@@ -297,9 +297,14 @@ impl Engine {
         if let Some(other) = self.project.mounts().iter().find(|m| m.name == name && m.root != dir) {
             return ToolOutput::error(Json::obj([("error", Json::from("mount_taken")), ("message", Json::from(format!("{name} is already mounted from {}", other.root.display())))]).to_string());
         }
-        let n = self.project_mount_folder(Mount { name: name.clone(), root: dir, kind: MountKind::Module });
+        let n = self.project_mount_folder(Mount { name: name.clone(), root: dir.clone(), kind: MountKind::Module });
         let files = self.world.files().range(format!("{name}/")..).take_while(|(p, _)| p.starts_with(&format!("{name}/"))).count();
-        ToolOutput::text(Json::obj([("mount", Json::from(name.as_str())), ("files", Json::from(files)), ("imported", Json::from(n))]).to_string())
+        let mut j = Json::obj([("mount", Json::from(name.as_str())), ("files", Json::from(files)), ("imported", Json::from(n))]);
+        // A module inside the engine's own Cargo workspace: its edits reach every workspace build.
+        if specula_logic::build::workspace_root(&dir) == cwd {
+            j.set("warning", Json::from("workspace_member: this module belongs to the engine's own Cargo workspace, so an edit that doesn't compile breaks the whole workspace's cargo build and cargo test, not just this module (manifests and paths are still checked on every commit)"));
+        }
+        ToolOutput::text(j.to_string())
     }
 
     /// Mounts `mount` and imports its files (one journal entry by `disk`); returns how many changed.
@@ -343,20 +348,49 @@ impl Engine {
 
     /// A mounted module's files as the store holds them (outside edits imported first): what a
     /// fix build compiles, so its fixes are worked out against exactly these texts.
-    fn project_module_texts(&mut self, dir: &std::path::Path) -> Vec<ModuleText> {
-        let Some(m) = self.project_module_mount(dir) else { return Vec::new() };
+    ///
+    /// Refused (`disk_out_of_sync`, naming the files) while any of them is held, has a write
+    /// pending, or isn't on disk as the store has it: Cargo compiles the disk, and fixes worked
+    /// out against other text would cut into it.
+    fn project_module_texts(&mut self, dir: &std::path::Path) -> Result<Vec<ModuleText>, Json> {
+        let Some(m) = self.project_module_mount(dir) else { return Ok(Vec::new()) };
         let prefix = format!("{}/", m.name);
         let paths: Vec<String> = self.world.files().range(prefix.clone()..).take_while(|(p, _)| p.starts_with(&prefix)).map(|(p, _)| p.clone()).collect();
         let events: Vec<Event> = paths.iter().filter_map(|p| self.project.refresh(p)).collect();
         if !events.is_empty() {
             self.project_import(events);
         }
-        self.world
+        let out_of_sync: Vec<Json> = self
+            .world
+            .files()
+            .range(prefix.clone()..)
+            .take_while(|(p, _)| p.starts_with(&prefix))
+            .filter_map(|(p, f)| {
+                let why = if let Some((_, _, why)) = self.project.held.get(p) {
+                    format!("held: the disk holds something that can't be mirrored ({why})")
+                } else if let Some(e) = self.project.pending.get(p) {
+                    format!("its last write hasn't reached the disk ({e})")
+                } else if self.project.stamp_of(p).map(|s| s.hash) != Some(f.hash) {
+                    "the disk doesn't hold the store's text".to_owned()
+                } else {
+                    return None;
+                };
+                Some(Json::obj([("path", Json::from(p.as_str())), ("why", Json::from(why))]))
+            })
+            .collect();
+        if !out_of_sync.is_empty() {
+            return Err(Json::obj([
+                ("error", Json::from("disk_out_of_sync")),
+                ("message", Json::from(format!("{} of the module's files aren't on disk as the store has them, and Cargo compiles the disk: fix them first (project_list shows held and pending files); nothing was built or fixed", out_of_sync.len()))),
+                ("files", Json::Arr(out_of_sync)),
+            ]));
+        }
+        Ok(self.world
             .files()
             .range(prefix.clone()..)
             .take_while(|(p, _)| p.starts_with(&prefix))
             .map(|(p, f)| ModuleText { disk: specula_logic::fix::canonical(&m.disk_path(&p[prefix.len()..])), path: p.clone(), version: f.version, hash: f.hash, text: Arc::clone(&f.text) })
-            .collect()
+            .collect())
     }
 
     /// `logic_build {fix: true}`'s fixes for a mounted module, committed as the caller's change
@@ -371,7 +405,10 @@ impl Engine {
             if let Some(ev) = self.project.refresh(&path) {
                 self.project_import(vec![ev]);
             }
+            // The disk must still hold exactly the text the fixes were planned from.
+            let on_disk = !self.project.held.contains_key(&path) && !self.project.pending.contains_key(&path) && self.project.stamp_of(&path).map(|s| s.hash) == Some(hash);
             match self.world.files().get(&path) {
+                Some(_) if !on_disk => out.skipped.push((path, "the disk doesn't hold the text the build compiled (held, pending, or changed)".into())),
                 Some(f) if (f.version, f.hash) == (version, hash) => {
                     if text.len() > project::MAX_FILE_BYTES {
                         out.skipped.push((path, "the fixed file would pass 1 MiB".into()));
@@ -396,9 +433,12 @@ impl Engine {
             Ok(())
         }) {
             Ok((_, seq)) => {
-                out.committed = paths;
                 out.journal = seq;
                 self.project_sync_for(None);
+                // A fix that didn't reach the disk stops the rounds: the next build would compile
+                // the old text.
+                out.stop = paths.iter().any(|p| self.project.pending.contains_key(p) || self.project.held.contains_key(p));
+                out.committed = paths;
             }
             Err(e) => out.error = Some(e.to_json()),
         }

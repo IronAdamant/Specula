@@ -96,16 +96,26 @@ root package are never project files. Every `Cargo.toml` commit is checked the s
 no `build`, `links` or proc-macro (nor the `proc_macro` / `build_dependencies` spellings), no `[workspace]`,
 `[patch]`, `[replace]`, `[target]` or `[build-dependencies]`, no renaming another crate to `specula-sdk` with
 `package =`, `lib.path` inside `src/`, and only path dependencies, so a crates.io dependency or a build script never
-reaches the disk. Every `.rs` commit has its compile-time paths checked (`#[path]`, `include_str!`,
-`include_bytes!`, `include!` stay inside the module's folder, never `target/`, as `logic_build`'s vet requires;
-ambulo includes its own `actions.json`).
+reaches the disk. Every `.rs` commit has its compile-time paths checked by a token scan (`#[path]`,
+`include_str!`, `include_bytes!`, `include!` stay inside the module's folder, never `target/`; ambulo includes its own
+`actions.json`), and every build checks the files rustc actually read (MODULES.md). These problems
+(`not_a_module`, `third_party_crate`, `build_script`, `not_allowed`, `source_path`) can't be stored as drafts:
+`allow_errors` doesn't override them for `Cargo.toml` and `.rs` files.
+
+**Modules inside the engine's own Cargo workspace** (ambulo is a member of the repo's workspace) mount with a
+`workspace_member` warning: their edits reach every workspace build, so a module edit that doesn't compile breaks the
+whole workspace's `cargo build` and `cargo test`, not just the module. The manifest and path checks above keep such an
+edit from adding a crates.io dependency or a build script to the workspace.
 
 **`logic_build {fix: true}` on a mounted module never writes the disk itself.** It is refused up front while another
 agent claims any of the module's files (`Claims::check_subtree`). Each round takes the store's texts first, builds
 without fixing, works rustc's fixes out against exactly those texts (`specula_logic::fix::plan`), and commits them as
 the caller's change through the store (claims checked again, journaled, undoable; the engine then writes the disk, so
 nothing is imported as `disk`). A file another agent or a human changed during the build keeps their text: its fixes
-are skipped and reported (`fixes_journaled.skipped`), because their offsets belong to the old text.
+are skipped and reported (`fixes_journaled.skipped`), because their offsets belong to the old text. Cargo compiles
+the disk, so a fix build is refused (`disk_out_of_sync`, naming the files) while any of the module's files is held,
+has a write pending, or isn't on disk as the store has it; each commit re-checks that the disk still holds the text
+its fixes were planned from, and a fix that didn't reach the disk ends the rounds.
 
 ## Tools
 

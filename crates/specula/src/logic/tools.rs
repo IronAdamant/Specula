@@ -462,9 +462,18 @@ fn fix_mounted(to_engine: &Sender<Request>, session: &SessionInfo, req: &BuildRe
     let mut round = 0;
     let typed = |call: ProjectCall| tools_call(to_engine, session, call);
     let report = loop {
-        let (tx, rx) = mpsc::channel::<Vec<ModuleText>>();
+        let (tx, rx) = mpsc::channel::<Result<Vec<ModuleText>, Json>>();
         typed(ProjectCall::ModuleTexts { dir: req.dir.clone(), reply: tx });
-        let texts = rx.try_recv().unwrap_or_default();
+        let texts = match rx.try_recv() {
+            Ok(Ok(t)) => t,
+            Ok(Err(e)) => {
+                // Held, pending or changed files: Cargo would compile other text than the plan's.
+                let message = e.get("message").and_then(Json::as_str).unwrap_or("out of sync").to_owned();
+                refused = Some(e);
+                break BuildReport { error: Some(("disk_out_of_sync", message)), ..BuildReport::default() };
+            }
+            Err(_) => Vec::new(),
+        };
         let report = (*build_service().build(plain.clone())).clone();
         if round == specula_logic::build::MAX_FIX_ROUNDS || report.fixable() == 0 {
             break report;
@@ -504,6 +513,10 @@ fn fix_mounted(to_engine: &Sender<Request>, session: &SessionInfo, req: &BuildRe
             }
         }
         journal.extend(done.journal);
+        if done.stop {
+            skipped.push(Json::obj([("why", Json::from("a fixed file didn't reach the disk (project_list shows it pending): no more rounds"))]));
+            break report;
+        }
         if done.committed.is_empty() {
             break report;
         }

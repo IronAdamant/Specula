@@ -73,6 +73,12 @@ fn mount_of(path: &str) -> &str {
     }
 }
 
+/// Problems no `allow_errors` overrides: for a module's `Cargo.toml` and `.rs` files, anything
+/// that would let a crates.io crate, a build script or files from outside into a build.
+pub fn never_allowed(kind: FileKind, code: &str) -> bool {
+    matches!(kind, FileKind::Cargo | FileKind::Rust) && matches!(code, "not_a_module" | "third_party_crate" | "build_script" | "not_allowed" | "source_path")
+}
+
 /// The nearest `style.json` from `recipe`'s folder up to its mount's root, among those `exists`
 /// says are there.
 fn nearest_style(recipe: &str, exists: impl Fn(&str) -> bool) -> Option<String> {
@@ -523,6 +529,11 @@ mod tests {
         assert!(codes(&engine_dep).contains(&"not_a_module".to_owned()));
         assert!(codes(&format!("{ambulo}[build-dependencies]\n")).contains(&"not_allowed".to_owned()));
         assert!(!validate("modules/ambulo/Cargo.toml", FileKind::Cargo, &serde, None, &[]).is_empty(), "every Cargo.toml commit is checked");
+        // Review round 3: these can't be stored as drafts.
+        for p in validate("modules/ambulo/Cargo.toml", FileKind::Cargo, &serde, None, &[]).iter().chain(&validate("modules/ambulo/Cargo.toml", FileKind::Cargo, &build, None, &[])) {
+            assert!(never_allowed(FileKind::Cargo, &p.code), "{p:?}");
+        }
+        assert!(!never_allowed(FileKind::Recipe, "not_a_module") && !never_allowed(FileKind::Rust, "json"));
         // Review round 2: renaming another crate to specula-sdk, lib.path and the underscore aliases.
         let renamed = ambulo.replace(sdk, "specula-sdk = { path = \"../../crates/specula-core\", package = \"specula-core\" }");
         assert!(codes(&renamed).contains(&"not_a_module".to_owned()), "{:?}", codes(&renamed));

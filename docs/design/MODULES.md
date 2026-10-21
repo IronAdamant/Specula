@@ -65,11 +65,15 @@ What `logic_build` lets a module build from, checked against `cargo metadata --o
   (`outside_root`);
 - **no build scripts** (`build_script`) and **no proc-macros** (`proc_macro`), anywhere in the build: they run code at
   build time;
-- **compile-time paths stay in the module's folder** (`source_path`, `specula_logic::paths`): `#[path = "..."]` and
-  `include_str!` / `include_bytes!` / `include!` must name a plain string literal that resolves inside the module (its
-  `src/` and top-level files such as `actions.json`; never `target/`), never an absolute path or one climbing out (a
-  module can't compile engine sources into itself or read `C:/Windows/win.ini` at build time). The project tools apply
-  the same check to every committed `.rs` file;
+- **compile-time paths stay in the module's folder** (`source_path`, `specula_logic::paths`). The authoritative check
+  runs **after** the build: rustc's dep-info for the module crate lists every file the compiler read, however the
+  source spelled the path (a renamed `include_str!`, a `macro_rules!` wrapper, escapes, `cfg_attr`), and each must lie
+  inside the module's folder (its `src/` and top-level files such as `actions.json`; never `target/`). A build that read
+  anything else is refused (no library is loaded, and its diagnostics are dropped, since an `include!` error can echo
+  the file it read). A token scan of the sources gives the early hint before Cargo runs and at every commit of a
+  mirrored `.rs` file. **What this is for:** determinism and lint coverage (no code compiled in that the lints didn't
+  scan, nothing compiled from engine sources) and not embedding host files into a module. It is **not a sandbox**: a
+  module is native code in the engine's process and can read any file at run time;
 - **no `.cargo/` folder** between the module and the working directory (`cargo_config`): a `rustc-wrapper` or linker
   there would run; the project's own `.cargo/config.toml` applies;
 - **no `rust-toolchain` or `rust-toolchain.toml`** between the module and the working directory (`toolchain_file`),

@@ -52,7 +52,7 @@ pub enum ProjectCall {
     /// claims any of its files (when it is mounted).
     FixGate { dir: PathBuf },
     /// A mounted module's files as the store holds them (what a fix build compiles).
-    ModuleTexts { dir: PathBuf, reply: Sender<Vec<ModuleText>> },
+    ModuleTexts { dir: PathBuf, reply: Sender<Result<Vec<ModuleText>, Json>> },
     /// A fix build's fixed texts `(path, version, hash it was worked out from, new text)`,
     /// committed as the caller's change; files changed since are skipped.
     CommitFixes { files: Vec<(String, u64, u64, String)>, reply: Sender<FixesCommitted> },
@@ -77,6 +77,8 @@ pub struct FixesCommitted {
     /// The commit was refused (a claim): nothing was written.
     pub error: Option<Json>,
     pub journal: Option<u64>,
+    /// Committed, but a write didn't reach the disk: no more rounds.
+    pub stop: bool,
 }
 
 impl ProjectCall {
@@ -570,11 +572,19 @@ fn edit_tool(tools: &Tools, session: &SessionInfo, args: &Json, tool: &'static s
             (None, None) => Vec::new(),
         };
         let errors = problems.iter().filter(|p| p.is_error()).count();
-        if errors > 0 && !allow_errors {
+        // A module's manifest and sources are built (and its manifest read by the whole Cargo
+        // workspace it may belong to): these never reach the disk, draft or not.
+        let hard = problems.iter().filter(|p| p.is_error() && project_kinds::never_allowed(kind, &p.code)).count();
+        if errors > 0 && (!allow_errors || hard > 0) {
+            let why = if hard > 0 {
+                format!("{path}: {hard} problem(s) that allow_errors can't override (a module's manifest and sources must stay a module's: no crates.io dependencies, build scripts or files from outside); nothing was changed")
+            } else {
+                format!("{path} would not load ({errors} error(s)); nothing was changed. Fix what the problems say (allow_errors stores a draft anyway)")
+            };
             return Ok(ToolOutput::error(
                 Json::obj([
                     ("error", Json::from("invalid")),
-                    ("message", Json::from(format!("{path} would not load ({errors} error(s)); nothing was changed. Fix what the problems say (allow_errors stores a draft anyway)"))),
+                    ("message", Json::from(why)),
                     ("path", Json::from(path.as_str())),
                     ("kind", Json::from(kind.name())),
                     ("problems", problems_json(&problems)),

@@ -155,6 +155,67 @@ def fix_checks(args, work, check):
             shutil.copytree(ws / "mods" / "ambulo", ws / "emptyassets" / "mod2", ignore=shutil.ignore_patterns("target"))
             e = err_of(ann, "project_mount", module="emptyassets/mod2")
             check("a mount inside another is refused", e is not None and e.get("error") == "mount_overlap", (e or {}).get("message", "")[:120])
+            check("a module in the engine's own workspace mounts with a warning", str(m.get("warning", "")).startswith("workspace_member"), str(m.get("warning", ""))[:80])
+            # Round 3 E: compile-time path evasions. The token scan refuses what it sees at
+            # commit; macro indirection is caught after the build by rustc's dep-info.
+            outside = work / "outside.txt"
+            outside.write_text("host file\n")
+            o = outside.as_posix()
+            evasions = {
+                "a '//' string earlier on the line": f'const S: &str = "//"; const W: &str = include_str!("{o}");\npub fn leak() -> usize {{ W.len() + S.len() }}\n',
+                "use core::include_str as grab": f'use core::include_str as grab;\nconst W: &str = grab!("{o}");\npub fn leak() -> usize {{ W.len() }}\n',
+                "a macro_rules wrapper": f'macro_rules! m {{ ($i:ident) => {{ $i!("{o}") }} }}\nconst W: &str = m!(include_str);\npub fn leak() -> usize {{ W.len() }}\n',
+            }
+            seen = []
+            for name, code in evasions.items():
+                v = ann.json("project_read", path=P, problems=False)["version"]
+                e = err_of(ann, "project_write", path=P, text=orig + "\n" + code, expect_version=v)
+                if e is not None:
+                    seen.append(f"{name}: refused at commit ({e.get('error')})")
+                    continue
+                b = err_of(ann, "logic_build", path="mods/ambulo", reload=False)
+                err = (b or {}).get("error")
+                code = err.get("code") if isinstance(err, dict) else err
+                ok = b is not None and code == "source_path" and not b.get("diagnostics") and not b.get("library")
+                seen.append(f"{name}: {'refused after the build (dep-info)' if ok else 'BUILT: ' + json.dumps(b)[:120]}")
+            v = ann.json("project_read", path=P, problems=False)["version"]
+            ann.json("project_write", path=P, text=orig, expect_version=v)
+            check("compile-time path evasions are refused (commit scan or the build's dep-info)", all("refused" in s for s in seen), "; ".join(seen))
+            # Round 3 F: allow_errors doesn't store a crates.io dependency or a build script.
+            cargo = ws / "mods" / "ambulo" / "Cargo.toml"
+            corig = cargo.read_text(encoding="utf-8")
+            PC = "modules/ambulo/Cargo.toml"
+            results = []
+            for bad in (corig.replace("[dependencies]", '[dependencies]\nserde = "1"'), corig.replace("publish = false", 'publish = false\nbuild = "src/b.rs"')):
+                v = ann.json("project_read", path=PC, problems=False)["version"]
+                e = err_of(ann, "project_write", path=PC, text=bad, expect_version=v, allow_errors=True)
+                results.append(e is not None and e.get("error") == "invalid" and cargo.read_text(encoding="utf-8") == corig)
+            check("allow_errors never stores a crates.io dependency or a build script", all(results), str(results))
+            # Round 3 H and L: fix:true while the disk doesn't hold the store's text.
+            v = ann.json("project_read", path=P, problems=False)["version"]
+            ann.json("project_write", path=P, text=warn, expect_version=v)
+            time.sleep(1.1)
+            lib.write_text(warn + "\n" + ("// pad " + "x" * 90 + "\n") * 11000, encoding="utf-8")
+            wait_for("the held lib.rs", lambda: ann.json("project_list", prefix=P, limit=1).get("disk_unreadable"), 10.0)
+            e_held = err_of(ann, "logic_build", path="mods/ambulo", fix=True, reload=False)
+            lib.write_text(warn, encoding="utf-8")
+            wait_for("the release", lambda: not ann.json("project_list", prefix=P, limit=1).get("disk_unreadable"), 10.0)
+            fh = open(lib, "rb")  # holds the file open without delete sharing: the engine's rename-over fails
+            try:
+                v = bob.json("project_read", path=P, problems=False)["version"]
+                bob.json("project_write", path=P, text="// bob's header, written while the file was locked\n" + warn, expect_version=v)
+                pending = ann.json("project_list", prefix=P, limit=1).get("disk_pending")
+                e_pending = err_of(ann, "logic_build", path="mods/ambulo", fix=True, reload=False)
+            finally:
+                fh.close()
+            time.sleep(2.5)
+            synced = lib.read_text(encoding="utf-8") == ann.json("project_read", path=P, problems=False)["text"]
+            check("fix:true is refused while a module file is held or pending (Cargo compiles the disk)",
+                  e_held is not None and e_held.get("fixes_journaled", {}).get("refused", {}).get("error") == "disk_out_of_sync"
+                  and bool(pending) and e_pending is not None and e_pending.get("fixes_journaled", {}).get("refused", {}).get("error") == "disk_out_of_sync" and synced,
+                  f"held: {(e_held or {}).get('error')}; pending: {(e_pending or {}).get('error')}; disk synced after the unlock: {synced}")
+            v = ann.json("project_read", path=P, problems=False)["version"]
+            ann.json("project_write", path=P, text=orig, expect_version=v)
             ann.close()
             bob.close()
         check("fix engine shuts down cleanly", eng.exit_code == 0, f"exit {eng.exit_code}")
