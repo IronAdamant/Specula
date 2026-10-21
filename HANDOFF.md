@@ -28,7 +28,7 @@ memory of the earlier ones. This page is **current state and what's next** only;
   wave 3 (M4) straight after, with the same review rounds.
   **Merged so far (2026-10-18):** all of wave 1 (swarm communication, the module host, physics P1-P3, Lex,
   animation A3), and from wave 2 the playtests and tool ergonomics (the 20+ replay exit proof passes), the visual
-  history gallery, save games with the balance lab, streaming with HLOD, and Sepulcra fully in Lex with live Lex. Wave 2 is
+  history gallery, save games with the balance lab, streaming with HLOD, Sepulcra fully in Lex with live Lex, and Locus with navigation and AI. Wave 2 is
   running: Locus and navigation/AI, playtest swarms and tool ergonomics, streaming and
   HLOD, Sepulcra fully in Lex with live Lex, save games and the balance lab, and P4 joints with A4 ragdolls.
 - **M3 plan:** Its plan (owner direction 2026-10-17: games
@@ -148,6 +148,8 @@ In practice that means six **foundations** that apply to every change from M1 on
   - Gameplay as data (Lex): `lex_schema`, `lex_list`, `lex_get`, `lex_edit`, `lex_validate`, `lex_simulate`,
     `lex_import`, `lex_export`, `lex_session` ([docs/design/LEX.md](docs/design/LEX.md)); `lex_live` runs a set live in the
     engine. Sepulcra plays from its Lex rules with `-- --rules lex`.
+  - Placement and navigation: `world_place` (relations), `nav_build`, `nav_path`, `nav_point`, `nav_agent`,
+    `nav_info`, `ai_check`, `ai_set`, `ai_status`, `model_collider`.
   - Animation: `anim_get`, `anim_set` (clips and graphs as data), `anim_state`, `anim_check` (motion checks),
     `anim_filmstrip` (contact sheets with checks); graph parameters via `world_set {anim: {graph, params}}`.
   - Physics: `physics_raycast`, `physics_cast`, `physics_overlap`, `physics_contacts`, `physics_events`,
@@ -176,11 +178,10 @@ In practice that means six **foundations** that apply to every change from M1 on
 
 **What it can't do yet** (most of it is M3+):
 - **No joints or ragdolls** yet (P4 and A4 are wave 2), and Sepulcra doesn't use physics yet. Sepulcra runs on its Rust rules by
-  default (`--rules lex` plays it from Lex). Saves are refused while a live Lex run is active (being fixed). Module characters move with a
+  default (`--rules lex` plays it from Lex). Module characters move with a
   simple kinematic placeholder, not the P2 controller. Modules can't load off Windows yet (no `dlopen`), and a module stuck in a loop that makes no
   requests can't be preempted.
-- No title screen in the app, settings aren't saved and there's no rebinding. Ragdoll bodies and live Lex runs aren't
-  in save files yet.
+- No title screen in the app, settings aren't saved and there's no rebinding. Ragdoll bodies aren't in save files yet.
 - **Windows only** at runtime: other platforms compile but report "unsupported" (Vulkan loading isn't implemented
   off Windows yet). CI has no GPU, so rendering is checked by hand with `scripts/window_check.py`.
 - **Localhost only:** no per-agent auth tokens yet, so the server must never bind beyond loopback.

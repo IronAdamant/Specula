@@ -43,6 +43,9 @@ mod save_tools;
 pub mod savegame;
 pub mod physics;
 mod physics_tools;
+pub mod nav;
+mod nav_tools;
+mod locus;
 pub mod playtest;
 mod playtest_engine;
 pub mod project;
@@ -480,6 +483,11 @@ struct Engine {
     save_writes: Vec<save_tools::Writing>,
     /// A save game being read and checked on a worker thread (one at a time).
     save_load: Option<save_tools::Loading>,
+    /// The game's saves refused for a moment (`nav_building`), retried when due: (due, tries,
+    /// request). A wave-start autosave isn't lost to a navmesh switching settings.
+    game_save_retry: Vec<save_tools::RetrySave>,
+    /// Retried game saves under way, noted on their answers (requested tick, tries).
+    game_save_notes: Vec<(game::GameRequest, save_tools::RetryInfo)>,
     /// The world autosave writes to: `--world`, or the last world_save / world_load.
     world_name: Option<String>,
     /// `world.revision()` as last saved or loaded.
@@ -544,6 +552,8 @@ struct Engine {
     logic: logic::LogicHost,
     /// The physics simulation and its bridge to the world (see [`physics`]).
     physics: physics::Physics,
+    /// Navmeshes, nav agents and minds (see [`nav`]).
+    nav: nav::Nav,
     /// Lex rule sets the engine steps live on its tick (see [`lex_live`]).
     lex_live: lex_live::Live,
     /// The hosted game's in-process Lex hooks ([`game::Game::lex_natives`]).
@@ -626,6 +636,8 @@ impl Engine {
             saves_dir: PathBuf::from("saves"),
             save_writes: Vec::new(),
             save_load: None,
+            game_save_retry: Vec::new(),
+            game_save_notes: Vec::new(),
             world_name: None,
             saved_revision: 0,
             last_autosave: Instant::now(),
@@ -657,6 +669,7 @@ impl Engine {
             frame_floor: (schedule::DEFAULT_FRAME_FLOOR_FPS, None),
             logic: logic::LogicHost::new(),
             physics: physics::Physics::default(),
+            nav: nav::Nav::default(),
             lex_live: lex_live::Live::default(),
             lex_natives: specula_lex::Natives::new(),
             stream: streaming::Streamer::default(),
@@ -692,6 +705,10 @@ impl Engine {
         self.physics.reset();
         // Live Lex runs presented into the old world: their entities are gone with it.
         self.lex_live = lex_live::Live::default();
+        self.nav.reset();
+        // Navigation reads the loaded world now: its navmeshes are built (in slices, the clock
+        // held) before the first tick, as they were in the run that saved it.
+        self.nav.sync(&self.world, self.world_generation);
         problems
     }
 
@@ -740,12 +757,49 @@ impl Engine {
         self.last_advance = Instant::now();
     }
 
+    /// Builds a loaded world's navmeshes for up to `limit` of wall time (slices back to back).
+    /// Returns whether the load is done.
+    fn build_nav_load(&mut self, limit: Duration) -> bool {
+        let started = Instant::now();
+        while self.nav.loading() {
+            if self.nav.load_slice(&self.world, self.world_generation, Some(nav::LOAD_SLICE_WORK)) {
+                break;
+            }
+            if started.elapsed() >= limit {
+                break;
+            }
+        }
+        !self.nav.loading()
+    }
+
+    /// The structured answer for a call that needs ticks while a load still builds.
+    fn nav_loading_error(&self) -> ToolOutput {
+        let mut e = WorldError::new("loading", "the loaded world's navmeshes are still being built (the simulation clock is held until they are): call again shortly")
+            .with("retry", true);
+        if let Some(Json::Arr(meshes)) = self.nav.summary_json().get("navmeshes").cloned() {
+            e = e.with("navmeshes", Json::Arr(meshes.into_iter().filter_map(|m| Some(Json::obj([("path", m.get("path")?.clone()), ("building", m.get("building").cloned().unwrap_or(Json::Null))]))).collect()));
+        }
+        world_error(&e)
+    }
+
     /// Turns the real time since the last call into whole ticks and runs them.
     fn advance_clock(&mut self) {
         // The world's anim assets reach the library (graph writes settle against them) without
         // waiting for a draw: headless engines never draw.
         self.models.refresh_anim_env(&self.library, &self.world, self.world_generation);
         let now = Instant::now();
+        if self.nav.loading() {
+            // A loaded world's navmeshes build first, slices back to back within a frame's
+            // budget, with the simulation clock held (frames and agent calls are served between
+            // frames; the time doesn't become ticks later). The result doesn't depend on the
+            // slices.
+            let _z = profile::zone("nav_load");
+            self.build_nav_load(nav::LOAD_FRAME);
+            self.last_advance = Instant::now();
+            if self.nav.loading() {
+                return;
+            }
+        }
         let ticks = self.clock.advance(now - self.last_advance);
         self.last_advance = now;
         let _z = profile::zone("sim");
@@ -777,6 +831,8 @@ impl Engine {
                 let _l = profile::zone("lex_live");
                 self.lex_live_tick();
             }
+            // Navigation decides and steers on the same tick, before physics walks its characters.
+            self.nav_tick();
             // Physics steps on the same fixed tick, after the game moved what it moves.
             self.physics_tick();
             self.clock.finish_tick();
@@ -1498,6 +1554,10 @@ impl Engine {
                 // Builds land promptly (and calls waiting on them are answered).
                 wait = wait.min(Duration::from_millis(5));
             }
+            if self.nav.loading() {
+                // A load builds back to back (calls are still read between slices).
+                wait = Duration::ZERO;
+            }
             if self.playtests.running() {
                 // Flat out, unless it waits for a deferred answer.
                 wait = if self.playtests.waiting_on_call() { wait.min(Duration::from_millis(1)) } else { Duration::ZERO };
@@ -1727,6 +1787,8 @@ impl Engine {
             }
             Command::PerfCapture(_) | Command::Playtest(_) => unreachable!("answered above"),
             Command::Time(op) if playtest_engine::clock_refused(op, self.playtests.running()) => playtest_engine::clock_busy(),
+            // Steps wait for a load to finish (bounded); they are never queued behind it.
+            Command::Time(TimeOp::Step(_)) if self.nav.loading() && !self.build_nav_load(nav::LOAD_CALL_WAIT) => self.nav_loading_error(),
             Command::Time(op) => {
                 match op {
                     TimeOp::Pause => self.clock.set_paused(true),
@@ -1813,6 +1875,8 @@ impl Engine {
                 ToolOutput::text(list.to_string())
             }
             Command::Physics(call) => self.physics_call(call, w, tick),
+            Command::Nav(call) => self.nav_call(call, w, tick),
+            Command::Place(call) => self.place_call(call, w, tick),
             Command::Stream(call) => self.stream_call(call, &request.session),
             Command::SaveGame(call) => self.handle_save(call, w, &by),
             Command::ModelBuild(_) | Command::ModelReload => unreachable!("answered by handle_model_call"),
@@ -1859,6 +1923,11 @@ impl Engine {
                 "physics",
                 Json::obj([("state_hash", Json::from(journal::hex(h))), ("recent", Json::arr(self.physics.hashes.range(pstart..).map(pair)))]),
             );
+        }
+        // Navigation's hidden state (navmeshes, corridors, minds).
+        if let Some(h) = self.nav.last_hash() {
+            let nstart = self.nav.hashes.len().saturating_sub(recent);
+            out.set("nav", Json::obj([("state_hash", Json::from(journal::hex(h))), ("recent", Json::arr(self.nav.hashes.range(nstart..).map(pair)))]));
         }
         if let Some(t) = tick {
             let found = self.tick_hashes.iter().find(|(at, _)| *at == t).map(|(_, h)| journal::hex(*h));
@@ -2132,6 +2201,7 @@ impl Engine {
             ("serve", if self.windowed { self.schedule.to_json() } else { Json::Null }),
             ("sim_tick", pacing.tick.to_json()),
             ("physics", self.physics.summary_json(&self.world.env().physics)),
+            ("nav", if self.nav.is_empty() { Json::Null } else { self.nav.summary_json() }),
             ("game_frame", pacing.game_frame.to_json()),
             (
                 "game_overlay",
@@ -2245,6 +2315,8 @@ fn call_class(command: &Command) -> Class {
         Command::Game { .. } => Class::Game,
         Command::Logic(_) => Class::Disk,
         Command::Physics(call) => call.class(),
+        Command::Nav(call) => call.class(),
+        Command::Place(call) => call.class(),
         Command::Stream(call) => call.class(),
         Command::SaveGame(call) => call.class(),
         Command::Playtest(_) => Class::Sim,

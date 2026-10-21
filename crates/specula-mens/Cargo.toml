@@ -1,0 +1,12 @@
+[package]
+name = "specula-mens"
+description = "Specula AI as data: behaviour trees and utility AI, validated JSON and a deterministic runner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+specula-core = { workspace = true }

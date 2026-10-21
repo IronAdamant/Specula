@@ -65,7 +65,7 @@ fn random_hex() -> String {
     out
 }
 
-/// See the module docs.
+
 /// Which reserved subtree a commit may write.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Owns {
@@ -76,6 +76,8 @@ enum Owns {
     LexLive,
     /// Project files (`/project`): the project tools.
     Project,
+    /// `/nav` and `props.navmesh`: the nav tools.
+    Nav,
 }
 
 #[derive(Default)]
@@ -306,6 +308,19 @@ impl Swarm {
         self.commit_with(world, tick, w, kind, Owns::Neither, command)
     }
 
+    /// [`Swarm::commit`] for the navigation tools: the only writer of `/nav` and of
+    /// `props.navmesh` (navmesh settings, exempt from region claims as data that sits nowhere).
+    pub fn commit_nav<T>(
+        &mut self,
+        world: &mut World,
+        tick: u64,
+        w: Writer,
+        kind: Kind,
+        command: impl FnOnce(&mut World) -> Result<T, WorldError>,
+    ) -> Result<(T, Option<u64>), WorldError> {
+        self.commit_with(world, tick, w, kind, Owns::Nav, command)
+    }
+
     /// [`Swarm::commit`] for the Lex tools: the only writer of the `/lex` subtree, which holds
     /// rule data (see `lex_tools`).
     pub fn commit_lex<T>(
@@ -391,6 +406,16 @@ impl Swarm {
                     format!("'{}' is in /project, which holds project files: change them with project_write / project_patch / project_delete (project_list and project_read read them)", c.path()),
                 )
                 .with("path", c.path().to_owned()));
+            }
+            // Likewise /nav and navmesh settings: only the nav tools write them.
+            if owns != Owns::Nav {
+                if let Some(c) = changes.iter().find(|c| crate::claims::touches_nav_data(c)) {
+                    return Err(WorldError::new(
+                        "reserved",
+                        format!("'{}' is navmesh data (/nav, props.navmesh): change it with nav_build (nav_build remove: true deletes one; nav_info reads them)", c.path()),
+                    )
+                    .with("path", c.path().to_owned()));
+                }
             }
             Ok(v)
         };

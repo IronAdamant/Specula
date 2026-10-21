@@ -48,7 +48,9 @@ dependencies = [
  "specula-gpu",
  "specula-input",
  "specula-lex",
+ "specula-locus",
  "specula-logic",
+ "specula-mens",
  "specula-model",
  "specula-physics",
  "specula-platform",
@@ -57,6 +59,7 @@ dependencies = [
  "specula-sys",
  "specula-text",
  "specula-ui",
+ "specula-via",
 ]
 
 [[package]]
@@ -121,12 +124,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "specula-locus"
+version = "0.3.0"
+dependencies = [
+ "specula-core",
+]
+
+[[package]]
 name = "specula-logic"
 version = "0.3.0"
 dependencies = [
  "specula-core",
  "specula-sdk",
  "specula-sys",
+]
+
+[[package]]
+name = "specula-mens"
+version = "0.3.0"
+dependencies = [
+ "specula-core",
 ]
 
 [[package]]
@@ -185,4 +202,11 @@ dependencies = [
  "specula-input",
  "specula-platform",
  "specula-text",
+]
+
+[[package]]
+name = "specula-via"
+version = "0.3.0"
+dependencies = [
+ "specula-core",
 ]

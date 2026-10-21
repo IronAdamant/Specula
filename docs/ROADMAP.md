@@ -526,12 +526,15 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
   every tick across 4,100 whole games; rebuilt through the `lex_*` tools alone (`scripts/sepulcra_lex_tools.py`, 42
   `lex_edit` calls); played live in the engine (`lex_live`, with input bindings, work budgets and module hooks as
   natives) and as `sepulcra --rules lex`, which won on the iGPU with parity on every tick and the replay verified.
-  Lex state is in save games; live runs in saves are next.
+  Lex state is in save games, live runs included.
   *Proof:* rebuild Sepulcra's rules in Lex through tools alone, with replays still matching.
-- [ ] ➕ **Placement by relations: Locus** *(research)*. `world_place` takes relations (on, against, along, between,
+- [x] ➕ **Placement by relations: Locus** *(research)*. `world_place` takes relations (on, against, along, between,
   facing, spacing, avoid, inside a region, on the navmesh) and solves positions deterministically. Unsatisfied
   relations come back as data with the nearest valid alternative.
   *Why:* agents make systematic coordinate errors, but are good at relations once a solver does the placing.
+  *Done 2026-10-18:* `crates/specula-locus` and `world_place` (on, against, along, between, near, inside, facing,
+  spacing, avoid, on_navmesh), collision-checked through physics, unsatisfied relations returned with the nearest valid
+  alternative, one journaled and undoable commit, dry runs, work budgets. Design: [design/LOCUS.md](design/LOCUS.md).
 
 - [x] **Module host**: game logic as Rust `cdylib`s behind a C ABI. The engine owns all state; build → reload without
   losing the world; structured build errors.
@@ -608,9 +611,13 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
   *Done 2026-10-18:* per-tick hash ring, `desync_trace` and `desync_compare` (files, live, or the journal replayed); Sepulcra reports subsystem hashes; `scripts/desync_check.py`.
 - [x] ➕ **Input actions with rebinding** ("jump", not "Space"), with device-correct glyphs.
   *Done 2026-10-13:* `specula-input`: actions as JSON, rebinding with conflicts, pad/touch cancel, device glyphs.
-- [ ] ➕ **Navigation and AI**: navmesh generation from world geometry, pathfinding, crowd avoidance; behaviour trees
+- [x] ➕ **Navigation and AI**: navmesh generation from world geometry, pathfinding, crowd avoidance; behaviour trees
   and utility AI as data.
   *Why:* nearly every game with NPCs needs this, and the original plan had no navigation at all.
+  *Done 2026-10-18:* `specula-via` (tiled voxel navmeshes rebuilt per tile on the tick, A* with string pulling,
+  off-mesh jump/drop/ladder links, area costs, deterministic crowds), `specula-mens` (behaviour trees and utility AI as
+  validated data), the `nav_*` and `ai_*` tools, a per-tick mind budget, and nav state (build queues included) in save
+  games. `scripts/nav_check.py`, `scripts/nav_sepulcra.py`. Design: [design/NAVIGATION.md](design/NAVIGATION.md).
 - [x] ➕ **Save games** (moved earlier from M6): with determinism, a save is a serialisation of simulation state.
   *Done 2026-10-18:* `.specsave` files (world, game, physics including its hidden state, module state; versioned,
   checksummed, fuzzed, decoded on a worker), `save_write`, `save_read`, `save_list`, `save_delete`; Sepulcra's Saved
