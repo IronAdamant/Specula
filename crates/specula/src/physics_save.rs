@@ -287,6 +287,52 @@ mod tests {
         assert!(c_diverged.is_some(), "a reload without the snapshot should drift (or this test proves nothing)");
     }
 
+    /// Review round 3, the blocker (probe savejoint.py): a chain of scaled links hung from the
+    /// world by a ball joint, saved after it has swung (1, 26 and 60 ticks), loads and continues
+    /// bit for bit. Joint frames once came from the world matrix's column lengths, which change
+    /// in the last bits as a body turns, so the rebuilt joint didn't match the saved one.
+    #[test]
+    fn a_swinging_chain_on_a_world_anchor_saves_and_loads() {
+        for (steps, threads) in [(1u64, 1usize), (26, 1), (60, 1), (60, 4)] {
+            let mut a = World::default();
+            let mut ids = Vec::new();
+            for i in 0..6u32 {
+                let mut s = SpawnSpec::new(WShape::Cube);
+                s.name = Some(format!("l{i}"));
+                s.position = Vec3::new(0.5 * i as f32 + 0.25, 6.0, -3.0);
+                s.scale = Vec3::new(0.5, 0.1, 0.1);
+                s.collider = Some(Collider::default());
+                s.body = Some(Body::new(BodyKind::Dynamic, 1.0));
+                ids.push(a.spawn(s, "t").unwrap().id);
+            }
+            let joint = |w: &mut World, name: String, body: String| {
+                let mut s = SpawnSpec::new(WShape::Group);
+                s.name = Some(name);
+                s.props = Json::parse(&format!(r#"{{"joint": {body}}}"#)).unwrap();
+                w.spawn(s, "t").unwrap();
+            };
+            joint(&mut a, "anchor".into(), format!(r#"{{"kind": "ball", "a": null, "b": {}, "anchor_a": [0, 6, -3], "anchor_b": [-0.5, 0, 0]}}"#, ids[0]));
+            for i in 1..6 {
+                joint(&mut a, format!("j{i}"), format!(r#"{{"kind": "hinge", "a": {}, "b": {}, "anchor_a": [0.5, 0, 0], "anchor_b": [-0.5, 0, 0], "axis_a": [0, 0, 1], "axis_b": [0, 0, 1], "limit": [-60, 60]}}"#, ids[i - 1], ids[i]));
+            }
+            let mut pa = Physics { threads, ..Physics::default() };
+            for t in 0..steps {
+                tick(&mut a, &mut pa, t);
+            }
+            assert_eq!(pa.space.joints().count(), 6, "{steps}: every joint is in");
+            let bytes = pa.save_state(&a, 0).expect("physics ran");
+            let files = crate::persist::render(&a);
+            let mut b = load(&files);
+            let mut pb = Physics { threads, ..Physics::default() };
+            pb.restore_state(&b, 0, steps, &bytes).unwrap_or_else(|e| panic!("{steps} ticks, {threads} threads: {e:?}"));
+            for t in steps..steps + 45 {
+                tick(&mut a, &mut pa, t);
+                tick(&mut b, &mut pb, t);
+                assert_eq!((a.state_hash(), pa.hash()), (b.state_hash(), pb.hash()), "{steps}: diverged at tick {t}");
+            }
+        }
+    }
+
     #[test]
     fn damaged_physics_sections_are_errors_and_leave_physics_reset() {
         let mut a = scene();

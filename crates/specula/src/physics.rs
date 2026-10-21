@@ -1182,12 +1182,38 @@ pub fn world_rotation(world: &World, e: &world::Entity) -> Quat {
     q.normalize()
 }
 
-/// An entity's world pose and scale (scale from the world matrix's column lengths).
+/// An entity's world pose and scale.
+///
+/// The scale is [`world_scale`]: the per-axis product of the scales up the parent chain, exact
+/// and independent of rotation. (The world matrix's column lengths, used before, changed in the
+/// last bits as a body turned, so a collider or joint rebuilt from a moved body came out a
+/// little different: a saved joint on a world anchor then failed to match on load.)
 pub fn world_pose(world: &World, e: &world::Entity) -> (Pose, Vec3) {
     let m = e.model();
-    let col = |i: usize| Vec3::new(m.cols[i][0], m.cols[i][1], m.cols[i][2]).length();
     let p = Vec3::new(m.cols[3][0], m.cols[3][1], m.cols[3][2]);
-    (Pose { p, q: world_rotation(world, e) }, Vec3::new(col(0), col(1), col(2)))
+    (Pose { p, q: world_rotation(world, e) }, world_scale(world, e))
+}
+
+/// An entity's world scale: its own scale times its ancestors', per axis, composed from the root
+/// down as the world matrix is (so an unrotated chain gives the matrix's column lengths bit for
+/// bit), as magnitudes. Rotation never changes it. A rotated parent with a non-uniform scale
+/// shears its children, which no collider can follow; the per-axis product is what they get.
+pub fn world_scale(world: &World, e: &world::Entity) -> Vec3 {
+    let abs = |v: Vec3| Vec3::new(v.x.abs(), v.y.abs(), v.z.abs());
+    let Some(first) = e.parent else { return abs(e.scale) };
+    // Ancestors' scales, nearest first (depth is bounded by the world's hierarchy rules).
+    let mut chain: Vec<Vec3> = Vec::with_capacity(4);
+    let mut at = Some(first);
+    while let Some(id) = at {
+        let Some(p) = world.get(id) else { break };
+        chain.push(p.scale);
+        at = p.parent;
+    }
+    let mut s = chain.pop().unwrap_or(Vec3::ONE);
+    while let Some(next) = chain.pop() {
+        s = mul3(s, next);
+    }
+    abs(mul3(s, e.scale))
 }
 
 fn mul3(a: Vec3, b: Vec3) -> Vec3 {
