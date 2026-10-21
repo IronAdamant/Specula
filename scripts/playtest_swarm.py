@@ -60,6 +60,10 @@ def short(report):
 
 
 class Swarm:
+    # The board's tag and title word for this swarm's tasks (the evals runner uses "eval").
+    task_tag = "playtest"
+    task_word = "playtest"
+
     def __init__(self, exe, out, workers=4, lead_port=7493, use_lead=False, engine_args=(), game_args=(), verify=True,
                  keep_scratch=False, log=print, session_format=None, ports_per_worker=None):
         self.exe, self.out = Path(exe), Path(out)
@@ -178,6 +182,12 @@ class Swarm:
         result["passed"] = bool(ok_run and ok_ver)
         return result
 
+    def summary(self, res):
+        """The one line a worker reports on the board for a finished job."""
+        status = res.get("run", {}).get("status", "error")
+        verified = res.get("verify", {}).get("replay", {}).get("verified")
+        return f"{status}; replay {'verified' if verified else 'NOT verified'}; {res.get('wall_s', 0)} s"
+
     def worker(self, k, lead_url):
         name = f"playtester-{k}"
         with Mcp(lead_url, name) as lead:
@@ -189,7 +199,7 @@ class Swarm:
                 port_list, folder = ports["ports"], Path(scratch["dir"])
                 self.log(f"  {name}: ports {port_list}, scratch {folder}")
                 while not self.stopping.is_set():
-                    ready = lead.json("task_list", ready_for_me=True, tag="playtest", limit=20).get("tasks", [])
+                    ready = lead.json("task_list", ready_for_me=True, tag=self.task_tag, limit=20).get("tasks", [])
                     if not ready:
                         break
                     took = None
@@ -212,9 +222,7 @@ class Swarm:
                         res = {"name": pt_name, "worker": k, "passed": False, "error": str(e)[:500]}
                     with self.lock:
                         self.results[pt_name] = res
-                    status = res.get("run", {}).get("status", "error")
-                    verified = res.get("verify", {}).get("replay", {}).get("verified")
-                    summary = f"{status}; replay {'verified' if verified else 'NOT verified'}; {res.get('wall_s', 0)} s"
+                    summary = self.summary(res)
                     lead.json("task_done", id=took["id"], summary=summary[:200])
                     self.log(f"  {name}: {pt_name}: {'PASS' if res['passed'] else 'FAIL'} ({summary})")
             finally:
@@ -241,10 +249,10 @@ class Swarm:
                 lead.json("agent_hello", name="playtest-lead", role="lead")
                 task_ids = []
                 for name, spec in specs.items():
-                    t = lead.json("task_post", title=f"playtest {name}", tags=["playtest"],
-                                  detail=(spec.get("description") or f"run playtest {name} and verify its replay")[:4000])
+                    t = lead.json("task_post", title=f"{self.task_word} {name}", tags=[self.task_tag],
+                                  detail=(spec.get("description") or spec.get("summary") or f"run {self.task_word} {name}")[:4000])
                     task_ids.append(t["id"])
-                self.log(f"posted {len(task_ids)} playtest tasks; {self.workers} workers")
+                self.log(f"posted {len(task_ids)} {self.task_word} tasks; {self.workers} workers")
                 threads = [threading.Thread(target=self.worker, args=(k + 1, lead_url), daemon=True) for k in range(self.workers)]
                 for th in threads:
                     th.start()
@@ -259,7 +267,7 @@ class Swarm:
                     for th in threads:
                         th.join(60)
                     raise
-                board = lead.json("task_list", tag="playtest", limit=200)
+                board = lead.json("task_list", tag=self.task_tag, limit=200)
                 done = sum(1 for t in board.get("tasks", []) if t.get("status") == "done")
         finally:
             self.stop_all()

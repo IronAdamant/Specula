@@ -1,0 +1,404 @@
+{
+ "eval": 1,
+ "id": "task_board_handoff",
+ "set": "heldout",
+ "area": "swarm",
+ "title": "Take a task from the board, do it, hand it back",
+ "summary": "Swarm workflow: pick the task meant for your role (not another's), build what its detail specifies, and finish it with a summary; the board, the journal and the world must agree on who did what.",
+ "game": null,
+ "setup": [
+  {
+   "as": "lead",
+   "call": "world_spawn",
+   "args": {
+    "shape": "cube",
+    "name": "ground",
+    "position": [
+     0,
+     -0.5,
+     0
+    ],
+    "scale": [
+     40,
+     1,
+     40
+    ],
+    "color": "#3d4a3a",
+    "collider": {
+     "shape": "box"
+    }
+   }
+  },
+  {
+   "as": "lead",
+   "call": "task_post",
+   "save": "paint",
+   "args": {
+    "title": "Paint the gate gold",
+    "detail": "For the painter: recolour /gate when it exists. Builders: not yours.",
+    "tags": [
+     "painter"
+    ],
+    "assign": "painter"
+   }
+  },
+  {
+   "as": "lead",
+   "call": "task_post",
+   "save": "sign",
+   "args": {
+    "title": "Build the north signpost",
+    "tags": [
+     "builder"
+    ],
+    "detail": "Under a group at /signs/north: a post (tag \"signpost\") 0.15 m square and 2 m tall standing on the ground at x = 0, z = -8, and a sign board (tag \"sign\") 1.2 m wide, 0.4 m tall and 0.05 m thick, centred 1.7 m up on the post's south side (+z), facing south. Both need box colliders."
+   }
+  }
+ ],
+ "brief": "You're a builder in a swarm (say hello with any name). The lead agent posted work on the task board. Take the task meant for builders (leave other roles' tasks alone), build exactly what its detail asks, and finish it with task_done and a one-line summary of what you built.",
+ "tools": [
+  "task_*",
+  "note_*",
+  "world_*",
+  "claim_*",
+  "intent_*",
+  "sight_frame",
+  "physics_raycast",
+  "time_control"
+ ],
+ "limits": {
+  "calls": 30,
+  "wall_s": 600
+ },
+ "verify": [
+  {
+   "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+   "world_diff": {
+    "allow": [
+     {
+      "path": "/signs",
+      "ops": [
+       "added"
+      ]
+     },
+     {
+      "path": "/signs/*",
+      "ops": [
+       "added"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "the builder task is done, with a summary",
+   "call": "task_get",
+   "args": {
+    "id": "${sign.id}"
+   },
+   "save": "t",
+   "expect": {
+    "status": "done",
+    "result": {
+     "ne": ""
+    }
+   }
+  },
+  {
+   "name": "the painter's task wasn't touched",
+   "call": "task_get",
+   "args": {
+    "id": "${paint.id}"
+   },
+   "expect": {
+    "status": "open",
+    "version": 1
+   }
+  },
+  {
+   "name": "the agent that finished the task built the post",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/signs/north",
+    "tags": [
+     "signpost"
+    ],
+    "fields": [
+     "path",
+     "created_by",
+     "bounds"
+    ]
+   },
+   "expect": {
+    "total": 1,
+    "items.0.created_by": "${t.owner}"
+   }
+  },
+  {
+   "name": "the post is 2 m tall, 0.15 m square, standing at x = 0, z = -8",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/signs/north",
+    "tags": [
+     "signpost"
+    ],
+    "fields": [
+     "path",
+     "bounds"
+    ]
+   },
+   "expect": {
+    "items.0.bounds.min.1": {
+     "near": 0,
+     "tol": 0.02
+    },
+    "items.0.bounds.max.1": {
+     "near": 2,
+     "tol": 0.02
+    },
+    "items.0.bounds.min.0": {
+     "near": -0.075,
+     "tol": 0.01
+    },
+    "items.0.bounds.max.0": {
+     "near": 0.075,
+     "tol": 0.01
+    },
+    "items.0.bounds.min.2": {
+     "near": -8.075,
+     "tol": 0.01
+    },
+    "items.0.bounds.max.2": {
+     "near": -7.925,
+     "tol": 0.01
+    }
+   }
+  },
+  {
+   "name": "the board is 1.2 m wide, centred 1.7 m up on the post's south side",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/signs/north",
+    "tags": [
+     "sign"
+    ],
+    "fields": [
+     "path",
+     "bounds"
+    ]
+   },
+   "expect": {
+    "total": 1,
+    "items.0.bounds.min.0": {
+     "near": -0.6,
+     "tol": 0.02
+    },
+    "items.0.bounds.max.0": {
+     "near": 0.6,
+     "tol": 0.02
+    },
+    "items.0.bounds.min.1": {
+     "near": 1.5,
+     "tol": 0.02
+    },
+    "items.0.bounds.max.1": {
+     "near": 1.9,
+     "tol": 0.02
+    },
+    "items.0.bounds.min.2": {
+     "gte": -7.94
+    },
+    "items.0.bounds.max.2": {
+     "lte": -7.85
+    }
+   }
+  },
+  {
+   "name": "a physics ray from the south hits the board (it has a collider)",
+   "call": "time_control",
+   "args": {
+    "action": "step",
+    "ticks": 1
+   }
+  },
+  {
+   "name": "the ray",
+   "call": "physics_raycast",
+   "args": {
+    "origin": [
+     0,
+     1.7,
+     -4
+    ],
+    "direction": [
+     0,
+     0,
+     -1
+    ],
+    "max_distance": 10
+   },
+   "expect": {
+    "hits.0.path": {
+     "contains": "/signs/north/"
+    }
+   }
+  }
+ ],
+ "reference": [
+  {
+   "call": "task_list",
+   "args": {
+    "ready_for_me": true,
+    "limit": 20
+   }
+  },
+  {
+   "call": "task_take",
+   "args": {
+    "id": "${sign.id}"
+   }
+  },
+  {
+   "call": "world_batch",
+   "args": {
+    "ops": [
+     {
+      "op": "spawn",
+      "shape": "group",
+      "name": "signs"
+     },
+     {
+      "op": "spawn",
+      "shape": "group",
+      "parent": "/signs",
+      "name": "north"
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/signs/north",
+      "name": "post",
+      "position": [
+       0,
+       1,
+       -8
+      ],
+      "scale": [
+       0.15,
+       2,
+       0.15
+      ],
+      "color": "#5b4a3a",
+      "tags": [
+       "signpost"
+      ],
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/signs/north",
+      "name": "board",
+      "position": [
+       0,
+       1.7,
+       -7.9
+      ],
+      "scale": [
+       1.2,
+       0.4,
+       0.05
+      ],
+      "color": "#b89c6a",
+      "tags": [
+       "sign"
+      ],
+      "collider": {
+       "shape": "box"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "call": "task_done",
+   "args": {
+    "id": "${sign.id}",
+    "summary": "Built /signs/north: a 2 m post at (0, 0, -8) and a 1.2 x 0.4 m board 1.7 m up on its south side, both with box colliders."
+   }
+  }
+ ],
+ "broken": [
+  {
+   "note": "builds the right thing but never takes or finishes the task, and grabs the painter's task by mistake",
+   "call": "world_batch",
+   "args": {
+    "ops": [
+     {
+      "op": "spawn",
+      "shape": "group",
+      "name": "signs"
+     },
+     {
+      "op": "spawn",
+      "shape": "group",
+      "parent": "/signs",
+      "name": "north"
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/signs/north",
+      "name": "post",
+      "position": [
+       0,
+       1,
+       -8
+      ],
+      "scale": [
+       0.15,
+       2,
+       0.15
+      ],
+      "tags": [
+       "signpost"
+      ],
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/signs/north",
+      "name": "board",
+      "position": [
+       0,
+       1.7,
+       -7.9
+      ],
+      "scale": [
+       1.2,
+       0.4,
+       0.05
+      ],
+      "tags": [
+       "sign"
+      ],
+      "collider": {
+       "shape": "box"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "call": "task_take",
+   "args": {
+    "id": "${paint.id}"
+   }
+  }
+ ]
+}

@@ -1,0 +1,460 @@
+{
+ "eval": 1,
+ "id": "undo_vandal",
+ "set": "public",
+ "area": "journal",
+ "title": "Undo exactly one agent's damage",
+ "summary": "Journal forensics: find which entries one agent made, undo them (force over others' later work where needed) and keep everything others built afterwards.",
+ "game": null,
+ "setup": [
+  {
+   "as": "builder",
+   "call": "world_batch",
+   "args": {
+    "ops": [
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "name": "ground",
+      "position": [
+       0,
+       -0.5,
+       0
+      ],
+      "scale": [
+       30,
+       1,
+       30
+      ],
+      "color": "#3d4a3a"
+     },
+     {
+      "op": "spawn",
+      "shape": "group",
+      "name": "gate",
+      "position": [
+       0,
+       0,
+       -4
+      ]
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/gate",
+      "name": "post_l",
+      "position": [
+       -1.5,
+       1.25,
+       0
+      ],
+      "scale": [
+       0.4,
+       2.5,
+       0.4
+      ],
+      "color": "#7a6a58"
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/gate",
+      "name": "post_r",
+      "position": [
+       1.5,
+       1.25,
+       0
+      ],
+      "scale": [
+       0.4,
+       2.5,
+       0.4
+      ],
+      "color": "#7a6a58"
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/gate",
+      "name": "beam",
+      "position": [
+       0,
+       2.7,
+       0
+      ],
+      "scale": [
+       3.8,
+       0.4,
+       0.5
+      ],
+      "color": "#5b4a3a"
+     },
+     {
+      "op": "spawn",
+      "shape": "group",
+      "name": "garden",
+      "position": [
+       0,
+       0,
+       3
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "as": "vandal",
+   "call": "world_delete",
+   "args": {
+    "path": "/gate/beam"
+   }
+  },
+  {
+   "as": "vandal",
+   "call": "world_batch",
+   "args": {
+    "ops": [
+     {
+      "op": "set",
+      "path": "/gate/post_l",
+      "color": "#ff2020"
+     },
+     {
+      "op": "set",
+      "path": "/gate/post_r",
+      "color": "#ff2020",
+      "scale": [
+       0.4,
+       1.2,
+       0.4
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "as": "builder",
+   "call": "world_spawn",
+   "args": {
+    "shape": "cube",
+    "parent": "/garden",
+    "name": "bench",
+    "position": [
+     0,
+     0.25,
+     0
+    ],
+    "scale": [
+     1.6,
+     0.5,
+     0.5
+    ],
+    "color": "#6b4f35"
+   }
+  },
+  {
+   "as": "builder",
+   "call": "world_spawn",
+   "args": {
+    "shape": "sphere",
+    "parent": "/gate",
+    "name": "lamp",
+    "position": [
+     0,
+     3.3,
+     0.4
+    ],
+    "scale": 0.3,
+    "color": "#ffd9a0",
+    "emissive": 2
+   }
+  },
+  {
+   "as": "gardener",
+   "call": "world_spawn",
+   "args": {
+    "shape": "sphere",
+    "parent": "/garden",
+    "name": "shrub",
+    "position": [
+     2,
+     0.4,
+     0
+    ],
+    "scale": 0.8,
+    "color": "#3f6b35"
+   }
+  }
+ ],
+ "brief": "Another agent, \"vandal\", damaged the gate at /gate a while ago. Since then, other agents have kept building (a bench, a lamp on the gate, a shrub). Use the journal to restore the gate to how it was before the vandal touched it, by undoing exactly the vandal's changes. Everything other agents made, before and after, must stay.",
+ "tools": [
+  "world_*",
+  "sight_frame",
+  "sight_compare"
+ ],
+ "limits": {
+  "calls": 30,
+  "wall_s": 600
+ },
+ "verify": [
+  {
+   "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+   "world_diff": {
+    "allow": [
+     {
+      "path": "/gate/beam",
+      "ops": [
+       "added"
+      ]
+     },
+     {
+      "path": "/gate/post_*",
+      "ops": [
+       "changed"
+      ],
+      "fields": [
+       "color",
+       "scale"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "the beam is back",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/gate/beam",
+    "fields": [
+     "path",
+     "position",
+     "scale"
+    ]
+   },
+   "expect": {
+    "total": 1,
+    "items.0.position": {
+     "eq": [
+      0,
+      2.7,
+      0
+     ]
+    },
+    "items.0.scale": {
+     "eq": [
+      3.8,
+      0.4,
+      0.5
+     ]
+    }
+   }
+  },
+  {
+   "name": "both posts have their colour and size back",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/gate",
+    "fields": [
+     "path",
+     "color",
+     "scale"
+    ]
+   },
+   "select": {
+    "from": "items",
+    "where": {
+     "path": {
+      "contains": "/gate/post_"
+     },
+     "color": "#7a6a58",
+     "scale": {
+      "eq": [
+       0.4,
+       2.5,
+       0.4
+      ]
+     }
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 2
+   }
+  },
+  {
+   "name": "the builder's later lamp on the gate stays",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/gate/lamp",
+    "fields": [
+     "path"
+    ]
+   },
+   "expect": {
+    "total": 1
+   }
+  },
+  {
+   "name": "the builder's bench and the gardener's shrub stay",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/garden",
+    "fields": [
+     "path"
+    ]
+   },
+   "expect": {
+    "total": 3
+   }
+  },
+  {
+   "name": "the journal shows both of the vandal's entries undone",
+   "call": "world_history",
+   "args": {
+    "agent": "vandal",
+    "limit": 20
+   },
+   "select": {
+    "from": "entries",
+    "where": {
+     "undone_by": {
+      "exists": true
+     }
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 2
+   }
+  },
+  {
+   "name": "no other agent's entry was undone",
+   "call": "world_history",
+   "args": {
+    "limit": 50
+   },
+   "select": {
+    "from": "entries",
+    "where": {
+     "by": {
+      "in": [
+       "builder",
+       "gardener"
+      ]
+     },
+     "undone_by": {
+      "exists": true
+     }
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 0
+   }
+  }
+ ],
+ "reference": [
+  {
+   "call": "world_history",
+   "args": {
+    "agent": "vandal",
+    "limit": 20
+   },
+   "save": "h",
+   "expect": {
+    "entries.#": 2
+   }
+  },
+  {
+   "call": "world_undo",
+   "args": {
+    "ids": [
+     "${h.entries.0.id}",
+     "${h.entries.1.id}"
+    ],
+    "force": true
+   }
+  }
+ ],
+ "broken": [
+  {
+   "note": "undoes 'the last few changes' instead of the vandal's: the shrub and lamp go, the gate stays broken",
+   "call": "world_history",
+   "args": {
+    "limit": 2
+   },
+   "save": "h"
+  },
+  {
+   "call": "world_undo",
+   "args": {
+    "ids": [
+     "${h.entries.0.id}",
+     "${h.entries.1.id}"
+    ],
+    "force": true
+   }
+  }
+ ],
+ "cheats": [
+  {
+   "id": "moved_others_work",
+   "note": "review round 3: undoes the vandal, then moves and recolours the bench and re-creates the lamp elsewhere (new id)",
+   "steps": [
+    {
+     "call": "world_history",
+     "args": {
+      "agent": "vandal",
+      "limit": 20
+     },
+     "save": "h",
+     "expect": {
+      "entries.#": 2
+     }
+    },
+    {
+     "call": "world_undo",
+     "args": {
+      "ids": [
+       "${h.entries.0.id}",
+       "${h.entries.1.id}"
+      ],
+      "force": true
+     }
+    },
+    {
+     "call": "world_set",
+     "args": {
+      "path": "/garden/bench",
+      "position": [
+       6,
+       0.25,
+       6
+      ],
+      "color": "#ff00ff"
+     }
+    },
+    {
+     "call": "world_delete",
+     "args": {
+      "path": "/gate/lamp"
+     }
+    },
+    {
+     "call": "world_spawn",
+     "args": {
+      "shape": "cube",
+      "parent": "/gate",
+      "name": "lamp",
+      "position": [
+       5,
+       0.5,
+       5
+      ],
+      "color": "#ff0000"
+     }
+    }
+   ]
+  }
+ ]
+}

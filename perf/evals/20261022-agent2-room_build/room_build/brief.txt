@@ -1,0 +1,13 @@
+Specula agent eval: Build a room with a doorway and a lamp (room_build)
+
+Build a small room in an empty world. Put every piece under one group at /room.
+- Floor: covers x -3..3 and z -2..2, its top surface at y = 0.
+- Walls: 3 m tall (from y = 0 to y = 3), on all four sides, with their inner faces exactly at x = -3, x = 3, z = -2 and z = 2.
+- Doorway: a gap 1.2 m wide (x -0.6..0.6) and 2.1 m tall (y 0..2.1) in the south wall (the z = 2 side), with wall above it.
+- Lamp: one entity tagged "lamp" that carries a point light, inside the room between 2 and 3 m up.
+The floor and every wall piece need a box collider (the engine checks the room with physics rays).
+
+Engine: MCP at http://127.0.0.1:7493/mcp (headless; the clock is paused: time_control steps it).
+Tools you may use: world_*, sight_frame, physics_raycast, physics_overlap, time_control (and agent_hello, engine_info).
+Limits: 40 tool calls, 600 s.
+Call eval_done when you have finished.

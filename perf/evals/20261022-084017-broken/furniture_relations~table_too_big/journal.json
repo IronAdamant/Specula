@@ -1,0 +1,665 @@
+{
+ "entries": [
+  {
+   "id": 21,
+   "tick": 14,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 4,
+   "items": [
+    {
+     "op": "set",
+     "id": 11,
+     "path": "/room/furniture/chair_1",
+     "version": 16
+    },
+    {
+     "op": "set",
+     "id": 12,
+     "path": "/room/furniture/chair_2",
+     "version": 16
+    },
+    {
+     "op": "set",
+     "id": 13,
+     "path": "/room/furniture/chair_3",
+     "version": 16
+    },
+    {
+     "op": "set",
+     "id": 14,
+     "path": "/room/furniture/chair_4",
+     "version": 16
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 20,
+   "tick": 13,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 4,
+   "items": [
+    {
+     "op": "set",
+     "id": 11,
+     "path": "/room/furniture/chair_1",
+     "version": 15
+    },
+    {
+     "op": "set",
+     "id": 12,
+     "path": "/room/furniture/chair_2",
+     "version": 15
+    },
+    {
+     "op": "set",
+     "id": 13,
+     "path": "/room/furniture/chair_3",
+     "version": 15
+    },
+    {
+     "op": "set",
+     "id": 14,
+     "path": "/room/furniture/chair_4",
+     "version": 15
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 19,
+   "tick": 12,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 4,
+   "items": [
+    {
+     "op": "set",
+     "id": 11,
+     "path": "/room/furniture/chair_1",
+     "version": 14
+    },
+    {
+     "op": "set",
+     "id": 12,
+     "path": "/room/furniture/chair_2",
+     "version": 14
+    },
+    {
+     "op": "set",
+     "id": 13,
+     "path": "/room/furniture/chair_3",
+     "version": 14
+    },
+    {
+     "op": "set",
+     "id": 14,
+     "path": "/room/furniture/chair_4",
+     "version": 14
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 18,
+   "tick": 11,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 4,
+   "items": [
+    {
+     "op": "set",
+     "id": 11,
+     "path": "/room/furniture/chair_1",
+     "version": 13
+    },
+    {
+     "op": "set",
+     "id": 12,
+     "path": "/room/furniture/chair_2",
+     "version": 13
+    },
+    {
+     "op": "set",
+     "id": 13,
+     "path": "/room/furniture/chair_3",
+     "version": 13
+    },
+    {
+     "op": "set",
+     "id": 14,
+     "path": "/room/furniture/chair_4",
+     "version": 13
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 17,
+   "tick": 10,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 4,
+   "items": [
+    {
+     "op": "set",
+     "id": 11,
+     "path": "/room/furniture/chair_1",
+     "version": 12
+    },
+    {
+     "op": "set",
+     "id": 12,
+     "path": "/room/furniture/chair_2",
+     "version": 12
+    },
+    {
+     "op": "set",
+     "id": 13,
+     "path": "/room/furniture/chair_3",
+     "version": 12
+    },
+    {
+     "op": "set",
+     "id": 14,
+     "path": "/room/furniture/chair_4",
+     "version": 12
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 16,
+   "tick": 9,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 4,
+   "items": [
+    {
+     "op": "set",
+     "id": 11,
+     "path": "/room/furniture/chair_1",
+     "version": 11
+    },
+    {
+     "op": "set",
+     "id": 12,
+     "path": "/room/furniture/chair_2",
+     "version": 11
+    },
+    {
+     "op": "set",
+     "id": 13,
+     "path": "/room/furniture/chair_3",
+     "version": 11
+    },
+    {
+     "op": "set",
+     "id": 14,
+     "path": "/room/furniture/chair_4",
+     "version": 11
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 15,
+   "tick": 8,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 4,
+   "items": [
+    {
+     "op": "set",
+     "id": 11,
+     "path": "/room/furniture/chair_1",
+     "version": 10
+    },
+    {
+     "op": "set",
+     "id": 12,
+     "path": "/room/furniture/chair_2",
+     "version": 10
+    },
+    {
+     "op": "set",
+     "id": 13,
+     "path": "/room/furniture/chair_3",
+     "version": 10
+    },
+    {
+     "op": "set",
+     "id": 14,
+     "path": "/room/furniture/chair_4",
+     "version": 10
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 14,
+   "tick": 7,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 4,
+   "items": [
+    {
+     "op": "set",
+     "id": 11,
+     "path": "/room/furniture/chair_1",
+     "version": 9
+    },
+    {
+     "op": "set",
+     "id": 12,
+     "path": "/room/furniture/chair_2",
+     "version": 9
+    },
+    {
+     "op": "set",
+     "id": 13,
+     "path": "/room/furniture/chair_3",
+     "version": 9
+    },
+    {
+     "op": "set",
+     "id": 14,
+     "path": "/room/furniture/chair_4",
+     "version": 9
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 13,
+   "tick": 6,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 4,
+   "items": [
+    {
+     "op": "set",
+     "id": 11,
+     "path": "/room/furniture/chair_1",
+     "version": 8
+    },
+    {
+     "op": "set",
+     "id": 12,
+     "path": "/room/furniture/chair_2",
+     "version": 8
+    },
+    {
+     "op": "set",
+     "id": 13,
+     "path": "/room/furniture/chair_3",
+     "version": 8
+    },
+    {
+     "op": "set",
+     "id": 14,
+     "path": "/room/furniture/chair_4",
+     "version": 8
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 12,
+   "tick": 5,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 4,
+   "items": [
+    {
+     "op": "set",
+     "id": 11,
+     "path": "/room/furniture/chair_1",
+     "version": 7
+    },
+    {
+     "op": "set",
+     "id": 12,
+     "path": "/room/furniture/chair_2",
+     "version": 7
+    },
+    {
+     "op": "set",
+     "id": 13,
+     "path": "/room/furniture/chair_3",
+     "version": 7
+    },
+    {
+     "op": "set",
+     "id": 14,
+     "path": "/room/furniture/chair_4",
+     "version": 7
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 11,
+   "tick": 4,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 4,
+   "items": [
+    {
+     "op": "set",
+     "id": 11,
+     "path": "/room/furniture/chair_1",
+     "version": 6
+    },
+    {
+     "op": "set",
+     "id": 12,
+     "path": "/room/furniture/chair_2",
+     "version": 6
+    },
+    {
+     "op": "set",
+     "id": 13,
+     "path": "/room/furniture/chair_3",
+     "version": 6
+    },
+    {
+     "op": "set",
+     "id": 14,
+     "path": "/room/furniture/chair_4",
+     "version": 6
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 10,
+   "tick": 3,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 4,
+   "items": [
+    {
+     "op": "set",
+     "id": 11,
+     "path": "/room/furniture/chair_1",
+     "version": 5
+    },
+    {
+     "op": "set",
+     "id": 12,
+     "path": "/room/furniture/chair_2",
+     "version": 5
+    },
+    {
+     "op": "set",
+     "id": 13,
+     "path": "/room/furniture/chair_3",
+     "version": 5
+    },
+    {
+     "op": "set",
+     "id": 14,
+     "path": "/room/furniture/chair_4",
+     "version": 5
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 9,
+   "tick": 2,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 4,
+   "items": [
+    {
+     "op": "set",
+     "id": 11,
+     "path": "/room/furniture/chair_1",
+     "version": 4
+    },
+    {
+     "op": "set",
+     "id": 12,
+     "path": "/room/furniture/chair_2",
+     "version": 4
+    },
+    {
+     "op": "set",
+     "id": 13,
+     "path": "/room/furniture/chair_3",
+     "version": 4
+    },
+    {
+     "op": "set",
+     "id": 14,
+     "path": "/room/furniture/chair_4",
+     "version": 4
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 8,
+   "tick": 1,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 4,
+   "items": [
+    {
+     "op": "set",
+     "id": 11,
+     "path": "/room/furniture/chair_1",
+     "version": 3
+    },
+    {
+     "op": "set",
+     "id": 12,
+     "path": "/room/furniture/chair_2",
+     "version": 3
+    },
+    {
+     "op": "set",
+     "id": 13,
+     "path": "/room/furniture/chair_3",
+     "version": 3
+    },
+    {
+     "op": "set",
+     "id": 14,
+     "path": "/room/furniture/chair_4",
+     "version": 3
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 7,
+   "tick": 0,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 4,
+   "items": [
+    {
+     "op": "set",
+     "id": 11,
+     "path": "/room/furniture/chair_1",
+     "version": 2
+    },
+    {
+     "op": "set",
+     "id": 12,
+     "path": "/room/furniture/chair_2",
+     "version": 2
+    },
+    {
+     "op": "set",
+     "id": 13,
+     "path": "/room/furniture/chair_3",
+     "version": 2
+    },
+    {
+     "op": "set",
+     "id": 14,
+     "path": "/room/furniture/chair_4",
+     "version": 2
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 6,
+   "tick": 0,
+   "by": "eval-verifier-c7ffbe",
+   "kind": "env",
+   "changes": 1,
+   "items": [
+    {
+     "op": "env",
+     "id": 0,
+     "path": "/"
+    }
+   ]
+  },
+  {
+   "id": 5,
+   "tick": 0,
+   "by": "solver",
+   "kind": "batch",
+   "changes": 4,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 11,
+     "path": "/room/furniture/chair_1",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 12,
+     "path": "/room/furniture/chair_2",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 13,
+     "path": "/room/furniture/chair_3",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 14,
+     "path": "/room/furniture/chair_4",
+     "version": 1
+    }
+   ]
+  },
+  {
+   "id": 4,
+   "tick": 0,
+   "by": "solver",
+   "kind": "batch",
+   "changes": 1,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 10,
+     "path": "/room/furniture/table",
+     "version": 1
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "tick": 0,
+   "by": "solver",
+   "kind": "spawn",
+   "changes": 1,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 9,
+     "path": "/room/furniture",
+     "version": 1
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "tick": 0,
+   "by": "eval-snapshot-813d7c",
+   "kind": "env",
+   "changes": 1,
+   "items": [
+    {
+     "op": "env",
+     "id": 0,
+     "path": "/"
+    }
+   ]
+  },
+  {
+   "id": 1,
+   "tick": 0,
+   "by": "setup",
+   "kind": "batch",
+   "changes": 8,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 1,
+     "path": "/room",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 2,
+     "path": "/room/floor",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 3,
+     "path": "/room/wall_north",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 4,
+     "path": "/room/wall_east",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 5,
+     "path": "/room/wall_west",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 6,
+     "path": "/room/wall_south_w",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 7,
+     "path": "/room/wall_south_e",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 8,
+     "path": "/room/doorway",
+     "version": 1
+    }
+   ]
+  }
+ ],
+ "next_cursor": null,
+ "oldest_kept": 1,
+ "evicted": 0
+}

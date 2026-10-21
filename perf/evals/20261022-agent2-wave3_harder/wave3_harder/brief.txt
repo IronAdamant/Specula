@@ -1,0 +1,8 @@
+Specula agent eval: Make wave 3 10% harder without breaking wave 4 (wave3_harder)
+
+The engine hosts Sepulcra (a tower defence) and its complete rules are stored as the Lex rule set "sepulcra". Make wave 3 10% harder: every enemy that spawns in wave 3 should have 10% more hit points than it has now. Waves 1-2 and 4-10 must stay exactly as they are (same enemies, same hit points), and nothing else in the rules may change. The centre-heavy build in evals/fixtures/sepulcra_centre_s7.commands.json (lex_simulate commands; seed 7) must still win. The set must validate with no errors.
+
+Engine: MCP at http://127.0.0.1:7495/mcp (headless; the clock is paused: time_control steps it).
+Tools you may use: lex_*, balance_* (and agent_hello, engine_info).
+Limits: 30 tool calls, 900 s.
+Call eval_done when you have finished.

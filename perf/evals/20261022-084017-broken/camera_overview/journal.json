@@ -1,0 +1,107 @@
+{
+ "entries": [
+  {
+   "id": 4,
+   "tick": 0,
+   "by": "eval-verifier-615c5e",
+   "kind": "env",
+   "changes": 1,
+   "items": [
+    {
+     "op": "env",
+     "id": 0,
+     "path": "/"
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "tick": 0,
+   "by": "solver",
+   "kind": "camera",
+   "changes": 1,
+   "items": [
+    {
+     "op": "camera_set",
+     "id": 4888628103088739000,
+     "path": "@camera/solver/overview",
+     "version": 1
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "tick": 0,
+   "by": "eval-snapshot-f62aa5",
+   "kind": "env",
+   "changes": 1,
+   "items": [
+    {
+     "op": "env",
+     "id": 0,
+     "path": "/"
+    }
+   ]
+  },
+  {
+   "id": 1,
+   "tick": 0,
+   "by": "setup",
+   "kind": "batch",
+   "changes": 8,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 1,
+     "path": "/ground",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 2,
+     "path": "/screen_wall",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 3,
+     "path": "/pillars",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 4,
+     "path": "/pillars/p1",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 5,
+     "path": "/pillars/p2",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 6,
+     "path": "/pillars/p3",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 7,
+     "path": "/pillars/p4",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 8,
+     "path": "/pillars/p5",
+     "version": 1
+    }
+   ]
+  }
+ ],
+ "next_cursor": null,
+ "oldest_kept": 1,
+ "evicted": 0
+}

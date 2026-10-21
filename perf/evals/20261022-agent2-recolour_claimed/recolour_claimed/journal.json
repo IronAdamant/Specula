@@ -1,0 +1,97 @@
+{
+ "entries": [
+  {
+   "id": 2,
+   "tick": 0,
+   "by": "lighter",
+   "kind": "batch",
+   "changes": 3,
+   "items": [
+    {
+     "op": "set",
+     "id": 6,
+     "path": "/street/lantern_e1",
+     "version": 2
+    },
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/street/lantern_e2",
+     "version": 2
+    },
+    {
+     "op": "set",
+     "id": 8,
+     "path": "/street/lantern_e3",
+     "version": 2
+    }
+   ]
+  },
+  {
+   "id": 1,
+   "tick": 0,
+   "by": "keeper",
+   "kind": "batch",
+   "changes": 9,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 1,
+     "path": "/ground",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 2,
+     "path": "/street",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 3,
+     "path": "/street/lantern_w1",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 4,
+     "path": "/street/lantern_w2",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 5,
+     "path": "/street/lantern_w3",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 6,
+     "path": "/street/lantern_e1",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 7,
+     "path": "/street/lantern_e2",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 8,
+     "path": "/street/lantern_e3",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 9,
+     "path": "/street/bench_w",
+     "version": 1
+    }
+   ]
+  }
+ ],
+ "next_cursor": null,
+ "oldest_kept": 1,
+ "evicted": 0
+}

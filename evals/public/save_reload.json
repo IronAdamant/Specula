@@ -1,0 +1,574 @@
+{
+ "eval": 1,
+ "id": "save_reload",
+ "set": "public",
+ "area": "saves",
+ "title": "Save, reload and prove there's no divergence",
+ "summary": "Determinism in practice: save mid-simulation, run on, reload, run again, and show the hashes agree; the verifier reloads the save itself and checks the hash the agent reported.",
+ "game": null,
+ "setup": [
+  {
+   "as": "setup",
+   "call": "world_batch",
+   "args": {
+    "ops": [
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "name": "ground",
+      "position": [
+       0,
+       -0.5,
+       0
+      ],
+      "scale": [
+       30,
+       1,
+       30
+      ],
+      "color": "#4a4f57",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "name": "ramp",
+      "position": [
+       0,
+       1,
+       0
+      ],
+      "rotation_deg": [
+       0,
+       0,
+       25
+      ],
+      "scale": [
+       6,
+       0.3,
+       3
+      ],
+      "color": "#7a7f87",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "group",
+      "name": "balls"
+     },
+     {
+      "op": "spawn",
+      "shape": "sphere",
+      "parent": "/balls",
+      "name": "ball_1",
+      "position": [
+       2,
+       4,
+       0.5
+      ],
+      "scale": 0.5,
+      "color": "#c86b3c",
+      "collider": {
+       "shape": "sphere"
+      },
+      "body": {
+       "kind": "dynamic",
+       "mass": 2
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "sphere",
+      "parent": "/balls",
+      "name": "ball_2",
+      "position": [
+       1.5,
+       5,
+       -0.6
+      ],
+      "scale": 0.5,
+      "color": "#3c8ac8",
+      "collider": {
+       "shape": "sphere"
+      },
+      "body": {
+       "kind": "dynamic",
+       "mass": 2
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/balls",
+      "name": "box_1",
+      "position": [
+       2.2,
+       6,
+       0
+      ],
+      "scale": 0.5,
+      "color": "#c8b43c",
+      "collider": {
+       "shape": "box"
+      },
+      "body": {
+       "kind": "dynamic",
+       "mass": 3
+      }
+     }
+    ]
+   }
+  }
+ ],
+ "brief": "A small physics scene is set up (balls and a box tumbling down a ramp); the clock is paused at tick 0. Do this:\n1. Run the simulation to tick 90 and save the game as \"checkpoint\".\n2. Run on to tick 180 and note the world's state hash there (world_hash).\n3. Load \"checkpoint\" and run to tick 180 again; check the state hash (world_hash) is the same as before.\n4. Leave the world at tick 180 (after the reload) and add a note on the path \"/\" whose text contains that state hash (the 16 hex digits) and whether the two runs matched.",
+ "tools": [
+  "world_*",
+  "save_*",
+  "time_control",
+  "note_*",
+  "desync_*",
+  "physics_info",
+  "physics_check",
+  "sight_frame"
+ ],
+ "limits": {
+  "calls": 30,
+  "wall_s": 600
+ },
+ "verify": [
+  {
+   "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+   "world_diff": {
+    "allow": [
+     {
+      "path": "/balls/*",
+      "ops": [
+       "changed"
+      ],
+      "fields": [
+       "position",
+       "rotation_deg",
+       "body",
+       "body.*"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "a save named checkpoint, made at tick 90",
+   "call": "save_list",
+   "args": {},
+   "select": {
+    "from": "saves",
+    "where": {
+     "name": "checkpoint"
+    }
+   },
+   "expect": {
+    "tick": 90
+   }
+  },
+  {
+   "name": "the world is at tick 180",
+   "call": "world_hash",
+   "args": {
+    "recent": 0
+   },
+   "save": "h",
+   "expect": {
+    "tick": 180
+   }
+  },
+  {
+   "name": "the note on / quotes the current state hash",
+   "call": "note_list",
+   "args": {
+    "limit": 50
+   },
+   "select": {
+    "from": "notes",
+    "where": {
+     "path": "/",
+     "text": {
+      "contains": "${h.state_hash}"
+     }
+    },
+    "count": true
+   },
+   "expect": {
+    "count": {
+     "gte": 1
+    }
+   }
+  },
+  {
+   "name": "in order: saved at 90, hashed at 180, loaded checkpoint, stepped to 180, hashed again; the two hashes equal; one save, no other load",
+   "transcript": {
+    "sequence": [
+     {
+      "tool": "save_write",
+      "args": {
+       "name": "checkpoint"
+      },
+      "answer": {
+       "tick": 90
+      }
+     },
+     {
+      "tool": "world_hash",
+      "answer": {
+       "tick": 180
+      }
+     },
+     {
+      "tool": "save_read",
+      "args": {
+       "name": "checkpoint"
+      },
+      "answer": {
+       "loaded": "checkpoint"
+      }
+     },
+     {
+      "tool": "time_control",
+      "args": {
+       "action": "step"
+      },
+      "answer": {
+       "tick": 180
+      }
+     },
+     {
+      "tool": "world_hash",
+      "answer": {
+       "tick": 180
+      }
+     }
+    ],
+    "equal": [
+     {
+      "a": 1,
+      "b": 4,
+      "path": "state_hash"
+     }
+    ],
+    "none": [
+     {
+      "tool": "save_read",
+      "args": {
+       "name": {
+        "ne": "checkpoint"
+       }
+      }
+     }
+    ],
+    "count": [
+     {
+      "tool": "save_write",
+      "args": {
+       "name": "checkpoint"
+      },
+      "n": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "the verifier loads checkpoint itself",
+   "call": "save_read",
+   "args": {
+    "name": "checkpoint",
+    "force": true
+   },
+   "expect": {
+    "tick": {
+     "exists": true
+    }
+   }
+  },
+  {
+   "name": "and runs 90 ticks",
+   "call": "time_control",
+   "args": {
+    "action": "step",
+    "ticks": 90
+   },
+   "expect": {
+    "tick": 180
+   }
+  },
+  {
+   "name": "reaching the same state hash the agent reported (no divergence)",
+   "call": "world_hash",
+   "args": {
+    "recent": 0
+   },
+   "expect": {
+    "tick": 180,
+    "state_hash": "${h.state_hash}"
+   }
+  }
+ ],
+ "reference": [
+  {
+   "call": "time_control",
+   "args": {
+    "action": "step",
+    "ticks": 90
+   },
+   "expect": {
+    "tick": 90
+   }
+  },
+  {
+   "call": "save_write",
+   "args": {
+    "name": "checkpoint",
+    "label": "tick 90, before the ramp"
+   }
+  },
+  {
+   "call": "time_control",
+   "args": {
+    "action": "step",
+    "ticks": 90
+   },
+   "expect": {
+    "tick": 180
+   }
+  },
+  {
+   "call": "world_hash",
+   "args": {
+    "recent": 0
+   },
+   "save": "first"
+  },
+  {
+   "call": "save_read",
+   "args": {
+    "name": "checkpoint",
+    "force": true
+   }
+  },
+  {
+   "call": "time_control",
+   "args": {
+    "action": "step",
+    "ticks": 90
+   },
+   "expect": {
+    "tick": 180
+   }
+  },
+  {
+   "call": "world_hash",
+   "args": {
+    "recent": 0
+   },
+   "save": "second",
+   "expect": {
+    "state_hash": "${first.state_hash}"
+   }
+  },
+  {
+   "call": "note_add",
+   "args": {
+    "on_path": "/",
+    "text": "tick 180 state hash ${second.state_hash}: matched the run before the reload (${first.state_hash})"
+   }
+  }
+ ],
+ "broken": [
+  {
+   "note": "skips the save and reload, reports the first run's hash, and leaves the world at tick 200",
+   "call": "time_control",
+   "args": {
+    "action": "step",
+    "ticks": 180
+   }
+  },
+  {
+   "call": "world_hash",
+   "args": {
+    "recent": 0
+   },
+   "save": "first"
+  },
+  {
+   "call": "note_add",
+   "args": {
+    "on_path": "/",
+    "text": "tick 180 state hash ${first.state_hash}: matched"
+   }
+  },
+  {
+   "call": "time_control",
+   "args": {
+    "action": "step",
+    "ticks": 20
+   }
+  }
+ ],
+ "cheats": [
+  {
+   "id": "never_reloads",
+   "note": "review cheat: saves at 90, runs to 180 and reports the hash without ever reloading (determinism makes the hash agree anyway)",
+   "steps": [
+    {
+     "call": "time_control",
+     "args": {
+      "action": "step",
+      "ticks": 90
+     }
+    },
+    {
+     "call": "save_write",
+     "args": {
+      "name": "checkpoint"
+     }
+    },
+    {
+     "call": "time_control",
+     "args": {
+      "action": "step",
+      "ticks": 90
+     }
+    },
+    {
+     "call": "world_hash",
+     "args": {
+      "recent": 0
+     },
+     "save": "first"
+    },
+    {
+     "call": "note_add",
+     "args": {
+      "on_path": "/",
+      "text": "hash ${first.state_hash}"
+     }
+    }
+   ]
+  },
+  {
+   "id": "reload_before_running_on",
+   "note": "review round 2: loads the save straight after writing it, so the second run is the only run and nothing is compared",
+   "steps": [
+    {
+     "call": "time_control",
+     "args": {
+      "action": "step",
+      "ticks": 90
+     }
+    },
+    {
+     "call": "save_write",
+     "args": {
+      "name": "checkpoint"
+     }
+    },
+    {
+     "call": "save_read",
+     "args": {
+      "name": "checkpoint",
+      "force": true
+     }
+    },
+    {
+     "call": "time_control",
+     "args": {
+      "action": "step",
+      "ticks": 90
+     }
+    },
+    {
+     "call": "world_hash",
+     "args": {
+      "recent": 0
+     },
+     "save": "first"
+    },
+    {
+     "call": "note_add",
+     "args": {
+      "on_path": "/",
+      "text": "hash ${first.state_hash}: matched"
+     }
+    }
+   ]
+  },
+  {
+   "id": "second_save_loaded",
+   "note": "review round 3: saves 'late' at 180, loads checkpoint, then loads 'late' and reports its hash",
+   "steps": [
+    {
+     "call": "time_control",
+     "args": {
+      "action": "step",
+      "ticks": 90
+     }
+    },
+    {
+     "call": "save_write",
+     "args": {
+      "name": "checkpoint"
+     }
+    },
+    {
+     "call": "time_control",
+     "args": {
+      "action": "step",
+      "ticks": 90
+     }
+    },
+    {
+     "call": "world_hash",
+     "args": {
+      "recent": 0
+     },
+     "save": "first"
+    },
+    {
+     "call": "save_write",
+     "args": {
+      "name": "late"
+     }
+    },
+    {
+     "call": "save_read",
+     "args": {
+      "name": "checkpoint",
+      "force": true
+     }
+    },
+    {
+     "call": "save_read",
+     "args": {
+      "name": "late",
+      "force": true
+     }
+    },
+    {
+     "call": "world_hash",
+     "args": {
+      "recent": 0
+     },
+     "save": "second"
+    },
+    {
+     "call": "note_add",
+     "args": {
+      "on_path": "/",
+      "text": "hash ${second.state_hash}: matched"
+     }
+    }
+   ]
+  }
+ ]
+}

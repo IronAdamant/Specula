@@ -1,0 +1,98 @@
+{
+ "entries": [
+  {
+   "id": 3,
+   "tick": 1,
+   "by": "eval-verifier-f062c6",
+   "kind": "env",
+   "changes": 1,
+   "items": [
+    {
+     "op": "env",
+     "id": 0,
+     "path": "/"
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "tick": 0,
+   "by": "solver",
+   "kind": "batch",
+   "changes": 9,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 1,
+     "path": "/room",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 2,
+     "path": "/room/floor",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 3,
+     "path": "/room/wall_east",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 4,
+     "path": "/room/wall_west",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 5,
+     "path": "/room/wall_north",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 6,
+     "path": "/room/wall_south_w",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 7,
+     "path": "/room/wall_south_e",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 8,
+     "path": "/room/lintel",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 9,
+     "path": "/room/lamp",
+     "version": 1
+    }
+   ]
+  },
+  {
+   "id": 1,
+   "tick": 0,
+   "by": "eval-snapshot-76852d",
+   "kind": "env",
+   "changes": 1,
+   "items": [
+    {
+     "op": "env",
+     "id": 0,
+     "path": "/"
+    }
+   ]
+  }
+ ],
+ "next_cursor": null,
+ "oldest_kept": 1,
+ "evicted": 0
+}

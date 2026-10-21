@@ -1,0 +1,372 @@
+{
+ "eval": 1,
+ "id": "camera_overview",
+ "set": "heldout",
+ "area": "sight",
+ "title": "Set up a camera that shows every pillar",
+ "summary": "Framing by measurement: a named camera from which five pillars are each fully visible (no occlusion, enough pixels), checked through that camera's own ID buffer.",
+ "game": null,
+ "setup": [
+  {
+   "as": "setup",
+   "call": "world_batch",
+   "args": {
+    "ops": [
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "name": "ground",
+      "position": [
+       0,
+       -0.5,
+       0
+      ],
+      "scale": [
+       40,
+       1,
+       40
+      ],
+      "color": "#3a3f45"
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "name": "screen_wall",
+      "position": [
+       0,
+       2,
+       0
+      ],
+      "scale": [
+       8,
+       4,
+       0.4
+      ],
+      "color": "#8d8478"
+     },
+     {
+      "op": "spawn",
+      "shape": "group",
+      "name": "pillars"
+     },
+     {
+      "op": "spawn",
+      "shape": "lathe",
+      "parent": "/pillars",
+      "name": "p1",
+      "position": [
+       -4,
+       0,
+       -3
+      ],
+      "profile": [
+       [
+        0.35,
+        0
+       ],
+       [
+        0.3,
+        2
+       ],
+       [
+        0.0,
+        2.1
+       ]
+      ],
+      "color": "#c9b38a",
+      "tags": [
+       "pillar"
+      ]
+     },
+     {
+      "op": "spawn",
+      "shape": "lathe",
+      "parent": "/pillars",
+      "name": "p2",
+      "position": [
+       0,
+       0,
+       -2
+      ],
+      "profile": [
+       [
+        0.35,
+        0
+       ],
+       [
+        0.3,
+        2
+       ],
+       [
+        0.0,
+        2.1
+       ]
+      ],
+      "color": "#c9b38a",
+      "tags": [
+       "pillar"
+      ]
+     },
+     {
+      "op": "spawn",
+      "shape": "lathe",
+      "parent": "/pillars",
+      "name": "p3",
+      "position": [
+       4,
+       0,
+       -3
+      ],
+      "profile": [
+       [
+        0.35,
+        0
+       ],
+       [
+        0.3,
+        2
+       ],
+       [
+        0.0,
+        2.1
+       ]
+      ],
+      "color": "#c9b38a",
+      "tags": [
+       "pillar"
+      ]
+     },
+     {
+      "op": "spawn",
+      "shape": "lathe",
+      "parent": "/pillars",
+      "name": "p4",
+      "position": [
+       -2.5,
+       0,
+       3
+      ],
+      "profile": [
+       [
+        0.35,
+        0
+       ],
+       [
+        0.3,
+        2
+       ],
+       [
+        0.0,
+        2.1
+       ]
+      ],
+      "color": "#c9b38a",
+      "tags": [
+       "pillar"
+      ]
+     },
+     {
+      "op": "spawn",
+      "shape": "lathe",
+      "parent": "/pillars",
+      "name": "p5",
+      "position": [
+       3,
+       0,
+       3.5
+      ],
+      "profile": [
+       [
+        0.35,
+        0
+       ],
+       [
+        0.3,
+        2
+       ],
+       [
+        0.0,
+        2.1
+       ]
+      ],
+      "color": "#c9b38a",
+      "tags": [
+       "pillar"
+      ]
+     }
+    ]
+   }
+  }
+ ],
+ "brief": "Five pillars stand under /pillars, on both sides of a 4 m tall wall (/screen_wall). Create one of your named cameras, \"overview\" (camera_set), from which, in a 960x540 capture, every pillar is clearly visible: each one shows at least 300 pixels of itself in the capture (the ID buffer's visible_px, so what the wall or another pillar hides doesn't count). Don't move or change anything in the world.",
+ "tools": [
+  "camera_*",
+  "sight_*",
+  "world_query",
+  "world_list"
+ ],
+ "limits": {
+  "calls": 30,
+  "wall_s": 600
+ },
+ "verify": [
+  {
+   "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+   "world_diff": {
+    "allow": []
+   }
+  },
+  {
+   "name": "a camera named overview was set",
+   "call": "world_history",
+   "args": {
+    "kinds": [
+     "camera"
+    ],
+    "limit": 20
+   },
+   "save": "cams",
+   "expect": {
+    "entries.#": {
+     "gte": 1
+    }
+   }
+  },
+  {
+   "name": "through it, all five pillars show at least 300 px (visible_px)",
+   "call": "sight_frame",
+   "args": {
+    "camera": "overview",
+    "camera_of": "${cams.entries.0.by}",
+    "width": 960,
+    "height": 540
+   },
+   "select": {
+    "from": "subjects",
+    "where": {
+     "path": {
+      "contains": "/pillars/"
+     },
+     "visible_px": {
+      "gte": 300
+     },
+     "occluded": {
+      "exists": false
+     },
+     "no_pixels": {
+      "exists": false
+     }
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 5
+   }
+  },
+  {
+   "name": "the world wasn't changed",
+   "call": "world_history",
+   "args": {
+    "kinds": [
+     "spawn",
+     "set",
+     "delete",
+     "batch"
+    ],
+    "limit": 20
+   },
+   "select": {
+    "from": "entries",
+    "where": {
+     "by": {
+      "ne": "setup"
+     }
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 0
+   }
+  }
+ ],
+ "reference": [
+  {
+   "call": "sight_frame",
+   "args": {
+    "eye": [
+     0,
+     14,
+     0.01
+    ],
+    "target": [
+     0,
+     0,
+     0
+    ],
+    "width": 960,
+    "height": 540
+   }
+  },
+  {
+   "call": "camera_set",
+   "args": {
+    "name": "overview",
+    "eye": [
+     0,
+     14,
+     3
+    ],
+    "target": [
+     0,
+     0,
+     0
+    ]
+   }
+  },
+  {
+   "call": "sight_frame",
+   "args": {
+    "camera": "overview",
+    "width": 960,
+    "height": 540
+   },
+   "select": {
+    "from": "subjects",
+    "where": {
+     "path": {
+      "contains": "/pillars/"
+     },
+     "visible_px": {
+      "gte": 300
+     },
+     "occluded": {
+      "exists": false
+     }
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 5
+   }
+  }
+ ],
+ "broken": [
+  {
+   "note": "a low three-quarter view from the south: the wall hides the north pillars",
+   "call": "camera_set",
+   "args": {
+    "name": "overview",
+    "eye": [
+     0,
+     2.5,
+     14
+    ],
+    "target": [
+     0,
+     1,
+     0
+    ]
+   }
+  }
+ ]
+}

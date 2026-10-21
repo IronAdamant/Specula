@@ -1,0 +1,17 @@
+{
+ "agent": "Claude (general-purpose subagent, same model as the lane), driving the engine only through scripts/evals.py tools / call on the proxy port",
+ "verifiers": "the suite after review round 2",
+ "harness_usage": {
+  "tokens": 60546,
+  "tool_uses": 15,
+  "duration_ms": 108984
+ },
+ "engine_calls": 11,
+ "result": "failed 4/5",
+ "note": "Not a fair score: the agent stopped half way because Claude Code's own permission check (auto mode, 'Modify Shared Resources') blocked its bridge calls, a recolour inside the claim and then a read-only claim_list; the engine refused nothing. The operator ended the run with eval_done (the transcript shows it as 'operator'), so the verifiers judged the state it reached.",
+ "report": [
+  "world_query found 6 lanterns (after the hints 'did you mean path_prefix?' and 'did you mean tags?'), claim_list showed keeper's claim over the west three; recoloured the east three with world_batch + expect_version, posted task 1 (assigned to keeper, linked to the claim and entities) and a note; task_get showed keeper's reply that it had shared the claim.",
+  "Its next world_batch (the west three) and a claim_list were blocked by the harness's permission check before reaching the engine; it stopped there rather than work around it.",
+  "Tool notes: two calls lost to argument names (path vs path_prefix, tag vs tags); keeper's reply came as a note, so a poller must read task_get's notes."
+ ]
+}

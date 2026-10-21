@@ -1,0 +1,1326 @@
+{
+ "eval": 1,
+ "id": "furniture_relations",
+ "set": "public",
+ "area": "locus",
+ "title": "Furnish a room by relations",
+ "summary": "Placement by relations (Locus): a table against a wall, chairs around it with spacing, the doorway kept clear; checked by bounds, physics overlap and a short simulation (nothing interpenetrates). Needs world_place (the navigation and Locus lane).",
+ "game": null,
+ "needs": [
+  "world_place"
+ ],
+ "setup": [
+  {
+   "as": "setup",
+   "call": "world_batch",
+   "args": {
+    "ops": [
+     {
+      "op": "spawn",
+      "shape": "group",
+      "name": "room"
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/room",
+      "name": "floor",
+      "position": [
+       0,
+       -0.1,
+       0
+      ],
+      "scale": [
+       8.4,
+       0.2,
+       6.4
+      ],
+      "color": "#6b5a48",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/room",
+      "name": "wall_north",
+      "position": [
+       0,
+       1.5,
+       -3.1
+      ],
+      "scale": [
+       8.4,
+       3,
+       0.2
+      ],
+      "color": "#9a9286",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/room",
+      "name": "wall_east",
+      "position": [
+       4.1,
+       1.5,
+       0
+      ],
+      "scale": [
+       0.2,
+       3,
+       6.4
+      ],
+      "color": "#9a9286",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/room",
+      "name": "wall_west",
+      "position": [
+       -4.1,
+       1.5,
+       0
+      ],
+      "scale": [
+       0.2,
+       3,
+       6.4
+      ],
+      "color": "#9a9286",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/room",
+      "name": "wall_south_w",
+      "position": [
+       -2.4,
+       1.5,
+       3.1
+      ],
+      "scale": [
+       3.6,
+       3,
+       0.2
+      ],
+      "color": "#9a9286",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/room",
+      "name": "wall_south_e",
+      "position": [
+       2.4,
+       1.5,
+       3.1
+      ],
+      "scale": [
+       3.6,
+       3,
+       0.2
+      ],
+      "color": "#9a9286",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "group",
+      "parent": "/room",
+      "name": "doorway",
+      "position": [
+       0,
+       0,
+       3
+      ],
+      "tags": [
+       "doorway"
+      ]
+     }
+    ]
+   }
+  }
+ ],
+ "brief": "Furnish the room at /room (inside: x -4..4, z -3..3, floor top at y = 0, a 1.2 m doorway in the middle of the south wall at z = 3). Put the furniture under /room/furniture:\n- a table (tag \"table\", 1.6 x 0.75 x 0.8 m, box collider) with its back against the north wall's inner face (z = -3), within 0.5 m of the room's centre line (x = 0), standing on the floor;\n- four chairs (tag \"chair\", 0.5 m cubes, box colliders, dynamic bodies of 8 kg) on the floor around the table, each between 0.4 and 1.2 m from it and at least 0.8 m from each other, all facing the table;\n- nothing within 1 m of the doorway, and nothing overlapping anything else.\nThe engine can solve placements from relations (world_place) so you don't have to compute coordinates.",
+ "tools": [
+  "world_*",
+  "physics_*",
+  "sight_frame",
+  "time_control"
+ ],
+ "limits": {
+  "calls": 30,
+  "wall_s": 600
+ },
+ "verify": [
+  {
+   "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+   "world_diff": {
+    "allow": [
+     {
+      "path": "/room/furniture",
+      "ops": [
+       "added"
+      ]
+     },
+     {
+      "path": "/room/furniture/*",
+      "ops": [
+       "added"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "one table, its back on the north wall's face, near the centre line, on the floor",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/room/furniture",
+    "tags": [
+     "table"
+    ],
+    "fields": [
+     "path",
+     "bounds",
+     "world_position"
+    ]
+   },
+   "expect": {
+    "total": 1,
+    "items.0.bounds.min.2": {
+     "near": -3,
+     "tol": 0.03
+    },
+    "items.0.world_position.0": {
+     "near": 0,
+     "tol": 0.5
+    },
+    "items.0.bounds.min.1": {
+     "near": 0,
+     "tol": 0.02
+    }
+   }
+  },
+  {
+   "name": "four chairs on the floor, within 1.2 m of the table's footprint",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/room/furniture",
+    "tags": [
+     "chair"
+    ],
+    "fields": [
+     "path",
+     "bounds",
+     "body"
+    ]
+   },
+   "select": {
+    "from": "items",
+    "where": {
+     "bounds.min.1": {
+      "near": 0,
+      "tol": 0.03
+     },
+     "bounds.min.0": {
+      "gte": -2.1
+     },
+     "bounds.max.0": {
+      "lte": 2.1
+     },
+     "bounds.min.2": {
+      "gte": -3
+     },
+     "bounds.max.2": {
+      "lte": -0.4
+     },
+     "body.kind": "dynamic"
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 4
+   }
+  },
+  {
+   "name": "the chairs are spread apart (bounds at least 0.55 m apart: 0.8 m between footprints, less what a turned chair's box adds)",
+   "geometry": {
+    "kind": "min_gap",
+    "query": {
+     "path_prefix": "/room/furniture",
+     "tags": [
+      "chair"
+     ]
+    },
+    "min": 0.55,
+    "min_count": 4
+   }
+  },
+  {
+   "name": "every chair faces the table (within 30 degrees)",
+   "geometry": {
+    "kind": "facing",
+    "query": {
+     "path_prefix": "/room/furniture",
+     "tags": [
+      "chair"
+     ]
+    },
+    "target": "/room/furniture/table",
+    "max_deg": 30,
+    "min_count": 4
+   }
+  },
+  {
+   "name": "every chair is a 0.5 m cube in the world (through its parents' scale)",
+   "geometry": {
+    "kind": "world_size",
+    "query": {
+     "path_prefix": "/room/furniture",
+     "tags": [
+      "chair"
+     ]
+    },
+    "size": [
+     0.5,
+     0.5,
+     0.5
+    ],
+    "tol": 0.03,
+    "min_count": 4
+   }
+  },
+  {
+   "name": "the table is 1.6 x 0.75 x 0.8 m",
+   "geometry": {
+    "kind": "size",
+    "query": {
+     "path_prefix": "/room/furniture",
+     "tags": [
+      "table"
+     ]
+    },
+    "size": [
+     1.6,
+     0.75,
+     0.8
+    ],
+    "tol": 0.03
+   }
+  },
+  {
+   "name": "the doorway is clear for 1 m",
+   "call": "time_control",
+   "args": {
+    "action": "step",
+    "ticks": 1
+   }
+  },
+  {
+   "name": "nothing in the doorway's metre",
+   "call": "physics_overlap",
+   "args": {
+    "shape": {
+     "shape": "box",
+     "size": [
+      3.2,
+      1.4,
+      1.9
+     ]
+    },
+    "at": [
+     0,
+     0.8,
+     1.95
+    ]
+   },
+   "expect": {
+    "total": 0
+   }
+  },
+  {
+   "name": "a second of physics: nothing overlaps, all at rest",
+   "playtest": {
+    "name": "furniture_settles",
+    "ticks": 30,
+    "end": [
+     {
+      "call": "physics_check",
+      "args": {
+       "checks": [
+        {
+         "check": "no_penetration",
+         "max_depth": 0.01
+        },
+        {
+         "check": "at_rest",
+         "entities": "/room/furniture"
+        }
+       ]
+      },
+      "expect": {
+       "pass": true
+      }
+     },
+     {
+      "call": "sight_frame",
+      "args": {
+       "eye": [
+        0,
+        7,
+        6
+       ],
+       "target": [
+        0,
+        0,
+        -1
+       ],
+       "width": 640,
+       "height": 400
+      },
+      "label": "furnished"
+     }
+    ]
+   }
+  }
+ ],
+ "reference": [
+  {
+   "call": "world_spawn",
+   "args": {
+    "shape": "group",
+    "parent": "/room",
+    "name": "furniture"
+   }
+  },
+  {
+   "call": "world_place",
+   "args": {
+    "spawn": {
+     "shape": "cube",
+     "parent": "/room/furniture",
+     "name": "table",
+     "scale": [
+      1.6,
+      0.75,
+      0.8
+     ],
+     "color": "#8a6a48",
+     "tags": [
+      "table"
+     ],
+     "collider": {
+      "shape": "box"
+     }
+    },
+    "relations": [
+     {
+      "rel": "against",
+      "target": "/room/wall_north",
+      "side": "south"
+     },
+     {
+      "rel": "near",
+      "target": [
+       0,
+       0,
+       -2.6
+      ],
+      "max": 0.5,
+      "soft": true
+     }
+    ]
+   }
+  },
+  {
+   "call": "world_place",
+   "args": {
+    "spawn": {
+     "shape": "cube",
+     "parent": "/room/furniture",
+     "name": "chair",
+     "scale": [
+      0.5,
+      0.5,
+      0.5
+     ],
+     "color": "#6a5038",
+     "tags": [
+      "chair"
+     ],
+     "collider": {
+      "shape": "box"
+     },
+     "body": {
+      "kind": "dynamic",
+      "mass": 8
+     }
+    },
+    "count": 4,
+    "relations": [
+     {
+      "rel": "near",
+      "target": "/room/furniture/table",
+      "min": 0.4,
+      "max": 1.2
+     },
+     {
+      "rel": "facing",
+      "target": "/room/furniture/table"
+     },
+     {
+      "rel": "spacing",
+      "min": 0.8
+     },
+     {
+      "rel": "avoid",
+      "target": "/room/doorway",
+      "distance": 1.5
+     }
+    ]
+   }
+  }
+ ],
+ "broken": [
+  {
+   "note": "coordinates by hand: the table floats 0.375 m up (centre at y = 0.75) and two chairs overlap",
+   "call": "world_batch",
+   "args": {
+    "ops": [
+     {
+      "op": "spawn",
+      "shape": "group",
+      "parent": "/room",
+      "name": "furniture"
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/room/furniture",
+      "name": "table",
+      "position": [
+       0,
+       0.75,
+       -2.6
+      ],
+      "scale": [
+       1.6,
+       0.75,
+       0.8
+      ],
+      "tags": [
+       "table"
+      ],
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/room/furniture",
+      "name": "chair_1",
+      "position": [
+       -1.2,
+       0.25,
+       -1.8
+      ],
+      "scale": 0.5,
+      "tags": [
+       "chair"
+      ],
+      "collider": {
+       "shape": "box"
+      },
+      "body": {
+       "kind": "dynamic",
+       "mass": 8
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/room/furniture",
+      "name": "chair_2",
+      "position": [
+       -0.9,
+       0.25,
+       -1.7
+      ],
+      "scale": 0.5,
+      "tags": [
+       "chair"
+      ],
+      "collider": {
+       "shape": "box"
+      },
+      "body": {
+       "kind": "dynamic",
+       "mass": 8
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/room/furniture",
+      "name": "chair_3",
+      "position": [
+       0.6,
+       0.25,
+       -1.6
+      ],
+      "scale": 0.5,
+      "tags": [
+       "chair"
+      ],
+      "collider": {
+       "shape": "box"
+      },
+      "body": {
+       "kind": "dynamic",
+       "mass": 8
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/room/furniture",
+      "name": "chair_4",
+      "position": [
+       1.3,
+       0.25,
+       -1.6
+      ],
+      "scale": 0.5,
+      "tags": [
+       "chair"
+      ],
+      "collider": {
+       "shape": "box"
+      },
+      "body": {
+       "kind": "dynamic",
+       "mass": 8
+      }
+     }
+    ]
+   }
+  }
+ ],
+ "cheats": [
+  {
+   "id": "chairs_bunched",
+   "note": "the table right; four chairs on the floor near it but in a tight 0.6 m cluster, all facing the table",
+   "steps": [
+    {
+     "call": "world_spawn",
+     "args": {
+      "shape": "group",
+      "parent": "/room",
+      "name": "furniture"
+     }
+    },
+    {
+     "call": "world_place",
+     "args": {
+      "spawn": {
+       "shape": "cube",
+       "parent": "/room/furniture",
+       "name": "table",
+       "scale": [
+        1.6,
+        0.75,
+        0.8
+       ],
+       "tags": [
+        "table"
+       ],
+       "collider": {
+        "shape": "box"
+       }
+      },
+      "relations": [
+       {
+        "rel": "against",
+        "target": "/room/wall_north",
+        "side": "south"
+       },
+       {
+        "rel": "near",
+        "target": [
+         0,
+         0,
+         -2.6
+        ],
+        "max": 0.5,
+        "soft": true
+       }
+      ]
+     }
+    },
+    {
+     "call": "world_place",
+     "args": {
+      "spawn": {
+       "shape": "cube",
+       "parent": "/room/furniture",
+       "name": "chair",
+       "scale": [
+        0.5,
+        0.5,
+        0.5
+       ],
+       "tags": [
+        "chair"
+       ],
+       "collider": {
+        "shape": "box"
+       },
+       "body": {
+        "kind": "dynamic",
+        "mass": 8
+       }
+      },
+      "count": 4,
+      "relations": [
+       {
+        "rel": "near",
+        "target": "/room/furniture/table",
+        "min": 0.4,
+        "max": 1.2
+       },
+       {
+        "rel": "facing",
+        "target": "/room/furniture/table"
+       },
+       {
+        "rel": "spacing",
+        "min": 0.05
+       },
+       {
+        "rel": "inside",
+        "region": {
+         "min": [
+          0.4,
+          0,
+          -2.2
+         ],
+         "max": [
+          1.8,
+          1,
+          -0.8
+         ]
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "chairs_face_north",
+   "note": "chairs placed by near and spacing but never turned (all facing +z, away from the table)",
+   "steps": [
+    {
+     "call": "world_spawn",
+     "args": {
+      "shape": "group",
+      "parent": "/room",
+      "name": "furniture"
+     }
+    },
+    {
+     "call": "world_place",
+     "args": {
+      "spawn": {
+       "shape": "cube",
+       "parent": "/room/furniture",
+       "name": "table",
+       "scale": [
+        1.6,
+        0.75,
+        0.8
+       ],
+       "tags": [
+        "table"
+       ],
+       "collider": {
+        "shape": "box"
+       }
+      },
+      "relations": [
+       {
+        "rel": "against",
+        "target": "/room/wall_north",
+        "side": "south"
+       },
+       {
+        "rel": "near",
+        "target": [
+         0,
+         0,
+         -2.6
+        ],
+        "max": 0.5,
+        "soft": true
+       }
+      ]
+     }
+    },
+    {
+     "call": "world_place",
+     "args": {
+      "spawn": {
+       "shape": "cube",
+       "parent": "/room/furniture",
+       "name": "chair",
+       "scale": [
+        0.5,
+        0.5,
+        0.5
+       ],
+       "rotation_deg": [
+        0,
+        0,
+        0
+       ],
+       "tags": [
+        "chair"
+       ],
+       "collider": {
+        "shape": "box"
+       },
+       "body": {
+        "kind": "dynamic",
+        "mass": 8
+       }
+      },
+      "count": 4,
+      "relations": [
+       {
+        "rel": "near",
+        "target": "/room/furniture/table",
+        "min": 0.4,
+        "max": 1.2
+       },
+       {
+        "rel": "spacing",
+        "min": 0.8
+       },
+       {
+        "rel": "avoid",
+        "target": "/room/doorway",
+        "distance": 1.5
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "table_too_big",
+   "note": "a 2 x 0.75 x 1 m table (the wrong size) with the chairs placed right",
+   "steps": [
+    {
+     "call": "world_spawn",
+     "args": {
+      "shape": "group",
+      "parent": "/room",
+      "name": "furniture"
+     }
+    },
+    {
+     "call": "world_place",
+     "args": {
+      "spawn": {
+       "shape": "cube",
+       "parent": "/room/furniture",
+       "name": "table",
+       "scale": [
+        2,
+        0.75,
+        1
+       ],
+       "tags": [
+        "table"
+       ],
+       "collider": {
+        "shape": "box"
+       }
+      },
+      "relations": [
+       {
+        "rel": "against",
+        "target": "/room/wall_north",
+        "side": "south"
+       },
+       {
+        "rel": "near",
+        "target": [
+         0,
+         0,
+         -2.5
+        ],
+        "max": 0.5,
+        "soft": true
+       }
+      ]
+     }
+    },
+    {
+     "call": "world_place",
+     "args": {
+      "spawn": {
+       "shape": "cube",
+       "parent": "/room/furniture",
+       "name": "chair",
+       "scale": [
+        0.5,
+        0.5,
+        0.5
+       ],
+       "tags": [
+        "chair"
+       ],
+       "collider": {
+        "shape": "box"
+       },
+       "body": {
+        "kind": "dynamic",
+        "mass": 8
+       }
+      },
+      "count": 4,
+      "relations": [
+       {
+        "rel": "near",
+        "target": "/room/furniture/table",
+        "min": 0.4,
+        "max": 1.2
+       },
+       {
+        "rel": "facing",
+        "target": "/room/furniture/table"
+       },
+       {
+        "rel": "spacing",
+        "min": 0.8
+       },
+       {
+        "rel": "avoid",
+        "target": "/room/doorway",
+        "distance": 1.5
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "turned_parent",
+   "note": "review round 2: chairs under a group turned 180 degrees, each with a local rotation that looks right but faces away in the world",
+   "steps": [
+    {
+     "call": "world_spawn",
+     "args": {
+      "shape": "group",
+      "parent": "/room",
+      "name": "furniture"
+     }
+    },
+    {
+     "call": "world_place",
+     "args": {
+      "spawn": {
+       "shape": "cube",
+       "parent": "/room/furniture",
+       "name": "table",
+       "scale": [
+        1.6,
+        0.75,
+        0.8
+       ],
+       "tags": [
+        "table"
+       ],
+       "collider": {
+        "shape": "box"
+       }
+      },
+      "relations": [
+       {
+        "rel": "against",
+        "target": "/room/wall_north",
+        "side": "south"
+       },
+       {
+        "rel": "near",
+        "target": [
+         0,
+         0,
+         -2.6
+        ],
+        "max": 0.5,
+        "soft": true
+       }
+      ]
+     }
+    },
+    {
+     "call": "world_batch",
+     "args": {
+      "ops": [
+       {
+        "op": "spawn",
+        "shape": "group",
+        "parent": "/room/furniture",
+        "name": "seats",
+        "rotation_deg": [
+         0,
+         180,
+         0
+        ]
+       },
+       {
+        "op": "spawn",
+        "shape": "cube",
+        "parent": "/room/furniture/seats",
+        "name": "chair_0",
+        "position": [
+         1.5,
+         0.25,
+         2.6
+        ],
+        "rotation_deg": [
+         0,
+         90.0,
+         0
+        ],
+        "scale": [
+         0.5,
+         0.5,
+         0.5
+        ],
+        "tags": [
+         "chair"
+        ],
+        "collider": {
+         "shape": "box"
+        },
+        "body": {
+         "kind": "dynamic",
+         "mass": 8
+        }
+       },
+       {
+        "op": "spawn",
+        "shape": "cube",
+        "parent": "/room/furniture/seats",
+        "name": "chair_1",
+        "position": [
+         -1.5,
+         0.25,
+         2.6
+        ],
+        "rotation_deg": [
+         0,
+         -90.0,
+         0
+        ],
+        "scale": [
+         0.5,
+         0.5,
+         0.5
+        ],
+        "tags": [
+         "chair"
+        ],
+        "collider": {
+         "shape": "box"
+        },
+        "body": {
+         "kind": "dynamic",
+         "mass": 8
+        }
+       },
+       {
+        "op": "spawn",
+        "shape": "cube",
+        "parent": "/room/furniture/seats",
+        "name": "chair_2",
+        "position": [
+         0.7,
+         0.25,
+         1.4
+        ],
+        "rotation_deg": [
+         0,
+         149.744,
+         0
+        ],
+        "scale": [
+         0.5,
+         0.5,
+         0.5
+        ],
+        "tags": [
+         "chair"
+        ],
+        "collider": {
+         "shape": "box"
+        },
+        "body": {
+         "kind": "dynamic",
+         "mass": 8
+        }
+       },
+       {
+        "op": "spawn",
+        "shape": "cube",
+        "parent": "/room/furniture/seats",
+        "name": "chair_3",
+        "position": [
+         -0.7,
+         0.25,
+         1.4
+        ],
+        "rotation_deg": [
+         0,
+         -149.744,
+         0
+        ],
+        "scale": [
+         0.5,
+         0.5,
+         0.5
+        ],
+        "tags": [
+         "chair"
+        ],
+        "collider": {
+         "shape": "box"
+        },
+        "body": {
+         "kind": "dynamic",
+         "mass": 8
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "stretched_parent",
+   "note": "review round 3: two chairs under a parent stretched 4x along z, thin and long in the world, with rotations that look right locally",
+   "steps": [
+    {
+     "call": "world_spawn",
+     "args": {
+      "shape": "group",
+      "parent": "/room",
+      "name": "furniture"
+     }
+    },
+    {
+     "call": "world_place",
+     "args": {
+      "spawn": {
+       "shape": "cube",
+       "parent": "/room/furniture",
+       "name": "table",
+       "scale": [
+        1.6,
+        0.75,
+        0.8
+       ],
+       "tags": [
+        "table"
+       ],
+       "collider": {
+        "shape": "box"
+       }
+      },
+      "relations": [
+       {
+        "rel": "against",
+        "target": "/room/wall_north",
+        "side": "south"
+       },
+       {
+        "rel": "near",
+        "target": [
+         0,
+         0,
+         -2.6
+        ],
+        "max": 0.5,
+        "soft": true
+       }
+      ]
+     }
+    },
+    {
+     "call": "world_batch",
+     "args": {
+      "ops": [
+       {
+        "op": "spawn",
+        "shape": "group",
+        "parent": "/room/furniture",
+        "name": "seats",
+        "scale": [
+         1,
+         1,
+         4
+        ]
+       },
+       {
+        "op": "spawn",
+        "shape": "cube",
+        "parent": "/room/furniture",
+        "name": "chair_f0",
+        "position": [
+         -0.7,
+         0.25,
+         -1.4
+        ],
+        "rotation_deg": [
+         0,
+         149.744,
+         0
+        ],
+        "scale": [
+         0.5,
+         0.5,
+         0.5
+        ],
+        "tags": [
+         "chair"
+        ],
+        "collider": {
+         "shape": "box"
+        },
+        "body": {
+         "kind": "dynamic",
+         "mass": 8
+        }
+       },
+       {
+        "op": "spawn",
+        "shape": "cube",
+        "parent": "/room/furniture",
+        "name": "chair_f1",
+        "position": [
+         0.7,
+         0.25,
+         -1.4
+        ],
+        "rotation_deg": [
+         0,
+         -149.744,
+         0
+        ],
+        "scale": [
+         0.5,
+         0.5,
+         0.5
+        ],
+        "tags": [
+         "chair"
+        ],
+        "collider": {
+         "shape": "box"
+        },
+        "body": {
+         "kind": "dynamic",
+         "mass": 8
+        }
+       },
+       {
+        "op": "spawn",
+        "shape": "cube",
+        "parent": "/room/furniture/seats",
+        "name": "chair_s0",
+        "position": [
+         -1.85,
+         0.25,
+         -0.6
+        ],
+        "rotation_deg": [
+         0,
+         71.17,
+         0
+        ],
+        "scale": [
+         0.06,
+         0.5,
+         0.5
+        ],
+        "tags": [
+         "chair"
+        ],
+        "collider": {
+         "shape": "box"
+        },
+        "body": {
+         "kind": "dynamic",
+         "mass": 8
+        }
+       },
+       {
+        "op": "spawn",
+        "shape": "cube",
+        "parent": "/room/furniture/seats",
+        "name": "chair_s1",
+        "position": [
+         1.85,
+         0.25,
+         -0.6
+        ],
+        "rotation_deg": [
+         0,
+         -71.17,
+         0
+        ],
+        "scale": [
+         0.06,
+         0.5,
+         0.5
+        ],
+        "tags": [
+         "chair"
+        ],
+        "collider": {
+         "shape": "box"
+        },
+        "body": {
+         "kind": "dynamic",
+         "mass": 8
+        }
+       }
+      ]
+     }
+    }
+   ]
+  }
+ ]
+}

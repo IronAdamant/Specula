@@ -1,0 +1,75 @@
+{
+ "format": "specula-evals",
+ "version": 1,
+ "summary": {
+  "mode": "agent",
+  "tasks": 1,
+  "ran": 1,
+  "as_expected": 1,
+  "unexpected": [],
+  "skipped": [],
+  "errors": [],
+  "calls": 20,
+  "resp_bytes": 11397,
+  "tokens_est": 3639,
+  "wall_s": 275.11
+ },
+ "results": [
+  {
+   "id": "module_jump",
+   "set": "public",
+   "area": "modules",
+   "mode": "agent",
+   "startup_s": 9.01,
+   "agent_summary": "Added a jump button action (Key.Space, Pad.South) to saltus; it sets vy = 5.7 m/s only on a press while grounded (from the last move_character), giving a 1.00 m feet rise at 30 Hz; mid-air presses and held jump do nothing, walking unchanged.",
+   "solution_wall_s": 228.33,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "saltus is running",
+     "passed": true
+    },
+    {
+     "name": "the jump action is declared",
+     "passed": true
+    },
+    {
+     "name": "a playtest: jump from the ground, press again mid-air, land, walk",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 3,
+    "of": 3,
+    "fraction": 1.0
+   },
+   "status": "passed",
+   "solution": {
+    "calls": 20,
+    "req_bytes": 3159,
+    "resp_bytes": 11397,
+    "tokens_est": 3639,
+    "errors": 2,
+    "error_codes": {
+     "not_run": 1,
+     "invalid_argument": 1
+    },
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 2,
+     "eval_done": 1,
+     "logic_build": 2,
+     "logic_input": 3,
+     "logic_status": 1,
+     "time_control": 5,
+     "world_query": 6
+    }
+   },
+   "wall_s": 275.09,
+   "validation_errors": 0,
+   "captures": [
+    "<target>/evals-runs/20261022-agent2-module_jump/module_jump/captures/run-1792609274-35900/frame_00001.png"
+   ]
+  }
+ ]
+}

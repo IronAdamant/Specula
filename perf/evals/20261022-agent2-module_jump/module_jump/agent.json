@@ -1,0 +1,17 @@
+{
+ "agent": "Claude (general-purpose subagent, same model as the lane), driving the engine only through scripts/evals.py tools / call on the proxy port",
+ "verifiers": "the suite after review round 2",
+ "harness_usage": {
+  "tokens": 72530,
+  "tool_uses": 28,
+  "duration_ms": 223606
+ },
+ "engine_calls": 20,
+ "result": "passed 3/3",
+ "report": [
+  "Added a jump button (Key.Space, Pad.South) to actions.json and, in tick, vy = 5.7 m/s when jump is pressed, the last move left the character grounded and vy <= 0; built twice with logic_build (0 errors, 0 warnings): the first speed assumed 60 Hz.",
+  "Checked: peak y = 1.00 m, a mid-air press ignored, landing at y = 0 grounded, walking 6 m in 1.5 s while holding jump without bouncing.",
+  "Error: world_query {path} -> 'did you mean path_prefix?'.",
+  "Tool notes: the tick rate (30 Hz) showed only in time_control's answer, after its first build; concise world_query leaves out props and detailed returns the whole lathe profile every call; logic_input echoes a button as value [1, 0]."
+ ]
+}

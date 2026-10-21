@@ -93,6 +93,12 @@ See [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md). Item-by-item detail, with the re
   rounding in simulation and world-state code to `dmath`
 - **Streaming fix:** a frame's first upload is always tried, and captures taken while no frame runs get their own
   budget, so a built HLOD proxy can no longer wait for its upload forever
+- **Agent evals:** 21 tasks with outcomes the engine verifies (15 public, 6 held out), each with a reference and a
+  broken solution plus 23 known cheats; `world_diff`, transcript, geometry, world-size and series verifiers;
+  `scripts/evals.py` runs them across parallel engines, or with a real agent behind a proxy that enforces the task's
+  tools and call limit. Results are scrubbed of private paths. Playtest matchers compare objects by key in any order
+- **Privacy:** `crates/specula/tests/private_paths.rs` fails on any home-folder, temp-folder or session path, or a
+  UUID, in a tracked file; `save_check.py` writes `<work>` instead of its temp folder
 - **Streaming pump:** the eviction queue is scanned across frames into heaps instead of being rebuilt and sorted in
   the frame after each pass (2-3.5 ms spikes on the iGPU); a running resident total; profile zones for every pump
   stage. Alternating A/B on the iGPU: in-flight stutter 0 frames on every run, against 3-9 on the earlier build

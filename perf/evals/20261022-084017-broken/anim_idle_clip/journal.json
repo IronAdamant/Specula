@@ -1,0 +1,413 @@
+{
+ "entries": [
+  {
+   "id": 6,
+   "tick": 0,
+   "by": "eval-verifier-c3277f",
+   "kind": "spawn",
+   "changes": 1,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 235,
+     "path": "/eval_probe",
+     "version": 1
+    }
+   ]
+  },
+  {
+   "id": 5,
+   "tick": 0,
+   "by": "eval-verifier-c3277f",
+   "kind": "env",
+   "changes": 1,
+   "items": [
+    {
+     "op": "env",
+     "id": 0,
+     "path": "/"
+    }
+   ]
+  },
+  {
+   "id": 4,
+   "tick": 0,
+   "by": "solver",
+   "kind": "batch",
+   "changes": 2,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 233,
+     "path": "/anims/recipes:shambler.json/graphs",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 234,
+     "path": "/anims/recipes:shambler.json/graphs/creature",
+     "version": 1
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "tick": 0,
+   "by": "solver",
+   "kind": "batch",
+   "changes": 4,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 229,
+     "path": "/anims",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 230,
+     "path": "/anims/recipes:shambler.json",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 231,
+     "path": "/anims/recipes:shambler.json/clips",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 232,
+     "path": "/anims/recipes:shambler.json/clips/idle_calm",
+     "version": 1
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "tick": 0,
+   "by": "eval-snapshot-f191ce",
+   "kind": "env",
+   "changes": 1,
+   "items": [
+    {
+     "op": "env",
+     "id": 0,
+     "path": "/"
+    }
+   ]
+  },
+  {
+   "id": 1,
+   "tick": 0,
+   "by": "sepulcra",
+   "kind": "game_start",
+   "changes": 265,
+   "items": [
+    {
+     "op": "env",
+     "id": 0,
+     "path": "/"
+    },
+    {
+     "op": "spawn",
+     "id": 1,
+     "path": "/slab",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 2,
+     "path": "/slab/body",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 3,
+     "path": "/slab/body/rock_00",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 3,
+     "path": "/slab/body/rock_00",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 4,
+     "path": "/slab/body/rock_01",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/slab/body/rock_01",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 5,
+     "path": "/slab/body/rock_02",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/slab/body/rock_02",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 6,
+     "path": "/slab/body/rock_03",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 6,
+     "path": "/slab/body/rock_03",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 7,
+     "path": "/slab/body/rock_04",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/slab/body/rock_04",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 8,
+     "path": "/slab/body/broken_0_0",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 9,
+     "path": "/slab/body/broken_1_0",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 10,
+     "path": "/slab/body/broken_19_0",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 11,
+     "path": "/slab/body/broken_0_1",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 12,
+     "path": "/slab/body/broken_19_18",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 13,
+     "path": "/slab/body/broken_0_19",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 14,
+     "path": "/slab/body/broken_18_19",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 15,
+     "path": "/slab/body/broken_19_19",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 16,
+     "path": "/slab/underside",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 17,
+     "path": "/slab/underside/chunk_0",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 18,
+     "path": "/slab/underside/chunk_1",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 19,
+     "path": "/slab/underside/chunk_2",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 20,
+     "path": "/slab/underside/chunk_3",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 21,
+     "path": "/slab/underside/chunk_4",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 22,
+     "path": "/slab/fragments",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 23,
+     "path": "/slab/fragments/piece00_2_0",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 23,
+     "path": "/slab/fragments/piece00_2_0",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 24,
+     "path": "/slab/fragments/piece01_5_0",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 24,
+     "path": "/slab/fragments/piece01_5_0",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 25,
+     "path": "/slab/fragments/piece02_16_0",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 25,
+     "path": "/slab/fragments/piece02_16_0",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 26,
+     "path": "/slab/fragments/piece00_1_1",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 26,
+     "path": "/slab/fragments/piece00_1_1",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 27,
+     "path": "/slab/fragments/piece02_19_1",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 27,
+     "path": "/slab/fragments/piece02_19_1",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 28,
+     "path": "/slab/fragments/piece00_0_2",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 28,
+     "path": "/slab/fragments/piece00_0_2",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 29,
+     "path": "/slab/fragments/piece01_7_3",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 29,
+     "path": "/slab/fragments/piece01_7_3",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 30,
+     "path": "/slab/fragments/piece00_4_4",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 30,
+     "path": "/slab/fragments/piece00_4_4",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 31,
+     "path": "/slab/fragments/piece01_7_4",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 31,
+     "path": "/slab/fragments/piece01_7_4",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 32,
+     "path": "/slab/fragments/piece02_14_5",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 32,
+     "path": "/slab/fragments/piece02_14_5",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 33,
+     "path": "/slab/fragments/piece03_7_7",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 33,
+     "path": "/slab/fragments/piece03_7_7",
+     "version": 2
+    }
+   ],
+   "items_omitted": 215
+  }
+ ],
+ "next_cursor": null,
+ "oldest_kept": 1,
+ "evicted": 0
+}

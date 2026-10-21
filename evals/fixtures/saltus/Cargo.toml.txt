@@ -1,0 +1,17 @@
+[package]
+name = "saltus"
+description = "Agent-eval module: a capsule that walks (the task adds a jump)"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Its own workspace: the eval copies it to target/evals-work/<run>/saltus, outside the checkout's
+# workspace members.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+specula-sdk = { path = "../../../../crates/specula-sdk" }

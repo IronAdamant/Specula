@@ -1,0 +1,140 @@
+{
+ "entries": [
+  {
+   "id": 5,
+   "tick": 0,
+   "by": "eval-verifier-0418df",
+   "kind": "env",
+   "changes": 1,
+   "items": [
+    {
+     "op": "env",
+     "id": 0,
+     "path": "/"
+    }
+   ]
+  },
+  {
+   "id": 4,
+   "tick": 0,
+   "by": "solver",
+   "kind": "batch",
+   "changes": 2,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 12,
+     "path": "/lex/arena/build",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 13,
+     "path": "/lex/arena/spike_tower",
+     "version": 1
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "tick": 0,
+   "by": "eval-snapshot-dfad00",
+   "kind": "env",
+   "changes": 1,
+   "items": [
+    {
+     "op": "env",
+     "id": 0,
+     "path": "/"
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "tick": 0,
+   "by": "setup",
+   "kind": "batch",
+   "changes": 2,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 10,
+     "path": "/lex/arena/gold",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 11,
+     "path": "/lex/arena/pads",
+     "version": 1
+    }
+   ]
+  },
+  {
+   "id": 1,
+   "tick": 0,
+   "by": "setup",
+   "kind": "batch",
+   "changes": 9,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 1,
+     "path": "/lex",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 2,
+     "path": "/lex/arena",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 3,
+     "path": "/lex/arena/crawler",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 4,
+     "path": "/lex/arena/crawlers",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 5,
+     "path": "/lex/arena/defeat",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 6,
+     "path": "/lex/arena/lives",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 7,
+     "path": "/lex/arena/score",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 8,
+     "path": "/lex/arena/square",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 9,
+     "path": "/lex/arena/to_goal",
+     "version": 1
+    }
+   ]
+  }
+ ],
+ "next_cursor": null,
+ "oldest_kept": 1,
+ "evicted": 0
+}

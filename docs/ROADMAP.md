@@ -588,9 +588,16 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
   sweeps run on threads inside one engine (identical on any thread count); a seeded Gaussian process tunes `param`
   items; targets can hold across several play styles; `scripts/balance_playtests.py` replays tuned points as Sepulcra
   playtests on parallel engines and flags any disagreement. Design: [design/BALANCE.md](design/BALANCE.md).
-- [ ] ➕ **Specula agent evals** *(research)*: a fixed suite of realistic tasks with verifiable outcomes (build a room
+- [x] ➕ **Specula agent evals** *(research)*: a fixed suite of realistic tasks with verifiable outcomes (build a room
   that passes these checks, add a patrolling enemy, make wave 3 10% harder without breaking wave 4). It runs after
   every tool change, with a held-out set, and doubles as the public benchmark for marketing.
+  *Done 2026-10-22:* 21 tasks (15 public, 6 held out) in `evals/`, each with a reference solution that must pass and
+  a broken one that must fail, plus 23 known cheats that must fail. `world_diff` fails anything changed beyond what a
+  task allows. `scripts/evals.py --reference|--broken|--agent` runs them in fresh engines across a swarm; agent mode
+  goes through a proxy that enforces the task's tools and call limit. Six tasks run by fresh agents all passed.
+  Design and results: [design/EVALS.md](design/EVALS.md). A private held-out set is an owner decision.
+  Next (Claude's proposal, from the owner's point that agents are often confused by vague briefs): tasks with a
+  deliberately ambiguous brief, where the best move is to ask on the board or state an assumption first.
 - [x] ➕ **Tool ergonomics** *(research)*: `response_format` (concise/detailed) on heavy tools; an audit of tool count,
   naming and error messages against agent-tool design guidance.
   *Done 2026-10-18:* concise answers by default on the heavy tools (a typical 20-call session uses 53% fewer bytes),
@@ -665,6 +672,17 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
   human picks, or clicks the part they dislike. Agents get the same gallery as data (`style_gallery`).
   *Why:* models can't judge beauty alone (frontier models 26.5% vs experts 68.9% at picking best and worst), and even
   experts are more consistent comparing than scoring.
+  **Owner, 2026-10-22, the pick flow:** select a variant, then two buttons:
+  - **"This one"** accepts it as is.
+  - **"This one, with edits"** opens a text field. The pick plus the note seeds a new gallery around it, and the
+    human picks again.
+  Clicking and short notes replace long prompts, so communication stays easy for people who can't say exactly what
+  they want, and less of their frustration reaches the agents. Claude's additions (proposal; the owner said "feel
+  free to mess with UX"):
+  - one-tap edit chips beside the field ("darker", "bigger", "simpler", "more detail");
+  - "none of these" for a new spread;
+  - a breadcrumb of earlier rounds to step back.
+  Every pick and note goes to the preference store.
 - [ ] ➕ **Pick-driven tuning** *(research)*: several rounds of picks drive preferential Bayesian optimisation over
   style parameters (Sequential Gallery), so a few clicks tune many parameters.
 - [ ] ➕ **Preference store** *(research)*: every pick and rejection, with its note, is kept per project (optionally

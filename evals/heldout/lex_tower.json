@@ -1,0 +1,410 @@
+{
+ "eval": 1,
+ "id": "lex_tower",
+ "set": "heldout",
+ "area": "lex",
+ "title": "Add a buildable tower and its build command",
+ "summary": "Gameplay as data across item kinds: an archetype with an attack behaviour, a command with typed args, a cost and a requirement with a refusal code; proven by simulated games with player commands.",
+ "game": null,
+ "setup": [
+  {
+   "as": "setup",
+   "call": "lex_import",
+   "args": {
+    "set": "arena"
+   },
+   "args_files": {
+    "document": "evals/fixtures/arena.lex.json"
+   }
+  },
+  {
+   "as": "setup",
+   "call": "lex_edit",
+   "args": {
+    "set": "arena",
+    "ops": [
+     {
+      "op": "put",
+      "id": "pads",
+      "item": {
+       "kind": "sites",
+       "points": {
+        "pad_a": [
+         2,
+         0,
+         3.5
+        ],
+        "pad_b": [
+         6,
+         0,
+         0.5
+        ]
+       },
+       "notes": "Where towers may be built."
+      }
+     },
+     {
+      "op": "put",
+      "id": "gold",
+      "item": {
+       "kind": "resource",
+       "start": 20,
+       "min": 0
+      }
+     }
+    ]
+   }
+  }
+ ],
+ "brief": "The Lex rule set \"arena\" (30 ticks a second) sends five crawlers (20 hit points, tag \"enemy\") along a path; it has a \"gold\" resource (20 at the start) and build sites in the \"pads\" item (pad_a, pad_b). Add:\n- a tower archetype \"spike_tower\" (tag \"tower\") that hits one enemy within 4 m for 5 points of damage at once (no projectile), at most once a second;\n- a player command \"build\" with one argument \"site\" (a site of \"pads\") that costs 10 gold and puts a spike_tower there, refused with the code \"occupied\" when a tower already stands on that site.\nKeep everything else as it is. The set must validate with no errors.",
+ "tools": [
+  "lex_*"
+ ],
+ "limits": {
+  "calls": 30,
+  "wall_s": 600
+ },
+ "verify": [
+  {
+   "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+   "world_diff": {
+    "allow": [
+     {
+      "path": "/lex/arena/*",
+      "ops": [
+       "added"
+      ]
+     },
+     {
+      "path": "/lex/*",
+      "ops": [
+       "changed"
+      ],
+      "fields": [
+       "props.lex.notes",
+       "props.lex.*.notes",
+       "props.lex.*.*.notes"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "the set validates with no errors",
+   "call": "lex_validate",
+   "args": {
+    "set": "arena"
+   },
+   "expect": {
+    "valid": true,
+    "errors": 0
+   }
+  },
+  {
+   "name": "one tower on pad_a kills all five crawlers, for 10 gold",
+   "call": "lex_simulate",
+   "args": {
+    "set": "arena",
+    "seed": 3,
+    "ticks": 1500,
+    "commands": [
+     {
+      "tick": 0,
+      "command": "build",
+      "args": {
+       "site": "pad_a"
+      }
+     }
+    ]
+   },
+   "expect": {
+    "commands.applied": 1,
+    "commands.refused": 0,
+    "resources.score": 5,
+    "resources.lives": 3,
+    "resources.gold": 10,
+    "outcome": null
+   }
+  },
+  {
+   "name": "it hits at most once a second for 5 points: the first crawler has 10 or 15 hp left after 2 s in range",
+   "call": "lex_simulate",
+   "args": {
+    "set": "arena",
+    "seed": 3,
+    "ticks": 245,
+    "save_as": "eval_hits",
+    "commands": [
+     {
+      "tick": 0,
+      "command": "build",
+      "args": {
+       "site": "pad_a"
+      }
+     }
+    ]
+   },
+   "expect": {
+    "complete": true
+   }
+  },
+  {
+   "name": "the first crawler's hit points",
+   "call": "lex_session",
+   "args": {
+    "action": "inspect",
+    "name": "eval_hits",
+    "archetype": "crawler"
+   },
+   "expect": {
+    "entities.0.attributes.hp": {
+     "in": [
+      "10pt",
+      "15pt"
+     ]
+    }
+   }
+  },
+  {
+   "name": "a second tower on the same pad is refused as occupied; a third build has no gold",
+   "call": "lex_simulate",
+   "args": {
+    "set": "arena",
+    "seed": 3,
+    "ticks": 30,
+    "commands": [
+     {
+      "tick": 0,
+      "command": "build",
+      "args": {
+       "site": "pad_a"
+      }
+     },
+     {
+      "tick": 1,
+      "command": "build",
+      "args": {
+       "site": "pad_a"
+      }
+     },
+     {
+      "tick": 2,
+      "command": "build",
+      "args": {
+       "site": "pad_b"
+      }
+     },
+     {
+      "tick": 3,
+      "command": "build",
+      "args": {
+       "site": "pad_b"
+      }
+     }
+    ]
+   },
+   "expect": {
+    "commands.applied": 2,
+    "commands.refused": 2,
+    "resources.gold": 0
+   }
+  },
+  {
+   "name": "the refusal codes",
+   "call": "lex_simulate",
+   "args": {
+    "set": "arena",
+    "seed": 3,
+    "ticks": 30,
+    "commands": [
+     {
+      "tick": 0,
+      "command": "build",
+      "args": {
+       "site": "pad_a"
+      }
+     },
+     {
+      "tick": 1,
+      "command": "build",
+      "args": {
+       "site": "pad_a"
+      }
+     }
+    ]
+   },
+   "expect": {
+    "rejections.0.code": "occupied",
+    "rejections.0.tick": 1
+   }
+  },
+  {
+   "name": "without towers the crawlers still win (lost at tick 779)",
+   "call": "lex_simulate",
+   "args": {
+    "set": "arena",
+    "seed": 3,
+    "ticks": 3000
+   },
+   "expect": {
+    "outcome.result": "lost",
+    "outcome.tick": 779
+   }
+  }
+ ],
+ "reference": [
+  {
+   "call": "lex_schema",
+   "args": {
+    "topic": "behaviours"
+   }
+  },
+  {
+   "call": "lex_edit",
+   "args": {
+    "set": "arena",
+    "ops": [
+     {
+      "op": "put",
+      "id": "spike_tower",
+      "expect_version": 0,
+      "item": {
+       "kind": "archetype",
+       "tags": [
+        "tower"
+       ],
+       "behaviours": [
+        {
+         "type": "attack",
+         "targets": [
+          "enemy"
+         ],
+         "range": "4m",
+         "cooldown": "1s",
+         "delivery": "instant",
+         "payload": [
+          {
+           "damage": "5pt"
+          }
+         ]
+        }
+       ]
+      }
+     },
+     {
+      "op": "put",
+      "id": "build",
+      "expect_version": 0,
+      "item": {
+       "kind": "command",
+       "args": {
+        "site": {
+         "type": "site",
+         "of": "pads"
+        }
+       },
+       "cost": {
+        "gold": 10
+       },
+       "require": [
+        {
+         "when": "!occupied(arg.site, tower)",
+         "code": "occupied",
+         "message": "a tower already stands there"
+        }
+       ],
+       "do": [
+        {
+         "spawn": "spike_tower",
+         "at": "arg.site"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "expect": {
+    "valid": true
+   }
+  },
+  {
+   "call": "lex_simulate",
+   "args": {
+    "set": "arena",
+    "seed": 3,
+    "ticks": 1500,
+    "commands": [
+     {
+      "tick": 0,
+      "command": "build",
+      "args": {
+       "site": "pad_a"
+      }
+     }
+    ]
+   },
+   "expect": {
+    "resources.score": 5
+   }
+  }
+ ],
+ "broken": [
+  {
+   "note": "a cooldown of 0.1 s (ten hits a second) and no occupied check",
+   "call": "lex_edit",
+   "args": {
+    "set": "arena",
+    "ops": [
+     {
+      "op": "put",
+      "id": "spike_tower",
+      "item": {
+       "kind": "archetype",
+       "tags": [
+        "tower"
+       ],
+       "behaviours": [
+        {
+         "type": "attack",
+         "targets": [
+          "enemy"
+         ],
+         "range": "4m",
+         "cooldown": "0.1s",
+         "delivery": "instant",
+         "payload": [
+          {
+           "damage": "5pt"
+          }
+         ]
+        }
+       ]
+      }
+     },
+     {
+      "op": "put",
+      "id": "build",
+      "item": {
+       "kind": "command",
+       "args": {
+        "site": {
+         "type": "site",
+         "of": "pads"
+        }
+       },
+       "cost": {
+        "gold": 10
+       },
+       "do": [
+        {
+         "spawn": "spike_tower",
+         "at": "arg.site"
+        }
+       ]
+      }
+     }
+    ]
+   }
+  }
+ ]
+}

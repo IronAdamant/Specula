@@ -1,0 +1,611 @@
+{
+ "eval": 1,
+ "id": "sight_hidden",
+ "set": "public",
+ "area": "sight",
+ "title": "Find what a camera can't see",
+ "summary": "Sight as data: use the ID buffer (visible_px, occluded) to tell fully hidden, partly hidden and visible crates apart, then tag them.",
+ "game": null,
+ "setup": [
+  {
+   "as": "setup",
+   "call": "world_batch",
+   "args": {
+    "ops": [
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "name": "ground",
+      "position": [
+       0,
+       -0.5,
+       0
+      ],
+      "scale": [
+       40,
+       1,
+       40
+      ],
+      "color": "#3a3f45"
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "name": "wall",
+      "position": [
+       0,
+       1.5,
+       4
+      ],
+      "scale": [
+       2.4,
+       3,
+       0.3
+      ],
+      "color": "#8d8478"
+     },
+     {
+      "op": "spawn",
+      "shape": "group",
+      "name": "crates"
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/crates",
+      "name": "crate_1",
+      "position": [
+       -5,
+       0.5,
+       0
+      ],
+      "color": "#8a6a48",
+      "tags": [
+       "crate"
+      ]
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/crates",
+      "name": "crate_2",
+      "position": [
+       -3,
+       0.5,
+       -3
+      ],
+      "color": "#8a6a48",
+      "tags": [
+       "crate"
+      ]
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/crates",
+      "name": "crate_3",
+      "position": [
+       3.5,
+       0.5,
+       -2
+      ],
+      "color": "#8a6a48",
+      "tags": [
+       "crate"
+      ]
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/crates",
+      "name": "crate_4",
+      "position": [
+       0,
+       0.5,
+       -1
+      ],
+      "color": "#8a6a48",
+      "tags": [
+       "crate"
+      ]
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/crates",
+      "name": "crate_5",
+      "position": [
+       1.7,
+       0.5,
+       0
+      ],
+      "color": "#8a6a48",
+      "tags": [
+       "crate"
+      ]
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/crates",
+      "name": "crate_6",
+      "position": [
+       6,
+       0.5,
+       -6
+      ],
+      "color": "#8a6a48",
+      "tags": [
+       "crate"
+      ]
+     }
+    ]
+   }
+  }
+ ],
+ "brief": "Six crates sit under /crates and a wall stands in front of some of them. Look from a camera at eye [0, 2, 12] aimed at [0, 1, 0] (50 degree vertical field of view, 960x540). Exactly one crate can't be seen from there at all. Add the tag \"hidden\" to that crate, and the tag \"seen\" to every crate that shows at least one pixel from that camera, even if partly behind the wall. Keep the crates' existing tags and don't move anything.",
+ "tools": [
+  "world_*",
+  "sight_*",
+  "camera_*"
+ ],
+ "limits": {
+  "calls": 25,
+  "wall_s": 600
+ },
+ "verify": [
+  {
+   "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+   "world_diff": {
+    "allow": [
+     {
+      "path": "/crates/crate_*",
+      "ops": [
+       "changed"
+      ],
+      "fields": [
+       "tags"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "one crate is tagged hidden, and it is crate_4",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/crates",
+    "tags": [
+     "hidden"
+    ],
+    "fields": [
+     "path"
+    ]
+   },
+   "expect": {
+    "total": 1,
+    "items.0.path": "/crates/crate_4"
+   }
+  },
+  {
+   "name": "the five others are tagged seen",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/crates",
+    "tags": [
+     "seen"
+    ],
+    "fields": [
+     "path"
+    ]
+   },
+   "expect": {
+    "total": 5
+   }
+  },
+  {
+   "name": "no crate is tagged both",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/crates",
+    "tags": [
+     "seen",
+     "hidden"
+    ],
+    "fields": [
+     "path"
+    ]
+   },
+   "expect": {
+    "total": 0
+   }
+  },
+  {
+   "name": "every crate keeps its crate tag",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/crates",
+    "tags": [
+     "crate"
+    ],
+    "fields": [
+     "path"
+    ]
+   },
+   "expect": {
+    "total": 6
+   }
+  },
+  {
+   "name": "nothing moved: crate_4 still hidden from the camera, crate_5 still partly visible",
+   "call": "sight_frame",
+   "args": {
+    "eye": [
+     0,
+     2,
+     12
+    ],
+    "target": [
+     0,
+     1,
+     0
+    ],
+    "width": 960,
+    "height": 540
+   },
+   "select": {
+    "from": "subjects",
+    "where": {
+     "path": "/crates/crate_5",
+     "visible_px": {
+      "gt": 0
+     }
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 1
+   }
+  },
+  {
+   "name": "the wall still hides crate_4",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/wall",
+    "fields": [
+     "path",
+     "position",
+     "version"
+    ]
+   },
+   "expect": {
+    "items.0.version": 1
+   }
+  },
+  {
+   "name": "the crates are where they were (all six)",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/crates",
+    "fields": [
+     "path",
+     "position"
+    ]
+   },
+   "expect": {
+    "total": 7,
+    "items.1.position": {
+     "eq": [
+      -5,
+      0.5,
+      0
+     ]
+    },
+    "items.2.position": {
+     "eq": [
+      -3,
+      0.5,
+      -3
+     ]
+    },
+    "items.3.position": {
+     "eq": [
+      3.5,
+      0.5,
+      -2
+     ]
+    },
+    "items.4.position": {
+     "eq": [
+      0,
+      0.5,
+      -1
+     ]
+    },
+    "items.5.position": {
+     "eq": [
+      1.7,
+      0.5,
+      0
+     ]
+    },
+    "items.6.position": {
+     "eq": [
+      6,
+      0.5,
+      -6
+     ]
+    },
+    "items.1.path": "/crates/crate_1",
+    "items.2.path": "/crates/crate_2",
+    "items.3.path": "/crates/crate_3",
+    "items.4.path": "/crates/crate_4",
+    "items.5.path": "/crates/crate_5",
+    "items.6.path": "/crates/crate_6"
+   }
+  }
+ ],
+ "reference": [
+  {
+   "call": "sight_frame",
+   "args": {
+    "eye": [
+     0,
+     2,
+     12
+    ],
+    "target": [
+     0,
+     1,
+     0
+    ],
+    "width": 960,
+    "height": 540
+   },
+   "save": "f"
+  },
+  {
+   "call": "sight_frame",
+   "args": {
+    "eye": [
+     0,
+     2,
+     12
+    ],
+    "target": [
+     0,
+     1,
+     0
+    ],
+    "width": 960,
+    "height": 540
+   },
+   "select": {
+    "from": "subjects",
+    "where": {
+     "path": "/crates/crate_4",
+     "visible_px": 0
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 1
+   }
+  },
+  {
+   "call": "world_batch",
+   "args": {
+    "ops": [
+     {
+      "op": "set",
+      "path": "/crates/crate_4",
+      "add_tags": [
+       "hidden"
+      ]
+     },
+     {
+      "op": "set",
+      "path": "/crates/crate_1",
+      "add_tags": [
+       "seen"
+      ]
+     },
+     {
+      "op": "set",
+      "path": "/crates/crate_2",
+      "add_tags": [
+       "seen"
+      ]
+     },
+     {
+      "op": "set",
+      "path": "/crates/crate_3",
+      "add_tags": [
+       "seen"
+      ]
+     },
+     {
+      "op": "set",
+      "path": "/crates/crate_5",
+      "add_tags": [
+       "seen"
+      ]
+     },
+     {
+      "op": "set",
+      "path": "/crates/crate_6",
+      "add_tags": [
+       "seen"
+      ]
+     }
+    ]
+   }
+  }
+ ],
+ "broken": [
+  {
+   "note": "reads 'behind the wall' from screen boxes, which ignore occlusion, and replaces tags instead of adding",
+   "call": "world_batch",
+   "args": {
+    "ops": [
+     {
+      "op": "set",
+      "path": "/crates/crate_5",
+      "tags": [
+       "hidden"
+      ]
+     },
+     {
+      "op": "set",
+      "path": "/crates/crate_1",
+      "tags": [
+       "seen"
+      ]
+     },
+     {
+      "op": "set",
+      "path": "/crates/crate_2",
+      "tags": [
+       "seen"
+      ]
+     },
+     {
+      "op": "set",
+      "path": "/crates/crate_3",
+      "tags": [
+       "seen"
+      ]
+     },
+     {
+      "op": "set",
+      "path": "/crates/crate_4",
+      "tags": [
+       "seen"
+      ]
+     },
+     {
+      "op": "set",
+      "path": "/crates/crate_6",
+      "tags": [
+       "seen"
+      ]
+     }
+    ]
+   }
+  }
+ ],
+ "cheats": [
+  {
+   "id": "moved_a_seen_crate",
+   "note": "review round 2: tags right, then moves crate_1 (only crate_4's position was checked)",
+   "steps": [
+    {
+     "call": "sight_frame",
+     "args": {
+      "eye": [
+       0,
+       2,
+       12
+      ],
+      "target": [
+       0,
+       1,
+       0
+      ],
+      "width": 960,
+      "height": 540
+     },
+     "save": "f"
+    },
+    {
+     "call": "sight_frame",
+     "args": {
+      "eye": [
+       0,
+       2,
+       12
+      ],
+      "target": [
+       0,
+       1,
+       0
+      ],
+      "width": 960,
+      "height": 540
+     },
+     "select": {
+      "from": "subjects",
+      "where": {
+       "path": "/crates/crate_4",
+       "visible_px": 0
+      },
+      "count": true
+     },
+     "expect": {
+      "count": 1
+     }
+    },
+    {
+     "call": "world_batch",
+     "args": {
+      "ops": [
+       {
+        "op": "set",
+        "path": "/crates/crate_4",
+        "add_tags": [
+         "hidden"
+        ]
+       },
+       {
+        "op": "set",
+        "path": "/crates/crate_1",
+        "add_tags": [
+         "seen"
+        ]
+       },
+       {
+        "op": "set",
+        "path": "/crates/crate_2",
+        "add_tags": [
+         "seen"
+        ]
+       },
+       {
+        "op": "set",
+        "path": "/crates/crate_3",
+        "add_tags": [
+         "seen"
+        ]
+       },
+       {
+        "op": "set",
+        "path": "/crates/crate_5",
+        "add_tags": [
+         "seen"
+        ]
+       },
+       {
+        "op": "set",
+        "path": "/crates/crate_6",
+        "add_tags": [
+         "seen"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "call": "world_set",
+     "args": {
+      "path": "/crates/crate_1",
+      "position": [
+       -5,
+       0.5,
+       3
+      ]
+     }
+    }
+   ]
+  }
+ ]
+}
