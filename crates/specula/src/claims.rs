@@ -648,6 +648,27 @@ pub fn touches_joint_data(change: &Change) -> bool {
     }
 }
 
+/// The bodies a joint change ties or lets go: both sides of the joint as it was and as it is
+/// (sorted, without repeats). Empty for anything that isn't joint data.
+pub fn joint_bodies(change: &Change) -> Vec<u64> {
+    let of = |e: &crate::world::Entity| {
+        e.props.get(crate::physics::joints::PROP).and_then(|j| crate::physics::joints::JointSpec::from_json(j).ok()).map(|s| s.a.into_iter().chain(s.b).collect::<Vec<_>>()).unwrap_or_default()
+    };
+    let mut ids = match change {
+        Change::Spawn { after, .. } => of(after),
+        Change::Delete { before, .. } => of(before),
+        Change::Set { before, after, .. } => {
+            let mut v = of(after);
+            v.extend(before.as_deref().map(of).unwrap_or_default());
+            v
+        }
+        Change::Pose { .. } | Change::Env { .. } | Change::Camera { .. } => Vec::new(),
+    };
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
 /// What a write that moves body `id` must be allowed to do, as a change to check against
 /// claims: the entity "changed" in place, so path claims and region claims (at its position)
 /// both apply. `None` when it doesn't exist.

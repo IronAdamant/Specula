@@ -402,6 +402,7 @@ fn prepare_load(
     generation: u64,
     parser: Option<crate::game::StateParser>,
     natives: specula_lex::Natives,
+    models: Option<std::sync::Arc<dyn crate::world::ModelSource>>,
 ) -> Result<Prepared, SaveError> {
     let t0 = Instant::now();
     let f = read_file(path)?;
@@ -463,10 +464,17 @@ fn prepare_load(
     };
     let physics_bytes = by_name.remove("physics");
     let mut physics = crate::physics::Physics::default();
+    let mut world = world;
+    if physics_bytes.is_some() {
+        let _ = world.set_model_source(models);
+    }
     if let Some(b) = &physics_bytes {
+        // Saved ragdolls are planned again from their models' rigs: the world needs the engine's
+        // models to read them (replace_world attaches them again and reports what didn't build).
         physics.restore_state(&world, generation, tick, b).map_err(|e| {
             let mut s = SaveError::new(e.code, e.message.clone()).in_section("physics");
-            s.details = e.details.clone();
+            // The section is the SaveError's own field: not again among the details.
+            s.details = e.details.iter().filter(|(k, _)| *k != "section").cloned().collect();
             s
         })?;
     }
@@ -832,9 +840,10 @@ impl Engine {
         let generation = self.world_generation + 1;
         let parser = self.game.as_ref().and_then(|g| g.state_parser());
         let natives = self.lex_natives.clone();
+        let models = Some(std::sync::Arc::clone(&self.library) as std::sync::Arc<dyn crate::world::ModelSource>);
         let handle = std::thread::Builder::new()
             .name("specula-load".into())
-            .spawn(move || prepare_load(&path, limits, hosted, hz, generation, parser, natives))
+            .spawn(move || prepare_load(&path, limits, hosted, hz, generation, parser, natives, models))
             .map_err(|e| SaveError::new("io", format!("could not start a save reader: {e}")))?;
         self.save_load = Some(Loading {
             name: name.to_owned(),
@@ -902,6 +911,8 @@ impl Engine {
         self.clock.set_tick(p.tick);
         let mut notes: Vec<Json> = p.notes;
         notes.extend(self.replace_world(p.world, &format!("save:{}", l.name)).into_iter().map(Json::from));
+        // The machine's thread count stays (it isn't in saves: results never depend on it).
+        physics.threads = self.physics.threads;
         self.physics = physics;
         // Live Lex runs: the save's (those running before stop: their world is gone).
         notes.extend(self.lex_live.apply_state(p.lex_live));
@@ -1177,6 +1188,43 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review round 2, finding 1 (probe savep.py): a save holding a saved entity's ragdoll is
+    /// read the way `save_read` reads it (the worker's `prepare_load`, from a file): the world it
+    /// loads has no models attached yet, so the ragdoll couldn't be planned and the save was
+    /// refused. With the engine's models handed over, physics comes back at the saved hash.
+    #[test]
+    fn a_save_with_a_ragdoll_loads_through_prepare_load() {
+        use crate::physics::ragdoll::tests::{ragdoll, run, shambler_world};
+        let (mut w, id) = shambler_world();
+        let mut p = crate::physics::Physics::default();
+        run(&mut w, &mut p, 0, 30);
+        ragdoll(&mut w, id, r#"{"mode": "limp", "hit": {"bone": "chest", "impulse": [0, 10, -40], "seq": 1}}"#);
+        run(&mut w, &mut p, 30, 10);
+        let physics = p.save_state(&w, 0).expect("physics ran");
+        let meta = Json::obj([
+            ("format", Json::from(savegame::FORMAT)),
+            ("game", Json::Null),
+            ("tick", Json::from(40u64)),
+            ("tick_hz", Json::from(30u64)),
+            ("dmath", Json::from(specula_core::dmath::VERSION)),
+            ("lex_runtime", Json::from(specula_lex::RUNTIME_VERSION)),
+        ]);
+        let world = savegame::pack_files(&crate::persist::render(&w));
+        let bytes = savegame::encode(&meta, &[Section { name: "world".into(), data: world }, Section { name: "physics".into(), data: physics }]);
+        let path = std::env::temp_dir().join(format!("specula-ragdoll-save-{}.specsave", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        let load = |models| prepare_load(&path, w.shape_limits(), None, 30, 1, None, specula_lex::Natives::new(), models);
+        let prepared = load(w.model_source().cloned()).map_err(|e| e.to_json().to_string()).expect("loads with the engine's models");
+        assert_eq!(prepared.physics.space.hash(), p.space.hash());
+        assert!(prepared.physics.ragdolls.live.contains_key(&id));
+        // Without models it can't (and says so once, with the section as the error's own field).
+        let e = load(None).err().expect("no rig without models");
+        assert_eq!(e.code, "save_mismatch");
+        let text = e.to_json().to_string();
+        assert_eq!(text.matches("\"section\"").count(), 1, "{text}");
+        let _ = std::fs::remove_file(&path);
+    }
 
     /// A saves folder has a cap: a save that would pass it is `saves_full` (saving over a save
     /// counts only the new one).

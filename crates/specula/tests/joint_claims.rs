@@ -121,3 +121,35 @@ fn joint_body_checks_see_path_and_region_claims() {
     assert_eq!(check(ALICE, s.abox), None);
     assert_eq!(check(ALICE, s.rbox), None);
 }
+
+/// Review round 2, finding 3 (probe undo.py): undoing a joint's removal ties the joint's bodies
+/// again, so it needs the right to change them like physics_joint does: mallory can't undo her
+/// way onto alice's claimed box.
+#[test]
+fn undo_cant_tie_a_joint_onto_claimed_bodies() {
+    use specula::journal::UndoRequest;
+    let (s1, s2) = (session("aaaaaa11"), session("bbbbbb22"));
+    let live = vec![s1.clone(), s2.clone()];
+    let mut sw = Swarm::default();
+    sw.hello(&s1, "alice".into(), "builder".into(), None, &live).unwrap();
+    sw.hello(&s2, "mallory".into(), "builder".into(), None, &live).unwrap();
+    let mut w = World::default();
+    w.set_recording(Recording::Full);
+    let abox = spawn(&mut sw, &mut w, ALICE, cube("abox", Vec3::new(0.0, 0.5, 0.0))).unwrap();
+    let mut j = SpawnSpec::new(Shape::Group);
+    j.name = Some("hold".into());
+    j.props = joint_props(abox);
+    let by = "mallory".to_string();
+    let jid = sw.commit_joint(&mut w, 0, MALLORY, Kind::Spawn, |w| w.spawn(j, &by).map(|e| e.id)).unwrap().0;
+    let (_, removed) = sw.commit_joint(&mut w, 0, MALLORY, Kind::Delete, |w| w.delete(&EntityKey::Id(jid), None).map(|_| ())).unwrap();
+    let removed = removed.expect("journaled");
+    sw.take_claim(&w, &s1, ClaimSpec { scope: Scope::path("/abox").unwrap(), lease: DEFAULT_LEASE, note: String::new() }).unwrap();
+    let r = sw.undo(&mut w, 0, MALLORY, &UndoRequest { ids: Some(vec![removed]), count: 1, force: false });
+    assert_eq!(r.err().map(|e| e.code), Some("claimed"));
+    assert!(w.entities().all(|e| e.props.get("joint").is_none()), "the joint stayed removed");
+    // Once alice lets the box go, the undo goes through.
+    sw.release(ALICE, None).unwrap();
+    let r = sw.undo(&mut w, 0, MALLORY, &UndoRequest { ids: Some(vec![removed]), count: 1, force: false });
+    assert!(r.is_ok(), "{:?}", r.err());
+    assert!(w.entities().any(|e| e.props.get("joint").is_some()));
+}

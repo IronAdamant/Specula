@@ -140,7 +140,8 @@ const KEYS: &[&str] = &["mode", "strength", "mass", "relocate", "hit", "radii", 
 pub fn hull_points(path: &str, v: &Json) -> Result<Vec<V3>, String> {
     let bad = || format!("'{path}' must be 4 to {MAX_HULL_POINTS} points [[x, y, z], ...] in the bone's frame (model metres, within ±10)");
     let pts = v.as_array().filter(|a| (4..=MAX_HULL_POINTS).contains(&a.len())).ok_or_else(bad)?;
-    pts.iter()
+    let out: Vec<V3> = pts
+        .iter()
         .map(|p| match p.as_array() {
             Some([x, y, z]) => {
                 let c = |j: &Json| j.as_f64().filter(|f| f.is_finite() && f.abs() <= 10.0).map(|f| f as f32).ok_or_else(bad);
@@ -148,7 +149,10 @@ pub fn hull_points(path: &str, v: &Json) -> Result<Vec<V3>, String> {
             }
             _ => Err(bad()),
         })
-        .collect()
+        .collect::<Result<_, _>>()?;
+    // A solid: flat or repeated points make no hull (physics would refuse the part).
+    Shape::hull(&out.iter().map(|p| v3(*p)).collect::<Vec<_>>()).map_err(|e| format!("'{path}' is no solid: {}", e.message))?;
+    Ok(out)
 }
 
 /// The JSON of hull points, in millimetres.
@@ -840,8 +844,8 @@ impl Physics {
             let off_since = if r.bool(f).map_err(ragdoll_bad)? { Some(r.f64(f).map_err(ragdoll_bad)?) } else { None };
             let started_tick = r.u64(f).map_err(ragdoll_bad)?;
             let frame_dt = r.f32(f).map_err(ragdoll_bad)?;
-            if !strength.is_finite() || !frame_dt.is_finite() || off_since.is_some_and(|s| !s.is_finite()) {
-                return Err(ragdoll_bad(r.error("invalid", f, "a ragdoll number isn't finite")));
+            if !(0.0..=10.0).contains(&strength) || !(frame_dt.is_finite() && frame_dt > 0.0 && frame_dt <= 1.0) || off_since.is_some_and(|s| !s.is_finite()) {
+                return Err(ragdoll_bad(r.error("invalid", f, "a ragdoll's strength must be 0..10, its frame time 0..1 s, its times finite")));
             }
             let k = r.count(f, bones_max, 40).map_err(ragdoll_bad)?;
             let start = (0..k).map(|_| r_transform(r)).collect::<Result<Vec<_>, _>>().map_err(ragdoll_bad)?;
@@ -881,16 +885,23 @@ impl Physics {
                 let layer = self.layer_bit(LAYER).map_err(|m| mismatch(id, m))?;
                 let mut m = Vec::new();
                 set.skeleton.model_space(&pose, &mut m);
+                let mut bodies = Vec::with_capacity(parts.len());
                 for p in &parts {
                     let d = part_body(&set, p, s.mode == Mode::Powered, bone_world(&pose_e, scale, &m[p.bone]), layer, id, false).map_err(|m| mismatch(id, m))?;
-                    self.space.insert(key(id, p.bone), d).map_err(|e| mismatch(id, e.message))?;
+                    bodies.push((key(id, p.bone), d));
                 }
+                let mut joints = Vec::with_capacity(s.joints.len());
                 for (b, d) in s.joints {
-                    if !bones.contains(&b) {
-                        return Err(mismatch(id, format!("a saved joint of {}'s ragdoll is on a bone without a part", world.path_of(id))));
+                    // A saved joint ties exactly what the plan ties: this part to its parent part
+                    // (never a body the save names; a crafted save can't reach the world).
+                    let part = parts.iter().find(|p| p.bone == b && p.joint.is_some());
+                    let ties = part.and_then(|p| p.parent).is_some_and(|parent| d.a == Some(key(id, parent)) && d.b == Some(key(id, b)));
+                    if !ties {
+                        return Err(mismatch(id, format!("a saved joint of {}'s ragdoll doesn't tie the parts its plan does", world.path_of(id))));
                     }
-                    self.space.insert_joint(key(id, b), d).map_err(|e| mismatch(id, e.message))?;
+                    joints.push((key(id, b), d));
                 }
+                self.insert_all(bodies, joints).map_err(|m| mismatch(id, m))?;
             }
             let pose = Arc::new(pose);
             self.ragdolls.live.insert(
@@ -1040,6 +1051,45 @@ impl Physics {
         }
     }
 
+    /// Inserts a ragdoll's bodies and joints all or nothing: on any refusal (a budget, a shape)
+    /// what already went in comes out again, so no part is left simulated without its ragdoll.
+    fn insert_all(&mut self, bodies: Vec<(u64, BodyDesc)>, joints: Vec<(u64, JointDesc)>) -> Result<(), String> {
+        let (mut in_b, mut in_j) = (Vec::with_capacity(bodies.len()), Vec::with_capacity(joints.len()));
+        let mut failed = None;
+        for (k, d) in bodies {
+            match self.space.insert(k, d) {
+                Ok(()) => in_b.push(k),
+                Err(e) => {
+                    failed = Some(e.message);
+                    break;
+                }
+            }
+        }
+        if failed.is_none() {
+            for (k, d) in joints {
+                match self.space.insert_joint(k, d) {
+                    Ok(()) => in_j.push(k),
+                    Err(e) => {
+                        failed = Some(e.message);
+                        break;
+                    }
+                }
+            }
+        }
+        match failed {
+            None => Ok(()),
+            Some(m) => {
+                for k in in_j {
+                    self.space.remove_joint(k);
+                }
+                for k in in_b {
+                    self.space.remove(k);
+                }
+                Err(m)
+            }
+        }
+    }
+
     fn start_ragdoll(&mut self, world: &mut World, id: u64, spec: &Spec, t: f64, dt: f32, tick: u64) -> Result<(), String> {
         let e = world.get(id).ok_or("gone")?;
         let (set, parts, scale, pose_e) = plan_for(world, e, spec)?;
@@ -1062,6 +1112,8 @@ impl Physics {
         let layer = self.layer_bit(LAYER)?;
         let inv_dt = 1.0 / dt.max(1.0e-6);
         let mut starts: Vec<(usize, Pose)> = Vec::with_capacity(parts.len());
+        let mut bodies: Vec<(u64, BodyDesc)> = Vec::with_capacity(parts.len());
+        let mut joints: Vec<(u64, JointDesc)> = Vec::with_capacity(parts.len());
         for p in &parts {
             let w = bone_world(&pose_e, scale, &m_now[p.bone]);
             starts.push((p.bone, w));
@@ -1081,7 +1133,7 @@ impl Physics {
                     d.angular_velocity = d.angular_velocity * (30.0 / d.angular_velocity.length());
                 }
             }
-            self.space.insert(key(id, p.bone), d).map_err(|e| e.message)?;
+            bodies.push((key(id, p.bone), d));
         }
         for p in &parts {
             let (Some(j), Some(parent)) = (&p.joint, p.parent) else { continue };
@@ -1096,8 +1148,10 @@ impl Physics {
             }
             // Joint friction in proportion to what the joint carries.
             jd.friction = FRICTION_PER_KG * p.carried * scale;
-            self.space.insert_joint(key(id, p.bone), jd).map_err(|e| e.message)?;
+            joints.push((key(id, p.bone), jd));
         }
+        // Everything built and checked first; then all of it goes in, or none.
+        self.insert_all(bodies, joints)?;
         // The entity's own collider (if any) stops colliding with its parts.
         self.space.set_group(id, id + 1);
         let hit_seq = spec.hit.as_ref().map_or(0, |h| h.seq.wrapping_sub(1));
@@ -1304,7 +1358,7 @@ impl Physics {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A small humanoid rig (recipe-style: rest frames along the model axes).
@@ -1387,13 +1441,13 @@ mod tests {
         (w, id)
     }
 
-    fn ragdoll(w: &mut World, id: u64, json: &str) {
+    pub(crate) fn ragdoll(w: &mut World, id: u64, json: &str) {
         let props = Json::obj([(PROP, Json::parse(json).unwrap())]);
         w.update(&EntityKey::Id(id), UpdateSpec { props: Some(props), ..UpdateSpec::default() }, "t").unwrap();
     }
 
     /// Runs physics ticks at 30 Hz with the world clock following.
-    fn run(w: &mut World, p: &mut Physics, from: u64, n: u64) {
+    pub(crate) fn run(w: &mut World, p: &mut Physics, from: u64, n: u64) {
         let settings = w.env().physics;
         for tick in from..from + n {
             w.set_clock_s(tick as f64 / 30.0);
@@ -1471,6 +1525,30 @@ mod tests {
         assert!(height(&caps, "chest") - height(&hull, "chest") > 0.15, "capsules {caps:?} hulls {hull:?}");
         // Twin runs end the same.
         assert_eq!(knocked_over(true).0, hull);
+    }
+
+    /// Review round 2, finding 2 (probe orphan.py): a ragdoll whose start fails partway (a
+    /// budget, a shape) leaves nothing behind, and a flat hull is refused as data.
+    #[test]
+    fn a_failed_start_leaves_no_parts_behind() {
+        let (mut w, id) = shambler_world();
+        let mut p = Physics::default();
+        run(&mut w, &mut p, 0, 20);
+        let before = (p.space.len(), p.space.hash());
+        // Parts that went in come out again when a later one is refused (here a joint tying a
+        // part to itself, after every body went in).
+        let parts: Vec<(u64, BodyDesc)> = (1..4u64)
+            .map(|b| (key(id, b as usize), BodyDesc::new(specula_physics::BodyKind::Dynamic, Pose::at(Vec3::new(b as f32, 1.0, 0.0)), Some(ColliderDesc::new(Shape::sphere(0.1))))))
+            .collect();
+        let bad = JointDesc::new(JointKind::Ball, Some(key(id, 1)), Some(key(id, 1)), Pose::IDENTITY, Pose::IDENTITY);
+        let good = JointDesc::new(JointKind::Ball, Some(key(id, 1)), Some(key(id, 2)), Pose::IDENTITY, Pose::IDENTITY);
+        assert!(p.insert_all(parts, vec![(key(id, 2), good), (key(id, 3), bad)]).is_err());
+        assert_eq!((p.space.len(), p.space.hash()), before, "no orphan parts");
+        assert!(p.space.joints().next().is_none(), "nor joints");
+        // A coplanar hull never gets that far: it is refused as data.
+        let flat = r#"{"mode": "limp", "hulls": {"shin_l": [[0,0,0],[0.1,0,0],[0,0.1,0],[0.1,0.1,0]]}}"#;
+        let e = Spec::from_json(&Json::parse(flat).unwrap()).unwrap_err();
+        assert!(e.contains("no solid"), "{e}");
     }
 
     /// Save games: a saved entity's ragdoll, mid-fall, continues bit for bit in a world loaded

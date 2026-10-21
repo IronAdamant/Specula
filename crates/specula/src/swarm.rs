@@ -445,7 +445,17 @@ impl Swarm {
     pub fn undo(&mut self, world: &mut World, tick: u64, w: Writer, req: &UndoRequest) -> Result<Undone, WorldError> {
         let now = Instant::now();
         let claims = &self.claims;
-        let mut check = |world: &World, change: &Change| claims.check(world, std::slice::from_ref(change), w, now);
+        // An undo that makes, changes or removes a joint moves (or lets go of) the joint's bodies,
+        // as physics_joint does: it needs the right to change them, before and after.
+        let mut check = |world: &World, change: &Change| {
+            claims.check(world, std::slice::from_ref(change), w, now)?;
+            for id in crate::claims::joint_bodies(change) {
+                if let Some(body) = crate::claims::body_change(world, id) {
+                    claims.check(world, std::slice::from_ref(&body), w, now).map_err(|e| e.with("note", "undoing a joint change moves the bodies it links, so it needs the right to change them"))?;
+                }
+            }
+            Ok(())
+        };
         let check: Option<&mut journal::Check> = if claims.could_block(w, now) { Some(&mut check) } else { None };
         let result = self.journal.undo(world, tick, w, req, check);
         match &result {
