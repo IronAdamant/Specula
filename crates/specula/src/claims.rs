@@ -596,7 +596,7 @@ pub(crate) fn scopes_overlap(world: &World, a: &Scope, b: &Scope) -> bool {
         (Scope::Path(p), r @ Scope::Region { .. }) | (r @ Scope::Region { .. }, Scope::Path(p)) => {
             // Overlap where an entity under the path already sits in the region. Rule data
             // (/lex) sits nowhere.
-            if p == "/lex" || p.starts_with("/lex/") {
+            if p == "/lex" || p.starts_with("/lex/") || under_nav(p) {
                 return false;
             }
             let root = if p == "/" { None } else { world.find_path(p).ok() };
@@ -631,6 +631,55 @@ pub fn touches_rule_data(change: &Change) -> bool {
         }
         Change::Pose { path, .. } => under_lex(path),
         Change::Env { .. } | Change::Camera { .. } => false,
+    }
+}
+
+fn under_nav(p: &str) -> bool {
+    p == "/nav" || p.starts_with("/nav/")
+}
+
+/// A bare group: nothing drawn, no collider, no body (it can hold settings, never be in the way).
+fn bare_group(e: &crate::world::Entity) -> bool {
+    e.shape == crate::world::Shape::Group && e.collider.is_none() && e.body.is_none()
+}
+
+/// Navmesh settings as data: the bare `/nav` group and bare groups holding `props.navmesh`
+/// (see [`crate::nav`]). Only these are exempt from region scopes.
+fn is_nav_data(e: &crate::world::Entity) -> bool {
+    bare_group(e) && (e.props.get(crate::nav::MESH_KEY).is_some() || (e.parent.is_none() && e.name == "nav"))
+}
+
+/// A change that writes `/nav` or navmesh settings anywhere: only the nav tools may make it
+/// ([`crate::swarm::Swarm::commit_nav`]), so nothing can hide in the exemption.
+pub fn touches_nav_data(change: &Change) -> bool {
+    let settings = |e: &crate::world::Entity| e.props.get(crate::nav::MESH_KEY).is_some();
+    match change {
+        Change::Spawn { path, after } => under_nav(path) || settings(after),
+        Change::Delete { path, before } => under_nav(path) || settings(before),
+        Change::Set { path, prev_path, before, after } => {
+            under_nav(path) || prev_path.as_deref().is_some_and(under_nav) || settings(after) || before.as_deref().is_some_and(settings)
+        }
+        Change::Pose { path, .. } => under_nav(path),
+        Change::Env { .. } | Change::Camera { .. } => false,
+    }
+}
+
+/// Navmesh settings staying under `/nav` (before and after), as bare groups: like rule data,
+/// they sit nowhere, so only path claims cover them. Anything else (a cube, a collider, a group
+/// that gained one) is checked at both ends like any entity, descendants included.
+fn nav_data_only(change: &Change) -> bool {
+    match change {
+        Change::Spawn { path, after } => under_nav(path) && is_nav_data(after),
+        Change::Delete { path, before } => under_nav(path) && is_nav_data(before),
+        Change::Set { path, prev_path, before, after } => {
+            under_nav(path)
+                && prev_path.as_deref().is_none_or(under_nav)
+                && is_nav_data(after)
+                && before.as_deref().is_none_or(is_nav_data)
+                // A move carries children: only a group whose transform stayed is exempt.
+                && before.as_deref().is_none_or(|b| b.model() == after.model())
+        }
+        _ => false,
     }
 }
 
@@ -682,8 +731,8 @@ fn change_points(world: &World, change: &Change) -> Vec<Vec3> {
     let mut points = Vec::new();
     // Lex rule data has no place in the world: only path claims cover it. Anything else, in
     // /lex or moving through it, is checked at both ends like any entity. Live runs' output
-    // likewise.
-    if rule_data_only(change) || lex_live_only(change) {
+    // likewise, and navmesh settings under /nav.
+    if rule_data_only(change) || lex_live_only(change) || nav_data_only(change) {
         return points;
     }
     match change {
@@ -750,6 +799,44 @@ mod tests {
     fn set(w: &mut World, path: &str, change: UpdateSpec) -> Vec<Change> {
         w.update(&EntityKey::Path(path.into()), change, "x").unwrap();
         w.take_changes()
+    }
+
+    #[test]
+    fn navmesh_settings_sit_nowhere_but_path_claims_cover_them() {
+        let now = Instant::now();
+        let mut w = world();
+        let mut c = Claims::default();
+        // Bob's region around the origin, where /nav and its settings live.
+        take(&mut c, &w, BOB, Scope::Region { min: Vec3::new(-5.0, -5.0, -5.0), max: Vec3::new(5.0, 5.0, 5.0) }, now).unwrap();
+        let mut g = SpawnSpec::new(Shape::Group);
+        g.name = Some("nav".into());
+        w.spawn(g, "ann").unwrap();
+        let mut s = SpawnSpec::new(Shape::Group);
+        s.name = Some("default".into());
+        s.parent = Some(EntityKey::Path("/nav".into()));
+        s.props = Json::obj([(crate::nav::MESH_KEY, Json::obj([("cell_size", Json::from(0.15))]))]);
+        w.spawn(s, "ann").unwrap();
+        let changes = w.take_changes();
+        assert!(c.check(&w, &changes, ANN, now).is_ok(), "settings aren't in bob's region");
+        // A cube under /nav is in the world like any other, and so is a navmesh-settings entity
+        // that is drawn or collides.
+        let cube = spawn(&mut w, "/nav/crate", Vec3::ZERO, "ann");
+        assert!(c.check(&w, &cube, ANN, now).is_err());
+        let mut drawn = SpawnSpec::new(Shape::Cube);
+        drawn.name = Some("sneaky".into());
+        drawn.parent = Some(EntityKey::Path("/nav".into()));
+        drawn.props = Json::obj([(crate::nav::MESH_KEY, Json::Obj(Vec::new()))]);
+        w.spawn(drawn, "ann").unwrap();
+        let sneaky = w.take_changes();
+        assert!(c.check(&w, &sneaky, ANN, now).is_err(), "a drawn cube with props.navmesh is in the region");
+        // Moving a settings group (its children with it) is checked too.
+        let moved = set(&mut w, "/nav/default", UpdateSpec { position: Some(Vec3::new(1.0, 0.0, 0.0)), ..Default::default() });
+        assert!(c.check(&w, &moved, ANN, now).is_err(), "a moved settings group is checked");
+        // A path claim on /nav covers the settings.
+        let mut c2 = Claims::default();
+        take(&mut c2, &w, BOB, Scope::Path("/nav".into()), now).unwrap();
+        let edit = set(&mut w, "/nav/default", UpdateSpec { props: Some(Json::obj([(crate::nav::MESH_KEY, Json::obj([("cell_size", Json::from(0.2))]))])), ..Default::default() });
+        assert!(c2.check(&w, &edit, ANN, now).is_err());
     }
 
     #[test]

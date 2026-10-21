@@ -460,6 +460,10 @@ impl Engine {
         if let Some(h) = self.physics.hash() {
             self.trace.scratch.push(("physics", h));
         }
+        // So is navigation's (corridors, crowd velocities, minds' running nodes).
+        if let Some(h) = self.nav.last_hash() {
+            self.trace.scratch.push(("nav", h));
+        }
         // Module state kept in the engine (stores, RNG positions, events): saved by save games.
         if let Some(h) = self.logic.state_hash() {
             self.trace.scratch.push(("logic", h));

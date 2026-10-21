@@ -282,6 +282,9 @@ pub(crate) struct Prepared {
     /// The game's section, parsed on the worker ([`crate::game::Game::state_parser`]).
     game_parsed: Option<Box<dyn std::any::Any + Send>>,
     logic: Option<crate::logic::LogicSnapshot>,
+    /// Navigation's state, decoded and shape-checked on the worker (restored once the loaded
+    /// navmeshes are built: [`crate::nav::Nav::restore_state`]).
+    nav: Option<Json>,
     sections: Vec<String>,
     notes: Vec<Json>,
     /// The hashes may not match although the state is right: another dmath or Lex runtime.
@@ -438,6 +441,10 @@ fn prepare_load(path: &std::path::Path, limits: crate::two_d::ShapeLimits, hoste
         Some(b) => Some(crate::logic::LogicHost::parse_state(b).map_err(|e| SaveError::new(e.code, e.message.clone()).in_section("logic"))?),
         None => None,
     };
+    let nav = match by_name.remove("nav") {
+        Some(b) => Some(crate::nav::parse_section(&b).map_err(|(code, m)| SaveError::new(code, m).in_section("nav"))?),
+        None => None,
+    };
     let physics_bytes = by_name.remove("physics");
     let mut physics = crate::physics::Physics::default();
     if let Some(b) = &physics_bytes {
@@ -459,7 +466,7 @@ fn prepare_load(path: &std::path::Path, limits: crate::two_d::ShapeLimits, hoste
     if game_parsed.is_some() {
         game_bytes = None;
     }
-    Ok(Prepared { meta, tick, world, physics, physics_bytes, game_bytes, game_parsed, logic, sections, notes, hashes_reliable, read_ms: t0.elapsed().as_secs_f64() * 1000.0 })
+    Ok(Prepared { meta, tick, world, physics, physics_bytes, game_bytes, game_parsed, logic, nav, sections, notes, hashes_reliable, read_ms: t0.elapsed().as_secs_f64() * 1000.0 })
 }
 
 /// A save taken between ticks, ready to render and write on any thread.
@@ -539,6 +546,36 @@ impl SaveJob {
     }
 }
 
+/// How often the game's save is tried again after a momentary refusal (`nav_building`), and
+/// how many wait at once.
+const MAX_GAME_SAVE_RETRIES: u32 = 20;
+const MAX_WAITING_SAVES: usize = 8;
+
+/// A game save waiting to be tried again.
+pub(crate) struct RetrySave {
+    at: Instant,
+    info: RetryInfo,
+    req: GameRequest,
+}
+
+/// The tick a game save was asked at and how often it was tried again.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RetryInfo {
+    requested_tick: u64,
+    tries: u32,
+}
+
+/// Whether a refused game request is tried again, and after how long: only saves refused for a
+/// moment (`nav_building`), at most [`MAX_GAME_SAVE_RETRIES`] times, [`MAX_WAITING_SAVES`] at
+/// once, after the refusal's `retry_after_ms` (50 ms to 5 s).
+fn retry_delay(e: &SaveError, is_save: bool, tries: u32, waiting: usize) -> Option<std::time::Duration> {
+    if e.code != "nav_building" || !is_save || tries >= MAX_GAME_SAVE_RETRIES || waiting >= MAX_WAITING_SAVES {
+        return None;
+    }
+    let ms = e.details.iter().find(|(k, _)| *k == "retry_after_ms").and_then(|(_, v)| v.as_u64()).unwrap_or(500).clamp(50, 5_000);
+    Some(std::time::Duration::from_millis(ms))
+}
+
 impl Engine {
     fn save_path(&self, name: &str) -> PathBuf {
         self.saves_dir.join(format!("{name}.{EXTENSION}"))
@@ -555,6 +592,10 @@ impl Engine {
         }
         if let Some(h) = self.logic.state_hash() {
             subs.push(("logic", h));
+        }
+        if !self.nav.is_empty() {
+            // What a save records (a synced copy's hash); after a load, the restored state's.
+            subs.push(("nav", self.nav.save_hash(&self.world, self.world_generation)));
         }
         subs
     }
@@ -687,6 +728,21 @@ impl Engine {
             }
         }
         let logic = self.logic.save_state();
+        // Navigation's state as it is (its build state as data: nothing is built for a save, so
+        // saving never changes the run). Only a switch to new settings or a load still being
+        // prepared is refused (`nav_building`, retry).
+        let nav = if self.nav.is_empty() {
+            None
+        } else {
+            let as_save = |e: crate::world::WorldError| {
+                let mut s = SaveError::new(e.code, e.message.clone()).in_section("nav");
+                s.details = e.details.clone();
+                s
+            };
+            // On a copy synced to the world (what the next tick's sync would mark): the live
+            // navigation is never touched, so saving changes nothing about the run.
+            Some(self.nav.save_section(&self.world, self.world_generation).map_err(as_save)?)
+        };
         let world = crate::persist::plan(&self.world, std::path::Path::new(""), None);
         let world_hash = self.state_hash();
         let subs = self.subsystem_hashes();
@@ -711,7 +767,7 @@ impl Engine {
             meta.push(("label", Json::from(l.as_str())));
         }
         let mut sections = Vec::new();
-        for (n, d) in [("game", game), ("physics", physics), ("logic", logic)] {
+        for (n, d) in [("game", game), ("physics", physics), ("logic", logic), ("nav", nav)] {
             if let Some(data) = d {
                 sections.push(Section { name: n.into(), data });
             }
@@ -843,6 +899,16 @@ impl Engine {
         } else if !self.logic.is_empty() {
             notes.push(Json::from("the save has no module state; running modules keep theirs"));
         }
+        // Navigation comes back once the loaded navmeshes are built (the clock is held until
+        // then); its hash is checked then (nav_info last_restore).
+        let mut nav_pending = false;
+        if let Some(state) = &p.nav {
+            match self.nav.restore_state(&self.world, self.world_generation, state) {
+                Ok(Some(_)) => {}
+                Ok(None) => nav_pending = true,
+                Err(e) => notes.push(Json::obj([("warning", Json::from("nav_not_restored")), ("error", Json::from(e.code)), ("message", Json::from(e.message.as_str()))])),
+            }
+        }
         if let (Some(state), Some(game)) = (parsed, self.game.as_mut()) {
             self.world.set_recording(Recording::Snapshot);
             game.apply_state(&mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name, windowed: self.windowed }, state);
@@ -873,11 +939,17 @@ impl Engine {
         }
         for n in names {
             let saved = saved_subs.iter().find(|(k, _)| *k == n).and_then(|(_, v)| v.as_str()).map(|s| s.chars().take(16).collect::<String>());
+            if n == "nav" && nav_pending {
+                // Checked when the restore completes (before the first tick).
+                subsystems.push(Json::obj([("name", Json::from(n)), ("saved", Json::from(saved)), ("now", Json::Null), ("pending", Json::from(true))]));
+                continue;
+            }
             let now = subs_now.iter().find(|(k, _)| *k == n).map(|(_, h)| hex(*h));
             let same = saved == now;
             all_match &= same;
             subsystems.push(Json::obj([("name", Json::from(n)), ("saved", Json::from(saved)), ("now", Json::from(now)), ("match", Json::from(same))]));
         }
+
         let ms = |v: f64| Json::from((v * 100.0).round() / 100.0);
         Ok(Json::obj([
             ("loaded", Json::from(l.name.as_str())),
@@ -957,6 +1029,21 @@ impl Engine {
                 });
             }
             Dest::Game(req) => {
+                // A save that was retried says which tick it was asked at and how often it was
+                // tried again (it holds a later tick).
+                let result = match (result, self.game_save_notes.iter().position(|(r, _)| *r == req)) {
+                    (Ok(mut j), Some(k)) => {
+                        let (_, info) = self.game_save_notes.remove(k);
+                        j.set("requested_tick", Json::from(info.requested_tick));
+                        j.set("retried", Json::from(info.tries));
+                        Ok(j)
+                    }
+                    (r, Some(k)) => {
+                        self.game_save_notes.remove(k);
+                        r
+                    }
+                    (r, None) => r,
+                };
                 let Some(game) = self.game.as_mut() else { return };
                 self.world.set_recording(Recording::Snapshot);
                 game.request_done(&mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name, windowed: self.windowed }, &req, result.map_err(|e| e.to_json()));
@@ -1036,9 +1123,18 @@ impl Engine {
         game.take_requests(&mut requests);
         let by = self.game_name.clone();
         let key = format!("game:{by}");
-        for (i, req) in requests.into_iter().enumerate() {
+        let now = Instant::now();
+        // The game's new requests (capped a frame), then its saves refused for a moment that
+        // are due again (not counted against the cap: they were accepted once already).
+        let (due, waiting): (Vec<RetrySave>, Vec<RetrySave>) = std::mem::take(&mut self.game_save_retry).into_iter().partition(|r| r.at <= now);
+        self.game_save_retry = waiting;
+        let tick = self.clock.tick();
+        let fresh = requests.into_iter().enumerate().map(|(i, req)| (req, i >= MAX_GAME_REQUESTS, RetryInfo { requested_tick: tick, tries: 0 }));
+        let again = due.into_iter().map(|r| (r.req, false, r.info));
+        let all: Vec<(GameRequest, bool, RetryInfo)> = fresh.chain(again).collect();
+        for (req, over_cap, info) in all {
             let started = match &req {
-                _ if i >= MAX_GAME_REQUESTS => Err(SaveError::new("too_many_requests", format!("at most {MAX_GAME_REQUESTS} requests a frame"))),
+                _ if over_cap => Err(SaveError::new("too_many_requests", format!("at most {MAX_GAME_REQUESTS} requests a frame"))),
                 // The player's own slots: their Save replaces what is there (they confirmed it).
                 GameRequest::Save { slot, label } => self.start_save(slot, label.clone(), true, true, &by, &key, Dest::Game(req.clone())).map(|()| None),
                 GameRequest::Load { slot } => self.start_load(slot, true, &by, None, Dest::Game(req.clone())).map(|()| None),
@@ -1046,9 +1142,22 @@ impl Engine {
                 GameRequest::Delete { slot } => self.delete_save(slot, true, &key).map(Some),
             };
             match started {
-                Ok(None) => {}
+                Ok(None) => {
+                    // A retried save says so when it lands (it saves a later tick than asked).
+                    if info.tries > 0 {
+                        self.game_save_notes.push((req, info));
+                        if self.game_save_notes.len() > 16 {
+                            self.game_save_notes.remove(0);
+                        }
+                    }
+                }
                 Ok(Some(j)) => self.deliver(Dest::Game(req), Ok(j)),
-                Err(e) => self.deliver(Dest::Game(req), Err(e)),
+                Err(e) => match retry_delay(&e, matches!(req, GameRequest::Save { .. }), info.tries, self.game_save_retry.len()) {
+                    // Refused only for a moment (a navmesh switching settings, a load being
+                    // prepared): tried again when due, a few times, before the game hears of it.
+                    Some(wait) => self.game_save_retry.push(RetrySave { at: now + wait, info: RetryInfo { requested_tick: info.requested_tick, tries: info.tries + 1 }, req }),
+                    None => self.deliver(Dest::Game(req), Err(e)),
+                },
             }
         }
     }
@@ -1086,6 +1195,19 @@ mod tests {
         drop(first);
         assert!(Reservation::take(&dir, &dir.join(format!("d.{EXTENSION}")), 200, 1000).is_ok(), "room again once the first is done");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_momentary_save_refusals_are_retried_and_boundedly() {
+        let building = SaveError::new("nav_building", "a navmesh is switching settings").with("retry_after_ms", 300);
+        assert_eq!(retry_delay(&building, true, 0, 0), Some(std::time::Duration::from_millis(300)));
+        assert_eq!(retry_delay(&building, false, 0, 0), None, "only saves");
+        assert_eq!(retry_delay(&building, true, MAX_GAME_SAVE_RETRIES, 0), None, "a few times");
+        assert_eq!(retry_delay(&building, true, 0, MAX_WAITING_SAVES), None, "a few at once");
+        assert_eq!(retry_delay(&SaveError::new("saves_full", "full"), true, 0, 0), None, "other refusals reach the game");
+        let quick = SaveError::new("nav_building", "x").with("retry_after_ms", 1);
+        assert_eq!(retry_delay(&quick, true, 0, 0), Some(std::time::Duration::from_millis(50)), "clamped");
+        assert_eq!(retry_delay(&SaveError::new("nav_building", "x"), true, 3, 2), Some(std::time::Duration::from_millis(500)), "a default wait");
     }
 
     #[test]

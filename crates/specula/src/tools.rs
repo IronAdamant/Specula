@@ -22,7 +22,8 @@ use std::time::{Duration, Instant};
 pub const INSTRUCTIONS: &str = "Specula is a live game engine you build in. The world is a tree of entities: \
 each has a name unique among its siblings and a path like /slab/stones/ward_03; transforms are local to the \
 parent, and 'group' entities hold children without drawing anything. Add things with world_spawn (or many at \
-once, all-or-nothing, with world_batch), change them with world_set, remove subtrees with world_delete, and find \
+once, all-or-nothing, with world_batch; or by relations instead of coordinates, with world_place: on, against, along, \
+between, near, inside, facing, spacing, avoid, on_navmesh, solved and collision-checked), change them with world_set, remove subtrees with world_delete, and find \
 them with world_query (filters, paged) or world_list. Address an entity by id, path, or a bare name that is \
 unique in the world. Entities carry tags, free-form props (game data), and physics collider/body components. \
 Every entity has a version: pass expect_version to world_set/world_delete so you never overwrite another agent's \
@@ -48,7 +49,11 @@ the engine adds its own tools (play_*). Game logic as code: a module is a Rust c
 logic_build compiles it (errors as data, fixes on request) and hot-reloads it at the next tick without losing the \
 world; logic_status, logic_input and logic_hook inspect, drive and call it. Gameplay rules are data: Lex rule sets \
 (lex_schema describes the language; lex_edit changes a set with validation, lex_simulate runs it headless and \
-deterministically). Coordinates: metres, right-handed, +Y up; a top-down view puts \
+deterministically). Navigation and AI: nav_build makes a navmesh from the world's geometry (edits rebuild only the tiles they touch), \
+nav_path and nav_point query it, nav_agent makes an entity walk it with the crowd, ai_set gives it a mind (behaviour \
+trees and utility AI as validated JSON; ai_check validates, ai_status shows why it does what it does), nav_info \
+reports, model_collider fits a collider to a model so it collides and carves navmeshes; navmeshes take off-mesh links \
+and named areas (nav_build links, areas; props.nav_area); sight_frame overlays navmesh and paths show them. Coordinates: metres, right-handed, +Y up; a top-down view puts \
 north (-Z) at the top. Other agents may be building in the same world at the same time: say who you are with \
 agent_hello. Names are unique among open sessions, idle ones included (a taken name is refused with a free \
 suggestion; the hosted game's name is reserved: name_reserved); \
@@ -223,6 +228,10 @@ pub enum Command {
     Logic(crate::logic::tools::LogicCall),
     /// The physics tools (see [`crate::physics_tools`]).
     Physics(crate::physics_tools::PhysicsCall),
+    /// The navigation and AI tools (see [`crate::nav_tools`]).
+    Nav(crate::nav_tools::NavCall),
+    /// world_place (see [`crate::locus`]).
+    Place(crate::locus::PlaceCall),
     /// The streaming tools (see [`crate::stream_tools`]).
     Stream(crate::stream_tools::StreamCall),
     /// playtest_run and playtest_report (see [`crate::playtest_engine`]).
@@ -601,13 +610,19 @@ pub(crate) fn parse(name: &str, args: &Json) -> Result<Command, String> {
                 Some(call) => call.map(Command::Swarm),
                 None => match crate::physics_tools::parse(other, args) {
                     Some(call) => call.map(Command::Physics),
-                    None => match crate::save_tools::parse(other, args) {
-                        Some(call) => call.map(Command::SaveGame),
-                        None => match crate::anim_tools::parse(other, args) {
-                            Some(call) => call.map(Command::Anim),
-                            None => match crate::stream_tools::parse(other, args) {
-                                Some(call) => call.map(Command::Stream),
-                                None => crate::logic::tools::parse(other, args).unwrap_or_else(|| Err(format!("unknown tool '{other}'"))),
+                    None => match crate::nav_tools::parse(other, args) {
+                        Some(call) => call.map(Command::Nav),
+                        None => match crate::locus::parse(other, args) {
+                            Some(call) => call.map(Command::Place),
+                            None => match crate::save_tools::parse(other, args) {
+                                Some(call) => call.map(Command::SaveGame),
+                                None => match crate::anim_tools::parse(other, args) {
+                                    Some(call) => call.map(Command::Anim),
+                                    None => match crate::stream_tools::parse(other, args) {
+                                        Some(call) => call.map(Command::Stream),
+                                        None => crate::logic::tools::parse(other, args).unwrap_or_else(|| Err(format!("unknown tool '{other}'"))),
+                                    },
+                                },
                             },
                         },
                     },
@@ -2429,6 +2444,8 @@ fn definitions() -> Vec<ToolDef> {
     .chain(crate::swarm_tools::definitions())
     .chain(crate::logic::tools::definitions())
     .chain(crate::physics_tools::definitions())
+    .chain(crate::nav_tools::definitions())
+    .chain([crate::locus::definition()])
     .chain(crate::stream_tools::definitions())
     .chain(crate::playtest_engine::definitions())
     .chain(crate::lex_tools::definitions())

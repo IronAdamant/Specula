@@ -820,6 +820,12 @@ impl Engine {
                 report.details.push((k, d));
             }
         }
+        if spec.has(Kind::Navmesh) || spec.has(Kind::Paths) {
+            for (k, d) in crate::nav_tools::paint(&self.nav, world, &mut p, spec.has(Kind::Navmesh), spec.has(Kind::Paths)) {
+                report.drawn.push(k);
+                report.details.push((k, d));
+            }
+        }
         if spec.has(Kind::Labels) {
             for (s, e, _) in shown.iter().take(spec.max_labels * 4) {
                 let at = centre(&p, e, s);
