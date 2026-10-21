@@ -744,9 +744,25 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
 
 ## Platform track (after M2, in parallel)
 
+- [ ] ➕ **Our own shader language, compiled to every backend** (owner, 2026-10-18: "I want this to be done at the
+  start, so that in the future, you and other AI agents can easily write shaders in any system no matter which,
+  especially for cross compatibility for consoles"; the owner accepts the time and token cost). Comes **first** on
+  this track, before the Metal backend and before the shader set grows further.
+  - One shader source in a small, typed language of Specula's own, with structured compile errors agents debug from
+    data (rule 5).
+  - Specula's own compiler, in Rust with zero dependencies: front end, a shared intermediate form, and back ends:
+    SPIR-V (Vulkan, replacing hand-run `glslc`), MSL (Metal for macOS and iOS), and later the console APIs' shading
+    languages once their SDKs are available.
+  - The engine's existing GLSL shaders are ported to it, and the generated SPIR-V must render identically on both
+    adapters (`window_check.py`, sight captures) before the GLSL is retired.
+  - Tools for agents to write, validate and hot-reload shaders through the protocol, like recipes and Lex rules.
+
+  *Why first:* one source for every platform keeps shaders from forking per backend, lets agents write a shader once,
+  and keeps consoles reachable later.
 - [ ] **Linux**: X11, then the Wayland wire protocol; Vulkan surface.
   *Why after M2:* the render-hardware interface needs to settle first.
-- [ ] **macOS**: Cocoa via the objc runtime, plus a native Metal backend. No MoltenVK, to stay zero-dep.
+- [ ] **macOS**: Cocoa via the objc runtime, plus a native Metal backend (shaders from the shader language above,
+  compiled to MSL). No MoltenVK, to stay zero-dep.
 - [ ] **Handheld-class targets** (for example Steam Deck, Linux + Vulkan) as part of F3's low-end story.
 - [ ] **Mobile (after v1.0)**: Android first (Vulkan already, so the render backend carries over), then iOS on the
   Metal backend. Prepared by F6; the zero-dep linking and signing story is researched first.
