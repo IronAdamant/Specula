@@ -46,6 +46,9 @@ use std::time::{Duration, Instant};
 /// While the window's camera moves (a quarter cell, or turns), priorities and wanted sets are
 /// recomputed at most this often; at once when the world, the builds or the sources change.
 pub const UPDATE_EVERY: Duration = Duration::from_millis(100);
+/// Captures with no frame started for this long (nothing drives frames: a test, a stalled
+/// window) start an upload budget of their own: a budget is per frame, never per lifetime.
+pub const FRAME_STALE: Duration = Duration::from_millis(100);
 /// A model at least this many pixels across in a camera's view is wanted there whatever
 /// `radius_m` says (a big building or a glass tower far away stays drawn).
 pub const RESIDENT_MIN_PX: f32 = 4.0;
@@ -656,6 +659,8 @@ pub struct Streamer {
     /// Transient model entities' builds not on the GPU yet (a game's presentation): uploaded
     /// first, without waiting for a pass.
     transients: Vec<u64>,
+    /// When the current upload budget began (see [`FRAME_STALE`]).
+    frame_began: Option<Instant>,
     /// Builds drawn instanced (at least [`INSTANCED_MIN`] entities): never merged.
     instanced: std::collections::BTreeSet<u64>,
     /// The eviction queue (see `victims`), kept across frames until the next pass.
@@ -712,6 +717,7 @@ impl Streamer {
             dirty_cells: Default::default(),
             transients: Vec::new(),
             instanced: Default::default(),
+            frame_began: None,
             victims_cache: None,
         }
     }
@@ -919,6 +925,10 @@ impl Streamer {
         self.frame = FrameUpload::default();
         if !self.cfg.enabled {
             return;
+        }
+        // Nothing has started a frame for a while: this call's budget is a fresh one.
+        if !new_frame && self.frame_began.is_none_or(|t| now.duration_since(t) > FRAME_STALE) {
+            self.begin_frame();
         }
         let _z = specula_core::profile::zone("stream");
         self.sources.retain(|s| s.until.is_none_or(|t| t > now));
@@ -1348,8 +1358,10 @@ impl Streamer {
             let spent = already + frame_start.elapsed().as_secs_f64() * 1e3;
             // Every upload batch still in flight (the GPU is that far behind): the rest waits for
             // the next frame rather than for the GPU (or for a fence poll, which the Intel driver
-            // can make slow while it is saturated).
-            if spent >= budget_ms || !gpu.upload_slot_free() {
+            // can make slow while it is saturated). The frame's first item goes whatever the
+            // frame's other work cost, so uploads always progress (a frame whose filing and
+            // wanted-set work alone exceed the budget used to upload nothing, every frame).
+            if (self.frame_items > 0 && spent >= budget_ms) || !gpu.upload_slot_free() {
                 self.frame.deferred += count - i as u32;
                 break;
             }
@@ -1461,6 +1473,7 @@ impl Streamer {
         self.spent_ms = 0.0;
         self.frame_items = 0;
         self.frame_bytes = 0;
+        self.frame_began = Some(Instant::now());
     }
 
     /// What is left of this frame's upload budget for other uploads (2D textures): `None` when
