@@ -706,7 +706,7 @@ impl TilemapSpec {
         match self.animations.binary_search_by_key(&cell.tile, |a| a.tile) {
             Ok(i) if cell.tile != 0 => {
                 let a = self.animations[i];
-                TileCell { frames: a.frames, frame_ticks: ((a.frame_ms as f64 * 0.06).round() as u32).clamp(1, 255) as u8, ..base }
+                TileCell { frames: a.frames, frame_ticks: (specula_core::dmath::round_f64(a.frame_ms as f64 * 0.06) as u32).clamp(1, 255) as u8, ..base }
             }
             _ => base,
         }
