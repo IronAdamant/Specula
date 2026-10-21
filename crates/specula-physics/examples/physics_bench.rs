@@ -12,6 +12,8 @@
 //! Each scene prints mean, p95 and max ms per tick and its final state hash (two runs on the
 //! same build must print the same hashes: determinism).
 
+#![allow(clippy::disallowed_methods, reason = "a benchmark measures wall-clock time")]
+
 use specula_core::math::Vec3;
 use specula_physics::{BodyDesc, BodyKind, CharacterConfig, ColliderDesc, Pose, Settings, Shape, Space};
 use std::time::Instant;

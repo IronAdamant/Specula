@@ -101,12 +101,17 @@ save games do, with the events waiting for the next tick and agents' held input:
 - A failed call changes nothing: world changes are rolled back (`World::rollback_to`), and so are state writes, RNG
   draws and events. Ids handed out during the failed call are not reused (the world's rule), and the journal is told
   about them, so `world_hash {verify}` still replays to the live hash.
-- Each load is recorded with its tick, generation and **build hash** (hash of the library bytes) in `logic_status`
-  (DETERMINISM.md rule 8). Module world changes are journaled as `module:<name>` (like a hosted game's ticks), and
+- Each load, reload, unload and disable is journaled (kind `module`) with its tick, generation and **build hash** (hash
+  of the library bytes, link time stamps left out) and shown in `logic_status` (DETERMINISM.md rule 8; playtest
+  replays refuse other builds, traces name a module whose build differs). Module world changes are journaled as `module:<name>` (like a hosted game's ticks), and
   `world_hash {verify}` replays them to the live hash (checked by `scripts/module_reload.py`).
-- Not yet enforced: the SDK can't stop a module from calling `std::time` or `f32::sin` itself. Planned with the Rust
-  track's determinism lints (`disallowed_methods` in a module template's `clippy.toml`). The FP-environment guard
-  (rule 6) is also still to do.
+- The SDK can't stop a module from calling `std::time` or `f32::sin` itself, but `logic_build` reports it: the
+  module's sources are scanned for platform maths, wall-clock time, `HashMap`, threads, `static mut` and
+  `thread_local!` (`determinism::<rule>` warnings; DETERMINISM.md, *Lints*). ambulo carries the simulation crates'
+  `clippy.toml`; copy it into a new module.
+- The floating-point environment is guarded around every call (DETERMINISM.md, *The floating-point guard*): a module
+  that changes the rounding mode is put right when it calls back or returns, and `logic_status` counts it
+  (`fp_restored`).
 
 ## The C ABI
 
@@ -284,9 +289,8 @@ one agent's headless call rate (`scripts/call_rate.py`) `world_set` 1,289 → 1,
 ## Not done yet
 
 - ~~Persisting the state store and RNG positions~~: save games carry them ([SAVES.md](SAVES.md), 2026-10-18).
-- Determinism lints for module crates; the FP-environment guard.
+- ~~Determinism lints for module crates; the FP-environment guard~~: done 2026-10-22 (DETERMINISM.md).
 - Loading libraries on Linux/macOS (`dlopen`): `specula_sys::dynlib` is Windows-only today, so `ModuleCode::open`
   returns `unsupported` there (linked-in modules work everywhere).
-- A journal entry kind for loads (today the load log is in `logic_status`; the desync detector will want it in the
-  journal).
+- ~~A journal entry kind for loads~~: kind `module`, 2026-10-22.
 - Preempting a runaway module (it would need a watchdog thread and a cooperative check in the SDK).

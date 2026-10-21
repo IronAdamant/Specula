@@ -493,7 +493,9 @@ def main():
         shutil.rmtree(work, ignore_errors=True)
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(json.dumps(report, indent=2) + "\n")
+        # The work folder is a temp path under the user's home: name it <work> so committed reports stay private.
+        text = json.dumps(report, indent=2).replace(json.dumps(str(work))[1:-1], "<work>")
+        args.out.write_text(text + "\n")
     for p in problems:
         print(f"  PROBLEM: {p}")
     print("PASS" if not problems else "FAIL")

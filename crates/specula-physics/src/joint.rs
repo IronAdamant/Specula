@@ -235,7 +235,7 @@ pub fn wrap(a: f32) -> f32 {
     // One step, whatever the size (subtracting τ in a loop never ends once τ is below a's
     // precision, about 1.3e8).
     let tau = 2.0 * PI;
-    let mut a = a - tau * (a / tau).round();
+    let mut a = a - tau * specula_core::dmath::round(a / tau);
     if a > PI {
         a -= tau;
     } else if a <= -PI {

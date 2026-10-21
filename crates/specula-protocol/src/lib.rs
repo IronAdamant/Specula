@@ -23,6 +23,8 @@
 //! at most 256 concurrent connections (beyond that, a proper `503` with `Retry-After: 1`, never a
 //! reset) and 1024 open sessions (oldest evicted).
 
+#![forbid(unsafe_code)]
+
 mod http;
 mod mcp;
 mod server;

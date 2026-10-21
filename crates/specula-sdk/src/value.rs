@@ -107,7 +107,7 @@ impl Value {
     pub fn as_i64(&self) -> Option<i64> {
         match self {
             Value::Int(i) => Some(*i),
-            Value::Num(n) if n.fract() == 0.0 && n.abs() < 9.0e18 => Some(*n as i64),
+            Value::Num(n) if specula_core::dmath::fract_f64(*n) == 0.0 && n.abs() < 9.0e18 => Some(*n as i64),
             _ => None,
         }
     }
@@ -218,7 +218,7 @@ impl Value {
         match json {
             Json::Null => Value::Null,
             Json::Bool(b) => Value::Bool(*b),
-            Json::Num(n) if n.fract() == 0.0 && n.abs() <= 9_007_199_254_740_992.0 => Value::Int(*n as i64),
+            Json::Num(n) if specula_core::dmath::fract_f64(*n) == 0.0 && n.abs() <= 9_007_199_254_740_992.0 => Value::Int(*n as i64),
             Json::Num(n) => Value::Num(*n),
             Json::Str(s) => Value::Str(s.clone()),
             Json::Arr(a) => Value::List(a.iter().map(Value::from_json).collect()),

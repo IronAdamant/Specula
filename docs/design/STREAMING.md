@@ -81,8 +81,11 @@ The budget covers all of a frame's streaming work: filing changed entities and r
 it before any upload, and captures' own pumps (an agent's sight call between frames) share what is left of the frame's
 budget instead of getting one each. The pump estimates each item's cost from a learned fixed cost per item plus a
 learned rate per MB (samples past three times the estimate are clipped: a driver stall must not starve later frames)
-and stops **before** an item that would overrun the time or byte budget (the first item of a frame always goes, so
-huge items still make progress; a proxy uploads one material group per item, a build one LOD). Misses are structured
+and stops **before** an item that would overrun the time or byte budget (the first item of a frame always goes, even
+when the frame's filing and wanted-set work alone used the budget, so huge items and busy frames still make progress;
+a proxy uploads one material group per item, a build one LOD; nothing goes while every upload batch is in flight).
+Captures with no frame started for `FRAME_STALE` (100 ms: a test, nothing driving frames) start a budget of their
+own: a budget is per frame, and spent work never blocks uploads for good. Misses are structured
 `perf_frame` errors with `{error, metric, value, budget, unit, adapter}`, and `stream_state.recent_misses` names the
 slowest item of each:
 

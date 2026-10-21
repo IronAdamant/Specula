@@ -97,22 +97,22 @@ pub fn isqrt(n: u64) -> u64 {
 
 /// Metres → mm (load time only).
 pub fn mm(metres: f64) -> i32 {
-    (metres * 1000.0).round() as i32
+    specula_core::dmath::round_f64(metres * 1000.0) as i32
 }
 
 /// Seconds → ticks (load time only).
 pub fn ticks(seconds: f64) -> u32 {
-    (seconds * f64::from(TICK_HZ)).round() as u32
+    specula_core::dmath::round_f64(seconds * f64::from(TICK_HZ)) as u32
 }
 
 /// HP → milli-HP (load time only).
 pub fn milli(v: f64) -> i32 {
-    (v * 1000.0).round() as i32
+    specula_core::dmath::round_f64(v * 1000.0) as i32
 }
 
 /// A 0..1 ratio → permille (load time only).
 pub fn permille(ratio: f64) -> i32 {
-    (ratio * 1000.0).round() as i32
+    specula_core::dmath::round_f64(ratio * 1000.0) as i32
 }
 
 #[cfg(test)]

@@ -19,8 +19,14 @@
 //! Each call's world changes go through a [`Commit`]: the engine's ticks journal them as
 //! `module:<name>` (like a hosted game's, exempt from claims: modules are the game's rules);
 //! loads, unloads and hooks an agent asks for are checked against other agents' claims as that
-//! agent's (see `tools::handle`). Each load is recorded with its tick and build hash
-//! (DETERMINISM.md rule 8).
+//! agent's (see `tools::handle`). Each load, reload, unload and disable is recorded with its tick,
+//! generation and build hash (DETERMINISM.md rule 8) as a [`ModuleEvent`] the engine journals
+//! ([`LogicHost::take_module_events`]).
+//!
+//! **Floating-point environment (rule 6).** Every call is guarded (`ModuleCode::call`): a module
+//! that changes the rounding mode or flush-to-zero gets it put back before the engine answers its
+//! requests and when it returns, and the change is counted against it ([`LogicHost::fp_log`],
+//! `logic_status`'s `fp_restored`).
 
 pub mod character;
 mod handler;
@@ -29,6 +35,8 @@ mod save;
 pub use save::LogicSnapshot;
 pub mod tools;
 
+use crate::fpguard::FpLog;
+use crate::journal::ModuleEvent;
 use crate::world::{Mark, Recording, World, WorldError};
 use character::{CharacterMover, Kinematic};
 use handler::ModuleHandler;
@@ -242,6 +250,7 @@ struct CallParts<'a> {
     mover: &'a mut dyn CharacterMover,
     log: &'a mut VecDeque<LogLine>,
     pending_events: usize,
+    fp: &'a mut FpLog,
 }
 
 /// Runs one call of `code` as module `name`, with the world recorded in full. On failure the
@@ -264,6 +273,12 @@ fn invoke(code: &ModuleCode, name: &str, parts: CallParts<'_>, call: u32, input:
         rng_undo: Vec::new(),
     };
     let out = code.call(call, input, &mut h, MAX_REQUESTS_PER_CALL);
+    if let Some(d) = out.fp_before {
+        parts.fp.note(tick, "before_module_call", d);
+    }
+    if let Some(d) = out.fp_changed {
+        parts.fp.note(tick, &agent, d);
+    }
     if out.ok() {
         Ok(Done { reply: out.reply, events: h.events, state_undo: h.state_undo, rng_undo: h.rng_undo })
     } else {
@@ -299,6 +314,10 @@ pub struct LogicHost {
     staged: Option<Staged>,
     /// Reused by [`LogicHost::state_hash`] (no allocation per tick once warm).
     hash_scratch: Vec<u8>,
+    /// Loads, reloads, unloads and disables not yet journaled ([`LogicHost::take_module_events`]).
+    module_events: Vec<ModuleEvent>,
+    /// Floating-point environment changes found around module calls (and restored).
+    fp: FpLog,
 }
 
 impl Default for LogicHost {
@@ -316,6 +335,8 @@ impl Default for LogicHost {
             pads: None,
             staged: None,
             hash_scratch: Vec::new(),
+            module_events: Vec::new(),
+            fp: FpLog::default(),
         }
     }
 }
@@ -454,14 +475,32 @@ impl LogicHost {
         self.slots.get(name).map(|s| &s.origin)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn parts<'a>(
         shared: &'a mut BTreeMap<String, Shared>,
         mover: &'a mut Box<dyn CharacterMover>,
         log: &'a mut VecDeque<LogLine>,
+        fp: &'a mut FpLog,
         pending: usize,
         name: &str,
     ) -> CallParts<'a> {
-        CallParts { shared: shared.entry(name.to_owned()).or_default(), mover: &mut **mover, log, pending_events: pending }
+        CallParts { shared: shared.entry(name.to_owned()).or_default(), mover: &mut **mover, log, pending_events: pending, fp }
+    }
+
+    /// Module loads, reloads, unloads and disables since the last call, oldest first, for the
+    /// journal (kind `module`) and the desync detector's trace.
+    pub fn take_module_events(&mut self) -> Vec<ModuleEvent> {
+        std::mem::take(&mut self.module_events)
+    }
+
+    /// The loaded modules' builds, by name (for replay files: a replay expects the same code).
+    pub fn builds(&self) -> Vec<(String, u64)> {
+        self.slots.iter().map(|(n, s)| (n.clone(), s.code.build_hash())).collect()
+    }
+
+    /// Floating-point environment changes found around module calls.
+    pub fn fp_log(&self) -> &FpLog {
+        &self.fp
     }
 
     /// One call into loaded module `name`, committed through `commit`; on failure or refusal
@@ -479,7 +518,7 @@ impl LogicHost {
             Phase::Hook => "hook",
             Phase::Stop => "stop",
         };
-        let parts = Self::parts(&mut self.shared, &mut self.mover, &mut self.log, self.pending_events.len(), name);
+        let parts = Self::parts(&mut self.shared, &mut self.mover, &mut self.log, &mut self.fp, self.pending_events.len(), name);
         let result = match invoke(&slot.code, name, parts, call, input, world, tick, what) {
             Ok(mut done) => match commit(world, mark, &agent, phase) {
                 Ok(()) => {
@@ -539,7 +578,7 @@ impl LogicHost {
         let mut stop_error = None;
         if let Some(old) = self.slots.get(&name).filter(|s| s.disabled.is_none()) {
             let stop = Value::map().with("tick", tick).with("tick_hz", tick_hz).with("reason", "reload");
-            let parts = Self::parts(&mut self.shared, &mut self.mover, &mut self.log, self.pending_events.len(), &name);
+            let parts = Self::parts(&mut self.shared, &mut self.mover, &mut self.log, &mut self.fp, self.pending_events.len(), &name);
             match invoke(&old.code, &name, parts, entry::STOP, &stop, world, tick, "stop") {
                 Ok(done) => events.extend(done.events),
                 Err(f) => stop_error = Some(f.json),
@@ -560,7 +599,7 @@ impl LogicHost {
             .with("reloaded", reloaded)
             .with("generation", generation);
         let t1 = Instant::now();
-        let parts = Self::parts(&mut self.shared, &mut self.mover, &mut self.log, self.pending_events.len() + events.len(), &name);
+        let parts = Self::parts(&mut self.shared, &mut self.mover, &mut self.log, &mut self.fp, self.pending_events.len() + events.len(), &name);
         let started = invoke(&code, &name, parts, entry::START, &start, world, tick, "start");
         let start_ms = t1.elapsed().as_secs_f64() * 1000.0;
         // 3. Commit, or put everything back.
@@ -594,10 +633,20 @@ impl LogicHost {
         }
         world.set_recording(before);
         self.pending_events.extend(events);
+        let mut previous_build = None;
         if let Some(old) = self.slots.remove(&name) {
+            previous_build = Some(old.code.build_hash());
             input.adopt(old.input);
             // `old` drops here: its library unloads.
         }
+        self.module_events.push(ModuleEvent {
+            tick,
+            module: name.clone(),
+            event: if reloaded { "reload" } else { "load" },
+            generation,
+            build_hash: code.build_hash(),
+            previous_build,
+        });
         let build_hash = format!("{:016x}", code.build_hash());
         let sdk = info.sdk.clone();
         let hooks: Vec<Json> = info.hooks.iter().map(|h| Json::from(h.qualified())).collect();
@@ -673,6 +722,14 @@ impl LogicHost {
         if forget {
             self.shared.remove(name);
         }
+        self.module_events.push(ModuleEvent {
+            tick,
+            module: name.to_owned(),
+            event: "unload",
+            generation: slot.generation,
+            build_hash: slot.code.build_hash(),
+            previous_build: None,
+        });
         push_bounded(
             &mut self.loads,
             Json::obj([
@@ -752,6 +809,14 @@ impl LogicHost {
     fn disable(&mut self, name: &str, why: Json, tick: u64) {
         if let Some(slot) = self.slots.get_mut(name) {
             slot.disabled = Some(why.clone());
+            self.module_events.push(ModuleEvent {
+                tick,
+                module: name.to_owned(),
+                event: "disabled",
+                generation: slot.generation,
+                build_hash: slot.code.build_hash(),
+                previous_build: None,
+            });
         }
         push_bounded(
             &mut self.loads,
@@ -952,7 +1017,14 @@ impl LogicHost {
                 ("hooks", Json::arr(s.info.hooks.iter().map(HookInfo::to_json))),
                 ("state_keys", Json::from(shared.map_or(0, |sh| sh.store.len()))),
                 ("state_bytes", Json::from(shared.map_or(0, |sh| sh.store_bytes))),
+                // Times this module left the floating-point environment changed (restored each time).
+                ("fp_restored", Json::from(self.fp.count(&agent_of(&name)))),
             ];
+            if let Some(r) = self.fp.last(&agent_of(&name)) {
+                let mut last = crate::fpguard::drift_json(&r.drift);
+                last.set("tick", Json::from(r.tick));
+                f.push(("fp_last", last));
+            }
             if detailed {
                 if let Some(sh) = shared {
                     // Bounded: the first 64 keys, values as JSON.

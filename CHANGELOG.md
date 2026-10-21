@@ -82,6 +82,17 @@ See [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md). Item-by-item detail, with the re
   `physics_contacts`, `physics_events`, `physics_info`, `physics_explain`, `physics_check`, `physics_impulse`, sight
   overlays `colliders` and `contacts`, a physics hash in `world_hash` and the desync trace. Existing worlds keep
   their files and hashes. `specula-model` gains `collider::fit_limited` (moving hulls are capped at 16 points)
+- **Determinism hardening:** module loads, unloads and their build hashes are journaled (`Kind::Module`) and
+  checked on replay and in saves; the build hash now covers the module's sources exactly, so rebuilding unchanged
+  code gives the same hash (saves and replays written before 2026-10-22 report another build for the same code).
+  The FP environment (MXCSR on x86, FPCR on aarch64) is checked and restored around module calls and before every
+  agent command (`specula_sys::fpenv`). Determinism lints: one `clippy.toml` in each of the 10 simulation crates
+  (no `HashMap`/`HashSet`, platform float maths or rounding, wall-clock time or threads), the same check on modules
+  at `logic_build` (`determinism::*` diagnostics, bounded), `forbid(unsafe_code)` in every crate without FFI and
+  workspace lints for SAFETY comments; `scripts/determinism_check.py`. The audit moved the remaining platform
+  rounding in simulation and world-state code to `dmath`
+- **Streaming fix:** a frame's first upload is always tried, and captures taken while no frame runs get their own
+  budget, so a built HLOD proxy can no longer wait for its upload forever
 
 ### Pre-M3 cleanup (2026-10-17)
 

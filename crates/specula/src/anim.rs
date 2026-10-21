@@ -202,11 +202,11 @@ pub struct GroundGrid {
 }
 
 fn cell_of(v: f32) -> i32 {
-    (v / CELL_M).floor() as i32
+    specula_core::dmath::floor(v / CELL_M) as i32
 }
 
 fn coarse_of(v: f32) -> i32 {
-    (v / COARSE_M).floor() as i32
+    specula_core::dmath::floor(v / COARSE_M) as i32
 }
 
 impl GroundGrid {

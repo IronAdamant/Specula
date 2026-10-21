@@ -277,6 +277,7 @@ mod tests {
         let set = BoxSet::new(boxes);
         let fp = Box3::aligned(Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 1.0, 1.0));
         let work = std::cell::Cell::new(0);
+        #[allow(clippy::disallowed_methods, reason = "the test bounds a query's wall time; the query itself never reads the clock")]
         let started = std::time::Instant::now();
         let mut n = 0usize;
         set.for_each_near(&fp, 1.0e4, &work, |_| n += 1);
