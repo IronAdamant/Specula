@@ -509,7 +509,7 @@ code only where no building block fits, and playtest headless at scale.
 
 Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GAMEMAKING.md](research/AGENT_GAMEMAKING.md) (2026-10-17, accepted by the owner).
 
-- [ ] ➕ **Gameplay as data: Lex** (Latin *lex*, "law"; owner, 2026-10-17: "you don't have to manually code a game").
+- [x] ➕ **Gameplay as data: Lex** (Latin *lex*, "law"; owner, 2026-10-17: "you don't have to manually code a game").
   A design pass first, then a typed rules language as text data:
   - behaviours as components (move, chase, patrol, spawn, damage, die, drop);
   - attributes and effects (Gameplay-Ability-System-like), events, triggers, timers, state machines;
@@ -522,8 +522,11 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
   fixed phase order, a limits table), the 9 `lex_*` tools (rule sets stored as `/lex` entities, so versions, claims,
   journal and undo apply; only the Lex tools write `/lex`), and a Sepulcra slice in Lex that matches the Rust sim
   tick for tick (`games/sepulcra/tests/lex_parity.rs`, `scripts/lex_check.py`). Design: [design/LEX.md](design/LEX.md).
-  Still open: the full Sepulcra port (flow fields, walls, climbing, flyers, the colossus) and Lex running live in the
-  window, where native effects call module hooks (`logic_hook`); headless runs use in-process natives.
+  *Proof met 2026-10-18:* Sepulcra's whole rule set in Lex (`games/sepulcra/lex`), identical to the hand-written sim on
+  every tick across 4,100 whole games; rebuilt through the `lex_*` tools alone (`scripts/sepulcra_lex_tools.py`, 42
+  `lex_edit` calls); played live in the engine (`lex_live`, with input bindings, work budgets and module hooks as
+  natives) and as `sepulcra --rules lex`, which won on the iGPU with parity on every tick and the replay verified.
+  Lex state is in save games; live runs in saves are next.
   *Proof:* rebuild Sepulcra's rules in Lex through tools alone, with replays still matching.
 - [ ] ➕ **Placement by relations: Locus** *(research)*. `world_place` takes relations (on, against, along, between,
   facing, spacing, avoid, inside a region, on the navmesh) and solves positions deterministically. Unsatisfied
@@ -741,9 +744,25 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
 
 ## Platform track (after M2, in parallel)
 
+- [ ] ➕ **Our own shader language, compiled to every backend** (owner, 2026-10-18: "I want this to be done at the
+  start, so that in the future, you and other AI agents can easily write shaders in any system no matter which,
+  especially for cross compatibility for consoles"; the owner accepts the time and token cost). Comes **first** on
+  this track, before the Metal backend and before the shader set grows further.
+  - One shader source in a small, typed language of Specula's own, with structured compile errors agents debug from
+    data (rule 5).
+  - Specula's own compiler, in Rust with zero dependencies: front end, a shared intermediate form, and back ends:
+    SPIR-V (Vulkan, replacing hand-run `glslc`), MSL (Metal for macOS and iOS), and later the console APIs' shading
+    languages once their SDKs are available.
+  - The engine's existing GLSL shaders are ported to it, and the generated SPIR-V must render identically on both
+    adapters (`window_check.py`, sight captures) before the GLSL is retired.
+  - Tools for agents to write, validate and hot-reload shaders through the protocol, like recipes and Lex rules.
+
+  *Why first:* one source for every platform keeps shaders from forking per backend, lets agents write a shader once,
+  and keeps consoles reachable later.
 - [ ] **Linux**: X11, then the Wayland wire protocol; Vulkan surface.
   *Why after M2:* the render-hardware interface needs to settle first.
-- [ ] **macOS**: Cocoa via the objc runtime, plus a native Metal backend. No MoltenVK, to stay zero-dep.
+- [ ] **macOS**: Cocoa via the objc runtime, plus a native Metal backend (shaders from the shader language above,
+  compiled to MSL). No MoltenVK, to stay zero-dep.
 - [ ] **Handheld-class targets** (for example Steam Deck, Linux + Vulkan) as part of F3's low-end story.
 - [ ] **Mobile (after v1.0)**: Android first (Vulkan already, so the render backend carries over), then iOS on the
   Metal backend. Prepared by F6; the zero-dep linking and signing story is researched first.
