@@ -516,12 +516,17 @@ struct NarrowJob {
 
 /// One pair's test (the same on any thread).
 pub(crate) fn test_pair(i: &NarrowIn) -> (Manifold, SatCache) {
+    test_shapes(&i.a, &i.pa, &i.b, &i.pb, i.margin, i.trigger, i.sat)
+}
+
+/// [`test_pair`] on borrowed shapes (the single-threaded narrowphase copies nothing).
+pub(crate) fn test_shapes(a: &crate::shape::Shape, pa: &crate::math::Pose, b: &crate::shape::Shape, pb: &crate::math::Pose, margin: f32, trigger: bool, sat: SatCache) -> (Manifold, SatCache) {
     let mut m = Manifold::default();
-    let mut sat = i.sat;
-    if i.trigger {
-        crate::contact::collide(&i.a, &i.pa, &i.b, &i.pb, 0.0, &mut m);
+    let mut sat = sat;
+    if trigger {
+        crate::contact::collide(a, pa, b, pb, 0.0, &mut m);
     } else {
-        crate::contact::collide_cached(&i.a, &i.pa, &i.b, &i.pb, i.margin, &mut m, Some(&mut sat));
+        crate::contact::collide_cached(a, pa, b, pb, margin, &mut m, Some(&mut sat));
     }
     (m, sat)
 }

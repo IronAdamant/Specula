@@ -1385,9 +1385,9 @@ impl Space {
                 for (k, &slot) in sim.iter().enumerate() {
                     match view.input(slot) {
                         Pre::Done(done) => narrow[k] = done,
-                        Pre::Test(input) => {
+                        Pre::Test(t) => {
                             index.push(k as u32);
-                            inputs.push(input);
+                            inputs.push(crate::parallel::NarrowIn { a: t.a.clone(), pa: t.pa, b: t.b.clone(), pb: t.pb, margin: t.margin, trigger: t.trigger, sat: t.sat });
                         }
                     }
                 }
@@ -2643,9 +2643,20 @@ struct Narrow {
 }
 
 /// A pair before its shape test: done (apart, or too far), or the test to run.
-enum Pre {
+enum Pre<'a> {
     Done(Narrow),
-    Test(crate::parallel::NarrowIn),
+    Test(PairTest<'a>),
+}
+
+/// A shape test to run (borrowed from the space).
+struct PairTest<'a> {
+    a: &'a Shape,
+    pa: Pose,
+    b: &'a Shape,
+    pb: Pose,
+    margin: f32,
+    trigger: bool,
+    sat: SatCache,
 }
 
 /// What the narrowphase reads (shareable across threads).
@@ -2664,8 +2675,8 @@ impl NarrowView<'_> {
     fn pair(&self, slot: u32) -> Narrow {
         match self.input(slot) {
             Pre::Done(done) => done,
-            Pre::Test(input) => {
-                let (manifold, sat) = crate::parallel::test_pair(&input);
+            Pre::Test(t) => {
+                let (manifold, sat) = crate::parallel::test_shapes(t.a, &t.pa, t.b, &t.pb, t.margin, t.trigger, t.sat);
                 Narrow { apart: false, manifold, sat }
             }
         }
@@ -2673,7 +2684,7 @@ impl NarrowView<'_> {
 
     /// [`NarrowView::pair`]'s cheap part: the result when the pair needs no shape test (apart,
     /// or its bounding spheres too far), else the test to run.
-    fn input(&self, slot: u32) -> Pre {
+    fn input(&self, slot: u32) -> Pre<'_> {
         let c = self.contacts[slot as usize].as_ref().expect("live contact");
         let (a, b) = (self.slots[c.a as usize].as_ref().expect("live"), self.slots[c.b as usize].as_ref().expect("live"));
         let mut out = Narrow { apart: false, manifold: Manifold::default(), sat: c.sat };
@@ -2694,7 +2705,7 @@ impl NarrowView<'_> {
         if crate::math::len_sq(a.center - b.center) > reach * reach {
             return Pre::Done(out);
         }
-        Pre::Test(crate::parallel::NarrowIn { a: ca.shape.clone(), pa, b: cb.shape.clone(), pb, margin, trigger: c.trigger, sat: c.sat })
+        Pre::Test(PairTest { a: &ca.shape, pa, b: &cb.shape, pb, margin, trigger: c.trigger, sat: c.sat })
     }
 }
 
