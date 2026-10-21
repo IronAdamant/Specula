@@ -612,7 +612,9 @@ fn mount_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<ToolO
     let dir = crate::logic::tools::project_path(module, "module")?;
     let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).map_err(|_| format!("'module': {module} has no Cargo.toml (it must be a module crate's folder)"))?;
     let doc = specula_core::toml::parse(&manifest).map_err(|e| format!("'module': {module}/Cargo.toml doesn't parse: {}", e.message))?;
-    let name = doc.get("package").and_then(|p| p.get("name")).and_then(Json::as_str).ok_or_else(|| format!("'module': {module}/Cargo.toml has no [package] name"))?;
+    let Some(name) = doc.get("package").and_then(|p| p.get("name")).and_then(Json::as_str) else {
+        return Ok(err("not_a_module", format!("{module}/Cargo.toml has no [package]: a workspace root isn't a module crate; nothing was mounted")));
+    };
     let mount = format!("{}/{name}", crate::project::MODULES);
     check_path(&mount).map_err(|e| format!("'module': the crate name gives the mount {mount:?}: {}", e.message))?;
     Ok(tools.send(session, Command::Project(ProjectCall::Mount { dir, name: mount })))

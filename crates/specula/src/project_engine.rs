@@ -80,6 +80,11 @@ impl Engine {
         if let Err(e) = project::check_path(path) {
             return Snap { error: Some(e), ..Snap::default() };
         }
+        // Another spelling of a file the store has is that file on Windows: never a second entry
+        // (looking it up on disk would find, and import, the other file).
+        if let Some(e) = self.project_case_clash(path) {
+            return Snap { error: Some(e), ..Snap::default() };
+        }
         // Fresh from disk: an edit made outside shows before anyone builds on the old text.
         if let Some(ev) = self.project.refresh(path) {
             self.project_import(vec![ev]);
@@ -105,6 +110,9 @@ impl Engine {
     }
 
     fn project_commit(&mut self, path: &str, base: (u64, u64), file: Option<(FileKind, Arc<str>)>, replace_unreadable: bool, w: Writer, by: &str) -> Committed {
+        if let Some(e) = self.project_case_clash(path) {
+            return Committed::Refused(e);
+        }
         if let Some(ev) = self.project.refresh(path) {
             self.project_import(vec![ev]);
         }
@@ -280,6 +288,16 @@ impl Engine {
         let found = self.project.mount(mount);
         let events = found.into_iter().map(|(path, kind, text, stamp)| Event::Changed { path, kind, text, stamp }).collect();
         self.project_import(events).len()
+    }
+
+    /// `case_clash` when the store has `path` under another spelling (Unicode case folding).
+    fn project_case_clash(&self, path: &str) -> Option<WorldError> {
+        if self.world.files().contains_key(path) {
+            return None;
+        }
+        let folded = project::fold_case(path);
+        let other = self.world.files().keys().find(|p| project::fold_case(p) == folded)?;
+        Some(WorldError::new("case_clash", format!("{other} exists; {path} differs only in case, which is the same file on Windows: use {other}")).with("path", path).with("existing", other.as_str()))
     }
 
     /// The engine's `--style FILE` text, which governs every recipe when given.
