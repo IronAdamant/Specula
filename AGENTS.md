@@ -36,6 +36,11 @@ Read [HANDOFF.md](HANDOFF.md) first.
     deterministic simulation ([docs/design/DETERMINISM.md](docs/design/DETERMINISM.md)), low-end performance (Intel
     iGPU is the reference), physics/animation designed in, humans optional but never locked out, portable by design
     (mobile comes later; nothing may assume desktop, x86 or a keyboard).
+    **Determinism lints:** every crate inherits `[lints] workspace = true` and is classified in
+    `crates/specula/tests/determinism_lints.rs`; simulation crates carry an identical copy of
+    `crates/specula-physics/clippy.toml` (no `HashMap`/`HashSet`, platform float maths or rounding — use
+    `specula_core::dmath` — wall-clock time or threads). Allow an exception only with a reason. Clippy caches don't
+    notice a changed `clippy.toml`: `cargo clean -p <crate>` first.
 11. **No session or share links in commit messages** (claude.ai sessions and the like): the repo is public. The CI job
     `commit-messages` rejects them in new commits; don't rewrite older history.
 
