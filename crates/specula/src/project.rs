@@ -773,8 +773,9 @@ fn watch(shared: &Shared, tx: &Sender<Event>) {
                 (Some(m), s) if s.is_none_or(|s| !s.same_file(m)) && sent.get(&path) != Some(&m) => {
                     sent.insert(path.clone(), m);
                     match read_text(&disk) {
-                        Ok((text, st)) if Some(st.hash) != s.map(|s| s.hash) => return tx.send(Event::Changed { path, kind, text, stamp: st }).is_ok(),
-                        Ok(_) => {}
+                        // Same text as synced still goes in: the engine stamps the new time, and a
+                        // file held as unreadable is released once the disk is readable again.
+                        Ok((text, st)) => return tx.send(Event::Changed { path, kind, text, stamp: st }).is_ok(),
                         // Mirrored files that turn unreadable are held; new ones are just skipped.
                         Err(why) if s.is_some() => return tx.send(Event::Unreadable { path, len: m.0, mtime: m.1, why }).is_ok(),
                         Err(_) => {}
