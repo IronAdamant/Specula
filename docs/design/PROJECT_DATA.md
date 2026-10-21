@@ -172,6 +172,30 @@ humans, editors, Git and the next engine see. They are kept equal like this:
 The journal holds each change's text before and after (shared, but counted at full size against its 48 MiB), so a
 1 MiB file edited many times pushes older history out sooner; that is the trade for exact undo and replay.
 
+## Proof
+
+`python scripts/project_check.py --window --adapter integrated` runs Sepulcra on a scratch copy of its assets and
+checks, through the tools alone:
+
+- two agents patch `tombstone.json` from the same version (one recolours the slab, the other raises the triangle
+  budget, 400 to 420): the second gets `stale_version` with `overlap: []`, rebases on the version `rebase` names and
+  succeeds; the file on disk holds both edits with its formatting kept (one line added for the new member);
+- a claim on `/project/assets/ui/hud.json` refuses another agent (`claimed`, naming the owner); the owner's edit
+  ("Wave" to "Night") hot-reloads into the HUD (window and captures);
+- `world_undo` puts the old text back on disk and in the HUD;
+- a sound recipe edited on disk is imported as a change by `disk` within a second or two, and an agent still on the
+  old version gets the human's edit as `theirs` (overlap: `loudness`);
+- an edit that would break the recipe is refused with the recipe parser's error;
+- captures before and after: the HUD's top bar, and all ten tombstones rebuilt with the new slab colour.
+
+Unit tests cover the store under the swarm layer (claims, undo conflicts, imports that can't be undone, `reserved`,
+replay reproducing the files), formatting-preserving JSON edits, diffs and their overlap, validation of Sepulcra's
+real files, and disk sync (atomic writes, deletes, an outside edit never overwritten).
+
+Found on the way: the model library's hot reload re-keyed only the **first** handle of a changed recipe (working out
+its key made the recipe known again, so the rest were skipped); Sepulcra's ten tombstones, each its own seed, showed
+it. Every handle of a changed recipe now rebuilds (`models.rs`, with a test).
+
 ## Later
 
 - Validating module sources before commit (a shadow copy of the crate checked with `cargo check`).

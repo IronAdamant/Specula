@@ -464,6 +464,7 @@ pub struct Synced {
 
 /// The engine's side of the disk: mounts, what was last synced, the watcher thread and the
 /// writes that failed.
+#[derive(Default)]
 pub struct Disk {
     shared: Arc<Shared>,
     events: Option<Receiver<Event>>,
@@ -477,12 +478,6 @@ pub struct Disk {
     pub conflicts: VecDeque<DiskNote>,
     /// Per mount: files of a known kind not mirrored, and whether its scan was cut short.
     pub skipped: BTreeMap<String, (Vec<(String, String)>, bool)>,
-}
-
-impl Default for Disk {
-    fn default() -> Self {
-        Disk { shared: Arc::default(), events: None, watcher: None, synced_revision: 0, pending: BTreeMap::new(), conflicts: VecDeque::new(), skipped: BTreeMap::new() }
-    }
 }
 
 impl Drop for Disk {

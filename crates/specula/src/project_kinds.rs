@@ -69,7 +69,7 @@ fn folder(path: &str) -> &str {
 /// The mount name a path starts with (`assets`, `modules/<name>`).
 fn mount_of(path: &str) -> &str {
     if let Some(rest) = path.strip_prefix("modules/") {
-        let n = rest.find('/').map_or(rest.len(), |i| i);
+        let n = rest.find('/').unwrap_or(rest.len());
         &path[..8 + n]
     } else {
         path.split('/').next().unwrap_or("")
