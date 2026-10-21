@@ -662,9 +662,10 @@ pub struct Ragdolls {
     /// found each tick).
     pub persistent: BTreeSet<u64>,
     player: GraphPlayer,
-    /// Each ragdoll entity's `props.ragdoll` as parsed, by the entity version it was parsed at
-    /// (read again only when the entity changes).
-    parsed: BTreeMap<u64, (u64, Result<Spec, String>)>,
+    /// Each ragdoll entity's `props.ragdoll` as parsed, by the entity's version and content hash
+    /// when it was parsed (read again only when the entity changes; the hash too, because a
+    /// force-undo that restores a deleted entity can give it a version it had before).
+    parsed: BTreeMap<u64, (u64, u64, Result<Arc<Spec>, String>)>,
     /// How many times a `props.ragdoll` was parsed (tests guard the per-tick cost with it).
     pub parses: u64,
 }
@@ -990,23 +991,26 @@ impl Physics {
                 world.set_external_pose(*id, Some(world::ExternalPose { pose: Arc::clone(&l.pose), direct: l.off_since.is_none() && l.mode == Mode::Powered }));
             }
         }
-        // Who has a ragdoll now.
-        let mut wanted: Vec<(u64, Spec)> = Vec::new();
+        // Who has a ragdoll now (switched off and not live: nothing to do, so not listed).
+        let mut wanted: Vec<(u64, Arc<Spec>)> = Vec::new();
         let transient = world.transient_entities().filter(|e| e.props.get(PROP).is_some()).map(|e| e.id);
         let ids: Vec<u64> = self.ragdolls.persistent.iter().copied().chain(transient).collect();
         // Parsed specs of entities no longer listed go.
         if self.ragdolls.parsed.len() > ids.len() {
-            self.ragdolls.parsed.retain(|k, _| ids.contains(k));
+            let listed: BTreeSet<u64> = ids.iter().copied().collect();
+            self.ragdolls.parsed.retain(|k, _| listed.contains(k));
         }
         for id in ids {
             let Some(e) = world.get(id) else { continue };
-            let fresh = self.ragdolls.parsed.get(&id).is_some_and(|(v, _)| *v == e.version);
+            let content = e.content_hash();
+            let fresh = self.ragdolls.parsed.get(&id).is_some_and(|(v, h, _)| *v == e.version && *h == content);
             if !fresh {
                 self.ragdolls.parses += 1;
-                self.ragdolls.parsed.insert(id, (e.version, Spec::from_json(e.props.get(PROP).expect("listed"))));
+                self.ragdolls.parsed.insert(id, (e.version, content, Spec::from_json(e.props.get(PROP).expect("listed")).map(Arc::new)));
             }
-            match &self.ragdolls.parsed[&id].1 {
-                Ok(s) => wanted.push((id, s.clone())),
+            match &self.ragdolls.parsed[&id].2 {
+                Ok(s) if s.mode == Mode::Off && !self.ragdolls.live.contains_key(&id) => {}
+                Ok(s) => wanted.push((id, Arc::clone(s))),
                 Err(m) => {
                     let m = format!("ragdoll: {m}");
                     self.note_problem_only(world, id, &m);
@@ -1014,7 +1018,8 @@ impl Physics {
             }
         }
         // Gone, or no longer a ragdoll: drop it.
-        let gone: Vec<u64> = self.ragdolls.live.keys().copied().filter(|id| !wanted.iter().any(|(w, _)| w == id)).collect();
+        let still: BTreeSet<u64> = wanted.iter().map(|(id, _)| *id).collect();
+        let gone: Vec<u64> = self.ragdolls.live.keys().copied().filter(|id| !still.contains(id)).collect();
         for id in gone {
             self.drop_ragdoll(world, id);
         }
@@ -1598,6 +1603,38 @@ pub(crate) mod tests {
         let took = started.elapsed();
         assert_eq!(p.ragdolls.parses, 20 + 20 * 30);
         assert!(took < std::time::Duration::from_millis(1500), "30 ticks of 20 changing ragdoll entities took {took:?}");
+    }
+
+    /// Review round 4, finding 3 (probe stalecache.py): a force-undo that restored a deleted
+    /// entity handed it a version it had had before, with other props, so the parsed spec (and
+    /// physics' body cache) kept the old state. Restored versions now go past every version the
+    /// entity had (`World::version_floor`), and the parsed spec is keyed on the content too.
+    #[test]
+    fn a_restored_entity_with_a_reused_version_is_read_again() {
+        use crate::journal::{Kind, UndoRequest, Writer};
+        let (mut w, id) = shambler_world();
+        w.set_recording(crate::world::Recording::Full);
+        let mut sw = crate::swarm::Swarm::default();
+        let me = Writer { name: "probe", session: None };
+        let mut p = Physics::default();
+        let set = |sw: &mut crate::swarm::Swarm, w: &mut World, json: &str| {
+            let props = Json::obj([(PROP, Json::parse(json).unwrap())]);
+            sw.commit(w, 0, me, Kind::Set, |w| w.update(&EntityKey::Id(id), UpdateSpec { props: Some(props), ..UpdateSpec::default() }, "probe").map(|e| e.version)).unwrap()
+        };
+        let (v_off, _) = set(&mut sw, &mut w, r#"{"mode": "off"}"#);
+        run(&mut w, &mut p, 0, 3);
+        let (v_limp, limp_seq) = set(&mut sw, &mut w, r#"{"mode": "limp"}"#);
+        run(&mut w, &mut p, 3, 1);
+        assert!(p.ragdolls.live.get(&id).is_some_and(|l| l.off_since.is_none()), "limp and live");
+        let (v_powered, _) = set(&mut sw, &mut w, r#"{"mode": "powered"}"#);
+        sw.commit(&mut w, 0, me, Kind::Delete, |w| w.delete(&EntityKey::Id(id), None).map(|_| ())).unwrap();
+        sw.undo(&mut w, 0, me, &UndoRequest { ids: Some(vec![limp_seq.unwrap()]), count: 1, force: true }).unwrap();
+        let e = w.get(id).expect("restored");
+        assert_eq!(v_limp, v_off + 1);
+        assert!(e.version > v_powered, "a restored entity takes a version it never had ({} after {v_powered}); it used to get the limp one, {v_limp}, again", e.version);
+        assert_eq!(e.props.get(PROP).and_then(|r| r.get("mode")).and_then(Json::as_str), Some("off"));
+        run(&mut w, &mut p, 4, 3);
+        assert!(p.ragdolls.live.get(&id).is_none_or(|l| l.off_since.is_some()), "switched off, as the props say");
     }
 
     /// Getting up is content: the shambler's graph has a getup state that blends from where the

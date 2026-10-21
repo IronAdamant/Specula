@@ -2028,6 +2028,10 @@ pub struct World {
     joints_by_body: BTreeMap<u64, BTreeSet<u64>>,
     /// Each joint entity's two sides as indexed in `joints_by_body`.
     joint_sides: BTreeMap<u64, [Option<u64>; 2]>,
+    /// The last version of each persistent entity removed from the world (dropped when it comes
+    /// back): a restored entity's version goes past it, so no version ever names two states
+    /// (caches keyed on versions, `expect_version`). Not state: never hashed or saved.
+    retired: BTreeMap<u64, u64>,
     /// Bumped whenever an entity that may own a mesh (lathe, model) comes, goes or changes its
     /// mesh, so the engine re-syncs GPU meshes only then.
     mesh_epoch: u64,
@@ -3191,6 +3195,12 @@ impl World {
         self.joint_sides.get(&joint).copied()
     }
 
+    /// The highest version entity `id` has had while in this world (now, or before it was
+    /// removed); 0 if never. A restored entity must take a higher one.
+    pub fn version_floor(&self, id: u64) -> u64 {
+        self.entities.get(&id).map_or(0, |e| e.version).max(self.retired.get(&id).copied().unwrap_or(0))
+    }
+
     /// Whether any persistent entity holds joint data.
     pub fn has_joints(&self) -> bool {
         !self.joint_sides.is_empty()
@@ -3221,6 +3231,7 @@ impl World {
     fn link(&mut self, e: Entity) {
         self.layout_epoch += 1;
         self.index_joint(e.id, joint_sides_of(&e));
+        self.retired.remove(&e.id);
         self.children.insert((e.parent.unwrap_or(ROOT), e.name.clone()), e.id);
         self.names.insert((e.name.clone(), e.id));
         if e.transient {
@@ -3244,6 +3255,9 @@ impl World {
         self.draw_touch(id);
         let e = self.entities.remove(&id)?;
         self.unindex_joint(id);
+        if !e.transient {
+            self.retired.insert(id, e.version);
+        }
         self.lit.remove(&id);
         self.flat.remove(&id);
         self.layout_epoch += 1;
@@ -3757,6 +3771,10 @@ impl World {
         self.draw_touch(id);
         let e = self.entities.remove(&id)?;
         self.unindex_joint(id);
+        if !e.transient {
+            let v = self.retired.get(&id).copied().unwrap_or(0).max(e.version);
+            self.retired.insert(id, v);
+        }
         self.lit.remove(&id);
         self.flat.remove(&id);
         self.layout_epoch += 1;

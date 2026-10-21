@@ -1108,11 +1108,11 @@ impl Journal {
 /// Puts back the state before each of `entry`'s changes, newest change first.
 fn undo_entry(world: &mut World, entry: &Entry, by: &str, force: bool) -> Result<(), WorldError> {
     let by: Arc<str> = Arc::from(by);
-    // A restored entity is a new version of whatever is there now.
+    // A restored entity is a new version of whatever is there now, and of anything it was
+    // before it was deleted (a version never names two states: caches key on them).
     let restore = |world: &World, before: &Entity| -> Entity {
         let mut e = before.clone();
-        let current = world.get(e.id).map_or(0, |c| c.version);
-        e.version = current.max(before.version) + 1;
+        e.version = world.version_floor(e.id).max(before.version) + 1;
         e.modified_by = Arc::clone(&by);
         e
     };

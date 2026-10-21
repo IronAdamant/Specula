@@ -1889,6 +1889,32 @@ mod tests {
         }
     }
 
+    /// Review round 4, finding 3, the general case: physics skips an entity whose version and
+    /// place it has already seen. A force-undo restoring a deleted entity used to hand it a
+    /// version it had had (with other content), so a collider change undone that way stayed in
+    /// physics. Restored versions now always go past the entity's last one.
+    #[test]
+    fn a_restored_entity_is_rebuilt_in_physics() {
+        use crate::journal::{UndoRequest, Writer};
+        let mut w = World::default();
+        w.set_recording(Recording::Full);
+        let mut sw = crate::swarm::Swarm::default();
+        let me = Writer { name: "probe", session: None };
+        let id = floor(&mut w);
+        let _ = w.take_changes();
+        let mut p = Physics::default();
+        run(&mut w, &mut p, None, 1);
+        let sphere = Collider { shape: ColliderShape::Sphere { radius: 0.5 }, ..Collider::default() };
+        let (_, seq) = sw.commit(&mut w, 0, me, Kind::Set, |w| w.update(&crate::world::EntityKey::Id(id), crate::world::UpdateSpec { collider: Some(Some(sphere)), ..Default::default() }, "probe").map(|_| ())).unwrap();
+        run(&mut w, &mut p, None, 1);
+        let is_box = |p: &Physics| matches!(p.space.body(id).and_then(|b| b.collider).map(|c| &c.shape), Some(specula_physics::Shape::Box { .. }));
+        assert!(!is_box(&p), "a sphere now");
+        sw.commit(&mut w, 0, me, Kind::Delete, |w| w.delete(&crate::world::EntityKey::Id(id), None).map(|_| ())).unwrap();
+        sw.undo(&mut w, 0, me, &UndoRequest { ids: Some(vec![seq.unwrap()]), count: 1, force: true }).unwrap();
+        run(&mut w, &mut p, None, 1);
+        assert!(is_box(&p), "the restored box is a box in physics too");
+    }
+
     /// Review round 4, finding 1 (probe shear.py): a child turned under a non-uniformly scaled
     /// parent gets its collider along its own axes. A [4,1,1] group holding a unit cube turned
     /// 90° about y: the mesh spans x -2..2, and so must the collider (it spanned -0.5..0.5,
