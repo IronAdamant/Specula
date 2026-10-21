@@ -613,16 +613,28 @@ impl Host for EngineHost<'_> {
     }
 
     fn run_ticks(&mut self, n: u64) -> u64 {
+        // A load's navmeshes come first (bounded); steps are never left queued behind it.
+        if self.e.nav.loading() && !self.e.build_nav_load(crate::nav::LOAD_PLAYTEST_WAIT) {
+            return 0;
+        }
         let before = self.e.clock.tick();
         self.e.clock.step(n);
         self.e.advance_clock();
-        self.e.clock.tick() - before
+        let ran = self.e.clock.tick() - before;
+        if ran < n {
+            self.e.clock.cancel_steps();
+        }
+        ran
     }
 
     fn parts(&mut self) -> Vec<(String, u64)> {
         let mut parts = vec![("world".to_owned(), self.e.state_hash())];
         if let Some(h) = self.e.physics.hash() {
             parts.push(("physics".to_owned(), h));
+        }
+        // Navigation's hidden state, so a replay names a nav divergence directly.
+        if let Some(h) = self.e.nav.last_hash() {
+            parts.push(("nav".to_owned(), h));
         }
         if let Some(g) = &self.e.game {
             let mut hashes = Vec::new();

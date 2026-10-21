@@ -1,6 +1,6 @@
 //! Debug overlays drawn into sight captures (`sight_frame {overlays: [...]}`): a ground grid
 //! with metre labels, world and entity axes, bounding boxes, entity labels, claim regions,
-//! skeletons, model LODs, and physics colliders and contacts.
+//! skeletons, model LODs, physics colliders and contacts, and navmeshes and paths.
 //!
 //! Everything is drawn with the GPU overlay (`FrameDesc::overlay`), after the scene and its
 //! post-processing, **on top of everything** (an x-ray: a box behind a wall still shows; the ID
@@ -36,11 +36,27 @@ pub enum Kind {
     Contacts,
     /// Physics joints: anchors, axes, limit arcs, how well each holds.
     Joints,
+    /// Navmesh polygons (see [`crate::nav_tools`]).
+    Navmesh,
+    /// Nav agents' paths, goals and velocities, and recent nav_path answers.
+    Paths,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 10] =
-        [Kind::Grid, Kind::Axes, Kind::Bounds, Kind::Labels, Kind::Claims, Kind::Skeletons, Kind::Lods, Kind::Colliders, Kind::Contacts, Kind::Joints];
+    pub const ALL: [Kind; 12] = [
+        Kind::Grid,
+        Kind::Axes,
+        Kind::Bounds,
+        Kind::Labels,
+        Kind::Claims,
+        Kind::Skeletons,
+        Kind::Lods,
+        Kind::Colliders,
+        Kind::Contacts,
+        Kind::Joints,
+        Kind::Navmesh,
+        Kind::Paths,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -54,6 +70,8 @@ impl Kind {
             Kind::Colliders => "colliders",
             Kind::Contacts => "contacts",
             Kind::Joints => "joints",
+            Kind::Navmesh => "navmesh",
+            Kind::Paths => "paths",
         }
     }
 

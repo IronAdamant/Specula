@@ -96,10 +96,12 @@ pub enum Kind {
     Camera,
     /// One fixed tick of the physics simulation moving bodies (coalesced, like a game tick).
     Physics,
+    /// One fixed tick of navigation moving agents (coalesced, like physics; see [`crate::nav`]).
+    Nav,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 12] = [
+    pub const ALL: [Kind; 13] = [
         Kind::Spawn,
         Kind::Set,
         Kind::Delete,
@@ -112,6 +114,7 @@ impl Kind {
         Kind::GameTool,
         Kind::Camera,
         Kind::Physics,
+        Kind::Nav,
     ];
 
     pub fn name(self) -> &'static str {
@@ -128,6 +131,7 @@ impl Kind {
             Kind::GameTool => "game_tool",
             Kind::Camera => "camera",
             Kind::Physics => "physics",
+            Kind::Nav => "nav",
         }
     }
 
@@ -136,7 +140,7 @@ impl Kind {
     }
 
     pub fn is_game(self) -> bool {
-        matches!(self, Kind::GameStart | Kind::GameTick | Kind::GameFrame | Kind::GameTool | Kind::Physics)
+        matches!(self, Kind::GameStart | Kind::GameTick | Kind::GameFrame | Kind::GameTool | Kind::Physics | Kind::Nav)
     }
 }
 
@@ -996,7 +1000,14 @@ impl Journal {
             }
             for &id in &ids {
                 if let Some(g) = self.game_touch.get(&id).filter(|g| g.seq > seq && !(by.session.is_none() && &*g.by == by.name)) {
-                    return Err(conflict(seq, id, &g.path, g.seq, &g.by, g.tick));
+                    let mut err = conflict(seq, id, &g.path, g.seq, &g.by, g.tick);
+                    if &*g.by == crate::nav::AGENT || &*g.by == crate::physics::AGENT {
+                        err = err.with(
+                            "hint",
+                            format!("{} moves it every tick, so this stays refused: force: true undoes the entry and puts the entity back where it was then", g.by),
+                        );
+                    }
+                    return Err(err);
                 }
             }
             for later in self.agents.from(seq + 1) {
@@ -1624,6 +1635,24 @@ mod tests {
         let mut j = Journal::with_limits(&w, "empty", 1000, 1);
         spawn(&mut w, &mut j, "ann", "/x");
         assert_eq!(j.len(), 1, "the newest entry is always kept");
+    }
+
+    #[test]
+    fn undo_after_navigation_moved_the_entity_says_force_puts_it_back() {
+        let (mut w, _) = live();
+        let mut j = Journal::with_limits(&w, "empty", 1000, usize::MAX);
+        spawn(&mut w, &mut j, "ann", "/a");
+        set(&mut w, &mut j, "ann", "/a", moved(1.0));
+        w.set_recording(Recording::Snapshot);
+        w.update(&EntityKey::Path("/a".into()), moved(2.0), crate::nav::AGENT).unwrap();
+        w.set_recording(Recording::Full);
+        let changes = w.take_changes();
+        j.append_game(1, crate::nav::AGENT, None, Kind::Nav, changes, w.next_id());
+        let err = undo(&mut w, &mut j, "ann", last(1)).unwrap_err();
+        assert_eq!((err.code, err.detail("later_by")), ("undo_conflict", Some(&Json::from("nav"))));
+        assert!(err.detail("hint").and_then(Json::as_str).is_some_and(|h| h.contains("force: true")));
+        undo(&mut w, &mut j, "ann", UndoRequest { force: true, ..last(1) }).unwrap();
+        assert_eq!(w.get(w.find_path("/a").unwrap()).unwrap().position.x, 0.0);
     }
 
     #[test]

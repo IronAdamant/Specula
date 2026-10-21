@@ -57,6 +57,9 @@ Read [HANDOFF.md](HANDOFF.md) first.
 | `specula-lex` | Lex: gameplay rules as typed text data (validate, compile, simulate deterministically) |
 | `specula-balance` | balance lab: targets as data, deterministic sweeps and tuning over Lex parameters |
 | `specula-physics` | collision queries, triggers, character controller, rigid bodies (stages P1–P3) |
+| `specula-via` | navigation: tiled navmeshes, paths, off-mesh links, crowds |
+| `specula-mens` | AI as data: behaviour trees and utility AI, validated, with a deterministic runner |
+| `specula-locus` | placement by relations (`world_place`'s solver) |
 | `specula-model` | procedural modelling: recipes → meshes, LODs, colliders |
 | `specula-gltf` | glTF 2.0 / GLB import and export |
 | `specula-sdk` | the one crate game-logic modules depend on: deterministic `Cx` API, versioned C ABI |

@@ -23,7 +23,7 @@ A world file holds what the world shows. The simulation remembers more:
 | Physics (`specula-physics`) | exact quaternions (the world stores Euler degrees), warm-start impulses, sleep timers and islands, the per-pair polytope memory (SAT features, part of the physics hash since review round 2), fat broadphase boxes, kinematic targets, the characters' ground memory, and the scale each collider was built at | the run continues deterministically but **diverges** from the one that saved (shown by `a_plain_rebuild_drifts...` and `a_saved_world_and_physics_continue_bit_identically` in the tests) |
 | The module host | each module's state store and RNG stream positions (MODULES.md: "comes with save games"), the events emitted in the last tick (delivered at the next), agents' held input | modules start empty |
 | The clock | the tick | tick numbers restart, so traces and journals don't line up |
-| Lex | a run's state | Sepulcra's `--rules lex` run is in the game's section; live runs refuse saves (see below) |
+| Lex | a run's state | Sepulcra's `--rules lex` run is in the game's section, live runs (`lex_live`) in their own (see below) |
 
 ## What a save holds
 
@@ -35,6 +35,8 @@ A save is taken **between ticks**, on the engine thread, at tick `T` (ticks comp
 | `game` | the hosted game's own bytes, in its own versioned format (Sepulcra: the sim `State` codec, the run's recording, the build order being followed, its pause and speed, presentation time) | `Game::save_state` |
 | `physics` | the bridge's state (layer table, what it last saw of every entity, the scale each collider was built at, characters' carried velocities, entities it couldn't simulate) and the space's hidden state (every body's exact pose, velocities, mass frame, sleep timer and island, target, fat box; every contact pair with its points, impulses and SAT memory; the moved set, awake set, islands, characters) | `Physics::save_state`, `Space::save_state` |
 | `logic` | each module's state store, RNG streams, seed and load count; events waiting for the next tick; per running module its build hash, generation, disabled state and input (agents' holds, the latched edges) | `LogicHost::save_state` |
+| `nav` | navigation's hidden state as versioned JSON (floats as bits): each navmesh's crowd (agents' positions, velocities, polygons, corridors, crossings, filters) with the navmesh hash and build counters it belongs to, every mind's running state and blackboard, agents' runtime goals and facing, the mind round robin, and the nav hash. Navmeshes are rebuilt from the world, except their build state, saved as data: the dirty and unbuilt tiles and the polygons of tiles built from geometry that has changed since (a load builds only the up-to-date tiles, puts the stale ones back and keeps the queues, so per-tick rebuilds go on exactly as in the saving run). Nothing is built for a save (it is never an input to the run); only a navmesh switching to new settings, or a load still being prepared, is refused (`nav_building`, retry: the game's autosave is retried) | `Nav::check_saveable`, `Nav::save_state`, `nav::encode_section` |
+| `lex_live` | each live Lex run (section version 1): its Lex state (snapshot v2) and Lex hash, the set's document as compiled with the run's params and seed, its `present` rules and input bindings, its anchor on the engine clock, credit, work, debt, a halt, input and hook counters, the newest journal entries that fit 16 MiB (the count left out kept), and what it presents (each shown entity's Lex id, rule and last position); agents' holds are left out (sessions aren't saved; the save says how many) | `lex_live::Live::save_state` |
 | (header) | tick, tick rate, game name, the world hash and every subsystem hash at the save, entity count, engine version, `dmath::VERSION`, Lex runtime version, who saved it, a label | `save_tools` |
 
 Physics is **synced with the world before saving** (what the next tick's sync would do), so the save describes one
@@ -182,11 +184,21 @@ match) and checked against the reference state at load. A version 1 section has 
 recording through Lex to the saved tick, as before. A load resumes the Lex run exactly (same Lex hash, parity on;
 `a_lex_mode_game_saves_and_loads_with_its_lex_state`).
 
-**Live Lex runs (`lex_live`) aren't in save games yet**: a live run's state would need its journal, presentation
-(the shown entities' ids, adopted from the world), credit and input with it, and agents' holds are tied to sessions,
-which saves don't keep. So `save_write`, and `save_read` (whose load replaces the world they present into), are
-refused while any set is live, with `live_lex_running` naming them: stop the runs first (their journals replay
-headless with `lex_simulate`). The run state itself is ready: `Sim::save_state` / `Sim::restore` write and check a
+**Live Lex runs (`lex_live`)** are saved in the `lex_live` section (above). A load parses it on the save reader's
+worker against the loaded world: it compiles each saved document with the run's params (the rules' hash must be the
+one the state was saved with, else `lex_rules_changed`), restores the state for a hosted run (module hooks run
+through the host), checks the Lex hash (`save_mismatch`), and **adopts** what the run presents from the loaded world
+by path (`/lex_live/<set>/e<id>`), never respawning it, so the world hash goes on as the saving run's. The clock is
+restored to the save's tick, so each run's anchor holds as saved. At the swap the runs live before the load stop
+(their world is gone; the answer lists them) and the save's take over; the engine's own `[lex_live]` limits stay.
+Agents' holds are not saved (they end with their sessions): the save notes how many it left out, and a load starts
+with none, so a hold still on at the save makes the two runs differ from there. The live runs are a subsystem hash
+(`lex_live`: each run's Lex hash, anchor, credit, debt and counters) in the save's header and in the desync
+detector's traces. `scripts/save_check.py` saves Sepulcra with a live run beside it (commanded, and pressed through
+an input binding), loads it in a fresh engine, and `desync_compare` matches every tick after, `lex_live` included;
+`lex_live.rs` tests a save loaded into another engine stepping 300 ticks with the same world and live hashes, the
+section round-tripping byte for byte, holds left out, and damaged sections (cut at every length, bits flipped) being
+errors or runs that step, never panics. The run state itself: `Sim::save_state` / `Sim::restore` write and check a
 run's whole `State` against the rules it runs under (the rules hash, params folded in, must match: `rules_changed`),
 and a restored run has the same `Sim::hash`, steps identically and charges the same work per tick
 (`games/sepulcra/tests/lex_saves.rs`: the slice saved mid-wave, three seeds, 4,000 ticks; the whole game, with
