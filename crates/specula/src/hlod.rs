@@ -439,6 +439,11 @@ impl Hlod {
         }
     }
 
+    /// Whether some camera wants cell `cell`'s proxy (as of the last pass).
+    pub fn wanted(&self, cell: CellKey) -> bool {
+        self.cells.get(&cell).is_some_and(|c| c.want.is_some())
+    }
+
     /// Uploaded proxies of wanted cells the window doesn't draw now: `(priority, cell)` (they
     /// may give way to nearer content under the memory budget).
     pub fn wanted_uploaded(&self) -> Vec<(f32, CellKey)> {
