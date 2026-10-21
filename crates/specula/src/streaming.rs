@@ -352,6 +352,9 @@ struct Resync {
     epoch: u64,
     /// The last entity filed.
     cursor: Option<u64>,
+    /// The highest persistent id when it began: entities spawned since are the catch-up's (a
+    /// world spawning faster than the walk would otherwise keep it from ending).
+    end: Option<u64>,
     cell_of: IdMap<u64, CellKey>,
     cells: BTreeMap<CellKey, Cell>,
 }
@@ -385,7 +388,8 @@ impl Index {
             let started = Instant::now();
             // Twice the slice for each refiling in a row that couldn't catch up.
             let scaled = if self.resync_overflows >= 6 { Duration::MAX } else { slice.saturating_mul(1 << self.resync_overflows) };
-            if self.resync_step(world, cell_m, started, scaled) {
+            let least = 64usize << self.resync_overflows.min(16);
+            if self.resync_step(world, cell_m, started, scaled, least) {
                 let rest = scaled.saturating_sub(started.elapsed());
                 if self.patch(world, cell_m, now, touched, rest) {
                     self.resync_overflows = 0;
@@ -423,24 +427,25 @@ impl Index {
     /// Starts filing every entity again (see [`Index::resync`]).
     fn begin_resync(&mut self, world: &World) {
         self.backlog.clear();
-        self.resync = Some(Resync { epoch: world.draw_epoch(), cursor: None, cell_of: IdMap::default(), cells: BTreeMap::new() });
+        self.resync = Some(Resync { epoch: world.draw_epoch(), cursor: None, end: world.last_persistent_id(), cell_of: IdMap::default(), cells: BTreeMap::new() });
     }
 
-    /// Files the next entities of a refiling for up to `slice` since `started` (64 at least);
+    /// Files the next entities of a refiling for up to `slice` since `started` (`least` at least);
     /// when done, its cells replace the old ones (every one to be worked out again) and the
     /// changes since it began are read next. Returns whether it is done.
-    fn resync_step(&mut self, world: &World, cell_m: f32, started: Instant, slice: Duration) -> bool {
+    fn resync_step(&mut self, world: &World, cell_m: f32, started: Instant, slice: Duration, least: usize) -> bool {
         let _z = specula_core::profile::zone("resync");
         let Some(r) = self.resync.as_mut() else { return true };
         let mut done = true;
-        for (n, e) in world.persistent_entities_after(r.cursor).enumerate() {
+        let walk = r.end.map(|end| world.persistent_entities_between(r.cursor, end));
+        for (n, e) in walk.into_iter().flatten().enumerate() {
             r.cursor = Some(e.id);
             if e.shape == Shape::Model {
                 let k = cell_key(e.world_position(), cell_m);
                 r.cell_of.insert(e.id, k);
                 r.cells.entry(k).or_default().members.push(Member::of(e, None, cell_m));
             }
-            if n % 64 == 63 && started.elapsed() >= slice {
+            if n + 1 >= least && n % 64 == 63 && started.elapsed() >= slice {
                 done = false;
                 break;
             }
@@ -2536,6 +2541,43 @@ mod tests {
         index.sync(&world, 0, 32.0, now, &mut touched, Duration::MAX);
         assert!(index.resync.is_none() && index.backlog.is_empty());
         assert_eq!(index.cell_of.len(), total + 2 * DRAW_LOG + 21 + changing);
+    }
+
+    /// Review: refilings in a row that can't catch up get twice the slice each, so a world that
+    /// keeps changing converges before the at-once fallback (a non-zero slice doubles).
+    #[test]
+    fn refilings_in_a_row_get_bigger_slices() {
+        use crate::world::{ModelSpec, SpawnSpec, DRAW_LOG};
+        let mut world = World::default();
+        let mut next = 0u64;
+        let mut spawn = |world: &mut World, n: u64| {
+            for _ in 0..n {
+                let mut s = SpawnSpec::model(ModelSpec { recipe: "recipes/x.json".into(), params: Vec::new(), seed: Some(next) });
+                s.position = Vec3::new((next % 80) as f32 * 5.0, 0.0, (next / 80) as f32 * 5.0);
+                world.spawn(s, "test").unwrap();
+                next += 1;
+            }
+        };
+        spawn(&mut world, 4000);
+        let mut index = Index::default();
+        let mut touched = Vec::new();
+        let now = Instant::now();
+        index.sync(&world, 0, 32.0, now, &mut touched, Duration::MAX);
+        spawn(&mut world, DRAW_LOG as u64 + 1);
+        let mut most = 0;
+        for _ in 0..1000 {
+            // Each call: changes pile up behind a refiling walking its least each call (a zero
+            // slice), more than the record holds before the first one ends.
+            spawn(&mut world, DRAW_LOG as u64 / 32);
+            index.sync(&world, 0, 32.0, now, &mut touched, Duration::ZERO);
+            most = most.max(index.resync_overflows);
+            if index.resync.is_none() {
+                break;
+            }
+        }
+        assert!(index.resync.is_none(), "it converges");
+        assert!(most >= 1, "it needed bigger slices");
+        assert!(most < 6, "before the at-once fallback (overflows {most})");
     }
 
     #[test]

@@ -2246,12 +2246,22 @@ impl World {
         self.entities.range(..TRANSIENT_ID_BASE).map(|(_, e)| e)
     }
 
-    /// The persistent entities after id `after` (all of them for `None`), by id: a reader that
-    /// walks them a slice at a time.
-    pub fn persistent_entities_after(&self, after: Option<u64>) -> impl Iterator<Item = &Entity> + '_ {
+    /// The persistent entities after id `after` (from the first for `None`) up to id `upto`, by
+    /// id: a reader that walks them a slice at a time.
+    pub fn persistent_entities_between(&self, after: Option<u64>, upto: u64) -> impl Iterator<Item = &Entity> + '_ {
         use std::ops::Bound;
-        let lo = after.map_or(Bound::Unbounded, Bound::Excluded);
-        self.entities.range((lo, Bound::Excluded(TRANSIENT_ID_BASE))).map(|(_, e)| e)
+        let upto = upto.min(TRANSIENT_ID_BASE - 1);
+        // (An empty range when the walk is past `upto`: a range's start may not pass its end.)
+        let bounds = match after {
+            Some(a) if a >= upto => (Bound::Included(0), Bound::Excluded(0)),
+            _ => (after.map_or(Bound::Unbounded, Bound::Excluded), Bound::Included(upto)),
+        };
+        self.entities.range(bounds).map(|(_, e)| e)
+    }
+
+    /// The highest persistent entity id now (`None`: none).
+    pub fn last_persistent_id(&self) -> Option<u64> {
+        self.entities.range(..TRANSIENT_ID_BASE).next_back().map(|(id, _)| *id)
     }
 
     /// The transient entities (game presentation), by id.
