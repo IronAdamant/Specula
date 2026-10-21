@@ -214,6 +214,22 @@ def main():
               and stale["conflict"].get("overlap") == ["loudness"],
               (stale or {}).get("conflict", {}).get("rebase", "")[:120])
 
+        # Cost: reads and validated writes (each write is journaled, written to disk and reloaded).
+        def timed(n, f):
+            out = []
+            for i in range(n):
+                t = time.perf_counter()
+                f(i)
+                out.append((time.perf_counter() - t) * 1000)
+            out.sort()
+            return {"median_ms": round(out[n // 2], 2), "max_ms": round(out[-1], 2)}
+        report["timings"] = {
+            "project_read_hud": timed(20, lambda i: ann.json("project_read", path=HUD, problems=False)),
+            "project_patch_sound": timed(20, lambda i: ann.json("project_patch", path="assets/sounds/sell.json", ops=[{"set": "seed", "value": 1000 + i}])),
+            "project_patch_recipe": timed(10, lambda i: ann.json("project_patch", path="assets/recipes/rune_glyph.json", ops=[{"set": "seed", "value": 2000 + i}])),
+        }
+        print(f"  timings: {json.dumps(report['timings'])}")
+
         ann.close()
         bob.close()
     check("clean shutdown", eng.exit_code == 0, f"exit {eng.exit_code}")
