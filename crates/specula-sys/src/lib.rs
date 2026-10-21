@@ -17,6 +17,10 @@
 //!
 //! Tests and examples must not declare imports from a DLL their dependencies already declare;
 //! add the function here (or to the owning crate) instead.
+//!
+//! [`fpenv`] checks and restores the CPU's floating-point control register (determinism rule 6).
+
+pub mod fpenv;
 
 #[cfg(windows)]
 pub mod kernel32 {

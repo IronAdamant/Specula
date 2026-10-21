@@ -11,6 +11,8 @@
 //! wait for vsync (see `schedule`), so agents aren't paced by the display. The human's window is
 //! pumped by its own thread (see `ui`), so dragging it never stalls agents.
 
+#![forbid(unsafe_code)]
+
 mod balance_tools;
 pub mod board;
 pub mod anim;
@@ -22,6 +24,7 @@ pub mod compare;
 pub mod conflict;
 pub mod desync;
 pub mod effects;
+pub mod fpguard;
 pub mod game;
 pub mod hlod;
 pub mod intents;
@@ -543,6 +546,9 @@ struct Engine {
     frame_floor: (u32, Option<String>),
     /// Game-logic modules (hot-reloaded libraries; see [`logic`]).
     logic: logic::LogicHost,
+    /// Floating-point environment changes found at startup and between ticks, and restored
+    /// (DETERMINISM.md rule 6; the module host keeps its own for module calls).
+    fp: fpguard::FpLog,
     /// The physics simulation and its bridge to the world (see [`physics`]).
     physics: physics::Physics,
     /// Navmeshes, nav agents and minds (see [`nav`]).
@@ -657,6 +663,12 @@ impl Engine {
             board_io: swarm_engine::BoardSaver::default(),
             frame_floor: (schedule::DEFAULT_FRAME_FLOOR_FPS, None),
             logic: logic::LogicHost::new(),
+            fp: {
+                // Something loaded before us (an injected overlay, a driver) may have changed it.
+                let mut fp = fpguard::FpLog::default();
+                fp.check(0, "startup");
+                fp
+            },
             physics: physics::Physics::default(),
             nav: nav::Nav::default(),
             lex_live: lex_live::Live::default(),
@@ -714,8 +726,25 @@ impl Engine {
         }
     }
 
+    /// Journals module loads, reloads, unloads and disables (kind `module`, DETERMINISM.md rule 8)
+    /// and notes them for the desync detector's traces. `by`: the agent whose call caused them
+    /// (`None`: they happened during a tick, e.g. a module disabled after a panic).
+    fn journal_module_events(&mut self, by: Option<Writer>) {
+        for ev in self.logic.take_module_events() {
+            self.trace.note_module(&ev);
+            let module = logic::agent_of(&ev.module);
+            let next_id = self.world.next_id();
+            match by {
+                Some(w) if ev.event != "disabled" => self.swarm.journal.append_module(w, None, ev, next_id),
+                Some(w) => self.swarm.journal.append_module(module.as_str(), Some(w.name), ev, next_id),
+                None => self.swarm.journal.append_module(module.as_str(), None, ev, next_id),
+            };
+        }
+    }
+
     /// Records the hash as a tick begins.
     fn record_tick_hash(&mut self) {
+        self.journal_module_events(None);
         let h = self.state_hash();
         if self.tick_hashes.len() == TICK_HASHES {
             self.tick_hashes.pop_front();
@@ -788,6 +817,9 @@ impl Engine {
         self.last_advance = now;
         let _z = profile::zone("sim");
         for _ in 0..ticks {
+            // The simulation runs in the default floating-point environment, whatever rendering,
+            // a driver or an overlay did to this thread since the last tick (rule 6).
+            self.fp.check(self.clock.tick(), "between_ticks");
             // Animations set during the tick start at its time.
             self.world.set_clock_s(self.clock.seconds());
             if let Some(game) = self.game.as_mut() {
@@ -1580,6 +1612,10 @@ impl Engine {
             let _ = request.reply.send(ToolOutput::error("skipped: the engine was busy too long; the command was not applied"));
             return;
         }
+        // Every command (world edits, model builds, sight, saves, playtests) runs in the default
+        // floating-point environment, whatever the frame just drawn (the GPU driver) left behind
+        // (rule 6).
+        self.fp.check(self.clock.tick(), "before_command");
         // perf_capture answers once its frames are recorded (see perf::Profiler::end_frame).
         let request = match request.command {
             Command::PerfCapture(spec) => {
@@ -1862,7 +1898,11 @@ impl Engine {
             Command::Stream(call) => self.stream_call(call, &request.session),
             Command::SaveGame(call) => self.handle_save(call, w, &by),
             Command::ModelBuild(_) | Command::ModelReload => unreachable!("answered by handle_model_call"),
-            Command::Logic(call) => logic::tools::handle(&mut self.logic, call, &mut self.world, &self.clock, &mut self.swarm, w),
+            Command::Logic(call) => {
+                let out = logic::tools::handle(&mut self.logic, call, &mut self.world, &self.clock, &mut self.swarm, w);
+                self.journal_module_events(Some(w));
+                out
+            }
             Command::Anim(call) => self.anim_call(call, w, tick),
         };
         if game_call {
@@ -2204,7 +2244,19 @@ impl Engine {
             ("render_graph", perf::graph_json(self.gpu.last_graph().as_ref(), graph)),
             // Effects that can't apply (a grading LUT that failed to load), structured.
             // and pipeline variants a background build failed to make.
-            ("problems", Json::Arr(self.luts.warning(self.world.env()).into_iter().chain(self.models.pipeline_failure_json()).collect())),
+            // and floating-point environment changes the guard restored (rule 6).
+            (
+                "problems",
+                Json::Arr(
+                    self.luts
+                        .warning(self.world.env())
+                        .into_iter()
+                        .chain(self.models.pipeline_failure_json())
+                        .chain(self.fp.problem())
+                        .chain(self.logic.fp_log().problem())
+                        .collect(),
+                ),
+            ),
         ]);
         ToolOutput::text(out.to_pretty())
     }
@@ -2262,6 +2314,9 @@ impl Engine {
             ("swarm", self.swarm.stats_json()),
             ("models", self.models_json()),
             ("window", self.window_json()),
+            // The floating-point environment guard: what it checks and what it had to restore,
+            // at startup and between ticks (`engine`) and around module calls (`modules`).
+            ("determinism", Json::obj([("fp_env", self.fp.to_json()), ("fp_env_modules", self.logic.fp_log().to_json())])),
         ]);
         let mut info = info;
         if let Some(e) = &self.board_io.error {

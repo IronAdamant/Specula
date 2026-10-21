@@ -49,6 +49,10 @@ pub const MAX_TICKS: u64 = 1_000_000;
 /// A run with `until` and no `ticks` gives up after this many.
 pub const DEFAULT_UNTIL_TICKS: u64 = 36_000;
 pub const DEFAULT_CHECKPOINT_EVERY: u64 = 300;
+/// Checkpoint parts added after replay files were first written: a replay whose checkpoints lack
+/// one is checked without it. `logic` (the module host's stores, RNG positions and events) came
+/// on 2026-10-22.
+pub const LATE_PARTS: [&str; 1] = ["logic"];
 /// Hashes one run records at most (the interval grows to fit).
 pub const MAX_CHECKPOINTS: u64 = 1024;
 pub const DEFAULT_EVERY: u64 = 30;
@@ -696,6 +700,9 @@ pub struct Expected {
     /// The original run's status.
     pub status: Option<String>,
     pub path: String,
+    /// The game modules' builds the recording ran with (`None`: a file from before they were
+    /// recorded, which can't be checked).
+    pub modules: Option<Vec<(String, u64)>>,
 }
 
 /// One playtest's progress (see the module docs).
@@ -959,7 +966,16 @@ impl Run {
     }
 
     /// The state's hashes at the point [`Action::Hash`] asked for.
-    pub fn record_hash(&mut self, point: HashPoint, parts: Vec<(String, u64)>) {
+    pub fn record_hash(&mut self, point: HashPoint, mut parts: Vec<(String, u64)>) {
+        // A part added to checkpoints after a replay file was written counts as not recorded
+        // there, so older replays still verify (see [`LATE_PARTS`]).
+        if let Some(want) = self.expected.as_ref().and_then(|e| e.checkpoints.get(self.checkpoints.len())) {
+            for late in LATE_PARTS {
+                if !want.parts.iter().any(|(k, _)| k == late) {
+                    parts.retain(|(k, _)| k != late);
+                }
+            }
+        }
         let cp = Checkpoint::new(point, self.tick, parts);
         match point {
             HashPoint::Start => self.started = true,
@@ -1181,7 +1197,21 @@ pub fn parse_replay(text: &str, path: &str, tick_hz: u32) -> Result<(Spec, Expec
     }
     let checkpoints = list.iter().enumerate().map(|(i, c)| Checkpoint::from_json(c, &format!("checkpoints[{i}]"))).collect::<Result<Vec<_>, _>>()?;
     let status = v.get("status").and_then(Json::as_str).map(str::to_owned);
-    Ok((spec, Expected { checkpoints, status, path: path.to_owned() }))
+    let modules = match v.get("modules") {
+        None | Some(Json::Null) => None,
+        Some(list) => {
+            let bad = || SpecError::new("modules", "modules is a list of {module, build_hash (16 hex digits)}");
+            let items = list.as_array().ok_or_else(bad)?;
+            let mut out = Vec::new();
+            for m in items.iter().take(256) {
+                let name = m.get("module").and_then(Json::as_str).ok_or_else(bad)?;
+                let hash = m.get("build_hash").and_then(Json::as_str).and_then(|h| u64::from_str_radix(h, 16).ok()).ok_or_else(bad)?;
+                out.push((name.to_owned(), hash));
+            }
+            Some(out)
+        }
+    };
+    Ok((spec, Expected { checkpoints, status, path: path.to_owned(), modules }))
 }
 
 /// Windows device names: `NUL.json` is the device NUL, not a file.
@@ -1391,6 +1421,37 @@ mod tests {
         let d = r.get("replay").unwrap().get("first_divergence").unwrap();
         assert_eq!(d.get("parts_differing").unwrap(), &Json::arr([Json::from("world")]), "{d}");
         assert!(parse_replay(&file, "r.json", 60).is_err(), "another tick rate");
+    }
+
+    /// Review: a replay written before checkpoints hashed the module host (`logic`) still
+    /// verifies; one that recorded it is checked against it.
+    #[test]
+    fn replays_without_a_late_part_are_checked_without_it() {
+        let text = r#"{"name": "r", "checkpoint_every": 50, "steps": [{"at": 0, "call": "a"}], "ticks": 100}"#;
+        let run_with = |logic: Option<u64>, exp: Option<Expected>| {
+            let mut r = Run::new(spec(text), exp);
+            for _ in 0..1000 {
+                match r.next_action() {
+                    Action::Call(_) => r.complete(&ok("{}")),
+                    Action::Hash(p) => {
+                        let mut parts = vec![("world".to_owned(), r.tick)];
+                        parts.extend(logic.map(|l| ("logic".to_owned(), l + r.tick)));
+                        r.record_hash(p, parts);
+                    }
+                    Action::Advance(n) => r.advanced(n),
+                    Action::Wait => unreachable!(),
+                    Action::Finish => break,
+                }
+            }
+            r
+        };
+        let old = run_with(None, None).replay_json(None, 30).to_pretty();
+        let (_, exp) = parse_replay(&old, "old.json", 30).unwrap();
+        assert_eq!(run_with(Some(7), Some(exp)).status(), Some(Status::Passed), "no logic part recorded: not compared");
+        let new = run_with(Some(7), None).replay_json(None, 30).to_pretty();
+        let (_, exp) = parse_replay(&new, "new.json", 30).unwrap();
+        assert_eq!(run_with(Some(7), Some(exp.clone())).status(), Some(Status::Passed));
+        assert_eq!(run_with(Some(8), Some(exp)).status(), Some(Status::Diverged), "recorded: compared");
     }
 
     #[test]

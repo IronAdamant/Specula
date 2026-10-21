@@ -529,3 +529,58 @@ fn a_saved_host_continues_exactly() {
     let notes = c.restore_state(&bytes).unwrap();
     assert!(notes.iter().any(|n| n.get("module").and_then(Json::as_str) == Some("walker")), "{notes:?}");
 }
+
+/// Loads, reloads, unloads and disables become module events with their tick, generation and
+/// build (the engine journals them as kind `module` and gives them to the desync detector).
+#[test]
+fn loads_reloads_unloads_and_disables_are_module_events() {
+    let mut r = Run::new();
+    r.load(ModuleCode::of::<WalkerV1>()).unwrap();
+    r.ticks(3);
+    r.load(ModuleCode::of::<WalkerV2>()).unwrap();
+    let evs = r.host.take_module_events();
+    let v1 = ModuleCode::of::<WalkerV1>().build_hash();
+    let v2 = ModuleCode::of::<WalkerV2>().build_hash();
+    assert_eq!(evs.len(), 2);
+    assert_eq!((evs[0].event, evs[0].tick, evs[0].generation, evs[0].build_hash), ("load", 0, 1, v1));
+    assert_eq!((evs[1].event, evs[1].tick, evs[1].generation, evs[1].build_hash, evs[1].previous_build), ("reload", 3, 2, v2, Some(v1)));
+    assert!(r.host.take_module_events().is_empty(), "taken once");
+    assert_eq!(r.host.builds(), vec![("walker".to_owned(), v2)]);
+    // A failed load is no event: nothing changed.
+    assert!(r.load(ModuleCode::of::<BadName>()).is_err());
+    assert!(r.host.take_module_events().is_empty());
+    r.host.unload("walker", false, &mut r.world, r.tick, 30, &mut no_journal()).unwrap();
+    let evs = r.host.take_module_events();
+    assert_eq!((evs[0].event, evs[0].build_hash, evs[0].running()), ("unload", v2, false));
+}
+
+/// A module that changes the rounding mode: the environment is restored after every call, the
+/// module's own maths start each call in the default one, and the change is counted against the
+/// module (logic_status, perf_frame).
+#[test]
+fn a_module_that_changes_the_rounding_mode_is_restored_and_reported() {
+    std::thread::spawn(|| {
+        if !specula_sys::fpenv::SUPPORTED {
+            eprintln!("skipped: no floating-point control register is checked on this target");
+            return;
+        }
+        let mut r = Run::new();
+        r.load(ModuleCode::of::<specula_logic::fixtures::FlipRounding>()).unwrap();
+        r.ticks(5);
+        assert_eq!(specula_sys::fpenv::control(), Some(specula_sys::fpenv::EXPECTED), "restored after the ticks");
+        let log = r.host.fp_log();
+        assert_eq!(log.count("module:fliprounding"), 5, "one change found per tick");
+        let status = r.host.status(Some("fliprounding"), false).unwrap();
+        let m = &status.get("modules").unwrap().as_array().unwrap()[0];
+        assert_eq!(m.get("fp_restored").and_then(Json::as_u64), Some(5));
+        assert_eq!(m.get("fp_last").and_then(|l| l.get("rounding")).and_then(Json::as_str), Some("toward_zero"));
+        assert!(log.problem().is_some(), "perf_frame lists it");
+        // The module's own maths start in the default environment each call.
+        let third = r.host.call_hook("fliprounding/fp_probe", &Json::Null, "test", "t", &mut r.world, r.tick, 30, &mut no_journal()).unwrap();
+        assert_eq!(third.as_u64(), Some(u64::from((1.0f32 / 3.0).to_bits())));
+        assert_eq!(specula_sys::fpenv::control(), Some(specula_sys::fpenv::EXPECTED));
+        assert_eq!(r.host.fp_log().count("module:fliprounding"), 6);
+    })
+    .join()
+    .expect("test thread");
+}

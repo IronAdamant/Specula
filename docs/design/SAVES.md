@@ -50,6 +50,11 @@ board (a save is the simulation, not the swarm's coordination; the journal start
 `world_hash {verify}` and `desync_compare {b: "replay"}` work from the load); module **code** (a save names each
 module's build hash; a load reports a missing or different build, DETERMINISM.md rule 8).
 
+**Saves from before 2026-10-22** name their modules' builds with the old formula (a hash of every byte of the
+library); the build hash now leaves out the link time stamps (DETERMINISM.md, *Module builds in the journal*). Loading
+such a save reports each module as "another build" even when it is the same code. The module state still loads; only
+the note is wrong. Save again to record the new hashes.
+
 ## Loading
 
 A load runs in two halves. **On a worker thread**: read the file, decode it, run the migrations, parse and check

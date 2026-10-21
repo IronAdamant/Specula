@@ -21,6 +21,8 @@
 //!
 //! Conventions: physical pixels, origin top-left, y down; colours sRGB with straight alpha.
 
+#![forbid(unsafe_code)]
+
 pub mod check;
 pub mod color;
 pub mod draw;

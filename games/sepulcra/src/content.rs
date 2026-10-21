@@ -308,7 +308,7 @@ fn parse_stones(text: &str) -> Result<(Vec<StoneDef>, Rules), DataError> {
         build_ticks: 0,
         early_call_milli_per_s: 0,
         edge_reach: mm(root.num("edge_reach_m", 0.0, 100.0)?),
-        refund_percent: (root.num("sell_refund", 0.0, 1.0)? * 100.0).round() as i32,
+        refund_percent: specula_core::dmath::round_f64(root.num("sell_refund", 0.0, 1.0)? * 100.0) as i32,
         wall: WallDef {
             cost: wall.int("cost", 0, 100_000)? as i32,
             hp: milli(wall.num("hp", 1.0, 1_000_000.0)?),

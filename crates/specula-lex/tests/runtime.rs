@@ -561,6 +561,7 @@ fn a_run_cut_short_by_the_clock_is_not_a_result() {
     let spec = RunSpec {
         ticks: 100,
         expect: vec![compile_query(&r, "res.gold >= 0").unwrap()],
+        #[allow(clippy::disallowed_methods, reason = "the test is about a wall-clock deadline")]
         deadline: Some(std::time::Instant::now()),
         ..Default::default()
     };

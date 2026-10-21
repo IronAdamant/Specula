@@ -170,13 +170,17 @@ struct OutFormat {
 /// # Safety
 /// `p` must point at a valid `WAVEFORMATEX` (and, when tagged extensible, the extended tail).
 unsafe fn parse_format(p: *const WaveFormatEx) -> Result<OutFormat> {
-    let wf = std::ptr::read_unaligned(p);
+    // SAFETY: the caller guarantees `p` points at a valid WAVEFORMATEX (read unaligned: COM
+    // memory makes no alignment promise).
+    let wf = unsafe { std::ptr::read_unaligned(p) };
     let (tag, channels, rate, align, bits) = (wf.format_tag, wf.channels, wf.samples_per_sec, wf.block_align, wf.bits_per_sample);
     let float = match tag {
         WAVE_FORMAT_IEEE_FLOAT => true,
         WAVE_FORMAT_PCM => false,
         WAVE_FORMAT_EXTENSIBLE if wf.cb_size >= 22 => {
-            let ext = std::ptr::read_unaligned(p as *const WaveFormatExtensible);
+            // SAFETY: tagged extensible with cb_size >= 22, so the caller's pointer covers the
+            // whole WAVEFORMATEXTENSIBLE (see this function's contract).
+            let ext = unsafe { std::ptr::read_unaligned(p as *const WaveFormatExtensible) };
             let sub = ext.sub_format;
             if sub == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT {
                 true

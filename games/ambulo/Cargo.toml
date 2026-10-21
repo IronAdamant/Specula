@@ -16,3 +16,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 specula-sdk = { path = "../../crates/specula-sdk" }
+
+[lints]
+workspace = true
