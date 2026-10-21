@@ -1,8 +1,10 @@
 """Save game check: a loaded save continues bit-identically, and the desync detector says so.
 
 Engine A (Sepulcra, seed 7, headless by default) plays the "centre" build order with a pile of
-physics crates tumbling beside the slab, a saved shambler falling as a limp ragdoll (saved
-mid-fall: its parts, joints and recorded pose), and the ambulo module walking its character (so the
+physics crates tumbling beside the slab, a chain of scaled links hung from the world by a ball
+joint (knocked swinging just before the save: joint frames must rebuild bit for bit from moved
+bodies), a saved shambler falling as a limp ragdoll (saved mid-fall: its parts, joints and
+recorded pose), and the ambulo module walking its character (so the
 world, the game's simulation, physics' hidden state and module state all move), and a live Lex
 run (lex_live) of a small tower-defence set beside it, with input bindings an agent presses, so a
 live run's state, journal, credit and presentation are saved too. At tick T it
@@ -132,6 +134,20 @@ def crates(m):
     m.json("world_batch", ops=ops)
 
 
+CHAIN = 6
+
+
+def chain(m):
+    """Six scaled links under /crates (world x 80..83, y 6, z -8): a ball joint to the world and
+    hinges between them."""
+    ops = [{"op": "spawn", "shape": "cube", "parent": "/crates", "name": f"l{i}", "position": [10 + 0.5 * i + 0.25, 6, -8],
+            "scale": [0.5, 0.1, 0.1], "collider": {"shape": "box"}, "body": {"kind": "dynamic", "mass": 1}} for i in range(CHAIN)]
+    m.json("world_batch", ops=ops)
+    m.json("physics_joint", kind="ball", a=None, b="/crates/l0", anchor=[80, 6, -8])
+    for i in range(1, CHAIN):
+        m.json("physics_joint", kind="hinge", a=f"/crates/l{i - 1}", b=f"/crates/l{i}", anchor=[80 + 0.5 * i, 6, -8], axis=[0, 0, 1], limit=[-60, 60])
+
+
 def shambler(m):
     """A saved (non-transient) shambler walking beside the crates; ragdoll_fall knocks it limp."""
     m.json("model_build", recipe="recipes/shambler.json")
@@ -249,6 +265,7 @@ def run(args, work):
         a.json("time_control", action="pause")
         a.call("play_new", seed=7, layout="centre")
         crates(a)
+        chain(a)
         shambler(a)
         nav_mesh = navigation(a)
         print(f"A: navmesh over the slab: {nav_mesh['polygons']} polygons; 3 walkers and a patrolling guard")
@@ -263,10 +280,14 @@ def run(args, work):
         a.call("play_command", action="call_wave")
         a.json("logic_input", module="ambulo", actions={"jump": True}, ticks=2)
         step(a, args.save_at - args.save_at // 2 - 8)
-        # The shambler falls; the save catches it mid-fall (8 ticks in).
+        # The chain is knocked swinging, the shambler falls; the save catches both in motion.
+        a.json("physics_impulse", path=f"/crates/l{CHAIN - 1}", impulse=[0, 2, 3])
         ragdoll_fall(a)
         step(a, 8)
         t = a.json("time_control", action="info")["tick"]
+        joints_a = a.json("physics_joints", limit=50)
+        moved = [j for j in joints_a["joints"] if j.get("made_by") and "/crates/l" in json.dumps(j)]
+        check(len(moved) == CHAIN, f"the chain's {CHAIN} joints are in the save ({len(moved)} listed)")
         rag_a = a.json("ragdoll_info", path="/crates/sh", checks=False)
         check(rag_a.get("active") is True and not rag_a.get("cosmetic"), f"the shambler is a live, saved ragdoll at the save ({rag_a.get('mode')})")
         saved = a.json("save_write", name="proof", label="save_check")
