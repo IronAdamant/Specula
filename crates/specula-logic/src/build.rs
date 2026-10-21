@@ -105,6 +105,11 @@ impl BuildReport {
         self.diagnostics.iter().filter(|d| d.level == "warning").count()
     }
 
+    /// Determinism lint warnings ([`crate::lint`]) among the diagnostics.
+    pub fn determinism_warnings(&self) -> usize {
+        self.diagnostics.iter().filter(|d| d.code.as_deref().is_some_and(|c| c.starts_with("determinism::"))).count()
+    }
+
     /// Machine-applicable fixes still on offer.
     pub fn fixable(&self) -> usize {
         self.diagnostics.iter().flat_map(|d| &d.fixes).filter(|f| f.machine_applicable()).count()
@@ -498,6 +503,8 @@ pub fn run_cargo(req: &BuildRequest) -> BuildReport {
     if report.error.as_ref().is_some_and(|e| matches!(e.0, "build_script" | "third_party_crate" | "outside_root" | "proc_macro")) {
         lock.restore();
     }
+    // Determinism lints on the module's sources (crate::lint): warnings after the compiler's.
+    report.diagnostics.extend(crate::lint::scan_dir(&req.dir));
     report.build_time = start.elapsed();
     report
 }

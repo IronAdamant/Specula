@@ -832,12 +832,19 @@ The aim is to make Rust's costs non-issues and then strengths. Research and meas
 1.2–2.0 s, release 12.7 s, 1.16 MB binary; unsafe code only in `specula-sys`, `-platform` and `-gpu`.
 
 **Cheap and immediate (with M1):**
-- [ ] `#![forbid(unsafe_code)]` in every crate without FFI (core, protocol, specula now; every new crate after).
-- [ ] `[workspace.lints]`: deny `clippy::undocumented_unsafe_blocks`, `clippy::missing_safety_doc` and
-  `unsafe_op_in_unsafe_fn`. SAFETY comments become machine-checked.
+- [x] `#![forbid(unsafe_code)]` in every crate without FFI (core, protocol, specula now; every new crate after).
+  *Done 2026-10-22:* every crate without FFI forbids it; `specula-core` denies it except for its counting allocator.
+  `crates/specula/tests/determinism_lints.rs` checks that every crate inherits the workspace lints.
+- [x] `[workspace.lints]`: deny `clippy::undocumented_unsafe_blocks`, `clippy::missing_safety_doc` and
+  `unsafe_op_in_unsafe_fn`. SAFETY comments become machine-checked. *Done 2026-10-22.*
 - [ ] Move to Rust edition 2024.
-- [ ] **Determinism as lints** in simulation crates: `disallowed_types` (default `HashMap`/`HashSet`) and
+- [x] **Determinism as lints** in simulation crates: `disallowed_types` (default `HashMap`/`HashSet`) and
   `disallowed_methods` (platform trig, wall-clock time).
+  *Done 2026-10-22:* one `clippy.toml` in each of the 10 simulation crates (physics, anim, lex, balance, sdk, via,
+  mens, locus, sepulcra, ambulo; a test keeps the copies identical and every crate classified), bans on `HashMap`/
+  `HashSet`, float transcendentals and rounding (use `dmath`), `Instant`/`SystemTime::now` and `thread::spawn`.
+  Modules get the same check at `logic_build` (`determinism::*` diagnostics). The engine also guards the FP
+  environment (MXCSR/FPCR) around module calls and agent commands, and journals module loads with their build hash.
 - [ ] **Compile-time budgets in CI** from `cargo build --timings`: clean dev under 30 s, incremental under 3 s.
 
 **With M3 (module host):**

@@ -68,6 +68,8 @@
 //! Specula specifics in `extras.specula` (material presets, bone tails, clip loop modes,
 //! distances, events and curves) so export → import round-trips them.
 
+#![forbid(unsafe_code)]
+
 pub mod accessor;
 pub mod color;
 pub mod doc;

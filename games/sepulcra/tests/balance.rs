@@ -2,6 +2,8 @@
 //! whose numbers don't depend on the thread count, and a tuned param that hits its target on
 //! held-out seeds the tuner never saw.
 
+#![allow(clippy::disallowed_methods, reason = "a test and benchmark harness: wall-clock timings and parallel runs, each run deterministic on its own")]
+
 use specula_balance::sweep::{sweep, Point, SweepOptions};
 use specula_balance::{Targets, TuneJob, TuneOptions, TuneParam};
 use specula_core::Json;

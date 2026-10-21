@@ -24,8 +24,16 @@
 //! Tick `T`'s hash is taken as tick `T` begins, after everything stamped with an earlier tick
 //! (the game's tick `T-1` and agents' edits made while the clock read `T-1`), so the entities
 //! listed under tick `T` are exactly what made hash `T` differ from hash `T-1`.
+//!
+//! **Module code is part of the input** (DETERMINISM.md rule 8). The log also keeps every module
+//! load, reload, unload and disable with its build hash (and, once older events are dropped, the
+//! builds they left running), and traces carry them (`modules`). A comparison works out which
+//! build of each module ran in each run at the divergent tick and names any module whose build,
+//! or the tick it was loaded at, differs (`modules`, and `module <name>: ...` first in
+//! `components`): the likely cause. Runs that match although their builds differ say so too
+//! (`module_builds_differ`): a mismatch is reported, not treated as a failure.
 
-use crate::journal::{hex, Journal};
+use crate::journal::{hex, Journal, ModuleEvent};
 use crate::world::{Change, Entity, World, CAMERA_ID_BASE};
 use specula_core::hash::hash_str;
 use specula_core::Json;
@@ -42,6 +50,8 @@ pub const MAX_TRACE_BYTES: u64 = 256 << 20;
 /// Entity hashes one `desync_compare {b: "replay"}` call may spend on per-tick world hashes
 /// (about 40 ms): past it the answer hands back `next_from_tick` to continue.
 pub const REPLAY_BUDGET: usize = 1_500_000;
+/// Module events a tick log keeps (older ones fold into its base).
+pub const MAX_MODULE_EVENTS: usize = 256;
 /// Entity fields left out of digests (bookkeeping, or derived from the parent).
 const IGNORED: [&str; 6] = ["id", "version", "created_by", "modified_by", "model_state", "world_position"];
 
@@ -54,12 +64,94 @@ pub struct TickRecord {
     pub subsystems: Vec<(&'static str, u64)>,
 }
 
+/// A module's code changing, as traces record it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModuleMark {
+    pub tick: u64,
+    pub module: String,
+    /// `load`, `reload`, `unload`, `disabled`.
+    pub event: String,
+    /// The build running afterwards (`None`: unloaded or disabled).
+    pub build: Option<u64>,
+}
+
+/// Which module builds a run had: those running before its first kept event, and the events.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModuleHistory {
+    /// Module → (build, the tick it was loaded at), before `events`.
+    pub base: BTreeMap<String, (u64, u64)>,
+    /// The base describes hash ticks from this one on (0: from the start). Past
+    /// [`MAX_MODULE_EVENTS`] the oldest events fold into the base, which then is right only after
+    /// the newest folded event.
+    pub known_from: u64,
+    /// Oldest first.
+    pub events: Vec<ModuleMark>,
+}
+
+impl ModuleHistory {
+    /// Module → (build, loaded at) for the code that ran in tick `t - 1`, which hash `t` shows (an
+    /// event while the clock read `T` affects tick `T` first); `None` for ticks before
+    /// [`ModuleHistory::known_from`] (their events were folded away).
+    pub fn builds_at(&self, t: u64) -> Option<BTreeMap<String, (u64, u64)>> {
+        if t < self.known_from {
+            return None;
+        }
+        let mut m = self.base.clone();
+        for e in self.events.iter().filter(|e| e.tick < t) {
+            match e.build {
+                Some(b) => {
+                    m.insert(e.module.clone(), (b, e.tick));
+                }
+                None => {
+                    m.remove(&e.module);
+                }
+            }
+        }
+        Some(m)
+    }
+
+    fn to_json(&self) -> Json {
+        Json::obj([
+            ("base", Json::obj(self.base.iter().map(|(n, (b, t))| (n.as_str(), Json::arr([Json::from(hex(*b)), Json::from(*t)]))))),
+            ("known_from_tick", Json::from(self.known_from)),
+            (
+                "events",
+                Json::arr(self.events.iter().map(|e| {
+                    Json::arr([Json::from(e.tick), Json::from(e.module.as_str()), Json::from(e.event.as_str()), Json::from(e.build.map(hex))])
+                })),
+            ),
+        ])
+    }
+
+    fn from_json(j: &Json) -> Result<ModuleHistory, String> {
+        let hash = |j: &Json| j.as_str().and_then(|s| u64::from_str_radix(s, 16).ok());
+        let mut h = ModuleHistory { known_from: j.get("known_from_tick").and_then(Json::as_u64).unwrap_or(0), ..ModuleHistory::default() };
+        for (name, v) in j.get("base").and_then(Json::as_object).unwrap_or_default() {
+            let r = v.as_array().filter(|r| r.len() == 2).ok_or("modules.base: each module is [build_hash, loaded_tick]")?;
+            let (b, t) = (hash(&r[0]).ok_or("modules.base: bad build hash")?, r[1].as_u64().ok_or("modules.base: bad tick")?);
+            h.base.insert(name.clone(), (b, t));
+        }
+        for e in j.get("events").and_then(Json::as_array).unwrap_or_default() {
+            let r = e.as_array().filter(|r| r.len() == 4).ok_or("modules.events: each is [tick, module, event, build_hash or null]")?;
+            h.events.push(ModuleMark {
+                tick: r[0].as_u64().ok_or("modules.events: bad tick")?,
+                module: r[1].as_str().ok_or("modules.events: bad module")?.to_owned(),
+                event: r[2].as_str().ok_or("modules.events: bad event")?.to_owned(),
+                build: if r[3].is_null() { None } else { Some(hash(&r[3]).ok_or("modules.events: bad build hash")?) },
+            });
+        }
+        Ok(h)
+    }
+}
+
 /// The engine's per-tick hashes (see the module docs).
 #[derive(Default)]
 pub struct TickLog {
     records: VecDeque<TickRecord>,
     /// Reused for the game's hashes each tick (no allocation per tick once warm).
     pub scratch: Vec<(&'static str, u64)>,
+    /// Module code changes (bounded: the oldest fold into `modules.base`).
+    modules: ModuleHistory,
 }
 
 impl TickLog {
@@ -81,9 +173,32 @@ impl TickLog {
         self.records.push_back(rec);
     }
 
-    /// Forgets everything (a new world was loaded: its ticks start a new run).
+    /// Forgets the ticks (a new world was loaded: its ticks start a new run). Module history
+    /// stays: the modules keep running in the new world.
     pub fn clear(&mut self) {
         self.records.clear();
+    }
+
+    /// Records a module event (the engine journals it too).
+    pub fn note_module(&mut self, ev: &ModuleEvent) {
+        if self.modules.events.len() >= MAX_MODULE_EVENTS {
+            let old = self.modules.events.remove(0);
+            self.modules.known_from = self.modules.known_from.max(old.tick + 1);
+            match old.build {
+                Some(b) => self.modules.base.insert(old.module, (b, old.tick)),
+                None => self.modules.base.remove(&old.module),
+            };
+        }
+        self.modules.events.push(ModuleMark {
+            tick: ev.tick,
+            module: ev.module.clone(),
+            event: ev.event.to_owned(),
+            build: ev.running().then_some(ev.build_hash),
+        });
+    }
+
+    pub fn modules(&self) -> &ModuleHistory {
+        &self.modules
     }
 
     pub fn records(&self) -> impl Iterator<Item = &TickRecord> + '_ {
@@ -116,6 +231,8 @@ pub struct Trace {
     pub changes: BTreeMap<u64, BTreeMap<u64, Mark>>,
     /// Entity lists are complete from this tick on.
     pub entities_from: u64,
+    /// Module builds (`None`: a trace written before they were recorded).
+    pub modules: Option<ModuleHistory>,
 }
 
 fn digest(v: &Json) -> u16 {
@@ -197,7 +314,7 @@ impl Trace {
         }
         // Complete from past the newest tick either journal ring evicted entries of.
         let entities_from = journal.complete_from_tick();
-        Trace { game: game.map(str::to_owned), tick_hz, ticks, changes, entities_from }
+        Trace { game: game.map(str::to_owned), tick_hz, ticks, changes, entities_from, modules: Some(log.modules.clone()) }
     }
 
     /// The trace as `specula.trace/v1` text (one tick per line).
@@ -224,7 +341,12 @@ impl Trace {
             });
             out.push_str(&Json::arr([Json::from(*t), Json::arr(items)]).to_string());
         }
-        out.push_str("\n]}\n");
+        out.push_str("\n]");
+        if let Some(m) = &self.modules {
+            out.push_str(",\n\"modules\": ");
+            out.push_str(&m.to_json().to_string());
+        }
+        out.push_str("}\n");
         out
     }
 
@@ -239,6 +361,7 @@ impl Trace {
             game: doc.get("game").and_then(Json::as_str).map(str::to_owned),
             tick_hz: doc.get("tick_hz").and_then(Json::as_u64).unwrap_or(0) as u32,
             entities_from: doc.get("entities_from_tick").and_then(Json::as_u64).unwrap_or(0),
+            modules: doc.get("modules").map(ModuleHistory::from_json).transpose()?,
             ..Trace::default()
         };
         for row in doc.get("ticks").and_then(Json::as_array).unwrap_or_default() {
@@ -287,8 +410,33 @@ impl Trace {
             ("to_tick", Json::from(self.ticks.keys().next_back().copied())),
             ("entities_from_tick", Json::from(self.entities_from)),
             ("entity_changes", Json::from(self.changes.values().map(BTreeMap::len).sum::<usize>())),
+            ("module_events", self.modules.as_ref().map_or(Json::Null, |m| Json::from(m.events.len()))),
         ])
     }
+}
+
+/// Modules whose code differs between two traces at hash tick `t` (another build, loaded at
+/// another tick, or running in one run only); `None` when a trace doesn't record modules.
+fn module_differences(a: &Trace, b: &Trace, t: u64) -> Option<Vec<(String, Json)>> {
+    let (ma, mb) = (a.modules.as_ref()?.builds_at(t)?, b.modules.as_ref()?.builds_at(t)?);
+    let names: BTreeSet<&String> = ma.keys().chain(mb.keys()).collect();
+    let side = |m: &BTreeMap<String, (u64, u64)>, n: &str| {
+        m.get(n).map_or(Json::Null, |(b, at)| Json::obj([("build_hash", Json::from(hex(*b))), ("loaded_at_tick", Json::from(*at))]))
+    };
+    let mut out = Vec::new();
+    for n in names {
+        let (x, y) = (ma.get(n), mb.get(n));
+        let what = match (x, y) {
+            (Some((bx, _)), Some((by, _))) if bx != by => format!("module {n}: build {} in a, {} in b", hex(*bx), hex(*by)),
+            (Some((_, tx)), Some((_, ty))) if tx != ty => format!("module {n}: same build, loaded at tick {tx} in a, {ty} in b"),
+            (Some(_), None) => format!("module {n}: running in a only"),
+            (None, Some(_)) => format!("module {n}: running in b only"),
+            _ => continue,
+        };
+        let item = Json::obj([("module", Json::from(n.as_str())), ("a", side(&ma, n)), ("b", side(&mb, n)), ("difference", Json::from(what.as_str()))]);
+        out.push((what, item));
+    }
+    Some(out)
 }
 
 /// Fields whose digests differ (or exist on one side only).
@@ -400,16 +548,31 @@ pub fn compare(a: &Trace, b: &Trace) -> Result<Json, crate::world::WorldError> {
         for s in &subsystems {
             components.push(format!("subsystem {}", s.get("name").and_then(Json::as_str).unwrap_or("?")));
         }
+        // Different module code is the likely cause: named first.
+        match module_differences(a, b, t) {
+            Some(diffs) => {
+                let named: Vec<String> = diffs.iter().map(|(w, _)| w.clone()).collect();
+                out.push(("modules", Json::arr(diffs.into_iter().map(|(_, j)| j))));
+                components.splice(0..0, named);
+            }
+            None => out.push(("modules_known", Json::from(false))),
+        }
         out.push(("components", Json::arr(components.into_iter().take(MAX_NAMED).map(Json::from))));
         out.push(("common_ticks", Json::from(common.len())));
         return Ok(Json::obj(out));
     }
-    Ok(Json::obj([
+    let last = *common.last().expect("not empty");
+    let mut out = vec![
         ("match", Json::from(true)),
         ("common_ticks", Json::from(common.len())),
         ("from_tick", Json::from(common[0])),
-        ("to_tick", Json::from(*common.last().expect("not empty"))),
-    ]))
+        ("to_tick", Json::from(last)),
+    ];
+    // Rule 8: different builds are reported even when the runs agree.
+    if let Some(diffs) = module_differences(a, b, last).filter(|d| !d.is_empty()) {
+        out.push(("module_builds_differ", Json::arr(diffs.into_iter().map(|(_, j)| j))));
+    }
+    Ok(Json::obj(out))
 }
 
 /// This engine against its own journal: replays it from the base tick by tick and compares with
@@ -615,6 +778,84 @@ mod tests {
             assert!(calls < 10);
         }
         assert_eq!((total, calls), (40, 4), "10 ticks per call");
+    }
+
+    fn ev(tick: u64, module: &str, event: &'static str, build: u64) -> ModuleEvent {
+        ModuleEvent { tick, module: module.into(), event, generation: 1, build_hash: build, previous_build: None }
+    }
+
+    /// Two runs of the same moves whose module builds differ from tick 12: the divergence names
+    /// the module and both builds, first among the components; the module history survives the
+    /// trace file format; runs that agree despite different builds say so.
+    #[test]
+    fn a_divergence_from_different_module_code_names_the_module() {
+        let (mut la, ja, _) = run(20, None, None);
+        let (mut lb, jb, _) = run(20, Some((12, 0.5)), None);
+        for log in [&mut la, &mut lb] {
+            log.note_module(&ev(0, "ambulo", "load", 0xaaaa));
+        }
+        lb.note_module(&ev(12, "ambulo", "reload", 0xbbbb));
+        let a = Trace::live(&la, &ja, None, 30, None, None);
+        let b = Trace::live(&lb, &jb, None, 30, None, None);
+        let r = compare(&a, &b).unwrap();
+        assert_eq!(r.get("first_divergent_tick"), Some(&Json::from(13)));
+        let m = &r.get("modules").unwrap().as_array().unwrap()[0];
+        assert_eq!(m.get("module").and_then(Json::as_str), Some("ambulo"));
+        assert_eq!(m.get("a").and_then(|x| x.get("build_hash")).and_then(Json::as_str), Some("000000000000aaaa"));
+        assert_eq!(m.get("b").and_then(|x| x.get("loaded_at_tick")).and_then(Json::as_u64), Some(12));
+        let c = r.get("components").unwrap().as_array().unwrap();
+        assert_eq!(c[0].as_str(), Some("module ambulo: build 000000000000aaaa in a, 000000000000bbbb in b"));
+        assert_eq!(c[1].as_str(), Some("entity /mover: position"));
+        // The file format keeps the history.
+        let parsed = Trace::parse(&b.render()).unwrap();
+        assert_eq!(parsed.modules, b.modules);
+        assert_eq!(compare(&a, &parsed).unwrap().get("modules"), r.get("modules"));
+        // Same moves, different builds: a match, with the builds reported.
+        let (lc, jc, _) = run(20, None, None);
+        let mut lc = lc;
+        lc.note_module(&ev(0, "ambulo", "load", 0xcccc));
+        let c = Trace::live(&lc, &jc, None, 30, None, None);
+        let r = compare(&a, &c).unwrap();
+        assert_eq!(r.get("match"), Some(&Json::from(true)));
+        assert_eq!(r.get("module_builds_differ").and_then(Json::as_array).map(<[Json]>::len), Some(1));
+        // Same builds: nothing about modules.
+        assert!(compare(&a, &a).unwrap().get("module_builds_differ").is_none());
+        // A trace from before module history: the comparison says it can't tell.
+        let mut old = b.clone();
+        old.modules = None;
+        assert_eq!(compare(&a, &old).unwrap().get("modules_known"), Some(&Json::from(false)));
+        assert!(Trace::parse(&old.render()).unwrap().modules.is_none());
+    }
+
+    #[test]
+    fn module_history_is_bounded_and_folds_into_its_base() {
+        let mut log = TickLog::default();
+        log.note_module(&ev(1, "a", "load", 1));
+        log.note_module(&ev(2, "b", "load", 2));
+        log.note_module(&ev(3, "b", "unload", 2));
+        for t in 0..MAX_MODULE_EVENTS as u64 {
+            log.note_module(&ev(10 + t, "c", "reload", 100 + t));
+        }
+        let m = log.modules();
+        assert_eq!(m.events.len(), MAX_MODULE_EVENTS);
+        assert_eq!(m.base.get("a"), Some(&(1, 1)), "a's load folded into the base");
+        assert!(!m.base.contains_key("b"), "b was unloaded");
+        let at = m.builds_at(u64::MAX).unwrap();
+        assert_eq!(at.get("c").map(|x| x.0), Some(100 + MAX_MODULE_EVENTS as u64 - 1));
+        // Review: ticks before the folded events aren't known any more (the base is "after" them).
+        assert_eq!(m.known_from, 4);
+        assert_eq!(m.builds_at(2), None);
+        assert_eq!(m.builds_at(4).unwrap().get("a"), Some(&(1, 1)));
+        assert_eq!(m.builds_at(11).unwrap().get("c"), Some(&(100, 10)));
+        // A comparison at an unknown tick says it can't tell; the file format keeps the bound.
+        let parsed = ModuleHistory::from_json(&Json::parse(&m.to_json().to_string()).unwrap()).unwrap();
+        assert_eq!(&parsed, m);
+        let t = |h: &ModuleHistory| Trace { modules: Some(h.clone()), ..Trace::default() };
+        assert!(module_differences(&t(m), &t(m), 2).is_none());
+        assert_eq!(module_differences(&t(m), &t(m), 50).map(|d| d.len()), Some(0));
+        // A disabled module isn't running.
+        log.note_module(&ev(9999, "a", "disabled", 1));
+        assert!(!log.modules().builds_at(u64::MAX).unwrap().contains_key("a"));
     }
 
     #[test]

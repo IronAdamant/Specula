@@ -230,6 +230,7 @@ pub struct Scratch {
 
 /// Builds tile `(tx, tz)` from the sources that touch it (in a fixed order); `marks` give the
 /// open space inside them their area.
+#[allow(clippy::disallowed_methods, reason = "stage timings (times_us) for reports only: never part of the mesh or its hash")]
 pub fn build_tile(cfg: &Config, d: &Derived, tx: u32, tz: u32, sources: &[Input], marks: &[Mark], scratch: &mut Scratch) -> TileBuild {
     let t = cfg.tile_cells as i32;
     let b = d.border as i32;

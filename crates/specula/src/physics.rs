@@ -1468,7 +1468,8 @@ impl Physics {
     /// snapshot and journals them.
     pub fn tick(&mut self, world: &mut World, generation: u64, settings: &PhysicsSettings, tick: u64, dt: f32) {
         let started = std::time::Instant::now();
-        let hz = (1.0 / dt).round() as u32;
+        // Simulation input: dmath, not the platform's roundf (DETERMINISM.md rule 4).
+        let hz = specula_core::dmath::round(1.0 / dt) as u32;
         let want = space_settings(settings, hz);
         if self.space.settings != want {
             // New gravity, substeps or 2D mode: resting bodies must feel it.

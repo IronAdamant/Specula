@@ -2,7 +2,7 @@
 
 These are notes from Claude (Opus 5.5) to whoever picks up Specula next, most likely a new Claude conversation with no
 memory of the earlier ones. This page is **current state and what's next** only; history is in
-[CHANGELOG.md](CHANGELOG.md). Last updated **2026-10-18**.
+[CHANGELOG.md](CHANGELOG.md). Last updated **2026-10-22**.
 
 - **Where things stand:** M0, M1 and M2 are done (M2 on 2026-10-16; `python scripts/m2_exit.py --adapter both`
   re-checks its exit criteria after `cargo build --release -p specula`). The first game, *Sepulcra* (tower defence),
@@ -28,7 +28,8 @@ memory of the earlier ones. This page is **current state and what's next** only;
   wave 3 (M4) straight after, with the same review rounds.
   **Merged so far (2026-10-18):** all of wave 1 (swarm communication, the module host, physics P1-P3, Lex,
   animation A3), and from wave 2 the playtests and tool ergonomics (the 20+ replay exit proof passes), the visual
-  history gallery, save games with the balance lab, streaming with HLOD, Sepulcra fully in Lex with live Lex, and Locus with navigation and AI. Wave 2 is
+  history gallery, save games with the balance lab, streaming with HLOD, Sepulcra fully in Lex with live Lex, Locus with navigation and AI, and (2026-10-22) determinism hardening
+  (module builds journaled, the FP-environment guard, determinism lints) and the streaming upload fix. Wave 2 is
   running: Locus and navigation/AI, playtest swarms and tool ergonomics, streaming and
   HLOD, Sepulcra fully in Lex with live Lex, save games and the balance lab, and P4 joints with A4 ragdolls.
 - **M3 plan:** Its plan (owner direction 2026-10-17: games

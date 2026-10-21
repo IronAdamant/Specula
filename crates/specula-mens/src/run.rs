@@ -620,11 +620,11 @@ impl Mind {
                 let opts = options.iter().zip(&st.scores).map(|(o, (s, parts))| {
                     Json::obj([
                         ("option", Json::from(o.label.as_str())),
-                        ("score", Json::from((f64::from(*s) * 1000.0).round() / 1000.0)),
+                        ("score", Json::from(specula_core::dmath::round_f64(f64::from(*s) * 1000.0) / 1000.0)),
                         (
                             "considerations",
                             Json::arr(o.considerations.iter().zip(parts).map(|(c, p)| {
-                                Json::obj([("input", Json::from(c.input.as_str())), ("score", Json::from((f64::from(*p) * 1000.0).round() / 1000.0))])
+                                Json::obj([("input", Json::from(c.input.as_str())), ("score", Json::from(specula_core::dmath::round_f64(f64::from(*p) * 1000.0) / 1000.0))])
                             })),
                         ),
                     ])

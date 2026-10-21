@@ -338,7 +338,9 @@ impl TuneJob {
     pub fn advance(&mut self, doc: &Document, targets: &Targets, max_evals: usize, opts: &SweepOptions) -> (usize, bool) {
         let mut n = 0;
         while n < max_evals && !self.done() {
-            if opts.deadline.is_some_and(|d| std::time::Instant::now() > d) {
+            #[allow(clippy::disallowed_methods, reason = "a wall-clock deadline: the tuning stops and says so; evaluations done are deterministic")]
+            let late = opts.deadline.is_some_and(|d| std::time::Instant::now() > d);
+            if late {
                 return (n, true);
             }
             let mut xs = self.propose();
@@ -390,7 +392,7 @@ impl TuneJob {
             Json::obj([
                 ("x", Json::arr(e.x.iter().map(|v| Json::from(*v)))),
                 ("params", Json::Obj(self.point(&e.x))),
-                ("loss", Json::from((e.loss * 10_000.0).round() / 10_000.0)),
+                ("loss", Json::from(specula_core::dmath::round_f64(e.loss * 10_000.0) / 10_000.0)),
                 ("loss_bits", Json::from(format!("{:016x}", e.loss.to_bits()))),
                 ("hit", Json::from(e.hit)),
             ])
@@ -408,7 +410,7 @@ impl TuneJob {
     /// Reads [`TuneJob::to_json`] (evaluations keep their exact losses; their per-target details
     /// aren't kept).
     pub fn from_json(j: &Json) -> Result<TuneJob, String> {
-        let int = |v: &Json| v.as_f64().filter(|f| f.fract() == 0.0 && f.abs() < 9.0e15).map(|f| f as i64);
+        let int = |v: &Json| v.as_f64().filter(|f| specula_core::dmath::fract_f64(*f) == 0.0 && f.abs() < 9.0e15).map(|f| f as i64);
         let mut space = Vec::new();
         for p in j.get("params").and_then(Json::as_array).ok_or("'params' is missing")?.iter().take(MAX_PARAMS + 1) {
             let stored: Vec<i64> = p.get("stored").and_then(Json::as_array).and_then(|a| a.iter().map(int).collect()).ok_or("param.stored is [min, max, base, step]")?;

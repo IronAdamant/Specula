@@ -2,6 +2,8 @@
 //! loop ends, floods), layer retirement, crossfade interrupts, hostile and degenerate generator
 //! specs, unreachable strides and pose-hash arguments.
 
+#![allow(clippy::disallowed_methods, reason = "a test or benchmark harness (timings, cameras for pictures), not simulation code")]
+
 use std::time::Instant;
 
 use specula_anim::clip::MAX_EVENTS_PER_STEP;

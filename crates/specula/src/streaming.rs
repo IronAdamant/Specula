@@ -337,7 +337,8 @@ struct Index {
 }
 
 fn cell_key(p: Vec3, cell_m: f32) -> CellKey {
-    let c = |v: f32| (v / cell_m).floor().clamp(-1.0e9, 1.0e9) as i32;
+    // dmath: the same cells on every platform (which cells stream in decides what captures show).
+    let c = |v: f32| specula_core::dmath::floor(v / cell_m).clamp(-1.0e9, 1.0e9) as i32;
     (c(p.x), c(p.z))
 }
 

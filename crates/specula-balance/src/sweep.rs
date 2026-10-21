@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use specula_core::Json;
+use specula_core::{dmath, Json};
 use specula_lex::{compile, Diagnostic, Document, Options};
 
 use crate::run::{RunResult, Runner};
@@ -60,7 +60,7 @@ pub struct TargetStat {
 
 impl TargetStat {
     pub fn to_json(&self) -> Json {
-        let r = |v: f64| Json::from((v * 10_000.0).round() / 10_000.0);
+        let r = |v: f64| Json::from(dmath::round_f64(v * 10_000.0) / 10_000.0);
         Json::obj([
             ("id", Json::from(self.id.as_str())),
             ("mean", self.mean.map_or(Json::Null, r)),
@@ -95,7 +95,7 @@ impl PolicyResult {
         Json::obj([
             ("policy", Json::from(self.name.as_str())),
             ("weight", Json::from(self.weight)),
-            ("loss", Json::from((self.loss * 10_000.0).round() / 10_000.0)),
+            ("loss", Json::from(dmath::round_f64(self.loss * 10_000.0) / 10_000.0)),
             ("hit", Json::from(self.hit)),
             ("targets", Json::arr(self.stats.iter().map(TargetStat::to_json))),
             ("outcomes", Json::Obj(self.outcomes.iter().map(|(k, n)| (k.clone(), Json::from(*n))).collect())),
@@ -131,7 +131,7 @@ impl PointResult {
             ("params", Json::Obj(self.point.clone())),
             ("rules_hash", self.rules_hash.map_or(Json::Null, |h| Json::from(format!("{h:016x}")))),
             ("runs", Json::from(self.runs)),
-            ("loss", Json::from((self.loss * 10_000.0).round() / 10_000.0)),
+            ("loss", Json::from(dmath::round_f64(self.loss * 10_000.0) / 10_000.0)),
             ("hit", Json::from(self.hit)),
             ("targets", Json::arr(self.stats.iter().map(TargetStat::to_json))),
             ("outcomes", Json::Obj(self.outcomes.iter().map(|(k, n)| (k.clone(), Json::from(*n))).collect())),
@@ -254,6 +254,9 @@ pub fn sweep(doc: &Document, targets: &Targets, points: &[Point], seeds: &[u64],
 pub fn sweep_keeping(doc: &Document, targets: &Targets, points: &[Point], seeds: &[u64], opts: &SweepOptions, keep_runs: bool) -> (SweepResult, Vec<Vec<RunResult>>) {
     // Compiling a big rule set takes a while: past the deadline, points aren't compiled at all
     // (they are reported unfinished, like points whose runs didn't all finish).
+    // The deadline only stops a runaway call: points it cuts short are reported unfinished,
+    // never as results.
+    #[allow(clippy::disallowed_methods, reason = "a wall-clock deadline; points it stops are reported unfinished")]
     let late = || opts.deadline.is_some_and(|d| Instant::now() > d);
     let prepared: Vec<Option<Result<Runner, Vec<Diagnostic>>>> = points.iter().map(|p| if late() { None } else { Some(prepare(doc, targets, p)) }).collect();
     // Jobs in (point, policy, seed) order: a point's runs are contiguous, each policy's in seed order.
@@ -266,6 +269,10 @@ pub fn sweep_keeping(doc: &Document, targets: &Targets, points: &[Point], seeds:
     let results: Vec<Mutex<Option<RunResult>>> = (0..jobs.len()).map(|_| Mutex::new(None)).collect();
     let next = AtomicUsize::new(0);
     let threads = opts.threads.clamp(1, 64).min(jobs.len().max(1));
+    // Each job is one whole deterministic run in its own slot; results are read back in job order,
+    // so thread timing decides only who runs what, never what a result is (rule 7). The
+    // deadline only leaves jobs undone (reported unfinished).
+    #[allow(clippy::disallowed_methods, reason = "workers fill result slots by job index, merged in job order; the deadline only leaves jobs unfinished")]
     std::thread::scope(|scope| {
         for _ in 0..threads {
             scope.spawn(|| loop {

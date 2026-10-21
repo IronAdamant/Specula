@@ -25,6 +25,8 @@
 //! forward/down (knee bend, nod, jaw open), Y yaws, Z rolls. Clip values are **rest-relative**
 //! (see [`clip`]).
 
+#![forbid(unsafe_code)]
+
 pub mod animator;
 pub mod blend;
 pub mod checks;
