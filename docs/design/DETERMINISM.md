@@ -1,6 +1,8 @@
 # Design: determinism
 
-Status: researched 2026-10-13. Deterministic maths (`dmath`) is implemented; the rest is not yet. Foundation **F2** in [ROADMAP.md](../ROADMAP.md).
+Status: researched 2026-10-13. Deterministic maths (`dmath`) built 2026-10-13; the M1 groundwork with M1; the M3 items
+(the floating-point guard, module builds in the journal, the lints) on 2026-10-22 ([below](#guards-and-lints-m3)).
+Foundation **F2** in [ROADMAP.md](../ROADMAP.md).
 
 **The rule:** the same starting world, the same seed and the same inputs give the same simulation, bit for bit, on
 every run.
@@ -72,13 +74,13 @@ boundary and journaled with that tick number. The journal is therefore a complet
    lane order.
 6. **Floating-point environment.** At each tick start, the simulation checks the CPU's floating-point control register
    (on x86-64, MXCSR rounding mode and flush-to-zero bits) and resets it if needed. *Why:* DLLs loaded into the process,
-   such as drivers or overlays, can change it.
+   such as drivers or overlays, can change it. Built: see [the guard](#the-floating-point-guard).
 7. **Deterministic parallelism.** Multithreaded systems must produce the same result whatever the thread timing. Work
    is split by index, and results are merged in index order. Box2D merges per-thread bit arrays with OR to get a
    fixed contact order without sorting. Creation order is part of the state, so ids are allocated deterministically.
 8. **Code is part of the input.** A hot-reloaded module is journaled as "module X reloaded at tick N, build hash H".
    A replay recorded with build H is expected to match only with build H. Mismatches across builds are reported, not
-   treated as failures.
+   treated as failures. Built: see [module builds](#module-builds-in-the-journal).
 9. **Floats are serialised exactly.** World files and the journal store floats so they round-trip bit-exactly
    (shortest round-trip decimal, or hex bits where needed). Otherwise saving and loading changes the simulation.
 
@@ -194,6 +196,78 @@ versions), `powi` (compiler-rt; LLVM may fold it differently), `mul_add`, `cbrt`
 - **Desync detector** (M3): when hashes diverge, binary-search for the first divergent tick, then compare per-component
   hashes to name the system responsible. The result is structured data an agent can act on.
 
+## Guards and lints (M3)
+
+Built 2026-10-22. `scripts/determinism_check.py` checks them in a running engine.
+
+### The floating-point guard
+
+`specula_sys::fpenv` reads and restores the control register with `core::arch::asm!` (no FFI):
+
+| Target | Register | Bits checked | Default |
+|---|---|---|---|
+| x86-64 (and x86 with SSE) | MXCSR | rounding, FTZ, DAZ, exception masks (`0xffc0`) | `0x1f80` |
+| AArch64 | FPCR | RMode, FZ, DN, AHP, FZ16, trap enables (`0x07c89f00`) | `0` |
+| other | none | nothing (`fpenv::SUPPORTED` is false) | |
+
+Status flags are sticky records, not modes, and are ignored. The x87 control word isn't checked: Rust does its float
+maths in SSE registers on these targets.
+
+**Where it checks.** Each change found is restored at once and recorded (`crates/specula/src/fpguard.rs`):
+- `startup`: as the engine starts, in case something loaded first changed it;
+- `between_ticks`: as each tick begins (rendering, the GPU driver or an overlay ran in between);
+- `before_command`: before each agent command (commands change the simulation too);
+- around every module call (`specula_logic::ModuleCode::call`): before the call (`before_module_call`), whenever the
+  module calls back (so the engine's answers to it run in the default environment), and when it returns
+  (`module:<name>`). Each call also starts the module in the default environment.
+
+**Where it reports.** `perf_frame`'s `problems` gets one `fp_env_restored` item (count, sources, the last change);
+`engine_info`'s `determinism` (`fp_env` for the engine, `fp_env_modules` for module calls); `logic_status` per module
+(`fp_restored`, `fp_last`). A module that changes the rounding mode can't desync the simulation: it is put right at the
+boundary, and the change is counted against it (tested with `specula_logic::fixtures::FlipRounding`).
+
+**Not guarded:** threads other than the engine's. The balance lab's sweep workers and connection threads start from
+whatever their creator had (on Linux, threads inherit the environment); none of them run foreign code today.
+
+### Module builds in the journal
+
+- Every load, reload, unload and disable of a module is a journal entry of kind `module` (`world_history {kinds:
+  ["module"]}`): tick, module, event, generation, build hash, and for a reload the build it replaced. It's a record, not
+  a world change, so it can't be undone (refused by id; "undo my last change" skips it).
+- **The build hash** is a hash of the library's bytes with the link time stamps a PE linker writes left out (COFF
+  TimeDateStamp, CheckSum, export and debug directory stamps; measured 2026-10-22: two builds of the same source differ
+  in exactly those 5 bytes). The same source rebuilt keeps its hash; any code change changes it.
+- **The desync detector** keeps the module history too (last 256 events, older ones folded into a base). Traces carry
+  it (`modules` in `specula.trace/v1`, optional, so older traces still read). `desync_compare` works out which build of
+  each module ran in each run at the divergent tick and names any module whose build, or load tick, differs, first in
+  `components` (`module ambulo: build ... in a, ... in b`). Runs that match although builds differ get
+  `module_builds_differ`. A trace without module history gives `modules_known: false`.
+- **Playtest replays** record the loaded modules' builds (`modules` in the replay file). A replay is refused with
+  `module_build_mismatch` (naming each module, recorded and loaded build) when they differ, unless
+  `allow_module_mismatch: true`, which runs it and reports `module_builds_differ`. Replay files without the list
+  aren't checked. Checkpoints now also hash the module host's state (`logic` part: stores, RNG positions, events).
+- Save games already name each module's build and report a mismatch on load ([SAVES.md](SAVES.md)). The journal's own
+  replay (`world_hash {verify}`, `desync_compare {b: "replay"}`) replays world states, so module code can't change it.
+
+### Lints
+
+- **Simulation crates** carry one `clippy.toml` (copied from `crates/specula-physics/clippy.toml`): `disallowed-types`
+  bans `HashMap`, `HashSet`, `RandomState`; `disallowed-methods` bans the platform maths above (every transcendental,
+  `floor`/`ceil`/`round`/`trunc`/`fract`, `powi`, `mul_add`, for `f32` and `f64`), `Instant::now`, `SystemTime::now`,
+  `thread::spawn` and `thread::scope`. Crates: specula-physics, specula-anim, specula-lex, specula-balance,
+  specula-sdk, sepulcra, ambulo (the module template). CI's clippy enforces it.
+- Every hit was fixed (dmath instead of `round`/`floor`/`fract`) or allowed with a reason: physics' stage timings, Lex's
+  and the balance lab's wall-clock deadlines (a run they stop is reported as stopped, never as a result), the balance
+  sweep's threads (results merged by job index), presentation code (contact-sheet framing), tests and benchmarks.
+- `crates/specula/tests/determinism_lints.rs` keeps it so: every workspace member must be listed as simulation (and
+  then carry the identical `clippy.toml`) or not; a new crate fails the test until it is classified.
+- **Modules** built by agents may have no `clippy.toml`, and clippy is too slow for the reload budget, so
+  `logic_build` scans the module's `src/` itself (`specula_logic::lint`: a small Rust tokenizer, the same names, plus
+  `static mut` and `thread_local!`) and adds each hit as a warning (`code: "determinism::<rule>"`, file, line, column,
+  a help note); `determinism_warnings` counts them. They don't stop the build. `// determinism: allowed: <why>` on the
+  line (or the line above) marks a deliberate use. It reads names, not types, so `x.round()` on a module's own type is
+  reported too.
+
 ## Costs and limits
 
 - Our own trig functions are slightly slower and slightly less accurate than the platform's. That doesn't matter for
@@ -214,9 +288,10 @@ versions), `powi` (compiler-rt; LLVM may fold it differently), `mul_add`, `cbrt`
   - `world_hash`
   - replay test in CI
 - **M3:**
-  - the SDK exposes only deterministic APIs
-  - module build hashes in the journal
-  - FP-environment guard
-  - desync detector
-  - physics and gameplay animation built under these rules
+  - the SDK exposes only deterministic APIs (done)
+  - module build hashes in the journal (done 2026-10-22)
+  - FP-environment guard (done 2026-10-22)
+  - desync detector (done)
+  - determinism lints in simulation crates and for modules (done 2026-10-22)
+  - physics and gameplay animation built under these rules (physics P1-P3 and animation A3 pass the lints)
 - **Later:** an ARM build in CI (D3) when an ARM target exists.
