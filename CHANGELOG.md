@@ -40,6 +40,14 @@ See [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md). Item-by-item detail, with the re
   `anim_get`, `anim_set`, `anim_state`, `anim_check`, `anim_filmstrip`. Sepulcra's creatures run on graphs with new
   clips (climb, glide, dive, pound, flinches, shuffle, jog), and the checks' fixes (a runner that hovered, colossus
   hands in the ground)
+- **Locus and navigation:** new crates `specula-locus` (`world_place`: objects placed by relations, collision-checked,
+  with the nearest valid alternative when a relation can't hold), `specula-via` (tiled navmeshes rebuilt per tile,
+  paths, off-mesh links, area costs, crowds) and `specula-mens` (behaviour trees and utility AI as data); tools
+  `nav_build`, `nav_path`, `nav_point`, `nav_agent`, `nav_info`, `ai_check`, `ai_set`, `ai_status`, `model_collider`;
+  `navmesh` and `paths` overlays; a `nav` hash in `world_hash` and desync traces; nav state in save games, saved
+  without changing the run
+- **Live Lex runs in save games:** a `lex_live` section (state, journal tail, presentation, budgets) that loads by
+  adopting the shown entities and is checked by hash
 - **Sepulcra fully in Lex, and live Lex:** the whole rule set (flow fields, walls, climbing, lane jumps, flyers, roots,
   the colossus) as Lex data, tick-identical to the Rust sim; new general Lex features (data items, triggers, refusal
   details, ordered archetypes, grouped spawns); `lex_live` runs a set on the engine's tick with presentation, input
