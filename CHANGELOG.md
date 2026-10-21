@@ -93,6 +93,9 @@ See [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md). Item-by-item detail, with the re
   rounding in simulation and world-state code to `dmath`
 - **Streaming fix:** a frame's first upload is always tried, and captures taken while no frame runs get their own
   budget, so a built HLOD proxy can no longer wait for its upload forever
+- **Streaming pump:** the eviction queue is scanned across frames into heaps instead of being rebuilt and sorted in
+  the frame after each pass (2-3.5 ms spikes on the iGPU); a running resident total; profile zones for every pump
+  stage. Alternating A/B on the iGPU: in-flight stutter 0 frames on every run, against 3-9 on the earlier build
 
 ### Pre-M3 cleanup (2026-10-17)
 
