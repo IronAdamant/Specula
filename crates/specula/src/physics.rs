@@ -1184,36 +1184,67 @@ pub fn world_rotation(world: &World, e: &world::Entity) -> Quat {
 
 /// An entity's world pose and scale.
 ///
-/// The scale is [`world_scale`]: the per-axis product of the scales up the parent chain, exact
-/// and independent of rotation. (The world matrix's column lengths, used before, changed in the
-/// last bits as a body turned, so a collider or joint rebuilt from a moved body came out a
-/// little different: a saved joint on a world anchor then failed to match on load.)
+/// The scale is [`world_scale`]: exact and independent of the entity's own turning. (The world
+/// matrix's column lengths, used before, changed in the last bits as a body turned, so a
+/// collider or joint rebuilt from a moved body came out a little different: a saved joint on a
+/// world anchor then failed to match on load.)
 pub fn world_pose(world: &World, e: &world::Entity) -> (Pose, Vec3) {
-    let m = e.model();
-    let p = Vec3::new(m.cols[3][0], m.cols[3][1], m.cols[3][2]);
-    (Pose { p, q: world_rotation(world, e) }, world_scale(world, e))
+    (world_pose_only(world, e), world_scale(world, e))
 }
 
-/// An entity's world scale: its own scale times its ancestors', per axis, composed from the root
-/// down as the world matrix is (so an unrotated chain gives the matrix's column lengths bit for
-/// bit), as magnitudes. Rotation never changes it. A rotated parent with a non-uniform scale
-/// shears its children, which no collider can follow; the per-axis product is what they get.
+/// An entity's world pose without its scale (no allocation; what per-tick callers need).
+pub fn world_pose_only(world: &World, e: &world::Entity) -> Pose {
+    let m = e.model();
+    Pose { p: Vec3::new(m.cols[3][0], m.cols[3][1], m.cols[3][2]), q: world_rotation(world, e) }
+}
+
+/// An entity's world scale along its own axes, as magnitudes.
+///
+/// Composed from the root down, one level at a time: an entity's axis `i` has the scale
+/// `s_i × |S · R · e_i|`, `S` its parent's world scale and `R` its own rotation (the parent's
+/// rotation turns everything alike, so it never matters). Exact shortcuts keep the common
+/// cases bit for bit equal to the per-axis product (what saves and joint frames rely on): an
+/// unrotated entity, a parent scaled uniformly, and rotations that only swap axes (multiples
+/// of 90°) take the parent's scales as they are, swapped. Only an entity turned at an odd angle
+/// under a non-uniformly scaled parent pays for the general case: its true scale then changes
+/// as it turns (the parent shears it, which no collider follows exactly). No allocation.
 pub fn world_scale(world: &World, e: &world::Entity) -> Vec3 {
     let abs = |v: Vec3| Vec3::new(v.x.abs(), v.y.abs(), v.z.abs());
-    let Some(first) = e.parent else { return abs(e.scale) };
-    // Ancestors' scales, nearest first (depth is bounded by the world's hierarchy rules).
-    let mut chain: Vec<Vec3> = Vec::with_capacity(4);
-    let mut at = Some(first);
-    while let Some(id) = at {
-        let Some(p) = world.get(id) else { break };
-        chain.push(p.scale);
-        at = p.parent;
+    let Some(parent) = e.parent.and_then(|p| world.get(p)) else { return abs(e.scale) };
+    let acc = world_scale(world, parent);
+    abs(mul3(through_rotation(acc, e.rotation_deg), e.scale))
+}
+
+/// The parent's world scale `acc` as seen along each of a child's axes, the child turned by
+/// `rot_deg` (see [`world_scale`]).
+fn through_rotation(acc: Vec3, rot_deg: Vec3) -> Vec3 {
+    if rot_deg == Vec3::ZERO || (acc.x == acc.y && acc.y == acc.z) {
+        return acc;
     }
-    let mut s = chain.pop().unwrap_or(Vec3::ONE);
-    while let Some(next) = chain.pop() {
-        s = mul3(s, next);
+    let q = Quat::from_euler_xyz_deg(rot_deg.x, rot_deg.y, rot_deg.z);
+    let axes = [q.rotate(Vec3::X), q.rotate(Vec3::Y), q.rotate(Vec3::Z)];
+    let comps = |v: Vec3| [v.x, v.y, v.z];
+    let a = comps(acc);
+    // An axis permutation: each turned axis lies along one of the parent's.
+    let along = |v: Vec3| {
+        let mut at = None;
+        for (k, c) in comps(v).into_iter().enumerate() {
+            if c.abs() > 0.5 {
+                if at.is_some() {
+                    return None;
+                }
+                at = Some(k);
+            } else if c.abs() >= 1e-4 {
+                return None;
+            }
+        }
+        at
+    };
+    if let [Some(i), Some(j), Some(k)] = axes.map(along) {
+        return Vec3::new(a[i], a[j], a[k]);
     }
-    abs(mul3(s, e.scale))
+    let len = |v: Vec3| Vec3::new(acc.x * v.x, acc.y * v.y, acc.z * v.z).length();
+    Vec3::new(len(axes[0]), len(axes[1]), len(axes[2]))
 }
 
 fn mul3(a: Vec3, b: Vec3) -> Vec3 {
@@ -1856,6 +1887,44 @@ mod tests {
                 j.append_snapshot(tick, AGENT, None, Kind::Physics, changes, w.next_id());
             }
         }
+    }
+
+    /// Review round 4, finding 1 (probe shear.py): a child turned under a non-uniformly scaled
+    /// parent gets its collider along its own axes. A [4,1,1] group holding a unit cube turned
+    /// 90° about y: the mesh spans x -2..2, and so must the collider (it spanned -0.5..0.5,
+    /// at right angles to the mesh). Turned 30°, the scale is the general case; unturned, the
+    /// per-axis product, bit for bit.
+    #[test]
+    fn a_turned_child_of_a_stretched_parent_collides_where_it_is_drawn() {
+        let hit_x = |rot_y: f32| {
+            let mut w = World::default();
+            let mut g = SpawnSpec::new(WShape::Group);
+            g.name = Some("g".into());
+            g.scale = Vec3::new(4.0, 1.0, 1.0);
+            let g = w.spawn(g, "t").unwrap().id;
+            let mut c = SpawnSpec::new(WShape::Cube);
+            c.name = Some("c".into());
+            c.parent = Some(crate::world::EntityKey::Id(g));
+            c.rotation_deg = Vec3::new(0.0, rot_y, 0.0);
+            c.collider = Some(Collider::default());
+            let c = w.spawn(c, "t").unwrap().id;
+            let mut p = Physics::default();
+            run(&mut w, &mut p, None, 1);
+            let (hits, _) = p.space.raycast(Vec3::new(10.0, 0.0, 0.0), Vec3::new(-1.0, 0.0, 0.0), 20.0, &specula_physics::space::Filter::default(), 1);
+            let e = w.get(c).unwrap();
+            (10.0 - hits[0].at, world_scale(&w, e))
+        };
+        let (x, s) = hit_x(90.0);
+        assert!((x - 2.0).abs() < 1e-3, "hits the turned cube at x {x} (the mesh's end is 2); scale {s:?}");
+        assert_eq!(s, Vec3::new(1.0, 1.0, 4.0), "an axis swap is exact");
+        let (x, s) = hit_x(0.0);
+        assert!((x - 2.0).abs() < 1e-3 && s == Vec3::new(4.0, 1.0, 1.0), "unturned: {x}, {s:?}");
+        // 30°: the box's corner reaches x = 4·(0.5·cos30 + 0.5·sin30) under the stretch; the
+        // collider is a box along the child's axes, scaled to the stretched lengths of its axes.
+        let (_, s) = hit_x(30.0);
+        let want = |c: f32, sn: f32| ((4.0 * c) * (4.0 * c) + sn * sn).sqrt();
+        let (c30, s30) = (30f32.to_radians().cos(), 30f32.to_radians().sin());
+        assert!((s.x - want(c30, s30)).abs() < 1e-4 && (s.z - want(s30, c30)).abs() < 1e-4 && s.y == 1.0, "{s:?}");
     }
 
     /// The world's `physics.coloured` with the engine's threads: the same world, bit for bit, on

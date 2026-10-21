@@ -1254,7 +1254,7 @@ impl Physics {
         let target = pose_at(&mut self.ragdolls.player, &set, e, t, true, false);
         let mut m = Vec::new();
         set.skeleton.model_space(&target, &mut m);
-        let (pose_e, _) = world_pose(world, e);
+        let pose_e = super::world_pose_only(world, e);
         let live = self.ragdolls.live.get(&id).expect("checked");
         let scale = live.scale;
         let mut motors: Vec<(u64, Motor)> = Vec::new();
@@ -1342,7 +1342,7 @@ impl Physics {
     /// Computes ragdoll `id`'s local pose from its bodies (relative to the entity as it is now).
     fn capture_ragdoll(&mut self, world: &mut World, id: u64, record: bool) {
         let Some(e) = world.get(id) else { return };
-        let (pose_e, _) = world_pose(world, e);
+        let pose_e = super::world_pose_only(world, e);
         let Some(live) = self.ragdolls.live.get_mut(&id) else { return };
         let skel = &live.set.skeleton;
         let inv_q = pose_e.q.conjugate();
