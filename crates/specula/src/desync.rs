@@ -80,14 +80,22 @@ pub struct ModuleMark {
 pub struct ModuleHistory {
     /// Module → (build, the tick it was loaded at), before `events`.
     pub base: BTreeMap<String, (u64, u64)>,
+    /// The base describes hash ticks from this one on (0: from the start). Past
+    /// [`MAX_MODULE_EVENTS`] the oldest events fold into the base, which then is right only after
+    /// the newest folded event.
+    pub known_from: u64,
     /// Oldest first.
     pub events: Vec<ModuleMark>,
 }
 
 impl ModuleHistory {
     /// Module → (build, loaded at) for the code that ran in tick `t - 1`, which hash `t` shows (an
-    /// event while the clock read `T` affects tick `T` first).
-    pub fn builds_at(&self, t: u64) -> BTreeMap<String, (u64, u64)> {
+    /// event while the clock read `T` affects tick `T` first); `None` for ticks before
+    /// [`ModuleHistory::known_from`] (their events were folded away).
+    pub fn builds_at(&self, t: u64) -> Option<BTreeMap<String, (u64, u64)>> {
+        if t < self.known_from {
+            return None;
+        }
         let mut m = self.base.clone();
         for e in self.events.iter().filter(|e| e.tick < t) {
             match e.build {
@@ -99,12 +107,13 @@ impl ModuleHistory {
                 }
             }
         }
-        m
+        Some(m)
     }
 
     fn to_json(&self) -> Json {
         Json::obj([
             ("base", Json::obj(self.base.iter().map(|(n, (b, t))| (n.as_str(), Json::arr([Json::from(hex(*b)), Json::from(*t)]))))),
+            ("known_from_tick", Json::from(self.known_from)),
             (
                 "events",
                 Json::arr(self.events.iter().map(|e| {
@@ -116,7 +125,7 @@ impl ModuleHistory {
 
     fn from_json(j: &Json) -> Result<ModuleHistory, String> {
         let hash = |j: &Json| j.as_str().and_then(|s| u64::from_str_radix(s, 16).ok());
-        let mut h = ModuleHistory::default();
+        let mut h = ModuleHistory { known_from: j.get("known_from_tick").and_then(Json::as_u64).unwrap_or(0), ..ModuleHistory::default() };
         for (name, v) in j.get("base").and_then(Json::as_object).unwrap_or_default() {
             let r = v.as_array().filter(|r| r.len() == 2).ok_or("modules.base: each module is [build_hash, loaded_tick]")?;
             let (b, t) = (hash(&r[0]).ok_or("modules.base: bad build hash")?, r[1].as_u64().ok_or("modules.base: bad tick")?);
@@ -174,6 +183,7 @@ impl TickLog {
     pub fn note_module(&mut self, ev: &ModuleEvent) {
         if self.modules.events.len() >= MAX_MODULE_EVENTS {
             let old = self.modules.events.remove(0);
+            self.modules.known_from = self.modules.known_from.max(old.tick + 1);
             match old.build {
                 Some(b) => self.modules.base.insert(old.module, (b, old.tick)),
                 None => self.modules.base.remove(&old.module),
@@ -408,7 +418,7 @@ impl Trace {
 /// Modules whose code differs between two traces at hash tick `t` (another build, loaded at
 /// another tick, or running in one run only); `None` when a trace doesn't record modules.
 fn module_differences(a: &Trace, b: &Trace, t: u64) -> Option<Vec<(String, Json)>> {
-    let (ma, mb) = (a.modules.as_ref()?.builds_at(t), b.modules.as_ref()?.builds_at(t));
+    let (ma, mb) = (a.modules.as_ref()?.builds_at(t)?, b.modules.as_ref()?.builds_at(t)?);
     let names: BTreeSet<&String> = ma.keys().chain(mb.keys()).collect();
     let side = |m: &BTreeMap<String, (u64, u64)>, n: &str| {
         m.get(n).map_or(Json::Null, |(b, at)| Json::obj([("build_hash", Json::from(hex(*b))), ("loaded_at_tick", Json::from(*at))]))
@@ -830,12 +840,22 @@ mod tests {
         assert_eq!(m.events.len(), MAX_MODULE_EVENTS);
         assert_eq!(m.base.get("a"), Some(&(1, 1)), "a's load folded into the base");
         assert!(!m.base.contains_key("b"), "b was unloaded");
-        let at = m.builds_at(u64::MAX);
+        let at = m.builds_at(u64::MAX).unwrap();
         assert_eq!(at.get("c").map(|x| x.0), Some(100 + MAX_MODULE_EVENTS as u64 - 1));
-        assert_eq!(m.builds_at(2).get("a"), Some(&(1, 1)));
+        // Review: ticks before the folded events aren't known any more (the base is "after" them).
+        assert_eq!(m.known_from, 4);
+        assert_eq!(m.builds_at(2), None);
+        assert_eq!(m.builds_at(4).unwrap().get("a"), Some(&(1, 1)));
+        assert_eq!(m.builds_at(11).unwrap().get("c"), Some(&(100, 10)));
+        // A comparison at an unknown tick says it can't tell; the file format keeps the bound.
+        let parsed = ModuleHistory::from_json(&Json::parse(&m.to_json().to_string()).unwrap()).unwrap();
+        assert_eq!(&parsed, m);
+        let t = |h: &ModuleHistory| Trace { modules: Some(h.clone()), ..Trace::default() };
+        assert!(module_differences(&t(m), &t(m), 2).is_none());
+        assert_eq!(module_differences(&t(m), &t(m), 50).map(|d| d.len()), Some(0));
         // A disabled module isn't running.
         log.note_module(&ev(9999, "a", "disabled", 1));
-        assert!(!log.modules().builds_at(u64::MAX).contains_key("a"));
+        assert!(!log.modules().builds_at(u64::MAX).unwrap().contains_key("a"));
     }
 
     #[test]
