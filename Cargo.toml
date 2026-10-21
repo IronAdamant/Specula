@@ -16,6 +16,9 @@ members = [
     "crates/specula-sdk",
     "crates/specula-logic",
     "crates/specula-physics",
+    "crates/specula-via",
+    "crates/specula-mens",
+    "crates/specula-locus",
     "crates/specula-lex",
     "crates/specula-balance",
     "crates/specula",
@@ -60,6 +63,9 @@ specula-ui = { path = "crates/specula-ui" }
 specula-sdk = { path = "crates/specula-sdk" }
 specula-logic = { path = "crates/specula-logic" }
 specula-physics = { path = "crates/specula-physics" }
+specula-via = { path = "crates/specula-via" }
+specula-mens = { path = "crates/specula-mens" }
+specula-locus = { path = "crates/specula-locus" }
 specula-lex = { path = "crates/specula-lex" }
 specula-balance = { path = "crates/specula-balance" }
 
@@ -96,6 +102,12 @@ opt-level = 2
 [profile.dev.package.specula-logic]
 opt-level = 2
 [profile.dev.package.specula-sdk]
+opt-level = 2
+[profile.dev.package.specula-via]
+opt-level = 2
+[profile.dev.package.specula-mens]
+opt-level = 2
+[profile.dev.package.specula-locus]
 opt-level = 2
 [profile.dev.package.specula]
 opt-level = 2

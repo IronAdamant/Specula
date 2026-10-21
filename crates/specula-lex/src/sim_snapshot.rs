@@ -9,7 +9,7 @@
 //! the same state under other rules is another game.
 //!
 //! Sepulcra's `--rules lex` mode saves its Lex run through this (in the game's section); live
-//! runs (`lex_live`) aren't in save games yet (SAVES.md, "Lex").
+//! runs (`lex_live`) through it in their own section (SAVES.md, "Lex").
 
 use super::*;
 use specula_core::bytes::{ByteReader, ByteWriter, DecodeError};
@@ -279,7 +279,18 @@ impl Sim {
     /// A run from [`Sim::save_state`]'s bytes against `rules` (which must be the rules it was
     /// saved with) and the hooks the rules need.
     pub fn restore(rules: Arc<Rules>, natives: &Natives, bytes: &[u8]) -> Result<Sim, SnapshotError> {
-        let mut sim = Sim::new(Arc::clone(&rules), 0, natives).map_err(|m| SnapshotError { code: "native_unbound", message: m, offset: None })?;
+        let sim = Sim::new(Arc::clone(&rules), 0, natives).map_err(|m| SnapshotError { code: "native_unbound", message: m, offset: None })?;
+        Self::restore_into(sim, rules, bytes)
+    }
+
+    /// [`Sim::restore`] for a run that leaves hooks without an in-process implementation to a
+    /// host ([`Sim::new_hosted`]: live Lex).
+    pub fn restore_hosted(rules: Arc<Rules>, natives: &Natives, bytes: &[u8]) -> Result<Sim, SnapshotError> {
+        let sim = Sim::new_hosted(Arc::clone(&rules), 0, natives).map_err(|m| SnapshotError { code: "native_unbound", message: m, offset: None })?;
+        Self::restore_into(sim, rules, bytes)
+    }
+
+    fn restore_into(mut sim: Sim, rules: Arc<Rules>, bytes: &[u8]) -> Result<Sim, SnapshotError> {
         let r0 = &*rules;
         let mut r = ByteReader::new(bytes);
         let d = dec;

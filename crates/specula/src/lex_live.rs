@@ -39,6 +39,9 @@
 //! **Commands** (`action: command`) apply at once, at the run's current tick (exactly as
 //! `lex_simulate` applies commands stamped with that tick), and are journaled with it.
 
+mod save;
+pub(crate) use save::{parse_state, LiveSnapshot};
+
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -181,6 +184,8 @@ pub struct Start {
     pub params: Json,
     pub present: Vec<Present>,
     pub input: Option<Arc<InputSpec>>,
+    /// The set's document as compiled (a save game keeps it, so a load compiles the same rules).
+    pub doc: Option<Arc<Json>>,
 }
 
 /// Entities with every tag in `tags` (and none of the `!tag`s) are shown as `spawn`.
@@ -237,6 +242,11 @@ struct Run {
     recent: VecDeque<Json>,
     hook_calls: u64,
     hook_failures: u64,
+    /// The set's document as compiled (for save games; `None`: started without one, tests).
+    doc: Option<Arc<Json>>,
+    /// Journal entries a save game left out (it keeps the newest that fit): `journal` starts
+    /// after them.
+    journal_dropped: usize,
     /// Module hook args, reused call to call.
     args: Json,
 }
@@ -298,9 +308,29 @@ impl Live {
         self.limits = limits;
     }
 
-    /// The live sets, by name.
-    pub(crate) fn sets(&self) -> Vec<String> {
-        self.runs.keys().cloned().collect()
+    /// What the live runs are, for the desync detector and save games (`None`: no run): each
+    /// set's Lex state and its anchor, credit, debt and counters (what decides when it steps).
+    /// What it presents is in the world hash, not here (a presented entity someone deleted is
+    /// still listed by the saving engine until the next presentation, but not by a loaded one).
+    pub(crate) fn state_hash(&self) -> Option<u64> {
+        if self.runs.is_empty() {
+            return None;
+        }
+        let mut h = specula_core::hash::StableHasher::with_seed(0x6c65_785f_6c69_7665);
+        h.write_u64(self.next_first as u64);
+        for (set, r) in &self.runs {
+            h.write_str(set);
+            h.write_u64(r.sim.hash());
+            h.write_u64(r.started);
+            h.write_i64(r.credit);
+            h.write_u64(r.behind);
+            h.write_bool(r.halted.is_some());
+            h.write_u64((r.journal_dropped + r.journal.len()) as u64);
+            h.write_u64(r.input_journaled as u64);
+            h.write_u64(r.input_dropped);
+            h.write_u64(r.hidden as u64);
+        }
+        Some(h.finish())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -839,6 +869,7 @@ impl Live {
                     params: run.params.clone(),
                     present: run.present_src.clone(),
                     input: run.input.as_ref().map(|i| Arc::clone(&i.spec)),
+                    doc: run.doc.clone(),
                 };
                 if let Err(e) = env.swarm.check_claimed_path(&format!("/{ROOT}/{set}"), w, "restart this live run") {
                     return world_error(&e);
@@ -896,10 +927,18 @@ impl Live {
                     ("outcome", run.sim.outcome().map_or(Json::Null, |(r, t)| Json::obj([("result", Json::from(r)), ("tick", Json::from(t))]))),
                     ("commands", Json::Arr(page)),
                     ("total", Json::from(run.journal.len())),
+                    // Commands a save game left out (it keeps the newest): this journal starts after
+                    // them, so it replays only from a state saved at its first command.
+                    ("dropped_before", Json::from(run.journal_dropped)),
                     ("next_offset", next.map_or(Json::Null, Json::from)),
+                    ("replayable", Json::Bool(run.journal_dropped == 0)),
                     (
                         "replay",
-                        Json::from("lex_simulate {set, seed, params, ticks: tick, commands} with these commands (tick, command, args) reaches this hash when no module hook writes the world"),
+                        Json::from(if run.journal_dropped == 0 {
+                            "lex_simulate {set, seed, params, ticks: tick, commands} with these commands (tick, command, args) reaches this hash when no module hook writes the world".to_owned()
+                        } else {
+                            format!("a replay from tick 0 isn't possible: a save game left out the first {} commands (it keeps the newest that fit); these commands replay only from a state saved at the first of them", run.journal_dropped)
+                        }),
                     ),
                 ]);
                 ToolOutput::text(j.to_pretty())
@@ -968,6 +1007,8 @@ impl Live {
             hook_calls: 0,
             hook_failures: 0,
             args: Json::Null,
+            doc: s.doc,
+            journal_dropped: 0,
         };
         present(env.world, env.swarm, env.tick, &mut run);
         let mut j = status_json(&s.set, &run, env.natives);
@@ -989,7 +1030,7 @@ impl Live {
         let stepping = self.runs.values().filter(|r| r.halted.is_none() && r.sim.outcome().is_none()).count().max(1);
         let share = i64::try_from((limits.work_per_tick / stepping as u64).max(1)).unwrap_or(i64::MAX);
         let first = self.next_first % n;
-        self.next_first = self.next_first.wrapping_add(1);
+        self.next_first = (first + 1) % n;
         let live_agents = self.live_agents.as_deref();
         let order: Vec<String> = self.runs.keys().cycle().skip(first).take(self.runs.len()).cloned().collect();
         for set in order {
@@ -1306,7 +1347,7 @@ fn parse(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<Result<Liv
                 Err(ds) => return Ok(Err(crate::lex_tools::err_with("invalid", "the rules don't compile; fix these first (each says what to change)", vec![("diagnostics", crate::lex_tools::diag_json(&ds, 50))]))),
             };
             let input = input_arg(args, &rules)?;
-            LiveCall::Start(Box::new(Start { set, rules, seed, params: Json::Obj(params), present, input }))
+            LiveCall::Start(Box::new(Start { set, rules, seed, params: Json::Obj(params), present, input, doc: Some(Arc::new(l.doc.to_json())) }))
         }
         "input" => {
             check_keys(args, "lex_live input", &[&["action", "set", "actions", "ticks"]])?;
@@ -1531,7 +1572,7 @@ mod tests {
     }
 
     fn start(present: Vec<Present>) -> LiveCall {
-        LiveCall::Start(Box::new(Start { set: "t".into(), rules: rules(), seed: 3, params: Json::Obj(Vec::new()), present, input: None }))
+        LiveCall::Start(Box::new(Start { set: "t".into(), rules: rules(), seed: 3, params: Json::Obj(Vec::new()), present, input: None, doc: None }))
     }
 
     fn walkers_as_spheres() -> Vec<Present> {
@@ -1681,7 +1722,7 @@ mod tests {
                                      {"type": "attack", "targets": ["enemy"], "range": "1000m", "cooldown": "0.034s", "delivery": "pulse", "payload": [{"damage": "0pt"}]}]},
                 "waves": {"kind": "waves", "waves": [{"groups": [{"archetype": "e", "count": 600, "at": ["lane"], "every": "0s"}]}]}}}"#;
             let rules = Arc::new(specula_lex::compile(&specula_lex::Document::parse(heavy).unwrap(), &Options::default()).unwrap().rules);
-            let s = Start { set: set.into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input: None };
+            let s = Start { set: set.into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input: None, doc: None };
             assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
             rig.ticks_with(5, limits);
             let run = rig.run_status(set);
@@ -1713,7 +1754,7 @@ mod tests {
             // allowance that runs out after about one (so the run is often behind).
             let mut rig = Rig::new(15);
             rig.natives.insert("test.nap".into(), Arc::new(Nap(nap)) as Arc<dyn specula_lex::NativeHook>);
-            let s = Start { set: "t".into(), rules: Arc::clone(&rules), seed: 2, params: Json::Obj(Vec::new()), present: walkers_as_spheres(), input: None };
+            let s = Start { set: "t".into(), rules: Arc::clone(&rules), seed: 2, params: Json::Obj(Vec::new()), present: walkers_as_spheres(), input: None, doc: None };
             assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
             let limits = Limits { work_per_tick: 3, ..LIMITS };
             let mut out = Vec::new();
@@ -1819,7 +1860,7 @@ mod tests {
             "bad": {"kind": "command", "do": [{"native": "bump"}, {"native": "missing"}]},
             "good": {"kind": "command", "do": [{"native": "bump"}]}}}"#;
         let rules = Arc::new(specula_lex::compile(&specula_lex::Document::parse(set).unwrap(), &Options::default()).unwrap().rules);
-        let s = Start { set: "atom".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input: None };
+        let s = Start { set: "atom".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input: None, doc: None };
         assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
         let before = rig.logic.test_snapshot("counter");
         let next_id = rig.world.next_id();
@@ -1865,7 +1906,7 @@ mod tests {
             let rules = Arc::new(specula_lex::compile(&specula_lex::Document::parse(&heavy(count)).unwrap(), &Options::default()).unwrap().rules);
             let mut rig = Rig::new(60);
             rig.natives.insert("test.nap".into(), Arc::new(Nap(nap)) as Arc<dyn specula_lex::NativeHook>);
-            let s = Start { set: "heavy".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input: None };
+            let s = Start { set: "heavy".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input: None, doc: None };
             assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
             let mut out = Vec::new();
             for _ in 0..90 {
@@ -1976,7 +2017,7 @@ mod tests {
         let bob_w = Writer { name: "bob", session: Some("bbbbbb22") };
         load_counter(&mut rig);
         let (rules, input) = bump_set(false);
-        let s = Start { set: "t".into(), rules: Arc::clone(&rules), seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input };
+        let s = Start { set: "t".into(), rules: Arc::clone(&rules), seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input, doc: None };
         assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
         rig.swarm.take_claim(&rig.world, &bob, ClaimSpec { scope: Scope::path("/counter").unwrap(), lease: DEFAULT_LEASE, note: String::new() }).unwrap();
         let direct = rig.call(LiveCall::Command { set: "t".into(), name: "bump".into(), args: Json::Null });
@@ -2010,7 +2051,7 @@ mod tests {
         let mut rig = Rig::new(60);
         load_counter(&mut rig);
         let (rules, input) = bump_set(true);
-        let s = Start { set: "t".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input };
+        let s = Start { set: "t".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input, doc: None };
         assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
         assert!(!rig.call(LiveCall::Input { set: "t".into(), actions: Json::obj([("go", Json::Bool(true))]), ticks: 100 }).is_error);
         rig.ticks(20);
@@ -2038,7 +2079,7 @@ mod tests {
         let mut rig = Rig::new(30);
         load_counter(&mut rig);
         let (rules, input) = bump_set(false);
-        let s = Start { set: "t".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input };
+        let s = Start { set: "t".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input, doc: None };
         assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
         let ann_live = [("aaaaaa11".to_owned(), "ann".to_owned())];
         for gone in [&[][..], &[("aaaaaa11".to_owned(), "annie".to_owned())][..]] {
@@ -2065,7 +2106,7 @@ mod tests {
         let mut rig = Rig::new(30);
         load_counter(&mut rig);
         let (rules, input) = bump_set(false);
-        let s = Start { set: "t".into(), rules: Arc::clone(&rules), seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input };
+        let s = Start { set: "t".into(), rules: Arc::clone(&rules), seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input, doc: None };
         assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
         rig.live.end_holds(&[("aaaaaa11".to_owned(), "ann".to_owned())]);
         assert!(!rig.call(LiveCall::Input { set: "t".into(), actions: Json::obj([("go", Json::Bool(true))]), ticks: 1000 }).is_error);
@@ -2081,7 +2122,7 @@ mod tests {
         assert!(!rig.live.has_holds());
 
         // Two runs, one halted: the other gets the whole allowance.
-        let s = Start { set: "u".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input: None };
+        let s = Start { set: "u".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input: None, doc: None };
         assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
         rig.live.runs.get_mut("u").unwrap().halted = Some(Json::obj([("error", Json::from("test"))]));
         rig.live.runs.get_mut("t").unwrap().credit = 0;
@@ -2099,7 +2140,7 @@ mod tests {
         let mut rig = Rig::new(60);
         load_counter(&mut rig);
         let (rules, input) = bump_set(false);
-        let s = Start { set: "t".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input };
+        let s = Start { set: "t".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input, doc: None };
         assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
         rig.ticks(4);
         assert!(!rig.call(LiveCall::Input { set: "t".into(), actions: Json::obj([("go", Json::Bool(true))]), ticks: 5 }).is_error);
@@ -2123,6 +2164,146 @@ mod tests {
         assert!(out.is_error && json(&out).get("error") == Some(&Json::from("held_by_another")), "{}", json(&out));
     }
 
+    /// A live run with input bindings, a tower that pulses, a random stream, presented entities
+    /// and a journal: its document (for saves), started.
+    fn saveable_run(rig: &mut Rig) {
+        let extra = r#""controls": {"kind": "data", "value": {
+            "actions": {"format": "specula.input.v1", "actions": [{"name": "build", "kind": "button", "bindings": ["Key.Space"]}]},
+            "bindings": [{"action": "build", "command": "build", "args": {"at": "a"}}]}},
+            "zap": {"kind": "archetype", "tags": ["stone"], "behaviours": [{"type": "attack", "targets": ["enemy"], "range": "20m", "cooldown": "0.3s", "delivery": "pulse", "payload": [{"damage": "1pt"}]}]},
+            "zapper": {"kind": "command", "args": {"at": "site"}, "do": [{"spawn": "zap", "at": "arg.at"}]},
+            "tithe": {"kind": "timer", "every": "0.5s", "do": [{"add": "gold", "amount": "rand(loot, 0, 3)"}]},"#;
+        let items = RULES.replace(r#""gold": {"kind": "resource", "start": 5},"#, &format!(r#""gold": {{"kind": "resource", "start": 50}}, {extra}"#));
+        let doc = Json::parse(&items).unwrap();
+        let rules = Arc::new(specula_lex::compile(&specula_lex::Document::from_json(&doc).unwrap(), &Options::default()).unwrap().rules);
+        let input = input_arg(&Json::obj([("input", Json::from("controls"))]), &rules).unwrap();
+        let present = vec![
+            Present { tags: vec!["enemy".into()], spawn: Json::obj([("shape", Json::from("sphere"))]) },
+            Present { tags: vec!["stone".into()], spawn: Json::obj([("shape", Json::from("cube"))]) },
+        ];
+        let s = Start { set: "t".into(), rules, seed: 4, params: Json::Obj(Vec::new()), present, input, doc: Some(Arc::new(doc)) };
+        assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
+        rig.ticks(10);
+        assert!(!rig.call(LiveCall::Command { set: "t".into(), name: "zapper".into(), args: Json::parse(r#"{"at": "a"}"#).unwrap() }).is_error);
+        assert!(!rig.call(LiveCall::Input { set: "t".into(), actions: Json::obj([("build", Json::Bool(true))]), ticks: 1 }).is_error);
+        rig.ticks(40);
+    }
+
+    /// Live runs in save games: a run saved mid-way and loaded into another engine (the world
+    /// as saved, a fresh `Live`) is the same run (Lex state, anchor, credit, journal, what it
+    /// shows, adopted by id) and steps on identically, world hash included.
+    #[test]
+    fn a_saved_live_run_loads_and_continues_identically() {
+        let mut a = Rig::new(30);
+        saveable_run(&mut a);
+        let bytes = a.live.save_state().unwrap().expect("a run is live");
+        let mut b = Rig::new(30);
+        b.world = a.world.clone();
+        b.tick = a.tick;
+        let snap = parse_state(&bytes, &b.world, b.tick, &b.natives).unwrap();
+        assert!(b.live.apply_state(Some(snap)).is_empty(), "no notes");
+        assert_eq!(b.run_status("t").to_string(), a.run_status("t").to_string());
+        assert_eq!(b.live.state_hash(), a.live.state_hash());
+        assert_eq!(b.run_status("t").get("hash"), a.run_status("t").get("hash"));
+        assert_eq!(b.live.save_state().unwrap(), Some(bytes.clone()), "the section round-trips byte for byte");
+        let journal = |r: &mut Rig| json(&r.call(LiveCall::Journal { set: "t".into(), offset: 0, limit: 100 })).get("commands").cloned();
+        assert_eq!(journal(&mut b), journal(&mut a));
+        for t in 0..300 {
+            a.ticks(1);
+            b.ticks(1);
+            assert_eq!((a.live.state_hash(), a.world.state_hash()), (b.live.state_hash(), b.world.state_hash()), "{t} ticks after the load");
+        }
+        let (sa, sb) = (a.run_status("t"), b.run_status("t"));
+        assert_eq!((sa.get("tick"), sa.get("hash"), sa.get("shown")), (sb.get("tick"), sb.get("hash"), sb.get("shown")));
+        // Commands after the load land the same way too.
+        for r in [&mut a, &mut b] {
+            assert!(!r.call(LiveCall::Command { set: "t".into(), name: "zapper".into(), args: Json::parse(r#"{"at": "a"}"#).unwrap() }).is_error);
+            r.ticks(30);
+        }
+        assert_eq!((a.live.state_hash(), a.world.state_hash()), (b.live.state_hash(), b.world.state_hash()));
+    }
+
+    /// Review round 7 (adopt.py): a presented entity deleted before the save isn't a mismatch:
+    /// the loaded run adopts what the world holds, matches the saving one's hashes at once, and
+    /// both show the entity again the same way.
+    #[test]
+    fn a_presented_entity_deleted_before_a_save_still_matches() {
+        let mut a = Rig::new(30);
+        saveable_run(&mut a);
+        let shown = a.shown();
+        let gone = a.world.find_path(&shown[0]).unwrap();
+        a.world.delete(&EntityKey::Id(gone), None).unwrap();
+        let bytes = a.live.save_state().unwrap().unwrap();
+        let mut b = Rig::new(30);
+        b.world = a.world.clone();
+        b.tick = a.tick;
+        let notes = b.live.apply_state(Some(parse_state(&bytes, &b.world, b.tick, &b.natives).unwrap()));
+        assert!(notes.iter().any(|n| n.get("warning") == Some(&Json::from("live_lex_presentation"))), "{notes:?}");
+        assert_eq!((b.live.state_hash(), b.world.state_hash()), (a.live.state_hash(), a.world.state_hash()), "matches at the load");
+        for t in 0..60 {
+            a.ticks(1);
+            b.ticks(1);
+            assert_eq!((a.live.state_hash(), a.world.state_hash()), (b.live.state_hash(), b.world.state_hash()), "{t} ticks after the load");
+        }
+        assert_eq!(a.shown(), b.shown());
+    }
+
+    /// An agent's hold isn't saved (sessions aren't): a load starts without it.
+    #[test]
+    fn holds_are_left_out_of_saves() {
+        let mut a = Rig::new(30);
+        saveable_run(&mut a);
+        assert!(!a.call(LiveCall::Input { set: "t".into(), actions: Json::obj([("build", Json::Bool(true))]), ticks: 100 }).is_error);
+        a.ticks(1);
+        assert_eq!(a.live.holds_count(), 1);
+        let bytes = a.live.save_state().unwrap().unwrap();
+        let mut b = Rig::new(30);
+        b.world = a.world.clone();
+        b.live.apply_state(Some(parse_state(&bytes, &b.world, a.tick, &b.natives).unwrap()));
+        assert_eq!(b.live.holds_count(), 0);
+        assert_eq!(b.run_status("t").get("input").and_then(|i| i.get("held")), Some(&Json::obj::<&str>([])));
+    }
+
+    /// The section is checked, never trusted: cut at every length and with bits flipped it is an
+    /// error or a run that steps (never a panic); a section that doesn't fit the save is refused.
+    #[test]
+    fn damaged_live_sections_are_errors_never_panics() {
+        let mut a = Rig::new(30);
+        saveable_run(&mut a);
+        let bytes = a.live.save_state().unwrap().unwrap();
+        let mut b = Rig::new(30);
+        b.world = a.world.clone();
+        let step = |snap: LiveSnapshot, base: &World| {
+            let mut r = Rig::new(30);
+            r.world = base.clone();
+            r.tick = 60;
+            r.live.apply_state(Some(snap));
+            r.ticks(40);
+        };
+        for cut in (0..bytes.len()).step_by(1 + bytes.len() / 600) {
+            assert!(parse_state(&bytes[..cut], &b.world, a.tick, &b.natives).is_err(), "cut at {cut}");
+        }
+        let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut accepted = 0;
+        for _ in 0..400 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let mut bad = bytes.clone();
+            let at = (x as usize) % bad.len();
+            bad[at] ^= 1 << ((x >> 32) % 8);
+            if let Ok(snap) = parse_state(&bad, &b.world, a.tick, &b.natives) {
+                accepted += 1;
+                step(snap, &b.world);
+            }
+        }
+        println!("{accepted} of 400 flipped sections were accepted (each stepped 40 ticks)");
+        // A section of another version is refused.
+        let mut v = bytes.clone();
+        v[0] = 9;
+        assert_eq!(parse_state(&v, &b.world, a.tick, &b.natives).err().map(|e| e.code), Some("unsupported_version"));
+    }
+
     #[test]
     fn input_bindings_make_a_run_playable_without_a_hosted_game() {
         let controls = r#""controls": {"kind": "data", "value": {
@@ -2132,7 +2313,7 @@ mod tests {
         let rules = Arc::new(specula_lex::compile(&specula_lex::Document::parse(&items).unwrap(), &Options::default()).unwrap().rules);
         let input = input_arg(&Json::obj([("input", Json::from("controls"))]), &rules).unwrap();
         let mut rig = Rig::new(30);
-        let s = Start { set: "t".into(), rules: Arc::clone(&rules), seed: 3, params: Json::Obj(Vec::new()), present: walkers_as_spheres(), input };
+        let s = Start { set: "t".into(), rules: Arc::clone(&rules), seed: 3, params: Json::Obj(Vec::new()), present: walkers_as_spheres(), input, doc: None };
         assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
         rig.ticks(5);
         // A key press at the window (shorter than a tick still counts).
@@ -2187,7 +2368,7 @@ mod tests {
         let items = RULES.replace(r#""hook": "fx/glow""#, r#""hook": "test.cmdboom""#);
         let rules = Arc::new(specula_lex::compile(&specula_lex::Document::parse(&items).unwrap(), &Options::default()).unwrap().rules);
         rig.natives.insert("test.cmdboom".into(), Arc::new(CmdBoom) as Arc<dyn specula_lex::NativeHook>);
-        let s = Start { set: "t".into(), rules, seed: 3, params: Json::Obj(Vec::new()), present: Vec::new(), input: None };
+        let s = Start { set: "t".into(), rules, seed: 3, params: Json::Obj(Vec::new()), present: Vec::new(), input: None, doc: None };
         assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
         rig.ticks(30);
         assert!(rig.call(LiveCall::Command { set: "t".into(), name: "ping".into(), args: Json::Null }).is_error);
@@ -2216,7 +2397,7 @@ mod tests {
         let items = RULES.replace(r#""glow": {"kind": "native", "hook": "fx/glow", "reason": "a world effect", "phase": "any"},"#, r#""glow": {"kind": "native", "hook": "test.boom", "reason": "a test", "phase": "any"}, "tick_boom": {"kind": "timer", "every": "1t", "do": [{"native": "glow"}]},"#);
         let rules = Arc::new(specula_lex::compile(&specula_lex::Document::parse(&items).unwrap(), &Options::default()).unwrap().rules);
         rig.natives.insert("test.boom".into(), Arc::new(Boom) as Arc<dyn specula_lex::NativeHook>);
-        let s = Start { set: "b".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input: None };
+        let s = Start { set: "b".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input: None, doc: None };
         assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
         rig.ticks(6);
         let out = rig.call(LiveCall::Resume { set: "b".into() });
@@ -2242,7 +2423,7 @@ mod tests {
         let rules = Arc::new(specula_lex::compile(&specula_lex::Document::parse(&items).unwrap(), &Options::default()).unwrap().rules);
         let mut rig = Rig::new(30);
         rig.natives.insert("test.boom".into(), Arc::new(Boom) as Arc<dyn specula_lex::NativeHook>);
-        let s = Start { set: "t".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input: None };
+        let s = Start { set: "t".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input: None, doc: None };
         assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
         rig.ticks(10);
         let run = &json(&rig.call(LiveCall::Status { set: Some("t".into()) })).get("runs").and_then(Json::as_array).unwrap()[0].clone();
@@ -2339,7 +2520,7 @@ mod tests {
             "jump": {"kind": "command", "do": [{"native": "launch", "args": {"speed": 7}}, {"native": "missing"}]},
             "hop": {"kind": "command", "do": [{"native": "launch", "args": {"speed": 7}}]}}}"#;
         let rules = Arc::new(specula_lex::compile(&specula_lex::Document::parse(set).unwrap(), &Options::default()).unwrap().rules);
-        let s = Start { set: "atom".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input: None };
+        let s = Start { set: "atom".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input: None, doc: None };
         assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
         let hash = json(&rig.call(LiveCall::Status { set: Some("atom".into()) })).get("runs").and_then(Json::as_array).unwrap()[0].get("hash").cloned();
         let out = rig.call(LiveCall::Command { set: "atom".into(), name: "jump".into(), args: Json::Null });
@@ -2359,10 +2540,10 @@ mod tests {
         assert!(!rig.call(start(Vec::new())).is_error);
         assert_eq!(json(&rig.call(start(Vec::new()))).get("error"), Some(&Json::from("already_running")));
         for k in 0..3 {
-            let s = Start { set: format!("t{k}"), rules: rules(), seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input: None };
+            let s = Start { set: format!("t{k}"), rules: rules(), seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input: None, doc: None };
             assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
         }
-        let s = Start { set: "t9".into(), rules: rules(), seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input: None };
+        let s = Start { set: "t9".into(), rules: rules(), seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input: None, doc: None };
         assert_eq!(json(&rig.call(LiveCall::Start(Box::new(s)))).get("error"), Some(&Json::from("runs_full")));
     }
 }
