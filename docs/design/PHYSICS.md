@@ -372,8 +372,10 @@ desync marks (a `body` field) and the world hash layout are unchanged. Measured 
 **Threads: a persistent, deterministic pool** (`specula-physics/src/parallel.rs`; `Settings::threads`, the engine's
 `--physics-threads N`, default 1). Started once; between steps the workers spin briefly then sleep. Work is split into
 chunks that whoever is free claims, the stepping thread too, and a phase ends when its chunks are done: a worker the
-machine doesn't schedule in time misses the step instead of holding it up (the scoped threads it replaces, started
-each step, saw 50 ms steps on a loaded machine). No `unsafe`: bodies and impulses live in atomics (`f32` bits) while a
+machine hasn't scheduled yet misses the step (the scoped threads it replaces were started each step, and every step
+waited for all of them: 50 ms steps on a loaded machine). A worker descheduled while it holds a claimed chunk still
+stalls the others at that phase's end until it runs again: under a 40-process load the review measured 4 threads at
+66 ms a step against 49 on one. Hence opt-in. No `unsafe`: bodies and impulses live in atomics (`f32` bits) while a
 step runs, each body on its own cache line. It runs:
 - the narrowphase's pair tests (the cheap checks stay on the stepping thread), results put back in pair order;
 - with **graph colouring** (`Settings::coloured`, the world's `physics.coloured`), the contact solver: constraints

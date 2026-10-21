@@ -80,9 +80,9 @@ pub struct Settings {
     pub max_cosmetic_pairs: usize,
     /// Threads physics may use (default 1: the calling thread only): the narrowphase's pair
     /// tests, and with `coloured` the contact solver, on a persistent pool
-    /// ([`crate::parallel`]: started once; a thread the machine doesn't schedule in time misses
-    /// the step instead of holding it up). Results never depend on it. Opt-in: on a busy machine
-    /// more threads compete with everything else.
+    /// ([`crate::parallel`]: started once; a thread not yet scheduled misses the step, but one
+    /// descheduled holding work stalls the step until it runs). Results never depend on it.
+    /// Opt-in: on a busy machine more threads can be slower than one.
     pub threads: usize,
     /// Solve contacts in graph-colour order (Box2D v3, see [`crate::solver::colour`]) instead
     /// of pair order. Needed to solve them on several threads (`threads` > 1); deterministic

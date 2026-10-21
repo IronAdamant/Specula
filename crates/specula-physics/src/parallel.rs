@@ -9,9 +9,12 @@
 //!   with the same result; the overflow group, the joints and everything between passes run
 //!   serially. Every constraint runs the very code the single-threaded solver runs, on bodies and
 //!   impulses loaded bit for bit, so the states are the same on any thread count.
-//! - **Never waiting on a late thread.** Work is split into chunks that whoever is free claims
-//!   (the step's own thread too); a phase ends when its chunks are done, so a worker the
-//!   machine hasn't scheduled simply misses the step instead of holding it up.
+//! - **Not waiting on threads that haven't started.** Work is split into chunks that whoever is
+//!   free claims (the step's own thread too); a phase ends when its chunks are done, so a worker
+//!   the machine hasn't scheduled yet simply misses the step. But a worker descheduled while it
+//!   holds a claimed chunk does stall the others at that phase's end until it runs again: on a
+//!   busy machine more threads can be slower than one (a review run under a 40-process load:
+//!   4 threads 66 ms a step against 49 on one), which is why threads are opt-in.
 //! - **No unsafe.** Bodies and impulses live in atomics (`f32` bits) while the step runs; the
 //!   colouring guarantees no two threads write the same body in a phase, and a phase's
 //!   completion count (release, acquire) orders the phases.
