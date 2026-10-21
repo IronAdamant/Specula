@@ -68,12 +68,110 @@ def widget_texts(mcp):
     return out
 
 
+def module_workspace(ws):
+    """A small Cargo workspace holding copies of specula-core, specula-sdk and ambulo (as
+    mods/ambulo), so fix builds edit copies, never the repo's own module."""
+    import re
+    ignore = shutil.ignore_patterns("target")
+    for c in ("specula-core", "specula-sdk"):
+        shutil.copytree(ROOT / "crates" / c, ws / "crates" / c, ignore=ignore)
+    shutil.copytree(ROOT / "games" / "ambulo", ws / "mods" / "ambulo", ignore=ignore)
+    shutil.copytree(ROOT / ".cargo", ws / ".cargo")
+    manifest = (ROOT / "Cargo.toml").read_text()
+    manifest = re.sub(r"members = \[.*?\]", 'members = ["crates/specula-core", "crates/specula-sdk", "mods/*"]', manifest, flags=re.S)
+    deps = re.search(r"\[workspace\.dependencies\]\n(.*?)\n\n", manifest, flags=re.S)
+    if deps:
+        kept = "\n".join(l for l in deps.group(1).splitlines() if l.startswith(("specula-core ", "specula-sdk ")) or not l.startswith("specula"))
+        manifest = manifest.replace(deps.group(1), kept)
+    (ws / "Cargo.toml").write_text(manifest)
+    (ws / "emptyassets").mkdir()
+
+
+def fix_checks(args, work, check):
+    """logic_build {fix: true} on a mounted module (review round 2): the fix is the caller's
+    journaled change (never `disk`), claims stop it, and a file another agent changes during the
+    build keeps their text."""
+    ws = work / "ws"
+    module_workspace(ws)
+    lib = ws / "mods" / "ambulo" / "src" / "lib.rs"
+    orig = lib.read_text(encoding="utf-8")
+    warn = orig + "\npub fn review_probe() -> i32 {\n    let mut x = 1;\n    x\n}\n"
+    P = "modules/ambulo/src/lib.rs"
+    exe = exe_path("sepulcra")
+    env_target = os.environ.get("CARGO_TARGET_DIR")
+    os.environ["CARGO_TARGET_DIR"] = str(work / "wstarget")
+    try:
+        with Engine(exe, args.port + 1, work / "engine-fix.log", "--headless", "--assets", str(ws / "emptyassets"), "--captures", str(work / "caps-fix"), "--worlds", str(work / "worlds-fix"), "--saves", str(work / "saves-fix"), "--", "--mute", cwd=str(ws)) as eng:
+            ann = eng.mcp("fix-ann")
+            bob = eng.mcp("fix-bob")
+            ann.hello("ann")
+            bob.hello("bob")
+            m = ann.json("project_mount", module="mods/ambulo")
+            ann.call("logic_build", path="mods/ambulo", check=True)  # warm (the first build compiles the SDK)
+            # A: ann's fix is ann's journaled change; she can undo it.
+            v = ann.json("project_read", path=P, problems=False)["version"]
+            ann.json("project_write", path=P, text=warn, expect_version=v)
+            r = ann.json("logic_build", path="mods/ambulo", fix=True, reload=False)
+            time.sleep(2.5)  # past the watcher: nothing may come in as `disk`
+            disk = lib.read_text(encoding="utf-8")
+            hist = ann.json("world_history", path_prefix="/project/" + P, limit=3)["entries"]
+            store = ann.json("project_read", path=P, problems=False)["text"]
+            check("fix:true on a mounted module is the caller's journaled change",
+                  "let x = 1" in disk and "let mut x" not in disk and store == disk and hist[0]["by"] == "ann" and hist[0]["kind"] == "file"
+                  and P in r.get("fixes_journaled", {}).get("files", []),
+                  f"{m.get('files')} files mounted; newest entry by {hist[0]['by']} ({hist[0]['kind']}); fixes {r.get('fixes_journaled')}")
+            u = ann.json("world_undo", count=1)
+            check("ann undoes her fix (no undo_conflict)", "let mut x" in lib.read_text(encoding="utf-8") and bool(u.get("undone")), f"undone {u.get('undone')}")
+            # B: bob's claim on the file stops ann's fix.
+            claim = bob.json("claim_take", path="/project/" + P, lease_s=120)
+            before = lib.read_text(encoding="utf-8")
+            e = err_of(ann, "logic_build", path="mods/ambulo", fix=True, reload=False)
+            time.sleep(2.5)
+            check("a claim on a module file stops fix:true", e is not None and lib.read_text(encoding="utf-8") == before, json.dumps(e)[:160] if e else "no error")
+            bob.json("claim_release", id=claim["id"])
+            # C: bob edits the file while ann's fix build runs: his text stands, never a broken mix.
+            results = []
+            for delay in (0.3, 0.8, 1.5):
+                v = ann.json("project_read", path=P, problems=False)["version"]
+                ann.json("project_write", path=P, text=warn, expect_version=v)
+                res = {}
+                th = __import__("threading").Thread(target=lambda: res.setdefault("r", ann.request("tools/call", {"name": "logic_build", "arguments": {"path": "mods/ambulo", "fix": True, "reload": False}})))
+                th.start()
+                time.sleep(delay)
+                v = bob.json("project_read", path=P, problems=False)["version"]
+                bobtext = "// bob's header, written while ann's fix build ran\n" + warn
+                bob.json("project_write", path=P, text=bobtext, expect_version=v)
+                th.join()
+                time.sleep(2.2)
+                disk = lib.read_text(encoding="utf-8")
+                sane = disk in (bobtext, bobtext.replace("let mut x", "let x"))
+                answer = json.loads(res["r"]["content"][0]["text"])
+                results.append((delay, sane, bool(answer.get("fixes_journaled", {}).get("skipped"))))
+                v = ann.json("project_read", path=P, problems=False)["version"]
+                ann.json("project_write", path=P, text=orig, expect_version=v)
+            check("a file changed during the fix build keeps the other agent's text", all(s for _, s, _ in results),
+                  "; ".join(f"delay {d}s: {'sane' if s else 'BROKEN'}{', fix skipped' if k else ''}" for d, s, k in results))
+            # D: a mount inside another (here the assets root) is refused.
+            shutil.copytree(ws / "mods" / "ambulo", ws / "emptyassets" / "mod2", ignore=shutil.ignore_patterns("target"))
+            e = err_of(ann, "project_mount", module="emptyassets/mod2")
+            check("a mount inside another is refused", e is not None and e.get("error") == "mount_overlap", (e or {}).get("message", "")[:120])
+            ann.close()
+            bob.close()
+        check("fix engine shuts down cleanly", eng.exit_code == 0, f"exit {eng.exit_code}")
+    finally:
+        if env_target is None:
+            os.environ.pop("CARGO_TARGET_DIR", None)
+        else:
+            os.environ["CARGO_TARGET_DIR"] = env_target
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=7496)
     ap.add_argument("--window", action="store_true", help="run with a window (default headless)")
     ap.add_argument("--adapter", default=None)
     ap.add_argument("--out", default=str(ROOT / "target" / "project-check"))
+    ap.add_argument("--skip-fix", action="store_true", help="skip the fix:true checks (they build a module workspace with Cargo)")
     args = ap.parse_args()
 
     out = Path(args.out)
@@ -239,6 +337,21 @@ def main():
         r = bob.json("project_patch", path="assets/sounds/sell.json", replace_unreadable=True, ops=[{"set": "loudness", "value": -12}])
         backup = Path(r.get("backup", "")) if r.get("backup") else None
         check("replacing it on purpose backs the bytes up first", backup is not None and backup.read_bytes() == human and b'"loudness": -12' in sell.read_bytes(), str(backup))
+        # Round 2: held again, then the disk put back to the store's text: released.
+        stored = sell.read_bytes()
+        time.sleep(0.05)
+        sell.write_bytes(human)
+        wait_for("held again", lambda: ann.json("project_list", prefix="assets/sounds/sell", limit=1).get("disk_unreadable"), 10.0)
+        time.sleep(0.05)
+        sell.write_bytes(stored)
+        released = wait_for("the release", lambda: not ann.json("project_list", prefix="assets/sounds/sell", limit=1).get("disk_unreadable"), 10.0)
+        # ...and replacing a held file with the very text the store has still replaces it.
+        time.sleep(0.05)
+        sell.write_bytes(human)
+        wait_for("held a third time", lambda: ann.json("project_list", prefix="assets/sounds/sell", limit=1).get("disk_unreadable"), 10.0)
+        same = bob.json("project_write", path="assets/sounds/sell.json", text=stored.decode("utf-8"), replace_unreadable=True)
+        check("a held file is released when the disk gets the store's text back; replace works with the same text",
+              bool(released) and not same.get("unchanged") and same.get("backup") and sell.read_bytes() == stored, f"replace answered version {same.get('version')}")
         # Delete and make again: an old expect_version never matches the new file.
         P = "assets/sounds/aba.json"
         ann.json("project_write", path=P, text=(assets / "sounds" / "ui_hover.json").read_text().replace("ui_hover", "aba"), expect_version=0)
@@ -295,6 +408,8 @@ def main():
         ann.close()
         bob.close()
     check("clean shutdown", eng.exit_code == 0, f"exit {eng.exit_code}")
+    if not args.skip_fix:
+        fix_checks(args, work, check)
     (work / "report.json").write_text(json.dumps(report, indent=2))
     print(f"report: {work / 'report.json'}")
     if failures:

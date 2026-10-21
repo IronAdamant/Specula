@@ -39,7 +39,7 @@ What the store shares with entities is everything the swarm layer gives:
 | path and region claims | **path claims** on a file or a folder (`claim_take {path: "/project/assets/ui"}`); region claims never cover files (they have no place in the world); a whole-world claim (`/`) covers them |
 | journal entries (`world_history`, `world_changes`, `world_rollup`, the board) | the same entries: kind `file`, ops `file_create`, `file_write`, `file_delete` |
 | `world_undo` | the same: undo restores the earlier text **in the engine and on disk** (and hot-reloads it) |
-| replay (`world_hash verify`, the journal-replay test) | every change carries the whole text before and after, so a replay rebuilds the files exactly |
+| replay (`world_hash verify`, the journal-replay test) | every change carries the whole text before and after while the journal's file-text budget keeps it (see *Bounds*): a replay rebuilds the files exactly from changes whose text is kept, and skips older ones whose text was dropped |
 
 `Change::File { path, before, after, import }` is the journal's record (text held as `Arc<str>`, so the store, the
 journal and the replay base share one copy). File changes get ids `FILE_ID_BASE | hash(path)` (bit 63; entity ids
@@ -89,13 +89,22 @@ would mean building a shadow copy of the crate, which its relative path dependen
 *Later*.
 
 **Only real modules mount, and their manifests stay modules.** `project_mount` refuses any folder whose `Cargo.toml`
-isn't a module's (a `cdylib` whose only dependency is `specula-sdk`, by path), the engine's working directory, and
-folders with a `build.rs`: the engine's own crates and the root package are never project files. Every `Cargo.toml`
-commit is checked the same way as text (`check_module_manifest`): no `build`, `links` or proc-macro, no `[workspace]`,
-`[patch]`, `[replace]`, `[target]` or `[build-dependencies]`, and only path dependencies, so a crates.io dependency
-or a build script never reaches the disk. `logic_build {fix: true}` on a mounted module is refused while another agent
-claims any of its files (`Claims::check_subtree`), and the fixes it writes are committed as the caller's change
-(journaled, undoable), not imported as edits by `disk`; if a claim refuses them, the disk gets the store's text back.
+isn't a module's (a `cdylib` whose only dependency is `specula-sdk`, by path, and that path must lead to the SDK
+crate), the engine's working directory, folders with a `build.rs`, and folders inside or holding another mount (the
+assets root included: one disk file never gets two project paths, `mount_overlap`). The engine's own crates and the
+root package are never project files. Every `Cargo.toml` commit is checked the same way (`check_module_manifest_at`):
+no `build`, `links` or proc-macro (nor the `proc_macro` / `build_dependencies` spellings), no `[workspace]`,
+`[patch]`, `[replace]`, `[target]` or `[build-dependencies]`, no renaming another crate to `specula-sdk` with
+`package =`, `lib.path` inside `src/`, and only path dependencies, so a crates.io dependency or a build script never
+reaches the disk. Every `.rs` commit has its compile-time paths checked (`#[path]`, `include_str!`,
+`include_bytes!`, `include!` stay inside `src/`, as `logic_build`'s vet requires).
+
+**`logic_build {fix: true}` on a mounted module never writes the disk itself.** It is refused up front while another
+agent claims any of the module's files (`Claims::check_subtree`). Each round takes the store's texts first, builds
+without fixing, works rustc's fixes out against exactly those texts (`specula_logic::fix::plan`), and commits them as
+the caller's change through the store (claims checked again, journaled, undoable; the engine then writes the disk, so
+nothing is imported as `disk`). A file another agent or a human changed during the build keeps their text: its fixes
+are skipped and reported (`fixes_journaled.skipped`), because their offsets belong to the old text.
 
 ## Tools
 
@@ -165,7 +174,8 @@ humans, editors, Git and the next engine see. They are kept equal like this:
   listed by `project_list` (`disk_unreadable`), never overwritten by a write, an undo or a retry, and refused to
   agents (`disk_unreadable`) until it is fixed on disk (then it is imported) or an agent passes
   `replace_unreadable: true`, which first copies the bytes to a hidden backup next to the file (never mirrored; the
-  answer names it).
+  answer names it; it works even when the new text is the one the store already has). A file put back on disk to
+  exactly the store's text is released.
 - **Links.** A write or delete whose folder is (or passes through) a link or junction is refused before anything is
   committed (`linked_folder`).
 - **At start**, the `assets` mount is scanned and its files enter the store as one `disk` entry at tick 0 (imports,
@@ -174,9 +184,9 @@ humans, editors, Git and the next engine see. They are kept equal like this:
 - **Case.** On Windows two paths that differ only in case are one file: creating one is refused (`case_clash`),
   comparing with Unicode case folding (`Ä` and `ä` clash), and device names (`CON`, `COM1`-`COM9`, `COM¹`,
   `CONIN$`, ...) are refused as names.
-- **Versions never repeat at a path.** A world remembers each deleted file's last version (16,384 paths; older ones
-  raise a floor for every path), and a file made there again continues from it, so an `expect_version` read from the
-  old file can never match the new one.
+- **Versions never repeat at a path.** A world remembers each deleted file's last version (the 16,384 most recently
+  deleted paths; past that the oldest tombstone goes and its version raises a floor for every path), and a file made
+  there again continues from it, so an `expect_version` read from the old file can never match the new one.
 
 ## Bounds
 
@@ -193,8 +203,10 @@ humans, editors, Git and the next engine see. They are kept equal like this:
 
 **File text has its own journal budget** (64 MiB, `MAX_FILE_TEXT_BYTES`), apart from the rings' 48 and 16 MiB: a
 file change counts only its bookkeeping there. Past the budget the oldest entries' texts are dropped (`kept: false`):
-those changes stay in the history but can't be undone (`too_old`) or replayed, while world history, undo and the
-replay base (`world_hash verify`) are untouched. So one agent rewriting a 1 MiB file can never push anyone's world
+those changes stay in the history but can't be undone (`too_old`), read back (`project_read {version}` answers
+`not_kept`; conflict help reports the base as `kept: false`) or replayed, while world history, undo and the replay
+base (`world_hash verify`) are untouched. The list of entries holding text follows the rings: entries they drop leave
+it too. So one agent rewriting a 1 MiB file can never push anyone's world
 history out. Diffs stay bounded too: JSON diffs match objects through a sorted index and stop at their cut (a
 70,000-key object diffs in about 4 ms), and texts over 512 KiB are diffed by lines. Edits keep a file's own line
 endings (CRLF stays CRLF).
