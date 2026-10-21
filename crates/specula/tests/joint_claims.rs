@@ -215,6 +215,22 @@ fn deleting_or_restoring_a_jointed_body_needs_the_other_bodies() {
     assert!(w.get(hook).is_some());
 }
 
+/// Review round 3, probe drag.py, decided: moving your own hook is allowed even though the rope
+/// drags alice's claimed box after it, as pushing it through contacts is (claims are about
+/// writes; PHYSICS.md "Joints and claims"). Changing what the hook is (its kind of body or
+/// scale), or where it hangs in the tree, is a joint change and needs the box.
+#[test]
+fn moving_a_jointed_body_is_allowed_changing_what_it_is_is_not() {
+    use specula::world::{Body, BodyKind};
+    let (mut sw, mut w, hook, _, _) = roped();
+    claim_abox(&mut sw, &w);
+    let set = |sw: &mut Swarm, w: &mut World, u: UpdateSpec| sw.commit(w, 0, MALLORY, Kind::Set, |w| w.update(&EntityKey::Id(hook), u, "mallory").map(|_| ())).map(|_| ()).map_err(|e| e.code);
+    assert_eq!(set(&mut sw, &mut w, UpdateSpec { position: Some(Vec3::new(0.0, 6.5, -61.0)), ..UpdateSpec::default() }), Ok(()), "a move");
+    assert_eq!(set(&mut sw, &mut w, UpdateSpec { scale: Some(Vec3::new(2.0, 2.0, 2.0)), ..UpdateSpec::default() }), Err("claimed"), "a rescale moves the joint's frame");
+    assert_eq!(set(&mut sw, &mut w, UpdateSpec { body: Some(Some(Body::new(BodyKind::Dynamic, 1.0))), ..UpdateSpec::default() }), Err("claimed"), "a new kind of body");
+    assert_eq!(set(&mut sw, &mut w, UpdateSpec { body: Some(None), ..UpdateSpec::default() }), Err("claimed"), "no body: the joint lets go");
+}
+
 /// Review round 3, finding 3 (probe modjoint.py): a module or game writes through
 /// check_game_changes, which now applies the joint rules: a joint spawned onto alice's claimed
 /// box is refused, and the world rolled back.
