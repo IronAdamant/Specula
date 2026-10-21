@@ -1,0 +1,17 @@
+{
+ "agent": "Claude (general-purpose subagent, same model as the lane), driving the engine only through scripts/evals.py tools / call on the proxy port",
+ "verifiers": "the suite after review round 2",
+ "harness_usage": {
+  "tokens": 78498,
+  "tool_uses": 22,
+  "duration_ms": 176285
+ },
+ "engine_calls": 15,
+ "result": "passed 14/14",
+ "report": [
+  "One lex_edit patch waves[2].scale.hp 1.1 -> 1.21 with expect_version 1; nothing else changed.",
+  "Checked: lex_validate clean; the centre build still wins seed 7 (tick 21851, 22 commands applied); a run saved early in wave 3 shows shamblers at 66.55pt and a runner at 31.46pt, a wave-2 shambler still at 55pt; it deleted its saved run.",
+  "Errors: lex_list {kind: wave} -> 'did you mean waves?'; lex_schema {topic: waves} -> unknown topic (the waves kind is under 'kinds').",
+  "Tool notes: lex_list truncates notes mid-sentence and shows no wave contents; the scale field's schema doesn't say it multiplies base hp or how it rounds; lex_simulate shows no hp per wave, so checking took a save and an inspect; lex_edit's schema doesn't say patch paths take array indexes mid-path (they do)."
+ ]
+}

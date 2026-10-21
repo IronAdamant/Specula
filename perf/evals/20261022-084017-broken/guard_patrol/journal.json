@@ -1,0 +1,180 @@
+{
+ "entries": [
+  {
+   "id": 6,
+   "tick": 120,
+   "by": "eval-verifier-4eec21",
+   "kind": "env",
+   "changes": 1,
+   "items": [
+    {
+     "op": "env",
+     "id": 0,
+     "path": "/"
+    }
+   ]
+  },
+  {
+   "id": 5,
+   "tick": 120,
+   "by": "solver",
+   "kind": "set",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 13,
+     "path": "/guard",
+     "version": 3
+    }
+   ]
+  },
+  {
+   "id": 4,
+   "tick": 0,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 13,
+     "path": "/guard",
+     "version": 2
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 3,
+   "tick": 0,
+   "by": "solver",
+   "kind": "batch",
+   "changes": 2,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 15,
+     "path": "/nav",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 16,
+     "path": "/nav/default",
+     "version": 1
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "tick": 0,
+   "by": "eval-snapshot-57106d",
+   "kind": "env",
+   "changes": 1,
+   "items": [
+    {
+     "op": "env",
+     "id": 0,
+     "path": "/"
+    }
+   ]
+  },
+  {
+   "id": 1,
+   "tick": 0,
+   "by": "setup",
+   "kind": "batch",
+   "changes": 14,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 1,
+     "path": "/floor",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 2,
+     "path": "/wall_north",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 3,
+     "path": "/wall_south",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 4,
+     "path": "/wall_west",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 5,
+     "path": "/wall_east",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 6,
+     "path": "/divider_north",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 7,
+     "path": "/divider_south",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 8,
+     "path": "/patrol",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 9,
+     "path": "/patrol/wp0",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 10,
+     "path": "/patrol/wp1",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 11,
+     "path": "/patrol/wp2",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 12,
+     "path": "/patrol/wp3",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 13,
+     "path": "/guard",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 14,
+     "path": "/guard/guard_body",
+     "version": 1
+    }
+   ]
+  }
+ ],
+ "next_cursor": null,
+ "oldest_kept": 1,
+ "evicted": 0
+}

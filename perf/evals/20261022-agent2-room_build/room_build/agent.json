@@ -1,0 +1,18 @@
+{
+ "agent": "Claude (general-purpose subagent, same model as the lane), driving the engine only through scripts/evals.py tools / call on the proxy port",
+ "verifiers": "the suite after review round 2",
+ "harness_usage": {
+  "tokens": 64373,
+  "tool_uses": 21,
+  "duration_ms": 127784
+ },
+ "engine_calls": 16,
+ "result": "passed 16/16",
+ "report": [
+  "One world_batch of 9 spawns under /room: a 6.4 x 0.2 x 4.4 floor with its top at y = 0, 0.2 m walls with inner faces at x = +-3 and z = +-2, the south wall as two piers and a 1.2 x 0.9 m lintel (doorway 1.2 m wide, 2.1 m tall), a lamp-tagged emissive sphere with a point light at (0, 2.6, 0); box colliders on every piece but the lamp.",
+  "Checked with nine physics rays after stepping one tick (walls at +-3 and -2, floor at 0, doorway open at y = 1 and near its top corner, lintel at 2.3, piers at x = 0.65, nothing above 3 m) and a world_query for the lamp tag.",
+  "No errors or refusals.",
+  "Tool notes: unclear whether collider size follows the entity's scale until rays showed it does; raycasts miss colliders spawned since the last tick on a paused clock, which only the description hints; the concise world_query doesn't show the light component.",
+  "Left out: no sight_frame, no corner rays."
+ ]
+}

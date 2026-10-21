@@ -1,0 +1,165 @@
+[
+{
+"tick": 0,
+"command": "place",
+"args": {
+"site": "top:8,12",
+"stone": "warding_1"
+}
+},
+{
+"tick": 0,
+"command": "place",
+"args": {
+"site": "top:12,8",
+"stone": "warding_1"
+}
+},
+{
+"tick": 901,
+"command": "place",
+"args": {
+"site": "top:7,8",
+"stone": "warding_1"
+}
+},
+{
+"tick": 2783,
+"command": "place",
+"args": {
+"site": "top:7,12",
+"stone": "rune_pillar_1"
+}
+},
+{
+"tick": 4351,
+"command": "place",
+"args": {
+"site": "top:10,12",
+"stone": "brazier_1"
+}
+},
+{
+"tick": 6301,
+"command": "place",
+"args": {
+"site": "top:12,11",
+"stone": "sky_obelisk_1"
+}
+},
+{
+"tick": 6519,
+"command": "place",
+"args": {
+"site": "top:7,7",
+"stone": "sky_obelisk_1"
+}
+},
+{
+"tick": 7494,
+"command": "upgrade",
+"args": {
+"stone": "top:8,12"
+}
+},
+{
+"tick": 8251,
+"command": "upgrade",
+"args": {
+"stone": "top:12,8"
+}
+},
+{
+"tick": 9017,
+"command": "place",
+"args": {
+"site": "top:11,7",
+"stone": "sky_obelisk_1"
+}
+},
+{
+"tick": 10351,
+"command": "upgrade",
+"args": {
+"stone": "top:12,11"
+}
+},
+{
+"tick": 10477,
+"command": "upgrade",
+"args": {
+"stone": "top:7,7"
+}
+},
+{
+"tick": 11471,
+"command": "upgrade",
+"args": {
+"stone": "top:10,12"
+}
+},
+{
+"tick": 12451,
+"command": "upgrade",
+"args": {
+"stone": "top:7,8"
+}
+},
+{
+"tick": 12499,
+"command": "place",
+"args": {
+"site": "top:12,12",
+"stone": "brazier_1"
+}
+},
+{
+"tick": 13544,
+"command": "upgrade",
+"args": {
+"stone": "top:8,12"
+}
+},
+{
+"tick": 14701,
+"command": "upgrade",
+"args": {
+"stone": "top:12,8"
+}
+},
+{
+"tick": 15333,
+"command": "upgrade",
+"args": {
+"stone": "top:12,11"
+}
+},
+{
+"tick": 16412,
+"command": "upgrade",
+"args": {
+"stone": "top:7,7"
+}
+},
+{
+"tick": 16951,
+"command": "upgrade",
+"args": {
+"stone": "top:11,7"
+}
+},
+{
+"tick": 17252,
+"command": "upgrade",
+"args": {
+"stone": "top:10,12"
+}
+},
+{
+"tick": 17857,
+"command": "upgrade",
+"args": {
+"stone": "top:7,12"
+}
+}
+]

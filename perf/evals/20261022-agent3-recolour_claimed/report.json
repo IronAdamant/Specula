@@ -1,0 +1,90 @@
+{
+ "format": "specula-evals",
+ "version": 1,
+ "summary": {
+  "mode": "agent",
+  "tasks": 1,
+  "ran": 1,
+  "as_expected": 1,
+  "unexpected": [],
+  "skipped": [],
+  "errors": [],
+  "calls": 13,
+  "resp_bytes": 6848,
+  "tokens_est": 2527,
+  "wall_s": 135.13
+ },
+ "results": [
+  {
+   "id": "recolour_claimed",
+   "set": "public",
+   "area": "swarm",
+   "mode": "agent",
+   "startup_s": 5.36,
+   "agent_summary": "Recoloured all 6 /street lanterns to #ffb347 (colour only). The 3 east ones were outside any claim; for the 3 west ones inside keeper claim 1 I posted a task assigned to keeper, which replied with a note and shared the claim, then I recoloured them. Keeper still owns claim 1.",
+   "solution_wall_s": 126.29,
+   "actors": [
+    {
+     "name": "keeper",
+     "fired": 1
+    },
+    {
+     "name": "keeper",
+     "fired": 1
+    }
+   ],
+   "actor_polls": 594,
+   "verifiers": [
+    {
+     "name": "exactly the six lanterns the keeper placed, and each is amber",
+     "passed": true
+    },
+    {
+     "name": "each of lantern_w1..w3 and lantern_e1..e3 is amber",
+     "passed": true
+    },
+    {
+     "name": "the keeper still holds its claim",
+     "passed": true
+    },
+    {
+     "name": "the lanterns didn't move and the bench is untouched",
+     "passed": true
+    },
+    {
+     "name": "lantern_w1 is where the keeper put it",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 5,
+    "of": 5,
+    "fraction": 1.0
+   },
+   "status": "passed",
+   "solution": {
+    "calls": 13,
+    "req_bytes": 3260,
+    "resp_bytes": 6848,
+    "tokens_est": 2527,
+    "errors": 2,
+    "error_codes": {
+     "invalid_argument": 2
+    },
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 1,
+     "claim_list": 2,
+     "eval_done": 1,
+     "note_add": 1,
+     "task_get": 1,
+     "task_post": 1,
+     "world_batch": 2,
+     "world_query": 4
+    }
+   },
+   "wall_s": 135.12,
+   "validation_errors": 0
+  }
+ ]
+}

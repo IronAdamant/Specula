@@ -121,4 +121,79 @@ main to 12,900 bytes** with the new defaults and compact JSON: **53% less** for 
 7. **Still heavy, not shaped**: `sight_orbit` and `sight_compare` (contact sheets with compact subjects already),
    `physics_contacts`, `task_list` with events. Shape them the same way when measurements show agents paying for them.
 8. **Agent evals** (M3): run realistic tasks through the tools and read the transcripts for what agents misuse or
-   leave out. The playtest runner checks outcomes; the evals lane adds the tasks.
+   leave out. The playtest runner checks outcomes; the evals lane adds the tasks. *Built 2026-10-18/22:*
+   [EVALS.md](EVALS.md); its findings are below.
+
+## Findings from the agent evals (2026-10-18 to 10-22)
+
+From writing 21 tasks' reference solutions and verifiers, and from real agents' transcripts
+(`perf/evals/*-agent-*`). "Agents" means Claude subagents that saw only the brief and the tools. Each item says who hit
+it; the fix is a suggestion, not done here.
+
+1. **`tag` vs `tags`** (every agent run that queried by tag hit it): `world_query` takes `tags` (an array) while
+   `task_list` takes `tag`. The refusal's hint ("did you mean 'tags'?") recovered every time, at the cost of a call.
+   Accept `tag` as a one-element `tags` on `world_query` (and `tags` on `task_list`), or rename to match.
+2. **Agents don't find `fields`**: two agents fetched `response_format: detailed` (about 2 KB for 6 entities) or gave
+   up checking a component (`light`, `color`) because the concise `world_query` leaves it out, and said "a way to ask
+   for only some fields would help". `fields` exists; the concise description should lead with it ("add `fields:
+   [\"color\"]` for more").
+3. **Physics queries see nothing until a tick runs**: on a paused world, `physics_raycast` / `physics_overlap` after a
+   `world_spawn` return no hits (they read "the colliders as of the last physics tick"). One agent stepped a tick
+   because it read the description; the reference solutions had to. Sync physics with the world before a query (as
+   `save_write` already does), or answer with a `stale: true` and the fix.
+4. **Partial occlusion is invisible in sight packets**: `occluded` is set only when no pixel shows, so a pillar 99 %
+   behind a wall reads `visible_px: 10` with no flag (`camera_overview`). An `occluded_fraction` (visible pixels vs the
+   subject drawn alone) or `occluded_px` would let agents ask "is it fully in view?".
+5. **Another agent's cameras can't be listed**: `camera_list` shows only the caller's; a verifier (or a reviewer) has
+   to find the owner in `world_history {kinds: [camera]}` before `sight_frame {camera_of}`. Add `owner` / `all` to
+   `camera_list`.
+6. **Names that change between write and read**: `task_done {summary}` is read back as `result` in `task_get`;
+   `lex_simulate` counts `commands.refused` but lists them under `rejections`; `task_get` events quote notes cut
+   mid-word next to the full `notes` array (one agent called it misleading).
+7. **Units as strings**: `lex_session inspect` gives attributes as `"66.55pt"`, `"0.8m/s"`: readable, but numeric
+   checks need string matching. Add the number in the human unit alongside (`{"hp": "66.55pt", "hp_value": 66.55}` or
+   a `numeric: true` option).
+8. **`world_query` on a missing `path_prefix` is an error** (`not_found`) where a filter would answer `total: 0`;
+   checks like "this was deleted" need `expect_error`.
+9. **`shape2d` bounds are loose**: a circle of radius 1.45 m with a 0.1 m stroke reports bounds of radius 1.65 m (the
+   stroke counted on both sides plus the antialiasing margin), so "is the ring 1.5 m?" needs a 0.2 m tolerance.
+10. **Collider units**: an agent wasn't sure whether `collider.size` is metres or scaled units until a ray told it; the
+    schema says "local (scaled) units" but an example ("size 1 = the cube's own size") would settle it.
+11. **The anim asset path** is `/anims/recipes:shambler.json/graphs/creature` where the docs say
+    `/anims/<recipe stem>/...`.
+12. **`world_undo {force}` means two things** (undo_vandal agent): "undo another agent's entry" and "override later
+    conflicting changes". Undoing a vandal's entries needs the first, and silently turns off the second, the check
+    that protects everyone's later work. Split it (`allow_others: true` keeps the conflict check; `force` stays the
+    override).
+13. **`lex_session` without `action`** lists runs even when `name` and `archetype` are given (patrol agent: a wasted
+    call). Infer `inspect` from `name`, or refuse with the fix.
+14. **Lex reads are coarse** (wave3 agent): `lex_get` returns a whole 5 KB `waves` item when one wave is wanted (a path
+    like `waves[2]` would do); `lex_edit` doesn't echo the patched path's old and new value; nothing shows the stats an
+    enemy will spawn with in a wave (it took a saved run and an inspect); `waves[i].scale` has no doc saying it
+    multiplies base attributes.
+15. **`lex_simulate` watch** never samples tick 0, and `count(tag)` can't count one archetype over time.
+16. **Measuring motion costs three calls a sample** (module agent): `logic_input`, `time_control step`, `world_query`.
+    A "step and report these entities" option on `time_control` (or a watch like `lex_simulate`'s) would halve a
+    tuning loop. The tick rate (30 Hz) appears only in `time_control`'s answer.
+17. **`world_history {detail}`** lists ids and paths but not values, so what an entry changed (and what an undo
+    restores) needs further reads.
+18. **A refusal names only the first bad argument** (re-runs, 2026-10-22): `{path, tag}` on `world_query` took two
+    refusals to fix. Name every unknown argument with its suggestion in one answer; `world_query`'s description could
+    also name its filters (`path_prefix`, `tags`, `region`) up front.
+19. **`lex_schema` topics** don't take kind names (`{topic: waves}` is refused; the waves kind is under `kinds`), and
+    `lex_list {kind: wave}` needs the plural.
+20. **No "inside claim N" filter**: an agent worked out which entities a region claim covers by comparing bounds by
+    hand; a `world_query {claim}` filter would answer it.
+21. **`world_env` with no arguments is journaled as a change** (round 3): reading the environment (the tool's only
+    way to read it) adds an `env` journal entry by the reader, so "nobody touched the environment" can't be checked
+    from the journal. Don't journal a call that changes nothing (or add a read-only form).
+
+Engine defects the evals ran into (reported to their lanes):
+
+- **Physics (P3):** a sphere that had gone to sleep inside the `ball_launch` bin, teleported back to the start with
+  `world_set {position, body: {velocity}}` and launched again, stops against the bin wall's outer face 0.55 m up and
+  hangs there while its velocity integrates to -70 m/s over 8 s (`physics_check energy` fails at 23 J a tick; the
+  tunnelling guard stops it every tick, `guard_stops: 206`). The same launch from a fresh engine bounces off the wall
+  normally. Warm-start or sleep state surviving a teleport looks like the cause.
+- **Navigation:** with `nav_agent {speed: 3}` the patrolling guard covers about 5.3 m/s of path between
+  samples while `ai_status` reports a velocity of 3.0 (`guard_patrol`); worth checking (not measured further here).

@@ -1,0 +1,1357 @@
+{
+ "entries": [
+  {
+   "id": 60,
+   "tick": 55,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 57
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 59,
+   "tick": 54,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 56
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 58,
+   "tick": 53,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 55
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 57,
+   "tick": 52,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 54
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 56,
+   "tick": 51,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 53
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 55,
+   "tick": 50,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 52
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 54,
+   "tick": 49,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 51
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 53,
+   "tick": 48,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 50
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 52,
+   "tick": 47,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 49
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 51,
+   "tick": 46,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 48
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 50,
+   "tick": 45,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 47
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 49,
+   "tick": 44,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 46
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 48,
+   "tick": 43,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 45
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 47,
+   "tick": 42,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 44
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 46,
+   "tick": 41,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 2,
+   "items": [
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 43
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 43
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 45,
+   "tick": 40,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 2,
+   "items": [
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 42
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 42
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 44,
+   "tick": 39,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 2,
+   "items": [
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 41
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 41
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 43,
+   "tick": 38,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 2,
+   "items": [
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 40
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 40
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 42,
+   "tick": 37,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 2,
+   "items": [
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 39
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 39
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 41,
+   "tick": 36,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 2,
+   "items": [
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 38
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 38
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 40,
+   "tick": 35,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 2,
+   "items": [
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 37
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 37
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 39,
+   "tick": 34,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 2,
+   "items": [
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 36
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 36
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 38,
+   "tick": 33,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 2,
+   "items": [
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 35
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 35
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 37,
+   "tick": 32,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 2,
+   "items": [
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 34
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 34
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 36,
+   "tick": 31,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 2,
+   "items": [
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 33
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 33
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 35,
+   "tick": 30,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 2,
+   "items": [
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 32
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 32
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 34,
+   "tick": 29,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 2,
+   "items": [
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 31
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 31
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 33,
+   "tick": 28,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 2,
+   "items": [
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 30
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 30
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 32,
+   "tick": 27,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 2,
+   "items": [
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 29
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 29
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 31,
+   "tick": 26,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 2,
+   "items": [
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 28
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 28
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 30,
+   "tick": 25,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 2,
+   "items": [
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 27
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 27
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 29,
+   "tick": 24,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 2,
+   "items": [
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 26
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 26
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 28,
+   "tick": 23,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 2,
+   "items": [
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 25
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 25
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 27,
+   "tick": 22,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 2,
+   "items": [
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 24
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 24
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 26,
+   "tick": 21,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 2,
+   "items": [
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 23
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 23
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 25,
+   "tick": 20,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 3,
+   "items": [
+    {
+     "op": "set",
+     "id": 3,
+     "path": "/stack/crate_1",
+     "version": 22
+    },
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 22
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 22
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 24,
+   "tick": 19,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 3,
+   "items": [
+    {
+     "op": "set",
+     "id": 3,
+     "path": "/stack/crate_1",
+     "version": 21
+    },
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 21
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 21
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 23,
+   "tick": 18,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 3,
+   "items": [
+    {
+     "op": "set",
+     "id": 3,
+     "path": "/stack/crate_1",
+     "version": 20
+    },
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 20
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 20
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 22,
+   "tick": 17,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 3,
+   "items": [
+    {
+     "op": "set",
+     "id": 3,
+     "path": "/stack/crate_1",
+     "version": 19
+    },
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 19
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 19
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 21,
+   "tick": 16,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 3,
+   "items": [
+    {
+     "op": "set",
+     "id": 3,
+     "path": "/stack/crate_1",
+     "version": 18
+    },
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 18
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 18
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 20,
+   "tick": 15,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 3,
+   "items": [
+    {
+     "op": "set",
+     "id": 3,
+     "path": "/stack/crate_1",
+     "version": 17
+    },
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 17
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 17
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 19,
+   "tick": 14,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 3,
+   "items": [
+    {
+     "op": "set",
+     "id": 3,
+     "path": "/stack/crate_1",
+     "version": 16
+    },
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 16
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 16
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 18,
+   "tick": 13,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 3,
+   "items": [
+    {
+     "op": "set",
+     "id": 3,
+     "path": "/stack/crate_1",
+     "version": 15
+    },
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 15
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 15
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 17,
+   "tick": 12,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 3,
+   "items": [
+    {
+     "op": "set",
+     "id": 3,
+     "path": "/stack/crate_1",
+     "version": 14
+    },
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 14
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 14
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 16,
+   "tick": 11,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 3,
+   "items": [
+    {
+     "op": "set",
+     "id": 3,
+     "path": "/stack/crate_1",
+     "version": 13
+    },
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 13
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 13
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 15,
+   "tick": 10,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 3,
+   "items": [
+    {
+     "op": "set",
+     "id": 3,
+     "path": "/stack/crate_1",
+     "version": 12
+    },
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 12
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 12
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 14,
+   "tick": 9,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 3,
+   "items": [
+    {
+     "op": "set",
+     "id": 3,
+     "path": "/stack/crate_1",
+     "version": 11
+    },
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 11
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 11
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 13,
+   "tick": 8,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 3,
+   "items": [
+    {
+     "op": "set",
+     "id": 3,
+     "path": "/stack/crate_1",
+     "version": 10
+    },
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 10
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 10
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 12,
+   "tick": 7,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 3,
+   "items": [
+    {
+     "op": "set",
+     "id": 3,
+     "path": "/stack/crate_1",
+     "version": 9
+    },
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 9
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 9
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 11,
+   "tick": 6,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 3,
+   "items": [
+    {
+     "op": "set",
+     "id": 3,
+     "path": "/stack/crate_1",
+     "version": 8
+    },
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 8
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 8
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 10,
+   "tick": 5,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 3,
+   "items": [
+    {
+     "op": "set",
+     "id": 3,
+     "path": "/stack/crate_1",
+     "version": 7
+    },
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 7
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 7
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 9,
+   "tick": 4,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 3,
+   "items": [
+    {
+     "op": "set",
+     "id": 3,
+     "path": "/stack/crate_1",
+     "version": 6
+    },
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 6
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 6
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 8,
+   "tick": 3,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 3,
+   "items": [
+    {
+     "op": "set",
+     "id": 3,
+     "path": "/stack/crate_1",
+     "version": 5
+    },
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 5
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 5
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 7,
+   "tick": 2,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 3,
+   "items": [
+    {
+     "op": "set",
+     "id": 3,
+     "path": "/stack/crate_1",
+     "version": 4
+    },
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 4
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 4
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 6,
+   "tick": 1,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 3,
+   "items": [
+    {
+     "op": "set",
+     "id": 3,
+     "path": "/stack/crate_1",
+     "version": 3
+    },
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 3
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 3
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 5,
+   "tick": 0,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 3,
+   "items": [
+    {
+     "op": "set",
+     "id": 3,
+     "path": "/stack/crate_1",
+     "version": 2
+    },
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 2
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 2
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 4,
+   "tick": 0,
+   "by": "eval-verifier-b7e214",
+   "kind": "env",
+   "changes": 1,
+   "items": [
+    {
+     "op": "env",
+     "id": 0,
+     "path": "/"
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "tick": 0,
+   "by": "solver",
+   "kind": "batch",
+   "changes": 4,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 2,
+     "path": "/stack",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 3,
+     "path": "/stack/crate_1",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 4,
+     "path": "/stack/crate_2",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 5,
+     "path": "/stack/crate_3",
+     "version": 1
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "tick": 0,
+   "by": "eval-snapshot-9a2d9d",
+   "kind": "env",
+   "changes": 1,
+   "items": [
+    {
+     "op": "env",
+     "id": 0,
+     "path": "/"
+    }
+   ]
+  },
+  {
+   "id": 1,
+   "tick": 0,
+   "by": "setup",
+   "kind": "spawn",
+   "changes": 1,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 1,
+     "path": "/ground",
+     "version": 1
+    }
+   ]
+  }
+ ],
+ "next_cursor": null,
+ "oldest_kept": 1,
+ "evicted": 0
+}

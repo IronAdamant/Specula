@@ -1,0 +1,407 @@
+{
+ "eval": 1,
+ "id": "ball_launch",
+ "set": "heldout",
+ "area": "physics",
+ "title": "Find a launch velocity that lands a ball in a bin",
+ "summary": "Experiment with the simulation (step, look, undo) to find one launch velocity; the verifier replays that velocity from the start in a playtest and checks where the ball comes to rest.",
+ "game": null,
+ "setup": [
+  {
+   "as": "setup",
+   "call": "world_batch",
+   "args": {
+    "ops": [
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "name": "ground",
+      "position": [
+       0,
+       -0.5,
+       0
+      ],
+      "scale": [
+       40,
+       1,
+       40
+      ],
+      "color": "#4a4f57",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "group",
+      "name": "bin",
+      "position": [
+       6,
+       0,
+       0
+      ]
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/bin",
+      "name": "wall_near",
+      "position": [
+       -0.8,
+       0.4,
+       0
+      ],
+      "scale": [
+       0.1,
+       0.8,
+       1.7
+      ],
+      "color": "#8a6a48",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/bin",
+      "name": "wall_far",
+      "position": [
+       0.8,
+       0.4,
+       0
+      ],
+      "scale": [
+       0.1,
+       0.8,
+       1.7
+      ],
+      "color": "#8a6a48",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/bin",
+      "name": "wall_left",
+      "position": [
+       0,
+       0.4,
+       -0.8
+      ],
+      "scale": [
+       1.5,
+       0.8,
+       0.1
+      ],
+      "color": "#8a6a48",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/bin",
+      "name": "wall_right",
+      "position": [
+       0,
+       0.4,
+       0.8
+      ],
+      "scale": [
+       1.5,
+       0.8,
+       0.1
+      ],
+      "color": "#8a6a48",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "sphere",
+      "name": "ball",
+      "position": [
+       0,
+       0.25,
+       0
+      ],
+      "scale": 0.5,
+      "color": "#d04a3a",
+      "collider": {
+       "shape": "sphere"
+      },
+      "body": {
+       "kind": "dynamic",
+       "mass": 1
+      }
+     }
+    ]
+   }
+  }
+ ],
+ "brief": "A ball (/ball, 0.5 m across, 1 kg, resting at [0, 0.25, 0]) and an open-topped bin (/bin, walls 0.8 m tall, inner floor x 5.25..6.75, z -0.75..0.75) are on the ground. Find a single launch velocity [vx, vy, vz] in m/s that, given to the ball at rest at its starting point, makes it come to rest inside the bin within 8 seconds. Experiment as you like (step time, look, put the ball back), then record your answer on the ball as props.launch = [vx, vy, vz] and leave the ball, the bin and the ground where they started. The verifier puts the ball back at the start, applies your launch and runs 8 seconds.",
+ "tools": [
+  "world_*",
+  "physics_*",
+  "time_control",
+  "sight_frame"
+ ],
+ "limits": {
+  "calls": 60,
+  "wall_s": 900
+ },
+ "verify": [
+  {
+   "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+   "world_diff": {
+    "allow": [
+     {
+      "path": "/ball",
+      "ops": [
+       "changed"
+      ],
+      "fields": [
+       "props",
+       "props.*",
+       "position",
+       "rotation_deg",
+       "body",
+       "body.*"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "a launch velocity is recorded on the ball",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/ball",
+    "fields": [
+     "path",
+     "props"
+    ]
+   },
+   "save": "b",
+   "expect": {
+    "items.0.props.launch.#": 3
+   }
+  },
+  {
+   "name": "the bin wasn't moved",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/bin",
+    "fields": [
+     "path",
+     "version",
+     "position"
+    ]
+   },
+   "select": {
+    "from": "items",
+    "where": {
+     "version": 1
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 5
+   }
+  },
+  {
+   "name": "nothing was added to the world (the setup's 7 entities)",
+   "call": "world_query",
+   "args": {
+    "fields": [
+     "path"
+    ],
+    "limit": 50
+   },
+   "expect": {
+    "total": 7
+   }
+  },
+  {
+   "name": "the ground is untouched",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/ground",
+    "fields": [
+     "path",
+     "version"
+    ]
+   },
+   "expect": {
+    "items.0.version": 1
+   }
+  },
+  {
+   "name": "replayed from the start, the ball comes to rest inside the bin",
+   "playtest": {
+    "name": "ball_launch_check",
+    "ticks": 240,
+    "steps": [
+     {
+      "at": 0,
+      "call": "world_set",
+      "args": {
+       "path": "/ball",
+       "position": [
+        0,
+        0.25,
+        0
+       ],
+       "rotation_deg": [
+        0,
+        0,
+        0
+       ],
+       "body": {
+        "kind": "dynamic",
+        "mass": 1,
+        "velocity": "${b.items.0.props.launch}",
+        "angular_velocity": [
+         0,
+         0,
+         0
+        ]
+       }
+      }
+     }
+    ],
+    "end": [
+     {
+      "call": "physics_check",
+      "args": {
+       "checks": [
+        {
+         "check": "inside",
+         "entity": "/ball",
+         "min": [
+          5.25,
+          0,
+          -0.75
+         ],
+         "max": [
+          6.75,
+          0.8,
+          0.75
+         ]
+        },
+        {
+         "check": "at_rest",
+         "entities": "/ball"
+        },
+        {
+         "check": "no_tunnelling"
+        }
+       ]
+      },
+      "expect": {
+       "pass": true
+      }
+     },
+     {
+      "call": "sight_frame",
+      "args": {
+       "eye": [
+        3,
+        3,
+        6
+       ],
+       "target": [
+        4,
+        0.5,
+        0
+       ],
+       "width": 640,
+       "height": 360
+      },
+      "label": "landed"
+     }
+    ]
+   }
+  }
+ ],
+ "reference": [
+  {
+   "call": "world_set",
+   "args": {
+    "path": "/ball",
+    "props": {
+     "launch": [
+      4.6,
+      7.0,
+      0
+     ]
+    }
+   }
+  }
+ ],
+ "broken": [
+  {
+   "note": "too flat: the ball clips the near wall and stays outside",
+   "call": "world_set",
+   "args": {
+    "path": "/ball",
+    "props": {
+     "launch": [
+      3.8,
+      6.0,
+      0
+     ]
+    }
+   }
+  }
+ ],
+ "cheats": [
+  {
+   "id": "backstop",
+   "note": "review cheat: adds a wall behind the bin so an overshooting launch bounces in",
+   "steps": [
+    {
+     "call": "world_batch",
+     "args": {
+      "ops": [
+       {
+        "op": "spawn",
+        "shape": "cube",
+        "name": "backstop",
+        "position": [
+         7.2,
+         3,
+         0
+        ],
+        "scale": [
+         0.5,
+         6,
+         2.4
+        ],
+        "collider": {
+         "shape": "box"
+        }
+       },
+       {
+        "op": "set",
+        "path": "/ball",
+        "props": {
+         "launch": [
+          6,
+          7,
+          0
+         ]
+        }
+       }
+      ]
+     }
+    }
+   ]
+  }
+ ]
+}

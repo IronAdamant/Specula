@@ -1,0 +1,750 @@
+{
+ "eval": 1,
+ "id": "hud_marker",
+ "set": "public",
+ "area": "ui",
+ "title": "Add an objective marker in the interface layer",
+ "summary": "Game interface in the scene: a flat ring and a floating marker in the ui layer (seen by players, left out of review captures unless asked for), checked by bounds and by captures with and without include_ui.",
+ "game": null,
+ "setup": [
+  {
+   "as": "setup",
+   "call": "world_batch",
+   "args": {
+    "ops": [
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "name": "ground",
+      "position": [
+       0,
+       -0.5,
+       0
+      ],
+      "scale": [
+       30,
+       1,
+       30
+      ],
+      "color": "#3d4a3a"
+     },
+     {
+      "op": "spawn",
+      "shape": "lathe",
+      "name": "well",
+      "position": [
+       4,
+       0,
+       -3
+      ],
+      "profile": [
+       [
+        0.9,
+        0
+       ],
+       [
+        0.9,
+        0.8
+       ],
+       [
+        0.75,
+        0.8
+       ],
+       [
+        0.75,
+        0.1
+       ]
+      ],
+      "color": "#7b7468",
+      "tags": [
+       "objective"
+      ]
+     }
+    ]
+   }
+  }
+ ],
+ "brief": "Mark the well at /well (it stands at x = 4, z = -3) as the player's objective with interface elements, under a group at /hud/objective:\n- a ring lying flat on the ground around the well: a circle outline of radius 1.5 m centred on the well, 2 to 6 cm above the ground (y = 0), drawn as a 2D shape;\n- a marker floating above the well, between 2.5 and 4 m up.\nBoth must be in the interface layer (\"ui\"), so players see them in the window but review captures leave them out unless asked to include the interface.",
+ "tools": [
+  "world_*",
+  "sight_frame",
+  "camera_*"
+ ],
+ "limits": {
+  "calls": 30,
+  "wall_s": 600
+ },
+ "verify": [
+  {
+   "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+   "world_diff": {
+    "allow": [
+     {
+      "path": "/hud",
+      "ops": [
+       "added"
+      ]
+     },
+     {
+      "path": "/hud/*",
+      "ops": [
+       "added"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "everything under /hud/objective is in the ui layer",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/hud/objective",
+    "fields": [
+     "path",
+     "layer",
+     "shape"
+    ]
+   },
+   "select": {
+    "from": "items",
+    "where": {
+     "layer": {
+      "ne": "ui"
+     },
+     "shape": {
+      "ne": "group"
+     }
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 0
+   }
+  },
+  {
+   "name": "exactly one 2D shape under /hud/objective",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/hud/objective",
+    "shape": "shape2d",
+    "fields": [
+     "path"
+    ]
+   },
+   "expect": {
+    "total": 1
+   }
+  },
+  {
+   "name": "it is the ring: one circle of radius about 1.5 m with a thin stroke (at most 0.25 m) and no fill, flat around the well, 2-6 cm up",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/hud/objective",
+    "shape": "shape2d",
+    "fields": [
+     "path",
+     "bounds",
+     "shape2d"
+    ]
+   },
+   "select": {
+    "from": "items",
+    "where": {
+     "shape2d.items.#": 1,
+     "shape2d.items.0.circle.2": {
+      "gte": 1.35,
+      "lte": 1.55
+     },
+     "shape2d.items.0.stroke.width": {
+      "gt": 0,
+      "lte": 0.25
+     },
+     "shape2d.items.0.fill": {
+      "exists": false
+     },
+     "bounds.min.0": {
+      "near": 2.5,
+      "tol": 0.2
+     },
+     "bounds.max.0": {
+      "near": 5.5,
+      "tol": 0.2
+     },
+     "bounds.min.2": {
+      "near": -4.5,
+      "tol": 0.2
+     },
+     "bounds.max.2": {
+      "near": -1.5,
+      "tol": 0.2
+     },
+     "bounds.min.1": {
+      "gte": 0.015
+     },
+     "bounds.max.1": {
+      "lte": 0.065
+     }
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 1
+   }
+  },
+  {
+   "name": "a marker floating 2.5-4 m above the well",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/hud/objective",
+    "fields": [
+     "path",
+     "bounds",
+     "shape"
+    ]
+   },
+   "select": {
+    "from": "items",
+    "where": {
+     "shape": {
+      "ne": "group"
+     },
+     "bounds.min.1": {
+      "gte": 2.5
+     },
+     "bounds.max.1": {
+      "lte": 4
+     },
+     "bounds.min.0": {
+      "gte": 3
+     },
+     "bounds.max.0": {
+      "lte": 5
+     },
+     "bounds.min.2": {
+      "gte": -4
+     },
+     "bounds.max.2": {
+      "lte": -2
+     }
+    },
+    "count": true
+   },
+   "expect": {
+    "count": {
+     "gte": 1
+    }
+   }
+  },
+  {
+   "name": "with include_ui the marker shows",
+   "call": "sight_frame",
+   "args": {
+    "eye": [
+     10,
+     7,
+     6
+    ],
+    "target": [
+     4,
+     1,
+     -3
+    ],
+    "width": 640,
+    "height": 400,
+    "include_ui": true,
+    "subjects": "visible"
+   },
+   "select": {
+    "from": "subjects",
+    "where": {
+     "path": {
+      "contains": "/hud/objective/"
+     }
+    },
+    "count": true
+   },
+   "expect": {
+    "count": {
+     "gte": 2
+    }
+   }
+  },
+  {
+   "name": "without it, review captures leave it out",
+   "call": "sight_frame",
+   "args": {
+    "eye": [
+     10,
+     7,
+     6
+    ],
+    "target": [
+     4,
+     1,
+     -3
+    ],
+    "width": 640,
+    "height": 400,
+    "subjects": "visible"
+   },
+   "select": {
+    "from": "subjects",
+    "where": {
+     "path": {
+      "contains": "/hud/"
+     }
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 0
+   }
+  }
+ ],
+ "reference": [
+  {
+   "call": "world_batch",
+   "args": {
+    "ops": [
+     {
+      "op": "spawn",
+      "shape": "group",
+      "name": "hud"
+     },
+     {
+      "op": "spawn",
+      "shape": "group",
+      "parent": "/hud",
+      "name": "objective",
+      "layer": "ui"
+     },
+     {
+      "op": "spawn",
+      "shape": "shape2d",
+      "parent": "/hud/objective",
+      "name": "ring",
+      "layer": "ui",
+      "position": [
+       4,
+       0.04,
+       -3
+      ],
+      "rotation_deg": [
+       -90,
+       0,
+       0
+      ],
+      "shape2d": {
+       "items": [
+        {
+         "circle": [
+          0,
+          0,
+          1.45
+         ],
+         "stroke": {
+          "width": 0.1,
+          "color": "#ffd166"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "lathe",
+      "parent": "/hud/objective",
+      "name": "marker",
+      "layer": "ui",
+      "position": [
+       4,
+       2.8,
+       -3
+      ],
+      "profile": [
+       [
+        0.0,
+        0
+       ],
+       [
+        0.3,
+        0.6
+       ],
+       [
+        0.0,
+        0.6
+       ]
+      ],
+      "color": "#ffd166",
+      "emissive": 2
+     }
+    ]
+   }
+  },
+  {
+   "call": "sight_frame",
+   "args": {
+    "eye": [
+     10,
+     7,
+     6
+    ],
+    "target": [
+     4,
+     1,
+     -3
+    ],
+    "width": 640,
+    "height": 400,
+    "include_ui": true
+   }
+  }
+ ],
+ "broken": [
+  {
+   "note": "the ring is left standing upright (2D shapes lie in the local XY plane) and the marker isn't in the ui layer",
+   "call": "world_batch",
+   "args": {
+    "ops": [
+     {
+      "op": "spawn",
+      "shape": "group",
+      "name": "hud"
+     },
+     {
+      "op": "spawn",
+      "shape": "group",
+      "parent": "/hud",
+      "name": "objective"
+     },
+     {
+      "op": "spawn",
+      "shape": "shape2d",
+      "parent": "/hud/objective",
+      "name": "ring",
+      "layer": "ui",
+      "position": [
+       4,
+       0.04,
+       -3
+      ],
+      "shape2d": {
+       "items": [
+        {
+         "circle": [
+          0,
+          0,
+          1.5
+         ],
+         "stroke": {
+          "width": 0.1,
+          "color": "#ffd166"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "sphere",
+      "parent": "/hud/objective",
+      "name": "marker",
+      "position": [
+       4,
+       3,
+       -3
+      ],
+      "scale": 0.4,
+      "color": "#ffd166",
+      "emissive": 2
+     }
+    ]
+   }
+  }
+ ],
+ "cheats": [
+  {
+   "id": "filled_square",
+   "note": "review round 2: a filled 3 x 3 m square instead of a ring (its bounds match)",
+   "steps": [
+    {
+     "call": "world_batch",
+     "args": {
+      "ops": [
+       {
+        "op": "spawn",
+        "shape": "group",
+        "name": "hud"
+       },
+       {
+        "op": "spawn",
+        "shape": "group",
+        "parent": "/hud",
+        "name": "objective",
+        "layer": "ui"
+       },
+       {
+        "op": "spawn",
+        "shape": "shape2d",
+        "parent": "/hud/objective",
+        "name": "ring",
+        "layer": "ui",
+        "position": [
+         4,
+         0.04,
+         -3
+        ],
+        "rotation_deg": [
+         -90,
+         0,
+         0
+        ],
+        "shape2d": {
+         "items": [
+          {
+           "rect": [
+            -1.5,
+            -1.5,
+            3,
+            3
+           ],
+           "fill": "#ffd166"
+          }
+         ]
+        }
+       },
+       {
+        "op": "spawn",
+        "shape": "lathe",
+        "parent": "/hud/objective",
+        "name": "marker",
+        "layer": "ui",
+        "position": [
+         4,
+         2.8,
+         -3
+        ],
+        "profile": [
+         [
+          0.0,
+          0
+         ],
+         [
+          0.3,
+          0.6
+         ],
+         [
+          0.0,
+          0.6
+         ]
+        ],
+        "color": "#ffd166",
+        "emissive": 2
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "square_plus_dot",
+   "note": "review round 3: a filled square with the right bounds plus a tiny stroked circle that passes the shape test",
+   "steps": [
+    {
+     "call": "world_batch",
+     "args": {
+      "ops": [
+       {
+        "op": "spawn",
+        "shape": "group",
+        "name": "hud"
+       },
+       {
+        "op": "spawn",
+        "shape": "group",
+        "parent": "/hud",
+        "name": "objective",
+        "layer": "ui"
+       },
+       {
+        "op": "spawn",
+        "shape": "shape2d",
+        "parent": "/hud/objective",
+        "name": "ring",
+        "layer": "ui",
+        "position": [
+         4,
+         0.04,
+         -3
+        ],
+        "rotation_deg": [
+         -90,
+         0,
+         0
+        ],
+        "shape2d": {
+         "items": [
+          {
+           "rect": [
+            -1.5,
+            -1.5,
+            3,
+            3
+           ],
+           "fill": "#ffd166"
+          }
+         ]
+        }
+       },
+       {
+        "op": "spawn",
+        "shape": "shape2d",
+        "parent": "/hud/objective",
+        "name": "dot",
+        "layer": "ui",
+        "position": [
+         4,
+         0.04,
+         -3
+        ],
+        "rotation_deg": [
+         -90,
+         0,
+         0
+        ],
+        "shape2d": {
+         "items": [
+          {
+           "circle": [
+            0,
+            0,
+            0.05
+           ],
+           "stroke": {
+            "width": 0.01,
+            "color": "#ffd166"
+           }
+          }
+         ]
+        }
+       },
+       {
+        "op": "spawn",
+        "shape": "lathe",
+        "parent": "/hud/objective",
+        "name": "marker",
+        "layer": "ui",
+        "position": [
+         4,
+         2.8,
+         -3
+        ],
+        "profile": [
+         [
+          0.0,
+          0
+         ],
+         [
+          0.3,
+          0.6
+         ],
+         [
+          0.0,
+          0.6
+         ]
+        ],
+        "color": "#ffd166",
+        "emissive": 2
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "fat_stroke_disc",
+   "note": "review round 3: a 0.75 m circle with a 1.5 m stroke: a filled disc that reads as a stroked circle",
+   "steps": [
+    {
+     "call": "world_batch",
+     "args": {
+      "ops": [
+       {
+        "op": "spawn",
+        "shape": "group",
+        "name": "hud"
+       },
+       {
+        "op": "spawn",
+        "shape": "group",
+        "parent": "/hud",
+        "name": "objective",
+        "layer": "ui"
+       },
+       {
+        "op": "spawn",
+        "shape": "shape2d",
+        "parent": "/hud/objective",
+        "name": "ring",
+        "layer": "ui",
+        "position": [
+         4,
+         0.04,
+         -3
+        ],
+        "rotation_deg": [
+         -90,
+         0,
+         0
+        ],
+        "shape2d": {
+         "items": [
+          {
+           "circle": [
+            0,
+            0,
+            0.75
+           ],
+           "stroke": {
+            "width": 1.5,
+            "color": "#ffd166"
+           }
+          }
+         ]
+        }
+       },
+       {
+        "op": "spawn",
+        "shape": "lathe",
+        "parent": "/hud/objective",
+        "name": "marker",
+        "layer": "ui",
+        "position": [
+         4,
+         2.8,
+         -3
+        ],
+        "profile": [
+         [
+          0.0,
+          0
+         ],
+         [
+          0.3,
+          0.6
+         ],
+         [
+          0.0,
+          0.6
+         ]
+        ],
+        "color": "#ffd166",
+        "emissive": 2
+       }
+      ]
+     }
+    }
+   ]
+  }
+ ]
+}

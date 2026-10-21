@@ -1,0 +1,82 @@
+{
+ "format": "specula-evals",
+ "version": 1,
+ "summary": {
+  "mode": "agent",
+  "tasks": 1,
+  "ran": 1,
+  "as_expected": 1,
+  "unexpected": [],
+  "skipped": [],
+  "errors": [],
+  "calls": 7,
+  "resp_bytes": 4342,
+  "tokens_est": 1348,
+  "wall_s": 124.24
+ },
+ "results": [
+  {
+   "id": "undo_vandal",
+   "set": "public",
+   "area": "journal",
+   "mode": "agent",
+   "startup_s": 9.02,
+   "agent_summary": "Read the journal, found vandal entries 2 (deleted /gate/beam) and 3 (batch set /gate/post_l and post_r), and undid exactly those with world_undo ids [2,3] force:true (journal 7); later bench, lamp and shrub untouched.",
+   "solution_wall_s": 108.69,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "the beam is back",
+     "passed": true
+    },
+    {
+     "name": "both posts have their colour and size back",
+     "passed": true
+    },
+    {
+     "name": "the builder's later lamp on the gate stays",
+     "passed": true
+    },
+    {
+     "name": "the builder's bench and the gardener's shrub stay",
+     "passed": true
+    },
+    {
+     "name": "the journal shows both of the vandal's entries undone",
+     "passed": true
+    },
+    {
+     "name": "no other agent's entry was undone",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 6,
+    "of": 6,
+    "fraction": 1.0
+   },
+   "status": "passed",
+   "solution": {
+    "calls": 7,
+    "req_bytes": 1053,
+    "resp_bytes": 4342,
+    "tokens_est": 1348,
+    "errors": 2,
+    "error_codes": {
+     "not_run": 1,
+     "not_yours": 1
+    },
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 2,
+     "eval_done": 1,
+     "world_history": 1,
+     "world_list": 1,
+     "world_undo": 2
+    }
+   },
+   "wall_s": 124.23,
+   "validation_errors": 0
+  }
+ ]
+}

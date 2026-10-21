@@ -1,0 +1,1060 @@
+{
+ "entries": [
+  {
+   "id": 64,
+   "tick": 58,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 62
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 63,
+   "tick": 57,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 61
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 62,
+   "tick": 56,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 60
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 61,
+   "tick": 55,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 59
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 60,
+   "tick": 54,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 58
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 59,
+   "tick": 53,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 57
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 58,
+   "tick": 52,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 56
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 57,
+   "tick": 51,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 55
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 56,
+   "tick": 50,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 54
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 55,
+   "tick": 49,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 53
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 54,
+   "tick": 48,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 52
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 53,
+   "tick": 47,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 51
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 52,
+   "tick": 46,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 50
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 51,
+   "tick": 45,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 49
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 50,
+   "tick": 44,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 48
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 49,
+   "tick": 43,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 47
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 48,
+   "tick": 42,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 46
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 47,
+   "tick": 41,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 45
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 46,
+   "tick": 40,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 44
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 45,
+   "tick": 39,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 43
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 44,
+   "tick": 38,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 42
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 43,
+   "tick": 37,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 41
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 42,
+   "tick": 36,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 40
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 41,
+   "tick": 35,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 39
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 40,
+   "tick": 34,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 38
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 39,
+   "tick": 33,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 37
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 38,
+   "tick": 32,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 36
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 37,
+   "tick": 31,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 35
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 36,
+   "tick": 30,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 34
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 35,
+   "tick": 29,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 33
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 34,
+   "tick": 28,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 32
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 33,
+   "tick": 27,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 31
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 32,
+   "tick": 26,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 30
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 31,
+   "tick": 25,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 29
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 30,
+   "tick": 24,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 28
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 29,
+   "tick": 23,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 27
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 28,
+   "tick": 22,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 26
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 27,
+   "tick": 21,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 25
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 26,
+   "tick": 20,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 24
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 25,
+   "tick": 19,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 23
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 24,
+   "tick": 18,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 22
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 23,
+   "tick": 17,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 21
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 22,
+   "tick": 16,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 20
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 21,
+   "tick": 15,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 19
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 20,
+   "tick": 14,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 18
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 19,
+   "tick": 13,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 17
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 18,
+   "tick": 12,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 16
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 17,
+   "tick": 11,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 15
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 16,
+   "tick": 10,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 14
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 15,
+   "tick": 9,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 13
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 14,
+   "tick": 8,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 12
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 13,
+   "tick": 7,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 11
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 12,
+   "tick": 6,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 10
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 11,
+   "tick": 5,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 9
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 10,
+   "tick": 4,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 8
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 9,
+   "tick": 3,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 7
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 8,
+   "tick": 2,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 6
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 7,
+   "tick": 1,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 5
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 6,
+   "tick": 0,
+   "by": "physics",
+   "kind": "physics",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 4
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 5,
+   "tick": 0,
+   "by": "eval-verifier-48415c",
+   "kind": "set",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 3
+    }
+   ]
+  },
+  {
+   "id": 4,
+   "tick": 0,
+   "by": "eval-verifier-48415c",
+   "kind": "env",
+   "changes": 1,
+   "items": [
+    {
+     "op": "env",
+     "id": 0,
+     "path": "/"
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "tick": 0,
+   "by": "solver",
+   "kind": "set",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/ball",
+     "version": 2
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "tick": 0,
+   "by": "eval-snapshot-2b3003",
+   "kind": "env",
+   "changes": 1,
+   "items": [
+    {
+     "op": "env",
+     "id": 0,
+     "path": "/"
+    }
+   ]
+  },
+  {
+   "id": 1,
+   "tick": 0,
+   "by": "setup",
+   "kind": "batch",
+   "changes": 7,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 1,
+     "path": "/ground",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 2,
+     "path": "/bin",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 3,
+     "path": "/bin/wall_near",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 4,
+     "path": "/bin/wall_far",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 5,
+     "path": "/bin/wall_left",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 6,
+     "path": "/bin/wall_right",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 7,
+     "path": "/ball",
+     "version": 1
+    }
+   ]
+  }
+ ],
+ "next_cursor": null,
+ "oldest_kept": 1,
+ "evicted": 0
+}

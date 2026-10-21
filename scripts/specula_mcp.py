@@ -143,8 +143,10 @@ class Engine:
     `shutdown_log` holds the engine's stderr after it stopped.
     """
 
-    def __init__(self, exe, port, log_path, *args, cwd=None):
+    def __init__(self, exe, port, log_path, *args, cwd=None, env=None):
         self.exe, self.port, self.log_path, self.args, self.cwd = Path(exe), port, Path(log_path), list(args), cwd
+        # The engine's environment (default: this process's).
+        self.env = env
         self.proc, self.startup_s, self.shutdown_log, self.exit_code = None, None, "", None
 
     def __enter__(self):
@@ -155,7 +157,7 @@ class Engine:
         flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
         start = time.perf_counter()
         self.proc = subprocess.Popen([str(self.exe), "--port", str(self.port), *self.args], stderr=self.log,
-                                     stdout=subprocess.DEVNULL, creationflags=flags, cwd=self.cwd)
+                                     stdout=subprocess.DEVNULL, creationflags=flags, cwd=self.cwd, env=self.env)
         # The process exists: a subclass may note it (before it answers, so a kill during start-up
         # can't hide it).
         self.started_process()

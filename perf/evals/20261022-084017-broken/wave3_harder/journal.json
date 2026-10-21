@@ -1,0 +1,726 @@
+{
+ "entries": [
+  {
+   "id": 6,
+   "tick": 0,
+   "by": "eval-verifier-bbadae",
+   "kind": "env",
+   "changes": 1,
+   "items": [
+    {
+     "op": "env",
+     "id": 0,
+     "path": "/"
+    }
+   ]
+  },
+  {
+   "id": 5,
+   "tick": 0,
+   "by": "solver",
+   "kind": "batch",
+   "changes": 2,
+   "items": [
+    {
+     "op": "set",
+     "id": 260,
+     "path": "/lex/sepulcra/runner",
+     "version": 2
+    },
+    {
+     "op": "set",
+     "id": 263,
+     "path": "/lex/sepulcra/shambler",
+     "version": 2
+    }
+   ]
+  },
+  {
+   "id": 4,
+   "tick": 0,
+   "by": "eval-snapshot-ecafab",
+   "kind": "env",
+   "changes": 1,
+   "items": [
+    {
+     "op": "env",
+     "id": 0,
+     "path": "/"
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "tick": 0,
+   "by": "setup",
+   "kind": "batch",
+   "changes": 51,
+   "items": [
+    {
+     "op": "set",
+     "id": 230,
+     "path": "/lex/sepulcra",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 236,
+     "path": "/lex/sepulcra/air_move",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 237,
+     "path": "/lex/sepulcra/bolt",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 238,
+     "path": "/lex/sepulcra/brazier_1",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 239,
+     "path": "/lex/sepulcra/brazier_2",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 240,
+     "path": "/lex/sepulcra/brazier_3",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 241,
+     "path": "/lex/sepulcra/breach_penalty",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 242,
+     "path": "/lex/sepulcra/call_wave",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 243,
+     "path": "/lex/sepulcra/colossus",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 244,
+     "path": "/lex/sepulcra/dust",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 245,
+     "path": "/lex/sepulcra/early_call_per_s",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 246,
+     "path": "/lex/sepulcra/edge_reach",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 247,
+     "path": "/lex/sepulcra/enemy",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 248,
+     "path": "/lex/sepulcra/flyer",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 249,
+     "path": "/lex/sepulcra/ground_move",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 250,
+     "path": "/lex/sepulcra/lob",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 251,
+     "path": "/lex/sepulcra/lose",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 252,
+     "path": "/lex/sepulcra/low_wall",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 253,
+     "path": "/lex/sepulcra/place",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 254,
+     "path": "/lex/sepulcra/roots_from_wave",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 255,
+     "path": "/lex/sepulcra/roots_radius",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 256,
+     "path": "/lex/sepulcra/roots_slow",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 257,
+     "path": "/lex/sepulcra/rune_pillar_1",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 258,
+     "path": "/lex/sepulcra/rune_pillar_2",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 259,
+     "path": "/lex/sepulcra/rune_pillar_3",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 260,
+     "path": "/lex/sepulcra/runner",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 261,
+     "path": "/lex/sepulcra/sell",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 262,
+     "path": "/lex/sepulcra/sell_refund",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 263,
+     "path": "/lex/sepulcra/shambler",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 264,
+     "path": "/lex/sepulcra/sky_obelisk_1",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 265,
+     "path": "/lex/sepulcra/sky_obelisk_2",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 266,
+     "path": "/lex/sepulcra/sky_obelisk_3",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 267,
+     "path": "/lex/sepulcra/slow",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 268,
+     "path": "/lex/sepulcra/spot",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 269,
+     "path": "/lex/sepulcra/start_dust",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 270,
+     "path": "/lex/sepulcra/start_tombstones",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 271,
+     "path": "/lex/sepulcra/stone",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 272,
+     "path": "/lex/sepulcra/tombstones",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 273,
+     "path": "/lex/sepulcra/unwall",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 274,
+     "path": "/lex/sepulcra/upgrade",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 275,
+     "path": "/lex/sepulcra/walker",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 276,
+     "path": "/lex/sepulcra/wall",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 277,
+     "path": "/lex/sepulcra/wall_clear",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 278,
+     "path": "/lex/sepulcra/wall_cost",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 279,
+     "path": "/lex/sepulcra/wall_hp",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 280,
+     "path": "/lex/sepulcra/warding_1",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 281,
+     "path": "/lex/sepulcra/warding_2",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 282,
+     "path": "/lex/sepulcra/warding_3",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 283,
+     "path": "/lex/sepulcra/waves",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 284,
+     "path": "/lex/sepulcra/win",
+     "version": 1
+    }
+   ],
+   "items_omitted": 1
+  },
+  {
+   "id": 2,
+   "tick": 0,
+   "by": "setup",
+   "kind": "batch",
+   "changes": 7,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 229,
+     "path": "/lex",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 230,
+     "path": "/lex/sepulcra",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 231,
+     "path": "/lex/sepulcra/air_entries",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 232,
+     "path": "/lex/sepulcra/build_spots",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 233,
+     "path": "/lex/sepulcra/slab",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 234,
+     "path": "/lex/sepulcra/spawn_points",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 235,
+     "path": "/lex/sepulcra/wall_spots",
+     "version": 1
+    }
+   ]
+  },
+  {
+   "id": 1,
+   "tick": 0,
+   "by": "sepulcra",
+   "kind": "game_start",
+   "changes": 265,
+   "items": [
+    {
+     "op": "env",
+     "id": 0,
+     "path": "/"
+    },
+    {
+     "op": "spawn",
+     "id": 1,
+     "path": "/slab",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 2,
+     "path": "/slab/body",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 3,
+     "path": "/slab/body/rock_00",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 3,
+     "path": "/slab/body/rock_00",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 4,
+     "path": "/slab/body/rock_01",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/slab/body/rock_01",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 5,
+     "path": "/slab/body/rock_02",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/slab/body/rock_02",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 6,
+     "path": "/slab/body/rock_03",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 6,
+     "path": "/slab/body/rock_03",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 7,
+     "path": "/slab/body/rock_04",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/slab/body/rock_04",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 8,
+     "path": "/slab/body/broken_0_0",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 9,
+     "path": "/slab/body/broken_1_0",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 10,
+     "path": "/slab/body/broken_19_0",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 11,
+     "path": "/slab/body/broken_0_1",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 12,
+     "path": "/slab/body/broken_19_18",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 13,
+     "path": "/slab/body/broken_0_19",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 14,
+     "path": "/slab/body/broken_18_19",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 15,
+     "path": "/slab/body/broken_19_19",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 16,
+     "path": "/slab/underside",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 17,
+     "path": "/slab/underside/chunk_0",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 18,
+     "path": "/slab/underside/chunk_1",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 19,
+     "path": "/slab/underside/chunk_2",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 20,
+     "path": "/slab/underside/chunk_3",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 21,
+     "path": "/slab/underside/chunk_4",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 22,
+     "path": "/slab/fragments",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 23,
+     "path": "/slab/fragments/piece00_2_0",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 23,
+     "path": "/slab/fragments/piece00_2_0",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 24,
+     "path": "/slab/fragments/piece01_5_0",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 24,
+     "path": "/slab/fragments/piece01_5_0",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 25,
+     "path": "/slab/fragments/piece02_16_0",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 25,
+     "path": "/slab/fragments/piece02_16_0",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 26,
+     "path": "/slab/fragments/piece00_1_1",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 26,
+     "path": "/slab/fragments/piece00_1_1",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 27,
+     "path": "/slab/fragments/piece02_19_1",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 27,
+     "path": "/slab/fragments/piece02_19_1",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 28,
+     "path": "/slab/fragments/piece00_0_2",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 28,
+     "path": "/slab/fragments/piece00_0_2",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 29,
+     "path": "/slab/fragments/piece01_7_3",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 29,
+     "path": "/slab/fragments/piece01_7_3",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 30,
+     "path": "/slab/fragments/piece00_4_4",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 30,
+     "path": "/slab/fragments/piece00_4_4",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 31,
+     "path": "/slab/fragments/piece01_7_4",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 31,
+     "path": "/slab/fragments/piece01_7_4",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 32,
+     "path": "/slab/fragments/piece02_14_5",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 32,
+     "path": "/slab/fragments/piece02_14_5",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 33,
+     "path": "/slab/fragments/piece03_7_7",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 33,
+     "path": "/slab/fragments/piece03_7_7",
+     "version": 2
+    }
+   ],
+   "items_omitted": 215
+  }
+ ],
+ "next_cursor": null,
+ "oldest_kept": 1,
+ "evicted": 0
+}

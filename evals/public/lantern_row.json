@@ -1,0 +1,741 @@
+{
+ "eval": 1,
+ "id": "lantern_row",
+ "set": "public",
+ "area": "world",
+ "title": "Line a path with evenly spaced lanterns",
+ "summary": "Coordinates from a description: five lanterns 2 m apart, standing on the ground, each lit; checked by positions and bounds.",
+ "game": null,
+ "setup": [
+  {
+   "as": "setup",
+   "call": "world_batch",
+   "args": {
+    "ops": [
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "name": "ground",
+      "position": [
+       0,
+       -0.5,
+       0
+      ],
+      "scale": [
+       30,
+       1,
+       30
+      ],
+      "color": "#3d4a3a",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "quad",
+      "name": "path",
+      "position": [
+       0,
+       0.01,
+       6
+      ],
+      "scale": [
+       10,
+       1,
+       1.2
+      ],
+      "color": "#8a7d64"
+     }
+    ]
+   }
+  }
+ ],
+ "brief": "The world has a ground (top at y = 0) and a straight path, /path, running along x from -5 to 5 at z = 6. Line it with five lanterns under a group at /lanterns: one every 2 m starting at x = -4 (so at x = -4, -2, 0, 2 and 4), all at z = 6. Each lantern stands on the ground (its lowest point at y = 0, no gap and not sunk in), is tagged \"lantern\", and carries a point light. Any shape or size up to 1.5 m tall.",
+ "tools": [
+  "world_*",
+  "sight_frame",
+  "time_control"
+ ],
+ "limits": {
+  "calls": 30,
+  "wall_s": 600
+ },
+ "verify": [
+  {
+   "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+   "world_diff": {
+    "allow": [
+     {
+      "path": "/lanterns",
+      "ops": [
+       "added"
+      ]
+     },
+     {
+      "path": "/lanterns/*",
+      "ops": [
+       "added"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "five lanterns",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/lanterns",
+    "tags": [
+     "lantern"
+    ],
+    "fields": [
+     "path"
+    ]
+   },
+   "expect": {
+    "total": 5
+   }
+  },
+  {
+   "name": "a lantern at x = -4",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/lanterns",
+    "tags": [
+     "lantern"
+    ],
+    "fields": [
+     "path",
+     "world_position"
+    ]
+   },
+   "select": {
+    "from": "items",
+    "where": {
+     "world_position.0": {
+      "near": -4,
+      "tol": 0.05
+     },
+     "world_position.2": {
+      "near": 6,
+      "tol": 0.05
+     }
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 1
+   }
+  },
+  {
+   "name": "a lantern at x = -2",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/lanterns",
+    "tags": [
+     "lantern"
+    ],
+    "fields": [
+     "path",
+     "world_position"
+    ]
+   },
+   "select": {
+    "from": "items",
+    "where": {
+     "world_position.0": {
+      "near": -2,
+      "tol": 0.05
+     },
+     "world_position.2": {
+      "near": 6,
+      "tol": 0.05
+     }
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 1
+   }
+  },
+  {
+   "name": "a lantern at x = 0",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/lanterns",
+    "tags": [
+     "lantern"
+    ],
+    "fields": [
+     "path",
+     "world_position"
+    ]
+   },
+   "select": {
+    "from": "items",
+    "where": {
+     "world_position.0": {
+      "near": 0,
+      "tol": 0.05
+     },
+     "world_position.2": {
+      "near": 6,
+      "tol": 0.05
+     }
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 1
+   }
+  },
+  {
+   "name": "a lantern at x = 2",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/lanterns",
+    "tags": [
+     "lantern"
+    ],
+    "fields": [
+     "path",
+     "world_position"
+    ]
+   },
+   "select": {
+    "from": "items",
+    "where": {
+     "world_position.0": {
+      "near": 2,
+      "tol": 0.05
+     },
+     "world_position.2": {
+      "near": 6,
+      "tol": 0.05
+     }
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 1
+   }
+  },
+  {
+   "name": "a lantern at x = 4",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/lanterns",
+    "tags": [
+     "lantern"
+    ],
+    "fields": [
+     "path",
+     "world_position"
+    ]
+   },
+   "select": {
+    "from": "items",
+    "where": {
+     "world_position.0": {
+      "near": 4,
+      "tol": 0.05
+     },
+     "world_position.2": {
+      "near": 6,
+      "tol": 0.05
+     }
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 1
+   }
+  },
+  {
+   "name": "every lantern stands on the ground (bounds' lowest y within 2 cm of 0)",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/lanterns",
+    "tags": [
+     "lantern"
+    ],
+    "fields": [
+     "path",
+     "bounds"
+    ]
+   },
+   "select": {
+    "from": "items",
+    "where": {
+     "bounds.min.1": {
+      "near": 0,
+      "tol": 0.02
+     },
+     "bounds.max.1": {
+      "lte": 1.5
+     }
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 5
+   }
+  },
+  {
+   "name": "every lantern is lit",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/lanterns",
+    "tags": [
+     "lantern"
+    ],
+    "fields": [
+     "path",
+     "light"
+    ]
+   },
+   "select": {
+    "from": "items",
+    "where": {
+     "light": {
+      "exists": true
+     }
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 5
+   }
+  },
+  {
+   "name": "the setup's path and ground are untouched",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/path",
+    "fields": [
+     "path",
+     "position",
+     "version"
+    ]
+   },
+   "expect": {
+    "items.0.version": 1,
+    "items.0.position": {
+     "eq": [
+      0,
+      0.01,
+      6
+     ]
+    }
+   }
+  },
+  {
+   "name": "a capture along the path shows them",
+   "call": "sight_frame",
+   "args": {
+    "eye": [
+     0,
+     3,
+     14
+    ],
+    "target": [
+     0,
+     0.5,
+     6
+    ],
+    "width": 640,
+    "height": 360,
+    "subjects": "visible"
+   },
+   "select": {
+    "from": "subjects",
+    "where": {
+     "path": {
+      "contains": "/lanterns/"
+     }
+    },
+    "count": true
+   },
+   "expect": {
+    "count": {
+     "gte": 5
+    }
+   }
+  }
+ ],
+ "reference": [
+  {
+   "call": "world_batch",
+   "args": {
+    "ops": [
+     {
+      "op": "spawn",
+      "shape": "group",
+      "name": "lanterns"
+     },
+     {
+      "op": "spawn",
+      "shape": "lathe",
+      "parent": "/lanterns",
+      "name": "lantern_1",
+      "position": [
+       -4,
+       0,
+       6
+      ],
+      "profile": [
+       [
+        0.12,
+        0
+       ],
+       [
+        0.04,
+        0.05
+       ],
+       [
+        0.04,
+        0.9
+       ],
+       [
+        0.14,
+        0.95
+       ],
+       [
+        0.14,
+        1.2
+       ],
+       [
+        0.0,
+        1.3
+       ]
+      ],
+      "color": "#2b2b2b",
+      "tags": [
+       "lantern"
+      ],
+      "light": {
+       "intensity": 1.5,
+       "range": 5,
+       "color": "#ffc070",
+       "offset": [
+        0,
+        1.1,
+        0
+       ]
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "lathe",
+      "parent": "/lanterns",
+      "name": "lantern_2",
+      "position": [
+       -2,
+       0,
+       6
+      ],
+      "profile": [
+       [
+        0.12,
+        0
+       ],
+       [
+        0.04,
+        0.05
+       ],
+       [
+        0.04,
+        0.9
+       ],
+       [
+        0.14,
+        0.95
+       ],
+       [
+        0.14,
+        1.2
+       ],
+       [
+        0.0,
+        1.3
+       ]
+      ],
+      "color": "#2b2b2b",
+      "tags": [
+       "lantern"
+      ],
+      "light": {
+       "intensity": 1.5,
+       "range": 5,
+       "color": "#ffc070",
+       "offset": [
+        0,
+        1.1,
+        0
+       ]
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "lathe",
+      "parent": "/lanterns",
+      "name": "lantern_3",
+      "position": [
+       0,
+       0,
+       6
+      ],
+      "profile": [
+       [
+        0.12,
+        0
+       ],
+       [
+        0.04,
+        0.05
+       ],
+       [
+        0.04,
+        0.9
+       ],
+       [
+        0.14,
+        0.95
+       ],
+       [
+        0.14,
+        1.2
+       ],
+       [
+        0.0,
+        1.3
+       ]
+      ],
+      "color": "#2b2b2b",
+      "tags": [
+       "lantern"
+      ],
+      "light": {
+       "intensity": 1.5,
+       "range": 5,
+       "color": "#ffc070",
+       "offset": [
+        0,
+        1.1,
+        0
+       ]
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "lathe",
+      "parent": "/lanterns",
+      "name": "lantern_4",
+      "position": [
+       2,
+       0,
+       6
+      ],
+      "profile": [
+       [
+        0.12,
+        0
+       ],
+       [
+        0.04,
+        0.05
+       ],
+       [
+        0.04,
+        0.9
+       ],
+       [
+        0.14,
+        0.95
+       ],
+       [
+        0.14,
+        1.2
+       ],
+       [
+        0.0,
+        1.3
+       ]
+      ],
+      "color": "#2b2b2b",
+      "tags": [
+       "lantern"
+      ],
+      "light": {
+       "intensity": 1.5,
+       "range": 5,
+       "color": "#ffc070",
+       "offset": [
+        0,
+        1.1,
+        0
+       ]
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "lathe",
+      "parent": "/lanterns",
+      "name": "lantern_5",
+      "position": [
+       4,
+       0,
+       6
+      ],
+      "profile": [
+       [
+        0.12,
+        0
+       ],
+       [
+        0.04,
+        0.05
+       ],
+       [
+        0.04,
+        0.9
+       ],
+       [
+        0.14,
+        0.95
+       ],
+       [
+        0.14,
+        1.2
+       ],
+       [
+        0.0,
+        1.3
+       ]
+      ],
+      "color": "#2b2b2b",
+      "tags": [
+       "lantern"
+      ],
+      "light": {
+       "intensity": 1.5,
+       "range": 5,
+       "color": "#ffc070",
+       "offset": [
+        0,
+        1.1,
+        0
+       ]
+      }
+     }
+    ]
+   }
+  }
+ ],
+ "broken": [
+  {
+   "note": "classic coordinate slips: spheres centred at y = 0 (sunk halfway) and the last two 2.5 m apart",
+   "call": "world_batch",
+   "args": {
+    "ops": [
+     {
+      "op": "spawn",
+      "shape": "group",
+      "name": "lanterns"
+     },
+     {
+      "op": "spawn",
+      "shape": "sphere",
+      "parent": "/lanterns",
+      "name": "l1",
+      "position": [
+       -4,
+       0,
+       6
+      ],
+      "scale": 0.4,
+      "tags": [
+       "lantern"
+      ],
+      "light": {
+       "intensity": 1
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "sphere",
+      "parent": "/lanterns",
+      "name": "l2",
+      "position": [
+       -2,
+       0,
+       6
+      ],
+      "scale": 0.4,
+      "tags": [
+       "lantern"
+      ],
+      "light": {
+       "intensity": 1
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "sphere",
+      "parent": "/lanterns",
+      "name": "l3",
+      "position": [
+       0,
+       0,
+       6
+      ],
+      "scale": 0.4,
+      "tags": [
+       "lantern"
+      ],
+      "light": {
+       "intensity": 1
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "sphere",
+      "parent": "/lanterns",
+      "name": "l4",
+      "position": [
+       2.5,
+       0,
+       6
+      ],
+      "scale": 0.4,
+      "tags": [
+       "lantern"
+      ],
+      "light": {
+       "intensity": 1
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "sphere",
+      "parent": "/lanterns",
+      "name": "l5",
+      "position": [
+       5,
+       0,
+       6
+      ],
+      "scale": 0.4,
+      "tags": [
+       "lantern"
+      ],
+      "light": {
+       "intensity": 1
+      }
+     }
+    ]
+   }
+  }
+ ]
+}

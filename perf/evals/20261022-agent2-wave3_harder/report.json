@@ -1,0 +1,118 @@
+{
+ "format": "specula-evals",
+ "version": 1,
+ "summary": {
+  "mode": "agent",
+  "tasks": 1,
+  "ran": 1,
+  "as_expected": 1,
+  "unexpected": [],
+  "skipped": [],
+  "errors": [],
+  "calls": 15,
+  "resp_bytes": 45296,
+  "tokens_est": 12462,
+  "wall_s": 221.62
+ },
+ "results": [
+  {
+   "id": "wave3_harder",
+   "set": "public",
+   "area": "lex",
+   "mode": "agent",
+   "startup_s": 7.5,
+   "agent_summary": "Patched waves[2].scale.hp in sepulcra from 1.1 to 1.21 (wave 3 enemies now have 10% more HP: shambler 60.5 -> 66.55, runner 28.6 -> 31.46); nothing else changed. Set validates clean and the centre build on seed 7 still wins (9 tombstones left).",
+   "solution_wall_s": 180.13,
+   "actors": [],
+   "verifiers": [
+    {
+     "name": "the set validates with no errors",
+     "passed": true
+    },
+    {
+     "name": "simulate into wave 1",
+     "passed": true
+    },
+    {
+     "name": "wave 1 shamblers unchanged (55 hp)",
+     "passed": true
+    },
+    {
+     "name": "simulate into wave 3",
+     "passed": true
+    },
+    {
+     "name": "wave 3 shamblers have 10% more hit points (60.5 -> 66.55)",
+     "passed": true
+    },
+    {
+     "name": "simulate to wave 3's runners",
+     "passed": true
+    },
+    {
+     "name": "wave 3 runners have 10% more hit points (28.6 -> 31.46)",
+     "passed": true
+    },
+    {
+     "name": "simulate into wave 4",
+     "passed": true
+    },
+    {
+     "name": "wave 4 shamblers unchanged (66 hp)",
+     "passed": true
+    },
+    {
+     "name": "simulate into wave 5",
+     "passed": true
+    },
+    {
+     "name": "wave 5 shamblers unchanged (74.25 hp)",
+     "passed": true
+    },
+    {
+     "name": "the centre-heavy build still wins seed 7",
+     "passed": true
+    },
+    {
+     "name": "the waves item is the shipped one except wave 3's hit-point scale",
+     "passed": true
+    },
+    {
+     "name": "no other rule item changed (the journal of /lex/sepulcra holds only edits of the waves item)",
+     "passed": true
+    }
+   ],
+   "score": {
+    "passed": 14,
+    "of": 14,
+    "fraction": 1.0
+   },
+   "status": "passed",
+   "solution": {
+    "calls": 15,
+    "req_bytes": 4554,
+    "resp_bytes": 45296,
+    "tokens_est": 12462,
+    "errors": 3,
+    "error_codes": {
+     "not_run": 1,
+     "invalid_argument": 2
+    },
+    "refused_not_allowed": 0,
+    "by_tool": {
+     "agent_hello": 2,
+     "eval_done": 1,
+     "lex_edit": 1,
+     "lex_get": 2,
+     "lex_list": 2,
+     "lex_schema": 2,
+     "lex_session": 2,
+     "lex_simulate": 2,
+     "lex_validate": 1
+    }
+   },
+   "wall_s": 221.61,
+   "validation_errors": 0
+  }
+ ]
+}

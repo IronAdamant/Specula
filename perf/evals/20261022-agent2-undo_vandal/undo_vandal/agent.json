@@ -1,0 +1,16 @@
+{
+ "agent": "Claude (general-purpose subagent, same model as the lane), driving the engine only through scripts/evals.py tools / call on the proxy port",
+ "verifiers": "the suite after review round 2",
+ "harness_usage": {
+  "tokens": 55085,
+  "tool_uses": 9,
+  "duration_ms": 81661
+ },
+ "engine_calls": 7,
+ "result": "passed 6/6",
+ "report": [
+  "world_history {detail} showed the vandal's entries 2 (deleted /gate/beam) and 3 (changed both posts); world_undo {ids: [2, 3]} was refused not_yours; with force it undid both; world_list confirmed the beam back with its id, the posts restored, everyone else's work unchanged.",
+  "Error: not_yours ('pass force: true to undo someone else's change'), clear.",
+  "Tool notes: force both allows undoing others' entries and overrides later conflicts, so undoing a vandal switches off the check that protects later work (an allow_others flag would keep it); world_history detail shows paths and versions, not values."
+ ]
+}
