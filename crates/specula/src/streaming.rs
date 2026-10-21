@@ -36,7 +36,8 @@ use specula_core::math::{Mat4, Vec3};
 use specula_core::Json;
 use specula_gpu::{DrawItem, Gpu, MaterialTextures, MeshStreams, TextureId};
 use specula_model::{MaterialKind, MeshData};
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
 
 /// Hash maps keyed by ids: the stable (unkeyed, fast) hasher, not SipHash.
 type IdMap<K, V> = HashMap<K, V, specula_core::hash::StableBuildHasher>;
@@ -564,10 +565,58 @@ struct PassState {
 }
 
 /// Something the memory budget may evict.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Victim {
     Build(u64),
     Proxy(CellKey),
+}
+
+impl Victim {
+    fn of(kind: u8, id: u64, cell: CellKey) -> Victim {
+        if kind == 0 {
+            Victim::Build(id)
+        } else {
+            Victim::Proxy(cell)
+        }
+    }
+}
+
+/// The eviction queue (see [`Streamer::scan_victims`]): uploads no camera wants, least recently
+/// wanted first, then soft-wanted ones, farthest first. Heaps: made in O(n), taken from in
+/// O(log n), so no frame sorts every upload.
+#[derive(Default)]
+struct Victims {
+    /// `(last wanted, kind (0 build, 1 proxy), build id, cell)`: the smallest goes first.
+    gone: BinaryHeap<Reverse<(u64, u8, u64, CellKey)>>,
+    /// `(priority as bits (never negative, so ordered as the floats), kind, build id, cell)`: the
+    /// largest (farthest) goes first.
+    soft: BinaryHeap<(u32, u8, u64, CellKey)>,
+}
+
+impl Victims {
+    /// The next victim and the priority it gives way to (unwanted ones: infinity).
+    fn front(&self) -> Option<(f32, Victim)> {
+        if let Some(Reverse((_, kind, id, cell))) = self.gone.peek() {
+            return Some((f32::INFINITY, Victim::of(*kind, *id, *cell)));
+        }
+        self.soft.peek().map(|&(bits, kind, id, cell)| (f32::from_bits(bits), Victim::of(kind, id, cell)))
+    }
+
+    fn pop(&mut self) {
+        if self.gone.pop().is_none() {
+            self.soft.pop();
+        }
+    }
+}
+
+/// A scan of the uploads for the next eviction queue, spread over frames after each pass.
+struct VictimScan {
+    /// The pass whose wanted set it reads.
+    pass: u64,
+    /// The last build looked at.
+    cursor: Option<u64>,
+    gone: Vec<Reverse<(u64, u8, u64, CellKey)>>,
+    soft: Vec<(u32, u8, u64, CellKey)>,
 }
 
 /// What one frame's pump did.
@@ -668,7 +717,16 @@ pub struct Streamer {
     /// Builds drawn instanced (at least [`INSTANCED_MIN`] entities): never merged.
     instanced: std::collections::BTreeSet<u64>,
     /// The eviction queue (see `victims`), kept across frames until the next pass.
-    victims_cache: Option<VecDeque<(f32, Victim)>>,
+    victims_cache: Option<Victims>,
+    /// The next eviction queue being made (see [`Streamer::scan_victims`]).
+    victim_scan: Option<VictimScan>,
+    /// The pass the eviction queue was made for (`None`: builds changed since).
+    victims_for: Option<u64>,
+    /// The memory budget was full at the last pump: eviction queues are worth keeping fresh.
+    memory_full: bool,
+    /// Bytes on the GPU (builds and proxies) as of the last pump, kept up to date by it; `None`:
+    /// worked out again (after a sync, a pass end or new settings).
+    resident_cache: Option<u64>,
 }
 
 impl Default for Streamer {
@@ -724,6 +782,10 @@ impl Streamer {
             frame_began: None,
             frame_tried: 0,
             victims_cache: None,
+            victim_scan: None,
+            victims_for: None,
+            memory_full: false,
+            resident_cache: None,
         }
     }
 
@@ -764,6 +826,11 @@ impl Streamer {
             self.dirty_cells.clear();
             models.cover.fill(0);
         }
+        // Proxies may have gone: what is on the GPU is summed again, the queue made again.
+        self.resident_cache = None;
+        self.victims_cache = None;
+        self.victim_scan = None;
+        self.victims_for = None;
         if old.enabled && !self.cfg.enabled {
             // The plain path uploads whole builds: partial ones go and come back complete.
             let partial: Vec<u64> = models.uploaded.iter().filter(|(_, m)| m.resident_from > 0).map(|(id, _)| *id).collect();
@@ -911,7 +978,10 @@ impl Streamer {
         let live = &self.live;
         models.failed.retain(|id, _| live.contains_key(id));
         models.sync_anim_sets(&library.lock(), world, false);
-        self.victims_cache = None;
+        // Builds changed: a new eviction queue is scanned over the next frames (the old one, and a
+        // scan already running, stay meanwhile; `evict_for` checks each entry again).
+        self.victims_for = None;
+        self.resident_cache = None;
         self.stale = true;
         std::mem::take(&mut self.upload_errors)
     }
@@ -985,6 +1055,11 @@ impl Streamer {
             if any_urgent {
                 self.pend_wanted(models);
             }
+        }
+        // The next eviction queue, a slice a frame, while the memory budget is full.
+        if self.memory_full && self.victims_cache.is_some() && (self.victims_for != Some(self.done_pass) || self.victim_scan.is_some()) {
+            let _z = specula_core::profile::zone("victims_scan");
+            self.scan_victims(models, self.cfg.upload_ms * 0.1);
         }
         // A game's presentation that isn't on the GPU yet goes first, without waiting for a pass.
         self.find_transients(world, models);
@@ -1241,7 +1316,9 @@ impl Streamer {
         }
         self.pending.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
         self.done_pass = frame;
-        self.victims_cache = None;
+        // The next eviction queue is scanned over the next frames, not in this one (after any
+        // scan already running).
+        self.resident_cache = None;
         self.nearest = pass.nearest;
         self.index.cells.retain(|_, c| !c.members.is_empty());
         let cells = &self.index.cells;
@@ -1299,9 +1376,13 @@ impl Streamer {
         }
         // The pending builds (sorted at the last update; finished ones dropped here) merged with
         // the proxies waiting for upload (few), by priority.
+        let zr = specula_core::profile::zone("retain");
         let live = &self.live;
         self.pending.retain(|&(_, b, _, level)| live.contains_key(&b) && !models.failed.contains_key(&b) && models.uploaded.get(&b).is_none_or(|m| m.resident_from > level));
+        drop(zr);
+        let zp = specula_core::profile::zone("proxies");
         let mut proxies: Vec<(f32, CellKey, u64)> = if self.hlod_on() { self.hlod.uploads().collect() } else { Vec::new() };
+        drop(zp);
         // Transients first (priority 0; a pass's entry for the same build follows harmlessly).
         if !self.transients.is_empty() {
             let transients = &self.transients;
@@ -1342,14 +1423,23 @@ impl Streamer {
         let budget_ms = self.cfg.upload_ms;
         let budget_bytes = (self.cfg.upload_mb * 1_048_576.0) as u64;
         let memory = (self.cfg.memory_mb * 1_048_576.0) as u64;
-        let mut resident = models.uploaded.values().map(|m| m.bytes).sum::<u64>() + self.hlod.resident_bytes();
+        let zs = specula_core::profile::zone("resident");
+        let mut resident = match self.resident_cache {
+            Some(r) => r,
+            None => models.uploaded.values().map(|m| m.bytes).sum::<u64>() + self.hlod.resident_bytes(),
+        };
+        drop(zs);
         let mut blocked = 0u64;
         // The lowest eviction threshold found to leave nothing to evict: an item whose threshold
         // is no lower is blocked at once (items come nearest first; a hard one goes lower).
         let mut exhausted = f32::INFINITY;
-        // What may be evicted, worked out once per pump when first needed.
-        // What may be evicted: made when first needed, kept until the next pass (or builds change).
-        let mut victims: Option<VecDeque<(f32, Victim)>> = self.victims_cache.take();
+        // What may be evicted: the queue the last scan made (re-checked entry by entry), or, the
+        // first time the memory budget fills, one made at once.
+        let mut victims: Option<Victims> = self.victims_cache.take();
+        let mut full = false;
+        let mut rebuilt = false;
+        // Upload failures (memory retired outside the count): the total is summed again.
+        let mut recount = false;
         self.blocked.clear();
         self.blocked_cells.clear();
         let count = (pending.len() + proxies.len()) as u32;
@@ -1379,10 +1469,23 @@ impl Streamer {
                 continue;
             }
             if resident + est > memory {
+                full = true;
                 // A hard-wanted item may evict any soft victim; others only farther ones.
                 let threshold = if hard { f32::NEG_INFINITY } else { prio };
                 if threshold < exhausted {
-                    let v = victims.get_or_insert_with(|| self.victims(models));
+                    // No queue yet, or one used up that is older than the wanted set: made now
+                    // (once a pump).
+                    let used_up = victims.as_ref().is_some_and(|v| v.front().is_none()) && self.victims_for != Some(self.done_pass);
+                    if victims.is_none() || (used_up && !rebuilt) {
+                        rebuilt = true;
+                        let _z = specula_core::profile::zone("victims");
+                        self.victims_cache = None;
+                        self.victim_scan = None;
+                        self.scan_victims(models, f64::INFINITY);
+                        victims = self.victims_cache.take();
+                    }
+                    let v = victims.get_or_insert_with(Victims::default);
+                    let _z = specula_core::profile::zone("evict");
                     resident -= self.evict_for(resident + est - memory, threshold, v, gpu, models);
                 }
                 if resident + est > memory {
@@ -1429,14 +1532,22 @@ impl Streamer {
                     }
                 }
                 Err(e) => {
+                    recount = true;
                     if self.upload_errors.len() < 10 {
                         self.upload_errors.push(e);
                     }
                 }
             }
         }
+        let _ze = specula_core::profile::zone("pump_end");
         self.pending = pending;
-        self.victims_cache = victims;
+        if victims.is_some() {
+            self.victims_cache = victims;
+        }
+        self.memory_full = full;
+        // Proxy uploads that replaced older ones retired memory the count doesn't see.
+        recount |= self.hlod.take_retired();
+        self.resident_cache = (!recount).then_some(resident);
         self.blocked_bytes = blocked;
         self.blocked.sort_unstable();
         self.blocked_cells.sort_unstable();
@@ -1519,50 +1630,63 @@ impl Streamer {
     /// What may be evicted now, in order: builds and proxies no camera wants (least recently
     /// wanted first), then builds wanted only softly (standing in for a proxy), farthest first.
     /// Made once per pump, when an upload first needs room.
-    fn victims(&self, models: &GpuModels) -> VecDeque<(f32, Victim)> {
-        let mut gone: Vec<(u64, Victim)> = models
-            .uploaded
-            .keys()
-            .filter(|id| !self.wanted_now(**id))
-            .map(|id| (self.want.get(id).map_or(0, |e| e.1), Victim::Build(*id)))
-            .chain(self.hlod.evictable().into_iter().map(|(f, cell)| (f, Victim::Proxy(cell))))
-            .collect();
-        gone.sort_by_key(|(f, victim)| {
-            (
-                *f,
-                match victim {
-                    Victim::Build(id) => (0, *id, (0, 0)),
-                    Victim::Proxy(c) => (1, 0, *c),
-                },
-            )
-        });
-        let mut soft: Vec<(f32, Victim)> = models
-            .uploaded
-            .keys()
-            .filter_map(|id| self.want.get(id).filter(|e| e.1 >= self.done_pass && !e.2).map(|e| (e.0, Victim::Build(*id))))
-            // Wanted proxies too (far ones give way to what is near).
-            .chain(self.hlod.wanted_uploaded().into_iter().map(|(p, cell)| (p, Victim::Proxy(cell))))
-            .collect();
-        soft.sort_by(|a, b| b.0.total_cmp(&a.0));
-        gone.into_iter().map(|(_, v)| (f32::INFINITY, v)).chain(soft).collect()
+    /// Scans the uploads for the next eviction queue for at most `slice_ms` (in steps of 64
+    /// builds); when done, it replaces the queue. Unwanted uploads go least recently wanted first
+    /// (builds before proxies on a tie), then soft-wanted ones (stand-ins, proxies the window
+    /// isn't drawing) farthest first.
+    fn scan_victims(&mut self, models: &GpuModels, slice_ms: f64) {
+        let start = Instant::now();
+        // A scan runs to its end for the pass it began on (a newer pass only starts the next one:
+        // passes can end faster than a big world's scan, which would then never finish).
+        let mut scan = self.victim_scan.take().unwrap_or_else(|| VictimScan { pass: self.done_pass, cursor: None, gone: Vec::new(), soft: Vec::new() });
+        let range = match scan.cursor {
+            None => models.uploaded.range(..),
+            Some(c) => models.uploaded.range((std::ops::Bound::Excluded(c), std::ops::Bound::Unbounded)),
+        };
+        for (n, &id) in range.map(|(id, _)| id).enumerate() {
+            match self.want.get(&id) {
+                Some(e) if e.1 >= self.done_pass => {
+                    if !e.2 {
+                        scan.soft.push((e.0.max(0.0).to_bits(), 0, id, (0, 0)));
+                    }
+                }
+                e => scan.gone.push(Reverse((e.map_or(0, |e| e.1), 0, id, (0, 0)))),
+            }
+            scan.cursor = Some(id);
+            if n % 64 == 63 && start.elapsed().as_secs_f64() * 1e3 >= slice_ms {
+                self.victim_scan = Some(scan);
+                return;
+            }
+        }
+        // The proxies (a few hundred cells at most), then the queue.
+        scan.gone.extend(self.hlod.evictable().into_iter().map(|(f, cell)| Reverse((f, 1, 0, cell))));
+        scan.soft.extend(self.hlod.wanted_uploaded().into_iter().map(|(p, cell)| (p.max(0.0).to_bits(), 1, 0, cell)));
+        self.victims_cache = Some(Victims { gone: BinaryHeap::from(scan.gone), soft: BinaryHeap::from(scan.soft) });
+        self.victims_for = Some(scan.pass);
     }
 
     /// Evicts from `victims` until `need` bytes are free (or none are left that may go for an
     /// item of priority `prio`: soft-wanted builds give way only to nearer items). Returns the
     /// bytes freed. A textured build's pixels left the CPU at upload: wanted again, it is
     /// imported again (`upload_next_level`).
-    fn evict_for(&mut self, need: u64, prio: f32, victims: &mut VecDeque<(f32, Victim)>, gpu: &mut Gpu, models: &mut GpuModels) -> u64 {
+    fn evict_for(&mut self, need: u64, prio: f32, victims: &mut Victims, gpu: &mut Gpu, models: &mut GpuModels) -> u64 {
         let mut freed = 0;
         while freed < need {
-            let Some(&(p, victim)) = victims.front() else { break };
+            let Some((p, victim)) = victims.front() else { break };
             // Unwanted ones (priority infinity) always go; soft ones only for a nearer item.
             if p <= prio {
                 break;
             }
-            victims.pop_front();
+            victims.pop();
+            let gone = p == f32::INFINITY;
             let bytes = match victim {
-                // (The queue may be older than this pass: a build it now wants hard stays.)
-                Victim::Build(id) if self.want.get(&id).is_some_and(|e| e.1 == self.updates && e.2) => 0,
+                // (The queue may be older than this pass: a build it now wants hard stays, and
+                // one it wants at all isn't taken as unwanted.)
+                Victim::Build(id) if self.want.get(&id).is_some_and(|e| e.1 >= self.done_pass && e.2) => 0,
+                Victim::Build(id) if gone && self.wanted_now(id) => 0,
+                // A soft one the latest wanted set puts no farther than the item: it stays.
+                Victim::Build(id) if !gone && self.want.get(&id).is_some_and(|e| e.1 >= self.done_pass && e.0 <= prio) => 0,
+                Victim::Proxy(cell) if gone && self.hlod.wanted(cell) => 0,
                 Victim::Build(id) => {
                     let bytes = models.uploaded.get(&id).map_or(0, |m| m.bytes);
                     evict_build(gpu, models, id);
@@ -2193,6 +2317,33 @@ mod tests {
             assert_eq!(index.cell_of.len(), before + n);
         }
         assert!(!index.sync(&world, 1, 32.0, now, &mut touched, Duration::ZERO), "the backlog is done");
+    }
+
+    /// The eviction queue's heaps give the order the sorted queue gave: unwanted uploads least
+    /// recently wanted first (a build before a proxy on a tie), then soft ones farthest first.
+    #[test]
+    fn eviction_queue_order() {
+        let mut v = Victims {
+            gone: BinaryHeap::from(vec![Reverse((7, 1, 0, (2, 2))), Reverse((3, 0, 40, (0, 0))), Reverse((7, 0, 9, (0, 0)))]),
+            soft: BinaryHeap::from(vec![(10.0f32.to_bits(), 0, 5, (0, 0)), (250.5f32.to_bits(), 1, 0, (1, 1)), (99.0f32.to_bits(), 0, 6, (0, 0))]),
+        };
+        let mut order = Vec::new();
+        while let Some((p, victim)) = v.front() {
+            order.push((p, victim));
+            v.pop();
+        }
+        let inf = f32::INFINITY;
+        assert_eq!(
+            order,
+            [
+                (inf, Victim::Build(40)),
+                (inf, Victim::Build(9)),
+                (inf, Victim::Proxy((2, 2))),
+                (250.5, Victim::Proxy((1, 1))),
+                (99.0, Victim::Build(6)),
+                (10.0, Victim::Build(5)),
+            ]
+        );
     }
 
     #[test]
