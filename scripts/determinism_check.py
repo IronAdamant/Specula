@@ -3,7 +3,8 @@
 Starts a headless engine, builds the example module (games/ambulo) with logic_build, and checks:
 - the floating-point guard is on and had nothing to restore (engine_info determinism);
 - the load is journaled (world_history kinds ["module"]) with the build hash logic_status shows;
-- a playtest recorded with that build replays and verifies;
+- a playtest recorded with that build replays and verifies in a second, fresh engine (port + 1)
+  that loaded the same build (both start with --paused, so they load it at the same tick);
 - after an edit that adds `x.sin()`, logic_build reports a determinism::platform_math warning, the
   reload is journaled with previous_build, and the old replay is refused with
   module_build_mismatch naming ambulo (and runs, reported, with allow_module_mismatch);
@@ -12,7 +13,7 @@ Starts a headless engine, builds the example module (games/ambulo) with logic_bu
 The module source is restored afterwards (and rebuilt). Output goes to <target>/determinism-check/
 (summary.json, engine log), <target> being $CARGO_TARGET_DIR or ./target.
 
-    cargo build -p specula && python scripts/determinism_check.py --port 7612
+    cargo build -p specula && python scripts/determinism_check.py --port 7612   (uses 7612 and 7613)
 """
 import argparse
 import json
@@ -68,7 +69,7 @@ def main():
     original = SRC.read_bytes()
     replay_file = ROOT / "playtests" / REPLAY
     summary = {}
-    engine = Engine(a.exe, a.port, out / "engine.log", "--headless", "--captures", str(out / "captures"), cwd=str(ROOT))
+    engine = Engine(a.exe, a.port, out / "engine.log", "--headless", "--paused", "--captures", str(out / "captures"), cwd=str(ROOT))
     try:
         with engine:
             mcp = engine.mcp("determinism-check")
@@ -94,12 +95,20 @@ def main():
                 "ticks": 60}
             rec = mcp.json("playtest_run", spec=spec, record=REPLAY, overwrite=True, wait_s=20)
             check(rec.get("status") == "passed", f"recorded a playtest ({rec.get('status')})")
-            # Same build: the replay runs (it starts from where the first run left the world, so
-            # its hashes may differ: this checks the module gate, not the hashes).
-            again, err = call(mcp, "playtest_run", replay=f"playtests/{REPLAY}", wait_s=20)
-            check(not err and "module_builds_differ" not in again, f"the replay runs with the same build ({again.get('status')})")
             recorded = json.loads(replay_file.read_text())
             check(recorded.get("modules") == [{"module": "ambulo", "build_hash": build1}], "the replay file names the module build")
+            # Same build in a fresh engine, from the same start: the replay verifies.
+            print("second engine: same build, replay")
+            fresh = Engine(a.exe, a.port + 1, out / "engine2.log", "--headless", "--paused", "--captures", str(out / "captures2"), cwd=str(ROOT))
+            with fresh:
+                m2 = fresh.mcp("determinism-check-2")
+                m2.hello("determinism-check-2")
+                r2 = build(m2)
+                check(r2.get("ok"), f"the second engine built and loaded ambulo ({r2.get('error')})")
+                check(m2.json("logic_status", module="ambulo")["modules"][0]["build_hash"] == build1, "with the same build hash")
+                again, err = call(m2, "playtest_run", replay=f"playtests/{REPLAY}", wait_s=20)
+                check(not err and again.get("replay", {}).get("verified") is True, f"the replay verifies there ({again.get('status')})")
+                summary["fresh_replay"] = again.get("replay")
 
             print("edit: ambulo calls x.sin()")
             check(original.count(LOG_OLD) == 1, "found ambulo's start log line to call the probe from")
