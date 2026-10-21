@@ -463,11 +463,14 @@ mod tests {
         let codes = |t: &str| check_module_manifest("m", t).into_iter().map(|p| p.code).collect::<Vec<_>>();
         let build = ambulo.replace("publish = false", "publish = false\nbuild = \"src/build.rs\"");
         assert!(codes(&build).contains(&"build_script".to_owned()));
-        let serde = format!("{ambulo}serde = \"1\"\n");
+        // Extra dependencies go in [dependencies] (the manifest ends with [lints]).
+        let sdk = "specula-sdk = { path = \"../../crates/specula-sdk\" }";
+        let dep = |extra: &str| ambulo.replace(sdk, &format!("{sdk}\n{extra}"));
+        let serde = dep("serde = \"1\"");
         assert!(codes(&serde).contains(&"third_party_crate".to_owned()), "{:?}", codes(&serde));
-        let git = format!("{ambulo}x = {{ git = \"https://example.invalid/x\" }}\n");
+        let git = dep("x = { git = \"https://example.invalid/x\" }");
         assert!(codes(&git).contains(&"third_party_crate".to_owned()));
-        let engine_dep = format!("{ambulo}specula-core = {{ path = \"../../crates/specula-core\" }}\n");
+        let engine_dep = dep("specula-core = { path = \"../../crates/specula-core\" }");
         assert!(codes(&engine_dep).contains(&"not_a_module".to_owned()));
         assert!(codes(&format!("{ambulo}[build-dependencies]\n")).contains(&"not_allowed".to_owned()));
         assert!(!validate("modules/ambulo/Cargo.toml", FileKind::Cargo, &serde, None, &[]).is_empty(), "every Cargo.toml commit is checked");
