@@ -1612,6 +1612,10 @@ impl Engine {
             let _ = request.reply.send(ToolOutput::error("skipped: the engine was busy too long; the command was not applied"));
             return;
         }
+        // Every command (world edits, model builds, sight, saves, playtests) runs in the default
+        // floating-point environment, whatever the frame just drawn (the GPU driver) left behind
+        // (rule 6).
+        self.fp.check(self.clock.tick(), "before_command");
         // perf_capture answers once its frames are recorded (see perf::Profiler::end_frame).
         let request = match request.command {
             Command::PerfCapture(spec) => {
@@ -1651,9 +1655,6 @@ impl Engine {
         let session = self.swarm.key(&request.session);
         let w = Writer::new(&by, Some(&session));
         let tick = self.clock.tick();
-        // Agents' commands change the simulation too: they run in the default floating-point
-        // environment, whatever the frame just drawn (the GPU driver) left behind (rule 6).
-        self.fp.check(tick, "before_command");
         // A game tool (play_ui pressing a menu's Save) may queue requests for the engine.
         let game_call = matches!(request.command, Command::Game { .. });
         let output = match request.command {
