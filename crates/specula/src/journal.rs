@@ -41,6 +41,10 @@ pub const MAX_BYTES: usize = 48 << 20;
 /// The hosted game's entries (one per tick or frame) kept, and their approximate memory.
 pub const MAX_GAME_ENTRIES: usize = 65_536;
 pub const MAX_GAME_BYTES: usize = 16 << 20;
+/// Project file text the journal holds (before and after of every kept file change), apart from
+/// the rings' budgets: past it the oldest entries' texts are dropped (they can't be undone any
+/// more), so file edits can never push world history or the replay base out.
+pub const MAX_FILE_TEXT_BYTES: usize = 64 << 20;
 /// Entries one world_undo call may undo.
 pub const MAX_UNDO: usize = 100;
 /// Entries a history call examines before handing back a cursor (bounds its cost).
@@ -448,6 +452,10 @@ pub struct Journal {
     /// The world the entries apply to, and its hash.
     base: World,
     base_hash: u64,
+    /// Entries holding file text, oldest first, with its bytes (see [`MAX_FILE_TEXT_BYTES`]).
+    file_texts: VecDeque<(u64, usize)>,
+    file_bytes: usize,
+    file_budget: usize,
     /// What the base is: `"empty"` or `"world:<name>"`.
     base_label: String,
     names: BTreeSet<Arc<str>>,
@@ -479,6 +487,9 @@ impl Journal {
             next_id_seen: 0,
             base: World::default(),
             base_hash: 0,
+            file_texts: VecDeque::new(),
+            file_bytes: 0,
+            file_budget: MAX_FILE_TEXT_BYTES,
             base_label: String::new(),
             names: BTreeSet::new(),
             names_prune_at: NAMES_PRUNE_AT,
@@ -496,6 +507,8 @@ impl Journal {
         }
         self.game_touch.clear();
         self.names.clear();
+        self.file_texts.clear();
+        self.file_bytes = 0;
         let mut copy = base.clone();
         copy.set_recording(Recording::Off);
         copy.take_changes();
@@ -539,6 +552,7 @@ impl Journal {
         ids.sort_unstable();
         ids.dedup();
         let bytes = std::mem::size_of::<Entry>() + ids.len() * 8 + changes.iter().map(Change::approx_bytes).sum::<usize>();
+        let file_bytes: usize = changes.iter().map(Change::file_text_bytes).sum();
         let by = self.intern(w.name);
         let session = w.session.map(|s| self.intern(s));
         for c in &changes {
@@ -574,7 +588,28 @@ impl Journal {
         } else {
             self.agents.push(entry);
         }
+        if file_bytes > 0 {
+            self.file_texts.push_back((seq, file_bytes));
+            self.file_bytes += file_bytes;
+            while self.file_bytes > self.file_budget {
+                let Some((old, b)) = self.file_texts.pop_front() else { break };
+                self.file_bytes -= b;
+                if let Some(e) = self.get_mut(old) {
+                    e.changes.iter_mut().for_each(Change::drop_file_text);
+                }
+            }
+        }
         seq
+    }
+
+    /// File text held now, and its budget (see [`MAX_FILE_TEXT_BYTES`]).
+    pub fn file_text(&self) -> (usize, usize) {
+        (self.file_bytes, self.file_budget)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_file_budget(&mut self, bytes: usize) {
+        self.file_budget = bytes;
     }
 
     /// Records a game's changes, coalesced to one change per entity (see [`coalesce`]); nothing
@@ -1095,6 +1130,13 @@ fn undo_entry(world: &mut World, entry: &Entry, by: &str, force: bool) -> Result
                 let restored = before.as_deref().map(|b| crate::cameras::NamedCamera { version: current.max(b.version) + 1, ..b.clone() });
                 world.restore_camera(owner, name, restored)?;
             }
+            Change::File { path, kept: false, .. } => {
+                return Err(WorldError::new(
+                    "too_old",
+                    format!("{path}: this change's text is no longer kept (project file text has its own journal budget; the oldest goes first): project_write the text you want instead"),
+                )
+                .with("path", path.as_str()));
+            }
             Change::File { path, before, import, .. } => {
                 let p = crate::project::project_path_of(path).unwrap_or(path);
                 if *import && before.is_none() {
@@ -1104,8 +1146,8 @@ fn undo_entry(world: &mut World, entry: &Entry, by: &str, force: bool) -> Result
                     )
                     .with("path", path.as_str()));
                 }
-                // A restored file is a new version of whatever is there now, within the store's limits.
-                let current = world.files().get(p).map_or(0, |f| f.version);
+                // A restored file is a new version of whatever is (or was) there, within the store's limits.
+                let current = world.file_version_floor(p);
                 let restored = before.as_deref().map(|b| crate::project::ProjectFile { version: current.max(b.version) + 1, modified_by: Arc::clone(&by), ..b.clone() });
                 if let Some(f) = &restored {
                     crate::project::room_for(world.files(), p, f.text.len())?;

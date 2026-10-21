@@ -396,8 +396,20 @@ pub fn build(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json) ->
         Ok(p) => p,
         Err(e) => return ToolOutput::error(argument_error(&e).to_pretty()),
     };
+    // Fixes write the module's sources: when they are project files, others' claims on them
+    // apply, and the fixes become the caller's journaled change (not an edit by `disk`).
+    if req.fix {
+        let (gate, refused) = project_call(to_engine, session, crate::project_tools::ProjectCall::FixGate { dir: req.dir.clone() });
+        if refused {
+            return ToolOutput::error(gate.to_string());
+        }
+    }
     let report = build_service().build(req.clone());
     let mut out = report_json(&report, &req, detailed);
+    if req.fix {
+        let (adopted, refused) = project_call(to_engine, session, crate::project_tools::ProjectCall::Adopt { dir: req.dir.clone() });
+        out.set(if refused { "fixes_refused" } else { "fixes_journaled" }, adopted);
+    }
     let build_ms = report.build_time.as_secs_f64() * 1000.0;
     let queued_ms = report.queued.as_secs_f64() * 1000.0;
     let mut reload_ms = 0.0;
@@ -423,6 +435,22 @@ pub fn build(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json) ->
     } else {
         ToolOutput::text(out.to_string())
     }
+}
+
+/// Sends a project command to the engine thread: `(answer as JSON, is_error)`.
+fn project_call(to_engine: &Sender<Request>, session: &SessionInfo, call: crate::project_tools::ProjectCall) -> (Json, bool) {
+    let (reply, answer) = mpsc::channel();
+    let request = Request { session: session.clone(), command: Command::Project(call), reply, deadline: Instant::now() + RELOAD_TIMEOUT };
+    let out = if to_engine.send(request).is_err() {
+        ToolOutput::error("the engine is shutting down")
+    } else {
+        answer.recv_timeout(RELOAD_TIMEOUT + Duration::from_secs(5)).unwrap_or_else(|_| ToolOutput::error("the engine didn't answer in time"))
+    };
+    let text = out.content.iter().find_map(|c| match c {
+        specula_protocol::Content::Text(t) => Some(t.clone()),
+        _ => None,
+    });
+    (text.as_deref().and_then(|t| Json::parse(t).ok()).unwrap_or(Json::Null), out.is_error)
 }
 
 /// Sends a command to the engine thread and waits for its answer: `(answer as JSON, is_error)`.

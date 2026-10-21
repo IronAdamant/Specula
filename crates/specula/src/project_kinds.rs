@@ -11,9 +11,6 @@ use specula_core::Json;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-/// Files a cross-check reads at most (a style's recipes, a theme's screens).
-pub const MAX_DEPENDENTS: usize = 256;
-
 /// One thing validation says about a file.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Problem {
@@ -76,13 +73,14 @@ fn mount_of(path: &str) -> &str {
     }
 }
 
-/// The `style.json` governing a recipe: the nearest one from its folder up to its mount's root.
-pub fn style_for(recipe: &str, files: &BTreeMap<String, ProjectFile>) -> Option<String> {
+/// The nearest `style.json` from `recipe`'s folder up to its mount's root, among those `exists`
+/// says are there.
+fn nearest_style(recipe: &str, exists: impl Fn(&str) -> bool) -> Option<String> {
     let mount = mount_of(recipe);
     let mut dir = folder(recipe);
     loop {
         let candidate = format!("{dir}/style.json");
-        if files.get(&candidate).is_some_and(|f| f.kind == FileKind::Style) {
+        if exists(&candidate) {
             return Some(candidate);
         }
         if dir == mount || dir.is_empty() {
@@ -92,27 +90,101 @@ pub fn style_for(recipe: &str, files: &BTreeMap<String, ProjectFile>) -> Option<
     }
 }
 
-/// The other files validating `path` reads (for snapshots): `(path, text)`.
-pub fn context(path: &str, kind: FileKind, files: &BTreeMap<String, ProjectFile>) -> Vec<(String, FileKind, Arc<str>)> {
+/// The `style.json` governing a recipe: the nearest one from its folder up to its mount's root.
+pub fn style_for(recipe: &str, files: &BTreeMap<String, ProjectFile>) -> Option<String> {
+    nearest_style(recipe, |c| files.get(c).is_some_and(|f| f.kind == FileKind::Style))
+}
+
+/// The label of the engine's `--style FILE` in validation context (it governs every recipe).
+pub const STYLE_OVERRIDE: &str = "(--style)";
+
+/// The other files validating `path` reads (for snapshots): `(path, kind, text)`. `style_override`:
+/// the engine's `--style FILE` text, which then governs every recipe.
+///
+/// For a style: every recipe it governs (or will, if it is new: a closer style takes over the
+/// recipes below it), and the style each of them falls back to without it.
+pub fn context(path: &str, kind: FileKind, files: &BTreeMap<String, ProjectFile>, style_override: Option<&Arc<str>>) -> Vec<(String, FileKind, Arc<str>)> {
     let get = |p: &str| files.get(p).map(|f| (p.to_owned(), f.kind, Arc::clone(&f.text)));
     match kind {
-        FileKind::Recipe => style_for(path, files).and_then(|s| get(&s)).into_iter().collect(),
+        FileKind::Recipe => match style_override {
+            Some(t) => vec![(STYLE_OVERRIDE.to_owned(), FileKind::Style, Arc::clone(t))],
+            None => style_for(path, files).and_then(|s| get(&s)).into_iter().collect(),
+        },
         FileKind::UiScreen => get(&format!("{}/theme.json", folder(path))).into_iter().collect(),
+        FileKind::Style if style_override.is_some() => Vec::new(),
         FileKind::Style => {
             let dir = folder(path);
-            files
-                .iter()
-                .filter(|(p, f)| f.kind == FileKind::Recipe && p.starts_with(&format!("{dir}/")) && style_for(p, files).as_deref() == Some(path))
-                .take(MAX_DEPENDENTS)
-                .map(|(p, f)| (p.clone(), f.kind, Arc::clone(&f.text)))
-                .collect()
+            let is_style = |c: &str| files.get(c).is_some_and(|f| f.kind == FileKind::Style);
+            let mut out = Vec::new();
+            let mut others: Vec<String> = Vec::new();
+            for (p, f) in files.iter().filter(|(p, f)| f.kind == FileKind::Recipe && p.starts_with(&format!("{dir}/"))) {
+                if nearest_style(p, |c| c == path || is_style(c)).as_deref() != Some(path) {
+                    continue;
+                }
+                out.push((p.clone(), f.kind, Arc::clone(&f.text)));
+                if let Some(o) = nearest_style(p, |c| c != path && is_style(c)) {
+                    if !others.contains(&o) {
+                        others.push(o);
+                    }
+                }
+            }
+            out.extend(others.iter().filter_map(|o| get(o)));
+            out
         }
         FileKind::UiTheme => {
             let dir = folder(path);
-            files.iter().filter(|(p, f)| f.kind == FileKind::UiScreen && folder(p) == dir).take(MAX_DEPENDENTS).map(|(p, f)| (p.clone(), f.kind, Arc::clone(&f.text))).collect()
+            files.iter().filter(|(p, f)| f.kind == FileKind::UiScreen && folder(p) == dir).map(|(p, f)| (p.clone(), f.kind, Arc::clone(&f.text))).collect()
         }
         _ => Vec::new(),
     }
+}
+
+/// Checks a module crate's `Cargo.toml` as text (what `logic_build` would refuse, without
+/// running Cargo): a `cdylib` whose only dependency is `specula-sdk` by path; no build script
+/// (`build` key), no `links`, no `[workspace]`, `[patch]`, `[replace]`, `[target]`,
+/// `[build-dependencies]` or non-path dependencies. Every problem is returned.
+pub fn check_module_manifest(file: &str, text: &str) -> Vec<Problem> {
+    let err = |code: &str, at: &str, message: String| Problem { file: file.to_owned(), severity: "error", code: code.to_owned(), at: at.to_owned(), message, offset: None };
+    let doc = match specula_core::toml::parse(text) {
+        Ok(d) => d,
+        Err(e) => return vec![Problem { file: file.to_owned(), severity: "error", code: e.code.to_owned(), at: format!("line {}", e.line), message: e.message, offset: None }],
+    };
+    let mut out = Vec::new();
+    let Some(package) = doc.get("package") else {
+        return vec![err("not_a_module", "package", "a module's Cargo.toml needs a [package] (a workspace root isn't a module)".into())];
+    };
+    for k in ["build", "links", "proc-macro"] {
+        if package.get(k).is_some() {
+            out.push(err("build_script", &format!("package.{k}"), format!("modules may not have package.{k}: nothing in a module's build may run code at build time")));
+        }
+    }
+    for t in ["workspace", "patch", "replace", "target", "build-dependencies", "bin", "example", "bench"] {
+        if doc.get(t).is_some() {
+            out.push(err("not_allowed", t, format!("[{t}] isn't allowed in a module's Cargo.toml (a module is one cdylib depending only on specula-sdk)")));
+        }
+    }
+    let cdylib = doc.get("lib").and_then(|l| l.get("crate-type")).and_then(Json::as_array).is_some_and(|a| a.iter().any(|t| t.as_str() == Some("cdylib")));
+    if !cdylib {
+        out.push(err("not_a_module", "lib.crate-type", "a module is a cdylib: [lib] crate-type = [\"cdylib\"]".into()));
+    }
+    if doc.get("lib").and_then(|l| l.get("proc-macro")).is_some() {
+        out.push(err("build_script", "lib.proc-macro", "modules may not be proc-macro crates (they run code at build time)".into()));
+    }
+    for table in ["dependencies", "dev-dependencies"] {
+        for (name, spec) in doc.get(table).and_then(Json::as_object).unwrap_or_default() {
+            let path = spec.get("path").and_then(Json::as_str);
+            let foreign = ["git", "registry", "version", "registry-index"].iter().find(|k| spec.get(k).is_some());
+            if path.is_none() || foreign.is_some() || spec.as_str().is_some() {
+                out.push(err("third_party_crate", &format!("{table}.{name}"), format!("'{name}' must be a path dependency (zero third-party crates): {{ path = \"...\" }} only")));
+            } else if table == "dependencies" && name != "specula-sdk" {
+                out.push(err("not_a_module", &format!("{table}.{name}"), format!("modules depend on specula-sdk only, not '{name}' (engine crates are never module dependencies)")));
+            }
+        }
+    }
+    if doc.get("dependencies").and_then(|d| d.get("specula-sdk")).is_none() {
+        out.push(err("not_a_module", "dependencies", "a module depends on specula-sdk (by path)".into()));
+    }
+    out
 }
 
 fn recipe(file: &str, text: &str, style: &specula_model::Style) -> Option<Problem> {
@@ -146,9 +218,16 @@ pub fn validate(path: &str, kind: FileKind, text: &str, old: Option<&str>, conte
         FileKind::Style => match specula_model::Style::parse(text) {
             Err(e) => out.push(from_json_error(path, &e.to_json())),
             Ok(style) => {
-                let before = old.and_then(|o| specula_model::Style::parse(o).ok());
+                let old_style = old.and_then(|o| specula_model::Style::parse(o).ok());
                 for (rp, _, rt) in context.iter().filter(|c| c.1 == FileKind::Recipe) {
                     if let Some(mut p) = recipe(rp, rt, &style) {
+                        // Fine before: with this file's old text, or (a new, closer style) with the
+                        // style that governed the recipe until now.
+                        let before = match (&old_style, old) {
+                            (Some(b), _) => Some(b.clone()),
+                            (None, Some(_)) => None,
+                            (None, None) => other_style(rp, path, context),
+                        };
                         let was_fine = before.as_ref().is_some_and(|b| recipe(rp, rt, b).is_none());
                         if !was_fine {
                             p.severity = "warning";
@@ -199,7 +278,60 @@ pub fn validate(path: &str, kind: FileKind, text: &str, old: Option<&str>, conte
             }
         }
         FileKind::AnimSet | FileKind::Json => out.extend(json_syntax(path, text)),
-        FileKind::Rust | FileKind::Cargo => {}
+        FileKind::Cargo => out.extend(check_module_manifest(path, text)),
+        FileKind::Rust => {}
+    }
+    out
+}
+
+/// The style a recipe falls back to without `path` (the nearest other style in `context`).
+fn other_style(recipe_path: &str, path: &str, context: &[(String, FileKind, Arc<str>)]) -> Option<specula_model::Style> {
+    let others: Vec<&(String, FileKind, Arc<str>)> = context.iter().filter(|c| c.1 == FileKind::Style && c.0 != path).collect();
+    let p = nearest_style(recipe_path, |c| others.iter().any(|o| o.0 == c))?;
+    others.iter().find(|o| o.0 == p).and_then(|o| specula_model::Style::parse(&o.2).ok())
+}
+
+/// What deleting `path` (whose text is `old`) breaks: a style's recipes are parsed with the style
+/// they fall back to (none: they can't build), a theme's screens lose their theme. Only files that
+/// loaded before count as errors.
+pub fn validate_delete(path: &str, kind: FileKind, old: &str, context: &[(String, FileKind, Arc<str>)]) -> Vec<Problem> {
+    let mut out = Vec::new();
+    match kind {
+        FileKind::Style => {
+            let Ok(old_style) = specula_model::Style::parse(old) else { return out };
+            for (rp, _, rt) in context.iter().filter(|c| c.1 == FileKind::Recipe) {
+                if recipe(rp, rt, &old_style).is_some() {
+                    continue; // already broken
+                }
+                match other_style(rp, path, context) {
+                    Some(next) => out.extend(recipe(rp, rt, &next)),
+                    None => out.push(Problem {
+                        file: rp.clone(),
+                        severity: "error",
+                        code: "style_not_found".into(),
+                        at: String::new(),
+                        message: format!("deleting {path} leaves this recipe without a style.json (next to it or above it): it would no longer build"),
+                        offset: None,
+                    }),
+                }
+            }
+        }
+        FileKind::UiTheme => {
+            let Ok(theme) = specula_ui::Theme::from_json_str(old) else { return out };
+            for (sp, _, st) in context.iter().filter(|c| c.1 == FileKind::UiScreen) {
+                if screen(sp, st, &theme).is_none() {
+                    out.push(Problem {
+                        file: sp.clone(),
+                        severity: "error",
+                        code: "theme_not_found".into(),
+                        at: String::new(),
+                        message: format!("deleting {path} leaves this screen without its theme: it would no longer load"),
+                        offset: None,
+                    });
+                }
+            }
+        }
+        _ => {}
     }
     out
 }
@@ -226,14 +358,14 @@ mod tests {
         files.insert("assets/ui/theme.json".to_owned(), file(FileKind::UiTheme, &sepulcra("ui/theme.json")));
         files.insert("assets/ui/hud.json".to_owned(), file(FileKind::UiScreen, &sepulcra("ui/hud.json")));
         assert_eq!(style_for("assets/recipes/tombstone.json", &files).as_deref(), Some("assets/style.json"));
-        let ctx = context("assets/recipes/tombstone.json", FileKind::Recipe, &files);
+        let ctx = context("assets/recipes/tombstone.json", FileKind::Recipe, &files, None);
         assert_eq!(ctx.len(), 1);
         assert!(validate("assets/recipes/tombstone.json", FileKind::Recipe, &tomb, None, &ctx).is_empty());
         let broken = tomb.replace("\"graveyard_stone\"", "\"no_such_material\"");
         let p = validate("assets/recipes/tombstone.json", FileKind::Recipe, &broken, None, &ctx);
         assert!(p.iter().any(Problem::is_error), "{p:?}");
         // A style edit that breaks a recipe is an error; one that leaves them all loading isn't.
-        let sctx = context("assets/style.json", FileKind::Style, &files);
+        let sctx = context("assets/style.json", FileKind::Style, &files, None);
         assert_eq!(sctx.len(), 1);
         assert!(validate("assets/style.json", FileKind::Style, &style, Some(&style), &sctx).is_empty());
         let s2 = Json::parse(&style).unwrap();
@@ -246,7 +378,7 @@ mod tests {
         }
         // Screens against their theme.
         let hud = sepulcra("ui/hud.json");
-        let uctx = context("assets/ui/hud.json", FileKind::UiScreen, &files);
+        let uctx = context("assets/ui/hud.json", FileKind::UiScreen, &files, None);
         assert!(validate("assets/ui/hud.json", FileKind::UiScreen, &hud, None, &uctx).is_empty());
         let p = validate("assets/ui/hud.json", FileKind::UiScreen, &hud.replace("specula.ui.screen.v1", "v0"), None, &uctx);
         assert!(p.iter().any(Problem::is_error));
@@ -257,5 +389,87 @@ mod tests {
         assert!(!validate("assets/style.toml", FileKind::StyleRules, "[motion]\nbogus = 1\n", None, &[]).is_empty());
         assert!(!validate("assets/anims/a.json", FileKind::AnimSet, "{", None, &[]).is_empty());
         assert!(validate("modules/m/src/lib.rs", FileKind::Rust, "fn broken(", None, &[]).is_empty(), "rust is logic_build's");
+    }
+
+    fn broken_style() -> String {
+        let mut s = Json::parse(&sepulcra("style.json")).unwrap();
+        let mats: Vec<(String, Json)> = s.get("materials").and_then(Json::as_object).unwrap().iter().filter(|(k, _)| k != "graveyard_stone").cloned().collect();
+        s.set("materials", Json::Obj(mats));
+        s.to_pretty()
+    }
+
+    fn sepulcra_store() -> BTreeMap<String, ProjectFile> {
+        let mut files = BTreeMap::new();
+        files.insert("assets/style.json".to_owned(), file(FileKind::Style, &sepulcra("style.json")));
+        for r in ["tombstone", "wall_segment", "rune_glyph"] {
+            files.insert(format!("assets/recipes/{r}.json"), file(FileKind::Recipe, &sepulcra(&format!("recipes/{r}.json"))));
+        }
+        files.insert("assets/ui/theme.json".to_owned(), file(FileKind::UiTheme, &sepulcra("ui/theme.json")));
+        files.insert("assets/ui/hud.json".to_owned(), file(FileKind::UiScreen, &sepulcra("ui/hud.json")));
+        files
+    }
+
+    /// Review findings: a new, closer style.json wasn't checked against the recipes it takes over;
+    /// deleting a style or theme wasn't validated; the cross-check stopped at 256 files; --style
+    /// was ignored.
+    #[test]
+    fn style_and_theme_holes_are_closed() {
+        let files = sepulcra_store();
+        // A new style next to the recipes, missing a material the tombstone uses: refused.
+        let near = "assets/recipes/style.json";
+        let ctx = context(near, FileKind::Style, &files, None);
+        assert_eq!(ctx.iter().filter(|c| c.1 == FileKind::Recipe).count(), 3, "it takes over every recipe below it");
+        assert!(ctx.iter().any(|c| c.0 == "assets/style.json"), "and knows what they fall back to");
+        let p = validate(near, FileKind::Style, &broken_style(), None, &ctx);
+        assert!(p.iter().any(|p| p.is_error() && p.file == "assets/recipes/tombstone.json"), "{p:?}");
+        assert!(validate(near, FileKind::Style, &sepulcra("style.json"), None, &ctx).iter().all(|p| !p.is_error()));
+        // Deleting the only style breaks every recipe; deleting the theme breaks the screens.
+        let sctx = context("assets/style.json", FileKind::Style, &files, None);
+        let p = validate_delete("assets/style.json", FileKind::Style, &sepulcra("style.json"), &sctx);
+        assert_eq!(p.iter().filter(|p| p.code == "style_not_found").count(), 3, "{p:?}");
+        let tctx = context("assets/ui/theme.json", FileKind::UiTheme, &files, None);
+        let p = validate_delete("assets/ui/theme.json", FileKind::UiTheme, &sepulcra("ui/theme.json"), &tctx);
+        assert!(p.iter().any(|p| p.file == "assets/ui/hud.json" && p.is_error()));
+        // Deleting a closer style falls back to the one above: fine when that one works.
+        let mut with_near = files.clone();
+        with_near.insert(near.to_owned(), file(FileKind::Style, &sepulcra("style.json")));
+        let nctx = context(near, FileKind::Style, &with_near, None);
+        assert!(validate_delete(near, FileKind::Style, &sepulcra("style.json"), &nctx).is_empty());
+        // Every dependent is checked, however many.
+        let mut many = files.clone();
+        for i in 0..300 {
+            many.insert(format!("assets/recipes/t{i:03}.json"), file(FileKind::Recipe, &sepulcra("recipes/tombstone.json")));
+        }
+        assert_eq!(context("assets/style.json", FileKind::Style, &many, None).iter().filter(|c| c.1 == FileKind::Recipe).count(), 303);
+        // --style: recipes are checked against it, and a style.json in the assets governs nothing.
+        let over: Arc<str> = Arc::from(broken_style());
+        let rctx = context("assets/recipes/tombstone.json", FileKind::Recipe, &files, Some(&over));
+        assert_eq!(rctx[0].0, STYLE_OVERRIDE);
+        assert!(validate("assets/recipes/tombstone.json", FileKind::Recipe, &sepulcra("recipes/tombstone.json"), None, &rctx).iter().any(Problem::is_error));
+        assert!(context("assets/style.json", FileKind::Style, &files, Some(&over)).is_empty());
+    }
+
+    /// Review finding: project_mount took any folder with a Cargo.toml (engine crates, the root
+    /// package), and Cargo.toml edits adding crates.io dependencies or a build script landed unchecked.
+    #[test]
+    fn only_module_manifests_pass() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let ambulo = std::fs::read_to_string(root.join("games/ambulo/Cargo.toml")).unwrap();
+        assert!(check_module_manifest("m", &ambulo).is_empty(), "{:?}", check_module_manifest("m", &ambulo));
+        let engine = std::fs::read_to_string(root.join("crates/specula/Cargo.toml")).unwrap();
+        assert!(check_module_manifest("m", &engine).iter().any(|p| p.code == "not_a_module"), "an engine crate isn't a module");
+        let workspace = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
+        assert!(!check_module_manifest("m", &workspace).is_empty(), "the workspace root isn't a module");
+        let codes = |t: &str| check_module_manifest("m", t).into_iter().map(|p| p.code).collect::<Vec<_>>();
+        let build = ambulo.replace("publish = false", "publish = false\nbuild = \"src/build.rs\"");
+        assert!(codes(&build).contains(&"build_script".to_owned()));
+        let serde = format!("{ambulo}serde = \"1\"\n");
+        assert!(codes(&serde).contains(&"third_party_crate".to_owned()), "{:?}", codes(&serde));
+        let git = format!("{ambulo}x = {{ git = \"https://example.invalid/x\" }}\n");
+        assert!(codes(&git).contains(&"third_party_crate".to_owned()));
+        let engine_dep = format!("{ambulo}specula-core = {{ path = \"../../crates/specula-core\" }}\n");
+        assert!(codes(&engine_dep).contains(&"not_a_module".to_owned()));
+        assert!(codes(&format!("{ambulo}[build-dependencies]\n")).contains(&"not_allowed".to_owned()));
+        assert!(!validate("modules/ambulo/Cargo.toml", FileKind::Cargo, &serde, None, &[]).is_empty(), "every Cargo.toml commit is checked");
     }
 }

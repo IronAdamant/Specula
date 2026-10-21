@@ -179,8 +179,18 @@ fn bad(code: &'static str, message: impl Into<String>, path: &str) -> WorldError
 
 /// Names Windows reserves (with any extension): never valid file names.
 fn device_name(name: &str) -> bool {
-    let stem = name.split('.').next().unwrap_or("").to_ascii_uppercase();
-    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL") || ((stem.starts_with("COM") || stem.starts_with("LPT")) && stem.len() == 4 && stem.as_bytes()[3].is_ascii_digit())
+    let stem = name.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
+    let numbered = |p: &str| stem.strip_prefix(p).is_some_and(|n| {
+        let mut c = n.chars();
+        matches!((c.next(), c.next()), (Some('0'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None))
+    });
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") || numbered("COM") || numbered("LPT")
+}
+
+/// `name` folded for case-insensitive comparison the way Windows compares file names (Unicode
+/// simple uppercase): `Ä` and `ä` are one file there.
+pub fn fold_case(name: &str) -> String {
+    name.chars().flat_map(char::to_uppercase).collect()
 }
 
 /// Checks a project path (`assets/ui/hud.json`): `/`-separated names valid as entity names and
@@ -410,7 +420,7 @@ pub fn write_atomic(root: &Path, path: &Path, text: &str) -> Result<(Stamp, Opti
 
 /// Refuses folders that leave `root` through a link (each existing folder from `root` down to
 /// `dir` must be a real folder).
-fn check_inside(root: &Path, dir: &Path) -> Result<(), String> {
+pub fn check_inside(root: &Path, dir: &Path) -> Result<(), String> {
     let rel = dir.strip_prefix(root).map_err(|_| format!("{} is outside the mount", dir.display()))?;
     let mut at = root.to_path_buf();
     for c in rel.components() {
@@ -432,6 +442,18 @@ pub enum Event {
     Changed { path: String, kind: FileKind, text: Arc<str>, stamp: Stamp },
     /// A mirrored file that is gone.
     Removed { path: String },
+    /// A mirrored file changed on disk into something that can't be mirrored (not UTF-8, or
+    /// larger than [`MAX_FILE_BYTES`]): it is held (never overwritten) until it is fixed on disk or
+    /// an agent replaces it on purpose (its bytes are backed up first).
+    Unreadable { path: String, len: u64, mtime: Option<SystemTime>, why: String },
+}
+
+impl Event {
+    pub fn path(&self) -> &str {
+        match self {
+            Event::Changed { path, .. } | Event::Removed { path } | Event::Unreadable { path, .. } => path,
+        }
+    }
 }
 
 /// What the watcher and the main thread share.
@@ -478,6 +500,9 @@ pub struct Disk {
     pub conflicts: VecDeque<DiskNote>,
     /// Per mount: files of a known kind not mirrored, and whether its scan was cut short.
     pub skipped: BTreeMap<String, (Vec<(String, String)>, bool)>,
+    /// Files changed on disk into something that can't be mirrored: path -> (size, time, why).
+    /// Never overwritten while held (see [`Event::Unreadable`]).
+    pub held: BTreeMap<String, (u64, Option<SystemTime>, String)>,
 }
 
 impl Drop for Disk {
@@ -575,29 +600,28 @@ impl Disk {
             (None, Some(_)) => Some(Event::Removed { path: path.to_owned() }),
             (None, None) => None,
             (Some(meta), Some(s)) if s.same_file(meta) => None,
-            (Some(_), _) => match read_text(&disk) {
+            (Some(meta), _) => match read_text(&disk) {
                 Ok((text, stamp)) if Some(stamp.hash) != known.map(|s| s.hash) => Some(Event::Changed { path: path.to_owned(), kind, text, stamp }),
                 Ok((_, stamp)) => {
                     // Touched, same text: remember the new time.
                     self.stamp(path, stamp);
                     None
                 }
-                Err(_) => None,
+                Err(why) => Some(Event::Unreadable { path: path.to_owned(), len: meta.0, mtime: meta.1, why }),
             },
         }
     }
 
     /// Whether `event` still describes the disk (a newer write may have overtaken it).
     pub fn still_current(&self, event: &Event) -> bool {
-        let Some((mount, rel)) = self.locate(match event {
-            Event::Changed { path, .. } | Event::Removed { path } => path,
-        }) else {
+        let Some((mount, rel)) = self.locate(event.path()) else {
             return false;
         };
         let now = stat(&mount.disk_path(&rel));
         match event {
             Event::Changed { stamp, .. } => now.is_some_and(|m| stamp.same_file(m) || stamp.mtime.is_none()),
             Event::Removed { .. } => now.is_none(),
+            Event::Unreadable { len, mtime, .. } => now == Some((*len, *mtime)),
         }
     }
 
@@ -643,6 +667,13 @@ impl Disk {
                         continue;
                     }
                     Event::Removed { .. } => {} // write it back (the store has it)
+                    Event::Unreadable { len, mtime, why, .. } => {
+                        let e = format!("disk_unreadable: the file on disk changed and can't be mirrored ({why}); it was not overwritten. Fix it on disk, or replace it with replace_unreadable: true (its bytes are backed up first)");
+                        self.held.insert(path.clone(), (len, mtime, why));
+                        self.pending.insert(path.clone(), e.clone());
+                        out.failed.push((path, e));
+                        continue;
+                    }
                 }
             }
             match file {
@@ -661,7 +692,7 @@ impl Disk {
                         out.failed.push((path, e));
                     }
                 },
-                None => match std::fs::remove_file(&disk) {
+                None => match disk.parent().map_or(Ok(()), |d| check_inside(&mount.root, d)).map_err(std::io::Error::other).and_then(|()| std::fs::remove_file(&disk)) {
                     Ok(()) => {
                         self.unstamp(&path);
                         self.pending.remove(&path);
@@ -683,6 +714,25 @@ impl Disk {
             self.synced_revision = revision;
         }
         out
+    }
+
+    /// Copies the bytes on disk at `path` (a held, unreadable file) next to it as a hidden backup
+    /// (never mirrored), and lets the next write replace the file. Returns the backup's path.
+    pub fn back_up_and_release(&mut self, path: &str) -> Result<PathBuf, String> {
+        let (mount, rel) = self.locate(path).ok_or("not mounted")?;
+        let disk = mount.disk_path(&rel);
+        let parent = disk.parent().ok_or("no folder")?;
+        check_inside(&mount.root, parent)?;
+        let name = disk.file_name().and_then(|n| n.to_str()).ok_or("bad name")?;
+        let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let backup = parent.join(format!(".{name}.specula-backup-{}-{n}", std::process::id()));
+        std::fs::copy(&disk, &backup).map_err(|e| format!("can't back up {}: {e}", disk.display()))?;
+        let meta = stat(&disk).ok_or("gone")?;
+        // What is there now counts as synced (hash 0 never matches a text), so the write proceeds.
+        self.stamp(path, Stamp { len: meta.0, mtime: meta.1, hash: 0 });
+        self.held.remove(path);
+        self.pending.remove(path);
+        Ok(backup)
     }
 
     /// Remembers a disk conflict for `project_list`.
@@ -717,11 +767,13 @@ fn watch(shared: &Shared, tx: &Sender<Event>) {
                     }
                 }
                 (Some(m), s) if s.is_none_or(|s| !s.same_file(m)) && sent.get(&path) != Some(&m) => {
-                    if let Ok((text, st)) = read_text(&disk) {
-                        sent.insert(path.clone(), m);
-                        if Some(st.hash) != s.map(|s| s.hash) {
-                            return tx.send(Event::Changed { path, kind, text, stamp: st }).is_ok();
-                        }
+                    sent.insert(path.clone(), m);
+                    match read_text(&disk) {
+                        Ok((text, st)) if Some(st.hash) != s.map(|s| s.hash) => return tx.send(Event::Changed { path, kind, text, stamp: st }).is_ok(),
+                        Ok(_) => {}
+                        // Mirrored files that turn unreadable are held; new ones are just skipped.
+                        Err(why) if s.is_some() => return tx.send(Event::Unreadable { path, len: m.0, mtime: m.1, why }).is_ok(),
+                        Err(_) => {}
                     }
                 }
                 _ => {}
@@ -781,6 +833,16 @@ mod tests {
     }
 
     #[test]
+    fn device_names_and_case_folding() {
+        for bad in ["assets/recipes/COM\u{b9}.json", "assets/recipes/conin$.json", "assets/recipes/CONOUT$.json", "assets/recipes/lpt0.json", "assets/aux"] {
+            assert!(check_path(bad).is_err(), "{bad:?} names a device");
+        }
+        assert!(check_path("assets/recipes/COM10.json").is_ok() && check_path("assets/recipes/console.json").is_ok());
+        assert_eq!(fold_case("assets/\u{c4}/t.json"), fold_case("assets/\u{e4}/t.json"));
+        assert_ne!(fold_case("a"), fold_case("b"));
+    }
+
+    #[test]
     fn paths_are_checked() {
         assert!(check_path("assets/ui/hud.json").is_ok());
         for bad in ["", "/assets/x.json", "assets/", "assets//x.json", "assets/.x.json", "assets/x.json.", "assets/a:b.json", "assets/con.json", "assets/../x.json", "assets\\x.json"] {
@@ -814,6 +876,73 @@ mod tests {
         assert_eq!(paths, ["assets/recipes/a.json", "assets/style.json", "assets/ui/hud.json", "assets/ui/theme.json"]);
         assert_eq!(disk.skipped[ASSETS].0.len(), 1, "the big recipe is listed as skipped");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Review finding: an outside edit that isn't UTF-8 (or is over 1 MiB) was never imported and the
+    /// next write overwrote it. It is held now: reported, never overwritten, backed up on purpose.
+    #[test]
+    fn unreadable_outside_edits_are_held_not_overwritten() {
+        let root = scratch("held");
+        std::fs::create_dir_all(root.join("sounds")).unwrap();
+        std::fs::write(root.join("sounds/s.json"), "{\"a\": 1}").unwrap();
+        let mut disk = Disk::default();
+        let mut files = BTreeMap::new();
+        for (p, k, t, s) in disk.mount(Mount { name: ASSETS.into(), root: root.clone(), kind: MountKind::Assets }) {
+            disk.stamp(&p, s);
+            files.insert(p, ProjectFile::new(k, t, 1, Arc::from("disk")));
+        }
+        let path = "assets/sounds/s.json";
+        for (i, human) in [b"{\"caf\xe9\": 1}".to_vec(), vec![b' '; MAX_FILE_BYTES + 1]].into_iter().enumerate() {
+            std::thread::sleep(Duration::from_millis(20));
+            std::fs::write(root.join("sounds/s.json"), &human).unwrap();
+            let ev = disk.refresh(path).expect("the change is seen");
+            assert!(matches!(&ev, Event::Unreadable { .. }), "{ev:?}");
+            assert!(disk.still_current(&ev));
+            // An agent's newer text waits: the human's bytes stay.
+            files.insert(path.into(), ProjectFile::new(FileKind::Sound, Arc::from("{\"b\": 2}"), 2 + i as u64, Arc::from("ann")));
+            let done = disk.sync(&files, 2);
+            assert_eq!(done.failed.len(), 1, "held");
+            assert!(disk.held.contains_key(path) && disk.pending[path].starts_with("disk_unreadable"));
+            assert_eq!(std::fs::read(root.join("sounds/s.json")).unwrap(), human, "never overwritten");
+        }
+        // Replacing it on purpose backs the bytes up first.
+        let backup = disk.back_up_and_release(path).unwrap();
+        assert_eq!(std::fs::read(&backup).unwrap().len(), MAX_FILE_BYTES + 1);
+        assert!(backup.file_name().unwrap().to_string_lossy().starts_with('.'), "hidden: never mirrored");
+        assert_eq!(disk.sync(&files, 3).changed, vec![path.to_owned()]);
+        assert_eq!(std::fs::read_to_string(root.join("sounds/s.json")).unwrap(), "{\"b\": 2}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Review finding: writes into a linked folder were committed, then pending forever; deletes
+    /// didn't check links at all.
+    #[cfg(windows)]
+    #[test]
+    fn linked_folders_are_refused() {
+        let root = scratch("links");
+        let outside = scratch("links-outside");
+        std::fs::create_dir_all(root.join("recipes")).unwrap();
+        let made = std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(root.join("jx")).arg(&outside).output();
+        if !made.is_ok_and(|o| o.status.success()) {
+            eprintln!("skipped: can't make a junction here");
+            return;
+        }
+        assert!(check_inside(&root, &root.join("jx").join("recipes")).is_err());
+        assert!(check_inside(&root, &root.join("recipes")).is_ok());
+        assert!(check_inside(&root, &root.join("new").join("deeper")).is_ok(), "folders yet to be made are fine");
+        // A delete through the link is refused like a write.
+        std::fs::write(outside.join("t.json"), "{}").unwrap();
+        let mut disk = Disk::default();
+        disk.mount(Mount { name: ASSETS.into(), root: root.clone(), kind: MountKind::Assets });
+        std::fs::create_dir_all(outside.join("recipes")).unwrap();
+        std::fs::write(outside.join("recipes/t.json"), "{}").unwrap();
+        let (len, mtime) = stat(&outside.join("recipes/t.json")).unwrap();
+        disk.stamp("assets/jx/recipes/t.json", Stamp { len, mtime, hash: text_hash("{}") });
+        let done = disk.sync(&BTreeMap::new(), 1);
+        assert!(outside.join("recipes/t.json").exists(), "not deleted through the link: {done:?}");
+        assert_eq!(done.failed.len(), 1, "{done:?}");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 
     #[test]

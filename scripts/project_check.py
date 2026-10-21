@@ -22,6 +22,7 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -213,6 +214,67 @@ def main():
               stale is not None and stale.get("conflict", {}).get("theirs", {}).get("changes", [{}])[0].get("by") == "disk"
               and stale["conflict"].get("overlap") == ["loudness"],
               (stale or {}).get("conflict", {}).get("rebase", "")[:120])
+
+        # Review round 1's probes, live.
+        tomb = (assets / "recipes" / "tombstone.json").read_bytes()
+        if b"\r\n" in tomb:
+            check("edits keep a CRLF file's line endings", b"\n" not in tomb.replace(b"\r\n", b""), "no bare LF after the inserted member")
+        e = err_of(ann, "project_mount", module="crates/specula")
+        check("an engine crate can't be mounted", e is not None and e.get("error") == "not_a_module", (e or {}).get("message", "")[:100])
+        e = err_of(ann, "project_mount", module=".")
+        check("the project root can't be mounted", e is not None and e.get("error") == "not_a_module", (e or {}).get("message", "")[:100])
+        m = ann.json("project_mount", module="games/ambulo")
+        e = err_of(ann, "project_patch", path="modules/ambulo/Cargo.toml", dry_run=True, ops=[{"find": "[dependencies]", "replace": "[dependencies]\nserde = \"1\""}])
+        check("a module mounts; a crates.io dependency is refused", m.get("files", 0) >= 2 and e is not None and e.get("error") == "invalid"
+              and any(p.get("code") == "third_party_crate" for p in e.get("problems", [])), f"{m.get('files')} files")
+        # A human saves a sound in another encoding: held, never overwritten, replaced only on purpose.
+        sell = assets / "sounds" / "sell.json"
+        human = sell.read_bytes().replace(b'"sound": 1', b'"sound": 1, "notes": "caf\xe9"', 1)
+        time.sleep(0.05)
+        sell.write_bytes(human)
+        held = wait_for("the unreadable edit", lambda: [h for h in ann.json("project_list", prefix="assets/sounds/sell", limit=1).get("disk_unreadable", []) if h["path"].endswith("sell.json")], 10.0)
+        e = err_of(bob, "project_patch", path="assets/sounds/sell.json", ops=[{"set": "loudness", "value": -12}])
+        check("a non-UTF-8 outside edit is held, not overwritten", bool(held) and e is not None and e.get("error") == "disk_unreadable" and sell.read_bytes() == human,
+              (held or [{}])[0].get("why", ""))
+        r = bob.json("project_patch", path="assets/sounds/sell.json", replace_unreadable=True, ops=[{"set": "loudness", "value": -12}])
+        backup = Path(r.get("backup", "")) if r.get("backup") else None
+        check("replacing it on purpose backs the bytes up first", backup is not None and backup.read_bytes() == human and b'"loudness": -12' in sell.read_bytes(), str(backup))
+        # Delete and make again: an old expect_version never matches the new file.
+        P = "assets/sounds/aba.json"
+        ann.json("project_write", path=P, text=(assets / "sounds" / "ui_hover.json").read_text().replace("ui_hover", "aba"), expect_version=0)
+        old_v = bob.json("project_read", path=P, problems=False)["version"]
+        ann.json("project_delete", path=P)
+        again = ann.json("project_write", path=P, text=(assets / "sounds" / "ui_hover.json").read_text().replace("ui_hover", "aba"), expect_version=0)
+        e = err_of(bob, "project_patch", path=P, expect_version=old_v, ops=[{"set": "loudness", "value": -30}])
+        check("versions never repeat across a delete (no ABA)", again["version"] > old_v and e is not None and e.get("error") == "stale_version", f"v{old_v} deleted, made again as v{again['version']}")
+        # Two spellings of one Windows file.
+        ann.json("project_write", path="assets/Ä/recipes/t.json", text=original, allow_errors=True)
+        e = err_of(ann, "project_write", path="assets/ä/recipes/t.json", text=original, allow_errors=True)
+        check("Unicode case clashes are refused", e is not None and e.get("error") == "case_clash", (e or {}).get("message", "")[:100])
+        # A folder that is a link to elsewhere.
+        outside = work / "outside"
+        outside.mkdir()
+        if sys.platform == "win32" and subprocess.run(["cmd", "/c", "mklink", "/J", str(assets / "jx"), str(outside)], capture_output=True).returncode == 0:
+            e = err_of(ann, "project_write", path="assets/jx/recipes/evil.json", text=original, allow_errors=True)
+            check("writes through a linked folder are refused before commit", e is not None and e.get("error") == "linked_folder" and not any(outside.rglob("*")), (e or {}).get("error", ""))
+        # Deleting the style every recipe uses.
+        e = err_of(ann, "project_delete", path="assets/style.json")
+        check("deleting a style its recipes need is refused", e is not None and e.get("error") == "invalid" and (assets / "style.json").exists(),
+              f"{len((e or {}).get('problems', []))} problems")
+        # Big files: a 980 KB anim set written repeatedly stays fast, and world history survives.
+        bob.json("world_spawn", shape="cube", name="bobs_cube", position=[0, -50, 0])
+        big = lambda i: json.dumps({f"k{n:06d}": i for n in range(70000)})
+        times = []
+        for i in range(6):
+            t = time.perf_counter()
+            ann.json("project_write", path="assets/anims/big.json", text=big(i), allow_errors=True)
+            times.append(time.perf_counter() - t)
+        undo = bob.json("world_undo", count=1)
+        verify = ann.json("world_hash", verify=True)
+        check("980 KB writes stay fast and never evict world history",
+              max(times[1:]) < 5.0 and undo.get("undone") and json.dumps(verify).find('"replayable": false') < 0,
+              f"writes {[round(t, 2) for t in times]} s; bob's undo {undo.get('undone')}")
+        report["big_writes_s"] = [round(t, 3) for t in times]
 
         # Cost: reads and validated writes (each write is journaled, written to disk and reloaded).
         def timed(n, f):

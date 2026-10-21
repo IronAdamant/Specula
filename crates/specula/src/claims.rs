@@ -227,6 +227,19 @@ impl Claims {
         }
     }
 
+    /// [`Claims::check_path`] for everything under `path` too: also refused when another agent's
+    /// live claim lies below it (a module's single file, say).
+    pub fn check_subtree(&self, path: &str, w: Writer, now: Instant, what: &str) -> Result<(), WorldError> {
+        self.check_path(path, w, now, what)?;
+        match self.below(path).find(|c| !c.lets(w, now)) {
+            None => Ok(()),
+            Some(c) => {
+                let message = format!("{what}: {} holds claim {} on {}, inside {path}; ask them to release or share it", c.owner, c.id, c.scope.describe());
+                Err(claim_error("claimed", c, now, message).with("entity_path", path))
+            }
+        }
+    }
+
     /// Path claims covering `path` (on it or an ancestor, or `/`).
     fn covering<'a>(&'a self, path: &'a str) -> impl Iterator<Item = &'a Claim> + 'a {
         let mut prefixes: Vec<&str> = vec!["/"];

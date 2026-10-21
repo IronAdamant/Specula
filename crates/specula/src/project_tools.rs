@@ -43,17 +43,24 @@ pub enum ProjectCall {
     /// and the changes since, and (`context`) the files validating it needs.
     Snapshot { path: String, version: Option<u64>, context: bool, reply: Sender<Snap> },
     /// Writes `file` (`None`: deletes) if the file is still at `base` (version, hash; version 0 =
-    /// absent), then syncs the disk and hot-reloads.
-    Commit { path: String, base: (u64, u64), file: Option<(FileKind, Arc<str>)>, reply: Sender<Committed> },
+    /// absent), then syncs the disk and hot-reloads. `replace_unreadable`: replace a file held
+    /// because the disk holds something that can't be mirrored (its bytes are backed up first).
+    Commit { path: String, base: (u64, u64), file: Option<(FileKind, Arc<str>)>, replace_unreadable: bool, reply: Sender<Committed> },
     /// Mirrors a module crate's folder as `modules/<name>`.
     Mount { dir: PathBuf, name: String },
+    /// Before `logic_build {fix: true}` writes fixes into a module: refused while another agent
+    /// claims any of its files (when it is mounted).
+    FixGate { dir: PathBuf },
+    /// After `logic_build {fix: true}`: the fixes in a mounted module become the caller's change.
+    Adopt { dir: PathBuf },
 }
 
 impl ProjectCall {
     pub fn class(&self) -> Class {
         match self {
             ProjectCall::List { .. } | ProjectCall::Snapshot { .. } => Class::Read,
-            ProjectCall::Commit { .. } | ProjectCall::Mount { .. } => Class::Disk,
+            ProjectCall::FixGate { .. } => Class::Read,
+            ProjectCall::Commit { .. } | ProjectCall::Mount { .. } | ProjectCall::Adopt { .. } => Class::Disk,
         }
     }
 }
@@ -315,8 +322,11 @@ enum Diff {
     Lines(Vec<Hunk>, bool),
 }
 
+/// Above this many bytes (both texts together) files are diffed by lines (bounded work).
+const JSON_DIFF_BYTES: usize = 512 * 1024;
+
 fn diff(kind: FileKind, a: &str, b: &str) -> Diff {
-    if kind.is_json() {
+    if kind.is_json() && a.len() + b.len() <= JSON_DIFF_BYTES {
         if let (Ok(x), Ok(y)) = (Json::parse(a), Json::parse(b)) {
             let (c, cut) = text::json_diff(&x, &y);
             return Diff::Paths(c, cut);
@@ -450,7 +460,7 @@ fn stale(path: &str, kind: FileKind, expected: u64, snap: &Snap, yours: Yours, t
 }
 
 fn edit_tool(tools: &Tools, session: &SessionInfo, args: &Json, tool: &'static str) -> Result<ToolOutput, String> {
-    let common: &[&str] = &["path", "expect_version", "allow_errors", "dry_run", "build"];
+    let common: &[&str] = &["path", "expect_version", "allow_errors", "dry_run", "build", "replace_unreadable"];
     let extra: &[&str] = match tool {
         "project_write" => &["text"],
         "project_patch" => &["ops"],
@@ -461,6 +471,7 @@ fn edit_tool(tools: &Tools, session: &SessionInfo, args: &Json, tool: &'static s
     let expect = uint(args, "expect_version", 0, u64::MAX >> 11)?;
     let allow_errors = bool_arg(args, "allow_errors")?.unwrap_or(false);
     let dry_run = bool_arg(args, "dry_run")?.unwrap_or(false);
+    let replace_unreadable = bool_arg(args, "replace_unreadable")?.unwrap_or(false);
     let build = match args.get("build") {
         None | Some(Json::Null) | Some(Json::Bool(false)) => None,
         Some(Json::Bool(true)) => Some(false),
@@ -477,7 +488,7 @@ fn edit_tool(tools: &Tools, session: &SessionInfo, args: &Json, tool: &'static s
     let ops = if tool == "project_patch" { parse_ops(args)? } else { Vec::new() };
     check_path(&path).map_err(|e| e.message)?;
     for _ in 0..EDIT_ATTEMPTS {
-        let snap = match snapshot(tools, session, &path, expect.filter(|v| *v > 0), tool != "project_delete") {
+        let snap = match snapshot(tools, session, &path, expect.filter(|v| *v > 0), true) {
             Ok(s) => s,
             Err(out) => return Ok(out),
         };
@@ -522,7 +533,12 @@ fn edit_tool(tools: &Tools, session: &SessionInfo, args: &Json, tool: &'static s
                 return Ok(ToolOutput::text(Json::obj([("path", Json::from(path.as_str())), ("version", Json::from(current_version)), ("unchanged", Json::Bool(true))]).to_string()));
             }
         }
-        let problems = next.as_deref().map(|n| project_kinds::validate(&path, kind, n, old.as_deref(), &snap.context)).unwrap_or_default();
+        let problems = match (next.as_deref(), old.as_deref()) {
+            (Some(n), o) => project_kinds::validate(&path, kind, n, o, &snap.context),
+            // A delete is checked against what depends on the file (a style's recipes, a theme's screens).
+            (None, Some(o)) => project_kinds::validate_delete(&path, kind, o, &snap.context),
+            (None, None) => Vec::new(),
+        };
         let errors = problems.iter().filter(|p| p.is_error()).count();
         if errors > 0 && !allow_errors {
             return Ok(ToolOutput::error(
@@ -546,7 +562,7 @@ fn edit_tool(tools: &Tools, session: &SessionInfo, args: &Json, tool: &'static s
         }
         let (tx, rx) = mpsc::channel();
         let file = next.map(|n| (kind, Arc::<str>::from(n)));
-        let out = tools.send(session, Command::Project(ProjectCall::Commit { path: path.clone(), base: (current_version, current_hash), file, reply: tx }));
+        let out = tools.send(session, Command::Project(ProjectCall::Commit { path: path.clone(), base: (current_version, current_hash), file, replace_unreadable, reply: tx }));
         if out.is_error {
             return Ok(out);
         }
@@ -616,6 +632,7 @@ pub fn definitions() -> Vec<ToolDef> {
         v.push(("allow_errors", t("boolean", "Store the edit even if validation finds errors (a draft). Default false: an edit that would leave the file unloadable is refused with every problem.")));
         v.push(("dry_run", t("boolean", "Validate and return the diff without writing.")));
         v.push(("build", Json::obj([("description", Json::from("Module files only: after the write, run logic_build for the module: true builds and reloads it, \"check\" only checks. Its diagnostics come back under 'build'; a failed build never replaces the running module."))])));
+        v.push(("replace_unreadable", t("boolean", "The file on disk was changed into something that can't be mirrored (not UTF-8, or over 1 MiB) and is held (disk_unreadable): replace it anyway. Its bytes are backed up next to it first (the answer names the backup).")));
         v
     };
     vec![
@@ -670,11 +687,11 @@ pub fn definitions() -> Vec<ToolDef> {
         ToolDef {
             name: "project_delete".into(),
             description: "Deletes a project file, on disk too (claim-checked, journaled; world_undo brings it back).".into(),
-            input_schema: obj(vec![("path", path()), ("expect_version", expect())], &["path"]),
+            input_schema: obj(vec![("path", path()), ("expect_version", expect()), ("allow_errors", t("boolean", "Delete even if a style's recipes or a theme's screens would no longer load.")), ("dry_run", t("boolean", "Check what the delete would break without deleting.")), ("replace_unreadable", t("boolean", "Delete a file held as disk_unreadable (its bytes are backed up first)."))], &["path"]),
         },
         ToolDef {
             name: "project_mount".into(),
-            description: "Mirrors a module crate's sources as project files under modules/<crate name>/: Cargo.toml, top-level *.json (actions.json) and src/**/*.rs. Then edit them with project_write / project_patch and build: true (runs logic_build).".into(),
+            description: "Mirrors a module crate's sources as project files under modules/<crate name>/: Cargo.toml, top-level *.json (actions.json) and src/**/*.rs. Only real modules mount (a cdylib depending on specula-sdk alone, by path; no build.rs): never the engine's crates or the project root (not_a_module). Every Cargo.toml edit is checked the same way. Then edit them with project_write / project_patch and build: true (runs logic_build).".into(),
             input_schema: obj(vec![("module", t("string", "The crate's folder under the engine's working directory, e.g. \"games/ambulo\" (as for logic_build)."))], &["module"]),
         },
     ]

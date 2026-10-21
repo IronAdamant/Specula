@@ -1740,11 +1740,16 @@ pub enum Change {
     /// `/project/<path>` (see [`crate::project`]). `import`: read from disk (an edit made outside
     /// the engine, or a mount), so undoing a creation (deleting a file the agent never made) is
     /// refused. Not world state for the hash.
+    ///
+    /// `kept`: the texts are still held. File text has its own budget in the journal (see
+    /// `Journal::append`); past it the oldest entries' texts are dropped (`kept: false`): those
+    /// can't be undone or replayed any more, while the world's history and replay are untouched.
     File {
         path: String,
         before: Option<Box<crate::project::ProjectFile>>,
         after: Option<Box<crate::project::ProjectFile>>,
         import: bool,
+        kept: bool,
     },
 }
 
@@ -1857,6 +1862,25 @@ impl Change {
         }
     }
 
+    /// Bytes of file text a change holds (before and after; 0 for anything but a kept file change).
+    pub fn file_text_bytes(&self) -> usize {
+        match self {
+            Change::File { before, after, kept: true, .. } => before.as_ref().map_or(0, |f| f.text.len()) + after.as_ref().map_or(0, |f| f.text.len()),
+            _ => 0,
+        }
+    }
+
+    /// Drops a file change's texts (the journal's file-text budget ran out): the change stays in
+    /// the history, but can't be undone or replayed any more.
+    pub fn drop_file_text(&mut self) {
+        if let Change::File { before, after, kept, .. } = self {
+            for f in [before, after].into_iter().flatten() {
+                f.text = Arc::from("");
+            }
+            *kept = false;
+        }
+    }
+
     /// Heap and inline size, for the journal's memory bound: every allocation counted with the
     /// allocator's overhead, B-tree nodes at their real size.
     pub fn approx_bytes(&self) -> usize {
@@ -1897,16 +1921,24 @@ impl Change {
                     };
                     heap(path) + heap(owner) + heap(name) + cam(before) + cam(after)
                 }
-                // Text is shared with the store, but counted in full: the journal's bound holds
-                // even once the store moved on.
+                // The text is counted against the journal's own file-text budget instead (see
+                // `Change::file_text_bytes`), so files can never push world history out.
                 Change::File { path, before, after, .. } => {
-                    let file = |f: &Option<Box<crate::project::ProjectFile>>| {
-                        f.as_ref().map_or(0, |f| std::mem::size_of::<crate::project::ProjectFile>() + ALLOC + heap(&f.text))
-                    };
+                    let file = |f: &Option<Box<crate::project::ProjectFile>>| f.as_ref().map_or(0, |_| std::mem::size_of::<crate::project::ProjectFile>() + ALLOC);
                     heap(path) + file(before) + file(after)
                 }
             }
     }
+}
+
+/// Deleted files whose last version a world remembers by path (see `World::file_version_floor`).
+pub const MAX_FILE_TOMBSTONES: usize = 16_384;
+
+/// A world's project files, handed from a world being replaced to the next.
+pub(crate) struct ProjectFiles {
+    files: BTreeMap<String, crate::project::ProjectFile>,
+    floor: BTreeMap<String, u64>,
+    floor_all: u64,
 }
 
 /// Bookkeeping per heap allocation (allocator header and rounding), roughly.
@@ -2061,6 +2093,11 @@ pub struct World {
     files: BTreeMap<String, crate::project::ProjectFile>,
     /// Bumped by every file change (the engine syncs the disk when it moves).
     files_revision: u64,
+    /// Deleted files' last versions (at most [`MAX_FILE_TOMBSTONES`]; older ones raise
+    /// `file_floor_all`): a file made again at a path continues its versions, so an
+    /// `expect_version` read from the old file can never match the new one.
+    file_floor: BTreeMap<String, u64>,
+    file_floor_all: u64,
     /// Bumped whenever an entity is linked, unlinked, renamed or moved to another parent: path
     /// lookups cached against it stay valid while it holds (follow cameras, every frame).
     layout_epoch: u64,
@@ -2469,24 +2506,48 @@ impl World {
         if before.is_none() && file.is_none() {
             return;
         }
+        match (&before, &file) {
+            (Some(b), None) => {
+                let v = self.file_floor.get(path).copied().unwrap_or(0).max(b.version);
+                self.file_floor.insert(path.to_owned(), v);
+                if self.file_floor.len() > MAX_FILE_TOMBSTONES {
+                    if let Some((_, v)) = self.file_floor.pop_first() {
+                        self.file_floor_all = self.file_floor_all.max(v);
+                    }
+                }
+            }
+            (_, Some(_)) => {
+                self.file_floor.remove(path);
+            }
+            (None, None) => {}
+        }
         self.revision += 1;
         self.files_revision += 1;
         if self.recording != Recording::Off {
-            self.changes.push(Change::File { path: crate::project::journal_path(path), before: before.map(Box::new), after: file.map(Box::new), import });
+            self.changes.push(Change::File { path: crate::project::journal_path(path), before: before.map(Box::new), after: file.map(Box::new), import, kept: true });
         }
+    }
+
+    /// The version a file made at `path` now must pass: the highest version a file there ever had
+    /// (live or deleted). A new file takes this plus one.
+    pub fn file_version_floor(&self, path: &str) -> u64 {
+        let live = self.files.get(path).map_or(0, |f| f.version);
+        live.max(self.file_floor.get(path).copied().unwrap_or(0)).max(self.file_floor_all)
     }
 
     /// Takes the project files out (a world being replaced hands them to the next: they are the
     /// project, not the world).
-    pub(crate) fn take_files(&mut self) -> BTreeMap<String, crate::project::ProjectFile> {
+    pub(crate) fn take_files(&mut self) -> ProjectFiles {
         self.files_revision += 1;
-        std::mem::take(&mut self.files)
+        ProjectFiles { files: std::mem::take(&mut self.files), floor: std::mem::take(&mut self.file_floor), floor_all: self.file_floor_all }
     }
 
-    /// Takes over `files` from the world this one replaces (not recorded: the journal starts over
-    /// from this world, files included).
-    pub(crate) fn adopt_files(&mut self, files: BTreeMap<String, crate::project::ProjectFile>, revision: u64) {
-        self.files = files;
+    /// Takes over the files from the world this one replaces (not recorded: the journal starts
+    /// over from this world, files included).
+    pub(crate) fn adopt_files(&mut self, files: ProjectFiles, revision: u64) {
+        self.files = files.files;
+        self.file_floor = files.floor;
+        self.file_floor_all = files.floor_all;
         self.files_revision = self.files_revision.max(revision) + 1;
     }
 
@@ -3532,6 +3593,8 @@ impl World {
             Change::Env { after, .. } => self.replace_env(**after),
             Change::Pose { pose, .. } => self.apply_pose(pose, by),
             Change::Camera { owner, name, after, .. } => self.put_camera_raw(owner, name, after.as_deref().cloned()),
+            // A change whose text was dropped (the file-text budget) can't be reproduced.
+            Change::File { kept: false, .. } => {}
             Change::File { path, after, import, .. } => {
                 self.put_file_raw(crate::project::project_path_of(path).unwrap_or(path), after.as_deref().cloned(), *import)
             }

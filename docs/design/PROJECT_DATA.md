@@ -67,14 +67,14 @@ Only files of known kinds are mirrored; everything else on disk is left alone:
 | Kind | Which files | Validated before commit by | Hot reload after commit |
 |---|---|---|---|
 | `recipe` | `*.json` in a folder named `recipes` | `specula_model::Recipe::parse` with the style that governs it (the first `style.json` walking up) | the model library re-reads it now; models using it rebuild (captures wait for them) |
-| `style` | `style.json` | `Style::parse`, then every recipe below it is parsed again: a style edit that breaks a recipe is refused | as recipes |
+| `style` | `style.json` | `Style::parse`, then every recipe it governs, or will (a new, closer style takes over the recipes below it), is parsed again: an edit that breaks a recipe that loaded is refused. Deleting one checks the recipes against the style they fall back to. With `--style FILE` every recipe is checked against that file instead | as recipes |
 | `style_rules` | `style.toml` | the TOML parser and `MotionRules::from_toml` (the `[motion]` table) | read fresh by every `anim_check` |
 | `ui_screen` | `*.json` in a folder named `ui`, except `theme.json` | `specula_ui::Screen::parse` with that folder's `theme.json` | the hosted game (`Game::assets_changed`): Sepulcra reloads its HUD (window and captures) |
-| `ui_theme` | `ui/theme.json` | `Theme::from_json_str`, then every screen of the folder parsed again | as screens |
+| `ui_theme` | `ui/theme.json` | `Theme::from_json_str`, then every screen of the folder parsed again; deleting it is refused while screens use it | as screens |
 | `sound` | `*.json` in a folder named `sounds` | `specula_audio`'s sound recipe parser | the hosted game: Sepulcra re-renders that sound |
 | `anim_set` | `*.json` in a folder named `anims` | JSON syntax (the anim lane owns its schema) | the model library, as recipes |
 | `rust` | `*.rs` under a module's `src/` | **`logic_build` only** (see below) | `build: true` on the write runs `logic_build` |
-| `cargo` | a module's `Cargo.toml` | `logic_build` | as `rust` |
+| `cargo` | a module's `Cargo.toml` | `check_module_manifest` (a module's manifest only), then `logic_build` | as `rust` |
 | `json` | other `*.json` at a module's top level (`actions.json`) | JSON syntax | as `rust` |
 
 Scans skip hidden entries (names starting with `.`, which is also where the engine's temporary files go), symbolic
@@ -87,6 +87,15 @@ answering with its diagnostics as data. A build that fails never replaces the ru
 world keeps running on the last good build; `world_undo` takes the source back. Validating a module before commit
 would mean building a shadow copy of the crate, which its relative path dependencies make awkward; it is listed under
 *Later*.
+
+**Only real modules mount, and their manifests stay modules.** `project_mount` refuses any folder whose `Cargo.toml`
+isn't a module's (a `cdylib` whose only dependency is `specula-sdk`, by path), the engine's working directory, and
+folders with a `build.rs`: the engine's own crates and the root package are never project files. Every `Cargo.toml`
+commit is checked the same way as text (`check_module_manifest`): no `build`, `links` or proc-macro, no `[workspace]`,
+`[patch]`, `[replace]`, `[target]` or `[build-dependencies]`, and only path dependencies, so a crates.io dependency
+or a build script never reaches the disk. `logic_build {fix: true}` on a mounted module is refused while another agent
+claims any of its files (`Claims::check_subtree`), and the fixes it writes are committed as the caller's change
+(journaled, undoable), not imported as edits by `disk`; if a claim refuses them, the disk gets the store's text back.
 
 ## Tools
 
@@ -152,10 +161,22 @@ humans, editors, Git and the next engine see. They are kept equal like this:
   on disk and in the store, the unwritten version stays in the journal, and `project_list` reports a `disk_conflict`.
   An import that creates a file can't be undone (that would delete a file the agent never made): `project_delete`
   removes it on purpose.
+- **Files that can't be mirrored.** An outside edit that leaves a mirrored file non-UTF-8 or over 1 MiB is **held**:
+  listed by `project_list` (`disk_unreadable`), never overwritten by a write, an undo or a retry, and refused to
+  agents (`disk_unreadable`) until it is fixed on disk (then it is imported) or an agent passes
+  `replace_unreadable: true`, which first copies the bytes to a hidden backup next to the file (never mirrored; the
+  answer names it).
+- **Links.** A write or delete whose folder is (or passes through) a link or junction is refused before anything is
+  committed (`linked_folder`).
 - **At start**, the `assets` mount is scanned and its files enter the store as one `disk` entry at tick 0 (imports,
   not undoable).
 - **World loads and save games** replace the world but keep the files: they are the project, not the world.
-- **Case.** On Windows two paths that differ only in case are one file: creating one is refused (`case_clash`).
+- **Case.** On Windows two paths that differ only in case are one file: creating one is refused (`case_clash`),
+  comparing with Unicode case folding (`Ä` and `ä` clash), and device names (`CON`, `COM1`-`COM9`, `COM¹`,
+  `CONIN$`, ...) are refused as names.
+- **Versions never repeat at a path.** A world remembers each deleted file's last version (16,384 paths; older ones
+  raise a floor for every path), and a file made there again continues from it, so an `expect_version` read from the
+  old file can never match the new one.
 
 ## Bounds
 
@@ -168,9 +189,15 @@ humans, editors, Git and the next engine see. They are kept equal like this:
 | Module mounts | 16 | `mount_limit` |
 | Scan | depth 8, 20,000 entries | the rest is not mirrored (`scan_truncated`) |
 | Response | 64 KiB (reads, listings), 8 KiB (conflict diffs) | cursors, `next_line`, cut diffs |
+| File text in the journal | 64 MiB | oldest texts dropped (`too_old` on undo) |
 
-The journal holds each change's text before and after (shared, but counted at full size against its 48 MiB), so a
-1 MiB file edited many times pushes older history out sooner; that is the trade for exact undo and replay.
+**File text has its own journal budget** (64 MiB, `MAX_FILE_TEXT_BYTES`), apart from the rings' 48 and 16 MiB: a
+file change counts only its bookkeeping there. Past the budget the oldest entries' texts are dropped (`kept: false`):
+those changes stay in the history but can't be undone (`too_old`) or replayed, while world history, undo and the
+replay base (`world_hash verify`) are untouched. So one agent rewriting a 1 MiB file can never push anyone's world
+history out. Diffs stay bounded too: JSON diffs match objects through a sorted index and stop at their cut (a
+70,000-key object diffs in about 4 ms), and texts over 512 KiB are diffed by lines. Edits keep a file's own line
+endings (CRLF stays CRLF).
 
 ## Proof
 

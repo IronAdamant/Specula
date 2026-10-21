@@ -65,12 +65,14 @@ impl Engine {
                 let _ = reply.send(snap);
                 ToolOutput::text("{}")
             }
-            ProjectCall::Commit { path, base, file, reply } => {
-                let done = self.project_commit(&path, base, file, w, by);
+            ProjectCall::Commit { path, base, file, replace_unreadable, reply } => {
+                let done = self.project_commit(&path, base, file, replace_unreadable, w, by);
                 let _ = reply.send(done);
                 ToolOutput::text("{}")
             }
             ProjectCall::Mount { dir, name } => self.project_mount(dir, name),
+            ProjectCall::FixGate { dir } => self.project_fix_gate(&dir, w),
+            ProjectCall::Adopt { dir } => self.project_adopt(&dir, w, by),
         }
     }
 
@@ -93,13 +95,16 @@ impl Engine {
         };
         let kind = current.as_ref().map(|f| f.kind).or(kind);
         let ctx = match (context, kind) {
-            (true, Some(k)) => crate::project_kinds::context(path, k, self.world.files()),
+            (true, Some(k)) => {
+                let over = self.project_style_override();
+                crate::project_kinds::context(path, k, self.world.files(), over.as_ref())
+            }
             _ => Vec::new(),
         };
         Snap { kind, module_dir, current, at_version: at, later, context: ctx, error: None }
     }
 
-    fn project_commit(&mut self, path: &str, base: (u64, u64), file: Option<(FileKind, Arc<str>)>, w: Writer, by: &str) -> Committed {
+    fn project_commit(&mut self, path: &str, base: (u64, u64), file: Option<(FileKind, Arc<str>)>, replace_unreadable: bool, w: Writer, by: &str) -> Committed {
         if let Some(ev) = self.project.refresh(path) {
             self.project_import(vec![ev]);
         }
@@ -107,21 +112,48 @@ impl Engine {
         if (cur.map_or(0, |f| f.version), cur.map_or(0, |f| f.hash)) != base {
             return Committed::Changed;
         }
-        let Some(kind) = self.project.locate(path).and_then(|(m, rel)| project::kind_for(m.kind, &rel)) else {
+        let Some((mount, rel)) = self.project.locate(path) else {
             return Committed::Refused(WorldError::new("not_mirrored", format!("{path} isn't in a mount (project_list shows them)")).with("path", path));
         };
+        let Some(kind) = project::kind_for(mount.kind, &rel) else {
+            return Committed::Refused(WorldError::new("not_mirrored", format!("{path} isn't a kind of file the project mirrors")).with("path", path));
+        };
+        // Never into a linked folder: the write could only fail, after the commit.
+        if let Some(dir) = mount.disk_path(&rel).parent() {
+            if let Err(e) = project::check_inside(&mount.root, dir) {
+                return Committed::Refused(WorldError::new("linked_folder", format!("{path}: {e}; nothing was changed (write somewhere that isn't behind a link)")).with("path", path));
+            }
+        }
+        // The disk holds something that can't be mirrored: never overwritten unless asked to.
+        let mut backup = None;
+        if let Some((_, _, why)) = self.project.held.get(path).cloned() {
+            if !replace_unreadable {
+                return Committed::Refused(
+                    WorldError::new("disk_unreadable", format!("{path} was changed on disk into something that can't be mirrored ({why}); nothing was changed. Fix it on disk (it is imported then), or pass replace_unreadable: true to replace it (its bytes are backed up first)"))
+                        .with("path", path)
+                        .with("why", why.as_str()),
+                );
+            }
+            match self.project.back_up_and_release(path) {
+                Ok(b) => backup = Some(b.display().to_string()),
+                Err(e) => return Committed::Refused(WorldError::new("backup_failed", format!("{path} couldn't be backed up before replacing it: {e}; nothing was changed")).with("path", path)),
+            }
+        }
         let new = match file {
             Some((_, text)) => {
                 if let Err(e) = project::room_for(self.world.files(), path, text.len()) {
                     return Committed::Refused(e);
                 }
                 if cur.is_none() {
-                    // One file on Windows: refuse a second spelling everywhere, so projects stay portable.
-                    if let Some(other) = self.world.files().keys().find(|p| p.eq_ignore_ascii_case(path)) {
+                    // One file on Windows (which folds case in Unicode): refuse a second spelling
+                    // everywhere, so projects stay portable.
+                    let folded = project::fold_case(path);
+                    if let Some(other) = self.world.files().keys().find(|p| project::fold_case(p) == folded) {
                         return Committed::Refused(WorldError::new("case_clash", format!("{other} exists; {path} differs only in case, which is the same file on Windows")).with("path", path).with("existing", other.as_str()));
                     }
                 }
-                Some(ProjectFile::new(kind, text, base.0 + 1, Arc::from(by)))
+                // Versions never repeat at a path, even across a delete (no ABA for expect_version).
+                Some(ProjectFile::new(kind, text, self.world.file_version_floor(path).max(base.0) + 1, Arc::from(by)))
             }
             None if cur.is_none() => return Committed::Refused(WorldError::new("not_found", format!("there is no project file {path}")).with("path", path)),
             None => None,
@@ -142,6 +174,9 @@ impl Engine {
                     j.push(("deleted", Json::Bool(true)));
                 }
                 j.push(("disk", disk));
+                if let Some(b) = backup {
+                    j.push(("backup", Json::from(b)));
+                }
                 j.push(("reloaded", Json::arr(reloaded.into_iter().map(Json::from))));
                 Committed::Done(Json::obj(j))
             }
@@ -172,6 +207,9 @@ impl Engine {
         let mut out = vec![("mounts", Json::Arr(mounts))];
         if !self.project.pending.is_empty() {
             out.push(("disk_pending", Json::arr(self.project.pending.iter().take(20).map(|(p, e)| Json::obj([("path", Json::from(p.as_str())), ("error", Json::from(e.as_str()))])))));
+        }
+        if !self.project.held.is_empty() {
+            out.push(("disk_unreadable", Json::arr(self.project.held.iter().take(20).map(|(p, (_, _, why))| Json::obj([("path", Json::from(p.as_str())), ("why", Json::from(why.as_str()))])))));
         }
         if !self.project.conflicts.is_empty() {
             out.push(("disk_conflicts", Json::arr(self.project.conflicts.iter().rev().take(10).map(|c| Json::obj([("path", Json::from(c.path.as_str())), ("message", Json::from(c.message.as_str()))])))));
@@ -204,6 +242,27 @@ impl Engine {
     }
 
     fn project_mount(&mut self, dir: PathBuf, name: String) -> ToolOutput {
+        // Only real modules: a cdylib depending on specula-sdk alone, never the engine's own crates.
+        let refuse = |code: &str, message: String| ToolOutput::error(Json::obj([("error", Json::from(code)), ("message", Json::from(message))]).to_string());
+        let cwd = std::env::current_dir().map(|d| specula_logic::fix::canonical(&d)).unwrap_or_default();
+        if specula_logic::fix::canonical(&dir) == cwd {
+            return refuse("not_a_module", "the engine's working directory is the project itself, not a module crate".into());
+        }
+        if dir.join("build.rs").exists() {
+            return refuse("build_script", format!("{} has a build.rs: modules may not run code at build time", dir.display()));
+        }
+        let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap_or_default();
+        let problems = crate::project_kinds::check_module_manifest("Cargo.toml", &manifest);
+        if !problems.is_empty() {
+            return ToolOutput::error(
+                Json::obj([
+                    ("error", Json::from("not_a_module")),
+                    ("message", Json::from(format!("{} isn't a module crate (a cdylib depending only on specula-sdk); nothing was mounted", dir.display()))),
+                    ("problems", Json::arr(problems.iter().take(20).map(crate::project_kinds::Problem::to_json))),
+                ])
+                .to_string(),
+            );
+        }
         let mounted = self.project.mounts().iter().any(|m| m.name == name);
         if !mounted && self.project.module_mounts() >= project::MAX_MODULE_MOUNTS {
             return ToolOutput::error(Json::obj([("error", Json::from("mount_limit")), ("message", Json::from(format!("at most {} module crates are mounted at once", project::MAX_MODULE_MOUNTS)))]).to_string());
@@ -223,6 +282,73 @@ impl Engine {
         self.project_import(events).len()
     }
 
+    /// The engine's `--style FILE` text, which governs every recipe when given.
+    fn project_style_override(&self) -> Option<Arc<str>> {
+        let path = self.library.lock().style_override()?.to_path_buf();
+        project::read_text(&path).ok().map(|(t, _)| t)
+    }
+
+    /// The mount of a module folder, if it is mounted.
+    fn project_module_mount(&self, dir: &std::path::Path) -> Option<Mount> {
+        let dir = specula_logic::fix::canonical(dir);
+        self.project.mounts().into_iter().find(|m| m.kind == MountKind::Module && specula_logic::fix::canonical(&m.root) == dir)
+    }
+
+    /// `logic_build {fix: true}` on a mounted module: refused while another agent holds a claim
+    /// on any of its files (the fixes would write them).
+    fn project_fix_gate(&mut self, dir: &std::path::Path, w: Writer) -> ToolOutput {
+        let Some(m) = self.project_module_mount(dir) else { return ToolOutput::text("{}") };
+        match self.swarm.claims.check_subtree(&project::journal_path(&m.name), w, std::time::Instant::now(), "apply fixes to") {
+            Ok(()) => ToolOutput::text(Json::obj([("mount", Json::from(m.name.as_str()))]).to_string()),
+            Err(e) => ToolOutput::error(e.to_json().to_string()),
+        }
+    }
+
+    /// After `logic_build {fix: true}` wrote fixes into a mounted module: they are committed as the
+    /// calling agent's change (claims checked, journaled, undoable) instead of waiting to be
+    /// imported as edits by `disk`. A claim that refuses them puts the store's text back on disk.
+    fn project_adopt(&mut self, dir: &std::path::Path, w: Writer, by: &str) -> ToolOutput {
+        let Some(m) = self.project_module_mount(dir) else { return ToolOutput::text("{}") };
+        let prefix = format!("{}/", m.name);
+        let paths: Vec<String> = self.project.mounts().iter().filter(|x| x.name == m.name).flat_map(|x| project::scan(x).files.into_iter().map(|(rel, _)| x.path_of(&rel))).collect();
+        let mut puts = Vec::new();
+        let mut stamps = Vec::new();
+        for p in paths.iter().filter(|p| p.starts_with(&prefix)) {
+            if let Some(Event::Changed { kind, text, stamp, .. }) = self.project.refresh(p) {
+                let version = self.world.file_version_floor(p) + 1;
+                puts.push((p.clone(), ProjectFile::new(kind, text, version, Arc::from(by))));
+                stamps.push((p.clone(), stamp));
+            }
+        }
+        if puts.is_empty() {
+            return ToolOutput::text(Json::obj([("adopted", Json::from(0))]).to_string());
+        }
+        let n = puts.len();
+        let tick = self.clock.tick();
+        let result = self.swarm.commit_project(&mut self.world, tick, w, |wd| {
+            for (p, f) in puts {
+                wd.put_file_raw(&p, Some(f), false);
+            }
+            Ok(())
+        });
+        match result {
+            Ok((_, seq)) => {
+                for (p, s) in stamps {
+                    self.project.stamp(&p, s);
+                }
+                ToolOutput::text(Json::obj([("adopted", Json::from(n)), ("journal", Json::from(seq))]).to_string())
+            }
+            Err(e) => {
+                // Refused: the disk goes back to the store's text (the fixes are dropped).
+                for (p, s) in stamps {
+                    self.project.stamp(&p, project::Stamp { hash: 0, ..s });
+                }
+                self.project_sync_for(None);
+                ToolOutput::error(e.to_json().to_string())
+            }
+        }
+    }
+
     /// At start: the assets root becomes the `assets` mount, its files the store's first entry.
     pub(crate) fn project_mount_assets(&mut self, root: PathBuf) {
         self.swarm.reserve(DISK_AGENT);
@@ -239,10 +365,7 @@ impl Engine {
         // The last word per path.
         let mut by_path: BTreeMap<String, Event> = BTreeMap::new();
         for ev in events {
-            let p = match &ev {
-                Event::Changed { path, .. } | Event::Removed { path } => path.clone(),
-            };
-            by_path.insert(p, ev);
+            by_path.insert(ev.path().to_owned(), ev);
         }
         let mut puts: Vec<(String, Option<ProjectFile>, bool)> = Vec::new();
         let mut stamps = Vec::new();
@@ -265,15 +388,24 @@ impl Engine {
                         let v = cur.map_or(0, |f| f.version);
                         self.project.note_conflict(&path, format!("edited on disk while the engine's version {v} wasn't written yet: the disk's text was kept, and version {v} is in the journal (project_read with version, or world_undo)"));
                     }
-                    let version = cur.map_or(1, |f| f.version + 1);
+                    self.project.held.remove(&path);
+                    let version = self.world.file_version_floor(&path) + 1;
                     puts.push((path.clone(), Some(ProjectFile::new(kind, text, version, Arc::from(DISK_AGENT))), cur.is_none()));
                     stamps.push((path, Some(stamp)));
                 }
                 Event::Removed { .. } => {
+                    self.project.held.remove(&path);
                     if cur.is_some() {
                         puts.push((path.clone(), None, false));
                     }
                     stamps.push((path, None));
+                }
+                Event::Unreadable { len, mtime, why, .. } => {
+                    let fresh = self.project.held.get(&path).is_none_or(|h| (h.0, h.1) != (len, mtime));
+                    if fresh {
+                        self.project.note_conflict(&path, format!("changed on disk into something that can't be mirrored ({why}): held, never overwritten; fix it on disk or replace it with replace_unreadable: true"));
+                    }
+                    self.project.held.insert(path, (len, mtime, why));
                 }
             }
         }
@@ -482,5 +614,90 @@ mod tests {
         let replayed = sw.journal.replay().unwrap();
         assert_eq!(replayed.files(), w.files());
         assert_eq!(replayed.state_hash(), w.state_hash(), "files aren't world state: the hash is the world's");
+    }
+
+    /// Review finding: one agent writing a 980 KB file 28 times evicted everyone's history
+    /// (world_undo found nothing, world_hash verify said replayable: false). File text now has
+    /// its own budget: past it the oldest file texts go, and nothing else.
+    #[test]
+    fn file_text_never_evicts_world_history() {
+        let (s1, s2) = (session("aaaaaa11"), session("bbbbbb22"));
+        let live = vec![s1.clone(), s2.clone()];
+        let mut sw = Swarm::default();
+        let mut w = World::default();
+        w.set_recording(Recording::Full);
+        sw.hello(&s1, "ann".into(), "builder".into(), None, &live).unwrap();
+        sw.hello(&s2, "bob".into(), "builder".into(), None, &live).unwrap();
+        let (k1, k2) = (sw.key(&s1), sw.key(&s2));
+        let (ann, bob) = (Writer::new("ann", Some(&k1)), Writer::new("bob", Some(&k2)));
+        sw.journal.set_file_budget(8 << 20);
+        sw.commit(&mut w, 0, bob, Kind::Spawn, |wd| wd.spawn(SpawnSpec::new(Shape::Cube), "bob").map(|_| ())).unwrap();
+        let p = "assets/anims/big.json";
+        let mut first = None;
+        for i in 0..28u64 {
+            let text = format!("[{i}{}]", ",0".repeat(490_000));
+            let (_, seq) = sw
+                .commit_project(&mut w, 1 + i, ann, |wd| {
+                    let v = wd.file_version_floor(p) + 1;
+                    wd.put_file_raw(p, Some(ProjectFile::new(FileKind::AnimSet, Arc::from(text), v, Arc::from("ann"))), false);
+                    Ok(())
+                })
+                .unwrap();
+            first = first.or(seq);
+        }
+        let (held, budget) = sw.journal.file_text();
+        assert!(held <= budget, "{held} > {budget}");
+        assert!(sw.journal.replayable(), "the world's replay base is untouched");
+        assert_eq!(sw.journal.replay().unwrap().state_hash(), w.state_hash());
+        // Bob's change is still his to undo.
+        sw.undo(&mut w, 40, bob, &UndoRequest { ids: None, count: 1, force: false }).unwrap();
+        assert_eq!(w.len(), 0);
+        // Ann's oldest write lost its text: it can't be undone, and says why.
+        let e = sw.undo(&mut w, 41, ann, &UndoRequest { ids: Some(vec![first.unwrap()]), count: 1, force: true }).unwrap_err();
+        assert_eq!(e.code, "too_old");
+        // Her newest still can.
+        sw.undo(&mut w, 42, ann, &UndoRequest { ids: None, count: 1, force: false }).unwrap();
+        assert!(w.files()[p].text.starts_with("[26,"));
+    }
+
+    /// Review finding: a file deleted and made again restarted at version 1, so an
+    /// `expect_version` read from the old file matched the new one (ABA).
+    #[test]
+    fn versions_never_repeat_at_a_path() {
+        let mut w = World::default();
+        let p = "assets/sounds/aba.json";
+        for v in 1..=3 {
+            w.put_file_raw(p, file("{}", v, "ann"), false);
+        }
+        w.put_file_raw(p, None, false);
+        assert_eq!(w.file_version_floor(p), 3, "the deleted file's last version is remembered");
+        assert_eq!(w.file_version_floor("assets/sounds/other.json"), 0);
+        w.put_file_raw(p, file("{}", w.file_version_floor(p) + 1, "ann"), false);
+        assert_eq!(w.files()[p].version, 4);
+        // Replays and world loads carry the floor.
+        let mut next = World::default();
+        let rev = w.files_revision();
+        w.put_file_raw(p, None, false);
+        next.adopt_files(w.take_files(), rev);
+        assert_eq!(next.file_version_floor(p), 4);
+    }
+
+    /// Review finding: `logic_build {fix: true}` wrote a mounted module's sources past other
+    /// agents' claims on single files.
+    #[test]
+    fn subtree_checks_see_claims_below() {
+        let (s1, s2) = (session("aaaaaa11"), session("bbbbbb22"));
+        let live = vec![s1.clone(), s2.clone()];
+        let mut sw = Swarm::default();
+        let w = World::default();
+        sw.hello(&s1, "ann".into(), "builder".into(), None, &live).unwrap();
+        sw.hello(&s2, "bob".into(), "builder".into(), None, &live).unwrap();
+        let k1 = sw.key(&s1);
+        let ann = Writer::new("ann", Some(&k1));
+        sw.take_claim(&w, &s2, ClaimSpec { scope: Scope::path("/project/modules/ambulo/src/lib.rs").unwrap(), lease: std::time::Duration::from_secs(60), note: String::new() }).unwrap();
+        let now = std::time::Instant::now();
+        assert!(sw.claims.check_path("/project/modules/ambulo", ann, now, "fix").is_ok(), "nothing covers the folder itself");
+        assert_eq!(sw.claims.check_subtree("/project/modules/ambulo", ann, now, "fix").unwrap_err().code, "claimed");
+        assert!(sw.claims.check_subtree("/project/modules/other", ann, now, "fix").is_ok());
     }
 }

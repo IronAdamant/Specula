@@ -992,6 +992,11 @@ impl Library {
         (0..self.handles.len() as u32).find(|&h| self.handle_spec(h).is_some_and(|s| s.recipe == source) && self.built(h).is_some())
     }
 
+    /// `--style FILE`, when the engine was started with one (it governs every recipe).
+    pub fn style_override(&self) -> Option<&Path> {
+        self.style_override.as_deref()
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }

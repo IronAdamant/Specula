@@ -206,14 +206,31 @@ fn indent_at(text: &str, at: usize) -> &str {
     &rest[..rest.len() - rest.trim_start_matches([' ', '\t']).len()]
 }
 
+/// The text's line ending: `\r\n` when it has any, else `\n`.
+pub fn eol_of(text: &str) -> &'static str {
+    if text.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    }
+}
+
+/// `t` with its bare `\n` line ends written as `eol` (so an edit doesn't mix line endings).
+pub fn with_eol(t: &str, eol: &str) -> String {
+    if eol == "\n" {
+        return t.to_owned();
+    }
+    t.replace("\r\n", "\n").replace('\n', eol)
+}
+
 /// `v` written for a place indented `indent`: compact when short, else pretty with its lines
-/// indented to match.
-fn render(v: &Json, indent: &str) -> String {
+/// indented to match (ending like the file's, `eol`).
+fn render(v: &Json, indent: &str, eol: &str) -> String {
     let compact = v.to_string();
     if compact.len() <= 100 || !matches!(v, Json::Obj(_) | Json::Arr(_)) {
         return compact;
     }
-    v.to_pretty().replace('\n', &format!("\n{indent}"))
+    v.to_pretty().replace('\n', &format!("{eol}{indent}"))
 }
 
 fn find<'n>(root: &'n Node, steps: &[Step]) -> Result<&'n Node, (usize, &'n Node)> {
@@ -240,7 +257,7 @@ pub fn json_set(text: &str, path: &str, value: &Json) -> Result<String, String> 
     let root = scan(text)?;
     let out = match find(&root, &steps) {
         Ok(node) => {
-            let v = render(value, indent_at(text, node.start));
+            let v = render(value, indent_at(text, node.start), eol_of(text));
             format!("{}{v}{}", &text[..node.start], &text[node.end..])
         }
         Err((k, parent)) => {
@@ -267,9 +284,10 @@ pub fn json_set(text: &str, path: &str, value: &Json) -> Result<String, String> 
 /// Adds a member (`key`) or an item to container `node`, after its last one.
 fn insert(text: &str, node: &Node, key: Option<&str>, value: &Json) -> String {
     let close = node.end - 1; // the closing bracket
+    let eol = eol_of(text);
     let entry = |indent: &str| match key {
-        Some(k) => format!("{}: {}", Json::from(k), render(value, indent)),
-        None => render(value, indent),
+        Some(k) => format!("{}: {}", Json::from(k), render(value, indent, eol)),
+        None => render(value, indent, eol),
     };
     match node.members.last() {
         None => {
@@ -277,7 +295,7 @@ fn insert(text: &str, node: &Node, key: Option<&str>, value: &Json) -> String {
             if multiline {
                 let outer = indent_at(text, close);
                 let indent = format!("{outer}  ");
-                format!("{}\n{indent}{}\n{outer}{}", &text[..node.start + 1], entry(&indent), &text[close..])
+                format!("{}{eol}{indent}{}{eol}{outer}{}", &text[..node.start + 1], entry(&indent), &text[close..])
             } else {
                 format!("{}{}{}", &text[..node.start + 1], entry(""), &text[close..])
             }
@@ -286,7 +304,7 @@ fn insert(text: &str, node: &Node, key: Option<&str>, value: &Json) -> String {
             let on_own_line = text[node.start..*member_start].contains('\n');
             if on_own_line {
                 let indent = indent_at(text, *member_start).to_owned();
-                format!("{},\n{indent}{}{}", &text[..last.end], entry(&indent), &text[last.end..])
+                format!("{},{eol}{indent}{}{}", &text[..last.end], entry(&indent), &text[last.end..])
             } else {
                 format!("{}, {}{}", &text[..last.end], entry(""), &text[last.end..])
             }
@@ -326,7 +344,7 @@ pub fn find_replace(text: &str, find: &str, replace: &str) -> Result<String, Str
     }
     let n = text.matches(find).count();
     match n {
-        1 => Ok(text.replacen(find, replace, 1)),
+        1 => Ok(text.replacen(find, &with_eol(replace, eol_of(text)), 1)),
         0 => Err("'find' text doesn't occur in the file (project_read shows it; whitespace counts)".into()),
         n => Err(format!("'find' text occurs {n} times; include more context so it occurs once")),
     }
@@ -336,6 +354,8 @@ pub fn find_replace(text: &str, find: &str, replace: &str) -> Result<String, Str
 pub fn replace_lines(text: &str, from: usize, to: usize, new: &str) -> Result<String, String> {
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let n = lines.len();
+    let eol = eol_of(text);
+    let new = &with_eol(new, eol);
     if from == 0 || from > n + 1 || to + 1 < from || to > n {
         return Err(format!("'lines' [{from}, {to}] is outside the file's {n} lines (1-based, inclusive; [k, k-1] inserts before line k)"));
     }
@@ -344,12 +364,12 @@ pub fn replace_lines(text: &str, from: usize, to: usize, new: &str) -> Result<St
         out.push_str(l);
     }
     if !out.is_empty() && !out.ends_with('\n') {
-        out.push('\n');
+        out.push_str(eol);
     }
     out.push_str(new);
     let rest = &lines[to..];
     if !rest.is_empty() && !new.is_empty() && !new.ends_with('\n') {
-        out.push('\n');
+        out.push_str(eol);
     }
     for l in rest {
         out.push_str(l);
@@ -464,52 +484,84 @@ const MAX_JSON_CHANGES: usize = 48;
 /// The values that differ between `a` and `b`, by path (leaves, or a whole value whose type
 /// changed), and whether the list was cut.
 pub fn json_diff(a: &Json, b: &Json) -> (Vec<JsonChange>, bool) {
-    let mut out = Vec::new();
-    let mut cut = false;
-    walk(a, b, &mut Vec::new(), &mut out, &mut cut);
+    let (out, cut, _) = json_diff_counted(a, b);
     (out, cut)
 }
 
-fn walk(a: &Json, b: &Json, at: &mut Vec<Step>, out: &mut Vec<JsonChange>, cut: &mut bool) {
-    if a == b {
-        return;
-    }
-    fn push(out: &mut Vec<JsonChange>, cut: &mut bool, at: &[Step], before: Option<&Json>, after: Option<&Json>) {
-        if out.len() == MAX_JSON_CHANGES {
-            *cut = true;
+/// [`json_diff`] and the work it did (values visited): objects are matched through a sorted index
+/// and the walk stops at the cut, so the work stays near-linear in the documents' size.
+pub fn json_diff_counted(a: &Json, b: &Json) -> (Vec<JsonChange>, bool, usize) {
+    let mut d = Differ { out: Vec::new(), cut: false, work: 0 };
+    d.walk(a, b, &mut Vec::new());
+    (d.out, d.cut, d.work)
+}
+
+struct Differ {
+    out: Vec<JsonChange>,
+    cut: bool,
+    work: usize,
+}
+
+impl Differ {
+    fn push(&mut self, at: &[Step], before: Option<&Json>, after: Option<&Json>) {
+        if self.out.len() == MAX_JSON_CHANGES {
+            self.cut = true;
         } else {
-            out.push(JsonChange { path: path_string(at), before: before.cloned(), after: after.cloned() });
+            self.out.push(JsonChange { path: path_string(at), before: before.cloned(), after: after.cloned() });
         }
     }
-    match (a, b) {
-        (Json::Obj(x), Json::Obj(y)) => {
-            for (k, v) in x {
-                at.push(Step::Key(k.clone()));
-                match y.iter().find(|(n, _)| n == k) {
-                    Some((_, w)) => walk(v, w, at, out, cut),
-                    None => push(out, cut, at, Some(v), None),
-                }
-                at.pop();
-            }
-            for (k, w) in y {
-                if !x.iter().any(|(n, _)| n == k) {
+
+    fn walk(&mut self, a: &Json, b: &Json, at: &mut Vec<Step>) {
+        self.work += 1;
+        if self.cut || a == b {
+            return;
+        }
+        match (a, b) {
+            (Json::Obj(x), Json::Obj(y)) => {
+                // Sorted indexes: no quadratic search in big objects (first key wins, as in get).
+                let mut xi: Vec<(&str, usize)> = x.iter().enumerate().map(|(i, (k, _))| (k.as_str(), i)).collect();
+                let mut yi: Vec<(&str, usize)> = y.iter().enumerate().map(|(i, (k, _))| (k.as_str(), i)).collect();
+                xi.sort();
+                yi.sort();
+                let find = |ix: &[(&str, usize)], k: &str| ix.binary_search_by(|(n, _)| (*n).cmp(k)).ok().map(|p| ix[p..].iter().take_while(|(n, _)| *n == k).map(|(_, i)| *i).min().unwrap_or(ix[p].1));
+                for (k, v) in x {
+                    if self.cut {
+                        return;
+                    }
                     at.push(Step::Key(k.clone()));
-                    push(out, cut, at, None, Some(w));
+                    match find(&yi, k) {
+                        Some(j) => self.walk(v, &y[j].1, at),
+                        None => self.push(at, Some(v), None),
+                    }
+                    at.pop();
+                }
+                for (k, w) in y {
+                    if self.cut {
+                        return;
+                    }
+                    self.work += 1;
+                    if find(&xi, k).is_none() {
+                        at.push(Step::Key(k.clone()));
+                        self.push(at, None, Some(w));
+                        at.pop();
+                    }
+                }
+            }
+            (Json::Arr(x), Json::Arr(y)) => {
+                for i in 0..x.len().max(y.len()) {
+                    if self.cut {
+                        return;
+                    }
+                    at.push(Step::Index(i));
+                    match (x.get(i), y.get(i)) {
+                        (Some(v), Some(w)) => self.walk(v, w, at),
+                        (v, w) => self.push(at, v, w),
+                    }
                     at.pop();
                 }
             }
+            _ => self.push(at, Some(a), Some(b)),
         }
-        (Json::Arr(x), Json::Arr(y)) => {
-            for i in 0..x.len().max(y.len()) {
-                at.push(Step::Index(i));
-                match (x.get(i), y.get(i)) {
-                    (Some(v), Some(w)) => walk(v, w, at, out, cut),
-                    (v, w) => push(out, cut, at, v, w),
-                }
-                at.pop();
-            }
-        }
-        _ => push(out, cut, at, Some(a), Some(b)),
     }
 }
 
@@ -602,6 +654,42 @@ mod tests {
         let (ins, _) = line_diff("a\nb\n", "a\nnew\nb\n");
         assert_eq!(ins, vec![Hunk { base: (1, 1), removed: vec![], added: vec!["new".into()] }]);
         assert_eq!(line_diff(base, base).0, vec![]);
+    }
+
+    #[test]
+    fn edits_keep_the_files_line_endings() {
+        let crlf = DOC.replace('\n', "\r\n");
+        let out = json_set(&crlf, "notes", &Json::from("hi")).unwrap();
+        assert!(out.contains("\"seed\": 7,\r\n  \"notes\": \"hi\"\r\n}"), "{out:?}");
+        assert!(!out.replace("\r\n", "").contains('\n'), "no bare LF: {out:?}");
+        let big = Json::obj((0..20).map(|i| (format!("key_{i}"), Json::from(i as f64))));
+        let out = json_set(&crlf, "budget", &big).unwrap();
+        assert!(!out.replace("\r\n", "").contains('\n'), "pretty values follow the file: {out:?}");
+        let t = "one\r\ntwo\r\n";
+        assert_eq!(replace_lines(t, 2, 1, "new\nlines\n").unwrap(), "one\r\nnew\r\nlines\r\ntwo\r\n");
+        assert_eq!(replace_lines(t, 3, 2, "end").unwrap(), "one\r\ntwo\r\nend");
+        assert_eq!(find_replace(t, "two", "2\n3").unwrap(), "one\r\n2\r\n3\r\n");
+        assert_eq!(replace_lines("a\nb\n", 2, 2, "B\n").unwrap(), "a\nB\n", "LF files stay LF");
+    }
+
+    /// Review finding: a 70,000-key object took 43 s a write (a linear search per key, and the
+    /// walk went on after the cut). Work is counted, not timed (CI machines vary).
+    #[test]
+    fn big_object_diffs_stay_linear_and_stop_at_the_cut() {
+        let doc = |v: f64| Json::obj((0..70_000).map(|n| (format!("k{n:06}"), Json::from(v))));
+        let (a, b) = (doc(0.0), doc(1.0));
+        let t = std::time::Instant::now();
+        let (changes, cut, work) = json_diff_counted(&a, &b);
+        eprintln!("70k-key diff: {:?}, {work} values visited", t.elapsed());
+        assert_eq!(changes.len(), MAX_JSON_CHANGES);
+        assert!(cut);
+        assert!(work < 1_000, "stops at the cut: {work}");
+        // All keys renamed but one: every key is looked up once in a sorted index.
+        let c = Json::obj((0..70_000).map(|n| (format!("z{n:06}"), Json::from(0.0))));
+        let (_, _, work) = json_diff_counted(&a, &c);
+        assert!(work <= 2 * 70_000 + 10, "{work}");
+        // Equal documents: one comparison.
+        assert_eq!(json_diff_counted(&a, &a.clone()).2, 1);
     }
 
     #[test]
