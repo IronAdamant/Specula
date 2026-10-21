@@ -340,6 +340,10 @@ struct Index {
     resync: Option<Resync>,
     /// Refilings finished.
     resyncs: u64,
+    /// Refilings in a row whose catch-up found the change record overflowed again: each next one
+    /// gets twice the slice, so a world that keeps changing still converges (after a few, it is
+    /// filed at once, as a rebuild would).
+    resync_overflows: u32,
 }
 
 /// See [`Index::resync`].
@@ -373,24 +377,20 @@ impl Index {
         }
         // The same world, but more changed than its change record holds: everything is filed
         // again a slice at a time (the old cells serve meanwhile), then the changes since.
-        if self.key == Some(key) && self.resync.is_some() {
-            let started = Instant::now();
-            if !self.resync_step(world, cell_m, started, slice) {
-                return true;
-            }
-            let rest = slice.saturating_sub(started.elapsed());
-            if !self.patch(world, cell_m, now, touched, rest) {
+        let patched = self.key == Some(key) && self.resync.is_none() && self.patch(world, cell_m, now, touched, slice);
+        if !patched && self.key == Some(key) {
+            if self.resync.is_none() {
                 self.begin_resync(world);
             }
-            return true;
-        }
-        let patched = self.key == Some(key) && self.patch(world, cell_m, now, touched, slice);
-        if !patched && self.key == Some(key) {
             let started = Instant::now();
-            self.begin_resync(world);
-            if self.resync_step(world, cell_m, started, slice) {
-                let rest = slice.saturating_sub(started.elapsed());
-                if !self.patch(world, cell_m, now, touched, rest) {
+            // Twice the slice for each refiling in a row that couldn't catch up.
+            let scaled = if self.resync_overflows >= 6 { Duration::MAX } else { slice.saturating_mul(1 << self.resync_overflows) };
+            if self.resync_step(world, cell_m, started, scaled) {
+                let rest = scaled.saturating_sub(started.elapsed());
+                if self.patch(world, cell_m, now, touched, rest) {
+                    self.resync_overflows = 0;
+                } else {
+                    self.resync_overflows += 1;
                     self.begin_resync(world);
                 }
             }
@@ -432,15 +432,13 @@ impl Index {
     fn resync_step(&mut self, world: &World, cell_m: f32, started: Instant, slice: Duration) -> bool {
         let _z = specula_core::profile::zone("resync");
         let Some(r) = self.resync.as_mut() else { return true };
-        let mut n = 0usize;
         let mut done = true;
-        for e in world.persistent_entities_after(r.cursor) {
+        for (n, e) in world.persistent_entities_after(r.cursor).enumerate() {
             r.cursor = Some(e.id);
             if e.shape == Shape::Model {
                 let k = cell_key(e.world_position(), cell_m);
                 r.cell_of.insert(e.id, k);
                 r.cells.entry(k).or_default().members.push(Member::of(e, None, cell_m));
-                n += 1;
             }
             if n % 64 == 63 && started.elapsed() >= slice {
                 done = false;
@@ -2509,13 +2507,35 @@ mod tests {
         }
         assert!(index.cell_of.contains_key(&late), "spawned during the refiling, filed after it");
         assert_eq!(index.cell_of.len(), total + DRAW_LOG + 11);
+        // A world that keeps changing faster than a sliced refiling can catch up with (review):
+        // each refiling in a row gets a bigger slice, so it still ends.
+        let mut calls = 0;
+        let mut next = 30_000u64;
+        index.sync(&world, 0, 32.0, now, &mut touched, Duration::ZERO);
+        loop {
+            for _ in 0..(DRAW_LOG as u64 / 3) {
+                spawn(&mut world, next);
+                next += 1;
+            }
+            index.sync(&world, 0, 32.0, now, &mut touched, Duration::ZERO);
+            calls += 1;
+            if index.resync.is_none() {
+                break;
+            }
+            assert!(calls < 500, "a refiling under constant change still ends");
+        }
+        while !index.backlog.is_empty() || index.epoch != world.draw_epoch() {
+            index.sync(&world, 0, 32.0, now, &mut touched, Duration::ZERO);
+        }
+        let changing = (next - 30_000) as usize;
+        assert_eq!(index.cell_of.len(), total + DRAW_LOG + 11 + changing);
         // A capture's call (no slice limit) does it all at once.
         for i in 0..(DRAW_LOG as u64 + 10) {
             spawn(&mut world, 20_000 + i);
         }
         index.sync(&world, 0, 32.0, now, &mut touched, Duration::MAX);
         assert!(index.resync.is_none() && index.backlog.is_empty());
-        assert_eq!(index.cell_of.len(), total + 2 * DRAW_LOG + 21);
+        assert_eq!(index.cell_of.len(), total + 2 * DRAW_LOG + 21 + changing);
     }
 
     #[test]

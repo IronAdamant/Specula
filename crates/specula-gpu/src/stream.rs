@@ -167,7 +167,8 @@ impl Blocks {
         if b.used == 0 {
             // One empty block of the usual size is kept for what comes next; an oversized one,
             // or a second spare, goes.
-            let usual = b.buffer.bytes <= MAX_BLOCK_BYTES;
+            // (Only a first-size block is kept: a bigger spare would hold memory no budget counts.)
+            let usual = b.buffer.bytes <= BLOCK_BYTES;
             let empty = self.blocks.iter().flatten().filter(|b| b.used == 0).count();
             if !usual || empty > 1 {
                 if let Some(b) = self.blocks[block as usize].take() {
