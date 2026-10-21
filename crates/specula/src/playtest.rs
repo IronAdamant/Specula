@@ -459,10 +459,23 @@ fn lookup(v: &Json, segs: &[Seg]) -> Option<Json> {
     Some(cur.clone())
 }
 
-/// Equality with numbers compared by value (JSON has one number type).
+/// Equality with numbers compared by value (JSON has one number type) and objects compared as
+/// maps: the same keys with equal values, in any order (an answer's key order is not part of it).
 fn same(a: &Json, b: &Json) -> bool {
     match (a, b) {
         (Json::Num(x), Json::Num(y)) => x == y,
+        (Json::Arr(x), Json::Arr(y)) => x.len() == y.len() && x.iter().zip(y).all(|(p, q)| same(p, q)),
+        (Json::Obj(x), Json::Obj(y)) => {
+            // Each key of either side once in the other, with an equal value. An object with a
+            // duplicate key equals nothing (what it means depends on the reader: Python keeps the
+            // last duplicate, a first-match lookup the first), so the two matchers can't disagree.
+            let unique = |o: &[(String, Json)]| o.iter().enumerate().all(|(i, (k, _))| o[..i].iter().all(|(k2, _)| k2 != k));
+            x.len() == y.len()
+                && unique(x)
+                && unique(y)
+                && x.iter().all(|(k, v)| y.iter().find(|(k2, _)| k2 == k).is_some_and(|(_, w)| same(v, w)))
+                && y.iter().all(|(k, _)| x.iter().any(|(k2, _)| k2 == k))
+        }
         _ => a == b,
     }
 }
@@ -493,6 +506,15 @@ impl Expect {
             Err(got.unwrap_or(Json::Null))
         }
     }
+}
+
+/// Whether `answer` at the dotted `path` matches `matcher`, exactly as a step's `expect` judges it;
+/// `Err` when the path or matcher is malformed. The agent-eval runner (`scripts/evals.py`) mirrors
+/// these semantics; `evals/matcher_cases.json` holds both to the same cases.
+pub fn expectation_holds(path: &str, matcher: &Json, answer: &Json) -> Result<bool, SpecError> {
+    let segs = parse_path(path).map_err(|e| SpecError::new(path, e))?;
+    let expect = Expect { path: path.to_owned(), segs, ops: parse_matcher(matcher, path)?, source: matcher.clone() };
+    Ok(expect.check(answer).is_ok())
 }
 
 /// A value for a failure report, cut to [`MAX_VALUE_CHARS`] of JSON.

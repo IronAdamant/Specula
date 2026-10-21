@@ -1,0 +1,145 @@
+//! Saltus (Latin "a leap"): an agent-eval module. A capsule at /saltus/player walks with the
+//! `move` action on a ground slab and jumps with `jump` (only from the ground).
+//!
+//! Module rules (docs/design/MODULES.md): stateless code (the character's vertical speed lives in
+//! the player's props), actions not keys (actions.json), the tick is the only clock.
+
+#![deny(unsafe_code)]
+
+use specula_sdk::{dmath, Cx, Id, Module, ModuleInfo, Patch, SdkError, Spawn, StopReason, Value, Vec3};
+
+/// Walking speed, metres per second.
+const WALK_SPEED: f32 = 4.0;
+const GRAVITY: f32 = 18.0;
+/// Take-off speed, metres per second. The take-off tick moves at the full speed, then gravity
+/// takes 0.6 m/s a tick (30 Hz): feet rise 1.00 m at 30 Hz, 0.95 m at 60 Hz (target 0.8..1.2 m).
+const JUMP_SPEED: f32 = 5.7;
+/// Fastest fall, metres per second.
+const TERMINAL_SPEED: f32 = 30.0;
+const RADIUS: f32 = 0.3;
+const HEIGHT: f32 = 1.8;
+
+const ROOT: &str = "/saltus";
+const PLAYER: &str = "/saltus/player";
+
+#[derive(Default)]
+pub struct Saltus;
+
+specula_sdk::export_module!(Saltus);
+
+impl Module for Saltus {
+    fn describe(&self) -> ModuleInfo {
+        ModuleInfo {
+            name: "saltus",
+            version: env!("CARGO_PKG_VERSION"),
+            description: "A walking, jumping capsule (/saltus/player) on a slab; actions move and jump.",
+            order: 0,
+            actions: include_str!("../actions.json"),
+            hooks: vec![],
+        }
+    }
+
+    fn start(&self, cx: &mut Cx) -> Result<(), SdkError> {
+        if cx.find(ROOT)?.is_none() {
+            cx.spawn(Spawn::new("group").name("saltus"))?;
+        }
+        if cx.query(Some("ground"), Some(ROOT), 1)?.is_empty() {
+            cx.spawn(
+                Spawn::new("cube")
+                    .name("ground")
+                    .parent(ROOT)
+                    .position(Vec3::new(0.0, -0.1, 0.0))
+                    .scale(Vec3::new(24.0, 0.2, 24.0))
+                    .color("#4a5560")
+                    .tags(&["ground"])
+                    .field("collider", Value::map().with("shape", "box")),
+            )?;
+        }
+        if cx.find(PLAYER)?.is_none() {
+            spawn_player(cx)?;
+        }
+        Ok(())
+    }
+
+    fn tick(&self, cx: &mut Cx) -> Result<(), SdkError> {
+        let id = match cx.find(PLAYER)? {
+            Some(id) => id,
+            None => spawn_player(cx)?,
+        };
+        let me = cx.entity(id)?.ok_or_else(|| SdkError::new("not_found", "the player vanished mid-tick"))?;
+        let mut vy = me.prop("vy").as_f32().unwrap_or(0.0);
+        // Standing on the ground as of the last move (the controller's answer, kept in props).
+        let was_grounded = me.prop("grounded").as_bool().unwrap_or(false);
+        let dt = cx.dt();
+        // Jump only on the press (not while held) and only from the ground: mid-air presses do nothing.
+        let jump = cx.action("jump").pressed && was_grounded && vy <= 0.0;
+
+        let stick = cx.action("move").value;
+        let mut walk = Vec3::new(stick[0], 0.0, -stick[1]);
+        let len = walk.length();
+        if len > 1.0 {
+            walk = walk * (1.0 / len);
+        }
+        walk = walk * WALK_SPEED;
+
+        vy = (vy - GRAVITY * dt).max(-TERMINAL_SPEED);
+        if jump {
+            vy = JUMP_SPEED;
+        }
+
+        let moved = cx.move_character(id, Vec3::new(walk.x * dt, vy * dt, walk.z * dt))?;
+        if moved.grounded && vy < 0.0 {
+            vy = 0.0;
+        }
+        let mut patch = Patch::new().props(Value::map().with("vy", vy).with("grounded", moved.grounded));
+        if len > 0.05 {
+            let yaw = dmath::atan2(walk.x, walk.z).to_degrees();
+            patch = patch.rotation_deg(Vec3::new(0.0, yaw, 0.0));
+        }
+        cx.set(id, patch)?;
+        Ok(())
+    }
+
+    fn stop(&self, cx: &mut Cx, reason: StopReason) -> Result<(), SdkError> {
+        if reason == StopReason::Unload {
+            if let Some(root) = cx.find(ROOT)? {
+                cx.delete(root)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn spawn_player(cx: &mut Cx) -> Result<Id, SdkError> {
+    // A capsule as a lathe profile: feet at the entity's origin, head at HEIGHT.
+    let mut profile = Vec::new();
+    const CAP: usize = 6;
+    for i in 0..=CAP {
+        let a = std::f32::consts::FRAC_PI_2 * i as f32 / CAP as f32;
+        profile.push(Value::from([(RADIUS * dmath::sin(a)).max(0.0), RADIUS - RADIUS * dmath::cos(a)]));
+    }
+    for i in 0..=CAP {
+        let a = std::f32::consts::FRAC_PI_2 * i as f32 / CAP as f32;
+        // cos(π/2) rounds to a hair below zero: radii must not.
+        profile.push(Value::from([(RADIUS * dmath::cos(a)).max(0.0), HEIGHT - RADIUS + RADIUS * dmath::sin(a)]));
+    }
+    cx.spawn(
+        Spawn::new("lathe")
+            .name("player")
+            .parent(ROOT)
+            .position(Vec3::new(0.0, 0.0, 0.0))
+            .color("#5ec8e0")
+            .tags(&["player", "character"])
+            .props(Value::map().with("vy", 0.0f32).with("grounded", true))
+            .field("profile", profile)
+            .field("segments", 16)
+            .field(
+                "collider",
+                Value::map()
+                    .with("shape", "capsule")
+                    .with("radius", RADIUS)
+                    .with("height", HEIGHT)
+                    .with("offset", Vec3::new(0.0, HEIGHT / 2.0, 0.0)),
+            ),
+    )
+}

@@ -1,0 +1,220 @@
+{
+ "eval": 1,
+ "id": "anim_idle_clip",
+ "set": "heldout",
+ "area": "animation",
+ "title": "Author a calmer idle and wire it into the graph",
+ "summary": "Agent-authored motion: generate a looping clip from a rig with a procedural generator, make a graph state play it, and prove it on a live entity and with motion checks.",
+ "game": "sepulcra",
+ "setup": [
+  {
+   "as": "setup",
+   "call": "model_build",
+   "args": {
+    "recipe": "recipes/shambler.json"
+   }
+  }
+ ],
+ "brief": "The engine hosts Sepulcra. Give the shambler (model recipes/shambler.json) a new, calmer idle: a looping clip named \"idle_calm\", exactly 4 seconds long, made with the engine's procedural motion generators (no hand-keyed poses needed). Make the \"idle\" state of its \"creature\" graph play it instead of the old idle, keeping the rest of the graph as it is. anim_check must pass for the new clip and for the idle state, and a shambler standing idle in the world must actually be playing idle_calm.",
+ "tools": [
+  "anim_*",
+  "model_build",
+  "world_*",
+  "time_control",
+  "sight_frame"
+ ],
+ "limits": {
+  "calls": 30,
+  "wall_s": 900
+ },
+ "verify": [
+  {
+   "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+   "world_diff": {
+    "allow": [
+     {
+      "path": "/anims*"
+     }
+    ]
+   }
+  },
+  {
+   "name": "idle_calm is a 4 s looping clip of the shambler",
+   "call": "anim_get",
+   "args": {
+    "recipe": "recipes/shambler.json"
+   },
+   "select": {
+    "from": "clips",
+    "where": {
+     "name": "idle_calm",
+     "duration": {
+      "near": 4,
+      "tol": 0.001
+     },
+     "loop": "loop"
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 1
+   }
+  },
+  {
+   "name": "motion checks pass for the clip and the idle state",
+   "call": "anim_check",
+   "args": {
+    "recipe": "recipes/shambler.json",
+    "clips": [
+     "idle_calm"
+    ],
+    "states": [
+     "idle"
+    ]
+   },
+   "expect": {
+    "passed": true
+   }
+  },
+  {
+   "name": "the graph keeps its other states",
+   "call": "anim_get",
+   "args": {
+    "recipe": "recipes/shambler.json",
+    "graph": "creature"
+   },
+   "expect": {
+    "graph.states.#": 5,
+    "graph.transitions.#": 6
+   }
+  },
+  {
+   "name": "a shambler standing idle in the world",
+   "call": "world_spawn",
+   "args": {
+    "shape": "model",
+    "recipe": "recipes/shambler.json",
+    "path": "/eval_probe",
+    "position": [
+     40,
+     0,
+     40
+    ],
+    "anim": {
+     "graph": "creature",
+     "params": {
+      "act": "idle"
+     }
+    }
+   }
+  },
+  {
+   "name": "a second of time",
+   "call": "time_control",
+   "args": {
+    "action": "step",
+    "ticks": 30
+   }
+  },
+  {
+   "name": "plays idle_calm",
+   "call": "anim_state",
+   "args": {
+    "path": "/eval_probe"
+   },
+   "expect": {
+    "layers.0.states.0.state": "idle",
+    "layers.0.states.0.clips.0.0": "idle_calm"
+   }
+  }
+ ],
+ "reference": [
+  {
+   "call": "anim_get",
+   "args": {
+    "recipe": "recipes/shambler.json",
+    "graph": "creature"
+   }
+  },
+  {
+   "call": "anim_set",
+   "args": {
+    "recipe": "recipes/shambler.json",
+    "name": "idle_calm",
+    "clip": {
+     "kind": "idle",
+     "duration": 4,
+     "body": "auto",
+     "breathe": 3
+    }
+   }
+  },
+  {
+   "call": "anim_set",
+   "args": {
+    "recipe": "recipes/shambler.json",
+    "name": "creature",
+    "patch": {
+     "states": {
+      "idle": "idle_calm"
+     }
+    }
+   }
+  },
+  {
+   "call": "anim_check",
+   "args": {
+    "recipe": "recipes/shambler.json",
+    "clips": [
+     "idle_calm"
+    ],
+    "states": [
+     "idle"
+    ]
+   },
+   "expect": {
+    "passed": true
+   }
+  }
+ ],
+ "broken": [
+  {
+   "note": "writes the clip but replaces the whole graph with only an idle state",
+   "call": "anim_set",
+   "args": {
+    "recipe": "recipes/shambler.json",
+    "name": "idle_calm",
+    "clip": {
+     "kind": "idle",
+     "duration": 4,
+     "body": "auto"
+    }
+   }
+  },
+  {
+   "call": "anim_set",
+   "args": {
+    "recipe": "recipes/shambler.json",
+    "name": "creature",
+    "graph": {
+     "params": {
+      "act": {
+       "type": "enum",
+       "values": [
+        "idle",
+        "move",
+        "attack",
+        "special",
+        "death"
+       ]
+      }
+     },
+     "states": {
+      "idle": "idle_calm"
+     },
+     "entry": "idle"
+    }
+   }
+  }
+ ]
+}

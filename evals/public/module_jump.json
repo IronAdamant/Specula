@@ -1,0 +1,331 @@
+{
+ "eval": 1,
+ "id": "module_jump",
+ "set": "public",
+ "area": "modules",
+ "title": "Add a jump to a game module",
+ "summary": "The code escape hatch: edit a hot-reloaded Rust module (a new input action and the physics of a jump), build it with logic_build, and prove it in the running world; judged by a playtest that presses jump on the ground and again in mid-air.",
+ "game": null,
+ "engine_cwd": "repo",
+ "files": [
+  {
+   "from": "evals/fixtures/saltus/Cargo.toml.txt",
+   "to": "saltus/Cargo.toml"
+  },
+  {
+   "from": "evals/fixtures/saltus/actions.json",
+   "to": "saltus/actions.json"
+  },
+  {
+   "from": "evals/fixtures/saltus/src/lib.rs",
+   "to": "saltus/src/lib.rs"
+  }
+ ],
+ "setup": [
+  {
+   "as": "setup",
+   "call": "logic_build",
+   "args": {
+    "path": "${work}/saltus"
+   },
+   "expect": {
+    "ok": true,
+    "errors": 0
+   }
+  }
+ ],
+ "brief": "A game module, \"saltus\" (a Rust cdylib in {work}/saltus, already built and running), adds a capsule character at /saltus/player that walks with the \"move\" action. Give it a jump: a button action named \"jump\" (bind Space and the gamepad's south button for players; agents press it with logic_input) that launches the character straight up only when it is standing on the ground, high enough that its feet rise at least 0.8 m (and no more than 1.2 m), after which it falls back and lands. Pressing jump again in mid-air must do nothing. Edit the module's files and rebuild it with logic_build {\"path\": \"{work}/saltus\"}; walking must keep working.",
+ "tools": [
+  "logic_*",
+  "world_query",
+  "world_list",
+  "time_control",
+  "sight_frame",
+  "physics_raycast"
+ ],
+ "limits": {
+  "calls": 40,
+  "wall_s": 1200
+ },
+ "verify": [
+  {
+   "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+   "world_diff": {
+    "allow": [
+     {
+      "path": "/saltus/player",
+      "ops": [
+       "changed"
+      ],
+      "fields": [
+       "position",
+       "rotation_deg",
+       "props.*"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "saltus is running",
+   "call": "logic_status",
+   "args": {
+    "module": "saltus",
+    "response_format": "detailed"
+   },
+   "expect": {
+    "modules.0.status": "running"
+   }
+  },
+  {
+   "name": "the jump action is declared",
+   "call": "logic_status",
+   "args": {
+    "module": "saltus",
+    "response_format": "detailed"
+   },
+   "expect": {
+    "modules.0.actions": {
+     "contains": "jump"
+    }
+   }
+  },
+  {
+   "name": "a playtest: jump from the ground, press again mid-air, land, walk",
+   "playtest": {
+    "name": "saltus_jump",
+    "steps": [
+     {
+      "at": 0,
+      "call": "world_query",
+      "args": {
+       "path_prefix": "/saltus/player",
+       "fields": [
+        "world_position",
+        "props"
+       ]
+      },
+      "expect": {
+       "items.0.world_position.1": {
+        "near": 0,
+        "tol": 0.05
+       }
+      }
+     },
+     {
+      "at": 0,
+      "call": "logic_input",
+      "args": {
+       "module": "saltus",
+       "actions": {
+        "jump": true
+       },
+       "ticks": 1
+      }
+     },
+     {
+      "at": 4,
+      "call": "logic_input",
+      "args": {
+       "module": "saltus",
+       "actions": {
+        "jump": true
+       },
+       "ticks": 1
+      }
+     },
+     {
+      "at": 10,
+      "call": "world_query",
+      "args": {
+       "path_prefix": "/saltus/player",
+       "fields": [
+        "world_position"
+       ]
+      },
+      "expect": {
+       "items.0.world_position.1": {
+        "gte": 0.8,
+        "lte": 1.2
+       }
+      }
+     },
+     {
+      "at": 10,
+      "call": "sight_frame",
+      "args": {
+       "eye": [
+        4.5,
+        0.4,
+        4.5
+       ],
+       "target": [
+        0,
+        1.2,
+        0
+       ],
+       "width": 480,
+       "height": 320
+      },
+      "label": "mid_jump"
+     },
+     {
+      "at": 70,
+      "call": "world_query",
+      "args": {
+       "path_prefix": "/saltus/player",
+       "fields": [
+        "world_position",
+        "props"
+       ]
+      },
+      "expect": {
+       "items.0.world_position.1": {
+        "near": 0,
+        "tol": 0.05
+       },
+       "items.0.props.grounded": true
+      }
+     },
+     {
+      "at": 71,
+      "call": "logic_input",
+      "args": {
+       "module": "saltus",
+       "actions": {
+        "move": [
+         1,
+         0
+        ]
+       },
+       "ticks": 15
+      }
+     },
+     {
+      "at": 100,
+      "call": "world_query",
+      "args": {
+       "path_prefix": "/saltus/player",
+       "fields": [
+        "world_position"
+       ]
+      },
+      "expect": {
+       "items.0.world_position.0": {
+        "gt": 1.5
+       },
+       "items.0.world_position.1": {
+        "near": 0,
+        "tol": 0.05
+       }
+      }
+     }
+    ],
+    "ticks": 100
+   }
+  },
+  {
+   "name": "a second jump measured every tick for 40 ticks: the feet peak between 0.8 and 1.2 m and land",
+   "series": {
+    "setup": [
+     {
+      "call": "logic_input",
+      "args": {
+       "module": "saltus",
+       "actions": {
+        "jump": true
+       },
+       "ticks": 1
+      }
+     }
+    ],
+    "ticks": 40,
+    "call": {
+     "call": "world_query",
+     "args": {
+      "path_prefix": "/saltus/player",
+      "fields": [
+       "path",
+       "world_position"
+      ],
+      "limit": 1
+     }
+    },
+    "value": "items.0.world_position.1",
+    "expect": {
+     "max": {
+      "gte": 0.8,
+      "lte": 1.2
+     },
+     "last": {
+      "near": 0,
+      "tol": 0.05
+     }
+    }
+   }
+  }
+ ],
+ "reference": [
+  {
+   "write": "saltus/src/lib.rs",
+   "text_file": "evals/fixtures/saltus_solution/lib.rs"
+  },
+  {
+   "write": "saltus/actions.json",
+   "text_file": "evals/fixtures/saltus_solution/actions.json"
+  },
+  {
+   "call": "logic_build",
+   "args": {
+    "path": "${work}/saltus"
+   },
+   "expect": {
+    "ok": true,
+    "errors": 0
+   }
+  }
+ ],
+ "broken": [
+  {
+   "note": "jumps whenever jump is pressed, also in mid-air",
+   "write": "saltus/src/lib.rs",
+   "text_file": "evals/fixtures/saltus_solution/lib_broken.rs"
+  },
+  {
+   "write": "saltus/actions.json",
+   "text_file": "evals/fixtures/saltus_solution/actions.json"
+  },
+  {
+   "call": "logic_build",
+   "args": {
+    "path": "${work}/saltus"
+   }
+  }
+ ],
+ "cheats": [
+  {
+   "id": "slow_high_jump",
+   "note": "review round 3: low gravity: 0.8-1.2 m at the sampled tick, but the jump keeps rising to about 1.7 m",
+   "steps": [
+    {
+     "write": "saltus/src/lib.rs",
+     "text": "//! Saltus (Latin \"a leap\"): an agent-eval module. A capsule at /saltus/player walks with the\n//! `move` action on a ground slab. It jumps with `jump` (the eval's reference solution).\n//!\n//! Module rules (docs/design/MODULES.md): stateless code (the character's vertical speed lives in\n//! the player's props), actions not keys (actions.json), the tick is the only clock.\n\n#![deny(unsafe_code)]\n\nuse specula_sdk::{dmath, Cx, Id, Module, ModuleInfo, Patch, SdkError, Spawn, StopReason, Value, Vec3};\n\n/// Walking speed, metres per second.\nconst WALK_SPEED: f32 = 4.0;\n/// Take-off speed of a jump, metres per second (about 1 m high with this gravity).\nconst JUMP_SPEED: f32 = 3.733;\nconst GRAVITY: f32 = 4.0;\n/// Fastest fall, metres per second.\nconst TERMINAL_SPEED: f32 = 30.0;\nconst RADIUS: f32 = 0.3;\nconst HEIGHT: f32 = 1.8;\n\nconst ROOT: &str = \"/saltus\";\nconst PLAYER: &str = \"/saltus/player\";\n\n#[derive(Default)]\npub struct Saltus;\n\nspecula_sdk::export_module!(Saltus);\n\nimpl Module for Saltus {\n    fn describe(&self) -> ModuleInfo {\n        ModuleInfo {\n            name: \"saltus\",\n            version: env!(\"CARGO_PKG_VERSION\"),\n            description: \"A walking, jumping capsule (/saltus/player) on a slab; actions move and jump.\",\n            order: 0,\n            actions: include_str!(\"../actions.json\"),\n            hooks: vec![],\n        }\n    }\n\n    fn start(&self, cx: &mut Cx) -> Result<(), SdkError> {\n        if cx.find(ROOT)?.is_none() {\n            cx.spawn(Spawn::new(\"group\").name(\"saltus\"))?;\n        }\n        if cx.query(Some(\"ground\"), Some(ROOT), 1)?.is_empty() {\n            cx.spawn(\n                Spawn::new(\"cube\")\n                    .name(\"ground\")\n                    .parent(ROOT)\n                    .position(Vec3::new(0.0, -0.1, 0.0))\n                    .scale(Vec3::new(24.0, 0.2, 24.0))\n                    .color(\"#4a5560\")\n                    .tags(&[\"ground\"])\n                    .field(\"collider\", Value::map().with(\"shape\", \"box\")),\n            )?;\n        }\n        if cx.find(PLAYER)?.is_none() {\n            spawn_player(cx)?;\n        }\n        Ok(())\n    }\n\n    fn tick(&self, cx: &mut Cx) -> Result<(), SdkError> {\n        let id = match cx.find(PLAYER)? {\n            Some(id) => id,\n            None => spawn_player(cx)?,\n        };\n        let me = cx.entity(id)?.ok_or_else(|| SdkError::new(\"not_found\", \"the player vanished mid-tick\"))?;\n        let mut vy = me.prop(\"vy\").as_f32().unwrap_or(0.0);\n        let grounded = me.prop(\"grounded\").as_bool().unwrap_or(false);\n        let dt = cx.dt();\n\n        let stick = cx.action(\"move\").value;\n        let mut walk = Vec3::new(stick[0], 0.0, -stick[1]);\n        let len = walk.length();\n        if len > 1.0 {\n            walk = walk * (1.0 / len);\n        }\n        walk = walk * WALK_SPEED;\n\n        // Jump only from the ground (no jumping again in mid-air).\n        if cx.action(\"jump\").pressed && grounded {\n            vy = JUMP_SPEED;\n        }\n        vy = (vy - GRAVITY * dt).max(-TERMINAL_SPEED);\n\n        let moved = cx.move_character(id, Vec3::new(walk.x * dt, vy * dt, walk.z * dt))?;\n        if moved.grounded && vy < 0.0 {\n            vy = 0.0;\n        }\n        let mut patch = Patch::new().props(Value::map().with(\"vy\", vy).with(\"grounded\", moved.grounded));\n        if len > 0.05 {\n            let yaw = dmath::atan2(walk.x, walk.z).to_degrees();\n            patch = patch.rotation_deg(Vec3::new(0.0, yaw, 0.0));\n        }\n        cx.set(id, patch)?;\n        Ok(())\n    }\n\n    fn stop(&self, cx: &mut Cx, reason: StopReason) -> Result<(), SdkError> {\n        if reason == StopReason::Unload {\n            if let Some(root) = cx.find(ROOT)? {\n                cx.delete(root)?;\n            }\n        }\n        Ok(())\n    }\n}\n\nfn spawn_player(cx: &mut Cx) -> Result<Id, SdkError> {\n    // A capsule as a lathe profile: feet at the entity's origin, head at HEIGHT.\n    let mut profile = Vec::new();\n    const CAP: usize = 6;\n    for i in 0..=CAP {\n        let a = std::f32::consts::FRAC_PI_2 * i as f32 / CAP as f32;\n        profile.push(Value::from([(RADIUS * dmath::sin(a)).max(0.0), RADIUS - RADIUS * dmath::cos(a)]));\n    }\n    for i in 0..=CAP {\n        let a = std::f32::consts::FRAC_PI_2 * i as f32 / CAP as f32;\n        // cos(\u03c0/2) rounds to a hair below zero: radii must not.\n        profile.push(Value::from([(RADIUS * dmath::cos(a)).max(0.0), HEIGHT - RADIUS + RADIUS * dmath::sin(a)]));\n    }\n    cx.spawn(\n        Spawn::new(\"lathe\")\n            .name(\"player\")\n            .parent(ROOT)\n            .position(Vec3::new(0.0, 0.0, 0.0))\n            .color(\"#5ec8e0\")\n            .tags(&[\"player\", \"character\"])\n            .props(Value::map().with(\"vy\", 0.0f32).with(\"grounded\", true))\n            .field(\"profile\", profile)\n            .field(\"segments\", 16)\n            .field(\n                \"collider\",\n                Value::map()\n                    .with(\"shape\", \"capsule\")\n                    .with(\"radius\", RADIUS)\n                    .with(\"height\", HEIGHT)\n                    .with(\"offset\", Vec3::new(0.0, HEIGHT / 2.0, 0.0)),\n            ),\n    )\n}\n"
+    },
+    {
+     "write": "saltus/actions.json",
+     "text_file": "evals/fixtures/saltus_solution/actions.json"
+    },
+    {
+     "call": "logic_build",
+     "args": {
+      "path": "${work}/saltus"
+     },
+     "expect": {
+      "ok": true,
+      "errors": 0
+     }
+    }
+   ]
+  }
+ ]
+}

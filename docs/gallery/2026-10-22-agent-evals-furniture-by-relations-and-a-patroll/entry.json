@@ -1,0 +1,32 @@
+{
+  "date": "2026-10-22",
+  "time": "03:03",
+  "date_source": "run id 20261022-030327-reference",
+  "approximate": false,
+  "milestone": "M3",
+  "commit": "",
+  "subject": "navigation",
+  "topic": "navigation",
+  "title": "Agent evals: furniture by relations and a patrolling guard",
+  "note": "The two agent-eval tasks that need Locus and navigation, run on main after that lane merged: world_place puts a table against the north wall and four chairs around it (checked by bounds, a doorway overlap and a second of physics); a guard with a patrol mind walks its waypoints in the west room (navmesh tiles and its current path from above).",
+  "source": "scripts/evals.py",
+  "adapter": "discrete",
+  "images": [
+    {
+      "file": "01-frame-00001.jpg",
+      "caption": "furniture_relations: table against the wall, chairs placed by near / facing / spacing / avoid",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 11117
+    },
+    {
+      "file": "02-frame-00001.jpg",
+      "caption": "guard_patrol: navmesh and the guard's path to its next waypoint, from above",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 640,
+      "bytes": 25477
+    }
+  ]
+}

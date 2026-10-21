@@ -1,0 +1,125 @@
+{
+ "entries": [
+  {
+   "id": 4,
+   "tick": 0,
+   "by": "eval-verifier-3cc4f0",
+   "kind": "env",
+   "changes": 1,
+   "items": [
+    {
+     "op": "env",
+     "id": 0,
+     "path": "/"
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "tick": 0,
+   "by": "solver",
+   "kind": "batch",
+   "changes": 3,
+   "items": [
+    {
+     "op": "set",
+     "id": 3,
+     "path": "/lex/arena/crawler",
+     "version": 2
+    },
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/lex/arena/crawlers",
+     "version": 2
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/lex/arena/defeat",
+     "version": 2
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "tick": 0,
+   "by": "eval-snapshot-ba5cd8",
+   "kind": "env",
+   "changes": 1,
+   "items": [
+    {
+     "op": "env",
+     "id": 0,
+     "path": "/"
+    }
+   ]
+  },
+  {
+   "id": 1,
+   "tick": 0,
+   "by": "designer",
+   "kind": "batch",
+   "changes": 9,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 1,
+     "path": "/lex",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 2,
+     "path": "/lex/arena",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 3,
+     "path": "/lex/arena/crawler",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 4,
+     "path": "/lex/arena/crawlers",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 5,
+     "path": "/lex/arena/defeat",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 6,
+     "path": "/lex/arena/lives",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 7,
+     "path": "/lex/arena/score",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 8,
+     "path": "/lex/arena/square",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 9,
+     "path": "/lex/arena/to_goal",
+     "version": 1
+    }
+   ]
+  }
+ ],
+ "next_cursor": null,
+ "oldest_kept": 1,
+ "evicted": 0
+}

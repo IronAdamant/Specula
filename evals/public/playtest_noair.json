@@ -1,0 +1,257 @@
+{
+ "eval": 1,
+ "id": "playtest_noair",
+ "set": "public",
+ "area": "playtests",
+ "title": "Write a playtest that proves a losing layout loses",
+ "summary": "QA as data: an agent writes a headless playtest spec (calls at ticks, an until condition, end assertions), runs it and records a replay; the engine's own state after the run shows the game really was played to the end.",
+ "game": "sepulcra",
+ "brief": "The engine hosts Sepulcra (a tower defence). Its built-in layout \"no_air\" builds no anti-air defences, and the design says it falls to the wraiths at wave 6. Prove it with a headless playtest: write a playtest spec that starts a new run with seed \"1\" and layout \"no_air\", runs until the game is over, and asserts at the end that it was lost at wave 6 with no tombstones left. Run it with playtest_run and record its replay as \"noair_s1.json\". It must pass.",
+ "tools": [
+  "playtest_*",
+  "play_*",
+  "world_query",
+  "sight_frame"
+ ],
+ "limits": {
+  "calls": 25,
+  "wall_s": 900
+ },
+ "verify": [
+  {
+   "name": "the last playtest passed",
+   "call": "playtest_report",
+   "args": {
+    "wait_s": 20
+   },
+   "expect": {
+    "status": "passed",
+    "failures_total": 0
+   }
+  },
+  {
+   "name": "the replay was recorded with its hash checkpoints",
+   "file": "playtests/noair_s1.json",
+   "expect": {
+    "format": "specula-playtest",
+    "spec": {
+     "exists": true
+    },
+    "checkpoints.#": {
+     "gte": 10
+    }
+   }
+  },
+  {
+   "name": "the recorded spec asserts, at its end, a loss at wave 6 with no tombstones",
+   "file": "playtests/noair_s1.json",
+   "select": {
+    "from": "spec.end",
+    "where": {
+     "call": "play_state",
+     "expect.outcome": {
+      "in": [
+       "lost",
+       {
+        "eq": "lost"
+       }
+      ]
+     },
+     "expect.wave": {
+      "in": [
+       6,
+       {
+        "eq": 6
+       }
+      ]
+     },
+     "expect.tombstones": {
+      "in": [
+       0,
+       {
+        "eq": 0
+       },
+       {
+        "lte": 0
+       }
+      ]
+     }
+    },
+    "count": true
+   },
+   "expect": {
+    "count": {
+     "gte": 1
+    }
+   }
+  },
+  {
+   "name": "the game in the engine was played to the end: no_air, seed 1, lost at wave 6 with no tombstones",
+   "call": "play_state",
+   "args": {},
+   "expect": {
+    "outcome": "lost",
+    "wave": 6,
+    "tombstones": 0,
+    "seed": "1"
+   }
+  },
+  {
+   "name": "the playtest ran the whole game (over 10,000 ticks)",
+   "call": "playtest_report",
+   "args": {
+    "wait_s": 20
+   },
+   "expect": {
+    "ticks": {
+     "gt": 10000
+    }
+   }
+  }
+ ],
+ "reference": [
+  {
+   "call": "playtest_run",
+   "args": {
+    "record": "noair_s1.json",
+    "overwrite": true,
+    "wait_s": 20,
+    "spec": {
+     "name": "no_air_s1",
+     "game": "sepulcra",
+     "description": "The no-anti-air layout falls to the wraiths at wave 6.",
+     "steps": [
+      {
+       "at": 0,
+       "call": "play_new",
+       "args": {
+        "seed": "1",
+        "layout": "no_air"
+       },
+       "expect": {
+        "seed": "1",
+        "outcome": "running"
+       }
+      }
+     ],
+     "until": {
+      "call": "play_state",
+      "expect": {
+       "outcome": {
+        "ne": "running"
+       }
+      },
+      "every": 30
+     },
+     "ticks": 40000,
+     "end": [
+      {
+       "call": "play_state",
+       "expect": {
+        "outcome": "lost",
+        "wave": 6,
+        "tombstones": 0
+       }
+      },
+      {
+       "call": "sight_frame",
+       "args": {
+        "width": 640,
+        "height": 360
+       },
+       "label": "the_end"
+      }
+     ]
+    }
+   },
+   "save": "r"
+  },
+  {
+   "call": "playtest_report",
+   "args": {
+    "wait_s": 20
+   },
+   "expect": {
+    "status": "passed"
+   }
+  }
+ ],
+ "broken": [
+  {
+   "note": "a playtest that starts the run and asserts it is running: it passes, but proves nothing about wave 6",
+   "call": "playtest_run",
+   "args": {
+    "record": "noair_s1.json",
+    "overwrite": true,
+    "wait_s": 20,
+    "spec": {
+     "name": "no_air_s1",
+     "game": "sepulcra",
+     "steps": [
+      {
+       "at": 0,
+       "call": "play_new",
+       "args": {
+        "seed": "1",
+        "layout": "no_air"
+       }
+      },
+      {
+       "at": 600,
+       "call": "play_state",
+       "expect": {
+        "outcome": "running"
+       }
+      }
+     ]
+    }
+   }
+  }
+ ],
+ "cheats": [
+  {
+   "id": "no_assertions",
+   "note": "review cheat: plays the game to its end but asserts nothing, so it passes whatever happens",
+   "steps": [
+    {
+     "call": "playtest_run",
+     "args": {
+      "record": "noair_s1.json",
+      "overwrite": true,
+      "wait_s": 20,
+      "spec": {
+       "name": "no_air_s1",
+       "game": "sepulcra",
+       "steps": [
+        {
+         "at": 0,
+         "call": "play_new",
+         "args": {
+          "seed": "1",
+          "layout": "no_air"
+         }
+        }
+       ],
+       "until": {
+        "call": "play_state",
+        "expect": {
+         "outcome": {
+          "ne": "running"
+         }
+        },
+        "every": 30
+       },
+       "ticks": 40000
+      }
+     }
+    },
+    {
+     "call": "playtest_report",
+     "args": {
+      "wait_s": 20
+     }
+    }
+   ]
+  }
+ ]
+}

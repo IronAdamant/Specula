@@ -1,0 +1,1561 @@
+{
+ "entries": [
+  {
+   "id": 25,
+   "tick": 11859,
+   "by": "sepulcra",
+   "kind": "game_tick",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 447,
+     "path": "/units/tombstones/tomb_01",
+     "version": 2
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 24,
+   "tick": 11834,
+   "by": "sepulcra",
+   "kind": "game_tick",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 448,
+     "path": "/units/tombstones/tomb_02",
+     "version": 2
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 23,
+   "tick": 11771,
+   "by": "sepulcra",
+   "kind": "game_tick",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 449,
+     "path": "/units/tombstones/tomb_03",
+     "version": 2
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 22,
+   "tick": 11591,
+   "by": "sepulcra",
+   "kind": "game_tick",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 450,
+     "path": "/units/tombstones/tomb_04",
+     "version": 2
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 21,
+   "tick": 11464,
+   "by": "sepulcra",
+   "kind": "game_tick",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 451,
+     "path": "/units/tombstones/tomb_05",
+     "version": 2
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 20,
+   "tick": 11391,
+   "by": "sepulcra",
+   "kind": "game_tick",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 452,
+     "path": "/units/tombstones/tomb_06",
+     "version": 2
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 19,
+   "tick": 11104,
+   "by": "sepulcra",
+   "kind": "game_tick",
+   "changes": 13,
+   "items": [
+    {
+     "op": "set",
+     "id": 461,
+     "path": "/units/stones/top:10,12",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 557,
+     "path": "/units/roots/top:10,11",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 558,
+     "path": "/units/roots/top:10,11/root_a",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 559,
+     "path": "/units/roots/top:10,11/root_b",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 560,
+     "path": "/units/roots/top:10,11/root_c",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 561,
+     "path": "/units/roots/top:10,13",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 562,
+     "path": "/units/roots/top:10,13/root_a",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 563,
+     "path": "/units/roots/top:10,13/root_b",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 564,
+     "path": "/units/roots/top:10,13/root_c",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 565,
+     "path": "/units/roots/top:11,13",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 566,
+     "path": "/units/roots/top:11,13/root_a",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 567,
+     "path": "/units/roots/top:11,13/root_b",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 568,
+     "path": "/units/roots/top:11,13/root_c",
+     "version": 1
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 18,
+   "tick": 10351,
+   "by": "sepulcra",
+   "kind": "game_tick",
+   "changes": 25,
+   "items": [
+    {
+     "op": "set",
+     "id": 463,
+     "path": "/units/stones/top:7,7",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 533,
+     "path": "/units/roots/top:6,6",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 534,
+     "path": "/units/roots/top:6,6/root_a",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 535,
+     "path": "/units/roots/top:6,6/root_b",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 536,
+     "path": "/units/roots/top:6,6/root_c",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 537,
+     "path": "/units/roots/top:7,6",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 538,
+     "path": "/units/roots/top:7,6/root_a",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 539,
+     "path": "/units/roots/top:7,6/root_b",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 540,
+     "path": "/units/roots/top:7,6/root_c",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 541,
+     "path": "/units/roots/top:8,6",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 542,
+     "path": "/units/roots/top:8,6/root_a",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 543,
+     "path": "/units/roots/top:8,6/root_b",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 544,
+     "path": "/units/roots/top:8,6/root_c",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 545,
+     "path": "/units/roots/top:6,7",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 546,
+     "path": "/units/roots/top:6,7/root_a",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 547,
+     "path": "/units/roots/top:6,7/root_b",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 548,
+     "path": "/units/roots/top:6,7/root_c",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 549,
+     "path": "/units/roots/top:6,8",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 550,
+     "path": "/units/roots/top:6,8/root_a",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 551,
+     "path": "/units/roots/top:6,8/root_b",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 552,
+     "path": "/units/roots/top:6,8/root_c",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 553,
+     "path": "/units/roots/top:8,8",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 554,
+     "path": "/units/roots/top:8,8/root_a",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 555,
+     "path": "/units/roots/top:8,8/root_b",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 556,
+     "path": "/units/roots/top:8,8/root_c",
+     "version": 1
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 17,
+   "tick": 9798,
+   "by": "sepulcra",
+   "kind": "game_tick",
+   "changes": 25,
+   "items": [
+    {
+     "op": "set",
+     "id": 462,
+     "path": "/units/stones/top:12,11",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 509,
+     "path": "/units/roots/top:11,10",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 510,
+     "path": "/units/roots/top:11,10/root_a",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 511,
+     "path": "/units/roots/top:11,10/root_b",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 512,
+     "path": "/units/roots/top:11,10/root_c",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 513,
+     "path": "/units/roots/top:12,10",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 514,
+     "path": "/units/roots/top:12,10/root_a",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 515,
+     "path": "/units/roots/top:12,10/root_b",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 516,
+     "path": "/units/roots/top:12,10/root_c",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 517,
+     "path": "/units/roots/top:13,10",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 518,
+     "path": "/units/roots/top:13,10/root_a",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 519,
+     "path": "/units/roots/top:13,10/root_b",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 520,
+     "path": "/units/roots/top:13,10/root_c",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 521,
+     "path": "/units/roots/top:11,11",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 522,
+     "path": "/units/roots/top:11,11/root_a",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 523,
+     "path": "/units/roots/top:11,11/root_b",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 524,
+     "path": "/units/roots/top:11,11/root_c",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 525,
+     "path": "/units/roots/top:13,11",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 526,
+     "path": "/units/roots/top:13,11/root_a",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 527,
+     "path": "/units/roots/top:13,11/root_b",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 528,
+     "path": "/units/roots/top:13,11/root_c",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 529,
+     "path": "/units/roots/top:13,12",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 530,
+     "path": "/units/roots/top:13,12/root_a",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 531,
+     "path": "/units/roots/top:13,12/root_b",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 532,
+     "path": "/units/roots/top:13,12/root_c",
+     "version": 1
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 16,
+   "tick": 8934,
+   "by": "sepulcra",
+   "kind": "game_tick",
+   "changes": 1,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 508,
+     "path": "/units/stones/top:11,7",
+     "version": 1
+    }
+   ]
+  },
+  {
+   "id": 15,
+   "tick": 8251,
+   "by": "sepulcra",
+   "kind": "game_tick",
+   "changes": 21,
+   "items": [
+    {
+     "op": "set",
+     "id": 457,
+     "path": "/units/stones/top:12,8",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 488,
+     "path": "/units/roots/top:13,7",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 489,
+     "path": "/units/roots/top:13,7/root_a",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 490,
+     "path": "/units/roots/top:13,7/root_b",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 491,
+     "path": "/units/roots/top:13,7/root_c",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 492,
+     "path": "/units/roots/top:11,8",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 493,
+     "path": "/units/roots/top:11,8/root_a",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 494,
+     "path": "/units/roots/top:11,8/root_b",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 495,
+     "path": "/units/roots/top:11,8/root_c",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 496,
+     "path": "/units/roots/top:13,8",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 497,
+     "path": "/units/roots/top:13,8/root_a",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 498,
+     "path": "/units/roots/top:13,8/root_b",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 499,
+     "path": "/units/roots/top:13,8/root_c",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 500,
+     "path": "/units/roots/top:11,9",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 501,
+     "path": "/units/roots/top:11,9/root_a",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 502,
+     "path": "/units/roots/top:11,9/root_b",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 503,
+     "path": "/units/roots/top:11,9/root_c",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 504,
+     "path": "/units/roots/top:13,9",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 505,
+     "path": "/units/roots/top:13,9/root_a",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 506,
+     "path": "/units/roots/top:13,9/root_b",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 507,
+     "path": "/units/roots/top:13,9/root_c",
+     "version": 1
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 14,
+   "tick": 8250,
+   "by": "sepulcra",
+   "kind": "game_tick",
+   "changes": 24,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 464,
+     "path": "/units/roots/top:8,11",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 465,
+     "path": "/units/roots/top:8,11/root_a",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 466,
+     "path": "/units/roots/top:8,11/root_b",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 467,
+     "path": "/units/roots/top:8,11/root_c",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 468,
+     "path": "/units/roots/top:9,11",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 469,
+     "path": "/units/roots/top:9,11/root_a",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 470,
+     "path": "/units/roots/top:9,11/root_b",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 471,
+     "path": "/units/roots/top:9,11/root_c",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 472,
+     "path": "/units/roots/top:9,12",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 473,
+     "path": "/units/roots/top:9,12/root_a",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 474,
+     "path": "/units/roots/top:9,12/root_b",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 475,
+     "path": "/units/roots/top:9,12/root_c",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 476,
+     "path": "/units/roots/top:7,13",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 477,
+     "path": "/units/roots/top:7,13/root_a",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 478,
+     "path": "/units/roots/top:7,13/root_b",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 479,
+     "path": "/units/roots/top:7,13/root_c",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 480,
+     "path": "/units/roots/top:8,13",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 481,
+     "path": "/units/roots/top:8,13/root_a",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 482,
+     "path": "/units/roots/top:8,13/root_b",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 483,
+     "path": "/units/roots/top:8,13/root_c",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 484,
+     "path": "/units/roots/top:9,13",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 485,
+     "path": "/units/roots/top:9,13/root_a",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 486,
+     "path": "/units/roots/top:9,13/root_b",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 487,
+     "path": "/units/roots/top:9,13/root_c",
+     "version": 1
+    }
+   ]
+  },
+  {
+   "id": 13,
+   "tick": 8195,
+   "by": "sepulcra",
+   "kind": "game_tick",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 453,
+     "path": "/units/tombstones/tomb_07",
+     "version": 2
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 12,
+   "tick": 8050,
+   "by": "sepulcra",
+   "kind": "game_tick",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 454,
+     "path": "/units/tombstones/tomb_08",
+     "version": 2
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 11,
+   "tick": 7810,
+   "by": "sepulcra",
+   "kind": "game_tick",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 455,
+     "path": "/units/tombstones/tomb_09",
+     "version": 2
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 10,
+   "tick": 7461,
+   "by": "sepulcra",
+   "kind": "game_tick",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 456,
+     "path": "/units/tombstones/tomb_10",
+     "version": 2
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 9,
+   "tick": 6977,
+   "by": "sepulcra",
+   "kind": "game_tick",
+   "changes": 1,
+   "items": [
+    {
+     "op": "set",
+     "id": 458,
+     "path": "/units/stones/top:8,12",
+     "version": 2
+    }
+   ],
+   "undoable": false
+  },
+  {
+   "id": 8,
+   "tick": 6301,
+   "by": "sepulcra",
+   "kind": "game_tick",
+   "changes": 1,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 463,
+     "path": "/units/stones/top:7,7",
+     "version": 1
+    }
+   ]
+  },
+  {
+   "id": 7,
+   "tick": 5178,
+   "by": "sepulcra",
+   "kind": "game_tick",
+   "changes": 1,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 462,
+     "path": "/units/stones/top:12,11",
+     "version": 1
+    }
+   ]
+  },
+  {
+   "id": 6,
+   "tick": 4351,
+   "by": "sepulcra",
+   "kind": "game_tick",
+   "changes": 1,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 461,
+     "path": "/units/stones/top:10,12",
+     "version": 1
+    }
+   ]
+  },
+  {
+   "id": 5,
+   "tick": 2569,
+   "by": "sepulcra",
+   "kind": "game_tick",
+   "changes": 1,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 460,
+     "path": "/units/stones/top:7,12",
+     "version": 1
+    }
+   ]
+  },
+  {
+   "id": 4,
+   "tick": 901,
+   "by": "sepulcra",
+   "kind": "game_tick",
+   "changes": 1,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 459,
+     "path": "/units/stones/top:7,8",
+     "version": 1
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "tick": 0,
+   "by": "sepulcra",
+   "kind": "game_tick",
+   "changes": 2,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 457,
+     "path": "/units/stones/top:12,8",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 458,
+     "path": "/units/stones/top:8,12",
+     "version": 1
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "tick": 0,
+   "by": "sepulcra",
+   "kind": "game_tool",
+   "changes": 456,
+   "via": "solver",
+   "items": [
+    {
+     "op": "delete",
+     "id": 21,
+     "path": "/slab/underside/chunk_4"
+    },
+    {
+     "op": "delete",
+     "id": 20,
+     "path": "/slab/underside/chunk_3"
+    },
+    {
+     "op": "delete",
+     "id": 19,
+     "path": "/slab/underside/chunk_2"
+    },
+    {
+     "op": "delete",
+     "id": 18,
+     "path": "/slab/underside/chunk_1"
+    },
+    {
+     "op": "delete",
+     "id": 17,
+     "path": "/slab/underside/chunk_0"
+    },
+    {
+     "op": "delete",
+     "id": 16,
+     "path": "/slab/underside"
+    },
+    {
+     "op": "delete",
+     "id": 55,
+     "path": "/slab/jump_ledges/top:4,11-top:4,13/scar"
+    },
+    {
+     "op": "delete",
+     "id": 57,
+     "path": "/slab/jump_ledges/top:4,11-top:4,13/end_b"
+    },
+    {
+     "op": "delete",
+     "id": 56,
+     "path": "/slab/jump_ledges/top:4,11-top:4,13/end_a"
+    },
+    {
+     "op": "delete",
+     "id": 54,
+     "path": "/slab/jump_ledges/top:4,11-top:4,13"
+    },
+    {
+     "op": "delete",
+     "id": 59,
+     "path": "/slab/jump_ledges/top:15,12-top:15,14/scar"
+    },
+    {
+     "op": "delete",
+     "id": 61,
+     "path": "/slab/jump_ledges/top:15,12-top:15,14/end_b"
+    },
+    {
+     "op": "delete",
+     "id": 60,
+     "path": "/slab/jump_ledges/top:15,12-top:15,14/end_a"
+    },
+    {
+     "op": "delete",
+     "id": 58,
+     "path": "/slab/jump_ledges/top:15,12-top:15,14"
+    },
+    {
+     "op": "delete",
+     "id": 53,
+     "path": "/slab/jump_ledges"
+    },
+    {
+     "op": "delete",
+     "id": 63,
+     "path": "/slab/graveyard/ground"
+    },
+    {
+     "op": "delete",
+     "id": 76,
+     "path": "/slab/graveyard/fence/segment_11"
+    },
+    {
+     "op": "delete",
+     "id": 75,
+     "path": "/slab/graveyard/fence/segment_10"
+    },
+    {
+     "op": "delete",
+     "id": 74,
+     "path": "/slab/graveyard/fence/segment_09"
+    },
+    {
+     "op": "delete",
+     "id": 73,
+     "path": "/slab/graveyard/fence/segment_08"
+    },
+    {
+     "op": "delete",
+     "id": 72,
+     "path": "/slab/graveyard/fence/segment_07"
+    },
+    {
+     "op": "delete",
+     "id": 71,
+     "path": "/slab/graveyard/fence/segment_06"
+    },
+    {
+     "op": "delete",
+     "id": 70,
+     "path": "/slab/graveyard/fence/segment_05"
+    },
+    {
+     "op": "delete",
+     "id": 69,
+     "path": "/slab/graveyard/fence/segment_04"
+    },
+    {
+     "op": "delete",
+     "id": 68,
+     "path": "/slab/graveyard/fence/segment_03"
+    },
+    {
+     "op": "delete",
+     "id": 67,
+     "path": "/slab/graveyard/fence/segment_02"
+    },
+    {
+     "op": "delete",
+     "id": 66,
+     "path": "/slab/graveyard/fence/segment_01"
+    },
+    {
+     "op": "delete",
+     "id": 65,
+     "path": "/slab/graveyard/fence/segment_00"
+    },
+    {
+     "op": "delete",
+     "id": 64,
+     "path": "/slab/graveyard/fence"
+    },
+    {
+     "op": "delete",
+     "id": 62,
+     "path": "/slab/graveyard"
+    },
+    {
+     "op": "delete",
+     "id": 49,
+     "path": "/slab/fragments/piece12_10_18"
+    },
+    {
+     "op": "delete",
+     "id": 48,
+     "path": "/slab/fragments/piece11_5_18"
+    },
+    {
+     "op": "delete",
+     "id": 47,
+     "path": "/slab/fragments/piece10_13_15"
+    },
+    {
+     "op": "delete",
+     "id": 45,
+     "path": "/slab/fragments/piece10_10_14"
+    },
+    {
+     "op": "delete",
+     "id": 44,
+     "path": "/slab/fragments/piece09_5_14"
+    },
+    {
+     "op": "delete",
+     "id": 52,
+     "path": "/slab/fragments/piece08_16_19"
+    },
+    {
+     "op": "delete",
+     "id": 50,
+     "path": "/slab/fragments/piece08_16_18"
+    },
+    {
+     "op": "delete",
+     "id": 46,
+     "path": "/slab/fragments/piece08_16_14"
+    },
+    {
+     "op": "delete",
+     "id": 43,
+     "path": "/slab/fragments/piece08_14_13"
+    },
+    {
+     "op": "delete",
+     "id": 51,
+     "path": "/slab/fragments/piece07_1_19"
+    },
+    {
+     "op": "delete",
+     "id": 42,
+     "path": "/slab/fragments/piece07_0_13"
+    },
+    {
+     "op": "delete",
+     "id": 39,
+     "path": "/slab/fragments/piece07_0_12"
+    },
+    {
+     "op": "delete",
+     "id": 38,
+     "path": "/slab/fragments/piece06_12_11"
+    },
+    {
+     "op": "delete",
+     "id": 41,
+     "path": "/slab/fragments/piece06_10_12"
+    },
+    {
+     "op": "delete",
+     "id": 40,
+     "path": "/slab/fragments/piece05_8_12"
+    },
+    {
+     "op": "delete",
+     "id": 37,
+     "path": "/slab/fragments/piece05_7_10"
+    },
+    {
+     "op": "delete",
+     "id": 36,
+     "path": "/slab/fragments/piece04_12_8"
+    },
+    {
+     "op": "delete",
+     "id": 34,
+     "path": "/slab/fragments/piece04_11_7"
+    },
+    {
+     "op": "delete",
+     "id": 35,
+     "path": "/slab/fragments/piece03_7_8"
+    },
+    {
+     "op": "delete",
+     "id": 33,
+     "path": "/slab/fragments/piece03_7_7"
+    }
+   ],
+   "items_omitted": 406
+  },
+  {
+   "id": 1,
+   "tick": 0,
+   "by": "sepulcra",
+   "kind": "game_start",
+   "changes": 265,
+   "items": [
+    {
+     "op": "env",
+     "id": 0,
+     "path": "/"
+    },
+    {
+     "op": "spawn",
+     "id": 1,
+     "path": "/slab",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 2,
+     "path": "/slab/body",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 3,
+     "path": "/slab/body/rock_00",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 3,
+     "path": "/slab/body/rock_00",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 4,
+     "path": "/slab/body/rock_01",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/slab/body/rock_01",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 5,
+     "path": "/slab/body/rock_02",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/slab/body/rock_02",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 6,
+     "path": "/slab/body/rock_03",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 6,
+     "path": "/slab/body/rock_03",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 7,
+     "path": "/slab/body/rock_04",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/slab/body/rock_04",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 8,
+     "path": "/slab/body/broken_0_0",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 9,
+     "path": "/slab/body/broken_1_0",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 10,
+     "path": "/slab/body/broken_19_0",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 11,
+     "path": "/slab/body/broken_0_1",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 12,
+     "path": "/slab/body/broken_19_18",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 13,
+     "path": "/slab/body/broken_0_19",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 14,
+     "path": "/slab/body/broken_18_19",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 15,
+     "path": "/slab/body/broken_19_19",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 16,
+     "path": "/slab/underside",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 17,
+     "path": "/slab/underside/chunk_0",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 18,
+     "path": "/slab/underside/chunk_1",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 19,
+     "path": "/slab/underside/chunk_2",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 20,
+     "path": "/slab/underside/chunk_3",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 21,
+     "path": "/slab/underside/chunk_4",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 22,
+     "path": "/slab/fragments",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 23,
+     "path": "/slab/fragments/piece00_2_0",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 23,
+     "path": "/slab/fragments/piece00_2_0",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 24,
+     "path": "/slab/fragments/piece01_5_0",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 24,
+     "path": "/slab/fragments/piece01_5_0",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 25,
+     "path": "/slab/fragments/piece02_16_0",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 25,
+     "path": "/slab/fragments/piece02_16_0",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 26,
+     "path": "/slab/fragments/piece00_1_1",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 26,
+     "path": "/slab/fragments/piece00_1_1",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 27,
+     "path": "/slab/fragments/piece02_19_1",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 27,
+     "path": "/slab/fragments/piece02_19_1",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 28,
+     "path": "/slab/fragments/piece00_0_2",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 28,
+     "path": "/slab/fragments/piece00_0_2",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 29,
+     "path": "/slab/fragments/piece01_7_3",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 29,
+     "path": "/slab/fragments/piece01_7_3",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 30,
+     "path": "/slab/fragments/piece00_4_4",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 30,
+     "path": "/slab/fragments/piece00_4_4",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 31,
+     "path": "/slab/fragments/piece01_7_4",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 31,
+     "path": "/slab/fragments/piece01_7_4",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 32,
+     "path": "/slab/fragments/piece02_14_5",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 32,
+     "path": "/slab/fragments/piece02_14_5",
+     "version": 2
+    },
+    {
+     "op": "spawn",
+     "id": 33,
+     "path": "/slab/fragments/piece03_7_7",
+     "version": 1
+    },
+    {
+     "op": "set",
+     "id": 33,
+     "path": "/slab/fragments/piece03_7_7",
+     "version": 2
+    }
+   ],
+   "items_omitted": 215
+  }
+ ],
+ "next_cursor": null,
+ "oldest_kept": 1,
+ "evicted": 0
+}

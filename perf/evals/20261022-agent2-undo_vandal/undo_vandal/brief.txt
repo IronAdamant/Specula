@@ -1,0 +1,8 @@
+Specula agent eval: Undo exactly one agent's damage (undo_vandal)
+
+Another agent, "vandal", damaged the gate at /gate a while ago. Since then, other agents have kept building (a bench, a lamp on the gate, a shrub). Use the journal to restore the gate to how it was before the vandal touched it, by undoing exactly the vandal's changes. Everything other agents made, before and after, must stay.
+
+Engine: MCP at http://127.0.0.1:7493/mcp (headless; the clock is paused: time_control steps it).
+Tools you may use: world_*, sight_frame, sight_compare (and agent_hello, engine_info).
+Limits: 30 tool calls, 600 s.
+Call eval_done when you have finished.

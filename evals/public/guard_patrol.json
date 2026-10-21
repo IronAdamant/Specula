@@ -1,0 +1,525 @@
+{
+ "eval": 1,
+ "id": "guard_patrol",
+ "set": "public",
+ "area": "ai",
+ "title": "Make a guard patrol its room",
+ "summary": "Navigation and AI as data: a navmesh that fits the character, a mind (behaviour tree) that patrols waypoints, checked by stepping 20 s and sampling where the guard goes. Needs nav_build and ai_set (the navigation and Locus lane).",
+ "game": null,
+ "needs": [
+  "nav_build",
+  "ai_set",
+  "nav_info",
+  "ai_status"
+ ],
+ "setup": [
+  {
+   "as": "setup",
+   "call": "world_batch",
+   "args": {
+    "ops": [
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "name": "floor",
+      "position": [
+       0,
+       -0.5,
+       0
+      ],
+      "scale": [
+       24,
+       1,
+       24
+      ],
+      "color": "#4a4f57",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "name": "wall_north",
+      "position": [
+       0,
+       1.25,
+       -12.2
+      ],
+      "scale": [
+       24.8,
+       2.5,
+       0.4
+      ],
+      "color": "#8c8f96",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "name": "wall_south",
+      "position": [
+       0,
+       1.25,
+       12.2
+      ],
+      "scale": [
+       24.8,
+       2.5,
+       0.4
+      ],
+      "color": "#8c8f96",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "name": "wall_west",
+      "position": [
+       -12.2,
+       1.25,
+       0
+      ],
+      "scale": [
+       0.4,
+       2.5,
+       24
+      ],
+      "color": "#8c8f96",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "name": "wall_east",
+      "position": [
+       12.2,
+       1.25,
+       0
+      ],
+      "scale": [
+       0.4,
+       2.5,
+       24
+      ],
+      "color": "#8c8f96",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "name": "divider_north",
+      "position": [
+       0,
+       1.25,
+       -6.6
+      ],
+      "scale": [
+       0.4,
+       2.5,
+       10.8
+      ],
+      "color": "#8c8f96",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "name": "divider_south",
+      "position": [
+       0,
+       1.25,
+       6.6
+      ],
+      "scale": [
+       0.4,
+       2.5,
+       10.8
+      ],
+      "color": "#8c8f96",
+      "collider": {
+       "shape": "box"
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "group",
+      "name": "patrol"
+     },
+     {
+      "op": "spawn",
+      "shape": "group",
+      "parent": "/patrol",
+      "name": "wp0",
+      "position": [
+       -9,
+       0,
+       -9
+      ]
+     },
+     {
+      "op": "spawn",
+      "shape": "group",
+      "parent": "/patrol",
+      "name": "wp1",
+      "position": [
+       -3,
+       0,
+       -9
+      ]
+     },
+     {
+      "op": "spawn",
+      "shape": "group",
+      "parent": "/patrol",
+      "name": "wp2",
+      "position": [
+       -3,
+       0,
+       9
+      ]
+     },
+     {
+      "op": "spawn",
+      "shape": "group",
+      "parent": "/patrol",
+      "name": "wp3",
+      "position": [
+       -9,
+       0,
+       9
+      ]
+     },
+     {
+      "op": "spawn",
+      "shape": "group",
+      "name": "guard",
+      "position": [
+       -9,
+       0.92,
+       -9
+      ],
+      "collider": {
+       "shape": "capsule",
+       "radius": 0.3,
+       "height": 1.8
+      },
+      "body": {
+       "kind": "kinematic",
+       "character": true
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/guard",
+      "name": "guard_body",
+      "scale": [
+       0.55,
+       1.8,
+       0.4
+      ],
+      "color": "#3070d0"
+     }
+    ]
+   }
+  }
+ ],
+ "brief": "A courtyard is split by a divider at x = 0 with a doorway in the middle. The guard (/guard, a capsule character in the west room) should patrol the four waypoints under /patrol (wp0 to wp3, the corners of a loop in the west room) in order and forever, at 3 m/s, never leaving the west room. Use the navigation tools (a navmesh that fits the guard's capsule and step height) and give the guard a mind (behaviour as data) that patrols /patrol. The clock is paused; navmeshes build as ticks run.",
+ "tools": [
+  "nav_*",
+  "ai_*",
+  "world_*",
+  "time_control",
+  "sight_frame",
+  "physics_raycast"
+ ],
+ "limits": {
+  "calls": 40,
+  "wall_s": 900
+ },
+ "verify": [
+  {
+   "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+   "world_diff": {
+    "allow": [
+     {
+      "path": "/nav",
+      "ops": [
+       "added"
+      ]
+     },
+     {
+      "path": "/nav/*",
+      "ops": [
+       "added"
+      ]
+     },
+     {
+      "path": "/guard",
+      "ops": [
+       "changed"
+      ],
+      "fields": [
+       "position",
+       "rotation_deg",
+       "props",
+       "props.*",
+       "body",
+       "body.*"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "a navmesh exists",
+   "call": "nav_info",
+   "args": {},
+   "expect": {
+    "navmeshes.#": {
+     "gte": 1
+    }
+   }
+  },
+  {
+   "name": "where the guard stands now",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/guard",
+    "fields": [
+     "path",
+     "world_position"
+    ],
+    "limit": 1
+   },
+   "save": "p0"
+  },
+  {
+   "name": "5 s pass",
+   "call": "time_control",
+   "args": {
+    "action": "step",
+    "ticks": 150
+   }
+  },
+  {
+   "name": "after 5 s the guard has moved and is in the west room",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/guard",
+    "fields": [
+     "path",
+     "world_position"
+    ],
+    "limit": 1
+   },
+   "save": "p1",
+   "expect": {
+    "items.0.world_position.0": {
+     "lt": -0.2
+    },
+    "items.0.world_position": {
+     "ne": "${p0.items.0.world_position}"
+    }
+   }
+  },
+  {
+   "name": "5 s more",
+   "call": "time_control",
+   "args": {
+    "action": "step",
+    "ticks": 150
+   }
+  },
+  {
+   "name": "after 10 s it is still moving, in the west room",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/guard",
+    "fields": [
+     "path",
+     "world_position"
+    ],
+    "limit": 1
+   },
+   "save": "p2",
+   "expect": {
+    "items.0.world_position.0": {
+     "lt": -0.2
+    },
+    "items.0.world_position": {
+     "ne": "${p1.items.0.world_position}"
+    }
+   }
+  },
+  {
+   "name": "10 s more",
+   "call": "time_control",
+   "args": {
+    "action": "step",
+    "ticks": 300
+   }
+  },
+  {
+   "name": "after 20 s it is still patrolling the west room",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/guard",
+    "fields": [
+     "path",
+     "world_position"
+    ],
+    "limit": 1
+   },
+   "expect": {
+    "items.0.world_position.0": {
+     "lt": -0.2
+    },
+    "items.0.world_position": {
+     "ne": "${p2.items.0.world_position}"
+    }
+   }
+  },
+  {
+   "name": "its mind is running a patrol",
+   "call": "ai_status",
+   "args": {
+    "path": "/guard"
+   },
+   "expect": {
+    "status": "running",
+    "running.#": {
+     "gte": 1
+    }
+   }
+  },
+  {
+   "name": "it walked the loop: the nav agent's goal is a waypoint",
+   "call": "ai_status",
+   "args": {
+    "path": "/guard"
+   },
+   "expect": {
+    "agent.target": {
+     "in": [
+      [
+       -9,
+       0,
+       -9
+      ],
+      [
+       -3,
+       0,
+       -9
+      ],
+      [
+       -3,
+       0,
+       9
+      ],
+      [
+       -9,
+       0,
+       9
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "name": "a capture from above with the navmesh and paths",
+   "call": "sight_frame",
+   "args": {
+    "ortho": {
+     "height_m": 27
+    },
+    "eye": [
+     0,
+     40,
+     0.01
+    ],
+    "target": [
+     0,
+     0,
+     0
+    ],
+    "width": 640,
+    "height": 640,
+    "overlays": [
+     "navmesh",
+     "paths"
+    ]
+   }
+  }
+ ],
+ "reference": [
+  {
+   "call": "nav_build",
+   "args": {
+    "like": "/guard"
+   }
+  },
+  {
+   "call": "time_control",
+   "args": {
+    "action": "step",
+    "ticks": 120
+   }
+  },
+  {
+   "call": "nav_agent",
+   "args": {
+    "path": "/guard",
+    "speed": 3.0
+   }
+  },
+  {
+   "call": "ai_set",
+   "args": {
+    "path": "/guard",
+    "def": {
+     "label": "guard",
+     "root": {
+      "do": "patrol",
+      "points": "/patrol",
+      "label": "patrol"
+     }
+    }
+   }
+  }
+ ],
+ "broken": [
+  {
+   "note": "a navmesh and a speed, but no mind: the guard stands still at wp0",
+   "call": "nav_build",
+   "args": {
+    "like": "/guard"
+   }
+  },
+  {
+   "call": "time_control",
+   "args": {
+    "action": "step",
+    "ticks": 120
+   }
+  },
+  {
+   "call": "nav_agent",
+   "args": {
+    "path": "/guard",
+    "speed": 3.0
+   }
+  }
+ ]
+}

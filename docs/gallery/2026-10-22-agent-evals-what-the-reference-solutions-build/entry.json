@@ -1,0 +1,48 @@
+{
+  "date": "2026-10-22",
+  "time": "02:00",
+  "date_source": "run id 20261022-020022-reference",
+  "approximate": false,
+  "milestone": "M3",
+  "commit": "",
+  "subject": "engine-tests",
+  "topic": "tooling",
+  "title": "Agent evals: what the reference solutions build",
+  "note": "First entry for the agent-eval suite (docs/design/EVALS.md): captures the verifiers take of worlds built by the tasks' reference solutions in fresh headless engines; each is checked by engine data (physics rays, physics_check, playtests, ID-buffer pixels), not by looking.",
+  "source": "scripts/evals.py",
+  "adapter": "discrete",
+  "images": [
+    {
+      "file": "01-frame-00001.jpg",
+      "caption": "room_build: the room through its doorway (13 verifiers: walls by physics rays, the doorway open, lamp inside)",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 5281
+    },
+    {
+      "file": "02-frame-00001.jpg",
+      "caption": "crate_stack: three crates after 10 s, collider and contact overlays (at rest, no penetration)",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 9042
+    },
+    {
+      "file": "03-frame-00001.jpg",
+      "caption": "module_jump: the hot-reloaded module's capsule at the top of its jump (feet 0.8-1.2 m up)",
+      "original": "frame_00001.png",
+      "width": 480,
+      "height": 320,
+      "bytes": 2463
+    },
+    {
+      "file": "04-frame-00002.jpg",
+      "caption": "hud_marker: the objective ring and marker in the ui layer, captured with include_ui",
+      "original": "frame_00002.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 5350
+    }
+  ]
+}

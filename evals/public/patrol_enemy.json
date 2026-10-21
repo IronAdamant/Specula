@@ -1,0 +1,375 @@
+{
+ "eval": 1,
+ "id": "patrol_enemy",
+ "set": "public",
+ "area": "lex",
+ "title": "Add a patrolling enemy in Lex",
+ "summary": "Gameplay as data: a new archetype with a patrol behaviour and a spawn at the start, without breaking the existing rules; checked by headless simulation and saved-run inspection.",
+ "game": null,
+ "setup": [
+  {
+   "as": "setup",
+   "call": "lex_import",
+   "args": {
+    "set": "arena"
+   },
+   "args_files": {
+    "document": "evals/fixtures/arena.lex.json"
+   }
+  }
+ ],
+ "brief": "The Lex rule set \"arena\" (30 ticks a second) has a square path called \"square\" (4 m a side, a loop) and crawlers that walk to a goal. Add an enemy archetype \"sentry\" (tagged \"enemy\") that patrols \"square\" in a loop at 1.5 m/s, starting from the path's first point, and make exactly one sentry appear when a run starts (tick 0) and no more after that. Keep the crawlers, lives and the defeat outcome working as they do now. The set must validate with no errors.",
+ "tools": [
+  "lex_*"
+ ],
+ "limits": {
+  "calls": 30,
+  "wall_s": 600
+ },
+ "verify": [
+  {
+   "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+   "world_diff": {
+    "allow": [
+     {
+      "path": "/lex/arena/*",
+      "ops": [
+       "added"
+      ]
+     },
+     {
+      "path": "/lex/*",
+      "ops": [
+       "changed"
+      ],
+      "fields": [
+       "props.lex.notes",
+       "props.lex.*.notes",
+       "props.lex.*.*.notes"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "the set validates with no errors",
+   "call": "lex_validate",
+   "args": {
+    "set": "arena"
+   },
+   "expect": {
+    "valid": true,
+    "errors": 0
+   }
+  },
+  {
+   "name": "simulate 2 s",
+   "call": "lex_simulate",
+   "args": {
+    "set": "arena",
+    "ticks": 60,
+    "seed": 3,
+    "save_as": "eval_t60"
+   },
+   "expect": {
+    "complete": true
+   }
+  },
+  {
+   "name": "one sentry, 3 m along the first side after 2 s",
+   "call": "lex_session",
+   "args": {
+    "action": "inspect",
+    "name": "eval_t60",
+    "archetype": "sentry"
+   },
+   "expect": {
+    "entities.#": 1,
+    "entities.0.pos_m.0": {
+     "near": 3,
+     "tol": 0.1
+    },
+    "entities.0.pos_m.2": {
+     "near": 0,
+     "tol": 0.1
+    }
+   }
+  },
+  {
+   "name": "simulate 10 s",
+   "call": "lex_simulate",
+   "args": {
+    "set": "arena",
+    "ticks": 300,
+    "seed": 3,
+    "save_as": "eval_t300"
+   },
+   "expect": {
+    "complete": true
+   }
+  },
+  {
+   "name": "still one sentry, 15 m around the loop (on the last side, at z = 1) after 10 s",
+   "call": "lex_session",
+   "args": {
+    "action": "inspect",
+    "name": "eval_t300",
+    "archetype": "sentry"
+   },
+   "expect": {
+    "entities.#": 1,
+    "entities.0.pos_m.0": {
+     "near": 0,
+     "tol": 0.1
+    },
+    "entities.0.pos_m.2": {
+     "near": 1,
+     "tol": 0.1
+    }
+   }
+  },
+  {
+   "name": "the sentry is tagged enemy",
+   "call": "lex_session",
+   "args": {
+    "action": "inspect",
+    "name": "eval_t300",
+    "tag": "enemy"
+   },
+   "select": {
+    "from": "entities",
+    "where": {
+     "archetype": "sentry"
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 1
+   }
+  },
+  {
+   "name": "simulate to the tick before the run ends",
+   "call": "lex_simulate",
+   "args": {
+    "set": "arena",
+    "ticks": 778,
+    "seed": 3,
+    "save_as": "eval_t778"
+   },
+   "expect": {
+    "complete": true
+   }
+  },
+  {
+   "name": "still exactly one sentry after 26 s",
+   "call": "lex_session",
+   "args": {
+    "action": "inspect",
+    "name": "eval_t778",
+    "archetype": "sentry"
+   },
+   "expect": {
+    "entities.#": 1
+   }
+  },
+  {
+   "name": "the crawlers still end the run as before (lost at tick 779, nothing scored)",
+   "call": "lex_simulate",
+   "args": {
+    "set": "arena",
+    "ticks": 3000,
+    "seed": 3
+   },
+   "expect": {
+    "outcome.result": "lost",
+    "outcome.tick": 779,
+    "resources.score": 0,
+    "resources.lives": 0
+   }
+  }
+ ],
+ "reference": [
+  {
+   "call": "lex_get",
+   "args": {
+    "set": "arena",
+    "ids": [
+     "square",
+     "crawlers"
+    ]
+   }
+  },
+  {
+   "call": "lex_edit",
+   "args": {
+    "set": "arena",
+    "ops": [
+     {
+      "op": "put",
+      "id": "sentry",
+      "expect_version": 0,
+      "item": {
+       "kind": "archetype",
+       "tags": [
+        "enemy"
+       ],
+       "notes": "Walks the square forever.",
+       "behaviours": [
+        {
+         "type": "patrol",
+         "path": "square",
+         "speed": "1.5m/s",
+         "mode": "loop"
+        }
+       ]
+      }
+     },
+     {
+      "op": "put",
+      "id": "sentry_spawn",
+      "expect_version": 0,
+      "item": {
+       "kind": "timer",
+       "start": "0s",
+       "count": 1,
+       "do": [
+        {
+         "spawn": "sentry",
+         "at": "square"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "expect": {
+    "valid": true
+   }
+  },
+  {
+   "call": "lex_simulate",
+   "args": {
+    "set": "arena",
+    "ticks": 60,
+    "save_as": "check"
+   }
+  },
+  {
+   "call": "lex_session",
+   "args": {
+    "action": "inspect",
+    "name": "check",
+    "archetype": "sentry"
+   },
+   "expect": {
+    "entities.#": 1
+   }
+  }
+ ],
+ "broken": [
+  {
+   "note": "a spawner timer without a count: a new sentry every 5 s",
+   "call": "lex_edit",
+   "args": {
+    "set": "arena",
+    "ops": [
+     {
+      "op": "put",
+      "id": "sentry",
+      "item": {
+       "kind": "archetype",
+       "tags": [
+        "enemy"
+       ],
+       "behaviours": [
+        {
+         "type": "patrol",
+         "path": "square",
+         "speed": "1.5m/s"
+        }
+       ]
+      }
+     },
+     {
+      "op": "put",
+      "id": "sentry_spawn",
+      "item": {
+       "kind": "timer",
+       "start": "0s",
+       "every": "5s",
+       "do": [
+        {
+         "spawn": "sentry",
+         "at": "square"
+        }
+       ]
+      }
+     }
+    ]
+   }
+  }
+ ],
+ "cheats": [
+  {
+   "id": "second_sentry_later",
+   "note": "one sentry at tick 0 and a second from another timer at 15 s (after the 10 s sample)",
+   "steps": [
+    {
+     "call": "lex_edit",
+     "args": {
+      "set": "arena",
+      "ops": [
+       {
+        "op": "put",
+        "id": "sentry",
+        "item": {
+         "kind": "archetype",
+         "tags": [
+          "enemy"
+         ],
+         "behaviours": [
+          {
+           "type": "patrol",
+           "path": "square",
+           "speed": "1.5m/s"
+          }
+         ]
+        }
+       },
+       {
+        "op": "put",
+        "id": "sentry_spawn",
+        "item": {
+         "kind": "timer",
+         "start": "0s",
+         "count": 1,
+         "do": [
+          {
+           "spawn": "sentry",
+           "at": "square"
+          }
+         ]
+        }
+       },
+       {
+        "op": "put",
+        "id": "sentry_backup",
+        "item": {
+         "kind": "timer",
+         "start": "15s",
+         "count": 1,
+         "do": [
+          {
+           "spawn": "sentry",
+           "at": "square"
+          }
+         ]
+        }
+       }
+      ]
+     }
+    }
+   ]
+  }
+ ]
+}

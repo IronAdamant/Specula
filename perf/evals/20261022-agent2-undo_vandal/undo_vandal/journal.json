@@ -1,0 +1,165 @@
+{
+ "entries": [
+  {
+   "id": 7,
+   "tick": 0,
+   "by": "restorer",
+   "kind": "undo",
+   "changes": 3,
+   "items": [
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/gate/post_r",
+     "version": 3
+    },
+    {
+     "op": "set",
+     "id": 3,
+     "path": "/gate/post_l",
+     "version": 3
+    },
+    {
+     "op": "spawn",
+     "id": 5,
+     "path": "/gate/beam",
+     "version": 2
+    }
+   ],
+   "undoes": [
+    3,
+    2
+   ]
+  },
+  {
+   "id": 6,
+   "tick": 0,
+   "by": "gardener",
+   "kind": "spawn",
+   "changes": 1,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 9,
+     "path": "/garden/shrub",
+     "version": 1
+    }
+   ]
+  },
+  {
+   "id": 5,
+   "tick": 0,
+   "by": "builder",
+   "kind": "spawn",
+   "changes": 1,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 8,
+     "path": "/gate/lamp",
+     "version": 1
+    }
+   ]
+  },
+  {
+   "id": 4,
+   "tick": 0,
+   "by": "builder",
+   "kind": "spawn",
+   "changes": 1,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 7,
+     "path": "/garden/bench",
+     "version": 1
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "tick": 0,
+   "by": "vandal",
+   "kind": "batch",
+   "changes": 2,
+   "items": [
+    {
+     "op": "set",
+     "id": 3,
+     "path": "/gate/post_l",
+     "version": 2
+    },
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/gate/post_r",
+     "version": 2
+    }
+   ],
+   "undone_by": 7
+  },
+  {
+   "id": 2,
+   "tick": 0,
+   "by": "vandal",
+   "kind": "delete",
+   "changes": 1,
+   "items": [
+    {
+     "op": "delete",
+     "id": 5,
+     "path": "/gate/beam"
+    }
+   ],
+   "undone_by": 7
+  },
+  {
+   "id": 1,
+   "tick": 0,
+   "by": "builder",
+   "kind": "batch",
+   "changes": 6,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 1,
+     "path": "/ground",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 2,
+     "path": "/gate",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 3,
+     "path": "/gate/post_l",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 4,
+     "path": "/gate/post_r",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 5,
+     "path": "/gate/beam",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 6,
+     "path": "/garden",
+     "version": 1
+    }
+   ]
+  }
+ ],
+ "next_cursor": null,
+ "oldest_kept": 1,
+ "evicted": 0
+}

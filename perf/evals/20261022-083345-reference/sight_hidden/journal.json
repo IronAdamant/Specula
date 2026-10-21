@@ -1,0 +1,143 @@
+{
+ "entries": [
+  {
+   "id": 4,
+   "tick": 0,
+   "by": "eval-verifier-d8507f",
+   "kind": "env",
+   "changes": 1,
+   "items": [
+    {
+     "op": "env",
+     "id": 0,
+     "path": "/"
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "tick": 0,
+   "by": "solver",
+   "kind": "batch",
+   "changes": 6,
+   "items": [
+    {
+     "op": "set",
+     "id": 7,
+     "path": "/crates/crate_4",
+     "version": 2
+    },
+    {
+     "op": "set",
+     "id": 4,
+     "path": "/crates/crate_1",
+     "version": 2
+    },
+    {
+     "op": "set",
+     "id": 5,
+     "path": "/crates/crate_2",
+     "version": 2
+    },
+    {
+     "op": "set",
+     "id": 6,
+     "path": "/crates/crate_3",
+     "version": 2
+    },
+    {
+     "op": "set",
+     "id": 8,
+     "path": "/crates/crate_5",
+     "version": 2
+    },
+    {
+     "op": "set",
+     "id": 9,
+     "path": "/crates/crate_6",
+     "version": 2
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "tick": 0,
+   "by": "eval-snapshot-c7a011",
+   "kind": "env",
+   "changes": 1,
+   "items": [
+    {
+     "op": "env",
+     "id": 0,
+     "path": "/"
+    }
+   ]
+  },
+  {
+   "id": 1,
+   "tick": 0,
+   "by": "setup",
+   "kind": "batch",
+   "changes": 9,
+   "items": [
+    {
+     "op": "spawn",
+     "id": 1,
+     "path": "/ground",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 2,
+     "path": "/wall",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 3,
+     "path": "/crates",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 4,
+     "path": "/crates/crate_1",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 5,
+     "path": "/crates/crate_2",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 6,
+     "path": "/crates/crate_3",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 7,
+     "path": "/crates/crate_4",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 8,
+     "path": "/crates/crate_5",
+     "version": 1
+    },
+    {
+     "op": "spawn",
+     "id": 9,
+     "path": "/crates/crate_6",
+     "version": 1
+    }
+   ]
+  }
+ ],
+ "next_cursor": null,
+ "oldest_kept": 1,
+ "evicted": 0
+}

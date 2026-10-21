@@ -1,0 +1,672 @@
+{
+ "eval": 1,
+ "id": "crate_stack",
+ "set": "public",
+ "area": "physics",
+ "title": "Stack crates that stay stacked",
+ "summary": "Physics as data: three dynamic crates stacked so they settle and stay at rest, with no interpenetration; judged by a playtest of 10 s of simulation and physics_check.",
+ "game": null,
+ "setup": [
+  {
+   "as": "setup",
+   "call": "world_spawn",
+   "args": {
+    "shape": "cube",
+    "name": "ground",
+    "position": [
+     0,
+     -0.5,
+     0
+    ],
+    "scale": [
+     30,
+     1,
+     30
+    ],
+    "color": "#4a4f57",
+    "collider": {
+     "shape": "box"
+    }
+   }
+  }
+ ],
+ "brief": "Stack three dynamic crates under a group at /stack, one on top of another, centred on x = 2, z = -1, standing on the ground (top at y = 0). Each crate is a 0.6 m cube with a box collider and a dynamic body of 20 kg. They must survive simulation: after 10 seconds (300 ticks) all three are at rest, nothing interpenetrates, they're still stacked (the top crate's centre between 1.4 and 1.6 m up) and still over x = 2, z = -1 (within 0.15 m). The verifier runs that simulation from your world as you leave it; you may step time yourself to test, then put things back.",
+ "tools": [
+  "world_*",
+  "physics_*",
+  "time_control",
+  "sight_frame"
+ ],
+ "limits": {
+  "calls": 40,
+  "wall_s": 600
+ },
+ "verify": [
+  {
+   "name": "nothing changed but what the task allows (world_diff against the world after setup)",
+   "world_diff": {
+    "allow": [
+     {
+      "path": "/stack",
+      "ops": [
+       "added"
+      ]
+     },
+     {
+      "path": "/stack/*",
+      "ops": [
+       "added"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "three dynamic bodies under /stack",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/stack",
+    "fields": [
+     "path",
+     "body",
+     "collider"
+    ]
+   },
+   "select": {
+    "from": "items",
+    "where": {
+     "body.kind": "dynamic",
+     "collider.shape": "box"
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 3
+   }
+  },
+  {
+   "name": "nothing but the ground and /stack (a group and three crates) in the world",
+   "call": "world_query",
+   "args": {
+    "fields": [
+     "path"
+    ],
+    "limit": 20
+   },
+   "expect": {
+    "total": 5
+   }
+  },
+  {
+   "name": "10 s of simulation: at rest, no penetration, no tunnelling, the three crates stacked over the spot",
+   "playtest": {
+    "name": "crate_stack_settles",
+    "ticks": 300,
+    "end": [
+     {
+      "call": "physics_check",
+      "args": {
+       "checks": [
+        {
+         "check": "at_rest",
+         "entities": "/stack"
+        },
+        {
+         "check": "no_penetration",
+         "max_depth": 0.02
+        },
+        {
+         "check": "no_tunnelling"
+        },
+        {
+         "check": "energy"
+        }
+       ],
+       "since_tick": 60
+      },
+      "expect": {
+       "pass": true
+      }
+     },
+     {
+      "call": "world_query",
+      "args": {
+       "path_prefix": "/stack",
+       "fields": [
+        "path",
+        "world_position",
+        "body"
+       ]
+      },
+      "expect": {
+       "total": {
+        "gte": 3
+       }
+      }
+     },
+     {
+      "call": "world_query",
+      "args": {
+       "path_prefix": "/stack",
+       "fields": [
+        "path",
+        "world_position",
+        "body"
+       ],
+       "limit": 10
+      },
+      "expect": {
+       "total": 4,
+       "items.1.world_position.0": {
+        "near": 2,
+        "tol": 0.15
+       },
+       "items.1.world_position.2": {
+        "near": -1,
+        "tol": 0.15
+       },
+       "items.2.world_position.0": {
+        "near": 2,
+        "tol": 0.15
+       },
+       "items.2.world_position.2": {
+        "near": -1,
+        "tol": 0.15
+       },
+       "items.3.world_position.0": {
+        "near": 2,
+        "tol": 0.15
+       },
+       "items.3.world_position.2": {
+        "near": -1,
+        "tol": 0.15
+       }
+      }
+     },
+     {
+      "call": "physics_overlap",
+      "args": {
+       "shape": {
+        "shape": "box",
+        "size": [
+         0.3,
+         0.3,
+         0.3
+        ]
+       },
+       "at": [
+        2,
+        1.5,
+        -1
+       ]
+      },
+      "expect": {
+       "total": 1,
+       "entities.0.path": {
+        "contains": "/stack/"
+       }
+      }
+     },
+     {
+      "call": "physics_overlap",
+      "args": {
+       "shape": {
+        "shape": "box",
+        "size": [
+         0.3,
+         0.3,
+         0.3
+        ]
+       },
+       "at": [
+        2,
+        0.9,
+        -1
+       ]
+      },
+      "expect": {
+       "total": 1,
+       "entities.0.path": {
+        "contains": "/stack/"
+       }
+      }
+     },
+     {
+      "call": "physics_overlap",
+      "args": {
+       "shape": {
+        "shape": "box",
+        "size": [
+         0.3,
+         0.3,
+         0.3
+        ]
+       },
+       "at": [
+        2,
+        0.3,
+        -1
+       ]
+      },
+      "expect": {
+       "total": 1,
+       "entities.0.path": {
+        "contains": "/stack/"
+       }
+      }
+     },
+     {
+      "call": "sight_frame",
+      "args": {
+       "eye": [
+        5,
+        2.5,
+        4
+       ],
+       "target": [
+        2,
+        0.9,
+        -1
+       ],
+       "width": 640,
+       "height": 400,
+       "overlays": [
+        "colliders",
+        "contacts"
+       ]
+      },
+      "label": "settled"
+     }
+    ]
+   },
+   "expect": {
+    "failures_total": 0
+   }
+  },
+  {
+   "name": "each crate is a 0.6 m cube in the world",
+   "geometry": {
+    "kind": "world_size",
+    "query": {
+     "path_prefix": "/stack",
+     "shape": "cube"
+    },
+    "size": [
+     0.6,
+     0.6,
+     0.6
+    ],
+    "tol": 0.02,
+    "min_count": 3
+   }
+  },
+  {
+   "name": "each crate weighs 20 kg",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/stack",
+    "shape": "cube",
+    "fields": [
+     "path",
+     "body"
+    ]
+   },
+   "select": {
+    "from": "items",
+    "where": {
+     "body.mass": 20,
+     "body.kind": "dynamic"
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 3
+   }
+  },
+  {
+   "name": "after the 10 s, one crate's centre is 1.4-1.6 m up",
+   "call": "world_query",
+   "args": {
+    "path_prefix": "/stack",
+    "shape": "cube",
+    "fields": [
+     "path",
+     "world_position"
+    ]
+   },
+   "select": {
+    "from": "items",
+    "where": {
+     "world_position.1": {
+      "gte": 1.4,
+      "lte": 1.6
+     }
+    },
+    "count": true
+   },
+   "expect": {
+    "count": 1
+   }
+  }
+ ],
+ "reference": [
+  {
+   "call": "world_batch",
+   "args": {
+    "ops": [
+     {
+      "op": "spawn",
+      "shape": "group",
+      "name": "stack"
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/stack",
+      "name": "crate_1",
+      "position": [
+       2,
+       0.3,
+       -1
+      ],
+      "scale": 0.6,
+      "color": "#8a6a48",
+      "collider": {
+       "shape": "box"
+      },
+      "body": {
+       "kind": "dynamic",
+       "mass": 20
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/stack",
+      "name": "crate_2",
+      "position": [
+       2,
+       0.9,
+       -1
+      ],
+      "scale": 0.6,
+      "color": "#7d5f40",
+      "collider": {
+       "shape": "box"
+      },
+      "body": {
+       "kind": "dynamic",
+       "mass": 20
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/stack",
+      "name": "crate_3",
+      "position": [
+       2,
+       1.5,
+       -1
+      ],
+      "scale": 0.6,
+      "color": "#8a6a48",
+      "collider": {
+       "shape": "box"
+      },
+      "body": {
+       "kind": "dynamic",
+       "mass": 20
+      }
+     }
+    ]
+   }
+  }
+ ],
+ "broken": [
+  {
+   "note": "each crate set 0.35 m further along x than the one below (more than half its width): the stack topples",
+   "call": "world_batch",
+   "args": {
+    "ops": [
+     {
+      "op": "spawn",
+      "shape": "group",
+      "name": "stack"
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/stack",
+      "name": "crate_1",
+      "position": [
+       2,
+       0.3,
+       -1
+      ],
+      "scale": 0.6,
+      "collider": {
+       "shape": "box"
+      },
+      "body": {
+       "kind": "dynamic",
+       "mass": 20
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/stack",
+      "name": "crate_2",
+      "position": [
+       2.35,
+       0.9,
+       -1
+      ],
+      "scale": 0.6,
+      "collider": {
+       "shape": "box"
+      },
+      "body": {
+       "kind": "dynamic",
+       "mass": 20
+      }
+     },
+     {
+      "op": "spawn",
+      "shape": "cube",
+      "parent": "/stack",
+      "name": "crate_3",
+      "position": [
+       2.7,
+       1.5,
+       -1
+      ],
+      "scale": 0.6,
+      "collider": {
+       "shape": "box"
+      },
+      "body": {
+       "kind": "dynamic",
+       "mass": 20
+      }
+     }
+    ]
+   }
+  }
+ ],
+ "cheats": [
+  {
+   "id": "pillar_and_loose_crates",
+   "note": "review round 2: a static pillar where the stack should be, and the three crates side by side elsewhere",
+   "steps": [
+    {
+     "call": "world_batch",
+     "args": {
+      "ops": [
+       {
+        "op": "spawn",
+        "shape": "cube",
+        "name": "pillar",
+        "position": [
+         2,
+         0.9,
+         -1
+        ],
+        "scale": [
+         0.6,
+         1.8,
+         0.6
+        ],
+        "collider": {
+         "shape": "box"
+        }
+       },
+       {
+        "op": "spawn",
+        "shape": "group",
+        "name": "stack"
+       },
+       {
+        "op": "spawn",
+        "shape": "cube",
+        "parent": "/stack",
+        "name": "crate_1",
+        "position": [
+         6,
+         0.3,
+         4
+        ],
+        "scale": 0.6,
+        "collider": {
+         "shape": "box"
+        },
+        "body": {
+         "kind": "dynamic",
+         "mass": 20
+        }
+       },
+       {
+        "op": "spawn",
+        "shape": "cube",
+        "parent": "/stack",
+        "name": "crate_2",
+        "position": [
+         7,
+         0.3,
+         4
+        ],
+        "scale": 0.6,
+        "collider": {
+         "shape": "box"
+        },
+        "body": {
+         "kind": "dynamic",
+         "mass": 20
+        }
+       },
+       {
+        "op": "spawn",
+        "shape": "cube",
+        "parent": "/stack",
+        "name": "crate_3",
+        "position": [
+         8,
+         0.3,
+         4
+        ],
+        "scale": 0.6,
+        "collider": {
+         "shape": "box"
+        },
+        "body": {
+         "kind": "dynamic",
+         "mass": 20
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "tall_bottom_crate",
+   "note": "review round 3: a 1.8 m tall 'crate' at the bottom and two crates on it",
+   "steps": [
+    {
+     "call": "world_batch",
+     "args": {
+      "ops": [
+       {
+        "op": "spawn",
+        "shape": "group",
+        "name": "stack"
+       },
+       {
+        "op": "spawn",
+        "shape": "cube",
+        "parent": "/stack",
+        "name": "crate_1",
+        "position": [
+         2,
+         0.9,
+         -1
+        ],
+        "scale": [
+         0.6,
+         1.8,
+         0.6
+        ],
+        "collider": {
+         "shape": "box"
+        },
+        "body": {
+         "kind": "dynamic",
+         "mass": 20
+        }
+       },
+       {
+        "op": "spawn",
+        "shape": "cube",
+        "parent": "/stack",
+        "name": "crate_2",
+        "position": [
+         2,
+         2.1,
+         -1
+        ],
+        "scale": 0.6,
+        "collider": {
+         "shape": "box"
+        },
+        "body": {
+         "kind": "dynamic",
+         "mass": 20
+        }
+       },
+       {
+        "op": "spawn",
+        "shape": "cube",
+        "parent": "/stack",
+        "name": "crate_3",
+        "position": [
+         2,
+         2.7,
+         -1
+        ],
+        "scale": 0.6,
+        "collider": {
+         "shape": "box"
+        },
+        "body": {
+         "kind": "dynamic",
+         "mass": 20
+        }
+       }
+      ]
+     }
+    }
+   ]
+  }
+ ]
+}

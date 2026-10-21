@@ -1,0 +1,20 @@
+{
+  "lex": 1,
+  "name": "arena",
+  "tick_hz": 30,
+  "notes": "The eval arena as a draft with three mistakes (lex_fix_errors): a misspelt path, a count written as a word and a unit slip.",
+  "items": {
+    "square": {"kind": "path", "points": [[0, 0, 0], [4, 0, 0], [4, 0, 4], [0, 0, 4]], "loop": true},
+    "to_goal": {"kind": "path", "points": [[-6, 0, 2], [10, 0, 2]]},
+    "score": {"kind": "resource", "start": 0, "min": 0},
+    "lives": {"kind": "resource", "start": 3, "min": 0},
+    "crawler": {"kind": "archetype", "tags": ["enemy", "ground"],
+                "attributes": {"hp": {"base": 20, "unit": "points"}, "speed": {"base": 1, "unit": "speed"}},
+                "behaviours": [
+                  {"type": "health", "attribute": "hp", "on_death": [{"add": "score", "amount": 1}]},
+                  {"type": "follow_path", "path": "to_gaol", "speed": "self.speed",
+                   "on_arrive": [{"add": "lives", "amount": -1}, {"despawn": "self"}]}]},
+    "crawlers": {"kind": "timer", "start": "2s", "every": "4s", "count": "five", "do": [{"spawn": "crawler", "at": "to_goal"}]},
+    "defeat": {"kind": "outcome", "result": "lost", "when": "res.lives <= 0m"}
+  }
+}
