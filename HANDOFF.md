@@ -29,7 +29,8 @@ memory of the earlier ones. This page is **current state and what's next** only;
   **Merged so far (2026-10-18):** all of wave 1 (swarm communication, the module host, physics P1-P3, Lex,
   animation A3), and from wave 2 the playtests and tool ergonomics (the 20+ replay exit proof passes), the visual
   history gallery, save games with the balance lab, streaming with HLOD, Sepulcra fully in Lex with live Lex, Locus with navigation and AI, and (2026-10-22) determinism hardening
-  (module builds journaled, the FP-environment guard, determinism lints) and the streaming upload fix. Wave 2 is
+  (module builds journaled, the FP-environment guard, determinism lints), the streaming upload and pump fixes, and
+  agent evals ([docs/design/EVALS.md](docs/design/EVALS.md), `scripts/evals.py`). Wave 2 is
   running: Locus and navigation/AI, playtest swarms and tool ergonomics, streaming and
   HLOD, Sepulcra fully in Lex with live Lex, save games and the balance lab, and P4 joints with A4 ragdolls.
 - **M3 plan:** Its plan (owner direction 2026-10-17: games
@@ -249,6 +250,8 @@ answer where it applies.
   [docs/design/BALANCE.md](docs/design/BALANCE.md).)
 - **MCP revision:** when to move to MCP 2026-07-28, which drops `initialize` and sessions (we pin 2025-11-25;
   `version_negotiation` in `crates/specula-protocol/tests/mcp_http.rs` asserts it).
+- **Agent evals:** keep a private held-out task set outside this public repository for benchmark claims, and who
+  writes it? ([docs/design/EVALS.md](docs/design/EVALS.md); `--tasks-dir` takes any folder.)
 - **crates.io:** whether and when to publish the crates.
 - **Remote agents:** are any remote or multi-machine agents planned for M3? If so, per-agent auth tokens come first.
 
