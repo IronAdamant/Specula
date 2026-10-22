@@ -582,8 +582,11 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
   *Done 2026-10-18:* `specula-anim` graphs (parameters, blend trees, layered state machines, transitions refused at
   parse when they would loop in zero time), plays as data whose pose is a pure function of time, IK and look-at;
   writes settle against a rig-only anim set that never waits for mesh builds. Sepulcra's four creatures run on graphs.
-- [ ] ➕ **Animation, stage A4, moved from M4** (owner, 2026-10-17): ragdolls and powered ragdolls blending to and from
+- [x] ➕ **Animation, stage A4, moved from M4** (owner, 2026-10-17): ragdolls and powered ragdolls blending to and from
   animation, driven by physics joints (P4 below).
+  *Done 2026-10-22:* `ragdoll_set` / `ragdoll_info` and `props.ragdoll`. Limp and powered ragdolls with hulls fitted
+  from the rig, blended to and from the animation graph, with a get-up state. Sepulcra's shambler dies as a ragdoll
+  within its motion checks (`scripts/sepulcra_ragdoll.py`). Ragdolls are saved mid-fall and continue bit for bit.
 - [x] ➕ **Agent-authored motion**: clips and poses written as data through tools (keyframes, procedural generators:
   walk cycles from a rig and a gait, breathing, recoil, procedural secondary motion), so agents animate without
   external tools; animation graphs edited live with the journal and undo.
@@ -629,7 +632,11 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
   ground penetration, joint limits, pops at transitions, root-motion drift. Agents verify motion instead of guessing.
   *Done 2026-10-18:* `anim_filmstrip` contact sheets (clips, states, transitions, live entities) with each row's
   checks, scale labels, root rise and darkness warnings in the packet; `scripts/anim_graph_check.py`.
-- [ ] ➕ **Physics, stage P4** (pulled forward for A4): joints and constraints for ragdolls.
+- [x] ➕ **Physics, stage P4** (pulled forward for A4): joints and constraints for ragdolls.
+  *Done 2026-10-22:* ball, hinge, distance and fixed joints with cone, twist and hinge limits and motors
+  (`physics_joint`, `physics_joints`, `made_by`). Joint rules apply on every write path, through a joint index.
+  World-anchored joints are saved bit for bit. An opt-in deterministic parallel solver (`--physics-threads`) gives
+  identical results on 1-64 threads. `scripts/joints_check.py`; design: [design/PHYSICS.md](design/PHYSICS.md).
 - [x] **Headless playtests**: `play_*` tools to script inputs, run N ticks, assert on state, and record a replay plus
   captures.
   *Progress 2026-10-13:* Sepulcra's `play_*` tools and `scripts/sepulcra_play.py` play and verify whole games.

@@ -34,8 +34,8 @@ memory of the earlier ones. This page is **current state and what's next** only;
   animation A3), and from wave 2 the playtests and tool ergonomics (the 20+ replay exit proof passes), the visual
   history gallery, save games with the balance lab, streaming with HLOD, Sepulcra fully in Lex with live Lex, Locus with navigation and AI, and (2026-10-22) determinism hardening
   (module builds journaled, the FP-environment guard, determinism lints), the streaming upload and pump fixes, and
-  agent evals ([docs/design/EVALS.md](docs/design/EVALS.md), `scripts/evals.py`), and project data through the
-  protocol (`project_*`). Wave 2 is
+  agent evals ([docs/design/EVALS.md](docs/design/EVALS.md), `scripts/evals.py`), project data through the
+  protocol (`project_*`), and P4 joints with A4 ragdolls. Wave 2 is
   running: Locus and navigation/AI, playtest swarms and tool ergonomics, streaming and
   HLOD, Sepulcra fully in Lex with live Lex, save games and the balance lab, and P4 joints with A4 ragdolls.
 - **M3 plan:** Its plan (owner direction 2026-10-17: games
@@ -159,6 +159,8 @@ In practice that means six **foundations** that apply to every change from M1 on
     `nav_info`, `ai_check`, `ai_set`, `ai_status`, `model_collider`.
   - Animation: `anim_get`, `anim_set` (clips and graphs as data), `anim_state`, `anim_check` (motion checks),
     `anim_filmstrip` (contact sheets with checks); graph parameters via `world_set {anim: {graph, params}}`.
+  - Joints and ragdolls: `physics_joint`, `physics_joints`, `ragdoll_set`, `ragdoll_info`; the `props.ragdoll`
+    component; `--physics-threads N` (an opt-in deterministic parallel solver).
   - Physics: `physics_raycast`, `physics_cast`, `physics_overlap`, `physics_contacts`, `physics_events`,
     `physics_info`, `physics_explain`, `physics_check`, `physics_impulse`; `collider` and `body` components;
     `world_env {physics}` (gravity, substeps, sleep, 2D mode).
@@ -187,11 +189,10 @@ In practice that means six **foundations** that apply to every change from M1 on
   third-party crates.** The Rust toolchain's own linker; Vulkan, XInput and AVRT are loaded at runtime.
 
 **What it can't do yet** (most of it is M3+):
-- **No joints or ragdolls** yet (P4 and A4 are wave 2), and Sepulcra doesn't use physics yet. Sepulcra runs on its Rust rules by
-  default (`--rules lex` plays it from Lex). Module characters move with a
-  simple kinematic placeholder, not the P2 controller. Modules can't load off Windows yet (no `dlopen`), and a module stuck in a loop that makes no
-  requests can't be preempted.
-- No title screen in the app, settings aren't saved and there's no rebinding. Ragdoll bodies aren't in save files yet.
+- Sepulcra uses physics only for its shamblers' ragdoll deaths (gameplay is still rules, not physics). It runs on its
+  Rust rules by default (`--rules lex` plays it from Lex). Modules can't load off Windows yet (no `dlopen`), and a
+  module stuck in a loop that makes no requests can't be preempted.
+- No title screen in the app, settings aren't saved and there's no rebinding.
 - **Windows only** at runtime: other platforms compile but report "unsupported" (Vulkan loading isn't implemented
   off Windows yet). CI has no GPU, so rendering is checked by hand with `scripts/window_check.py`.
 - **Localhost only:** no per-agent auth tokens yet, so the server must never bind beyond loopback.
