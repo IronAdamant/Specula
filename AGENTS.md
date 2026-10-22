@@ -43,6 +43,13 @@ Read [HANDOFF.md](HANDOFF.md) first.
     notice a changed `clippy.toml`: `cargo clean -p <crate>` first.
 11. **No session or share links in commit messages** (claude.ai sessions and the like): the repo is public. The CI job
     `commit-messages` rejects them in new commits; don't rewrite older history.
+12. **Security first** (owner, 2026-10-22). Before you run Specula anywhere new (another OS, a server, a cloud
+    swarm), check its security first.
+    - The engine binds to loopback only, until per-agent auth tokens **and** TLS exist.
+    - TLS always comes from the operating system: SChannel on Windows, Network.framework on macOS. On Linux, which
+      has no OS TLS, use a tunnel (SSH, WireGuard or Tailscale).
+    - **Never hand-roll cryptography.**
+    - Specula sets a baseline. Operators, and the organisations they work for, secure their own environments.
 
 ## Layout
 

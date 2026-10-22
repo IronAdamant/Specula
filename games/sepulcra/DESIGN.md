@@ -354,6 +354,14 @@ Everything runs without a window, through `games/sepulcra/examples/headless.rs`.
   - three maps of about 10 waves each, using every face of the cube, sides and bottom included;
   - the maps are a graveyard, a frozen wasteland and a volcano;
   - English first.
+  - **Staged:** map 1 is the prototype on all six faces, which proves the camera and the pathing. Maps 2 and 3
+    reuse the same cube base with different paths.
+- **Camera on the cube:** right-click orbits the cube, and the view never flips upside-down.
+  - Paths stay readable across edges: path edges are easy to trace from face to face.
+  - **(proposal)** Path edges glow and carry on over the cube's edges, with small arrows where a path crosses a
+    face.
+  - **(proposal)** A small cube indicator in a corner shows the face in view and marks the faces where enemies are.
+- **Free and open:** Sepulcra is a free demo on Steam and stays open source (MIT/Apache), as the engine's showcase.
 - **Controls:** a gamepad pause, a title screen, saved settings and rebinding (M5/M6).
 
 The rusher balance question is still waiting for the owner's own playtest:

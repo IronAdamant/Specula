@@ -786,6 +786,9 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
   *Why:* devs who want to edit by hand can; human edits are journaled like agent edits.
 - [ ] ➕ **Cloud swarm foundations** (owner, 2026-10-22; end of M5): the design notes for remote and cloud agents,
   meaning per-agent auth tokens, scoped tools, rate limits and binding beyond loopback, ready to build in M6.
+  **Encryption comes from the OS, never our own crypto** (owner, 2026-10-22): SChannel on Windows and
+  Network.framework on macOS, called through raw-dylib like Vulkan; on Linux, a required tunnel (SSH or
+  WireGuard/Tailscale). A security-first checklist for agents is in AGENTS.md rule 12.
 
 ---
 

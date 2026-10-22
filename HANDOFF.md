@@ -47,6 +47,16 @@ memory of the earlier ones. This page is **current state and what's next** only;
     - Map 1 is the dark graveyard. Map 2 is the opposite, a frozen wasteland with unique mobs and frost versions of
       the towers. Map 3 is volcanic, a mix of light and fire.
     - English first; other languages only if the Steam page shows demand.
+    - Staged: map 1 is the prototype on all six faces, which proves the camera and the pathing. Maps 2 and 3 reuse
+      the same cube base with different paths.
+    - Camera: right-click orbits the cube; it never flips upside-down. Paths stay readable across edges.
+    - **Sepulcra stays free and open** (MIT/Apache, like the engine), released as a free demo on Steam to show
+      what AI agents can build when humans direct them well. The owner's paid games will live in their own
+      private repos, using the engine as a dependency.
+  - **Security baseline:** OS-provided TLS only, never our own crypto. Operators secure their own environments
+    (AGENTS.md rule 12).
+  - **The realism range:** quality presets span "simple, gameplay first" to "really good on a strong PC".
+    The low preset always holds budget on the iGPU.
   - **Sepulcra look:**
     - readable moonlight at night;
     - the floating slab over mist, made stylish;
