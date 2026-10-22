@@ -125,6 +125,32 @@ def main():
         check(listed["total"] == len(doc["items"]) and len(listed["items"]) > 5, "the set survives world_save / world_load")
         again = ann.json("lex_simulate", **sim_args)
         check(again["hash"] == a["hash"], "and simulates to the same hash")
+
+        # Bounded answers (F1; the M3 audit's worst case): a set of 120 items of ~14 KB each.
+        big = {"lex": 1, "name": "bigset", "tick_hz": 30,
+               "items": {f"d{i:03}": {"kind": "param", "type": "int", "value": 1, "notes": "z" * 14000} for i in range(120)}}
+        ann.json("lex_import", set="bigset", document=big, allow_errors=True)
+        ids = [f"d{i:03}" for i in range(50)]
+        got = ann.text("lex_get", set="bigset", ids=ids)
+        page = json.loads(got)
+        check(len(got) < 80_000 and page["next_ids"] and page["omitted"] == len(page["next_ids"]),
+              f"lex_get answers {len(got)} bytes with {len(page['items'])} items and names the other {page.get('omitted')}")
+        seen = [it["id"] for it in page["items"]]
+        while page.get("next_ids"):
+            page = ann.json("lex_get", set="bigset", ids=page["next_ids"])
+            seen += [it["id"] for it in page["items"]]
+        check(seen == ids, "next_ids pages through every id asked for, in order")
+        small = ann.text("lex_export", set=SET)
+        check(json.loads(small).get("items"), f"a small set exports inline ({len(small)} bytes)")
+        out = ann.text("lex_export", set="bigset")
+        filed = json.loads(out)
+        check(len(out) < 2000 and filed.get("file") and filed["bytes"] > 64 * 1024,
+              f"a big set ({filed.get('bytes')} bytes) exports to a file: {Path(filed.get('file', '')).name}")
+        check(json.loads(Path(filed["file"]).read_text())["items"].keys() == big["items"].keys(), "the file holds the whole document")
+        refused_inline = refused(ann, "lex_export", set="bigset", to="inline")
+        check(refused_inline["error"] == "too_large", "to: inline past 64 KB is refused with too_large")
+        back = ann.json("lex_import", set="bigset", file=filed["file"], allow_errors=True)
+        check(back["changes"] == [], "lex_import {file} of the export changes nothing")
         ann.close()
         bob.close()
     print("lex_check: all passed")
