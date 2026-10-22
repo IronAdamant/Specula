@@ -22,8 +22,12 @@ memory of the earlier ones. This page is **current state and what's next** only;
   world, contact sheets and taste checks, galleries and preferences, review queue, procedural modelling tiers 2-4,
   baked GI, VFX, terrain, then the M4 exit proof). Check `git log` and ROADMAP ticks for progress.
   **Owner, 2026-10-18: shaders get a language of our own,** compiled to SPIR-V, MSL and later the console APIs, built
-  first on the Platform track (ROADMAP), so agents write a shader once for every platform. Release plan after M5: test
-  on the owner's Windows, macOS and Arch Linux machines with Sepulcra, then the Steam MVP.
+  first on the Platform track (ROADMAP), so agents write a shader once for every platform.
+  **Owner, 2026-10-22, the release plan:** Windows first, all the way through a Windows-focused M6, then the
+  announcement. After that, macOS and Linux, tested on the owner's Windows, macOS and Arch Linux machines with
+  Sepulcra and the Steam MVP. Those ports are **native** (Metal, and the Linux window systems directly), never
+  translation layers such as MoltenVK or Wine/Proton, because those add overhead and dependencies. "Many people are
+  on Windows OS anyway."
   **Owner, 2026-10-22: M4 approved** ("Finish M3 and M4 now fully, and with full effort please"): finish M3, then run
   wave 3 (M4) straight after, with the same review rounds.
   **Merged so far (2026-10-18):** all of wave 1 (swarm communication, the module host, physics P1-P3, Lex,

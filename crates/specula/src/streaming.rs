@@ -334,6 +334,29 @@ struct Index {
     cell_m: f32,
     /// Changed entities not filed yet (sorted).
     backlog: Vec<u64>,
+    /// A refiling in progress: the world's change record no longer reached back (an agent's
+    /// batch bigger than it), so every entity is filed again, a slice at a time, while the cells
+    /// as they were serve (see [`Index::sync`]).
+    resync: Option<Resync>,
+    /// Refilings finished.
+    resyncs: u64,
+    /// Refilings in a row whose catch-up found the change record overflowed again: each next one
+    /// gets twice the slice, so a world that keeps changing still converges (after a few, it is
+    /// filed at once, as a rebuild would).
+    resync_overflows: u32,
+}
+
+/// See [`Index::resync`].
+struct Resync {
+    /// The world's draw epoch when it began: changes since are patched in once it is done.
+    epoch: u64,
+    /// The last entity filed.
+    cursor: Option<u64>,
+    /// The highest persistent id when it began: entities spawned since are the catch-up's (a
+    /// world spawning faster than the walk would otherwise keep it from ending).
+    end: Option<u64>,
+    cell_of: IdMap<u64, CellKey>,
+    cells: BTreeMap<CellKey, Cell>,
 }
 
 fn cell_key(p: Vec3, cell_m: f32) -> CellKey {
@@ -352,11 +375,35 @@ impl Index {
     fn sync(&mut self, world: &World, generation: u64, cell_m: f32, now: Instant, touched: &mut Vec<CellKey>, slice: Duration) -> bool {
         touched.clear();
         let key = (generation, cell_m.to_bits());
-        if self.key == Some(key) && self.epoch == world.draw_epoch() && self.backlog.is_empty() {
+        if self.key == Some(key) && self.epoch == world.draw_epoch() && self.backlog.is_empty() && self.resync.is_none() {
             return false;
         }
-        let patched = self.key == Some(key) && self.patch(world, cell_m, now, touched, slice);
+        // The same world, but more changed than its change record holds: everything is filed
+        // again a slice at a time (the old cells serve meanwhile), then the changes since.
+        let patched = self.key == Some(key) && self.resync.is_none() && self.patch(world, cell_m, now, touched, slice);
+        if !patched && self.key == Some(key) {
+            if self.resync.is_none() {
+                self.begin_resync(world);
+            }
+            let started = Instant::now();
+            // Twice the slice for each refiling in a row that couldn't catch up.
+            let scaled = if self.resync_overflows >= 6 { Duration::MAX } else { slice.saturating_mul(1 << self.resync_overflows) };
+            let least = 64usize << self.resync_overflows.min(16);
+            if self.resync_step(world, cell_m, started, scaled, least) {
+                let rest = scaled.saturating_sub(started.elapsed());
+                if self.patch(world, cell_m, now, touched, rest) {
+                    self.resync_overflows = 0;
+                } else {
+                    self.resync_overflows += 1;
+                    self.begin_resync(world);
+                }
+            }
+            return true;
+        }
         if !patched {
+            // Another world (a load) or cell size: filed at once (the old cells don't apply).
+            let _z = specula_core::profile::zone("rebuild");
+            self.resync = None;
             self.backlog.clear();
             self.cells.clear();
             self.cell_of.clear();
@@ -377,16 +424,62 @@ impl Index {
         true
     }
 
+    /// Starts filing every entity again (see [`Index::resync`]).
+    fn begin_resync(&mut self, world: &World) {
+        self.backlog.clear();
+        self.resync = Some(Resync { epoch: world.draw_epoch(), cursor: None, end: world.last_persistent_id(), cell_of: IdMap::default(), cells: BTreeMap::new() });
+    }
+
+    /// Files the next entities of a refiling for up to `slice` since `started` (`least` at least);
+    /// when done, its cells replace the old ones (every one to be worked out again) and the
+    /// changes since it began are read next. Returns whether it is done.
+    fn resync_step(&mut self, world: &World, cell_m: f32, started: Instant, slice: Duration, least: usize) -> bool {
+        let _z = specula_core::profile::zone("resync");
+        let Some(r) = self.resync.as_mut() else { return true };
+        let mut done = true;
+        let walk = r.end.map(|end| world.persistent_entities_between(r.cursor, end));
+        for (n, e) in walk.into_iter().flatten().enumerate() {
+            r.cursor = Some(e.id);
+            if e.shape == Shape::Model {
+                let k = cell_key(e.world_position(), cell_m);
+                r.cell_of.insert(e.id, k);
+                r.cells.entry(k).or_default().members.push(Member::of(e, None, cell_m));
+            }
+            if n + 1 >= least && n % 64 == 63 && started.elapsed() >= slice {
+                done = false;
+                break;
+            }
+        }
+        if !done {
+            return false;
+        }
+        let r = self.resync.take().expect("checked");
+        self.cells = r.cells;
+        self.cell_of = r.cell_of;
+        for c in self.cells.values_mut() {
+            c.bounds();
+            c.dirty = true;
+        }
+        // Changes since it began come next, as a patch (entities met by the walk after they
+        // changed are filed again: harmless).
+        self.epoch = r.epoch;
+        self.backlog.clear();
+        self.resyncs += 1;
+        true
+    }
+
     /// The changed entities only; false when the world's change record doesn't reach back. An
     /// entity that stays in its cell is updated in place.
     fn patch(&mut self, world: &World, cell_m: f32, now: Instant, touched: &mut Vec<CellKey>, slice: Duration) -> bool {
         if self.epoch != world.draw_epoch() {
+            let _z = specula_core::profile::zone("changes");
             let Some(changes) = world.draw_changes_since(self.epoch) else { return false };
             self.backlog.extend(changes);
             self.backlog.sort_unstable();
             self.backlog.dedup();
             self.epoch = world.draw_epoch();
         }
+        let zf = specula_core::profile::zone("file");
         let started = Instant::now();
         let mut done = 0;
         for i in 0..self.backlog.len() {
@@ -439,6 +532,8 @@ impl Index {
             }
         }
         self.backlog.drain(..done);
+        drop(zf);
+        let _zb = specula_core::profile::zone("rebound");
         touched.sort_unstable();
         touched.dedup();
         self.rebound.sort_unstable();
@@ -615,6 +710,8 @@ struct VictimScan {
     pass: u64,
     /// The last build looked at.
     cursor: Option<u64>,
+    /// Every build was looked at: the proxies and the heaps are next.
+    builds_done: bool,
     gone: Vec<Reverse<(u64, u8, u64, CellKey)>>,
     soft: Vec<(u32, u8, u64, CellKey)>,
 }
@@ -1638,7 +1735,15 @@ impl Streamer {
         let start = Instant::now();
         // A scan runs to its end for the pass it began on (a newer pass only starts the next one:
         // passes can end faster than a big world's scan, which would then never finish).
-        let mut scan = self.victim_scan.take().unwrap_or_else(|| VictimScan { pass: self.done_pass, cursor: None, gone: Vec::new(), soft: Vec::new() });
+        let mut scan = self.victim_scan.take().unwrap_or_else(|| VictimScan { pass: self.done_pass, cursor: None, builds_done: false, gone: Vec::new(), soft: Vec::new() });
+        if scan.builds_done {
+            // The proxies (a few hundred cells at most) and the heaps: a step of their own.
+            scan.gone.extend(self.hlod.evictable().into_iter().map(|(f, cell)| Reverse((f, 1, 0, cell))));
+            scan.soft.extend(self.hlod.wanted_uploaded().into_iter().map(|(p, cell)| (p.max(0.0).to_bits(), 1, 0, cell)));
+            self.victims_cache = Some(Victims { gone: BinaryHeap::from(scan.gone), soft: BinaryHeap::from(scan.soft) });
+            self.victims_for = Some(scan.pass);
+            return;
+        }
         let range = match scan.cursor {
             None => models.uploaded.range(..),
             Some(c) => models.uploaded.range((std::ops::Bound::Excluded(c), std::ops::Bound::Unbounded)),
@@ -1653,16 +1758,17 @@ impl Streamer {
                 e => scan.gone.push(Reverse((e.map_or(0, |e| e.1), 0, id, (0, 0)))),
             }
             scan.cursor = Some(id);
-            if n % 64 == 63 && start.elapsed().as_secs_f64() * 1e3 >= slice_ms {
+            if n % 16 == 15 && start.elapsed().as_secs_f64() * 1e3 >= slice_ms {
                 self.victim_scan = Some(scan);
                 return;
             }
         }
-        // The proxies (a few hundred cells at most), then the queue.
-        scan.gone.extend(self.hlod.evictable().into_iter().map(|(f, cell)| Reverse((f, 1, 0, cell))));
-        scan.soft.extend(self.hlod.wanted_uploaded().into_iter().map(|(p, cell)| (p.max(0.0).to_bits(), 1, 0, cell)));
-        self.victims_cache = Some(Victims { gone: BinaryHeap::from(scan.gone), soft: BinaryHeap::from(scan.soft) });
-        self.victims_for = Some(scan.pass);
+        scan.builds_done = true;
+        self.victim_scan = Some(scan);
+        if slice_ms.is_infinite() {
+            // All at once (the first time the budget fills): the last step now too.
+            self.scan_victims(models, slice_ms);
+        }
     }
 
     /// Evicts from `victims` until `need` bytes are free (or none are left that may go for an
@@ -1941,7 +2047,15 @@ impl Streamer {
             ("pending_builds", Json::from(pending)),
             ("sources", Json::from(self.sources.len())),
             ("cells", Json::from(self.index.cells.len())),
-            ("index", Json::obj([("rebuilds", Json::from(self.index.rebuilds)), ("patches", Json::from(self.index.patches))])),
+            (
+                "index",
+                Json::obj([
+                    ("rebuilds", Json::from(self.index.rebuilds)),
+                    ("refilings", Json::from(self.index.resyncs)),
+                    ("refiling", Json::from(self.index.resync.is_some())),
+                    ("patches", Json::from(self.index.patches)),
+                ]),
+            ),
             ("ms_per_item", Json::from((self.ms_per_item * 1000.0).round() / 1000.0)),
             ("ms_per_mb", Json::from((self.ms_per_mb * 1000.0).round() / 1000.0)),
             ("hlod", self.hlod.json()),
@@ -2344,6 +2458,126 @@ mod tests {
                 (10.0, Victim::Build(5)),
             ]
         );
+    }
+
+    /// More changes at once than the world's change record holds (an agent's big batch): the
+    /// index files everything again a slice at a time, never all in one call, while the old cells
+    /// serve; once done it holds every entity, then catches up with what changed meanwhile.
+    #[test]
+    fn a_refiling_is_sliced() {
+        use crate::world::{ModelSpec, SpawnSpec, DRAW_LOG};
+        let mut world = World::default();
+        let spawn = |world: &mut World, i: u64| {
+            let mut s = SpawnSpec::model(ModelSpec { recipe: "recipes/x.json".into(), params: Vec::new(), seed: Some(i) });
+            s.position = Vec3::new((i % 50) as f32 * 7.0, 0.0, (i / 50) as f32 * 7.0);
+            world.spawn(s, "test").unwrap().id
+        };
+        for i in 0..100 {
+            spawn(&mut world, i);
+        }
+        let mut index = Index::default();
+        let mut touched = Vec::new();
+        let now = Instant::now();
+        index.sync(&world, 0, 32.0, now, &mut touched, Duration::MAX);
+        let rebuilds = index.rebuilds;
+        // A batch past the change record.
+        for i in 100..(100 + DRAW_LOG as u64 + 400) {
+            spawn(&mut world, i);
+        }
+        let total = 100 + DRAW_LOG + 400;
+        let mut calls = 0;
+        loop {
+            // A zero slice: the least a call may do (64 entities).
+            index.sync(&world, 0, 32.0, now, &mut touched, Duration::ZERO);
+            calls += 1;
+            if index.resync.is_none() && index.backlog.is_empty() {
+                break;
+            }
+            assert!(index.cell_of.len() == 100 || index.cell_of.len() == total, "the old cells serve until it is done");
+            assert!(calls < 100, "it ends");
+        }
+        assert!(calls > 5, "sliced over {calls} calls");
+        assert_eq!(index.rebuilds, rebuilds, "not rebuilt at once");
+        assert_eq!(index.resyncs, 1);
+        assert_eq!(index.cell_of.len(), total);
+        assert_eq!(index.cells.values().map(|c| c.members.len()).sum::<usize>(), total);
+        // Changes during a refiling are caught up after it.
+        for i in 0..(DRAW_LOG as u64 + 10) {
+            spawn(&mut world, 10_000 + i);
+        }
+        index.sync(&world, 0, 32.0, now, &mut touched, Duration::ZERO);
+        let late = spawn(&mut world, 99_999);
+        while index.resync.is_some() || !index.backlog.is_empty() || index.epoch != world.draw_epoch() {
+            index.sync(&world, 0, 32.0, now, &mut touched, Duration::ZERO);
+        }
+        assert!(index.cell_of.contains_key(&late), "spawned during the refiling, filed after it");
+        assert_eq!(index.cell_of.len(), total + DRAW_LOG + 11);
+        // A world that keeps changing faster than a sliced refiling can catch up with (review):
+        // each refiling in a row gets a bigger slice, so it still ends.
+        let mut calls = 0;
+        let mut next = 30_000u64;
+        index.sync(&world, 0, 32.0, now, &mut touched, Duration::ZERO);
+        loop {
+            for _ in 0..(DRAW_LOG as u64 / 3) {
+                spawn(&mut world, next);
+                next += 1;
+            }
+            index.sync(&world, 0, 32.0, now, &mut touched, Duration::ZERO);
+            calls += 1;
+            if index.resync.is_none() {
+                break;
+            }
+            assert!(calls < 500, "a refiling under constant change still ends");
+        }
+        while !index.backlog.is_empty() || index.epoch != world.draw_epoch() {
+            index.sync(&world, 0, 32.0, now, &mut touched, Duration::ZERO);
+        }
+        let changing = (next - 30_000) as usize;
+        assert_eq!(index.cell_of.len(), total + DRAW_LOG + 11 + changing);
+        // A capture's call (no slice limit) does it all at once.
+        for i in 0..(DRAW_LOG as u64 + 10) {
+            spawn(&mut world, 20_000 + i);
+        }
+        index.sync(&world, 0, 32.0, now, &mut touched, Duration::MAX);
+        assert!(index.resync.is_none() && index.backlog.is_empty());
+        assert_eq!(index.cell_of.len(), total + 2 * DRAW_LOG + 21 + changing);
+    }
+
+    /// Review: refilings in a row that can't catch up get twice the slice each, so a world that
+    /// keeps changing converges before the at-once fallback (a non-zero slice doubles).
+    #[test]
+    fn refilings_in_a_row_get_bigger_slices() {
+        use crate::world::{ModelSpec, SpawnSpec, DRAW_LOG};
+        let mut world = World::default();
+        let mut next = 0u64;
+        let mut spawn = |world: &mut World, n: u64| {
+            for _ in 0..n {
+                let mut s = SpawnSpec::model(ModelSpec { recipe: "recipes/x.json".into(), params: Vec::new(), seed: Some(next) });
+                s.position = Vec3::new((next % 80) as f32 * 5.0, 0.0, (next / 80) as f32 * 5.0);
+                world.spawn(s, "test").unwrap();
+                next += 1;
+            }
+        };
+        spawn(&mut world, 4000);
+        let mut index = Index::default();
+        let mut touched = Vec::new();
+        let now = Instant::now();
+        index.sync(&world, 0, 32.0, now, &mut touched, Duration::MAX);
+        spawn(&mut world, DRAW_LOG as u64 + 1);
+        let mut most = 0;
+        for _ in 0..1000 {
+            // Each call: changes pile up behind a refiling walking its least each call (a zero
+            // slice), more than the record holds before the first one ends.
+            spawn(&mut world, DRAW_LOG as u64 / 32);
+            index.sync(&world, 0, 32.0, now, &mut touched, Duration::ZERO);
+            most = most.max(index.resync_overflows);
+            if index.resync.is_none() {
+                break;
+            }
+        }
+        assert!(index.resync.is_none(), "it converges");
+        assert!(most >= 1, "it needed bigger slices");
+        assert!(most < 6, "before the at-once fallback (overflows {most})");
     }
 
     #[test]

@@ -211,6 +211,7 @@ impl GpuInner {
         };
         // On error `gpu` drops and releases whatever was created.
         gpu.cmd_pool = gpu.device.create_command_pool()?;
+        gpu.uploads.warm(&gpu.device)?;
         gpu.sync_cmd = gpu.device.allocate_command_buffer(gpu.cmd_pool)?;
         gpu.sync_fence = gpu.device.create_fence(false)?;
         gpu.upload = Some(FrameUpload::new(&gpu.device)?);
@@ -315,10 +316,13 @@ impl GpuInner {
         let layout = mesh_layout(vertices, indices, streams)?;
         let total = layout.total;
         // A range of a mesh block, not an allocation of its own (see `stream.rs`).
-        let (block, at, handle, size) = self.uploads.blocks.alloc(&self.device, total)?;
+        let (block, at, handle, size) = {
+            let _z = specula_core::profile::zone("gpu.range");
+            self.uploads.blocks.alloc(&self.device, total)?
+        };
         let staged = {
             let _z = specula_core::profile::zone("gpu.stage");
-            match self.uploads.stage(&self.device, self.cmd_pool, total) {
+            match self.uploads.stage(&self.device, total) {
                 Ok(s) => s,
                 Err(e) => {
                     self.uploads.retire(crate::stream::Retired::Range(block, at, size));
@@ -326,13 +330,18 @@ impl GpuInner {
                 }
             }
         };
+        let zw = specula_core::profile::zone("gpu.write");
         // SAFETY: `staged.dst` points to at least `total` bytes of mapped staging memory that no
         // submitted batch uses (its slot is recording).
         unsafe { layout.write(staged.dst, vertices, indices) };
-        let cmd = self.uploads.recording_cmd(&self.device, self.cmd_pool)?;
+        drop(zw);
+        let zc = specula_core::profile::zone("gpu.record");
+        let cmd = self.uploads.recording_cmd(&self.device)?;
         crate::stream::record_buffer_copy(&self.device, cmd, &staged, handle, at, total);
+        drop(zc);
         // The block's buffer, borrowed: never destroyed through the mesh (`Mesh::pooled`).
         let buffer = Buffer { handle, memory: VK_NULL_HANDLE, mapped: ptr::null_mut(), bytes: size, kind: MemoryKind::Meshes };
+        let _zf = specula_core::profile::zone("gpu.finish");
         let id = self.finish_mesh(buffer, layout, vertices, indices.len(), Some((block, at, size)));
         self.uploads.queued(id.0, total);
         Ok(id)
@@ -390,7 +399,7 @@ impl GpuInner {
 
     /// Submits the upload batch (and retirements) now, and frees what finished batches release.
     pub fn flush_uploads(&mut self) -> Result<(), GpuError> {
-        let flushed = self.uploads.flush(&self.device, self.cmd_pool);
+        let flushed = self.uploads.flush(&self.device);
         for slot in self.uploads.take_freed_slots() {
             self.descriptors.free_slot(slot);
         }
@@ -409,7 +418,7 @@ impl GpuInner {
     /// it, finish every batch first.
     fn settle_upload_of(&mut self, id: u32) {
         if self.uploads.is_pending(id) {
-            let _ = self.uploads.finish(&self.device, self.cmd_pool);
+            let _ = self.uploads.finish(&self.device);
             for slot in self.uploads.take_freed_slots() {
                 self.descriptors.free_slot(slot);
             }
@@ -759,7 +768,7 @@ impl GpuInner {
                 return Err(e);
             }
         };
-        let staged = match self.uploads.stage(&self.device, self.cmd_pool, total) {
+        let staged = match self.uploads.stage(&self.device, total) {
             Ok(s) => s,
             Err(e) => {
                 self.device.destroy_image(&image);
@@ -773,7 +782,7 @@ impl GpuInner {
             unsafe { ptr::copy_nonoverlapping(level.as_ptr(), staged.dst.add(at as usize), level.len()) };
         }
         let mut regions = level_regions(width, height, &offsets);
-        let cmd = self.uploads.recording_cmd(&self.device, self.cmd_pool)?;
+        let cmd = self.uploads.recording_cmd(&self.device)?;
         crate::stream::record_image_copy(&self.device, cmd, &staged, image.handle, &mut regions);
         // A fresh slot: no pending frame reads it.
         match vk_sampler {

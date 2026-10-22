@@ -37,16 +37,24 @@ together stalled one frame for all of them, and deleting a mesh waited for both 
 Now, with streaming on (the default):
 
 - **Queued uploads** (`Gpu::queue_mesh`, `Gpu::queue_texture_levels`): the data goes into a staging arena (8 MB,
-  persistently mapped, one per batch slot) and the copy into a command buffer of copies, each followed by a barrier
-  to vertex, index and fragment reads. The batch is submitted **before the next frame on the same queue** (`present`
+  persistently mapped, one per batch slot) and the copy into a command buffer of copies, ended by one memory barrier
+  to vertex and index reads (not one per copy: on the Intel driver every recording call can stall). Each slot has its
+  own transient command pool, made with the device and reset whole when the slot is reused (vendors' advice: no
+  per-buffer resets). The batch is submitted **before the next frame on the same queue** (`present`
   and every offscreen render flush it first), so that frame already draws the new mesh: a barrier's second scope
   reaches everything later in submission order. Nothing waits. Three slots cycle; a slot is reused once its fence has
   signalled (polled once a frame, at the flush, with a zero timeout: on the Intel driver even a zero-timeout poll can
   take milliseconds while the GPU is saturated). Only if all three are in flight (the GPU three batches behind) does
   queuing wait, for the oldest, and `upload_stats().slot_waits` counts it.
-- **Mesh blocks:** queued meshes are ranges of 16 MB device-local blocks (first fit, freed ranges coalesce), not an
+- **Mesh blocks:** queued meshes are ranges of device-local blocks (first fit, freed ranges coalesce), not an
   allocation each. On the Intel iGPU a `vkAllocateMemory` costs about 0.3 ms and a free as much, which capped streaming
-  at a few meshes a frame (and some drivers allow only 4096 allocations). One empty block is kept as a spare.
+  at a few meshes a frame (and some drivers allow only 4096 allocations). Blocks grow 16, 32, then 64 MB, so a big world
+  loading makes a few allocations (each 3-30 ms on the busy iGPU), a small world one small one. One empty 16 MB block is
+  kept as a spare.
+- **Driver stalls.** On the Intel iGPU's Windows driver, recording calls (`vkBeginCommandBuffer`, `vkCmdCopyBuffer`)
+  sometimes take 10-200 ms while a big world loads (measured 2026-10-22, zoned per call): never on the RTX, never in
+  frames that don't upload, and the same with a fresh pool per batch reset whole. They are constant-time calls on our
+  side; `stream_check.py` reports frames over budget only inside them apart (`over_budget_in_driver_recording`).
 - **Deferred frees** (`Gpu::retire_mesh`, `retire_texture`): the resource is freed once the first batch submitted
   after the retirement has finished. A fence signal covers everything submitted earlier on the queue, so every frame
   that could have read the resource is done by then. When nothing else is queued, an empty batch carries the fence.
@@ -111,8 +119,10 @@ frames (each frame spends half the upload budget on it, at least one cell), so a
 more than that; a capture from a new view or a jump of the window's camera runs a whole pass at once (an agent is
 waiting). Passes start when the window's camera moves (a quarter cell, or a tenth of the way to the nearest cell, a turn
 or a zoom: at most every 100 ms), when the world or the builds change, and at least once a second. Changed entities
-are filed the same way, a slice at a time (an agent's 1,000-spawn batch costs milliseconds to file); captures file
-everything at once, and a capture redoes the changed cells in its view at once, out of turn (it never sees the world
+are filed the same way, a slice at a time (an agent's 1,000-spawn batch costs milliseconds to file). When more changed
+than the world's change record holds (1,024 changes), every entity is filed again, also a slice at a time, while the
+old cells serve, then the changes since; refilings in a row that can't catch up get twice the slice each (it used to be
+a rebuild in one frame: 3-6 ms for 8,000 entities). Captures file everything at once, and a capture redoes the changed cells in its view at once, out of turn (it never sees the world
 as it was there), without a whole pass.
 
 - Models that can't be merged (glass, textured, animated, moving) are wanted within `radius_m`, and beyond it wherever
