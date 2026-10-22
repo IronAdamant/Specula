@@ -395,7 +395,8 @@ would have to be stitched back into one canonical document, and reading a set pi
 
 **Which files `lex_import {file}` reads** (as `desync_compare` its trace files; `crates/specula/src/safe_path.rs`): only
 paths relative to the engine's own folders, tried in order: this run's captures folder, the captures root, the worlds
-folder and the assets root. Absolute, UNC (`\\host\share`), verbatim (`\\?\`) and drive-relative paths, `..`, `:` and
+folder and the assets root, the last only when one was named (`--assets`, or the hosted game's own): without one
+the engine's assets root falls back to its working folder, which may hold anything, so it is not a root then. Absolute, UNC (`\\host\share`), verbatim (`\\?\`) and drive-relative paths, `..`, `:` and
 links or reparse points on the way are refused with one `path_not_allowed`, before anything touches the disk, so an
 answer never says whether a file elsewhere exists or what it holds; reads are bounded (`File::take`).
 

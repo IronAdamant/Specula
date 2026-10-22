@@ -287,7 +287,8 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         .map_err(|e| format!("GPU init failed: {e}"))?;
     let captures_root = args.captures.unwrap_or_else(|| cwd.join("captures"));
     // `--assets`, else the hosted game's own folder, else the working directory.
-    let assets = args.assets.or_else(|| game.as_ref().and_then(|g| g.assets_root())).unwrap_or_else(|| cwd.clone());
+    let named_assets = args.assets.or_else(|| game.as_ref().and_then(|g| g.assets_root()));
+    let assets = named_assets.clone().unwrap_or_else(|| cwd.clone());
     if let Some(g) = game.as_mut() {
         g.use_assets(&assets);
     }
@@ -366,7 +367,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
             server_version: env!("CARGO_PKG_VERSION").into(),
             instructions: Some(tools::INSTRUCTIONS.into()),
         },
-        Arc::new(tools::Tools::new(to_engine, game_tools).with_formats(Arc::clone(&engine.formats)).with_lex_natives(engine.lex_natives.clone()).with_capture_dir(engine.capture_dir.clone(), vec![engine.capture_dir.clone(), captures_root.clone(), engine.worlds_dir.clone(), assets.clone()])),
+        Arc::new(tools::Tools::new(to_engine, game_tools).with_formats(Arc::clone(&engine.formats)).with_lex_natives(engine.lex_natives.clone()).with_capture_dir(engine.capture_dir.clone(), safe_path::Roots::for_files(&engine.capture_dir, &captures_root, &engine.worlds_dir, named_assets.as_deref()))),
     )
     .map_err(|e| format!("MCP server: {e}"))?;
     eprintln!("specula: MCP at http://{}/mcp — Ctrl+C to stop", server.local_addr());

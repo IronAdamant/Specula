@@ -31,6 +31,16 @@ fn not_allowed(what: &str) -> Refusal {
 pub struct Roots(pub Vec<PathBuf>);
 
 impl Roots {
+    /// The folders `lex_import {file}` reads from, in order: this run's captures, the captures
+    /// root, the worlds folder, and the assets root only when one was named (`--assets` or the
+    /// hosted game's). The engine's fallback assets root is its working folder, which may hold
+    /// anything, so it is left out.
+    pub fn for_files(captures: &Path, captures_root: &Path, worlds: &Path, named_assets: Option<&Path>) -> Roots {
+        let mut roots = vec![captures.to_path_buf(), captures_root.to_path_buf(), worlds.to_path_buf()];
+        roots.extend(named_assets.map(Path::to_path_buf));
+        Roots(roots)
+    }
+
     /// Resolves `name` (relative, `ext` at the end) to an existing regular file under a root:
     /// the first root that has it. `what` names the argument in messages.
     pub fn resolve(&self, name: &str, ext: &str, what: &str) -> Result<PathBuf, Refusal> {
@@ -167,6 +177,25 @@ mod tests {
         let p = roots.resolve("big.json", ".json", "'file'").unwrap();
         assert_eq!(read_bounded(&p, 99, "'file'").unwrap_err().code, "too_large");
         assert_eq!(read_bounded(&p, 100, "'file'").unwrap().len(), 100);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The assets root is a root only when it was named: the working-folder fallback is not.
+    #[test]
+    fn the_fallback_assets_root_is_not_a_root() {
+        let base = tmp("assets");
+        let (root, worlds, cwd) = (base.join("captures"), base.join("worlds"), base.join("cwd"));
+        let caps = root.join("run-1");
+        for d in [&caps, &worlds, &cwd] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(cwd.join("private.json"), "{}").unwrap();
+        let fallback = Roots::for_files(&caps, &root, &worlds, None);
+        assert!(!fallback.0.contains(&cwd));
+        assert_eq!(fallback.resolve("private.json", ".json", "'file'").unwrap_err().code, "not_found");
+        let named = Roots::for_files(&caps, &root, &worlds, Some(&cwd));
+        assert_eq!(named.0.last(), Some(&cwd), "a named assets root comes last");
+        assert!(named.resolve("private.json", ".json", "'file'").is_ok());
         let _ = std::fs::remove_dir_all(&base);
     }
 
