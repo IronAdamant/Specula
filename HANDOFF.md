@@ -291,9 +291,43 @@ answer where it applies.
   those six advantages (engine survey §1).
 - **Tokens are a cost.** Every tool response should stay bounded. `max_subjects` was the first example of this rule.
 
+**The plan for the week of 2026-10-26 (M4 resumes when the owner's usage limit resets; agreed 2026-10-22):**
+1. **M4 merges first.** These lanes are parked on their own branches. Squash-merge each into main, since their
+   branches carry history from before the scrub:
+   - review queues (done);
+   - procedural modelling (done; the integrator verifies it after merging main);
+   - asset studio (done; the integrator verifies it);
+   - VFX and decals: re-run the stopped narrow round-3 review of the flash-safety detector first. Player safety:
+     the detector counts flashes over 40×22 cells, so check whether a fine checkerboard inverting at 10 Hz averages
+     out to no change, and test against WCAG 2.3.1's "any 10° field" area rule.
+2. **Then the unstarted M4 items, in this order:**
+   1. galleries with the owner's pick flow ("This one" / "This one, with edits"), the preference store, pick-driven
+      tuning, reference boards, and the style configurator with onboarding;
+   2. the disk footprint budget;
+   3. binary assets through the protocol;
+   4. baked GI;
+   5. the terrain renderer and stylised water;
+   6. the Fidelity T3 sheet;
+   7. the M4 exit proof (30+ props pass `style.toml`, shown as one contact sheet in the review queue, approved
+      into the game);
+   8. then the M4 integration audit and push.
+3. **Process changes, learned from M3** (most of M3's bugs sat between lanes, and fixes often caused new ones):
+   - **One write policy.** Claims, reserved data and joint rules are enforced in one place that every write path
+     goes through (agents, undo, modules, game tools, live Lex, loads). Today they are re-checked per path, and
+     "X bypasses claims" was the most common major finding.
+   - **Integration checks early,** not only at the end of a milestone: run a short cross-lane audit after every
+     3-4 merges.
+   - **Every reviewer probe becomes a permanent test** (unit test, or a live-script step) in the same round.
+   - **Every lane gets at least one independent review round,** not only its own reviewer. Independent rounds
+     found majors in lanes their own reviewers had passed.
+   - **Dogfood in the real game early.** Textured models, live waves and entity churn found bugs that synthetic
+     worlds missed.
+   - **Disk:** delete a lane's target folder when it merges, and build with `CARGO_INCREMENTAL=0` when space is
+     short.
+
 **Recommendations for the next session:**
-1. **M3 and M4 are approved and under way** (see the wave plan at the top). Continue the waves; Lex comes first
-   because Locus, the balance lab and agent evals all build on it. Run lanes with reviews, as in M2.
+1. **M3 is done and pushed once the steps above it are complete; M4 follows the plan above.** Run lanes with
+   reviews, as in M2 and M3.
 2. **Bring the open owner decisions** (the list above) to the owner in one short batch, with Claude's recommendation
    for each; several of them (night darkness, title screen, settings) shape Sepulcra's M3 work.
 3. **Keep Sepulcra the dogfood.** Each M3 feature should land in the game (rules moved into Lex data, physics on
