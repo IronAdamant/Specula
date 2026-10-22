@@ -49,8 +49,28 @@ Now, with streaming on (the default):
 - **Mesh blocks:** queued meshes are ranges of device-local blocks (first fit, freed ranges coalesce), not an
   allocation each. On the Intel iGPU a `vkAllocateMemory` costs about 0.3 ms and a free as much, which capped streaming
   at a few meshes a frame (and some drivers allow only 4096 allocations). Blocks grow 16, 32, then 64 MB, so a big world
-  loading makes a few allocations (each 3-30 ms on the busy iGPU), a small world one small one. One empty 16 MB block is
-  kept as a spare.
+  loading makes a few allocations, a small world one small one. One empty 16 MB block is kept as a spare.
+- **Blocks grow ahead, on a worker thread.** A block's `vkAllocateMemory` takes 2-160 ms on the busy iGPU. Allocating
+  ahead in a frame that does nothing else was tried first and doesn't hide it: that frame takes the whole allocation
+  (125 ms measured). So the pump starts the next block early and its memory is allocated off the frame:
+  - **How:** the block's buffer is made on the engine thread, without memory (`Device::create_buffer_unbound`). A
+    thread named `specula-mesh-alloc` allocates the memory through a `RawAllocator` (the device handle and the two
+    function pointers). The next flush binds it and starts using the block (`Device::adopt_buffer`); if binding fails, the
+    buffer and the memory are both freed. `Uploads::destroy` (always run by the GPU's drop, with the device idle and still
+    alive) joins the thread and frees memory it allocated that was never adopted.
+  - **Why the worker is safe:** Vulkan lets any thread use a `VkDevice`. `vkAllocateMemory` has no externally
+    synchronized parameters. `vkFreeMemory` has only the memory it frees, and only the thread that got that memory
+    frees it. The validation callback the worker may trigger writes through a mutex. That is the `SAFETY` reasoning
+    behind `RawAllocator`'s `Send`.
+  - **When:** a block grows when uploads are queued and under 60% of the next block's size is free. At 8 MB of uploads a
+    frame, that leaves a few frames for the allocation to finish before anything needs the new block. Blocks grow only
+    while they hold less than `memory_mb`, so they never pass the budget by more than one block, and a world filling its
+    budget still gets its last block ahead. The **first block** is made synchronously by the first upload, since there
+    is nothing yet to hide it behind. A failed allocation, or a failed bind, stops growth for 1 s.
+  - **Fit rule:** while a block grows, the pump puts off an item that doesn't fit the free space already there, so the
+    frame never waits for the worker. A build must fit **twice** its estimate in one free range: the estimate counts 28
+    bytes a vertex, and parts may also carry skin (8) and UV + tangent (16) streams. A proxy group is one mesh with an
+    exact estimate, so it must fit that estimate.
 - **Driver stalls.** On the Intel iGPU's Windows driver, recording calls (`vkBeginCommandBuffer`, `vkCmdCopyBuffer`)
   sometimes take 10-200 ms while a big world loads (measured 2026-10-22, zoned per call): never on the RTX, never in
   frames that don't upload, and the same with a fresh pool per batch reset whole. They are constant-time calls on our
@@ -122,7 +142,10 @@ or a zoom: at most every 100 ms), when the world or the builds change, and at le
 are filed the same way, a slice at a time (an agent's 1,000-spawn batch costs milliseconds to file). When more changed
 than the world's change record holds (1,024 changes), every entity is filed again, also a slice at a time, while the
 old cells serve, then the changes since; refilings in a row that can't catch up get twice the slice each (it used to be
-a rebuild in one frame: 3-6 ms for 8,000 entities). Captures file everything at once, and a capture redoes the changed cells in its view at once, out of turn (it never sees the world
+a rebuild in one frame: 3-6 ms for 8,000 entities). A pass's end is sliced too, in two steps that may run in different
+frames. The **pending** step makes the list of what to upload, nearest first. The **tidy** step drops cells and proxies
+nothing wants and schedules the next pass. Together they used to take 1.6-3.5 ms in one frame on the busy iGPU; now
+each step takes at most 1.3 ms. Captures file everything at once, and a capture redoes the changed cells in its view at once, out of turn (it never sees the world
 as it was there), without a whole pass.
 
 - Models that can't be merged (glass, textured, animated, moving) are wanted within `radius_m`, and beyond it wherever
@@ -247,6 +270,48 @@ The world hash is identical with streaming on and off, the flight doesn't change
 both ways. Loading had 1 frame of 2,400 with `frame/stream` over twice the budget (within the check's 0.1 %
 allowance for driver stalls). Earlier runs on a busier machine had up to 5, from a slow `vkBeginCommandBuffer` and
 descheduled pumps.
+
+**Loading, 2026-10-22: growing blocks ahead on the worker vs main.**
+- **Method:** `stream_check.py --skip off,sepulcra --cells 24`, run alternately with main's build and the lane's. The
+  load is the number of cargo and rustc processes and the CPU % at the start of each run. The counts are loading
+  frames over budget because of streaming.
+- **First series** (the worker and its fit rule, before blocks could grow up to the full budget):
+
+  | Pair | Machine load | main | lane |
+  |---|---|---|---|
+  | 1 | 1 cargo, 1 rustc, 17-22% CPU (the only quiet pair) | 1 | 0 |
+  | 2 | main 4 / 7 at 62%; lane 1 / 4 at 32% | 0 | 1 |
+  | 3 | 2-3 / 5-6 at 42% | 0 | 0 |
+  | 4 | 2 / 1-5 at 28-40% | 5 (fails) | 1 |
+
+  Totals: main 6, lane 2.
+- **Second series** (the final version), on a much busier machine (frame p99 128-488 ms in both builds):
+
+  | Pair | Machine load | main | lane |
+  |---|---|---|---|
+  | 1 | 1-2 cargo, 0-6 rustc, 42-50% CPU | 9 (fails) | 3 (fails) |
+  | 2 | 2 / 1-4 at 44-65% | 1, and 2 flight frames (fails) | 2 (fails) |
+  | 3 | 3 / 6 at 57-66% | 2, and 2 flight frames (fails) | 1 (passes) |
+
+  Main passed 0 of 3 runs, with 4 flight frames over budget. The lane passed 1 of 3, with none.
+- **What changed on the frame:** main allocates 4 blocks on the frame per run, up to 164 ms each. The lane allocates
+  only the first, 2-5 ms. A pass's end took up to 2.9 ms in main; in the lane each step takes at most 1.3 ms.
+- **What remains:** the lane beats main in every series. On a heavily loaded machine the loading check is still not
+  reliably green. Its slowest frames are mostly inside `vk.record` (17-75 ms), the driver stall above, which the check
+  reports apart. The rest come from the first block, `vk.begin_cb` and `vk.reset_pool`, `gpu.finish`, the resident
+  recount, and a pass's pending step.
+
+## Known limits
+
+- **The 2× margin** of the fit rule can be exceeded by a build with many tiny parts (each range is rounded up to 256
+  bytes) or with vertices shared between parts (each part gets its own copy). The cost is one wait on the frame for the
+  rest of an allocation, not a hang.
+- **At most one empty block, up to 64 MB, may be held** when `memory_mb` fills with textures while the mesh blocks still
+  hold less than the budget: a block grown then sits unused. No second one grows, since its free space is above the
+  threshold.
+- **A synchronous allocation ignores the budget.** When no block is growing and a mesh fits no free range, the block
+  allocator adds a block at once without checking the budget. Fragmented blocks can therefore hold more than the
+  resident bytes: `memory_mb` limits resident bytes, not the space blocks hold.
 
 ## Later
 
