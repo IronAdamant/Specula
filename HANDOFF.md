@@ -30,6 +30,46 @@ memory of the earlier ones. This page is **current state and what's next** only;
   Sepulcra and the Steam MVP. Those ports are **native** (Metal, and the Linux window systems directly), never
   translation layers such as MoltenVK or Wine/Proton, because those add overhead and dependencies. "Many people are
   on Windows OS anyway."
+  **Decided by the owner on 2026-10-22** (Claude's recommendations, answered by the owner; full notes in the owner's diary):
+  - **Steamworks: yes, as an optional extra.** `steam_api64.dll` is loaded at runtime, and games run and build
+    without it. Docs must tell human devs and agents this plainly.
+  - **Remote and cloud agents: local only until M6.** Lay the foundation notes for cloud swarms at the end of M5.
+    In M6, build per-agent auth tokens and test cloud swarms thoroughly (Claude, Grok Build, OpenAI and other
+    vendors' swarms). Then run an adversarial review **before any marketing**.
+  - **MCP 2026-07-28: wait** until Claude Code supports it, then switch in one small lane. Testing needs restarts:
+    handle them with subagents, or ask the owner up front.
+  - **crates.io: after M6.** First verify on macOS and Linux with small games; if it holds up, publish to
+    crates.io, then market. M6 is effectively proto-v1.0. The Specula engine is **open source**.
+  - **A private held-out eval set: yes, at M6.** Claude reminds the owner at M6, before any benchmark claims.
+  - **Sepulcra v1.0:**
+    - Three maps of about 10 waves, using **every face of the cube, sides and bottom included** (a "cubic
+      globe").
+    - Map 1 is the dark graveyard. Map 2 is the opposite, a frozen wasteland with unique mobs and frost versions of
+      the towers. Map 3 is volcanic, a mix of light and fire.
+    - English first; other languages only if the Steam page shows demand.
+  - **Sepulcra look:**
+    - readable moonlight at night;
+    - the floating slab over mist, made stylish;
+    - cyan for magic, green for the dead;
+    - moss may exceed the saturation rule on map 1, and real grass blades should replace flat green;
+    - an iron fence;
+    - fire colour is for fire only (dim or desaturated shows "can't afford");
+    - open-licence (SIL OFL) fonts.
+  - **Sepulcra rules:**
+    - walls on top-face lanes only;
+    - a boss leak is survivable but costly;
+    - keep the 3 m edge reach and 8 m per wall;
+    - rune pillars don't slow wraiths;
+    - the early-call bonus is real but small.
+  - **Controls:** gamepad pause, title screen, saved settings and rebinding, in M5/M6. Each game chooses keyboard
+    and mouse, controller, or both; agents recommend both.
+  - **The five design docs are reviewed,** delegated to Claude. The owner's notes on them:
+    - **ARM:** test determinism on their M2 MacBook.
+    - **Physics:** aim as high as possible later.
+    - **Animation:** "good enough" at M6, better after v1.0.
+    - **Procedural modelling:** lay the foundations now for realistic, organic content (Unreal-class quality, but
+      more efficient) after v1.0, starting stylised.
+    - **UI:** stays zero-dependency, screen reader included.
   **Owner, 2026-10-22: M4 approved** ("Finish M3 and M4 now fully, and with full effort please"): finish M3, then run
   wave 3 (M4) straight after, with the same review rounds.
   **Merged so far (2026-10-18):** all of wave 1 (swarm communication, the module host, physics P1-P3, Lex,
@@ -239,33 +279,11 @@ In practice that means six **foundations** that apply to every change from M1 on
 
 This is the **one list** of decisions waiting for the owner (other docs link here instead of keeping their own;
 `crates/specula/tests/docs_links.rs` checks it isn't duplicated). Remove an item once it's decided and record the
-answer where it applies.
+answer where it applies. The owner decided everything else on 2026-10-22 (see "Decided by the owner on 2026-10-22" above).
 
-- **Sepulcra scope:** art style, size and launch languages (genre is decided: tower defence; v1.0 platforms are
-  decided: Windows + Steam Deck, mobile later).
-- **Steamworks:** may `steam_api64.dll` be loaded at runtime as an optional platform service? It's needed for
-  achievements, cloud saves and Steam Input glyphs.
-- **Sepulcra questions:** how dark night should be (Claude darkened it; fire and runes carry the scene; STYLE.md
-  proposes "readable moonlight"); active pause on a gamepad (P is active pause, Start opens the menu); a title
-  screen; saved settings and rebinding; may the fire colour mark "can't afford" (STYLE.md reserves fire for fire).
-- **Sepulcra rules** ([DESIGN.md](games/sepulcra/DESIGN.md) has the context): walls only on top-face lanes, or on
-  cliff lanes too? Is a boss (colossus) leak meant to be survivable, as now (5 tombstones, about 30 % of good runs), or a
-  must-kill? Edge reach of 3 m (two cell rows) across faces: too generous or too strict? Should rune pillars slow
-  wraiths (now only the obelisk answers flyers)? Calling waves early pays 0.5 dust per second left: should it be a
-  real economy lever? Is 8 m per wall a good weight for breaking walls?
-- **STYLE.md's questions:** floating slab over mist, or a dark canyon? Cyan magic vs green dead?
-- **Other waiting items:** DESIGN.md's **(proposal)** lines, shipping fonts, `style.json` proposals, and reviewing
-  the five `docs/design/` docs (their "reviewed" boxes in ROADMAP are unticked).
-- **Sepulcra balance (from the balance lab, 2026-10-18):** tuning runner and shambler HP together hits every target for
-  the dust-gated and brazier-first builds, but a rusher who calls every wave early still loses 2 runs in 16 on unseen
-  seeds. Should calling waves early be that risky? (A human playtest decides; see
-  [docs/design/BALANCE.md](docs/design/BALANCE.md).)
-- **MCP revision:** when to move to MCP 2026-07-28, which drops `initialize` and sessions (we pin 2025-11-25;
-  `version_negotiation` in `crates/specula-protocol/tests/mcp_http.rs` asserts it).
-- **Agent evals:** keep a private held-out task set outside this public repository for benchmark claims, and who
-  writes it? ([docs/design/EVALS.md](docs/design/EVALS.md); `--tasks-dir` takes any folder.)
-- **crates.io:** whether and when to publish the crates.
-- **Remote agents:** are any remote or multi-machine agents planned for M3? If so, per-agent auth tokens come first.
+- **Sepulcra balance (from the balance lab, 2026-10-18):** a rusher who calls every wave early still loses 2 runs in
+  16 on unseen seeds. Claude recommends keeping it risky. The owner will playtest it in M6, on each OS, and decide
+  then ([docs/design/BALANCE.md](docs/design/BALANCE.md)).
 
 ## Claude's opinions and thoughts
 

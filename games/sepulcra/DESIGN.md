@@ -342,11 +342,22 @@ Everything runs without a window, through `games/sepulcra/examples/headless.rs`.
   - `State::step` and `State::step_into` drive a game one tick at a time.
   - `State::hash()` lets a run check its determinism tick by tick.
 
-### Still open
+### Decided (owner, 2026-10-22)
 
-The owner's open questions on these rules (walls on cliff lanes, the colossus, edge reach, wraiths, calling waves
-early, breaking walls) are kept with every other owner question in
-[HANDOFF.md](../../HANDOFF.md#open-owner-decisions), so there is one list.
+- **Walls:** only on top-face lanes. The cliffs stay the danger lanes.
+- **The colossus:** a leak is survivable but costly.
+- **Edge reach:** keep 3 m, until a human playtest says otherwise.
+- **Wraiths:** rune pillars don't slow them; the obelisk answers flyers.
+- **Calling waves early:** the bonus is a real lever, but small.
+- **Breaking walls:** keep 8 m per wall, until playtests say otherwise.
+- **The v1.0 scope:**
+  - three maps of about 10 waves each, using every face of the cube, sides and bottom included;
+  - the maps are a graveyard, a frozen wasteland and a volcano;
+  - English first.
+- **Controls:** a gamepad pause, a title screen, saved settings and rebinding (M5/M6).
+
+The rusher balance question is still waiting for the owner's own playtest:
+[HANDOFF.md](../../HANDOFF.md#open-owner-decisions).
 
 ## Camera and controls
 

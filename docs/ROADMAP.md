@@ -784,6 +784,8 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
   - claim map overlay, review queue, cost and progress dashboard
 
   *Why:* devs who want to edit by hand can; human edits are journaled like agent edits.
+- [ ] ➕ **Cloud swarm foundations** (owner, 2026-10-22; end of M5): the design notes for remote and cloud agents,
+  meaning per-agent auth tokens, scoped tools, rate limits and binding beyond loopback, ready to build in M6.
 
 ---
 
@@ -794,11 +796,18 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
   budgets checked on the reference hardware before release.
 - [ ] ➕ **Asset packing**: compressed, patch-friendly packs; licence metadata on every asset, and export refuses
   unlicensed ones.
-- [ ] ➕ **Steam integration** (if the owner approves): runtime-loaded `steam_api64.dll` for achievements, cloud saves
-  and Steam Input.
+- [ ] ➕ **Steam integration** (approved 2026-10-22 as an **optional extra**): runtime-loaded `steam_api64.dll` for
+  achievements, cloud saves and Steam Input. Games build and run without it, and the docs tell devs and agents so.
 - [ ] ➕ **Steam Deck Verified pass**: controller-only playthrough by agents, 800p legibility, at least 30 fps.
 - [ ] ➕ **Soak tests**: long headless runs for leaks and crashes.
 - [ ] **Ship the owner's original game.**
+- [ ] ➕ **Cloud swarms, tested** (owner, 2026-10-22): per-agent auth tokens, then thorough tests with real cloud
+  swarms from several vendors (Claude, Grok Build, OpenAI ...).
+- [ ] ➕ **Adversarial review before marketing**: of the whole engine, cloud access included.
+- [ ] ➕ **A private held-out eval set**, kept outside the public repo, before any benchmark claim. Claude reminds
+  the owner at M6.
+- [ ] **Release order** (owner, 2026-10-22): verify on macOS and Linux with small games, then publish the
+  crates to crates.io (open source), then market.
 
 ---
 
@@ -928,7 +937,10 @@ The aim is to make Rust's costs non-issues and then strengths. Research and meas
 - [ ] Own shading language compiled to SPIR-V (removes the dev-time `glslc`).
 - [ ] Networking and multiplayer: lockstep or rollback, which F2 makes possible.
 - [ ] Animation retargeting and parametric character generation.
-- [ ] Publish crates to crates.io (an [open owner decision](../HANDOFF.md#open-owner-decisions)).
+- [ ] Publish crates to crates.io: after M6 and the macOS and Linux checks (decided 2026-10-22; see M6).
+- [ ] **Realism foundations after v1.0** (owner, 2026-10-22): realistic, organic content at Unreal-class quality
+  but more efficient (sculpting, materials, lighting, characters), with best-possible physics and animation.
+  Start stylised; lay the foundations as M4-M6 build.
 
 ---
 
@@ -936,11 +948,11 @@ The aim is to make Rust's costs non-issues and then strengths. Research and meas
 
 These are researched designs, written before implementation so the foundations hold.
 
-- [x] [design/DETERMINISM.md](design/DETERMINISM.md): written 2026-10-13. [ ] Reviewed with the owner.
-- [x] [design/PHYSICS.md](design/PHYSICS.md): written 2026-10-13. [ ] Reviewed with the owner.
-- [x] [design/ANIMATION.md](design/ANIMATION.md): written 2026-10-13. [ ] Reviewed with the owner.
-- [x] [design/PROCEDURAL_MODELLING.md](design/PROCEDURAL_MODELLING.md): written 2026-10-13. [ ] Reviewed with the owner.
-- [x] [design/UI.md](design/UI.md): UI, text, input focus and accessibility; written 2026-10-13. [ ] Reviewed with the owner.
+- [x] [design/DETERMINISM.md](design/DETERMINISM.md): written 2026-10-13. [x] Reviewed (delegated to Claude by the owner, 2026-10-22; test ARM on the owner's M2 MacBook).
+- [x] [design/PHYSICS.md](design/PHYSICS.md): written 2026-10-13. [x] Reviewed (delegated, 2026-10-22; aim for the best physics possible later).
+- [x] [design/ANIMATION.md](design/ANIMATION.md): written 2026-10-13. [x] Reviewed (delegated, 2026-10-22; good enough at M6, better after v1.0).
+- [x] [design/PROCEDURAL_MODELLING.md](design/PROCEDURAL_MODELLING.md): written 2026-10-13. [x] Reviewed (delegated, 2026-10-22; foundations for realism after v1.0).
+- [x] [design/UI.md](design/UI.md): UI, text, input focus and accessibility; written 2026-10-13. [x] Reviewed (delegated, 2026-10-22; zero-dep screen reader).
 - [x] [research/ENGINE_SURVEY.md](research/ENGINE_SURVEY.md): Unreal, Unity and Godot vs. Specula; gaps; Unreal's
   efficiency problems; hard truths. Written 2026-10-13. [ ] Reviewed with the owner.
 - [x] [research/RUST_AT_SCALE.md](research/RUST_AT_SCALE.md): compile times, unsafe and the language as strengths;

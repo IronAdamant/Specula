@@ -120,7 +120,17 @@ colour and roughness alone (procedural tier 1).
 | Point lights on screen | 16 maximum (engine limit); prefer emissive without lights |
 | Draw calls | under 300 per frame after instancing |
 
-## Still open
+## Decided (owner, 2026-10-22)
 
-This bible's open questions (slab over mist or a canyon, cyan magic vs green dead, how dark night is) are kept
-with every other owner question in [HANDOFF.md](../../HANDOFF.md#open-owner-decisions), so there is one list.
+- **Night:** readable moonlight. Fire and runes carry the mood, and enemies must always be visible.
+- **The setting:** the floating slab over mist, made stylish.
+- **Colour roles:** cyan for magic, green for the dead. Fire colour is for fire only: "can't afford" is shown dim or
+  desaturated, never fire-coloured (the asset studio enforces this).
+- **Moss:** may exceed the saturation rule on map 1, and real grass blades should replace flat green patches.
+- **The fence:** iron.
+- **Fonts:** open licence (SIL OFL).
+- **Maps for v1.0:** map 1 is the dark graveyard; map 2 is a frozen wasteland with unique mobs and frost versions
+  of the towers; map 3 is volcanic, a mix of light and fire. Each map gets a style section of its own when it's
+  built.
+
+Anything still undecided is in [HANDOFF.md](../../HANDOFF.md#open-owner-decisions).
