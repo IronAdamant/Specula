@@ -769,6 +769,11 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
 
 ## Platform track (after M2, in parallel)
 
+**Order (owner, 2026-10-22):** Windows first, through a Windows-focused M6 and its announcement. Then macOS and
+Linux, **native**: Metal and Cocoa, X11/Wayland and Vulkan. No translation layers (MoltenVK, Wine/Proton, ...): they
+add overhead and dependencies we don't control. The shader language below comes first, so every backend shares one
+source of shaders.
+
 - [ ] ➕ **Our own shader language, compiled to every backend** (owner, 2026-10-18: "I want this to be done at the
   start, so that in the future, you and other AI agents can easily write shaders in any system no matter which,
   especially for cross compatibility for consoles"; the owner accepts the time and token cost). Comes **first** on
