@@ -11,7 +11,23 @@ Specula is now a zero-dependency, agent-native game engine (Rust `std` + OS/driv
 See [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md). Item-by-item detail, with the reasoning for each, is in
 [docs/ROADMAP.md](docs/ROADMAP.md); the timeline of decisions is under [Project history](#project-history) below.
 
-### M3, in progress (from 2026-10-18)
+### M3, done (2026-10-18 to 2026-10-22)
+
+- **M3 exit on the iGPU:** `scripts/m3_exit.py` plays a whole Sepulcra game windowed on the Intel iGPU and holds
+  every frame-level budget, with everyday desktop apps open (GPU p95 about 6 ms against 14). The scene pass is
+  cheaper: point lights out of range are skipped, the shadow disc stops early where its rim taps agree, and the sky
+  ray is computed per vertex. FXAA takes its luma from the tonemap pass. An optional window frame cap
+  (`--max-fps`, `perf.toml [window] max_fps`) is off by default
+- **M3 integration audit fixes:**
+  - module RNG streams are capped (`rng_full`), so saves always load, and their hash is kept incrementally;
+  - `lex_get` answers are capped near 64 KB, and big `lex_export`s are written to files;
+  - `world_load` is refused while a playtest runs;
+  - playtest replays hash live Lex runs;
+  - reserved-data rules apply on every write path (games, modules, live Lex);
+  - `world_load` lists and stops live Lex runs;
+  - files that agents name are confined to the engine's own folders (`safe_path`: `lex_import`, `desync_compare`);
+  - `anim_filmstrip` shares the world's shadow map, so it no longer makes the GPU wait idle;
+  - `specula-model` is now a simulation crate
 
 - **Swarm communication:** a task board (`task_*`: dependencies, owners, blockers, questions, a change feed; saved as
   `board.json` beside the world, with a 24 MiB budget), intents and notes (`intent_*`, `note_*`; overlaps flagged

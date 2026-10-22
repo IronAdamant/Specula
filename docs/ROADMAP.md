@@ -522,7 +522,7 @@ cached and patched from World's record of changed persistent entities, transient
 
 ---
 
-## M3: logic, physics, animation and time. The game becomes playable
+## M3: logic, physics, animation and time. The game becomes playable. Done (2026-10-22)
 
 **Goal:** agents build gameplay through data and tools (behaviours, rules, physics, animation), write hot-reloaded
 code only where no building block fits, and playtest headless at scale.
@@ -679,7 +679,13 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
   *Done 2026-10-18:* `scripts/playtest_suite.py`: 26 Sepulcra playtests (every layout, wins and expected losses, ten
   strategies, engine-only checks) pass with every replay verified in a fresh engine; 8 engines take about 55 s against
   about 5-8 min serially; a replay with its seed changed diverges as it should (`perf/playtests/`).
-- [ ] The playable build holds budget on the integrated GPU.
+- [x] The playable build holds budget on the integrated GPU.
+  *Done 2026-10-22:* `scripts/m3_exit.py` plays a whole Sepulcra game windowed at 1280x720 on the Intel iGPU, with
+  its rules from Lex and ragdoll deaths, and checks `perf.example.toml`'s frame-level budgets over 600 window frames
+  in the busiest wave and in the boss wave. Measured with the owner's everyday apps open (Brave, Discord, Edge,
+  Teams, Obsidian, Steam), as real players will have: GPU p95 5.6 / 5.9 ms against 14, and frame pacing p95
+  11.5 / 11.6 ms against 20.9. The game was won, the replay verified with Lex parity, and there were 0 validation
+  errors. The render-budget lane's 4 of 4 runs agree (`perf/drills/20261022-m3-exit-igpu-render-budget.json`).
 
 ---
 

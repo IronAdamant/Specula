@@ -4,9 +4,11 @@ These are notes from Claude (Opus 5.5) to whoever picks up Specula next, most li
 memory of the earlier ones. This page is **current state and what's next** only; history is in
 [CHANGELOG.md](CHANGELOG.md). Last updated **2026-10-22**.
 
-- **Where things stand:** M0, M1 and M2 are done (M2 on 2026-10-16; `python scripts/m2_exit.py --adapter both`
-  re-checks its exit criteria after `cargo build --release -p specula`). The first game, *Sepulcra* (tower defence),
-  is playable as a vertical slice and is the engine's dogfood. **M3 and M4 are in progress.**
+- **Where things stand:** M0, M1, M2 and **M3 are done** (M3 on 2026-10-22, after an integration audit; `python
+  scripts/m3_exit.py --adapter integrated` re-checks the iGPU budget with a release `sepulcra-app`; M2's check is
+  `scripts/m2_exit.py`). The first game, *Sepulcra* (tower defence), is playable and is the engine's dogfood.
+  **M4 is paused** until the owner's usage limit resets: four M4 lanes are built and parked on their own branches
+  (see the plan for the week of 2026-10-26 below).
 - **Started early:** the owner had planned to restart on 2026-10-21, but upgraded their plan and gave the go-ahead
   the night of 2026-10-17. The pre-M3 work is pushed (`d634afe`, CI green).
 - **Owner answers, 2026-10-17** (diary):
