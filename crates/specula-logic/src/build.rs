@@ -84,6 +84,8 @@ pub struct BuildReport {
     pub diagnostics: Vec<Diagnostic>,
     pub fixes_applied: Vec<Applied>,
     pub stderr_tail: Vec<String>,
+    /// The module crate's artifacts (its library, or a check build's metadata).
+    pub artifacts: Vec<PathBuf>,
     /// The Cargo command line (for humans reproducing it).
     pub command: String,
     /// Workspace root the file names are resolved against.
@@ -295,6 +297,8 @@ pub fn vet(req: &BuildRequest) -> Result<(), (&'static str, String)> {
         }
         at = d.parent();
     }
+    // Compile-time paths (`#[path]`, `include_str!`...) stay inside the module's src/.
+    crate::paths::check_module(&dir)?;
     let lock = workspace_root(&dir).join("Cargo.lock");
     let lock_before = std::fs::read(&lock).ok();
     let restore = || match &lock_before {
@@ -503,6 +507,24 @@ pub fn run_cargo(req: &BuildRequest) -> BuildReport {
     if report.error.as_ref().is_some_and(|e| matches!(e.0, "build_script" | "third_party_crate" | "outside_root" | "proc_macro")) {
         lock.restore();
     }
+    // The authoritative compile-time path check: every file rustc read for the module (its
+    // dep-info) lies inside the module's folder. A refused build loads nothing, and its
+    // diagnostics go (an include! error can echo the file it read).
+    if report.ok {
+        let dep = report.package.as_deref().and_then(|name| report.artifacts.iter().find_map(|a| crate::paths::find_dep_info(a, name)));
+        let checked = match dep {
+            Some(d) => crate::paths::check_dep_info(&d, &req.dir, &workspace_root(&req.dir)),
+            None => Err(("source_path", "the build left no dep-info to check which files it read; the module isn't loaded".to_owned())),
+        };
+        if let Err((code, message)) = checked {
+            report.ok = false;
+            report.error = Some((code, message));
+            report.library = None;
+            report.diagnostics.clear();
+            report.stderr_tail.clear();
+            return BuildReport { build_time: start.elapsed(), ..report };
+        }
+    }
     // Determinism lints on the module's sources (crate::lint): warnings after the compiler's.
     report.diagnostics.extend(crate::lint::scan_dir(&req.dir));
     report.build_time = start.elapsed();
@@ -612,6 +634,7 @@ fn cargo_once(req: &BuildRequest) -> BuildReport {
             Message::Artifact { manifest: m, name, kinds, files, fresh, .. } if fix::canonical(&m) == manifest => {
                 report.package = Some(name);
                 report.fresh = fresh;
+                report.artifacts.extend(files.iter().cloned());
                 if kinds.iter().any(|k| k == "cdylib") {
                     report.library = files.into_iter().find(|f| {
                         let ext = f.extension().and_then(|e| e.to_str()).unwrap_or_default();

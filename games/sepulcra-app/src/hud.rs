@@ -133,6 +133,37 @@ impl Hud {
         Ok(ui)
     }
 
+    /// Hot reload: the theme and screens whose files changed (`names`: file stems under `ui/`,
+    /// `theme` for the theme), in the window's UI and the capture UI. Screens keep their
+    /// visibility. A file that doesn't load keeps what was there; its error is returned.
+    pub fn reload(&mut self, names: &[String]) -> Vec<String> {
+        let mut errors = Vec::new();
+        let Some(dir) = self.dir.clone() else { return errors };
+        let uis = self.ui.iter_mut().chain(self.capture.as_mut().map(|(ui, _)| ui));
+        for ui in uis {
+            if names.iter().any(|n| n == "theme") {
+                let r = std::fs::read_to_string(dir.join("theme.json")).map_err(|e| e.to_string()).and_then(|t| Theme::from_json_str(&t).map_err(|e| e.to_string())).and_then(|t| ui.set_theme(t).map_err(|e| e.to_string()));
+                if let Err(e) = r {
+                    errors.push(format!("ui/theme.json: {e}"));
+                }
+            }
+            for n in names.iter().filter(|n| *n != "theme") {
+                let r = std::fs::read_to_string(dir.join(format!("{n}.json"))).map_err(|e| e.to_string()).and_then(|t| ui.load_screen(&t).map(|_| ()).map_err(|e| e.to_string()));
+                if let Err(e) = r {
+                    errors.push(format!("ui/{n}.json: {e}"));
+                }
+            }
+        }
+        // Lay out again on the next frame.
+        self.laid_out = None;
+        errors.sort();
+        errors.dedup();
+        if let Some(e) = errors.first() {
+            self.problem = Some(e.clone());
+        }
+        errors
+    }
+
     /// A HUD that draws nothing (before the game starts).
     pub fn off(why: &str) -> Hud {
         Hud {
