@@ -1509,13 +1509,15 @@ impl Streamer {
             first.append(&mut self.pending);
             self.pending = first;
         }
-        // Mesh memory ahead of need: when the blocks are over ~70% full (or empty) and uploads
-        // are coming, the next block is started, its `vkAllocateMemory` (milliseconds on the Intel
-        // iGPU) on a worker thread. Not past the memory budget, and not while the budget is full
-        // (the items waiting are blocked by it: a new block would sit empty, held).
+        // Mesh memory ahead of need: when the blocks are over 40% full and uploads are coming,
+        // the next block is started, its `vkAllocateMemory` (milliseconds on the Intel iGPU) on
+        // a worker thread.
         let (free, total, next) = gpu.mesh_space();
         let wanted_soon = !self.pending.is_empty() || !proxies.is_empty();
-        let room = (total + next) as f64 <= self.cfg.memory_mb * 1_048_576.0 * 1.25 && !self.memory_full;
+        // While the blocks hold less than the memory budget: what is resident lives in them, so
+        // a world filling its budget still gets its last block ahead (a measured 57 ms otherwise),
+        // and blocks never grow past the budget by more than one block.
+        let room = (total as f64) < self.cfg.memory_mb * 1_048_576.0;
         let backoff = self.grow_failed.is_some_and(|t| t.elapsed() < Duration::from_secs(1));
         // (Under 60% of a block free: at 8 MB a frame of uploads, the allocation has a few
         // frames to finish before anything needs it.)
