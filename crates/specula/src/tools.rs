@@ -318,6 +318,8 @@ pub struct Tools {
     pub(crate) lex_natives: specula_lex::Natives,
     /// Kept `balance_tune` jobs.
     pub(crate) balance_jobs: crate::balance_tools::Jobs,
+    /// Where `lex_export` writes documents too big to answer inline.
+    pub(crate) lex_exports: crate::lex_tools::Exports,
     /// Default response formats, the engine's and each session's (see [`crate::response`]).
     formats: std::sync::Arc<crate::response::Defaults>,
     /// Tools that take `response_format` themselves (a session's detailed default is passed on).
@@ -341,9 +343,16 @@ impl Tools {
             lex_locks: Default::default(),
             lex_natives: Default::default(),
             balance_jobs: Default::default(),
+            lex_exports: Default::default(),
             formats: crate::response::Defaults::new(crate::response::Format::Concise),
             native_format,
         }
+    }
+
+    /// The engine's captures folder (`lex_export` writes big documents there).
+    pub fn with_capture_dir(mut self, dir: std::path::PathBuf) -> Tools {
+        self.lex_exports.dir = Some(dir);
+        self
     }
 
     /// Uses `formats` for default response formats (shared with the engine thread).
@@ -2022,7 +2031,9 @@ fn definitions() -> Vec<ToolDef> {
             name: "world_load".into(),
             description: "Replace the whole live world (every agent's work) with a saved one and make it the current \
                           world. Refuses while there are unsaved changes unless force is true, and while another \
-                          agent holds a live claim (error claimed, listing them; force doesn't override claims)."
+                          agent holds a live claim (error claimed, listing them; force doesn't override claims) or a \
+                          playtest runs (playtest_running, retry_after_ms). World files hold no live Lex runs: runs \
+                          live before the load stop, and the answer's lex_live lists them."
                 .into(),
             input_schema: schema(
                 vec![
