@@ -223,6 +223,19 @@ entities only; everything else is the gap.
   *Why:* this session's lanes clobbered a shared scratch folder, one killed other lanes' engines, and engines
   collided on ports.
   *Done 2026-10-18:* `lease_*` tools: ports (checked against the OS listener table, never a wildcard bind), advisory GPU ms per second, scratch folders.
+- [ ] ➕ **Disk footprint budget** (owner, 2026-10-22: sort it out "before it impacts someone else's system ...
+  especially when they have even less space"). A swarm must not fill the operator's disk. Measured on 2026-10-22:
+  about 30 build folders (one per lane and reviewer, each 5-15 GB) took a 1 TB drive from 340 GB free to full, and a
+  lane's link failed with "No space left on device".
+  - Disk use reported as data (`engine_info.disk`): free space, and the engine's own caches, captures, saves,
+    journals, module build output and scratch leases.
+  - A budget from `perf.toml [disk]`, with the oldest captures, cache entries and scratch pruned first. Agents are
+    warned before a write would cross the budget, and refused (structured) below a free-space floor.
+  - Module builds share one Cargo target per module, and `logic_build` drops stale artefacts.
+  - Scratch leases expire and are cleaned up.
+  - A swarm guide in the docs: shared targets for lanes, `-j` limits, and cleaning merged lanes.
+  *Why:* operators with small disks shouldn't find out the hard way, and cleanup done under pressure is how real
+  work gets deleted.
 - [ ] **Role templates** (M1, growing): builder, reviewer, playtester, art director, sight-skeptic, performance
   auditor. They live in `.claude/agents/`, with Grok equivalents when used.
 - [x] **Headless playtest swarms** (M3): many headless engines on separate ports, each run by an agent testing one path,
