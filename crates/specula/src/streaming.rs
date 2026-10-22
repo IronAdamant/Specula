@@ -1607,8 +1607,14 @@ impl Streamer {
                 continue;
             }
             // No room in the mesh blocks while one grows on the worker: put off (queuing would
-            // wait for the allocation); the block joins at a flush.
-            if gpu.mesh_growing() && !gpu.mesh_fits(est) {
+            // wait for the allocation); the block joins at a flush. A build's estimate counts 28
+            // bytes a vertex; its parts may carry skin (8) and UV + tangent (16) streams too, so
+            // twice the estimate must fit (a proxy group's is exact).
+            let need = match item {
+                Item::Build(_) => est.saturating_mul(2),
+                Item::Proxy(_) => est,
+            };
+            if gpu.mesh_growing() && !gpu.mesh_fits(need) {
                 self.frame.deferred += 1;
                 continue;
             }

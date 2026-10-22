@@ -272,7 +272,10 @@ impl Blocks {
         g.waiting = None;
         match got {
             Ok(memory) => {
-                let buffer = dev.adopt_buffer(handle, memory, bytes, MemoryKind::Meshes)?;
+                let buffer = dev.adopt_buffer(handle, memory, bytes, MemoryKind::Meshes).inspect_err(|_| {
+                    self.grow_failures += 1;
+                    self.failed_at = Some(std::time::Instant::now());
+                })?;
                 self.insert(Block { buffer, free: vec![(0, block)], used: 0 });
                 self.grown += 1;
                 Ok(())
