@@ -134,10 +134,13 @@ pub(crate) struct Blocks {
     /// Blocks grown ahead (adopted), and growths that failed.
     pub grown: u64,
     pub grow_failures: u64,
+    /// When a growth last failed: no new one for a second (out of memory, typically).
+    failed_at: Option<std::time::Instant>,
 }
 
 /// A worker thread making `vkAllocateMemory` calls for mesh blocks, so no frame waits for one
-/// (2-125 ms each on a busy Intel iGPU). One growth at a time.
+/// (2-125 ms each on a busy Intel iGPU). One growth at a time. Its owner joins it in
+/// [`Blocks::destroy`] (`GpuInner::drop` always runs that, the device idle and still alive).
 struct Grower {
     tx: Option<std::sync::mpsc::Sender<(u64, u32)>>,
     rx: std::sync::mpsc::Receiver<Result<VkDeviceMemory, VkResult>>,
@@ -235,7 +238,7 @@ impl Blocks {
     /// Starts the next block ahead of need: its buffer now (cheap), its memory on the worker
     /// thread; [`Blocks::poll_grow`] adopts it once allocated. One growth at a time.
     pub fn grow(&mut self, dev: &Device) -> Result<(), GpuError> {
-        if self.grower.as_ref().is_some_and(|g| g.waiting.is_some()) {
+        if self.growing() || self.failed_at.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(1)) {
             return Ok(());
         }
         if self.grower.is_none() {
@@ -277,9 +280,21 @@ impl Blocks {
             Err(r) => {
                 dev.discard_unbound(handle, VK_NULL_HANDLE);
                 self.grow_failures += 1;
+                self.failed_at = Some(std::time::Instant::now());
                 Err(GpuError::vk("vkAllocateMemory (a mesh block, ahead)", r))
             }
         }
+    }
+
+    /// A block is growing ahead (its memory not allocated yet).
+    pub fn growing(&self) -> bool {
+        self.grower.as_ref().is_some_and(|g| g.waiting.is_some())
+    }
+
+    /// Whether a mesh of `bytes` fits a block now, without allocating.
+    pub fn fits(&self, bytes: u64) -> bool {
+        let size = bytes.div_ceil(RANGE_ALIGN) * RANGE_ALIGN;
+        self.blocks.iter().flatten().any(|b| b.free.iter().any(|&(_, len)| len >= size))
     }
 
     /// Gives a range back (no frame or batch may still use it); an empty block is freed when

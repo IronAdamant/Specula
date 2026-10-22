@@ -1517,7 +1517,10 @@ impl Streamer {
         let wanted_soon = !self.pending.is_empty() || !proxies.is_empty();
         let room = (total + next) as f64 <= self.cfg.memory_mb * 1_048_576.0 * 1.25 && !self.memory_full;
         let backoff = self.grow_failed.is_some_and(|t| t.elapsed() < Duration::from_secs(1));
-        if wanted_soon && room && !backoff && (free as f64) < next as f64 * 0.3 {
+        // (Under 60% of a block free: at 8 MB a frame of uploads, the allocation has a few
+        // frames to finish before anything needs it.)
+        // (The very first block is made by the first upload: nothing to hide it behind yet.)
+        if wanted_soon && room && !backoff && total > 0 && (free as f64) < next as f64 * 0.6 {
             if let Err(e) = gpu.grow_mesh_space() {
                 // (Out of memory, typically: tried again a second later; uploads go on meanwhile.)
                 self.grow_failed = Some(Instant::now());
@@ -1600,6 +1603,12 @@ impl Streamer {
             // An item's cost: a fixed part (buffer creation, recording) plus its size.
             let est_ms = self.ms_per_item + est as f64 / 1_048_576.0 * self.ms_per_mb;
             if self.frame_items > 0 && (spent + est_ms > budget_ms || self.frame_bytes + est > budget_bytes) {
+                self.frame.deferred += 1;
+                continue;
+            }
+            // No room in the mesh blocks while one grows on the worker: put off (queuing would
+            // wait for the allocation); the block joins at a flush.
+            if gpu.mesh_growing() && !gpu.mesh_fits(est) {
                 self.frame.deferred += 1;
                 continue;
             }

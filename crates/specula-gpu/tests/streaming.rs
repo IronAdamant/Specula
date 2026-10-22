@@ -155,6 +155,14 @@ fn large_and_many_batches_stay_correct() {
         let (free, grown, _) = gpu.mesh_space();
         assert_eq!(grown, total + next, "{test}: one more block");
         assert!(free >= next, "{test}: the new block is empty");
+        // It joins without anyone waiting for it (polled, as a streamer does).
+        let t = std::time::Instant::now();
+        while gpu.mesh_growing() && t.elapsed() < std::time::Duration::from_secs(10) {
+            gpu.mesh_fits(1);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        eprintln!("{test}: a {next}-byte block grew on the worker in {:?}", t.elapsed());
+        assert!(!gpu.mesh_growing() && gpu.mesh_fits(1), "{test}: the block joined");
         let (cv, ci) = cube();
         let small = gpu.queue_mesh(&cv, &ci, &MeshStreams::default()).unwrap();
         assert_eq!(gpu.mesh_space().1, grown, "{test}: no allocation for a mesh that fits");
