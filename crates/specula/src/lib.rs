@@ -113,7 +113,7 @@ const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 
 const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|integrated|<index>] [--size WxH] \
 [--captures DIR] [--worlds DIR] [--world NAME] [--saves DIR] [--cache DIR] [--assets DIR] [--style FILE] [--perf FILE] \
-[--paused] [--response-format concise|detailed] [--physics-threads N] [-- GAME ARGS...]";
+[--paused] [--max-fps N] [--response-format concise|detailed] [--physics-threads N] [-- GAME ARGS...]";
 
 /// How long a capture waits (parked, the engine serving others) for models still building.
 const CAPTURE_BUILD_WAIT: Duration = Duration::from_secs(10);
@@ -168,6 +168,8 @@ struct Args {
     /// Threads physics may use (`--physics-threads`, 1..64, default 1): the narrowphase, and
     /// with the world's `physics.coloured` the contact solver. The results never depend on it.
     physics_threads: usize,
+    /// The window's frame cap (`--max-fps`, 20..1000; over `perf.toml` `[window] max_fps`).
+    max_fps: Option<u32>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -193,6 +195,7 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
         paused: false,
         response_format: response::Format::Concise,
         physics_threads: 1,
+        max_fps: None,
     };
     let mut it = argv;
     while let Some(flag) = it.next() {
@@ -207,6 +210,13 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--port" => args.port = value()?.parse().map_err(|_| format!("bad port\n{USAGE}"))?,
             "--headless" => args.headless = true,
             "--paused" => args.paused = true,
+            "--max-fps" => {
+                let range = schedule::MIN_MAX_FPS..=schedule::MAX_MAX_FPS;
+                args.max_fps = Some(value()?.parse().ok().filter(|n| range.contains(n)).ok_or_else(|| {
+                    format!("--max-fps must be {}..{} frames a second
+{USAGE}", schedule::MIN_MAX_FPS, schedule::MAX_MAX_FPS)
+                })?);
+            }
             "--response-format" => {
                 args.response_format = match value()?.as_str() {
                     "concise" => response::Format::Concise,
@@ -307,6 +317,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     );
     engine.world.set_shape_limits(perf_cfg.shape_limits());
     engine.frame_floor = (perf_cfg.swarm.frame_floor_fps, None);
+    engine.max_fps = args.max_fps.or(perf_cfg.window.max_fps);
     engine.lex_live.set_limits(perf_cfg.lex_live);
     engine.stream = streaming::Streamer::new(perf_cfg.streaming.clone(), kind);
     engine.perf_cfg = perf_cfg;
@@ -568,6 +579,8 @@ struct Engine {
     /// The window's frame floor under a swarm's backlog, and who set it (`None`: perf.toml or the
     /// default); see `schedule` and `swarm_settings`.
     frame_floor: (u32, Option<String>),
+    /// The window's frame cap (`--max-fps`, `perf.toml` `[window] max_fps`; `None`: every vblank).
+    max_fps: Option<u32>,
     /// Game-logic modules (hot-reloaded libraries; see [`logic`]).
     logic: logic::LogicHost,
     /// Floating-point environment changes found at startup and between ticks, and restored
@@ -690,6 +703,7 @@ impl Engine {
             traces_written: 0,
             board_io: swarm_engine::BoardSaver::default(),
             frame_floor: (schedule::DEFAULT_FRAME_FLOOR_FPS, None),
+            max_fps: None,
             logic: {
                 // Modules' move_character is the physics P2 controller (the space is lent to it
                 // around module calls: lend_physics / return_physics).
@@ -1481,6 +1495,7 @@ impl Engine {
                 schedule.set_display_refresh(hz.map(|hz| Duration::from_secs_f64(1.0 / hz)));
             }
             schedule.set_frame_floor(self.frame_floor.0);
+            schedule.set_max_fps(self.max_fps);
             self.schedule = schedule;
             let window = if minimized { schedule::MINIMIZED_SERVE } else { schedule.window() };
             let serve_start = Instant::now();

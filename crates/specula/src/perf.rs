@@ -483,6 +483,8 @@ pub struct PerfConfig {
     /// `[swarm]`: the window's frame floor under a backlog and the resource lease pools (see
     /// [`SwarmConfig`]).
     pub swarm: SwarmConfig,
+    /// `[window]`: the window's own settings (see [`WindowConfig`]).
+    pub window: WindowConfig,
     /// `[lex_live]`: live Lex runs' work limits (see [`crate::lex_live::Limits`]).
     pub lex_live: crate::lex_live::Limits,
     /// `[streaming]`: upload and memory budgets, cells, HLOD (see [`crate::streaming`]).
@@ -499,6 +501,7 @@ impl Default for PerfConfig {
             history_frames: HISTORY,
             shapes: crate::two_d::ShapeLimits::default(),
             swarm: SwarmConfig::default(),
+            window: WindowConfig::default(),
             lex_live: crate::lex_live::LIMITS,
             streaming: crate::streaming::StreamTable::default(),
             base: Json::obj::<&str>([]),
@@ -556,9 +559,10 @@ impl PerfConfig {
                     }
                 }
                 "swarm" => cfg.swarm = SwarmConfig::parse(v)?,
+                "window" => cfg.window = WindowConfig::parse(v)?,
                 "lex_live" => cfg.lex_live = crate::lex_live::Limits::parse(v)?,
                 "streaming" => cfg.streaming = crate::streaming::StreamTable::parse(v)?,
-                other => return Err(format!("unknown section '{other}' (known: profiler, budgets, adapter, swarm, lex_live, streaming)")),
+                other => return Err(format!("unknown section '{other}' (known: profiler, budgets, adapter, swarm, window, lex_live, streaming)")),
             }
         }
         Budgets::from_json(&cfg.base, "budgets")?;
@@ -679,6 +683,35 @@ impl SwarmConfig {
                 other => {
                     return Err(format!("unknown key '{other}' in [swarm] (known: frame_floor_fps, lease_ports, scratch_root, gpu_ms_per_s)"))
                 }
+            }
+        }
+        Ok(cfg)
+    }
+}
+
+/// `perf.toml` `[window]`: the window's settings.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WindowConfig {
+    /// `max_fps`: the window presents at most this many frames a second, on whole vblanks
+    /// (20..=1000; default none: every vblank). `--max-fps` overrides it. See `schedule`.
+    pub max_fps: Option<u32>,
+}
+
+impl WindowConfig {
+    fn parse(v: &Json) -> Result<WindowConfig, String> {
+        use crate::schedule::{MAX_MAX_FPS, MIN_MAX_FPS};
+        let mut cfg = WindowConfig::default();
+        for (k, x) in v.as_object().ok_or("[window] must be a table")? {
+            match k.as_str() {
+                "max_fps" => {
+                    cfg.max_fps = Some(
+                        x.as_u64()
+                            .filter(|n| (u64::from(MIN_MAX_FPS)..=u64::from(MAX_MAX_FPS)).contains(n))
+                            .ok_or(format!("[window] max_fps must be a whole number of frames a second from {MIN_MAX_FPS} to {MAX_MAX_FPS}"))?
+                            as u32,
+                    );
+                }
+                other => return Err(format!("unknown key '{other}' in [window] (known: max_fps)")),
             }
         }
         Ok(cfg)
@@ -1567,6 +1600,17 @@ mod tests {
         for bad in ["work_per_tick = 0", "step_work = 9000000", "backstop_ms = 1", "work = 3"] {
             let err = PerfConfig::parse(&format!("[lex_live]\n{bad}\n")).unwrap_err();
             assert!(err.contains("[lex_live]"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn the_window_section_sets_the_frame_cap() {
+        assert_eq!(PerfConfig::default().window.max_fps, None, "every vblank by default");
+        let cfg = PerfConfig::parse("[window]\nmax_fps = 60\n").unwrap();
+        assert_eq!(cfg.window.max_fps, Some(60));
+        for bad in ["max_fps = 5", "max_fps = 2000", "max_fps = 60.5", "fps = 60"] {
+            let err = PerfConfig::parse(&format!("[window]\n{bad}\n")).unwrap_err();
+            assert!(err.contains("[window]"), "{bad}: {err}");
         }
     }
 

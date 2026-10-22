@@ -32,6 +32,11 @@
 //! frame waits in the swapchain's queue for its vblank). One sequential agent never has two calls
 //! queued, so however fast it is, the human's window keeps the display's full rate.
 //!
+//! **The frame cap** ([`Schedule::set_max_fps`]; `--max-fps`, `perf.toml` `[window] max_fps`)
+//! presents at most that often, on the fewest whole vblanks that keep under it (60 fps: every 4th
+//! at 240 Hz, every 3rd at 144 Hz), steered like a backlog's skipped vblanks; agents get the rest
+//! of each period and the GPU idles in it. Off by default (every vblank). It wins over the floor.
+//!
 //! **Late frames** (the gap over the period plus half a refresh) raise the caution. A late frame
 //! whose present blocked over a refresh was submitted before its vblank and skipped by the display
 //! or compositor (it happens without any serving, e.g. on hybrid-GPU laptops): it isn't counted
@@ -81,6 +86,9 @@ pub const MINIMIZED_SERVE: Duration = Duration::from_millis(16);
 pub const DEFAULT_FRAME_FLOOR_FPS: u32 = 60;
 pub const MIN_FRAME_FLOOR_FPS: u32 = 20;
 pub const MAX_FRAME_FLOOR_FPS: u32 = 240;
+/// The frame cap's range (`--max-fps`, `perf.toml` `[window] max_fps`).
+pub const MIN_MAX_FPS: u32 = 20;
+pub const MAX_MAX_FPS: u32 = 1000;
 /// Windows ending with a backlog, in a row, that make one (and as many clear ones end it).
 const BUSY_AFTER: u8 = 4;
 /// Calls queued as a window ends that make it end with a backlog (one sequential agent has at
@@ -242,6 +250,8 @@ pub struct Schedule {
     caution: f32,
     /// Under a backlog, frames come at least this often (the frame floor, as a period).
     busy_frame: Duration,
+    /// The frame cap as a period: frames come at most this often (`None`: every vblank).
+    cap_frame: Option<Duration>,
     /// Windows that ended with a backlog, counted up to `2 * BUSY_AFTER` and down by clear
     /// ones; a backlog from [`BUSY_AFTER`].
     pressure: u8,
@@ -274,6 +284,7 @@ impl Default for Schedule {
             work: Duration::ZERO,
             caution: 1.0,
             busy_frame: floor_period(DEFAULT_FRAME_FLOOR_FPS),
+            cap_frame: None,
             pressure: 0,
             windows: 0,
             calls: 0,
@@ -300,6 +311,7 @@ impl Schedule {
             ("margin_ms", ms(self.margin())),
             ("backlog", Json::from(self.busy())),
             ("frame_floor_fps", Json::from(self.frame_floor_fps())),
+            ("max_fps", self.max_fps().map_or(Json::Null, Json::from)),
             ("call_cost_ms", Json::obj(Class::ALL.map(|c| (c.name(), ms(self.cost(c, now)))))),
             ("windows", Json::from(self.windows)),
             ("backlog_windows", Json::from(self.busy_windows)),
@@ -321,6 +333,20 @@ impl Schedule {
     /// The frame floor in frames a second.
     pub fn frame_floor_fps(&self) -> u32 {
         (1_000_000_000 / self.busy_frame.as_nanos().max(1)) as u32
+    }
+
+    /// Sets the frame cap: the window presents at most `fps` frames a second (clamped to
+    /// [`MIN_MAX_FPS`]..=[`MAX_MAX_FPS`]), on whole vblanks: the fewest that keep under it (60 at
+    /// 240 Hz: every 4th; at 144 Hz: every 3rd, 48 fps). `None`: every vblank. The time saved goes
+    /// to agents' calls, and the GPU idles in it (F3: a laptop's iGPU shares its power and memory
+    /// with the CPU and the desktop, so rendering frames nobody needs costs the frames that count).
+    pub fn set_max_fps(&mut self, fps: Option<u32>) {
+        self.cap_frame = fps.map(|fps| Duration::from_nanos(1_000_000_000 / u64::from(fps.clamp(MIN_MAX_FPS, MAX_MAX_FPS))));
+    }
+
+    /// The frame cap in frames a second (`None`: none).
+    pub fn max_fps(&self) -> Option<u32> {
+        self.cap_frame.map(|p| (1_000_000_000 / p.as_nanos().max(1)) as u32)
     }
 
     /// The current serve window.
@@ -354,16 +380,18 @@ impl Schedule {
     }
 
     /// The time between presents the window is sized for: the refresh interval, or under a
-    /// backlog the most whole refreshes that keep the frame floor.
+    /// backlog the most whole refreshes that keep the frame floor; with a frame cap, at least the
+    /// fewest whole refreshes that keep under it (the cap wins over the floor).
     pub fn period(&self) -> Duration {
         let refresh = self.refresh();
-        if !self.busy() {
-            return refresh;
-        }
         // A little slack, so 240 Hz measured at 4.17 ms still gives 4 at 60 fps; small enough
         // (1/256 of a refresh) that no whole-hertz display up to 360 Hz falls below the floor
         // (1/8 let a floor of 52 at 100 Hz give 50 fps).
-        let n = (self.busy_frame + refresh / 256).as_nanos() / refresh.as_nanos();
+        let slack = refresh / 256;
+        let mut n = if self.busy() { (self.busy_frame + slack).as_nanos() / refresh.as_nanos() } else { 1 };
+        if let Some(cap) = self.cap_frame {
+            n = n.max(cap.saturating_sub(slack).as_nanos().div_ceil(refresh.as_nanos()));
+        }
         refresh * n.max(1) as u32
     }
 
@@ -455,9 +483,10 @@ impl Schedule {
         self.sized = sized.clamp(least, MAX_SERVE.max(least));
         self.sized_for = period;
         self.serve = self.sized;
-        // Under a backlog frames skip vblanks on purpose: no probes (the interval is kept).
+        // Under a backlog or a cap frames skip vblanks on purpose: no probes (the interval is
+        // kept; a probe's early present would show at the next vblank, over the cap).
         self.since_probe += 1;
-        let measure = self.display.is_none() && !self.busy();
+        let measure = self.display.is_none() && period == self.refresh();
         if measure && (self.since_probe >= PROBE_EVERY || self.probe_count < FIRST_PROBES) {
             self.since_probe = 0;
             self.serve = MIN_SERVE;
@@ -674,6 +703,56 @@ mod tests {
         // Without a backlog the floor changes nothing.
         s.pressure = 0;
         assert_eq!(s.period(), HZ240);
+    }
+
+    /// The frame cap presents on the fewest whole vblanks that keep under it, with or without a
+    /// backlog (it wins over the floor), steers the gap to its period, and is clamped to its range.
+    #[test]
+    fn the_frame_cap_skips_vblanks_to_stay_under_it() {
+        let mut s = Schedule::default();
+        s.set_display_refresh(Some(HZ240));
+        run(&mut s, HZ240, ms(1.0), 10);
+        assert_eq!((s.max_fps(), s.period()), (None, HZ240));
+        s.set_max_fps(Some(60));
+        assert_eq!((s.max_fps(), s.period()), (Some(60), HZ240 * 4));
+        let mut t = s.last_frame.1.unwrap();
+        let mut gap = Duration::ZERO;
+        for _ in 0..60 {
+            // A free image: present returns at once, the frame waits in the queue for its vblank.
+            gap = s.window() + ms(1.2);
+            t += gap;
+            s.presented(s.last_frame.0 + 1, s.window(), Duration::ZERO, t);
+        }
+        assert!(gap.abs_diff(HZ240 * 4 - HZ240 / 4) < ms(0.05), "gap {gap:?}");
+        assert!(s.window() > HZ240 * 3, "agents get most of the period: {:?}", s.window());
+        // 144 Hz: two vblanks would be 72 fps, so three (48 fps); 60 Hz: every vblank.
+        s.set_display_refresh(Some(Duration::from_nanos(1_000_000_000 / 144)));
+        assert_eq!(s.period(), Duration::from_nanos(1_000_000_000 / 144) * 3);
+        s.set_display_refresh(Some(HZ60));
+        assert_eq!(s.period(), HZ60);
+        // A cap under the floor wins under a backlog; over it, the floor's skipping stays.
+        s.set_display_refresh(Some(HZ240));
+        s.pressure = BUSY_AFTER;
+        s.set_max_fps(Some(30));
+        assert_eq!(s.period(), HZ240 * 8);
+        s.set_max_fps(Some(120));
+        assert_eq!(s.period(), HZ240 * 4, "the 60 fps floor's skipping");
+        s.set_max_fps(Some(1));
+        assert_eq!(s.max_fps(), Some(MIN_MAX_FPS), "clamped");
+        s.set_max_fps(None);
+        assert_eq!(s.period(), HZ240 * 4);
+        // On every whole-hertz display the cap holds and is as close as whole vblanks allow.
+        for hz in 24u64..=360 {
+            let refresh = Duration::from_nanos(1_000_000_000 / hz);
+            let mut s = Schedule::default();
+            s.set_display_refresh(Some(refresh));
+            for fps in [MIN_MAX_FPS, 30, 48, 60, 90, 120, 144, 240] {
+                s.set_max_fps(Some(fps));
+                let (period, cap) = (s.period(), Duration::from_nanos(1_000_000_000 / u64::from(fps)));
+                assert!(period + refresh / 128 >= cap, "{fps} fps at {hz} Hz: period {period:?} < {cap:?}");
+                assert!(period == refresh || period < cap + refresh, "{fps} fps at {hz} Hz: one vblank too many");
+            }
+        }
     }
 
     /// Review round 3: the floor is a promise ("at least frame_floor_fps"): on every whole-hertz

@@ -79,6 +79,15 @@ post_bloom = 0.6
 post_tonemap = 0.2
 post_fxaa = 0.3
 
+# The window (`--max-fps N` overrides max_fps). A frame cap presents at most max_fps frames a second,
+# on whole vblanks (60: every 4th at 240 Hz, every 3rd at 144 Hz); the GPU idles the rest of each
+# period and agents' calls get it. On a laptop the iGPU shares its power and memory with the CPU and
+# the desktop: at 240 Hz uncapped Sepulcra kept the iGPU ~60% busy and DWM composed every frame;
+# capped at 60 the engine used ~30% and DWM half as much, and the GPU p95 fell from 10.4 to 6.3 ms
+# (2026-10-22; perf/README.md, "M3 exit proof"). Off by default: every vblank.
+# [window]
+# max_fps = 60                  # 20-1000
+
 # Swarm settings (the lead agent can also change frame_floor_fps live with swarm_settings, whose reply
 # suggests a floor from this machine's hardware).
 # [swarm]
