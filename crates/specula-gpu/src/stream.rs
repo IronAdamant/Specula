@@ -62,6 +62,9 @@ pub struct UploadStats {
     pub freed: u64,
     /// Items that did not fit a slot's arena and got their own staging buffer.
     pub dedicated_staging: u64,
+    /// Mesh blocks allocated ahead on the worker thread, and such allocations that failed.
+    pub mesh_blocks_grown: u64,
+    pub mesh_block_grow_failures: u64,
     /// Device-local mesh blocks, the bytes they hold and the bytes meshes use in them.
     pub mesh_blocks: u32,
     pub mesh_block_bytes: u64,
@@ -126,17 +129,55 @@ impl Block {
 #[derive(Default)]
 pub(crate) struct Blocks {
     blocks: Vec<Option<Block>>,
+    /// The worker that allocates blocks ahead of need (see [`Blocks::grow`]).
+    grower: Option<Grower>,
+    /// Blocks grown ahead (adopted), and growths that failed.
+    pub grown: u64,
+    pub grow_failures: u64,
+}
+
+/// A worker thread making `vkAllocateMemory` calls for mesh blocks, so no frame waits for one
+/// (2-125 ms each on a busy Intel iGPU). One growth at a time.
+struct Grower {
+    tx: Option<std::sync::mpsc::Sender<(u64, u32)>>,
+    rx: std::sync::mpsc::Receiver<Result<VkDeviceMemory, VkResult>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    /// The buffer waiting for its memory: `(buffer, bytes to allocate, block size)`.
+    waiting: Option<(VkBuffer, u64, u64)>,
+}
+
+impl Grower {
+    fn start(alloc: crate::device::RawAllocator) -> Option<Grower> {
+        let (tx, jobs) = std::sync::mpsc::channel::<(u64, u32)>();
+        let (done, rx) = std::sync::mpsc::channel();
+        let thread = std::thread::Builder::new()
+            .name("specula-mesh-alloc".into())
+            .spawn(move || {
+                for (size, type_index) in jobs {
+                    let r = alloc.allocate(size, type_index);
+                    if let Err(std::sync::mpsc::SendError(Ok(m))) = done.send(r) {
+                        alloc.free(m); // nobody is listening any more
+                    }
+                }
+            })
+            .ok()?;
+        Some(Grower { tx: Some(tx), rx, thread: Some(thread), waiting: None })
+    }
 }
 
 impl Blocks {
     /// A range of `bytes` for a mesh: `(block, offset, its buffer, the range's size)`.
     pub fn alloc(&mut self, dev: &Device, bytes: u64) -> Result<(u32, u64, VkBuffer, u64), GpuError> {
         let size = bytes.div_ceil(RANGE_ALIGN) * RANGE_ALIGN;
-        for (i, b) in self.blocks.iter_mut().enumerate() {
-            if let Some(b) = b {
-                if let Some(at) = b.take(size) {
-                    return Ok((i as u32, at, b.buffer.handle, size));
-                }
+        if let Some(found) = self.take(size) {
+            return Ok(found);
+        }
+        // A block growing ahead that would hold it: waited for (the rest of its allocation).
+        if self.grower.as_ref().and_then(|g| g.waiting).is_some_and(|(_, _, block)| block >= size) {
+            let _z = specula_core::profile::zone("gpu.block_wait");
+            self.poll_grow(dev, true)?;
+            if let Some(found) = self.take(size) {
+                return Ok(found);
             }
         }
         let block_bytes = size.max(self.next_block_bytes());
@@ -144,6 +185,17 @@ impl Blocks {
         let b = self.blocks[i].as_mut().expect("just added");
         let at = b.take(size).expect("a fresh block holds it");
         Ok((i as u32, at, b.buffer.handle, size))
+    }
+
+    fn take(&mut self, size: u64) -> Option<(u32, u64, VkBuffer, u64)> {
+        for (i, b) in self.blocks.iter_mut().enumerate() {
+            if let Some(b) = b {
+                if let Some(at) = b.take(size) {
+                    return Some((i as u32, at, b.buffer.handle, size));
+                }
+            }
+        }
+        None
     }
 
     /// The size the next block gets (16, 32, then 64 MB).
@@ -156,8 +208,11 @@ impl Blocks {
     fn add(&mut self, dev: &Device, bytes: u64) -> Result<usize, GpuError> {
         let _z = specula_core::profile::zone("gpu.block_new");
         let buffer = crate::gpu::create_mesh_buffer(dev, bytes)?;
-        let block = Block { buffer, free: vec![(0, bytes)], used: 0 };
-        Ok(match self.blocks.iter().position(Option::is_none) {
+        Ok(self.insert(Block { buffer, free: vec![(0, bytes)], used: 0 }))
+    }
+
+    fn insert(&mut self, block: Block) -> usize {
+        match self.blocks.iter().position(Option::is_none) {
             Some(i) => {
                 self.blocks[i] = Some(block);
                 i
@@ -166,19 +221,65 @@ impl Blocks {
                 self.blocks.push(Some(block));
                 self.blocks.len() - 1
             }
-        })
+        }
     }
 
-    /// `(free bytes in every block, bytes in every block, the next block's size)`.
+    /// `(free bytes in every block, bytes in every block, the next block's size)`; a block
+    /// growing ahead counts as there (free).
     pub fn space(&self) -> (u64, u64, u64) {
         let (free, total) = self.blocks.iter().flatten().fold((0, 0), |(f, t), b| (f + (b.buffer.bytes - b.used), t + b.buffer.bytes));
-        (free, total, self.next_block_bytes())
+        let growing = self.grower.as_ref().and_then(|g| g.waiting).map_or(0, |(_, _, block)| block);
+        (free + growing, total + growing, self.next_block_bytes())
     }
 
-    /// Makes the next block now, ahead of need (see [`crate::Gpu::grow_mesh_space`]).
+    /// Starts the next block ahead of need: its buffer now (cheap), its memory on the worker
+    /// thread; [`Blocks::poll_grow`] adopts it once allocated. One growth at a time.
     pub fn grow(&mut self, dev: &Device) -> Result<(), GpuError> {
-        let bytes = self.next_block_bytes();
-        self.add(dev, bytes).map(|_| ())
+        if self.grower.as_ref().is_some_and(|g| g.waiting.is_some()) {
+            return Ok(());
+        }
+        if self.grower.is_none() {
+            self.grower = Grower::start(dev.raw_allocator());
+        }
+        let block = self.next_block_bytes();
+        let usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        let (handle, req) = dev.create_buffer_unbound(block, usage)?;
+        let Some(type_index) = dev.memory_type(req.memory_type_bits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0) else {
+            dev.discard_unbound(handle, VK_NULL_HANDLE);
+            return Err(GpuError::new(format!("no device-local memory type for a mesh block (type bits {:#x})", req.memory_type_bits)));
+        };
+        let sent = self.grower.as_ref().and_then(|g| g.tx.as_ref()).is_some_and(|tx| tx.send((req.size, type_index)).is_ok());
+        if !sent {
+            // No worker (it couldn't start): made here, as before.
+            dev.discard_unbound(handle, VK_NULL_HANDLE);
+            return self.add(dev, block).map(|_| ());
+        }
+        if let Some(g) = self.grower.as_mut() {
+            g.waiting = Some((handle, req.size, block));
+        }
+        Ok(())
+    }
+
+    /// Adopts a block grown ahead once its memory is allocated (`wait`: blocks until then).
+    pub fn poll_grow(&mut self, dev: &Device, wait: bool) -> Result<(), GpuError> {
+        let Some(g) = self.grower.as_mut() else { return Ok(()) };
+        let Some((handle, bytes, block)) = g.waiting else { return Ok(()) };
+        let got = if wait { g.rx.recv().ok() } else { g.rx.try_recv().ok() };
+        let Some(got) = got else { return Ok(()) };
+        g.waiting = None;
+        match got {
+            Ok(memory) => {
+                let buffer = dev.adopt_buffer(handle, memory, bytes, MemoryKind::Meshes)?;
+                self.insert(Block { buffer, free: vec![(0, block)], used: 0 });
+                self.grown += 1;
+                Ok(())
+            }
+            Err(r) => {
+                dev.discard_unbound(handle, VK_NULL_HANDLE);
+                self.grow_failures += 1;
+                Err(GpuError::vk("vkAllocateMemory (a mesh block, ahead)", r))
+            }
+        }
     }
 
     /// Gives a range back (no frame or batch may still use it); an empty block is freed when
@@ -213,6 +314,21 @@ impl Blocks {
     }
 
     fn destroy(&mut self, dev: &Device) {
+        if let Some(mut g) = self.grower.take() {
+            // The worker ends with its job list; what it allocated meanwhile is freed here.
+            g.tx = None;
+            if let Some(t) = g.thread.take() {
+                let _ = t.join();
+            }
+            while let Ok(r) = g.rx.try_recv() {
+                if let Ok(m) = r {
+                    dev.discard_unbound(VK_NULL_HANDLE, m);
+                }
+            }
+            if let Some((handle, ..)) = g.waiting {
+                dev.discard_unbound(handle, VK_NULL_HANDLE);
+            }
+        }
         for b in self.blocks.drain(..).flatten() {
             dev.destroy_buffer(&b.buffer);
         }
@@ -274,6 +390,7 @@ impl Uploads {
         s.in_flight = self.slots.iter().filter(|s| s.state != SlotState::Free).count() as u32;
         s.retired_pending = (self.retired.len() + self.retired_now.len()) as u32;
         (s.mesh_blocks, s.mesh_block_bytes, s.mesh_block_used) = self.blocks.usage();
+        (s.mesh_blocks_grown, s.mesh_block_grow_failures) = (self.blocks.grown, self.blocks.grow_failures);
         s
     }
 
@@ -396,6 +513,9 @@ impl Uploads {
     /// resources were retired since the last submission. Frees what finished batches release.
     pub fn flush(&mut self, dev: &Device) -> Result<(), GpuError> {
         self.poll(dev);
+        // A block grown ahead joins once its memory is there (an error is counted, not fatal:
+        // the next growth tries again).
+        let _ = self.blocks.poll_grow(dev, false);
         if self.recording.is_none() && self.retired_now.is_empty() {
             return Ok(());
         }

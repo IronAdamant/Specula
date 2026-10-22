@@ -484,6 +484,7 @@ impl Hlod {
             let stale = c.ready.as_ref().is_some_and(|r| r.key != c.content.key);
             if c.want.is_none() || stale {
                 c.ready = None;
+                self.retired_any |= !c.staged.1.is_empty();
                 for (m, ..) in c.staged.1.drain(..) {
                     gpu.retire_mesh(m);
                 }

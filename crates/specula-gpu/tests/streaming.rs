@@ -158,6 +158,7 @@ fn large_and_many_batches_stay_correct() {
         let (cv, ci) = cube();
         let small = gpu.queue_mesh(&cv, &ci, &MeshStreams::default()).unwrap();
         assert_eq!(gpu.mesh_space().1, grown, "{test}: no allocation for a mesh that fits");
+        assert_eq!(gpu.upload_stats().mesh_blocks_grown, 1, "{test}: the block came from the worker");
         gpu.retire_mesh(small);
         let sync = gpu.upload_mesh(&v, &idx).unwrap();
         let expected = render(&mut gpu, target, &[DrawItem::new(sync, IDENTITY, [0.3, 0.8, 0.4, 1.0])]);

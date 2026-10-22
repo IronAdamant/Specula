@@ -1265,9 +1265,9 @@ impl Gpu {
         self.inner.mesh_space()
     }
 
-    /// Allocates the next mesh block now, before a queued mesh needs it: a `vkAllocateMemory`
-    /// (milliseconds on some drivers) in a frame chosen for it instead of in the middle of an
-    /// upload.
+    /// Starts the next mesh block ahead of need: its `vkAllocateMemory` (milliseconds on some
+    /// drivers) runs on a worker thread, and the block joins at a later flush. A no-op while one
+    /// is growing.
     pub fn grow_mesh_space(&mut self) -> Result<(), GpuError> {
         self.inner.grow_mesh_space()
     }

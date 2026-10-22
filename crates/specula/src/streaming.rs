@@ -1509,17 +1509,15 @@ impl Streamer {
             first.append(&mut self.pending);
             self.pending = first;
         }
-        // Mesh memory ahead of need: when the blocks are over ~70% full (or empty), the next one
-        // is allocated in a frame of its own, with no uploads (its `vkAllocateMemory` takes
-        // milliseconds on the Intel iGPU; inside an upload frame it would add to them). Not past
-        // the memory budget: a world that fits uses what it has.
+        // Mesh memory ahead of need: when the blocks are over ~70% full (or empty) and uploads
+        // are coming, the next block is started, its `vkAllocateMemory` (milliseconds on the Intel
+        // iGPU) on a worker thread. Not past the memory budget, and not while the budget is full
+        // (the items waiting are blocked by it: a new block would sit empty, held).
         let (free, total, next) = gpu.mesh_space();
         let wanted_soon = !self.pending.is_empty() || !proxies.is_empty();
-        let room = (total + next) as f64 <= self.cfg.memory_mb * 1_048_576.0 * 1.25;
+        let room = (total + next) as f64 <= self.cfg.memory_mb * 1_048_576.0 * 1.25 && !self.memory_full;
         let backoff = self.grow_failed.is_some_and(|t| t.elapsed() < Duration::from_secs(1));
-        if wanted_soon && room && !backoff && (free as f64) < next as f64 * 0.3 && self.frame_tried == 0 {
-            self.frame_tried += 1;
-            self.frame.deferred += (self.pending.len() + proxies.len()) as u32;
+        if wanted_soon && room && !backoff && (free as f64) < next as f64 * 0.3 {
             if let Err(e) = gpu.grow_mesh_space() {
                 // (Out of memory, typically: tried again a second later; uploads go on meanwhile.)
                 self.grow_failed = Some(Instant::now());
@@ -1527,8 +1525,6 @@ impl Streamer {
                     self.upload_errors.push(format!("mesh memory not grown ahead: {e}"));
                 }
             }
-            self.totals.deferred += self.frame.deferred;
-            return;
         }
         if self.pending.is_empty() && proxies.is_empty() {
             self.blocked_bytes = 0;
