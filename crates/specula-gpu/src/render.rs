@@ -2319,6 +2319,9 @@ pub fn prepare_graph(
         let view = g.image(map).array_view;
         if descriptors.shadow_view != view {
             if descriptors.shadow_view != VK_NULL_HANDLE {
+                // Named so perf_capture shows it: a capture whose map has another shape than the
+                // window's would pay it twice per capture (scripts/shadow_rebind_check.py).
+                let _z = specula_core::profile::zone("gpu.shadow_rebind_wait");
                 dev.wait_idle();
             }
             descriptors.write_shadow(dev, view);
