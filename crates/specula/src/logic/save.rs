@@ -61,6 +61,7 @@ impl LogicHost {
                 w.str(k);
                 w.blob(&v.encode());
             }
+            // At most MAX_RNG_STREAMS (the handler refuses more), as the reader expects.
             w.len_u32(s.rngs.len());
             for (stream, rng) in &s.rngs {
                 let (state, inc) = rng.to_parts();
@@ -109,11 +110,12 @@ impl LogicHost {
                 let v = value(&mut r, "store.value")?;
                 s.put(&k, Some(v));
             }
-            let streams = r.count("rngs", 65_536, 20).map_err(bad)?;
+            // The handler's cap: what it allowed always loads.
+            let streams = r.count("rngs", MAX_RNG_STREAMS, 20).map_err(bad)?;
             for _ in 0..streams {
                 let stream = r.str("rngs.stream", 4096).map_err(bad)?;
                 let (state, inc) = (r.u64("rngs.state").map_err(bad)?, r.u64("rngs.inc").map_err(bad)?);
-                s.rngs.insert(stream, Rng::from_parts(state, inc));
+                s.put_rng(stream, Some(Rng::from_parts(state, inc)));
             }
             shared.insert(name, s);
         }
@@ -190,7 +192,8 @@ impl LogicHost {
     }
 
     /// A hash of the state modules keep in the engine (stores, RNG positions, pending events),
-    /// for the desync detector; `None` without modules.
+    /// for the desync detector; `None` without modules. Cheap per tick: the store's hash is
+    /// cached until the store changes, and the streams' is kept as they change.
     pub fn state_hash(&mut self) -> Option<u64> {
         if self.slots.is_empty() && self.shared.is_empty() {
             return None;
@@ -220,12 +223,9 @@ impl LogicHost {
                 }
             };
             h.write_u64(store);
-            for (stream, rng) in &s.rngs {
-                let (a, b) = rng.to_parts();
-                h.write_str(stream);
-                h.write_u64(a);
-                h.write_u64(b);
-            }
+            // The streams' hash is kept as they change (`Shared::draw`), not walked per tick.
+            h.write_u64(s.rngs.len() as u64);
+            h.write_u64(s.rng_sum);
         }
         for e in &self.pending_events {
             h.write_str(&e.name);

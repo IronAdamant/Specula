@@ -436,6 +436,11 @@ impl<'a> Cx<'a> {
 
     /// The next 32 random bits of the engine stream `stream` (seeded per module and stream, so
     /// a new stream never shifts another; the position survives reloads).
+    ///
+    /// A module keeps at most 1,024 streams: a new name past that fails with code `rng_full`.
+    /// Name streams by purpose (`"loot"`, `"spawns"`), never one per entity or tick (that
+    /// grows without bound); for per-entity randomness draw from a purpose stream in a fixed order
+    /// (entities sorted by id).
     pub fn random_u32(&mut self, stream: &str) -> Result<u32, SdkError> {
         let v = self.ask(Value::map().with("op", "rng").with("stream", stream))?;
         Ok(v.as_u64().unwrap_or(0) as u32)

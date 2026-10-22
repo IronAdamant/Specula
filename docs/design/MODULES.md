@@ -94,7 +94,12 @@ A fresh `Self::default()` handles every call, so a module has nowhere to keep st
 - **the state store** (`Cx::state` / `set_state`): a per-module key-value map of `Value`s (≤ 1,024 keys, ≤ 1 MiB),
   kept across reloads;
 - **RNG streams** (`Cx::random_*`): PCG32 per `(module, stream)`, seeded from the module's seed, positions kept
-  across reloads.
+  across reloads. At most **1,024 streams per module** (`MAX_RNG_STREAMS`): a new name past that is refused with
+  `rng_full` (old streams still draw), like `state_full`. Save games write at most that many and read at most that
+  many, so every save loads. Name streams by **purpose** (`loot`, `spawns`, `ai`), not one per entity or per tick:
+  a stream per entity grows without bound as entities come and go. For per-entity randomness, draw from the purpose
+  stream in a fixed order (entities sorted by id), or mix the entity id into the draw. The streams' hash for the desync
+  detector is kept as they change (a wrapping sum of per-stream hashes), so its per-tick cost doesn't grow with them.
 
 So a reload loses nothing by construction. `static mut`, `thread_local!`, `OnceLock` caches and threads are against
 the rules: they break determinism or dangle after an unload. (World files don't hold the state store and RNG positions;

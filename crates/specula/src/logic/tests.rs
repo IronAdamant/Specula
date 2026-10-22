@@ -530,6 +530,115 @@ fn a_saved_host_continues_exactly() {
     assert!(notes.iter().any(|n| n.get("module").and_then(Json::as_str) == Some("walker")), "{notes:?}");
 }
 
+/// Asks for 100 new RNG streams a tick (the anti-pattern: a stream per thing) and notes the first
+/// refusal's code in its state store; fails every fifth tick after drawing (rolled back).
+#[derive(Default)]
+struct StreamHog;
+impl Module for StreamHog {
+    fn describe(&self) -> ModuleInfo {
+        ModuleInfo { name: "hog", ..ModuleInfo::default() }
+    }
+    fn tick(&self, cx: &mut Cx) -> Result<(), SdkError> {
+        let t = cx.tick();
+        for i in 0..100 {
+            if let Err(e) = cx.random_u32(&format!("thing_{t}_{i}")) {
+                if cx.state("refused")?.is_null() {
+                    cx.set_state("refused", e.code.as_str())?;
+                }
+                break;
+            }
+        }
+        // Old streams still draw at the cap.
+        cx.random_u32("thing_0_0")?;
+        if t % 5 == 4 {
+            return Err(SdkError::new("odd", "drew, then failed"));
+        }
+        Ok(())
+    }
+}
+
+/// The streams' incrementally kept hash, recomputed from scratch.
+fn rng_sum_from_scratch(s: &Shared) -> u64 {
+    s.rngs().iter().fold(0u64, |sum, (k, r)| sum.wrapping_add(super::stream_hash(k, r)))
+}
+
+/// A module's RNG streams are capped (`rng_full`, like `state_full`), a save at the cap loads
+/// (the writer's cap is the reader's), and the per-tick hash keeps up with draws and rollbacks.
+#[test]
+fn rng_streams_are_capped_and_a_save_at_the_cap_loads() {
+    let mut a = Run::new();
+    a.load(ModuleCode::of::<StreamHog>()).unwrap();
+    a.ticks(20);
+    let s = &a.host.shared["hog"];
+    assert_eq!(s.rngs().len(), MAX_RNG_STREAMS, "capped");
+    assert_eq!(s.store.get("refused"), Some(&Value::from("rng_full")));
+    assert_eq!(s.rng_sum, rng_sum_from_scratch(s), "kept through draws and failed calls");
+    let bytes = a.host.save_state().expect("a module ran");
+    let mut b = Run { host: LogicHost::new(), world: a.world.clone(), tick: a.tick };
+    b.load(ModuleCode::of::<StreamHog>()).unwrap();
+    let notes = b.host.restore_state(&bytes).expect("a save at the cap loads");
+    assert!(notes.is_empty(), "{notes:?}");
+    assert_eq!(b.host.shared["hog"].rngs(), a.host.shared["hog"].rngs());
+    assert_eq!(b.host.state_hash(), a.host.state_hash());
+    for t in 0..10 {
+        a.ticks(1);
+        b.ticks(1);
+        assert_eq!(b.host.state_hash(), a.host.state_hash(), "diverged {t} ticks after the load");
+    }
+    // A draw changes the hash; undoing it puts the hash back.
+    let s = a.host.shared.get_mut("hog").unwrap();
+    let (before, sum) = (s.rngs().get("thing_0_0").copied(), s.rng_sum);
+    s.draw("thing_0_0", || unreachable!("exists"), |r| r.next_u32());
+    assert_ne!(s.rng_sum, sum);
+    s.put_rng("thing_0_0".into(), before);
+    assert_eq!(s.rng_sum, sum);
+}
+
+/// Modules can't write reserved data (`/lex`, `/lex_live`, `/project`, `/nav`): the request is
+/// refused with `reserved` and undone; the module carries on.
+#[derive(Default)]
+struct Trespasser;
+impl Module for Trespasser {
+    fn describe(&self) -> ModuleInfo {
+        ModuleInfo { name: "trespasser", ..ModuleInfo::default() }
+    }
+    fn tick(&self, cx: &mut Cx) -> Result<(), SdkError> {
+        let mut codes = Vec::new();
+        let tries = [
+            Spawn::new("group").name("lex"),
+            Spawn::new("cube").name("lex_live"),
+            Spawn::new("cube").name("project"),
+            Spawn::new("group").name("nav"),
+            Spawn::new("group").name("rules").props(Value::map().with("lex", Value::map())),
+            Spawn::new("group").name("mesh").props(Value::map().with(crate::nav::MESH_KEY, Value::map())),
+        ];
+        for s in tries {
+            codes.push(Value::from(cx.spawn(s).err().map_or("ok".to_owned(), |e| e.code)));
+        }
+        // Turning an ordinary entity into rule data is refused too.
+        let id = cx.spawn(Spawn::new("group").name("box"))?;
+        let changed = cx.set(id, Patch::new().props(Value::map().with("lex", Value::map())));
+        codes.push(Value::from(changed.err().map_or("ok".to_owned(), |e| e.code)));
+        cx.set_state("codes", Value::List(codes))
+    }
+}
+
+#[test]
+fn modules_cannot_write_reserved_data() {
+    let mut r = Run::new();
+    r.world.set_recording(Recording::Full);
+    r.load(ModuleCode::of::<Trespasser>()).unwrap();
+    r.ticks(1);
+    let codes = r.state("trespasser", "codes");
+    let codes: Vec<&str> = codes.as_list().unwrap_or_default().iter().filter_map(Value::as_str).collect();
+    assert_eq!(codes, ["reserved"; 7], "{codes:?}");
+    for p in ["/lex", "/lex_live", "/project", "/nav", "/rules", "/mesh"] {
+        assert!(r.world.find_path(p).is_err(), "{p} was undone");
+    }
+    let id = r.world.find_path("/box").expect("the module carried on");
+    assert!(r.world.get(id).unwrap().props.get("lex").is_none(), "the refused change was undone");
+}
+
 /// Loads, reloads, unloads and disables become module events with their tick, generation and
 /// build (the engine journals them as kind `module` and gives them to the desync detector).
 #[test]

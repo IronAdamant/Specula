@@ -3,7 +3,7 @@
 //! the world (state, RNG positions, events) is undone if the call fails, as the world is.
 
 use super::character::CharacterMover;
-use super::{EventRec, LogLine, Shared, LOG_LINES, MAX_PENDING_EVENTS};
+use super::{EventRec, LogLine, Shared, LOG_LINES, MAX_PENDING_EVENTS, MAX_RNG_STREAMS};
 use crate::world::{EntityKey, World, WorldError};
 use specula_core::rng::Rng;
 use specula_core::Json;
@@ -68,6 +68,20 @@ fn str_arg<'v>(req: &'v Value, key: &str) -> Result<&'v str, Value> {
 impl specula_logic::Handler for ModuleHandler<'_> {
     fn request(&mut self, req: &Value) -> Result<Value, Value> {
         let op = req.get("op").and_then(Value::as_str).unwrap_or_default();
+        if matches!(op, "spawn" | "set" | "delete" | "move_character") {
+            // The reserved-data rules hold for modules as for agents (`/lex`, `/lex_live`,
+            // `/project`, `/nav`): a write that breaks one is undone and refused.
+            let mark = self.world.mark();
+            let out = self.answer(op, req)?;
+            crate::swarm::check_module_changes(self.world, mark).map_err(|e| error_value(&e))?;
+            return Ok(out);
+        }
+        self.answer(op, req)
+    }
+}
+
+impl ModuleHandler<'_> {
+    fn answer(&mut self, op: &str, req: &Value) -> Result<Value, Value> {
         match op {
             "find" => match self.world.find_path(str_arg(req, "path")?) {
                 Ok(id) => Ok(Value::from(id)),
@@ -155,17 +169,30 @@ impl specula_logic::Handler for ModuleHandler<'_> {
                 if stream.is_empty() || stream.len() > 64 {
                     return Err(refuse("invalid_field", "'stream' must be 1..64 bytes"));
                 }
-                let before = self.shared.rngs.get(stream).copied();
+                let before = self.shared.rngs().get(stream).copied();
+                if before.is_none() && self.shared.rngs().len() >= MAX_RNG_STREAMS {
+                    return Err(error_value(
+                        &WorldError::new(
+                            "rng_full",
+                            format!(
+                                "this module already has {MAX_RNG_STREAMS} RNG streams, the most it may keep; draw from a few streams named by purpose (\"loot\", \"spawns\"), not one per entity or tick"
+                            ),
+                        )
+                        .with("stream", stream)
+                        .with("limit", MAX_RNG_STREAMS),
+                    ));
+                }
                 if !self.rng_undo.iter().any(|(s, _)| s == stream) {
                     self.rng_undo.push((stream.to_owned(), before));
                 }
                 let seed = self.shared.seed;
                 let module = self.module;
-                let rng = self.shared.rngs.entry(stream.to_owned()).or_insert_with(|| Rng::named(seed, &format!("module/{module}/{stream}")));
-                Ok(match req.get("below").and_then(Value::as_u64) {
+                let below = req.get("below").and_then(Value::as_u64);
+                let make = || Rng::named(seed, &format!("module/{module}/{stream}"));
+                Ok(self.shared.draw(stream, make, |rng| match below {
                     Some(n) => Value::from(rng.below(n.clamp(1, u64::from(u32::MAX)) as u32)),
                     None => Value::from(rng.next_u32()),
-                })
+                }))
             }
             "move_character" => {
                 let id = id_arg(req)?;
