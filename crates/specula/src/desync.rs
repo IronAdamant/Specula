@@ -259,7 +259,7 @@ fn fields_of(e: &Entity, path: &str) -> Vec<(String, u16)> {
 fn mark_of(c: &Change) -> Option<(u64, Mark)> {
     let id = c.id();
     if id >= CAMERA_ID_BASE {
-        return None; // cameras are agents' views, not world state
+        return None; // cameras are agents' views and files the project's, not world state
     }
     Some(match c {
         Change::Spawn { after, path } | Change::Set { after, path, .. } => {
@@ -287,7 +287,7 @@ fn mark_of(c: &Change) -> Option<(u64, Mark)> {
             let h = fields.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, (_, d)| (h ^ u64::from(*d)).wrapping_mul(0x100_0000_01b3));
             (id, Mark { path: path.clone(), hash: Some(h), fields })
         }
-        Change::Camera { .. } => return None,
+        Change::Camera { .. } | Change::File { .. } => return None,
     })
 }
 

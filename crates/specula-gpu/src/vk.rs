@@ -163,6 +163,7 @@ pub const ST_BUFFER_DEVICE_ADDRESS_INFO: VkStructureType = 1_000_244_001;
 pub const ST_PHYSICAL_DEVICE_FEATURES_2: VkStructureType = 1_000_059_000;
 pub const ST_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2: VkStructureType = 1_000_059_006;
 pub const ST_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT: VkStructureType = 1_000_237_000;
+pub const ST_MEMORY_BARRIER_2: VkStructureType = 1_000_314_000;
 pub const ST_BUFFER_MEMORY_BARRIER_2: VkStructureType = 1_000_314_001;
 pub const ST_IMAGE_MEMORY_BARRIER_2: VkStructureType = 1_000_314_002;
 pub const ST_DEPENDENCY_INFO: VkStructureType = 1_000_314_003;
@@ -287,6 +288,7 @@ pub const VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT: VkFlags = 0x20;
 pub const VK_IMAGE_ASPECT_COLOR_BIT: VkFlags = 0x1;
 pub const VK_IMAGE_ASPECT_DEPTH_BIT: VkFlags = 0x2;
 pub const VK_SAMPLE_COUNT_1_BIT: VkFlags = 0x1;
+pub const VK_COMMAND_POOL_CREATE_TRANSIENT_BIT: VkFlags = 0x1;
 pub const VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT: VkFlags = 0x2;
 pub const VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT: VkFlags = 0x1;
 pub const VK_FENCE_CREATE_SIGNALED_BIT: VkFlags = 0x1;
@@ -1142,6 +1144,16 @@ pub struct VkSubmitInfo2 {
 }
 
 #[repr(C)]
+pub struct VkMemoryBarrier2 {
+    pub s_type: VkStructureType,
+    pub p_next: *const c_void,
+    pub src_stage_mask: VkFlags64,
+    pub src_access_mask: VkFlags64,
+    pub dst_stage_mask: VkFlags64,
+    pub dst_access_mask: VkFlags64,
+}
+
+#[repr(C)]
 pub struct VkBufferMemoryBarrier2 {
     pub s_type: VkStructureType,
     pub p_next: *const c_void,
@@ -1574,6 +1586,7 @@ fn_table! {
             fn(VkCommandBuffer, *const VkCommandBufferBeginInfo) -> VkResult;
         end_command_buffer = c"vkEndCommandBuffer": fn(VkCommandBuffer) -> VkResult;
         reset_command_buffer = c"vkResetCommandBuffer": fn(VkCommandBuffer, VkFlags) -> VkResult;
+        reset_command_pool = c"vkResetCommandPool": fn(VkDevice, VkCommandPool, VkFlags) -> VkResult;
         create_fence = c"vkCreateFence":
             fn(VkDevice, *const VkFenceCreateInfo, *const c_void, *mut VkFence) -> VkResult;
         destroy_fence = c"vkDestroyFence": fn(VkDevice, VkFence, *const c_void);

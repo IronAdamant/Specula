@@ -39,7 +39,7 @@ an entity) and look through them (or another agent's) with sight_frame {camera};
 contact sheet of one entity; sight_compare marks a 'before' and diffs the world against it later; sight_query \
 answers one entity's on-screen facts without an image. world_env sets the sun, ambient light, \
 background and tone mapping; window_view points the human's window. world_save / world_load keep the world in \
-text files. Say who you are with agent_hello. perf_frame reports GPU time per pass, draw counts, memory, \
+text files. The game's text files (recipes, UI screens, sounds, style files, module sources) are project files: edit them with project_write / project_patch (validated, versioned, claimed as /project/<path>, journaled, undoable, hot-reloaded); edits made on disk are imported as the agent 'disk'. Say who you are with agent_hello. perf_frame reports GPU time per pass, draw counts, memory, \
 frame pacing and budget errors (budgets from perf.toml); perf_zones shows CPU time per engine phase, \
 perf_memory the heap, and perf_capture records frames to a file and a trace timeline; time_control pauses, steps or speeds up the simulation clock. \
 Model meshes stream onto the GPU within per-frame budgets (never changing the simulation): far cells draw as merged \
@@ -244,6 +244,8 @@ pub enum Command {
     SaveGame(crate::save_tools::SaveCall),
     /// The animation tools (see [`crate::anim_tools`]).
     Anim(crate::anim_tools::AnimCall),
+    /// Project files (see [`crate::project_tools`]).
+    Project(crate::project_tools::ProjectCall),
 }
 
 /// time_control's actions on the simulation clock.
@@ -360,6 +362,12 @@ impl Tools {
         self.lex_natives.keys().cloned().collect()
     }
 
+    /// The engine thread's request channel (for tools that chain engine calls, like a write that
+    /// runs logic_build).
+    pub(crate) fn engine(&self) -> &Sender<Request> {
+        &self.to_engine
+    }
+
     /// Sends a command to the main thread and waits for its answer.
     pub(crate) fn send(&self, session: &SessionInfo, command: Command) -> ToolOutput {
         let (reply, answer) = mpsc::channel();
@@ -431,6 +439,9 @@ impl Tools {
         } else if name.starts_with("lex_") {
             // Lex tools do their heavy work (validation, simulation) on this thread.
             return crate::lex_tools::call(self, session, name, arguments);
+        } else if name.starts_with("project_") {
+            // Patching, validation and diffs run on this thread; the engine snapshots and commits.
+            return crate::project_tools::call(self, session, name, arguments);
         } else if name.starts_with("balance_") {
             // The balance lab runs simulations on this thread (and its workers), like lex_simulate.
             return crate::balance_tools::call(self, session, name, arguments);
@@ -2451,6 +2462,7 @@ fn definitions() -> Vec<ToolDef> {
     .chain(crate::stream_tools::definitions())
     .chain(crate::playtest_engine::definitions())
     .chain(crate::lex_tools::definitions())
+    .chain(crate::project_tools::definitions())
     .chain(crate::lex_live::definitions())
     .chain(crate::save_tools::definitions())
     .chain(crate::balance_tools::definitions())

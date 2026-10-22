@@ -322,7 +322,7 @@ pub fn scan_limited(src: &str, room: usize) -> (Vec<Hit>, usize) {
 
 /// The `.rs` files under `dir/src`, sorted (at most [`MAX_FILES`], walking at most [`MAX_DIRS`]
 /// folders).
-fn sources(dir: &Path) -> Vec<PathBuf> {
+pub(crate) fn sources(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![dir.join("src")];
     let mut walked = 0;

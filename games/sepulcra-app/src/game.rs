@@ -1132,6 +1132,23 @@ impl Game for SepulcraGame {
         Ok(())
     }
 
+    fn assets_changed(&mut self, _ctx: &mut Ctx, paths: &[String]) {
+        // Screens, the theme and sounds come from the assets folder: reload what changed (the
+        // engine reloads recipes itself).
+        let stem = |p: &str, dir: &str| p.strip_prefix(dir).and_then(|r| r.strip_suffix(".json")).filter(|r| !r.contains('/')).map(str::to_owned);
+        let screens: Vec<String> = paths.iter().filter_map(|p| stem(p, "ui/")).collect();
+        let sounds: Vec<String> = paths.iter().filter_map(|p| stem(p, "sounds/")).collect();
+        let assets = self.assets.clone().unwrap_or_else(SepulcraGame::default_assets);
+        if !screens.is_empty() {
+            for e in self.hud.reload(&screens) {
+                eprintln!("sepulcra: hot reload: {e}");
+            }
+        }
+        if !sounds.is_empty() {
+            self.sfx.reload(assets.join("sounds"), &sounds);
+        }
+    }
+
     fn lex_natives(&self) -> specula_lex::Natives {
         sepulcra::lex::natives()
     }

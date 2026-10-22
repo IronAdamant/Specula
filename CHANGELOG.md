@@ -99,6 +99,10 @@ See [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md). Item-by-item detail, with the re
   tools and call limit. Results are scrubbed of private paths. Playtest matchers compare objects by key in any order
 - **Privacy:** `crates/specula/tests/private_paths.rs` fails on any home-folder, temp-folder or session path, or a
   UUID, in a tracked file; `save_check.py` writes `<work>` instead of its temp folder
+- **Streaming during loading:** the spatial index is refiled a slice at a time while the old cells serve (a big load
+  used to force a 3-6 ms one-frame rebuild); upload batches use a fresh transient pool per slot, reset whole, with one
+  barrier; mesh blocks grow 16-64 MB. Stalls inside the Intel driver's command recording are zoned and reported apart
+  by `stream_check.py`. Alternating A/B on the iGPU: loading overruns lower than the earlier build in every pair
 - **Streaming pump:** the eviction queue is scanned across frames into heaps instead of being rebuilt and sorted in
   the frame after each pass (2-3.5 ms spikes on the iGPU); a running resident total; profile zones for every pump
   stage. Alternating A/B on the iGPU: in-flight stutter 0 frames on every run, against 3-9 on the earlier build

@@ -26,6 +26,8 @@ specula-via = { workspace = true }
 specula-mens = { workspace = true }
 specula-locus = { workspace = true }
 specula-lex = { workspace = true }
+specula-ui = { workspace = true }
+specula-audio = { workspace = true }
 specula-balance = { workspace = true }
 
 [lints]

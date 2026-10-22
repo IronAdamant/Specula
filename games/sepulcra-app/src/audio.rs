@@ -70,6 +70,8 @@ pub struct Sfx {
     audio: Option<Audio>,
     sounds: BTreeMap<String, Vec<Sound>>,
     loading: Option<Receiver<Rendered>>,
+    /// Sounds rendered again after their recipe changed (hot reload).
+    reloading: Vec<Receiver<Rendered>>,
     last: BTreeMap<&'static str, f32>,
     ambience: Option<VoiceId>,
     /// Brazier fires crackling, by cell.
@@ -95,6 +97,7 @@ impl Sfx {
             audio: None,
             sounds: BTreeMap::new(),
             loading: None,
+            reloading: Vec::new(),
             last: BTreeMap::new(),
             ambience: None,
             crackles: BTreeMap::new(),
@@ -139,8 +142,58 @@ impl Sfx {
         sfx
     }
 
+    /// Hot reload: renders the sounds named (file stems under `sounds/`) again from `dir` on a
+    /// worker thread; each replaces the old one when it lands (one that fails keeps the old).
+    pub fn reload(&mut self, dir: std::path::PathBuf, names: &[String]) {
+        if self.audio.is_none() {
+            return;
+        }
+        let names: Vec<String> = names.iter().filter(|n| RECIPES.iter().any(|(r, _)| r == n)).cloned().collect();
+        if names.is_empty() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let spawned = std::thread::Builder::new().name("sepulcra-sounds".into()).spawn(move || {
+            let mut out: Rendered = Vec::new();
+            for name in names {
+                let r = std::fs::read_to_string(dir.join(format!("{name}.json"))).map_err(|e| e.to_string());
+                let n = if VARIED.contains(&name.as_str()) { VARIATIONS } else { 1 };
+                for variation in 0..n {
+                    let s = r.clone().and_then(|t| specula_audio::load_recipe(&t, &RenderOptions { variation, ..RenderOptions::default() }).map_err(|e| e.to_string()));
+                    out.push((name.clone(), s));
+                }
+            }
+            let _ = tx.send(out);
+        });
+        match spawned {
+            Ok(_) => self.reloading.push(rx),
+            Err(e) => self.problem = Some(format!("sound thread: {e}")),
+        }
+    }
+
     /// Picks up the rendered sounds when they're ready (call once a frame).
     pub fn poll(&mut self) {
+        // Reloaded sounds replace the old renders (all of a sound's variations at once).
+        let mut i = 0;
+        while i < self.reloading.len() {
+            match self.reloading[i].try_recv() {
+                Ok(rendered) => {
+                    self.reloading.swap_remove(i);
+                    let mut fresh: BTreeMap<String, Vec<Sound>> = BTreeMap::new();
+                    for (name, r) in rendered {
+                        match r {
+                            Ok(s) => fresh.entry(name).or_default().push(s),
+                            Err(e) => self.problem = Some(format!("sound {name}: {e}")),
+                        }
+                    }
+                    self.sounds.extend(fresh);
+                }
+                Err(mpsc::TryRecvError::Empty) => i += 1,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.reloading.swap_remove(i);
+                }
+            }
+        }
         let Some(rx) = &self.loading else { return };
         let Ok(rendered) = rx.try_recv() else { return };
         self.loading = None;

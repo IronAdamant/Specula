@@ -53,6 +53,11 @@ mod nav_tools;
 mod locus;
 pub mod playtest;
 mod playtest_engine;
+pub mod project;
+mod project_engine;
+mod project_kinds;
+mod project_text;
+mod project_tools;
 mod response;
 mod schedule;
 pub mod sight;
@@ -336,6 +341,8 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     );
     eprintln!("specula: captures in {}", engine.capture_dir.display());
     eprintln!("specula: model recipes under {}", assets.display());
+    // The assets root's text files become project files (versioned, claimed, journaled).
+    engine.project_mount_assets(assets.clone());
 
     if let Some(g) = &game {
         engine.clock = Clock::new(g.tick_hz());
@@ -575,6 +582,10 @@ struct Engine {
     playtests: playtest_engine::Playtests,
     /// Default response formats (`--response-format`, `agent_hello`), shared with the tools.
     formats: Arc<response::Defaults>,
+    /// Project files on disk: mounts, the watcher, failed writes (see [`project`]).
+    project: project::Disk,
+    /// When failed project writes were last tried.
+    project_retry: Instant,
 }
 
 /// A model_build or model_reload call waiting for builds on the worker threads.
@@ -693,6 +704,8 @@ impl Engine {
             fly: None,
             playtests: Default::default(),
             formats: response::Defaults::new(response::Format::Concise),
+            project: project::Disk::default(),
+            project_retry: Instant::now(),
         })
     }
 
@@ -706,6 +719,9 @@ impl Engine {
         let failed = world.set_model_source(Some(Arc::clone(&self.library) as Arc<dyn world::ModelSource>));
         let problems =
             failed.iter().map(|(id, e)| format!("model {} ({id}) not built: {e}", world.path_of(*id))).collect();
+        // Project files are the project's, not the world's: they stay.
+        let files_revision = self.world.files_revision();
+        world.adopt_files(self.world.take_files(), files_revision);
         self.swarm.journal.rebase(&world, &format!("world:{name}"));
         self.world = world;
         // Follow cameras resolve afresh in the new world (its cameras came with it).
@@ -1485,6 +1501,7 @@ impl Engine {
             self.poll_assets(false);
             self.pump_builds(None);
             self.poll_saves();
+            self.project_pump();
             self.serve_captures();
             self.pump_playtests(server, playtest_engine::WINDOW_SLICE);
             self.advance_clock();
@@ -1619,6 +1636,7 @@ impl Engine {
                 eprintln!("specula: upload batch not submitted: {e}");
             }
             self.poll_saves();
+            self.project_pump();
             self.serve_captures();
             self.pump_playtests(server, playtest_engine::HEADLESS_SLICE);
         }
@@ -1925,7 +1943,10 @@ impl Engine {
                 out
             }
             Command::Anim(call) => self.anim_call(call, w, tick),
+            Command::Project(call) => self.project_call(call, w, &by),
         };
+        // Undo (or anything else) changed project files: the disk follows before the answer.
+        self.project_after_request();
         if game_call {
             self.serve_game_requests();
         }
@@ -2375,6 +2396,7 @@ fn call_class(command: &Command) -> Class {
         Command::Stream(call) => call.class(),
         Command::SaveGame(call) => call.class(),
         Command::Playtest(_) => Class::Sim,
+        Command::Project(call) => call.class(),
         Command::Lex(call) if call.is_read() => Class::Read,
         Command::Lex(_) => Class::Edit,
         Command::LexLive(call) => call.class(),

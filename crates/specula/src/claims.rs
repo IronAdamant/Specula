@@ -227,6 +227,19 @@ impl Claims {
         }
     }
 
+    /// [`Claims::check_path`] for everything under `path` too: also refused when another agent's
+    /// live claim lies below it (a module's single file, say).
+    pub fn check_subtree(&self, path: &str, w: Writer, now: Instant, what: &str) -> Result<(), WorldError> {
+        self.check_path(path, w, now, what)?;
+        match self.below(path).find(|c| !c.lets(w, now)) {
+            None => Ok(()),
+            Some(c) => {
+                let message = format!("{what}: {} holds claim {} on {}, inside {path}; ask them to release or share it", c.owner, c.id, c.scope.describe());
+                Err(claim_error("claimed", c, now, message).with("entity_path", path))
+            }
+        }
+    }
+
     /// Path claims covering `path` (on it or an ancestor, or `/`).
     fn covering<'a>(&'a self, path: &'a str) -> impl Iterator<Item = &'a Claim> + 'a {
         let mut prefixes: Vec<&str> = vec!["/"];
@@ -432,7 +445,8 @@ impl Claims {
     /// Refuses replacing the whole world (`world_load`) while another agent holds a live claim:
     /// a load would wipe their claimed work. `force` doesn't override claims.
     pub fn check_replace_world(&self, w: Writer, now: Instant) -> Result<(), WorldError> {
-        let others = self.others(w, now);
+        // Claims on project files don't count: a load keeps the files.
+        let others: Vec<&Claim> = self.others(w, now).into_iter().filter(|c| !matches!(&c.scope, Scope::Path(p) if crate::project::under_root(p))).collect();
         if others.is_empty() {
             return Ok(());
         }
@@ -630,7 +644,7 @@ pub fn touches_rule_data(change: &Change) -> bool {
             under_lex(path) || prev_path.as_deref().is_some_and(under_lex) || is_rule_data(after) || before.as_deref().is_some_and(is_rule_data)
         }
         Change::Pose { path, .. } => under_lex(path),
-        Change::Env { .. } | Change::Camera { .. } => false,
+        Change::Env { .. } | Change::Camera { .. } | Change::File { .. } => false,
     }
 }
 
@@ -644,7 +658,8 @@ pub fn touches_joint_data(change: &Change) -> bool {
         Change::Spawn { after, .. } => is_joint(after),
         Change::Delete { before, .. } => is_joint(before),
         Change::Set { before, after, .. } => is_joint(after) || before.as_deref().is_some_and(is_joint),
-        Change::Pose { .. } | Change::Env { .. } | Change::Camera { .. } => false,
+        // Project files hold no entities, so never joint data.
+        Change::Pose { .. } | Change::Env { .. } | Change::Camera { .. } | Change::File { .. } => false,
     }
 }
 
@@ -662,7 +677,7 @@ pub fn joint_bodies(change: &Change) -> Vec<u64> {
             v.extend(before.as_deref().map(of).unwrap_or_default());
             v
         }
-        Change::Pose { .. } | Change::Env { .. } | Change::Camera { .. } => Vec::new(),
+        Change::Pose { .. } | Change::Env { .. } | Change::Camera { .. } | Change::File { .. } => Vec::new(),
     };
     ids.sort_unstable();
     ids.dedup();
@@ -753,7 +768,7 @@ pub fn touches_nav_data(change: &Change) -> bool {
             under_nav(path) || prev_path.as_deref().is_some_and(under_nav) || settings(after) || before.as_deref().is_some_and(settings)
         }
         Change::Pose { path, .. } => under_nav(path),
-        Change::Env { .. } | Change::Camera { .. } => false,
+        Change::Env { .. } | Change::Camera { .. } | Change::File { .. } => false,
     }
 }
 
@@ -851,8 +866,9 @@ fn change_points(world: &World, change: &Change) -> Vec<Vec3> {
             }
         }
         // Only the hosted game's own ticks record poses, and they are never checked.
-        // Cameras belong to their agent name, not to any claimed region.
-        Change::Env { .. } | Change::Pose { .. } | Change::Camera { .. } => {}
+        // Cameras belong to their agent name, not to any claimed region; project files have no
+        // place in the world (only path claims cover them).
+        Change::Env { .. } | Change::Pose { .. } | Change::Camera { .. } | Change::File { .. } => {}
     }
     points
 }

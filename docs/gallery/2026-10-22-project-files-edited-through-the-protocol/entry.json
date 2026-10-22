@@ -1,0 +1,48 @@
+{
+  "date": "2026-10-22",
+  "time": "03:10",
+  "date_source": "run id 20261022-030945",
+  "approximate": false,
+  "milestone": "M3",
+  "commit": "",
+  "subject": "sepulcra",
+  "topic": "tooling",
+  "title": "Project files edited through the protocol",
+  "note": "Sepulcra's recipe and HUD screen changed by two agents through project_patch alone (claims, stale_version with conflict help, rebase), hot-reloaded into the running game; then world_undo puts the HUD back. First entry for project data; also the model hot-reload fix (every tombstone rebuilds, not only the first).",
+  "source": "scripts/project_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-frame-00002.jpg",
+      "caption": "Tombstones before the recipe edit",
+      "original": "frame_00002.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 25043
+    },
+    {
+      "file": "02-frame-00004.jpg",
+      "caption": "After project_patch of tombstone.json: all ten slabs rune_glow, rebuilt live; HUD reads Night",
+      "original": "frame_00004.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 26467
+    },
+    {
+      "file": "03-frame-00003.jpg",
+      "caption": "HUD after a claimed edit of ui/hud.json: Wave became Night",
+      "original": "frame_00003.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 14378
+    },
+    {
+      "file": "04-frame-00005.jpg",
+      "caption": "After world_undo: the HUD reads Wave again (file restored on disk)",
+      "original": "frame_00005.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 14367
+    }
+  ]
+}
