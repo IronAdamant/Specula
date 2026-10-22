@@ -12,6 +12,7 @@
 //! - All maths is `f32` basic operations, `sqrt` and [`crate::dmath`] trig, so a shape is
 //!   bit-identical on every platform (F2).
 
+#[allow(clippy::disallowed_types, reason = "see each use: lookup-only or order-independent maps")]
 use std::collections::HashMap;
 
 use specula_core::rng::Rng;
@@ -351,6 +352,7 @@ impl Shape {
     }
 
     /// An icosphere resting on y = 0: 20·4ⁿ triangles.
+    #[allow(clippy::disallowed_types, reason = "lookup and insert only: the output follows the input order, never the map's")]
     pub fn sphere(radius: f32, subdivisions: u32) -> Shape {
         let t = (1.0 + 5.0f32.sqrt()) * 0.5;
         let mut pos: Vec<V3> = [
@@ -683,6 +685,7 @@ impl Shape {
 
     /// Merges vertices closer than `eps` (grid-snapped; first vertex wins) and drops triangles
     /// that collapse.
+    #[allow(clippy::disallowed_types, reason = "lookup and insert only: the output follows the input order, never the map's")]
     pub fn weld(&mut self, eps: f32) {
         let inv = 1.0 / eps;
         let mut ids: HashMap<[i64; 3], u32> = HashMap::new();
@@ -729,6 +732,7 @@ impl Shape {
 
     /// Splits every triangle into four, `levels` times (midpoints are shared, so closed shells
     /// stay closed).
+    #[allow(clippy::disallowed_types, reason = "lookup and insert only: the output follows the input order, never the map's")]
     pub fn subdivide(&mut self, levels: u32) {
         for _ in 0..levels {
             let mut mid: HashMap<(u32, u32), u32> = HashMap::new();
@@ -757,6 +761,7 @@ impl Shape {
 
     /// Area-weighted vertex normals, shared by every vertex at the same position (so seams
     /// between coincident vertices move together).
+    #[allow(clippy::disallowed_types, reason = "lookup and insert only: the output follows the input order, never the map's")]
     pub fn smooth_normals(&self) -> Vec<V3> {
         let mut group: HashMap<[u32; 3], usize> = HashMap::new();
         let gid: Vec<usize> = self
@@ -895,6 +900,7 @@ impl Shape {
 
     /// Cheap ambient occlusion: darkens concave vertices (neighbours above the tangent plane)
     /// by up to `amount`.
+    #[allow(clippy::disallowed_types, reason = "iterated only to count or take maxima, which no order changes")]
     pub fn concavity_shade(&mut self, amount: f32) {
         // Per edge (welded by position): if the far corner of one face lies above the other
         // face's plane, the edge is a valley; its strength grows with the fold angle (90° = 1).
@@ -959,6 +965,7 @@ impl Shape {
     /// Builds the render mesh: welds equal positions, drops degenerate triangles, computes
     /// normals (faces meeting at more than `smooth_angle_deg` get a hard edge; 0 = flat), blends
     /// the bevel tint and quantises colours to sRGB8.
+    #[allow(clippy::disallowed_types, reason = "lookup and insert only: the output follows the input order, never the map's")]
     pub fn finalize(&self, smooth_angle_deg: f32, material: &str) -> MeshData {
         let mut s = self.clone();
         // Weld points closer than 10 µm (a taper to almost 0, float noise) so no seam opens.
@@ -1027,6 +1034,7 @@ impl Shape {
     }
 
     /// Merges vertices with bit-identical positions and drops collapsed triangles.
+    #[allow(clippy::disallowed_types, reason = "lookup and insert only: the output follows the input order, never the map's")]
     pub fn weld_exact(&mut self) {
         let mut ids: HashMap<[u32; 3], u32> = HashMap::new();
         let mut pos = Vec::new();
@@ -1047,6 +1055,7 @@ impl Shape {
 
     /// Open edges (each directed edge must be matched by exactly one reverse edge), after
     /// welding equal positions. 0 = watertight.
+    #[allow(clippy::disallowed_types, reason = "iterated only to count or take maxima, which no order changes")]
     pub fn open_edge_count(&self) -> usize {
         let mut s = self.clone();
         s.weld_exact();

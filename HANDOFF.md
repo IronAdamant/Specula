@@ -185,7 +185,8 @@ In practice that means six **foundations** that apply to every change from M1 on
 - **Game-side crates:** `specula-anim` (A1-A3: clips, graphs, IK, motion generators and checks), `specula-audio` (WASAPI, procedural 3D audio),
   `specula-input` (keyboard, mouse, XInput gamepads), `specula-text`, `specula-ui`, `specula-model` (procedural
   modelling, tier 1), `specula-gltf`.
-- **Size:** about 129k lines of Rust in 13 crates (17 with `specula-sdk`, `specula-logic`, `specula-physics` and `specula-lex`) plus the Sepulcra game and app; about 1,100 tests. **Zero
+- **Size:** about 234k lines of Rust (2026-10-22): 218k in 21 engine crates and 16k in 3 game crates (Sepulcra's
+  rules and app, and the Ambulo example module); about 1,800 tests. **Zero
   third-party crates.** The Rust toolchain's own linker; Vulkan, XInput and AVRT are loaded at runtime.
 
 **What it can't do yet** (most of it is M3+):

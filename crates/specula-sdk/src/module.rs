@@ -459,8 +459,8 @@ impl<'a> Cx<'a> {
 
     /// Moves a character entity by `motion` (metres this tick, gravity included) through the
     /// engine's character controller, which stops it at the ground and slides it along walls,
-    /// and sets the entity's position. Today's controller is a minimal kinematic placeholder;
-    /// the physics character controller (P2) takes its place behind this same call.
+    /// and sets the entity's position. The engine answers it with the physics character
+    /// controller (P2): steps, slopes, moving platforms and pushing dynamic bodies.
     pub fn move_character(&mut self, id: Id, motion: Vec3) -> Result<Moved, SdkError> {
         let v = self.ask(Value::map().with("op", "move_character").with("id", id.0).with("motion", motion))?;
         Ok(Moved {

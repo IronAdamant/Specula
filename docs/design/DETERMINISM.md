@@ -260,8 +260,11 @@ whatever their creator had (on Linux, threads inherit the environment); none of 
   bans `HashMap`, `HashSet`, `RandomState`; `disallowed-methods` bans the platform maths above (every transcendental,
   `floor`/`ceil`/`round`/`trunc`/`fract`, `powi`, `mul_add`, for `f32` and `f64`), `Instant::now`, `SystemTime::now`,
   `thread::spawn` and `thread::scope`. Crates: specula-physics, specula-anim, specula-lex, specula-balance,
-  specula-sdk, sepulcra, ambulo (the module template). CI's clippy enforces it.
-- Every hit was fixed (dmath instead of `round`/`floor`/`fract`) or allowed with a reason: physics' stage timings, Lex's
+  specula-sdk, specula-via, specula-mens, specula-locus, specula-model (recipes build the meshes ragdolls fit their
+  bones to and the hulls bodies collide with), sepulcra, ambulo (the module template). CI's clippy enforces it.
+- Every hit was fixed (dmath instead of `round`/`floor`/`fract`) or allowed with a reason (specula-model's
+  `HashMap`s weld vertices and dedupe edges by lookup, or are iterated only to count or take maxima; each function
+  says which): physics' stage timings, Lex's
   and the balance lab's wall-clock deadlines (a run they stop is reported as stopped, never as a result), the balance
   sweep's threads (results merged by job index), presentation code (contact-sheet framing), tests and benchmarks.
 - `crates/specula/tests/determinism_lints.rs` keeps it so: every workspace member must be listed as simulation (and

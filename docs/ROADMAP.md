@@ -573,10 +573,11 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
   - P3: rigid bodies with the Soft Step solver
 
   *Done 2026-10-18:* `crates/specula-physics`; engine components, `physics_*` tools, a physics hash in `world_hash` and
-  the desync trace; `scripts/physics_check.py`. Still open: 1,000 awake mixed bodies take about 3.5 ms per tick in
-  the space (target 2 ms) plus about 1.3 ms of world write-back and hashing, so a world-side pose-and-body fast path
-  (and a journal change kind for it) is next; module characters still use the module host's `Kinematic` placeholder
-  until a `PhysicsMover` wires P2 in.
+  the desync trace; `scripts/physics_check.py`. *Since, with P4 (`0ee0f42`):* the world-side write-back fast path
+  (`World::set_motion`, journaled as a `Change::Pose` that carries the body: 46% less write-back) and module
+  characters on the P2 controller (`PhysicsMover` behind `Cx::move_character`; the `Kinematic` placeholder is only the
+  fallback without physics). Still open: 1,000 awake mixed bodies take about 3.9-4.2 ms per tick in the space
+  (target 2 ms; PHYSICS.md has the next steps).
 - [x] **Animation, stage A3** ([design/ANIMATION.md](design/ANIMATION.md)): state machines and blend trees as text
   data, events, root motion, two-bone IK (feet on the ground, hands on handles), look-at.
   *Done 2026-10-18:* `specula-anim` graphs (parameters, blend trees, layered state machines, transitions refused at

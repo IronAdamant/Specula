@@ -14,6 +14,7 @@
 //!
 //! The GPU `Vertex` has no colour yet, so each part is drawn as one mesh per vertex-colour
 //! bucket (triangles grouped by their average colour, 5 bits per channel).
+#![allow(clippy::disallowed_methods, reason = "a test or benchmark harness (timings, cameras for pictures), not simulation code")]
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

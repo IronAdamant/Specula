@@ -47,9 +47,13 @@ never get that high, cameras use bit 62), so undo conflicts and history filters 
 `/project` is reserved: `world_spawn` and friends refuse entities there (`reserved`), and only the `project_*` tools
 make file changes (`Swarm::commit_project`), so nothing can masquerade as a file.
 
-The world hash leaves files out (like cameras): recipes, screens, sounds and styles are presentation, and module code
-enters the simulation through its build (DETERMINISM.md rule 8: a module's build hash belongs in the journal). Game
-data that drives the simulation is Lex (entities, hashed). The determinism requirement for files is that **replays
+The world hash leaves files out (like cameras): screens, sounds and styles are presentation, and module code enters the
+simulation through its build (DETERMINISM.md rule 8: a module's build hash belongs in the journal). Game data that
+drives the simulation is Lex (entities, hashed). **Recipes are the exception that feeds the simulation:** the mesh a
+recipe builds sizes a saved entity's ragdoll (its rig plan: capsule radii and hulls fitted to the mesh) and a model
+collider's hull, so `specula-model` is a simulation crate under the determinism lints (dmath only, no hash-order
+iteration; `determinism_lints.rs`), and what a recipe produces reaches the simulation hashes through the
+bodies and colliders it sizes rather than through the file itself. The determinism requirement for files is that **replays
 reproduce them**: every write, import and undo is a journal entry holding the full text, and a test replays a
 journal of file edits and compares the store byte for byte.
 

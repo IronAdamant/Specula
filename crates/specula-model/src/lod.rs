@@ -5,6 +5,7 @@
 //! deterministic and robust on any input. The cell size for a target triangle ratio is found by
 //! bisection. Quadric-error simplification (better shapes per triangle) is the planned upgrade.
 
+#[allow(clippy::disallowed_types, reason = "see each use: lookup-only or order-independent maps")]
 use std::collections::HashMap;
 
 use crate::dmath;
@@ -13,6 +14,7 @@ use crate::mesh::Bounds;
 use crate::shape::Shape;
 
 /// Clusters `shape` on a grid of `cell` metres anchored at `origin`.
+#[allow(clippy::disallowed_types, reason = "lookup and insert only: the output follows the input order, never the map's")]
 pub fn cluster(shape: &Shape, cell: f32, origin: V3) -> Shape {
     if cell <= 0.0 {
         return shape.clone();
