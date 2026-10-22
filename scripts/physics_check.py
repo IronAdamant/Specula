@@ -189,7 +189,7 @@ def run(m, failures, label):
     ov = m.json("physics_overlap", shape={"shape": "box", "size": [2, 2, 2]}, at=[0, 3, 4])
     check(any(e["path"] == "/zone" for e in ov["entities"]), f"{label}: overlap finds the trigger zone", failures)
     ex = m.json("physics_explain", path="/slug")
-    check(ex["simulated"] and ex["tunnelling"]["guarded_against_static"], f"{label}: physics_explain on the slug", failures)
+    check(ex["simulated"] and ex["tunnelling"]["guarded"], f"{label}: physics_explain on the slug", failures)
     contacts = m.json("physics_contacts", entity="/tower/b0")
     check(contacts["total"] >= 2, f"{label}: the tower's bottom box has its contacts ({contacts['total']})", failures)
     end, _ = save(f"{label}_end", m.call("sight_frame", overlays=["colliders", "contacts"], **eye))

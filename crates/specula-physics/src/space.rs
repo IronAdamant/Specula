@@ -22,11 +22,12 @@
 //! [`Settings::max_pairs`]); past a cap the extra work is dropped (deterministically, in key
 //! order) and the step's report carries a structured `budget` error naming the limit.
 
-use crate::contact::{collide, collide_cached, Manifold, SatCache, MAX_POINTS};
+use crate::contact::{Manifold, SatCache, MAX_POINTS};
+use crate::joint::{JointConstraint, JointDesc, JointImpulses, JointState, Motor};
 use crate::math::{Aabb, Mat3, Pose, Quat, Vec3};
 use crate::query::{self, CastHit, RayHit};
 use crate::shape::Shape;
-use crate::solver::{self, Constraint, Softness, SolverBody, SolverPoint, Tuning, STATIC};
+use crate::solver::{self, Constraint, Imp, Softness, SolverBody, SolverPoint, Tuning, STATIC};
 use crate::tree::Tree;
 use crate::PhysicsError;
 use specula_core::hash::StableHasher;
@@ -35,6 +36,7 @@ use std::time::Instant;
 
 #[path = "snapshot.rs"]
 mod snapshot;
+pub use snapshot::{read_joint_desc, write_joint_desc};
 pub use snapshot::SNAPSHOT_VERSION;
 
 /// Simulation settings. Defaults follow Box2D v3 where it has an equivalent.
@@ -68,6 +70,30 @@ pub struct Settings {
     pub plane_2d: bool,
     pub max_bodies: usize,
     pub max_pairs: usize,
+    /// Joint stiffness, Hz (capped at a quarter of the substep rate), and damping ratio.
+    pub joint_hertz: f32,
+    pub joint_damping_ratio: f32,
+    pub max_joints: usize,
+    /// Cosmetic bodies (see [`BodyDesc::cosmetic`]) and their pairs and joints have their own
+    /// caps, so presentation can never crowd out the simulation.
+    pub max_cosmetic_bodies: usize,
+    pub max_cosmetic_pairs: usize,
+    /// Threads physics may use (default 1: the calling thread only): the narrowphase's pair
+    /// tests, and with `coloured` the contact solver, on a persistent pool
+    /// ([`crate::parallel`]: started once; a thread not yet scheduled misses the step, but one
+    /// descheduled holding work stalls the step until it runs). Results never depend on it.
+    /// Opt-in: on a busy machine more threads can be slower than one.
+    pub threads: usize,
+    /// Solve contacts in graph-colour order (Box2D v3, see [`crate::solver::colour`]) instead
+    /// of pair order. Needed to solve them on several threads (`threads` > 1); deterministic
+    /// either way, the same states on any thread count for a given choice. Default off: in pair
+    /// order a 10-box tower drifts 4.6 mm sideways as it settles, coloured 12 mm.
+    pub coloured: bool,
+    /// On the thread pool, solve contacts four at a time in lanes ([`crate::wide`], Box2D v3's
+    /// wide solver in plain Rust): bit-identical results, but measured slower (1,000 awake
+    /// boxes, 4 threads: the solve stage 1.48 ms against 1.25 one at a time; gathering the lanes
+    /// costs more than the lanes save without SIMD intrinsics), so off by default.
+    pub wide: bool,
 }
 
 impl Default for Settings {
@@ -89,6 +115,14 @@ impl Default for Settings {
             plane_2d: false,
             max_bodies: 20_000,
             max_pairs: 65_536,
+            joint_hertz: 60.0,
+            joint_damping_ratio: 5.0,
+            max_joints: 16_384,
+            max_cosmetic_bodies: 4_096,
+            max_cosmetic_pairs: 16_384,
+            threads: 1,
+            coloured: false,
+            wide: false,
         }
     }
 }
@@ -153,6 +187,13 @@ pub struct BodyDesc {
     /// The tunnelling guard against static colliders.
     pub ccd: bool,
     pub collider: Option<ColliderDesc>,
+    /// Bodies sharing a non-zero group never collide with each other (a ragdoll's bones).
+    pub group: u64,
+    /// Presentation only (a transient creature's ragdoll): it collides with static and
+    /// kinematic bodies and other cosmetic ones, never with simulated dynamic bodies or
+    /// triggers, queries don't see it, and it is left out of the state hash, so the simulation
+    /// is bit-identical with or without it.
+    pub cosmetic: bool,
 }
 
 impl BodyDesc {
@@ -172,11 +213,16 @@ impl BodyDesc {
             can_sleep: true,
             ccd: true,
             collider,
+            group: 0,
+            cosmetic: false,
         }
     }
 }
 
 const NONE: u32 = u32::MAX;
+/// A joint further off than this (m, and rad for angles and limits) keeps its bodies awake.
+const JOINT_WAKE_M: f32 = 0.01;
+const JOINT_WAKE_RAD: f32 = 0.02;
 
 #[derive(Clone, Debug)]
 struct Body {
@@ -255,6 +301,8 @@ struct Contact {
     restitution: f32,
     /// The polytope test's memory (see [`SatCache`]).
     sat: SatCache,
+    /// A cosmetic body is in it (its own cap; not hashed).
+    cosmetic: bool,
 }
 
 /// What happened during a step.
@@ -341,6 +389,13 @@ pub struct StepReport {
     pub energy_change: f64,
     /// The bodies that gained the most energy this step: `(key, joules)`, at most 4.
     pub energy_gainers: Vec<(u64, f64)>,
+    /// Joints solved this step; among them (cosmetic joints left out) the worst joint error
+    /// `(linear m, angular rad, key)`, the worst angle past a limit (hinges and ball joints,
+    /// rad) and the worst offset past one (prismatic and distance joints, m).
+    pub joints: usize,
+    pub worst_joint: Option<(f32, f32, u64)>,
+    pub worst_limit: Option<(f32, u64)>,
+    pub worst_offset: Option<(f32, u64)>,
     pub errors: Vec<PhysicsError>,
     pub times: StageTimes,
 }
@@ -356,6 +411,12 @@ pub struct Filter {
     pub mask: u64,
     pub triggers: bool,
     pub exclude: Option<u64>,
+}
+
+impl Filter {
+    pub fn new(mask: u64, triggers: bool, exclude: Option<u64>) -> Filter {
+        Filter { mask, triggers, exclude }
+    }
 }
 
 impl Default for Filter {
@@ -411,6 +472,27 @@ pub struct CharacterState {
     pub ground: Option<u64>,
 }
 
+/// The contact solver's thread pool, started when first needed (and again for another thread
+/// count). A copied space starts without one: threads aren't state.
+#[derive(Debug, Default)]
+struct ParallelSlot(Option<Box<crate::parallel::Parallel>>);
+
+impl Clone for ParallelSlot {
+    fn clone(&self) -> ParallelSlot {
+        ParallelSlot(None)
+    }
+}
+
+impl ParallelSlot {
+    fn get(&mut self, threads: usize) -> &mut crate::parallel::Parallel {
+        let threads = threads.clamp(1, 64);
+        if self.0.as_ref().is_none_or(|p| p.threads() != threads) {
+            self.0 = Some(Box::new(crate::parallel::Parallel::new(threads)));
+        }
+        self.0.as_mut().expect("just made")
+    }
+}
+
 /// The physics world.
 #[derive(Clone, Debug)]
 pub struct Space {
@@ -455,8 +537,50 @@ pub struct Space {
     active: Vec<u32>,
     solver_bodies: Vec<SolverBody>,
     constraints: Vec<Constraint>,
+    /// The constraints' colour groups (see [`solver::colour`]) and its scratch.
+    groups: Vec<u32>,
+    colouring: solver::ColourScratch,
     solver_points: Vec<SolverPoint>,
+    solver_imps: Vec<Imp>,
+    /// The threaded narrowphase's inputs and where their results go (reused).
+    narrow_inputs: Vec<crate::parallel::NarrowIn>,
+    narrow_index: Vec<u32>,
+    /// The tunnelling guard's fast-body keys and candidates (reused).
+    ccd_buffers: (Vec<u64>, Vec<u32>),
+    /// The contact solver's threads (started on first use when `threads` > 1 and `coloured`).
+    parallel: ParallelSlot,
     candidates: Vec<(u64, u64)>,
+    /// Joints by key, the bodies' joints `(body, joint)`, and the pairs joints keep from
+    /// colliding (with how many joints keep each).
+    joints: BTreeMap<u64, Joint>,
+    body_joints: BTreeSet<(u64, u64)>,
+    no_collide: BTreeMap<(u64, u64), u32>,
+    joint_cons: Vec<JointConstraint>,
+    /// Each sim pair's narrowphase result this step (reused).
+    narrow: Vec<Narrow>,
+    /// Cosmetic bodies and the pairs with a cosmetic body (their own caps; left out of the hash).
+    cosmetic_count: usize,
+    cosmetic_pairs: usize,
+}
+
+/// A joint in the space.
+#[derive(Clone, Debug)]
+struct Joint {
+    desc: JointDesc,
+    imp: JointImpulses,
+    state: JointState,
+    /// A hash of `desc` (part of the state hash).
+    desc_hash: u64,
+    /// The step that last solved it (0: never).
+    solved: u64,
+}
+
+/// A read-only view of a joint.
+#[derive(Clone, Copy, Debug)]
+pub struct JointView<'a> {
+    pub key: u64,
+    pub desc: &'a JointDesc,
+    pub state: JointState,
 }
 
 impl Default for Space {
@@ -498,7 +622,21 @@ impl Space {
             solver_bodies: Vec::new(),
             constraints: Vec::new(),
             solver_points: Vec::new(),
+            solver_imps: Vec::new(),
+            narrow_inputs: Vec::new(),
+            narrow_index: Vec::new(),
+            ccd_buffers: (Vec::new(), Vec::new()),
+            parallel: ParallelSlot::default(),
+            groups: Vec::new(),
+            colouring: solver::ColourScratch::default(),
             candidates: Vec::new(),
+            joints: BTreeMap::new(),
+            body_joints: BTreeSet::new(),
+            no_collide: BTreeMap::new(),
+            joint_cons: Vec::new(),
+            narrow: Vec::new(),
+            cosmetic_count: 0,
+            cosmetic_pairs: 0,
         }
     }
 
@@ -551,6 +689,8 @@ impl Space {
         if let Some(&s) = self.by_key.get(&key) {
             let old = self.slot(s);
             let same_pairs = old.desc.kind == desc.kind
+                && old.desc.group == desc.group
+                && old.desc.cosmetic == desc.cosmetic
                 && match (&old.desc.collider, &desc.collider) {
                     (Some(a), Some(b)) => a.is_trigger == b.is_trigger && a.layer == b.layer && a.mask == b.mask,
                     (None, None) => true,
@@ -584,7 +724,15 @@ impl Space {
             self.sync_awake(s);
             return Ok(());
         }
-        if self.by_key.len() >= self.settings.max_bodies {
+        if desc.cosmetic && self.cosmetic_count >= self.settings.max_cosmetic_bodies {
+            return Err(PhysicsError::new(
+                "budget",
+                format!("physics holds at most {} cosmetic bodies (Settings::max_cosmetic_bodies)", self.settings.max_cosmetic_bodies),
+            )
+            .with("limit", self.settings.max_cosmetic_bodies)
+            .with("key", key));
+        }
+        if !desc.cosmetic && self.by_key.len() - self.cosmetic_count >= self.settings.max_bodies {
             self.refused += 1;
             return Err(PhysicsError::new(
                 "budget",
@@ -629,6 +777,11 @@ impl Space {
         if self.slot(s).is_dynamic() {
             self.dynamic_count += 1;
         }
+        if self.slot(s).desc.cosmetic {
+            self.cosmetic_count += 1;
+        }
+        // Joints that waited for this body come alive: wake their other bodies.
+        self.wake_joint_partners(key);
         self.refresh_proxy(s, true);
         self.sync_awake(s);
         Ok(())
@@ -674,6 +827,9 @@ impl Space {
         if c.touching {
             self.touching_count -= 1;
         }
+        if c.cosmetic {
+            self.cosmetic_pairs -= 1;
+        }
         Some(c)
     }
 
@@ -697,6 +853,9 @@ impl Space {
         if b.desc.kind == BodyKind::Dynamic {
             self.dynamic_count -= 1;
         }
+        if b.desc.cosmetic {
+            self.cosmetic_count -= 1;
+        }
         if b.proxy != NONE {
             if b.in_static_tree {
                 self.static_tree.remove(b.proxy);
@@ -712,6 +871,8 @@ impl Space {
         self.free.push(s);
         self.moved.remove(&key);
         self.characters.remove(&key);
+        // Its joints stay (inactive until it comes back); what they held is free to move.
+        self.wake_joint_partners(key);
         true
     }
 
@@ -784,6 +945,29 @@ impl Space {
                 self.wake_slot(o);
             }
         }
+    }
+
+    /// Puts a body in collision group `group` (0: none): it stops colliding with that group's
+    /// bodies (their pairs go) and may collide again with its old group's.
+    pub fn set_group(&mut self, key: u64, group: u64) {
+        let Some(&s) = self.by_key.get(&key) else {
+            return;
+        };
+        if self.slot(s).desc.group == group {
+            return;
+        }
+        self.slot_mut(s).desc.group = group;
+        if group != 0 {
+            for k in self.pairs_of(key) {
+                let other = if k.0 == key { k.1 } else { k.0 };
+                if self.get(other).is_some_and(|o| o.desc.group == group) {
+                    self.drop_contact(k);
+                }
+            }
+        }
+        self.wake_slot(s);
+        self.moved.insert(key);
+        self.inactive_cache.set(None);
     }
 
     pub fn set_velocity(&mut self, key: u64, v: Vec3, w: Vec3) {
@@ -1017,6 +1201,16 @@ impl Space {
         if ca.is_trigger && cb.is_trigger {
             return false;
         }
+        if a.desc.group != 0 && a.desc.group == b.desc.group {
+            return false;
+        }
+        if a.desc.cosmetic != b.desc.cosmetic {
+            // Presentation never touches the simulation's dynamic bodies or triggers.
+            let (real, _) = if a.desc.cosmetic { (b, a) } else { (a, b) };
+            if real.is_dynamic() || ca.is_trigger || cb.is_trigger {
+                return false;
+            }
+        }
         let (sa, sb) = (a.desc.kind == BodyKind::Static, b.desc.kind == BodyKind::Static);
         if ca.is_trigger || cb.is_trigger {
             return !(sa && sb);
@@ -1053,16 +1247,23 @@ impl Space {
         cands.sort_unstable();
         cands.dedup();
         let mut dropped = 0usize;
+        let mut dropped_cosmetic = 0usize;
         for &(ka, kb) in &cands {
-            if self.pairs.contains_key(&(ka, kb)) {
-                continue;
-            }
-            if self.pairs.len() >= self.settings.max_pairs {
-                dropped += 1;
+            if self.pairs.contains_key(&(ka, kb)) || self.no_collide.contains_key(&(ka, kb)) {
                 continue;
             }
             let (sa, sb) = (self.by_key[&ka], self.by_key[&kb]);
             let (a, b) = (self.slot(sa), self.slot(sb));
+            let cosmetic = a.desc.cosmetic || b.desc.cosmetic;
+            if cosmetic {
+                if self.cosmetic_pairs >= self.settings.max_cosmetic_pairs {
+                    dropped_cosmetic += 1;
+                    continue;
+                }
+            } else if self.pairs.len() - self.cosmetic_pairs >= self.settings.max_pairs {
+                dropped += 1;
+                continue;
+            }
             let (ca, cb) = (a.desc.collider.as_ref().expect("paired"), b.desc.collider.as_ref().expect("paired"));
             let trigger = ca.is_trigger || cb.is_trigger;
             let friction = (ca.friction * cb.friction).sqrt();
@@ -1078,7 +1279,11 @@ impl Space {
                 friction,
                 restitution,
                 sat: SatCache::default(),
+                cosmetic,
             };
+            if cosmetic {
+                self.cosmetic_pairs += 1;
+            }
             let slot = match self.contact_free.pop() {
                 Some(slot) => {
                     self.contacts[slot as usize] = Some(c);
@@ -1107,6 +1312,19 @@ impl Space {
                 )
                 .with("limit", self.settings.max_pairs)
                 .with("dropped", dropped),
+            );
+        }
+        if dropped_cosmetic > 0 {
+            self.report.errors.push(
+                PhysicsError::new(
+                    "budget",
+                    format!(
+                        "{dropped_cosmetic} new cosmetic contact pairs were dropped: physics keeps at most {} (Settings::max_cosmetic_pairs)",
+                        self.settings.max_cosmetic_pairs
+                    ),
+                )
+                .with("limit", self.settings.max_cosmetic_pairs)
+                .with("dropped", dropped_cosmetic),
             );
         }
         self.candidates = cands;
@@ -1142,46 +1360,82 @@ impl Space {
         let mut remove: Vec<(u64, u64)> = Vec::new();
         let mut wake: Vec<u32> = Vec::new();
         let mut events: Vec<Event> = Vec::new();
-        let mut m = Manifold::default();
         let mut touching_delta: isize = 0;
         let mut deepest: Option<(f32, u64, u64)> = None;
         // Mesh triangles left untested by the per-pair cap: (pairs, triangles, first pair).
         let mut capped: (usize, u64, Option<(u64, u64)>) = (0, 0, None);
         self.collect_sim();
-        for &slot in &self.sim {
+        // Every pair's contact points first: pairs are independent, so many pairs run on
+        // several threads, each filling its own slice of `narrow` in `sim` order (the results
+        // are the same however the work is split: determinism rule 7). Then one pass in order.
+        let mut narrow = std::mem::take(&mut self.narrow);
+        narrow.clear();
+        // One thread: each pair is tested in the pass below, in place, into one manifold and the
+        // contact's own SAT memory (no copies; returning results by value cost 20% here).
+        let fused = narrow_threads(self.sim.len(), self.settings.threads) <= 1;
+        if !fused {
+            narrow.resize(self.sim.len(), Narrow::default());
+            let view = NarrowView { slots: &self.slots, contacts: &self.contacts, static_tree: &self.static_tree, dynamic_tree: &self.dynamic_tree, base, max_margin, dt };
+            let sim = &self.sim;
+            {
+                // The cheap checks here; the pair tests on the pool's threads (started once).
+                let mut inputs = std::mem::take(&mut self.narrow_inputs);
+                let mut index = std::mem::take(&mut self.narrow_index);
+                inputs.clear();
+                index.clear();
+                for (k, &slot) in sim.iter().enumerate() {
+                    match view.input(slot) {
+                        Pre::Done(done) => narrow[k] = done,
+                        Pre::Test(t) => {
+                            index.push(k as u32);
+                            inputs.push(crate::parallel::NarrowIn { a: t.a.clone(), pa: t.pa, b: t.b.clone(), pb: t.pb, margin: t.margin, trigger: t.trigger, sat: t.sat });
+                        }
+                    }
+                }
+                self.parallel.get(self.settings.threads).narrowphase(
+                    |job| std::mem::swap(job, &mut inputs),
+                    |i, manifold, sat| narrow[index[i] as usize] = Narrow { apart: false, manifold, sat },
+                );
+                self.narrow_inputs = inputs;
+                self.narrow_index = index;
+            }
+        }
+        let mut in_place = Narrow::default();
+        for (k, &slot) in self.sim.iter().enumerate() {
             let c = self.contacts[slot as usize].as_mut().expect("live contact");
             let (ka, kb) = c.key;
             let (a, b) = (self.slots[c.a as usize].as_ref().expect("live"), self.slots[c.b as usize].as_ref().expect("live"));
-            let fa = fat_of(&self.static_tree, &self.dynamic_tree, a);
-            let fb = fat_of(&self.static_tree, &self.dynamic_tree, b);
-            if !fa.overlaps(&fb) {
+            let pre = if fused {
+                match pair_input(c, a, b, &self.static_tree, &self.dynamic_tree, base, max_margin, dt) {
+                    Pre::Done(done) => in_place = done,
+                    Pre::Test(t) => {
+                        in_place.apart = false;
+                        in_place.sat = t.sat;
+                        if t.trigger {
+                            crate::contact::collide(t.a, &t.pa, t.b, &t.pb, 0.0, &mut in_place.manifold);
+                        } else {
+                            crate::contact::collide_cached(t.a, &t.pa, t.b, &t.pb, t.margin, &mut in_place.manifold, Some(&mut in_place.sat));
+                        }
+                    }
+                }
+                &in_place
+            } else {
+                &narrow[k]
+            };
+            if pre.apart {
                 if c.touching {
                     events.push(end_event(c, ka, kb));
                 }
                 remove.push((ka, kb));
                 continue;
             }
-            let (ca, cb) = (a.desc.collider.as_ref().expect("paired"), b.desc.collider.as_ref().expect("paired"));
-            let (pa, pb) = (a.desc.pose.mul(&ca.offset), b.desc.pose.mul(&cb.offset));
+            let ca = a.desc.collider.as_ref().expect("paired");
             let was = c.touching;
-            // Speculative contacts reach as far as the pair can close in one step (at least the
-            // base distance), so a fast approach is caught before it overlaps.
-            let closing = (a.desc.velocity - b.desc.velocity).length()
-                + a.desc.angular_velocity.length() * a.outer_radius
-                + b.desc.angular_velocity.length() * b.outer_radius;
-            let margin = (base + closing * dt).min(max_margin);
-            // Bounding spheres apart: no points (cheap early out).
-            let reach = a.outer_radius + b.outer_radius + margin;
-            let far = crate::math::len_sq(a.center - b.center) > reach * reach;
+            let m = pre.manifold;
+            if m.skipped > 0 {
+                capped = (capped.0 + 1, capped.1 + u64::from(m.skipped), capped.2.or(Some((ka, kb))));
+            }
             if c.trigger {
-                if far {
-                    m.len = 0;
-                } else {
-                    collide(&ca.shape, &pa, &cb.shape, &pb, 0.0, &mut m);
-                    if m.skipped > 0 {
-                        capped = (capped.0 + 1, capped.1 + u64::from(m.skipped), capped.2.or(Some((ka, kb))));
-                    }
-                }
                 let deepest = m.as_slice().iter().fold(None::<crate::contact::ContactPoint>, |d, p| match d {
                     Some(q) if q.separation <= p.separation => Some(q),
                     _ => Some(*p),
@@ -1205,14 +1459,7 @@ impl Space {
                 }
                 continue;
             }
-            if far {
-                m.len = 0;
-            } else {
-                collide_cached(&ca.shape, &pa, &cb.shape, &pb, margin, &mut m, Some(&mut c.sat));
-                if m.skipped > 0 {
-                    capped = (capped.0 + 1, capped.1 + u64::from(m.skipped), capped.2.or(Some((ka, kb))));
-                }
-            }
+            c.sat = pre.sat;
             // Warm start: carry impulses over by feature id.
             let old = c.points;
             let old_len = c.len;
@@ -1284,8 +1531,12 @@ impl Space {
         for s in wake {
             self.wake_slot(s);
         }
+        // Cosmetic bodies' contacts make no events: presentation mustn't crowd the simulation's
+        // events out of the per-step cap (or the engine's event ring).
         let room = MAX_EVENTS_PER_STEP.saturating_sub(self.report.events.len());
-        self.report.events.extend(events.into_iter().take(room));
+        let events: Vec<Event> = events.into_iter().filter(|e| !(self.is_cosmetic(e.a) || self.is_cosmetic(e.b))).take(room).collect();
+        self.report.events.extend(events);
+        self.narrow = narrow;
     }
 
     /// Advances the simulation by `dt` seconds.
@@ -1331,6 +1582,7 @@ impl Space {
                 b.desc.angular_velocity = angular_velocity_to(b.desc.pose.q, target.q, inv_dt);
             }
         }
+        self.wake_jointed();
         self.find_pairs();
         lap(&mut times.pairs_us);
         self.narrowphase();
@@ -1400,7 +1652,7 @@ impl Space {
     /// One dynamic body's kinetic and potential energy (zero for others).
     fn body_energy(&self, s: u32) -> (f64, f64) {
         let b = self.slot(s);
-        if !b.is_dynamic() || b.inv_mass == 0.0 {
+        if !b.is_dynamic() || b.inv_mass == 0.0 || b.desc.cosmetic {
             return (0.0, 0.0);
         }
         let m = 1.0 / b.inv_mass;
@@ -1415,9 +1667,11 @@ impl Space {
         let mut sbodies = std::mem::take(&mut self.solver_bodies);
         let mut cons = std::mem::take(&mut self.constraints);
         let mut points = std::mem::take(&mut self.solver_points);
+        let mut imps = std::mem::take(&mut self.solver_imps);
         sbodies.clear();
         cons.clear();
         points.clear();
+        imps.clear();
         let slots = std::mem::take(&mut self.active);
         for &s in &slots {
             let plane = settings.plane_2d;
@@ -1486,10 +1740,9 @@ impl Space {
                     rb,
                     normal: p.normal,
                     adjusted_separation: p.separation - (rb - ra).dot(p.normal),
-                    normal_impulse: p.normal_impulse,
-                    tangent_impulse: p.tangent_impulse,
                     ..SolverPoint::default()
                 });
+                imps.push(Imp { normal: p.normal_impulse, tangent: p.tangent_impulse, max_normal: 0.0 });
             }
             cons.push(Constraint {
                 a: ia,
@@ -1504,6 +1757,15 @@ impl Space {
         }
         self.report.constraints = cons.len();
         self.report.points = points.len();
+        if settings.coloured {
+            solver::colour(&mut cons, &sbodies, &mut self.groups, &mut self.colouring);
+        } else {
+            self.groups.clear();
+            self.groups.extend([0, cons.len() as u32]);
+        }
+        let joint_soft = Softness::new(settings.joint_hertz.min(0.25 * substep_rate), settings.joint_damping_ratio, h);
+        self.prepare_joints(joint_soft, h);
+        let mut joints = std::mem::take(&mut self.joint_cons);
         let tuning = Tuning {
             substeps: settings.substeps.max(1),
             contact_hertz: hertz,
@@ -1511,18 +1773,21 @@ impl Space {
             push_speed: settings.push_speed,
             restitution_threshold: settings.restitution_threshold,
             max_linear_speed: settings.max_linear_speed,
+            wide: settings.wide,
         };
-        solver::step(&cons, &mut points, &mut sbodies, dt, &tuning);
+        let parallel = if settings.coloured && settings.threads > 1 { Some(self.parallel.get(settings.threads)) } else { None };
+        solver::step(&mut cons, &self.groups, &mut points, &mut imps, &mut joints, &mut sbodies, dt, &tuning, parallel);
         // Store impulses for next step's warm start.
         for sc in &cons {
             let c = self.contacts[sc.contact as usize].as_mut().expect("live contact");
-            for (k, sp) in points[sc.range()].iter().enumerate() {
-                c.points[k].normal_impulse = sp.normal_impulse;
-                c.points[k].tangent_impulse = sp.tangent_impulse;
-                c.points[k].max_normal_impulse = sp.max_normal_impulse;
+            for (k, i) in imps[sc.range()].iter().enumerate() {
+                c.points[k].normal_impulse = i.normal;
+                c.points[k].tangent_impulse = i.tangent;
+                c.points[k].max_normal_impulse = i.max_normal;
             }
         }
         self.solver_points = points;
+        self.solver_imps = imps;
         // Write dynamic bodies back.
         for &s in &slots {
             let b = self.slot_mut(s);
@@ -1540,6 +1805,8 @@ impl Space {
         self.active = slots;
         self.solver_bodies = sbodies;
         self.constraints = cons;
+        self.joint_cons = joints;
+        self.finish_joints(h);
     }
 
     fn integrate_kinematic(&mut self, dt: f32) {
@@ -1566,11 +1833,23 @@ impl Space {
     }
 
     /// Fast dynamic bodies cast their inner sphere from where they were to where they are
-    /// against static colliders, and stop at the first hit (Box2D v3's continuous step, with a
-    /// sphere core).
+    /// against static colliders, and against the dynamic and kinematic bodies that weren't fast
+    /// this step (where those ended up), and stop at the first hit (Box2D v3's continuous step,
+    /// with a sphere core, its bullets against non-bullets). Two fast bodies don't stop each
+    /// other (that would depend on which went first); they stay listed as fast.
     fn tunnelling_guard(&mut self, dt: f32) {
         let slots = std::mem::take(&mut self.active);
         let mut fast_total = 0;
+        // This step's fast bodies, by key (they aren't targets).
+        // Buffers kept between steps (no allocation once warm).
+        let (mut fast_keys, mut cands) = std::mem::take(&mut self.ccd_buffers);
+        fast_keys.clear();
+        fast_keys.extend(slots.iter().filter_map(|&s| {
+            let b = self.slot(s);
+            let moving = b.is_dynamic() && !b.desc.sleeping && b.solver != NONE && b.desc.collider.as_ref().is_some_and(|c| !c.is_trigger);
+            (moving && b.inner_radius > 0.0 && (b.center - b.c0).length() > 0.5 * b.inner_radius).then_some(b.key)
+        }));
+        fast_keys.sort_unstable();
         for &s in &slots {
             let b = self.slot(s);
             if !b.is_dynamic() || b.desc.sleeping || b.solver == NONE {
@@ -1600,18 +1879,34 @@ impl Space {
             let start = Pose::at(c0);
             let swept = Aabb::around(c0, Vec3::new(r, r, r)).swept(delta);
             let mut best: Option<(f32, u64, CastHit)> = None;
-            let mut cands: Vec<u32> = Vec::new();
+            cands.clear();
             self.static_tree.query(&swept, |o| {
                 cands.push(o);
                 true
             });
-            for o in cands {
+            let statics = cands.len();
+            self.dynamic_tree.query(&swept, |o| {
+                if o != s {
+                    cands.push(o);
+                }
+                true
+            });
+            for (i, &o) in cands.iter().enumerate() {
                 let ob = self.slot(o);
                 let Some(oc) = &ob.desc.collider else {
                     continue;
                 };
                 if oc.is_trigger || oc.mask & layer == 0 || mask_bits & oc.layer == 0 {
                     continue;
+                }
+                if i >= statics {
+                    // A moving target: one that pairs with this body, isn't jointed to it
+                    // without collisions, and wasn't fast itself.
+                    let b = self.slot(s);
+                    let pair = (key.min(ob.key), key.max(ob.key));
+                    if !Space::should_pair(b, ob) || self.no_collide.contains_key(&pair) || fast_keys.binary_search(&ob.key).is_ok() {
+                        continue;
+                    }
                 }
                 let op = ob.desc.pose.mul(&oc.offset);
                 if let Some(h) = query::cast_shape(&probe, &start, delta, &oc.shape, &op, self.settings.linear_slop) {
@@ -1638,6 +1933,7 @@ impl Space {
         }
         self.report.fast_total = fast_total;
         self.active = slots;
+        self.ccd_buffers = (fast_keys, cands);
     }
 
     fn sleep(&mut self, dt: f32) {
@@ -1695,6 +1991,34 @@ impl Space {
                 self.slot_mut(ib).sleep_time = 0.0;
             }
         }
+        // Jointed bodies sleep together; a joint to a moving kinematic body keeps them awake, and
+        // so does a joint that doesn't hold yet (its correction moves the bodies through the
+        // biased pass only, so they report rest while still off: asleep, they'd stay there).
+        let mut kept_awake: Vec<u64> = Vec::new();
+        for c in &self.joint_cons {
+            if self.joints.get(&c.key).is_some_and(|j| j.state.linear_error > JOINT_WAKE_M || j.state.angular_error > JOINT_WAKE_RAD || j.state.limit_excess > JOINT_WAKE_RAD) {
+                kept_awake.extend(c.desc.bodies());
+            }
+            let (ia, ib) = (c.a, c.b);
+            let moving = |i: u32| i != STATIC && self.solver_bodies[i as usize].kinematic;
+            let dynamic = |i: u32| i != STATIC && !self.solver_bodies[i as usize].kinematic;
+            if dynamic(ia) && dynamic(ib) {
+                let (ra, rb) = (find(&mut parent, ia), find(&mut parent, ib));
+                if ra != rb {
+                    let (lo, hi) = (ra.min(rb), ra.max(rb));
+                    parent[hi as usize] = lo;
+                }
+            } else if dynamic(ia) && moving(ib) {
+                kept_awake.extend(c.desc.a);
+            } else if dynamic(ib) && moving(ia) {
+                kept_awake.extend(c.desc.b);
+            }
+        }
+        for k in kept_awake {
+            if let Some(&slot) = self.by_key.get(&k) {
+                self.slot_mut(slot).sleep_time = 0.0;
+            }
+        }
         // Least sleep time per island.
         let mut min_time = std::mem::take(&mut self.uf_time);
         min_time.clear();
@@ -1743,12 +2067,326 @@ impl Space {
     }
 
     // -----------------------------------------------------------------------------------------
+    // Joints (P4)
+
+    /// Adds a joint, or replaces the joint with this key (its warm start survives when only its
+    /// limits or motor changed). Its bodies need not exist yet: until they do it is inactive.
+    pub fn insert_joint(&mut self, key: u64, desc: JointDesc) -> Result<(), PhysicsError> {
+        crate::joint::validate(&desc).map_err(|e| e.with("joint", key))?;
+        let old = self.joints.get(&key);
+        if old.is_none() && self.joints.len() >= self.settings.max_joints {
+            return Err(PhysicsError::new("budget", format!("physics holds at most {} joints (Settings::max_joints)", self.settings.max_joints))
+                .with("limit", self.settings.max_joints)
+                .with("joint", key));
+        }
+        let keep = old.filter(|o| o.desc.kind == desc.kind && o.desc.a == desc.a && o.desc.b == desc.b && o.desc.frame_a == desc.frame_a && o.desc.frame_b == desc.frame_b);
+        let imp = keep.map_or(JointImpulses::default(), |o| o.imp);
+        let state = keep.map_or(JointState::default(), |o| o.state);
+        if self.joints.contains_key(&key) {
+            self.unlink_joint(key);
+        }
+        let desc_hash = desc_hash(&desc);
+        for b in desc.bodies() {
+            self.body_joints.insert((b, key));
+        }
+        if let (Some(a), Some(b), false) = (desc.a, desc.b, desc.collide_connected) {
+            let pair = (a.min(b), a.max(b));
+            *self.no_collide.entry(pair).or_insert(0) += 1;
+            if self.pairs.contains_key(&pair) {
+                if let Some(c) = self.drop_contact(pair) {
+                    if c.touching {
+                        self.wake(a);
+                        self.wake(b);
+                    }
+                }
+            }
+        }
+        let bodies: Vec<u64> = desc.bodies().collect();
+        self.joints.insert(key, Joint { desc, imp, state, desc_hash, solved: 0 });
+        for b in bodies {
+            self.wake(b);
+        }
+        self.inactive_cache.set(None);
+        Ok(())
+    }
+
+    /// Drops a joint's links to its bodies (the pair may collide again).
+    fn unlink_joint(&mut self, key: u64) {
+        let Some(j) = self.joints.get(&key) else { return };
+        let desc = j.desc.clone();
+        for b in desc.bodies() {
+            self.body_joints.remove(&(b, key));
+        }
+        if let (Some(a), Some(b), false) = (desc.a, desc.b, desc.collide_connected) {
+            let pair = (a.min(b), a.max(b));
+            if let Some(n) = self.no_collide.get_mut(&pair) {
+                *n -= 1;
+                if *n == 0 {
+                    self.no_collide.remove(&pair);
+                    // Let the pair be found again.
+                    for k in [a, b] {
+                        if self.by_key.contains_key(&k) {
+                            self.moved.insert(k);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Removes a joint (its bodies wake). Returns whether it existed.
+    pub fn remove_joint(&mut self, key: u64) -> bool {
+        if !self.joints.contains_key(&key) {
+            return false;
+        }
+        self.unlink_joint(key);
+        let j = self.joints.remove(&key).expect("checked");
+        for b in j.desc.bodies() {
+            self.wake(b);
+        }
+        self.inactive_cache.set(None);
+        true
+    }
+
+    /// Changes a joint's motor (a powered ragdoll's targets, each tick) without touching its warm
+    /// start; wakes its bodies when the motor changed.
+    pub fn set_joint_motor(&mut self, key: u64, motor: Option<Motor>) -> Result<(), PhysicsError> {
+        let Some(j) = self.joints.get(&key) else {
+            return Err(PhysicsError::new("not_found", format!("no joint {key}")).with("joint", key));
+        };
+        if j.desc.motor == motor {
+            return Ok(());
+        }
+        let mut desc = j.desc.clone();
+        desc.motor = motor;
+        crate::joint::validate(&desc).map_err(|e| e.with("joint", key))?;
+        let hash = desc_hash(&desc);
+        let bodies: Vec<u64> = desc.bodies().collect();
+        let j = self.joints.get_mut(&key).expect("checked");
+        j.desc = desc;
+        j.desc_hash = hash;
+        for b in bodies {
+            self.wake(b);
+        }
+        self.inactive_cache.set(None);
+        Ok(())
+    }
+
+    pub fn joint(&self, key: u64) -> Option<JointView<'_>> {
+        self.joints.get(&key).map(|j| JointView { key, desc: &j.desc, state: self.joint_state(j) })
+    }
+
+    /// Joints in key order.
+    pub fn joints(&self) -> impl Iterator<Item = JointView<'_>> + '_ {
+        self.joints.iter().map(|(k, j)| JointView { key: *k, desc: &j.desc, state: self.joint_state(j) })
+    }
+
+    pub fn joint_count(&self) -> usize {
+        self.joints.len()
+    }
+
+    /// Keys of the joints a body is in, sorted.
+    pub fn joints_of(&self, body: u64) -> Vec<u64> {
+        self.body_joints.range((body, 0)..=(body, u64::MAX)).map(|(_, j)| *j).collect()
+    }
+
+    /// Wakes the bodies sharing a joint with `key`.
+    fn wake_joint_partners(&mut self, key: u64) {
+        let joints = self.joints_of(key);
+        for jk in joints {
+            let others: Vec<u64> = self.joints[&jk].desc.bodies().filter(|b| *b != key).collect();
+            for o in others {
+                self.wake(o);
+            }
+        }
+    }
+
+    /// A body's pose, or the world's (identity) for `None`; `None` when the body is missing.
+    fn side_pose(&self, k: Option<u64>) -> Option<Pose> {
+        match k {
+            None => Some(Pose::IDENTITY),
+            Some(k) => self.get(k).map(|b| b.desc.pose),
+        }
+    }
+
+    /// Wakes sleeping bodies jointed to awake ones (islands follow joints), before a step.
+    fn wake_jointed(&mut self) {
+        if self.joints.is_empty() {
+            return;
+        }
+        // Sleeping islands hold whole joint graphs, so one pass wakes everything; a few more
+        // cover joints added between islands that slept apart.
+        for _ in 0..8 {
+            let mut wake: Vec<u64> = Vec::new();
+            for &k in &self.awake {
+                for (_, jk) in self.body_joints.range((k, 0)..=(k, u64::MAX)) {
+                    for o in self.joints[jk].desc.bodies() {
+                        if self.get(o).is_some_and(|b| b.is_dynamic() && b.desc.sleeping) {
+                            wake.push(o);
+                        }
+                    }
+                }
+            }
+            if wake.is_empty() {
+                return;
+            }
+            wake.sort_unstable();
+            wake.dedup();
+            for k in wake {
+                self.wake(k);
+            }
+        }
+    }
+
+    /// The joints this step solves, prepared (the bodies' solver indices must be set); the
+    /// others are marked inactive with why.
+    fn prepare_joints(&mut self, joint_soft: Softness, h: f32) {
+        let mut cons = std::mem::take(&mut self.joint_cons);
+        cons.clear();
+        if self.joints.is_empty() {
+            self.joint_cons = cons;
+            return;
+        }
+        // Joints of awake bodies (all of them when that is cheaper).
+        let keys: Vec<u64> = if self.joints.len() <= self.awake.len() * 4 {
+            self.joints.keys().copied().collect()
+        } else {
+            let mut ks: Vec<u64> = self.awake.iter().flat_map(|k| self.body_joints.range((*k, 0)..=(*k, u64::MAX)).map(|(_, j)| *j)).collect();
+            ks.sort_unstable();
+            ks.dedup();
+            ks
+        };
+        for key in keys {
+            let j = &self.joints[&key];
+            if self.joint_blocker(&j.desc, true).is_some() {
+                continue;
+            }
+            // (solver index, centre, anchor from the centre, frame rotation): world, step start.
+            let frame = |k: Option<u64>, f: &Pose| -> (u32, Vec3, Vec3, Quat) {
+                match k.and_then(|k| self.get(k)) {
+                    None => (STATIC, f.p, Vec3::ZERO, f.q),
+                    Some(b) => {
+                        let w = b.desc.pose.mul(f);
+                        if b.solver == NONE {
+                            (STATIC, w.p, Vec3::ZERO, w.q)
+                        } else {
+                            (b.solver, b.center, w.p - b.center, w.q)
+                        }
+                    }
+                }
+            };
+            let (ia, ca, ra0, fa0) = frame(j.desc.a, &j.desc.frame_a);
+            let (ib, cb, rb0, fb0) = frame(j.desc.b, &j.desc.frame_b);
+            let (soft, spring) = crate::joint::softness(&j.desc, joint_soft, h);
+            cons.push(JointConstraint { a: ia, b: ib, desc: j.desc.clone(), ra0, rb0, fa0, fb0, delta_center: cb - ca, soft, spring, imp: j.imp, key });
+        }
+        self.joint_cons = cons;
+    }
+
+    /// Stores the solved joints' impulses and measures them at their new poses.
+    fn finish_joints(&mut self, h: f32) {
+        let cons = std::mem::take(&mut self.joint_cons);
+        let mut worst: Option<(f32, f32, u64)> = None;
+        let mut over: Option<(f32, u64)> = None;
+        let mut past: Option<(f32, u64)> = None;
+        for c in &cons {
+            let (Some(pa), Some(pb)) = (self.side_pose(c.desc.a), self.side_pose(c.desc.b)) else { continue };
+            let state = crate::joint::measure(&c.desc, &pa, &pb, &c.imp, h);
+            let cosmetic = c.desc.bodies().any(|k| self.get(k).is_some_and(|b| b.desc.cosmetic));
+            if !cosmetic {
+                if worst.is_none_or(|(l, a, _)| state.linear_error > l || state.linear_error == l && state.angular_error > a) {
+                    worst = Some((state.linear_error, state.angular_error, c.key));
+                }
+                let angular = matches!(c.desc.kind, crate::joint::JointKind::Hinge | crate::joint::JointKind::Ball);
+                let slot = if angular { &mut over } else { &mut past };
+                if state.limit_excess > 0.0 && slot.is_none_or(|(e, _)| state.limit_excess > e) {
+                    *slot = Some((state.limit_excess, c.key));
+                }
+            }
+            let steps = self.steps;
+            let j = self.joints.get_mut(&c.key).expect("prepared");
+            j.imp = c.imp;
+            j.state = state;
+            j.solved = steps;
+        }
+        self.report.joints = cons.len();
+        self.report.worst_joint = worst;
+        self.report.worst_limit = over;
+        self.report.worst_offset = past;
+        self.joint_cons = cons;
+    }
+
+    /// Why a joint can't be solved now (`None`: it can). `solving`: inside a step, where a body
+    /// is simulated only when it has a solver index.
+    fn joint_blocker(&self, desc: &JointDesc, solving: bool) -> Option<&'static str> {
+        let side = |k: Option<u64>| -> Result<Option<&Body>, &'static str> {
+            match k {
+                None => Ok(None),
+                Some(k) => self.get(k).map(Some).ok_or("missing_body"),
+            }
+        };
+        let (a, b) = match (side(desc.a), side(desc.b)) {
+            (Err(w), _) | (_, Err(w)) => return Some(w),
+            (Ok(a), Ok(b)) => (a, b),
+        };
+        let simulated = |b: Option<&Body>| b.is_some_and(|b| b.is_dynamic() && !b.desc.sleeping && (!solving || b.solver != NONE));
+        let dynamic = |b: Option<&Body>| b.is_some_and(|b| b.is_dynamic());
+        let mixed = match (a, b) {
+            (Some(a), Some(b)) if a.desc.cosmetic != b.desc.cosmetic => {
+                if a.desc.cosmetic {
+                    b.is_dynamic()
+                } else {
+                    a.is_dynamic()
+                }
+            }
+            _ => false,
+        };
+        if mixed {
+            Some("cosmetic_link")
+        } else if !dynamic(a) && !dynamic(b) {
+            Some("no_dynamic_body")
+        } else if !simulated(a) && !simulated(b) {
+            Some("asleep")
+        } else {
+            None
+        }
+    }
+
+    /// A joint's state as of now: its last measurement, marked inactive (with why) unless the
+    /// last step solved it.
+    fn joint_state(&self, j: &Joint) -> JointState {
+        if j.solved == self.steps && j.state.active {
+            return j.state;
+        }
+        let inactive = self.joint_blocker(&j.desc, false).or(Some("not_stepped"));
+        JointState { active: false, inactive, ..j.state }
+    }
+
+    /// Whether a joint touches a cosmetic body (left out of the hash).
+    /// Whether body `key` is cosmetic (presentation only).
+    pub(crate) fn is_cosmetic(&self, key: u64) -> bool {
+        self.get(key).is_some_and(|b| b.desc.cosmetic)
+    }
+
+    fn joint_is_cosmetic(&self, j: &Joint) -> bool {
+        j.desc.bodies().any(|k| self.get(k).is_some_and(|b| b.desc.cosmetic))
+    }
+
+    /// Whether every body of a joint is outside the awake set (its state can't change in a step).
+    fn joint_is_inactive(&self, j: &Joint) -> bool {
+        j.desc.bodies().all(|k| !self.awake.contains(&k))
+    }
+
+    // -----------------------------------------------------------------------------------------
     // Queries
 
     fn passes(&self, b: &Body, f: &Filter) -> bool {
         let Some(c) = &b.desc.collider else {
             return false;
         };
+        if b.desc.cosmetic {
+            return false;
+        }
         if f.exclude == Some(b.key) || c.layer & f.mask == 0 {
             return false;
         }
@@ -1835,7 +2473,7 @@ impl Space {
 
     /// Keys of bodies whose boxes overlap `bounds`, sorted (both trees).
     pub fn in_box(&self, bounds: &Aabb, limit: usize) -> (Vec<u64>, usize) {
-        let mut keys: Vec<u64> = self.candidates_in(bounds).into_iter().map(|s| self.slot(s).key).collect();
+        let mut keys: Vec<u64> = self.candidates_in(bounds).into_iter().filter(|s| !self.slot(*s).desc.cosmetic).map(|s| self.slot(s).key).collect();
         keys.sort_unstable();
         let total = keys.len();
         keys.truncate(limit);
@@ -1944,27 +2582,44 @@ impl Space {
     fn inactive_hash(&self) -> u64 {
         let mut h = StableHasher::with_seed(0x5068_7973_6963_7332);
         for (&key, &s) in &self.by_key {
-            if !self.awake.contains(&key) {
-                Space::hash_body(&mut h, key, self.slot(s));
+            let b = self.slot(s);
+            if !self.awake.contains(&key) && !b.desc.cosmetic {
+                Space::hash_body(&mut h, key, b);
             }
         }
         for (&k, &slot) in &self.pairs {
-            if !self.awake.contains(&k.0) && !self.awake.contains(&k.1) {
-                Space::hash_contact(&mut h, k, self.contact(slot));
+            let c = self.contact(slot);
+            if !self.awake.contains(&k.0) && !self.awake.contains(&k.1) && !c.cosmetic {
+                Space::hash_contact(&mut h, k, c);
+            }
+        }
+        for (&k, j) in &self.joints {
+            if self.joint_is_inactive(j) && !self.joint_is_cosmetic(j) {
+                Space::hash_joint(&mut h, k, j);
             }
         }
         h.finish()
+    }
+
+    fn hash_joint(h: &mut StableHasher, key: u64, j: &Joint) {
+        h.write_u64(key);
+        h.write_u64(j.desc_hash);
+        j.imp.hash_into(h);
     }
 
     /// The whole state: counts, the cached inactive part, then the awake bodies, their
     /// contacts and the characters, in key order.
     fn combine(&self, inactive: u64) -> u64 {
         let mut h = StableHasher::with_seed(0x5068_7973_6963_7331);
-        h.write_u64(self.by_key.len() as u64);
-        h.write_u64(self.pairs.len() as u64);
+        // Cosmetic bodies and their pairs are left out (the simulation is the same without them).
+        h.write_u64((self.by_key.len() - self.cosmetic_count) as u64);
+        h.write_u64((self.pairs.len() - self.cosmetic_pairs) as u64);
         h.write_u64(inactive);
         for &key in &self.awake {
-            Space::hash_body(&mut h, key, self.slot(self.by_key[&key]));
+            let b = self.slot(self.by_key[&key]);
+            if !b.desc.cosmetic {
+                Space::hash_body(&mut h, key, b);
+            }
         }
         let mut keys: Vec<(u64, u64)> = Vec::new();
         for &k in &self.awake {
@@ -1974,7 +2629,19 @@ impl Space {
         keys.sort_unstable();
         keys.dedup();
         for k in keys {
-            Space::hash_contact(&mut h, k, self.contact(self.pairs[&k]));
+            let c = self.contact(self.pairs[&k]);
+            if !c.cosmetic {
+                Space::hash_contact(&mut h, k, c);
+            }
+        }
+        let real = self.joints.values().filter(|j| !self.joint_is_cosmetic(j)).count();
+        if real > 0 {
+            h.write_u64(real as u64);
+            for (&k, j) in &self.joints {
+                if !self.joint_is_inactive(j) && !self.joint_is_cosmetic(j) {
+                    Space::hash_joint(&mut h, k, j);
+                }
+            }
         }
         for (k, c) in &self.characters {
             h.write_u64(*k);
@@ -1983,6 +2650,92 @@ impl Space {
         }
         h.finish()
     }
+}
+
+/// One pair's narrowphase result.
+#[derive(Clone, Copy, Debug, Default)]
+struct Narrow {
+    /// The fat boxes no longer overlap: the pair ends.
+    apart: bool,
+    manifold: Manifold,
+    /// The polytope test's memory after this test.
+    sat: SatCache,
+}
+
+/// A pair before its shape test: done (apart, or too far), or the test to run.
+enum Pre<'a> {
+    Done(Narrow),
+    Test(PairTest<'a>),
+}
+
+/// A shape test to run (borrowed from the space).
+struct PairTest<'a> {
+    a: &'a Shape,
+    pa: Pose,
+    b: &'a Shape,
+    pb: Pose,
+    margin: f32,
+    trigger: bool,
+    sat: SatCache,
+}
+
+/// What the narrowphase reads (shareable across threads).
+struct NarrowView<'a> {
+    slots: &'a [Option<Body>],
+    contacts: &'a [Option<Contact>],
+    static_tree: &'a Tree,
+    dynamic_tree: &'a Tree,
+    base: f32,
+    max_margin: f32,
+    dt: f32,
+}
+
+impl NarrowView<'_> {
+    /// A pair's cheap part: the result when the pair needs no shape test (apart, or its bounding
+    /// spheres too far), else the test to run (on the pool's threads).
+    fn input(&self, slot: u32) -> Pre<'_> {
+        let c = self.contacts[slot as usize].as_ref().expect("live contact");
+        let (a, b) = (self.slots[c.a as usize].as_ref().expect("live"), self.slots[c.b as usize].as_ref().expect("live"));
+        pair_input(c, a, b, self.static_tree, self.dynamic_tree, self.base, self.max_margin, self.dt)
+    }
+}
+
+/// A pair's cheap checks (see [`NarrowView::input`]), borrowing only the bodies' shapes.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn pair_input<'b>(c: &Contact, a: &'b Body, b: &'b Body, static_tree: &Tree, dynamic_tree: &Tree, base: f32, max_margin: f32, dt: f32) -> Pre<'b> {
+    let mut out = Narrow { apart: false, manifold: Manifold::default(), sat: c.sat };
+    let fa = fat_of(static_tree, dynamic_tree, a);
+    let fb = fat_of(static_tree, dynamic_tree, b);
+    if !fa.overlaps(&fb) {
+        out.apart = true;
+        return Pre::Done(out);
+    }
+    let (ca, cb) = (a.desc.collider.as_ref().expect("paired"), b.desc.collider.as_ref().expect("paired"));
+    let (pa, pb) = (a.desc.pose.mul(&ca.offset), b.desc.pose.mul(&cb.offset));
+    // Speculative contacts reach as far as the pair can close in one step (at least the base
+    // distance), so a fast approach is caught before it overlaps.
+    let closing = (a.desc.velocity - b.desc.velocity).length() + a.desc.angular_velocity.length() * a.outer_radius + b.desc.angular_velocity.length() * b.outer_radius;
+    let margin = (base + closing * dt).min(max_margin);
+    // Bounding spheres apart: no points (cheap early out).
+    let reach = a.outer_radius + b.outer_radius + margin;
+    if crate::math::len_sq(a.center - b.center) > reach * reach {
+        return Pre::Done(out);
+    }
+    Pre::Test(PairTest { a: &ca.shape, pa, b: &cb.shape, pb, margin, trigger: c.trigger, sat: c.sat })
+}
+
+/// Pairs per narrowphase thread at least (fewer run on the calling thread: starting threads
+/// costs more than small batches save).
+const PAIRS_PER_THREAD: usize = 384;
+/// How many threads a narrowphase of `pairs` pairs uses, at most `limit` (the result never
+/// depends on it).
+fn narrow_threads(pairs: usize, limit: usize) -> usize {
+    if pairs < 2 * PAIRS_PER_THREAD || limit <= 1 {
+        return 1;
+    }
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    (pairs / PAIRS_PER_THREAD).min(cores).min(limit).max(1)
 }
 
 thread_local! {
@@ -2041,8 +2794,9 @@ fn validate(d: &BodyDesc) -> Result<(), PhysicsError> {
         return Err(PhysicsError::new("invalid_body", "a dynamic body needs a positive mass").with("field", "mass"));
     }
     if let Some(c) = &d.collider {
-        if let (Some(h), false) = (c.shape.polytope(), d.kind == BodyKind::Static) {
-            if matches!(c.shape, Shape::Hull(_)) && h.points.len() > crate::shape::MAX_MOVING_HULL_POINTS {
+        let big_part = c.shape.compound_parts().and_then(|ps| ps.iter().find_map(|(_, s)| s.polytope().filter(|h| matches!(s, Shape::Hull(_)) && h.points.len() > crate::shape::MAX_MOVING_HULL_POINTS)));
+        if let (Some(h), false) = (c.shape.polytope().or(big_part), d.kind == BodyKind::Static) {
+            if (matches!(c.shape, Shape::Hull(_)) || big_part.is_some()) && h.points.len() > crate::shape::MAX_MOVING_HULL_POINTS {
                 return Err(PhysicsError::new(
                     "hull_too_big",
                     format!(
@@ -2171,4 +2925,51 @@ fn angular_velocity_to(from: Quat, to: Quat, inv_dt: f32) -> Vec3 {
     }
     let angle = 2.0 * specula_core::dmath::atan2(s, d.w);
     v * (angle / s * inv_dt)
+}
+
+/// A hash of everything a joint is made of.
+fn desc_hash(d: &JointDesc) -> u64 {
+    let mut h = StableHasher::with_seed(0x4a6f_696e_7431);
+    h.write_u8(d.kind as u8);
+    for k in [d.a, d.b] {
+        h.write_u64(k.unwrap_or(u64::MAX));
+    }
+    for f in [d.frame_a, d.frame_b] {
+        [f.p.x, f.p.y, f.p.z, f.q.x, f.q.y, f.q.z, f.q.w].iter().for_each(|v| h.write_f32(*v));
+    }
+    let opt2 = |h: &mut StableHasher, v: Option<[f32; 2]>| match v {
+        None => h.write_u8(0),
+        Some([a, b]) => {
+            h.write_u8(1);
+            h.write_f32(a);
+            h.write_f32(b);
+        }
+    };
+    opt2(&mut h, d.limit);
+    opt2(&mut h, d.swing);
+    [d.length[0], d.length[1], d.spring_hertz, d.spring_damping, d.rest_length].iter().for_each(|v| h.write_f32(*v));
+    match d.motor {
+        None => h.write_u8(0),
+        Some(m) => {
+            h.write_u8(1);
+            match m.drive {
+                crate::joint::Drive::Speed(v) => {
+                    h.write_u8(1);
+                    h.write_f32(v);
+                }
+                crate::joint::Drive::Position(v) => {
+                    h.write_u8(2);
+                    h.write_f32(v);
+                }
+                crate::joint::Drive::Rotation(q) => {
+                    h.write_u8(3);
+                    [q.x, q.y, q.z, q.w].iter().for_each(|v| h.write_f32(*v));
+                }
+            }
+            [m.max_force, m.hertz, m.damping_ratio].iter().for_each(|v| h.write_f32(*v));
+        }
+    }
+    h.write_f32(d.friction);
+    h.write_bool(d.collide_connected);
+    h.finish()
 }

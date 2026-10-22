@@ -222,6 +222,131 @@ fn fast_bodies_do_not_tunnel_through_thin_walls() {
 }
 
 #[test]
+fn fast_bodies_do_not_tunnel_through_thin_dynamic_bodies() {
+    // A bullet at 300 m/s and a free-floating 5 cm plate: the guard casts against the plate too.
+    for ccd in [true, false] {
+        let mut s = Space::new(Settings { gravity: Vec3::ZERO, ..Settings::default() });
+        let mut plate = BodyDesc::new(BodyKind::Dynamic, Pose::at(v3(5.0, 0.0, 0.0)), Some(ColliderDesc::new(Shape::cuboid(v3(0.025, 2.0, 2.0)))));
+        plate.mass = 20.0;
+        s.insert(1, plate).unwrap();
+        let mut d = BodyDesc::new(BodyKind::Dynamic, Pose::at(Vec3::ZERO), Some(ColliderDesc::new(Shape::sphere(0.1))));
+        d.velocity = v3(300.0, 0.0, 0.0);
+        d.ccd = ccd;
+        s.insert(2, d).unwrap();
+        let mut guarded = false;
+        for _ in 0..30 {
+            let r = s.step(DT);
+            guarded |= r.events.iter().any(|e| e.kind == EventKind::Ccd && e.a == 2 && e.b == 1);
+        }
+        let (x, plate_v) = (s.body(2).unwrap().pose.p.x, s.body(1).unwrap().velocity.x);
+        if ccd {
+            assert!(guarded, "the guard fired on the dynamic plate");
+            assert!(x < s.body(1).unwrap().pose.p.x, "the bullet stayed on its side: x = {x}");
+            assert!(plate_v > 0.5, "and hit it: the plate moves at {plate_v} m/s");
+        } else {
+            assert!(x > 5.0, "without the guard it passes through: x = {x}");
+        }
+    }
+}
+
+#[test]
+fn the_threaded_narrowphase_gives_the_same_states() {
+    // 900 boxes in a heap (thousands of pairs: the narrowphase splits them over threads).
+    let build = |threads: usize| {
+        let mut s = Space::new(Settings { threads, ..Settings::default() });
+        ground(&mut s);
+        for i in 0..900u64 {
+            let (x, y, z) = ((i % 10) as f32 * 1.05 - 5.0, 0.5 + (i / 100) as f32 * 1.05, ((i / 10) % 10) as f32 * 1.05 - 5.0);
+            dynamic(&mut s, 10 + i, Shape::cuboid(v3(0.5, 0.5, 0.5)), v3(x, y, z));
+        }
+        s
+    };
+    let (mut one, mut four) = (build(1), build(4));
+    for t in 0..40 {
+        one.step(DT);
+        four.step(DT);
+        assert_eq!(one.hash(), four.hash(), "diverged at step {t}");
+    }
+    assert!(one.report().pairs > 2000, "enough pairs to split: {}", one.report().pairs);
+}
+
+/// The coloured solver on its thread pool: a heap of boxes and spheres, a pendulum chain of
+/// joints, a spinning kinematic paddle and a tower, the same states (bit for bit, every step) on
+/// 1, 2, 3, 4 and 8 threads; and coloured differs from pair order only in the order it solves.
+#[test]
+fn the_coloured_solver_gives_the_same_states_on_any_thread_count() {
+    use specula_physics::joint::{JointDesc, JointKind};
+    let build = |threads: usize| {
+        let mut s = Space::new(Settings { threads, coloured: true, ..Settings::default() });
+        ground(&mut s);
+        for i in 0..300u64 {
+            let (x, y, z) = ((i % 10) as f32 * 1.02 - 5.0, 0.5 + (i / 100) as f32 * 1.05, ((i / 10) % 10) as f32 * 1.02 - 5.0);
+            let shape = if i % 4 == 0 { Shape::sphere(0.5) } else { Shape::cuboid(v3(0.5, 0.5, 0.5)) };
+            dynamic(&mut s, 10 + i, shape, v3(x, y, z));
+        }
+        let mut k = BodyDesc::new(BodyKind::Kinematic, Pose::at(v3(0.0, 0.3, 9.0)), Some(ColliderDesc::new(Shape::cuboid(v3(4.0, 0.3, 0.3)))));
+        k.angular_velocity = v3(0.0, 1.5, 0.0);
+        s.insert(5, k).unwrap();
+        for i in 0..6u64 {
+            dynamic(&mut s, 2000 + i, Shape::cuboid(v3(0.1, 0.25, 0.1)), v3(9.0, 6.0 - 0.5 * i as f32, 0.0));
+            let a = (i > 0).then_some(2000 + i - 1);
+            let fa = if i == 0 { Pose::at(v3(9.0, 6.25, 0.0)) } else { Pose::at(v3(0.0, -0.25, 0.0)) };
+            s.insert_joint(3000 + i, JointDesc::new(JointKind::Ball, a, Some(2000 + i), fa, Pose::at(v3(0.0, 0.25, 0.0)))).unwrap();
+        }
+        dynamic(&mut s, 2100, Shape::cuboid(v3(0.4, 0.4, 0.4)), v3(7.0, 3.5, 0.0));
+        s.set_velocity(2100, v3(4.0, 0.0, 0.0), Vec3::ZERO);
+        s
+    };
+    let mut runs: Vec<Space> = [1, 2, 3, 4, 8].into_iter().map(build).collect();
+    // And the wide solve (four constraints in lanes) on four threads.
+    let mut wide = build(4);
+    wide.settings.wide = true;
+    runs.push(wide);
+    let mut most = 0;
+    for t in 0..120 {
+        for s in &mut runs {
+            s.step(DT);
+        }
+        most = most.max(runs[0].report().constraints);
+        let h = runs[0].hash();
+        for (i, s) in runs.iter().enumerate().skip(1) {
+            assert_eq!(s.hash(), h, "{} diverged at step {t}", ["1 thread", "2 threads", "3 threads", "4 threads", "8 threads", "4 threads, wide"][i]);
+        }
+    }
+    assert!(most > 300, "enough contacts to colour: {most}");
+}
+
+#[test]
+fn compound_bodies_stand_on_their_parts() {
+    // A stool: a seat on four thin legs, dropped from a metre. It lands on its legs, upright,
+    // with the seat clear of the floor.
+    let mut s = Space::default();
+    ground(&mut s);
+    let leg = |x: f32, z: f32| (Pose::at(v3(x, -0.25, z)), Shape::cuboid(v3(0.03, 0.25, 0.03)));
+    let stool = Shape::compound(vec![(Pose::at(v3(0.0, 0.03, 0.0)), Shape::cuboid(v3(0.3, 0.03, 0.3))), leg(0.25, 0.25), leg(-0.25, 0.25), leg(0.25, -0.25), leg(-0.25, -0.25)]).unwrap();
+    let mut d = BodyDesc::new(BodyKind::Dynamic, Pose::at(v3(0.0, 1.5, 0.0)), Some(ColliderDesc::new(stool)));
+    d.mass = 4.0;
+    s.insert(2, d).unwrap();
+    for _ in 0..240 {
+        s.step(DT);
+    }
+    let b = s.body(2).unwrap();
+    assert!((b.pose.p.y - 0.5).abs() < 0.02, "on its legs: the seat's underside at {}", b.pose.p.y);
+    assert!(b.pose.q.rotate(Vec3::Y).y > 0.999, "upright");
+    assert!(b.sleeping, "and asleep");
+    // Its centre of mass is where its parts' volumes put it (the seat is most of it).
+    assert!(b.center.y > b.pose.p.y - 0.1 && b.center.y < b.pose.p.y + 0.03, "{:?}", b.center);
+    // Rays and casts see the parts, not the box around them: one between the legs misses.
+    let (hits, _) = s.raycast(v3(0.0, 0.25, -2.0), v3(0.0, 0.0, 1.0), 4.0, &Filter::default(), 4);
+    assert!(hits.is_empty(), "between the legs: {hits:?}");
+    let (hits, _) = s.raycast(v3(0.25, 0.25, -2.0), v3(0.0, 0.0, 1.0), 4.0, &Filter::default(), 4);
+    assert_eq!(hits.first().map(|h| h.key), Some(2), "a leg");
+    // Nested compounds, meshes inside them and empty ones are refused.
+    assert!(Shape::compound(vec![]).is_err());
+    assert!(Shape::compound(vec![(Pose::IDENTITY, Shape::compound(vec![(Pose::IDENTITY, Shape::sphere(1.0))]).unwrap())]).is_err());
+}
+
+#[test]
 fn triggers_report_enter_and_exit() {
     let mut s = Space::default();
     let mut zone = ColliderDesc::new(Shape::cuboid(v3(2.0, 0.5, 2.0)));

@@ -1,5 +1,6 @@
-//! Collision shapes: sphere, capsule, box and convex hull (any body), and triangle mesh and
-//! heightfield (static only), with their bounds, support functions and mass properties.
+//! Collision shapes: sphere, capsule, box and convex hull (any body), compounds of them (any
+//! body), and triangle mesh and heightfield (static only), with their bounds, support functions
+//! and mass properties.
 //!
 //! Shapes are given in their collider's local frame, already scaled (the engine bakes an
 //! entity's scale in). Heavy shape data (hulls, meshes) is shared through `Arc`, so cloning a
@@ -21,6 +22,70 @@ pub const MIN_HALF_EXTENT: f32 = 1.0e-4;
 pub const MAX_MESH_TRIANGLES: usize = 65_536;
 /// Most samples per side of a heightfield.
 pub const MAX_HEIGHTFIELD_SIDE: usize = 257;
+/// Most parts of a compound shape (pairs of compounds cost parts x parts).
+pub const MAX_COMPOUND_PARTS: usize = 16;
+
+/// Convex parts at poses in one frame: a body made of several shapes (a chair, a cart, a
+/// hammer). Its centre of mass and inertia are the parts' together, at one density.
+#[derive(Clone, Debug)]
+pub struct Compound {
+    pub parts: Vec<(Pose, Shape)>,
+    pub aabb: Aabb,
+    /// Centre of mass and inertia about it, for a mass of 1 kg.
+    pub com: Vec3,
+    pub unit_inertia: Mat3,
+    pub inner_radius: f32,
+    pub outer_radius: f32,
+}
+
+/// A convex shape's volume (m³).
+fn volume(s: &Shape) -> f32 {
+    let pi = std::f32::consts::PI;
+    match s {
+        Shape::Sphere { radius } => 4.0 / 3.0 * pi * radius * radius * radius,
+        Shape::Capsule { radius, half_height } => pi * radius * radius * (2.0 * half_height + 4.0 / 3.0 * radius),
+        Shape::Box { half, .. } => 8.0 * half.x * half.y * half.z,
+        Shape::Hull(h) => h.volume,
+        _ => 0.0,
+    }
+}
+
+impl Compound {
+    pub fn new(parts: Vec<(Pose, Shape)>) -> Result<Compound, PhysicsError> {
+        if parts.is_empty() || parts.len() > MAX_COMPOUND_PARTS {
+            return Err(PhysicsError::new("invalid_compound", format!("a compound has 1 to {MAX_COMPOUND_PARTS} parts (got {})", parts.len()))
+                .with("parts", parts.len()));
+        }
+        if let Some(i) = parts.iter().position(|(_, s)| !matches!(s, Shape::Sphere { .. } | Shape::Capsule { .. } | Shape::Box { .. } | Shape::Hull(_))) {
+            return Err(PhysicsError::new("invalid_compound", "a compound's parts are spheres, capsules, boxes or hulls").with("part", i));
+        }
+        let vols: Vec<f32> = parts.iter().map(|(_, s)| volume(s).max(1.0e-12)).collect();
+        let total: f32 = vols.iter().sum();
+        let mut com = Vec3::ZERO;
+        let mut centers = Vec::with_capacity(parts.len());
+        for ((pose, s), v) in parts.iter().zip(&vols) {
+            let (c, _) = s.mass_properties(1.0);
+            let wc = pose.point(c);
+            centers.push(wc);
+            com = com + wc * (v / total);
+        }
+        let mut inertia = Mat3::ZERO;
+        for (((pose, s), v), c) in parts.iter().zip(&vols).zip(&centers) {
+            let m = v / total;
+            let (_, i) = s.mass_properties(m);
+            let r = Mat3::from_quat(pose.q);
+            let d = *c - com;
+            // Parallel axes: m (|d|² E − d dᵀ).
+            let dd = d.dot(d);
+            let shift = Mat3 { c: [v3(dd - d.x * d.x, -d.y * d.x, -d.z * d.x), v3(-d.x * d.y, dd - d.y * d.y, -d.z * d.y), v3(-d.x * d.z, -d.y * d.z, dd - d.z * d.z)] }.scale(m);
+            inertia = inertia.add(&i.rotated(&r)).add(&shift);
+        }
+        let aabb = parts.iter().fold(Aabb::EMPTY, |b, (pose, s)| b.union(&s.aabb(pose)));
+        let inner = parts.iter().zip(&centers).map(|((_, s), c)| s.inner_radius() - (*c - com).length()).fold(0.0f32, f32::max);
+        let outer = parts.iter().zip(&centers).map(|((_, s), c)| s.outer_radius() + (*c - com).length()).fold(0.0f32, f32::max);
+        Ok(Compound { parts, aabb, com, unit_inertia: inertia, inner_radius: inner.max(0.0), outer_radius: outer })
+    }
+}
 
 /// A collision shape in its collider's local frame.
 #[derive(Clone, Debug)]
@@ -39,6 +104,8 @@ pub enum Shape {
         hull: Arc<Hull>,
     },
     Hull(Arc<Hull>),
+    /// Convex parts together (any body).
+    Compound(Arc<Compound>),
     /// Static only.
     Mesh(Arc<TriMesh>),
     /// Static only: a grid of heights, centred on the local origin.
@@ -68,6 +135,19 @@ impl Shape {
         Ok(Shape::Hull(Arc::new(Hull::new(points)?)))
     }
 
+    /// Convex `parts` (spheres, capsules, boxes, hulls) at poses in one frame.
+    pub fn compound(parts: Vec<(Pose, Shape)>) -> Result<Shape, PhysicsError> {
+        Ok(Shape::Compound(Arc::new(Compound::new(parts)?)))
+    }
+
+    /// The parts of a compound (`None` for other shapes).
+    pub fn compound_parts(&self) -> Option<&[(Pose, Shape)]> {
+        match self {
+            Shape::Compound(c) => Some(&c.parts),
+            _ => None,
+        }
+    }
+
     pub fn mesh(vertices: Vec<Vec3>, triangles: Vec<[u32; 3]>) -> Result<Shape, PhysicsError> {
         Ok(Shape::Mesh(Arc::new(TriMesh::new(vertices, triangles)?)))
     }
@@ -83,6 +163,7 @@ impl Shape {
             Shape::Capsule { .. } => "capsule",
             Shape::Box { .. } => "box",
             Shape::Hull(_) => "hull",
+            Shape::Compound(_) => "compound",
             Shape::Mesh(_) => "mesh",
             Shape::Heightfield(_) => "heightfield",
         }
@@ -115,6 +196,7 @@ impl Shape {
             Shape::Capsule { radius, half_height } => Aabb::around(Vec3::ZERO, v3(*radius, half_height + radius, *radius)),
             Shape::Box { half, .. } => Aabb::around(Vec3::ZERO, *half),
             Shape::Hull(h) => h.aabb,
+            Shape::Compound(c) => c.aabb,
             Shape::Mesh(m) => m.aabb,
             Shape::Heightfield(h) => h.mesh.aabb,
         }
@@ -147,6 +229,7 @@ impl Shape {
             Shape::Sphere { radius } | Shape::Capsule { radius, .. } => *radius,
             Shape::Box { half, .. } => half.x.min(half.y).min(half.z),
             Shape::Hull(h) => h.inner_radius,
+            Shape::Compound(c) => c.inner_radius,
             Shape::Mesh(_) | Shape::Heightfield(_) => 0.0,
         }
     }
@@ -158,6 +241,7 @@ impl Shape {
             Shape::Capsule { radius, half_height } => radius + half_height,
             Shape::Box { half, .. } => half.length(),
             Shape::Hull(h) => h.outer_radius,
+            Shape::Compound(c) => c.outer_radius,
             Shape::Mesh(m) => m.aabb.extents().length(),
             Shape::Heightfield(h) => h.mesh.aabb.extents().length(),
         }
@@ -184,6 +268,7 @@ impl Shape {
                 (Vec3::ZERO, Mat3::diag(v3(k * (s.y + s.z), k * (s.x + s.z), k * (s.x + s.y))))
             }
             Shape::Hull(h) => (h.centroid, h.unit_inertia.scale(mass / h.volume.max(1e-12))),
+            Shape::Compound(c) => (c.com, c.unit_inertia.scale(mass)),
             Shape::Mesh(_) | Shape::Heightfield(_) => (Vec3::ZERO, Mat3::ZERO),
         }
     }

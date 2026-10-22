@@ -1,6 +1,6 @@
 //! Physics benchmark (foundation F3): the PHYSICS.md budget scenes, timed on this machine.
 //!
-//! `cargo run --release -p specula-physics --example physics_bench [-- --quick]`
+//! `cargo run --release -p specula-physics --example physics_bench [-- --quick] [--threads N] [--coloured]`
 //!
 //! - **pyramid**: a 20-row pyramid of boxes (210 bodies) settling and falling asleep.
 //! - **awake 1000**: 1,000 mixed bodies (boxes, spheres, capsules, hulls) raining onto a floor;
@@ -81,6 +81,15 @@ impl Timing {
     }
 }
 
+/// The scenes' settings: defaults, with `--threads N` (the narrowphase; with `--coloured`, the
+/// contact solver too) and `--coloured` (graph-colour solving order).
+fn settings() -> Settings {
+    let args: Vec<String> = std::env::args().collect();
+    let threads = args.iter().position(|a| a == "--threads").and_then(|i| args.get(i + 1)).and_then(|n| n.parse().ok()).unwrap_or(Settings::default().threads);
+    let coloured = args.iter().any(|a| a == "--coloured");
+    Settings { threads, coloured, ..Settings::default() }
+}
+
 fn main() {
     let quick = std::env::args().any(|a| a == "--quick");
     if std::env::args().any(|a| a == "--pairs") {
@@ -118,7 +127,7 @@ fn main() {
 
     // Pyramid.
     {
-        let mut s = Space::default();
+        let mut s = Space::new(settings());
         floor(&mut s, 50.0);
         let rows = 20u64;
         let mut key = 100;
@@ -141,7 +150,7 @@ fn main() {
 
     // 1000 awake bodies.
     {
-        let mut s = Space::default();
+        let mut s = Space::new(settings());
         floor(&mut s, 60.0);
         let hull =
             Shape::hull(&[v3(-0.4, -0.3, -0.4), v3(0.4, -0.3, -0.4), v3(0.0, -0.3, 0.45), v3(0.0, 0.4, 0.0), v3(0.2, 0.1, 0.2)]).unwrap();
@@ -165,7 +174,7 @@ fn main() {
 
     // 10000 sleeping bodies.
     {
-        let mut s = Space::default();
+        let mut s = Space::new(settings());
         floor(&mut s, 200.0);
         for i in 0..10_000u64 {
             let (x, z) = ((i % 100) as f32 * 1.5 - 75.0, (i / 100) as f32 * 1.5 - 75.0);
@@ -185,7 +194,7 @@ fn main() {
 
     // Characters on a heightfield.
     {
-        let mut s = Space::new(Settings::default());
+        let mut s = Space::new(settings());
         let n = 65usize;
         let heights: Vec<f32> = (0..n * n)
             .map(|i| {

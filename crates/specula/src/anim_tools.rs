@@ -451,7 +451,7 @@ fn merge_patch(target: &Json, patch: &Json) -> Json {
 }
 
 /// The recipe stem a source's assets live under (`recipes/shambler.json` → `shambler`).
-fn stem_of(source: &str) -> String {
+pub(crate) fn stem_of(source: &str) -> String {
     let file = source.rsplit(['/', '\\']).next().unwrap_or(source);
     let stem = file.split('.').next().unwrap_or(file);
     let clean: String = stem.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect();
@@ -619,7 +619,7 @@ impl Engine {
     }
 
     /// The motion rules for a source: the first style.toml from its folder up to the assets root.
-    fn motion_rules(&self, source: &str) -> Result<MotionRules, ToolOutput> {
+    pub(crate) fn motion_rules(&self, source: &str) -> Result<MotionRules, ToolOutput> {
         let root = self.library.lock().root().to_path_buf();
         let mut dir = root.join(source);
         loop {

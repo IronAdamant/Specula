@@ -438,10 +438,15 @@ impl LogicHost {
         LogicHost::default()
     }
 
-    /// Replaces the character controller behind `move_character` (the physics lane's P2
-    /// controller, when it lands).
+    /// Replaces the character controller behind `move_character` (the engine sets the physics
+    /// P2 controller, [`crate::physics::mover::PhysicsMover`]).
     pub fn set_mover(&mut self, mover: Box<dyn CharacterMover>) {
         self.mover = mover;
+    }
+
+    /// The character controller (to lend it what it needs around calls).
+    pub fn mover_mut(&mut self) -> &mut dyn CharacterMover {
+        &mut *self.mover
     }
 
     pub fn is_empty(&self) -> bool {

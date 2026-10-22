@@ -99,7 +99,8 @@ def main():
             check(player(builder)["position"][1] > 0.3, "jumped")
             step(builder, 40)
             landed = player(builder)
-            check(abs(landed["position"][1]) < 1e-4, "landed")
+            # The physics controller rests a character half its 1 cm skin above the ground.
+            check(abs(landed["position"][1]) < 0.006, f"landed (y = {landed['position'][1]})")
 
             print("editor: WALK_SPEED 4 -> 8, logic_build while the world runs")
             builder.json("time_control", action="resume")

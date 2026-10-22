@@ -74,6 +74,8 @@ enum Owns {
     Lex,
     /// `/lex_live`: lex_live start and stop.
     LexLive,
+    /// Joint data (`props.joint`): physics_joint, which checks the joint's bodies itself.
+    Joint,
     /// Project files (`/project`): the project tools.
     Project,
     /// `/nav` and `props.navmesh`: the nav tools.
@@ -99,7 +101,13 @@ pub struct Swarm {
     pub leases: Leases,
     /// Agent name → refused writes by error code, for roll-ups (at most [`MAX_AGENTS`] names).
     refused: BTreeMap<String, BTreeMap<&'static str, u64>>,
+    /// Prune the world's removed-entity versions once there are more than this (twice what the
+    /// last prune kept; see [`Swarm::prune_retired`]).
+    retired_prune_at: usize,
 }
+
+/// The world's removed-entity versions are pruned once there are at least this many.
+pub const RETIRED_PRUNE_MIN: usize = 1024;
 
 /// A session's name before (or without) agent_hello.
 pub fn default_name(s: &SessionInfo) -> String {
@@ -308,6 +316,19 @@ impl Swarm {
         self.commit_with(world, tick, w, kind, Owns::Neither, command)
     }
 
+    /// [`Swarm::commit`] for `physics_joint`: the only writer of joint data (`props.joint`),
+    /// which checks the joint's bodies against claims itself.
+    pub fn commit_joint<T>(
+        &mut self,
+        world: &mut World,
+        tick: u64,
+        w: Writer,
+        kind: Kind,
+        command: impl FnOnce(&mut World) -> Result<T, WorldError>,
+    ) -> Result<(T, Option<u64>), WorldError> {
+        self.commit_with(world, tick, w, kind, Owns::Joint, command)
+    }
+
     /// [`Swarm::commit`] for the navigation tools: the only writer of `/nav` and of
     /// `props.navmesh` (navmesh settings, exempt from region claims as data that sits nowhere).
     pub fn commit_nav<T>(
@@ -374,10 +395,13 @@ impl Swarm {
         owns: Owns,
         command: impl FnOnce(&mut World) -> Result<T, WorldError>,
     ) -> Result<(T, Option<u64>), WorldError> {
+        let now = Instant::now();
+        let claims = &self.claims;
         // The /lex subtree is Lex rule data, written only through the lex_* tools, and /lex_live
         // holds live runs' groups and output, spawned only by lex_live (so both can be exempt
-        // from region claims without letting anything hide there). A failing command is rolled
-        // back by the journal.
+        // from region claims without letting anything hide there); joint data only through
+        // physics_joint (a joint moves the bodies it links). A failing command is rolled back by
+        // the journal.
         let command = |wd: &mut World| {
             let mark = wd.mark();
             let v = command(wd)?;
@@ -396,6 +420,23 @@ impl Swarm {
                         format!("'{}' is in /lex_live, where live Lex runs show their entities: lex_live starts and stops runs (world_delete works there; a run shows what it needs again)", c.path()),
                     )
                     .with("path", c.path().to_owned()));
+                }
+            }
+            if owns != Owns::Joint {
+                if let Some(c) = changes.iter().find(|c| crate::claims::touches_joint_data(c) && !matches!(c, Change::Delete { .. })) {
+                    return Err(WorldError::new(
+                        "reserved",
+                        format!("'{}' is a joint (props.joint): make, change or remove joints with physics_joint, which checks the right to move both bodies", c.path()),
+                    )
+                    .with("path", c.path().to_owned())
+                    .with("field", "props.joint"));
+                }
+            }
+            // Removing a joint, or a body a joint links, lets go of the joint's other bodies:
+            // allowed with the right to change them (physics_joint checks its own writes).
+            if owns != Owns::Joint && claims.could_block(w, now) {
+                for c in changes {
+                    check_joint_rules(claims, wd, c, w, now)?;
                 }
             }
             // /project holds project files, written only through the project tools; no entity may
@@ -419,11 +460,10 @@ impl Swarm {
             }
             Ok(v)
         };
-        let now = Instant::now();
-        let claims = &self.claims;
         let mut check = |world: &World, change: &Change| claims.check(world, std::slice::from_ref(change), w, now);
         let check: Option<&mut journal::Check> = if claims.could_block(w, now) { Some(&mut check) } else { None };
         let result = journal::commit(world, &mut self.journal, tick, w, kind, check, command);
+        self.prune_retired(world);
         match &result {
             Err(e) => self.count_rejection(w, e),
             Ok((_, Some(seq))) => {
@@ -435,13 +475,20 @@ impl Swarm {
         result
     }
 
-    /// Undoes `w`'s entries, checked against claims like any write.
+    /// Undoes `w`'s entries, checked against claims like any write (and the joint rules: undoing
+    /// a joint's removal ties its bodies again, restoring a jointed body pulls the others).
     pub fn undo(&mut self, world: &mut World, tick: u64, w: Writer, req: &UndoRequest) -> Result<Undone, WorldError> {
         let now = Instant::now();
         let claims = &self.claims;
-        let mut check = |world: &World, change: &Change| claims.check(world, std::slice::from_ref(change), w, now);
+        // An undo that makes, changes or removes a joint moves (or lets go of) the joint's bodies,
+        // as physics_joint does: it needs the right to change them, before and after.
+        let mut check = |world: &World, change: &Change| {
+            claims.check(world, std::slice::from_ref(change), w, now)?;
+            check_joint_rules(claims, world, change, w, now)
+        };
         let check: Option<&mut journal::Check> = if claims.could_block(w, now) { Some(&mut check) } else { None };
         let result = self.journal.undo(world, tick, w, req, check);
+        self.prune_retired(world);
         match &result {
             Err(e) => self.count_rejection(w, e),
             Ok(u) => self.board.note_entry(w, u.seq, u.changes),
@@ -476,7 +523,12 @@ impl Swarm {
     pub fn check_game_changes(&mut self, world: &mut World, mark: Mark, tick: u64, game: &str, w: Writer) -> Result<(), WorldError> {
         let now = Instant::now();
         let claims = &self.claims;
-        let mut check = |world: &World, change: &Change| claims.check(world, std::slice::from_ref(change), w, now);
+        // Joint rules too: a module or game that makes a joint, or removes a body one links, moves
+        // the joint's bodies (it needs the right to change them, as physics_joint does).
+        let mut check = |world: &World, change: &Change| {
+            claims.check(world, std::slice::from_ref(change), w, now)?;
+            check_joint_rules(claims, world, change, w, now)
+        };
         let checked = if claims.could_block(w, now) { world.recheck_steps(mark, &mut check) } else { Ok(()) };
         if let Err(e) = checked {
             self.journal.note_next_id(world.next_id());
@@ -494,6 +546,7 @@ impl Swarm {
                 self.board.note_entry(w, seq, count);
             }
         }
+        self.prune_retired(world);
         Ok(())
     }
 
@@ -518,6 +571,25 @@ impl Swarm {
     pub fn game_changes(&mut self, world: &mut World, tick: u64, game: &str, kind: Kind) {
         let changes = world.take_changes();
         self.journal.append_snapshot(tick, game, None, kind, changes, world.next_id());
+        self.prune_retired(world);
+    }
+
+    /// Keeps the world's record of removed entities' versions (what restores go past, see
+    /// [`World::version_floor`]) to what the journal can still restore: once it has grown past
+    /// twice what was kept last time (and [`RETIRED_PRUNE_MIN`]), ids no entry in the ring
+    /// touches go. Amortized: each prune costs about the ring's ids, and runs only after as many
+    /// deletes. Called after every journaled write.
+    pub fn prune_retired(&mut self, world: &mut World) {
+        if world.retired_len() > self.retired_prune_at.max(RETIRED_PRUNE_MIN) {
+            self.prune_retired_now(world);
+        }
+    }
+
+    /// [`Swarm::prune_retired`] at once.
+    pub fn prune_retired_now(&mut self, world: &mut World) {
+        let keep = self.journal.ids_in_ring();
+        world.retain_retired(|id| keep.contains(&id));
+        self.retired_prune_at = 2 * world.retired_len();
     }
 
     /// Whether `w` may replace the whole world (world_load).
@@ -602,6 +674,17 @@ impl Swarm {
     }
 }
 
+/// The joint rules for one change ([`crate::claims::joint_rule_changes`]): every body it moves
+/// through a joint must be one `w` may change.
+fn check_joint_rules(claims: &Claims, world: &World, change: &Change, w: Writer, now: Instant) -> Result<(), WorldError> {
+    for body in crate::claims::joint_rule_changes(world, change) {
+        claims.check(world, std::slice::from_ref(&body), w, now).map_err(|e| {
+            e.with("note", "this change ties, lets go of or pulls bodies linked by a joint (props.joint), so it needs the right to change them").with("joint_change", change.path().to_owned())
+        })?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -628,6 +711,46 @@ mod tests {
 
     fn claim(path: &str) -> ClaimSpec {
         ClaimSpec { scope: Scope::path(path).unwrap(), lease: DEFAULT_LEASE, note: String::new() }
+    }
+
+    /// Integrator, round 4: the world's record of removed entities' versions stays bounded by
+    /// what the journal can still restore (it held every id ever deleted: 10M deletes, about
+    /// 0.5 GB), while an undo within the ring still restores past the entity's last version.
+    #[test]
+    fn removed_versions_stay_bounded_by_the_journal() {
+        let mut w = world();
+        let mut sw = Swarm { journal: Journal::with_limits(&w, "empty", 400, 64 << 20), ..Swarm::default() };
+        let me = Writer { name: "churn", session: None };
+        let churn = |sw: &mut Swarm, w: &mut World, n: usize, tag: &str| {
+            for i in 0..n {
+                let id = sw.commit(w, 0, me, Kind::Spawn, |w| w.spawn(spec(&format!("/{tag}{i}")), "churn").map(|e| e.id)).unwrap().0;
+                sw.commit(w, 0, me, Kind::Delete, |w| w.delete(&EntityKey::Id(id), None).map(|_| ())).unwrap();
+            }
+        };
+        // 20,000 deletes through a ring of 400 entries (200 spawn + delete pairs).
+        let mut most = 0;
+        for round in 0..20 {
+            churn(&mut sw, &mut w, 1000, &format!("c{round}_"));
+            most = most.max(w.retired_len());
+        }
+        let ring_ids = sw.journal.ids_in_ring().len();
+        assert!(ring_ids <= 200, "{ring_ids}");
+        assert!(most <= 2 * RETIRED_PRUNE_MIN.max(2 * ring_ids) + 1, "kept {most} removed versions for {ring_ids} ids in the ring");
+        // An undo within the ring: a box set twice, deleted, then its first set force-undone.
+        let id = sw.commit(&mut w, 0, me, Kind::Spawn, |w| w.spawn(spec("/a"), "churn").map(|e| e.id)).unwrap().0;
+        let set = |sw: &mut Swarm, w: &mut World, x: f32| {
+            sw.commit(w, 0, me, Kind::Set, |w| w.update(&EntityKey::Id(id), UpdateSpec { position: Some(specula_core::math::Vec3::new(x, 0.0, 0.0)), ..UpdateSpec::default() }, "churn").map(|e| e.version)).unwrap()
+        };
+        let (_, first) = set(&mut sw, &mut w, 1.0);
+        let (last, _) = set(&mut sw, &mut w, 2.0);
+        sw.commit(&mut w, 0, me, Kind::Delete, |w| w.delete(&EntityKey::Id(id), None).map(|_| ())).unwrap();
+        // Other churn, still within the ring, then a prune: the box's version is kept.
+        churn(&mut sw, &mut w, 50, "late");
+        sw.prune_retired_now(&mut w);
+        assert!(w.retired_len() <= sw.journal.ids_in_ring().len());
+        assert!(w.version_floor(id) >= last, "the box's last version survived the prune");
+        sw.undo(&mut w, 0, me, &UndoRequest { ids: Some(vec![first.unwrap()]), count: 1, force: true }).unwrap();
+        assert!(w.get(id).unwrap().version > last, "restored past its last version");
     }
 
     /// Reviewer finding: a third session saying hello as "ann" could act as ann; unnamed Claude

@@ -249,15 +249,20 @@ pub struct Creature {
     pub death_s: f32,
     /// How strongly its head follows the look target (the graveyard).
     pub look: f32,
+    /// It dies as a ragdoll (physics takes the body from the animation; A4) instead of playing
+    /// its death clip.
+    pub ragdoll: bool,
 }
 
 /// The creature for an enemy kind.
 pub fn creature(kind: &str) -> Creature {
     match kind {
-        "runner" => Creature { recipe: "recipes/skeleton_runner.json", scale: 1.2, special_s: 0.95, death_s: 1.6, look: 0.4 },
-        "wraith" => Creature { recipe: "recipes/wraith.json", scale: 1.2, special_s: 1.75, death_s: 1.8, look: 0.7 },
-        "colossus" => Creature { recipe: "recipes/bone_colossus.json", scale: 1.0, special_s: 3.0, death_s: 3.4, look: 0.5 },
-        _ => Creature { recipe: "recipes/shambler.json", scale: 1.2, special_s: 1.3, death_s: 2.4, look: 0.5 },
+        // The runner's bones scatter, the wraith fades, the colossus crumbles: their deaths are
+        // clips. The shambler falls as a ragdoll.
+        "runner" => Creature { recipe: "recipes/skeleton_runner.json", scale: 1.2, special_s: 0.95, death_s: 1.6, look: 0.4, ragdoll: false },
+        "wraith" => Creature { recipe: "recipes/wraith.json", scale: 1.2, special_s: 1.75, death_s: 1.8, look: 0.7, ragdoll: false },
+        "colossus" => Creature { recipe: "recipes/bone_colossus.json", scale: 1.0, special_s: 3.0, death_s: 3.4, look: 0.5, ragdoll: false },
+        _ => Creature { recipe: "recipes/shambler.json", scale: 1.2, special_s: 1.3, death_s: 2.4, look: 0.5, ragdoll: true },
     }
 }
 

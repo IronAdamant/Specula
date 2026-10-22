@@ -192,6 +192,13 @@ entities only; everything else is the gap.
   style files, Lex rules and module sources get the same claims, versions, journal and undo as world entities. Then
   imported images, models and audio follow with the asset studio.
   *M3 progress 2026-10-18:* Lex rules (stored as world entities). Recipes, UI screens, sounds and style files remain.
+  *M3 part done 2026-10-22:* `project_*` tools (`project_list`, `project_read`, `project_write`, `project_patch`,
+  `project_delete`, `project_mount`) put recipes, UI screens and themes, sounds, style files and module sources under
+  the same claims, versions, journal (`Change::File`, with its own text budget) and undo. Each file is validated by
+  kind. The disk is kept in sync atomically: a human's outside edit is imported as `disk` and never overwritten, and
+  files the engine can't read are held. Only real modules mount, and their manifests and compile-time paths are
+  checked (rustc's dep-info after every build). `logic_build {fix: true}` commits fixes as the caller.
+  `scripts/project_check.py`; design: [design/PROJECT_DATA.md](design/PROJECT_DATA.md). M4 (binary assets) remains.
   *Why:* two agents editing one recipe file today can silently clobber each other.
 - [x] **Task board** (M3; planned for M1–M2, not built): `task_post`, `task_take`, `task_update`, `task_done`.
   - Tasks are linked to claims and journal entries.
@@ -207,6 +214,7 @@ entities only; everything else is the gap.
 - [ ] **Conflict help** (M3: diffs; M4: merges). A refused write carries what changed: theirs, yours and the common
   original. In M4, a suggested three-way merge for text data, where the engine knows the schema.
   *M3 part done 2026-10-18:* `stale_version`, `claimed` and `claims_overlap` refusals carry `conflict {base, theirs, yours, overlap, rebase}`.
+  Project files get the same help: JSON-path diffs for JSON files, line hunks otherwise, with overlap (2026-10-22).
 - [x] **Roll-ups for parents** (M3): `world_changes` summarised per agent or task ("child 3 finished the walls: 42
   changes, 2 refused, 1 open question"), so a parent reads a report, not a log.
   *Done 2026-10-18:* `world_rollup {by: agent|task}`.
@@ -215,6 +223,19 @@ entities only; everything else is the gap.
   *Why:* this session's lanes clobbered a shared scratch folder, one killed other lanes' engines, and engines
   collided on ports.
   *Done 2026-10-18:* `lease_*` tools: ports (checked against the OS listener table, never a wildcard bind), advisory GPU ms per second, scratch folders.
+- [ ] ➕ **Disk footprint budget** (owner, 2026-10-22: sort it out "before it impacts someone else's system ...
+  especially when they have even less space"). A swarm must not fill the operator's disk. Measured on 2026-10-22:
+  about 30 build folders (one per lane and reviewer, each 5-15 GB) took a 1 TB drive from 340 GB free to full, and a
+  lane's link failed with "No space left on device".
+  - Disk use reported as data (`engine_info.disk`): free space, and the engine's own caches, captures, saves,
+    journals, module build output and scratch leases.
+  - A budget from `perf.toml [disk]`, with the oldest captures, cache entries and scratch pruned first. Agents are
+    warned before a write would cross the budget, and refused (structured) below a free-space floor.
+  - Module builds share one Cargo target per module, and `logic_build` drops stale artefacts.
+  - Scratch leases expire and are cleaned up.
+  - A swarm guide in the docs: shared targets for lanes, `-j` limits, and cleaning merged lanes.
+  *Why:* operators with small disks shouldn't find out the hard way, and cleanup done under pressure is how real
+  work gets deleted.
 - [ ] **Role templates** (M1, growing): builder, reviewer, playtester, art director, sight-skeptic, performance
   auditor. They live in `.claude/agents/`, with Grok equivalents when used.
 - [x] **Headless playtest swarms** (M3): many headless engines on separate ports, each run by an agent testing one path,
@@ -561,8 +582,11 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
   *Done 2026-10-18:* `specula-anim` graphs (parameters, blend trees, layered state machines, transitions refused at
   parse when they would loop in zero time), plays as data whose pose is a pure function of time, IK and look-at;
   writes settle against a rig-only anim set that never waits for mesh builds. Sepulcra's four creatures run on graphs.
-- [ ] ➕ **Animation, stage A4, moved from M4** (owner, 2026-10-17): ragdolls and powered ragdolls blending to and from
+- [x] ➕ **Animation, stage A4, moved from M4** (owner, 2026-10-17): ragdolls and powered ragdolls blending to and from
   animation, driven by physics joints (P4 below).
+  *Done 2026-10-22:* `ragdoll_set` / `ragdoll_info` and `props.ragdoll`. Limp and powered ragdolls with hulls fitted
+  from the rig, blended to and from the animation graph, with a get-up state. Sepulcra's shambler dies as a ragdoll
+  within its motion checks (`scripts/sepulcra_ragdoll.py`). Ragdolls are saved mid-fall and continue bit for bit.
 - [x] ➕ **Agent-authored motion**: clips and poses written as data through tools (keyframes, procedural generators:
   walk cycles from a rig and a gait, breathing, recoil, procedural secondary motion), so agents animate without
   external tools; animation graphs edited live with the journal and undo.
@@ -608,7 +632,11 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
   ground penetration, joint limits, pops at transitions, root-motion drift. Agents verify motion instead of guessing.
   *Done 2026-10-18:* `anim_filmstrip` contact sheets (clips, states, transitions, live entities) with each row's
   checks, scale labels, root rise and darkness warnings in the packet; `scripts/anim_graph_check.py`.
-- [ ] ➕ **Physics, stage P4** (pulled forward for A4): joints and constraints for ragdolls.
+- [x] ➕ **Physics, stage P4** (pulled forward for A4): joints and constraints for ragdolls.
+  *Done 2026-10-22:* ball, hinge, distance and fixed joints with cone, twist and hinge limits and motors
+  (`physics_joint`, `physics_joints`, `made_by`). Joint rules apply on every write path, through a joint index.
+  World-anchored joints are saved bit for bit. An opt-in deterministic parallel solver (`--physics-threads`) gives
+  identical results on 1-64 threads. `scripts/joints_check.py`; design: [design/PHYSICS.md](design/PHYSICS.md).
 - [x] **Headless playtests**: `play_*` tools to script inputs, run N ticks, assert on state, and record a replay plus
   captures.
   *Progress 2026-10-13:* Sepulcra's `play_*` tools and `scripts/sepulcra_play.py` play and verify whole games.

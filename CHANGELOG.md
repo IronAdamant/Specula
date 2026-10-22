@@ -93,6 +93,18 @@ See [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md). Item-by-item detail, with the re
   rounding in simulation and world-state code to `dmath`
 - **Streaming fix:** a frame's first upload is always tried, and captures taken while no frame runs get their own
   budget, so a built HLOD proxy can no longer wait for its upload forever
+- **Joints and ragdolls (P4, A4):** ball, hinge, distance and fixed joints with limits and motors; limp and powered
+  ragdolls with hulls fitted from the rig, blending to and from animation, with a get-up; Sepulcra's shambler dies as
+  a ragdoll. Ragdolls and world-anchored joints save and load bit for bit. Joint rules apply on every write path
+  through a joint index. World scale is composed through each level's rotation. Restored entities never reuse a
+  version, which fixes stale physics bodies after a force-undo; the record is pruned to what the journal can undo. An
+  opt-in deterministic parallel physics solver (`--physics-threads`)
+- **Project data through the protocol:** `project_*` tools give recipes, UI screens and themes, sounds, style files
+  and module sources the claims, versions, journal (`Change::File`), undo and conflict help that entities have, with
+  validation by kind and atomic disk sync (outside edits imported as `disk`, unreadable ones held). Mounts accept only
+  real modules; manifests and compile-time paths are checked, the latter from rustc's dep-info after every build.
+  `logic_build {fix: true}` commits fixes as the caller. Model hot reload now rebuilds every handle of a changed
+  recipe (only the first was rebuilt)
 - **Agent evals:** 21 tasks with outcomes the engine verifies (15 public, 6 held out), each with a reference and a
   broken solution plus 23 known cheats; `world_diff`, transcript, geometry, world-size and series verifiers;
   `scripts/evals.py` runs them across parallel engines, or with a real agent behind a proxy that enforces the task's

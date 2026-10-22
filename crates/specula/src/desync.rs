@@ -280,6 +280,8 @@ fn mark_of(c: &Change) -> Option<(u64, Mark)> {
                 ("color", v(pose.color)),
             ]
             .into_iter()
+            // Physics' poses carry the body (its velocities and sleep state).
+            .chain(pose.body.map(|b| ("body", b.to_json())))
             .map(|(k, j)| (k.to_owned(), digest(&j)))
             .collect();
             let h = fields.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, (_, d)| (h ^ u64::from(*d)).wrapping_mul(0x100_0000_01b3));
