@@ -1,6 +1,7 @@
 //! Recipes are agent-written input: a crafted recipe must get a structured error (or a correct
 //! model) in bounded time and memory, never abort the process. Each case here is a regression
 //! from the lane review's probe harness.
+#![allow(clippy::disallowed_methods, reason = "a test or benchmark harness (timings, cameras for pictures), not simulation code")]
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};

@@ -158,7 +158,12 @@ pub(crate) struct Shared {
     pub store: BTreeMap<String, Value>,
     /// Encoded size of `store` (keys + values).
     pub store_bytes: usize,
-    pub rngs: BTreeMap<String, Rng>,
+    /// RNG streams by name (at most [`MAX_RNG_STREAMS`]). Changed only through
+    /// [`Shared::draw`], [`Shared::put_rng`] and [`Shared::clear_rngs`], which keep `rng_sum`.
+    rngs: BTreeMap<String, Rng>,
+    /// The streams' hash, kept as they change: the wrapping sum of each stream's own hash
+    /// ([`stream_hash`]), so the desync detector's per-tick hash never walks every stream.
+    rng_sum: u64,
     pub seed: u64,
     /// Loads so far: the next load's generation is this + 1.
     pub loads: u64,
@@ -166,7 +171,60 @@ pub(crate) struct Shared {
     pub store_hash: std::cell::Cell<Option<u64>>,
 }
 
+/// Most RNG streams one module keeps: a new name past it is refused with `rng_full`. Save games
+/// write at most this many (the handler allows no more) and read at most this many, so a save
+/// always loads.
+pub const MAX_RNG_STREAMS: usize = 1024;
+
+/// One stream's share of [`Shared`]'s `rng_sum`.
+fn stream_hash(stream: &str, rng: &Rng) -> u64 {
+    let (a, b) = rng.to_parts();
+    let mut h = specula_core::hash::StableHasher::with_seed(0x6c6f_6769_6333);
+    h.write_str(stream);
+    h.write_u64(a);
+    h.write_u64(b);
+    h.finish()
+}
+
 impl Shared {
+    /// The streams, by name.
+    pub fn rngs(&self) -> &BTreeMap<String, Rng> {
+        &self.rngs
+    }
+
+    /// Runs `f` on stream `stream` (made with `make` if it is new), keeping `rng_sum`.
+    pub fn draw<R>(&mut self, stream: &str, make: impl FnOnce() -> Rng, f: impl FnOnce(&mut Rng) -> R) -> R {
+        let before = self.rngs.get(stream).map_or(0, |r| stream_hash(stream, r));
+        let rng = match self.rngs.get_mut(stream) {
+            Some(r) => r,
+            None => self.rngs.entry(stream.to_owned()).or_insert_with(make),
+        };
+        let out = f(rng);
+        let after = stream_hash(stream, rng);
+        self.rng_sum = self.rng_sum.wrapping_sub(before).wrapping_add(after);
+        out
+    }
+
+    /// Sets (`Some`) or removes (`None`) a stream (undo, save games), keeping `rng_sum`.
+    pub fn put_rng(&mut self, stream: String, rng: Option<Rng>) {
+        let old = match rng {
+            Some(r) => {
+                self.rng_sum = self.rng_sum.wrapping_add(stream_hash(&stream, &r));
+                self.rngs.insert(stream.clone(), r)
+            }
+            None => self.rngs.remove(&stream),
+        };
+        if let Some(o) = old {
+            self.rng_sum = self.rng_sum.wrapping_sub(stream_hash(&stream, &o));
+        }
+    }
+
+    /// Removes every stream (a load with a new seed).
+    pub fn clear_rngs(&mut self) {
+        self.rngs.clear();
+        self.rng_sum = 0;
+    }
+
     /// Sets (`Some`) or removes (`None`) a key, keeping `store_bytes`; returns the old value.
     pub fn put(&mut self, key: &str, value: Option<Value>) -> Option<Value> {
         self.store_hash.set(None);
@@ -236,10 +294,7 @@ fn undo_shared(shared: &mut Shared, state_undo: Vec<(String, Option<Value>)>, rn
         shared.put(&key, before);
     }
     for (stream, before) in rng_undo.into_iter().rev() {
-        match before {
-            Some(r) => shared.rngs.insert(stream, r),
-            None => shared.rngs.remove(&stream),
-        };
+        shared.put_rng(stream, before);
     }
 }
 
@@ -588,7 +643,7 @@ impl LogicHost {
         let shared = self.shared.entry(name.clone()).or_default();
         if let Some(s) = seed {
             shared.seed = s;
-            shared.rngs.clear();
+            shared.clear_rngs();
         }
         shared.loads += 1;
         let generation = shared.loads;

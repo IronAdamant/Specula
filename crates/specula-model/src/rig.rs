@@ -173,7 +173,7 @@ impl Rig {
     /// A bounded summary for tool responses: bone names, parents and heads (at most
     /// [`MAX_BONES`] entries).
     pub fn report(&self) -> Json {
-        let v3 = |v: V3| Json::arr(v.iter().map(|x| Json::Num((*x as f64 * 1000.0).round() / 1000.0)));
+        let v3 = |v: V3| Json::arr(v.iter().map(|x| Json::Num(crate::dmath::round_f64(*x as f64 * 1000.0) / 1000.0)));
         Json::arr(self.bones.iter().map(|b| {
             Json::obj([
                 ("name", Json::Str(b.name.clone())),

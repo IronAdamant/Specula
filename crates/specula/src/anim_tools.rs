@@ -536,8 +536,15 @@ struct Source {
 }
 
 /// The stage the filmstrip renders on: STYLE.md's moonlight, brightened for small tiles, with
-/// the moon's shadow so feet visibly meet the ground.
-fn stage() -> specula_gpu::Environment {
+/// the moon's shadow so feet visibly meet the ground. The shadow map has the shape of the world's
+/// (`window`: what the window and sight captures use) when the world has shadows: every graph
+/// shares one shadow map, and a map of another shape is swapped in only after the GPU goes idle,
+/// which a filmstrip would cost the window twice (scripts/shadow_rebind_check.py).
+fn stage(window: &specula_gpu::ShadowSettings) -> specula_gpu::Environment {
+    let mut shadow = specula_gpu::ShadowSettings { enabled: true, resolution: 2048, cascades: 1, distance: 120.0, softness: 1.5, bias: 1.0 };
+    if window.enabled {
+        (shadow.resolution, shadow.cascades) = (window.resolution, window.cascades);
+    }
     let (el, az) = (35.0f32.to_radians(), 50.0f32.to_radians());
     let rgb = |r: u8, g: u8, b: u8| [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0];
     specula_gpu::Environment {
@@ -548,7 +555,7 @@ fn stage() -> specula_gpu::Environment {
         ambient_intensity: 3.0,
         exposure: 1.2,
         tonemap: true,
-        shadow: specula_gpu::ShadowSettings { enabled: true, resolution: 2048, cascades: 1, distance: 120.0, softness: 1.5, bias: 1.0 },
+        shadow,
         ..specula_gpu::Environment::default()
     }
 }
@@ -1154,7 +1161,7 @@ impl Engine {
             clear_color: srgb(0x0b, 0x10, 0x20),
             draws,
             reverse_z: true,
-            environment: stage(),
+            environment: stage(&self.world.env().light.shadow),
             lights: &[],
             time_s: 0.0,
             overlay: &[],

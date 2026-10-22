@@ -27,7 +27,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from specula_mcp import ROOT, Engine, Mcp, url_for
+from specula_mcp import ROOT, Engine, Mcp, share_file, url_for
 
 
 def exe_path(name, debug):
@@ -67,7 +67,7 @@ def game_run(m, ticks, at=None):
 
 def compare(a_mcp, b_mcp):
     trace = a_mcp.json("desync_trace")
-    return b_mcp.json("desync_compare", a=trace["file"], b="live"), trace
+    return b_mcp.json("desync_compare", a=share_file(b_mcp, trace["file"]), b="live"), trace
 
 
 def scenario(args, work, game):
@@ -136,7 +136,7 @@ def main():
     args = ap.parse_args()
     if args.files:
         m = Mcp(url_for(args.port), "desync-check")
-        result = m.json("desync_compare", a=str(Path(args.files[0]).resolve()), b=str(Path(args.files[1]).resolve()))
+        result = m.json("desync_compare", a=share_file(m, args.files[0]), b=share_file(m, args.files[1]))
         print(json.dumps(result, indent=2))
         sys.exit(0 if result.get("match") else 1)
     if 7471 in args.ports:

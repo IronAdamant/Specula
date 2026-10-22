@@ -121,6 +121,21 @@ class Mcp:
         return [t["name"] for t in self.request("tools/list", {})["tools"]]
 
 
+def share_file(mcp, path):
+    """Copies a file (another engine's desync trace, say) into the captures folder of the engine
+    `mcp` talks to, and returns the name to pass it: engines read files agents name only under
+    their own folders (captures, worlds, assets), relative to them."""
+    import shutil
+    captures = Path(mcp.json("engine_info", response_format="detailed")["captures"])
+    captures.mkdir(parents=True, exist_ok=True)
+    src = Path(path)
+    if src.resolve().parent == captures.resolve():
+        return src.name
+    name = f"shared_{src.name}"
+    shutil.copyfile(src, captures / name)
+    return name
+
+
 def url_for(port):
     return f"http://127.0.0.1:{port}/mcp"
 

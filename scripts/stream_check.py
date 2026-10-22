@@ -34,7 +34,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from specula_mcp import ROOT, Engine  # noqa: E402
+from specula_mcp import ROOT, Engine, share_file  # noqa: E402
 
 CELL = 32.0
 ASSETS = ROOT / "games" / "sepulcra" / "assets"
@@ -490,7 +490,7 @@ def run_sepulcra(a, out, report, check):
                     captures.append(shot["image"]["path"])
                 m.json("time_control", action="step", ticks=1)
         trace = mcps[0].json("desync_trace")
-        result = mcps[1].json("desync_compare", a=trace["file"], b="live")
+        result = mcps[1].json("desync_compare", a=share_file(mcps[1], trace["file"]), b="live")
         stream_on = mcps[0].json("perf_frame")["streaming"]
         report["sepulcra"] = {"ticks": a.sepulcra_ticks, "trace_ticks": trace["ticks"], "match": result.get("match"),
                               "first_divergent_tick": result.get("first_divergent_tick"), "components": result.get("components"),

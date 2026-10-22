@@ -1,5 +1,6 @@
 //! Every Sepulcra recipe builds, is valid, stays within games/sepulcra/STYLE.md's triangle
 //! budgets and proportions, simplifies into LODs, and builds bit-identically (pinned hash).
+#![allow(clippy::disallowed_methods, reason = "a test or benchmark harness (timings, cameras for pictures), not simulation code")]
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

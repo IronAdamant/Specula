@@ -82,15 +82,84 @@ enum Owns {
     Nav,
 }
 
+/// The reserved-data rules, for every writer: `/lex` (and Lex rule data anywhere) only through
+/// the Lex tools, entities in `/lex_live` only from lex_live (deleting there is anyone's: a run
+/// shows what it needs again), `/project` only through the project tools (and no entity there),
+/// `/nav` and navmesh settings only through the nav tools, and (with `joints`) joint data only
+/// through physics_joint. `owns` is the one subtree the caller may write. Agents' commits, game
+/// tools, module loads and hooks ([`Swarm::check_game_changes`]) and module requests
+/// ([`check_module_changes`]) all run it, so nothing can hide in a subtree's claim exemptions.
+/// Hosted games and modules may make joints (their bodies are checked by `check_joint_rules`).
+fn check_reserved(changes: &[Change], owns: Owns, joints: bool) -> Result<(), WorldError> {
+    // The /lex subtree is Lex rule data, written only through the lex_* tools, and /lex_live
+    // holds live runs' groups and output, spawned only by lex_live (so both can be exempt from
+    // region claims without letting anything hide there); joint data only through physics_joint
+    // (a joint moves the bodies it links).
+    if owns != Owns::Lex {
+        if let Some(c) = changes.iter().find(|c| crate::claims::touches_rule_data(c)) {
+            return Err(WorldError::new("reserved", format!("'{}' is in /lex, which holds Lex rule data: change it with lex_edit / lex_import (lex_get and lex_list read it)", c.path()))
+                .with("path", c.path().to_owned()));
+        }
+    }
+    if owns != Owns::LexLive {
+        if let Some(c) = changes.iter().find(|c| crate::claims::touches_lex_live(c)) {
+            return Err(WorldError::new(
+                "reserved",
+                format!("'{}' is in /lex_live, where live Lex runs show their entities: lex_live starts and stops runs (world_delete works there; a run shows what it needs again)", c.path()),
+            )
+            .with("path", c.path().to_owned()));
+        }
+    }
+    if joints && owns != Owns::Joint {
+        if let Some(c) = changes.iter().find(|c| crate::claims::touches_joint_data(c) && !matches!(c, Change::Delete { .. })) {
+            return Err(WorldError::new(
+                "reserved",
+                format!("'{}' is a joint (props.joint): make, change or remove joints with physics_joint, which checks the right to move both bodies", c.path()),
+            )
+            .with("path", c.path().to_owned())
+            .with("field", "props.joint"));
+        }
+    }
+    // /project holds project files, written only through the project tools; no entity may live
+    // there (a claim on a file must never cover something else).
+    if let Some(c) = changes.iter().find(|c| (owns != Owns::Project && matches!(c, Change::File { .. })) || (!matches!(c, Change::File { .. }) && crate::project::under_root(c.path()))) {
+        return Err(WorldError::new(
+            "reserved",
+            format!("'{}' is in /project, which holds project files: change them with project_write / project_patch / project_delete (project_list and project_read read them)", c.path()),
+        )
+        .with("path", c.path().to_owned()));
+    }
+    // Likewise /nav and navmesh settings: only the nav tools write them.
+    if owns != Owns::Nav {
+        if let Some(c) = changes.iter().find(|c| crate::claims::touches_nav_data(c)) {
+            return Err(WorldError::new(
+                "reserved",
+                format!("'{}' is navmesh data (/nav, props.navmesh): change it with nav_build (nav_build remove: true deletes one; nav_info reads them)", c.path()),
+            )
+            .with("path", c.path().to_owned()));
+        }
+    }
+    Ok(())
+}
+
+/// [`check_reserved`] for a module's own request (the module handler), on the changes recorded
+/// since `mark`: on a refusal they are rolled back (the ids they used are never handed out again)
+/// and the module gets the error.
+pub(crate) fn check_module_changes(world: &mut World, mark: Mark) -> Result<(), WorldError> {
+    let start = world.mark_changes(mark);
+    if let Err(e) = check_reserved(&world.pending_changes()[start..], Owns::Neither, false) {
+        world.rollback_to(mark);
+        return Err(e);
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 pub struct Swarm {
     pub journal: Journal,
     pub claims: Claims,
     /// Session id → identity given with agent_hello.
     agents: BTreeMap<String, Agent>,
-    /// Agent name → the identity that most recently said agent_hello with it (its current holder:
-    /// names are unique among open sessions).
-    named: BTreeMap<String, String>,
     /// Names agents may not take: the hosted game's, in-process writers'.
     reserved: BTreeSet<String>,
     /// The task board and notes (see [`crate::board`]).
@@ -135,16 +204,6 @@ impl Swarm {
             Some(a) => a.key.clone(),
             None => session.id.clone(),
         }
-    }
-
-    /// The identity key now going by `name` (the last agent_hello with it), if any.
-    pub fn key_of_name(&self, name: &str) -> Option<&str> {
-        self.named.get(name).map(String::as_str)
-    }
-
-    /// Whether `key` is an identity some agent_hello named (else it is an unnamed session's).
-    pub fn is_named_key(&self, key: &str) -> bool {
-        self.named.values().any(|k| k == key)
     }
 
     pub fn role(&self, session_id: &str) -> &str {
@@ -226,7 +285,6 @@ impl Swarm {
             ("resume_token", Json::from(token.as_str())),
             ("note", Json::from("keep resume_token private; a later session continues as this agent (claims and undo included) with agent_hello {name, resume_token}")),
         ]);
-        self.named.insert(name.clone(), key.clone());
         self.agents.insert(session.id.clone(), Agent { name, role, key, token });
         Ok(reply)
     }
@@ -266,7 +324,6 @@ impl Swarm {
             ("resumed", Json::from(true)),
             ("claims", Json::arr(self.claims.owned_by(Writer::new(&agent.name, Some(&agent.key))).into_iter().map(Json::from))),
         ]);
-        self.named.insert(agent.name.clone(), agent.key.clone());
         self.agents.insert(session.id.clone(), agent);
         Ok(reply)
     }
@@ -407,55 +464,12 @@ impl Swarm {
             let v = command(wd)?;
             let start = wd.mark_changes(mark);
             let changes = &wd.pending_changes()[start..];
-            if owns != Owns::Lex {
-                if let Some(c) = changes.iter().find(|c| crate::claims::touches_rule_data(c)) {
-                    return Err(WorldError::new("reserved", format!("'{}' is in /lex, which holds Lex rule data: change it with lex_edit / lex_import (lex_get and lex_list read it)", c.path()))
-                        .with("path", c.path().to_owned()));
-                }
-            }
-            if owns != Owns::LexLive {
-                if let Some(c) = changes.iter().find(|c| crate::claims::touches_lex_live(c)) {
-                    return Err(WorldError::new(
-                        "reserved",
-                        format!("'{}' is in /lex_live, where live Lex runs show their entities: lex_live starts and stops runs (world_delete works there; a run shows what it needs again)", c.path()),
-                    )
-                    .with("path", c.path().to_owned()));
-                }
-            }
-            if owns != Owns::Joint {
-                if let Some(c) = changes.iter().find(|c| crate::claims::touches_joint_data(c) && !matches!(c, Change::Delete { .. })) {
-                    return Err(WorldError::new(
-                        "reserved",
-                        format!("'{}' is a joint (props.joint): make, change or remove joints with physics_joint, which checks the right to move both bodies", c.path()),
-                    )
-                    .with("path", c.path().to_owned())
-                    .with("field", "props.joint"));
-                }
-            }
+            check_reserved(changes, owns, true)?;
             // Removing a joint, or a body a joint links, lets go of the joint's other bodies:
             // allowed with the right to change them (physics_joint checks its own writes).
             if owns != Owns::Joint && claims.could_block(w, now) {
                 for c in changes {
                     check_joint_rules(claims, wd, c, w, now)?;
-                }
-            }
-            // /project holds project files, written only through the project tools; no entity may
-            // live there (a claim on a file must never cover something else).
-            if let Some(c) = changes.iter().find(|c| (owns != Owns::Project && matches!(c, Change::File { .. })) || (!matches!(c, Change::File { .. }) && crate::project::under_root(c.path()))) {
-                return Err(WorldError::new(
-                    "reserved",
-                    format!("'{}' is in /project, which holds project files: change them with project_write / project_patch / project_delete (project_list and project_read read them)", c.path()),
-                )
-                .with("path", c.path().to_owned()));
-            }
-            // Likewise /nav and navmesh settings: only the nav tools write them.
-            if owns != Owns::Nav {
-                if let Some(c) = changes.iter().find(|c| crate::claims::touches_nav_data(c)) {
-                    return Err(WorldError::new(
-                        "reserved",
-                        format!("'{}' is navmesh data (/nav, props.navmesh): change it with nav_build (nav_build remove: true deletes one; nav_info reads them)", c.path()),
-                    )
-                    .with("path", c.path().to_owned()));
                 }
             }
             Ok(v)
@@ -521,6 +535,15 @@ impl Swarm {
     /// journals them under `game`, via `w`. On rejection the world is back at `mark` (ids it used
     /// are never handed out again; the journal notes them).
     pub fn check_game_changes(&mut self, world: &mut World, mark: Mark, tick: u64, game: &str, w: Writer) -> Result<(), WorldError> {
+        // The reserved-data rules hold for the game and modules as for agents (joints aside:
+        // the game and modules may make them, checked below).
+        let start = world.mark_changes(mark);
+        if let Err(e) = check_reserved(&world.pending_changes()[start..], Owns::Neither, false) {
+            world.rollback_to(mark);
+            self.journal.note_next_id(world.next_id());
+            self.count_rejection(w, &e);
+            return Err(e.with("game", game));
+        }
         let now = Instant::now();
         let claims = &self.claims;
         // Joint rules too: a module or game that makes a joint, or removes a body one links, moves
@@ -918,5 +941,21 @@ mod tests {
         let last = sw.journal.entries().last().unwrap();
         assert_eq!((last.kind, &*last.by, last.via.as_deref()), (Kind::GameTool, "sepulcra", Some("bob")));
         assert_eq!(sw.journal.replay().unwrap().state_hash(), w.state_hash());
+    }
+
+    /// Audit: game tools (and module loads and hooks, through the same check) skipped the
+    /// reserved-data rules; they hold for them as for agents, with no claims in play.
+    #[test]
+    fn game_tools_cannot_write_reserved_data() {
+        let mut sw = Swarm::default();
+        let mut w = world();
+        let bob = Writer::new("bob", Some("bbbbbb22"));
+        for path in ["/lex", "/lex_live", "/project", "/nav"] {
+            let err = sw.game_tool(&mut w, 1, "sepulcra", bob, |w| w.spawn(spec(path), "game").map(|_| ()).unwrap()).unwrap_err();
+            assert_eq!((err.code, err.detail("game")), ("reserved", Some(&Json::from("sepulcra"))), "{path}");
+            assert!(w.find_path(path).is_err() && w.pending_changes().is_empty(), "{path} rolled back");
+        }
+        assert!(sw.game_tool(&mut w, 1, "sepulcra", bob, |w| w.spawn(spec("/tower"), "game").map(|_| ()).unwrap()).is_ok());
+        assert_eq!(sw.journal.replay().unwrap().state_hash(), w.state_hash(), "ids the refused spawns used are noted");
     }
 }

@@ -1,9 +1,10 @@
 //! The character controller behind the SDK's `move_character`.
 //!
-//! [`CharacterMover`] is the interface; [`Kinematic`] is a minimal placeholder until the physics
-//! lane's kinematic character controller (P2) takes its place through
-//! [`super::LogicHost::set_mover`]. Modules never see the difference: they ask to move by a
-//! displacement and get back where they ended up and whether they stand on something.
+//! [`CharacterMover`] is the interface. The engine sets the physics P2 controller
+//! (`crate::physics::mover::PhysicsMover`) through [`super::LogicHost::set_mover`]; [`Kinematic`]
+//! is the minimal fallback a host without physics keeps (tests). Modules never see the
+//! difference: they ask to move by a displacement and get back where they ended up and whether
+//! they stand on something.
 
 use crate::world::{ColliderShape, EntityKey, UpdateSpec, World, WorldError};
 use specula_core::math::Vec3;

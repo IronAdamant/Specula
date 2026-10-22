@@ -1,5 +1,6 @@
 //! Automatic colliders fitted to a mesh: box, capsule or convex hull (see docs/design/PHYSICS.md).
 
+#[allow(clippy::disallowed_types, reason = "see each use: lookup-only or order-independent maps")]
 use std::collections::HashMap;
 
 use crate::math3::{self, V3};
@@ -141,6 +142,7 @@ pub fn capsule(points: &[V3]) -> Collider {
 }
 
 /// Convex hull of `points` (incremental, `f64` predicates). `None` if the points are flat.
+#[allow(clippy::disallowed_types, reason = "lookup and insert only: the output follows the input order, never the map's")]
 pub fn convex_hull(points: &[V3]) -> Option<(Vec<V3>, Vec<u32>)> {
     // Unique points in input order.
     let mut seen: HashMap<[u32; 3], ()> = HashMap::new();
@@ -247,6 +249,7 @@ pub fn convex_hull(points: &[V3]) -> Option<(Vec<V3>, Vec<u32>)> {
 
 /// Hull with at most `max_points` vertices: if the full hull has more, its vertices are thinned
 /// on a coarsening grid (keeping one real hull vertex per cell) and the hull recomputed.
+#[allow(clippy::disallowed_types, reason = "lookup and insert only: the output follows the input order, never the map's")]
 pub fn hull_limited(points: &[V3], max_points: usize) -> Option<(Vec<V3>, Vec<u32>)> {
     let (mut p, mut i) = convex_hull(points)?;
     let b = Bounds::of(points);
@@ -276,6 +279,7 @@ pub fn hull_limited(points: &[V3], max_points: usize) -> Option<(Vec<V3>, Vec<u3
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods, reason = "a test or benchmark harness (timings, cameras for pictures), not simulation code")]
     use super::*;
     use crate::shape::Shape;
 

@@ -34,7 +34,9 @@ when a condition holds:
   (matched against the error's `error` or `code`).
 - **Captures**: any answer with `image.path` (`sight_frame`) is listed with its label and tick.
 - **Time**: the playtest owns the clock. It pauses it, steps tick by tick to each `at`, and refuses other agents'
-  `time_control` (except `info`) until it ends; ticks queued by an earlier `step` are dropped.
+  `time_control` (except `info`) until it ends; ticks queued by an earlier `step` are dropped. It owns the world too:
+  `world_load` and `save_read` are refused (`playtest_running` with `retry_after_ms`) while it runs, from other
+  agents and from the spec's own steps, since either would replace the world it records.
 - **Bounds**: a spec is at most 256 KB of JSON, with 256 steps, 64 end steps, 32 expectations a step, each matcher
   at most 2 KB and each path 256 characters. A run is at most 1,000,000 ticks, `max_wall_s` (default 600, at most
   3600) and 64 file-writing calls (`sight_frame`, `sight_orbit`, `sight_compare`, `perf_capture`, and the game's
@@ -57,8 +59,11 @@ second, a whole ten-wave run in under a second); a windowed one gives it 4 ms a 
 ## Replays verify by hash
 
 At the start, every `checkpoint_every` ticks (default 300; it grows so a run keeps at most 1,024) and at the end, the
-run records a checkpoint: the world's state hash, the physics hash and the game's subsystem hashes (what the desync
-detector sees), combined. `record` writes them with the spec into a **replay file** (`format: specula-playtest`).
+run records a checkpoint: the world's state hash, the physics hash, navigation's, the game's subsystem hashes, the
+module host's (`logic`: stores, RNG positions, events) and live Lex runs' own state (`lex_live`; what they show is in
+the world hash), as the desync detector sees them, combined. Parts added after replay files were first written
+(`logic`, `lex_live`, both 2026-10-22; `playtest::LATE_PARTS`) are compared only when the replay recorded them, so
+older replays still verify. `record` writes them with the spec into a **replay file** (`format: specula-playtest`).
 `playtest_run {replay}` runs that spec again and compares every checkpoint; the first that differs stops the run as
 `diverged` and names the parts that differ (then `desync_trace` and `desync_compare` find the component and field).
 

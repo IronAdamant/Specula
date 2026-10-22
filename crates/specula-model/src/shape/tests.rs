@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods, reason = "a test or benchmark harness (timings, cameras for pictures), not simulation code")]
 use super::*;
 
 /// Finalises, validates, and checks closed + outward; returns the mesh.

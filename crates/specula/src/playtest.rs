@@ -50,9 +50,9 @@ pub const MAX_TICKS: u64 = 1_000_000;
 pub const DEFAULT_UNTIL_TICKS: u64 = 36_000;
 pub const DEFAULT_CHECKPOINT_EVERY: u64 = 300;
 /// Checkpoint parts added after replay files were first written: a replay whose checkpoints lack
-/// one is checked without it. `logic` (the module host's stores, RNG positions and events) came
-/// on 2026-10-22.
-pub const LATE_PARTS: [&str; 1] = ["logic"];
+/// one is checked without it. `logic` (the module host's stores, RNG positions and events) and
+/// `lex_live` (live Lex runs' own state) came on 2026-10-22.
+pub const LATE_PARTS: [&str; 2] = ["logic", "lex_live"];
 /// Hashes one run records at most (the interval grows to fit).
 pub const MAX_CHECKPOINTS: u64 = 1024;
 pub const DEFAULT_EVERY: u64 = 30;
@@ -76,7 +76,7 @@ const FAILURE_BYTES: (usize, usize) = (6 * 1024, 48 * 1024);
 pub const MAX_REPORT_BYTES: usize = 128 * 1024;
 
 /// Tools a playtest may not call, and why (the error says what to do instead).
-pub const FORBIDDEN: [(&str, &str); 8] = [
+pub const FORBIDDEN: [(&str, &str); 9] = [
     ("time_control", "the playtest owns the clock: schedule calls with 'at' ticks, and end the run with 'ticks' or 'until'"),
     ("playtest_run", "playtests don't nest: run them one after another"),
     ("playtest_report", "playtests don't nest"),
@@ -84,6 +84,7 @@ pub const FORBIDDEN: [(&str, &str); 8] = [
     ("logic_build", "module builds run outside the engine thread: build before the playtest"),
     ("logic_reload", "module reloads run outside the engine thread: reload before the playtest"),
     ("save_read", "a load replaces the world the playtest is recording: load the save before playtest_run"),
+    ("world_load", "a load replaces the world the playtest is recording: load the world before playtest_run"),
     ("save_delete", "playtests don't delete files: delete saves before or after the playtest"),
 ];
 
@@ -1445,10 +1446,16 @@ mod tests {
         assert!(parse_replay(&file, "r.json", 60).is_err(), "another tick rate");
     }
 
-    /// Review: a replay written before checkpoints hashed the module host (`logic`) still
-    /// verifies; one that recorded it is checked against it.
+    /// Review: a replay written before checkpoints hashed the module host (`logic`) or live Lex
+    /// runs (`lex_live`) still verifies; one that recorded the part is checked against it.
     #[test]
     fn replays_without_a_late_part_are_checked_without_it() {
+        for late in LATE_PARTS {
+            late_part_checked(late);
+        }
+    }
+
+    fn late_part_checked(late: &str) {
         let text = r#"{"name": "r", "checkpoint_every": 50, "steps": [{"at": 0, "call": "a"}], "ticks": 100}"#;
         let run_with = |logic: Option<u64>, exp: Option<Expected>| {
             let mut r = Run::new(spec(text), exp);
@@ -1457,7 +1464,7 @@ mod tests {
                     Action::Call(_) => r.complete(&ok("{}")),
                     Action::Hash(p) => {
                         let mut parts = vec![("world".to_owned(), r.tick)];
-                        parts.extend(logic.map(|l| ("logic".to_owned(), l + r.tick)));
+                        parts.extend(logic.map(|l| (late.to_owned(), l + r.tick)));
                         r.record_hash(p, parts);
                     }
                     Action::Advance(n) => r.advanced(n),

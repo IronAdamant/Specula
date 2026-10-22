@@ -436,6 +436,11 @@ impl<'a> Cx<'a> {
 
     /// The next 32 random bits of the engine stream `stream` (seeded per module and stream, so
     /// a new stream never shifts another; the position survives reloads).
+    ///
+    /// A module keeps at most 1,024 streams: a new name past that fails with code `rng_full`.
+    /// Name streams by purpose (`"loot"`, `"spawns"`), never one per entity or tick (that
+    /// grows without bound); for per-entity randomness draw from a purpose stream in a fixed order
+    /// (entities sorted by id).
     pub fn random_u32(&mut self, stream: &str) -> Result<u32, SdkError> {
         let v = self.ask(Value::map().with("op", "rng").with("stream", stream))?;
         Ok(v.as_u64().unwrap_or(0) as u32)
@@ -454,8 +459,8 @@ impl<'a> Cx<'a> {
 
     /// Moves a character entity by `motion` (metres this tick, gravity included) through the
     /// engine's character controller, which stops it at the ground and slides it along walls,
-    /// and sets the entity's position. Today's controller is a minimal kinematic placeholder;
-    /// the physics character controller (P2) takes its place behind this same call.
+    /// and sets the entity's position. The engine answers it with the physics character
+    /// controller (P2): steps, slopes, moving platforms and pushing dynamic bodies.
     pub fn move_character(&mut self, id: Id, motion: Vec3) -> Result<Moved, SdkError> {
         let v = self.ask(Value::map().with("op", "move_character").with("id", id.0).with("motion", motion))?;
         Ok(Moved {

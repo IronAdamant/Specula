@@ -29,6 +29,7 @@ pub fn sin_cos_deg(deg: f64) -> (f64, f64) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods, reason = "a test or benchmark harness (timings, cameras for pictures), not simulation code")]
     use super::*;
 
     #[test]

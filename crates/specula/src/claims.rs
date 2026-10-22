@@ -791,13 +791,15 @@ fn nav_data_only(change: &Change) -> bool {
     }
 }
 
-/// Rule data staying in `/lex` (before and after): exempt from region scopes.
+/// Rule data staying in `/lex` (before and after), as bare groups: exempt from region scopes.
+/// Anything with a shape, collider or body in `/lex` is checked at both ends like any entity.
 fn rule_data_only(change: &Change) -> bool {
+    let data = |e: &crate::world::Entity| bare_group(e) && is_rule_data(e);
     match change {
-        Change::Spawn { path, after } => under_lex(path) && is_rule_data(after),
-        Change::Delete { path, before } => under_lex(path) && is_rule_data(before),
+        Change::Spawn { path, after } => under_lex(path) && data(after),
+        Change::Delete { path, before } => under_lex(path) && data(before),
         Change::Set { path, prev_path, before, after } => {
-            under_lex(path) && prev_path.as_deref().is_none_or(under_lex) && is_rule_data(after) && before.as_deref().is_none_or(is_rule_data)
+            under_lex(path) && prev_path.as_deref().is_none_or(under_lex) && data(after) && before.as_deref().is_none_or(data)
         }
         _ => false,
     }
@@ -808,14 +810,14 @@ fn under_lex_live(p: &str) -> bool {
 }
 
 /// What `lex_live` start and stop write, exempt from region scopes: the groups `/lex_live` and
-/// `/lex_live/<set>` (no geometry, at the origin), and deletes inside `/lex_live` (what a run
+/// `/lex_live/<set>` (bare: no geometry, collider or body; at the origin), and deletes inside `/lex_live` (what a run
 /// shows comes back while it runs). Nothing else in `/lex_live` is exempt; agents can't spawn or
 /// change entities there at all ([`touches_lex_live`]), and a run's own presentation is the
 /// rules' output, journaled without claim checks like a hosted game's.
 fn lex_live_only(change: &Change) -> bool {
     match change {
         Change::Spawn { path, after } => {
-            after.shape == crate::world::Shape::Group && (path == "/lex_live" || path.strip_prefix("/lex_live/").is_some_and(|s| !s.is_empty() && !s.contains('/')))
+            bare_group(after) && (path == "/lex_live" || path.strip_prefix("/lex_live/").is_some_and(|s| !s.is_empty() && !s.contains('/')))
         }
         Change::Delete { path, .. } => under_lex_live(path),
         _ => false,
@@ -946,6 +948,43 @@ mod tests {
         take(&mut c2, &w, BOB, Scope::Path("/nav".into()), now).unwrap();
         let edit = set(&mut w, "/nav/default", UpdateSpec { props: Some(Json::obj([(crate::nav::MESH_KEY, Json::obj([("cell_size", Json::from(0.2))]))])), ..Default::default() });
         assert!(c2.check(&w, &edit, ANN, now).is_err());
+    }
+
+    /// Only bare groups are exempt in /lex and /lex_live: a drawn or colliding entity carrying
+    /// rule data, or a drawn run group, is in the region like any other.
+    #[test]
+    fn only_bare_groups_of_rule_data_and_live_runs_sit_nowhere() {
+        let now = Instant::now();
+        let mut w = world();
+        let mut c = Claims::default();
+        take(&mut c, &w, BOB, Scope::Region { min: Vec3::new(-5.0, -5.0, -5.0), max: Vec3::new(5.0, 5.0, 5.0) }, now).unwrap();
+        for root in ["lex", "lex_live"] {
+            let mut g = SpawnSpec::new(Shape::Group);
+            g.name = Some(root.into());
+            w.spawn(g, "ann").unwrap();
+            let ch = w.take_changes();
+            assert!(c.check(&w, &ch, ANN, now).is_ok(), "/{root} sits nowhere");
+        }
+        let mut item = SpawnSpec::new(Shape::Group);
+        item.name = Some("rules".into());
+        item.parent = Some(EntityKey::Path("/lex".into()));
+        item.props = Json::obj([("lex_set", Json::obj([("tick_hz", Json::from(60))]))]);
+        w.spawn(item, "ann").unwrap();
+        let ch = w.take_changes();
+        assert!(c.check(&w, &ch, ANN, now).is_ok(), "a set's header sits nowhere");
+        let mut drawn = SpawnSpec::new(Shape::Cube);
+        drawn.name = Some("sneaky".into());
+        drawn.parent = Some(EntityKey::Path("/lex".into()));
+        drawn.props = Json::obj([("lex", Json::obj([("kind", Json::from("param"))]))]);
+        w.spawn(drawn, "ann").unwrap();
+        let ch = w.take_changes();
+        assert!(c.check(&w, &ch, ANN, now).is_err(), "a drawn cube with props.lex is in the region");
+        let mut run = SpawnSpec::new(Shape::Cube);
+        run.name = Some("set".into());
+        run.parent = Some(EntityKey::Path("/lex_live".into()));
+        w.spawn(run, "ann").unwrap();
+        let ch = w.take_changes();
+        assert!(c.check(&w, &ch, ANN, now).is_err(), "a drawn run group is in the region");
     }
 
     #[test]

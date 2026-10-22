@@ -207,7 +207,7 @@ fn trace_ref(args: &Json, key: &str) -> Result<TraceRef, String> {
         Some("live") => Ok(TraceRef::Live),
         Some("replay") => Ok(TraceRef::Replay),
         Some(p) if p.to_ascii_lowercase().ends_with(".json") => Ok(TraceRef::File(p.to_owned())),
-        Some(_) => Err(format!("'{key}' must be \"live\", \"replay\" or a trace file path ending in .json (from desync_trace)")),
+        Some(_) => Err(format!("'{key}' must be \"live\", \"replay\" or a trace file ending in .json (from desync_trace), relative to this engine's captures folder")),
         None => Err(format!("'{key}' is required: \"live\", \"replay\" or a trace file")),
     }
 }
@@ -725,8 +725,9 @@ pub fn definitions() -> Vec<ToolDef> {
         ),
         def(
             "desync_compare",
-            "Find where two runs that should agree first differ: a and b are trace files (from desync_trace, any engine) or \
-             \"live\" (this engine now). Reports first_divergent_tick, last_matching_tick, the subsystems whose hashes differ \
+            "Find where two runs that should agree first differ: a and b are trace files (from desync_trace, any engine; \
+             named relative to this engine's captures folder, its captures root or its worlds folder: copy another engine's \
+             trace in first; absolute paths and '..' are refused with path_not_allowed) or \"live\" (this engine now). Reports first_divergent_tick, last_matching_tick, the subsystems whose hashes differ \
              and the entities (with fields) that changed differently going into that tick, as 'components'. a: \"live\", \
              b: \"replay\" checks this engine against its own journal replayed tick by tick, and names entities whose live \
              state the journal doesn't explain; each replay call does bounded work and returns next_from_tick (done: false) to continue. Script: scripts/desync_check.py.",

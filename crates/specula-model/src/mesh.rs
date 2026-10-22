@@ -1,5 +1,6 @@
 //! Render-ready triangle meshes: the output of a recipe build.
 
+#[allow(clippy::disallowed_types, reason = "see each use: lookup-only or order-independent maps")]
 use std::collections::HashMap;
 use std::fmt;
 
@@ -335,6 +336,7 @@ impl MeshData {
 
     /// Open edges after welding equal positions: 0 for a watertight (closed, 2-manifold-edged)
     /// mesh. Counts edges not matched by exactly one opposite edge.
+    #[allow(clippy::disallowed_types, reason = "iterated only to count or take maxima, which no order changes")]
     pub fn open_edge_count(&self) -> usize {
         // Weld by exact position bits so split normals don't count as seams.
         let mut ids: HashMap<[u32; 3], u32> = HashMap::new();
