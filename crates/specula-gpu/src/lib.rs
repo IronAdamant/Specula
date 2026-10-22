@@ -1259,6 +1259,30 @@ impl Gpu {
         self.inner.upload_stats()
     }
 
+    /// Queued meshes' device memory (see [`Gpu::queue_mesh`]): `(free bytes in its blocks, bytes
+    /// in them, the next block's size)`.
+    pub fn mesh_space(&self) -> (u64, u64, u64) {
+        self.inner.mesh_space()
+    }
+
+    /// Starts the next mesh block ahead of need: its `vkAllocateMemory` (milliseconds on some
+    /// drivers) runs on a worker thread, and the block joins at a later flush. A no-op while one
+    /// is growing.
+    pub fn grow_mesh_space(&mut self) -> Result<(), GpuError> {
+        self.inner.grow_mesh_space()
+    }
+
+    /// Whether a queued mesh of `bytes` fits the mesh blocks now (no allocation, no wait for a
+    /// block growing ahead). A streamer puts off what doesn't fit while a block grows.
+    pub fn mesh_fits(&mut self, bytes: u64) -> bool {
+        self.inner.mesh_fits(bytes)
+    }
+
+    /// A mesh block is growing ahead (see [`Gpu::grow_mesh_space`]).
+    pub fn mesh_growing(&self) -> bool {
+        self.inner.mesh_growing()
+    }
+
     /// Whether something can be queued now without waiting for the GPU: a batch is being
     /// recorded or a batch slot is free (as of the last fence poll, at the last flush).
     pub fn upload_slot_free(&self) -> bool {

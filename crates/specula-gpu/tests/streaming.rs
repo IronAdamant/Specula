@@ -149,6 +149,25 @@ fn large_and_many_batches_stay_correct() {
         }
         let bytes = (v.len() * 28 + idx.len() * 4) as u64;
         assert!(bytes > UPLOAD_ARENA_BYTES, "the test mesh ({bytes} B) must not fit an arena");
+        // Mesh memory grown ahead: the next queued mesh lands in it without an allocation.
+        let (_, total, next) = gpu.mesh_space();
+        gpu.grow_mesh_space().unwrap();
+        let (free, grown, _) = gpu.mesh_space();
+        assert_eq!(grown, total + next, "{test}: one more block");
+        assert!(free >= next, "{test}: the new block is empty");
+        // It joins without anyone waiting for it (polled, as a streamer does).
+        let t = std::time::Instant::now();
+        while gpu.mesh_growing() && t.elapsed() < std::time::Duration::from_secs(10) {
+            gpu.mesh_fits(1);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        eprintln!("{test}: a {next}-byte block grew on the worker in {:?}", t.elapsed());
+        assert!(!gpu.mesh_growing() && gpu.mesh_fits(1), "{test}: the block joined");
+        let (cv, ci) = cube();
+        let small = gpu.queue_mesh(&cv, &ci, &MeshStreams::default()).unwrap();
+        assert_eq!(gpu.mesh_space().1, grown, "{test}: no allocation for a mesh that fits");
+        assert_eq!(gpu.upload_stats().mesh_blocks_grown, 1, "{test}: the block came from the worker");
+        gpu.retire_mesh(small);
         let sync = gpu.upload_mesh(&v, &idx).unwrap();
         let expected = render(&mut gpu, target, &[DrawItem::new(sync, IDENTITY, [0.3, 0.8, 0.4, 1.0])]);
         let big = gpu.queue_mesh(&v, &idx, &MeshStreams::default()).unwrap();

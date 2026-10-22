@@ -307,6 +307,61 @@ impl Device {
         }
     }
 
+    /// A buffer with no memory yet, and what its memory must be (see [`Device::adopt_buffer`]).
+    pub(crate) fn create_buffer_unbound(&self, size: u64, usage: VkFlags) -> Result<(VkBuffer, VkMemoryRequirements), GpuError> {
+        let info = VkBufferCreateInfo {
+            s_type: ST_BUFFER_CREATE_INFO,
+            p_next: ptr::null(),
+            flags: 0,
+            size,
+            usage,
+            sharing_mode: VK_SHARING_MODE_EXCLUSIVE,
+            queue_family_index_count: 0,
+            p_queue_family_indices: ptr::null(),
+        };
+        let mut handle = VK_NULL_HANDLE;
+        // SAFETY: valid device and create info.
+        let r = unsafe { (self.fns.create_buffer)(self.handle, &info, ptr::null(), &mut handle) };
+        if r != VK_SUCCESS {
+            return Err(GpuError::vk(&format!("vkCreateBuffer ({size} bytes)"), r));
+        }
+        let mut req = VkMemoryRequirements::default();
+        // SAFETY: `handle` is a live buffer of this device.
+        unsafe { (self.fns.get_buffer_memory_requirements)(self.handle, handle, &mut req) };
+        Ok((handle, req))
+    }
+
+    /// Binds memory allocated elsewhere (by [`RawAllocator`] on a worker thread) to an unbound
+    /// buffer and counts it: the buffer. On failure both are freed.
+    pub(crate) fn adopt_buffer(&self, handle: VkBuffer, memory: VkDeviceMemory, bytes: u64, kind: MemoryKind) -> Result<Buffer, GpuError> {
+        // SAFETY: `memory` was allocated for this buffer's requirements; offset 0 is aligned.
+        let r = unsafe { (self.fns.bind_buffer_memory)(self.handle, handle, memory, 0) };
+        if r != VK_SUCCESS {
+            // SAFETY: both belong to this device, are unused, and are destroyed once.
+            unsafe {
+                (self.fns.destroy_buffer)(self.handle, handle, ptr::null());
+                (self.fns.free_memory)(self.handle, memory, ptr::null());
+            }
+            return Err(GpuError::vk("vkBindBufferMemory", r));
+        }
+        self.account(kind, bytes, true);
+        Ok(Buffer { handle, memory, mapped: ptr::null_mut(), bytes, kind })
+    }
+
+    /// Destroys a buffer that never got memory, or frees memory that never got a buffer.
+    pub(crate) fn discard_unbound(&self, handle: VkBuffer, memory: VkDeviceMemory) {
+        // SAFETY: unused objects of this device (null handles are ignored), destroyed once.
+        unsafe {
+            (self.fns.destroy_buffer)(self.handle, handle, ptr::null());
+            (self.fns.free_memory)(self.handle, memory, ptr::null());
+        }
+    }
+
+    /// What a worker thread needs to call `vkAllocateMemory` (and `vkFreeMemory`) on this device.
+    pub(crate) fn raw_allocator(&self) -> RawAllocator {
+        RawAllocator { device: self.handle, allocate: self.fns.allocate_memory, free: self.fns.free_memory }
+    }
+
     /// GPU address of a buffer created with `VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT`.
     pub fn buffer_address(&self, buffer: &Buffer) -> u64 {
         let info = VkBufferDeviceAddressInfo { s_type: ST_BUFFER_DEVICE_ADDRESS_INFO, p_next: ptr::null(), buffer: buffer.handle };
@@ -693,6 +748,40 @@ impl Drop for Device {
         // SAFETY: owners destroyed every child object before dropping the device; the device is
         // idle (the `Gpu` waits) and destroyed exactly once.
         unsafe { (self.fns.destroy_device)(self.handle, ptr::null()) };
+    }
+}
+
+/// `vkAllocateMemory` and `vkFreeMemory` for a worker thread. The device must outlive it (its
+/// owner joins the thread before the device goes).
+#[derive(Clone, Copy)]
+pub(crate) struct RawAllocator {
+    device: VkDevice,
+    allocate: unsafe extern "system" fn(VkDevice, *const VkMemoryAllocateInfo, *const c_void, *mut VkDeviceMemory) -> VkResult,
+    free: unsafe extern "system" fn(VkDevice, VkDeviceMemory, *const c_void),
+}
+
+// SAFETY: a VkDevice may be used from any thread; neither vkAllocateMemory nor vkFreeMemory has
+// an externally synchronized parameter except the memory freed (owned by the caller), so calls
+// from a worker thread are valid alongside the owner's (Vulkan spec, "Threading Behavior").
+unsafe impl Send for RawAllocator {}
+
+impl RawAllocator {
+    /// One allocation of `size` bytes of memory type `type_index`.
+    pub(crate) fn allocate(&self, size: u64, type_index: u32) -> Result<VkDeviceMemory, VkResult> {
+        let info = VkMemoryAllocateInfo { s_type: ST_MEMORY_ALLOCATE_INFO, p_next: ptr::null(), allocation_size: size, memory_type_index: type_index };
+        let mut memory = VK_NULL_HANDLE;
+        // SAFETY: the device is live (see the type's docs); valid allocate info and out-pointer.
+        let r = unsafe { (self.allocate)(self.device, &info, ptr::null(), &mut memory) };
+        if r == VK_SUCCESS {
+            Ok(memory)
+        } else {
+            Err(r)
+        }
+    }
+
+    pub(crate) fn free(&self, memory: VkDeviceMemory) {
+        // SAFETY: `memory` came from `allocate`, is unused, and is freed once.
+        unsafe { (self.free)(self.device, memory, ptr::null()) };
     }
 }
 

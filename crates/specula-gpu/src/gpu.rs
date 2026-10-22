@@ -410,6 +410,24 @@ impl GpuInner {
         self.uploads.stats()
     }
 
+    pub fn mesh_space(&self) -> (u64, u64, u64) {
+        self.uploads.blocks.space()
+    }
+
+    pub fn grow_mesh_space(&mut self) -> Result<(), GpuError> {
+        self.uploads.blocks.grow(&self.device)
+    }
+
+    pub fn mesh_fits(&mut self, bytes: u64) -> bool {
+        // A block grown ahead joins as soon as it is there.
+        let _ = self.uploads.blocks.poll_grow(&self.device, false);
+        self.uploads.blocks.fits(bytes)
+    }
+
+    pub fn mesh_growing(&self) -> bool {
+        self.uploads.blocks.growing()
+    }
+
     pub fn upload_slot_free(&self) -> bool {
         self.uploads.slot_free()
     }
