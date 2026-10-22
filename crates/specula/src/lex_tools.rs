@@ -62,11 +62,18 @@ const MAX_EXPORT_BYTES: usize = 2 * 1024 * 1024;
 /// answers stay small, and the file is the canonical text to keep or diff anyway).
 const EXPORT_INLINE_BYTES: usize = 64 * 1024;
 
-/// Where `lex_export` writes files: the engine's captures folder, numbered per engine run.
+/// Most export files one engine run writes (a document already written is reused).
+const MAX_EXPORT_FILES: usize = 64;
+
+/// Where `lex_export` writes files: this run's captures folder, numbered per run. Capture runs
+/// are pruned (the engine keeps the last 20), so an agent copies a file it wants to keep.
 #[derive(Default)]
 pub struct Exports {
     pub(crate) dir: Option<std::path::PathBuf>,
-    written: std::sync::atomic::AtomicU64,
+    /// The folders `lex_import {file}` reads from (captures first).
+    pub(crate) roots: crate::safe_path::Roots,
+    /// Files written this run, by content hash (the same document is written once).
+    written: Mutex<BTreeMap<u64, std::path::PathBuf>>,
 }
 
 /// What the main thread does for a lex tool. Only cheap reads and the final write happen
@@ -1182,16 +1189,6 @@ fn edit_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<ToolOu
     Ok(locked(tools, &e.set, || edit_in(&mut EngineStore { tools, session }, &e)).unwrap_or_else(|busy| busy))
 }
 
-/// A file `lex_export` wrote (or any `*.json` the agent names): absolute, relative to the
-/// engine's folder, or relative to its captures folder.
-fn import_path(tools: &Tools, p: &str) -> std::path::PathBuf {
-    let path = std::path::PathBuf::from(p);
-    match &tools.lex_exports.dir {
-        Some(dir) if !path.is_absolute() && !path.exists() => dir.join(path),
-        _ => path,
-    }
-}
-
 /// `lex_import`'s document: inline (`document`) or a file (`file`, as `lex_export` writes).
 fn import_document(tools: &Tools, args: &Json) -> Result<Json, ToolOutput> {
     match (args.get("document"), crate::tools::string_arg(args, "file")) {
@@ -1200,17 +1197,12 @@ fn import_document(tools: &Tools, args: &Json) -> Result<Json, ToolOutput> {
         (None, Err(m)) => Err(err("invalid_argument", m)),
         (None, Ok(None)) => Err(err("invalid_argument", "'document' or 'file' is required: the document ({\"lex\": 1, \"tick_hz\": ..., \"items\": {...}}) or a *.lex.json file (lex_export writes them)")),
         (None, Ok(Some(p))) => {
-            if !p.to_ascii_lowercase().ends_with(".json") {
-                return Err(err("invalid_argument", format!("'file' must be a *.json file (lex_export writes *.lex.json), not {p:?}")));
-            }
-            let path = import_path(tools, p);
-            let file = |e: std::io::Error| err_with("io", format!("could not read {}: {e}", path.display()), vec![("file", Json::from(path.display().to_string()))]);
-            let size = std::fs::metadata(&path).map_err(file)?.len();
-            if size > MAX_EXPORT_BYTES as u64 {
-                return Err(err_with("too_large", format!("{} is {size} bytes; documents are read up to {MAX_EXPORT_BYTES}", path.display()), vec![("file", Json::from(path.display().to_string()))]));
-            }
-            let text = std::fs::read_to_string(&path).map_err(file)?;
-            Json::parse(&text).map_err(|e| err_with("invalid_document", format!("{} is not JSON: {e}", path.display()), vec![("file", Json::from(path.display().to_string()))]))
+            // Only files under the engine's own folders (crate::safe_path): an answer never says
+            // anything about a file elsewhere, not even whether it exists.
+            let refused = |r: crate::safe_path::Refusal| err(r.code, r.message);
+            let path = tools.lex_exports.roots.resolve(p, ".json", "'file'").map_err(refused)?;
+            let text = crate::safe_path::read_bounded(&path, MAX_EXPORT_BYTES, "'file'").map_err(refused)?;
+            Json::parse(&text).map_err(|e| err("invalid_document", format!("'file' is not JSON (at byte {})", e.offset)))
         }
     }
 }
@@ -1274,23 +1266,44 @@ fn export_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<Tool
     let Some(dir) = &tools.lex_exports.dir else {
         return Ok(err("no_captures", "this engine has no captures folder to write the file to; lex_list and lex_get page through the set"));
     };
-    let n = tools.lex_exports.written.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-    let path = dir.join(format!("lex_{set}_{n:04}.lex.json"));
-    if let Err(e) = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&path, &text)) {
-        return Ok(err_with("io", format!("could not write {}: {e}", path.display()), vec![("file", Json::from(path.display().to_string()))]));
-    }
+    let hash = {
+        let mut h = specula_core::hash::StableHasher::with_seed(0x6c65_785f_6578);
+        h.write_str(&set);
+        h.write_bytes(text.as_bytes());
+        h.finish()
+    };
+    let path = {
+        let mut written = tools.lex_exports.written.lock().unwrap_or_else(|p| p.into_inner());
+        match written.get(&hash).filter(|p| std::fs::read(p).is_ok_and(|b| b == text.as_bytes())) {
+            // The same document again: the file already holds it.
+            Some(p) => p.clone(),
+            None if written.len() >= MAX_EXPORT_FILES => {
+                return Ok(err_with(
+                    "exports_full",
+                    format!("this engine run has written {MAX_EXPORT_FILES} export files; copy the ones to keep and restart the engine, or read the set with lex_list and lex_get"),
+                    vec![("limit", Json::from(MAX_EXPORT_FILES))],
+                ));
+            }
+            None => {
+                let path = dir.join(format!("lex_{set}_{:04}.lex.json", written.len() + 1));
+                if let Err(e) = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&path, &text)) {
+                    return Ok(err_with("io", format!("could not write {}: {e}", path.display()), vec![("file", Json::from(path.display().to_string()))]));
+                }
+                written.insert(hash, path.clone());
+                path
+            }
+        }
+    };
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     Ok(ToolOutput::text(
         Json::obj([
             ("set", Json::from(set)),
             ("file", Json::from(path.display().to_string())),
+            ("import_file", Json::from(name)),
             ("bytes", Json::from(text.len())),
             ("items", Json::from(doc.items.len())),
-            ("content_hash", Json::from(format!("{:016x}", {
-                let mut h = specula_core::hash::StableHasher::with_seed(0x6c65_785f_6578);
-                h.write_bytes(text.as_bytes());
-                h.finish()
-            }))),
-            ("next", Json::from("read the file, or lex_import {set, file} it into a set")),
+            ("content_hash", Json::from(format!("{hash:016x}"))),
+            ("next", Json::from("read the file (capture runs are pruned: the engine keeps its last 20, so copy it somewhere permanent to keep it), or lex_import {set, file: import_file}")),
         ])
         .to_string(),
     ))
@@ -1636,12 +1649,12 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "lex_import".into(),
-            description: "Writes a whole document into a set in one atomic, validated, journaled edit (replace: true, the default, deletes items the document doesn't have). Give the document inline ('document') or as a *.lex.json file ('file': a path lex_export answered with, any *.json path, or one relative to the engine's captures folder; at most 2 MB).".into(),
+            description: "Writes a whole document into a set in one atomic, validated, journaled edit (replace: true, the default, deletes items the document doesn't have). Give the document inline ('document') or as a *.lex.json file ('file': a path relative to the engine's captures, worlds or assets folder, tried in that order, such as the import_file lex_export answered with; absolute paths and '..' are refused with path_not_allowed; at most 2 MB).".into(),
             input_schema: obj(
                 vec![
                     ("set", set()),
                     ("document", document()),
-                    ("file", t("string", "A *.json file holding the document (instead of 'document'), e.g. the 'file' lex_export answered with.")),
+                    ("file", t("string", "A *.json file holding the document (instead of 'document'), relative to the captures, worlds or assets folder, e.g. the import_file lex_export answered with.")),
                     ("replace", t("boolean", "Delete items not in the document (default true).")),
                     ("allow_errors", t("boolean", "Store it even with validation errors.")),
                     ("dry_run", t("boolean", "Only validate and report.")),
@@ -1651,7 +1664,7 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "lex_export".into(),
-            description: "A set as one canonical document (items sorted by id, keys sorted): the text form to save as a *.lex.json file or diff. Up to 64 KB it is the answer itself; a bigger one (or to: \"file\") is written to a *.lex.json file in the engine's captures folder and the answer is {set, file, bytes, items, content_hash} (lex_import {file} reads it back). At most 2 MB.".into(),
+            description: "A set as one canonical document (items sorted by id, keys sorted): the text form to save as a *.lex.json file or diff. Up to 64 KB it is the answer itself; a bigger one (or to: \"file\") is written to a *.lex.json file in this run's captures folder and the answer is {set, file (its full path), import_file, bytes, items, content_hash} (lex_import {file: import_file} reads it back). The same document is written once; at most 64 files per engine run (exports_full); capture runs are pruned (the last 20 kept), so copy a file to keep it. At most 2 MB.".into(),
             input_schema: obj(
                 vec![
                     ("set", set()),

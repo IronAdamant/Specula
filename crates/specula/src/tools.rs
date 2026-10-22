@@ -349,9 +349,11 @@ impl Tools {
         }
     }
 
-    /// The engine's captures folder (`lex_export` writes big documents there).
-    pub fn with_capture_dir(mut self, dir: std::path::PathBuf) -> Tools {
+    /// The engine's captures folder (`lex_export` writes big documents there) and the folders
+    /// agents may name files in (`lex_import {file}`: captures first; see [`crate::safe_path`]).
+    pub fn with_capture_dir(mut self, dir: std::path::PathBuf, roots: Vec<std::path::PathBuf>) -> Tools {
         self.lex_exports.dir = Some(dir);
+        self.lex_exports.roots = crate::safe_path::Roots(roots);
         self
     }
 

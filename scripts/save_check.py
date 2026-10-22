@@ -34,7 +34,7 @@ import time
 import zlib
 from pathlib import Path
 
-from specula_mcp import ROOT, Engine, Mcp, url_for
+from specula_mcp import ROOT, Engine, Mcp, share_file, url_for
 
 
 def exe_path(name):
@@ -337,7 +337,7 @@ def run(args, work):
         restored = b.json("nav_info").get("last_restore") or {}
         check(restored.get("restored") is True, f"navigation was restored with the saved hash ({restored})")
         trace_b = b.json("desync_trace", from_tick=t + 1, to_tick=t + args.ticks)
-        cmp = b.json("desync_compare", a=trace_a["file"], b=trace_b["file"])
+        cmp = b.json("desync_compare", a=share_file(b, trace_a["file"]), b=share_file(b, trace_b["file"]))
         report["compare"] = cmp
         print(f"desync_compare: match={cmp.get('match')} common_ticks={cmp.get('common_ticks')} "
               f"first_divergent_tick={cmp.get('first_divergent_tick')} components={cmp.get('components')}")

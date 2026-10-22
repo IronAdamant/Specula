@@ -43,6 +43,7 @@ mod perf;
 pub mod persist;
 pub mod rollup;
 mod save_tools;
+mod safe_path;
 pub mod savegame;
 pub mod physics;
 mod physics_tools;
@@ -365,7 +366,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
             server_version: env!("CARGO_PKG_VERSION").into(),
             instructions: Some(tools::INSTRUCTIONS.into()),
         },
-        Arc::new(tools::Tools::new(to_engine, game_tools).with_formats(Arc::clone(&engine.formats)).with_lex_natives(engine.lex_natives.clone()).with_capture_dir(engine.capture_dir.clone())),
+        Arc::new(tools::Tools::new(to_engine, game_tools).with_formats(Arc::clone(&engine.formats)).with_lex_natives(engine.lex_natives.clone()).with_capture_dir(engine.capture_dir.clone(), vec![engine.capture_dir.clone(), captures_root.clone(), engine.worlds_dir.clone(), assets.clone()])),
     )
     .map_err(|e| format!("MCP server: {e}"))?;
     eprintln!("specula: MCP at http://{}/mcp — Ctrl+C to stop", server.local_addr());

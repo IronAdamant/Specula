@@ -383,7 +383,7 @@ named `notes` is data.
 | `lex_edit` | Atomic `put` / `patch` (field paths like `behaviours[0].range`) / `delete` ops with `expect_version` (0: must not exist yet); creates the set when needed. The whole set is validated after the edit, and an edit that adds errors is refused with every new error (`allow_errors` stores a draft; errors already there don't block fixing others). `dry_run` only reports. |
 | `lex_validate` | Every error and warning for a set (or an inline document), the items by kind, the params (the tunable search space) and the declared native hooks with their reasons. |
 | `lex_simulate` | Compiles a set (with `params` overrides) and runs it headless for up to N ticks or until an outcome, from a fresh state or a saved run; applies `commands` at ticks; returns a bounded report: outcome, resources, waves, entities by archetype, event counts, refusals, run-time diagnostics, native calls, `expect` results, `watch` samples (at most 200) and the state hash. Runs on the calling agent's protocol thread, so many agents simulate in parallel without stalling the window; the wall clock is read as work is spent, and a call that passes 20 s stops part-way and comes back `complete: false`, without a hash or an outcome, and can't be saved: run fewer ticks per call, splitting a long run into complete calls joined with `save_as` / `from`. |
-| `lex_import` / `lex_export` | A whole document in (one validated, journaled edit; `replace` deletes items it doesn't have) or out (canonical text to save as `*.lex.json`). Export answers inline up to 64 KB; a bigger document (or `to: "file"`) is written to `lex_<set>_<n>.lex.json` in the engine's captures folder and the answer is `{set, file, bytes, items, content_hash}`. Import takes the document inline (`document`) or as a file (`file`: the path export answered with, any `*.json` path, or one relative to the captures folder), up to 2 MB either way. |
+| `lex_import` / `lex_export` | A whole document in (one validated, journaled edit; `replace` deletes items it doesn't have) or out (canonical text to save as `*.lex.json`). Export answers inline up to 64 KB; a bigger document (or `to: "file"`) is written to `lex_<set>_<n>.lex.json` in this run's captures folder and the answer is `{set, file, import_file, bytes, items, content_hash}`. The same document is written once (its file is reused), at most 64 files per engine run (`exports_full`). Capture runs are pruned (the engine keeps its last 20), so copy a file somewhere permanent to keep it. Import takes the document inline (`document`) or as a file (`file`), up to 2 MB either way. |
 | `lex_session` | Saved runs: list them, inspect one's entities (paged; attributes in human units, effects, machine state) or delete one. |
 | `lex_live` | Runs a stored set live in the engine (see [Live Lex](#live-lex-lex_live)): `start`, `command`, `status`, `journal`, `stop`. |
 
@@ -392,6 +392,12 @@ diffs as a `*.lex.json` file anyway, so a file is the natural form past 64 KB, a
 would have to be stitched back into one canonical document, and reading a set piecewise is already `lex_list` plus
 `lex_get`. Agents are on the same machine today (the server binds loopback only); a remote agent reads sets with
 `lex_list` and `lex_get`, whose answers are bounded. Sepulcra's sets export inline (12-25 KB).
+
+**Which files `lex_import {file}` reads** (as `desync_compare` its trace files; `crates/specula/src/safe_path.rs`): only
+paths relative to the engine's own folders, tried in order: this run's captures folder, the captures root, the worlds
+folder and the assets root. Absolute, UNC (`\\host\share`), verbatim (`\\?\`) and drive-relative paths, `..`, `:` and
+links or reparse points on the way are refused with one `path_not_allowed`, before anything touches the disk, so an
+answer never says whether a file elsewhere exists or what it holds; reads are bounded (`File::take`).
 
 Saved runs (`save_as`, then `from`) let an agent run to a point, look, add commands and continue, or branch
 what-ifs from one state. A run remembers its rules' hash; continuing it after the rules changed is refused with

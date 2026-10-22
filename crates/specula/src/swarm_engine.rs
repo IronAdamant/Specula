@@ -313,8 +313,12 @@ impl Engine {
                         TraceRef::Live => Ok(e.live_trace(None, None)),
                         TraceRef::Replay => unreachable!("checked when parsed"),
                         TraceRef::File(p) => {
-                            let path = e.trace_path(p);
-                            Trace::read(&path).map_err(|m| WorldError::new("bad_trace", m).with("file", path.display().to_string()))
+                            // Only files under this engine's folders (crate::safe_path): nothing is
+                            // said about a path elsewhere, not even whether it exists.
+                            let refused = |r: crate::safe_path::Refusal| WorldError::new(r.code, r.message).with("file", p.as_str());
+                            let path = e.trace_path(p).map_err(refused)?;
+                            let text = crate::safe_path::read_bounded(&path, crate::desync::MAX_TRACE_BYTES as usize, "the trace file").map_err(refused)?;
+                            Trace::parse(&text).map_err(|m| WorldError::new("bad_trace", m).with("file", p.as_str()))
                         }
                     }
                 };
@@ -334,14 +338,13 @@ impl Engine {
         }
     }
 
-    /// A trace file named in `desync_compare`: absolute, or relative to this run's captures.
-    fn trace_path(&self, p: &str) -> PathBuf {
-        let path = PathBuf::from(p);
-        if path.is_absolute() || path.exists() {
-            path
-        } else {
-            self.capture_dir.join(path)
-        }
+    /// A trace file named in `desync_compare`: relative to this run's captures folder, the
+    /// captures root (other runs, and engines sharing `--captures`) or the worlds folder.
+    fn trace_path(&self, p: &str) -> Result<PathBuf, crate::safe_path::Refusal> {
+        let mut roots = vec![self.capture_dir.clone()];
+        roots.extend(self.capture_dir.parent().map(Path::to_path_buf));
+        roots.push(self.worlds_dir.clone());
+        crate::safe_path::Roots(roots).resolve(p, ".json", "a trace file")
     }
 
     fn live_trace(&self, from: Option<u64>, to: Option<u64>) -> Trace {

@@ -149,8 +149,21 @@ def main():
         check(json.loads(Path(filed["file"]).read_text())["items"].keys() == big["items"].keys(), "the file holds the whole document")
         refused_inline = refused(ann, "lex_export", set="bigset", to="inline")
         check(refused_inline["error"] == "too_large", "to: inline past 64 KB is refused with too_large")
-        back = ann.json("lex_import", set="bigset", file=filed["file"], allow_errors=True)
-        check(back["changes"] == [], "lex_import {file} of the export changes nothing")
+        again_out = json.loads(ann.text("lex_export", set="bigset"))
+        check(again_out["file"] == filed["file"], "the same document again reuses its file")
+        back = ann.json("lex_import", set="bigset", file=filed["import_file"], allow_errors=True)
+        check(back["changes"] == [], "lex_import {file: import_file} of the export changes nothing")
+        # Only files under the engine's own folders, and nothing said about any other (review probe).
+        secret = work / "outside" / "secret.json"
+        secret.parent.mkdir(parents=True, exist_ok=True)
+        secret.write_text(json.dumps({"lex": 1, "tick_hz": 30, "items": {"password": {"kind": "param", "value": "hunter2"}}}))
+        for bad in [str(secret), str(secret.parent / "missing.json"), filed["file"], "../outside/secret.json",
+                    "\\\\localhost\\c$\\x.json", "\\\\?\\C:\\x.json", "C:x.json"]:
+            e = refused(ann, "lex_import", set="probe", file=bad, dry_run=True)
+            check(e["error"] == "path_not_allowed" and "hunter2" not in json.dumps(e) and "missing" not in json.dumps(e),
+                  f"lex_import {{file: {bad!r}}} is refused with path_not_allowed and says nothing about it")
+        e = refused(ann, "desync_compare", a=str(secret), b="live")
+        check(e.get("error") == "path_not_allowed", "desync_compare refuses a trace file outside the engine's folders too")
         ann.close()
         bob.close()
     print("lex_check: all passed")
