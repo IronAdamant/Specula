@@ -308,6 +308,13 @@ impl Live {
         self.limits = limits;
     }
 
+    /// Stops every run (`world_load` replaced the world they presented into), keeping the
+    /// limits; returns the stopped sets, for the caller's answer.
+    pub(crate) fn stop_all(&mut self) -> Vec<String> {
+        self.next_first = 0;
+        std::mem::take(&mut self.runs).into_keys().collect()
+    }
+
     /// What the live runs are, for the desync detector and save games (`None`: no run): each
     /// set's Lex state and its anchor, credit, debt and counters (what decides when it steps).
     /// What it presents is in the world hash, not here (a presented entity someone deleted is
@@ -1117,6 +1124,17 @@ impl Live {
 fn no_run(live: &Live, set: &str) -> ToolOutput {
     let names: Vec<&str> = live.runs.keys().map(String::as_str).collect();
     crate::lex_tools::err_with("not_running", format!("set '{set}' is not live"), vec![("live", Json::arr(names.iter().map(|n| Json::from(*n)))), ("suggestion", Json::from("lex_live {action: start, set}"))])
+}
+
+/// Removes `/lex_live` (every run's group and what it showed) from a world loaded from world
+/// files, before it goes live: world files don't hold live runs, so after `world_load` nothing
+/// would update or remove those entities. Returns how many were removed. The removal isn't
+/// recorded (the journal starts from the world without them).
+pub(crate) fn remove_presentation(world: &mut World) -> usize {
+    let Ok(id) = world.find_path(&format!("/{ROOT}")) else { return 0 };
+    let removed = world.delete(&EntityKey::Id(id), None).map_or(0, |d| d.removed.len());
+    world.take_changes();
+    removed
 }
 
 /// `/lex_live`, made if missing.

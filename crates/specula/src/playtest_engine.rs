@@ -710,6 +710,11 @@ impl Host for EngineHost<'_> {
         if let Some(h) = self.e.logic.state_hash() {
             parts.push(("logic".to_owned(), h));
         }
+        // Live Lex runs' own state (their presentation is in the world hash), as the desync
+        // detector and save games hash it.
+        if let Some(h) = self.e.lex_live.state_hash() {
+            parts.push(("lex_live".to_owned(), h));
+        }
         parts
     }
 

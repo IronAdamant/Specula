@@ -316,8 +316,13 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         // Owned for as long as this engine works in it: a second engine is refused, not interleaved.
         engine.world_lock = Some(persist::WorldLock::acquire(&dir).map_err(|e| format!("world '{name}': {e}"))?);
         if dir.join("world.json").exists() {
-            let (world, saved) = persist::load_limited(&dir, engine.world.shape_limits())
+            let (mut world, saved) = persist::load_limited(&dir, engine.world.shape_limits())
                 .map_err(|e| format!("world '{name}' in {}: {e}", dir.display()))?;
+            // World files hold no live Lex runs: what they kept of /lex_live goes (as world_load).
+            let removed = lex_live::remove_presentation(&mut world);
+            if removed > 0 {
+                eprintln!("specula: removed {removed} /lex_live entities the world files kept (no live Lex run shows them)");
+            }
             for problem in engine.replace_world(world, &name).into_iter().chain(saved.warnings.iter().cloned()) {
                 eprintln!("specula: {problem}");
             }
@@ -360,7 +365,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
             server_version: env!("CARGO_PKG_VERSION").into(),
             instructions: Some(tools::INSTRUCTIONS.into()),
         },
-        Arc::new(tools::Tools::new(to_engine, game_tools).with_formats(Arc::clone(&engine.formats)).with_lex_natives(engine.lex_natives.clone())),
+        Arc::new(tools::Tools::new(to_engine, game_tools).with_formats(Arc::clone(&engine.formats)).with_lex_natives(engine.lex_natives.clone()).with_capture_dir(engine.capture_dir.clone())),
     )
     .map_err(|e| format!("MCP server: {e}"))?;
     eprintln!("specula: MCP at http://{}/mcp — Ctrl+C to stop", server.local_addr());
@@ -731,8 +736,9 @@ impl Engine {
         self.tick_hashes.clear();
         self.trace.clear();
         self.physics.reset();
-        // Live Lex runs presented into the old world: their entities are gone with it.
-        self.lex_live = lex_live::Live::default();
+        // Live Lex runs presented into the old world: callers stop them and say so (world_load
+        // with `Live::stop_all`, save_read with the save's runs in `Live::apply_state`), keeping
+        // perf.toml's [lex_live] limits.
         self.nav.reset();
         // Navigation reads the loaded world now: its navmeshes are built (in slices, the clock
         // held) before the first tick, as they were in the run that saved it.
@@ -1766,6 +1772,12 @@ impl Engine {
                 }
             }
             Command::Save { name, overwrite } => self.save(name, overwrite),
+            // A playtest owns the clock and the world until it ends (as for save_read): a load
+            // would replace the world under it. Not even with force.
+            Command::Load { .. } if self.playtests.running() => world_error(
+                &WorldError::new("playtest_running", "a playtest is running (it owns the clock and the world); load after it ends (playtest_report waits for it) or cancel it")
+                    .with("retry_after_ms", 1000),
+            ),
             Command::Load { name, force } => match self.swarm.check_replace_world(w) {
                 Ok(()) => self.load(name, force),
                 Err(e) => world_error(&e),
@@ -2161,10 +2173,14 @@ impl Engine {
             Err(e) => return ToolOutput::error(e.to_json().to_pretty()),
         };
         match persist::load_limited(&dir, self.world.shape_limits()) {
-            Ok((world, saved)) => {
+            Ok((mut world, saved)) => {
                 if lock.is_some() {
                     self.world_lock = lock;
                 }
+                // Live Lex runs presented into the outgoing world, and world files hold no runs:
+                // they stop, and what the files kept of /lex_live (nothing would update it) goes.
+                let removed = lex_live::remove_presentation(&mut world);
+                let stopped = self.lex_live.stop_all();
                 let mut problems = self.replace_world(world, &name);
                 problems.extend(saved.warnings.iter().cloned());
                 problems.extend(self.load_board(&dir));
@@ -2172,16 +2188,24 @@ impl Engine {
                 self.world_name = Some(name.clone());
                 self.saved_revision = self.world.revision();
                 self.last_autosave = Instant::now();
-                ToolOutput::text(
-                    Json::obj([
-                        ("loaded", Json::from(name)),
-                        ("dir", Json::from(dir.display().to_string())),
-                        ("entities", Json::from(self.world.len())),
-                        ("state_hash", Json::from(format!("{:016x}", self.world.state_hash()))),
-                        ("warnings", Json::arr(problems.into_iter().take(20).map(Json::from))),
-                    ])
-                    .to_pretty(),
-                )
+                let mut out = vec![
+                    ("loaded", Json::from(name)),
+                    ("dir", Json::from(dir.display().to_string())),
+                    ("entities", Json::from(self.world.len())),
+                    ("state_hash", Json::from(format!("{:016x}", self.world.state_hash()))),
+                    ("warnings", Json::arr(problems.into_iter().take(20).map(Json::from))),
+                ];
+                if !stopped.is_empty() || removed > 0 {
+                    out.push((
+                        "lex_live",
+                        Json::obj([
+                            ("stopped", Json::arr(stopped.into_iter().map(Json::from))),
+                            ("presentation_removed", Json::from(removed)),
+                            ("note", Json::from("world files hold no live Lex runs: runs live before the load stopped, and /lex_live entities in the files were removed; lex_live {action: start} runs a set again (save_write / save_read keep runs)")),
+                        ]),
+                    ));
+                }
+                ToolOutput::text(Json::obj(out).to_pretty())
             }
             Err(e) => ToolOutput::error(e.to_json().to_pretty()),
         }
