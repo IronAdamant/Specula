@@ -192,6 +192,13 @@ entities only; everything else is the gap.
   style files, Lex rules and module sources get the same claims, versions, journal and undo as world entities. Then
   imported images, models and audio follow with the asset studio.
   *M3 progress 2026-10-18:* Lex rules (stored as world entities). Recipes, UI screens, sounds and style files remain.
+  *M3 part done 2026-10-22:* `project_*` tools (`project_list`, `project_read`, `project_write`, `project_patch`,
+  `project_delete`, `project_mount`) put recipes, UI screens and themes, sounds, style files and module sources under
+  the same claims, versions, journal (`Change::File`, with its own text budget) and undo. Each file is validated by
+  kind. The disk is kept in sync atomically: a human's outside edit is imported as `disk` and never overwritten, and
+  files the engine can't read are held. Only real modules mount, and their manifests and compile-time paths are
+  checked (rustc's dep-info after every build). `logic_build {fix: true}` commits fixes as the caller.
+  `scripts/project_check.py`; design: [design/PROJECT_DATA.md](design/PROJECT_DATA.md). M4 (binary assets) remains.
   *Why:* two agents editing one recipe file today can silently clobber each other.
 - [x] **Task board** (M3; planned for M1–M2, not built): `task_post`, `task_take`, `task_update`, `task_done`.
   - Tasks are linked to claims and journal entries.
@@ -207,6 +214,7 @@ entities only; everything else is the gap.
 - [ ] **Conflict help** (M3: diffs; M4: merges). A refused write carries what changed: theirs, yours and the common
   original. In M4, a suggested three-way merge for text data, where the engine knows the schema.
   *M3 part done 2026-10-18:* `stale_version`, `claimed` and `claims_overlap` refusals carry `conflict {base, theirs, yours, overlap, rebase}`.
+  Project files get the same help: JSON-path diffs for JSON files, line hunks otherwise, with overlap (2026-10-22).
 - [x] **Roll-ups for parents** (M3): `world_changes` summarised per agent or task ("child 3 finished the walls: 42
   changes, 2 refused, 1 open question"), so a parent reads a report, not a log.
   *Done 2026-10-18:* `world_rollup {by: agent|task}`.

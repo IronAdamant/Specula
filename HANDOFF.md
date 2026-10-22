@@ -34,7 +34,8 @@ memory of the earlier ones. This page is **current state and what's next** only;
   animation A3), and from wave 2 the playtests and tool ergonomics (the 20+ replay exit proof passes), the visual
   history gallery, save games with the balance lab, streaming with HLOD, Sepulcra fully in Lex with live Lex, Locus with navigation and AI, and (2026-10-22) determinism hardening
   (module builds journaled, the FP-environment guard, determinism lints), the streaming upload and pump fixes, and
-  agent evals ([docs/design/EVALS.md](docs/design/EVALS.md), `scripts/evals.py`). Wave 2 is
+  agent evals ([docs/design/EVALS.md](docs/design/EVALS.md), `scripts/evals.py`), and project data through the
+  protocol (`project_*`). Wave 2 is
   running: Locus and navigation/AI, playtest swarms and tool ergonomics, streaming and
   HLOD, Sepulcra fully in Lex with live Lex, save games and the balance lab, and P4 joints with A4 ragdolls.
 - **M3 plan:** Its plan (owner direction 2026-10-17: games
@@ -165,6 +166,9 @@ In practice that means six **foundations** that apply to every change from M1 on
   - Saves and balance: `save_write`, `save_read`, `save_list`, `save_delete` (`--saves DIR`); `balance_targets`,
     `balance_sweep`, `balance_tune`.
   - Playtests: `playtest_run` (a spec as data: steps, expectations, replays) and `playtest_report`.
+  - Project files: `project_list`, `project_read`, `project_write`, `project_patch`, `project_delete`,
+    `project_mount` (recipes, UI, sounds, styles and module sources with claims, versions, journal and undo; outside
+    edits come in as `disk`; [docs/design/PROJECT_DATA.md](docs/design/PROJECT_DATA.md)).
   - Game logic: `logic_build` (diagnostics as data), `logic_reload`, `logic_unload`, `logic_status`, `logic_input`,
     `logic_hook` (hot-reloaded Rust modules; see [docs/design/MODULES.md](docs/design/MODULES.md)).
   - Performance and time: `perf_frame` (GPU ms per pass, render graph, draws, memory, pacing, budget errors from
