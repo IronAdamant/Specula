@@ -111,6 +111,8 @@ See [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md). Item-by-item detail, with the re
   tools and call limit. Results are scrubbed of private paths. Playtest matchers compare objects by key in any order
 - **Privacy:** `crates/specula/tests/private_paths.rs` fails on any home-folder, temp-folder or session path, or a
   UUID, in a tracked file; `save_check.py` writes `<work>` instead of its temp folder
+- **Streaming, memory ahead of need:** GPU memory blocks are allocated ahead on a worker thread and adopted at a
+  flush, so a load no longer allocates on the frame (up to 164 ms before); the end of a pass is sliced into two steps
 - **Streaming during loading:** the spatial index is refiled a slice at a time while the old cells serve (a big load
   used to force a 3-6 ms one-frame rebuild); upload batches use a fresh transient pool per slot, reset whole, with one
   barrier; mesh blocks grow 16-64 MB. Stalls inside the Intel driver's command recording are zoned and reported apart
