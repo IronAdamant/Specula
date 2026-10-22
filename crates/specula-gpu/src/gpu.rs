@@ -410,6 +410,14 @@ impl GpuInner {
         self.uploads.stats()
     }
 
+    pub fn mesh_space(&self) -> (u64, u64, u64) {
+        self.uploads.blocks.space()
+    }
+
+    pub fn grow_mesh_space(&mut self) -> Result<(), GpuError> {
+        self.uploads.blocks.grow(&self.device)
+    }
+
     pub fn upload_slot_free(&self) -> bool {
         self.uploads.slot_free()
     }

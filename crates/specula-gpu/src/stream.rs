@@ -139,14 +139,25 @@ impl Blocks {
                 }
             }
         }
+        let block_bytes = size.max(self.next_block_bytes());
+        let i = self.add(dev, block_bytes)?;
+        let b = self.blocks[i].as_mut().expect("just added");
+        let at = b.take(size).expect("a fresh block holds it");
+        Ok((i as u32, at, b.buffer.handle, size))
+    }
+
+    /// The size the next block gets (16, 32, then 64 MB).
+    fn next_block_bytes(&self) -> u64 {
         let blocks = self.blocks.iter().flatten().count() as u32;
-        let block_bytes = size.max((BLOCK_BYTES << blocks.min(2)).min(MAX_BLOCK_BYTES));
+        (BLOCK_BYTES << blocks.min(2)).min(MAX_BLOCK_BYTES)
+    }
+
+    /// A new empty block of `bytes` (a `vkAllocateMemory`); its index.
+    fn add(&mut self, dev: &Device, bytes: u64) -> Result<usize, GpuError> {
         let _z = specula_core::profile::zone("gpu.block_new");
-        let buffer = crate::gpu::create_mesh_buffer(dev, block_bytes)?;
-        let mut block = Block { buffer, free: vec![(0, block_bytes)], used: 0 };
-        let at = block.take(size).expect("a fresh block holds it");
-        let handle = block.buffer.handle;
-        let i = match self.blocks.iter().position(Option::is_none) {
+        let buffer = crate::gpu::create_mesh_buffer(dev, bytes)?;
+        let block = Block { buffer, free: vec![(0, bytes)], used: 0 };
+        Ok(match self.blocks.iter().position(Option::is_none) {
             Some(i) => {
                 self.blocks[i] = Some(block);
                 i
@@ -155,8 +166,19 @@ impl Blocks {
                 self.blocks.push(Some(block));
                 self.blocks.len() - 1
             }
-        };
-        Ok((i as u32, at, handle, size))
+        })
+    }
+
+    /// `(free bytes in every block, bytes in every block, the next block's size)`.
+    pub fn space(&self) -> (u64, u64, u64) {
+        let (free, total) = self.blocks.iter().flatten().fold((0, 0), |(f, t), b| (f + (b.buffer.bytes - b.used), t + b.buffer.bytes));
+        (free, total, self.next_block_bytes())
+    }
+
+    /// Makes the next block now, ahead of need (see [`crate::Gpu::grow_mesh_space`]).
+    pub fn grow(&mut self, dev: &Device) -> Result<(), GpuError> {
+        let bytes = self.next_block_bytes();
+        self.add(dev, bytes).map(|_| ())
     }
 
     /// Gives a range back (no frame or batch may still use it); an empty block is freed when

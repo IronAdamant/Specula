@@ -149,6 +149,16 @@ fn large_and_many_batches_stay_correct() {
         }
         let bytes = (v.len() * 28 + idx.len() * 4) as u64;
         assert!(bytes > UPLOAD_ARENA_BYTES, "the test mesh ({bytes} B) must not fit an arena");
+        // Mesh memory grown ahead: the next queued mesh lands in it without an allocation.
+        let (_, total, next) = gpu.mesh_space();
+        gpu.grow_mesh_space().unwrap();
+        let (free, grown, _) = gpu.mesh_space();
+        assert_eq!(grown, total + next, "{test}: one more block");
+        assert!(free >= next, "{test}: the new block is empty");
+        let (cv, ci) = cube();
+        let small = gpu.queue_mesh(&cv, &ci, &MeshStreams::default()).unwrap();
+        assert_eq!(gpu.mesh_space().1, grown, "{test}: no allocation for a mesh that fits");
+        gpu.retire_mesh(small);
         let sync = gpu.upload_mesh(&v, &idx).unwrap();
         let expected = render(&mut gpu, target, &[DrawItem::new(sync, IDENTITY, [0.3, 0.8, 0.4, 1.0])]);
         let big = gpu.queue_mesh(&v, &idx, &MeshStreams::default()).unwrap();

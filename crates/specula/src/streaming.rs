@@ -657,6 +657,9 @@ struct PassState {
     urgent_only: bool,
     /// The window's distance to its nearest cell so far.
     nearest: f32,
+    /// How far its end got: 0 still walking cells, 1 the pump's list made (the wanted set is
+    /// this pass's), then the tidying (see [`Streamer::step`]).
+    end: u8,
 }
 
 /// Something the memory budget may evict.
@@ -808,6 +811,8 @@ pub struct Streamer {
     transients: Vec<u64>,
     /// When the current upload budget began (see [`FRAME_STALE`]).
     frame_began: Option<Instant>,
+    /// When growing mesh memory ahead last failed (tried again a second later).
+    grow_failed: Option<Instant>,
     /// Items the frame's pumps tried (uploaded, blocked, failed or put off): the first goes
     /// whatever the budget, the rest only within it.
     frame_tried: u32,
@@ -878,6 +883,7 @@ impl Streamer {
             instanced: Default::default(),
             frame_began: None,
             frame_tried: 0,
+            grow_failed: None,
             victims_cache: None,
             victim_scan: None,
             victims_for: None,
@@ -1139,7 +1145,7 @@ impl Streamer {
         match &mut self.pass {
             Some(pass) => pass.urgent.extend(urgent),
             // No pass running: only those cells, against the last pass's wanted set.
-            None if any_urgent => self.pass = Some(PassState { cursor: None, left_out: Vec::new(), urgent, urgent_only: true, nearest: f32::INFINITY }),
+            None if any_urgent => self.pass = Some(PassState { cursor: None, left_out: Vec::new(), urgent, urgent_only: true, nearest: f32::INFINITY, end: 0 }),
             None => {}
         }
         if self.pass.is_some() {
@@ -1178,7 +1184,7 @@ impl Streamer {
         left_out.extend(self.hlod.take_left_out());
         left_out.sort_unstable();
         left_out.dedup();
-        self.pass = Some(PassState { cursor: None, left_out, urgent, urgent_only: false, nearest: f32::INFINITY });
+        self.pass = Some(PassState { cursor: None, left_out, urgent, urgent_only: false, nearest: f32::INFINITY, end: 0 });
     }
 
     /// Works through the running pass for at most `slice_ms` (at least one cell): each cell's
@@ -1393,31 +1399,42 @@ impl Streamer {
             self.pass = Some(pass);
             return;
         }
-        // The pass is done.
+        // The pass is done: its end comes in two steps, each in a call of its own when the slice
+        // is used up (a capture's call does both).
         let _z = specula_core::profile::zone("pass_end");
-        // A game's presentation (transient models) comes first.
-        for e in world.transient_entities().filter(|e| e.shape == Shape::Model) {
-            if let Some(b) = build_of(e.resolved_model().map(|r| r.handle)) {
-                wish(b, 0.0, true, 0);
+        if pass.end == 0 {
+            let _z = specula_core::profile::zone("pending");
+            // A game's presentation (transient models) comes first.
+            for e in world.transient_entities().filter(|e| e.shape == Shape::Model) {
+                if let Some(b) = build_of(e.resolved_model().map(|r| r.handle)) {
+                    wish(b, 0.0, true, 0);
+                }
+            }
+            if self.want.len() > live.len() * 2 + 64 {
+                self.want.retain(|b, _| live.contains_key(b));
+            }
+            // What the pump works through until the next pass: down to the finest level needed.
+            self.pending.clear();
+            for (b, &(p, f, hard, level)) in &self.want {
+                if f == frame && live.contains_key(b) && models.uploaded.get(b).is_none_or(|m| m.resident_from > level) {
+                    self.pending.push((p, *b, hard, level));
+                }
+            }
+            self.pending.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+            self.done_pass = frame;
+            self.nearest = pass.nearest;
+            pass.end = 1;
+            if started.elapsed().as_secs_f64() * 1e3 >= slice_ms {
+                drop(lib);
+                self.pass = Some(pass);
+                return;
             }
         }
-        if self.want.len() > live.len() * 2 + 64 {
-            self.want.retain(|b, _| live.contains_key(b));
-        }
-        // What the pump works through until the next pass: down to the finest level needed.
-        self.pending.clear();
-        for (b, &(p, f, hard, level)) in &self.want {
-            if f == frame && live.contains_key(b) && models.uploaded.get(b).is_none_or(|m| m.resident_from > level) {
-                self.pending.push((p, *b, hard, level));
-            }
-        }
-        self.pending.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-        self.done_pass = frame;
-        // The next eviction queue is scanned over the next frames, not in this one (after any
-        // scan already running).
-        self.resident_cache = None;
-        self.nearest = pass.nearest;
+        // The tidying: cells gone, their proxies, proxies no camera wants, new proxy builds.
+        let _zt = specula_core::profile::zone("tidy");
         self.index.cells.retain(|_, c| !c.members.is_empty());
+        // Proxies retired here leave the running resident total (not summed again).
+        let proxies_before = self.hlod.resident_bytes();
         let cells = &self.index.cells;
         self.hlod.retain(|k| cells.contains_key(&k), gpu);
         if hlod_on {
@@ -1425,6 +1442,10 @@ impl Streamer {
             self.hlod.drop_unwanted(gpu);
             let cells = &self.index.cells;
             self.hlod.schedule(now, self.cfg.settle_s, |key, content| inputs_of(cells.get(&key)?, content, &lib));
+        }
+        let gone = proxies_before.saturating_sub(self.hlod.resident_bytes());
+        if let Some(r) = self.resident_cache.as_mut() {
+            *r = r.saturating_sub(gone);
         }
     }
 
@@ -1487,6 +1508,27 @@ impl Streamer {
             let mut first: Vec<(f32, u64, bool, usize)> = transients.iter().map(|&b| (0.0, b, true, 0)).collect();
             first.append(&mut self.pending);
             self.pending = first;
+        }
+        // Mesh memory ahead of need: when the blocks are over ~70% full (or empty), the next one
+        // is allocated in a frame of its own, with no uploads (its `vkAllocateMemory` takes
+        // milliseconds on the Intel iGPU; inside an upload frame it would add to them). Not past
+        // the memory budget: a world that fits uses what it has.
+        let (free, total, next) = gpu.mesh_space();
+        let wanted_soon = !self.pending.is_empty() || !proxies.is_empty();
+        let room = (total + next) as f64 <= self.cfg.memory_mb * 1_048_576.0 * 1.25;
+        let backoff = self.grow_failed.is_some_and(|t| t.elapsed() < Duration::from_secs(1));
+        if wanted_soon && room && !backoff && (free as f64) < next as f64 * 0.3 && self.frame_tried == 0 {
+            self.frame_tried += 1;
+            self.frame.deferred += (self.pending.len() + proxies.len()) as u32;
+            if let Err(e) = gpu.grow_mesh_space() {
+                // (Out of memory, typically: tried again a second later; uploads go on meanwhile.)
+                self.grow_failed = Some(Instant::now());
+                if self.upload_errors.len() < 10 {
+                    self.upload_errors.push(format!("mesh memory not grown ahead: {e}"));
+                }
+            }
+            self.totals.deferred += self.frame.deferred;
+            return;
         }
         if self.pending.is_empty() && proxies.is_empty() {
             self.blocked_bytes = 0;
