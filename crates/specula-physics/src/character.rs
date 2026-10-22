@@ -68,8 +68,28 @@ pub struct CharacterMove {
     pub ground: Option<u64>,
     /// Climbed a step this move.
     pub stepped: bool,
+    /// Part of the horizontal motion was stopped by an obstacle.
+    pub blocked: bool,
     /// What it touched this move: `(key, normal)`, at most 8.
     pub hits: Vec<(u64, Vec3)>,
+    /// Dynamic bodies it walked into: `(key, impulse N·s, at)`. [`Space::move_character`]
+    /// applies them; [`Space::plan_character`] only lists them.
+    pub pushes: Vec<(u64, Vec3, Vec3)>,
+}
+
+/// A character's collider and pose for a move: a body in the space, or one that lives
+/// elsewhere (the engine's module controller plans moves for entities without a body).
+#[derive(Clone, Copy, Debug)]
+pub struct CharacterBody<'a> {
+    pub shape: &'a crate::Shape,
+    /// The collider's pose in the body frame.
+    pub offset: Pose,
+    /// The body frame in the world.
+    pub pose: Pose,
+    /// The layers it collides with.
+    pub mask: u64,
+    /// Its own body, which its casts ignore.
+    pub exclude: Option<u64>,
 }
 
 const MAX_HITS: usize = 8;
@@ -99,28 +119,61 @@ impl Space {
         }
         let col =
             body.collider.ok_or_else(|| PhysicsError::new("no_collider", "a character needs a collider (a capsule)").with("key", key))?;
-        if col.shape.is_static_only() {
-            return Err(PhysicsError::new("static_only_shape", "a character's collider must be convex (capsule, sphere, box or hull)")
+        if col.shape.is_static_only() || col.shape.compound_parts().is_some() {
+            return Err(PhysicsError::new("not_convex", "a character's collider must be convex (capsule, sphere, box or hull)")
                 .with("key", key));
         }
         let shape = col.shape.clone();
-        let up = normalize_or(cfg.up, Vec3::Y);
         let rot = body.pose.q;
+        let c = CharacterBody { shape: &shape, offset: col.offset, pose: body.pose, mask: col.mask, exclude: Some(key) };
+        let prev = self.characters.get(&key).copied().unwrap_or_default();
+        let mv = self.plan_character(&c, velocity, cfg, dt, prev);
+        for (k, imp, at) in &mv.pushes {
+            self.apply_impulse(*k, *imp, *at);
+        }
+        let state = CharacterState { grounded: mv.grounded, ground_normal: mv.ground_normal, ground: mv.ground };
+        self.characters.insert(key, state);
+        self.set_pose(key, Pose { p: mv.position, q: rot });
+        Ok(mv)
+    }
+
+    /// The mover for a character body.
+    fn mover<'a>(c: &CharacterBody<'a>, cfg: &'a CharacterConfig) -> Mover<'a> {
+        let up = normalize_or(cfg.up, Vec3::Y);
+        let rot = c.pose.q;
         // The collider's lowest point along `up`, relative to the body origin.
-        let b = shape.aabb(&Pose { p: Vec3::ZERO, q: rot }.mul(&col.offset));
+        let b = c.shape.aabb(&Pose { p: Vec3::ZERO, q: rot }.mul(&c.offset));
         let lowest = (b.min.x * up.x).min(b.max.x * up.x) + (b.min.y * up.y).min(b.max.y * up.y) + (b.min.z * up.z).min(b.max.z * up.z);
-        let m = Mover {
-            shape: &shape,
-            offset: col.offset,
+        Mover {
+            shape: c.shape,
+            offset: c.offset,
             rot,
-            filter: Filter { mask: col.mask, triggers: false, exclude: Some(key) },
+            filter: Filter { mask: c.mask, triggers: false, exclude: c.exclude },
             up,
             min_ground_dot: specula_core::dmath::cos(cfg.max_slope_deg.clamp(0.0, 89.9).to_radians()),
             skin: cfg.skin.max(1.0e-4),
             cfg,
             feet: (-lowest).max(0.0),
-        };
-        let prev = self.characters.get(&key).copied().unwrap_or_default();
+        }
+    }
+
+    /// What a character at its pose stands on now (within a few skins below): the memory a
+    /// stateless controller starts each move from.
+    pub fn character_ground(&self, c: &CharacterBody, cfg: &CharacterConfig) -> CharacterState {
+        let m = Space::mover(c, cfg);
+        match self.probe(&m, c.pose.p, 3.0 * m.skin) {
+            Some(h) => CharacterState { grounded: true, ground_normal: h.normal, ground: Some(h.key) },
+            None => CharacterState::default(),
+        }
+    }
+
+    /// A move of `c` planned from memory `prev`, changing nothing: [`Space::move_character`]
+    /// without its effects (the new position, the controller's memory and the pushes are the
+    /// caller's to apply).
+    pub fn plan_character(&self, c: &CharacterBody, velocity: Vec3, cfg: &CharacterConfig, dt: f32, prev: CharacterState) -> CharacterMove {
+        let m = Space::mover(c, cfg);
+        let up = m.up;
+        let body_pose = c.pose;
         let mut v = velocity;
 
         // Vertical velocity: gravity in the air, none while standing.
@@ -152,7 +205,7 @@ impl Space {
         };
 
         // 1. Depenetrate.
-        let start = self.depenetrate(&m, body.pose.p);
+        let start = self.depenetrate(&m, body_pose.p);
         // 2. Slide: horizontal (riding over low edges while on the ground), then vertical.
         let (p1, h1) = self.slide(&m, start, horizontal, true, prev.grounded);
         h1.iter().for_each(|h| note(&mut hits, h));
@@ -204,9 +257,10 @@ impl Space {
             v = v - up * v.dot(up);
         }
         // Push dynamic bodies walked into.
+        let mut pushes: Vec<(u64, Vec3, Vec3)> = Vec::new();
         if cfg.push_force > 0.0 {
             let impulse_limit = cfg.push_force * dt;
-            let pushes: Vec<(u64, Vec3, Vec3)> = hits
+            pushes = hits
                 .iter()
                 .filter_map(|(k, n)| {
                     let b = self.body(*k)?;
@@ -221,14 +275,19 @@ impl Space {
                     Some((*k, dir * (b.mass * speed).min(impulse_limit), b.center))
                 })
                 .collect();
-            for (k, imp, at) in pushes {
-                self.apply_impulse(k, imp, at);
-            }
         }
-        let state = CharacterState { grounded, ground_normal: ground.map_or(Vec3::ZERO, |h| h.normal), ground: ground.map(|h| h.key) };
-        self.characters.insert(key, state);
-        self.set_pose(key, Pose { p: p2, q: rot });
-        Ok(CharacterMove { position: p2, velocity: v, grounded, ground_normal: state.ground_normal, ground: state.ground, stepped, hits })
+        let blocked = wanted > 1.0e-5 && horizontal_len(p2 - start, up) < wanted - 1.0e-4;
+        CharacterMove {
+            position: p2,
+            velocity: v,
+            grounded,
+            ground_normal: ground.map_or(Vec3::ZERO, |h| h.normal),
+            ground: ground.map(|h| h.key),
+            stepped,
+            blocked,
+            hits,
+            pushes,
+        }
     }
 
     /// Casts the character's collider (its body at `at`) along `delta`.

@@ -648,6 +648,100 @@ pub fn touches_rule_data(change: &Change) -> bool {
     }
 }
 
+/// A change that writes joint data (`props.joint`: creates, edits or removes a joint entity):
+/// only `physics_joint` may make it ([`crate::swarm::Swarm::commit_joint`]), because a joint
+/// moves the bodies it links and must be checked against their claims; a plain write removing a
+/// joint is allowed when the writer may change both its bodies.
+pub fn touches_joint_data(change: &Change) -> bool {
+    use crate::physics::joints::is_joint;
+    match change {
+        Change::Spawn { after, .. } => is_joint(after),
+        Change::Delete { before, .. } => is_joint(before),
+        Change::Set { before, after, .. } => is_joint(after) || before.as_deref().is_some_and(is_joint),
+        // Project files hold no entities, so never joint data.
+        Change::Pose { .. } | Change::Env { .. } | Change::Camera { .. } | Change::File { .. } => false,
+    }
+}
+
+/// The bodies a joint change ties or lets go: both sides of the joint as it was and as it is
+/// (sorted, without repeats). Empty for anything that isn't joint data.
+pub fn joint_bodies(change: &Change) -> Vec<u64> {
+    let of = |e: &crate::world::Entity| {
+        e.props.get(crate::physics::joints::PROP).and_then(|j| crate::physics::joints::JointSpec::from_json(j).ok()).map(|s| s.a.into_iter().chain(s.b).collect::<Vec<_>>()).unwrap_or_default()
+    };
+    let mut ids = match change {
+        Change::Spawn { after, .. } => of(after),
+        Change::Delete { before, .. } => of(before),
+        Change::Set { before, after, .. } => {
+            let mut v = of(after);
+            v.extend(before.as_deref().map(of).unwrap_or_default());
+            v
+        }
+        Change::Pose { .. } | Change::Env { .. } | Change::Camera { .. } | Change::File { .. } => Vec::new(),
+    };
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+thread_local! {
+    /// Joints [`joint_rule_changes`] looked at on this thread (tests count the work with it).
+    static JOINT_RULE_WORK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many joints the joint rules have looked at on this thread so far: the work they do,
+/// which depends on the joints a change touches, never on the world's size.
+pub fn joint_rule_work() -> u64 {
+    JOINT_RULE_WORK.with(|w| w.get())
+}
+
+/// The bodies a change moves through joints, as [`body_change`]s to check against claims (the
+/// joint rules: a joint moves the bodies it links, so whoever makes, changes or removes one
+/// needs the right to change them):
+/// - joint data itself ([`joint_bodies`]: both sides, as it was and as it is);
+/// - removing or restoring an entity a joint names, or giving it or taking away its body, or
+///   changing its kind of body: the joint's other bodies, which it lets go of or pulls (found
+///   in the world's joint index, [`World::joints_on`]).
+///
+/// Moving a body you may change is not one, and nor is moving, rescaling or reparenting it or
+/// an ancestor: what is jointed to it follows, as things it pushes through contacts do (see
+/// PHYSICS.md, "Joints and claims"). Cheap: nothing to do in a world without joints, and an
+/// index lookup otherwise.
+pub fn joint_rule_changes(world: &World, change: &Change) -> Vec<Change> {
+    let data = touches_joint_data(change);
+    if !data && !world.has_joints() {
+        return Vec::new();
+    }
+    let mut ids = if data { joint_bodies(change) } else { Vec::new() };
+    let rebodied = |b: &crate::world::Entity, a: &crate::world::Entity| b.body.map(|x| x.kind) != a.body.map(|x| x.kind);
+    let linked = match change {
+        Change::Delete { before, .. } => Some(before.id),
+        Change::Spawn { after, .. } => Some(after.id),
+        Change::Set { before: Some(b), after, .. } if rebodied(b, after) => Some(after.id),
+        _ => None,
+    };
+    if let Some(x) = linked {
+        for j in world.joints_on(x) {
+            JOINT_RULE_WORK.with(|w| w.set(w.get() + 1));
+            ids.extend(world.joint_sides(j).into_iter().flatten().flatten().filter(|i| *i != x));
+        }
+    }
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    ids.into_iter().filter_map(|id| body_change(world, id)).collect()
+}
+
+/// What a write that moves body `id` must be allowed to do, as a change to check against
+/// claims: the entity "changed" in place, so path claims and region claims (at its position)
+/// both apply. `None` when it doesn't exist.
+pub fn body_change(world: &World, id: u64) -> Option<Change> {
+    let e = world.get(id)?;
+    Some(Change::Set { path: world.path_of(id), prev_path: None, before: Some(Box::new(e.clone())), after: Box::new(e.clone()) })
+}
+
 fn under_nav(p: &str) -> bool {
     p == "/nav" || p.starts_with("/nav/")
 }

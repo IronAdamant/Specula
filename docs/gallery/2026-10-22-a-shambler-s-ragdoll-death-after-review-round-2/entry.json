@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-22",
+  "time": "",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M3",
+  "commit": "",
+  "subject": "sepulcra",
+  "topic": "animation",
+  "title": "A shambler's ragdoll death after review round 2",
+  "note": "The same death in play after review round 2 (ragdolls go into physics all or nothing, flat hulls refused, saved ragdolls reload mid-fall): the blow lands at +6 ticks. The fall and where it rests are pixel for pixel unchanged since 2026-10-18-shamblers-die-as-ragdolls (the simulation is deterministic and the fixes don't change a good start), so they are left out. Motion checks: penetration 2.8 cm, floating 0, pops 1.3 cm (limits 3, 2.5, 6).",
+  "source": "scripts/sepulcra_ragdoll.py",
+  "adapter": "discrete",
+  "images": [
+    {
+      "file": "01-frame-00003.jpg",
+      "caption": "+6 ticks: the blow lands",
+      "original": "frame_00003.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 15667
+    }
+  ]
+}

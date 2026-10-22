@@ -228,6 +228,7 @@ pub fn check_spawn(s: &SpawnSpec) -> Result<(), WorldError> {
     if !matches!(s.props, Json::Null | Json::Obj(_)) {
         return Err(invalid("props", "'props' must be a JSON object".into()));
     }
+    crate::physics::ragdoll::check_props(&s.props)?;
     s.collider.as_ref().map_or(Ok(()), Collider::validate)?;
     if let Some(a) = &s.anim {
         if s.shape != Shape::Model {
@@ -262,6 +263,9 @@ pub fn check_update(u: &UpdateSpec) -> Result<(), WorldError> {
     check_tags(u.tags.iter().flatten().chain(&u.add_tags))?;
     if u.props.as_ref().is_some_and(|p| !matches!(p, Json::Obj(_))) {
         return Err(invalid("props", "'props' must be a JSON object".into()));
+    }
+    if let Some(p) = &u.props {
+        crate::physics::ragdoll::check_props(p)?;
     }
     if let Some(Some(c)) = &u.collider {
         c.validate()?;
@@ -1762,7 +1766,8 @@ pub fn camera_path(owner: &str, name: &str) -> String {
 /// conflicts and history filters treat each camera as its own thing.
 pub const CAMERA_ID_BASE: u64 = 1 << 62;
 
-/// The fields a game moves every tick: transform and colour (plus the version they reached).
+/// The fields a game or physics moves every tick: transform, colour and the body component
+/// (whose velocities and sleep state physics writes back), plus the version they reached.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pose {
     pub id: u64,
@@ -1771,11 +1776,12 @@ pub struct Pose {
     pub rotation_deg: Vec3,
     pub scale: Vec3,
     pub color: [f32; 3],
+    pub body: Option<Body>,
 }
 
 impl Pose {
     pub fn of(e: &Entity) -> Pose {
-        Pose { id: e.id, version: e.version, position: e.position, rotation_deg: e.rotation_deg, scale: e.scale, color: e.color }
+        Pose { id: e.id, version: e.version, position: e.position, rotation_deg: e.rotation_deg, scale: e.scale, color: e.color, body: e.body }
     }
 
     /// Puts the pose on `e` (a copy of the same entity).
@@ -1784,6 +1790,7 @@ impl Pose {
         e.rotation_deg = self.rotation_deg;
         e.scale = self.scale;
         e.color = self.color;
+        e.body = self.body;
         e.version = self.version;
         e.hash.0.set(None);
     }
@@ -2082,6 +2089,17 @@ pub struct World {
     /// Ids of the 2D entities (sprites, tilemaps, shapes), so the window's 2D pass doesn't visit
     /// every 3D entity. Kept by `link` and `unlink` (an entity's `two_d` comes with its shape).
     flat: BTreeSet<u64>,
+    /// Joint data by body: the persistent entities whose `props.joint` names each body as `a` or
+    /// `b` (the claims' joint rules ask it per change). Kept by `link`, `unlink` and `update`.
+    joints_by_body: BTreeMap<u64, BTreeSet<u64>>,
+    /// Each joint entity's two sides as indexed in `joints_by_body`.
+    joint_sides: BTreeMap<u64, [Option<u64>; 2]>,
+    /// The last version of each persistent entity removed from the world (dropped when it comes
+    /// back): a restored entity's version goes past it, so no version ever names two states
+    /// (caches keyed on versions, `expect_version`). Only ids an undo can still restore matter,
+    /// so the swarm prunes it to the journal's ring ([`World::retain_retired`]). Not state: never
+    /// hashed or saved; a loaded world starts without it (its journal starts empty too).
+    retired: BTreeMap<u64, u64>,
     /// Bumped whenever an entity that may own a mesh (lathe, model) comes, goes or changes its
     /// mesh, so the engine re-syncs GPU meshes only then.
     mesh_epoch: u64,
@@ -2123,6 +2141,19 @@ pub struct World {
     /// The anim assets in the world, as graph writes settle against them (derived from the
     /// entities, refreshed inside `update`; never hashed or saved).
     anim_assets: crate::anim::AssetCache,
+    /// Poses supplied from outside the animation (ragdolls, from physics; A4) by entity:
+    /// what a graph's `{external: true}` nodes play. Derived each physics tick, never hashed,
+    /// journaled or saved.
+    external_poses: BTreeMap<u64, ExternalPose>,
+}
+
+/// A pose supplied from outside the animation (a ragdoll's).
+#[derive(Clone, Debug)]
+pub struct ExternalPose {
+    pub pose: Arc<specula_anim::Pose>,
+    /// Drawn as it is, whatever the anim plays (a powered ragdoll, which follows the animation
+    /// itself); otherwise only the graph's `{external: true}` nodes play it.
+    pub direct: bool,
 }
 
 /// The shape2d spec of an entity's 2D component, if it has one.
@@ -3154,9 +3185,10 @@ impl World {
         if let Some(t) = tags {
             e.tags = t;
         }
-        if let Some(p) = props {
+        let rejoint = props.map(|p| {
             e.props = p;
-        }
+            joint_sides_of(e)
+        });
         if let Some(c) = change.collider {
             e.collider = c;
         }
@@ -3189,6 +3221,10 @@ impl World {
         e.version += 1;
         e.hash.0.set(None);
         e.modified_by = by;
+        if let Some(sides) = rejoint {
+            self.index_joint(id, sides);
+        }
+        let e = self.entities.get_mut(&id).expect("resolved above");
         if let Some((old_parent, old_name)) = old {
             let new_key = (e.parent.unwrap_or(ROOT), e.name.clone());
             self.names.remove(&(old_name.clone(), id));
@@ -3331,9 +3367,63 @@ impl World {
         }
     }
 
+    /// The joints (entity ids) whose `props.joint` names `body` as one of its sides.
+    pub fn joints_on(&self, body: u64) -> impl Iterator<Item = u64> + '_ {
+        self.joints_by_body.get(&body).into_iter().flatten().copied()
+    }
+
+    /// The bodies joint entity `joint` names (as indexed), if it is one.
+    pub fn joint_sides(&self, joint: u64) -> Option<[Option<u64>; 2]> {
+        self.joint_sides.get(&joint).copied()
+    }
+
+    /// The highest version entity `id` has had while in this world (now, or before it was
+    /// removed); 0 if never. A restored entity must take a higher one.
+    pub fn version_floor(&self, id: u64) -> u64 {
+        self.entities.get(&id).map_or(0, |e| e.version).max(self.retired.get(&id).copied().unwrap_or(0))
+    }
+
+    /// How many removed entities' last versions are kept (see [`World::version_floor`]).
+    pub fn retired_len(&self) -> usize {
+        self.retired.len()
+    }
+
+    /// Keeps only the removed entities' last versions `keep` says an undo can still need.
+    pub fn retain_retired(&mut self, keep: impl Fn(u64) -> bool) {
+        self.retired.retain(|id, _| keep(*id));
+    }
+
+    /// Whether any persistent entity holds joint data.
+    pub fn has_joints(&self) -> bool {
+        !self.joint_sides.is_empty()
+    }
+
+    fn index_joint(&mut self, id: u64, sides: Option<[Option<u64>; 2]>) {
+        self.unindex_joint(id);
+        let Some(sides) = sides else { return };
+        for b in sides.into_iter().flatten() {
+            self.joints_by_body.entry(b).or_default().insert(id);
+        }
+        self.joint_sides.insert(id, sides);
+    }
+
+    fn unindex_joint(&mut self, id: u64) {
+        let Some(sides) = self.joint_sides.remove(&id) else { return };
+        for b in sides.into_iter().flatten() {
+            if let Some(set) = self.joints_by_body.get_mut(&b) {
+                set.remove(&id);
+                if set.is_empty() {
+                    self.joints_by_body.remove(&b);
+                }
+            }
+        }
+    }
+
     /// Indexes `e` (its id must not be in the world).
     fn link(&mut self, e: Entity) {
         self.layout_epoch += 1;
+        self.index_joint(e.id, joint_sides_of(&e));
+        self.retired.remove(&e.id);
         self.children.insert((e.parent.unwrap_or(ROOT), e.name.clone()), e.id);
         self.names.insert((e.name.clone(), e.id));
         if e.transient {
@@ -3356,6 +3446,10 @@ impl World {
     fn unlink(&mut self, id: u64) -> Option<Entity> {
         self.draw_touch(id);
         let e = self.entities.remove(&id)?;
+        self.unindex_joint(id);
+        if !e.transient {
+            self.retired.insert(id, e.version);
+        }
         self.lit.remove(&id);
         self.flat.remove(&id);
         self.layout_epoch += 1;
@@ -3776,6 +3870,82 @@ impl World {
         self.record_env(before);
     }
 
+    /// The pose an entity's `{external: true}` animation nodes play (its ragdoll's), if any.
+    pub fn external_pose(&self, id: u64) -> Option<&ExternalPose> {
+        self.external_poses.get(&id)
+    }
+
+    /// Sets (or with `None` clears) entity `id`'s external pose. Not world state: it isn't
+    /// hashed, journaled or saved (physics derives it every tick).
+    pub fn set_external_pose(&mut self, id: u64, pose: Option<ExternalPose>) {
+        match pose {
+            Some(p) => {
+                self.external_poses.insert(id, p);
+            }
+            None => {
+                self.external_poses.remove(&id);
+            }
+        }
+    }
+
+    /// Entities with an external pose.
+    pub fn external_pose_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.external_poses.keys().copied()
+    }
+
+    /// Physics' write-back, the hot path (foundation F3): a body's new local position and
+    /// rotation (`None`: unchanged) and its body component, of which only the motion
+    /// (velocities, sleeping) may differ from what the entity has; anything else goes through
+    /// [`World::update`]. Checked like an update, but recorded by [`Recording::Snapshot`] as a
+    /// [`Change::Pose`] (which carries the body) instead of a copy of the whole entity.
+    pub fn set_motion(&mut self, id: u64, position: Option<Vec3>, rotation_deg: Option<Vec3>, body: Body, by: &str) -> Result<&Entity, WorldError> {
+        position.map_or(Ok(()), |p| check_point("position", p))?;
+        rotation_deg.map_or(Ok(()), check_rotation)?;
+        check_body(&body)?;
+        let e = self.entities.get(&id).ok_or_else(|| WorldError::new("not_found", format!("no entity with id {id}")).with("id", id))?;
+        let motion_only = e.body.is_some_and(|old| Body { velocity: old.velocity, angular_velocity: old.angular_velocity, sleeping: old.sleeping, ..body } == old);
+        if !motion_only {
+            let change = UpdateSpec { position, rotation_deg, body: Some(Some(body)), ..UpdateSpec::default() };
+            return self.update(&EntityKey::Id(id), change, by);
+        }
+        let before = (self.recording == Recording::Full).then(|| Box::new(e.clone()));
+        let transient = e.transient;
+        let by = self.intern(by);
+        let moved = position.is_some() || rotation_deg.is_some();
+        if !moved {
+            // (A move is logged by `refresh`.)
+            self.draw_touch(id);
+        }
+        let e = self.entities.get_mut(&id).expect("checked");
+        if let Some(p) = position {
+            e.position = p;
+        }
+        if let Some(r) = rotation_deg {
+            e.rotation_deg = r;
+        }
+        e.body = Some(body);
+        e.version += 1;
+        e.hash.0.set(None);
+        e.modified_by = by;
+        if moved {
+            self.refresh(id);
+        }
+        self.touch(id);
+        self.bump(transient);
+        match self.recording {
+            Recording::Off => {}
+            Recording::Snapshot if transient => {}
+            Recording::Snapshot => {
+                self.dirty.entry(id).or_insert(Dirty::Pose);
+            }
+            Recording::Full => {
+                let after = Box::new(self.entities[&id].clone());
+                self.changes.push(Change::Set { path: self.path_of(id), prev_path: None, before, after });
+            }
+        }
+        Ok(&self.entities[&id])
+    }
+
     /// Replays a [`Change::Pose`]: the entity takes the pose, attributed to `by`. Unknown ids
     /// are ignored (the change's entity was replayed away).
     pub(crate) fn apply_pose(&mut self, pose: &Pose, by: &str) {
@@ -3800,6 +3970,11 @@ impl World {
     fn unlink_exact(&mut self, id: u64) -> Option<Entity> {
         self.draw_touch(id);
         let e = self.entities.remove(&id)?;
+        self.unindex_joint(id);
+        if !e.transient {
+            let v = self.retired.get(&id).copied().unwrap_or(0).max(e.version);
+            self.retired.insert(id, v);
+        }
         self.lit.remove(&id);
         self.flat.remove(&id);
         self.layout_epoch += 1;
@@ -4061,6 +4236,15 @@ pub fn canonical_props(props: Json) -> Result<Json, WorldError> {
             .with("field", "props"));
     }
     Ok(props)
+}
+
+/// The sides a persistent entity's `props.joint` names (ids; `null` or anything else is none),
+/// or `None` when it holds no joint data. Indexed as written, valid or not (a claim check
+/// errs on the side of the bodies named).
+fn joint_sides_of(e: &Entity) -> Option<[Option<u64>; 2]> {
+    let j = e.props.get(crate::physics::joints::PROP).filter(|_| !e.transient)?;
+    let side = |k: &str| j.get(k).and_then(Json::as_u64);
+    Some([side("a"), side("b")])
 }
 
 /// `current` with `patch`'s keys set (a `null` value removes the key).
@@ -4544,6 +4728,35 @@ mod tests {
             assert!(w.update(&EntityKey::Id(id), bad, "t").is_err());
             assert_eq!(w.get(id).unwrap().version, version, "rejected changes don't count");
         }
+    }
+
+    /// The joint index (what the claims' joint rules look up) follows spawns, prop edits,
+    /// deletes, failed batches and rollbacks, and leaves transient entities out.
+    #[test]
+    fn the_joint_index_follows_every_change() {
+        let mut w = World::default();
+        w.set_recording(Recording::Full);
+        let joint = |a: &str, b: &str| Json::parse(&format!(r#"{{"joint": {{"kind": "ball", "a": {a}, "b": {b}}}}}"#)).unwrap();
+        let mut s = SpawnSpec::new(Shape::Group);
+        s.name = Some("j".into());
+        s.props = joint("null", "7");
+        let j = w.spawn(s, "t").unwrap().id;
+        assert_eq!((w.joints_on(7).collect::<Vec<_>>(), w.joint_sides(j)), (vec![j], Some([None, Some(7)])));
+        w.update(&EntityKey::Id(j), UpdateSpec { props: Some(joint("3", "9")), ..UpdateSpec::default() }, "t").unwrap();
+        assert!(w.joints_on(7).next().is_none() && w.joints_on(3).eq([j]) && w.joints_on(9).eq([j]));
+        let mark = w.mark();
+        w.update(&EntityKey::Id(j), UpdateSpec { props: Some(Json::parse(r#"{"joint": null}"#).unwrap()), ..UpdateSpec::default() }, "t").unwrap();
+        assert!(!w.has_joints());
+        w.rollback_to(mark);
+        assert!(w.joints_on(3).eq([j]), "a rollback restores it");
+        w.delete(&EntityKey::Id(j), None).unwrap();
+        assert!(!w.has_joints() && w.joints_on(9).next().is_none());
+        let mut t = SpawnSpec::new(Shape::Group);
+        t.name = Some("tj".into());
+        t.transient = true;
+        t.props = joint("null", "5");
+        w.spawn(t, "t").unwrap();
+        assert!(!w.has_joints(), "transient props are presentation, not joints");
     }
 
     #[test]

@@ -63,7 +63,7 @@ pub fn anim_set_of(world: &World, e: &Entity) -> Option<Arc<AnimSet>> {
 /// alone (no mesh, no waiting: see `Library::write_set`), with the world's own assets (as of
 /// now) over it, so the result never depends on build timing or on when the engine last looked
 /// at the world.
-fn write_set_of(world: &World, e: &Entity) -> Option<Arc<AnimSet>> {
+pub(crate) fn write_set_of(world: &World, e: &Entity) -> Option<Arc<AnimSet>> {
     world.model_source()?.anim_set_for_write(e.resolved_model()?.handle, world.anim_assets())
 }
 

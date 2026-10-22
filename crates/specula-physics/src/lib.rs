@@ -28,18 +28,23 @@
 pub mod character;
 pub mod contact;
 pub mod gjk;
+pub mod joint;
 pub mod math;
+pub mod parallel;
+mod wide;
 pub mod query;
 pub mod shape;
 pub mod solver;
 pub mod space;
 pub mod tree;
 
-pub use character::{CharacterConfig, CharacterMove};
+pub use character::{CharacterBody, CharacterConfig, CharacterMove};
+pub use joint::{Drive, JointDesc, JointKind, JointState, Motor};
 pub use math::{Aabb, Pose};
 pub use shape::Shape;
 pub use space::{
-    BodyDesc, BodyKind, BodyView, ColliderDesc, ContactView, Event, EventKind, FastBody, Filter, Hit, Settings, Space, StepReport,
+    read_joint_desc, write_joint_desc, BodyDesc, BodyKind, BodyView, ColliderDesc, ContactView, Event, EventKind, FastBody, Filter, Hit, JointView, Settings,
+    Space, StepReport,
 };
 
 use specula_core::Json;

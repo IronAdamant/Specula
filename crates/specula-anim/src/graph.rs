@@ -320,6 +320,12 @@ pub struct AnimGraph {
     pub layers: Vec<Layer>,
     pub ik: Vec<Ik>,
     pub limits: Vec<Limit>,
+    /// Ragdoll capsule radii by bone, model metres (A4; `"ragdoll": {"radius": {...}}`): bones
+    /// not listed get a radius from their length.
+    pub ragdoll_radius: Vec<(usize, f32)>,
+    /// Ragdoll convex hull parts by bone (A4; `"ragdoll": {"hull": {bone: [[x, y, z], ...]}}`):
+    /// 4 to 16 points in the bone's rest frame (model metres), over its radius.
+    pub ragdoll_hull: Vec<(usize, Vec<[f32; 3]>)>,
     /// Bones the motion checks treat as feet.
     pub feet: Vec<usize>,
     /// Per node: whether every (non-additive) clip under it loops (exit times of looping states
@@ -1125,7 +1131,38 @@ fn parse_graph(v: &Json, binder: &Binder) -> Result<AnimGraph, AnimError> {
             .flatten()
             .collect(),
     };
-    o.finish("graph, params, nodes, states, entry, transitions, layers, ik, limits, feet")?;
+    // Ragdoll sizes (A4): capsule radii per bone (`ragdoll_set {fit: true}` measures them).
+    let mut ragdoll_radius = Vec::new();
+    let mut ragdoll_hull = Vec::new();
+    if let Some(r) = o.get("ragdoll") {
+        let mut ro = Obj::new(r, "ragdoll", "the ragdoll's sizes")?;
+        if let Some(rad) = ro.get("radius") {
+            for (bone, rv) in limit_obj(rad, "ragdoll.radius", MAX_LIMITS, "radii")? {
+                let rp = format!("ragdoll.radius.{bone}");
+                let b = binder.bone(bone, &rp)?;
+                let x = rv.as_f64().filter(|x| x.is_finite() && (0.005..=10.0).contains(x));
+                let x = x.ok_or_else(|| err(&rp, AnimErrorCode::OutOfRange, "a capsule radius in model metres, 0.005..10"))?;
+                ragdoll_radius.push((b, x as f32));
+            }
+        }
+        if let Some(hv) = ro.get("hull") {
+            for (bone, pts) in limit_obj(hv, "ragdoll.hull", MAX_LIMITS, "hulls")? {
+                let hp = format!("ragdoll.hull.{bone}");
+                let b = binder.bone(bone, &hp)?;
+                let bad = || err(&hp, AnimErrorCode::OutOfRange, "4 to 16 points [[x, y, z], ...] in the bone's rest frame (model metres, within ±10)");
+                let list = pts.as_array().filter(|a| (4..=16).contains(&a.len())).ok_or_else(bad)?;
+                let mut out = Vec::with_capacity(list.len());
+                for p in list {
+                    let Some([x, y, z]) = p.as_array() else { return Err(bad()) };
+                    let c = |j: &Json| j.as_f64().filter(|f| f.is_finite() && f.abs() <= 10.0).map(|f| f as f32).ok_or_else(bad);
+                    out.push([c(x)?, c(y)?, c(z)?]);
+                }
+                ragdoll_hull.push((b, out));
+            }
+        }
+        ro.finish("radius, hull")?;
+    }
+    o.finish("graph, params, nodes, states, entry, transitions, layers, ik, limits, ragdoll, feet")?;
     // Named nodes nobody plays are still checked.
     for i in 0..ctx.named.len() {
         if ctx.named[i].2.is_none() {
@@ -1135,7 +1172,7 @@ fn parse_graph(v: &Json, binder: &Binder) -> Result<AnimGraph, AnimError> {
     }
     let node_loops = check_trees(&ctx)?;
     check_instant_cycles(&ctx.params, &layers)?;
-    Ok(AnimGraph { params: ctx.params, nodes: ctx.nodes, layers, ik, limits, feet, node_loops, source: v.clone() })
+    Ok(AnimGraph { params: ctx.params, nodes: ctx.nodes, layers, ik, limits, ragdoll_radius, ragdoll_hull, feet, node_loops, source: v.clone() })
 }
 
 /// Work [`check_instant_cycles`] may do per graph (paths looked at); past it, the resolver's

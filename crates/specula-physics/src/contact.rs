@@ -245,7 +245,7 @@ pub fn convex<'a>(shape: &'a Shape, pose: &Pose) -> Option<Convex<'a>> {
             *radius,
         )),
         Shape::Box { hull, .. } | Shape::Hull(hull) => Some(Convex::Poly(PosedHull::new(hull, *pose))),
-        Shape::Mesh(_) | Shape::Heightfield(_) => None,
+        Shape::Compound(_) | Shape::Mesh(_) | Shape::Heightfield(_) => None,
     }
 }
 
@@ -258,6 +258,9 @@ pub fn collide(a: &Shape, pa: &Pose, b: &Shape, pb: &Pose, margin: f32, out: &mu
 pub fn collide_cached(a: &Shape, pa: &Pose, b: &Shape, pb: &Pose, margin: f32, out: &mut Manifold, cache: Option<&mut SatCache>) {
     out.len = 0;
     out.skipped = 0;
+    if a.compound_parts().is_some() || b.compound_parts().is_some() {
+        return compound_collide(a, pa, b, pb, margin, out);
+    }
     match (a.triangles(), b.triangles()) {
         (Some(_), Some(_)) => {}
         (Some(mesh), None) => {
@@ -295,6 +298,78 @@ pub fn collide_cached(a: &Shape, pa: &Pose, b: &Shape, pb: &Pose, margin: f32, o
                 _ => convex_vs_convex(&ca, &cb, margin, out),
             }
         }
+    }
+}
+
+/// Most contact points gathered from a compound's part pairs before reducing to four.
+const MAX_GATHERED: usize = 32;
+
+/// Contacts of a compound (either side) with anything: every part pair whose boxes meet,
+/// reduced to the four points that hold it best (the deepest, then the ones farthest from those
+/// kept). Feature ids carry the parts, so warm starts follow them.
+fn compound_collide(a: &Shape, pa: &Pose, b: &Shape, pb: &Pose, margin: f32, out: &mut Manifold) {
+    let one_a = [(Pose::IDENTITY, a.clone())];
+    let one_b = [(Pose::IDENTITY, b.clone())];
+    let parts_a: &[(Pose, Shape)] = a.compound_parts().unwrap_or(&one_a);
+    let parts_b: &[(Pose, Shape)] = b.compound_parts().unwrap_or(&one_b);
+    let mut gathered = [ContactPoint::default(); MAX_GATHERED];
+    let mut n = 0usize;
+    let mut m = Manifold::default();
+    for (i, (la, sa)) in parts_a.iter().enumerate() {
+        let wa = pa.mul(la);
+        let ba = sa.aabb(&wa).expand(margin);
+        for (j, (lb, sb)) in parts_b.iter().enumerate() {
+            let wb = pb.mul(lb);
+            if !ba.overlaps(&sb.aabb(&wb)) {
+                continue;
+            }
+            collide_cached(sa, &wa, sb, &wb, margin, &mut m, None);
+            out.skipped += m.skipped;
+            for p in m.as_slice() {
+                let p = ContactPoint { id: p.id ^ ((i as u32 + 1) << 20) ^ ((j as u32 + 1) << 26), ..*p };
+                if n < MAX_GATHERED {
+                    gathered[n] = p;
+                    n += 1;
+                } else if let Some(k) = (0..n).max_by(|&x, &y| gathered[x].separation.total_cmp(&gathered[y].separation)) {
+                    // Full: a deeper point replaces the shallowest.
+                    if p.separation < gathered[k].separation {
+                        gathered[k] = p;
+                    }
+                }
+            }
+        }
+    }
+    reduce(&gathered[..n], out);
+}
+
+/// Up to [`MAX_POINTS`] of `points`: the deepest, then each time the one farthest from those
+/// kept (ties to the lower index).
+fn reduce(points: &[ContactPoint], out: &mut Manifold) {
+    out.len = 0;
+    if points.len() <= MAX_POINTS {
+        for p in points {
+            out.push(*p);
+        }
+        return;
+    }
+    let mut kept = [usize::MAX; MAX_POINTS];
+    let deepest = (0..points.len()).min_by(|&x, &y| points[x].separation.total_cmp(&points[y].separation)).unwrap_or(0);
+    kept[0] = deepest;
+    out.push(points[deepest]);
+    for slot in 1..MAX_POINTS {
+        let mut best: Option<(f32, usize)> = None;
+        for (i, p) in points.iter().enumerate() {
+            if kept[..slot].contains(&i) {
+                continue;
+            }
+            let d = kept[..slot].iter().map(|&k| crate::math::dist_sq(points[k].point, p.point)).fold(f32::MAX, f32::min);
+            if best.is_none_or(|(bd, _)| d > bd) {
+                best = Some((d, i));
+            }
+        }
+        let Some((_, i)) = best else { break };
+        kept[slot] = i;
+        out.push(points[i]);
     }
 }
 

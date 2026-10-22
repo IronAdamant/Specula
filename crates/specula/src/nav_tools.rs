@@ -244,6 +244,9 @@ fn collider_summary(c: &crate::physics::Collider) -> Json {
             j.set("columns", Json::from(*columns));
             j.set("rows", Json::from(*rows));
         }
+        ColliderShape::Compound { parts } => {
+            j.set("parts", Json::from(parts.len()));
+        }
     }
     j
 }

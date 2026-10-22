@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-18",
+  "time": "14:44",
+  "date_source": "file time",
+  "approximate": false,
+  "milestone": "M3",
+  "commit": "",
+  "subject": "sepulcra",
+  "topic": "animation",
+  "title": "Shamblers die as ragdolls",
+  "note": "A shambler killed on a path in a real game (seed 7, wave 1) falls as a ragdoll on hull parts, knocked back from where it faced, and lies on its back; the motion checks pass (penetration 2.8 cm, floating 0, pops 1.3 cm). Before this, shamblers played a death clip.",
+  "source": "scripts/sepulcra_ragdoll.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-frame-00001.jpg",
+      "caption": "Walking, the moment it dies",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 15231
+    },
+    {
+      "file": "02-frame-00004.jpg",
+      "caption": "12 ticks later: going down",
+      "original": "frame_00004.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 15610
+    },
+    {
+      "file": "03-frame-00008.jpg",
+      "caption": "2 s later: lying on its back on the path",
+      "original": "frame_00008.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 15637
+    }
+  ]
+}

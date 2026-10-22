@@ -46,6 +46,8 @@ mod save_tools;
 pub mod savegame;
 pub mod physics;
 mod physics_tools;
+mod joint_tools;
+mod ragdoll_tools;
 pub mod nav;
 mod nav_tools;
 mod locus;
@@ -110,7 +112,7 @@ const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 
 const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|integrated|<index>] [--size WxH] \
 [--captures DIR] [--worlds DIR] [--world NAME] [--saves DIR] [--cache DIR] [--assets DIR] [--style FILE] [--perf FILE] \
-[--paused] [--response-format concise|detailed] [-- GAME ARGS...]";
+[--paused] [--response-format concise|detailed] [--physics-threads N] [-- GAME ARGS...]";
 
 /// How long a capture waits (parked, the engine serving others) for models still building.
 const CAPTURE_BUILD_WAIT: Duration = Duration::from_secs(10);
@@ -162,6 +164,9 @@ struct Args {
     paused: bool,
     /// The default `response_format` of every session (`--response-format`; concise unless set).
     response_format: response::Format,
+    /// Threads physics may use (`--physics-threads`, 1..64, default 1): the narrowphase, and
+    /// with the world's `physics.coloured` the contact solver. The results never depend on it.
+    physics_threads: usize,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -186,6 +191,7 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
         game_args: Vec::new(),
         paused: false,
         response_format: response::Format::Concise,
+        physics_threads: 1,
     };
     let mut it = argv;
     while let Some(flag) = it.next() {
@@ -226,6 +232,9 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--perf" => args.perf = Some(PathBuf::from(value()?)),
             "--worlds" => args.worlds = Some(PathBuf::from(value()?)),
             "--saves" => args.saves = Some(PathBuf::from(value()?)),
+            "--physics-threads" => {
+                args.physics_threads = value()?.parse().ok().filter(|n| (1..=64).contains(n)).ok_or_else(|| format!("--physics-threads must be 1..64\n{USAGE}"))?;
+            }
             "--world" => {
                 let name = value()?;
                 persist::validate_world_name(&name).map_err(|e| format!("--world: {e}\n{USAGE}"))?;
@@ -285,6 +294,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     let mut engine = Engine::new(gpu, &captures_root, library)?;
     engine.windowed = !args.headless;
     engine.formats = response::Defaults::new(args.response_format);
+    engine.physics.threads = args.physics_threads;
     engine.profiler = perf::Profiler::new(perf_cfg.history_frames);
     let kind = perf::adapter_kind(engine.gpu.adapter().kind);
     eprintln!(
@@ -673,7 +683,13 @@ impl Engine {
             traces_written: 0,
             board_io: swarm_engine::BoardSaver::default(),
             frame_floor: (schedule::DEFAULT_FRAME_FLOOR_FPS, None),
-            logic: logic::LogicHost::new(),
+            logic: {
+                // Modules' move_character is the physics P2 controller (the space is lent to it
+                // around module calls: lend_physics / return_physics).
+                let mut host = logic::LogicHost::new();
+                host.set_mover(Box::new(physics::mover::PhysicsMover::default()));
+                host
+            },
             fp: {
                 // Something loaded before us (an injected overlay, a driver) may have changed it.
                 let mut fp = fpguard::FpLog::default();
@@ -850,6 +866,7 @@ impl Engine {
             }
             if !self.logic.is_empty() {
                 let _l = profile::zone("modules");
+                self.lend_physics();
                 let (tick, swarm) = (self.clock.tick(), &mut self.swarm);
                 // The game's rules: journaled, exempt from claims.
                 let commit = &mut |w: &mut World, _: world::Mark, agent: &str, phase| {
@@ -857,6 +874,7 @@ impl Engine {
                     Ok(())
                 };
                 self.logic.tick(&mut self.world, tick, self.clock.hz(), commit);
+                self.return_physics();
             }
             // Live Lex rule sets step on the same tick, after the modules (whose hooks they call).
             if !self.lex_live.is_empty() {
@@ -1394,6 +1412,7 @@ impl Engine {
     ) -> (LodStats, Vec<String>) {
         let errors = self.sync_meshes();
         self.models.begin_frame(time_s);
+        self.models.set_externals(&self.world);
         // HLOD (see `hlod`): the view's proxies first (the window switches cells in and out),
         // then every entity except those a proxy draws (the view's cover bits), then the proxies.
         let mut proxies = std::mem::take(&mut self.stream.scratch);
@@ -1917,7 +1936,9 @@ impl Engine {
             Command::SaveGame(call) => self.handle_save(call, w, &by),
             Command::ModelBuild(_) | Command::ModelReload => unreachable!("answered by handle_model_call"),
             Command::Logic(call) => {
+                self.lend_physics();
                 let out = logic::tools::handle(&mut self.logic, call, &mut self.world, &self.clock, &mut self.swarm, w);
+                self.return_physics();
                 self.journal_module_events(Some(w));
                 out
             }

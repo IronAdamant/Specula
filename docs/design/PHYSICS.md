@@ -1,7 +1,9 @@
 # Design: physics
 
 Status: researched 2026-10-13; **P1–P3 implemented 2026-10-18** (crate `specula-physics`, engine bridge
-`crates/specula/src/physics.rs`, tools `crates/specula/src/physics_tools.rs`); P4 (joints, ragdolls) is next. Foundation
+`crates/specula/src/physics.rs`, tools `crates/specula/src/physics_tools.rs`); **P4 (joints, ragdolls) implemented
+2026-10-18**, with compound colliders and continuous collision against moving bodies (see
+[P4 as built](#p4-as-built-2026-10-18)). Foundation
 **F4**; stages P1–P4 land in M3 (P4 moved from M4 with ragdolls, owner 2026-10-17) ([ROADMAP.md](../ROADMAP.md)).
 What was built, and where it departs from the design below (with why), is in
 [Implementation](#implementation-2026-10-18) at the end.
@@ -252,8 +254,13 @@ replays physics changes exactly (`world_hash verify`). `world_hash` reports the 
 world's. *Limit:* hidden state (warm-start impulses, sleep timers, the exact rotation behind `rotation_deg`) isn't saved
 in world files, so a reloaded world continues deterministically from the load, but not bit-identically to the run that
 saved it. Save games carry all of it, so a loaded save continues bit-identically ([SAVES.md](SAVES.md)); bodies
-remember the scale their collider was built at for it (a world matrix's column lengths jitter in the last bit as a body
-turns, and the space keeps the shape it was built with).
+remember the scale their collider was built at for it. **World scale** (`physics::world_scale`, what colliders, joint
+frames, the mover, ragdolls and navmeshes read) is composed level by level from the root, never from the world
+matrix's column lengths (those jitter in the last bit as a body turns, so a joint rebuilt from a moved body didn't match
+its save): an entity's axis `i` scales by `s_i × |S · R · e_i|`, `S` its parent's world scale and `R` its own rotation.
+Unturned entities, uniformly scaled parents and turns by multiples of 90° are exact (the parent's scales, swapped);
+only a child turned at an odd angle under a non-uniformly scaled parent takes the general case, and its true shape is
+sheared, which no collider follows exactly.
 
 **2D.** `world_env {physics: {plane_2d: true}}` keeps dynamic bodies in the XY plane (Specula's 2D plane) turning about
 Z only, by locking axes in the solver. Shapes stay 3D (a circle is a sphere, a 2D box a thin box), so 2D games get the
@@ -286,6 +293,136 @@ world's generic update and its full-entity snapshots. The next steps for the 2 m
 friction at the manifold centre instead of per point, SIMD rows (Box2D's wide solver) and a deterministic parallel
 narrowphase.
 
-**Deferred.** P4 (joints, ragdolls); dynamic-versus-dynamic continuous collision; auto-colliders from models; compound
-colliders (one collider per entity: build compounds from child entities with static colliders, or a hull); tile-map
-colliders for 2D; the 1,000-awake-bodies budget; parallel or SIMD solving (deterministic merges, per determinism rule 7).
+**Deferred (at P1–P3).** Since done in P4 (below): joints and ragdolls, continuous collision against moving bodies,
+compound colliders, a parallel narrowphase, graph-coloured and threaded solving, a wide (four-lane) solve kernel.
+Still open: auto-colliders from models (`ragdoll_set {fit}` shows the deterministic route: measure the built mesh,
+write the result as data); tile-map colliders for 2D; the 1,000-awake-bodies budget of 2 ms (see below).
+
+## P4 as built (2026-10-18)
+
+**Joints** (`crates/specula-physics/src/joint.rs`): fixed, hinge, ball (an elliptical swing cone and a twist range),
+distance (rod `[L, L]`, rope `[0, L]`, a spring towards a rest length) and prismatic. Each joint has a frame on each
+body (anchor, axis = frame x, reference = frame y), in the body's frame or the world's (`a: None`). Limits, a friction
+torque (hinge and ball), and motors: a speed (hinge, prismatic), a position (hinge angle, prismatic offset) or a
+rotation (ball, fixed: frame B in frame A), each clamped by `max_force`; position and rotation drives are soft springs
+(Hz, damping ratio). Solved in the Soft Step solver as Box2D v3 does: warm start, solve with bias, relax without it,
+joints before contacts in every pass, softness `joint_hertz` (60 Hz, damping 5, capped at a quarter of the substep
+rate). Point constraints are one 3×3 block, angular locks one 3×3 block, hinge axis alignment two rows, limits
+one-sided rows with speculation, anchors and axes recomputed from each body's motion within the step. Jointed bodies
+don't collide unless `collide_connected`; joints link islands (they sleep and wake together; a joint to a moving
+kinematic body keeps its partner awake). A joint whose body is missing waits (`inactive: missing_body`); its state is
+measured after each step it is solved in (`JointState`: gap, misalignment, angle or offset, swing, excess past its
+limits, force and torque), and its description, warm-start impulses and drive targets are in the hash.
+- *Amendment: joint stiffness is relative to the two bodies a joint links.* A soft spring is stiff against those
+  bodies' inertia, not against what hangs below them, so a soft drive tracking an animation through a chain of light
+  parts sags; a powered ragdoll's drives run at 60 Hz with a torque cap instead (see ANIMATION.md).
+- *Measured (`tests/joints.rs`):* a 10-link ball chain holds within 2 cm while it swings, then sleeps; a door's motor
+  stops it 0.05° past its 100° limit; a rope holds 3.0001 m; a rod holds 1 m within 1 cm; a slider stays on its rail
+  within 5 mm; a weld keeps its offset; a falling-hinges scene is bit-identical in any insertion order. A weld landing
+  hard stretches for a tick (7.7 cm at 7 m/s in `joints_check.py`), which `physics_check joint_error` with `since_tick`
+  separates from how joints hold at rest.
+
+**Engine joints** (`crates/specula/src/physics/joints.rs`, tools `crates/specula/src/joint_tools.rs`): a joint is an
+entity (a group, by default under body b, tagged `joint`) whose `props.joint` holds it as data, with frames in each
+body's local scaled coordinates (like collider offsets), so joints are journaled, undoable, claimable, saved and
+hashed. The bridge rebuilds a joint when its entity changes and when a body's scale does; unchanged joints keep their
+warm start. `physics_joint` makes, changes or removes one from world-space anchors and axes; a joint moves the bodies
+it links, so it needs the right to change both (and, when changed, the ones it let go), checked as a change at each
+body so path and region claims both apply. **Joint data is reserved for it**: `props.joint` written by world tools
+(spawn, set, batch) is refused (`reserved`), and a world tool may delete a joint only with the right to both its
+bodies (review of the lane, finding 1: a joint spawned with `world_spawn` used to pull another agent's claimed box
+5 m).
+
+**Joints and claims, every write path** (review rounds 3 and 4): one rule, `claims::joint_rule_changes`. A change
+needs the right to change every body it moves through a joint: joint data itself (both sides, before and after), and
+removing or restoring an entity a joint names, or giving it another kind of body or none (the joint's other bodies
+are let go of or pulled). The world keeps an index of joints by body (`World::joints_on`), so the rule costs an index
+lookup per change, and nothing in a world without joints. Where it applies:
+
+| Write path | Checked as |
+|---|---|
+| world tools: spawn, set, delete, batch (`Swarm::commit_with`) | the calling agent; joint data itself is reserved for `physics_joint` (deletes allowed) |
+| `world_undo` (`Swarm::undo`) | the calling agent (undoing a hook's delete to yank a box back is `claimed`) |
+| tools and hooks an agent calls in a module or hosted game, live Lex inputs (`Swarm::check_game_changes`) | the calling agent (a module tool's joint onto another agent's claimed box is `claimed`) |
+| `lex_live` starting and stopping runs (`commit_lex_live`, which is `commit_with`) | the calling agent |
+| playtests | the agent that started them (their calls take the paths above) |
+| `save_read`, `world_load` | refused while other agents hold claims (they replace everything) |
+| **exempt:** a module's `tick`, a hosted game's tick and live Lex runs' ticks | the game's own rules: journaled under the game's name, never checked against claims (claims hold agents back, not the game being made) |
+
+**Moving is allowed**, even when a joint drags a claimed body after it: moving, rescaling or reparenting a body you
+may change, or any of its ancestors, is the same as pushing it through contacts, which claims never stopped (claims
+are about writes, not physics). The claim's holder sees who did it: `physics_explain` on the dragged body lists its
+joints, each with `made_by`, and the journal names who moved the other body.
+
+`physics_joints` lists joints with their state (paged by key, ragdoll joints too; naming an entity lists its
+ragdoll's); `physics_check` takes `joint_error` and
+`joint_limits`; `physics_explain` lists an entity's joints; the `joints` sight overlay draws anchors, axes and hinge
+limit arcs, coloured by how each holds, with a drawn legend. A joint that doesn't hold yet keeps its bodies awake
+(its correction lives in the biased pass, so a body could report rest and fall asleep in mid-air), a distance joint's
+over-stretch counts as past its limits, and the checks include every joint as it is now (asleep ones too). Live
+check: `scripts/joints_check.py` (twin runs end in the same world and physics hashes; undo removes a joint; the
+journal replays; a second agent can't tie claimed boxes, by joint tool or world tool).
+
+**Ragdolls** (`crates/specula/src/physics/ragdoll.rs`; design in [ANIMATION.md](ANIMATION.md#a4-as-built-2026-10-18)):
+capsules and joints built from a skeleton, limits from the anim graph. Transient entities' ragdolls are **cosmetic
+bodies** (`BodyDesc::cosmetic`): they collide with static and kinematic bodies and with each other, never with
+simulated dynamic bodies or triggers; queries don't see them; they have their own caps; they are left out of the state
+hash, so the simulation is bit-identical with or without them (tested), and they make no contact events. Parts of one
+ragdoll share a collision group (`BodyDesc::group`). Parts can be **convex hulls fitted to the mesh** (16 points at
+most, the moving-hull cap; see ANIMATION.md).
+
+**Save games.** The physics snapshot (`specula-physics/src/snapshot.rs`, version 2; version 1 saves still load)
+carries the joint settings and every joint's warm starts, last state and solve step (the joints themselves are
+rebuilt from the world and checked by key and description), and leaves cosmetic bodies out (saves don't keep
+transient entities, and nothing simulated depends on them). The bridge (`physics_save.rs`, version 2) saves the saved
+entities' live ragdolls: planned again from the loaded entity (the plan is pure) with their joints as they were
+(limits opened at the start, the drives' last targets), so a ragdoll mid-fall continues bit for bit after a load
+(tested, limp and powered).
+
+**Compound colliders** (`Shape::Compound`; engine `collider {shape: compound, parts: [...]}`): 1–16 convex parts
+(box, sphere, capsule, hull) with offsets and rotations, as one body: mass and inertia from the parts' volumes
+(parallel axes); contacts from every part pair whose boxes meet, reduced to four points (the deepest, then each time
+the farthest from those kept; feature ids carry the parts, so warm starts follow them); rays and casts per part. Hull
+parts on moving bodies keep the 16-point cap. Characters refuse compounds (the controller sweeps one convex shape).
+Under an uneven scale a rotated part keeps its own proportions (close, not exact).
+
+**Continuous collision against moving bodies.** The tunnelling guard also casts a fast body's inner sphere against the
+dynamic and kinematic bodies it pairs with that weren't fast themselves that step, where they ended up (Box2D v3's
+bullets against non-bullets). Two fast bodies still don't stop each other (that would depend on which went first);
+they stay listed as fast. A 300 m/s bullet stops at a free-floating 5 cm plate and knocks it on (tested).
+
+**Write-back fast path.** Physics writes bodies back through `World::set_motion`: the position, rotation and body
+component when only its motion changed, recorded by the snapshot recorder as a `Change::Pose`, which now carries the
+body (replays put it back; physics changes were never undoable), instead of a copy of the entity. Journal replay, the
+desync marks (a `body` field) and the world hash layout are unchanged. Measured in `bridge_profile` over the same
+1,000 bodies in one run: `World::update` and its snapshot 3.6 ms, `set_motion` and its snapshot 1.9 ms (46% less).
+
+**Threads: a persistent, deterministic pool** (`specula-physics/src/parallel.rs`; `Settings::threads`, the engine's
+`--physics-threads N`, default 1). Started once; between steps the workers spin briefly then sleep. Work is split into
+chunks that whoever is free claims, the stepping thread too, and a phase ends when its chunks are done: a worker the
+machine hasn't scheduled yet misses the step (the scoped threads it replaces were started each step, and every step
+waited for all of them: 50 ms steps on a loaded machine). A worker descheduled while it holds a claimed chunk still
+stalls the others at that phase's end until it runs again: under a 40-process load the review measured 4 threads at
+66 ms a step against 49 on one. Hence opt-in. No `unsafe`: bodies and impulses live in atomics (`f32` bits) while a
+step runs, each body on its own cache line. It runs:
+- the narrowphase's pair tests (the cheap checks stay on the stepping thread), results put back in pair order;
+- with **graph colouring** (`Settings::coloured`, the world's `physics.coloured`), the contact solver: constraints
+  are coloured as Box2D v3 does (no two in a group share a moving body; a constraint with a static side never takes
+  colour 0; 24 colours, then an overflow), groups run one at a time with their constraints in parallel, small groups
+  and the overflow serially, joints serially between them. Every constraint runs the very code the single-threaded
+  solver runs, so states are bit-identical on 1, 2, 3, 4 and 8 threads (tested, with joints, a kinematic paddle and a
+  tower). Colouring is a choice, not a default: it solves in another order, and a settling 10-box tower drifts 12 mm
+  sideways coloured against 4.6 mm in pair order, so it stays off unless a world asks for threads to help.
+- **The wide kernel** (`wide.rs`, `Settings::wide`): four constraints of a colour group solved side by side in lanes,
+  bit-identical to one at a time (tested). Measured slower in plain Rust (solve stage 1.48 ms against 1.25, 4 threads):
+  gathering the lanes costs more than they save without SIMD intrinsics (which need `unsafe`), so it is off.
+- Tried and left out: friction at the manifold centre (it changed nothing alone, and with colouring the tower
+  drifted 7 cm).
+
+**The 1,000-awake-body budget: not met.** `physics_bench` awake 1000, back to back with main on the shared
+i9-13900HX (best of six, at about 16% CPU load from other sessions): main 3.46 ms a tick; this lane on one thread
+3.8; with 4 threads 2.9 (narrowphase 0.9); coloured on 4 threads 2.9 and on 8 threads 2.8 (solve 1.13: about 0.4 of
+it serial setup, the contact passes 0.65 against 1.0 on one thread). Under full load (100%) the same runs gave main
+4.05, coloured 8 threads 3.05. What still runs on one thread: building pairs (0.3), the narrowphase's checks and
+merge, the solver's setup (constraints, colouring, prepare, write-back) and the broadphase; the next steps toward 2 ms
+are those on the pool, then SIMD rows if `unsafe` intrinsics are ever allowed for them.

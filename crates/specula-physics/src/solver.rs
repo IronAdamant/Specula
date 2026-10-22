@@ -20,11 +20,9 @@
 //! from each body's position and rotation change since the step began. Points are stored
 //! densely (a pair uses only the points it has), since every pass streams them.
 //!
-//! **Joints (P4)** slot in beside the contacts: each joint type adds `prepare`, `warm_start`,
-//! `solve(use_bias)` and `relax` passes run in the same places as the contact passes below
-//! (joints first, as in Box2D), with their own softness (joint Hz), built from the same
-//! [`Row`]s. The body arrays, substepping and island linking (touching pairs in
-//! [`crate::space`]) need no change.
+//! **Joints (P4)** ([`crate::joint`]) run beside the contacts: warm start, solve with bias and
+//! relax in the same places as the contact passes (joints first, as in Box2D), with their own
+//! softness (joint Hz), built from the same [`Row`]s.
 //!
 //! Locked axes (2D mode, or a body's own locks) zero the matching inverse mass and inertia
 //! components, so constraint masses stay consistent with what the body can do.
@@ -94,7 +92,7 @@ pub struct Row {
 }
 
 impl Row {
-    fn new(dir: Vec3, ra: Vec3, rb: Vec3, a: &Local, b: &Local) -> Row {
+    pub(crate) fn new(dir: Vec3, ra: Vec3, rb: Vec3, a: &Local, b: &Local) -> Row {
         let rxa = ra.cross(dir);
         let rxb = rb.cross(dir);
         let aa = a.inv_inertia.mul_vec(rxa);
@@ -105,12 +103,12 @@ impl Row {
 
     /// Relative velocity along the row (B minus A).
     #[inline]
-    fn velocity(&self, a: &Local, b: &Local) -> f32 {
+    pub(crate) fn velocity(&self, a: &Local, b: &Local) -> f32 {
         self.dir.dot(b.v - a.v) + self.rxb.dot(b.w) - self.rxa.dot(a.w)
     }
 
     #[inline]
-    fn apply(&self, l: f32, a: &mut Local, b: &mut Local) {
+    pub(crate) fn apply(&self, l: f32, a: &mut Local, b: &mut Local) {
         let p = self.dir * l;
         a.v = a.v - mul(a.inv_mass, p);
         a.w = a.w - self.aa * l;
@@ -130,11 +128,18 @@ pub struct SolverPoint {
     pub n: Row,
     pub t1: Row,
     pub t2: Row,
-    pub normal_impulse: f32,
-    pub tangent_impulse: [f32; 2],
-    pub max_normal_impulse: f32,
     /// Normal relative velocity at the step start (for restitution).
     pub relative_velocity: f32,
+}
+
+/// A contact point's accumulated impulses (what the passes change; kept apart from the
+/// point's fixed rows, so a thread can load and store just these).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Imp {
+    pub normal: f32,
+    pub tangent: [f32; 2],
+    /// The largest normal impulse of the step (whether it touched, for restitution).
+    pub max_normal: f32,
 }
 
 /// A contact pair's constraint; its points are `points[start..start + len]`.
@@ -167,24 +172,26 @@ pub struct Tuning {
     pub push_speed: f32,
     pub restitution_threshold: f32,
     pub max_linear_speed: f32,
+    /// The thread pool solves four constraints at a time ([`crate::Settings::wide`]).
+    pub wide: bool,
 }
 
 const MAX_ROTATION_PER_SUBSTEP: f32 = 0.25 * std::f32::consts::PI;
 
 /// A constraint's body state in locals (zero masses for static and kinematic bodies).
-struct Local {
-    v: Vec3,
-    w: Vec3,
-    dp: Vec3,
-    dq: Quat,
-    inv_mass: Vec3,
-    inv_inertia: Mat3,
+pub(crate) struct Local {
+    pub(crate) v: Vec3,
+    pub(crate) w: Vec3,
+    pub(crate) dp: Vec3,
+    pub(crate) dq: Quat,
+    pub(crate) inv_mass: Vec3,
+    pub(crate) inv_inertia: Mat3,
     moves: bool,
 }
 
 impl Local {
     #[inline]
-    fn load(bodies: &[SolverBody], i: u32) -> Local {
+    pub(crate) fn load(bodies: &[SolverBody], i: u32) -> Local {
         if i == STATIC {
             return Local { v: Vec3::ZERO, w: Vec3::ZERO, dp: Vec3::ZERO, dq: Quat::IDENTITY, inv_mass: Vec3::ZERO, inv_inertia: Mat3::ZERO, moves: false };
         }
@@ -200,8 +207,28 @@ impl Local {
         }
     }
 
+    /// [`Local::load`] of a body whose motion is kept apart (the thread pool's atomics).
+    #[inline(always)]
+    pub(crate) fn with_motion(b: &SolverBody, v: Vec3, w: Vec3, dp: Vec3, dq: Quat) -> Local {
+        Local {
+            v,
+            w,
+            dp,
+            dq,
+            inv_mass: if b.kinematic { Vec3::ZERO } else { b.inv_mass },
+            inv_inertia: if b.kinematic { Mat3::ZERO } else { b.inv_inertia },
+            moves: !b.kinematic,
+        }
+    }
+
+    /// Whether it takes impulses (a dynamic body).
     #[inline]
-    fn store(&self, bodies: &mut [SolverBody], i: u32) {
+    pub(crate) fn moves(&self) -> bool {
+        self.moves
+    }
+
+    #[inline]
+    pub(crate) fn store(&self, bodies: &mut [SolverBody], i: u32) {
         if self.moves {
             let b = &mut bodies[i as usize];
             b.v = self.v;
@@ -212,9 +239,12 @@ impl Local {
 
 /// Prepares constraint rows (Jacobians, masses, tangents, relative velocity). Impulses carry
 /// over.
-pub fn prepare(constraints: &[Constraint], points: &mut [SolverPoint], bodies: &[SolverBody]) {
+pub fn prepare(constraints: &[Constraint], points: &mut [SolverPoint], imps: &mut [Imp], bodies: &[SolverBody]) {
     for c in constraints {
         let (a, b) = (Local::load(bodies, c.a), Local::load(bodies, c.b));
+        for i in &mut imps[c.range()] {
+            i.max_normal = 0.0;
+        }
         for p in &mut points[c.range()] {
             let n = p.normal;
             let (t1, t2) = crate::math::basis(n);
@@ -222,15 +252,22 @@ pub fn prepare(constraints: &[Constraint], points: &mut [SolverPoint], bodies: &
             p.t1 = Row::new(t1, p.ra, p.rb, &a, &b);
             p.t2 = Row::new(t2, p.ra, p.rb, &a, &b);
             p.relative_velocity = p.n.velocity(&a, &b);
-            p.max_normal_impulse = 0.0;
         }
     }
 }
 
 pub fn integrate_velocities(bodies: &mut [SolverBody], h: f32, max_speed: f32) {
     for b in bodies.iter_mut() {
+        integrate_velocity(b, h, max_speed);
+    }
+}
+
+/// One body's velocity over a substep (gravity, damping, the speed caps, its locks).
+#[inline(always)]
+pub(crate) fn integrate_velocity(b: &mut SolverBody, h: f32, max_speed: f32) {
+    {
         if b.kinematic {
-            continue;
+            return;
         }
         let mut v = (b.v + b.gravity * h) * (1.0 / (1.0 + h * b.linear_damping));
         let mut w = b.w * (1.0 / (1.0 + h * b.angular_damping));
@@ -264,31 +301,53 @@ fn lock(v: &mut Vec3, axes: [bool; 3]) {
 
 pub fn integrate_positions(bodies: &mut [SolverBody], h: f32) {
     for b in bodies.iter_mut() {
-        b.dp = b.dp + b.v * h;
-        b.dq = integrate_rotation(b.dq, b.w, h);
+        integrate_position(b, h);
     }
 }
 
-pub fn warm_start(constraints: &[Constraint], points: &[SolverPoint], bodies: &mut [SolverBody]) {
+/// One body's position and rotation over a substep.
+#[inline(always)]
+pub(crate) fn integrate_position(b: &mut SolverBody, h: f32) {
+    b.dp = b.dp + b.v * h;
+    b.dq = integrate_rotation(b.dq, b.w, h);
+}
+
+pub fn warm_start(constraints: &[Constraint], points: &[SolverPoint], imps: &[Imp], bodies: &mut [SolverBody]) {
     for c in constraints {
         let (mut a, mut b) = (Local::load(bodies, c.a), Local::load(bodies, c.b));
-        for p in &points[c.range()] {
-            p.n.apply(p.normal_impulse, &mut a, &mut b);
-            p.t1.apply(p.tangent_impulse[0], &mut a, &mut b);
-            p.t2.apply(p.tangent_impulse[1], &mut a, &mut b);
-        }
+        warm_one(&points[c.range()], &imps[c.range()], &mut a, &mut b);
         a.store(bodies, c.a);
         b.store(bodies, c.b);
     }
 }
 
+/// One constraint's warm start (the same code on any thread).
+#[inline(always)]
+pub(crate) fn warm_one(pts: &[SolverPoint], imps: &[Imp], a: &mut Local, b: &mut Local) {
+    for (p, i) in pts.iter().zip(imps) {
+        p.n.apply(i.normal, a, b);
+        p.t1.apply(i.tangent[0], a, b);
+        p.t2.apply(i.tangent[1], a, b);
+    }
+}
+
 /// One pass over the contacts: non-penetration (soft, with bias when `use_bias`), then friction.
-pub fn solve(constraints: &[Constraint], points: &mut [SolverPoint], bodies: &mut [SolverBody], inv_h: f32, push_speed: f32, use_bias: bool) {
+pub fn solve(constraints: &[Constraint], points: &[SolverPoint], imps: &mut [Imp], bodies: &mut [SolverBody], inv_h: f32, push_speed: f32, use_bias: bool) {
     for c in constraints {
         let (mut a, mut b) = (Local::load(bodies, c.a), Local::load(bodies, c.b));
+        solve_one(c, &points[c.range()], &mut imps[c.range()], &mut a, &mut b, inv_h, push_speed, use_bias);
+        a.store(bodies, c.a);
+        b.store(bodies, c.b);
+    }
+}
+
+/// One constraint's pass (`pts` and `imps` are its own points; the same code on any thread).
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn solve_one(c: &Constraint, pts: &[SolverPoint], imps: &mut [Imp], a: &mut Local, b: &mut Local, inv_h: f32, push_speed: f32, use_bias: bool) {
+    {
         let dp = b.dp - a.dp;
-        let pts = &mut points[c.range()];
-        for p in pts.iter_mut() {
+        for (p, i) in pts.iter().zip(imps.iter_mut()) {
             // Current separation from the bodies' motion since the step began.
             let pra = a.dq.rotate(p.ra);
             let prb = b.dq.rotate(p.rb);
@@ -301,73 +360,165 @@ pub fn solve(constraints: &[Constraint], points: &mut [SolverPoint], bodies: &mu
             } else {
                 (0.0, 1.0, 0.0)
             };
-            let vn = p.n.velocity(&a, &b);
-            let mut impulse = -p.n.mass * mass_scale * (vn + bias) - impulse_scale * p.normal_impulse;
-            let new = (p.normal_impulse + impulse).max(0.0);
-            impulse = new - p.normal_impulse;
-            p.normal_impulse = new;
-            p.max_normal_impulse = p.max_normal_impulse.max(impulse);
-            p.n.apply(impulse, &mut a, &mut b);
+            let vn = p.n.velocity(a, b);
+            let mut impulse = -p.n.mass * mass_scale * (vn + bias) - impulse_scale * i.normal;
+            let new = (i.normal + impulse).max(0.0);
+            impulse = new - i.normal;
+            i.normal = new;
+            i.max_normal = i.max_normal.max(impulse);
+            p.n.apply(impulse, a, b);
         }
         // Friction: a disc of radius friction x normal impulse in the tangent plane.
-        for p in pts.iter_mut() {
-            let l1 = -p.t1.mass * p.t1.velocity(&a, &b);
-            let l2 = -p.t2.mass * p.t2.velocity(&a, &b);
-            let (old1, old2) = (p.tangent_impulse[0], p.tangent_impulse[1]);
+        for (p, i) in pts.iter().zip(imps.iter_mut()) {
+            let l1 = -p.t1.mass * p.t1.velocity(a, b);
+            let l2 = -p.t2.mass * p.t2.velocity(a, b);
+            let [old1, old2] = i.tangent;
             let (mut n1, mut n2) = (old1 + l1, old2 + l2);
-            let max = c.friction * p.normal_impulse;
+            let max = c.friction * i.normal;
             let len2 = n1 * n1 + n2 * n2;
             if len2 > max * max {
                 let k = if len2 > 0.0 { max / len2.sqrt() } else { 0.0 };
                 n1 *= k;
                 n2 *= k;
             }
-            p.tangent_impulse = [n1, n2];
-            p.t1.apply(n1 - old1, &mut a, &mut b);
-            p.t2.apply(n2 - old2, &mut a, &mut b);
+            i.tangent = [n1, n2];
+            p.t1.apply(n1 - old1, a, b);
+            p.t2.apply(n2 - old2, a, b);
         }
-        a.store(bodies, c.a);
-        b.store(bodies, c.b);
     }
 }
 
-pub fn restitution(constraints: &[Constraint], points: &mut [SolverPoint], bodies: &mut [SolverBody], threshold: f32) {
+pub fn restitution(constraints: &[Constraint], points: &[SolverPoint], imps: &mut [Imp], bodies: &mut [SolverBody], threshold: f32) {
     for c in constraints {
         if c.restitution == 0.0 {
             continue;
         }
         let (mut a, mut b) = (Local::load(bodies, c.a), Local::load(bodies, c.b));
-        for p in &mut points[c.range()] {
-            if p.relative_velocity > -threshold || p.max_normal_impulse == 0.0 {
-                continue;
-            }
-            let vn = p.n.velocity(&a, &b);
-            let mut impulse = -p.n.mass * (vn + c.restitution * p.relative_velocity);
-            let new = (p.normal_impulse + impulse).max(0.0);
-            impulse = new - p.normal_impulse;
-            p.normal_impulse = new;
-            p.max_normal_impulse = p.max_normal_impulse.max(impulse);
-            p.n.apply(impulse, &mut a, &mut b);
-        }
+        restitution_one(c, &points[c.range()], &mut imps[c.range()], &mut a, &mut b, threshold);
         a.store(bodies, c.a);
         b.store(bodies, c.b);
     }
 }
 
-/// Runs a whole step on prepared bodies and constraints.
-pub fn step(constraints: &[Constraint], points: &mut [SolverPoint], bodies: &mut [SolverBody], dt: f32, t: &Tuning) {
+/// One constraint's bounce (the same code on any thread).
+#[inline(always)]
+pub(crate) fn restitution_one(c: &Constraint, pts: &[SolverPoint], imps: &mut [Imp], a: &mut Local, b: &mut Local, threshold: f32) {
+    for (p, i) in pts.iter().zip(imps.iter_mut()) {
+        if p.relative_velocity > -threshold || i.max_normal == 0.0 {
+            continue;
+        }
+        let vn = p.n.velocity(a, b);
+        let mut impulse = -p.n.mass * (vn + c.restitution * p.relative_velocity);
+        let new = (i.normal + impulse).max(0.0);
+        impulse = new - i.normal;
+        i.normal = new;
+        i.max_normal = i.max_normal.max(impulse);
+        p.n.apply(impulse, a, b);
+    }
+}
+
+/// Buffers [`colour`] reuses.
+#[derive(Clone, Debug, Default)]
+pub struct ColourScratch {
+    masks: Vec<u32>,
+    colours: Vec<u8>,
+    out: Vec<Constraint>,
+}
+
+/// Colours constraints are spread over; one that finds none free goes to the overflow group,
+/// solved after them (Box2D v3's graph colouring).
+pub const MAX_COLORS: usize = 24;
+
+/// Graph colouring (Box2D v3): reorders `constraints` into groups in which no two share a
+/// body that moves (dynamic bodies; static and kinematic ones take no impulses, so any number
+/// of constraints may touch them), each the lowest colour free for both its bodies, in the
+/// order given, then the overflow. A group's constraints can be solved in any order, or at once,
+/// with the same result. `groups` gets the groups' bounds (`groups[i]..groups[i + 1]`; the last
+/// group is the overflow). Deterministic: the same constraints in the same order always colour
+/// the same way. `scratch` is kept between steps (no allocation once warm).
+pub fn colour(constraints: &mut Vec<Constraint>, bodies: &[SolverBody], groups: &mut Vec<u32>, scratch: &mut ColourScratch) {
+    let ColourScratch { masks, colours, out } = scratch;
+    masks.clear();
+    masks.resize(bodies.len(), 0);
+    let moving = |i: u32| i != STATIC && !bodies[i as usize].kinematic;
+    let mut counts = [0u32; MAX_COLORS + 1];
+    colours.clear();
+    for c in constraints.iter() {
+        let used = (if moving(c.a) { masks[c.a as usize] } else { 0 }) | (if moving(c.b) { masks[c.b as usize] } else { 0 });
+        // As Box2D v3: a constraint with an unmoving side never takes colour 0, so the bodies
+        // resting on others are solved before what they rest on is pinned (stacks hold better).
+        let both = moving(c.a) && moving(c.b);
+        let free = !used & ((1u32 << MAX_COLORS) - 1) & if both { u32::MAX } else { !1 };
+        let k = if free == 0 { MAX_COLORS } else { free.trailing_zeros() as usize };
+        if k < MAX_COLORS {
+            for i in [c.a, c.b] {
+                if moving(i) {
+                    masks[i as usize] |= 1 << k;
+                }
+            }
+        }
+        counts[k] += 1;
+        colours.push(k as u8);
+    }
+    groups.clear();
+    let mut at = 0u32;
+    let mut starts = [0u32; MAX_COLORS + 1];
+    for k in 0..=MAX_COLORS {
+        starts[k] = at;
+        groups.push(at);
+        at += counts[k];
+    }
+    groups.push(at);
+    out.clear();
+    if let Some(first) = constraints.first().copied() {
+        out.resize(constraints.len(), first);
+    }
+    for (c, &k) in constraints.iter().zip(colours.iter()) {
+        out[starts[k as usize] as usize] = *c;
+        starts[k as usize] += 1;
+    }
+    std::mem::swap(constraints, out);
+}
+
+/// Runs a whole step on prepared bodies, contacts and joints (joints before contacts in every
+/// pass, as in Box2D: contacts get the last word, so nothing sinks).
+///
+/// With `parallel` (and more than one colour group), the contact passes run on its threads, a
+/// colour group at a time (see [`colour`]): the same states as on one thread, since a group's
+/// constraints share no moving body and the overflow group stays serial.
+#[allow(clippy::too_many_arguments)]
+pub fn step(
+    constraints: &mut Vec<Constraint>,
+    groups: &[u32],
+    points: &mut Vec<SolverPoint>,
+    imps: &mut [Imp],
+    joints: &mut Vec<crate::joint::JointConstraint>,
+    bodies: &mut [SolverBody],
+    dt: f32,
+    t: &Tuning,
+    parallel: Option<&mut crate::parallel::Parallel>,
+) {
     let n = t.substeps.max(1);
     let h = dt / n as f32;
     let inv_h = 1.0 / h;
-    prepare(constraints, points, bodies);
+    prepare(constraints, points, imps, bodies);
+    if let Some(p) = parallel {
+        if groups.len() > 2 && !constraints.is_empty() {
+            p.step(constraints, groups, points, imps, joints, bodies, h, n, t);
+            return;
+        }
+    }
     for _ in 0..n {
         integrate_velocities(bodies, h, t.max_linear_speed);
-        warm_start(constraints, points, bodies);
-        solve(constraints, points, bodies, inv_h, t.push_speed, true);
+        crate::joint::warm_start(joints, bodies);
+        warm_start(constraints, points, imps, bodies);
+        crate::joint::solve(joints, bodies, h, true);
+        solve(constraints, points, imps, bodies, inv_h, t.push_speed, true);
         integrate_positions(bodies, h);
-        solve(constraints, points, bodies, inv_h, t.push_speed, false);
+        crate::joint::solve(joints, bodies, h, false);
+        solve(constraints, points, imps, bodies, inv_h, t.push_speed, false);
     }
-    restitution(constraints, points, bodies, t.restitution_threshold);
+    restitution(constraints, points, imps, bodies, t.restitution_threshold);
 }
 
 #[cfg(test)]

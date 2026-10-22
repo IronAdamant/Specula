@@ -34,6 +34,8 @@ pub enum Kind {
     Colliders,
     /// Physics contact points and normals.
     Contacts,
+    /// Physics joints: anchors, axes, limit arcs, how well each holds.
+    Joints,
     /// Navmesh polygons (see [`crate::nav_tools`]).
     Navmesh,
     /// Nav agents' paths, goals and velocities, and recent nav_path answers.
@@ -41,7 +43,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 11] = [
+    pub const ALL: [Kind; 12] = [
         Kind::Grid,
         Kind::Axes,
         Kind::Bounds,
@@ -51,6 +53,7 @@ impl Kind {
         Kind::Lods,
         Kind::Colliders,
         Kind::Contacts,
+        Kind::Joints,
         Kind::Navmesh,
         Kind::Paths,
     ];
@@ -66,6 +69,7 @@ impl Kind {
             Kind::Lods => "lods",
             Kind::Colliders => "colliders",
             Kind::Contacts => "contacts",
+            Kind::Joints => "joints",
             Kind::Navmesh => "navmesh",
             Kind::Paths => "paths",
         }
@@ -352,6 +356,18 @@ impl Painter {
         for face in [[0, 1, 3, 2], [4, 5, 7, 6], [0, 1, 5, 4], [2, 3, 7, 6], [0, 2, 6, 4], [1, 3, 7, 5]] {
             self.polygon(&face.map(|i| c[i]), color);
         }
+    }
+
+    /// A filled pixel rectangle `[x, y, width, height]` (legends, panels).
+    pub fn rect2d(&mut self, rect: [f32; 4], color: [f32; 4]) {
+        self.push(OverlayQuad::solid(rect, color));
+    }
+
+    /// A legend's label: placed first (top priority) and counted with the grid's labels, not
+    /// against the entity labels' budget.
+    pub fn legend_label(&mut self, text: &str, anchor: [f32; 2], color: [f32; 4], priority: u64) {
+        let text: String = text.chars().take(MAX_LABEL_CHARS).collect();
+        self.labels.push(LabelReq { text, anchor, color, priority: u64::MAX - 64 + priority.min(63), grid: true });
     }
 
     pub fn label(&mut self, text: &str, anchor: [f32; 2], color: [f32; 4], priority: u64) {

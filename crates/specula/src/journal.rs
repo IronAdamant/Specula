@@ -562,12 +562,29 @@ impl Journal {
         let mut copy = base.clone();
         copy.set_recording(Recording::Off);
         copy.take_changes();
+        // The base only replays recorded states; it never restores (nothing older than it can
+        // be undone), so it keeps no removed entities' versions.
+        copy.retain_retired(|_| false);
         // Replays only rebuild state; they never draw, so they never build models.
         copy.set_model_source(None);
         self.base_hash = copy.state_hash();
         self.next_id_seen = copy.next_id();
         self.base = copy;
         self.base_label = label.to_owned();
+    }
+
+    /// Every entity id an entry still in the journal touches (what an undo could restore; not
+    /// project files).
+    pub fn ids_in_ring(&self) -> BTreeSet<u64> {
+        let mut ids = BTreeSet::new();
+        for ring in [&self.agents, &self.game] {
+            for e in &ring.entries {
+                // Entities only: the environment (0) and project files (ids from FILE_ID_BASE) never
+                // leave a removed version behind.
+                ids.extend(e.ids.iter().copied().filter(|id| *id != 0 && *id < crate::project::FILE_ID_BASE));
+            }
+        }
+        ids
     }
 
     fn intern(&mut self, name: &str) -> Arc<str> {
@@ -1162,11 +1179,11 @@ impl Journal {
 /// Puts back the state before each of `entry`'s changes, newest change first.
 fn undo_entry(world: &mut World, entry: &Entry, by: &str, force: bool) -> Result<(), WorldError> {
     let by: Arc<str> = Arc::from(by);
-    // A restored entity is a new version of whatever is there now.
+    // A restored entity is a new version of whatever is there now, and of anything it was
+    // before it was deleted (a version never names two states: caches key on them).
     let restore = |world: &World, before: &Entity| -> Entity {
         let mut e = before.clone();
-        let current = world.get(e.id).map_or(0, |c| c.version);
-        e.version = current.max(before.version) + 1;
+        e.version = world.version_floor(e.id).max(before.version) + 1;
         e.modified_by = Arc::clone(&by);
         e
     };

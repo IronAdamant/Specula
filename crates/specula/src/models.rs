@@ -2188,6 +2188,8 @@ struct AnimFrame {
     fade_player: GraphPlayer,
     fade_pose: Pose,
     own_pose: Pose,
+    /// Ragdolls' poses this frame (the world's external poses).
+    externals: BTreeMap<u64, crate::world::ExternalPose>,
 }
 
 /// Model → world of an entity, as the animation library's affine.
@@ -2235,11 +2237,12 @@ impl AnimFrame {
     fn evaluate_graph(&mut self, e: &Entity, build: u64, set: &AnimSet, a: &AnimSpec) -> bool {
         let t = self.time;
         self.entry(e, build, set);
-        let AnimFrame { entities, model, skin, ground, fade_player, fade_pose, own_pose, .. } = self;
+        let AnimFrame { entities, model, skin, ground, fade_player, fade_pose, own_pose, externals, .. } = self;
         let entry = entities.get_mut(&e.id).expect("made by entry");
         let to_world = affine_of(&e.model());
         let scale = crate::anim::entity_scale(e);
-        let around = Surroundings { to_world: Some(to_world), ground: ground.as_deref().map(|g| g as &dyn specula_anim::ik::Ground), external: None };
+        let external = externals.get(&e.id).map(|x| &*x.pose);
+        let around = Surroundings { to_world: Some(to_world), ground: ground.as_deref().map(|g| g as &dyn specula_anim::ik::Ground), external };
         // Evaluates one anim (graph or clip) into `out`; false when it has nothing to play.
         let pose_of = |spec: &AnimSpec, player: &mut GraphPlayer, animator: &mut Animator, out: &mut Pose| -> bool {
             match &spec.graph {
@@ -2279,6 +2282,17 @@ impl AnimFrame {
     /// Leaves entity `e`'s pose at the frame's time in `self.model` / `self.skin`. False when it
     /// has no clip of `set` to play (it draws the bind pose).
     fn evaluate(&mut self, e: &Entity, build: u64, set: &AnimSet) -> bool {
+        // A ragdoll's pose (physics, A4) plays through the graph's external nodes; an anim
+        // without any (or no anim at all) shows it as it is.
+        if let Some(x) = self.externals.get(&e.id).filter(|x| x.pose.local.len() == set.skeleton.len()) {
+            let plays_it = e.anim.as_ref().and_then(|a| a.graph.as_ref()).and_then(|g| set.graph(&g.graph)).is_some_and(|g| g.nodes.iter().any(|n| matches!(n, specula_anim::graph::Node::External)));
+            if x.direct || !plays_it {
+                let p = Arc::clone(&x.pose);
+                set.skeleton.model_space(&p, &mut self.model);
+                set.skeleton.skin_matrices(&self.model, &mut self.skin);
+                return true;
+            }
+        }
         let Some(a) = &e.anim else { return false };
         if a.graph.is_some() || a.from.as_deref().is_some_and(|f| f.graph.is_some()) {
             return self.evaluate_graph(e, build, set, a);
@@ -2542,6 +2556,21 @@ impl GpuModels {
             }
         };
         Some((level, count, model.lods[level].iter().map(|p| u64::from(p.triangles)).sum()))
+    }
+
+    /// The world's external poses (ragdolls) for this frame's draws (nothing allocates when
+    /// there are none).
+    pub fn set_externals(&self, world: &World) {
+        let mut a = self.anim.borrow_mut();
+        if a.externals.is_empty() && world.external_pose_ids().next().is_none() {
+            return;
+        }
+        a.externals.clear();
+        for id in world.external_pose_ids() {
+            if let Some(x) = world.external_pose(id) {
+                a.externals.insert(id, x.clone());
+            }
+        }
     }
 
     /// Starts a frame's draw list at render time `time_s` (engine clock seconds, or a capture's

@@ -20,6 +20,10 @@
 //! - Transient entities (a game's presentation) never take part.
 
 use crate::world::{self, check_num, check_point, vec3_json, validate_tag, WorldError};
+
+pub mod joints;
+pub mod mover;
+pub mod ragdoll;
 use specula_core::hash::StableHasher;
 use specula_core::math::Vec3;
 use specula_core::Json;
@@ -60,7 +64,21 @@ pub enum ColliderShape {
     /// Static only: `columns × rows` heights (row by row along +Z, each along +X), `cell`
     /// metres apart on X and Z, centred on the entity's origin.
     Heightfield { columns: u32, rows: u32, cell: [f32; 2], heights: Arc<Vec<f32>> },
+    /// Convex parts (box, sphere, capsule, hull) together, each with its own offset and
+    /// rotation: one body of several shapes (any body kind).
+    Compound { parts: Arc<Vec<CompoundPart>> },
 }
+
+/// One part of a compound collider.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompoundPart {
+    pub shape: ColliderShape,
+    pub offset: Vec3,
+    pub rotation_deg: Vec3,
+}
+
+/// Most parts of a compound collider.
+pub const MAX_COMPOUND_PARTS: usize = specula_physics::shape::MAX_COMPOUND_PARTS;
 
 impl ColliderShape {
     pub fn name(&self) -> &'static str {
@@ -71,6 +89,7 @@ impl ColliderShape {
             ColliderShape::Hull { .. } => "hull",
             ColliderShape::Mesh { .. } => "mesh",
             ColliderShape::Heightfield { .. } => "heightfield",
+            ColliderShape::Compound { .. } => "compound",
         }
     }
 
@@ -119,6 +138,19 @@ impl Collider {
     /// JSON (defaults left out, so older worlds' colliders read and hash as before).
     pub fn to_json(&self) -> Json {
         let mut f = match &self.shape {
+            ColliderShape::Compound { parts } => vec![
+                ("shape", Json::from("compound")),
+                (
+                    "parts",
+                    Json::arr(parts.iter().map(|p| {
+                        let mut j = Collider { shape: p.shape.clone(), offset: p.offset, ..Collider::default() }.to_json();
+                        if p.rotation_deg != Vec3::ZERO {
+                            j.set("rotation_deg", vec3_json(p.rotation_deg));
+                        }
+                        j
+                    })),
+                ),
+            ],
             ColliderShape::Box { size } => vec![("shape", Json::from("box")), ("size", vec3_json(*size))],
             ColliderShape::Sphere { radius } => vec![("shape", Json::from("sphere")), ("radius", Json::from(*radius))],
             ColliderShape::Capsule { radius, height } => {
@@ -162,6 +194,18 @@ impl Collider {
     /// Value checks (the world runs them on every write).
     pub(crate) fn validate(&self) -> Result<(), WorldError> {
         match &self.shape {
+            ColliderShape::Compound { parts } => {
+                if parts.is_empty() || parts.len() > MAX_COMPOUND_PARTS {
+                    return Err(invalid("collider.parts", format!("'collider.parts' lists 1 to {MAX_COMPOUND_PARTS} parts")));
+                }
+                for (i, p) in parts.iter().enumerate() {
+                    if matches!(p.shape, ColliderShape::Compound { .. } | ColliderShape::Mesh { .. } | ColliderShape::Heightfield { .. }) {
+                        return Err(invalid("collider.parts", format!("'collider.parts'[{i}] must be a box, sphere, capsule or hull")));
+                    }
+                    Collider { shape: p.shape.clone(), offset: p.offset, ..Collider::default() }.validate().map_err(|e| e.with("part", i))?;
+                    check_point("collider.parts.rotation_deg", p.rotation_deg).map_err(|e| e.with("part", i))?;
+                }
+            }
             ColliderShape::Box { size } => {
                 [size.x, size.y, size.z].iter().try_for_each(|v| check_num("collider.size", *v, &COLLIDER_SIZE))?
             }
@@ -482,6 +526,13 @@ impl Collider {
                 h.write_u32(*rows);
                 cell.iter().chain(heights.iter()).for_each(|v| h.write_f32(*v));
             }
+            ColliderShape::Compound { parts } => {
+                h.write_u64(parts.len() as u64);
+                for p in parts.iter() {
+                    h.write_u64(Collider { shape: p.shape.clone(), offset: p.offset, ..Collider::default() }.field_hash());
+                    v3(&mut h, &p.rotation_deg);
+                }
+            }
         }
         v3(&mut h, &self.offset);
         h.write_bool(self.is_trigger);
@@ -568,7 +619,7 @@ pub(crate) fn check_pair(c: Option<&Collider>, b: Option<&Body>) -> Result<(), W
         }
     }
     if let Some(b) = b {
-        if b.character.is_some() && c.is_none_or(|c| c.shape.static_only() || c.is_trigger) {
+        if b.character.is_some() && c.is_none_or(|c| c.shape.static_only() || c.is_trigger || matches!(c.shape, ColliderShape::Compound { .. })) {
             return Err(WorldError::new("invalid_component", "a character needs a solid convex collider (a capsule, usually)").with("field", "collider"));
         }
     }
@@ -623,12 +674,13 @@ fn check_object_keys(o: &Json, what: &str, allowed: &[&str]) -> Result<(), Strin
 
 const COLLIDER_KEYS: &[&str] = &[
     "shape", "size", "radius", "height", "points", "vertices", "triangles", "columns", "rows", "cell", "heights", "offset", "is_trigger",
-    "layer", "mask", "friction", "restitution",
+    "layer", "mask", "friction", "restitution", "parts",
 ];
+const PART_KEYS: &[&str] = &["shape", "size", "radius", "height", "points", "offset", "rotation_deg"];
 
 /// `collider`: `{shape, ...}` or `false` to remove it (see the world_spawn schema).
 pub(crate) fn collider_arg(args: &Json) -> Result<Option<Option<Collider>>, String> {
-    const ERR: &str = "'collider' must be false or {shape: box|sphere|capsule|hull|mesh|heightfield, ...}";
+    const ERR: &str = "'collider' must be false or {shape: box|sphere|capsule|hull|mesh|heightfield|compound, ...}";
     let c = match args.get("collider") {
         None | Some(Json::Null) => return Ok(None),
         Some(Json::Bool(false)) => return Ok(Some(None)),
@@ -651,6 +703,26 @@ pub(crate) fn collider_arg(args: &Json) -> Result<Option<Option<Collider>>, Stri
         list.iter().map(|p| point(p, &field)).collect()
     };
     let shape = match c.get("shape").and_then(Json::as_str) {
+        Some("compound") => {
+            let list = c.get("parts").and_then(Json::as_array).ok_or("'collider.parts' must be an array of parts: {shape: box|sphere|capsule|hull, ..., offset, rotation_deg}")?;
+            if list.is_empty() || list.len() > MAX_COMPOUND_PARTS {
+                return Err(format!("'collider.parts' lists 1 to {MAX_COMPOUND_PARTS} parts"));
+            }
+            let mut parts = Vec::with_capacity(list.len());
+            for (i, p) in list.iter().enumerate() {
+                check_object_keys(p, &format!("collider.parts[{i}]"), PART_KEYS)?;
+                if !matches!(p.get("shape").and_then(Json::as_str), Some("box" | "sphere" | "capsule" | "hull")) {
+                    return Err(format!("'collider.parts[{i}].shape' must be box, sphere, capsule or hull"));
+                }
+                let mut plain = p.clone();
+                if let Json::Obj(pairs) = &mut plain {
+                    pairs.retain(|(k, _)| k != "rotation_deg");
+                }
+                let part = collider_arg(&Json::obj([("collider", plain)])).map_err(|e| format!("'collider.parts[{i}]': {e}"))?.flatten().expect("an object");
+                parts.push(CompoundPart { shape: part.shape, offset: part.offset, rotation_deg: opt_point(p, "rotation_deg", "collider.parts.rotation_deg")?.unwrap_or(Vec3::ZERO) });
+            }
+            ColliderShape::Compound { parts: Arc::new(parts) }
+        }
         Some("box") => ColliderShape::Box { size: opt_point(c, "size", "collider.size")?.unwrap_or(Vec3::ONE) },
         Some("sphere") => ColliderShape::Sphere { radius: size("radius", Some(0.5))? },
         Some("capsule") => ColliderShape::Capsule { radius: size("radius", None)?, height: size("height", None)? },
@@ -810,6 +882,10 @@ pub struct PhysicsSettings {
     /// Contact stiffness, Hz.
     pub contact_hertz: f32,
     pub enabled: bool,
+    /// Solve contacts in graph-colour order (so they can run on several threads, the engine's
+    /// `--physics-threads`): the same states on any thread count, but other ones than pair
+    /// order (default off; see [`specula_physics::Settings::coloured`]).
+    pub coloured: bool,
 }
 
 impl Default for PhysicsSettings {
@@ -822,6 +898,7 @@ impl Default for PhysicsSettings {
             plane_2d: d.plane_2d,
             contact_hertz: d.contact_hertz,
             enabled: true,
+            coloured: d.coloured,
         }
     }
 }
@@ -835,9 +912,10 @@ pub struct PhysicsPatch {
     pub plane_2d: Option<bool>,
     pub contact_hertz: Option<f32>,
     pub enabled: Option<bool>,
+    pub coloured: Option<bool>,
 }
 
-const SETTING_KEYS: &[&str] = &["gravity", "substeps", "sleep", "plane_2d", "contact_hertz", "enabled"];
+const SETTING_KEYS: &[&str] = &["gravity", "substeps", "sleep", "plane_2d", "contact_hertz", "enabled", "coloured"];
 
 impl PhysicsPatch {
     pub fn parse(v: &Json) -> Result<PhysicsPatch, String> {
@@ -854,6 +932,7 @@ impl PhysicsPatch {
             plane_2d: opt_bool(v, "plane_2d", "physics.plane_2d")?,
             contact_hertz: opt_num(v, "contact_hertz", "physics.contact_hertz")?,
             enabled: opt_bool(v, "enabled", "physics.enabled")?,
+            coloured: opt_bool(v, "coloured", "physics.coloured")?,
         })
     }
 
@@ -891,17 +970,25 @@ impl PhysicsPatch {
         if let Some(v) = self.enabled {
             s.enabled = v;
         }
+        if let Some(v) = self.coloured {
+            s.coloured = v;
+        }
     }
 
     pub fn to_json(s: &PhysicsSettings) -> Json {
-        Json::obj([
+        let mut j = Json::obj([
             ("gravity", Json::arr(s.gravity.map(Json::from))),
             ("substeps", Json::from(s.substeps)),
             ("sleep", Json::from(s.sleep)),
             ("plane_2d", Json::from(s.plane_2d)),
             ("contact_hertz", Json::from(s.contact_hertz)),
             ("enabled", Json::from(s.enabled)),
-        ])
+        ]);
+        // Only when on: world files and answers stay as they were for everyone else.
+        if s.coloured {
+            j.set("coloured", Json::from(true));
+        }
+        j
     }
 
     /// Hashes nothing while the settings are all defaults, so older worlds keep their hash.
@@ -914,6 +1001,10 @@ impl PhysicsPatch {
             h.write_bool(s.plane_2d);
             h.write_f32(s.contact_hertz);
             h.write_bool(s.enabled);
+            // Only when on, so worlds with other settings keep their hash.
+            if s.coloured {
+                h.write_str("coloured");
+            }
         }
     }
 }
@@ -929,6 +1020,7 @@ pub fn space_settings(s: &PhysicsSettings, hz: u32) -> specula_physics::Settings
         sleep: s.sleep,
         plane_2d: s.plane_2d,
         contact_hertz: s.contact_hertz,
+        coloured: s.coloured,
         ..specula_physics::Settings::default()
     }
 }
@@ -995,11 +1087,18 @@ pub struct TickRecord {
     pub kinetic: f64,
     /// The bodies that gained the most energy: `(id, joules)`.
     pub gainers: [(u64, f64); 2],
+    /// The worst joint error `(m, rad, joint)`, angle past a limit `(rad, joint)` and offset past
+    /// one `(m, joint)` (see [`specula_physics::StepReport`]).
+    pub joint: Option<(f32, f32, u64)>,
+    pub limit: Option<(f32, u64)>,
+    pub offset: Option<(f32, u64)>,
 }
 
 /// The engine's physics: the space and its bridge to the world.
 pub struct Physics {
     pub space: Space,
+    /// Threads physics may use (the engine's `--physics-threads`; kept across resets).
+    pub threads: usize,
     seen: BTreeMap<u64, Seen>,
     layers: BTreeMap<String, u32>,
     /// `(world generation, draw epoch)` synced up to.
@@ -1025,12 +1124,15 @@ pub struct Physics {
     pub tick_ms: VecDeque<f64>,
     /// The world's settings reached the space once (later changes wake sleeping bodies).
     settings_applied: bool,
+    /// Ragdolls (A4; see [`ragdoll`]).
+    pub ragdolls: ragdoll::Ragdolls,
 }
 
 impl Default for Physics {
     fn default() -> Physics {
         Physics {
             space: Space::default(),
+            threads: 1,
             seen: BTreeMap::new(),
             layers: BTreeMap::new(),
             synced: None,
@@ -1047,6 +1149,7 @@ impl Default for Physics {
             errors: VecDeque::new(),
             tick_ms: VecDeque::new(),
             settings_applied: false,
+            ragdolls: ragdoll::Ragdolls::default(),
         }
     }
 }
@@ -1079,12 +1182,69 @@ pub fn world_rotation(world: &World, e: &world::Entity) -> Quat {
     q.normalize()
 }
 
-/// An entity's world pose and scale (scale from the world matrix's column lengths).
+/// An entity's world pose and scale.
+///
+/// The scale is [`world_scale`]: exact and independent of the entity's own turning. (The world
+/// matrix's column lengths, used before, changed in the last bits as a body turned, so a
+/// collider or joint rebuilt from a moved body came out a little different: a saved joint on a
+/// world anchor then failed to match on load.)
 pub fn world_pose(world: &World, e: &world::Entity) -> (Pose, Vec3) {
+    (world_pose_only(world, e), world_scale(world, e))
+}
+
+/// An entity's world pose without its scale (no allocation; what per-tick callers need).
+pub fn world_pose_only(world: &World, e: &world::Entity) -> Pose {
     let m = e.model();
-    let col = |i: usize| Vec3::new(m.cols[i][0], m.cols[i][1], m.cols[i][2]).length();
-    let p = Vec3::new(m.cols[3][0], m.cols[3][1], m.cols[3][2]);
-    (Pose { p, q: world_rotation(world, e) }, Vec3::new(col(0), col(1), col(2)))
+    Pose { p: Vec3::new(m.cols[3][0], m.cols[3][1], m.cols[3][2]), q: world_rotation(world, e) }
+}
+
+/// An entity's world scale along its own axes, as magnitudes.
+///
+/// Composed from the root down, one level at a time: an entity's axis `i` has the scale
+/// `s_i × |S · R · e_i|`, `S` its parent's world scale and `R` its own rotation (the parent's
+/// rotation turns everything alike, so it never matters). Exact shortcuts keep the common
+/// cases bit for bit equal to the per-axis product (what saves and joint frames rely on): an
+/// unrotated entity, a parent scaled uniformly, and rotations that only swap axes (multiples
+/// of 90°) take the parent's scales as they are, swapped. Only an entity turned at an odd angle
+/// under a non-uniformly scaled parent pays for the general case: its true scale then changes
+/// as it turns (the parent shears it, which no collider follows exactly). No allocation.
+pub fn world_scale(world: &World, e: &world::Entity) -> Vec3 {
+    let abs = |v: Vec3| Vec3::new(v.x.abs(), v.y.abs(), v.z.abs());
+    let Some(parent) = e.parent.and_then(|p| world.get(p)) else { return abs(e.scale) };
+    let acc = world_scale(world, parent);
+    abs(mul3(through_rotation(acc, e.rotation_deg), e.scale))
+}
+
+/// The parent's world scale `acc` as seen along each of a child's axes, the child turned by
+/// `rot_deg` (see [`world_scale`]).
+fn through_rotation(acc: Vec3, rot_deg: Vec3) -> Vec3 {
+    if rot_deg == Vec3::ZERO || (acc.x == acc.y && acc.y == acc.z) {
+        return acc;
+    }
+    let q = Quat::from_euler_xyz_deg(rot_deg.x, rot_deg.y, rot_deg.z);
+    let axes = [q.rotate(Vec3::X), q.rotate(Vec3::Y), q.rotate(Vec3::Z)];
+    let comps = |v: Vec3| [v.x, v.y, v.z];
+    let a = comps(acc);
+    // An axis permutation: each turned axis lies along one of the parent's.
+    let along = |v: Vec3| {
+        let mut at = None;
+        for (k, c) in comps(v).into_iter().enumerate() {
+            if c.abs() > 0.5 {
+                if at.is_some() {
+                    return None;
+                }
+                at = Some(k);
+            } else if c.abs() >= 1e-4 {
+                return None;
+            }
+        }
+        at
+    };
+    if let [Some(i), Some(j), Some(k)] = axes.map(along) {
+        return Vec3::new(a[i], a[j], a[k]);
+    }
+    let len = |v: Vec3| Vec3::new(acc.x * v.x, acc.y * v.y, acc.z * v.z).length();
+    Vec3::new(len(axes[0]), len(axes[1]), len(axes[2]))
 }
 
 fn mul3(a: Vec3, b: Vec3) -> Vec3 {
@@ -1115,6 +1275,24 @@ fn build_shape(c: &Collider, s: Vec3) -> Result<Shape, String> {
             (cell[0] * s.x, cell[1] * s.z),
         )
         .map_err(|e| e.message)?,
+        // Parts scale like the entity (a rotated part under an uneven scale keeps its own
+        // proportions, scaled by the axis it lies along most: close, not exact).
+        ColliderShape::Compound { parts } => {
+            let built = parts
+                .iter()
+                .map(|p| {
+                    let q = Quat::from_euler_xyz_deg(p.rotation_deg.x, p.rotation_deg.y, p.rotation_deg.z);
+                    let along = |axis: Vec3| {
+                        let w = q.rotate(axis);
+                        Vec3::new(w.x.abs(), w.y.abs(), w.z.abs()).dot(s)
+                    };
+                    let part_scale = Vec3::new(along(Vec3::X), along(Vec3::Y), along(Vec3::Z));
+                    let shape = build_shape(&Collider { shape: p.shape.clone(), ..Collider::default() }, part_scale)?;
+                    Ok((Pose::new(mul3(p.offset, s), q), shape))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            Shape::compound(built).map_err(|e| e.message)?
+        }
     };
     Ok(shape)
 }
@@ -1122,7 +1300,9 @@ fn build_shape(c: &Collider, s: Vec3) -> Result<Shape, String> {
 impl Physics {
     /// Forgets everything (a new world).
     pub fn reset(&mut self) {
+        let threads = self.threads;
         *self = Physics::default();
+        self.threads = threads;
     }
 
     /// The bit of a layer name (allocated on first use; "default" is bit 0).
@@ -1307,6 +1487,8 @@ impl Physics {
                 d.lock_angular = body.lock_rotation;
                 d.sleeping = body.sleeping && body.kind == BodyKind::Dynamic;
                 d.ccd = body.ccd;
+                // An entity with a ragdoll doesn't collide with its own parts.
+                d.group = self.ragdolls.group_of(id);
                 if body.character.is_some() {
                     // A character moves by its controller, not by its velocity.
                     d.velocity = Vec3::ZERO;
@@ -1344,8 +1526,18 @@ impl Physics {
                 ids.dedup();
                 for id in ids {
                     match world.get(id) {
-                        Some(e) => self.upsert(world, e),
-                        None => self.forget(id),
+                        Some(e) => {
+                            self.upsert(world, e);
+                            // Joints: the entity's own, and those on it as a body.
+                            self.upsert_joint(world, e);
+                            self.refresh_joints_of(world, id);
+                            self.note_ragdoll(Some(e), id);
+                        }
+                        None => {
+                            self.forget(id);
+                            self.forget_joint(id);
+                            self.note_ragdoll(None, id);
+                        }
                     }
                 }
             }
@@ -1353,12 +1545,26 @@ impl Physics {
                 // The change log doesn't reach back: compare everything (state survives).
                 self.pending.clear();
                 let mut live = BTreeSet::new();
+                let mut live_joints = BTreeSet::new();
                 for e in world.persistent_entities() {
                     if relevant(e) {
                         live.insert(e.id);
                         self.upsert(world, e);
                     }
                 }
+                // Joints after every body (their frames take the bodies' scales).
+                self.ragdolls.persistent.clear();
+                for e in world.persistent_entities() {
+                    if joints::is_joint(e) {
+                        live_joints.insert(e.id);
+                        self.upsert_joint(world, e);
+                    }
+                    if e.props.get(ragdoll::PROP).is_some() {
+                        self.ragdolls.persistent.insert(e.id);
+                    }
+                }
+                self.drop_stale_joints(&live_joints);
+                live.extend(live_joints);
                 let gone: Vec<u64> = self.seen.keys().filter(|k| !live.contains(k)).copied().collect();
                 for id in gone {
                     self.forget(id);
@@ -1422,7 +1628,7 @@ impl Physics {
             if !moved && new_body == body {
                 continue;
             }
-            let mut change = UpdateSpec { body: (new_body != body).then_some(Some(new_body)), ..Default::default() };
+            let (mut position, mut rotation_deg) = (None, None);
             if moved {
                 // Into the parent's frame.
                 let (local_p, local_q) = match e.parent.and_then(|p| world.get(p)) {
@@ -1433,11 +1639,12 @@ impl Physics {
                     }
                     None => (view.pose.p, view.pose.q),
                 };
-                change.position = Some(local_p);
-                change.rotation_deg = Some(specula_physics::math::quat_to_euler_deg(local_q));
+                position = Some(local_p);
+                rotation_deg = Some(specula_physics::math::quat_to_euler_deg(local_q));
             }
             let has_children = world.has_children(id);
-            match world.update(&EntityKey::Id(id), change, AGENT) {
+            // The world's pose-and-body fast path: journaled as a pose, not a copy of the entity.
+            match world.set_motion(id, position, rotation_deg, new_body, AGENT) {
                 Ok(e) => {
                     let (version, cols) = (e.version, mat_cols(&e.model()));
                     if let Some(s) = self.seen.get_mut(&id) {
@@ -1470,7 +1677,9 @@ impl Physics {
         let started = std::time::Instant::now();
         // Simulation input: dmath, not the platform's roundf (DETERMINISM.md rule 4).
         let hz = specula_core::dmath::round(1.0 / dt) as u32;
-        let want = space_settings(settings, hz);
+        let mut want = space_settings(settings, hz);
+        // Threads are the machine's, not the world's (the results never depend on them).
+        want.threads = self.threads;
         if self.space.settings != want {
             // New gravity, substeps or 2D mode: resting bodies must feel it.
             let wake = self.space.settings.gravity != want.gravity || self.space.settings.plane_2d != want.plane_2d || self.space.settings.substeps != want.substeps || self.space.settings.sleep != want.sleep;
@@ -1482,6 +1691,7 @@ impl Physics {
         }
         self.settings_applied = true;
         self.sync(world, generation);
+        self.ragdolls_before_step(world, tick, dt);
         if self.space.is_empty() {
             // Report the empty state's hash once (world_hash must not show a stale one).
             let empty = self.space.hash();
@@ -1497,6 +1707,7 @@ impl Physics {
         self.move_characters(world, dt);
         let report = self.space.step(dt).clone();
         self.write_back(world);
+        self.ragdolls_after_step(world);
         // Physics' own writes are known: skip them in the change log next sync.
         self.synced = Some((generation, world.draw_epoch()));
         for ev in &report.events {
@@ -1526,6 +1737,9 @@ impl Physics {
             awake: report.awake,
             kinetic: report.kinetic_energy,
             gainers: [0, 1].map(|i| report.energy_gainers.get(i).copied().unwrap_or((0, 0.0))),
+            joint: report.worst_joint,
+            limit: report.worst_limit,
+            offset: report.worst_offset,
         });
         if self.hashes.len() == HASHES {
             self.hashes.pop_front();
@@ -1675,6 +1889,92 @@ mod tests {
         }
     }
 
+    /// Review round 4, finding 3, the general case: physics skips an entity whose version and
+    /// place it has already seen. A force-undo restoring a deleted entity used to hand it a
+    /// version it had had (with other content), so a collider change undone that way stayed in
+    /// physics. Restored versions now always go past the entity's last one.
+    #[test]
+    fn a_restored_entity_is_rebuilt_in_physics() {
+        use crate::journal::{UndoRequest, Writer};
+        let mut w = World::default();
+        w.set_recording(Recording::Full);
+        let mut sw = crate::swarm::Swarm::default();
+        let me = Writer { name: "probe", session: None };
+        let id = floor(&mut w);
+        let _ = w.take_changes();
+        let mut p = Physics::default();
+        run(&mut w, &mut p, None, 1);
+        let sphere = Collider { shape: ColliderShape::Sphere { radius: 0.5 }, ..Collider::default() };
+        let (_, seq) = sw.commit(&mut w, 0, me, Kind::Set, |w| w.update(&crate::world::EntityKey::Id(id), crate::world::UpdateSpec { collider: Some(Some(sphere)), ..Default::default() }, "probe").map(|_| ())).unwrap();
+        run(&mut w, &mut p, None, 1);
+        let is_box = |p: &Physics| matches!(p.space.body(id).and_then(|b| b.collider).map(|c| &c.shape), Some(specula_physics::Shape::Box { .. }));
+        assert!(!is_box(&p), "a sphere now");
+        sw.commit(&mut w, 0, me, Kind::Delete, |w| w.delete(&crate::world::EntityKey::Id(id), None).map(|_| ())).unwrap();
+        sw.undo(&mut w, 0, me, &UndoRequest { ids: Some(vec![seq.unwrap()]), count: 1, force: true }).unwrap();
+        run(&mut w, &mut p, None, 1);
+        assert!(is_box(&p), "the restored box is a box in physics too");
+    }
+
+    /// Review round 4, finding 1 (probe shear.py): a child turned under a non-uniformly scaled
+    /// parent gets its collider along its own axes. A [4,1,1] group holding a unit cube turned
+    /// 90° about y: the mesh spans x -2..2, and so must the collider (it spanned -0.5..0.5,
+    /// at right angles to the mesh). Turned 30°, the scale is the general case; unturned, the
+    /// per-axis product, bit for bit.
+    #[test]
+    fn a_turned_child_of_a_stretched_parent_collides_where_it_is_drawn() {
+        let hit_x = |rot_y: f32| {
+            let mut w = World::default();
+            let mut g = SpawnSpec::new(WShape::Group);
+            g.name = Some("g".into());
+            g.scale = Vec3::new(4.0, 1.0, 1.0);
+            let g = w.spawn(g, "t").unwrap().id;
+            let mut c = SpawnSpec::new(WShape::Cube);
+            c.name = Some("c".into());
+            c.parent = Some(crate::world::EntityKey::Id(g));
+            c.rotation_deg = Vec3::new(0.0, rot_y, 0.0);
+            c.collider = Some(Collider::default());
+            let c = w.spawn(c, "t").unwrap().id;
+            let mut p = Physics::default();
+            run(&mut w, &mut p, None, 1);
+            let (hits, _) = p.space.raycast(Vec3::new(10.0, 0.0, 0.0), Vec3::new(-1.0, 0.0, 0.0), 20.0, &specula_physics::space::Filter::default(), 1);
+            let e = w.get(c).unwrap();
+            (10.0 - hits[0].at, world_scale(&w, e))
+        };
+        let (x, s) = hit_x(90.0);
+        assert!((x - 2.0).abs() < 1e-3, "hits the turned cube at x {x} (the mesh's end is 2); scale {s:?}");
+        assert_eq!(s, Vec3::new(1.0, 1.0, 4.0), "an axis swap is exact");
+        let (x, s) = hit_x(0.0);
+        assert!((x - 2.0).abs() < 1e-3 && s == Vec3::new(4.0, 1.0, 1.0), "unturned: {x}, {s:?}");
+        // 30°: the box's corner reaches x = 4·(0.5·cos30 + 0.5·sin30) under the stretch; the
+        // collider is a box along the child's axes, scaled to the stretched lengths of its axes.
+        let (_, s) = hit_x(30.0);
+        let want = |c: f32, sn: f32| ((4.0 * c) * (4.0 * c) + sn * sn).sqrt();
+        let (c30, s30) = (30f32.to_radians().cos(), 30f32.to_radians().sin());
+        assert!((s.x - want(c30, s30)).abs() < 1e-4 && (s.z - want(s30, c30)).abs() < 1e-4 && s.y == 1.0, "{s:?}");
+    }
+
+    /// The world's `physics.coloured` with the engine's threads: the same world, bit for bit, on
+    /// any thread count (threads are the machine's, never in the world or its hash).
+    #[test]
+    fn coloured_physics_is_the_same_on_any_thread_count() {
+        let go = |threads: usize| {
+            let mut w = World::default();
+            floor(&mut w);
+            for i in 0..400u32 {
+                crate_at(&mut w, &format!("c{i}"), Vec3::new((i % 10) as f32 * 1.05 - 5.0, 0.5 + (i / 100) as f32 * 1.1, ((i / 10) % 10) as f32 * 1.05 - 5.0));
+            }
+            let patch = crate::world::EnvPatch { physics: Some(PhysicsPatch { coloured: Some(true), ..PhysicsPatch::default() }), ..crate::world::EnvPatch::default() };
+            w.set_env(&patch).unwrap();
+            let mut p = Physics { threads, ..Physics::default() };
+            run(&mut w, &mut p, None, 60);
+            (w.state_hash(), p.space.hash(), p.space.settings.coloured)
+        };
+        let one = go(1);
+        assert!(one.2, "the world's setting reached the space");
+        assert_eq!(go(4), one);
+        assert_eq!(go(8), one);
+    }
+
     /// Where an engine physics tick goes with 1,000 awake boxes (review round 2, finding 6). Run
     /// with `cargo test --release -p specula --lib bridge_profile -- --ignored --nocapture`.
     #[test]
@@ -1691,7 +1991,10 @@ mod tests {
         settings.sleep = false;
         let mut p = Physics::default();
         p.space.settings = space_settings(&settings, 60);
-        let (mut sync, mut step, mut back, mut changes, mut space_stages) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        if let Some(t) = std::env::var("SPECULA_PHYSICS_THREADS").ok().and_then(|t| t.parse().ok()) {
+            p.space.settings.threads = t;
+        }
+        let (mut sync, mut step, mut back, mut changes, mut space_stages, mut world_hash) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
         let mut j = Journal::default();
         let n = 120u64;
         for tick in 0..n {
@@ -1709,11 +2012,15 @@ mod tests {
             let ch = w.take_changes();
             j.append_snapshot(tick, AGENT, None, Kind::Physics, ch, w.next_id());
             let t4 = std::time::Instant::now();
+            // The engine hashes the world every tick (world_hash, the desync detector).
+            let _ = w.state_hash();
+            let t5 = std::time::Instant::now();
             if tick >= 20 {
                 sync += (t1 - t0).as_secs_f64();
                 step += (t2 - t1).as_secs_f64();
                 back += (t3 - t2).as_secs_f64();
                 changes += (t4 - t3).as_secs_f64();
+                world_hash += (t5 - t4).as_secs_f64();
                 let t = report.times;
                 space_stages += (t.pairs_us + t.narrowphase_us + t.solve_us + t.integrate_us + t.ccd_us) / 1.0e6;
             }
@@ -1721,12 +2028,13 @@ mod tests {
         }
         let ms = |v: f64| v * 1000.0 / (n - 20) as f64;
         println!(
-            "1000 awake boxes, per tick: sync {:.3} ms, space step {:.3} ms (stages {:.3}), write-back + hash {:.3} ms, changes + journal {:.3} ms",
+            "1000 awake boxes, per tick: sync {:.3} ms, space step {:.3} ms (stages {:.3}), write-back + hash {:.3} ms, changes + journal {:.3} ms, world hash {:.3} ms",
             ms(sync),
             ms(step),
             ms(space_stages),
             ms(back),
-            ms(changes)
+            ms(changes),
+            ms(world_hash)
         );
         // The pieces, once over every body.
         let ids: Vec<u64> = p.space.stepped().collect();
@@ -1744,11 +2052,29 @@ mod tests {
             w.update(&EntityKey::Id(*id), change, AGENT).unwrap();
         }
         let update_ms = t.elapsed().as_secs_f64() * 1000.0;
+        let t = std::time::Instant::now();
+        let changes_update = w.take_changes();
+        let take_update_ms = t.elapsed().as_secs_f64() * 1000.0;
+        // The same writes through the pose-and-body fast path (what write-back uses).
+        let t = std::time::Instant::now();
+        for (id, (pose, r)) in ids.iter().zip(poses.iter().zip(&eulers)) {
+            let body = w.get(*id).unwrap().body.unwrap();
+            w.set_motion(*id, Some(pose.p), Some(*r), body, AGENT).unwrap();
+        }
+        let motion_ms = t.elapsed().as_secs_f64() * 1000.0;
+        let t = std::time::Instant::now();
+        let changes_motion = w.take_changes();
+        let take_motion_ms = t.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(changes_update.len(), changes_motion.len());
+        assert!(changes_motion.iter().all(|c| matches!(c, crate::world::Change::Pose { .. })), "recorded as poses");
         w.set_recording(Recording::Full);
         let t = std::time::Instant::now();
         let _ = p.space.hash();
         let hash_ms = t.elapsed().as_secs_f64() * 1000.0;
-        println!("pieces over {} bodies: world_pose {world_pose_ms:.3} ms, quat_to_euler {euler_ms:.3} ms, world.update {update_ms:.3} ms, space hash {hash_ms:.3} ms", ids.len());
+        println!(
+            "pieces over {} bodies: world_pose {world_pose_ms:.3} ms, quat_to_euler {euler_ms:.3} ms, world.update {update_ms:.3} ms + snapshot {take_update_ms:.3} ms, world.set_motion {motion_ms:.3} ms + snapshot {take_motion_ms:.3} ms, space hash {hash_ms:.3} ms",
+            ids.len()
+        );
     }
 
     #[test]
@@ -2040,5 +2366,38 @@ mod tests {
         run(&mut w, &mut p, None, 2);
         assert_ne!(p.hash(), Some(stale));
         assert_eq!(p.hash(), Some(specula_physics::Space::default().hash()));
+    }
+
+    /// Compound colliders: parsed, validated, round-tripped, hashed and simulated as one body.
+    #[test]
+    fn compound_colliders_are_one_body_of_several_shapes() {
+        let j = Json::parse(
+            r#"{"collider":{"shape":"compound","parts":[{"shape":"box","size":[1,0.1,0.6],"offset":[0,0.45,0]},
+                {"shape":"sphere","radius":0.2,"offset":[0.4,0.2,0.25]},{"shape":"sphere","radius":0.2,"offset":[-0.4,0.2,0.25]},
+                {"shape":"capsule","radius":0.1,"height":0.7,"offset":[0,0.2,-0.25],"rotation_deg":[0,0,90]}]}}"#,
+        )
+        .unwrap();
+        let c = collider_arg(&j).unwrap().unwrap().unwrap();
+        c.validate().unwrap();
+        assert_eq!(collider_arg(&Json::obj([("collider", c.to_json())])).unwrap().unwrap().unwrap(), c, "round trip");
+        let bad = |t: &str| collider_arg(&Json::parse(t).unwrap()).and_then(|c| c.unwrap().unwrap().validate().map_err(|e| e.message)).unwrap_err();
+        assert!(bad(r#"{"collider":{"shape":"compound","parts":[]}}"#).contains("1 to 16"));
+        assert!(bad(r#"{"collider":{"shape":"compound","parts":[{"shape":"heightfield"}]}}"#).contains("box, sphere, capsule or hull"));
+        assert!(bad(r#"{"collider":{"shape":"compound","parts":[{"shape":"box","layer":"x"}]}}"#).contains("not a field"));
+        // A cart (a deck on two wheels and an axle) dropped on the floor rests on its parts.
+        let mut w = World::default();
+        floor(&mut w);
+        let mut s = SpawnSpec::new(WShape::Group);
+        s.name = Some("cart".into());
+        s.position = Vec3::new(0.0, 2.0, 0.0);
+        s.collider = Some(c);
+        s.body = Some(Body::new(BodyKind::Dynamic, 30.0));
+        let id = w.spawn(s, "t").unwrap().id;
+        let mut p = Physics::default();
+        run(&mut w, &mut p, None, 240);
+        assert!(p.problems.is_empty(), "{:?}", p.problems);
+        let e = w.get(id).unwrap();
+        assert!(e.position.y > -0.05 && e.position.y < 0.15, "resting on its wheels and axle: {:?}", e.position);
+        assert!(e.body.unwrap().sleeping, "{:?}", e.body);
     }
 }

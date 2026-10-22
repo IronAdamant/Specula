@@ -355,8 +355,9 @@ pub fn frame_extra_schema() -> Vec<(&'static str, Json)> {
                          tinted per owner, with owner names), skeletons (bones and joints of rigged models, rest pose), \
                          lods (each model's LOD level and triangles), colliders (physics collider wireframes: grey \
                          static, yellow kinematic, green awake, blue asleep, magenta triggers), contacts (physics contact \
-                         points with their normals: red penetrating, orange touching, green speculative). The packet's \
-                         'overlays' says what was drawn.",
+                         points with their normals: red penetrating, orange touching, green speculative), joints (physics \
+                         joints: anchors, yellow axes, hinge limit arcs; teal holding, orange strained, red past a limit \
+                         or apart, grey inactive). The packet's 'overlays' says what was drawn.",
                     ),
                 ),
             ]),

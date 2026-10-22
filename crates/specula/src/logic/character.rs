@@ -26,6 +26,9 @@ pub trait CharacterMover {
     /// Moves entity `id` by `motion` (metres, world axes, gravity included) and sets its
     /// position, attributing the change to `by`.
     fn move_character(&mut self, world: &mut World, id: u64, motion: Vec3, by: &str) -> Result<Moved, WorldError>;
+
+    /// For the engine to reach its own controller's state (e.g. lend it the physics space).
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
 /// Highest step a character walks up without jumping.
@@ -66,6 +69,21 @@ impl Kinematic {
                     let (y0, y1) = heights.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), h| (a.min(*h), b.max(*h)));
                     (Vec3::new(-hx, y0, -hz), Vec3::new(hx, y1, hz))
                 }
+                // Each part's reach around its offset (rotation ignored: a little generous).
+                ColliderShape::Compound { parts } => {
+                    let reach = |s: &ColliderShape| match s {
+                        ColliderShape::Box { size } => size.length() * 0.5,
+                        ColliderShape::Sphere { radius } => *radius,
+                        ColliderShape::Capsule { height, .. } => height * 0.5,
+                        ColliderShape::Hull { points } => points.iter().map(|p| p.length()).fold(0.0f32, f32::max),
+                        _ => 0.0,
+                    };
+                    let corners: Vec<Vec3> = parts.iter().flat_map(|p| {
+                        let r = reach(&p.shape);
+                        [p.offset - Vec3::new(r, r, r), p.offset + Vec3::new(r, r, r)]
+                    }).collect();
+                    bounds(&corners)
+                }
             };
             if llo.x > lhi.x {
                 continue;
@@ -98,7 +116,11 @@ fn footprint_hits(b: &Aabb, x: f32, z: f32, r: f32) -> bool {
 
 impl CharacterMover for Kinematic {
     fn name(&self) -> &str {
-        "kinematic placeholder (until physics P2)"
+        "kinematic placeholder (no physics space)"
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 
     fn move_character(&mut self, world: &mut World, id: u64, motion: Vec3, by: &str) -> Result<Moved, WorldError> {

@@ -734,6 +734,17 @@ fn collider_tris(m: &Mat4, c: &physics::Collider) -> Option<(Vec<Triangle>, bool
             }
             (out, false)
         }
+        // A compound: each part where it sits (solid, as its parts are).
+        ColliderShape::Compound { parts } => {
+            let mut out = Vec::new();
+            for p in parts.iter() {
+                let rot = specula_core::math::Quat::from_euler_xyz_deg(p.rotation_deg.x, p.rotation_deg.y, p.rotation_deg.z);
+                let pm = *m * Mat4::from_trs(o + p.offset, rot, Vec3::ONE);
+                let part = physics::Collider { shape: p.shape.clone(), offset: Vec3::ZERO, ..c.clone() };
+                out.extend(collider_tris(&pm, &part)?.0);
+            }
+            (out, true)
+        }
     })
 }
 
