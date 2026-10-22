@@ -387,7 +387,10 @@ impl Window {
         let i = index as usize;
         self.graph.bind_image(res.out, self.images[i], self.views[i]);
 
-        dev.begin(f.cmd)?;
+        {
+            let _z = specula_core::profile::zone("gpu.frame_begin");
+            dev.begin(f.cmd)?;
+        }
         if let Some(t) = f.timer.as_mut() {
             t.begin_frame(dev, f.cmd, frame_no);
         }
