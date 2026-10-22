@@ -2030,7 +2030,9 @@ pub struct World {
     joint_sides: BTreeMap<u64, [Option<u64>; 2]>,
     /// The last version of each persistent entity removed from the world (dropped when it comes
     /// back): a restored entity's version goes past it, so no version ever names two states
-    /// (caches keyed on versions, `expect_version`). Not state: never hashed or saved.
+    /// (caches keyed on versions, `expect_version`). Only ids an undo can still restore matter,
+    /// so the swarm prunes it to the journal's ring ([`World::retain_retired`]). Not state: never
+    /// hashed or saved; a loaded world starts without it (its journal starts empty too).
     retired: BTreeMap<u64, u64>,
     /// Bumped whenever an entity that may own a mesh (lathe, model) comes, goes or changes its
     /// mesh, so the engine re-syncs GPU meshes only then.
@@ -3199,6 +3201,16 @@ impl World {
     /// removed); 0 if never. A restored entity must take a higher one.
     pub fn version_floor(&self, id: u64) -> u64 {
         self.entities.get(&id).map_or(0, |e| e.version).max(self.retired.get(&id).copied().unwrap_or(0))
+    }
+
+    /// How many removed entities' last versions are kept (see [`World::version_floor`]).
+    pub fn retired_len(&self) -> usize {
+        self.retired.len()
+    }
+
+    /// Keeps only the removed entities' last versions `keep` says an undo can still need.
+    pub fn retain_retired(&mut self, keep: impl Fn(u64) -> bool) {
+        self.retired.retain(|id, _| keep(*id));
     }
 
     /// Whether any persistent entity holds joint data.

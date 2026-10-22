@@ -544,12 +544,26 @@ impl Journal {
         let mut copy = base.clone();
         copy.set_recording(Recording::Off);
         copy.take_changes();
+        // The base only replays recorded states; it never restores (nothing older than it can
+        // be undone), so it keeps no removed entities' versions.
+        copy.retain_retired(|_| false);
         // Replays only rebuild state; they never draw, so they never build models.
         copy.set_model_source(None);
         self.base_hash = copy.state_hash();
         self.next_id_seen = copy.next_id();
         self.base = copy;
         self.base_label = label.to_owned();
+    }
+
+    /// Every entity id an entry still in the journal touches (what an undo could restore).
+    pub fn ids_in_ring(&self) -> BTreeSet<u64> {
+        let mut ids = BTreeSet::new();
+        for ring in [&self.agents, &self.game] {
+            for e in &ring.entries {
+                ids.extend(e.ids.iter().copied().filter(|id| *id != 0));
+            }
+        }
+        ids
     }
 
     fn intern(&mut self, name: &str) -> Arc<str> {
