@@ -57,7 +57,10 @@ float fog_transmittance(Frame f, vec3 dir, float dist, bool to_infinity) {
 
 // The fog's colour seen along `dir`: brighter towards the sun.
 vec3 fog_radiance(Frame f, vec3 dir) {
-    float s = pow(max(dot(dir, f.sun_dir.xyz), 0.0), 8.0);
+    float s = max(dot(dir, f.sun_dir.xyz), 0.0);
+    s *= s;
+    s *= s;
+    s *= s; // the 8th power, by multiplication (pow is two transcendentals per pixel)
     return f.fog_color.rgb + f.sun_color.rgb * (f.fog_params.w * s);
 }
 

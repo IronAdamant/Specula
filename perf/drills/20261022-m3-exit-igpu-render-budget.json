@@ -1,0 +1,2391 @@
+{
+ "schema": "specula.drill/v1",
+ "what": "scripts/m3_exit.py --adapter integrated (Sepulcra, Lex rules, 1280x720 window, 600 frames per capture), Intel RaptorLake-S iGPU, 240 Hz laptop panel, with Discord, Brave, Obsidian, Steam, Teams and Edge open",
+ "note": "v2_nocap_1 is an intermediate build (scene optimisations, FXAA luma, no cap); the before numbers of main itself are the integrator's three runs (target/m3-exit/integrated*) and perf_lane base runs in the lane report",
+ "groups": {
+  "before (main 6785d29, uncapped), quiet machine": [
+   {
+    "run": "v2_nocap_1",
+    "max_fps": null,
+    "passed": false,
+    "validation_errors": 0,
+    "replay": "verified",
+    "end": "won",
+    "measured": [
+     {
+      "label": "busy_wave",
+      "wave": 6,
+      "enemies": 18,
+      "frame_ms": {
+       "mean": 11.366,
+       "p95": 21.824,
+       "max": 50.932
+      },
+      "gpu_ms": {
+       "mean": 7.015,
+       "p95": 10.383,
+       "max": 14.027
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.355,
+        "p95": 0.419,
+        "max": 4.723
+       },
+       "scene": {
+        "mean": 3.005,
+        "p95": 5.216,
+        "max": 9.049
+       },
+       "ssao": {
+        "mean": 0.474,
+        "p95": 0.605,
+        "max": 3.11
+       },
+       "ssao_blur": {
+        "mean": 0.342,
+        "p95": 1.521,
+        "max": 4.36
+       },
+       "post_bloom": {
+        "mean": 0.681,
+        "p95": 0.901,
+        "max": 4.74
+       },
+       "post_tonemap": {
+        "mean": 1.196,
+        "p95": 1.624,
+        "max": 5.041
+       },
+       "post_fxaa": {
+        "mean": 0.574,
+        "p95": 2.205,
+        "max": 7.068
+       },
+       "overlay": {
+        "mean": 0.381,
+        "p95": 0.396,
+        "max": 6.457
+       }
+      },
+      "budget_misses": [
+       {
+        "error": "frame_pacing_over_budget",
+        "metric": "frame_pacing_p95_ms",
+        "value": 21.824,
+        "budget": 20.9,
+        "unit": "ms",
+        "adapter": "integrated"
+       }
+      ],
+      "desktop_apps": {
+       "brave": 22,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {},
+      "other_engines_running": 0,
+      "compilers_running": 0,
+      "passed": false
+     },
+     {
+      "label": "boss_wave",
+      "wave": 10,
+      "enemies": 3,
+      "frame_ms": {
+       "mean": 9.819,
+       "p95": 15.477,
+       "max": 31.294
+      },
+      "gpu_ms": {
+       "mean": 6.761,
+       "p95": 9.44,
+       "max": 12.44
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.306,
+        "p95": 0.351,
+        "max": 3.481
+       },
+       "scene": {
+        "mean": 3.143,
+        "p95": 5.194,
+        "max": 6.679
+       },
+       "ssao": {
+        "mean": 0.524,
+        "p95": 0.647,
+        "max": 3.723
+       },
+       "ssao_blur": {
+        "mean": 0.296,
+        "p95": 0.32,
+        "max": 2.923
+       },
+       "post_bloom": {
+        "mean": 0.639,
+        "p95": 0.912,
+        "max": 3.576
+       },
+       "post_tonemap": {
+        "mean": 1.052,
+        "p95": 1.392,
+        "max": 3.708
+       },
+       "post_fxaa": {
+        "mean": 0.514,
+        "p95": 1.964,
+        "max": 3.578
+       },
+       "overlay": {
+        "mean": 0.281,
+        "p95": 0.33,
+        "max": 3.486
+       }
+      },
+      "budget_misses": [],
+      "desktop_apps": {
+       "brave": 23,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {},
+      "other_engines_running": 0,
+      "compilers_running": 0,
+      "passed": true
+     }
+    ]
+   }
+  ],
+  "clean: final build, no other engine": [
+   {
+    "run": "clean_0_nocap",
+    "max_fps": null,
+    "passed": true,
+    "validation_errors": 0,
+    "replay": "verified",
+    "end": "won",
+    "measured": [
+     {
+      "label": "busy_wave",
+      "wave": 6,
+      "enemies": 18,
+      "frame_ms": {
+       "mean": 8.982,
+       "p95": 16.007,
+       "max": 235.314
+      },
+      "gpu_ms": {
+       "mean": 5.048,
+       "p95": 6.905,
+       "max": 65.561
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.245,
+        "p95": 0.337,
+        "max": 2.371
+       },
+       "scene": {
+        "mean": 2.124,
+        "p95": 3.018,
+        "max": 38.265
+       },
+       "ssao": {
+        "mean": 0.598,
+        "p95": 0.827,
+        "max": 18.228
+       },
+       "post_bloom": {
+        "mean": 0.507,
+        "p95": 0.702,
+        "max": 4.879
+       },
+       "post_tonemap": {
+        "mean": 0.93,
+        "p95": 1.333,
+        "max": 9.366
+       },
+       "post_fxaa": {
+        "mean": 0.396,
+        "p95": 1.045,
+        "max": 23.504
+       },
+       "overlay": {
+        "mean": 0.242,
+        "p95": 0.316,
+        "max": 2.195
+       }
+      },
+      "budget_misses": [],
+      "desktop_apps": {
+       "brave": 20,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {
+       "engine": [
+        66.3,
+        82.2
+       ],
+       "dwm": [
+        9.1,
+        20.8
+       ],
+       "System": [
+        0.0,
+        0.1
+       ]
+      },
+      "other_engines_running": 0,
+      "compilers_running": 0,
+      "passed": true
+     },
+     {
+      "label": "boss_wave",
+      "wave": 10,
+      "enemies": 3,
+      "frame_ms": {
+       "mean": 6.926,
+       "p95": 11.484,
+       "max": 16.176
+      },
+      "gpu_ms": {
+       "mean": 4.594,
+       "p95": 5.887,
+       "max": 7.339
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.208,
+        "p95": 0.268,
+        "max": 0.304
+       },
+       "scene": {
+        "mean": 2.05,
+        "p95": 2.628,
+        "max": 2.98
+       },
+       "ssao": {
+        "mean": 0.51,
+        "p95": 0.653,
+        "max": 2.319
+       },
+       "post_bloom": {
+        "mean": 0.456,
+        "p95": 0.582,
+        "max": 0.659
+       },
+       "post_tonemap": {
+        "mean": 0.868,
+        "p95": 1.11,
+        "max": 1.264
+       },
+       "post_fxaa": {
+        "mean": 0.289,
+        "p95": 0.369,
+        "max": 1.198
+       },
+       "overlay": {
+        "mean": 0.208,
+        "p95": 0.269,
+        "max": 1.31
+       }
+      },
+      "budget_misses": [],
+      "desktop_apps": {
+       "brave": 21,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {
+       "engine": [
+        81.7,
+        85.2
+       ],
+       "dwm": [
+        0.2,
+        0.3
+       ]
+      },
+      "other_engines_running": 0,
+      "compilers_running": 0,
+      "passed": true
+     }
+    ]
+   },
+   {
+    "run": "clean_1_nocap",
+    "max_fps": null,
+    "passed": true,
+    "validation_errors": 0,
+    "replay": "verified",
+    "end": "won",
+    "measured": [
+     {
+      "label": "busy_wave",
+      "wave": 6,
+      "enemies": 18,
+      "frame_ms": {
+       "mean": 7.921,
+       "p95": 14.311,
+       "max": 22.396
+      },
+      "gpu_ms": {
+       "mean": 5.048,
+       "p95": 7.038,
+       "max": 12.621
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.256,
+        "p95": 0.342,
+        "max": 1.447
+       },
+       "scene": {
+        "mean": 2.113,
+        "p95": 2.932,
+        "max": 4.275
+       },
+       "ssao": {
+        "mean": 0.583,
+        "p95": 0.798,
+        "max": 2.531
+       },
+       "post_bloom": {
+        "mean": 0.514,
+        "p95": 0.712,
+        "max": 1.643
+       },
+       "post_tonemap": {
+        "mean": 0.971,
+        "p95": 1.366,
+        "max": 1.548
+       },
+       "post_fxaa": {
+        "mean": 0.363,
+        "p95": 0.446,
+        "max": 5.506
+       },
+       "overlay": {
+        "mean": 0.244,
+        "p95": 0.336,
+        "max": 5.724
+       }
+      },
+      "budget_misses": [],
+      "desktop_apps": {
+       "brave": 21,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {
+       "engine": [
+        82.4,
+        87.6
+       ],
+       "dwm": [
+        0.6,
+        1.0
+       ]
+      },
+      "other_engines_running": 0,
+      "compilers_running": 0,
+      "passed": true
+     },
+     {
+      "label": "boss_wave",
+      "wave": 10,
+      "enemies": 3,
+      "frame_ms": {
+       "mean": 6.872,
+       "p95": 11.725,
+       "max": 15.605
+      },
+      "gpu_ms": {
+       "mean": 4.428,
+       "p95": 5.046,
+       "max": 6.184
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.2,
+        "p95": 0.229,
+        "max": 0.241
+       },
+       "scene": {
+        "mean": 1.975,
+        "p95": 2.263,
+        "max": 2.355
+       },
+       "ssao": {
+        "mean": 0.493,
+        "p95": 0.556,
+        "max": 2.156
+       },
+       "post_bloom": {
+        "mean": 0.441,
+        "p95": 0.499,
+        "max": 0.528
+       },
+       "post_tonemap": {
+        "mean": 0.839,
+        "p95": 0.953,
+        "max": 1.017
+       },
+       "post_fxaa": {
+        "mean": 0.278,
+        "p95": 0.314,
+        "max": 1.443
+       },
+       "overlay": {
+        "mean": 0.198,
+        "p95": 0.23,
+        "max": 1.056
+       }
+      },
+      "budget_misses": [],
+      "desktop_apps": {
+       "brave": 21,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {
+       "engine": [
+        79.8,
+        81.8
+       ],
+       "dwm": [
+        0.2,
+        0.3
+       ]
+      },
+      "other_engines_running": 0,
+      "compilers_running": 0,
+      "passed": true
+     }
+    ]
+   },
+   {
+    "run": "clean_2_cap60",
+    "max_fps": 60,
+    "passed": true,
+    "validation_errors": 0,
+    "replay": "verified",
+    "end": "won",
+    "measured": [
+     {
+      "label": "busy_wave",
+      "wave": 6,
+      "enemies": 18,
+      "frame_ms": {
+       "mean": 16.223,
+       "p95": 17.616,
+       "max": 18.99
+      },
+      "gpu_ms": {
+       "mean": 4.069,
+       "p95": 4.351,
+       "max": 5.957
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.201,
+        "p95": 0.207,
+        "max": 0.81
+       },
+       "scene": {
+        "mean": 1.728,
+        "p95": 1.822,
+        "max": 3.493
+       },
+       "ssao": {
+        "mean": 0.466,
+        "p95": 0.47,
+        "max": 1.256
+       },
+       "post_bloom": {
+        "mean": 0.418,
+        "p95": 0.43,
+        "max": 0.516
+       },
+       "post_tonemap": {
+        "mean": 0.792,
+        "p95": 0.806,
+        "max": 1.548
+       },
+       "post_fxaa": {
+        "mean": 0.263,
+        "p95": 0.262,
+        "max": 1.574
+       },
+       "overlay": {
+        "mean": 0.197,
+        "p95": 0.217,
+        "max": 1.155
+       }
+      },
+      "budget_misses": [],
+      "desktop_apps": {
+       "brave": 20,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {
+       "engine": [
+        31.0,
+        31.4
+       ],
+       "dwm": [
+        0.7,
+        1.4
+       ]
+      },
+      "other_engines_running": 0,
+      "compilers_running": 0,
+      "passed": true
+     },
+     {
+      "label": "boss_wave",
+      "wave": 10,
+      "enemies": 3,
+      "frame_ms": {
+       "mean": 16.177,
+       "p95": 17.474,
+       "max": 24.7
+      },
+      "gpu_ms": {
+       "mean": 4.192,
+       "p95": 4.23,
+       "max": 5.212
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.193,
+        "p95": 0.199,
+        "max": 0.858
+       },
+       "scene": {
+        "mean": 1.872,
+        "p95": 1.912,
+        "max": 2.742
+       },
+       "ssao": {
+        "mean": 0.467,
+        "p95": 0.468,
+        "max": 1.311
+       },
+       "post_bloom": {
+        "mean": 0.419,
+        "p95": 0.426,
+        "max": 1.131
+       },
+       "post_tonemap": {
+        "mean": 0.792,
+        "p95": 0.804,
+        "max": 1.796
+       },
+       "post_fxaa": {
+        "mean": 0.264,
+        "p95": 0.267,
+        "max": 1.054
+       },
+       "overlay": {
+        "mean": 0.181,
+        "p95": 0.192,
+        "max": 0.199
+       }
+      },
+      "budget_misses": [],
+      "desktop_apps": {
+       "brave": 21,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {
+       "engine": [
+        32.2,
+        32.4
+       ],
+       "dwm": [
+        0.4,
+        0.7
+       ]
+      },
+      "other_engines_running": 0,
+      "compilers_running": 0,
+      "passed": true
+     }
+    ]
+   },
+   {
+    "run": "clean_3_nocap",
+    "max_fps": null,
+    "passed": true,
+    "validation_errors": 0,
+    "replay": "verified",
+    "end": "won",
+    "measured": [
+     {
+      "label": "busy_wave",
+      "wave": 6,
+      "enemies": 18,
+      "frame_ms": {
+       "mean": 9.184,
+       "p95": 16.818,
+       "max": 176.422
+      },
+      "gpu_ms": {
+       "mean": 5.929,
+       "p95": 7.875,
+       "max": 171.302
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.259,
+        "p95": 0.343,
+        "max": 1.967
+       },
+       "scene": {
+        "mean": 2.273,
+        "p95": 3.266,
+        "max": 21.16
+       },
+       "ssao": {
+        "mean": 0.857,
+        "p95": 0.878,
+        "max": 148.971
+       },
+       "post_bloom": {
+        "mean": 0.563,
+        "p95": 0.849,
+        "max": 4.876
+       },
+       "post_tonemap": {
+        "mean": 1.041,
+        "p95": 1.394,
+        "max": 16.443
+       },
+       "post_fxaa": {
+        "mean": 0.655,
+        "p95": 1.001,
+        "max": 108.112
+       },
+       "overlay": {
+        "mean": 0.276,
+        "p95": 0.4,
+        "max": 2.321
+       }
+      },
+      "budget_misses": [],
+      "desktop_apps": {
+       "brave": 21,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {
+       "engine": [
+        65.5,
+        84.1
+       ],
+       "dwm": [
+        13.3,
+        28.6
+       ],
+       "System": [
+        0.1,
+        0.1
+       ]
+      },
+      "other_engines_running": 0,
+      "compilers_running": 0,
+      "passed": true
+     },
+     {
+      "label": "boss_wave",
+      "wave": 10,
+      "enemies": 3,
+      "frame_ms": {
+       "mean": 7.074,
+       "p95": 11.707,
+       "max": 16.856
+      },
+      "gpu_ms": {
+       "mean": 4.699,
+       "p95": 5.512,
+       "max": 6.462
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.208,
+        "p95": 0.236,
+        "max": 0.25
+       },
+       "scene": {
+        "mean": 2.103,
+        "p95": 2.477,
+        "max": 3.75
+       },
+       "ssao": {
+        "mean": 0.518,
+        "p95": 0.585,
+        "max": 1.356
+       },
+       "post_bloom": {
+        "mean": 0.468,
+        "p95": 0.527,
+        "max": 1.204
+       },
+       "post_tonemap": {
+        "mean": 0.888,
+        "p95": 1.006,
+        "max": 2.136
+       },
+       "post_fxaa": {
+        "mean": 0.296,
+        "p95": 0.333,
+        "max": 1.188
+       },
+       "overlay": {
+        "mean": 0.212,
+        "p95": 0.242,
+        "max": 1.122
+       }
+      },
+      "budget_misses": [],
+      "desktop_apps": {
+       "brave": 20,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {
+       "engine": [
+        79.7,
+        83.4
+       ],
+       "dwm": [
+        0.7,
+        0.9
+       ]
+      },
+      "other_engines_running": 0,
+      "compilers_running": 0,
+      "passed": true
+     }
+    ]
+   },
+   {
+    "run": "clean_4_nocap",
+    "max_fps": null,
+    "passed": true,
+    "validation_errors": 0,
+    "replay": "verified",
+    "end": "won",
+    "measured": [
+     {
+      "label": "busy_wave",
+      "wave": 6,
+      "enemies": 18,
+      "frame_ms": {
+       "mean": 8.096,
+       "p95": 17.554,
+       "max": 51.552
+      },
+      "gpu_ms": {
+       "mean": 4.449,
+       "p95": 6.809,
+       "max": 22.896
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.226,
+        "p95": 0.337,
+        "max": 1.623
+       },
+       "scene": {
+        "mean": 1.871,
+        "p95": 2.874,
+        "max": 4.046
+       },
+       "ssao": {
+        "mean": 0.506,
+        "p95": 0.785,
+        "max": 1.364
+       },
+       "post_bloom": {
+        "mean": 0.456,
+        "p95": 0.703,
+        "max": 1.003
+       },
+       "post_tonemap": {
+        "mean": 0.866,
+        "p95": 1.34,
+        "max": 1.925
+       },
+       "post_fxaa": {
+        "mean": 0.309,
+        "p95": 0.438,
+        "max": 14.54
+       },
+       "overlay": {
+        "mean": 0.21,
+        "p95": 0.333,
+        "max": 1.065
+       }
+      },
+      "budget_misses": [],
+      "desktop_apps": {
+       "brave": 20,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {
+       "engine": [
+        75.4,
+        80.1
+       ],
+       "dwm": [
+        0.6,
+        1.6
+       ]
+      },
+      "other_engines_running": 0,
+      "compilers_running": 0,
+      "passed": true
+     },
+     {
+      "label": "boss_wave",
+      "wave": 10,
+      "enemies": 2,
+      "frame_ms": {
+       "mean": 6.73,
+       "p95": 11.364,
+       "max": 15.243
+      },
+      "gpu_ms": {
+       "mean": 4.298,
+       "p95": 5.184,
+       "max": 5.619
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.193,
+        "p95": 0.218,
+        "max": 0.248
+       },
+       "scene": {
+        "mean": 1.913,
+        "p95": 2.237,
+        "max": 3.014
+       },
+       "ssao": {
+        "mean": 0.476,
+        "p95": 0.53,
+        "max": 1.69
+       },
+       "post_bloom": {
+        "mean": 0.435,
+        "p95": 0.494,
+        "max": 1.809
+       },
+       "post_tonemap": {
+        "mean": 0.808,
+        "p95": 0.907,
+        "max": 1.858
+       },
+       "post_fxaa": {
+        "mean": 0.279,
+        "p95": 0.313,
+        "max": 1.414
+       },
+       "overlay": {
+        "mean": 0.19,
+        "p95": 0.219,
+        "max": 1.271
+       }
+      },
+      "budget_misses": [],
+      "desktop_apps": {
+       "brave": 21,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {
+       "engine": [
+        78.0,
+        78.9
+       ],
+       "dwm": [
+        0.8,
+        2.1
+       ]
+      },
+      "other_engines_running": 0,
+      "compilers_running": 0,
+      "passed": true
+     }
+    ]
+   },
+   {
+    "run": "clean_5_cap60",
+    "max_fps": 60,
+    "passed": false,
+    "validation_errors": 0,
+    "replay": "verified",
+    "end": "won",
+    "measured": [
+     {
+      "label": "busy_wave",
+      "wave": 6,
+      "enemies": 18,
+      "frame_ms": {
+       "mean": 16.279,
+       "p95": 17.568,
+       "max": 19.036
+      },
+      "gpu_ms": {
+       "mean": 6.929,
+       "p95": 8.248,
+       "max": 8.678
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.29,
+        "p95": 0.298,
+        "max": 1.562
+       },
+       "scene": {
+        "mean": 3.411,
+        "p95": 4.873,
+        "max": 5.471
+       },
+       "ssao": {
+        "mean": 1.076,
+        "p95": 2.364,
+        "max": 2.635
+       },
+       "post_bloom": {
+        "mean": 0.522,
+        "p95": 1.703,
+        "max": 2.076
+       },
+       "post_tonemap": {
+        "mean": 0.831,
+        "p95": 0.845,
+        "max": 2.602
+       },
+       "post_fxaa": {
+        "mean": 0.553,
+        "p95": 1.857,
+        "max": 2.088
+       },
+       "overlay": {
+        "mean": 0.242,
+        "p95": 0.23,
+        "max": 1.895
+       }
+      },
+      "budget_misses": [],
+      "desktop_apps": {
+       "brave": 21,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {
+       "engine": [
+        43.5,
+        47.0
+       ],
+       "dwm": [
+        7.3,
+        7.6
+       ],
+       "System": [
+        0.0,
+        0.1
+       ]
+      },
+      "other_engines_running": 0,
+      "compilers_running": 0,
+      "passed": true
+     },
+     {
+      "label": "boss_wave",
+      "wave": 10,
+      "enemies": 3,
+      "frame_ms": {
+       "mean": 19.047,
+       "p95": 24.238,
+       "max": 323.846
+      },
+      "gpu_ms": {
+       "mean": 8.206,
+       "p95": 9.552,
+       "max": 161.368
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.293,
+        "p95": 0.412,
+        "max": 3.569
+       },
+       "scene": {
+        "mean": 4.252,
+        "p95": 5.39,
+        "max": 129.053
+       },
+       "ssao": {
+        "mean": 1.222,
+        "p95": 2.35,
+        "max": 32.486
+       },
+       "post_bloom": {
+        "mean": 0.576,
+        "p95": 1.693,
+        "max": 4.931
+       },
+       "post_tonemap": {
+        "mean": 0.906,
+        "p95": 1.312,
+        "max": 9.415
+       },
+       "post_fxaa": {
+        "mean": 0.581,
+        "p95": 1.823,
+        "max": 44.511
+       },
+       "overlay": {
+        "mean": 0.371,
+        "p95": 0.513,
+        "max": 55.457
+       }
+      },
+      "budget_misses": [
+       {
+        "error": "frame_pacing_over_budget",
+        "metric": "frame_pacing_p95_ms",
+        "value": 24.238,
+        "budget": 20.9,
+        "unit": "ms",
+        "adapter": "integrated"
+       }
+      ],
+      "desktop_apps": {
+       "brave": 21,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {
+       "engine": [
+        43.9,
+        48.2
+       ],
+       "dwm": [
+        13.1,
+        40.1
+       ],
+       "System": [
+        0.0,
+        0.1
+       ]
+      },
+      "other_engines_running": 0,
+      "compilers_running": 0,
+      "passed": false
+     }
+    ]
+   }
+  ],
+  "contended: final build with a second Sepulcra engine (60 fps, ~33% of the iGPU) left running": [
+   {
+    "run": "final_0_nocap",
+    "max_fps": null,
+    "passed": true,
+    "validation_errors": 0,
+    "replay": "verified",
+    "end": "won",
+    "measured": [
+     {
+      "label": "busy_wave",
+      "wave": 6,
+      "enemies": 18,
+      "frame_ms": {
+       "mean": 9.035,
+       "p95": 18.11,
+       "max": 24.832
+      },
+      "gpu_ms": {
+       "mean": 4.46,
+       "p95": 4.884,
+       "max": 9.437
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.221,
+        "p95": 0.24,
+        "max": 0.282
+       },
+       "scene": {
+        "mean": 1.897,
+        "p95": 2.091,
+        "max": 6.912
+       },
+       "ssao": {
+        "mean": 0.509,
+        "p95": 0.556,
+        "max": 0.945
+       },
+       "post_bloom": {
+        "mean": 0.458,
+        "p95": 0.498,
+        "max": 0.76
+       },
+       "post_tonemap": {
+        "mean": 0.87,
+        "p95": 0.947,
+        "max": 1.124
+       },
+       "post_fxaa": {
+        "mean": 0.284,
+        "p95": 0.308,
+        "max": 1.238
+       },
+       "overlay": {
+        "mean": 0.216,
+        "p95": 0.258,
+        "max": 2.237
+       }
+      },
+      "budget_misses": [],
+      "desktop_apps": {
+       "brave": 22,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {
+       "engine": [
+        60.4,
+        61.3
+       ],
+       "sepulcra": [
+        33.4,
+        34.0
+       ],
+       "dwm": [
+        0.1,
+        0.1
+       ]
+      },
+      "other_engines_running": 1,
+      "compilers_running": 0,
+      "passed": true
+     },
+     {
+      "label": "boss_wave",
+      "wave": 10,
+      "enemies": 3,
+      "frame_ms": {
+       "mean": 9.291,
+       "p95": 17.837,
+       "max": 27.077
+      },
+      "gpu_ms": {
+       "mean": 4.584,
+       "p95": 4.807,
+       "max": 5.972
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.209,
+        "p95": 0.219,
+        "max": 1.793
+       },
+       "scene": {
+        "mean": 2.053,
+        "p95": 2.155,
+        "max": 2.658
+       },
+       "ssao": {
+        "mean": 0.507,
+        "p95": 0.532,
+        "max": 0.63
+       },
+       "post_bloom": {
+        "mean": 0.458,
+        "p95": 0.48,
+        "max": 1.699
+       },
+       "post_tonemap": {
+        "mean": 0.866,
+        "p95": 0.911,
+        "max": 0.957
+       },
+       "post_fxaa": {
+        "mean": 0.288,
+        "p95": 0.305,
+        "max": 1.236
+       },
+       "overlay": {
+        "mean": 0.2,
+        "p95": 0.219,
+        "max": 0.23
+       }
+      },
+      "budget_misses": [],
+      "desktop_apps": {
+       "brave": 22,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {
+       "engine": [
+        60.9,
+        61.5
+       ],
+       "sepulcra": [
+        33.0,
+        33.3
+       ],
+       "dwm": [
+        0.1,
+        0.2
+       ]
+      },
+      "other_engines_running": 1,
+      "compilers_running": 0,
+      "passed": true
+     }
+    ]
+   },
+   {
+    "run": "final_1_cap60",
+    "max_fps": 60,
+    "passed": true,
+    "validation_errors": 0,
+    "replay": "verified",
+    "end": "won",
+    "measured": [
+     {
+      "label": "busy_wave",
+      "wave": 6,
+      "enemies": 18,
+      "frame_ms": {
+       "mean": 16.174,
+       "p95": 17.446,
+       "max": 19.474
+      },
+      "gpu_ms": {
+       "mean": 4.024,
+       "p95": 4.127,
+       "max": 5.668
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.2,
+        "p95": 0.208,
+        "max": 0.23
+       },
+       "scene": {
+        "mean": 1.708,
+        "p95": 1.812,
+        "max": 3.329
+       },
+       "ssao": {
+        "mean": 0.461,
+        "p95": 0.467,
+        "max": 0.49
+       },
+       "post_bloom": {
+        "mean": 0.417,
+        "p95": 0.425,
+        "max": 0.761
+       },
+       "post_tonemap": {
+        "mean": 0.788,
+        "p95": 0.802,
+        "max": 0.848
+       },
+       "post_fxaa": {
+        "mean": 0.255,
+        "p95": 0.26,
+        "max": 0.285
+       },
+       "overlay": {
+        "mean": 0.191,
+        "p95": 0.216,
+        "max": 0.219
+       }
+      },
+      "budget_misses": [],
+      "desktop_apps": {
+       "brave": 21,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {
+       "engine": [
+        31.0,
+        31.2
+       ],
+       "sepulcra": [
+        30.7,
+        31.2
+       ],
+       "dwm": [
+        0.1,
+        0.1
+       ]
+      },
+      "other_engines_running": 1,
+      "compilers_running": 0,
+      "passed": true
+     },
+     {
+      "label": "boss_wave",
+      "wave": 10,
+      "enemies": 3,
+      "frame_ms": {
+       "mean": 16.175,
+       "p95": 17.325,
+       "max": 28.949
+      },
+      "gpu_ms": {
+       "mean": 4.187,
+       "p95": 4.238,
+       "max": 5.458
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.194,
+        "p95": 0.204,
+        "max": 0.226
+       },
+       "scene": {
+        "mean": 1.876,
+        "p95": 1.919,
+        "max": 3.184
+       },
+       "ssao": {
+        "mean": 0.463,
+        "p95": 0.476,
+        "max": 0.515
+       },
+       "post_bloom": {
+        "mean": 0.417,
+        "p95": 0.431,
+        "max": 0.472
+       },
+       "post_tonemap": {
+        "mean": 0.791,
+        "p95": 0.812,
+        "max": 0.868
+       },
+       "post_fxaa": {
+        "mean": 0.261,
+        "p95": 0.27,
+        "max": 0.298
+       },
+       "overlay": {
+        "mean": 0.181,
+        "p95": 0.194,
+        "max": 0.277
+       }
+      },
+      "budget_misses": [],
+      "desktop_apps": {
+       "brave": 22,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {
+       "engine": [
+        32.1,
+        32.4
+       ],
+       "sepulcra": [
+        30.7,
+        31.3
+       ],
+       "dwm": [
+        0.1,
+        0.2
+       ]
+      },
+      "other_engines_running": 1,
+      "compilers_running": 0,
+      "passed": true
+     }
+    ]
+   },
+   {
+    "run": "final_2_nocap",
+    "max_fps": null,
+    "passed": true,
+    "validation_errors": 0,
+    "replay": "verified",
+    "end": "won",
+    "measured": [
+     {
+      "label": "busy_wave",
+      "wave": 6,
+      "enemies": 18,
+      "frame_ms": {
+       "mean": 8.927,
+       "p95": 17.2,
+       "max": 26.887
+      },
+      "gpu_ms": {
+       "mean": 4.433,
+       "p95": 5.085,
+       "max": 9.728
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.219,
+        "p95": 0.251,
+        "max": 0.322
+       },
+       "scene": {
+        "mean": 1.876,
+        "p95": 2.154,
+        "max": 2.205
+       },
+       "ssao": {
+        "mean": 0.506,
+        "p95": 0.583,
+        "max": 0.591
+       },
+       "post_bloom": {
+        "mean": 0.457,
+        "p95": 0.523,
+        "max": 0.534
+       },
+       "post_tonemap": {
+        "mean": 0.868,
+        "p95": 0.997,
+        "max": 1.233
+       },
+       "post_fxaa": {
+        "mean": 0.29,
+        "p95": 0.323,
+        "max": 5.6
+       },
+       "overlay": {
+        "mean": 0.213,
+        "p95": 0.258,
+        "max": 0.272
+       }
+      },
+      "budget_misses": [],
+      "desktop_apps": {
+       "brave": 24,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {
+       "engine": [
+        60.8,
+        61.3
+       ],
+       "sepulcra": [
+        33.2,
+        34.7
+       ],
+       "dwm": [
+        0.1,
+        0.2
+       ]
+      },
+      "other_engines_running": 1,
+      "compilers_running": 0,
+      "passed": true
+     },
+     {
+      "label": "boss_wave",
+      "wave": 10,
+      "enemies": 3,
+      "frame_ms": {
+       "mean": 9.888,
+       "p95": 17.688,
+       "max": 24.186
+      },
+      "gpu_ms": {
+       "mean": 4.788,
+       "p95": 6.245,
+       "max": 11.682
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.213,
+        "p95": 0.277,
+        "max": 0.299
+       },
+       "scene": {
+        "mean": 2.139,
+        "p95": 2.791,
+        "max": 3.624
+       },
+       "ssao": {
+        "mean": 0.528,
+        "p95": 0.692,
+        "max": 0.916
+       },
+       "post_bloom": {
+        "mean": 0.475,
+        "p95": 0.617,
+        "max": 0.666
+       },
+       "post_tonemap": {
+        "mean": 0.903,
+        "p95": 1.18,
+        "max": 1.283
+       },
+       "post_fxaa": {
+        "mean": 0.308,
+        "p95": 0.39,
+        "max": 6.743
+       },
+       "overlay": {
+        "mean": 0.218,
+        "p95": 0.286,
+        "max": 6.675
+       }
+      },
+      "budget_misses": [],
+      "desktop_apps": {
+       "brave": 22,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {
+       "engine": [
+        58.6,
+        60.3
+       ],
+       "sepulcra": [
+        35.3,
+        41.9
+       ],
+       "dwm": [
+        0.1,
+        0.1
+       ]
+      },
+      "other_engines_running": 1,
+      "compilers_running": 0,
+      "passed": true
+     }
+    ]
+   },
+   {
+    "run": "final_3_cap60",
+    "max_fps": 60,
+    "passed": false,
+    "validation_errors": 0,
+    "replay": "verified",
+    "end": "won",
+    "measured": [
+     {
+      "label": "busy_wave",
+      "wave": 6,
+      "enemies": 18,
+      "frame_ms": {
+       "mean": 19.336,
+       "p95": 24.929,
+       "max": 400.809
+      },
+      "gpu_ms": {
+       "mean": 5.028,
+       "p95": 7.282,
+       "max": 155.297
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.222,
+        "p95": 0.316,
+        "max": 1.053
+       },
+       "scene": {
+        "mean": 1.946,
+        "p95": 2.945,
+        "max": 10.629
+       },
+       "ssao": {
+        "mean": 0.608,
+        "p95": 0.748,
+        "max": 26.853
+       },
+       "post_bloom": {
+        "mean": 0.498,
+        "p95": 0.757,
+        "max": 6.318
+       },
+       "post_tonemap": {
+        "mean": 0.872,
+        "p95": 1.179,
+        "max": 9.381
+       },
+       "post_fxaa": {
+        "mean": 0.41,
+        "p95": 0.716,
+        "max": 6.699
+       },
+       "overlay": {
+        "mean": 0.468,
+        "p95": 0.269,
+        "max": 142.773
+       }
+      },
+      "budget_misses": [
+       {
+        "error": "frame_pacing_over_budget",
+        "metric": "frame_pacing_p95_ms",
+        "value": 24.929,
+        "budget": 20.9,
+        "unit": "ms",
+        "adapter": "integrated"
+       }
+      ],
+      "desktop_apps": {
+       "brave": 24,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {
+       "engine": [
+        31.4,
+        33.6
+       ],
+       "sepulcra": [
+        30.9,
+        32.5
+       ],
+       "dwm": [
+        4.2,
+        7.5
+       ]
+      },
+      "other_engines_running": 1,
+      "compilers_running": 0,
+      "passed": false
+     },
+     {
+      "label": "boss_wave",
+      "wave": 10,
+      "enemies": 3,
+      "frame_ms": {
+       "mean": 16.775,
+       "p95": 20.315,
+       "max": 33.54
+      },
+      "gpu_ms": {
+       "mean": 4.652,
+       "p95": 6.024,
+       "max": 11.189
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.219,
+        "p95": 0.251,
+        "max": 2.439
+       },
+       "scene": {
+        "mean": 2.015,
+        "p95": 2.676,
+        "max": 7.792
+       },
+       "ssao": {
+        "mean": 0.549,
+        "p95": 0.557,
+        "max": 6.646
+       },
+       "post_bloom": {
+        "mean": 0.46,
+        "p95": 0.525,
+        "max": 6.411
+       },
+       "post_tonemap": {
+        "mean": 0.829,
+        "p95": 0.926,
+        "max": 3.239
+       },
+       "post_fxaa": {
+        "mean": 0.354,
+        "p95": 0.326,
+        "max": 6.34
+       },
+       "overlay": {
+        "mean": 0.222,
+        "p95": 0.21,
+        "max": 6.059
+       }
+      },
+      "budget_misses": [],
+      "desktop_apps": {
+       "brave": 22,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {
+       "engine": [
+        32.0,
+        32.6
+       ],
+       "sepulcra": [
+        30.8,
+        31.3
+       ],
+       "dwm": [
+        3.7,
+        6.2
+       ],
+       "System": [
+        0.0,
+        0.1
+       ]
+      },
+      "other_engines_running": 1,
+      "compilers_running": 0,
+      "passed": true
+     }
+    ]
+   },
+   {
+    "run": "final_4_nocap",
+    "max_fps": null,
+    "passed": false,
+    "validation_errors": 0,
+    "replay": "verified",
+    "end": "won",
+    "measured": [
+     {
+      "label": "busy_wave",
+      "wave": 6,
+      "enemies": 18,
+      "frame_ms": {
+       "mean": 12.213,
+       "p95": 20.399,
+       "max": 43.456
+      },
+      "gpu_ms": {
+       "mean": 6.038,
+       "p95": 11.781,
+       "max": 21.264
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.308,
+        "p95": 0.341,
+        "max": 4.427
+       },
+       "scene": {
+        "mean": 2.436,
+        "p95": 4.181,
+        "max": 10.836
+       },
+       "ssao": {
+        "mean": 0.646,
+        "p95": 0.793,
+        "max": 7.999
+       },
+       "post_bloom": {
+        "mean": 0.585,
+        "p95": 0.714,
+        "max": 14.874
+       },
+       "post_tonemap": {
+        "mean": 0.973,
+        "p95": 1.282,
+        "max": 9.426
+       },
+       "post_fxaa": {
+        "mean": 0.634,
+        "p95": 2.576,
+        "max": 11.981
+       },
+       "overlay": {
+        "mean": 0.451,
+        "p95": 0.348,
+        "max": 12.181
+       }
+      },
+      "budget_misses": [],
+      "desktop_apps": {
+       "brave": 21,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {
+       "engine": [
+        49.9,
+        50.8
+       ],
+       "sepulcra": [
+        34.1,
+        35.6
+       ],
+       "dwm": [
+        12.9,
+        13.2
+       ],
+       "System": [
+        0.0,
+        0.1
+       ]
+      },
+      "other_engines_running": 1,
+      "compilers_running": 0,
+      "passed": true
+     },
+     {
+      "label": "boss_wave",
+      "wave": 10,
+      "enemies": 3,
+      "frame_ms": {
+       "mean": 13.176,
+       "p95": 23.472,
+       "max": 30.337
+      },
+      "gpu_ms": {
+       "mean": 6.37,
+       "p95": 11.427,
+       "max": 16.979
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.288,
+        "p95": 0.31,
+        "max": 3.659
+       },
+       "scene": {
+        "mean": 2.733,
+        "p95": 4.807,
+        "max": 11.857
+       },
+       "ssao": {
+        "mean": 0.721,
+        "p95": 1.835,
+        "max": 10.368
+       },
+       "post_bloom": {
+        "mean": 0.608,
+        "p95": 0.682,
+        "max": 9.491
+       },
+       "post_tonemap": {
+        "mean": 1.024,
+        "p95": 1.263,
+        "max": 7.917
+       },
+       "post_fxaa": {
+        "mean": 0.616,
+        "p95": 2.089,
+        "max": 10.854
+       },
+       "overlay": {
+        "mean": 0.376,
+        "p95": 0.305,
+        "max": 10.347
+       }
+      },
+      "budget_misses": [
+       {
+        "error": "frame_pacing_over_budget",
+        "metric": "frame_pacing_p95_ms",
+        "value": 23.472,
+        "budget": 20.9,
+        "unit": "ms",
+        "adapter": "integrated"
+       }
+      ],
+      "desktop_apps": {
+       "brave": 23,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {
+       "engine": [
+        48.7,
+        52.3
+       ],
+       "sepulcra": [
+        36.5,
+        39.9
+       ],
+       "dwm": [
+        11.9,
+        13.9
+       ],
+       "System": [
+        0.0,
+        0.1
+       ]
+      },
+      "other_engines_running": 1,
+      "compilers_running": 0,
+      "passed": false
+     }
+    ]
+   },
+   {
+    "run": "final_5_nocap",
+    "max_fps": null,
+    "passed": true,
+    "validation_errors": 0,
+    "replay": "verified",
+    "end": "won",
+    "measured": [
+     {
+      "label": "busy_wave",
+      "wave": 6,
+      "enemies": 18,
+      "frame_ms": {
+       "mean": 9.24,
+       "p95": 17.211,
+       "max": 28.205
+      },
+      "gpu_ms": {
+       "mean": 4.526,
+       "p95": 5.136,
+       "max": 5.846
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.224,
+        "p95": 0.257,
+        "max": 0.269
+       },
+       "scene": {
+        "mean": 1.923,
+        "p95": 2.226,
+        "max": 3.405
+       },
+       "ssao": {
+        "mean": 0.519,
+        "p95": 0.586,
+        "max": 1.495
+       },
+       "post_bloom": {
+        "mean": 0.466,
+        "p95": 0.525,
+        "max": 0.564
+       },
+       "post_tonemap": {
+        "mean": 0.887,
+        "p95": 1.007,
+        "max": 1.064
+       },
+       "post_fxaa": {
+        "mean": 0.287,
+        "p95": 0.326,
+        "max": 0.347
+       },
+       "overlay": {
+        "mean": 0.215,
+        "p95": 0.246,
+        "max": 0.251
+       }
+      },
+      "budget_misses": [],
+      "desktop_apps": {
+       "brave": 21,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {
+       "engine": [
+        60.4,
+        62.0
+       ],
+       "sepulcra": [
+        33.5,
+        35.9
+       ],
+       "dwm": [
+        0.1,
+        0.1
+       ]
+      },
+      "other_engines_running": 1,
+      "compilers_running": 0,
+      "passed": true
+     },
+     {
+      "label": "boss_wave",
+      "wave": 10,
+      "enemies": 3,
+      "frame_ms": {
+       "mean": 9.842,
+       "p95": 17.957,
+       "max": 26.012
+      },
+      "gpu_ms": {
+       "mean": 4.737,
+       "p95": 5.523,
+       "max": 7.528
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.213,
+        "p95": 0.248,
+        "max": 0.291
+       },
+       "scene": {
+        "mean": 2.123,
+        "p95": 2.482,
+        "max": 3.657
+       },
+       "ssao": {
+        "mean": 0.527,
+        "p95": 0.615,
+        "max": 1.852
+       },
+       "post_bloom": {
+        "mean": 0.472,
+        "p95": 0.55,
+        "max": 0.675
+       },
+       "post_tonemap": {
+        "mean": 0.897,
+        "p95": 1.049,
+        "max": 1.192
+       },
+       "post_fxaa": {
+        "mean": 0.296,
+        "p95": 0.347,
+        "max": 0.392
+       },
+       "overlay": {
+        "mean": 0.205,
+        "p95": 0.241,
+        "max": 0.293
+       }
+      },
+      "budget_misses": [],
+      "desktop_apps": {
+       "brave": 21,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {
+       "engine": [
+        58.7,
+        60.1
+       ],
+       "sepulcra": [
+        33.9,
+        35.7
+       ],
+       "dwm": [
+        0.1,
+        0.2
+       ]
+      },
+      "other_engines_running": 1,
+      "compilers_running": 0,
+      "passed": true
+     }
+    ]
+   },
+   {
+    "run": "final_6_cap60",
+    "max_fps": 60,
+    "passed": false,
+    "validation_errors": 0,
+    "replay": "verified",
+    "end": "won",
+    "measured": [
+     {
+      "label": "busy_wave",
+      "wave": 6,
+      "enemies": 18,
+      "frame_ms": {
+       "mean": 26.554,
+       "p95": 71.644,
+       "max": 382.263
+      },
+      "gpu_ms": {
+       "mean": 8.264,
+       "p95": 15.965,
+       "max": 251.756
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.263,
+        "p95": 0.42,
+        "max": 2.307
+       },
+       "scene": {
+        "mean": 2.991,
+        "p95": 4.148,
+        "max": 102.119
+       },
+       "ssao": {
+        "mean": 0.899,
+        "p95": 1.181,
+        "max": 68.643
+       },
+       "post_bloom": {
+        "mean": 0.933,
+        "p95": 1.035,
+        "max": 81.177
+       },
+       "post_tonemap": {
+        "mean": 1.4,
+        "p95": 1.722,
+        "max": 165.437
+       },
+       "post_fxaa": {
+        "mean": 1.163,
+        "p95": 0.666,
+        "max": 132.29
+       },
+       "overlay": {
+        "mean": 0.61,
+        "p95": 0.44,
+        "max": 82.44
+       }
+      },
+      "budget_misses": [
+       {
+        "error": "gpu_over_budget",
+        "metric": "gpu_ms",
+        "value": 15.965,
+        "budget": 14,
+        "unit": "ms",
+        "adapter": "integrated"
+       },
+       {
+        "error": "frame_pacing_over_budget",
+        "metric": "frame_pacing_p95_ms",
+        "value": 71.644,
+        "budget": 20.9,
+        "unit": "ms",
+        "adapter": "integrated"
+       }
+      ],
+      "desktop_apps": {
+       "brave": 23,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {
+       "engine": [
+        31.4,
+        50.6
+       ],
+       "sepulcra": [
+        31.0,
+        41.2
+       ],
+       "dwm": [
+        18.0,
+        70.6
+       ]
+      },
+      "other_engines_running": 1,
+      "compilers_running": 0,
+      "passed": false
+     },
+     {
+      "label": "boss_wave",
+      "wave": 10,
+      "enemies": 3,
+      "frame_ms": {
+       "mean": 21.29,
+       "p95": 51.949,
+       "max": 175.88
+      },
+      "gpu_ms": {
+       "mean": 6.624,
+       "p95": 12.463,
+       "max": 127.416
+      },
+      "gpu_passes_ms": {
+       "shadow": {
+        "mean": 0.244,
+        "p95": 0.353,
+        "max": 2.826
+       },
+       "scene": {
+        "mean": 2.717,
+        "p95": 3.712,
+        "max": 106.83
+       },
+       "ssao": {
+        "mean": 0.692,
+        "p95": 0.922,
+        "max": 38.111
+       },
+       "post_bloom": {
+        "mean": 0.543,
+        "p95": 0.793,
+        "max": 12.056
+       },
+       "post_tonemap": {
+        "mean": 1.31,
+        "p95": 1.47,
+        "max": 117.288
+       },
+       "post_fxaa": {
+        "mean": 0.608,
+        "p95": 0.52,
+        "max": 51.915
+       },
+       "overlay": {
+        "mean": 0.504,
+        "p95": 0.36,
+        "max": 50.285
+       }
+      },
+      "budget_misses": [
+       {
+        "error": "frame_pacing_over_budget",
+        "metric": "frame_pacing_p95_ms",
+        "value": 51.949,
+        "budget": 20.9,
+        "unit": "ms",
+        "adapter": "integrated"
+       }
+      ],
+      "desktop_apps": {
+       "brave": 21,
+       "discord": 6,
+       "ms-teams": 2,
+       "msedge": 7,
+       "obsidian": 4,
+       "steam": 1,
+       "steamwebhelper": 8
+      },
+      "gpu_3d_percent_mean_max": {
+       "engine": [
+        31.9,
+        46.0
+       ],
+       "sepulcra": [
+        30.1,
+        43.7
+       ],
+       "dwm": [
+        17.2,
+        61.5
+       ]
+      },
+      "other_engines_running": 1,
+      "compilers_running": 0,
+      "passed": false
+     }
+    ]
+   }
+  ]
+ }
+}

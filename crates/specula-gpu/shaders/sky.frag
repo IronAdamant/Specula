@@ -20,6 +20,8 @@ layout(push_constant) uniform Push {
 } pc;
 
 layout(location = 0) in vec2 v_uv;
+layout(location = 1) in vec4 v_near; // sky.vert
+layout(location = 2) in vec4 v_mid;
 layout(location = 0) out vec4 out_color;
 
 uint pcg(uint v) {
@@ -68,10 +70,7 @@ float sky_t(float y, float k) {
 
 void main() {
     Frame f = pc.frame;
-    vec2 ndc = v_uv * 2.0 - 1.0;
-    vec4 a = f.inv_view_proj * vec4(ndc, pc.mode == 1u ? 1.0 : 0.0, 1.0);
-    vec4 b = f.inv_view_proj * vec4(ndc, 0.5, 1.0);
-    vec3 dir = normalize(b.xyz / b.w - a.xyz / a.w);
+    vec3 dir = normalize(v_mid.xyz / v_mid.w - v_near.xyz / v_near.w);
 
     vec3 c;
     if (dir.y >= 0.0) {

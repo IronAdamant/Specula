@@ -1,27 +1,55 @@
 #version 460
-// FXAA 3.11 (Timothy Lottes), the PC "quality" algorithm with a 6-step edge search, on the tone
-// mapped image (src, an sRGB texture: samples are linear; luma is taken perceptually).
+// FXAA 3.11 (Timothy Lottes), the PC "quality" algorithm (preset 25: an 8-step edge search), on
+// the tone mapped image (src, an sRGB texture: samples are linear; luma is taken perceptually,
+// the square root of Rec. 601 luma).
+// Specialized (src/render.rs FXAA_LUMA_ALPHA): when the tonemap pass wrote each pixel's luma into
+// alpha (the HDR path), luma is read, never computed, and the four neighbours come from two
+// gathers (FXAA_GATHER4_ALPHA): 1 fetch + 2 gathers decide most pixels, against 5 fetches and 5
+// lumas. The FXAA-only path (the scene rendered straight into the LDR image, whose alpha is the
+// scene's) computes luma from colour.
 // Compile with shaders/build.sh.
 #include "post.glsl"
+
+layout(constant_id = 0) const uint FEATURES = 0u;
+const bool LUMA_ALPHA = (FEATURES & 1u) != 0u;
 
 const float EDGE_THRESHOLD = 0.125;
 const float EDGE_THRESHOLD_MIN = 0.0312;
 const float SUBPIX = 0.75;
 
-vec3 rgb_at(vec2 uv) { return textureLod(textures[pc.src], uv, 0.0).rgb; }
+vec4 rgba_at(vec2 uv) { return textureLod(textures[pc.src], uv, 0.0); }
+vec3 rgb_at(vec2 uv) { return rgba_at(uv).rgb; }
 float luma(vec3 c) { return sqrt(dot(c, vec3(0.299, 0.587, 0.114))); }
-float luma_at(vec2 uv) { return luma(rgb_at(uv)); }
+float luma_of(vec4 t) { return LUMA_ALPHA ? t.a : luma(t.rgb); }
+float luma_at(vec2 uv) { return luma_of(rgba_at(uv)); }
 float luma_off(vec2 uv, vec2 o) { return luma_at(uv + o * pc.texel); }
 
 void main() {
     vec2 uv = v_uv;
     vec2 rcp = pc.texel;
-    vec3 rgb_m = rgb_at(uv);
-    float luma_m = luma(rgb_m);
-    float luma_s = luma_off(uv, vec2(0.0, 1.0));
-    float luma_e = luma_off(uv, vec2(1.0, 0.0));
-    float luma_n = luma_off(uv, vec2(0.0, -1.0));
-    float luma_w = luma_off(uv, vec2(-1.0, 0.0));
+    vec4 rgba_m = rgba_at(uv);
+    vec3 rgb_m = rgba_m.rgb;
+    float luma_m = luma_of(rgba_m);
+    float luma_s, luma_e, luma_n, luma_w, luma_nw, luma_se;
+    if (LUMA_ALPHA) {
+        // A quarter texel past the centre, so the 2x2 footprint is this pixel and the ones to its
+        // east and south whatever the rounding. Gather order: (x, y+1), (x+1, y+1), (x+1, y),
+        // (x, y), y down.
+        vec2 g = uv + 0.25 * rcp;
+        vec4 a = textureGather(textures[pc.src], g, 3);
+        vec4 b = textureGatherOffset(textures[pc.src], g, ivec2(-1, -1), 3);
+        luma_s = a.x;
+        luma_se = a.y;
+        luma_e = a.z;
+        luma_w = b.x;
+        luma_n = b.z;
+        luma_nw = b.w;
+    } else {
+        luma_s = luma_off(uv, vec2(0.0, 1.0));
+        luma_e = luma_off(uv, vec2(1.0, 0.0));
+        luma_n = luma_off(uv, vec2(0.0, -1.0));
+        luma_w = luma_off(uv, vec2(-1.0, 0.0));
+    }
     float range_max = max(max(max(luma_n, luma_w), max(luma_e, luma_s)), luma_m);
     float range_min = min(min(min(luma_n, luma_w), min(luma_e, luma_s)), luma_m);
     float range = range_max - range_min;
@@ -29,8 +57,10 @@ void main() {
         out_color = vec4(rgb_m, 1.0);
         return;
     }
-    float luma_nw = luma_off(uv, vec2(-1.0, -1.0));
-    float luma_se = luma_off(uv, vec2(1.0, 1.0));
+    if (!LUMA_ALPHA) {
+        luma_nw = luma_off(uv, vec2(-1.0, -1.0));
+        luma_se = luma_off(uv, vec2(1.0, 1.0));
+    }
     float luma_ne = luma_off(uv, vec2(1.0, -1.0));
     float luma_sw = luma_off(uv, vec2(-1.0, 1.0));
 

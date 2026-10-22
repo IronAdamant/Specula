@@ -45,7 +45,7 @@ transient_shape2d_vertices = 250_000   # transient entities: effects and present
 [budgets.gpu_passes]             # GPU ms per pass
 scene = 8.0
 shadow = 2.5
-ssao = 1.2                       # half resolution, 8 samples, both blurs: 0.66 ms at 1280x720 (2026-10-16)
+ssao = 1.2                       # half resolution, 8 samples, both blurs: 0.66 ms at 1280x720 (2026-10-16); 0.47 in Sepulcra's boss wave (2026-10-22)
 post_bloom = 1.5
 # Tone mapping now also applies the SSAO term and the colour grade (both added 2026-10-15, after
 # the 0.43 ms above was measured): 0.80 ms p95 with the Sepulcra grade at 1280x720 (2026-10-16).
@@ -78,6 +78,15 @@ ssao = 0.4
 post_bloom = 0.6
 post_tonemap = 0.2
 post_fxaa = 0.3
+
+# The window (`--max-fps N` overrides max_fps). A frame cap presents at most max_fps frames a second,
+# on whole vblanks (60: every 4th at 240 Hz, every 3rd at 144 Hz); the GPU idles the rest of each
+# period and agents' calls get it. On the 240 Hz iGPU laptop uncapped Sepulcra kept the iGPU 60-85%
+# busy; capped at 60 about 31%, with steadier GPU times. But a capped frame's present doesn't block,
+# so CPU stalls land in frame pacing undamped (1 of 2 capped M3 exit runs missed pacing; uncapped
+# passed 4 of 4): off by default, every vblank (2026-10-22; perf/README.md, "M3 exit proof").
+# [window]
+# max_fps = 60                  # 20-1000
 
 # Swarm settings (the lead agent can also change frame_floor_fps live with swarm_settings, whose reply
 # suggests a floor from this machine's hardware).

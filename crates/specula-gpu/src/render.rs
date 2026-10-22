@@ -141,9 +141,16 @@ pub const FEAT_SSAO: u32 = 32;
 /// SSAO are compiled out when off, so the pass then runs the code it ran before they existed.
 pub const COMPOSITE_GRADING: u32 = 1;
 pub const COMPOSITE_SSAO: u32 = 2;
+/// FXAA follows: the tonemap pass writes each pixel's luma into alpha for it.
+pub const COMPOSITE_LUMA: u32 = 4;
+/// The FXAA pass's specialization constant (`shaders/fxaa.frag`): luma is in the image's alpha
+/// (the tonemap pass wrote it), so it is gathered instead of computed.
+pub const FXAA_LUMA_ALPHA: u32 = 1;
 
 fn composite_features(mode: PostMode) -> u32 {
-    (if mode.grading { COMPOSITE_GRADING } else { 0 }) | if mode.ssao { COMPOSITE_SSAO } else { 0 }
+    (if mode.grading { COMPOSITE_GRADING } else { 0 })
+        | (if mode.ssao { COMPOSITE_SSAO } else { 0 })
+        | if mode.fxaa { COMPOSITE_LUMA } else { 0 }
 }
 
 /// Skinned pipelines (their fragment stage leaves the lava lamp's ray marcher out).
@@ -901,8 +908,8 @@ pub enum PipelineKey {
     BloomUp,
     /// HDR (+ bloom) → display values in `format`.
     Composite { format: VkFormat, features: u32 },
-    /// FXAA into `format`.
-    Fxaa { format: VkFormat },
+    /// FXAA into `format`; `luma_alpha`: the tonemap pass wrote luma into the source's alpha.
+    Fxaa { format: VkFormat, luma_alpha: bool },
     /// The sky behind the scene in `format` (+ D32 depth, EQUAL far plane), with or without fog.
     Sky { format: VkFormat, fog: bool },
     /// Overlay quads into `format`, inside the scene pass (`depth`: its D32 attachment, unused)
@@ -1029,7 +1036,9 @@ impl PipelineKey {
             PipelineKey::Composite { format, features } => {
                 PipelineDesc { spec: features, ..fullscreen(Shader::CompositeFrag, format, Blend::Off) }
             }
-            PipelineKey::Fxaa { format } => fullscreen(Shader::FxaaFrag, format, Blend::Off),
+            PipelineKey::Fxaa { format, luma_alpha } => {
+                PipelineDesc { spec: if luma_alpha { FXAA_LUMA_ALPHA } else { 0 }, ..fullscreen(Shader::FxaaFrag, format, Blend::Off) }
+            }
             PipelineKey::Sky { format, fog } => PipelineDesc {
                 vert: Shader::SkyVert,
                 frag: Some(Shader::SkyFrag),
@@ -1430,10 +1439,14 @@ impl Pipelines {
     /// Every pipeline that renders into `color_format` (a target or window format).
     pub fn prebuild(&mut self, dev: &Device, color_format: VkFormat) -> Result<(), GpuError> {
         self.prebuild_scene(dev, color_format)?;
-        for features in [0, COMPOSITE_GRADING, COMPOSITE_SSAO, COMPOSITE_GRADING | COMPOSITE_SSAO] {
+        // The tonemap pass writes the target itself (no FXAA after it), or the LDR image FXAA reads.
+        for features in 0..COMPOSITE_LUMA {
             self.get(dev, PipelineKey::Composite { format: color_format, features })?;
+            self.get(dev, PipelineKey::Composite { format: LDR_FORMAT, features: features | COMPOSITE_LUMA })?;
         }
-        self.get(dev, PipelineKey::Fxaa { format: color_format })?;
+        for luma_alpha in [false, true] {
+            self.get(dev, PipelineKey::Fxaa { format: color_format, luma_alpha })?;
+        }
         for depth in [false, true] {
             self.get(dev, PipelineKey::Overlay { format: color_format, depth })?;
         }
@@ -1530,7 +1543,7 @@ impl Pipelines {
             bloom_down: get(mode.bloom(), PipelineKey::BloomDown)?,
             bloom_up: get(mode.bloom(), PipelineKey::BloomUp)?,
             composite: get(mode.hdr(), PipelineKey::Composite { format: composite_format, features: composite_features(mode) })?,
-            fxaa: get(mode.fxaa, PipelineKey::Fxaa { format: final_format })?,
+            fxaa: get(mode.fxaa, PipelineKey::Fxaa { format: final_format, luma_alpha: mode.hdr() })?,
             overlay: get(overlay, PipelineKey::Overlay { format: final_format, depth: mode.direct() })?,
             // Prebuilt with the scene's: a lookup, never a creation.
             sprite_cutout: get(true, PipelineKey::Sprite { format: scene_format, cutout: true, features })?,

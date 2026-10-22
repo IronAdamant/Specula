@@ -59,6 +59,43 @@ set, undo or world load that would pass its pool's budget is refused with
 They are world limits, not frame budgets, so they may only appear in `[budgets]`, never in
 `[adapter.*]`: a world must load the same on every machine.
 
+# M3 exit proof: Sepulcra on the iGPU
+
+`python scripts/m3_exit.py --adapter integrated [--max-fps N]` plays a whole game of Sepulcra (Lex rules)
+windowed at 1280x720 on the reference iGPU and checks the frame-level budgets over 600 real-time frames
+in the busiest wave and in the boss wave. Each capture records the desktop apps running and, on Windows,
+every process's share of the engine's GPU while it measured (`gpu_3d_percent_mean_max`, from the OS's GPU
+counters): the criterion must hold with typical apps open (the owner's machine runs Discord, Brave,
+Obsidian and Steam), so a failure there is a failure, and the data says who else used the GPU.
+
+Per-pass GPU ms, boss wave, same view, Intel RaptorLake-S iGPU (2026-10-22, quiet GPU):
+
+| pass | before | after | what changed |
+|---|---|---|---|
+| scene | 2.73 | 1.88 | point lights out of range skipped; 4 rim shadow taps first (12 only in penumbrae); sky ray from the vertex stage; fixed powers multiplied |
+| post_fxaa | 0.37 | 0.26 | luma written into alpha by the tonemap pass, neighbours gathered (FXAA 3.11 `FXAA_GATHER4_ALPHA`) |
+| ssao (3 passes) | 0.47 | 0.47 | already half resolution, 8 samples, separable depth-aware blur; the cheaper spiral saved nothing measurable |
+| post_tonemap | 0.78 | 0.79 | grading is 0.26 of it (saturation 0.08, lift/gain 0.05) |
+| bloom, shadow, overlay | 0.42, 0.19, 0.19 | the same | |
+| **GPU frame** | **5.1** | **4.2** | |
+
+FXAA's p95 of 1.6-2.7 ms in earlier runs was never FXAA's own cost (0.26-0.37 ms; 0.23 offscreen):
+spikes land in the passes that write the swapchain image (FXAA and the overlay drawn in it) when other
+GPU work (DWM composing at 240 Hz, other engines) runs at the end of the frame. Pass p95s under
+contention are a contention measure; the frame's GPU p95 and pacing decide the criterion.
+
+Results (`perf/drills/20261022-m3-exit-igpu-render-budget.json`): uncapped, no other engine, 4 of 4
+pass (busy wave GPU p95 6.8-7.9 ms, pacing p95 14.3-17.6 ms; boss wave GPU p95 5.0-5.9, pacing p95
+11.4-11.7). With a second Sepulcra engine left running at 60 fps (a third of the iGPU) 3 of 4 uncapped
+runs still pass (the miss: boss pacing p95 23.5 ms while DWM took 12%).
+
+**The frame cap** (`--max-fps`, `[window] max_fps`) halves the iGPU's load (about 31% vs 60-85% at
+240 Hz) and steadies GPU times (p95 4.2-4.4 ms), but 1 of 2 capped clean runs missed pacing (24.2 ms,
+DWM bursts to 40%): a capped frame's present finds a free image and returns at once, so a CPU stall
+reaches the frame interval undamped, where an uncapped FIFO present absorbs it while it blocks for the
+vblank. So it is off by default. Presenting at a target time (submit early, present on time; or
+`VK_KHR_present_wait`) would remove that.
+
 # Agent throughput (windowed)
 
 The window serves agents' calls between presents (`crates/specula/src/schedule.rs`): each serve window is the
