@@ -654,6 +654,9 @@ pub struct Live {
     pub pose: Arc<APose>,
 }
 
+/// An entity's `props.ragdoll` as parsed: (entity version, content hash, the spec or why not).
+type Parsed = (u64, u64, Result<Arc<Spec>, String>);
+
 /// The engine's ragdolls.
 #[derive(Default)]
 pub struct Ragdolls {
@@ -665,7 +668,7 @@ pub struct Ragdolls {
     /// Each ragdoll entity's `props.ragdoll` as parsed, by the entity's version and content hash
     /// when it was parsed (read again only when the entity changes; the hash too, because a
     /// force-undo that restores a deleted entity can give it a version it had before).
-    parsed: BTreeMap<u64, (u64, u64, Result<Arc<Spec>, String>)>,
+    parsed: BTreeMap<u64, Parsed>,
     /// How many times a `props.ragdoll` was parsed (tests guard the per-tick cost with it).
     pub parses: u64,
 }
