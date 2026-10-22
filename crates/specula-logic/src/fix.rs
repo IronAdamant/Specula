@@ -29,6 +29,27 @@ pub struct FixError {
 /// first; spans that don't fit the file as it is now (it changed since the build) are skipped.
 /// Each file is rewritten once, back to front, so byte offsets stay valid.
 pub fn apply(diagnostics: &[Diagnostic], root: &Path) -> Result<Vec<Applied>, FixError> {
+    let read = &mut |file: &Path| std::fs::read_to_string(file).map_err(|e| FixError { code: "read_failed", file: file.to_owned(), message: e.to_string() });
+    let mut applied = Vec::new();
+    for p in plan(diagnostics, root, read)? {
+        std::fs::write(&p.file, &p.text).map_err(|e| FixError { code: "write_failed", file: p.file.clone(), message: e.to_string() })?;
+        applied.extend(p.applied);
+    }
+    Ok(applied)
+}
+
+/// One file's fixes, worked out but not written: its new text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Planned {
+    /// Canonical path.
+    pub file: PathBuf,
+    pub text: String,
+    pub applied: Vec<Applied>,
+}
+
+/// [`apply`] without writing anything: the fixed texts, from the texts `read` gives (the
+/// engine passes the texts the build compiled, so offsets always match them).
+pub fn plan(diagnostics: &[Diagnostic], root: &Path, read: &mut dyn FnMut(&Path) -> Result<String, FixError>) -> Result<Vec<Planned>, FixError> {
     let root = canonical(root);
     let mut by_file: BTreeMap<PathBuf, Vec<&Fix>> = BTreeMap::new();
     for fix in diagnostics.iter().flat_map(|d| &d.fixes).filter(|f| f.machine_applicable()) {
@@ -37,10 +58,9 @@ pub fn apply(diagnostics: &[Diagnostic], root: &Path) -> Result<Vec<Applied>, Fi
             by_file.entry(file).or_default().push(fix);
         }
     }
-    let mut applied = Vec::new();
+    let mut planned = Vec::new();
     for (file, mut fixes) in by_file {
-        let text = std::fs::read_to_string(&file)
-            .map_err(|e| FixError { code: "read_failed", file: file.clone(), message: e.to_string() })?;
+        let text = read(&file)?;
         fixes.sort_by_key(|f| (f.byte_start, f.byte_end));
         fixes.dedup_by(|a, b| a.byte_start == b.byte_start && a.byte_end == b.byte_end && a.replacement == b.replacement);
         // Keep non-overlapping ones, first come first served.
@@ -62,16 +82,10 @@ pub fn apply(diagnostics: &[Diagnostic], root: &Path) -> Result<Vec<Applied>, Fi
         for f in kept.iter().rev() {
             out.replace_range(f.byte_start..f.byte_end, &f.replacement);
         }
-        std::fs::write(&file, out).map_err(|e| FixError { code: "write_failed", file: file.clone(), message: e.to_string() })?;
-        applied.extend(kept.iter().map(|f| Applied {
-            file: file.clone(),
-            line: f.line,
-            column: f.column,
-            replacement: f.replacement.clone(),
-            message: f.message.clone(),
-        }));
+        let applied = kept.iter().map(|f| Applied { file: file.clone(), line: f.line, column: f.column, replacement: f.replacement.clone(), message: f.message.clone() }).collect();
+        planned.push(Planned { file, text: out, applied });
     }
-    Ok(applied)
+    Ok(planned)
 }
 
 /// Canonical when it exists (resolves `..`, links and case), else as given. On Windows the

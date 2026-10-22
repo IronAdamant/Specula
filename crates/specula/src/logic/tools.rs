@@ -402,12 +402,29 @@ pub fn build(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json) ->
         Ok(p) => p,
         Err(e) => return ToolOutput::error(argument_error(&e).to_pretty()),
     };
-    let report = build_service().build(req.clone());
+    // Fixes write the module's sources. When they are project files (a mounted module) the
+    // fixer never writes the disk: each round's fixes are worked out against the texts the build
+    // compiled and committed as the caller's change (claims, journal, undo); a file someone
+    // changed during the build keeps their text. Other modules are fixed in place, as before.
+    let mut mounted = false;
+    if req.fix {
+        let (gate, refused) = project_call(to_engine, session, crate::project_tools::ProjectCall::FixGate { dir: req.dir.clone() });
+        if refused {
+            return ToolOutput::error(gate.to_string());
+        }
+        mounted = gate.get("mount").is_some();
+    }
+    let (report, fixes) = if mounted { fix_mounted(to_engine, session, &req) } else { ((*build_service().build(req.clone())).clone(), None) };
     let mut out = report_json(&report, &req, detailed);
+    let mut fix_refused = false;
+    if let Some(f) = fixes {
+        fix_refused = f.get("refused").is_some();
+        out.set("fixes_journaled", f);
+    }
     let build_ms = report.build_time.as_secs_f64() * 1000.0;
     let queued_ms = report.queued.as_secs_f64() * 1000.0;
     let mut reload_ms = 0.0;
-    let mut failed = !report.ok;
+    let mut failed = !report.ok || fix_refused;
     if let (true, Some(library)) = (report.ok && reload, report.library.clone()) {
         let t = Instant::now();
         let (loaded, is_error) = load_library(to_engine, session, library, Some(req.dir.clone()), seed);
@@ -429,6 +446,115 @@ pub fn build(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json) ->
     } else {
         ToolOutput::text(out.to_string())
     }
+}
+
+/// `logic_build {fix: true}` on a mounted module (see [`build`]): build without fixing, work
+/// the fixes out against the store's texts taken before that build, commit them as the caller
+/// (skipping files changed since), and build again; at most [`specula_logic::build::MAX_FIX_ROUNDS`]
+/// rounds. Returns the last build and what happened to the fixes.
+fn fix_mounted(to_engine: &Sender<Request>, session: &SessionInfo, req: &BuildRequest) -> (BuildReport, Option<Json>) {
+    use crate::project_tools::{FixesCommitted, ModuleText, ProjectCall};
+    let mut plain = req.clone();
+    plain.fix = false;
+    let mut applied = Vec::new();
+    let (mut committed, mut skipped, mut journal) = (Vec::new(), Vec::new(), Vec::new());
+    let mut refused = None;
+    let mut round = 0;
+    let typed = |call: ProjectCall| tools_call(to_engine, session, call);
+    let report = loop {
+        let (tx, rx) = mpsc::channel::<Result<Vec<ModuleText>, Json>>();
+        typed(ProjectCall::ModuleTexts { dir: req.dir.clone(), reply: tx });
+        let texts = match rx.try_recv() {
+            Ok(Ok(t)) => t,
+            Ok(Err(e)) => {
+                // Held, pending or changed files: Cargo would compile other text than the plan's.
+                let message = e.get("message").and_then(Json::as_str).unwrap_or("out of sync").to_owned();
+                refused = Some(e);
+                break BuildReport { error: Some(("disk_out_of_sync", message)), ..BuildReport::default() };
+            }
+            Err(_) => Vec::new(),
+        };
+        let report = (*build_service().build(plain.clone())).clone();
+        if round == specula_logic::build::MAX_FIX_ROUNDS || report.fixable() == 0 {
+            break report;
+        }
+        round += 1;
+        let mut read = |file: &Path| {
+            texts.iter().find(|t| t.disk == file).map(|t| t.text.to_string()).ok_or_else(|| specula_logic::fix::FixError { code: "not_mirrored", file: file.to_owned(), message: "not a project file of this module".into() })
+        };
+        let planned = match specula_logic::fix::plan(&report.diagnostics, &req.dir, &mut read) {
+            Ok(p) => p,
+            Err(e) => {
+                skipped.push(Json::obj([("file", Json::from(e.file.display().to_string())), ("why", Json::from(e.message))]));
+                break report;
+            }
+        };
+        let files: Vec<(String, u64, u64, String)> = planned
+            .iter()
+            .filter_map(|p| texts.iter().find(|t| t.disk == p.file).map(|t| (t.path.clone(), t.version, t.hash, p.text.clone())))
+            .collect();
+        if files.is_empty() {
+            break report;
+        }
+        let (tx, rx) = mpsc::channel::<FixesCommitted>();
+        typed(ProjectCall::CommitFixes { files, reply: tx });
+        let done = rx.try_recv().unwrap_or_default();
+        skipped.extend(done.skipped.iter().map(|(p, why)| Json::obj([("path", Json::from(p.as_str())), ("why", Json::from(why.as_str()))])));
+        if let Some(e) = done.error {
+            refused = Some(e);
+            break report;
+        }
+        for p in &planned {
+            if let Some(t) = texts.iter().find(|t| t.disk == p.file && done.committed.contains(&t.path)) {
+                applied.extend(p.applied.iter().cloned());
+                if !committed.contains(&t.path) {
+                    committed.push(t.path.clone());
+                }
+            }
+        }
+        journal.extend(done.journal);
+        if done.stop {
+            skipped.push(Json::obj([("why", Json::from("a fixed file didn't reach the disk (project_list shows it pending): no more rounds"))]));
+            break report;
+        }
+        if done.committed.is_empty() {
+            break report;
+        }
+    };
+    let mut report = report;
+    report.fixes_applied = applied;
+    let mut f = vec![
+        ("files", Json::arr(committed.iter().map(|p| Json::from(p.as_str())))),
+        ("journal", Json::arr(journal.into_iter().map(Json::from))),
+    ];
+    if !skipped.is_empty() {
+        f.push(("skipped", Json::Arr(skipped)));
+    }
+    if let Some(e) = refused {
+        f.push(("refused", e));
+    }
+    (report, Some(Json::obj(f)))
+}
+
+/// Sends a project command whose answer comes on its own typed channel (only errors matter here).
+fn tools_call(to_engine: &Sender<Request>, session: &SessionInfo, call: crate::project_tools::ProjectCall) {
+    let _ = project_call(to_engine, session, call);
+}
+
+/// Sends a project command to the engine thread: `(answer as JSON, is_error)`.
+fn project_call(to_engine: &Sender<Request>, session: &SessionInfo, call: crate::project_tools::ProjectCall) -> (Json, bool) {
+    let (reply, answer) = mpsc::channel();
+    let request = Request { session: session.clone(), command: Command::Project(call), reply, deadline: Instant::now() + RELOAD_TIMEOUT };
+    let out = if to_engine.send(request).is_err() {
+        ToolOutput::error("the engine is shutting down")
+    } else {
+        answer.recv_timeout(RELOAD_TIMEOUT + Duration::from_secs(5)).unwrap_or_else(|_| ToolOutput::error("the engine didn't answer in time"))
+    };
+    let text = out.content.iter().find_map(|c| match c {
+        specula_protocol::Content::Text(t) => Some(t.clone()),
+        _ => None,
+    });
+    (text.as_deref().and_then(|t| Json::parse(t).ok()).unwrap_or(Json::Null), out.is_error)
 }
 
 /// Sends a command to the engine thread and waits for its answer: `(answer as JSON, is_error)`.
