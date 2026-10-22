@@ -150,7 +150,10 @@ vec3 display(vec3 c) {
 // soft glow around the sun (as a window or the moon would show in a glossy surface).
 vec3 env_radiance(vec3 dir) {
     float up = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
-    float sun = pow(max(dot(dir, pc.frame.sun_dir.xyz), 0.0), 24.0);
+    float sun = max(dot(dir, pc.frame.sun_dir.xyz), 0.0);
+    sun *= sun;
+    sun *= sun;
+    sun *= sun * sun; // the 24th power, by multiplication
     return pc.frame.ambient.rgb * mix(0.35, 1.25, up) + pc.frame.sky.rgb * 0.25 * up + pc.frame.sun_color.rgb * 4.0 * sun;
 }
 
@@ -167,15 +170,19 @@ float ggx(vec3 n, vec3 v, vec3 l, float rough) {
     return a2 / (PI * den * den) * 0.25 / ((ndv * (1.0 - k) + k) * (ndl * (1.0 - k) + k));
 }
 
-// A 12-tap Poisson disc (unit radius).
+// A 12-tap Poisson disc (unit radius). The first four lie near the rim, one per quadrant: they
+// decide alone where all four agree (see sun_shadow).
 const vec2 POISSON[12] = vec2[](
-    vec2(-0.326, -0.406), vec2(-0.840, -0.074), vec2(-0.696, 0.457), vec2(-0.203, 0.621),
-    vec2(0.962, -0.195), vec2(0.473, -0.480), vec2(0.519, 0.767), vec2(0.185, -0.893),
+    vec2(-0.840, -0.074), vec2(0.962, -0.195), vec2(0.519, 0.767), vec2(0.185, -0.893),
+    vec2(-0.326, -0.406), vec2(-0.696, 0.457), vec2(-0.203, 0.621), vec2(0.473, -0.480),
     vec2(0.507, 0.064), vec2(0.896, 0.412), vec2(-0.322, -0.933), vec2(-0.792, -0.598));
 
 // How much sun reaches p (1 = fully lit): the nearest cascade whose square holds p (with room
 // for the filter), sampled with a Poisson disc of hardware-filtered comparisons. The lookup
-// point moves along the normal by a few texels so surfaces don't shadow themselves.
+// point moves along the normal by a few texels so surfaces don't shadow themselves. Four taps
+// on the disc's rim go first: where they agree (fully lit or fully shadowed: most of the screen)
+// the other eight would too, unless a caster thinner than the disc's gaps (a few centimetres at
+// Sepulcra's settings) lies wholly inside it, so they are skipped. Penumbrae take all twelve.
 float sun_shadow(vec3 p, vec3 n) {
     float depth = dot(pc.frame.shadow_axis.xyz, p) + pc.frame.shadow_axis.w;
     float fade = smoothstep(pc.frame.shadow_fade.x, pc.frame.shadow_fade.y, depth);
@@ -193,7 +200,13 @@ float sun_shadow(vec3 p, vec3 n) {
         float margin = (radius + 1.5) / size;
         if (all(greaterThan(uv, vec2(margin))) && all(lessThan(uv, vec2(1.0 - margin))) && s.z <= 1.0) {
             float lit = 0.0;
-            for (int i = 0; i < 12; i++) {
+            for (int i = 0; i < 4; i++) {
+                lit += texture(shadow_map, vec4(uv + POISSON[i] * (radius / size), float(k), s.z));
+            }
+            if (lit == 0.0 || lit == 4.0) {
+                return mix(lit * 0.25, 1.0, fade);
+            }
+            for (int i = 4; i < 12; i++) {
                 lit += texture(shadow_map, vec4(uv + POISSON[i] * (radius / size), float(k), s.z));
             }
             return mix(lit / 12.0, 1.0, fade);
@@ -217,6 +230,12 @@ void gather_light(vec3 p, vec3 n, vec3 v, float rough, out vec3 diffuse, out vec
     for (int i = 0; i < count; i++) {
         vec3 to_light = pc.frame.lights[i].pos_range.xyz - p;
         float d2 = dot(to_light, to_light);
+        // Out of range the window below is 0: skip the light (most pixels are out of every
+        // light's range, and the BRDF is most of the loop's cost).
+        float range = pc.frame.lights[i].pos_range.w;
+        if (d2 >= range * range) {
+            continue;
+        }
         float d = sqrt(d2);
         float x = d / pc.frame.lights[i].pos_range.w;
         float window = clamp(1.0 - x * x * x * x, 0.0, 1.0);
@@ -299,7 +318,9 @@ vec4 shade_lit() {
     vec3 ambient = SSAO ? albedo * (1.0 - metallic) * pc.frame.ambient.rgb : vec3(0.0);
     if (spec_weight > 0.0) {
         vec3 f0 = mix(vec3(0.04), albedo, metallic);
-        vec3 fresnel = f0 + (1.0 - f0) * pow(1.0 - max(dot(n, v), 0.0), 5.0);
+        float m = 1.0 - max(dot(n, v), 0.0);
+        float m2 = m * m;
+        vec3 fresnel = f0 + (1.0 - f0) * (m2 * m2 * m); // Schlick's fifth power, by multiplication
         vec3 reflected = mix(env_radiance(reflect(-v, n)), pc.frame.ambient.rgb, rough);
         c += spec_weight * fresnel * (specular + reflected * (1.0 - 0.7 * rough));
         if (SSAO) {

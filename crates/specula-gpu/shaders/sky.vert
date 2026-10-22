@@ -16,9 +16,16 @@ layout(push_constant) uniform Push {
 } pc;
 
 layout(location = 0) out vec2 v_uv;
+// The view ray's points on the near plane and halfway into the depth range, homogeneous: linear
+// in screen position, so interpolated exactly and divided per pixel (no per-pixel matrices).
+layout(location = 1) out vec4 v_near;
+layout(location = 2) out vec4 v_mid;
 
 void main() {
     vec2 p = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
     v_uv = p;
-    gl_Position = vec4(p * 2.0 - 1.0, pc.mode == 1u ? 0.0 : 1.0, 1.0);
+    vec2 ndc = p * 2.0 - 1.0;
+    v_near = pc.frame.inv_view_proj * vec4(ndc, pc.mode == 1u ? 1.0 : 0.0, 1.0);
+    v_mid = pc.frame.inv_view_proj * vec4(ndc, 0.5, 1.0);
+    gl_Position = vec4(ndc, pc.mode == 1u ? 0.0 : 1.0, 1.0);
 }

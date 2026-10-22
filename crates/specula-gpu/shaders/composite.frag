@@ -23,13 +23,15 @@ layout(push_constant) uniform Push {
     vec4 lift;      // lift per channel, w saturation
     vec4 gamma;     // 1 / gamma per channel, w vibrance
     vec4 gain;      // gain per channel, w LUT strength
-    vec4 fx;        // vignette, vignette radius, grain, unused
+    vec4 fx;        // vignette, vignette radius, grain, 1 / the centre-to-corner distance
 } pc;
 
-// Specialized per pipeline (src/render.rs COMPOSITE_*): grading and SSAO compiled out when off.
+// Specialized per pipeline (src/render.rs COMPOSITE_*): grading and SSAO compiled out when off;
+// LUMA: FXAA follows, and reads each pixel's luma from alpha (shaders/fxaa.frag).
 layout(constant_id = 0) const uint FEATURES = 0u;
 const bool GRADING = (FEATURES & 1u) != 0u;
 const bool SSAO = (FEATURES & 2u) != 0u;
+const bool LUMA = (FEATURES & 4u) != 0u;
 
 const uint GRADE_BALANCE = 1u;
 const uint GRADE_CONTRAST = 2u;
@@ -161,7 +163,7 @@ void main() {
         if ((steps & GRADE_VIGNETTE) != 0u) {
             float aspect = pc.texel.y / pc.texel.x;
             vec2 d = (v_uv - 0.5) * vec2(aspect, 1.0);
-            float r = length(d) / length(vec2(aspect, 1.0) * 0.5); // 1 at the corners
+            float r = length(d) * pc.fx.w; // 1 at the corners
             float start = pc.fx.y;
             float t = clamp((r - start) / (1.0 - start), 0.0, 1.0);
             float v = 1.0 - pc.fx.x * t * t * (3.0 - 2.0 * t);
@@ -180,5 +182,7 @@ void main() {
         float n = hash_u(uint(gl_FragCoord.x), uint(gl_FragCoord.y)) - 0.5;
         c += n * 2.2 * pow(max(c, vec3(1e-4)), vec3(0.545)) / 255.0;
     }
-    out_color = vec4(max(c, vec3(0.0)), 1.0);
+    c = max(c, vec3(0.0));
+    // FXAA's luma (as `luma` in shaders/fxaa.frag) of what the LDR image will hold.
+    out_color = vec4(c, LUMA ? sqrt(dot(min(c, vec3(1.0)), vec3(0.299, 0.587, 0.114))) : 1.0);
 }

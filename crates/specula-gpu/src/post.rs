@@ -261,7 +261,13 @@ pub fn record_post_pass(
                 ao: if res.ssao.is_some() { slot(res.ao) } else { NO_TEXTURE },
                 bloom_intensity,
                 pad: [0; 2],
-                grade: grading_data(&env.grading),
+                grade: {
+                    // The vignette's 1 / centre-to-corner distance (in heights), once per frame.
+                    let mut g = grading_data(&env.grading);
+                    let aspect = extent.width as f32 / extent.height.max(1) as f32;
+                    g[4][3] = 2.0 / (aspect * aspect + 1.0).sqrt();
+                    g
+                },
             };
             let target = if res.fxaa { res.ldr } else { res.out };
             let out = g.color_attachment(p, target, [0.0; 4]);
@@ -305,7 +311,8 @@ pub fn white_balance(temperature: f32, tint: f32) -> [f32; 3] {
 }
 
 /// The grading numbers of the frame data: balance (+ contrast), lift (+ saturation),
-/// 1 / gamma (+ vibrance), gain (+ LUT strength), effects (vignette, radius, grain, unused).
+/// 1 / gamma (+ vibrance), gain (+ LUT strength), effects (vignette, radius, grain; the tonemap
+/// pass sets the last to 1 / the frame's centre-to-corner distance).
 pub fn grading_data(g: &GradingSettings) -> [[f32; 4]; 5] {
     let wb = white_balance(g.temperature.clamp(-1.0, 1.0), g.tint.clamp(-1.0, 1.0));
     let inv_gamma = g.gamma.map(|v| 1.0 / v.max(1e-3));

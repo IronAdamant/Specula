@@ -22,6 +22,7 @@ float ign(vec2 p) {
 ivec2 g_size;
 bool g_reverse;
 float g_ortho; // NDC depth per metre of an orthographic projection, 0 for perspective
+mat4 g_inv;    // the frame's inv_view_proj, loaded once (not per tap through the frame pointer)
 
 float depth_at(ivec2 p) {
     return texelFetch(textures[pc.src], clamp(p, ivec2(0), g_size - 1), 0).r;
@@ -34,7 +35,7 @@ float view_depth_at(Frame f, vec2 ndc, float d) {
     if (g_ortho > 0.0) {
         return abs(d - (g_reverse ? 1.0 : 0.0)) / g_ortho;
     }
-    mat4 m = f.inv_view_proj;
+    mat4 m = g_inv;
     return 1.0 / (m[0][3] * ndc.x + m[1][3] * ndc.y + m[2][3] * d + m[3][3]);
 }
 
@@ -44,7 +45,7 @@ bool is_sky(float d) {
 
 vec3 world_at(ivec2 p, float d) {
     vec2 ndc = (vec2(p) + 0.5) * pc.texel * 2.0 - 1.0;
-    vec4 w = pc.frame.inv_view_proj * vec4(ndc, d, 1.0);
+    vec4 w = g_inv * vec4(ndc, d, 1.0);
     return w.xyz / w.w;
 }
 
@@ -52,6 +53,7 @@ void main() {
     g_size = textureSize(textures[pc.src], 0);
     g_reverse = (pc.mode & 256u) != 0u;
     g_ortho = uintBitsToFloat(pc.pad);
+    g_inv = pc.frame.inv_view_proj;
     ivec2 own = ivec2(gl_FragCoord.xy); // this target's pixel (picks the pattern)
     ivec2 c = ivec2(gl_FragCoord.xy * pc.params.w); // the depth pixel under its centre
     float d = depth_at(c);
@@ -95,10 +97,16 @@ void main() {
     float bias = 0.02 * radius;
     float eps = 0.01 * r2;
     float sum = 0.0;
+    // Tap i lies at angle alpha * TURNS * TAU + rot, alpha = (i + jitter) / samples: the first
+    // tap's direction, then a fixed rotation per tap (no sine and cosine per tap).
+    float angle = jitter / float(samples) * TURNS * TAU + rot;
+    vec2 dir = vec2(cos(angle), sin(angle));
+    float turn = TURNS * TAU / float(samples);
+    vec2 step_rot = vec2(cos(turn), sin(turn));
     for (uint i = 0u; i < samples; i++) {
         float alpha = (float(i) + jitter) / float(samples);
-        float angle = alpha * TURNS * TAU + rot;
-        ivec2 q = c + ivec2(round(vec2(cos(angle), sin(angle)) * (alpha * screen)));
+        ivec2 q = c + ivec2(round(dir * (alpha * screen)));
+        dir = vec2(dir.x * step_rot.x - dir.y * step_rot.y, dir.x * step_rot.y + dir.y * step_rot.x);
         float dq = depth_at(q);
         if (is_sky(dq)) {
             continue;
