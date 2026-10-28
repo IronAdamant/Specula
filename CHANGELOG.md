@@ -13,6 +13,19 @@ See [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md). Item-by-item detail, with the re
 
 ### M4, in progress (from 2026-10-28)
 
+- **Asset studio:** `specula-studio` measures assets against `style.toml` (budgets, scale, palette families by exact
+  Oklab search) and runs taste checks (silhouettes, thumbnail solidity, pixel heights, edge contrast, flat light)
+  on an offscreen stage with light rigs and scale references. Contact sheets, line-ups, before/after marks and
+  shot sets. Calls run on the caller's thread, and renders go to the engine round-robin within a budget. Six tools
+- **Procedural modelling tiers 2-4:** CSG with bevels, SDF sculpts, terrain with erosion, scatter, a building
+  generator and texture graphs, all under one deterministic work budget. Sepulcra's graveyard gains procedural
+  headstones, a crypt and ruins. `style.toml` gains building, ruin, terrain and set categories (Claude's proposal)
+- **Review queue, critique queue, merges and director tools:** review submissions with batch decisions and a modal
+  review screen in the window; critiques linked to the board; three-way merge offers; `task_plan` and
+  `task_progress`. Promotion and revert go through the write policy
+- **Particles, effects and decals:** `specula-scintilla` effects as data; one instanced particle draw; deferred-style
+  decals. Photosensitivity (WCAG 2.3.1) is checked per effect, flashing instances are never drawn, and a runtime
+  flash watch measures the final frame (warn-only). Sepulcra gets fire, embers, wraith trails, impacts and dust
 - **One write policy** (the owner's top process change after M3): every change to the live world goes through
   `write_policy`. Writer code gets `&mut dyn WorldWrite` (recorded writes only) and never `&mut World`; the live
   journal is written only with a key that nothing outside the policy can make; exemptions are named variants with

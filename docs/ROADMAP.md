@@ -211,10 +211,11 @@ entities only; everything else is the gap.
   overlaps with other intents or claims are flagged *before* any edit. Agents can also leave notes on entities, files
   and tasks for whoever comes next, as handoffs.
   *Done 2026-10-18:* `intent_declare`/`intent_list`/`intent_clear` (overlaps flagged before any edit; `claim_take` adds `intent_warnings`), `note_add`/`note_list`/`note_delete`.
-- [ ] **Conflict help** (M3: diffs; M4: merges). A refused write carries what changed: theirs, yours and the common
+- [x] **Conflict help** (M3: diffs; M4: merges). A refused write carries what changed: theirs, yours and the common
   original. In M4, a suggested three-way merge for text data, where the engine knows the schema.
   *M3 part done 2026-10-18:* `stale_version`, `claimed` and `claims_overlap` refusals carry `conflict {base, theirs, yours, overlap, rebase}`.
   Project files get the same help: JSON-path diffs for JSON files, line hunks otherwise, with overlap (2026-10-22).
+  *M4 part done 2026-10-29:* structural three-way merge offers on stale world_set, world_batch and lex_edit, and `merge_suggest`.
 - [x] **Roll-ups for parents** (M3): `world_changes` summarised per agent or task ("child 3 finished the walls: 42
   changes, 2 refused, 1 open question"), so a parent reads a report, not a log.
   *Done 2026-10-18:* `world_rollup {by: agent|task}`.
@@ -243,7 +244,8 @@ entities only; everything else is the gap.
   *Why:* this is where swarms beat studios. QA scales with agents, not headcount.
   *Done 2026-10-18:* `scripts/playtest_swarm.py` (tasks on the board, leased ports and scratch folders, a fresh
   `--headless --paused` engine to record and another to verify each replay, one report).
-- [ ] **Review queue** (M4): agents submit finished work with captures attached; the owner approves or rejects batches.
+- [x] **Review queue** (M4): agents submit finished work with captures attached; the owner approves or rejects batches.
+  *Done 2026-10-29:* see M4's review queue.
 - [ ] **Director pattern** (M4–M5): one lead agent turns the game design doc into tasks, assigns roles and tracks
   progress on the board, with the owner as final reviewer.
   *Why:* this is the "agents complete the entire game" path.
@@ -694,14 +696,18 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
 **Goal:** agents produce consistent, on-style assets at volume, checked automatically and approved in batches.
 **Why here:** swarm needs #4 and #5. Content is where small studios lose to big ones.
 
-- [ ] **Stage world**: neutral backdrop, fixed lighting, scale references (a 1.8 m human, a 1 m cube).
-- [ ] **Contact sheets** (many angles in one image), **line-ups** (asset beside siblings), **before/after**.
-- [ ] **Style bible and `style.toml`**:
+- [x] **Stage world**: neutral backdrop, fixed lighting, scale references (a 1.8 m human, a 1 m cube).
+  *Done 2026-10-29:* `studio_stage`: an isolated offscreen stage with light rigs (neutral, game, worst), a silhouette mode and the 1.8 m and 1 m references (specula-studio; design/ASSET_STUDIO.md).
+- [x] **Contact sheets** (many angles in one image), **line-ups** (asset beside siblings), **before/after**.
+  *Done 2026-10-29:* `studio_sheet`, `studio_lineup`, `studio_compare` (before/after by mark); `scripts/studio_check.py`.
+- [x] **Style bible and `style.toml`**:
   - The bible holds the per-game palette, shape language and proportions.
   - `style.toml` holds the measurable rules: triangle and texture budgets, scale ranges, palette distance, naming.
   - A violation is an error.
-- [ ] **Taste loop**: silhouette, value and colour passes at thumbnail size; critique against the bible; revise. See
+  *Done 2026-10-29:* measurable `style.toml` rules (budgets, scale with float and sink, palette families by exact Oklab search, naming, taste) checked by `style_check`; Sepulcra's rules come from STYLE.md, and all 41 recipes pass.
+- [x] **Taste loop**: silhouette, value and colour passes at thumbnail size; critique against the bible; revise. See
   the procedural modelling design and [research/AGENT_GAMEMAKING.md](research/AGENT_GAMEMAKING.md).
+  *Done 2026-10-29:* `studio_check` runs the silhouette, value and colour passes at thumbnail size and returns a critique per pass with the bible's text and revise hints.
 - [ ] ➕ **Galleries: "choose, don't describe"** *(research)*. The engine generates variants spread across a parameter
   space (lighting, palette, proportions, materials, layout), shows them side by side in the window or editor, and a
   human picks, or clicks the part they dislike. Agents get the same gallery as data (`style_gallery`).
@@ -726,26 +732,33 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
 - [ ] ➕ **Reference boards** *(research)*: the human drops in images; the engine measures them (value histogram,
   saturation, palette, contrast, edge density, shadow softness), and the numbers become targets the scene is checked
   against.
-- [ ] ➕ **Taste checks as data** *(research)*, reported like budget errors:
+- [x] ➕ **Taste checks as data** *(research)*, reported like budget errors:
   - silhouette distinctness between siblings, and readability at thumbnail size;
   - subject/background value contrast;
   - palette distance and neutral saturation;
   - scale against reference figures;
   - flat-lighting detection.
-- [ ] ➕ **Shot sets** *(research)*: standard camera rigs for every review (gameplay view, close-up, worst-case
+  *Done 2026-10-29:* silhouette distinctness, thumbnail solidity, pixel height from the game camera and on a phone, edge value contrast, flat lighting, scale and palette, all reported like budget errors.
+- [x] ➕ **Shot sets** *(research)*: standard camera rigs for every review (gameplay view, close-up, worst-case
   lighting, phone-sized, iGPU), so nothing is judged from one flattering angle.
+  *Done 2026-10-29:* close_up, gameplay, worst_light, phone and igpu shots, with LODs picked by screen size as the game does.
 - [ ] ➕ **Style configurator and first-run onboarding** (owner, 2026-10-16): start from a base style; agents ask new
   users how the game should look through galleries of options, including UI colours such as "can't afford".
-- [ ] ➕ **Structured critique queue** *(research)*: sight-skeptic and reviewer findings become items that humans and
+- [x] ➕ **Structured critique queue** *(research)*: sight-skeptic and reviewer findings become items that humans and
   agents work through, each linking its capture and metric.
-- [ ] **Procedural modelling, tiers 2–4**: booleans, SDF modelling, scatter and building generators, terrain,
+  *Done 2026-10-29:* `critique_add`, `critique_list`, `critique_update`, linked to the task board (design/REVIEW.md).
+- [x] **Procedural modelling, tiers 2–4**: booleans, SDF modelling, scatter and building generators, terrain,
   procedural materials.
-- [ ] **Review queue**: submissions with captures; the owner approves or rejects batches, and a rejection returns to
+  *Done 2026-10-29:* CSG with bevels, SDF sculpts, terrain with erosion, scatter and a building generator, under one deterministic work budget; `procgen_texture`, `procgen_terrain`, `procgen_scatter` (design/PROCEDURAL_MODELLING.md).
+- [x] **Review queue**: submissions with captures; the owner approves or rejects batches, and a rejection returns to
   the agent with its note.
+  *Done 2026-10-29:* `review_submit`, `review_list`, `review_decide`, `review_screen` (the window's review screen, modal for keys, mouse and pads); approvals promote through the write policy as the decider.
 - [ ] ➕ **Baked global illumination**: lightmaps or probe volumes, baked by agents.
   *Why:* this is the low-end-friendly answer to Lumen.
-- [ ] ➕ **Particle/VFX system**: CPU first, GPU later. Cosmetic only, so it's outside determinism. Effects are data.
+- [x] ➕ **Particle/VFX system**: CPU first, GPU later. Cosmetic only, so it's outside determinism. Effects are data.
+  *Done 2026-10-29:* specula-scintilla effects as data, evaluated in closed form on the CPU; budgets per adapter; photosensitivity checks per effect plus a runtime flash watch (design/VFX.md).
 - [ ] ➕ **Terrain renderer** (LOD + splat materials), **decals**, **stylised water**.
+  *Decals done 2026-10-29* (deferred-style, lit and multiply; design/VFX.md). The terrain renderer and water remain.
 
 **Exit proof:**
 - [ ] A swarm builds a themed asset set (30+ props) that passes `style.toml`.
@@ -887,8 +900,9 @@ Each tier is rendered in the M4 stage world from fixed cameras, and every milest
 - [ ] ➕ **Cascaded shadow maps with soft filtering**, plus contact shadows.
 - [ ] ➕ **TAA** (with an upscaling path), **GTAO**, screen-space reflections.
 - [ ] ➕ **Subsurface and translucency:** leaves first, skin later.
-- [ ] ➕ **Procedural texture graphs** (Substance Designer-style, as text recipes): agents author PBR texture sets
+- [x] ➕ **Procedural texture graphs** (Substance Designer-style, as text recipes): agents author PBR texture sets
   without scans or third-party tools.
+  *Done 2026-10-29:* texture graphs as text recipes, baked on up to 4 threads with identical output, used by Sepulcra's crypt and ruins.
 - [ ] ➕ **Hair and fur cards**, for the optional head.
 - [ ] **Reference comparison:** a T4 sheet next to reference photos or renders, critiqued with the taste loop.
 

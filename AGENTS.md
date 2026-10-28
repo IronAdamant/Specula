@@ -80,7 +80,9 @@ Read [HANDOFF.md](HANDOFF.md) first.
 | `specula-via` | navigation: tiled navmeshes, paths, off-mesh links, crowds |
 | `specula-mens` | AI as data: behaviour trees and utility AI, validated, with a deterministic runner |
 | `specula-locus` | placement by relations (`world_place`'s solver) |
-| `specula-model` | procedural modelling: recipes → meshes, LODs, colliders |
+| `specula-model` | procedural modelling: recipes → meshes, LODs, colliders; CSG, SDF, terrain, scatter, texture graphs |
+| `specula-studio` | the asset studio's measures: `style.toml` rules, asset facts, taste checks, critiques |
+| `specula-scintilla` | particles/VFX and decals as data: effects, a closed-form evaluator, budgets, photosensitivity checks |
 | `specula-gltf` | glTF 2.0 / GLB import and export |
 | `specula-sdk` | the one crate game-logic modules depend on: deterministic `Cx` API, versioned C ABI |
 | `specula-logic` | module host internals: library loading, the build service, diagnostics as data |

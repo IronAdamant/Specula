@@ -223,6 +223,15 @@ In practice that means six **foundations** that apply to every change from M1 on
   - Project files: `project_list`, `project_read`, `project_write`, `project_patch`, `project_delete`,
     `project_mount` (recipes, UI, sounds, styles and module sources with claims, versions, journal and undo; outside
     edits come in as `disk`; [docs/design/PROJECT_DATA.md](docs/design/PROJECT_DATA.md)).
+  - Asset studio: `studio_stage`, `studio_sheet`, `studio_lineup`, `studio_compare`, `studio_check`, `style_check`
+    ([docs/design/ASSET_STUDIO.md](docs/design/ASSET_STUDIO.md)).
+  - Procedural modelling: `procgen_texture`, `procgen_terrain`, `procgen_scatter`
+    ([docs/design/PROCEDURAL_MODELLING.md](docs/design/PROCEDURAL_MODELLING.md)).
+  - Review and direction: `review_submit`, `review_list`, `review_decide`, `review_screen`, `critique_add`,
+    `critique_list`, `critique_update`, `merge_suggest`, `task_plan`, `task_progress`
+    ([docs/design/REVIEW.md](docs/design/REVIEW.md)); the window's review screen opens with F9.
+  - Effects: `vfx_get`, `vfx_set`, `vfx_preview`, `vfx_check`, `vfx_info`; the `vfx` and `decal` components; `--vfx`
+    ([docs/design/VFX.md](docs/design/VFX.md)).
   - Game logic: `logic_build` (diagnostics as data), `logic_reload`, `logic_unload`, `logic_status`, `logic_input`,
     `logic_hook` (hot-reloaded Rust modules; see [docs/design/MODULES.md](docs/design/MODULES.md)).
   - Performance and time: `perf_frame` (GPU ms per pass, render graph, draws, memory, pacing, budget errors from
