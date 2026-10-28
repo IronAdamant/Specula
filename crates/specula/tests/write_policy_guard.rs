@@ -176,6 +176,11 @@ const OWNERS: &[Rule] = &[
     Rule { pattern: "journal_exempt(", allowed: &["lex_live.rs", "write_policy.rs"], why: "exempt writers journal through Live::exempt; live Lex journals its runs' ticks as it goes" },
     Rule { pattern: "write_policy::rolled_back(", allowed: &["lex_live.rs"], why: "live Lex takes a refused command back itself" },
     Rule { pattern: "self.world.disk(", allowed: &["project_engine.rs"], why: "files read from disk" },
+    Rule {
+        pattern: "Ctx { world",
+        allowed: &["lib.rs", "game.rs"],
+        why: "the hosted game gets the live world only inside Engine::game_call, Live::exempt or Live::game_tool (lib.rs)",
+    },
     Rule { pattern: "write_policy::disk(", allowed: &[], why: "files read from disk go through Live::disk" },
 ];
 

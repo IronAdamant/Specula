@@ -23,7 +23,10 @@ live Lex hooks, the physics, navigation and anim writers, world loads. Every new
 3. **Nothing is left behind.** Every entry point ends with no change pending (`Live::settle`): a writer that changed
    the world without journaling or rolling it back is a bug. Debug builds assert; release builds journal the changes
    as `engine:stray` (so replay stays exact), print a line and count them (`engine_info` `swarm.unjournaled_writes`).
-   The live world always records full changes between entry points.
+   The live world always records full changes between entry points. Code outside this crate that holds the live
+   world (the hosted game, in its own calls and its tools) can't hide writes either: the world's *seal* moves
+   whenever recorded changes are taken or recording is switched off, and the policy reports (debug assertion, count)
+   a call during which it moved.
 4. **Replacing the world needs a proof.** `Live::replace` takes a `MayReplace`, which only `may_replace` makes (no
    playtest running, no other agent's claim). world_load, save_read (at start and again at the swap) and `--world`
    at startup all get one, so a new way to load a world can't skip the check.
@@ -123,7 +126,8 @@ desync traces) need nothing: `Live` derefs to `&World`.
   mixed ops (claimed and reserved), world_load under a playtest.
 - `the_table_names_every_writer`: a new `Rule`, `Exempt` or `Opener` variant doesn't compile until the table has a
   row for it.
-- `a_writer_that_leaves_changes_unjournaled_is_caught`, `exempt_writers_record_as_documented`,
+- `a_writer_that_leaves_changes_unjournaled_is_caught`, `a_game_that_hides_its_writes_is_caught`,
+  `exempt_writers_record_as_documented`,
   `with_no_blocking_claim_a_batch_does_no_claim_work` (the fast path stays O(changes)).
 - **The guard** (`tests/write_policy_guard.rs`), above.
 - Engine-level checks on every path stay where they were: `swarm.rs`, `claims_steps.rs`, `joint_claims.rs`,

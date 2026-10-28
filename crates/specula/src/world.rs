@@ -2145,6 +2145,10 @@ pub struct World {
     /// what a graph's `{external: true}` nodes play. Derived each physics tick, never hashed,
     /// journaled or saved.
     external_poses: BTreeMap<u64, ExternalPose>,
+    /// Moves whenever recorded changes are taken or recording is switched off: the write policy
+    /// checks it stands still while the hosted game holds the live world, so a game's writes
+    /// can't be hidden from the journal and the checks (see [`World::seal`]).
+    seal: u64,
 }
 
 /// A pose supplied from outside the animation (a ragdoll's).
@@ -3568,7 +3572,16 @@ impl World {
 
     /// What the world records about its changes from now on.
     pub fn set_recording(&mut self, recording: Recording) {
+        if recording == Recording::Off && self.recording != Recording::Off {
+            self.seal += 1;
+        }
         self.recording = recording;
+    }
+
+    /// Moves whenever recorded changes are taken ([`World::take_changes`]) or recording is
+    /// switched off: what the write policy compares around the hosted game's calls.
+    pub(crate) fn seal(&self) -> u64 {
+        self.seal
     }
 
     pub fn recording(&self) -> Recording {
@@ -3582,6 +3595,7 @@ impl World {
     /// Transient entities' changes are left out: they are recorded while a command runs (so a
     /// rejected command rolls them back like anything else), but they are never journaled.
     pub fn take_changes(&mut self) -> Vec<Change> {
+        self.seal += 1;
         let mut out = std::mem::take(&mut self.changes);
         out.retain(|c| !c.is_transient());
         if self.dirty.is_empty() && self.dirty_env.is_none() && self.dirty_removed.is_empty() {

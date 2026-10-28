@@ -535,19 +535,40 @@ impl Live {
 
     /// [`game_tool`] on the live world.
     pub(crate) fn game_tool<T>(&mut self, swarm: &mut Swarm, tick: u64, game: &str, w: Writer, call: impl FnOnce(&mut World) -> T) -> Result<T, WorldError> {
-        let out = game_tool(&mut self.world, swarm, tick, game, w, call);
+        let mut hid = false;
+        let out = game_tool(&mut self.world, swarm, tick, game, w, |wd| {
+            let seal = wd.seal();
+            let out = call(wd);
+            hid = wd.seal() != seal;
+            out
+        });
         self.settle(swarm, tick, "game_tool");
+        self.hid(hid, "game_tool");
         out
+    }
+
+    /// The hosted game (or another writer handed the world) took its recorded changes or
+    /// stopped recording: what it did skipped the journal and the checks. A bug in that writer:
+    /// a debug assertion, and counted with the strays.
+    fn hid(&mut self, hid: bool, entry: &str) {
+        if hid {
+            self.strays += 1;
+            eprintln!("specula: write_policy: {entry}: the writer took the world's recorded changes or stopped recording, so its writes skipped the journal and the checks");
+            debug_assert!(false, "write_policy: {entry}: the writer hid its changes");
+        }
     }
 
     /// An [`Exempt`] writer: `f` runs with the world recording as the writer does, and what it
     /// changed is journaled under the writer's name ([`journal_exempt`]).
     pub(crate) fn exempt<T>(&mut self, swarm: &mut Swarm, tick: u64, why: Exempt, f: impl FnOnce(&mut World) -> T) -> T {
         self.world.set_recording(why.recording());
+        let seal = self.world.seal();
         let out = f(&mut self.world);
+        let hid = self.world.seal() != seal;
         self.world.set_recording(Recording::Full);
         journal_exempt(&mut self.world, swarm, tick, why);
         self.settle(swarm, tick, "exempt");
+        self.hid(hid, "exempt");
         out
     }
 

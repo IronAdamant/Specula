@@ -400,6 +400,32 @@ fn a_writer_that_leaves_changes_unjournaled_is_caught() {
     assert_eq!(f.sw.journal.replay().unwrap().state_hash(), f.live.state_hash());
 }
 
+/// A hosted game (external code holding the live world in a game tool or its own calls) that
+/// takes the world's recorded changes itself, or stops recording, would hide its writes from the
+/// journal and the claims: the policy sees the world's seal move and reports it (a debug
+/// assertion; counted in release).
+#[test]
+fn a_game_that_hides_its_writes_is_caught() {
+    for how in ["take", "off"] {
+        let mut f = fixture();
+        let id = f.abox;
+        let hid = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = f.live.game_tool(&mut f.sw, 1, "sepulcra", MALLORY, |wd| {
+                if how == "off" {
+                    wd.set_recording(Recording::Off);
+                }
+                wd.update(&EntityKey::Id(id), moved(8.0), "sepulcra").unwrap();
+                if how == "take" {
+                    wd.take_changes();
+                }
+            });
+        }));
+        assert_eq!(hid.is_err(), cfg!(debug_assertions), "{how}");
+        assert_eq!(f.live.strays(), 1, "{how}");
+        assert_eq!(f.live.recording(), Recording::Full, "{how}: recording again");
+    }
+}
+
 /// Exempt writers record as they always did: per-tick writers one change per entity (cheap,
 /// replay-only), the game's start and anim reloads full states; the live world records full
 /// changes again afterwards.
