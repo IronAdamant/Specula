@@ -26,6 +26,9 @@
 //! - **Nothing is left behind.** Every entry point ends with no change pending: a writer that
 //!   changed the world without journaling it (or rolling it back) is a bug, caught by a debug
 //!   assertion, and journaled as `engine:stray` in release builds so replay stays exact.
+//! - **Nothing can hide.** While the hosted game or an exempt writer holds the live world it is
+//!   sealed ([`World::set_sealed`]): switching recording or taking the recorded changes does
+//!   nothing (and is reported), so their writes stay checked and journaled.
 //! - **A guard test** (`crates/specula/tests/write_policy_guard.rs`) fails if the escape hatches
 //!   (taking or hiding recorded changes, raw puts, journal appends) or the exempt writers appear
 //!   outside the files that own them, or if anything else gets a field of type `World`.
@@ -472,6 +475,17 @@ impl Deref for Live {
     }
 }
 
+/// Runs `f` with `world` sealed ([`World::set_sealed`]): code the policy hands the live world to
+/// (the hosted game, exempt writers) can't change how it records or take its recorded changes,
+/// so nothing it writes escapes the checks and the journal. The policy's own journaling runs
+/// after, unsealed.
+fn sealed<T>(world: &mut World, f: impl FnOnce(&mut World) -> T) -> T {
+    world.set_sealed(true);
+    let out = f(world);
+    world.set_sealed(false);
+    out
+}
+
 /// Attribution of changes a writer left unjournaled (see [`Live::settle`]).
 pub const STRAY_AGENT: &str = "engine:stray";
 
@@ -533,42 +547,36 @@ impl Live {
         out
     }
 
-    /// [`game_tool`] on the live world.
+    /// [`game_tool`] on the live world. The world is [sealed](sealed) while the game runs.
     pub(crate) fn game_tool<T>(&mut self, swarm: &mut Swarm, tick: u64, game: &str, w: Writer, call: impl FnOnce(&mut World) -> T) -> Result<T, WorldError> {
-        let mut hid = false;
-        let out = game_tool(&mut self.world, swarm, tick, game, w, |wd| {
-            let seal = wd.seal();
-            let out = call(wd);
-            hid = wd.seal() != seal;
-            out
-        });
+        let breaks = self.world.seal_breaks();
+        let out = game_tool(&mut self.world, swarm, tick, game, w, |wd| sealed(wd, call));
         self.settle(swarm, tick, "game_tool");
-        self.hid(hid, "game_tool");
+        self.report_breaks(breaks, "game_tool");
         out
     }
 
-    /// The hosted game (or another writer handed the world) took its recorded changes or
-    /// stopped recording: what it did skipped the journal and the checks. A bug in that writer:
-    /// a debug assertion, and counted with the strays.
-    fn hid(&mut self, hid: bool, entry: &str) {
-        if hid {
+    /// The writer tried to change how the world records, or to take its recorded changes, while
+    /// it held the sealed world: refused (its writes stayed recorded, checked and journaled), and
+    /// a bug in that writer: reported and counted with the strays.
+    fn report_breaks(&mut self, before: u64, entry: &str) {
+        if self.world.seal_breaks() != before {
             self.strays += 1;
-            eprintln!("specula: write_policy: {entry}: the writer took the world's recorded changes or stopped recording, so its writes skipped the journal and the checks");
-            debug_assert!(false, "write_policy: {entry}: the writer hid its changes");
+            eprintln!("specula: write_policy: {entry}: the writer tried to change recording or take the world's recorded changes; refused (its writes are checked and journaled as usual)");
         }
     }
 
-    /// An [`Exempt`] writer: `f` runs with the world recording as the writer does, and what it
-    /// changed is journaled under the writer's name ([`journal_exempt`]).
+    /// An [`Exempt`] writer: `f` runs with the world recording as the writer does (and
+    /// [sealed](sealed)), and what it changed is journaled under the writer's name
+    /// ([`journal_exempt`]).
     pub(crate) fn exempt<T>(&mut self, swarm: &mut Swarm, tick: u64, why: Exempt, f: impl FnOnce(&mut World) -> T) -> T {
         self.world.set_recording(why.recording());
-        let seal = self.world.seal();
-        let out = f(&mut self.world);
-        let hid = self.world.seal() != seal;
+        let breaks = self.world.seal_breaks();
+        let out = sealed(&mut self.world, f);
         self.world.set_recording(Recording::Full);
         journal_exempt(&mut self.world, swarm, tick, why);
         self.settle(swarm, tick, "exempt");
-        self.hid(hid, "exempt");
+        self.report_breaks(breaks, "exempt");
         out
     }
 

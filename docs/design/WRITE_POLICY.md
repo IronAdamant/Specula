@@ -23,15 +23,23 @@ live Lex hooks, the physics, navigation and anim writers, world loads. Every new
 3. **Nothing is left behind.** Every entry point ends with no change pending (`Live::settle`): a writer that changed
    the world without journaling or rolling it back is a bug. Debug builds assert; release builds journal the changes
    as `engine:stray` (so replay stays exact), print a line and count them (`engine_info` `swarm.unjournaled_writes`).
-   The live world always records full changes between entry points. Code outside this crate that holds the live
-   world (the hosted game, in its own calls and its tools) can't hide writes either: the world's *seal* moves
-   whenever recorded changes are taken or recording is switched off, and the policy reports (debug assertion, count)
-   a call during which it moved.
-4. **Replacing the world needs a proof.** `Live::replace` takes a `MayReplace`, which only `may_replace` makes (no
+   The live world always records full changes between entry points.
+4. **Nothing can hide.** Code outside this crate holds the live world too: the hosted game, in its own calls and its
+   tools. While it (or an exempt writer) does, the world is **sealed**: `set_recording` and `take_changes` change
+   nothing, so its writes stay recorded, checked and journaled. Each attempt is refused, printed and counted. (Review
+   round 1 found a game tool switching to `Recording::Snapshot`, which leaves no step-by-step trace, moving another
+   agent's claimed box. Now it is `claimed`.)
+5. **Replacing the world needs a proof.** `Live::replace` takes a `MayReplace`, which only `may_replace` makes (no
    playtest running, no other agent's claim). world_load, save_read (at start and again at the swap) and `--world`
    at startup all get one, so a new way to load a world can't skip the check.
-5. **The guard test** (`crates/specula/tests/write_policy_guard.rs`) catches what the compiler can't see, so a
-   regression fails even if visibility is loosened later. It reads the crate's non-test sources and fails if:
+6. **The simulation's writers live apart.** The hosted game's exemptions, anim reloads and the module host's and
+   Lex tools' sessions are opened only in `sim_writes.rs`, a short file of named functions (`sim_writes::game`,
+   `game_start`, `module_tick`, `anim_reload`, `logic_tools`, `lex_tools`). The agent tools' dispatcher (`lib.rs`)
+   names no exemption itself.
+7. **The guard test** (`crates/specula/tests/write_policy_guard.rs`) catches what the compiler can't see, so a
+   regression fails even if visibility is loosened later. It lexes the crate's non-test sources: comments and
+   literals are blanked, and `#[cfg(test)]` items are skipped by brace depth. Matching ignores whitespace, and method
+   patterns also match their path form (`World::take_changes(w)`). It fails if:
    - an **escape hatch** appears outside the files that own it: taking recorded changes (`take_changes`), switching
      recording off, raw puts and removes that skip a write's validation, rollbacks, the step re-check, pruning,
      journal appends, rebases and id notes, swapping project files;
@@ -39,8 +47,15 @@ live Lex hooks, the physics, navigation and anim writers, world loads. Every new
      `Rule::Nav` only in `nav_tools.rs`, `Opener::LexLive` only in `lex_live.rs`...);
    - engine code uses **Swarm's write methods** (`swarm.commit`, `game_changes`...: they remain for detached worlds
      and tests);
-   - any struct outside the listed files gets a **field of type `World`**, `Live` gains `DerefMut` or a public
-     field, or a function returns `&mut World`.
+   - any struct outside the listed files gets a **field holding a `World`** (`World`, `Box<World>`...), `Live` gains
+     `DerefMut` or a public field, or a function hands out a mutable world (`-> &mut World`, `-> &'a mut World`,
+     `-> Option<&mut World>`);
+   - variants are imported bare (`use ...::Exempt::*`), which would hide them from the owner check.
+
+   **Its limits, honestly.** It is a text scan at file granularity. It can't see an alias (`let j = &mut
+   swarm.journal; j.undo(..)`, `use Exempt as E`), and an owner file may use its exemption anywhere in that file. A
+   new write path in an owner file (`sim_writes.rs`, `lex_live.rs`, `physics.rs`, `nav_tools.rs`) needs a reviewer's
+   eye. The compiler (`Live`), the sealed world and the settle check don't depend on the scan.
 
 Detached worlds (the journal's base and replays, a save being read off the engine thread, a world read from its files
 before it goes live, tests, the hosted game's offline builds) are plain `World`s: they are data, not the shared world
@@ -95,8 +110,8 @@ point it goes through now. Behaviour is unchanged on every path (same checks, sa
 | logic_build/logic_reload loads, logic_unload, logic_hook | agent via a module | `check_game_changes` (agent_commit); `check_module_changes` per request | session (`Opener::Modules`) + `module_agent_commit`; `module_request` |
 | lex_live commands and held input | agent via a run | `check_game_changes`, hooks staged | session (`Opener::LexLive`) + `game_commit` |
 | lex_live local input (window, gamepad) | the local player | `game_changes` | `journal_exempt`, `Exempt::LexLive` |
-| the game's start | game | `game_changes` (full recording) | `Exempt::GameStart` |
-| the game's tick, frame, overlay, before_capture, request_done, assets_changed, apply_state | game | 7 call sites each setting Snapshot and calling `game_changes` | `Live::exempt`, `Exempt::Game` (one helper, `Engine::game_call`) |
+| the game's start | game | `game_changes` (full recording) | `sim_writes::game_start` (`Exempt::GameStart`) |
+| the game's tick, frame, overlay, before_capture, request_done, assets_changed, apply_state | game | 7 call sites each setting Snapshot and calling `game_changes` | `sim_writes::game` (`Exempt::Game`; via `Engine::game_call`), sealed |
 | module ticks | module | `game_changes` per call; `check_module_changes` per request | session (`Opener::Modules`) + `module_tick_commit` (`Exempt::Module`); `module_request` |
 | live Lex ticks, presentation, hooks a run's tick calls | live Lex run | `game_changes` | `journal_exempt`, `Exempt::LexLive` |
 | physics tick (pose write-back, ragdoll external poses) | physics | Snapshot + `game_changes` | `Live::exempt`, `Exempt::Physics` |
@@ -116,8 +131,13 @@ desync traces) need nothing: `Live` derefs to `&World`.
 
 ## Tests
 
-- **The regression table** (`write_policy/tests.rs`, `every_write_path_holds_the_policy`): 46 rows, every writer
-  of the audit tried against alice's path- and region-claimed boxes and against reserved data, from one fixture. Each
+- **The regression table** (`write_policy/tests.rs`, `every_write_path_holds_the_policy`): 46 rows, every *writer*
+  the policy knows (each `Rule`, `Exempt` and `Opener`, undo, game commits, module requests, disk, replacement), tried
+  against alice's path- and region-claimed boxes and against reserved data, from one fixture. It drives the policy's
+  entry points directly. The engine's call sites (which `Rule` each tool passes, that `Command::Load` asks
+  `may_replace`) need the GPU-backed `Engine`. They are covered by the compiler (every site had to pick an entry
+  point), the guard, the subsystems' own tests (lex_live's rig drives `apply_command` against claimed hooks) and the
+  live scripts below. Each
   refused row must leave the world exactly as it was (only the id counter moves on), nothing pending and no change
   journaled; each exempt row must journal under its own name; and the journal must replay to the live world after
   every row. The M3 bypass findings are rows marked `M3`: undo of a joint's removal, a module hook tying a joint onto a
@@ -126,10 +146,12 @@ desync traces) need nothing: `Live` derefs to `&World`.
   mixed ops (claimed and reserved), world_load under a playtest.
 - `the_table_names_every_writer`: a new `Rule`, `Exempt` or `Opener` variant doesn't compile until the table has a
   row for it.
-- `a_writer_that_leaves_changes_unjournaled_is_caught`, `a_game_that_hides_its_writes_is_caught`,
+- `a_writer_that_leaves_changes_unjournaled_is_caught`, `a_game_that_tries_to_hide_its_writes_is_refused` (take,
+  off, snapshot; an exempt writer too),
   `exempt_writers_record_as_documented`,
   `with_no_blocking_claim_a_batch_does_no_claim_work` (the fast path stays O(changes)).
-- **The guard** (`tests/write_policy_guard.rs`), above.
+- **The guard** (`tests/write_policy_guard.rs`), above, with a test of its own scanner (`#[cfg(test)]` fields,
+  literals, path forms, spacing).
 - Engine-level checks on every path stay where they were: `swarm.rs`, `claims_steps.rs`, `joint_claims.rs`,
   `journal_replay.rs`, Sepulcra's `tests/claims.rs`, and the live scripts (`swarm_drill.py`'s attacks,
   `joints_check.py`, `project_check.py`, `save_check.py`, `world_load_check.py`).

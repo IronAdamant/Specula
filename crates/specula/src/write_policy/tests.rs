@@ -402,29 +402,53 @@ fn a_writer_that_leaves_changes_unjournaled_is_caught() {
 }
 
 /// A hosted game (external code holding the live world in a game tool or its own calls) that
-/// takes the world's recorded changes itself, or stops recording, would hide its writes from the
-/// journal and the claims: the policy sees the world's seal move and reports it (a debug
-/// assertion; counted in release).
+/// takes the world's recorded changes itself, or switches recording (off, or to Snapshot, where
+/// writes leave no step-by-step trace), would hide its writes from the journal and the claims
+/// (review round 1, probe1.rs: Snapshot got mallory onto alice's claimed box). The world is
+/// sealed while the game holds it: the attempt changes nothing, the write is checked and refused
+/// as usual, and the attempt is reported and counted. The same for
+/// an exempt writer.
 #[test]
-fn a_game_that_hides_its_writes_is_caught() {
-    for how in ["take", "off"] {
+fn a_game_that_tries_to_hide_its_writes_is_refused() {
+    for how in ["take", "off", "snapshot"] {
         let mut f = fixture();
-        let id = f.abox;
-        let hid = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = f.live.game_tool(&mut f.sw, 1, "sepulcra", MALLORY, |wd| {
-                if how == "off" {
-                    wd.set_recording(Recording::Off);
+        let (id, before) = (f.abox, f.live.get(f.abox).unwrap().position);
+        let mut result = None;
+        let tried = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            result = Some(f.live.game_tool(&mut f.sw, 1, "sepulcra", MALLORY, |wd| {
+                match how {
+                    "off" => wd.set_recording(Recording::Off),
+                    "snapshot" => wd.set_recording(Recording::Snapshot),
+                    _ => {}
                 }
                 wd.update(&EntityKey::Id(id), moved(8.0), "sepulcra").unwrap();
                 if how == "take" {
-                    wd.take_changes();
+                    assert!(wd.take_changes().is_empty(), "nothing to take while sealed");
                 }
-            });
+            }));
         }));
-        assert_eq!(hid.is_err(), cfg!(debug_assertions), "{how}");
-        assert_eq!(f.live.strays(), 1, "{how}");
-        assert_eq!(f.live.recording(), Recording::Full, "{how}: recording again");
+        assert!(tried.is_ok(), "{how}: refused, not a crash");
+        assert_eq!(result.map(|r| r.map_err(|e| e.code)), Some(Err("claimed")), "{how}: the write was checked and refused");
+        assert_eq!(f.live.get(id).unwrap().position, before, "{how}: alice's box didn't move");
+        assert_eq!((f.live.strays(), f.live.recording()), (1, Recording::Full), "{how}");
+        assert!(!f.live.has_unjournaled(), "{how}");
+        assert_eq!(f.sw.journal.replay().unwrap().state_hash(), f.live.state_hash(), "{how}");
     }
+    // An exempt writer can't hide its writes either: they are journaled under its name.
+    let mut f = fixture();
+    let id = f.abox;
+    let last = f.sw.journal.last_seq();
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        f.live.exempt(&mut f.sw, 1, Exempt::Physics, |wd| {
+            wd.set_recording(Recording::Off);
+            wd.update(&EntityKey::Id(id), moved(6.0), "physics").unwrap();
+            wd.take_changes();
+        })
+    }));
+    let entry = f.sw.journal.entries().last().unwrap();
+    assert!(entry.seq > last && &*entry.by == "physics" && entry.touches(id), "journaled as physics'");
+    assert_eq!(f.live.strays(), 1);
+    assert_eq!(f.sw.journal.replay().unwrap().state_hash(), f.live.state_hash());
 }
 
 /// Exempt writers record as they always did: per-tick writers one change per entity (cheap,

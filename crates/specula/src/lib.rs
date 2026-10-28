@@ -72,6 +72,7 @@ mod swarm_tools;
 mod tools;
 pub mod two_d;
 mod ui;
+mod sim_writes;
 pub mod world;
 pub mod write_policy;
 
@@ -761,13 +762,11 @@ impl Engine {
     }
 
     /// Calls the hosted game (`call` gets its [`Ctx`]) as one of its own writes, journaled as
-    /// `kind` under its name and exempt from claims ([`write_policy::Exempt::Game`]). `None`
-    /// without a game.
+    /// `kind` under its name and exempt from claims ([`sim_writes::game`]). `None` without a
+    /// game.
     fn game_call<T>(&mut self, kind: Kind, call: impl FnOnce(&mut dyn Game, &mut Ctx) -> T) -> Option<T> {
         let game = self.game.as_mut()?;
-        let (clock, agent, windowed) = (&self.clock, self.game_name.as_str(), self.windowed);
-        let why = write_policy::Exempt::Game { name: agent, kind };
-        Some(self.world.exempt(&mut self.swarm, clock.tick(), why, |w| call(game.as_mut(), &mut Ctx { world: w, clock, agent, windowed })))
+        Some(sim_writes::game(&mut self.world, &mut self.swarm, game.as_mut(), &self.clock, &self.game_name, self.windowed, kind, call))
     }
 
     /// The world's state hash, reusing the last one while nothing changed.
@@ -821,9 +820,7 @@ impl Engine {
     /// Calls the game's `start` once the engine is ready.
     fn start_game(&mut self) {
         let Some(game) = self.game.as_mut() else { return };
-        let (clock, agent, windowed) = (&self.clock, self.game_name.as_str(), self.windowed);
-        let why = write_policy::Exempt::GameStart { name: agent };
-        self.world.exempt(&mut self.swarm, clock.tick(), why, |w| game.start(&mut Ctx { world: w, clock, agent, windowed }));
+        sim_writes::game_start(&mut self.world, &mut self.swarm, game.as_mut(), &self.clock, &self.game_name, self.windowed);
         self.last_advance = Instant::now();
     }
 
@@ -889,11 +886,8 @@ impl Engine {
             if !self.logic.is_empty() {
                 let _l = profile::zone("modules");
                 self.lend_physics();
-                let (tick, hz, logic) = (self.clock.tick(), self.clock.hz(), &mut self.logic);
                 // The game's rules: journaled, exempt from claims.
-                self.world.session(&mut self.swarm, tick, write_policy::Opener::Modules, |w, swarm| {
-                    logic.tick(w, tick, hz, &mut write_policy::module_tick_commit(swarm, tick));
-                });
+                sim_writes::module_tick(&mut self.world, &mut self.swarm, &mut self.logic, self.clock.tick(), self.clock.hz());
                 self.return_physics();
             }
             // Live Lex rule sets step on the same tick, after the modules (whose hooks they call).
@@ -944,9 +938,7 @@ impl Engine {
             agent_view,
             title: &mut self.game_title,
         };
-        let (clock, agent, windowed) = (&self.clock, self.game_name.as_str(), self.windowed);
-        let why = write_policy::Exempt::Game { name: agent, kind: Kind::GameFrame };
-        self.world.exempt(&mut self.swarm, clock.tick(), why, |w| game.frame(&mut Ctx { world: w, clock, agent, windowed }, &mut frame));
+        sim_writes::game(&mut self.world, &mut self.swarm, game.as_mut(), &self.clock, &self.game_name, self.windowed, Kind::GameFrame, |game, ctx| game.frame(ctx, &mut frame));
         // While the window looks through an agent's camera the game's camera writes don't count
         // (only a human takes the view back, F5): the game was told (`Frame::agent_view`).
         if agent_view {
@@ -965,10 +957,8 @@ impl Engine {
             return;
         }
         let _z = profile::zone("game_overlay");
-        let (clock, agent, windowed) = (&self.clock, self.game_name.as_str(), self.windowed);
         let mut overlay = game::Overlay { size, camera, capture, quads: out, textures: &mut self.gpu };
-        let why = write_policy::Exempt::Game { name: agent, kind: Kind::GameFrame };
-        self.world.exempt(&mut self.swarm, clock.tick(), why, |w| game.overlay(&mut Ctx { world: w, clock, agent, windowed }, &mut overlay));
+        sim_writes::game(&mut self.world, &mut self.swarm, game.as_mut(), &self.clock, &self.game_name, self.windowed, Kind::GameFrame, |game, ctx| game.overlay(ctx, &mut overlay));
         // Past the cap, or naming a texture the GPU doesn't have: dropped (counted), never a
         // failed frame.
         let gpu = &self.gpu;
@@ -1195,7 +1185,7 @@ impl Engine {
         }
         // Anim sets that changed reach the world here, journaled (never when a build lands).
         if !reload.anim_handles.is_empty() {
-            self.world.exempt(&mut self.swarm, self.clock.tick(), write_policy::Exempt::AnimReload, |w| anim::resettle(w, &reload.anim_handles));
+            sim_writes::anim_reload(&mut self.world, &mut self.swarm, self.clock.tick(), &reload.anim_handles);
         }
         Some(reload)
     }
@@ -1741,8 +1731,7 @@ impl Engine {
             Command::Lex(call) => {
                 let hooks: Vec<String> = self.logic.hooks().iter().map(logic::HookInfo::qualified).collect();
                 let in_process: Vec<String> = self.lex_natives.keys().cloned().collect();
-                let by = by.as_str();
-                self.world.session(&mut self.swarm, tick, write_policy::Opener::LexTools, |wd, swarm| lex_tools::handle(call, wd, swarm, tick, w, by, &hooks, &in_process))
+                sim_writes::lex_tools(&mut self.world, &mut self.swarm, tick, call, w, &by, &hooks, &in_process)
             }
             Command::LexLive(call) => self.lex_live_call(call, &by, w),
             Command::Batch(ops) => {
@@ -1895,8 +1884,7 @@ impl Engine {
                                 Some(c) => game.restore(c),
                                 None => {
                                     // The game's repair is its own write (its state, shown again).
-                                    let why = write_policy::Exempt::Game { name: agent, kind: Kind::GameTool };
-                                    self.world.exempt(&mut self.swarm, tick, why, |wd| game.world_rolled_back(&mut Ctx { world: wd, clock, agent, windowed }));
+                                    sim_writes::game(&mut self.world, &mut self.swarm, game.as_mut(), clock, agent, windowed, Kind::GameTool, |game, ctx| game.world_rolled_back(ctx));
                                 }
                             }
                             world_error(&self.conflict_help(e, Some(&conflict::Yours { fields: vec![format!("(game tool {name})")] })))
@@ -1956,8 +1944,7 @@ impl Engine {
             Command::ModelBuild(_) | Command::ModelReload => unreachable!("answered by handle_model_call"),
             Command::Logic(call) => {
                 self.lend_physics();
-                let (logic, clock) = (&mut self.logic, &self.clock);
-                let out = self.world.session(&mut self.swarm, tick, write_policy::Opener::Modules, |wd, swarm| logic::tools::handle(logic, call, wd, clock, swarm, w));
+                let out = sim_writes::logic_tools(&mut self.world, &mut self.swarm, &mut self.logic, &self.clock, call, w);
                 self.return_physics();
                 self.journal_module_events(Some(w));
                 out

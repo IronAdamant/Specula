@@ -2145,10 +2145,11 @@ pub struct World {
     /// what a graph's `{external: true}` nodes play. Derived each physics tick, never hashed,
     /// journaled or saved.
     external_poses: BTreeMap<u64, ExternalPose>,
-    /// Moves whenever recorded changes are taken or recording is switched off: the write policy
-    /// checks it stands still while the hosted game holds the live world, so a game's writes
-    /// can't be hidden from the journal and the checks (see [`World::seal`]).
-    seal: u64,
+    /// Set by the write policy while the hosted game or an exempt writer holds the live world:
+    /// recording can't change and recorded changes can't be taken (see [`World::set_sealed`]).
+    sealed: bool,
+    /// Attempts to do either while sealed.
+    seal_breaks: u64,
 }
 
 /// A pose supplied from outside the animation (a ragdoll's).
@@ -3571,17 +3572,28 @@ impl World {
     }
 
     /// What the world records about its changes from now on.
+    ///
+    /// While the write policy has [sealed](World::set_sealed) the world (the hosted game or an
+    /// exempt writer holds the live world), this changes nothing: the attempt is counted
+    /// ([`World::seal_breaks`]) and the policy reports it.
     pub fn set_recording(&mut self, recording: Recording) {
-        if recording == Recording::Off && self.recording != Recording::Off {
-            self.seal += 1;
+        if self.sealed {
+            self.seal_breaks += 1;
+            return;
         }
         self.recording = recording;
     }
 
-    /// Moves whenever recorded changes are taken ([`World::take_changes`]) or recording is
-    /// switched off: what the write policy compares around the hosted game's calls.
-    pub(crate) fn seal(&self) -> u64 {
-        self.seal
+    /// Seals the world (or unseals it): while sealed, [`World::set_recording`] and
+    /// [`World::take_changes`] change nothing, so code the write policy hands the live world to
+    /// (the hosted game, exempt writers) can't hide its writes from the journal and the checks.
+    pub(crate) fn set_sealed(&mut self, sealed: bool) {
+        self.sealed = sealed;
+    }
+
+    /// Attempts to change recording or take the recorded changes while sealed, ever.
+    pub(crate) fn seal_breaks(&self) -> u64 {
+        self.seal_breaks
     }
 
     pub fn recording(&self) -> Recording {
@@ -3594,8 +3606,14 @@ impl World {
     ///
     /// Transient entities' changes are left out: they are recorded while a command runs (so a
     /// rejected command rolls them back like anything else), but they are never journaled.
+    ///
+    /// While the world is sealed (see [`World::set_sealed`]) nothing is taken: the changes stay
+    /// for the write policy to check and journal, and the attempt is counted.
     pub fn take_changes(&mut self) -> Vec<Change> {
-        self.seal += 1;
+        if self.sealed {
+            self.seal_breaks += 1;
+            return Vec::new();
+        }
         let mut out = std::mem::take(&mut self.changes);
         out.retain(|c| !c.is_transient());
         if self.dirty.is_empty() && self.dirty_env.is_none() && self.dirty_removed.is_empty() {
