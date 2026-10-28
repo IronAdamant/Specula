@@ -11,7 +11,7 @@ use super::*;
 impl Scene {
     /// The scene over a loaded world that holds what `state` built, or why it can't adopt it
     /// (then [`Scene::build`] is the fallback).
-    pub fn adopt(world: &mut World, agent: &str, state: &State) -> Result<Scene, String> {
+    pub fn adopt(world: &mut GameWorld<'_>, agent: &str, state: &State) -> Result<Scene, String> {
         let content = state.content();
         let map = &content.map;
         let geo = SlabGeo::new(map);
@@ -64,7 +64,7 @@ impl Scene {
                 ents::delete(world, old);
             }
         }
-        let sub = |world: &mut World, parent: u64, name: &str| ents::group(world, agent, Some(parent), name, Vec3::ZERO, Vec3::ZERO, &[], Json::Null);
+        let sub = |world: &mut GameWorld<'_>, parent: u64, name: &str| ents::group(world, agent, Some(parent), name, Vec3::ZERO, Vec3::ZERO, &[], Json::Null);
         let live = ents::transient_group(world, agent, "live", Layer::World, &["game", "transient"]);
         let (enemies_g, bolts_g, fx_g) = (sub(world, live, "enemies"), sub(world, live, "bolts"), sub(world, live, "fx"));
         let ui = ents::transient_group(world, agent, "cursor", Layer::Ui, &["ui"]);

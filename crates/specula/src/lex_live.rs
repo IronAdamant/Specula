@@ -52,6 +52,7 @@ use crate::schedule::Class;
 use crate::swarm::Swarm;
 use crate::tools::{check_keys, Command, Tools};
 use crate::world::{EntityKey, Mark, Recording, Shape, SpawnSpec, UpdateSpec, World, WorldError};
+use crate::write_policy::{WorldWrite, self, Exempt, Opener, Rule};
 use specula_core::math::Vec3;
 use specula_core::Json;
 use specula_lex::rules::{NativeDef, Rules, TagFilter};
@@ -408,7 +409,7 @@ fn metres(p: [i64; 3]) -> Vec3 {
 /// Module hooks for a live run: `call_hook`.
 struct Host<'a> {
     logic: &'a mut LogicHost,
-    world: &'a mut World,
+    world: &'a mut dyn WorldWrite,
     swarm: &'a mut Swarm,
     tick: u64,
     hz: u32,
@@ -444,9 +445,9 @@ impl NativeHost for Host<'_> {
         let reason: String = hook.reason.chars().take(300).collect();
         let reason = if reason.trim().is_empty() { "a Lex native".to_owned() } else { reason };
         let (swarm, agent, tick, staged) = (&mut *self.swarm, self.agent, self.tick, self.staged);
-        let commit = &mut |w: &mut World, _: Mark, _: &str, _| {
+        let commit = &mut |w: &mut dyn WorldWrite, _: Mark, _: &str, _| {
             if !staged {
-                swarm.game_changes(w, tick, agent, Kind::GameTick);
+                write_policy::journal_exempt(w, swarm, tick, Exempt::LexLive { agent });
             }
             Ok(())
         };
@@ -463,7 +464,7 @@ impl NativeHost for Host<'_> {
 
 /// What a call needs from the engine (so the runner is testable without one).
 pub(crate) struct Env<'a> {
-    pub world: &'a mut World,
+    pub world: &'a mut dyn WorldWrite,
     pub logic: &'a mut LogicHost,
     pub swarm: &'a mut Swarm,
     pub natives: &'a specula_lex::Natives,
@@ -476,7 +477,7 @@ impl crate::Engine {
     pub(crate) fn lex_live_call(&mut self, call: LiveCall, by: &str, w: Writer) -> ToolOutput {
         let (tick, hz) = (self.clock.tick(), self.clock.hz());
         let crate::Engine { lex_live, world, logic, swarm, lex_natives, .. } = self;
-        lex_live.call(call, by, w, Env { world, logic, swarm, natives: lex_natives, tick, hz })
+        world.session(swarm, tick, Opener::LexLive, |world, swarm| lex_live.call(call, by, w, Env { world, logic, swarm, natives: lex_natives, tick, hz })).unwrap_or_else(|e| world_error(&e))
     }
 
     /// Ends live-input holds whose agents are gone (each frame while any hold is on).
@@ -492,7 +493,9 @@ impl crate::Engine {
     pub(crate) fn lex_live_tick(&mut self) {
         let (tick, hz) = (self.clock.tick(), self.clock.hz());
         let crate::Engine { lex_live, world, logic, swarm, lex_natives, .. } = self;
-        lex_live.tick(Env { world, logic, swarm, natives: lex_natives, tick, hz }, lex_live.limits);
+        let limits = lex_live.limits;
+        // A tick can't be refused: what a run left unjournaled was rolled back and reported.
+        let _ = world.session(swarm, tick, Opener::LexLive, |world, swarm| lex_live.tick(Env { world, logic, swarm, natives: lex_natives, tick, hz }, limits));
     }
 }
 
@@ -528,7 +531,7 @@ fn engine_ticks_for(lex_ticks: u32, lex_hz: u32, hz: u32) -> u64 {
 /// run's own input (window, gamepad, held actions): journaled like the run's ticks. Answers the
 /// accepted command, or the error (a panicking native also halts the run).
 #[allow(clippy::too_many_arguments)]
-fn apply_command(run: &mut Run, name: &str, args: &Json, by: &str, w: Option<Writer>, input: bool, world: &mut World, logic: &mut LogicHost, swarm: &mut Swarm, tick: u64, hz: u32) -> Result<Json, Json> {
+fn apply_command(run: &mut Run, name: &str, args: &Json, by: &str, w: Option<Writer>, input: bool, world: &mut dyn WorldWrite, logic: &mut LogicHost, swarm: &mut Swarm, tick: u64, hz: u32) -> Result<Json, Json> {
     if run.journal.len() >= MAX_JOURNAL {
         return Err(Json::obj([
             ("error", Json::from("journal_full")),
@@ -554,9 +557,8 @@ fn apply_command(run: &mut Run, name: &str, args: &Json, by: &str, w: Option<Wri
         let sim = &mut run.sim;
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sim.apply_undoable(&call, &mut host)))
     };
-    let undo = |world: &mut World, swarm: &mut Swarm, logic: &mut LogicHost| {
-        world.rollback_to(mark);
-        swarm.note_rolled_back(world);
+    let undo = |world: &mut dyn WorldWrite, swarm: &mut Swarm, logic: &mut LogicHost| {
+        write_policy::rolled_back(world, swarm, mark);
         logic.drop_staged();
     };
     let before = match result {
@@ -580,7 +582,7 @@ fn apply_command(run: &mut Run, name: &str, args: &Json, by: &str, w: Option<Wri
     };
     match w {
         Some(w) => {
-            if let Err(e) = swarm.check_game_changes(world, mark, tick, &agent, w) {
+            if let Err(e) = write_policy::game_commit(world, swarm, mark, tick, &agent, w) {
                 // The world is back at the mark; the run and the modules go back with it.
                 logic.drop_staged();
                 if let Some(u) = before {
@@ -592,7 +594,9 @@ fn apply_command(run: &mut Run, name: &str, args: &Json, by: &str, w: Option<Wri
                 return Err(j);
             }
         }
-        None => swarm.game_changes(world, tick, &agent, Kind::GameTick),
+        None => {
+            write_policy::journal_exempt(world, swarm, tick, Exempt::LexLive { agent: &agent });
+        }
     }
     logic.keep_staged();
     if input {
@@ -673,7 +677,7 @@ fn holder_live(h: &Holder, live: &[(String, String)]) -> bool {
 /// gamepads as the run's own input. Past [`MAX_INPUT_COMMANDS_PER_TICK`] in this engine tick, or
 /// past the work allowance, the rest are dropped (counted in status).
 #[allow(clippy::too_many_arguments)]
-fn fire(run: &mut Run, list: Vec<Fired>, fired_n: &mut usize, live: Option<&[(String, String)]>, world: &mut World, logic: &mut LogicHost, swarm: &mut Swarm, tick: u64, hz: u32) {
+fn fire(run: &mut Run, list: Vec<Fired>, fired_n: &mut usize, live: Option<&[(String, String)]>, world: &mut dyn WorldWrite, logic: &mut LogicHost, swarm: &mut Swarm, tick: u64, hz: u32) {
     for f in list {
         if run.halted.is_some() || run.sim.outcome().is_some() {
             return;
@@ -785,7 +789,7 @@ impl Live {
                 }
                 let group = run.group;
                 if env.world.get(group).is_some() {
-                    if let Err(e) = env.swarm.commit_lex_live(env.world, env.tick, w, Kind::Delete, |wd| wd.delete(&EntityKey::Id(group), None).map(|_| ())) {
+                    if let Err(e) = write_policy::commit(env.world, env.swarm, env.tick, w, Kind::Delete, Rule::LexLive, |wd| wd.delete(&EntityKey::Id(group), None).map(|_| ())) {
                         return world_error(&e);
                     }
                 }
@@ -883,7 +887,7 @@ impl Live {
                 }
                 let group = run.group;
                 if env.world.get(group).is_some() {
-                    if let Err(e) = env.swarm.commit_lex_live(env.world, env.tick, w, Kind::Delete, |wd| wd.delete(&EntityKey::Id(group), None).map(|_| ())) {
+                    if let Err(e) = write_policy::commit(env.world, env.swarm, env.tick, w, Kind::Delete, Rule::LexLive, |wd| wd.delete(&EntityKey::Id(group), None).map(|_| ())) {
                         return world_error(&e);
                     }
                 }
@@ -963,6 +967,15 @@ impl Live {
         if let Err(e) = env.swarm.check_claimed_path(&format!("/{ROOT}/{}", s.set), w, "start this live run") {
             return world_error(&e);
         }
+        // What the run will present is journaled as its own writes (exempt from the reserved-data
+        // and joint rules): nothing reserved may be in it (review round 3: a present rule tied a
+        // joint onto another agent's claimed box).
+        for (i, p) in s.present.iter().enumerate() {
+            let checked = crate::tools::parse_spawn_fields(&p.spawn).and_then(|spec| write_policy::presentation_allowed(&spec));
+            if let Err(m) = checked {
+                return error("reserved", format!("present[{i}].spawn: {m}"));
+            }
+        }
         let sim = match Sim::new_hosted(Arc::clone(&s.rules), s.seed, env.natives) {
             Ok(sim) => sim,
             Err(m) => return error("native_failed", m),
@@ -976,7 +989,7 @@ impl Live {
         };
         let set = s.set.clone();
         // The group: /lex_live/<set>, replacing a leftover one (a saved world, say).
-        let made = env.swarm.commit_lex_live(env.world, env.tick, w, Kind::Batch, |wd| {
+        let made = write_policy::commit(env.world, env.swarm, env.tick, w, Kind::Batch, Rule::LexLive, |wd| {
             let root = root_group(wd, w.name)?;
             if let Ok(old) = wd.find_path(&format!("/{ROOT}/{set}")) {
                 wd.delete(&EntityKey::Id(old), None)?;
@@ -988,6 +1001,8 @@ impl Live {
             Err(e) => return world_error(&e),
         };
         let rules_present = s.present.iter().map(|p| (filter_of(&s.rules, &p.tags), p.spawn.clone())).collect();
+        // Who started it, for the notices its ticks' writes into claims make.
+        env.swarm.note_starter(&format!("lex:{}", s.set), w.name);
         let mut run = Run {
             sim,
             agent: format!("lex:{}", s.set),
@@ -1138,7 +1153,7 @@ pub(crate) fn remove_presentation(world: &mut World) -> usize {
 }
 
 /// `/lex_live`, made if missing.
-fn root_group(wd: &mut World, by: &str) -> Result<u64, WorldError> {
+fn root_group(wd: &mut dyn WorldWrite, by: &str) -> Result<u64, WorldError> {
     match wd.find_path(&format!("/{ROOT}")) {
         Ok(id) => Ok(id),
         Err(_) => {
@@ -1150,7 +1165,7 @@ fn root_group(wd: &mut World, by: &str) -> Result<u64, WorldError> {
 }
 
 /// `/lex_live/<set>`, a run's group.
-fn run_group(wd: &mut World, root: u64, set: &str, seed: u64, by: &str) -> Result<u64, WorldError> {
+fn run_group(wd: &mut dyn WorldWrite, root: u64, set: &str, seed: u64, by: &str) -> Result<u64, WorldError> {
     let mut g = SpawnSpec::new(Shape::Group);
     g.name = Some(set.to_owned());
     g.parent = Some(EntityKey::Id(root));
@@ -1160,9 +1175,15 @@ fn run_group(wd: &mut World, root: u64, set: &str, seed: u64, by: &str) -> Resul
 
 /// Shows the run's entities as world entities (journaled replay-only under `lex:<set>`). A
 /// shown entity someone deleted is shown again; a deleted group is made again.
-fn present(world: &mut World, swarm: &mut Swarm, tick: u64, run: &mut Run) {
-    let prev = world.recording();
-    world.set_recording(Recording::Snapshot);
+fn present(world: &mut dyn WorldWrite, swarm: &mut Swarm, tick: u64, run: &mut Run) {
+    // One change per entity (replay-only, cheap), journaled as the run's own.
+    write_policy::recording_as(world, Recording::Snapshot, |world| present_entities(world, run));
+    let agent = run.agent.clone();
+    write_policy::journal_exempt(world, swarm, tick, Exempt::LexLive { agent: &agent });
+}
+
+/// [`present`]'s work on the world (recorded one change per entity).
+fn present_entities(world: &mut dyn WorldWrite, run: &mut Run) {
     let agent = run.agent.clone();
     let set = agent.trim_start_matches("lex:").to_owned();
     if world.get(run.group).is_none() {
@@ -1172,8 +1193,6 @@ fn present(world: &mut World, swarm: &mut Swarm, tick: u64, run: &mut Run) {
             Ok(g) => run.group = g,
             Err(e) => {
                 run.present_error = Some(format!("the run's group /{ROOT}/{set} can't be made again: {}", e.message));
-                world.set_recording(prev);
-                swarm.game_changes(world, tick, &agent, Kind::GameTick);
                 return;
             }
         }
@@ -1271,8 +1290,6 @@ fn present(world: &mut World, swarm: &mut Swarm, tick: u64, run: &mut Run) {
         run.present_error = fail;
     }
     run.presented = Some(run.sim.tick());
-    world.set_recording(prev);
-    swarm.game_changes(world, tick, &agent, Kind::GameTick);
 }
 
 fn status_json(set: &str, run: &Run, in_process: &specula_lex::Natives) -> Json {
@@ -1479,7 +1496,8 @@ fn present_arg(args: &Json) -> Result<Vec<Present>, String> {
         if spec_json.get("shape").is_none() {
             spec_json.set("shape", Json::from("cube"));
         }
-        crate::tools::parse_spawn_fields(&spec_json).map_err(|m| format!("present[{i}].spawn: {m}"))?;
+        let spec = crate::tools::parse_spawn_fields(&spec_json).map_err(|m| format!("present[{i}].spawn: {m}"))?;
+        crate::write_policy::presentation_allowed(&spec).map_err(|m| format!("present[{i}].spawn.{m}"))?;
         out.push(Present { tags, spawn: spec_json });
     }
     Ok(out)
@@ -1867,9 +1885,8 @@ mod tests {
             }
         }
         let mut rig = Rig::new(30);
-        let journal = &mut |w: &mut World, _: Mark, _: &str, _| {
-            w.take_changes();
-            Ok(())
+        let journal = &mut |w: &mut dyn WorldWrite, _: Mark, _: &str, _| {
+            crate::write_policy::drop_changes(w)
         };
         rig.logic.load(specula_logic::ModuleCode::of::<Counter>(), crate::logic::Origin::default(), None, &mut rig.world, 0, 30, journal).unwrap();
         let set = r#"{"lex": 1, "name": "atom", "tick_hz": 30, "items": {
@@ -2000,9 +2017,8 @@ mod tests {
                 Ok(Value::from(n))
             }
         }
-        let journal = &mut |w: &mut World, _: Mark, _: &str, _| {
-            w.take_changes();
-            Ok(())
+        let journal = &mut |w: &mut dyn WorldWrite, _: Mark, _: &str, _| {
+            crate::write_policy::drop_changes(w)
         };
         rig.logic.load(specula_logic::ModuleCode::of::<Counter>(), crate::logic::Origin::default(), None, &mut rig.world, 0, 30, journal).unwrap();
     }
@@ -2524,9 +2540,8 @@ mod tests {
         let code = ModuleCode::open(built.library.as_ref().unwrap(), &base.join("loaded")).unwrap();
         let mut rig = Rig::new(30);
         let origin = crate::logic::Origin { dir: None, library: built.library.clone() };
-        let commit = &mut |w: &mut World, _: Mark, _: &str, _| {
-            w.take_changes();
-            Ok(())
+        let commit = &mut |w: &mut dyn WorldWrite, _: Mark, _: &str, _| {
+            crate::write_policy::drop_changes(w)
         };
         rig.logic.load(code, origin, None, &mut rig.world, 0, 30, commit).unwrap();
         let player = rig.world.find_path("/ambulo/player").unwrap();
@@ -2563,5 +2578,67 @@ mod tests {
         }
         let s = Start { set: "t9".into(), rules: rules(), seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input: None, doc: None };
         assert_eq!(json(&rig.call(LiveCall::Start(Box::new(s)))).get("error"), Some(&Json::from("runs_full")));
+    }
+}
+
+/// Review round 3 (probes/lex_live/probe.rs): a live run's presentation is journaled as the run's
+/// own writes (exempt from the reserved-data and joint rules), so a present rule carrying
+/// props.joint tied a joint onto another agent's claimed box. Present rules are checked when the
+/// run starts (and when a save brings it back): reserved data is refused.
+#[cfg(test)]
+mod presentation_tests {
+    use super::*;
+    use crate::claims::{ClaimSpec, Scope, DEFAULT_LEASE};
+    use crate::world::{Body, BodyKind};
+
+    const RULES: &str = r#"{"lex": 1, "name": "t", "tick_hz": 30, "items": {
+        "lane": {"kind": "path", "points": [[0, 0, 0], [10, 0, 0]]},
+        "walker": {"kind": "archetype", "tags": ["enemy"], "attributes": {"hp": "5pt"},
+                   "behaviours": [{"type": "health", "attribute": "hp"},
+                                  {"type": "follow_path", "path": "@spawn", "speed": "2m/s"}]},
+        "waves": {"kind": "waves", "waves": [{"groups": [{"archetype": "walker", "count": 1, "at": ["lane"], "every": "1s"}]}]}
+    }}"#;
+
+    #[test]
+    fn a_present_rule_cant_carry_reserved_data() {
+        let session = |id: &str| SessionInfo { id: id.into(), client_name: "c".into(), client_version: "1".into(), protocol_version: "x".into() };
+        let (alice, bob) = (session("aaaaaa11"), session("bbbbbb22"));
+        let all = vec![alice.clone(), bob.clone()];
+        let mut swarm = Swarm::default();
+        swarm.hello(&alice, "alice".into(), "builder".into(), None, &all).unwrap();
+        swarm.hello(&bob, "bob".into(), "builder".into(), None, &all).unwrap();
+        let mut world = World::default();
+        world.set_recording(Recording::Full);
+        let mut s = SpawnSpec::new(Shape::Cube);
+        s.name = Some("abox".into());
+        s.body = Some(Body::new(BodyKind::Dynamic, 5.0));
+        let alice_w = Writer { name: "alice", session: Some("aaaaaa11") };
+        let abox = write_policy::commit(&mut world, &mut swarm, 0, alice_w, Kind::Spawn, Rule::World, |wd| wd.spawn(s, "alice").map(|e| e.id)).unwrap().0;
+        swarm.take_claim(&world, &alice, ClaimSpec { scope: Scope::path("/abox").unwrap(), lease: DEFAULT_LEASE, note: String::new() }).unwrap();
+        let bob_w = Writer { name: "bob", session: Some("bbbbbb22") };
+        let doc = specula_lex::Document::parse(RULES).unwrap();
+        let rules = Arc::new(specula_lex::compile(&doc, &Options::default()).unwrap().rules);
+        let logic = &mut LogicHost::new();
+        let natives: specula_lex::Natives = Default::default();
+        for props in [format!(r#"{{"joint": {{"kind": "fixed", "a": null, "b": {abox}}}}}"#), r#"{"navmesh": {}}"#.to_owned(), r#"{"lex": {}}"#.to_owned()] {
+            let spawn = Json::parse(&format!(r#"{{"shape": "sphere", "props": {props}}}"#)).unwrap();
+            let present = vec![Present { tags: vec!["enemy".into()], spawn }];
+            let mut live = Live::default();
+            let start = LiveCall::Start(Box::new(Start { set: "t".into(), rules: Arc::clone(&rules), seed: 3, params: Json::Obj(Vec::new()), present, input: None, doc: None }));
+            let out = live.call(start, "bob", bob_w, Env { world: &mut world, logic, swarm: &mut swarm, natives: &natives, tick: 0, hz: 30 });
+            assert!(out.is_error, "{props}: refused");
+            let text = match &out.content[0] { specula_protocol::Content::Text(t) => t.clone(), _ => String::new() };
+            assert!(text.contains("reserved"), "{props}: {text}");
+            for t in 0..40 {
+                live.tick(Env { world: &mut world, logic, swarm: &mut swarm, natives: &natives, tick: t, hz: 30 }, LIMITS);
+            }
+            assert_eq!(world.joints_on(abox).count(), 0, "{props}: no joint on alice's claimed box");
+            assert!(world.entities().all(|e| e.props.get("navmesh").is_none() && e.props.get("lex").is_none()), "{props}");
+        }
+        // The same run without reserved data presents its walker.
+        let present = vec![Present { tags: vec!["enemy".into()], spawn: Json::parse(r#"{"shape": "sphere"}"#).unwrap() }];
+        let mut live = Live::default();
+        let start = LiveCall::Start(Box::new(Start { set: "t".into(), rules, seed: 3, params: Json::Obj(Vec::new()), present, input: None, doc: None }));
+        assert!(!live.call(start, "bob", bob_w, Env { world: &mut world, logic, swarm: &mut swarm, natives: &natives, tick: 0, hz: 30 }).is_error);
     }
 }

@@ -4,7 +4,8 @@
 
 use super::character::CharacterMover;
 use super::{EventRec, LogLine, Shared, LOG_LINES, MAX_PENDING_EVENTS, MAX_RNG_STREAMS};
-use crate::world::{EntityKey, World, WorldError};
+use crate::write_policy::WorldWrite;
+use crate::world::{EntityKey, WorldError};
 use specula_core::rng::Rng;
 use specula_core::Json;
 use specula_sdk::Value;
@@ -25,7 +26,7 @@ const MAX_LOG_CHARS: usize = 400;
 const OPS: &str = "find, get, query, spawn, set, delete, state_get, state_set, rng, move_character, emit, log";
 
 pub(super) struct ModuleHandler<'a> {
-    pub world: &'a mut World,
+    pub world: &'a mut dyn WorldWrite,
     pub module: &'a str,
     /// `module:<name>`: attribution of the module's world changes.
     pub agent: &'a str,
@@ -73,7 +74,7 @@ impl specula_logic::Handler for ModuleHandler<'_> {
             // `/project`, `/nav`): a write that breaks one is undone and refused.
             let mark = self.world.mark();
             let out = self.answer(op, req)?;
-            crate::swarm::check_module_changes(self.world, mark).map_err(|e| error_value(&e))?;
+            crate::write_policy::module_request(self.world, mark).map_err(|e| error_value(&e))?;
             return Ok(out);
         }
         self.answer(op, req)

@@ -35,9 +35,10 @@ mod save;
 pub use save::LogicSnapshot;
 pub mod tools;
 
+use crate::write_policy::WorldWrite;
 use crate::fpguard::FpLog;
 use crate::journal::ModuleEvent;
-use crate::world::{Mark, Recording, World, WorldError};
+use crate::world::{Mark, WorldError};
 use character::{CharacterMover, Kinematic};
 use handler::ModuleHandler;
 use input::ModuleInput;
@@ -81,7 +82,7 @@ pub enum Phase {
 /// refuses them; the world must then be back at `mark` (the host makes sure) and the host undoes
 /// the rest of the call. Called after a failed call too, with nothing pending, so the journal
 /// learns about ids the failed call used.
-pub type Commit<'a> = dyn FnMut(&mut World, Mark, &str, Phase) -> Result<(), WorldError> + 'a;
+pub type Commit<'a> = dyn FnMut(&mut dyn WorldWrite, Mark, &str, Phase) -> Result<(), WorldError> + 'a;
 
 /// Where a module came from: rebuilt with `logic_build`, reloaded with `logic_reload`.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -311,7 +312,7 @@ struct CallParts<'a> {
 /// Runs one call of `code` as module `name`, with the world recorded in full. On failure the
 /// world (back to where the call began), state and RNG are rolled back here.
 #[allow(clippy::too_many_arguments)]
-fn invoke(code: &ModuleCode, name: &str, parts: CallParts<'_>, call: u32, input: &Value, world: &mut World, tick: u64, what: &str) -> Result<Done, Failure> {
+fn invoke(code: &ModuleCode, name: &str, parts: CallParts<'_>, call: u32, input: &Value, world: &mut dyn WorldWrite, tick: u64, what: &str) -> Result<Done, Failure> {
     let agent = agent_of(name);
     let mark = world.mark();
     let mut h = ModuleHandler {
@@ -561,11 +562,15 @@ impl LogicHost {
     /// One call into loaded module `name`, committed through `commit`; on failure or refusal
     /// nothing it did is kept.
     #[allow(clippy::too_many_arguments)]
-    fn call(&mut self, name: &str, call: u32, input: &Value, world: &mut World, tick: u64, phase: Phase, commit: &mut Commit<'_>) -> Result<Value, CallError> {
+    fn call(&mut self, name: &str, call: u32, input: &Value, world: &mut dyn WorldWrite, tick: u64, phase: Phase, commit: &mut Commit<'_>) -> Result<Value, CallError> {
+        // Full changes, so a failed or refused call rolls back exactly.
+        crate::write_policy::recording_full(world, |world| self.call_full(name, call, input, world, tick, phase, commit))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn call_full(&mut self, name: &str, call: u32, input: &Value, world: &mut dyn WorldWrite, tick: u64, phase: Phase, commit: &mut Commit<'_>) -> Result<Value, CallError> {
         let slot = self.slots.get(name).expect("callers check the module exists");
         let agent = agent_of(name);
-        let before = world.recording();
-        world.set_recording(Recording::Full);
         let mark = world.mark();
         let what = match phase {
             Phase::Start => "start",
@@ -598,7 +603,6 @@ impl LogicHost {
                 Err(CallError::Module(f))
             }
         };
-        world.set_recording(before);
         result
     }
 
@@ -611,7 +615,22 @@ impl LogicHost {
         code: ModuleCode,
         origin: Origin,
         seed: Option<u64>,
-        world: &mut World,
+        world: &mut dyn WorldWrite,
+        tick: u64,
+        tick_hz: u32,
+        commit: &mut Commit<'_>,
+    ) -> Result<Json, WorldError> {
+        // Full changes, so a failed load rolls back exactly.
+        crate::write_policy::recording_full(world, |world| self.load_full(code, origin, seed, world, tick, tick_hz, commit))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn load_full(
+        &mut self,
+        code: ModuleCode,
+        origin: Origin,
+        seed: Option<u64>,
+        world: &mut dyn WorldWrite,
         tick: u64,
         tick_hz: u32,
         commit: &mut Commit<'_>,
@@ -624,8 +643,6 @@ impl LogicHost {
         if !reloaded && self.slots.len() >= MAX_MODULES {
             return Err(WorldError::new("too_many_modules", format!("at most {MAX_MODULES} modules at once; unload one first")));
         }
-        let before = world.recording();
-        world.set_recording(Recording::Full);
         let mark = world.mark();
         let saved = self.shared.get(&name).cloned();
         let mut events = Vec::new();
@@ -683,10 +700,8 @@ impl LogicHost {
             };
             let at = world.mark();
             let _ = commit(world, at, &agent, Phase::Start);
-            world.set_recording(before);
             return Err(e.with("module", name.as_str()));
         }
-        world.set_recording(before);
         self.pending_events.extend(events);
         let mut previous_build = None;
         if let Some(old) = self.slots.remove(&name) {
@@ -758,7 +773,7 @@ impl LogicHost {
     /// `commit` refuses the stop's changes (another agent's claim), nothing changes and the
     /// module stays; if the stop itself fails, its changes are dropped and the module is
     /// unloaded anyway.
-    pub fn unload(&mut self, name: &str, forget: bool, world: &mut World, tick: u64, tick_hz: u32, commit: &mut Commit<'_>) -> Result<Json, WorldError> {
+    pub fn unload(&mut self, name: &str, forget: bool, world: &mut dyn WorldWrite, tick: u64, tick_hz: u32, commit: &mut Commit<'_>) -> Result<Json, WorldError> {
         if !self.slots.contains_key(name) {
             return Err(self.no_module(name));
         }
@@ -883,7 +898,7 @@ impl LogicHost {
 
     /// One simulation tick of every running module (call after the tick's other systems; the
     /// tick number is the one being run). `commit` journals each module's changes.
-    pub fn tick(&mut self, world: &mut World, tick: u64, tick_hz: u32, commit: &mut Commit<'_>) {
+    pub fn tick(&mut self, world: &mut dyn WorldWrite, tick: u64, tick_hz: u32, commit: &mut Commit<'_>) {
         if self.slots.is_empty() {
             self.pending_events.clear();
             return;
@@ -971,7 +986,7 @@ impl LogicHost {
         args: &Json,
         reason: &str,
         caller: &str,
-        world: &mut World,
+        world: &mut dyn WorldWrite,
         tick: u64,
         tick_hz: u32,
         commit: &mut Commit<'_>,

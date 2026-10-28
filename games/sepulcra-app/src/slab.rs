@@ -9,7 +9,7 @@ use crate::ents;
 use crate::looks::{self, hex, palette::*, Part};
 use sepulcra::map::{CellKind, Face, Map};
 use sepulcra::CellId;
-use specula::world::World;
+use specula::game::GameWorld;
 use specula_core::math::Vec3;
 use specula_core::rng::Rng;
 use specula_core::Json;
@@ -256,7 +256,7 @@ fn shade(c: [f32; 3], k: f32) -> [f32; 3] {
 
 /// Marks a slab piece as ground: creatures' feet stand on its top (the anim graphs' feet IK) and
 /// the dead fall onto it (a static box collider: ragdolls land on it).
-fn ground(world: &mut World, agent: &str, id: u64) {
+fn ground(world: &mut GameWorld<'_>, agent: &str, id: u64) {
     if id != 0 {
         let change = specula::world::UpdateSpec {
             add_tags: vec![specula::anim::GROUND_TAG.into()],
@@ -268,7 +268,7 @@ fn ground(world: &mut World, agent: &str, id: u64) {
 }
 
 /// Builds the slab under `/slab` (replacing an old one). Returns the group's id.
-pub fn build(world: &mut World, agent: &str, map: &Map, geo: &SlabGeo) -> u64 {
+pub fn build(world: &mut GameWorld<'_>, agent: &str, map: &Map, geo: &SlabGeo) -> u64 {
     if let Some(old) = ents::top_level(world, "slab") {
         ents::delete(world, old);
     }

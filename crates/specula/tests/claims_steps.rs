@@ -86,7 +86,7 @@ impl Setup {
     }
 
     fn replays(&self) {
-        assert_eq!(self.sw.journal.replay().unwrap().state_hash(), self.w.state_hash(), "the journal still replays");
+        assert_eq!(self.sw.journal().replay().unwrap().state_hash(), self.w.state_hash(), "the journal still replays");
     }
 }
 
@@ -228,7 +228,7 @@ fn p8_snapshot_edge_cases_replay() {
     s.w.spawn(spec("/p", Vec3::new(3.0, 0.0, 0.0)), "game").unwrap();
     s.w.set_recording(Recording::Full);
     s.sw.game_changes(&mut s.w, 2, "sepulcra", Kind::GameTick);
-    let replayed = s.sw.journal.replay().unwrap();
+    let replayed = s.sw.journal().replay().unwrap();
     assert_eq!(replayed.state_hash(), s.w.state_hash());
     assert_eq!(replayed.find_path("/p").ok(), s.w.find_path("/p").ok());
     assert_eq!(replayed.find_path("/q2").ok(), s.w.find_path("/q2").ok());
@@ -296,7 +296,7 @@ fn r2_committing_matches_raw_application() {
             claims_elsewhere(&mut s);
         }
         s.batch(BOB, ops()).unwrap();
-        let entry = s.sw.journal.entries().last().unwrap();
+        let entry = s.sw.journal().entries().last().unwrap();
         assert_eq!(shape(&raw), shape(&s.w), "claims={claims}");
         assert_eq!((raw.state_hash(), raw.next_id()), (s.w.state_hash(), s.w.next_id()));
         assert_eq!(raw_changes.len(), entry.changes.len());
@@ -367,7 +367,7 @@ fn r5_chains_and_redo_into_a_claim() {
     s.spawn(BOB, "/u", Vec3::ZERO);
     s.sw.undo(&mut s.w, 0, BOB, &UndoRequest { ids: None, count: 1, force: false }).unwrap();
     s.claim(pclaim("/u"));
-    let last = s.sw.journal.last_seq();
+    let last = s.sw.journal().last_seq();
     let redo = s.sw.undo(&mut s.w, 0, BOB, &UndoRequest { ids: Some(vec![last]), count: 1, force: true });
     assert_eq!(redo.unwrap_err().code, "claimed", "a redo can't bring an entity back into someone's claim");
     s.replays();

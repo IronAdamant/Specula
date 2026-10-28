@@ -279,6 +279,9 @@ pub(crate) struct Playtests {
     next_id: u64,
     active: Option<Active>,
     done: VecDeque<Finished>,
+    /// Tests: a playtest counts as running without one.
+    #[cfg(test)]
+    pretend: bool,
 }
 
 fn error(code: &str, message: impl Into<String>, details: Vec<(&str, Json)>) -> ToolOutput {
@@ -335,7 +338,17 @@ impl Active {
 
 impl Playtests {
     pub fn running(&self) -> bool {
+        #[cfg(test)]
+        if self.pretend {
+            return true;
+        }
         self.active.is_some()
+    }
+
+    /// Tests: playtests that say one is running.
+    #[cfg(test)]
+    pub(crate) fn pretend_running() -> Playtests {
+        Playtests { pretend: true, ..Playtests::default() }
     }
 
     /// The running playtest waits for a deferred answer (no need to spin).

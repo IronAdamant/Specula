@@ -5,7 +5,7 @@
 
 use sepulcra::Content;
 use sepulcra_app::SepulcraGame;
-use specula::game::{Clock, Ctx, Frame, Game, Overlay};
+use specula::game::{Clock, Ctx, Frame, Game, Overlay, GameWorld};
 use specula::sight::Camera;
 use specula::world::{Recording, World};
 use specula_core::math::Vec3;
@@ -61,15 +61,15 @@ fn a_warm_window_frame_allocates_nothing() {
     let mut game = SepulcraGame::new(Arc::new(Content::builtin()), 7);
     let mut world = World::default();
     let mut clock = Clock::new(game.tick_hz());
-    game.start(&mut Ctx { world: &mut world, clock: &clock, agent: "sepulcra", windowed: false });
+    game.start(&mut Ctx { world: GameWorld::new(&mut world), clock: &clock, agent: "sepulcra", windowed: false });
     game.call_tool(
-        &mut Ctx { world: &mut world, clock: &clock, agent: "sepulcra", windowed: false },
+        &mut Ctx { world: GameWorld::new(&mut world), clock: &clock, agent: "sepulcra", windowed: false },
         "play_new",
         &Json::obj([("seed", Json::from("7")), ("layout", Json::from("centre"))]),
     );
     // Into wave 2, with the dead on the slab and stones shooting.
     for _ in 0..2600 {
-        game.tick(&mut Ctx { world: &mut world, clock: &clock, agent: "sepulcra", windowed: false });
+        game.tick(&mut Ctx { world: GameWorld::new(&mut world), clock: &clock, agent: "sepulcra", windowed: false });
         clock.finish_tick();
     }
     assert!(game.state().enemies().len() >= 4, "wave 2 is on the slab ({} enemies)", game.state().enemies().len());
@@ -81,11 +81,11 @@ fn a_warm_window_frame_allocates_nothing() {
         let mut f = Frame { input: &[], size: (1280, 720), alpha, dt_s: 0.016, camera: &mut camera, agent_view: false, title: &mut title };
         // As the engine runs a frame: game changes are coalesced, transient ones not recorded.
         world.set_recording(Recording::Snapshot);
-        game.frame(&mut Ctx { world, clock: &clock, agent: "sepulcra", windowed: false }, &mut f);
+        game.frame(&mut Ctx { world: GameWorld::new(world), clock: &clock, agent: "sepulcra", windowed: false }, &mut f);
         let cam = camera.unwrap();
         quads.clear();
         let mut o = Overlay { size: (1280, 720), camera: cam, capture: false, quads: &mut quads, textures: &mut textures };
-        game.overlay(&mut Ctx { world, clock: &clock, agent: "sepulcra", windowed: false }, &mut o);
+        game.overlay(&mut Ctx { world: GameWorld::new(world), clock: &clock, agent: "sepulcra", windowed: false }, &mut o);
         world.set_recording(Recording::Full);
         drop(world.take_changes());
     };

@@ -184,7 +184,7 @@ pub fn rollup(sw: &Swarm, q: &RollupQuery, now: Instant) -> Json {
     let mut by_task: BTreeMap<u64, Group> = BTreeMap::new();
     let (mut scanned, mut last, mut more, mut unlinked) = (0usize, q.since, false, 0u64);
     // Game tools are agents' work and always count; the game's own ticks and frames only with `game`.
-    for e in sw.journal.entries_after(q.since, true) {
+    for e in sw.journal().entries_after(q.since, true) {
         if scanned == MAX_SCAN {
             more = true;
             break;
@@ -350,7 +350,7 @@ pub fn rollup(sw: &Swarm, q: &RollupQuery, now: Instant) -> Json {
         ("since", Json::from(q.since)),
         ("next_since", Json::from(last)),
         ("more", Json::from(more)),
-        ("journal_last_id", Json::from(sw.journal.last_seq())),
+        ("journal_last_id", Json::from(sw.journal().last_seq())),
         ("board_seq", Json::from(sw.board.seq())),
     ];
     if cut {
@@ -359,7 +359,7 @@ pub fn rollup(sw: &Swarm, q: &RollupQuery, now: Instant) -> Json {
     if q.by == By::Task {
         out.push(("entries_without_task", Json::from(unlinked)));
     }
-    if !sw.journal.replayable() {
+    if !sw.journal().replayable() {
         out.push(("note", Json::from("older journal entries were evicted; counts cover the entries kept")));
     }
     Json::obj(out)

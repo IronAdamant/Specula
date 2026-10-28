@@ -2,6 +2,7 @@
 
 use super::tools::no_journal;
 use super::*;
+use crate::world::{Recording, World};
 use specula_sdk::{Cx, HookDef, Id, Module, ModuleInfo, Patch, SdkError, Spawn, Vec3};
 
 const ACTIONS: &str = r#"{"format": "specula.input.v1", "actions": [
@@ -384,8 +385,8 @@ fn failed_calls_still_journal_the_ids_they_used() {
     world.set_recording(Recording::Full);
     let mut host = LogicHost::new();
     for tick in 0..5 {
-        let mut commit = |w: &mut World, _: Mark, agent: &str, phase: Phase| {
-            swarm.game_changes(w, tick, agent, tools::kind(phase));
+        let mut commit = |w: &mut dyn crate::write_policy::WorldWrite, _: Mark, agent: &str, phase: Phase| {
+            crate::write_policy::journal_exempt(w, &mut swarm, tick, crate::write_policy::Exempt::Module { agent, kind: tools::kind(phase) });
             Ok(())
         };
         if tick == 0 {
@@ -394,7 +395,7 @@ fn failed_calls_still_journal_the_ids_they_used() {
         host.tick(&mut world, tick, 30, &mut commit);
     }
     assert_eq!(world.len(), 2, "ticks 1 and 3 kept their cubes");
-    let replayed = swarm.journal.replay().expect("replayable");
+    let replayed = swarm.journal().replay().expect("replayable");
     assert_eq!(replayed.state_hash(), world.state_hash(), "world_hash verify matches after failed spawns");
 }
 
@@ -486,7 +487,7 @@ fn claims_guard_module_loads_unloads_and_hooks() {
     assert_eq!(x(&world), 1.0);
     let out = tools::handle(&mut host, load(ModuleCode::of::<WalkerV2>()), &mut world, &clock, &mut swarm, owner);
     assert!(!out.is_error, "the owner may replace it: {}", text(&out));
-    let replayed = swarm.journal.replay().expect("replayable");
+    let replayed = swarm.journal().replay().expect("replayable");
     assert_eq!(replayed.state_hash(), world.state_hash());
 }
 

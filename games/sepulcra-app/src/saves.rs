@@ -17,7 +17,7 @@
 
 use super::*;
 use sepulcra::script::{Recording, Script};
-use specula::game::GameRequest;
+use specula::game::{GameRequest, GameWorld};
 use specula_core::bytes::{ByteReader, ByteWriter, DecodeError};
 
 /// The game section's own layout version. 2 adds the Lex rules' state (`--rules lex`); a
@@ -174,7 +174,7 @@ impl SepulcraGame {
 
     /// Takes a parsed section over the loaded world: the state, then the scene adopting what
     /// the world holds (rebuilt only if it can't be adopted).
-    pub(crate) fn apply_saved(&mut self, world: &mut World, agent: &str, l: Loaded) {
+    pub(crate) fn apply_saved(&mut self, world: &mut GameWorld<'_>, agent: &str, l: Loaded) {
         // `--rules lex`: the saved Lex run, or (an older save, or one made without it) the
         // recording replayed through Lex to the saved tick; then checked against the state.
         self.lex = if self.rules_lex {
@@ -365,7 +365,7 @@ impl SepulcraGame {
     }
 
     /// How a request went, for the player.
-    pub(crate) fn request_result(&mut self, world: &mut World, req: &GameRequest, result: Result<Json, Json>) {
+    pub(crate) fn request_result(&mut self, world: &mut GameWorld<'_>, req: &GameRequest, result: Result<Json, Json>) {
         if let (GameRequest::List, Ok(list)) = (req, &result) {
             self.slots = slots_of(list);
             return;

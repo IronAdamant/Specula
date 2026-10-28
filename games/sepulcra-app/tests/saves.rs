@@ -5,7 +5,7 @@
 
 use sepulcra::Content;
 use sepulcra_app::SepulcraGame;
-use specula::game::{Clock, Ctx, Game};
+use specula::game::{Clock, Ctx, Game, GameWorld};
 use specula::world::World;
 use specula_core::Json;
 use std::sync::Arc;
@@ -21,19 +21,19 @@ impl Host {
         let mut game = SepulcraGame::new(content, seed);
         let mut world = World::default();
         let clock = Clock::new(game.tick_hz());
-        game.start(&mut Ctx { world: &mut world, clock: &clock, agent: "sepulcra", windowed: false });
+        game.start(&mut Ctx { world: GameWorld::new(&mut world), clock: &clock, agent: "sepulcra", windowed: false });
         Host { game, world, clock }
     }
 
     fn call(&mut self, name: &str, args: &str) {
         let Host { game, world, clock } = self;
-        let out = game.call_tool(&mut Ctx { world, clock, agent: "sepulcra", windowed: false }, name, &Json::parse(args).unwrap());
+        let out = game.call_tool(&mut Ctx { world: GameWorld::new(world), clock, agent: "sepulcra", windowed: false }, name, &Json::parse(args).unwrap());
         assert!(!out.is_error, "{name} {args}: {:?}", out.content);
     }
 
     fn tick(&mut self) {
         let Host { game, world, clock } = self;
-        game.tick(&mut Ctx { world, clock, agent: "sepulcra", windowed: false });
+        game.tick(&mut Ctx { world: GameWorld::new(world), clock, agent: "sepulcra", windowed: false });
         self.clock.finish_tick();
     }
 
@@ -73,7 +73,7 @@ fn a_loaded_run_continues_tick_for_tick() {
     b.clock.set_tick(tick);
     let parsed = b.game.parse_state(&bytes).unwrap();
     let Host { game, world, clock } = &mut b;
-    game.apply_state(&mut Ctx { world, clock, agent: "sepulcra", windowed: false }, parsed);
+    game.apply_state(&mut Ctx { world: GameWorld::new(world), clock, agent: "sepulcra", windowed: false }, parsed);
     assert_eq!(b.hashes(), a.hashes(), "the load adopted the world without changing it");
     assert!(b.world.transient_len() > 0, "the transient presentation was rebuilt");
     for t in 0..3000 {
@@ -103,7 +103,7 @@ fn the_fuzzers_crash_file_is_refused_not_a_crash() {
             b.world = load(&files);
             b.clock.set_tick(tick);
             let Host { game, world, clock } = &mut b;
-            game.apply_state(&mut Ctx { world, clock, agent: "sepulcra", windowed: false }, state);
+            game.apply_state(&mut Ctx { world: GameWorld::new(world), clock, agent: "sepulcra", windowed: false }, state);
             for _ in 0..3000 {
                 b.tick();
             }

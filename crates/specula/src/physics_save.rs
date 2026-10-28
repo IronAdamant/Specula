@@ -208,7 +208,7 @@ impl Physics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::{Shape as WShape, SpawnSpec};
+    use crate::world::{Recording, Shape as WShape, SpawnSpec};
 
     const DT: f32 = 1.0 / 30.0;
 

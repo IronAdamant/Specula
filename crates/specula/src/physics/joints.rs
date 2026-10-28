@@ -399,7 +399,7 @@ impl Physics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::{Shape as WShape, SpawnSpec};
+    use crate::world::{Recording, Shape as WShape, SpawnSpec};
 
     fn spec_json(text: &str) -> Json {
         Json::parse(text).unwrap()

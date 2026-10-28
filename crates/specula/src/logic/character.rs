@@ -6,6 +6,7 @@
 //! difference: they ask to move by a displacement and get back where they ended up and whether
 //! they stand on something.
 
+use crate::write_policy::WorldWrite;
 use crate::world::{ColliderShape, EntityKey, UpdateSpec, World, WorldError};
 use specula_core::math::Vec3;
 
@@ -26,7 +27,7 @@ pub trait CharacterMover {
 
     /// Moves entity `id` by `motion` (metres, world axes, gravity included) and sets its
     /// position, attributing the change to `by`.
-    fn move_character(&mut self, world: &mut World, id: u64, motion: Vec3, by: &str) -> Result<Moved, WorldError>;
+    fn move_character(&mut self, world: &mut dyn WorldWrite, id: u64, motion: Vec3, by: &str) -> Result<Moved, WorldError>;
 
     /// For the engine to reach its own controller's state (e.g. lend it the physics space).
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
@@ -124,7 +125,7 @@ impl CharacterMover for Kinematic {
         self
     }
 
-    fn move_character(&mut self, world: &mut World, id: u64, motion: Vec3, by: &str) -> Result<Moved, WorldError> {
+    fn move_character(&mut self, world: &mut dyn WorldWrite, id: u64, motion: Vec3, by: &str) -> Result<Moved, WorldError> {
         if ![motion.x, motion.y, motion.z].iter().all(|v| v.is_finite() && v.abs() <= 100.0) {
             return Err(WorldError::new("invalid_field", "'motion' must be three finite numbers within ±100 m per tick")
                 .with("field", "motion"));

@@ -391,13 +391,32 @@ pub fn check_dep_info(deps_file: &Path, dir: &Path, root: &Path) -> Result<(), (
     Ok(())
 }
 
-/// The newest rustc dep-info for library target `name` in a Cargo target folder's `deps`
-/// (`<name>-<hash>.d`, or `<name>.d` for a cdylib), from one of the build's artifacts.
+/// The rustc dep-info of the build's artifact for library target `name`, in its Cargo target
+/// folder's `deps`. The artifact's own first: `deps/<file stem>.d` (`ambulo.d` for the cdylib
+/// `ambulo.dll`, `ambulo-<hash>.d` for `libambulo-<hash>.rlib`). Otherwise the newest
+/// `<name>-<hash>.d` that a real build wrote: never a `cargo check` or `cargo clippy` metadata
+/// file sharing the folder, which lists `clippy.toml` and `Cargo.toml` among what it read (and
+/// made logic_build refuse a clean module with `source_path` after a clippy run).
 pub fn find_dep_info(artifact: &Path, name: &str) -> Option<PathBuf> {
     let parent = artifact.parent()?;
     let deps = if parent.file_name().is_some_and(|n| n == "deps") { parent.to_path_buf() } else { parent.join("deps") };
     let stem = name.replace('-', "_");
+    if let Some(own) = artifact.file_stem().map(|s| s.to_string_lossy().into_owned()) {
+        let own = own.strip_prefix("lib").filter(|o| o.starts_with(&stem)).map(str::to_owned).unwrap_or(own);
+        let path = deps.join(format!("{own}.d"));
+        if (own == stem || own.starts_with(&format!("{stem}-"))) && path.is_file() {
+            return Some(path);
+        }
+    }
     let prefix = format!("{stem}-");
+    // A check or clippy run's dep-info names only `.rmeta` outputs (and clippy's records its
+    // arguments); a real build's names the library it made.
+    let metadata_only = |path: &Path| {
+        std::fs::read_to_string(path).map_or(true, |t| {
+            t.contains("env-dep:CLIPPY_ARGS")
+                || t.lines().filter_map(|l| l.split_once(": ").map(|(target, _)| target)).filter(|target| !target.ends_with(".d")).all(|target| target.ends_with(".rmeta"))
+        })
+    };
     std::fs::read_dir(&deps)
         .ok()?
         .flatten()
@@ -406,6 +425,7 @@ pub fn find_dep_info(artifact: &Path, name: &str) -> Option<PathBuf> {
             // cdylibs carry no hash in their names (`ambulo.d`); rlibs and metadata do.
             (n.starts_with(&prefix) && n.ends_with(".d")) || n == format!("{stem}.d")
         })
+        .filter(|e| !metadata_only(&e.path()))
         .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
         .map(|e| e.path())
 }
@@ -413,6 +433,34 @@ pub fn find_dep_info(artifact: &Path, name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    /// Pre-existing bug found by the write-policy lane: after `cargo clippy` in the same target
+    /// folder, the newest `ambulo-<hash>.d` was clippy's (listing clippy.toml and Cargo.toml),
+    /// and logic_build refused a clean module. The artifact's own dep-info is used, and metadata
+    /// dep-info never is.
+    #[test]
+    fn the_artifacts_own_dep_info_wins_never_clippys() {
+        let root = std::env::temp_dir().join(format!("specula-depinfo-own-{}", std::process::id()));
+        let deps = root.join("debug").join("deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        let own = "D:/t/debug/deps/ambulo.d: games/ambulo/src/lib.rs\nD:/t/debug/deps/ambulo.dll: games/ambulo/src/lib.rs\n";
+        let clippy = "D:/t/debug/deps/ambulo-5b27.d: games/ambulo/clippy.toml games/ambulo/src/lib.rs Cargo.toml\nD:/t/debug/deps/libambulo-5b27.rmeta: games/ambulo/clippy.toml Cargo.toml\n# env-dep:CLIPPY_ARGS=-D\n";
+        let rlib = "D:/t/debug/deps/ambulo-77aa.d: games/ambulo/src/lib.rs\nD:/t/debug/deps/libambulo-77aa.rlib: games/ambulo/src/lib.rs\n";
+        std::fs::write(deps.join("ambulo.d"), own).unwrap();
+        std::fs::write(deps.join("ambulo-77aa.d"), rlib).unwrap();
+        // Written last: the newest file.
+        std::fs::write(deps.join("ambulo-5b27.d"), clippy).unwrap();
+        let cdylib = root.join("debug").join("ambulo.dll");
+        assert_eq!(find_dep_info(&cdylib, "ambulo"), Some(deps.join("ambulo.d")), "the cdylib's own");
+        assert_eq!(find_dep_info(&deps.join("libambulo-77aa.rlib"), "ambulo"), Some(deps.join("ambulo-77aa.d")), "the rlib's own");
+        std::fs::remove_file(deps.join("ambulo.d")).unwrap();
+        std::fs::remove_file(deps.join("ambulo-77aa.d")).unwrap();
+        assert_eq!(find_dep_info(&cdylib, "ambulo"), None, "clippy's metadata is never taken");
+        std::fs::write(deps.join("ambulo-77aa.d"), rlib).unwrap();
+        assert_eq!(find_dep_info(&cdylib, "ambulo"), Some(deps.join("ambulo-77aa.d")), "else the newest real build's");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn compile_time_paths_stay_in_the_module() {

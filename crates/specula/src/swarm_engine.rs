@@ -303,7 +303,7 @@ impl Engine {
             }
             SwarmCall::DesyncCompare { a, b, from_tick } => {
                 if b == TraceRef::Replay {
-                    let mut j = desync::against_replay(&self.trace, &self.swarm.journal, &self.world, from_tick);
+                    let mut j = desync::against_replay(&self.trace, self.swarm.journal(), &self.world, from_tick);
                     j.set("a", Json::from("live"));
                     j.set("b", Json::from("replay"));
                     return out(j);
@@ -349,7 +349,7 @@ impl Engine {
 
     fn live_trace(&self, from: Option<u64>, to: Option<u64>) -> Trace {
         let game = self.game.as_ref().map(|_| self.game_name.as_str());
-        Trace::live(&self.trace, &self.swarm.journal, game, self.clock.hz(), from, to)
+        Trace::live(&self.trace, self.swarm.journal(), game, self.clock.hz(), from, to)
     }
 
     fn lease_pools(&self, server: &Server) -> Pools {
@@ -420,8 +420,8 @@ impl Engine {
     /// Adds `conflict` (base, theirs, yours) to a refused write's error (see [`conflict`]).
     pub(crate) fn conflict_help(&self, e: WorldError, yours: Option<&Yours>) -> WorldError {
         match yours {
-            Some(y) => conflict::help(&self.world, &self.swarm.journal, e, y),
-            None => conflict::help(&self.world, &self.swarm.journal, e, &Yours::default()),
+            Some(y) => conflict::help(&self.world, self.swarm.journal(), e, y),
+            None => conflict::help(&self.world, self.swarm.journal(), e, &Yours::default()),
         }
     }
 

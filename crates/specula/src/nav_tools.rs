@@ -555,10 +555,8 @@ impl crate::Engine {
         let tick = self.clock.tick();
         let hz = self.clock.hz();
         let _z = specula_core::profile::zone("nav");
-        self.world.set_recording(crate::world::Recording::Snapshot);
-        self.nav.tick(&mut self.world, &mut self.physics, self.world_generation, tick, 1.0 / hz as f32, hz);
-        self.world.set_recording(crate::world::Recording::Full);
-        self.swarm.game_changes(&mut self.world, tick, nav::AGENT, JKind::Nav);
+        let (navs, physics, generation) = (&mut self.nav, &mut self.physics, self.world_generation);
+        self.world.exempt(&mut self.swarm, tick, crate::write_policy::Exempt::Nav, |w| navs.tick(w, physics, generation, tick, 1.0 / hz as f32, hz));
     }
 
     fn spot(&self, s: &Spot) -> Result<Vec3, WorldError> {
@@ -690,7 +688,7 @@ impl crate::Engine {
                 };
                 let change = UpdateSpec { props: Some(Json::obj([(nav::AGENT_KEY, value)])), expect_version, ..Default::default() };
                 let by = w.name.to_owned();
-                match self.swarm.commit(&mut self.world, tick, w, JKind::Set, |wd| wd.update(&EntityKey::Id(id), change, &by).map(|e| e.id)) {
+                match self.world.commit(&mut self.swarm, tick, w, JKind::Set, crate::write_policy::Rule::World, |wd| wd.update(&EntityKey::Id(id), change, &by).map(|e| e.id)) {
                     Ok((id, seq)) => {
                         self.nav.sync(&self.world, self.world_generation);
                         let mut out = self.nav.agent_json(&self.world, id).unwrap_or_else(|| Json::obj([("id", Json::from(id)), ("nav_agent", Json::from(false))]));
@@ -810,7 +808,7 @@ impl crate::Engine {
                 };
                 let change = UpdateSpec { props: Some(Json::obj([(key, value)])), expect_version, ..Default::default() };
                 let by = w.name.to_owned();
-                match self.swarm.commit(&mut self.world, tick, w, JKind::Set, |wd| wd.update(&EntityKey::Id(id), change, &by).map(|e| e.id)) {
+                match self.world.commit(&mut self.swarm, tick, w, JKind::Set, crate::write_policy::Rule::World, |wd| wd.update(&EntityKey::Id(id), change, &by).map(|e| e.id)) {
                     Ok((id, seq)) => {
                         self.nav.sync(&self.world, self.world_generation);
                         let mut out = self.nav.mind_json(&self.world, id, 4096).unwrap_or_else(|| Json::obj([("id", Json::from(id)), ("path", Json::from(self.world.path_of(id)))]));
@@ -878,7 +876,7 @@ impl crate::Engine {
         let summary = collider_summary(&collider);
         let change = UpdateSpec { collider: Some(Some(collider.clone())), expect_version, ..Default::default() };
         let by = w.name.to_owned();
-        let (_, seq) = self.swarm.commit(&mut self.world, tick, w, JKind::Set, |wd| wd.update(&EntityKey::Id(id), change, &by).map(|e| e.id))?;
+        let (_, seq) = self.world.commit(&mut self.swarm, tick, w, JKind::Set, crate::write_policy::Rule::World, |wd| wd.update(&EntityKey::Id(id), change, &by).map(|e| e.id))?;
         // A summary, not the collider itself (a mesh collider is hundreds of KB; world_query
         // fields: ["collider"] reads it).
         let mut out = Json::obj([("id", Json::from(id)), ("path", Json::from(self.world.path_of(id))), ("moving", Json::from(moving)), ("journal", Json::from(seq))]);
@@ -900,7 +898,7 @@ impl crate::Engine {
         // /nav is reserved for these tools: removing a navmesh is one of them too.
         if args.get("remove").and_then(Json::as_bool) == Some(true) {
             let Some(id) = existing else { return Err(WorldError::new("no_navmesh", format!("there is no navmesh '{name}'")).with("path", path.as_str())) };
-            let (_, seq) = self.swarm.commit_nav(&mut self.world, tick, w, JKind::Delete, |wd| wd.delete(&EntityKey::Id(id), expect_version).map(|_| ()))?;
+            let (_, seq) = self.world.commit(&mut self.swarm, tick, w, JKind::Delete, crate::write_policy::Rule::Nav, |wd| wd.delete(&EntityKey::Id(id), expect_version).map(|_| ()))?;
             self.nav.sync(&self.world, self.world_generation);
             return Ok(Json::obj([("removed", Json::from(path.as_str())), ("journal", Json::from(seq))]));
         }
@@ -1047,7 +1045,7 @@ impl crate::Engine {
             None
         } else {
             let by = w.name.to_owned();
-            self.swarm.commit_nav(&mut self.world, tick, w, JKind::Batch, |wd| wd.apply_batch(ops, &by).map_err(|(i, e)| e.with("op_index", i)))?.1
+            self.world.commit(&mut self.swarm, tick, w, JKind::Batch, crate::write_policy::Rule::Nav, |wd| wd.apply_batch(ops, &by).map_err(|(i, e)| e.with("op_index", i)))?.1
         };
         let id = self.world.find_path(&path)?;
         self.nav.sync(&self.world, self.world_generation);

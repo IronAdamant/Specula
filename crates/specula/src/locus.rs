@@ -8,6 +8,7 @@
 //! at all: unsatisfied relations come back as data with the nearest valid alternative, which
 //! `on_unsatisfied: "alternative"` writes instead. `dry_run` only reports.
 
+use crate::write_policy::WorldWrite;
 use crate::journal::{Kind as JKind, Writer};
 use crate::nav::{self, Nav};
 use crate::physics::{self, ColliderShape, Physics};
@@ -1050,8 +1051,8 @@ impl crate::Engine {
             }
         }
         let by = w.name.to_owned();
-        let apply = |wd: &mut World| wd.apply_batch(ops, &by).map_err(|(i, e)| e.with("op_index", i));
-        match self.swarm.commit(&mut self.world, tick, w, JKind::Batch, apply) {
+        let apply = |wd: &mut dyn WorldWrite| wd.apply_batch(ops, &by).map_err(|(i, e)| e.with("op_index", i));
+        match self.world.commit(&mut self.swarm, tick, w, JKind::Batch, crate::write_policy::Rule::World, apply) {
             Ok((results, seq)) => {
                 if let Json::Obj(pairs) = &mut out {
                     if let Some((_, Json::Arr(list))) = pairs.iter_mut().find(|(k, _)| k == "placements") {

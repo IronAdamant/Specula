@@ -9,8 +9,10 @@
 //! never touched and the running `cargo test` doesn't hold the build lock it needs. Skips (passing) where module libraries can't be loaded (not
 //! Windows yet) or Cargo isn't available.
 
+use specula::logic::tools::no_journal;
 use specula::logic::{LogicHost, Origin, Phase};
 use specula::world::{Mark, World, WorldError};
+use specula::write_policy::WorldWrite;
 use specula_core::Json;
 use specula_logic::{BuildRequest, BuildService, ModuleCode};
 use std::path::{Path, PathBuf};
@@ -24,11 +26,8 @@ struct Run {
     tick: u64,
 }
 
-fn journal() -> impl FnMut(&mut World, Mark, &str, Phase) -> Result<(), WorldError> {
-    |w: &mut World, _: Mark, _: &str, _: Phase| {
-        w.take_changes();
-        Ok(())
-    }
+fn journal() -> impl FnMut(&mut dyn WorldWrite, Mark, &str, Phase) -> Result<(), WorldError> {
+    no_journal()
 }
 
 impl Run {

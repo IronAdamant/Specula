@@ -58,7 +58,7 @@ impl Game for Stress {
 
     fn start(&mut self, ctx: &mut Ctx) {
         let started = Instant::now();
-        let w = &mut *ctx.world;
+        let w = &mut ctx.world;
         let night = EnvPatch {
             sun_direction: Some(Vec3::new(0.43, 0.5, 0.75)),
             sun_color: Some([0.79, 0.84, 1.0]),

@@ -337,14 +337,15 @@ bodies (review of the lane, finding 1: a joint spawned with `world_spawn` used t
 needs the right to change every body it moves through a joint: joint data itself (both sides, before and after), and
 removing or restoring an entity a joint names, or giving it another kind of body or none (the joint's other bodies
 are let go of or pulled). The world keeps an index of joints by body (`World::joints_on`), so the rule costs an index
-lookup per change, and nothing in a world without joints. Where it applies:
+lookup per change, and nothing in a world without joints. Where it applies (all of it lives in the one write
+policy now, [WRITE_POLICY.md](WRITE_POLICY.md)):
 
 | Write path | Checked as |
 |---|---|
-| world tools: spawn, set, delete, batch (`Swarm::commit_with`) | the calling agent; joint data itself is reserved for `physics_joint` (deletes allowed) |
-| `world_undo` (`Swarm::undo`) | the calling agent (undoing a hook's delete to yank a box back is `claimed`) |
-| tools and hooks an agent calls in a module or hosted game, live Lex inputs (`Swarm::check_game_changes`) | the calling agent (a module tool's joint onto another agent's claimed box is `claimed`) |
-| `lex_live` starting and stopping runs (`commit_lex_live`, which is `commit_with`) | the calling agent |
+| world tools: spawn, set, delete, batch (`write_policy::commit`) | the calling agent; joint data itself is reserved for `physics_joint` (deletes allowed) |
+| `world_undo` (`write_policy::undo`) | the calling agent (undoing a hook's delete to yank a box back is `claimed`) |
+| tools and hooks an agent calls in a module or hosted game, live Lex inputs (`write_policy::game_commit`) | the calling agent (a module tool's joint onto another agent's claimed box is `claimed`) |
+| `lex_live` starting and stopping runs (`write_policy::commit` with `Rule::LexLive`) | the calling agent |
 | playtests | the agent that started them (their calls take the paths above) |
 | `save_read`, `world_load` | refused while other agents hold claims (they replace everything) |
 | **exempt:** a module's `tick`, a hosted game's tick and live Lex runs' ticks | the game's own rules: journaled under the game's name, never checked against claims (claims hold agents back, not the game being made) |

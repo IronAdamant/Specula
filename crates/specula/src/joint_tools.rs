@@ -308,7 +308,7 @@ impl crate::Engine {
                 return world_error(&e);
             }
             let by = w.name.to_owned();
-            return match self.swarm.commit_joint(&mut self.world, tick, w, JKind::Delete, |wd| wd.delete(&EntityKey::Id(id), None).map(|d| d.path)) {
+            return match self.world.commit(&mut self.swarm, tick, w, JKind::Delete, crate::write_policy::Rule::Joint, |wd| wd.delete(&EntityKey::Id(id), None).map(|d| d.path)) {
                 Ok((path, seq)) => ToolOutput::text(Json::obj([("removed", Json::from(id)), ("path", Json::from(path)), ("by", Json::from(by)), ("journal", Json::from(seq))]).to_string()),
                 Err(e) => world_error(&e),
             };
@@ -398,7 +398,7 @@ impl crate::Engine {
         let result = match target {
             Some(id) => {
                 let change = UpdateSpec { props: Some(props), ..Default::default() };
-                self.swarm.commit_joint(&mut self.world, tick, w, JKind::Set, |wd| wd.update(&EntityKey::Id(id), change, &by).map(|e| e.id))
+                self.world.commit(&mut self.swarm, tick, w, JKind::Set, crate::write_policy::Rule::Joint, |wd| wd.update(&EntityKey::Id(id), change, &by).map(|e| e.id))
             }
             None => {
                 let parent = match &jw.parent {
@@ -423,7 +423,7 @@ impl crate::Engine {
                 s.parent = Some(EntityKey::Id(parent));
                 s.props = props;
                 s.tags = ["joint".to_string()].into_iter().collect();
-                self.swarm.commit_joint(&mut self.world, tick, w, JKind::Spawn, |wd| wd.spawn(s, &by).map(|e| e.id))
+                self.world.commit(&mut self.swarm, tick, w, JKind::Spawn, crate::write_policy::Rule::Joint, |wd| wd.spawn(s, &by).map(|e| e.id))
             }
         };
         match result {

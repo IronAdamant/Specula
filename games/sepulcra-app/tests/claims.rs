@@ -6,7 +6,7 @@
 use sepulcra::Content;
 use sepulcra_app::SepulcraGame;
 use specula::claims::{ClaimSpec, Scope, DEFAULT_LEASE};
-use specula::game::{Clock, Ctx, Game};
+use specula::game::{Clock, Ctx, Game, GameWorld};
 use specula::journal::{Kind, Writer};
 use specula::swarm::Swarm;
 use specula::world::{EntityKey, Recording, Shape, SpawnSpec, World, WorldError};
@@ -56,7 +56,7 @@ impl Host {
         let mut swarm = Swarm::default();
         swarm.reserve(game.name());
         world.set_recording(Recording::Snapshot);
-        game.start(&mut Ctx { world: &mut world, clock: &clock, agent: "sepulcra", windowed: false });
+        game.start(&mut Ctx { world: GameWorld::new(&mut world), clock: &clock, agent: "sepulcra", windowed: false });
         world.set_recording(Recording::Full);
         swarm.game_changes(&mut world, 0, "sepulcra", Kind::GameStart);
         let (ann, bob) = (session("aaaaaa11"), session("bbbbbb22"));
@@ -69,7 +69,7 @@ impl Host {
     fn tool(&mut self, who: Writer, name: &str, args: Json) -> Result<ToolOutput, WorldError> {
         let Host { game, world, swarm, clock, .. } = self;
         let checkpoint = if swarm.claims.is_empty() { None } else { game.checkpoint() };
-        let call = |w: &mut World| game.call_tool(&mut Ctx { world: w, clock, agent: "sepulcra", windowed: false }, name, &args);
+        let call = |w: &mut GameWorld| game.call_tool(&mut Ctx { world: w.reborrow(), clock, agent: "sepulcra", windowed: false }, name, &args);
         let result = swarm.game_tool(world, clock.tick(), "sepulcra", who, call);
         if result.is_err() {
             game.restore(checkpoint.expect("sepulcra checkpoints"));
@@ -80,7 +80,7 @@ impl Host {
     fn tick(&mut self) {
         let Host { game, world, swarm, clock, .. } = self;
         world.set_recording(Recording::Snapshot);
-        game.tick(&mut Ctx { world, clock, agent: "sepulcra", windowed: false });
+        game.tick(&mut Ctx { world: GameWorld::new(world), clock, agent: "sepulcra", windowed: false });
         world.set_recording(Recording::Full);
         swarm.game_changes(world, clock.tick(), "sepulcra", Kind::GameTick);
         clock.finish_tick();
@@ -121,7 +121,7 @@ fn a_rejected_place_leaves_game_and_world_as_they_were() {
     let out = h.tool(BOB, "play_command", sell);
     assert!(out.map_or(true, |o| o.is_error), "nothing to sell");
     assert!(ann.iter().all(|id| h.world.get(*id).is_some()), "ann's entities are intact");
-    assert_eq!(h.swarm.journal.replay().unwrap().state_hash(), h.world.state_hash());
+    assert_eq!(h.swarm.journal().replay().unwrap().state_hash(), h.world.state_hash());
 }
 
 /// Review (36cb5a1): a rejected tool also leaves what the player sees of the HUD as it was (the
@@ -168,7 +168,7 @@ fn a_rejected_new_game_keeps_ticks_out_of_others_claims() {
     let mut foreign = 0;
     h.world.walk(Some(ann[0]), |e, _| foreign += usize::from(&*e.created_by != "ann"));
     assert_eq!((touched, foreign), (0, 0), "game ticks stayed out of ann's claim");
-    assert_eq!(h.swarm.journal.replay().map(|w| w.state_hash()), h.swarm.journal.replay().map(|_| h.world.state_hash()));
+    assert_eq!(h.swarm.journal().replay().map(|w| w.state_hash()), h.swarm.journal().replay().map(|_| h.world.state_hash()));
 }
 
 /// Without claims nothing is checkpointed and tools apply as before.
@@ -179,7 +179,7 @@ fn tools_apply_normally_without_claims() {
     let out = h.tool(BOB, "play_command", place).unwrap();
     assert!(!out.is_error);
     assert_eq!(h.game.state().stones().count(), 1);
-    let entry = h.swarm.journal.entries().last().unwrap();
+    let entry = h.swarm.journal().entries().last().unwrap();
     assert_eq!((entry.kind, entry.via.as_deref()), (Kind::GameTool, Some("bob")));
 }
 

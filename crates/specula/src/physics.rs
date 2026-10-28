@@ -19,6 +19,7 @@
 //!   the world's own hash, so replays and twin runs can compare both.
 //! - Transient entities (a game's presentation) never take part.
 
+use crate::write_policy::WorldWrite;
 use crate::world::{self, check_num, check_point, vec3_json, validate_tag, WorldError};
 
 pub mod joints;
@@ -1028,7 +1029,7 @@ pub fn space_settings(s: &PhysicsSettings, hz: u32) -> specula_physics::Settings
 // ---------------------------------------------------------------------------------------------
 // The engine's physics: world <-> space
 
-use crate::world::{EntityKey, Recording, UpdateSpec, World};
+use crate::world::{EntityKey, UpdateSpec, World};
 use specula_core::math::Quat;
 use specula_physics::{BodyDesc, ColliderDesc, Event, EventKind, Pose, Shape, Space, StepReport};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -1596,7 +1597,7 @@ impl Physics {
     }
 
     /// Writes the bodies the step moved back into the world (journaled by the caller).
-    fn write_back(&mut self, world: &mut World) {
+    fn write_back(&mut self, world: &mut dyn WorldWrite) {
         let mut keys = std::mem::take(&mut self.keys);
         keys.clear();
         keys.extend(self.space.stepped().chain(self.characters.keys().copied()));
@@ -1673,7 +1674,7 @@ impl Physics {
 
     /// One fixed tick: sync, characters, step, write-back. The caller records changes as a
     /// snapshot and journals them.
-    pub fn tick(&mut self, world: &mut World, generation: u64, settings: &PhysicsSettings, tick: u64, dt: f32) {
+    pub fn tick(&mut self, world: &mut dyn WorldWrite, generation: u64, settings: &PhysicsSettings, tick: u64, dt: f32) {
         let started = std::time::Instant::now();
         // Simulation input: dmath, not the platform's roundf (DETERMINISM.md rule 4).
         let hz = specula_core::dmath::round(1.0 / dt) as u32;
@@ -1841,10 +1842,9 @@ impl crate::Engine {
         let tick = self.clock.tick();
         let dt = 1.0 / self.clock.hz() as f32;
         let _z = specula_core::profile::zone("physics");
-        self.world.set_recording(Recording::Snapshot);
-        self.physics.tick(&mut self.world, self.world_generation, &settings, tick, dt);
-        self.world.set_recording(Recording::Full);
-        self.swarm.game_changes(&mut self.world, tick, AGENT, crate::journal::Kind::Physics);
+        // Pose write-back, the hot path: journaled replay-only under `physics`, exempt from claims.
+        let (physics, generation) = (&mut self.physics, self.world_generation);
+        self.world.exempt(&mut self.swarm, tick, crate::write_policy::Exempt::Physics, |w| physics.tick(w, generation, &settings, tick, dt));
     }
 }
 
@@ -1852,7 +1852,7 @@ impl crate::Engine {
 mod tests {
     use super::*;
     use crate::journal::{Journal, Kind};
-    use crate::world::{Shape as WShape, SpawnSpec};
+    use crate::world::{Recording, Shape as WShape, SpawnSpec};
 
     const DT: f32 = 1.0 / 60.0;
 

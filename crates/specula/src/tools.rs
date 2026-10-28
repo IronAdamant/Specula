@@ -2443,7 +2443,8 @@ fn definitions() -> Vec<ToolDef> {
         ToolDef {
             name: "claim_list".into(),
             description: "Live claims in id order, one page at a time: id, owner, path or region, expires_in_s, \
-                          shared, note. Returns total, claims and next_cursor."
+                          shared, note. Returns total, claims and next_cursor, and notices: writes that modules' and live Lex \
+                          runs' own ticks (exempt from claims) made inside your claims, each with by, started_by, path, op, claim and tick."
                 .into(),
             input_schema: schema(
                 vec![

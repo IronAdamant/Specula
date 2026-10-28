@@ -1943,6 +1943,7 @@ impl Change {
 pub const MAX_FILE_TOMBSTONES: usize = 16_384;
 
 /// A world's project files, handed from a world being replaced to the next.
+#[derive(Clone)]
 pub(crate) struct ProjectFiles {
     files: BTreeMap<String, crate::project::ProjectFile>,
     floor: BTreeMap<String, FileTombstone>,
@@ -2145,6 +2146,58 @@ pub struct World {
     /// what a graph's `{external: true}` nodes play. Derived each physics tick, never hashed,
     /// journaled or saved.
     external_poses: BTreeMap<u64, ExternalPose>,
+    /// Set by the write policy while the hosted game or an exempt writer holds the live world:
+    /// recording can't change and recorded changes can't be taken (see [`World::set_sealed`]).
+    sealed: bool,
+    /// Attempts to do either while sealed.
+    seal_breaks: u64,
+    /// Set while an agent's command, a disk import or a game tool runs: their checks run on full
+    /// changes, so recording stays full however asked (see `write_policy::recording_as`).
+    full_only: bool,
+    /// Set on the engine's live world only ([`World::mark_live`]); a default or cloned world
+    /// never carries it, so the write policy notices a live world replaced wholesale.
+    live: LiveMark,
+    /// Persistent changes made while recording was off, and while it wasn't full (see
+    /// [`World::moves`]): counters nothing ever clears.
+    moves_off: u64,
+    moves_unfull: u64,
+}
+
+/// What caches key on in a world (ids, revisions, stamps, epochs): see [`World::advance_past`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Epochs {
+    next_id: u64,
+    revision: u64,
+    stamp: u64,
+    transient_seq: u64,
+    draw_epoch: u64,
+    layout_epoch: u64,
+    mesh_epoch: u64,
+    model_drops: u64,
+}
+
+impl Epochs {
+    /// The id counter then.
+    pub(crate) fn next_id(&self) -> u64 {
+        self.next_id
+    }
+}
+
+/// Whether a world is the engine's live one: neither `Default` nor `Clone` carries it.
+#[derive(Debug, Default)]
+struct LiveMark(bool);
+
+impl Clone for LiveMark {
+    fn clone(&self) -> LiveMark {
+        LiveMark(false)
+    }
+}
+
+/// The engine's clock as a world holds it (see [`World::world_time`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ClockParts {
+    clock_s: f64,
+    time_offset: f64,
 }
 
 /// A pose supplied from outside the animation (a ragdoll's).
@@ -2450,6 +2503,7 @@ impl World {
         let before = self.env;
         patch.apply(&mut self.env);
         self.revision += 1;
+        self.count_move();
         self.record_env(before);
         Ok(())
     }
@@ -2537,6 +2591,7 @@ impl World {
             return; // nothing was there
         }
         self.revision += 1;
+        self.count_move();
         if self.recording != Recording::Off {
             self.changes.push(Change::Camera {
                 path: camera_path(owner, name),
@@ -2594,6 +2649,7 @@ impl World {
             (None, None) => {}
         }
         self.revision += 1;
+        self.count_move();
         self.files_revision += 1;
         if self.recording != Recording::Off {
             self.changes.push(Change::File { path: crate::project::journal_path(path), before: before.map(Box::new), after: file.map(Box::new), import, kept: true });
@@ -2611,6 +2667,9 @@ impl World {
     /// project, not the world).
     pub(crate) fn take_files(&mut self) -> ProjectFiles {
         self.files_revision += 1;
+        // Unrecorded, whatever the recording mode: the write policy sees a hidden write.
+        self.moves_off += 1;
+        self.moves_unfull += 1;
         ProjectFiles {
             files: std::mem::take(&mut self.files),
             floor: std::mem::take(&mut self.file_floor),
@@ -2649,6 +2708,50 @@ impl World {
     pub(crate) fn set_next_id(&mut self, next_id: u64) {
         let max = self.entities.range(..TRANSIENT_ID_BASE).next_back().map_or(0, |(id, _)| *id);
         self.next_id = next_id.max(max).min(MAX_NEXT_ID);
+    }
+
+    /// Marks this world as the engine's live one (the write policy: `Live::new`, `Live::replace`).
+    pub(crate) fn mark_live(&mut self) {
+        self.live = LiveMark(true);
+    }
+
+    /// Whether this is still the world the write policy marked live (a world put in its place,
+    /// default or cloned, isn't).
+    pub(crate) fn is_marked_live(&self) -> bool {
+        self.live.0
+    }
+
+    /// The clock as this world holds it.
+    pub(crate) fn clock_parts(&self) -> ClockParts {
+        ClockParts { clock_s: self.clock_s, time_offset: self.time_offset }
+    }
+
+    /// Puts back a clock taken with [`World::clock_parts`].
+    pub(crate) fn set_clock_parts(&mut self, c: ClockParts) {
+        self.clock_s = c.clock_s;
+        self.time_offset = c.time_offset;
+    }
+
+    /// Lends the project files out without moving [`World::files_revision`] (so the disk sync
+    /// sees nothing): the write policy keeps them while writers that don't use them hold the
+    /// live world, and gives them back with [`World::return_files`].
+    pub(crate) fn lend_files(&mut self) -> ProjectFiles {
+        ProjectFiles {
+            files: std::mem::take(&mut self.files),
+            floor: std::mem::take(&mut self.file_floor),
+            order: std::mem::take(&mut self.file_floor_order),
+            seq: self.file_floor_seq,
+            floor_all: self.file_floor_all,
+        }
+    }
+
+    /// Gives back what [`World::lend_files`] lent (the revision stays).
+    pub(crate) fn return_files(&mut self, files: ProjectFiles) {
+        self.files = files.files;
+        self.file_floor = files.floor;
+        self.file_floor_order = files.order;
+        self.file_floor_seq = files.seq;
+        self.file_floor_all = files.floor_all;
     }
 
     fn child_range(&self, parent: u64) -> std::collections::btree_map::Range<'_, (u64, String), u64> {
@@ -2950,6 +3053,7 @@ impl World {
     fn bump(&mut self, transient: bool) {
         if !transient {
             self.revision += 1;
+            self.count_move();
         }
     }
 
@@ -3567,8 +3671,130 @@ impl World {
     }
 
     /// What the world records about its changes from now on.
+    ///
+    /// While the write policy has [sealed](World::set_sealed) the world (the hosted game or an
+    /// exempt writer holds the live world), this changes nothing: the attempt is counted
+    /// ([`World::seal_breaks`]) and the policy reports it.
     pub fn set_recording(&mut self, recording: Recording) {
+        if self.sealed && recording != self.recording {
+            self.seal_breaks += 1;
+            return;
+        }
         self.recording = recording;
+    }
+
+    /// Seals the world (or unseals it): while sealed, [`World::set_recording`] (to another mode)
+    /// and [`World::take_changes`] change nothing, so code holding the live world can't hide its
+    /// writes from the journal and the checks. The live world is sealed except while the write
+    /// policy journals.
+    pub(crate) fn set_sealed(&mut self, sealed: bool) {
+        self.sealed = sealed;
+    }
+
+    /// Whether the world is sealed (see [`World::set_sealed`]).
+    pub(crate) fn is_sealed(&self) -> bool {
+        self.sealed
+    }
+
+    /// Persistent changes ever made while recording was off, and while it wasn't full
+    /// (`(off, not full)`): every change counts, however it was made, and nothing clears them.
+    /// The write policy compares them around a writer: a change made unrecorded (or, in an
+    /// agent's commit, recorded one per entity) is a hidden write, whatever its spelling.
+    pub(crate) fn moves(&self) -> (u64, u64) {
+        (self.moves_off, self.moves_unfull)
+    }
+
+    /// Counts a persistent change against the recording mode (see [`World::moves`]).
+    fn count_move(&mut self) {
+        if self.recording != Recording::Full {
+            self.moves_unfull += 1;
+            if self.recording == Recording::Off {
+                self.moves_off += 1;
+            }
+        }
+    }
+
+    /// The project files as they are, to put back on a world that took this one's place.
+    pub(crate) fn files_snapshot(&self) -> ProjectFiles {
+        ProjectFiles {
+            files: self.files.clone(),
+            floor: self.file_floor.clone(),
+            order: self.file_floor_order.clone(),
+            seq: self.file_floor_seq,
+            floor_all: self.file_floor_all,
+        }
+    }
+
+    /// The clock as this world holds it is `c` (exactly).
+    pub(crate) fn clock_is(&self, c: &ClockParts) -> bool {
+        self.clock_s.to_bits() == c.clock_s.to_bits() && self.time_offset.to_bits() == c.time_offset.to_bits()
+    }
+
+    /// Whether every change recorded and not taken yet can be rolled back: all of them full
+    /// changes, which carry their state before (none recorded one per entity, Snapshot).
+    pub(crate) fn can_roll_back_pending(&self) -> bool {
+        self.dirty.is_empty() && self.dirty_removed.is_empty() && self.dirty_env.is_none() && self.changes.iter().all(|c| !matches!(c, Change::Set { before: None, .. } | Change::Pose { .. }))
+    }
+
+    /// Rolls back every change recorded and not taken yet (see
+    /// [`World::can_roll_back_pending`]), as [`World::rollback_to`] a mark taken right after the
+    /// last take.
+    pub(crate) fn rollback_pending(&mut self) {
+        let mark = Mark { next_id: self.next_id, revision: self.revision, changes: 0 };
+        self.rollback_to(mark);
+    }
+
+    /// The counters caches key on (see [`World::advance_past`]).
+    pub(crate) fn epochs(&self) -> Epochs {
+        Epochs {
+            next_id: self.next_id,
+            revision: self.revision,
+            stamp: self.stamp,
+            transient_seq: self.transient_seq,
+            draw_epoch: self.draw_epoch,
+            layout_epoch: self.layout_epoch,
+            mesh_epoch: self.mesh_epoch,
+            model_drops: self.model_drops,
+        }
+    }
+
+    /// Moves every counter past `old` (a world that took another's place must never repeat an
+    /// id, a revision, a subtree stamp or an epoch the old one used: caches key on them), and
+    /// forgets which entities the draw caches saw change.
+    pub(crate) fn advance_past(&mut self, old: Epochs) {
+        self.set_next_id(old.next_id.max(self.next_id));
+        self.revision = self.revision.max(old.revision) + 1;
+        self.stamp = self.stamp.max(old.stamp) + 1;
+        self.transient_seq = self.transient_seq.max(old.transient_seq);
+        self.draw_epoch = self.draw_epoch.max(old.draw_epoch);
+        self.draw_reset();
+        self.layout_epoch = self.layout_epoch.max(old.layout_epoch) + 1;
+        self.mesh_epoch = self.mesh_epoch.max(old.mesh_epoch) + 1;
+        self.model_drops = self.model_drops.max(old.model_drops) + 1;
+        // Every top-level subtree changed: world files rewrite all of them.
+        for top in self.entities.values().filter(|e| e.parent.is_none() && !e.transient).map(|e| e.id).collect::<Vec<_>>() {
+            self.stamp += 1;
+            self.touched.insert(top, self.stamp);
+        }
+    }
+
+    /// Attempts to change recording or take the recorded changes while sealed, ever.
+    pub(crate) fn seal_breaks(&self) -> u64 {
+        self.seal_breaks
+    }
+
+    /// Counts an attempt the write policy refused (see [`World::seal_breaks`]).
+    pub(crate) fn count_seal_break(&mut self) {
+        self.seal_breaks += 1;
+    }
+
+    /// Whether recording must stay full (see the field), and setting it.
+    pub(crate) fn full_only(&self) -> bool {
+        self.full_only
+    }
+
+    pub(crate) fn set_full_only(&mut self, on: bool) {
+        self.full_only = on;
     }
 
     pub fn recording(&self) -> Recording {
@@ -3581,7 +3807,14 @@ impl World {
     ///
     /// Transient entities' changes are left out: they are recorded while a command runs (so a
     /// rejected command rolls them back like anything else), but they are never journaled.
+    ///
+    /// While the world is sealed (see [`World::set_sealed`]) nothing is taken: the changes stay
+    /// for the write policy to check and journal, and the attempt is counted.
     pub fn take_changes(&mut self) -> Vec<Change> {
+        if self.sealed {
+            self.seal_breaks += 1;
+            return Vec::new();
+        }
         let mut out = std::mem::take(&mut self.changes);
         out.retain(|c| !c.is_transient());
         if self.dirty.is_empty() && self.dirty_env.is_none() && self.dirty_removed.is_empty() {
@@ -3644,6 +3877,12 @@ impl World {
         &self.changes
     }
 
+    /// Whether anything is recorded and not taken yet, in either recording mode (the write
+    /// policy's check that every writer journals or rolls back what it changed).
+    pub(crate) fn has_unjournaled(&self) -> bool {
+        !self.changes.is_empty() || !self.dirty.is_empty() || !self.dirty_removed.is_empty() || self.dirty_env.is_some()
+    }
+
     /// Remembers the current state, so [`World::rollback_to`] can return to it. Needs
     /// [`Recording::Full`] for every change in between.
     pub(crate) fn mark(&self) -> Mark {
@@ -3666,11 +3905,13 @@ impl World {
     pub(crate) fn rollback_to(&mut self, mark: Mark) {
         let undo: Vec<Change> = self.changes.drain(mark.changes.min(self.changes.len())..).collect();
         let recording = std::mem::replace(&mut self.recording, Recording::Off);
-        let revision = self.revision;
+        let (revision, moves) = (self.revision, self.moves());
         for change in undo.iter().rev() {
             self.apply_before(change);
         }
         self.recording = recording;
+        // Undoing recorded changes is no hidden write.
+        (self.moves_off, self.moves_unfull) = moves;
         if !undo.is_empty() || self.next_id != mark.next_id || revision != mark.revision {
             self.revision = self.revision.max(revision) + 1;
         }
@@ -3690,7 +3931,7 @@ impl World {
             return Ok(());
         }
         let steps: Vec<Change> = self.changes.drain(start..).collect();
-        let (next_id, revision) = (self.next_id, self.revision);
+        let (next_id, revision, moves) = (self.next_id, self.revision, self.moves());
         let recording = std::mem::replace(&mut self.recording, Recording::Off);
         // Back to the start, then forward one change at a time.
         for change in steps.iter().rev() {
@@ -3708,6 +3949,7 @@ impl World {
         match failed {
             None => {
                 self.recording = recording;
+                (self.moves_off, self.moves_unfull) = moves;
                 self.changes.extend(steps);
                 self.next_id = self.next_id.max(next_id);
                 self.revision = revision.max(self.revision);
@@ -3718,6 +3960,7 @@ impl World {
                     self.apply_before(change);
                 }
                 self.recording = recording;
+                (self.moves_off, self.moves_unfull) = moves;
                 self.next_id = self.next_id.max(next_id);
                 // Forward only (see `rollback_to`).
                 self.revision = self.revision.max(revision) + 1;
@@ -3867,6 +4110,7 @@ impl World {
         let before = self.env;
         self.env = env;
         self.revision += 1;
+        self.count_move();
         self.record_env(before);
     }
 
