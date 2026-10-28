@@ -298,7 +298,7 @@ and chases, a crowd, captures, twin-run hashes) and `scripts/nav_sepulcra.py` (S
   `budget` after about 4 M units (1.5 M since review round 2).
 
 **Review round 2 (coordinator, 2026-10-18).**
-- *`/nav` is reserved* like `/lex`: only the nav tools (`Swarm::commit_nav`) write `/nav` or `props.navmesh`
+- *`/nav` is reserved* like `/lex`: only the nav tools (`Rule::Nav` commits, [WRITE_POLICY.md](WRITE_POLICY.md)) write `/nav` or `props.navmesh`
   anywhere; world_* writes there are refused with `reserved`. Only bare groups (no shape drawn, no collider, no
   body) holding settings are exempt from region claims, and one whose transform changes is checked like any entity.
   `nav_build remove: true` deletes a navmesh.

@@ -45,7 +45,7 @@ What the store shares with entities is everything the swarm layer gives:
 journal and the replay base share one copy). File changes get ids `FILE_ID_BASE | hash(path)` (bit 63; entity ids
 never get that high, cameras use bit 62), so undo conflicts and history filters treat each file as one thing.
 `/project` is reserved: `world_spawn` and friends refuse entities there (`reserved`), and only the `project_*` tools
-make file changes (`Swarm::commit_project`), so nothing can masquerade as a file.
+make file changes (`Rule::Project` commits, [WRITE_POLICY.md](WRITE_POLICY.md)), so nothing can masquerade as a file.
 
 The world hash leaves files out (like cameras): screens, sounds and styles are presentation, and module code enters the
 simulation through its build (DETERMINISM.md rule 8: a module's build hash belongs in the journal). Game data that

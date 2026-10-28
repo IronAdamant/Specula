@@ -635,7 +635,7 @@ fn is_rule_data(e: &crate::world::Entity) -> bool {
 }
 
 /// A change that writes `/lex` or Lex rule data anywhere (into, inside or out of `/lex`): only
-/// the Lex tools may make it ([`crate::swarm::Swarm::commit_lex`]).
+/// the Lex tools may make it ([`crate::write_policy::Rule::Lex`]).
 pub fn touches_rule_data(change: &Change) -> bool {
     match change {
         Change::Spawn { path, after } => under_lex(path) || is_rule_data(after),
