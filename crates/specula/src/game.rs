@@ -231,7 +231,7 @@ pub struct Ctx<'a> {
 /// }
 /// ```
 pub struct GameWorld<'a> {
-    world: &'a mut World,
+    world: &'a mut dyn crate::write_policy::WorldWrite,
 }
 
 impl<'a> GameWorld<'a> {
@@ -241,17 +241,22 @@ impl<'a> GameWorld<'a> {
         GameWorld { world }
     }
 
+    /// A handle over a writer's handle (the engine's: the game never sees more than this).
+    pub(crate) fn over(world: &'a mut dyn crate::write_policy::WorldWrite) -> GameWorld<'a> {
+        GameWorld { world }
+    }
+
     /// Project files aren't the game's to read through the world: they are the project's, read
     /// from disk (see [`Game::assets_changed`]), and the engine lends them out while the game's
     /// own calls run, so this is empty then. Kept only to say so.
     #[deprecated(note = "project files aren't available to the hosted game through the world (empty during its calls): read them from disk, see Game::assets_changed")]
     pub fn files(&self) -> &std::collections::BTreeMap<String, crate::project::ProjectFile> {
-        self.world.files()
+        self.world.as_world().files()
     }
 
     /// A shorter-lived handle on the same world (to hand to a [`Ctx`] or a helper).
     pub fn reborrow(&mut self) -> GameWorld<'_> {
-        GameWorld { world: self.world }
+        GameWorld { world: &mut *self.world }
     }
 
     /// [`World::spawn`].
@@ -288,7 +293,7 @@ impl<'a> GameWorld<'a> {
 impl std::ops::Deref for GameWorld<'_> {
     type Target = World;
     fn deref(&self) -> &World {
-        self.world
+        self.world.as_world()
     }
 }
 

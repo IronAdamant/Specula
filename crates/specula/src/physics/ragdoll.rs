@@ -39,6 +39,7 @@
 //!   `ragdoll_info` runs the motion checks on it (penetration, where it comes to rest, joint
 //!   limits, pops where physics takes over), beside its joints' own errors.
 
+use crate::write_policy::WorldWrite;
 use super::joints::SYNTHETIC;
 use super::*;
 use specula_anim::graph::{AnimGraph, Limit, Value};
@@ -982,7 +983,7 @@ impl Physics {
     }
 
     /// Starts, switches, hits, drives and ends ragdolls (before the step).
-    pub(super) fn ragdolls_before_step(&mut self, world: &mut World, tick: u64, dt: f32) {
+    pub(super) fn ragdolls_before_step(&mut self, world: &mut dyn WorldWrite, tick: u64, dt: f32) {
         if self.ragdolls.live.is_empty() && self.ragdolls.persistent.is_empty() && world.transient_entities().next().is_none() {
             return;
         }
@@ -1132,14 +1133,14 @@ impl Physics {
         }
     }
 
-    fn start_ragdoll(&mut self, world: &mut World, id: u64, spec: &Spec, t: f64, dt: f32, tick: u64) -> Result<(), String> {
+    fn start_ragdoll(&mut self, world: &mut dyn WorldWrite, id: u64, spec: &Spec, t: f64, dt: f32, tick: u64) -> Result<(), String> {
         let e = world.get(id).ok_or("gone")?;
         let (set, parts, scale, pose_e) = plan_for(world, e, spec)?;
         self.start_planned(world, id, spec, set, parts, scale, pose_e, t, dt, tick)
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn start_planned(&mut self, world: &mut World, id: u64, spec: &Spec, set: Arc<AnimSet>, parts: Vec<Part>, scale: f32, pose_e: Pose, t: f64, dt: f32, tick: u64) -> Result<(), String> {
+    fn start_planned(&mut self, world: &mut dyn WorldWrite, id: u64, spec: &Spec, set: Arc<AnimSet>, parts: Vec<Part>, scale: f32, pose_e: Pose, t: f64, dt: f32, tick: u64) -> Result<(), String> {
         let e = world.get(id).ok_or("gone")?;
         let powered = spec.mode == Mode::Powered;
         // What it was playing (without its ragdoll state, which plays this very pose), now and
@@ -1292,7 +1293,7 @@ impl Physics {
 
     /// Switches a ragdoll off: (optionally) moves the entity under the pelvis, keeps the last
     /// pose for the transition out, and removes the bodies.
-    fn stop_ragdoll(&mut self, world: &mut World, id: u64, relocate: bool, t: f64) {
+    fn stop_ragdoll(&mut self, world: &mut dyn WorldWrite, id: u64, relocate: bool, t: f64) {
         if relocate {
             let root = self.ragdolls.live.get(&id).and_then(|l| l.parts.iter().find(|p| p.parent.is_none()).map(|p| p.bone));
             if let (Some(b), Some(e)) = (root, world.get(id)) {
@@ -1329,7 +1330,7 @@ impl Physics {
     }
 
     /// The entity is gone or has no ragdoll any more.
-    fn drop_ragdoll(&mut self, world: &mut World, id: u64) {
+    fn drop_ragdoll(&mut self, world: &mut dyn WorldWrite, id: u64) {
         self.remove_ragdoll_bodies(id);
         self.ragdolls.live.remove(&id);
         world.set_external_pose(id, None);
@@ -1340,7 +1341,7 @@ impl Physics {
 
     /// After the step: each ragdoll's pose from its bodies (as the entity's external pose), and
     /// its record for the checks.
-    pub(super) fn ragdolls_after_step(&mut self, world: &mut World) {
+    pub(super) fn ragdolls_after_step(&mut self, world: &mut dyn WorldWrite) {
         let ids: Vec<u64> = self.ragdolls.live.iter().filter(|(_, l)| l.off_since.is_none()).map(|(id, _)| *id).collect();
         for id in ids {
             self.capture_ragdoll(world, id, true);
@@ -1348,7 +1349,7 @@ impl Physics {
     }
 
     /// Computes ragdoll `id`'s local pose from its bodies (relative to the entity as it is now).
-    fn capture_ragdoll(&mut self, world: &mut World, id: u64, record: bool) {
+    fn capture_ragdoll(&mut self, world: &mut dyn WorldWrite, id: u64, record: bool) {
         let Some(e) = world.get(id) else { return };
         let pose_e = super::world_pose_only(world, e);
         let Some(live) = self.ragdolls.live.get_mut(&id) else { return };

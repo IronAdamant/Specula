@@ -121,7 +121,7 @@ fn a_rejected_place_leaves_game_and_world_as_they_were() {
     let out = h.tool(BOB, "play_command", sell);
     assert!(out.map_or(true, |o| o.is_error), "nothing to sell");
     assert!(ann.iter().all(|id| h.world.get(*id).is_some()), "ann's entities are intact");
-    assert_eq!(h.swarm.journal.replay().unwrap().state_hash(), h.world.state_hash());
+    assert_eq!(h.swarm.journal().replay().unwrap().state_hash(), h.world.state_hash());
 }
 
 /// Review (36cb5a1): a rejected tool also leaves what the player sees of the HUD as it was (the
@@ -168,7 +168,7 @@ fn a_rejected_new_game_keeps_ticks_out_of_others_claims() {
     let mut foreign = 0;
     h.world.walk(Some(ann[0]), |e, _| foreign += usize::from(&*e.created_by != "ann"));
     assert_eq!((touched, foreign), (0, 0), "game ticks stayed out of ann's claim");
-    assert_eq!(h.swarm.journal.replay().map(|w| w.state_hash()), h.swarm.journal.replay().map(|_| h.world.state_hash()));
+    assert_eq!(h.swarm.journal().replay().map(|w| w.state_hash()), h.swarm.journal().replay().map(|_| h.world.state_hash()));
 }
 
 /// Without claims nothing is checkpointed and tools apply as before.
@@ -179,7 +179,7 @@ fn tools_apply_normally_without_claims() {
     let out = h.tool(BOB, "play_command", place).unwrap();
     assert!(!out.is_error);
     assert_eq!(h.game.state().stones().count(), 1);
-    let entry = h.swarm.journal.entries().last().unwrap();
+    let entry = h.swarm.journal().entries().last().unwrap();
     assert_eq!((entry.kind, entry.via.as_deref()), (Kind::GameTool, Some("bob")));
 }
 

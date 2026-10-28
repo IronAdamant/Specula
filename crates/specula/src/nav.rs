@@ -17,6 +17,7 @@
 //!   their walking velocity) are written back as `nav` journal entries (after-only, coalesced,
 //!   exempt from claims, like physics).
 
+use crate::write_policy::WorldWrite;
 use crate::physics::{self, BodyKind, ColliderShape, Physics};
 use crate::world::{self, Entity, EntityKey, Shape, UpdateSpec, World};
 use specula_core::hash::StableHasher;
@@ -2134,7 +2135,7 @@ impl Nav {
 
     /// One fixed tick: sync, rebuild dirty tiles, minds, crowds, write-back. The caller records
     /// changes as a snapshot and journals them.
-    pub fn tick(&mut self, world: &mut World, physics: &mut Physics, generation: u64, tick: u64, dt: f32, hz: u32) {
+    pub fn tick(&mut self, world: &mut dyn WorldWrite, physics: &mut Physics, generation: u64, tick: u64, dt: f32, hz: u32) {
         let started = std::time::Instant::now();
         self.sync(world, generation);
         if self.is_empty() {

@@ -14,72 +14,91 @@ live Lex hooks, the physics, navigation and anim writers, world loads. Every new
 
 ## How bypassing is prevented
 
+What the **compiler** enforces (points 1, 4 and 5) and what is a **run-time backstop** (point 6) are kept apart here
+on purpose: review rounds 2 to 4 each fooled the previous round's detection, so the structure carries the weight.
+
 1. **The live world is a `write_policy::Live`.** `Engine.world` is a `Live`: it reads like a `World` (`Deref`), but
-   it has no `DerefMut` and its field is private, so no engine code can get a `&mut World` of the live world except
-   inside one of `Live`'s entry points. This is a compile error, not a convention: changing `Engine.world` to `Live`
-   produced 70 errors, one per write site, and each was migrated to an entry point.
+   it has no `DerefMut` and its field is private, so no engine code can get a `&mut World` of the live world. This is
+   a compile error, not a convention: changing `Engine.world` to `Live` produced 70 errors, one per write site, and
+   each was migrated to an entry point.
 2. **Every entry point names its writer**, and the writer decides the rules (the table below). An exemption is a named
    variant with its reason (`Exempt::Physics`, `Exempt::Game {..}`...), never a missing check.
 3. **Nothing is left behind.** Every entry point ends with no change pending (`Live::settle`): a writer that changed
-   the world without journaling or rolling it back is a bug, and the entry point fails closed: point 5 says how.
-   The live world always records full changes between entry points.
-4. **The hosted game never holds a `World`.** Its `Ctx` carries a `game::GameWorld`: it reads like a `World` and
-   writes entities and the environment (`spawn`, `update`, `delete`, `apply_batch`, `set_env`, `set_motion`). It has
-   no `DerefMut` and no accessor, so a game can't replace the world (`*ctx.world = World::default()`), stop it
-   recording or take its recorded changes. Each is a compile error, pinned by `compile_fail` doctests on
-   `GameWorld`. Review round 1 found a game tool switching to `Recording::Snapshot` (no step-by-step trace) to move
-   another agent's claimed box; round 2 found one replacing the whole world. Both are now impossible from a game.
-   Sepulcra's change was mechanical: `&mut World` became `&mut GameWorld<'_>` in its helpers.
-5. **Writers in the crate can't hide either, however they spell it.** Review round 3 found writes hidden inside
-   agents' commits by spellings no text scan sees: path-form calls, macros, `#[path]` modules, renamed imports,
-   `clone_from`, a world put in place through another reference. So detection is at run time, on the live world:
-   - **Sealed.** The live world is sealed except while the policy itself journals. Sealed, `set_recording` (to
-     another mode) and `take_changes` change nothing, so every write stays recorded, reaches the checks and is
-     journaled. Each attempt is printed and counted. Live Lex's presentation switches to one change per entity only
-     through `write_policy::recording_as`.
-   - **Acknowledged.** Every persistent change moves the world's revision, however it was made (recorded or not).
-     The policy acknowledges the revision each time it journals or rolls back. A revision that moved with nothing
-     recorded to show for it is an *unrecorded write*.
-   - **Marked.** Every entry point that runs a writer's code (agents' commits, disk imports, game tools, exempt
-     writers, sessions) runs it *guarded*. The live world carries a mark that neither `Default` nor `Clone` copies,
-     so a world put in its place (`*w = ..`, `mem::swap`, `mem::take`, `clone_from`, through any alias) is noticed.
-     Project files are lent out meanwhile, except to the project tools and disk imports, which write them.
-   - **Fail closed** (`Live::settle`), in release builds too:
-     - unjournaled full changes are rolled back; changes recorded one per entity (Snapshot) can't be, so they are
-       journaled as `engine:stray`;
-     - an unrecorded write, or a replaced world, can't be undone: the journal starts over from the world as it is,
-       so replay stays exact;
-     - each is a structured log line (`unjournaled_write`, `unrecorded_write`, `world_replaced`), counted in
-       engine_info (`swarm.unjournaled_writes`, `swarm.world_replacements`) and a debug assertion;
-     - agents' commits, disk imports, undo and game tools answer `unjournaled_write`.
-   - **Recovered.** A replaced world is made live consistently. It is marked, sealed and recording, and gets back the
-     clock, the model library, the shape budgets and the lent project files. Ids, revisions, subtree stamps and the
-     transient, draw, layout and mesh epochs all move past the old world's. The engine resets its caches as after a
-     load, and the next autosave rewrites every world file.
+   the world without journaling or rolling it back is a bug, and the entry point fails closed (point 6). The live
+   world always records full changes between entry points.
+4. **No writer ever holds a `World`** (review round 4). Every writer's code, at every entry point (agents' commands
+   in `Live::commit`, disk imports, game tools, exempt writers, the module host's and live Lex's sessions, and the
+   physics, navigation, animation, character, Locus and Lex code they call), gets a handle: `&mut dyn WorldWrite`.
+   It reads like a `World` (`Deref` to `&World`) and has only recorded writes: `spawn`, `update`, `delete`,
+   `apply_batch`, `set_env`, `set_motion`, and the narrow recorded operations subsystems need (`set_external_pose`
+   for ragdolls, `set_camera` / `delete_cameras`, `put_file` for the project tools and disk imports, `rollback_to`
+   for the module host's call transactions). It has no way to switch recording, take recorded changes, move
+   epochs, set the id counter, take or put raw project files, change the shape budgets, the model library
+   or the clock, mark or seal the world, or reach the `World` behind it: `policy_world` takes a `PolicyKey`, whose
+   field is private to `write_policy`. Replacing the world through a handle doesn't compile either (`*w = ..` on an
+   unsized `dyn`, `mem::swap`). Each is pinned by a `compile_fail` doctest on `WorldWrite`. The hosted game gets a
+   `game::GameWorld`, a wrapper over the same handle (doctests on `GameWorld`), so Sepulcra's code is unchanged.
+5. **Only the policy writes the live journal.** `Swarm`'s journal field is private; `Swarm::journal()` reads it, and
+   `journal_mut` and `claims_and_journal` take the `PolicyKey`. So a session can't append an entry under another
+   agent's name, undo one or start the journal over (probes P5, P6; `compile_fail` doctests on `Swarm::journal`).
+   A detached `Journal` (a test's, a replay's) is ordinary data.
+6. **The run-time backstop.** Points 4 and 5 make the known evasions unspellable. In case a future change opens one
+   (a new `&mut World` path, `unsafe`), every entry point still checks, on the live world, in release builds too:
+   - **Sealed.** The live world is sealed except while the policy itself journals: `set_recording` (to another mode)
+     and `take_changes` change nothing, so every write stays recorded and reaches the checks. Inside agents'
+     commands, disk imports and game tools, recording also stays full even through `recording_as` (P1b: Snapshot hid
+     a write from the step-by-step claim check). Each attempt is printed and counted.
+   - **Counted moves.** The world counts persistent changes made while recording was off, and while it wasn't full,
+     in counters nothing ever clears (journaling doesn't: round 3's acknowledgement was cleared by a later
+     `journal_exempt`, probe P1d). Rollbacks and the step re-check, which replay recorded changes, don't count. The
+     policy compares them around each writer, independently of what is pending (P1e): a change made unrecorded, or
+     in a checked writer's code one per entity, is a *hidden write*. `take_files` counts as one.
+   - **Marked.** The live world carries a mark that neither `Default` nor `Clone` copies, so a world put in its place
+     is noticed. Project files are lent out while writers that don't use them run; the project tools, disk imports
+     and undo keep them, and a copy is taken to put back.
+   - **Settings.** The id counter (never lowered; a jump is noted in the journal so replay ends past it), the shape
+     budgets, the model library and the clock are compared around each writer and put back if moved (P4, P4b).
+   - **Fail closed** (`Live::settle`): unjournaled full changes are rolled back; changes recorded one per entity
+     (Snapshot) can't be, so they are journaled as `engine:stray`; a hidden write or a replaced world can't be undone,
+     so the journal starts over from the world as it is and replay stays exact. Each is a structured log line
+     (`unjournaled_write`, `unrecorded_write`, `world_replaced`, `settings_moved`), counted in engine_info
+     (`swarm.unjournaled_writes`, `swarm.world_replacements`) and a debug assertion. Agents' commits, disk imports,
+     undo, game tools and sessions answer `unjournaled_write` (sessions too: the Lex and logic tools no longer answer
+     success after a rollback). Ticks can't be refused; theirs are reported.
+   - **Recovered.** A replaced world is made live consistently: marked, sealed and recording, with the clock, the model
+     library, the shape budgets and the project files back (lent, or the copy kept for the project tools, disk imports
+     and undo: never the empty store of the world put in its place, which the disk sync would take for deletions,
+     probe P3). Ids, revisions, subtree stamps, the files revision and the transient, draw, layout and mesh epochs all
+     move past the old world's. The engine resets its caches as after a load, and the next autosave rewrites every
+     world file. A hidden write in the project tools or a disk import puts the files copy back too (P2).
    - **Known loss.** What a replaced world held is gone (entities, cameras, the journal's history and undo). That is
-     the price of a writer's bug, and it is reported, never silent.
-6. **Replacing the world needs a proof.** `Live::replace` takes a `MayReplace`, which only `may_replace` makes (no
+     the price of a writer's bug, and it is reported, never silent. The backstop can't see a hidden write that moves
+     no counter and no setting; that is what point 4 is for.
+7. **Replacing the world needs a proof.** `Live::replace` takes a `MayReplace`, which only `may_replace` makes (no
    playtest running, read from the engine's playtests rather than a caller's flag, and no other agent's claim).
    `Live::new` appears once, in `Engine::new` (a guard test). world_load, save_read (at start and again at the swap) and `--world`
    at startup all get one, so a new way to load a world can't skip the check.
-7. **The simulation's writers live apart.** The hosted game's exemptions, anim reloads and the module host's and
+8. **The simulation's writers live apart.** The hosted game's exemptions, anim reloads and the module host's and
    Lex tools' sessions are opened only in `sim_writes.rs`, a short file of named functions (`sim_writes::game`,
    `game_start`, `module_tick`, `anim_reload`, `logic_tools`, `lex_tools`). The agent tools' dispatcher (`lib.rs`)
    names no exemption itself. The hosted game's own calls are a `GameCall` (tick, frame, overlay,
    before_capture, assets_changed, apply_state, request_done, the repair after a refused tool), so only the game's
    own methods run as its exempt writes, never a closure. Their reserved-data writes are reported and counted
    (`swarm.game_reserved_writes`), not refused: a tick can't be refused halfway.
-8. **Presentation is checked.** A live Lex run's presentation is journaled as the run's own writes, exempt from the
+9. **Presentation is checked.** A live Lex run's presentation is journaled as the run's own writes, exempt from the
    reserved-data and joint rules. So its `present` rules are checked when the run starts, and again when a save
    brings it back: no `props.joint`, no navmesh settings, no Lex rule data. (Round 3: a present rule tied a joint
    onto a claimed box.)
-9. **Ticks tell claim holders.** Module ticks and live Lex runs' ticks stay exempt from claims, which keeps them
+10. **Ticks tell claim holders.** Module ticks and live Lex runs' ticks stay exempt from claims, which keeps them
    deterministic. A write one makes inside another agent's claim is a *notice* for the claim's holder: by (the module
    or run), started_by (the agent who loaded or started it), path, op, claim and tick. The holder sees them in
-   `claim_list` (`notices`), and engine_info counts them (`swarm.claim_notices`). Whether such writes should ever be
+   `claim_list` (`notices`), and engine_info counts them (`swarm.claim_notices`). They are bounded per holder (the
+   newest 64 each, for at most 64 holders), so one holder's flood never pushes another's out; at most 16 per call.
+   `claim_list` reports what was dropped (`notices_dropped`: past the 64 kept, and changes past the per-call cap,
+   never examined). Nothing is examined while nobody holds a claim. Whether such writes should ever be
    refused is the owner's decision.
-10. **The guard test** (`crates/specula/tests/write_policy_guard.rs`) catches what the compiler can't see, so a
-   regression fails even if visibility is loosened later. It is a backstop: points 1 to 5 don't depend on it. It
+11. **The guard test** (`crates/specula/tests/write_policy_guard.rs`) catches what the compiler can't see, so a
+   regression fails even if visibility is loosened later. It is a backstop: points 1 to 6 don't depend on it. It
    lexes every source file the engine compiles. A file is skipped only when a `#[cfg(test)] mod` declares it, never
    because of its name. Comments and literals are blanked, and `#[cfg(test)]` items are skipped by brace depth.
    Matching ignores whitespace, and hatch names match bare (called, in path form, named in a macro, passed as a
@@ -97,16 +116,24 @@ live Lex hooks, the physics, navigation and anim writers, world loads. Every new
    - variants are imported bare (`use ...::Exempt::*`), or the policy's names, `World` or `mem::swap/take/replace`
      are imported under another name;
    - a `#[path]` module appears (one allowed: `physics_save.rs`);
-   - the new hatches (sealing, marking, acknowledging, lending files, recovering, `clone_from`, `recording_as`)
-     appear outside their owners;
+   - the new hatches (sealing, marking, lending files, recovering, `clone_from`, `recording_as`, the policy's key and
+     `policy_world`, `journal_mut`, `claims_and_journal`, `drop_changes`, the handle's `put_file`) appear outside
+     their owners;
    - code outside `write_policy.rs` replaces a world wholesale (`*world = ..`, `*wd = ..`, `mem::swap/take/replace`
      of one), or writes project files outside the project tools (`put_file_raw`).
 
-   **Its limits, honestly.** It is a text scan at file granularity. It can't see a value alias (`let j = &mut
-   swarm.journal; j.undo(..)`), and an owner file may use its exemption anywhere in that file. A new write path in an
-   owner file (`sim_writes.rs`, `lex_live.rs`, `physics.rs`, `nav_tools.rs`) needs a reviewer's eye. Picking the
-   wrong *named* exemption is the one thing only review catches. Hiding a write, or replacing the world, is caught at
-   run time whatever the spelling.
+   **Its limits, honestly.** It is a text scan at file granularity: an owner file may use its exemption anywhere in
+   that file, so a new write path in an owner file (`sim_writes.rs`, `lex_live.rs`, `physics.rs`, `nav_tools.rs`)
+   needs a reviewer's eye. Picking the wrong *named* exemption is the one thing only review catches. Aliases no
+   longer matter for the journal (point 5: the field is private). `unsafe` code could forge the policy's key (a
+   zero-sized value); AGENTS.md rule 8 keeps `unsafe` to FFI boundaries, and review checks it.
+
+   **What the `compile_fail` doctests prove.** Those on public methods (`take_changes`, `set_recording`,
+   `set_shape_limits`, `adopt_clock`, `set_model_source`, the journal's `rebase`) prove the handle doesn't reach
+   them. Methods that are `pub(crate)` (`take_files`, `replay_next_id`, `put_file_raw`, `mark_live`) would fail in a
+   doctest anyway; inside the crate they are off the handle because `WorldWrite` doesn't declare them and its
+   `Deref` gives `&World`. Controls in the guard test spell the allowed uses of the same paths, so the doctests fail
+   for the reason they state.
 
 Detached worlds (the journal's base and replays, a save being read off the engine thread, a world read from its files
 before it goes live, tests, the hosted game's offline builds) are plain `World`s: they are data, not the shared world
@@ -197,12 +224,23 @@ desync traces) need nothing: `Live` derefs to `&World`.
   mixed ops (claimed and reserved), world_load under a playtest.
 - `the_table_names_every_writer`: a new `Rule`, `Exempt` or `Opener` variant doesn't compile until the table has a
   row for it.
-- `hiding_or_replacing_inside_a_commit_is_caught_however_spelled` (review round 3's probes as rows: path form,
-  macro, recording off, `mem::swap`, an aliased reference, `clone_from`, a renamed swap, a modified clone).
-  `lex_live::presentation_tests` covers presentation. `ticks_writing_inside_a_claim_notify_its_holder` and
-  `the_games_own_reserved_writes_are_reported` cover points 9 and 7.
-- Rows marked *replaced*: an exempt writer doing `*w = World::default()`, `mem::swap` and `mem::take`, and a session
-  putting a clone in the live world's place. Each must be reported, keep the clock, project files and ids, and replay.
+- **The compiler** (point 4, 5): `compile_fail` doctests on `WorldWrite` (taking changes, recording off, `*w = ..`,
+  `mem::swap`, the shape budgets and clock, the model library, making the key), `GameWorld` and `Swarm::journal`
+  (rebasing through the read-only journal, the private field), with controls in the guard test.
+- **The backstop** (point 6), with writers that hold the world itself (`Live::raw_writer_for_test`,
+  `raw_commit_for_test`, `raw_disk_for_test`: what no handle allows):
+  `hiding_or_replacing_inside_a_commit_is_caught_however_spelled` (review round 3's probes as rows: path form,
+  macro, recording off, `mem::swap`, an aliased reference, `clone_from`, a renamed swap, a modified clone), and the
+  rows marked *replaced* (`*w = World::default()`, `mem::swap`, `mem::take`, a clone). Each must be reported, keep the
+  clock, project files and ids, and replay.
+- **Review round 4's probes**: `p1_a_command_cant_switch_recording_to_hide_a_write` (P1, P1b),
+  `p1_hidden_writes_in_exempt_writers_and_sessions_are_caught` (P1c, P1d, P1e),
+  `p1f_starting_over_after_a_hidden_write_is_deterministic`, `p2_files_taken_inside_a_project_command_are_put_back`,
+  `p3_a_world_replaced_in_a_project_command_or_disk_import_keeps_the_files` (the data-loss case: files and files
+  revision), `p4_engine_settings_moved_in_a_command_are_put_back` (P4, P4b); P5 and P6 are `compile_fail` doctests.
+  `claim_notices_are_bounded_per_holder`.
+- `lex_live::presentation_tests` covers presentation. `ticks_writing_inside_a_claim_notify_its_holder` and
+  `the_games_own_reserved_writes_are_reported` cover points 10 and 8.
 - `a_writer_that_leaves_changes_unjournaled_is_caught`, `a_sealed_writer_cant_hide_its_writes`,
   `exempt_writers_record_as_documented`,
   `with_no_blocking_claim_a_batch_does_no_claim_work` (the fast path stays O(changes)).

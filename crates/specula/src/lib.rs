@@ -1757,7 +1757,7 @@ impl Engine {
             Command::Batch(ops) => {
                 let count = ops.len();
                 let yours = self.batch_yours(&ops);
-                let apply = |wd: &mut World| wd.apply_batch(ops, &by).map_err(|(i, e)| e.with("op_index", i));
+                let apply = |wd: &mut dyn write_policy::WorldWrite| wd.apply_batch(ops, &by).map_err(|(i, e)| e.with("op_index", i));
                 match self.world.commit(&mut self.swarm, tick, w, Kind::Batch, crate::write_policy::Rule::World, apply) {
                     Ok((results, seq)) => {
                         let mut summary = batch_summary(&results);
@@ -1913,8 +1913,8 @@ impl Engine {
                 }
                 None => ToolOutput::error(format!("no game is running, so '{name}' is unavailable")),
             },
-            Command::History(q) => ToolOutput::text(self.swarm.journal.history(&q).to_string()),
-            Command::Changes(q) => ToolOutput::text(self.swarm.journal.changes_text(&q)),
+            Command::History(q) => ToolOutput::text(self.swarm.journal().history(&q).to_string()),
+            Command::Changes(q) => ToolOutput::text(self.swarm.journal().changes_text(&q)),
             Command::Undo(req) => match self.world.undo(&mut self.swarm, tick, w, &req) {
                 Ok(u) => {
                     // Cameras an undo removed (or re-pointed) leave no stale follow state.
@@ -1959,6 +1959,10 @@ impl Engine {
                 let notices = self.swarm.claim_notices(Some(&by), 20);
                 if notices.as_array().is_some_and(|a| !a.is_empty()) {
                     list.set("notices", notices);
+                    let (dropped, unexamined) = self.swarm.claim_notices_dropped(&by);
+                    if dropped + unexamined > 0 {
+                        list.set("notices_dropped", Json::obj([("past_the_64_kept", Json::from(dropped)), ("changes_unexamined", Json::from(unexamined))]));
+                    }
                 }
                 ToolOutput::text(list.to_string())
             }
@@ -2008,7 +2012,7 @@ impl Engine {
             ("tick", Json::from(self.clock.tick())),
             ("state_hash", Json::from(journal::hex(hash))),
             ("entities", Json::from(self.world.len())),
-            ("journal_last_id", Json::from(self.swarm.journal.last_seq())),
+            ("journal_last_id", Json::from(self.swarm.journal().last_seq())),
             ("recent", Json::arr(self.tick_hashes.range(start..).map(pair))),
         ]);
         // Physics state the world doesn't hold (warm starts, sleep timers, exact rotations).
@@ -2031,12 +2035,12 @@ impl Engine {
         }
         if verify {
             let started = Instant::now();
-            let report = match self.swarm.journal.replay() {
+            let report = match self.swarm.journal().replay() {
                 Some(w) => {
                     let replayed = w.state_hash();
                     Json::obj([
                         ("replayable", Json::from(true)),
-                        ("entries", Json::from(self.swarm.journal.len())),
+                        ("entries", Json::from(self.swarm.journal().len())),
                         ("replay_hash", Json::from(journal::hex(replayed))),
                         ("matches", Json::from(replayed == hash)),
                         ("ms", Json::from(started.elapsed().as_secs_f64() * 1000.0)),

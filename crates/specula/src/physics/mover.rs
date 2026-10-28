@@ -30,6 +30,7 @@
 //! rides platforms, everything P2 does, without module changes.
 
 use super::*;
+use crate::write_policy::WorldWrite;
 use crate::logic::character::{CharacterMover, Kinematic, Moved};
 use specula_physics::{CharacterBody, CharacterConfig};
 
@@ -56,7 +57,7 @@ impl CharacterMover for PhysicsMover {
         self
     }
 
-    fn move_character(&mut self, world: &mut World, id: u64, motion: Vec3, by: &str) -> Result<Moved, WorldError> {
+    fn move_character(&mut self, world: &mut dyn WorldWrite, id: u64, motion: Vec3, by: &str) -> Result<Moved, WorldError> {
         let dt = if self.dt > 0.0 { self.dt } else { 1.0 / 30.0 };
         let Some(physics) = self.physics.as_ref() else {
             return Kinematic.move_character(world, id, motion, by);

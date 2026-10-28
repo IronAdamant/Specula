@@ -50,7 +50,13 @@ const HATCHES: &[Rule] = &[
     },
     Rule { pattern: ".mark_live(", allowed: &["world.rs", "write_policy.rs"], why: "only Live marks the live world" },
     Rule { pattern: ".set_sealed(", allowed: &["world.rs", "write_policy.rs"], why: "only the policy seals and unseals the live world (around its own journaling)" },
-    Rule { pattern: ".acknowledge(", allowed: &["world.rs", "write_policy.rs"], why: "only the policy acknowledges what it journaled or rolled back" },
+    Rule { pattern: "policy_world(", allowed: &["write_policy.rs"], why: "the world behind a writer's handle is the policy's (its key is constructed nowhere else)" },
+    Rule { pattern: "recording_full(", allowed: &["write_policy.rs", "logic/mod.rs"], why: "the module host's call transactions record full changes (only ever to full: nothing hides)" },
+    Rule { pattern: "PolicyKey(", allowed: &["write_policy.rs"], why: "only the policy makes its key" },
+    Rule { pattern: ".journal_mut(", allowed: &["write_policy.rs"], why: "only the policy writes the live journal (P5, P6: a session appending or undoing under another agent's name)" },
+    Rule { pattern: ".claims_and_journal(", allowed: &["write_policy.rs"], why: "only the policy writes the live journal" },
+    Rule { pattern: "drop_changes(", allowed: &["write_policy.rs", "logic/tools.rs"], why: "dropping a detached world's changes (tests and tools; refused on the live world): logic::tools::no_journal" },
+    Rule { pattern: ".put_file(", allowed: &["world.rs", "write_policy.rs", "project_engine.rs"], why: "project files are written by the project tools and disk imports (Rule::Project, Live::disk)" },
     Rule { pattern: ".lend_files(", allowed: &["world.rs", "write_policy.rs"], why: "the policy lends project files out while writers that don't use them run" },
     Rule { pattern: ".return_files(", allowed: &["world.rs", "write_policy.rs"], why: "the policy lends project files out while writers that don't use them run" },
     Rule { pattern: ".advance_past(", allowed: &["world.rs", "write_policy.rs"], why: "recovering a replaced world is the policy's" },
@@ -89,8 +95,8 @@ const HATCHES: &[Rule] = &[
     },
     Rule {
         pattern: ".put_file_raw(",
-        allowed: &["world.rs", "journal.rs", "project_engine.rs"],
-        why: "project files are written by the project tools and disk imports (Rule::Project, Live::disk); other writers hold the world while its files are lent out",
+        allowed: &["world.rs", "journal.rs", "write_policy.rs"],
+        why: "raw file puts: the journal's undo and replay, and the handle's put_file (the project tools and disk imports)",
     },
     Rule {
         pattern: ".remove_raw(",
@@ -650,7 +656,9 @@ fn the_live_world_has_no_other_way_in() {
             // A function handing out a mutable world (`-> &mut World`, `-> &'a mut World`,
             // `-> Option<&mut World>`...).
             // (A returned closure that takes one, `-> impl FnMut(&mut World, ..)`, hands out nothing.)
-            let hands_out = s.contains("fn") && s.split_once("->").is_some_and(|(_, ret)| !ret.contains("Fn") && (ret.contains("mutWorld") || ret.contains("mutcrate::world::World")));
+            // (One that takes the policy's key, `policy_world(&mut self, &PolicyKey)`, hands it
+            // out only to the policy.)
+            let hands_out = s.contains("fn") && !s.contains("PolicyKey") && s.split_once("->").is_some_and(|(_, ret)| !ret.contains("Fn") && (ret.contains("mutWorld") || ret.contains("mutcrate::world::World")));
             if hands_out {
                 problems.push(format!("src/{file}:{n}: hands out &mut World: writes go through write_policy's entry points\n    {t}"));
             }
@@ -703,4 +711,31 @@ fn the_live_world_is_made_once() {
     // E3 (review round 3): `*live = Live::new(World::default())` skips MayReplace.
     let made: usize = engine_code().iter().map(|(_, lines)| lines.iter().filter(|(_, l)| holds(l, "Live::new(")).count()).sum();
     assert_eq!(made, 1, "Live::new appears once, in Engine::new");
+}
+
+/// The compile_fail doctests on `WorldWrite`, `GameWorld` and `Swarm::journal` fail for the
+/// reason they state only if the paths they name are right: these controls, from outside the
+/// crate as the doctests are, spell the allowed uses of the same paths and must compile.
+#[allow(dead_code)]
+mod doctest_controls {
+    use specula::write_policy::WorldWrite;
+
+    fn write(w: &mut dyn WorldWrite) -> u64 {
+        let _ = w.delete(&specula::world::EntityKey::Path("/gone".into()), None); // a recorded write
+        w.revision() // and reads, through the world
+    }
+
+    fn read(sw: &specula::swarm::Swarm) -> usize {
+        sw.journal().len()
+    }
+
+    fn game(ctx: &mut specula::game::Ctx) -> u64 {
+        ctx.world.revision()
+    }
+
+    fn detached(w: &mut specula::world::World) {
+        w.take_changes(); // a world of your own is yours
+        w.set_recording(specula::world::Recording::Off);
+        let _ = write(w);
+    }
 }

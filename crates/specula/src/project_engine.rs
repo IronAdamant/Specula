@@ -104,7 +104,7 @@ impl Engine {
         let module_dir = located.filter(|(m, _)| m.kind == MountKind::Module).map(|(m, _)| m.root);
         let (at, later) = match (version, &current) {
             (Some(v), Some(c)) if v == c.version => (Some(Arc::clone(&c.text)), Vec::new()),
-            (Some(v), _) => at_version(&self.swarm.journal, path, v),
+            (Some(v), _) => at_version(self.swarm.journal(), path, v),
             (None, _) => (None, Vec::new()),
         };
         let kind = current.as_ref().map(|f| f.kind).or(kind);
@@ -178,7 +178,7 @@ impl Engine {
         };
         let tick = self.clock.tick();
         match self.world.commit(&mut self.swarm, tick, w, crate::journal::Kind::File, crate::write_policy::Rule::Project, |wd| {
-            wd.put_file_raw(path, new, false);
+            wd.put_file(path, new, false);
             Ok(())
         }) {
             Err(e) => Committed::Refused(e),
@@ -427,7 +427,7 @@ impl Engine {
         let tick = self.clock.tick();
         match self.world.commit(&mut self.swarm, tick, w, crate::journal::Kind::File, crate::write_policy::Rule::Project, |wd| {
             for (p, f) in puts {
-                wd.put_file_raw(&p, Some(f), false);
+                wd.put_file(&p, Some(f), false);
             }
             Ok(())
         }) {
@@ -512,7 +512,7 @@ impl Engine {
         if !puts.is_empty() {
             let result = self.world.disk(&mut self.swarm, tick, |wd| {
                 for (p, f, import) in puts {
-                    wd.put_file_raw(&p, f, import);
+                    wd.put_file(&p, f, import);
                 }
                 Ok(())
             });
@@ -643,7 +643,7 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        let imported = sw.journal.entries().last().unwrap().seq;
+        let imported = sw.journal().entries().last().unwrap().seq;
         let undo_import = sw.undo(&mut w, 0, ann, &UndoRequest { ids: Some(vec![imported]), count: 1, force: true });
         assert_eq!(undo_import.unwrap_err().code, "not_undoable");
         // Ann writes v2, bob v3; history is attributed per file.
@@ -657,7 +657,7 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        let last = sw.journal.entries().last().unwrap();
+        let last = sw.journal().entries().last().unwrap();
         assert_eq!((last.kind, &*last.by, last.changes[0].op(), last.changes[0].path()), (Kind::File, "bob", "file_write", "/project/assets/recipes/t.json"));
         // Ann's undo would overwrite bob's later change: refused without force.
         assert_eq!(sw.undo(&mut w, 3, ann, &UndoRequest { ids: None, count: 1, force: false }).unwrap_err().code, "undo_conflict");
@@ -703,7 +703,7 @@ mod tests {
         sw.undo(&mut w, 7, bob, &UndoRequest { ids: None, count: 1, force: false }).unwrap();
         assert_eq!(&*w.files()[p].text, "{\"v\": 5}");
         // The journal replays the files byte for byte (F2: replays reproduce project data).
-        let replayed = sw.journal.replay().unwrap();
+        let replayed = sw.journal().replay().unwrap();
         assert_eq!(replayed.files(), w.files());
         assert_eq!(replayed.state_hash(), w.state_hash(), "files aren't world state: the hash is the world's");
     }
@@ -722,7 +722,7 @@ mod tests {
         sw.hello(&s2, "bob".into(), "builder".into(), None, &live).unwrap();
         let (k1, k2) = (sw.key(&s1), sw.key(&s2));
         let (ann, bob) = (Writer::new("ann", Some(&k1)), Writer::new("bob", Some(&k2)));
-        sw.journal.set_file_budget(8 << 20);
+        sw.journal_for_test().set_file_budget(8 << 20);
         sw.commit(&mut w, 0, bob, Kind::Spawn, |wd| wd.spawn(SpawnSpec::new(Shape::Cube), "bob").map(|_| ())).unwrap();
         let p = "assets/anims/big.json";
         let mut first = None;
@@ -737,10 +737,10 @@ mod tests {
                 .unwrap();
             first = first.or(seq);
         }
-        let (held, budget) = sw.journal.file_text();
+        let (held, budget) = sw.journal().file_text();
         assert!(held <= budget, "{held} > {budget}");
-        assert!(sw.journal.replayable(), "the world's replay base is untouched");
-        assert_eq!(sw.journal.replay().unwrap().state_hash(), w.state_hash());
+        assert!(sw.journal().replayable(), "the world's replay base is untouched");
+        assert_eq!(sw.journal().replay().unwrap().state_hash(), w.state_hash());
         // Bob's change is still his to undo.
         sw.undo(&mut w, 40, bob, &UndoRequest { ids: None, count: 1, force: false }).unwrap();
         assert_eq!(w.len(), 0);
@@ -785,7 +785,7 @@ mod tests {
         sw.hello(&s1, "ann".into(), "builder".into(), None, std::slice::from_ref(&s1)).unwrap();
         let k1 = sw.key(&s1);
         let ann = Writer::new("ann", Some(&k1));
-        sw.journal.set_file_budget(3_000);
+        sw.journal_for_test().set_file_budget(3_000);
         let p = "assets/sounds/s.json";
         for v in 1..=4u64 {
             let text = format!("{{\"v\": {v}, \"pad\": \"{}\"}}", "x".repeat(1_000));
@@ -795,10 +795,10 @@ mod tests {
             })
             .unwrap();
         }
-        let (old, later) = super::at_version(&sw.journal, p, 1);
+        let (old, later) = super::at_version(sw.journal(), p, 1);
         assert!(old.is_none(), "version 1's text was dropped: not kept, never \"\"");
         assert!(!later.is_empty(), "the later changes are still listed");
-        assert!(super::at_version(&sw.journal, p, 3).0.is_some_and(|t| t.contains("\"v\": 3")));
+        assert!(super::at_version(sw.journal(), p, 3).0.is_some_and(|t| t.contains("\"v\": 3")));
     }
 
     /// Review round 2: the list of entries holding file text had no bound tied to the rings.

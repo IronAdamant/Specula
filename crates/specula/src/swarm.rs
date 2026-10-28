@@ -69,7 +69,8 @@ fn random_hex() -> String {
 
 #[derive(Default)]
 pub struct Swarm {
-    pub journal: Journal,
+    /// Read with [`Swarm::journal`]; only the write policy writes it ([`Swarm::journal_mut`]).
+    journal: Journal,
     pub claims: Claims,
     /// Session id → identity given with agent_hello.
     agents: BTreeMap<String, Agent>,
@@ -90,15 +91,19 @@ pub struct Swarm {
     /// notices (at most [`MAX_AGENTS`]).
     starters: BTreeMap<String, String>,
     /// Writes a module's or live Lex run's own ticks made to entities another agent claimed
-    /// (exempt from claims, so never refused), newest last: told to the claim's holder in
-    /// claim_list (at most [`MAX_CLAIM_NOTICES`]).
-    claim_notices: VecDeque<Json>,
+    /// (exempt from claims, so never refused), by the claim's holder, newest last, and how many
+    /// of the holder's were dropped past [`MAX_CLAIM_NOTICES`]: told to the holder in claim_list.
+    /// One holder's notices never push another's out (at most [`MAX_AGENTS`] holders).
+    claim_notices: BTreeMap<String, (VecDeque<Json>, u64)>,
     /// Claim notices ever made.
     claim_notices_total: u64,
+    /// Changes a call made past [`NOTICES_PER_CALL`] notices, never examined for claims.
+    claim_notices_unexamined: u64,
 }
 
-/// Claim notices kept (see `Swarm::claim_notices`), and how many one journaled call may add.
-pub const MAX_CLAIM_NOTICES: usize = 256;
+/// Claim notices kept per holder (see `Swarm::claim_notices`), and how many one journaled call
+/// may make.
+pub const MAX_CLAIM_NOTICES: usize = 64;
 const NOTICES_PER_CALL: usize = 16;
 
 /// The world's removed-entity versions are pruned once there are at least this many.
@@ -286,9 +291,47 @@ impl Swarm {
         self.refused.get(name)
     }
 
-    #[cfg(test)]
-    pub(crate) fn journal(&self) -> &Journal {
+    /// The journal of every world change, to read (history, the change feed, replay). Only the
+    /// write policy writes it (its `journal_mut` takes a key nothing else can make): a writer
+    /// can't append an entry under another agent's name, undo one, or start the journal over
+    /// (review round 4, P5 and P6).
+    ///
+    /// ```compile_fail
+    /// fn forge(sw: &mut specula::swarm::Swarm, w: &specula::world::World) {
+    ///     sw.journal().rebase(w, "forged"); // read-only
+    /// }
+    /// ```
+    ///
+    /// ```compile_fail
+    /// fn forge(sw: &mut specula::swarm::Swarm) {
+    ///     let _ = &mut sw.journal; // private
+    /// }
+    /// ```
+    pub fn journal(&self) -> &Journal {
         &self.journal
+    }
+
+    /// The journal to write: the write policy's only (its key, [`crate::write_policy::PolicyKey`],
+    /// is one only it can make), so no other code appends, undoes or rebases the engine's journal.
+    pub(crate) fn journal_mut(&mut self, _: &crate::write_policy::PolicyKey) -> &mut Journal {
+        &mut self.journal
+    }
+
+    /// The claims to read and the journal to write at once (the write policy's checks run while
+    /// it journals).
+    pub(crate) fn claims_and_journal(&mut self, _: &crate::write_policy::PolicyKey) -> (&Claims, &mut Journal) {
+        (&self.claims, &mut self.journal)
+    }
+
+    /// Tests: the journal to adjust (budgets).
+    #[cfg(test)]
+    pub(crate) fn journal_for_test(&mut self) -> &mut Journal {
+        &mut self.journal
+    }
+
+    /// A swarm whose journal starts from `journal` (tests, tools building a detached world).
+    pub fn with_journal(journal: Journal) -> Swarm {
+        Swarm { journal, ..Swarm::default() }
     }
 
     /// Refuses `w` acting on what `path` names (a module's root, `/<name>`) while another agent
@@ -377,16 +420,18 @@ impl Swarm {
 
     /// A module's or live Lex run's own tick (`by`) changed entities another agent holds a claim
     /// on. Ticks are exempt from claims (the game's rules, deterministic), so nothing is refused;
-    /// the claim's holder is told instead: a notice per change (at most 16 per call, the newest
-    /// 256 kept) naming the writer and the agent who started it, shown in the holder's
-    /// claim_list. Costs nothing while nobody holds a claim.
+    /// the claim's holder is told instead: a notice per change (at most 16 per call; the changes
+    /// past them are counted, unexamined; the newest 64 kept per holder, the rest counted)
+    /// naming the writer and the agent who started it, shown in the holder's claim_list. Costs
+    /// nothing while nobody holds a claim.
     pub(crate) fn note_claim_crossings(&mut self, world: &World, changes: &[Change], by: &str, tick: u64) {
         let now = Instant::now();
         let w = Writer::new(by, None);
         let started_by = self.starters.get(by).cloned();
         let mut added = 0;
-        for c in changes {
+        for (i, c) in changes.iter().enumerate() {
             if added == NOTICES_PER_CALL {
+                self.claim_notices_unexamined += (changes.len() - i) as u64;
                 break;
             }
             let Err(e) = self.claims.check(world, std::slice::from_ref(c), w, now) else { continue };
@@ -402,19 +447,31 @@ impl Swarm {
                 ("claim", e.detail("claim").cloned().unwrap_or(Json::Null)),
                 ("holder", e.detail("owner").cloned().unwrap_or(Json::Null)),
             ]);
-            if self.claim_notices.len() == MAX_CLAIM_NOTICES {
-                self.claim_notices.pop_front();
+            let holder = e.detail("owner").and_then(Json::as_str).unwrap_or_default().to_owned();
+            if self.claim_notices.len() >= MAX_AGENTS && !self.claim_notices.contains_key(&holder) {
+                self.claim_notices.pop_first();
             }
-            self.claim_notices.push_back(notice);
+            let (kept, dropped) = self.claim_notices.entry(holder).or_default();
+            if kept.len() == MAX_CLAIM_NOTICES {
+                kept.pop_front();
+                *dropped += 1;
+            }
+            kept.push_back(notice);
             self.claim_notices_total += 1;
             added += 1;
         }
     }
 
-    /// The claim notices for `holder` (all of them for `None`), newest last, at most `limit`.
+    /// The claim notices for `holder` (everyone's for `None`), newest last, at most `limit`.
     pub fn claim_notices(&self, holder: Option<&str>, limit: usize) -> Json {
-        let mine: Vec<&Json> = self.claim_notices.iter().filter(|n| holder.is_none_or(|h| n.get("holder").and_then(Json::as_str) == Some(h))).collect();
+        let mine: Vec<&Json> = self.claim_notices.iter().filter(|(h, _)| holder.is_none_or(|x| *h == x)).flat_map(|(_, (kept, _))| kept.iter()).collect();
         Json::arr(mine[mine.len().saturating_sub(limit)..].iter().map(|n| (*n).clone()))
+    }
+
+    /// Notices dropped for `holder` past the 64 kept, and changes never examined past the
+    /// per-call cap (everyone's).
+    pub fn claim_notices_dropped(&self, holder: &str) -> (u64, u64) {
+        (self.claim_notices.get(holder).map_or(0, |(_, d)| *d), self.claim_notices_unexamined)
     }
 
     pub fn stats_json(&self) -> Json {

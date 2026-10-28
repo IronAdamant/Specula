@@ -17,6 +17,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use crate::write_policy::WorldWrite;
 use crate::journal::{Kind, Writer};
 use crate::swarm::Swarm;
 use crate::tools::{check_keys, Command, Tools};
@@ -325,7 +326,7 @@ fn list_json(world: &World, set: &str, kind: Option<&str>, after: Option<&str>, 
 /// `hooks`: the native hooks the module host's running modules provide (`module/name`);
 /// `in_process`: the ones the hosted game implements in-process ([`crate::game::Game::lex_natives`]).
 #[allow(clippy::too_many_arguments)]
-pub fn handle(call: LexCall, world: &mut World, swarm: &mut Swarm, tick: u64, w: Writer, by: &str, hooks: &[String], in_process: &[String]) -> ToolOutput {
+pub fn handle(call: LexCall, world: &mut dyn WorldWrite, swarm: &mut Swarm, tick: u64, w: Writer, by: &str, hooks: &[String], in_process: &[String]) -> ToolOutput {
     match call {
         LexCall::Snapshot { set, only } => {
             let mut j = snapshot_json(world, &set, only.as_deref());
@@ -339,7 +340,7 @@ pub fn handle(call: LexCall, world: &mut World, swarm: &mut Swarm, tick: u64, w:
     }
 }
 
-fn commit(c: Commit, world: &mut World, swarm: &mut Swarm, tick: u64, w: Writer, by: &str) -> ToolOutput {
+fn commit(c: Commit, world: &mut dyn WorldWrite, swarm: &mut Swarm, tick: u64, w: Writer, by: &str) -> ToolOutput {
     let now = versions(world, &c.set);
     if now != c.base {
         return err("set_changed", "the set changed while the edit was being validated");
@@ -388,7 +389,7 @@ fn commit(c: Commit, world: &mut World, swarm: &mut Swarm, tick: u64, w: Writer,
     for id in &c.deletes {
         ops.push(Op::Delete(EntityKey::Path(format!("{sp}/{id}")), base_version(id)));
     }
-    let apply = |wd: &mut World| wd.apply_batch(ops, by).map_err(|(i, e): (usize, WorldError)| e.with("op_index", i));
+    let apply = |wd: &mut dyn WorldWrite| wd.apply_batch(ops, by).map_err(|(i, e): (usize, WorldError)| e.with("op_index", i));
     match crate::write_policy::commit(world, swarm, tick, w, Kind::Batch, crate::write_policy::Rule::Lex, apply) {
         Ok((_, seq)) => {
             let v = versions(world, &c.set).map(|v| v.items).unwrap_or_default();

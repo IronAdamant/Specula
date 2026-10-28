@@ -1943,6 +1943,7 @@ impl Change {
 pub const MAX_FILE_TOMBSTONES: usize = 16_384;
 
 /// A world's project files, handed from a world being replaced to the next.
+#[derive(Clone)]
 pub(crate) struct ProjectFiles {
     files: BTreeMap<String, crate::project::ProjectFile>,
     floor: BTreeMap<String, FileTombstone>,
@@ -2150,12 +2151,16 @@ pub struct World {
     sealed: bool,
     /// Attempts to do either while sealed.
     seal_breaks: u64,
+    /// Set while an agent's command, a disk import or a game tool runs: their checks run on full
+    /// changes, so recording stays full however asked (see `write_policy::recording_as`).
+    full_only: bool,
     /// Set on the engine's live world only ([`World::mark_live`]); a default or cloned world
     /// never carries it, so the write policy notices a live world replaced wholesale.
     live: LiveMark,
-    /// The revision as the write policy last acknowledged it (journaled or rolled back): see
-    /// [`World::unacknowledged`].
-    acked: u64,
+    /// Persistent changes made while recording was off, and while it wasn't full (see
+    /// [`World::moves`]): counters nothing ever clears.
+    moves_off: u64,
+    moves_unfull: u64,
 }
 
 /// What caches key on in a world (ids, revisions, stamps, epochs): see [`World::advance_past`].
@@ -2169,6 +2174,13 @@ pub(crate) struct Epochs {
     layout_epoch: u64,
     mesh_epoch: u64,
     model_drops: u64,
+}
+
+impl Epochs {
+    /// The id counter then.
+    pub(crate) fn next_id(&self) -> u64 {
+        self.next_id
+    }
 }
 
 /// Whether a world is the engine's live one: neither `Default` nor `Clone` carries it.
@@ -2491,6 +2503,7 @@ impl World {
         let before = self.env;
         patch.apply(&mut self.env);
         self.revision += 1;
+        self.count_move();
         self.record_env(before);
         Ok(())
     }
@@ -2578,6 +2591,7 @@ impl World {
             return; // nothing was there
         }
         self.revision += 1;
+        self.count_move();
         if self.recording != Recording::Off {
             self.changes.push(Change::Camera {
                 path: camera_path(owner, name),
@@ -2635,6 +2649,7 @@ impl World {
             (None, None) => {}
         }
         self.revision += 1;
+        self.count_move();
         self.files_revision += 1;
         if self.recording != Recording::Off {
             self.changes.push(Change::File { path: crate::project::journal_path(path), before: before.map(Box::new), after: file.map(Box::new), import, kept: true });
@@ -2652,6 +2667,9 @@ impl World {
     /// project, not the world).
     pub(crate) fn take_files(&mut self) -> ProjectFiles {
         self.files_revision += 1;
+        // Unrecorded, whatever the recording mode: the write policy sees a hidden write.
+        self.moves_off += 1;
+        self.moves_unfull += 1;
         ProjectFiles {
             files: std::mem::take(&mut self.files),
             floor: std::mem::take(&mut self.file_floor),
@@ -3035,6 +3053,7 @@ impl World {
     fn bump(&mut self, transient: bool) {
         if !transient {
             self.revision += 1;
+            self.count_move();
         }
     }
 
@@ -3677,16 +3696,38 @@ impl World {
         self.sealed
     }
 
-    /// The write policy acknowledges every change so far: they are journaled, or rolled back.
-    pub(crate) fn acknowledge(&mut self) {
-        self.acked = self.revision;
+    /// Persistent changes ever made while recording was off, and while it wasn't full
+    /// (`(off, not full)`): every change counts, however it was made, and nothing clears them.
+    /// The write policy compares them around a writer: a change made unrecorded (or, in an
+    /// agent's commit, recorded one per entity) is a hidden write, whatever its spelling.
+    pub(crate) fn moves(&self) -> (u64, u64) {
+        (self.moves_off, self.moves_unfull)
     }
 
-    /// Whether the world changed since the policy last acknowledged it. Every change to
-    /// persistent state moves the revision, whatever records it (or doesn't: recording off,
-    /// changes taken), so this doesn't depend on how a writer spelled its write.
-    pub(crate) fn unacknowledged(&self) -> bool {
-        self.revision != self.acked
+    /// Counts a persistent change against the recording mode (see [`World::moves`]).
+    fn count_move(&mut self) {
+        if self.recording != Recording::Full {
+            self.moves_unfull += 1;
+            if self.recording == Recording::Off {
+                self.moves_off += 1;
+            }
+        }
+    }
+
+    /// The project files as they are, to put back on a world that took this one's place.
+    pub(crate) fn files_snapshot(&self) -> ProjectFiles {
+        ProjectFiles {
+            files: self.files.clone(),
+            floor: self.file_floor.clone(),
+            order: self.file_floor_order.clone(),
+            seq: self.file_floor_seq,
+            floor_all: self.file_floor_all,
+        }
+    }
+
+    /// The clock as this world holds it is `c` (exactly).
+    pub(crate) fn clock_is(&self, c: &ClockParts) -> bool {
+        self.clock_s.to_bits() == c.clock_s.to_bits() && self.time_offset.to_bits() == c.time_offset.to_bits()
     }
 
     /// Whether every change recorded and not taken yet can be rolled back: all of them full
@@ -3740,6 +3781,20 @@ impl World {
     /// Attempts to change recording or take the recorded changes while sealed, ever.
     pub(crate) fn seal_breaks(&self) -> u64 {
         self.seal_breaks
+    }
+
+    /// Counts an attempt the write policy refused (see [`World::seal_breaks`]).
+    pub(crate) fn count_seal_break(&mut self) {
+        self.seal_breaks += 1;
+    }
+
+    /// Whether recording must stay full (see the field), and setting it.
+    pub(crate) fn full_only(&self) -> bool {
+        self.full_only
+    }
+
+    pub(crate) fn set_full_only(&mut self, on: bool) {
+        self.full_only = on;
     }
 
     pub fn recording(&self) -> Recording {
@@ -3850,11 +3905,13 @@ impl World {
     pub(crate) fn rollback_to(&mut self, mark: Mark) {
         let undo: Vec<Change> = self.changes.drain(mark.changes.min(self.changes.len())..).collect();
         let recording = std::mem::replace(&mut self.recording, Recording::Off);
-        let revision = self.revision;
+        let (revision, moves) = (self.revision, self.moves());
         for change in undo.iter().rev() {
             self.apply_before(change);
         }
         self.recording = recording;
+        // Undoing recorded changes is no hidden write.
+        (self.moves_off, self.moves_unfull) = moves;
         if !undo.is_empty() || self.next_id != mark.next_id || revision != mark.revision {
             self.revision = self.revision.max(revision) + 1;
         }
@@ -3874,7 +3931,7 @@ impl World {
             return Ok(());
         }
         let steps: Vec<Change> = self.changes.drain(start..).collect();
-        let (next_id, revision) = (self.next_id, self.revision);
+        let (next_id, revision, moves) = (self.next_id, self.revision, self.moves());
         let recording = std::mem::replace(&mut self.recording, Recording::Off);
         // Back to the start, then forward one change at a time.
         for change in steps.iter().rev() {
@@ -3892,6 +3949,7 @@ impl World {
         match failed {
             None => {
                 self.recording = recording;
+                (self.moves_off, self.moves_unfull) = moves;
                 self.changes.extend(steps);
                 self.next_id = self.next_id.max(next_id);
                 self.revision = revision.max(self.revision);
@@ -3902,6 +3960,7 @@ impl World {
                     self.apply_before(change);
                 }
                 self.recording = recording;
+                (self.moves_off, self.moves_unfull) = moves;
                 self.next_id = self.next_id.max(next_id);
                 // Forward only (see `rollback_to`).
                 self.revision = self.revision.max(revision) + 1;
@@ -4051,6 +4110,7 @@ impl World {
         let before = self.env;
         self.env = env;
         self.revision += 1;
+        self.count_move();
         self.record_env(before);
     }
 

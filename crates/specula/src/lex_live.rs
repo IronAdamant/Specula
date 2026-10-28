@@ -52,7 +52,7 @@ use crate::schedule::Class;
 use crate::swarm::Swarm;
 use crate::tools::{check_keys, Command, Tools};
 use crate::world::{EntityKey, Mark, Recording, Shape, SpawnSpec, UpdateSpec, World, WorldError};
-use crate::write_policy::{self, Exempt, Opener, Rule};
+use crate::write_policy::{WorldWrite, self, Exempt, Opener, Rule};
 use specula_core::math::Vec3;
 use specula_core::Json;
 use specula_lex::rules::{NativeDef, Rules, TagFilter};
@@ -409,7 +409,7 @@ fn metres(p: [i64; 3]) -> Vec3 {
 /// Module hooks for a live run: `call_hook`.
 struct Host<'a> {
     logic: &'a mut LogicHost,
-    world: &'a mut World,
+    world: &'a mut dyn WorldWrite,
     swarm: &'a mut Swarm,
     tick: u64,
     hz: u32,
@@ -445,7 +445,7 @@ impl NativeHost for Host<'_> {
         let reason: String = hook.reason.chars().take(300).collect();
         let reason = if reason.trim().is_empty() { "a Lex native".to_owned() } else { reason };
         let (swarm, agent, tick, staged) = (&mut *self.swarm, self.agent, self.tick, self.staged);
-        let commit = &mut |w: &mut World, _: Mark, _: &str, _| {
+        let commit = &mut |w: &mut dyn WorldWrite, _: Mark, _: &str, _| {
             if !staged {
                 write_policy::journal_exempt(w, swarm, tick, Exempt::LexLive { agent });
             }
@@ -464,7 +464,7 @@ impl NativeHost for Host<'_> {
 
 /// What a call needs from the engine (so the runner is testable without one).
 pub(crate) struct Env<'a> {
-    pub world: &'a mut World,
+    pub world: &'a mut dyn WorldWrite,
     pub logic: &'a mut LogicHost,
     pub swarm: &'a mut Swarm,
     pub natives: &'a specula_lex::Natives,
@@ -477,7 +477,7 @@ impl crate::Engine {
     pub(crate) fn lex_live_call(&mut self, call: LiveCall, by: &str, w: Writer) -> ToolOutput {
         let (tick, hz) = (self.clock.tick(), self.clock.hz());
         let crate::Engine { lex_live, world, logic, swarm, lex_natives, .. } = self;
-        world.session(swarm, tick, Opener::LexLive, |world, swarm| lex_live.call(call, by, w, Env { world, logic, swarm, natives: lex_natives, tick, hz }))
+        world.session(swarm, tick, Opener::LexLive, |world, swarm| lex_live.call(call, by, w, Env { world, logic, swarm, natives: lex_natives, tick, hz })).unwrap_or_else(|e| world_error(&e))
     }
 
     /// Ends live-input holds whose agents are gone (each frame while any hold is on).
@@ -494,7 +494,8 @@ impl crate::Engine {
         let (tick, hz) = (self.clock.tick(), self.clock.hz());
         let crate::Engine { lex_live, world, logic, swarm, lex_natives, .. } = self;
         let limits = lex_live.limits;
-        world.session(swarm, tick, Opener::LexLive, |world, swarm| lex_live.tick(Env { world, logic, swarm, natives: lex_natives, tick, hz }, limits));
+        // A tick can't be refused: what a run left unjournaled was rolled back and reported.
+        let _ = world.session(swarm, tick, Opener::LexLive, |world, swarm| lex_live.tick(Env { world, logic, swarm, natives: lex_natives, tick, hz }, limits));
     }
 }
 
@@ -530,7 +531,7 @@ fn engine_ticks_for(lex_ticks: u32, lex_hz: u32, hz: u32) -> u64 {
 /// run's own input (window, gamepad, held actions): journaled like the run's ticks. Answers the
 /// accepted command, or the error (a panicking native also halts the run).
 #[allow(clippy::too_many_arguments)]
-fn apply_command(run: &mut Run, name: &str, args: &Json, by: &str, w: Option<Writer>, input: bool, world: &mut World, logic: &mut LogicHost, swarm: &mut Swarm, tick: u64, hz: u32) -> Result<Json, Json> {
+fn apply_command(run: &mut Run, name: &str, args: &Json, by: &str, w: Option<Writer>, input: bool, world: &mut dyn WorldWrite, logic: &mut LogicHost, swarm: &mut Swarm, tick: u64, hz: u32) -> Result<Json, Json> {
     if run.journal.len() >= MAX_JOURNAL {
         return Err(Json::obj([
             ("error", Json::from("journal_full")),
@@ -556,7 +557,7 @@ fn apply_command(run: &mut Run, name: &str, args: &Json, by: &str, w: Option<Wri
         let sim = &mut run.sim;
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sim.apply_undoable(&call, &mut host)))
     };
-    let undo = |world: &mut World, swarm: &mut Swarm, logic: &mut LogicHost| {
+    let undo = |world: &mut dyn WorldWrite, swarm: &mut Swarm, logic: &mut LogicHost| {
         write_policy::rolled_back(world, swarm, mark);
         logic.drop_staged();
     };
@@ -676,7 +677,7 @@ fn holder_live(h: &Holder, live: &[(String, String)]) -> bool {
 /// gamepads as the run's own input. Past [`MAX_INPUT_COMMANDS_PER_TICK`] in this engine tick, or
 /// past the work allowance, the rest are dropped (counted in status).
 #[allow(clippy::too_many_arguments)]
-fn fire(run: &mut Run, list: Vec<Fired>, fired_n: &mut usize, live: Option<&[(String, String)]>, world: &mut World, logic: &mut LogicHost, swarm: &mut Swarm, tick: u64, hz: u32) {
+fn fire(run: &mut Run, list: Vec<Fired>, fired_n: &mut usize, live: Option<&[(String, String)]>, world: &mut dyn WorldWrite, logic: &mut LogicHost, swarm: &mut Swarm, tick: u64, hz: u32) {
     for f in list {
         if run.halted.is_some() || run.sim.outcome().is_some() {
             return;
@@ -1152,7 +1153,7 @@ pub(crate) fn remove_presentation(world: &mut World) -> usize {
 }
 
 /// `/lex_live`, made if missing.
-fn root_group(wd: &mut World, by: &str) -> Result<u64, WorldError> {
+fn root_group(wd: &mut dyn WorldWrite, by: &str) -> Result<u64, WorldError> {
     match wd.find_path(&format!("/{ROOT}")) {
         Ok(id) => Ok(id),
         Err(_) => {
@@ -1164,7 +1165,7 @@ fn root_group(wd: &mut World, by: &str) -> Result<u64, WorldError> {
 }
 
 /// `/lex_live/<set>`, a run's group.
-fn run_group(wd: &mut World, root: u64, set: &str, seed: u64, by: &str) -> Result<u64, WorldError> {
+fn run_group(wd: &mut dyn WorldWrite, root: u64, set: &str, seed: u64, by: &str) -> Result<u64, WorldError> {
     let mut g = SpawnSpec::new(Shape::Group);
     g.name = Some(set.to_owned());
     g.parent = Some(EntityKey::Id(root));
@@ -1174,7 +1175,7 @@ fn run_group(wd: &mut World, root: u64, set: &str, seed: u64, by: &str) -> Resul
 
 /// Shows the run's entities as world entities (journaled replay-only under `lex:<set>`). A
 /// shown entity someone deleted is shown again; a deleted group is made again.
-fn present(world: &mut World, swarm: &mut Swarm, tick: u64, run: &mut Run) {
+fn present(world: &mut dyn WorldWrite, swarm: &mut Swarm, tick: u64, run: &mut Run) {
     // One change per entity (replay-only, cheap), journaled as the run's own.
     write_policy::recording_as(world, Recording::Snapshot, |world| present_entities(world, run));
     let agent = run.agent.clone();
@@ -1182,7 +1183,7 @@ fn present(world: &mut World, swarm: &mut Swarm, tick: u64, run: &mut Run) {
 }
 
 /// [`present`]'s work on the world (recorded one change per entity).
-fn present_entities(world: &mut World, run: &mut Run) {
+fn present_entities(world: &mut dyn WorldWrite, run: &mut Run) {
     let agent = run.agent.clone();
     let set = agent.trim_start_matches("lex:").to_owned();
     if world.get(run.group).is_none() {
@@ -1884,9 +1885,8 @@ mod tests {
             }
         }
         let mut rig = Rig::new(30);
-        let journal = &mut |w: &mut World, _: Mark, _: &str, _| {
-            w.take_changes();
-            Ok(())
+        let journal = &mut |w: &mut dyn WorldWrite, _: Mark, _: &str, _| {
+            crate::write_policy::drop_changes(w)
         };
         rig.logic.load(specula_logic::ModuleCode::of::<Counter>(), crate::logic::Origin::default(), None, &mut rig.world, 0, 30, journal).unwrap();
         let set = r#"{"lex": 1, "name": "atom", "tick_hz": 30, "items": {
@@ -2017,9 +2017,8 @@ mod tests {
                 Ok(Value::from(n))
             }
         }
-        let journal = &mut |w: &mut World, _: Mark, _: &str, _| {
-            w.take_changes();
-            Ok(())
+        let journal = &mut |w: &mut dyn WorldWrite, _: Mark, _: &str, _| {
+            crate::write_policy::drop_changes(w)
         };
         rig.logic.load(specula_logic::ModuleCode::of::<Counter>(), crate::logic::Origin::default(), None, &mut rig.world, 0, 30, journal).unwrap();
     }
@@ -2541,9 +2540,8 @@ mod tests {
         let code = ModuleCode::open(built.library.as_ref().unwrap(), &base.join("loaded")).unwrap();
         let mut rig = Rig::new(30);
         let origin = crate::logic::Origin { dir: None, library: built.library.clone() };
-        let commit = &mut |w: &mut World, _: Mark, _: &str, _| {
-            w.take_changes();
-            Ok(())
+        let commit = &mut |w: &mut dyn WorldWrite, _: Mark, _: &str, _| {
+            crate::write_policy::drop_changes(w)
         };
         rig.logic.load(code, origin, None, &mut rig.world, 0, 30, commit).unwrap();
         let player = rig.world.find_path("/ambulo/player").unwrap();

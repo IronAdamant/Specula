@@ -47,7 +47,7 @@ impl GameCall<'_, '_> {
 pub(crate) fn game(world: &mut Live, swarm: &mut Swarm, game: &mut dyn Game, clock: &Clock, name: &str, windowed: bool, call: GameCall) {
     let why = Exempt::Game { name, kind: call.kind() };
     world.exempt(swarm, clock.tick(), why, |w| {
-        let ctx = &mut Ctx { world: GameWorld::new(w), clock, agent: name, windowed };
+        let ctx = &mut Ctx { world: GameWorld::over(w), clock, agent: name, windowed };
         match call {
             GameCall::Tick => game.tick(ctx),
             GameCall::Frame(frame) => game.frame(ctx, frame),
@@ -64,13 +64,14 @@ pub(crate) fn game(world: &mut Live, swarm: &mut Swarm, game: &mut dyn Game, clo
 /// The hosted game's `start` ([`Exempt::GameStart`]: full states, as made).
 pub(crate) fn game_start(world: &mut Live, swarm: &mut Swarm, game: &mut dyn Game, clock: &Clock, name: &str, windowed: bool) {
     let why = Exempt::GameStart { name };
-    world.exempt(swarm, clock.tick(), why, |w| game.start(&mut Ctx { world: GameWorld::new(w), clock, agent: name, windowed }));
+    world.exempt(swarm, clock.tick(), why, |w| game.start(&mut Ctx { world: GameWorld::over(w), clock, agent: name, windowed }));
 }
 
 /// One tick of every running module: each call journaled under its module, exempt from claims
 /// (each request it makes is still checked for reserved data).
 pub(crate) fn module_tick(world: &mut Live, swarm: &mut Swarm, logic: &mut LogicHost, tick: u64, hz: u32) {
-    world.session(swarm, tick, Opener::Modules, |w, swarm| logic.tick(w, tick, hz, &mut write_policy::module_tick_commit(swarm, tick)));
+    // A tick can't be refused: what a module left unjournaled was rolled back and reported.
+    let _ = world.session(swarm, tick, Opener::Modules, |w, swarm| logic.tick(w, tick, hz, &mut write_policy::module_tick_commit(swarm, tick)));
 }
 
 /// Anim sets changed on disk resettle the graphs that use them ([`Exempt::AnimReload`]).
@@ -81,11 +82,11 @@ pub(crate) fn anim_reload(world: &mut Live, swarm: &mut Swarm, tick: u64, handle
 /// The logic_* tools an agent `w` calls: loads, unloads and hooks commit as `w`'s
 /// (`module_agent_commit`, claims checked).
 pub(crate) fn logic_tools(world: &mut Live, swarm: &mut Swarm, logic: &mut LogicHost, clock: &Clock, call: crate::logic::tools::LogicCall, w: Writer) -> ToolOutput {
-    world.session(swarm, clock.tick(), Opener::Modules, |wd, swarm| crate::logic::tools::handle(logic, call, wd, clock, swarm, w))
+    world.session(swarm, clock.tick(), Opener::Modules, |wd, swarm| crate::logic::tools::handle(logic, call, wd, clock, swarm, w)).unwrap_or_else(|e| ToolOutput::error(e.to_json().to_pretty()))
 }
 
 /// The lex_* tools an agent `w` calls: they commit with `Rule::Lex` as `w`'s.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn lex_tools(world: &mut Live, swarm: &mut Swarm, tick: u64, call: crate::lex_tools::LexCall, w: Writer, by: &str, hooks: &[String], in_process: &[String]) -> ToolOutput {
-    world.session(swarm, tick, Opener::LexTools, |wd, swarm| crate::lex_tools::handle(call, wd, swarm, tick, w, by, hooks, in_process))
+    world.session(swarm, tick, Opener::LexTools, |wd, swarm| crate::lex_tools::handle(call, wd, swarm, tick, w, by, hooks, in_process)).unwrap_or_else(|e| ToolOutput::error(e.to_json().to_pretty()))
 }

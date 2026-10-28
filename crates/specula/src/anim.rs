@@ -21,6 +21,7 @@
 //! Poses, IK and events in the render path are cosmetic; root motion, which can feed a
 //! simulation, comes from [`specula_anim::play::root_motion`] at the simulation's own ticks.
 
+use crate::write_policy::WorldWrite;
 use crate::world::{AnimSpec, Entity, Shape, World, WorldError};
 use specula_anim::graph::{AnimGraph, Value};
 use specula_anim::ik::Ground;
@@ -144,7 +145,7 @@ pub(crate) fn settle_update(world: &World, e: &Entity, new: &mut AnimSpec) -> Re
 /// anim set. Called by the engine where it polls the files, so a changed anim set reaches the
 /// world at a defined point, as journaled changes by `RELOAD_AGENT`. Returns how many plays it
 /// wrote (a play its new set can't take keeps its old state and is reported by `anim_state`).
-pub(crate) fn resettle(world: &mut World, handles: &BTreeSet<u32>) -> usize {
+pub(crate) fn resettle(world: &mut dyn WorldWrite, handles: &BTreeSet<u32>) -> usize {
     let ids: Vec<(u64, AnimSpec)> = world
         .persistent_entities()
         .filter(|e| e.resolved_model().is_some_and(|r| handles.contains(&r.handle)))

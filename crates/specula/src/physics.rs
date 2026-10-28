@@ -19,6 +19,7 @@
 //!   the world's own hash, so replays and twin runs can compare both.
 //! - Transient entities (a game's presentation) never take part.
 
+use crate::write_policy::WorldWrite;
 use crate::world::{self, check_num, check_point, vec3_json, validate_tag, WorldError};
 
 pub mod joints;
@@ -1596,7 +1597,7 @@ impl Physics {
     }
 
     /// Writes the bodies the step moved back into the world (journaled by the caller).
-    fn write_back(&mut self, world: &mut World) {
+    fn write_back(&mut self, world: &mut dyn WorldWrite) {
         let mut keys = std::mem::take(&mut self.keys);
         keys.clear();
         keys.extend(self.space.stepped().chain(self.characters.keys().copied()));
@@ -1673,7 +1674,7 @@ impl Physics {
 
     /// One fixed tick: sync, characters, step, write-back. The caller records changes as a
     /// snapshot and journals them.
-    pub fn tick(&mut self, world: &mut World, generation: u64, settings: &PhysicsSettings, tick: u64, dt: f32) {
+    pub fn tick(&mut self, world: &mut dyn WorldWrite, generation: u64, settings: &PhysicsSettings, tick: u64, dt: f32) {
         let started = std::time::Instant::now();
         // Simulation input: dmath, not the platform's roundf (DETERMINISM.md rule 4).
         let hz = specula_core::dmath::round(1.0 / dt) as u32;

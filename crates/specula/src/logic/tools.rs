@@ -9,11 +9,12 @@
 //! millisecond: describe, stop the old build, start the new one).
 
 use super::{root_of, LogicHost, Origin, Phase};
+use crate::write_policy::WorldWrite;
 use crate::game::Clock;
 use crate::journal::{Kind, Writer};
 use crate::swarm::Swarm;
 use crate::tools::{argument_error, bool_arg, check_keys, int_arg, string_arg, Command, Request};
-use crate::world::{Mark, World, WorldError};
+use crate::world::{Mark, WorldError};
 use specula_core::Json;
 use specula_logic::{BuildReport, BuildRequest, BuildService, ModuleCode};
 use specula_protocol::{SessionInfo, ToolDef, ToolOutput};
@@ -278,7 +279,7 @@ fn open(library: &Path) -> Result<ModuleCode, WorldError> {
 
 /// What an agent's load, unload or hook commits: the module's changes checked against other
 /// agents' claims as `w`'s, and journaled under the module's name via `w`.
-fn agent_commit<'a>(swarm: &'a mut Swarm, tick: u64, w: Writer<'a>) -> impl FnMut(&mut World, Mark, &str, Phase) -> Result<(), WorldError> + 'a {
+fn agent_commit<'a>(swarm: &'a mut Swarm, tick: u64, w: Writer<'a>) -> impl FnMut(&mut dyn WorldWrite, Mark, &str, Phase) -> Result<(), WorldError> + 'a {
     crate::write_policy::module_agent_commit(swarm, tick, w)
 }
 
@@ -293,7 +294,7 @@ fn check_module_owner(swarm: &Swarm, module: &str, w: Writer, doing: &str) -> Re
 /// Applies a module-host command on the engine thread, at a tick boundary. `w` is the calling
 /// agent: what its loads, unloads and hooks change is checked against other agents' claims, and
 /// a module whose root (`/<name>`) another agent has claimed can't be replaced or unloaded.
-pub fn handle(host: &mut LogicHost, call: LogicCall, world: &mut World, clock: &Clock, swarm: &mut Swarm, w: Writer) -> ToolOutput {
+pub fn handle(host: &mut LogicHost, call: LogicCall, world: &mut dyn WorldWrite, clock: &Clock, swarm: &mut Swarm, w: Writer) -> ToolOutput {
     let (tick, hz) = (clock.tick(), clock.hz());
     let result = match call {
         LogicCall::Load { code, origin, seed, open_ms } => LogicHost::name_of(&code)
@@ -652,11 +653,8 @@ pub fn builds_json() -> Json {
     Json::obj([("running", Json::from(running)), ("queued", Json::from(queued)), ("recent", Json::arr(recent))])
 }
 
-/// A journal for tests: drops the changes.
-#[cfg(test)]
-pub(crate) fn no_journal() -> impl FnMut(&mut World, Mark, &str, Phase) -> Result<(), WorldError> {
-    |w: &mut World, _: Mark, _: &str, _: Phase| {
-        w.take_changes();
-        Ok(())
-    }
+/// A journal that keeps nothing, for a world of your own (tests, tools): drops the changes.
+/// Refused on the live world ([`crate::write_policy::drop_changes`]).
+pub fn no_journal() -> impl FnMut(&mut dyn WorldWrite, Mark, &str, Phase) -> Result<(), WorldError> {
+    |w: &mut dyn WorldWrite, _: Mark, _: &str, _: Phase| crate::write_policy::drop_changes(w)
 }
