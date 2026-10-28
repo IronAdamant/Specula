@@ -213,6 +213,24 @@ fn procgen_collider(f: &mut Fix, path: &str) -> Result<(), WorldError> {
     agent(f, MALLORY, Kind::Set, Rule::World, |wd| wd.update(&key, change, "mallory").map(|_| ()))
 }
 
+/// The review queue's promotion (review_engine): the roots at `path` move under `to` in one
+/// Rule::World batch, as the decider (mallory here).
+fn review_promote(f: &mut Fix, path: &str, to: &str) -> Result<(), WorldError> {
+    let id = f.live.find_path(path)?;
+    let (stamp, entities) = crate::review::stamp(&f.live, id, crate::review::MAX_SUBTREE);
+    let root = crate::review::Root { path: path.into(), id, version: f.live.get(id).map_or(0, |e| e.version), stamp, entities };
+    let p = crate::review::Promote { to: to.into(), replace: false, remove_tag: None };
+    let (ops, _) = crate::review_engine::promotion_ops(&f.live, &[root], &p)?;
+    agent(f, MALLORY, Kind::Batch, Rule::World, |wd| wd.apply_batch(ops, "mallory").map(|_| ()).map_err(|(_, e)| e))
+}
+
+/// A rejection's revert (review_engine): refused unless it takes back only the submission's own
+/// work, then the policy's undo as the decider (mallory here).
+fn review_revert(f: &mut Fix, seq: u64) -> Result<(), WorldError> {
+    let req = crate::review_engine::revert_request(&f.sw, &f.live, 99, &[seq])?;
+    f.live.undo(&mut f.sw, 1, MALLORY, &req).map(|_| ())
+}
+
 const ROWS: &[(&str, Write, Expect)] = &[
     // The procgen tools (procgen_tools.rs): exactly what they send, as the calling agent.
     ("procgen_scatter's spawn batch into a claimed region", |f| procgen_scatter(f, [5.0, 0.0, 5.0], None), Expect::Refused("claimed")),
@@ -336,6 +354,19 @@ const ROWS: &[(&str, Write, Expect)] = &[
         wd.put_file("assets/recipes/t.json", Some(crate::project::ProjectFile::new(crate::project::FileKind::Recipe, Arc::from("{}"), 1, Arc::from("disk"))), true);
         Ok(())
     }).map(|_| ()), Expect::Exempt("disk")),
+    // The review queue (M4): promotion is a Rule::World batch as the decider; a revert is the
+    // policy's undo as the decider, after the queue's own refusals.
+    ("review promotion moving work into a claimed path (M4)", |f| review_promote(f, "/mg", "/abox"), Expect::Refused("claimed")),
+    ("review promotion of free work (M4)", |f| {
+        agent(f, MALLORY, Kind::Spawn, Rule::World, |wd| wd.spawn(group("/game"), "mallory").map(|_| ()))?;
+        review_promote(f, "/mg", "/game")
+    }, Expect::Allowed),
+    ("review revert of work onto a claimed entity (M4)", |f| review_revert(f, f.edit), Expect::Refused("claimed")),
+    ("review revert of work someone changed since (M4)", |f| {
+        let abox = f.abox;
+        let spawned = f.sw.journal().entries().find(|e| e.touches(abox)).map_or(0, |e| e.seq);
+        review_revert(f, spawned)
+    }, Expect::Refused("revert_conflict")),
     // Replacing the world (world_load, save_read, startup).
     ("world_load while another agent holds claims (M1)", |f| may_replace(&f.sw, MALLORY, &crate::playtest_engine::Playtests::default()).map(|_| ()), Expect::Refused("claimed")),
     ("world_load under a playtest (M3)", |f| may_replace(&f.sw, ALICE, &crate::playtest_engine::Playtests::pretend_running()).map(|_| ()), Expect::Refused("playtest_running")),

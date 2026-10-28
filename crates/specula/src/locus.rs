@@ -1071,7 +1071,7 @@ impl crate::Engine {
                 }
                 Ok(out)
             }
-            Err(e) => Err(Err(self.conflict_help(e, Some(&crate::conflict::Yours { fields: vec!["(world_place)".into()] })))),
+            Err(e) => Err(Err(self.conflict_help(e, Some(&crate::conflict::Yours::named(vec!["(world_place)".into()]))))),
         }
     }
 

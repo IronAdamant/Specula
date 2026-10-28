@@ -23,6 +23,7 @@ pub mod claims;
 pub mod compare;
 pub mod conflict;
 pub mod desync;
+mod director;
 pub mod effects;
 pub mod fpguard;
 pub mod game;
@@ -36,6 +37,7 @@ mod lex_live;
 pub use lex_live::{Limits as LexLiveLimits, LIMITS as LEX_LIVE_LIMITS};
 mod lex_tools;
 mod luts;
+pub mod merge;
 pub mod meshes;
 pub mod models;
 pub mod orbit;
@@ -61,6 +63,10 @@ mod project_kinds;
 mod project_text;
 mod project_tools;
 mod response;
+pub mod review;
+mod review_engine;
+mod review_screen;
+mod review_tools;
 mod schedule;
 pub mod sight;
 pub mod sight_overlay;
@@ -375,6 +381,8 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         // Its changes are attributed to this name: no agent may take it.
         engine.swarm.reserve(g.name());
     }
+    // The window's human, in the review queue's attribution.
+    engine.swarm.reserve(review::WINDOW_OWNER);
     let game_tools = game.as_ref().map(|g| g.tools()).unwrap_or_default();
     engine.lex_natives = game.as_ref().map(|g| g.lex_natives()).unwrap_or_default();
     let (to_engine, requests) = mpsc::channel();
@@ -622,6 +630,12 @@ struct Engine {
     project: project::Disk,
     /// When failed project writes were last tried.
     project_retry: Instant,
+    /// The window's review screen (see `review_screen`).
+    review_ui: review_screen::ReviewUi,
+    /// The gamepads handed to the hosted game each window frame (reused), and the gate that
+    /// releases them while the review screen holds the input.
+    game_pads: Vec<specula_platform::GamepadState>,
+    pad_gate: game::PadGate,
 }
 
 /// A model_build or model_reload call waiting for builds on the worker threads.
@@ -744,6 +758,9 @@ impl Engine {
             formats: response::Defaults::new(response::Format::Concise),
             project: project::Disk::default(),
             project_retry: Instant::now(),
+            review_ui: review_screen::ReviewUi::default(),
+            game_pads: Vec::new(),
+            pad_gate: game::PadGate::default(),
         })
     }
 
@@ -947,11 +964,22 @@ impl Engine {
     fn game_frame(&mut self, ui: &UiThread, size: (u32, u32), dt: Duration) {
         self.input.clear();
         ui.drain_events(&mut self.input);
-        self.logic.feed_window(&self.input, dt.as_secs_f32());
+        // The review screen reads input first; while it is open the game, modules and live Lex
+        // runs get none (no keys, pointer or pads).
+        let modal = self.review_frame(size);
+        if modal {
+            self.logic.feed_window_idle(dt.as_secs_f32());
+        } else {
+            self.logic.feed_window(&self.input, dt.as_secs_f32());
+        }
         if self.lex_live.has_input() {
-            let poll = !self.logic.reads_input();
-            let pads = self.logic.pad_states(poll);
-            self.lex_live.feed_window(&self.input, pads, dt.as_secs_f32());
+            if modal {
+                self.lex_live.feed_window(&self.input, &[], dt.as_secs_f32());
+            } else {
+                let poll = !self.logic.reads_input();
+                let pads = self.logic.pad_states(poll);
+                self.lex_live.feed_window(&self.input, pads, dt.as_secs_f32());
+            }
         }
         // A human taking the controls takes the camera back from an agent's (window_view).
         if self.window_follow.is_some() && human_took_controls(&self.input) {
@@ -959,6 +987,16 @@ impl Engine {
         }
         let agent_view = self.window_follow.is_some();
         let shown = self.window_camera;
+        if self.game.is_none() {
+            return;
+        }
+        // The game's pads: polled here unless the modules just did, released while the review
+        // screen holds the input (and until buttons held then are let go).
+        let poll = modal || !self.logic.reads_input();
+        let mut pads = std::mem::take(&mut self.game_pads);
+        pads.clear();
+        pads.extend_from_slice(self.logic.pad_states(poll));
+        self.pad_gate.apply(modal, &mut pads);
         let Some(game) = self.game.as_mut() else { return };
         let _z = profile::zone("game_frame");
         let start = Instant::now();
@@ -970,6 +1008,7 @@ impl Engine {
             camera: &mut self.window_camera,
             agent_view,
             title: &mut self.game_title,
+            pads: &pads,
         };
         sim_writes::game(&mut self.world, &mut self.swarm, game.as_mut(), &self.clock, &self.game_name, self.windowed, sim_writes::GameCall::Frame(&mut frame));
         // While the window looks through an agent's camera the game's camera writes don't count
@@ -1593,6 +1632,7 @@ impl Engine {
             // The game's interface (its own zone, outside the draw list's).
             let mut game_quads = std::mem::take(&mut self.game_quads);
             self.game_overlay(size, camera, false, &mut game_quads);
+            self.review_overlay(size, false, &mut game_quads);
             let draw_list = profile::zone("draw_list");
             let mut draws = std::mem::take(&mut self.draws);
             let started = Instant::now();
@@ -1796,14 +1836,14 @@ impl Engine {
                     }
                     // A claim rejects the batch as a whole (no single op is at fault).
                     Err(e) if e.detail("op_index").is_none() => {
-                        let all = conflict::Yours { fields: vec!["(the batch's ops)".into()] };
+                        let all = conflict::Yours::named(vec!["(the batch's ops)".into()]);
                         world_error(&self.conflict_help(e, Some(&all)))
                     }
                     Err(mut e) => {
                         let index = e.detail("op_index").and_then(Json::as_u64).unwrap_or(0);
                         e.details.retain(|(k, _)| *k != "op_index");
                         let mine = yours.iter().find(|(i, _)| *i as u64 == index).map(|(_, y)| y);
-                        let e = self.conflict_help(e, mine);
+                        let e = conflict::in_batch(self.conflict_help(e, mine), index);
                         ToolOutput::error(
                             Json::obj([
                                 ("error", Json::from("batch_failed")),
@@ -1851,7 +1891,7 @@ impl Engine {
                     }
                     ToolOutput::text(env.to_pretty())
                 }
-                Err(e) => world_error(&self.conflict_help(e, Some(&conflict::Yours { fields: vec!["(environment)".into()] }))),
+                Err(e) => world_error(&self.conflict_help(e, Some(&conflict::Yours::named(vec!["(environment)".into()])))),
             },
             Command::View(view) => match view {
                 tools::ViewSpec::Auto => {
@@ -1937,7 +1977,7 @@ impl Engine {
                                     sim_writes::game(&mut self.world, &mut self.swarm, game.as_mut(), clock, agent, windowed, sim_writes::GameCall::RolledBack);
                                 }
                             }
-                            world_error(&self.conflict_help(e, Some(&conflict::Yours { fields: vec![format!("(game tool {name})")] })))
+                            world_error(&self.conflict_help(e, Some(&conflict::Yours::named(vec![format!("(game tool {name})")]))))
                         }
                     }
                 }
@@ -1958,7 +1998,7 @@ impl Engine {
                     .to_string(),
                     )
                 }
-                Err(e) => world_error(&self.conflict_help(e, Some(&conflict::Yours { fields: vec!["(undo)".into()] }))),
+                Err(e) => world_error(&self.conflict_help(e, Some(&conflict::Yours::named(vec!["(undo)".into()])))),
             },
             Command::Hash { recent, tick, verify } => self.hash_report(recent, tick, verify),
             Command::ClaimTake(spec) => {
@@ -1969,6 +2009,7 @@ impl Engine {
                 }
             }
             Command::Swarm(call) => self.handle_swarm(call, &request.session, server),
+            Command::Review(call) => self.handle_review(call, &request.session, server),
             Command::ClaimRenew { id, lease } => match self.swarm.renew(w, id, lease) {
                 Ok(out) => ToolOutput::text(out.to_string()),
                 Err(e) => world_error(&e),
@@ -2475,6 +2516,7 @@ fn call_class(command: &Command) -> Class {
         Command::Save { .. } | Command::Load { .. } | Command::ModelBuild(_) | Command::ModelReload => Class::Disk,
         Command::Hash { verify: true, .. } => Class::Big,
         Command::Swarm(call) => call.class(),
+        Command::Review(call) => call.class(),
         Command::Batch(ops) if ops.len() > HEAVY_BATCH_OPS => Class::Big,
         Command::Time(TimeOp::Step(_)) => Class::Sim,
         Command::Game { .. } => Class::Game,

@@ -1171,7 +1171,7 @@ impl Game for SepulcraGame {
         // Autosaves are for people playing: on with a window, off headless (agents' runs).
         self.autosave_on = ctx.windowed;
         if ctx.windowed {
-            self.controls.enable_gamepads();
+            // Gamepads come with each window frame from the engine (`Frame::pads`).
             if !self.mute {
                 self.sfx = Sfx::start(Some(assets.join("sounds")));
                 self.sfx.set_volume(self.volume);
@@ -1257,7 +1257,7 @@ impl Game for SepulcraGame {
         }
         // Input reaches the HUD first; the game gets what the HUD didn't take. The HUD shows the
         // state as of now (threat arrows from last frame's camera).
-        self.controls.begin(frame.input);
+        self.controls.begin(frame.input, frame.pads);
         let cam = self.camera;
         self.fill_hud(cam.as_ref(), frame.size);
         let mut ui_events = std::mem::take(&mut self.ui_frame);

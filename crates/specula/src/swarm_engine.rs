@@ -32,6 +32,8 @@ pub(crate) struct BoardSaver {
     pub warning: Option<Json>,
     /// It couldn't be moved aside either: the board isn't saved there (that would overwrite it).
     pub blocked: bool,
+    /// The same for the world's `review.json`: the queue isn't saved there.
+    pub review_blocked: bool,
 }
 
 impl BoardSaver {
@@ -117,7 +119,12 @@ impl Engine {
                 Err(e) => fail(&e),
             },
             SwarmCall::TaskDone { id, summary, cancel, expect } if named => match self.swarm.board.done(w, tick, id, summary, cancel, expect) {
-                Ok(t) => out(brief(t)),
+                Ok(t) => {
+                    let j = brief(t);
+                    // A critique carried by this task follows it (see `review`).
+                    self.sync_critiques();
+                    out(j)
+                }
                 Err(e) => fail(&e),
             },
             SwarmCall::TaskPost(_) | SwarmCall::TaskTake { .. } | SwarmCall::TaskUpdate { .. } | SwarmCall::TaskDone { .. } => hello_required("tasks"),
@@ -480,7 +487,7 @@ impl Engine {
 
     /// Whether the board has changes not yet written next to the world.
     pub(crate) fn board_unsaved(&self) -> bool {
-        self.swarm.board.revision() != self.board_io.saved
+        self.board_revision() != self.board_io.saved
     }
 
     /// Where the board is written: the current world's folder, once the world has been saved there.
@@ -504,11 +511,14 @@ impl Engine {
             let _z = specula_core::profile::zone("board.render");
             self.swarm.board.render_cached()
         };
-        let revision = self.swarm.board.revision();
+        // The review queue is saved with the board (see `review_engine`).
+        let review = self.review_text(&dir);
+        let revision = self.board_revision();
         let (tx, done) = std::sync::mpsc::channel();
         let job = move || {
             let _z = specula_core::profile::zone("board.write");
-            let _ = tx.send(write_board(&dir, &text).map_err(|e| (dir.display().to_string(), e.to_string())));
+            let written = write_board(&dir, &text).and_then(|()| review.map_or(Ok(()), |r| crate::review_engine::write_review(&dir, &r)));
+            let _ = tx.send(written.map_err(|e| (dir.display().to_string(), e.to_string())));
         };
         if std::thread::Builder::new().name("specula-board".into()).spawn(job).is_ok() {
             self.board_io.job = Some((revision, done));
@@ -548,8 +558,10 @@ impl Engine {
         let dir = self.board_dir()?;
         let _z = specula_core::profile::zone("board.save");
         let text = self.swarm.board.render_cached();
-        let revision = self.swarm.board.revision();
-        self.board_io.note(revision, write_board(&dir, &text).map_err(|e| (dir.display().to_string(), e.to_string())));
+        let review = self.review_text(&dir);
+        let revision = self.board_revision();
+        let written = write_board(&dir, &text).and_then(|()| review.map_or(Ok(()), |r| crate::review_engine::write_review(&dir, &r)));
+        self.board_io.note(revision, written.map_err(|e| (dir.display().to_string(), e.to_string())));
         self.board_io.error.clone()
     }
 
@@ -593,10 +605,18 @@ impl Engine {
                 ("file", Json::from(path.display().to_string())),
                 ("moved_to", Json::from(moved.map(|p| p.display().to_string()))),
             ]));
-            self.board_io.saved = self.swarm.board.revision();
-            return Some(message);
+            let review = self.load_review(dir);
+            self.board_io.saved = self.board_revision();
+            return Some(match review {
+                Some(r) => format!("{message}; {r}"),
+                None => message,
+            });
         }
-        self.board_io.saved = self.swarm.board.revision();
-        None
+        let review = self.load_review(dir);
+        self.board_io.saved = self.board_revision();
+        if let Some(r) = &review {
+            self.board_io.warning = Some(Json::obj([("error", Json::from("review_unreadable")), ("message", Json::from(r.as_str()))]));
+        }
+        review
     }
 }

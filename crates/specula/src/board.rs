@@ -134,7 +134,8 @@ pub struct BoardEvent {
     pub by: String,
     /// `post`, `take`, `update`, `progress`, `blocked`, `unblocked`, `question`, `answer`,
     /// `assign`, `reopen`, `done`, `cancel`, `link`, `note`, `note_delete`; and, for the feed,
-    /// `intent`, `intent_clear`, `lease`, `lease_release`, `settings`.
+    /// `intent`, `intent_clear`, `lease`, `lease_release`, `settings`; the review queue's
+    /// `review` and `critique`.
     pub what: &'static str,
     pub task: Option<u64>,
     /// A short text (a progress line, the blocker, the question), at most 200 characters.
@@ -1317,9 +1318,9 @@ impl Board {
 
 /// The static name of a saved event kind.
 fn event_name(s: &str) -> &'static str {
-    const NAMES: [&str; 21] = [
+    const NAMES: [&str; 23] = [
         "post", "take", "update", "progress", "blocked", "unblocked", "question", "answer", "assign", "reopen", "done", "cancel", "link",
-        "note", "note_delete", "intent", "intent_clear", "lease", "lease_release", "settings", "claim",
+        "note", "note_delete", "intent", "intent_clear", "lease", "lease_release", "settings", "claim", "review", "critique",
     ];
     NAMES.into_iter().find(|n| *n == s).unwrap_or("update")
 }

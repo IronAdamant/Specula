@@ -1,0 +1,17 @@
+{
+  "format": "specula.ui.screen.v1",
+  "name": "review_tab",
+  "input": "hud",
+  "layer": 89,
+  "notes": "The tab that opens the review screen by mouse or touch while work is pending (keys: F9; gamepad: LB + RB + Y). State: pending.",
+  "root": {
+    "type": "box",
+    "children": [
+      {
+        "type": "button", "id": "rv_tab", "style": "tab", "anchor": "bottom_left", "margin": [0, 0, 12, 12],
+        "text": "Review ({pending})", "action": "review_open", "visible": "pending > 0",
+        "tooltip": "Open the review queue (F9)."
+      }
+    ]
+  }
+}

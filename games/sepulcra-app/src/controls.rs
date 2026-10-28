@@ -15,7 +15,6 @@ use specula_core::math::Vec3;
 use specula_core::Json;
 use specula_input::{ActionMap, Device, Input};
 use specula_ui::Consumed;
-use specula_platform::gamepad::Gamepads;
 use specula_platform::{Event, GamepadState, MAX_GAMEPADS};
 use std::time::Instant;
 
@@ -130,7 +129,6 @@ fn same(a: &Camera, b: &Camera) -> bool {
 pub struct Controls {
     pub orbit: Orbit,
     input: Input,
-    pads: Option<Gamepads>,
     started: Instant,
     /// The gamepad's cursor, in window pixels.
     pad_cursor: Option<(f32, f32)>,
@@ -152,7 +150,6 @@ impl Controls {
         Controls {
             orbit: Orbit::default(),
             input: Input::new(map),
-            pads: None,
             started: Instant::now(),
             pad_cursor: None,
             written: None,
@@ -160,24 +157,15 @@ impl Controls {
         }
     }
 
-    /// Starts polling gamepads (optional: without XInput the game is mouse, touch and keyboard).
-    pub fn enable_gamepads(&mut self) {
-        match Gamepads::new() {
-            Ok(p) => self.pads = Some(p),
-            Err(e) => eprintln!("sepulcra: no gamepads: {e}"),
+    /// Reads this frame's events and the pads the engine handed the frame (`Frame::pads`: all
+    /// released while an engine screen holds the input, so the owner's presses there never act
+    /// here; empty without XInput). Then the HUD sees the input ([`Controls::input`]), and
+    /// [`Controls::act`] turns what's left into play.
+    pub fn begin(&mut self, events: &[Event], frame_pads: &[GamepadState]) {
+        let mut pads = [GamepadState::default(); MAX_GAMEPADS];
+        for (slot, p) in pads.iter_mut().zip(frame_pads) {
+            *slot = *p;
         }
-    }
-
-    /// Reads this frame's events (and pads). Then the HUD sees the input
-    /// ([`Controls::input`]), and [`Controls::act`] turns what's left into play.
-    pub fn begin(&mut self, events: &[Event]) {
-        let pads = match &mut self.pads {
-            Some(p) => {
-                p.poll();
-                *p.states()
-            }
-            None => [GamepadState::default(); MAX_GAMEPADS],
-        };
         // This clock only measures frame time for input (taps, holds), never the simulation.
         let now = self.started.elapsed().as_secs_f64();
         self.input.update(now, events, &pads);

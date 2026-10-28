@@ -88,6 +88,8 @@ pub enum LexCall {
     List { set: String, kind: Option<String>, after: Option<String>, limit: usize },
     /// Writes a validated edit, unless the set changed since it was validated.
     Commit(Commit),
+    /// An item's entity (`eid`) as it was at `version`, from the journal (a stale edit's merge).
+    ItemAt { eid: u64, version: u64 },
 }
 
 impl LexCall {
@@ -337,7 +339,42 @@ pub fn handle(call: LexCall, world: &mut dyn WorldWrite, swarm: &mut Swarm, tick
         LexCall::Sets { after, limit } => ToolOutput::text(sets_json(world, after.as_deref(), limit).to_string()),
         LexCall::List { set, kind, after, limit } => list_json(world, &set, kind.as_deref(), after.as_deref(), limit),
         LexCall::Commit(c) => commit(c, world, swarm, tick, w, by),
+        LexCall::ItemAt { eid, version } => ToolOutput::text(Json::obj([("item", item_at(swarm, eid, version).unwrap_or(Json::Null))]).to_string()),
     }
+}
+
+/// The Lex item an item entity held at `version` (journal or base world), if still known.
+fn item_at(swarm: &Swarm, eid: u64, version: u64) -> Option<Json> {
+    crate::conflict::at_version(swarm.journal(), eid, version).and_then(|(e, _, _)| e.props.get("lex").cloned())
+}
+
+/// A stale op's suggested merge (`version_conflict`'s `merge`): the item at the version the
+/// agent read, the item now and the op's result on the base, merged three ways.
+fn merge_offer(store: &mut dyn Store, set: &str, op: &EditOp, eid: u64, want: u64, have: u64, now: Option<&Json>) -> Option<Json> {
+    let (theirs, base) = (now?, store.item_at(eid, want)?);
+    let yours = match op {
+        EditOp::Put { item, .. } => item.clone(),
+        EditOp::Patch { set, remove, .. } => crate::merge::apply_patch(&base, set, remove).ok()?,
+        EditOp::Delete { .. } => return None,
+    };
+    let m = crate::merge::merge3(Some(&base), Some(theirs), Some(&yours), crate::merge::Kind::Lex, crate::merge::Prefer::Theirs);
+    let merged = m.merged.clone()?;
+    let mut j = m.to_json();
+    // The merged item once: in apply.
+    if let Json::Obj(pairs) = &mut j {
+        pairs.retain(|(k, _)| k != "merged");
+    }
+    let put = Json::obj([("op", Json::from("put")), ("id", Json::from(op.id())), ("item", merged), ("expect_version", Json::from(have))]);
+    j.set("apply", Json::obj([("tool", Json::from("lex_edit")), ("args", Json::obj([("set", Json::from(set)), ("ops", Json::arr([put]))]))]));
+    j.set(
+        "next",
+        Json::from(if m.clean() {
+            "clean: send merge.apply (lex_edit) to write your change on top of theirs (add your edit's other ops to it)"
+        } else {
+            "conflicts keep theirs in merge.apply: decide each (conflicts lists base, theirs and yours), adjust the item, then send it"
+        }),
+    );
+    Some(j)
 }
 
 fn commit(c: Commit, world: &mut dyn WorldWrite, swarm: &mut Swarm, tick: u64, w: Writer, by: &str) -> ToolOutput {
@@ -483,6 +520,10 @@ pub(crate) fn diag_json(ds: &[Diagnostic], limit: usize) -> Json {
 trait Store {
     fn snapshot(&mut self, set: &str) -> Result<Json, ToolOutput>;
     fn commit(&mut self, c: Commit) -> ToolOutput;
+    /// An item entity's Lex item at `version` (for a stale op's merge), if still known.
+    fn item_at(&mut self, _eid: u64, _version: u64) -> Option<Json> {
+        None
+    }
 }
 
 struct EngineStore<'a> {
@@ -509,6 +550,11 @@ impl Store for EngineStore<'_> {
     fn commit(&mut self, c: Commit) -> ToolOutput {
         self.tools.send(self.session, Command::Lex(LexCall::Commit(c)))
     }
+
+    fn item_at(&mut self, eid: u64, version: u64) -> Option<Json> {
+        let out = self.tools.send(self.session, Command::Lex(LexCall::ItemAt { eid, version }));
+        output_json(&out).get("item").filter(|i| !i.is_null()).cloned()
+    }
 }
 
 /// How often an edit is validated again when other agents keep changing the set under it.
@@ -533,6 +579,8 @@ fn edit_in(store: &mut dyn Store, e: &Edit) -> ToolOutput {
             base_items.insert(id.clone(), (it.get("eid").and_then(Json::as_u64).unwrap_or(0), version));
             before.insert(id, it.get("item").cloned().unwrap_or(Json::Null));
         }
+        // Item entities by id (a stale op's merge reads its base from the journal).
+        let eids: BTreeMap<String, u64> = base_items.iter().map(|(k, (e, _))| (k.clone(), *e)).collect();
         let base = exists.then(|| Versions { set: snap.get("set_version").and_then(Json::as_u64).unwrap_or(0), items: base_items });
         let old_header = header_of(snap.get("header"), &e.set);
         let (hooks, in_process) = (hooks_of(&snap, "hooks"), hooks_of(&snap, "in_process"));
@@ -577,10 +625,18 @@ fn edit_in(store: &mut dyn Store, e: &Edit) -> ToolOutput {
             if let Some(want) = op.expect() {
                 let have = item_versions.get(&id).copied().unwrap_or(0);
                 if have != want {
+                    let mut extra = vec![("version", Json::from(have)), ("suggestion", Json::from("lex_get it again, redo the change on the current item, and pass its version"))];
+                    let eid = eids.get(&id).copied().unwrap_or(0);
+                    if want > 0 && have > 0 {
+                        if let Some(m) = merge_offer(store, &e.set, op, eid, want, have, before.get(&id)) {
+                            extra[1] = ("suggestion", Json::from("merge holds a suggested three-way merge: send merge.apply, or adjust it"));
+                            extra.push(("merge", m));
+                        }
+                    }
                     return fail(
                         "version_conflict",
                         format!("expected version {want}, but the item is at version {have}{}", if have == 0 { " (it doesn't exist)" } else { "" }),
-                        vec![("version", Json::from(have)), ("suggestion", Json::from("lex_get it again, redo the change on the current item, and pass its version"))],
+                        extra,
                     );
                 }
             }
@@ -1788,6 +1844,10 @@ mod tests {
             }
             handle(LexCall::Commit(c), self.w, self.sw, 0, self.who, self.who.name, &[], &[])
         }
+
+        fn item_at(&mut self, eid: u64, version: u64) -> Option<Json> {
+            item_at(self.sw, eid, version)
+        }
     }
 
     fn go(w: &mut World, sw: &mut Swarm, who: Writer, e: Edit) -> (bool, Json) {
@@ -1807,6 +1867,38 @@ mod tests {
 
     fn ids(w: &World, set: &str) -> Vec<String> {
         snap(w, set).get("items").and_then(Json::as_array).unwrap_or_default().iter().filter_map(|i| i.get("id").and_then(Json::as_str).map(str::to_owned)).collect()
+    }
+
+    /// M4: a stale patch of another field gets a clean three-way merge it can send as is.
+    #[test]
+    fn a_stale_edit_carries_a_merge_to_accept() {
+        let (mut w, mut sw) = setup();
+        let (bad, out) = go(&mut w, &mut sw, ANN, edit_of("rules", vec![put("gold", r#"{"kind": "resource", "start": 5}"#)]));
+        assert!(!bad, "{out}");
+        let patch = |field: &str, v: Json, expect: u64| EditOp::Patch { id: "gold".into(), set: vec![(field.into(), v)], remove: vec![], expect: Some(expect) };
+        let (bad, out) = go(&mut w, &mut sw, BOB, edit_of("rules", vec![patch("start", Json::from(6), 1)]));
+        assert!(!bad, "{out}");
+        // Ann read version 1 too, and notes it.
+        let (bad, out) = go(&mut w, &mut sw, ANN, edit_of("rules", vec![patch("notes", Json::from("shiny"), 1)]));
+        assert!(bad);
+        assert_eq!(out.get("error").and_then(Json::as_str), Some("version_conflict"));
+        let m = out.get("merge").expect("a merge offer");
+        assert_eq!(m.get("clean"), Some(&Json::Bool(true)), "{m}");
+        let op = &m.get("apply").unwrap().get("args").unwrap().get("ops").unwrap().as_array().unwrap()[0];
+        let merged = op.get("item").unwrap().clone();
+        assert_eq!((merged.get("start").and_then(Json::as_i64), merged.get("notes").and_then(Json::as_str)), (Some(6), Some("shiny")));
+        assert_eq!(op.get("expect_version"), Some(&Json::from(2)));
+        let (bad, out) = go(&mut w, &mut sw, ANN, edit_of("rules", vec![EditOp::Put { id: "gold".into(), item: merged, expect: Some(2) }]));
+        assert!(!bad, "{out}");
+        assert_eq!(item(&w, "rules", "gold").map(|(v, j)| (v, j.get("start").and_then(Json::as_i64), j.get("notes").cloned())), Some((3, Some(6), Some(Json::from("shiny")))));
+        // Both changing the start: a conflict that keeps theirs.
+        let (bad, out) = go(&mut w, &mut sw, ANN, edit_of("rules", vec![patch("start", Json::from(7), 3)]));
+        assert!(!bad, "{out}");
+        let (bad, out) = go(&mut w, &mut sw, BOB, edit_of("rules", vec![patch("start", Json::from(9), 3)]));
+        assert!(bad);
+        let m = out.get("merge").expect("a merge offer");
+        assert_eq!(m.get("clean"), Some(&Json::Bool(false)));
+        assert_eq!(m.get("conflicts").unwrap().as_array().unwrap()[0].get("path"), Some(&Json::from("start")));
     }
 
     #[test]

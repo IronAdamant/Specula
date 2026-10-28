@@ -849,6 +849,14 @@ impl LogicHost {
         }
     }
 
+    /// A window frame whose input something else took (the engine's modal review screen): every
+    /// module input sees no events and released pads, so nothing is pressed or held.
+    pub fn feed_window_idle(&mut self, dt_s: f32) {
+        for slot in self.slots.values_mut() {
+            slot.input.feed(&[], &[], dt_s);
+        }
+    }
+
     /// The gamepads' states as last polled (opened at first use; empty without XInput), for
     /// other input readers in the same frame (live Lex runs), polling them if no module did.
     pub fn pad_states(&mut self, poll: bool) -> &[specula_platform::gamepad::GamepadState] {

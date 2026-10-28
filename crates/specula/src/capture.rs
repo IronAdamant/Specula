@@ -535,6 +535,7 @@ impl Engine {
         let mut quads = Vec::new();
         if opts.include_ui {
             self.game_overlay((w, h), camera, true, &mut quads);
+            self.review_overlay((w, h), true, &mut quads);
         }
         let hud = quads.len();
         // Its opaque panels hide the scene under them in the ID counts, as they hide it from a

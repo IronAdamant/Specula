@@ -12,7 +12,7 @@ use crate::sight::Camera;
 use crate::world::World;
 use specula_core::Json;
 use specula_gpu::{OverlayQuad, OverlayTextures};
-use specula_platform::Event;
+use specula_platform::{Event, GamepadState, MAX_GAMEPADS};
 use specula_protocol::{ToolDef, ToolOutput};
 use std::any::Any;
 use std::path::PathBuf;
@@ -324,6 +324,36 @@ pub struct Frame<'a> {
     pub agent_view: bool,
     /// Set to replace the window title (the HUD until the engine has text).
     pub title: &'a mut Option<String>,
+    /// The gamepads this frame, polled by the engine (empty without XInput). Read pads from here,
+    /// not from your own poll: while an engine screen holds the input (the review screen is
+    /// modal) they are all released, and a button still held from then stays released until it
+    /// is let go (see [`PadGate`]), so the owner's presses there never also act in the game.
+    pub pads: &'a [GamepadState],
+}
+
+/// Gamepads for the hosted game around an engine screen that takes the input: while `captured`
+/// every pad reads released (sticks and triggers centred), and a button held at any moment of
+/// the capture stays masked afterwards until it is let go, so the press that closes the screen
+/// never arrives in the game as a new press. Allocation-free.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PadGate {
+    masked: [u32; MAX_GAMEPADS],
+}
+
+impl PadGate {
+    pub fn apply(&mut self, captured: bool, pads: &mut [GamepadState]) {
+        for (p, mask) in pads.iter_mut().zip(self.masked.iter_mut()) {
+            let held = p.buttons | p.raw.buttons;
+            if captured {
+                *mask |= held;
+                *p = GamepadState { connected: p.connected, ..GamepadState::default() };
+            } else {
+                *mask &= held;
+                p.buttons &= !*mask;
+                p.raw.buttons &= !*mask;
+            }
+        }
+    }
 }
 
 /// Keeps the quads a frame can draw: at most `max`, and only those whose texture `live` knows
@@ -478,6 +508,36 @@ impl Clock {
             ("paused", Json::from(self.paused)),
             ("scale", Json::from(self.scale)),
         ])
+    }
+}
+
+#[cfg(test)]
+mod pad_gate_tests {
+    use super::*;
+
+    #[test]
+    fn captured_pads_read_released_until_let_go() {
+        let south = specula_platform::GamepadButton::South.bit();
+        let held = |b: u32| {
+            let mut p = GamepadState { connected: true, buttons: b, left_stick: [0.5, 0.0], ..GamepadState::default() };
+            p.raw.buttons = b;
+            p
+        };
+        let mut gate = PadGate::default();
+        let mut pads = [held(south)];
+        gate.apply(true, &mut pads);
+        assert_eq!((pads[0].buttons, pads[0].raw.buttons, pads[0].left_stick, pads[0].connected), (0, 0, [0.0; 2], true));
+        // Still held after the screen closed: masked (no new press for the game).
+        let mut pads = [held(south)];
+        gate.apply(false, &mut pads);
+        assert_eq!(pads[0].buttons, 0);
+        assert_eq!(pads[0].left_stick, [0.5, 0.0], "sticks pass once the capture ends");
+        // Let go, then pressed again: the game sees it.
+        let mut pads = [held(0)];
+        gate.apply(false, &mut pads);
+        let mut pads = [held(south)];
+        gate.apply(false, &mut pads);
+        assert_eq!(pads[0].buttons, south);
     }
 }
 

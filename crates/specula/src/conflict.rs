@@ -15,10 +15,18 @@
 //! fields the write sets.
 //!
 //! Values bigger than [`MAX_VALUE_BYTES`] are replaced by their size, so a conflict on a tile map
-//! stays small. M4 adds suggested three-way merges for text data.
+//! stays small.
+//!
+//! **M4: a suggested merge.** A `stale_version` refusal whose base version is still known also
+//! carries `merge` (see [`crate::merge`]): `props` keys both sides changed are merged three ways
+//! (game data is JSON), other fields you set are kept unless they changed and you set them
+//! differently (a conflict, which keeps theirs). `merge.apply` is the `world_set` call that
+//! writes the merge at the current version: send it as is to accept, or adjust it. Fields the
+//! answer can't repeat (materials, colliders...) are listed under `merge.resend`.
 
 use crate::journal::Journal;
-use crate::world::{Change, Entity, UpdateSpec, World, WorldError};
+use crate::merge::{self, Kind as MergeKind, Prefer};
+use crate::world::{Change, Entity, EntityKey, UpdateSpec, World, WorldError};
 use specula_core::Json;
 use std::collections::BTreeSet;
 
@@ -36,15 +44,26 @@ const IGNORED: [&str; 6] = ["id", "version", "created_by", "modified_by", "model
 pub struct Yours {
     /// Entity fields (`props.<key>` for props keys), or `["(delete)"]`.
     pub fields: Vec<String>,
+    /// The `props` patch it sets (a merge offer merges it key by key).
+    pub props: Option<Json>,
+    /// Other fields it sets, as `world_set` arguments (for the merge's `apply`).
+    pub values: Vec<(String, Json)>,
+    /// Fields it sets that `values` can't repeat (the merge says to send them again).
+    pub resend: Vec<String>,
 }
 
 impl Yours {
     pub fn delete() -> Yours {
-        Yours { fields: vec!["(delete)".into()] }
+        Yours { fields: vec!["(delete)".into()], ..Yours::default() }
     }
 
     pub fn spawn() -> Yours {
-        Yours { fields: vec!["(spawn)".into()] }
+        Yours { fields: vec!["(spawn)".into()], ..Yours::default() }
+    }
+
+    /// Only the fields' names (a refusal that has nothing to merge).
+    pub fn named(fields: Vec<String>) -> Yours {
+        Yours { fields, ..Yours::default() }
     }
 
     /// The entity fields an update sets.
@@ -108,7 +127,45 @@ impl Yours {
             None if u.props.is_some() => add("props"),
             None => {}
         }
-        Yours { fields: f }
+        // The values a merge's apply can repeat.
+        let v3 = |v: specula_core::math::Vec3| Json::arr([Json::from(f64::from(v.x)), Json::from(f64::from(v.y)), Json::from(f64::from(v.z))]);
+        let mut values: Vec<(String, Json)> = Vec::new();
+        if let Some(n) = &u.name {
+            values.push(("rename".into(), Json::from(n.as_str())));
+        }
+        match &u.parent {
+            Some(None) => values.push(("parent".into(), Json::Null)),
+            Some(Some(EntityKey::Path(p))) => values.push(("parent".into(), Json::from(p.as_str()))),
+            Some(Some(EntityKey::Id(id))) => values.push(("parent".into(), Json::from(*id))),
+            _ => {}
+        }
+        for (k, v) in [("position", u.position), ("rotation_deg", u.rotation_deg), ("scale", u.scale)] {
+            if let Some(v) = v {
+                values.push((k.into(), v3(v)));
+            }
+        }
+        if let Some(c) = u.color {
+            values.push(("color".into(), Json::arr(c.iter().map(|x| Json::from(f64::from(*x))))));
+        }
+        if let Some(t) = &u.tags {
+            values.push(("tags".into(), Json::arr(t.iter().map(|x| Json::from(x.as_str())))));
+        }
+        for (k, list) in [("add_tags", &u.add_tags), ("remove_tags", &u.remove_tags)] {
+            if !list.is_empty() {
+                values.push((k.into(), Json::arr(list.iter().map(|x| Json::from(x.as_str())))));
+            }
+        }
+        if let Some(v) = u.visible {
+            values.push(("visible".into(), Json::Bool(v)));
+        }
+        let parent_rendered = values.iter().any(|(k, _)| k == "parent");
+        let repeated = |name: &str| {
+            name.starts_with("props")
+                || matches!(name, "name" | "position" | "rotation_deg" | "scale" | "color" | "tags" | "visible")
+                || (matches!(name, "parent" | "path") && (parent_rendered || u.name.is_some()))
+        };
+        let resend = f.iter().filter(|n| !repeated(n)).cloned().collect();
+        Yours { fields: f, props: u.props.clone(), values, resend }
     }
 }
 
@@ -157,7 +214,7 @@ fn same_field(a: &str, b: &str) -> bool {
 
 /// The entity at `version` and the path it had then, from the journal (newest first) or its
 /// base world; with the journal entry that recorded it.
-fn at_version(journal: &Journal, id: u64, version: u64) -> Option<(Entity, String, Option<u64>)> {
+pub(crate) fn at_version(journal: &Journal, id: u64, version: u64) -> Option<(Entity, String, Option<u64>)> {
     for e in journal.touching(id, SCAN) {
         for c in e.changes.iter().rev().filter(|c| c.id() == id) {
             match c {
@@ -245,9 +302,11 @@ fn stale(world: &World, journal: &Journal, e: WorldError, yours: &Yours) -> Worl
     }
     let current = now.to_json(&world.path_of(id));
     let mut conflict = vec![];
+    let mut offer = None;
     let (changed, base) = match at_version(journal, id, expected) {
         Some((then, path, seq)) => {
             let base_json = then.to_json(&path);
+            offer = merge_offer(&base_json, &current, id, now.version, &parent_as_path(world, yours));
             let changed = changed_fields(&base_json, &current);
             let fields = Json::obj(changed.iter().map(|k| (k.clone(), field(&base_json, k).map_or(Json::Null, value))));
             (changed, Json::obj([("version", Json::from(expected)), ("journal", Json::from(seq)), ("fields", fields)]))
@@ -270,7 +329,144 @@ fn stale(world: &World, journal: &Journal, e: WorldError, yours: &Yours) -> Worl
     let (overlap, advice) = overlap_and_advice(&changed, yours, now.version);
     conflict.push(("overlap", overlap));
     conflict.push(("rebase", Json::from(advice)));
+    if let Some(m) = offer {
+        conflict.push(("merge", m));
+    }
     e.with("conflict", Json::obj(conflict))
+}
+
+/// A merge offered for op `index` of a `world_batch`: its apply is one `world_set`, so it says to
+/// send the merged op back inside the batch (sending it alone would drop the batch's other ops).
+pub fn in_batch(mut e: WorldError, index: u64) -> WorldError {
+    for (k, v) in e.details.iter_mut() {
+        if *k != "conflict" {
+            continue;
+        }
+        if let Some(mut m) = v.get("merge").cloned() {
+            m.set("batch_op", Json::from(index));
+            let next = format!(
+                "this was ops[{index}] of a world_batch, and none of the batch was applied: put merge.apply's args back as ops[{index}] (op: set) and send the whole batch again"
+            );
+            m.set("next", Json::from(next));
+            v.set("merge", m);
+        }
+    }
+    e
+}
+
+/// `yours` with a parent given by id written as that parent's path, so it compares with the
+/// listing (which shows paths) and the merge's apply names it the same way.
+fn parent_as_path(world: &World, yours: &Yours) -> Yours {
+    let mut y = yours.clone();
+    for (k, v) in y.values.iter_mut() {
+        if k == "parent" {
+            if let Some(id) = v.as_u64().filter(|id| world.get(*id).is_some()) {
+                *v = Json::from(world.path_of(id));
+            }
+        }
+    }
+    y
+}
+
+/// The suggested merge of a stale `world_set` (see the module docs), when there is one to offer.
+fn merge_offer(base: &Json, current: &Json, id: u64, now_version: u64, yours: &Yours) -> Option<Json> {
+    if yours.fields.is_empty() || yours.fields.iter().any(|f| f.starts_with('(')) {
+        return None;
+    }
+    let mut args = vec![("id".to_owned(), Json::from(id)), ("expect_version".to_owned(), Json::from(now_version))];
+    let mut conflicts: Vec<Json> = Vec::new();
+    let mut total = 0usize;
+    match &yours.props {
+        Some(Json::Obj(pairs)) => {
+            let mut merged: Vec<(String, Json)> = Vec::new();
+            for (k, v) in pairs {
+                let name = format!("props.{k}");
+                let (b, t) = (field(base, &name), field(current, &name));
+                let m = merge::merge3_under(k, b, t, (!v.is_null()).then_some(v), MergeKind::Props, Prefer::Theirs);
+                total += m.conflicts_total;
+                for c in m.conflicts.iter().take(merge::MAX_CONFLICTS.saturating_sub(conflicts.len())) {
+                    let side = |x: &Option<Json>| x.as_ref().map_or(Json::obj([("absent", Json::Bool(true))]), value);
+                    let mut j = Json::obj([("base", side(&c.base)), ("theirs", side(&c.theirs)), ("yours", side(&c.yours))]);
+                    let path = if c.path.is_empty() {
+                        name.clone()
+                    } else if c.path.starts_with('[') {
+                        format!("{name}{}", c.path)
+                    } else {
+                        format!("{name}.{}", c.path)
+                    };
+                    j.set("path", Json::from(path));
+                    conflicts.push(j);
+                }
+                // Write only what differs from theirs (null removes the key).
+                if m.merged.as_ref() != t {
+                    merged.push((k.clone(), m.merged.unwrap_or(Json::Null)));
+                }
+            }
+            if !merged.is_empty() {
+                args.push(("props".to_owned(), Json::Obj(merged)));
+            }
+        }
+        Some(_) => return None,
+        None => {}
+    }
+    for (arg, v) in &yours.values {
+        // The listing field the argument sets.
+        let listing = match arg.as_str() {
+            "rename" => "name",
+            "parent" => "path",
+            "add_tags" | "remove_tags" => {
+                // Adding or removing a tag composes with anything they did.
+                args.push((arg.clone(), v.clone()));
+                continue;
+            }
+            other => other,
+        };
+        let (b, t) = (field(base, listing), field(current, listing));
+        let theirs_changed = !match (b, t) {
+            (Some(x), Some(y)) => merge::same(x, y),
+            (None, None) => true,
+            _ => false,
+        };
+        // Your value as the listing shows it (colours are hex there; a parent shows as the path).
+        let as_listed = match (arg.as_str(), v) {
+            ("color", Json::Arr(c)) if c.len() == 3 => {
+                let f = |i: usize| c[i].as_f64().unwrap_or(0.0) as f32;
+                Json::from(crate::world::color_hex([f(0), f(1), f(2)]))
+            }
+            ("parent", Json::Str(p)) => {
+                let renamed = yours.values.iter().find(|(k, _)| k == "rename").and_then(|(_, v)| v.as_str());
+                let name = renamed.or_else(|| field(current, "name").and_then(Json::as_str)).unwrap_or("");
+                Json::from(format!("{p}/{name}"))
+            }
+            _ => v.clone(),
+        };
+        if !theirs_changed {
+            args.push((arg.clone(), v.clone()));
+        } else if t.is_some_and(|t| merge::same(t, &as_listed)) {
+            // They set what you set.
+        } else {
+            total += 1;
+            if conflicts.len() < merge::MAX_CONFLICTS {
+                let side = |x: Option<&Json>| x.map_or(Json::obj([("absent", Json::Bool(true))]), value);
+                conflicts.push(Json::obj([("path", Json::from(listing)), ("base", side(b)), ("theirs", side(t)), ("yours", value(v))]));
+            }
+        }
+    }
+    let mut out = vec![
+        ("clean", Json::Bool(total == 0)),
+        ("conflicts", Json::Arr(conflicts)),
+        ("apply", Json::obj([("tool", Json::from("world_set")), ("args", Json::Obj(args))])),
+    ];
+    if !yours.resend.is_empty() {
+        out.push(("resend", Json::arr(yours.resend.iter().map(|f| Json::from(f.as_str())))));
+    }
+    let next = if total == 0 {
+        "clean: send merge.apply (world_set) to write your change on top of theirs"
+    } else {
+        "conflicts keep theirs in merge.apply: decide each (conflicts lists base, theirs and yours), adjust apply's args, then send it"
+    };
+    out.push(("next", Json::from(next)));
+    Some(Json::obj(out))
 }
 
 fn claimed(world: &World, journal: &Journal, e: WorldError, yours: &Yours) -> WorldError {
@@ -374,11 +570,66 @@ mod tests {
         ];
         let e = journal::commit(&mut w, &mut j, 0, Writer::new("ann", Some("ann")), Kind::Batch, None, |w| w.apply_batch(ops, "ann").map_err(|(_, e)| e))
             .unwrap_err();
-        let e = help(&w, &j, e, &Yours { fields: vec!["color".into()] });
+        let e = help(&w, &j, e, &Yours::named(vec!["color".into()]));
         let c = e.detail("conflict").unwrap();
         assert_eq!(c.get("same_batch"), Some(&Json::from(true)));
         let advice = c.get("rebase").unwrap().as_str().unwrap();
         assert!(advice.contains("after your earlier ops") && !advice.contains("  "), "{advice}");
+    }
+
+    /// M4: a stale write carries a suggested merge whose apply can be sent as is.
+    #[test]
+    fn a_stale_write_carries_a_merge_to_accept() {
+        let mut w = world();
+        let mut j = Journal::default();
+        let mut s = SpawnSpec::new(Shape::Cube);
+        s.name = Some("gate".into());
+        s.props = Json::parse(r#"{"stats": {"hp": 1, "speed": 1}, "tags": ["iron"]}"#).unwrap();
+        journal::commit(&mut w, &mut j, 0, Writer::new("ann", Some("ann")), Kind::Spawn, None, |w| w.spawn(s, "ann").map(|_| ())).unwrap();
+        let props = |t: &str| Some(Json::parse(t).unwrap());
+        set(&mut w, &mut j, "bob", UpdateSpec { props: props(r#"{"stats": {"hp": 3, "speed": 1}, "tags": ["iron", "old"]}"#), position: Some(Vec3::ONE), ..Default::default() }).unwrap();
+        // Ann read version 1: she speeds it up, adds a tag and recolours it.
+        let mine = UpdateSpec { props: props(r#"{"stats": {"hp": 1, "speed": 2}, "tags": ["iron", "bolted"]}"#), color: Some([1.0, 0.0, 0.0]), expect_version: Some(1), ..Default::default() };
+        let yours = Yours::of_update(&mine);
+        let refused = set(&mut w, &mut j, "ann", mine).unwrap_err();
+        let e = help(&w, &j, refused, &yours);
+        let m = e.detail("conflict").unwrap().get("merge").expect("a merge offer");
+        assert_eq!(m.get("clean"), Some(&Json::Bool(true)), "{m}");
+        let args = m.get("apply").unwrap().get("args").unwrap();
+        assert_eq!(args.get("expect_version"), Some(&Json::from(2)));
+        let merged = args.get("props").unwrap();
+        assert!(crate::merge::same(merged, &Json::parse(r#"{"stats": {"hp": 3, "speed": 2}, "tags": ["iron", "old", "bolted"]}"#).unwrap()), "{merged}");
+        assert!(args.get("color").is_some() && args.get("position").is_none());
+        // Accepting it: the apply's props and colour on top of Bob's change.
+        let accept = UpdateSpec { props: Some(merged.clone()), color: Some([1.0, 0.0, 0.0]), expect_version: Some(2), ..Default::default() };
+        assert_eq!(set(&mut w, &mut j, "ann", accept).unwrap(), 3);
+        // Both moving it: a conflict that keeps theirs (apply leaves position out).
+        set(&mut w, &mut j, "bob", UpdateSpec { position: Some(Vec3::new(5.0, 0.0, 0.0)), ..Default::default() }).unwrap();
+        let mine = UpdateSpec { position: Some(Vec3::new(9.0, 0.0, 0.0)), expect_version: Some(3), ..Default::default() };
+        let yours = Yours::of_update(&mine);
+        let refused = set(&mut w, &mut j, "ann", mine).unwrap_err();
+        let e = help(&w, &j, refused, &yours);
+        let m = e.detail("conflict").unwrap().get("merge").unwrap();
+        assert_eq!(m.get("clean"), Some(&Json::Bool(false)));
+        assert_eq!(m.get("conflicts").unwrap().as_array().unwrap()[0].get("path"), Some(&Json::from("position")));
+        assert!(m.get("apply").unwrap().get("args").unwrap().get("position").is_none());
+        // Fields the answer can't repeat are named.
+        let u = UpdateSpec { look: crate::world::LookPatch { roughness: Some(0.5), ..Default::default() }, ..Default::default() };
+        assert_eq!(Yours::of_update(&u).resend, ["roughness"]);
+        // Integrator follow-up: a parent given by id compares with the listing's path. Bob moves
+        // the gate under /yard; Ann (reading an older version) moves it there too, by id.
+        let mut yard = SpawnSpec::new(Shape::Group);
+        yard.name = Some("yard".into());
+        let yard_id = journal::commit(&mut w, &mut j, 0, Writer::new("bob", Some("bob")), Kind::Spawn, None, |w| w.spawn(yard, "bob").map(|e| e.id)).unwrap().0;
+        let v = w.get(w.find_path("/gate").unwrap()).unwrap().version;
+        set(&mut w, &mut j, "bob", UpdateSpec { parent: Some(Some(EntityKey::Path("/yard".into()))), ..Default::default() }).unwrap_or_else(|_| panic!("bob moves it"));
+        let key = EntityKey::Path("/yard/gate".into());
+        let mine = UpdateSpec { parent: Some(Some(EntityKey::Id(yard_id))), color: Some([0.0, 0.0, 1.0]), expect_version: Some(v), ..Default::default() };
+        let yours = Yours::of_update(&mine);
+        let refused = journal::commit(&mut w, &mut j, 0, Writer::new("ann", Some("ann")), Kind::Set, None, |w| w.update(&key, mine, "ann").map(|e| e.version)).unwrap_err();
+        let e = help(&w, &j, refused, &yours);
+        let m = e.detail("conflict").unwrap().get("merge").unwrap();
+        assert_eq!(m.get("clean"), Some(&Json::Bool(true)), "the same parent, by id and by path: no conflict ({m})");
     }
 
     #[test]

@@ -224,6 +224,9 @@ pub enum Command {
     /// The task board, intents, notes, roll-ups, leases, swarm settings and the desync detector
     /// (see [`crate::swarm_tools`]).
     Swarm(crate::swarm_tools::SwarmCall),
+    /// The review queue, critiques, the window's review screen and the director's plans (see
+    /// [`crate::review_tools`]).
+    Review(crate::review_tools::ReviewCall),
     /// The module host's tools (see [`crate::logic::tools`]).
     Logic(crate::logic::tools::LogicCall),
     /// The physics tools (see [`crate::physics_tools`]).
@@ -451,6 +454,8 @@ impl Tools {
         match name {
             "logic_build" => return crate::logic::tools::build(&self.to_engine, session, arguments),
             "logic_reload" => return crate::logic::tools::reload(&self.to_engine, session, arguments),
+            // Pure: merged on this connection's thread.
+            "merge_suggest" => return crate::review_tools::merge_suggest(arguments),
             _ => {}
         }
         // agent_hello {response_format} sets this session's default (once the hello succeeds).
@@ -523,6 +528,9 @@ impl Tools {
 pub(crate) fn parse(name: &str, args: &Json) -> Result<Command, String> {
     if let Some(call) = crate::playtest_engine::parse(name, args) {
         return call.map(Command::Playtest);
+    }
+    if let Some(call) = crate::review_tools::parse(name, args) {
+        return call.map(Command::Review);
     }
     match name {
         "world_spawn" => parse_spawn(args).map(Command::Spawn),
@@ -2508,6 +2516,7 @@ fn definitions() -> Vec<ToolDef> {
     .into_iter()
     .chain(crate::sight_tools::definitions())
     .chain(crate::swarm_tools::definitions())
+    .chain(crate::review_tools::definitions())
     .chain(crate::logic::tools::definitions())
     .chain(crate::physics_tools::definitions())
     .chain(crate::nav_tools::definitions())

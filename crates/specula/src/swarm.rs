@@ -82,6 +82,8 @@ pub struct Swarm {
     pub intents: Intents,
     /// Ports, GPU time and scratch folders leased to agents (see [`crate::leases`]).
     pub leases: Leases,
+    /// The review queue and critiques, saved with the board (see [`crate::review`]).
+    pub review: crate::review::Review,
     /// Agent name → refused writes by error code, for roll-ups (at most [`MAX_AGENTS`] names).
     refused: BTreeMap<String, BTreeMap<&'static str, u64>>,
     /// Prune the world's removed-entity versions once there are more than this (twice what the

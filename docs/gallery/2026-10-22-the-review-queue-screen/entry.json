@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-22",
+  "time": "06:58",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M4",
+  "commit": "",
+  "subject": "ui",
+  "topic": "UI",
+  "title": "The review queue screen",
+  "note": "First entry for the engine's own review screen (M4 review queue): the owner pages through pending submissions with their contact sheet, checks and summary, and approves or rejects by mouse, touch, keys or pad. Shown over a plain engine world, with the Review (n) tab at the bottom left; the second capture is after a keyboard approval promoted #1 into /world/props.",
+  "source": "scripts/review_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-review-screen-window.png",
+      "caption": "The real window: submission 1 of 3 with its 8-view contact sheet, all checks passed",
+      "original": "review_screen_window.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 38003
+    },
+    {
+      "file": "02-review-screen-after-approve.png",
+      "caption": "After Enter approved #1: #2 shows a failed taste check, the status line says what moved",
+      "original": "review_screen_after_approve.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 35863
+    },
+    {
+      "file": "03-review-screen-sight.png",
+      "caption": "The same screen in a sight_frame capture with include_ui (the packet counts its panels as occluders)",
+      "original": "review_screen_sight.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 38003
+    }
+  ]
+}

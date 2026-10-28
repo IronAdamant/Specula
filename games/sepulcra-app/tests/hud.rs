@@ -30,7 +30,7 @@ impl Host {
     fn frame(&mut self, input: &[Event]) {
         let Host { game, world, clock } = self;
         let (mut cam, mut title) = (None, None);
-        let mut f = Frame { input, size: SIZE, alpha: 1.0, dt_s: 0.016, camera: &mut cam, agent_view: false, title: &mut title };
+        let mut f = Frame { input, size: SIZE, alpha: 1.0, dt_s: 0.016, camera: &mut cam, agent_view: false, title: &mut title, pads: &[] };
         game.frame(&mut Ctx { world: GameWorld::new(world), clock, agent: "sepulcra", windowed: false }, &mut f);
     }
 
