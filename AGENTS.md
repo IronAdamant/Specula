@@ -50,6 +50,14 @@ Read [HANDOFF.md](HANDOFF.md) first.
       has no OS TLS, use a tunnel (SSH, WireGuard or Tailscale).
     - **Never hand-roll cryptography.**
     - Specula sets a baseline. Operators, and the organisations they work for, secure their own environments.
+13. **One write policy** (owner, 2026-10-28). Every change to the live world goes through `write_policy`
+    ([docs/design/WRITE_POLICY.md](docs/design/WRITE_POLICY.md)).
+    - Writers get `&mut dyn WorldWrite`, never `&mut World`. The live journal is written only through the policy.
+    - A new write path picks an entry point and a named `Rule` or `Exempt`. An exemption is a named variant with
+      its reason, never a missing check.
+    - Never add a `World` field, a `&mut World` accessor or a hatch call outside its owner.
+    - Add a row to the regression table (`every_write_path_holds_the_policy`). `crates/specula/tests/write_policy_guard.rs`
+      enforces the rest.
 
 ## Layout
 

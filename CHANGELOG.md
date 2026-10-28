@@ -11,6 +11,16 @@ Specula is now a zero-dependency, agent-native game engine (Rust `std` + OS/driv
 See [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md). Item-by-item detail, with the reasoning for each, is in
 [docs/ROADMAP.md](docs/ROADMAP.md); the timeline of decisions is under [Project history](#project-history) below.
 
+### M4, in progress (from 2026-10-28)
+
+- **One write policy** (the owner's top process change after M3): every change to the live world goes through
+  `write_policy`. Writer code gets `&mut dyn WorldWrite` (recorded writes only) and never `&mut World`; the live
+  journal is written only with a key that nothing outside the policy can make; exemptions are named variants with
+  reasons. A runtime backstop catches unrecorded writes, puts back engine settings and never loses project files.
+  Claim holders get notices when module or live-Lex ticks write inside their claims. `logic_build` no longer picks
+  clippy's dep-info file. Behaviour is unchanged: physics, joints and playtest end hashes are identical, and the swarm
+  drill holds
+
 ### M3, done (2026-10-18 to 2026-10-22)
 
 - **M3 exit on the iGPU:** `scripts/m3_exit.py` plays a whole Sepulcra game windowed on the Intel iGPU and holds

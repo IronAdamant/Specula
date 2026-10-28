@@ -343,9 +343,10 @@ answer where it applies. The owner decided everything else on 2026-10-22 (see "D
       into the game);
    8. then the M4 integration audit and push.
 3. **Process changes, learned from M3** (most of M3's bugs sat between lanes, and fixes often caused new ones):
-   - **One write policy.** Claims, reserved data and joint rules are enforced in one place that every write path
-     goes through (agents, undo, modules, game tools, live Lex, loads). Today they are re-checked per path, and
-     "X bypasses claims" was the most common major finding.
+   - **One write policy: done (2026-10-29).** Every write goes through `write_policy`, and writers never hold
+     `&mut World`; compile_fail doctests, a guard test and a 50-row regression table pin it (AGENTS.md rule 13,
+     [docs/design/WRITE_POLICY.md](docs/design/WRITE_POLICY.md)). It took five review rounds: each detection
+     scheme was fooled until writers lost raw access entirely.
    - **Integration checks early,** not only at the end of a milestone: run a short cross-lane audit after every
      3-4 merges.
    - **Every reviewer probe becomes a permanent test** (unit test, or a live-script step) in the same round.
