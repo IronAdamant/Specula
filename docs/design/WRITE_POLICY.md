@@ -144,7 +144,7 @@ agents build in, so their `World` methods stay public.
 | Writer (entry point) | Reserved data | Transient entities | Claims | Joint rules | Journaled |
 |---|---|---|---|---|---|
 | An agent's tool (`Live::commit`, `Rule::World`) | all refused | refused | step by step, as the agent | on the result | under the agent, undoable |
-| ... owning one kind (`Rule::Joint`, `Nav`, `Lex`, `LexLive`, `Project`) | its kind allowed | refused | as the agent | as above; `Joint`: the tool checks its bodies itself | under the agent |
+| ... owning one kind (`Rule::Joint`, `Nav`, `Lex`, `LexLive`, `Project`, `Vfx`) | its kind allowed | refused | as the agent | as above; `Joint`: the tool checks its bodies itself | under the agent |
 | `world_undo` (`Live::undo`) | (restores what was) | (as recorded) | step by step, as the agent; `force` never overrides them | step by step | under the agent, kind `undo` |
 | What an agent asked the hosted game, a module or a live Lex run to do (`Live::game_tool`, `game_commit`, `module_agent_commit`) | all refused (joints allowed) | the game's own | step by step, as the agent | step by step | under the game or module, `via` the agent; on refusal the world rolls back and the caller rolls its own state back |
 | A module's own request (`module_request`) | all refused | | no (the call's commit decides) | no | the call is journaled by its commit |
@@ -183,6 +183,7 @@ point it goes through now. Behaviour is unchanged on every path (same checks, sa
 | lex_edit, lex_import | agent | `Swarm::commit_lex` | session (`Opener::LexTools`) + `commit`, `Rule::Lex` |
 | lex_live start and stop | agent | `Swarm::commit_lex_live` | session (`Opener::LexLive`) + `commit`, `Rule::LexLive` |
 | project_write, project_patch, project_delete, logic_build `fix: true` | agent | `Swarm::commit_project` | `Live::commit`, `Rule::Project` |
+| vfx_set (the effect library, `/vfx`; M4) | agent | (new) | `Live::commit`, `Rule::Vfx` |
 | project files read from disk (mounts, the watcher) | a human (disk) | `Swarm::commit_disk`: no claims | `Live::disk` (exempt) |
 | world_undo | agent | `Swarm::undo`: claims + joint rules per step | `Live::undo` |
 | play_* game tools | agent via the game | `Swarm::game_tool` → `check_game_changes`; on refusal checkpoint restore, or `world_rolled_back` journaled by hand | `Live::game_tool`; the repair is `Exempt::Game` (kind `game_tool`) |
@@ -269,5 +270,6 @@ desync traces) need nothing: `Live` derefs to `&World`.
    if the policy lacks what you need, add a narrow, named entry point here.
 
 For the parked M4 lanes: review promotion writes project files and world entities as the approving agent
-(`Rule::Project` / `Rule::World` commits); the `/vfx` library is new reserved data (step 2); procedural scatter spawns
+(`Rule::Project` / `Rule::World` commits); the `/vfx` library is new reserved data (step 2: built, `Rule::Vfx`, with
+the effect rules, `crate::vfx::write_rules`, on every checked path; VFX.md "Photosensitivity"); procedural scatter spawns
 are an agent's batch (`Rule::World`, one `apply_batch`, all or nothing).

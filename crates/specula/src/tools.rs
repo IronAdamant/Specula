@@ -103,7 +103,7 @@ pub const DEFAULT_FIELDS: [&str; 6] = ["id", "path", "shape", "position", "tags"
 // Arguments each tool accepts. Anything else is rejected (with the closest valid name), so a typo
 // like `rotation` for `rotation_deg` is an error instead of a silently ignored value.
 const LOOK_KEYS: &[&str] = &["material", "opacity", "emissive", "metallic", "roughness", "specular", "color2", "seed", "light"];
-const COMPONENT_KEYS: &[&str] = &["tags", "props", "collider", "body", "anim"];
+const COMPONENT_KEYS: &[&str] = &["tags", "props", "collider", "body", "anim", "vfx", "decal"];
 pub(crate) const SPAWN_KEYS: &[&str] = &[
     "shape", "name", "parent", "path", "position", "rotation_deg", "scale", "color", "profile", "segments", "recipe",
     "params", "visible", "layer", "transient", "sprite", "tilemap", "shape2d",
@@ -251,6 +251,8 @@ pub enum Command {
     StudioRender(Box<crate::studio::RenderJob>),
     /// A studio call ended: its builds needn't stay pinned on the GPU.
     StudioDone(u64),
+    /// The effect tools (see [`crate::vfx_tools`]).
+    Vfx(crate::vfx_tools::VfxCall),
     /// Project files (see [`crate::project_tools`]).
     Project(crate::project_tools::ProjectCall),
 }
@@ -687,9 +689,12 @@ pub(crate) fn parse(name: &str, args: &Json) -> Result<Command, String> {
                                 Some(call) => call.map(Command::SaveGame),
                                 None => match crate::anim_tools::parse(other, args) {
                                     Some(call) => call.map(Command::Anim),
-                                    None => match crate::stream_tools::parse(other, args) {
-                                        Some(call) => call.map(Command::Stream),
-                                        None => crate::logic::tools::parse(other, args).unwrap_or_else(|| Err(format!("unknown tool '{other}'"))),
+                                    None => match crate::vfx_tools::parse(other, args) {
+                                        Some(call) => call.map(Command::Vfx),
+                                        None => match crate::stream_tools::parse(other, args) {
+                                            Some(call) => call.map(Command::Stream),
+                                            None => crate::logic::tools::parse(other, args).unwrap_or_else(|| Err(format!("unknown tool '{other}'"))),
+                                        },
                                     },
                                 },
                             },
@@ -900,8 +905,13 @@ fn parse_time(args: &Json) -> Result<TimeOp, String> {
 /// A rejected argument as structured data. `field` is the first quoted name in the message: every
 /// argument message names its key that way (`'scale' must be ...`).
 pub fn argument_error(message: &str) -> Json {
+    // A message may carry its own error code (`... [error: photosensitive]`).
+    let (message, code) = match message.rsplit_once(" [error: ") {
+        Some((m, c)) if c.ends_with(']') => (m, &c[..c.len() - 1]),
+        _ => (message, "invalid_argument"),
+    };
     let field = message.split('\'').nth(1).filter(|f| !f.is_empty() && !f.contains(' '));
-    let mut out = vec![("error", Json::from("invalid_argument")), ("message", Json::from(message))];
+    let mut out = vec![("error", Json::from(code)), ("message", Json::from(message))];
     if let Some(f) = field {
         out.push(("field", Json::from(f)));
     }
@@ -1075,6 +1085,8 @@ pub(crate) fn parse_spawn_fields(args: &Json) -> Result<SpawnSpec, String> {
     spec.collider = collider_arg(args)?.flatten();
     spec.body = body_arg(args)?.flatten();
     spec.anim = anim_arg(args)?.flatten();
+    spec.vfx = crate::vfx::vfx_arg(args)?.flatten();
+    spec.decal = crate::vfx::decal_arg(args)?.flatten();
     // Value ranges are the world's to decide (the same checks guard in-process game code).
     world::check_spawn(&spec).map_err(value_error)?;
     Ok(spec)
@@ -1351,6 +1363,8 @@ fn parse_set_fields(args: &Json) -> Result<(EntityKey, UpdateSpec), String> {
         collider: collider_arg(args)?,
         body: body_arg(args)?,
         anim: anim_arg(args)?,
+        vfx: crate::vfx::vfx_arg(args)?,
+        decal: crate::vfx::decal_arg(args)?,
         recipe: string_arg(args, "recipe")?.map(str::to_owned),
         params: params_arg(args)?,
         visible: bool_arg(args, "visible")?,
@@ -1362,7 +1376,7 @@ fn parse_set_fields(args: &Json) -> Result<(EntityKey, UpdateSpec), String> {
     if change.is_empty() {
         return Err("world_set needs at least one change: rename, parent, position, rotation_deg, scale, color, a \
                     look field (material, opacity, emissive, metallic, roughness, specular, color2, seed), light, \
-                    profile, tags, add_tags, remove_tags, props, collider, body, anim, recipe, params, visible or layer"
+                    profile, tags, add_tags, remove_tags, props, collider, body, anim, vfx, decal, recipe, params, visible or layer"
             .into());
     }
     world::check_update(&change).map_err(value_error)?;
@@ -1803,6 +1817,18 @@ fn definitions() -> Vec<ToolDef> {
                      time T, in world time (time_control / engine_info clock.world_time_s; world_load resumes it \
                      from the save): clip time = (T - start) x speed + time_offset, so sight_frame time_s 0, 0.25, \
                      ... is a filmstrip. model_build lists the clips",
+                ),
+            ),
+            (
+                "vfx",
+                described(
+                    "A visual effect at the entity (cosmetic: never read by the simulation): an effect name (vfx_get lists built-ins and the world's own) or {effect, params? {rate, size, speed, alpha, intensity (x multipliers), tint (sRGB colour multiplied in; pale built-ins take a family colour), light (true/false), seed}, start (world time s or \"now\"; default now: one-shot bursts play then)}; false removes it. Particles are a function of world time, so captures repeat; vfx_preview films an effect, vfx_check checks its budget and readability",
+                ),
+            ),
+            (
+                "decal",
+                described(
+                    "A decal: the entity's box (size [x, y, z] m, default [1, 0.4, 1], centred on it) projects a texture along its local -Y onto the opaque surfaces inside it. A texture name (scorch, rune_circle, cracks; or a .png under the assets folder) or {texture, size, color (sRGB tint), opacity, mode (\"lit\": re-lit albedo, or \"multiply\": darkens; scorch defaults to multiply), normal (a normal map: cracks_normal or a .png), normal_strength, roughness, specular, emissive, angle_fade (cosine to the box's up below which surfaces get nothing; default 0.3), order (draw order), uv [u0, v0, u1, v1], life (s after start; then gone), fade_in, fade_out (s), start}; false removes it",
                 ),
             ),
         ]);
@@ -2531,6 +2557,7 @@ fn definitions() -> Vec<ToolDef> {
     .chain(crate::procgen_tools::definitions())
     .chain(crate::anim_tools::definitions())
     .chain(crate::studio_tools::definitions())
+    .chain(crate::vfx_tools::definitions())
     .collect()
 }
 

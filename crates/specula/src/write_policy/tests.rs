@@ -48,6 +48,32 @@ fn joint_onto(name: &str, b: u64) -> SpawnSpec {
     j
 }
 
+/// A small burst every quarter second (vfx_check's `calm`): within 3 flashes a second as it is,
+/// at `size` 0.05 m; five times bigger and four times as often, it strobes (at 0.01 m it still
+/// doesn't).
+fn calm(size: f32) -> Json {
+    Json::parse(&format!(r##"{{"emitters": [{{"bursts": [{{"count": 1, "cycles": 0, "interval": 0.25}}], "lifetime": 0.05, "size": {size}, "color": "#ffffff", "alpha": [[0, 1], [1, 1]], "blend": "additive"}}]}}"##)).unwrap()
+}
+
+/// A world effect `/vfx/<name>` as vfx_set writes it.
+fn effect(name: &str, size: f32) -> SpawnSpec {
+    let mut s = group(&format!("/vfx/{name}"));
+    s.tags.insert(crate::vfx::EFFECT_TAG.into());
+    s.props = Json::obj([(crate::vfx::EFFECT_PROP, calm(size))]);
+    s
+}
+
+/// An entity playing `effect` with `rate` and `size` params.
+fn playing(name: &str, effect: &str, rate: f32, size: f32) -> SpawnSpec {
+    let mut s = SpawnSpec::new(Shape::Group);
+    s.name = Some(name.into());
+    s.position = Vec3::new(60.0, 1.0, 60.0);
+    let mut v = specula_scintilla::VfxSpec::new(effect);
+    (v.params.rate, v.params.size) = (rate, size);
+    s.vfx = Some(v);
+    s
+}
+
 fn moved(x: f32) -> UpdateSpec {
     UpdateSpec { position: Some(Vec3::new(x, 0.5, 0.0)), ..UpdateSpec::default() }
 }
@@ -56,7 +82,9 @@ fn moved(x: f32) -> UpdateSpec {
 /// (inside her region claim); mallory's group `/mg` with three kinematic hooks, the first two
 /// roped to the box (`rope`, `rope2`, made through physics_joint's rule). Before alice claimed,
 /// mallory moved the box (`edit`), removed `rope2` (`unjoint`) and deleted `hook3` with its rope
-/// (`unhook`): undoing those now is undoing onto alice's claim.
+/// (`unhook`): undoing those now is undoing onto alice's claim. The effect library holds alice's
+/// `/vfx/glow` (her path claim) and mallory's smaller `/vfx/spark`, which mallory's `/lamp` plays
+/// five times bigger and four times as often (calm still, at that size).
 struct Fix {
     live: Live,
     sw: Swarm,
@@ -101,6 +129,11 @@ fn fixture() -> Fix {
     let edit = live.commit(&mut sw, 0, MALLORY, Kind::Set, Rule::World, |wd| wd.update(&EntityKey::Id(abox), moved(0.25), "mallory").map(|_| ())).unwrap().1.unwrap();
     let unjoint = live.commit(&mut sw, 0, MALLORY, Kind::Delete, Rule::Joint, |wd| wd.delete(&EntityKey::Id(rope2), None).map(|_| ())).unwrap().1.unwrap();
     let unhook = live.commit(&mut sw, 0, MALLORY, Kind::Delete, Rule::World, |wd| wd.delete(&EntityKey::Id(hook3), None).map(|_| ())).unwrap().1.unwrap();
+    spawn(&mut live, &mut sw, ALICE, Rule::Vfx, group("/vfx"));
+    spawn(&mut live, &mut sw, ALICE, Rule::Vfx, effect("glow", 0.05));
+    spawn(&mut live, &mut sw, MALLORY, Rule::Vfx, effect("spark", 0.01));
+    spawn(&mut live, &mut sw, MALLORY, Rule::World, playing("lamp", "spark", 4.0, 5.0));
+    sw.take_claim(&live, &s1, ClaimSpec { scope: Scope::path("/vfx/glow").unwrap(), lease: DEFAULT_LEASE, note: String::new() }).unwrap();
     sw.take_claim(&live, &s1, ClaimSpec { scope: Scope::path("/abox").unwrap(), lease: DEFAULT_LEASE, note: String::new() }).unwrap();
     let region = Scope::region(Vec3::new(3.0, -1.0, 3.0), Vec3::new(7.0, 4.0, 7.0)).unwrap();
     sw.take_claim(&live, &s1, ClaimSpec { scope: region, lease: DEFAULT_LEASE, note: String::new() }).unwrap();
@@ -183,6 +216,18 @@ fn module_request_at(f: &mut Fix, path: &'static str) -> Result<(), WorldError> 
         let mark = wd.mark();
         let spawned = wd.spawn(group(path), "module:nexus").map(|_| ());
         let out = spawned.and_then(|()| module_request(wd, mark));
+        let mut commit = module_tick_commit(sw, 1);
+        commit(wd, mark, "module:nexus", Phase::Tick).unwrap();
+        out
+    })
+    .and_then(|r| r)
+}
+
+/// A module's spawn request (during its own tick) for `spec`.
+fn module_request_spawn(f: &mut Fix, spec: SpawnSpec) -> Result<(), WorldError> {
+    f.live.session(&mut f.sw, 1, Opener::Modules, |wd, sw| {
+        let mark = wd.mark();
+        let out = wd.spawn(spec, "module:nexus").map(|_| ()).and_then(|()| module_request(wd, mark));
         let mut commit = module_tick_commit(sw, 1);
         commit(wd, mark, "module:nexus", Phase::Tick).unwrap();
         out
@@ -285,6 +330,35 @@ const ROWS: &[(&str, Write, Expect)] = &[
     ("the Lex tools' rule on a claimed entity", |f| set_abox(f, Rule::Lex), Expect::Refused("claimed")),
     ("lex_live's rule on a claimed entity", |f| set_abox(f, Rule::LexLive), Expect::Refused("claimed")),
     ("the project tools' rule on a claimed entity", |f| set_abox(f, Rule::Project), Expect::Refused("claimed")),
+    ("vfx_set's rule on a claimed entity", |f| set_abox(f, Rule::Vfx), Expect::Refused("claimed")),
+    // The effect library (/vfx, the vfx_effect tag: only vfx_set) and the effect rules
+    // (crate::vfx::write_rules: effects named must exist; nothing may flash more than 3 times a
+    // second) on every checked path.
+    ("world_spawn in /vfx", |f| spawn_at(f, MALLORY, "/vfx/sneak"), Expect::Refused("reserved")),
+    ("world_spawn tagging an effect outside /vfx", |f| {
+        let mut s = effect("glow", 0.05);
+        s.parent = None;
+        agent(f, MALLORY, Kind::Spawn, Rule::World, |wd| wd.spawn(s, "mallory").map(|_| ()))
+    }, Expect::Refused("reserved")),
+    ("world_set moving an effect out of /vfx", |f| agent(f, MALLORY, Kind::Set, Rule::World, |wd| {
+        wd.update(&EntityKey::Path("/vfx/spark".into()), UpdateSpec { parent: Some(None), ..UpdateSpec::default() }, "mallory").map(|_| ())
+    }), Expect::Refused("reserved")),
+    ("world_delete of an effect", |f| agent(f, MALLORY, Kind::Delete, Rule::World, |wd| wd.delete(&EntityKey::Path("/vfx/spark".into()), None).map(|_| ())), Expect::Refused("reserved")),
+    ("vfx_set's rule on a claimed effect", |f| agent(f, MALLORY, Kind::Set, Rule::Vfx, |wd| {
+        wd.update(&EntityKey::Path("/vfx/glow".into()), UpdateSpec { props: Some(Json::obj([(crate::vfx::EFFECT_PROP, calm(0.02))])), ..UpdateSpec::default() }, "mallory").map(|_| ())
+    }), Expect::Refused("claimed")),
+    ("vfx_set's rule adding an effect", |f| agent(f, MALLORY, Kind::Spawn, Rule::Vfx, |wd| wd.spawn(effect("ember", 0.05), "mallory").map(|_| ())), Expect::Allowed),
+    ("vfx_set's rule changing an effect so an instance playing it flashes", |f| agent(f, MALLORY, Kind::Set, Rule::Vfx, |wd| {
+        wd.update(&EntityKey::Path("/vfx/spark".into()), UpdateSpec { props: Some(Json::obj([(crate::vfx::EFFECT_PROP, calm(0.05))])), ..UpdateSpec::default() }, "mallory").map(|_| ())
+    }), Expect::Refused("photosensitive")),
+    ("world_spawn playing an effect there isn't", |f| agent(f, MALLORY, Kind::Spawn, Rule::World, |wd| wd.spawn(playing("odd", "nowhere", 1.0, 1.0), "mallory").map(|_| ())), Expect::Refused("unknown_effect")),
+    ("world_spawn playing an effect with params that flash", |f| agent(f, MALLORY, Kind::Spawn, Rule::World, |wd| wd.spawn(playing("loud", "glow", 4.0, 20.0), "mallory").map(|_| ())), Expect::Refused("photosensitive")),
+    ("world_spawn playing an effect calmly", |f| agent(f, MALLORY, Kind::Spawn, Rule::World, |wd| wd.spawn(playing("quiet", "spark", 1.0, 1.0), "mallory").map(|_| ())), Expect::Allowed),
+    ("world_set turning an instance's params up until it flashes", |f| agent(f, MALLORY, Kind::Set, Rule::World, |wd| {
+        let mut v = specula_scintilla::VfxSpec::new("glow");
+        (v.params.rate, v.params.size) = (4.0, 20.0);
+        wd.update(&EntityKey::Path("/lamp".into()), UpdateSpec { vfx: Some(Some(v)), ..UpdateSpec::default() }, "mallory").map(|_| ())
+    }), Expect::Refused("photosensitive")),
     // world_undo (Live::undo), forced (conflicts aside, claims always apply).
     ("world_undo of a change to a claimed entity", |f| undo(f, f.edit), Expect::Refused("claimed")),
     ("world_undo of a joint's removal onto a claimed body (M3)", |f| undo(f, f.unjoint), Expect::Refused("claimed")),
@@ -305,6 +379,15 @@ const ROWS: &[(&str, Write, Expect)] = &[
     ("a game tool writing /nav", |f| for_mallory(f, "sepulcra", |wd| {
         wd.spawn(group("/nav"), "sepulcra").unwrap();
     }), Expect::Refused("reserved")),
+    ("a game tool writing /vfx", |f| for_mallory(f, "sepulcra", |wd| {
+        wd.spawn(effect("forge", 0.05), "sepulcra").unwrap();
+    }), Expect::Refused("reserved")),
+    ("a game tool an agent called playing an effect with params that flash", |f| for_mallory(f, "sepulcra", |wd| {
+        wd.spawn(playing("loud", "glow", 4.0, 20.0), "sepulcra").unwrap();
+    }), Expect::Refused("photosensitive")),
+    ("a live Lex command's hooks playing an effect there isn't", |f| for_mallory(f, "lex:siege", |wd| {
+        wd.spawn(playing("odd", "nowhere", 1.0, 1.0), "lex:siege").unwrap();
+    }), Expect::Refused("unknown_effect")),
     ("a module hook an agent called tying a joint onto a claimed body (M3)", |f| {
         let id = f.abox;
         module_hook(f, |wd| {
@@ -325,6 +408,9 @@ const ROWS: &[(&str, Write, Expect)] = &[
     ("a module request writing /lex (M3)", |f| module_request_at(f, "/lex"), Expect::Refused("reserved")),
     ("a module request writing /lex_live (M3)", |f| module_request_at(f, "/lex_live"), Expect::Refused("reserved")),
     ("a module request writing /nav", |f| module_request_at(f, "/nav"), Expect::Refused("reserved")),
+    ("a module request writing /vfx", |f| module_request_at(f, "/vfx/forge"), Expect::Refused("reserved")),
+    ("a module request playing an effect with params that flash", |f| module_request_spawn(f, playing("loud", "glow", 4.0, 20.0)), Expect::Refused("photosensitive")),
+    ("a module request playing an effect there isn't", |f| module_request_spawn(f, playing("odd", "nowhere", 1.0, 1.0)), Expect::Refused("unknown_effect")),
     // The documented exemptions: the simulation's own writers move a claimed entity, journaled
     // under their names.
     ("the hosted game's tick (exempt)", |f| exempt_move(f, Exempt::Game { name: "sepulcra", kind: Kind::GameTick }), Expect::Exempt("sepulcra")),
@@ -454,7 +540,7 @@ fn every_write_path_holds_the_policy() {
 fn the_table_names_every_writer() {
     let names: Vec<&str> = ROWS.iter().map(|(n, _, _)| *n).collect();
     let has = |s: &str| names.iter().any(|n| n.contains(s));
-    for rule in [Rule::World, Rule::Joint, Rule::Nav, Rule::Lex, Rule::LexLive, Rule::Project] {
+    for rule in [Rule::World, Rule::Joint, Rule::Nav, Rule::Lex, Rule::LexLive, Rule::Project, Rule::Vfx] {
         let row = match rule {
             Rule::World => "world_set",
             Rule::Joint => "physics_joint's rule",
@@ -462,6 +548,7 @@ fn the_table_names_every_writer() {
             Rule::Lex => "the Lex tools' rule",
             Rule::LexLive => "lex_live's rule",
             Rule::Project => "the project tools' rule",
+            Rule::Vfx => "vfx_set's rule",
         };
         assert!(has(row), "{rule:?} has a row");
     }

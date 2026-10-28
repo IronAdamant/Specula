@@ -81,6 +81,9 @@ mod swarm_tools;
 mod tools;
 pub mod two_d;
 mod ui;
+pub mod flashwatch;
+pub mod vfx;
+mod vfx_tools;
 mod sim_writes;
 pub mod world;
 pub mod write_policy;
@@ -124,7 +127,7 @@ const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 
 const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|integrated|<index>] [--size WxH] \
 [--captures DIR] [--worlds DIR] [--world NAME] [--saves DIR] [--cache DIR] [--assets DIR] [--style FILE] [--perf FILE] \
-[--paused] [--max-fps N] [--response-format concise|detailed] [--physics-threads N] [-- GAME ARGS...]";
+[--paused] [--max-fps N] [--response-format concise|detailed] [--physics-threads N] [--vfx on|off] [-- GAME ARGS...]";
 
 /// How long a capture waits (parked, the engine serving others) for models still building.
 const CAPTURE_BUILD_WAIT: Duration = Duration::from_secs(10);
@@ -176,6 +179,8 @@ struct Args {
     paused: bool,
     /// The default `response_format` of every session (`--response-format`; concise unless set).
     response_format: response::Format,
+    /// Effects and decals drawn (`--vfx on|off`; on by default). Never changes the simulation.
+    vfx: bool,
     /// Threads physics may use (`--physics-threads`, 1..64, default 1): the narrowphase, and
     /// with the world's `physics.coloured` the contact solver. The results never depend on it.
     physics_threads: usize,
@@ -205,6 +210,7 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
         game_args: Vec::new(),
         paused: false,
         response_format: response::Format::Concise,
+        vfx: true,
         physics_threads: 1,
         max_fps: None,
     };
@@ -221,6 +227,14 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--port" => args.port = value()?.parse().map_err(|_| format!("bad port\n{USAGE}"))?,
             "--headless" => args.headless = true,
             "--paused" => args.paused = true,
+            "--vfx" => {
+                args.vfx = match value()?.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    other => return Err(format!("--vfx must be on or off, not '{other}'
+{USAGE}")),
+                }
+            }
             "--max-fps" => {
                 let range = schedule::MIN_MAX_FPS..=schedule::MAX_MAX_FPS;
                 args.max_fps = Some(value()?.parse().ok().filter(|n| range.contains(n)).ok_or_else(|| {
@@ -331,6 +345,8 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     engine.max_fps = args.max_fps.or(perf_cfg.window.max_fps);
     engine.lex_live.set_limits(perf_cfg.lex_live);
     engine.stream = streaming::Streamer::new(perf_cfg.streaming.clone(), kind);
+    engine.vfx.budget = perf_cfg.vfx.budget(kind);
+    engine.vfx.enabled = args.vfx;
     engine.perf_cfg = perf_cfg;
     engine.worlds_dir = args.worlds.unwrap_or_else(|| cwd.join("worlds"));
     engine.saves_dir = args.saves.unwrap_or_else(|| cwd.join("saves"));
@@ -624,6 +640,12 @@ struct Engine {
     fly: Option<stream_tools::Fly>,
     /// Headless playtests: the running one and recent reports (see [`playtest`]).
     playtests: playtest_engine::Playtests,
+    /// Particles, effects and decals (see [`vfx`]): cosmetic, never simulation.
+    vfx: vfx::Vfx,
+    /// WCAG 2.3.1 on the final image: the window's frames and each view's captures.
+    flash: flashwatch::FlashWatch,
+    /// Zero of the window flash watch's clock.
+    flash_epoch: Instant,
     /// Default response formats (`--response-format`, `agent_hello`), shared with the tools.
     formats: Arc<response::Defaults>,
     /// Project files on disk: mounts, the watcher, failed writes (see [`project`]).
@@ -661,6 +683,7 @@ impl Engine {
     fn new(mut gpu: Gpu, captures_root: &Path, library: Library) -> Result<Engine, String> {
         let meshes = ShapeMeshes::upload(&mut gpu).map_err(|e| format!("mesh upload: {e}"))?;
         let two_d = two_d::TwoDGpu::new(library.root());
+        let vfx = vfx::Vfx::new(library.root());
         let started = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let capture_dir = captures_root.join(format!("run-{started}-{}", std::process::id()));
         let luts = luts::Luts::new(library.root());
@@ -755,6 +778,9 @@ impl Engine {
             stream: streaming::Streamer::default(),
             fly: None,
             playtests: Default::default(),
+            vfx,
+            flash: flashwatch::FlashWatch::default(),
+            flash_epoch: Instant::now(),
             formats: response::Defaults::new(response::Format::Concise),
             project: project::Disk::default(),
             project_retry: Instant::now(),
@@ -793,6 +819,7 @@ impl Engine {
         // with `Live::stop_all`, save_read with the save's runs in `Live::apply_state`), keeping
         // perf.toml's [lex_live] limits.
         self.nav.reset();
+        self.vfx.reset();
         // Navigation reads the loaded world now: its navmeshes are built (in slices, the clock
         // held) before the first tick, as they were in the run that saved it.
         self.nav.sync(&self.world, self.world_generation);
@@ -948,6 +975,9 @@ impl Engine {
             self.nav_tick();
             // Physics steps on the same fixed tick, after the game moved what it moves.
             self.physics_tick();
+            // World-space effects' tracks (cosmetic: read only), as of the tick's end.
+            let tick_end = self.world.world_time() + 1.0 / f64::from(self.clock.hz());
+            self.vfx.tick(&self.world, self.world_generation, tick_end);
             self.check_world_replaced();
             self.clock.finish_tick();
             let _h = profile::zone("tick_hash");
@@ -1648,11 +1678,15 @@ impl Engine {
             let view_proj = camera.view_proj(size.0, size.1);
             let mut draws_2d = std::mem::take(&mut self.draws_2d);
             self.build_draws_2d(&view_proj, true, time_s as f32, &mut draws_2d, None);
+            let fx_view = vfx::View::of(&camera, size.0, size.1);
+            self.build_effects(&fx_view, time_s, true, &mut lights, true);
+            let fx = self.vfx.take_frame();
             let bones = self.models.take_bones();
             let mut frame = FrameDesc {
                 bones: &bones,
                 draws_2d: &draws_2d,
                 overlay: &game_quads,
+                effects: fx.effects(),
                 ..sight::frame(&self.world, &view_proj, &draws, &lights, time_s as f32)
             };
             self.luts.apply(&mut self.gpu, self.world.env(), &mut frame, false);
@@ -1662,10 +1696,16 @@ impl Engine {
             let present = profile::zone("present");
             let frame_cpu = frame_started.elapsed();
             let presented = self.gpu.present(&frame).map_err(|e| format!("present: {e}"));
+            {
+                // The flash grid borrowed (no copy of the frame's stats).
+                let _z = profile::zone("flash_watch");
+                self.flash.feed_window(self.gpu.flash_grid(), self.flash_epoch.elapsed().as_secs_f64());
+            }
             let (frame_no, cpu) = self.gpu.last_window_timing();
             let blocked = Duration::from_secs_f64((cpu.wait_ms + cpu.submit_ms).max(0.0) / 1000.0);
             schedule.presented(frame_no, served, blocked, Instant::now());
             self.models.put_bones(bones);
+            self.vfx.put_frame(fx);
             drop(present);
             self.draws = draws;
             self.lights = lights;
@@ -2052,6 +2092,7 @@ impl Engine {
             }
             Command::Anim(call) => self.anim_call(call, w, tick),
             Command::StudioRender(_) | Command::StudioDone(_) => unreachable!("queued by studio_enqueue"),
+            Command::Vfx(call) => self.vfx_call(call, w, tick),
             Command::Project(call) => self.project_call(call, w, &by),
         };
         self.check_world_replaced();
@@ -2368,6 +2409,19 @@ impl Engine {
         };
         let mut errors = perf::evaluate(&budgets, &sample, kind);
         errors.extend(self.stream.budget_errors(kind));
+        if self.flash.window.report.over {
+            let r = &self.flash.window.report;
+            errors.push(Json::obj([
+                ("error", Json::from("flash")),
+                ("message", Json::from(format!(
+                    "the window flashes: up to {} flashes (red {}) in the last second over {:.1}% of the view (WCAG 2.3.1 allows 3, over at most {:.1}%)",
+                    r.flashes,
+                    r.red_flashes,
+                    r.area.max(r.red_area) * 100.0,
+                    flashwatch::AREA * 100.0
+                ))),
+            ]));
+        }
         let source = self.perf_cfg.source.as_ref().map_or(Json::Null, |p| Json::from(p.display().to_string()));
         let heap_mb = (heap.current_bytes as f64 / 1_048_576.0 * 10.0).round() / 10.0;
         let out = Json::obj([
@@ -2402,6 +2456,10 @@ impl Engine {
             ("shape_budgets", self.world.shape_budgets_json()),
             ("models", self.models_json()),
             ("streaming", self.stream.json(&self.gpu, &self.models)),
+            // Effects: the window frame's budget use (vfx_info has more).
+            ("vfx", Json::obj([("enabled", Json::from(self.vfx.enabled)), ("budget", self.vfx.budget.to_json()), ("window", self.vfx.window.to_json())])),
+            // WCAG 2.3.1 on the final image (the window's grid and each view's captures).
+            ("flash", self.flash.to_json(window.as_ref().and_then(|w| w.flash.unsupported))),
             ("render_graph", perf::graph_json(self.gpu.last_graph().as_ref(), graph)),
             // Effects that can't apply (a grading LUT that failed to load), structured.
             // and pipeline variants a background build failed to make.
@@ -2513,6 +2571,7 @@ fn call_class(command: &Command) -> Class {
         Command::Frame(_) | Command::Sight(_) => Class::Render,
         Command::Anim(call) => anim_tools::call_class(call),
         Command::StudioRender(_) | Command::StudioDone(_) => Class::Read,
+        Command::Vfx(call) => vfx_tools::call_class(call),
         Command::Save { .. } | Command::Load { .. } | Command::ModelBuild(_) | Command::ModelReload => Class::Disk,
         Command::Hash { verify: true, .. } => Class::Big,
         Command::Swarm(call) => call.class(),

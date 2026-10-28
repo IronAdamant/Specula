@@ -1009,7 +1009,7 @@ impl GpuInner {
         let features = frame_features(frame, &self.scratch, shadow.is_some());
         let mode = PostMode::of(env).fit(extent);
         let zpl = specula_core::profile::zone("gpu.pipelines");
-        let pipelines = self.pipelines.frame(&self.device, TARGET_FORMAT, features, mode, env.sky.enabled, !frame.overlay.is_empty())?;
+        let pipelines = self.pipelines.frame(&self.device, TARGET_FORMAT, features, mode, env.sky.enabled, !frame.overlay.is_empty(), (!frame.effects.particles.is_empty(), !frame.effects.decals.is_empty()), false)?;
         drop(zpl);
         // Graph images replaced (or long unused) are freed once no pending frame can use them.
         self.pool.collect(&self.device, &mut self.descriptors, self.completed);
@@ -1025,6 +1025,11 @@ impl GpuInner {
             overlay: !frame.overlay.is_empty(),
             two_d: !frame.draws_2d.is_empty(),
             ssao: crate::ssao::ssao_extent(env, extent),
+            particles: !frame.effects.particles.is_empty(),
+            decals: !self.scratch.effects.decals.is_empty(),
+            blended: self.scratch.plan.batches.iter().any(|b| b.material.blended()),
+            flash: false,
+            flash_reset: false,
         };
         let res = declare_frame(&mut t.graph, &shape);
         // Sight's ID passes come after the frame's own, so the image is the same with or without.
@@ -1151,6 +1156,7 @@ impl GpuInner {
         if let Some(mut old) = self.window.take() {
             self.device.wait_idle();
             self.pool.release_owner(&self.device, &mut self.descriptors, WINDOW_OWNER);
+            old.release_slots(&mut self.descriptors);
             old.destroy(&self.instance, &self.device, self.cmd_pool);
             if self.last_graph == Some(GraphSource::Window) {
                 self.last_graph = None;
@@ -1222,6 +1228,11 @@ impl GpuInner {
         stats.pipelines = self.pipelines.stats();
         stats.memory = self.device.memory_stats(&self.instance);
         stats
+    }
+
+    /// The window's last flash watch blocks, borrowed (no copy of the frame's stats).
+    pub fn flash_grid(&self) -> &crate::FlashGrid {
+        &self.last_window.flash
     }
 
     pub fn mark_warm(&mut self) {
@@ -1628,6 +1639,11 @@ mod tests {
             overlay: false,
             two_d: false,
             ssao: None,
+            particles: false,
+            decals: false,
+            blended: false,
+            flash: false,
+            flash_reset: false,
         };
         let mut g = FrameGraph::new(77);
         let shadow_view = |gpu: &GpuInner| gpu.descriptors.shadow_view;

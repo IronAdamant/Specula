@@ -1242,9 +1242,6 @@ impl<T: Copy + PartialEq + fmt::Debug> RenderGraph<T> {
     }
 
     /// A buffer owned elsewhere; bind its handle each frame.
-    // Part of the graph API for the passes that come next (ID buffer, GPU skinning, SSAO); used by
-    // the tests today.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn import_buffer(&mut self, name: &'static str, size: u64, prior: Prior, fin: Final) -> Res {
         self.add(name, Kind::Buffer { size, prior, fin })
     }
@@ -1302,11 +1299,19 @@ impl<T: Copy + PartialEq + fmt::Debug> RenderGraph<T> {
         b.layer_views[0] = view;
     }
 
-    // Part of the graph API for the passes that come next (ID buffer, GPU skinning, SSAO); used by
-    // the tests today.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// [`RenderGraph::bind_image`] with the image's bindless slot (an imported image sampled).
+    pub fn bind_image_slot(&mut self, res: Res, image: VkImage, view: VkImageView, slot: u32) {
+        self.bind_image(res, image, view);
+        self.bound[res.0 as usize].image.slot = slot;
+    }
+
     pub fn bind_buffer(&mut self, res: Res, buffer: VkBuffer) {
         self.bound[res.0 as usize].buffer = buffer;
+    }
+
+    /// The handle bound to imported buffer `res` this frame.
+    pub fn buffer(&self, res: Res) -> VkBuffer {
+        self.bound[res.0 as usize].buffer
     }
 
     pub fn image(&self, res: Res) -> &BoundImage {
@@ -1615,7 +1620,11 @@ fn create_entry(
     let aspect = aspect_of(desc.format);
     let bindless = desc.bindless && usage & VK_IMAGE_USAGE_SAMPLED_BIT != 0;
     let slot = if bindless { descriptors.alloc_slot()? } else { NO_SLOT };
-    let image = match dev.create_image_with(desc.format, desc.width, desc.height, 1, desc.layers, usage, aspect, desc.memory, name) {
+    // An image only copied to and from (the flash watch's levels) still gets a view: views need
+    // a usage that can be viewed, so such images are also made sampleable (never bound).
+    let viewable = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    let create_usage = if usage & viewable == 0 { usage | VK_IMAGE_USAGE_SAMPLED_BIT } else { usage };
+    let image = match dev.create_image_with(desc.format, desc.width, desc.height, 1, desc.layers, create_usage, aspect, desc.memory, name) {
         Ok(i) => i,
         Err(e) => {
             if slot != NO_SLOT {

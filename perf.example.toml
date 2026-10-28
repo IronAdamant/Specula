@@ -51,6 +51,10 @@ post_bloom = 1.5
 # the 0.43 ms above was measured): 0.80 ms p95 with the Sepulcra grade at 1280x720 (2026-10-16).
 post_tonemap = 1.2
 post_fxaa = 0.8
+# Effects (docs/design/VFX.md). Sepulcra mid-wave on the iGPU at 1280x720 (2026-10-22, a shared
+# machine): particles 0.02-0.07 ms (30-80 particles), decals 0.04-0.14 ms (7-10 decals).
+decals = 0.5
+particles = 1.0
 
 [budgets.zones]                  # CPU ms per frame (p95) per zone path; "thread:path" for other threads
 "frame/requests" = 6.0           # agents' tool calls (sight_frame renders count here)
@@ -78,6 +82,22 @@ ssao = 0.4
 post_bloom = 0.6
 post_tonemap = 0.2
 post_fxaa = 0.3
+decals = 0.2
+particles = 0.4
+
+# Effects (docs/design/VFX.md): what particles, decals and effect lights may cost per frame. Over a budget,
+# effects are thinned (nearest and highest priority keep theirs), never dropped silently: vfx_info and
+# perf_frame's vfx report expected, drawn and thinned particles and the fill estimate. [vfx.<kind>] overrides
+# per adapter kind, key by key.
+# [vfx]
+# max_particles = 4000          # particles drawn per frame, all effects together (discrete default 6000)
+# max_work = 100000            # CPU work evaluating them, in units of about 10-20 ns (plain particle 11, noise 26, stick 29, both 179; discrete 160000)
+# max_emitters = 512            # emitters evaluated per frame (nearest first)
+# max_decals = 256              # decals drawn per frame (nearest first)
+# fill_cap = 1.5                # estimated particle pixels per frame, in screens (discrete default 3.0)
+# decal_fill_cap = 1.0          # screen area decal boxes may cover per frame, in screens; lit ones count double (about 2.7 ms per lit screen on the iGPU at 720p; discrete 3.0)
+# max_per_effect = 1500         # what vfx_check allows one effect instance at its peak
+# lights = 4                    # point lights effects may add (the frame's 16 are shared with the world's)
 
 # The window (`--max-fps N` overrides max_fps). A frame cap presents at most max_fps frames a second,
 # on whole vblanks (60: every 4th at 240 Hz, every 3rd at 144 Hz); the GPU idles the rest of each

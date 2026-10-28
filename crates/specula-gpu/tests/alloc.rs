@@ -8,7 +8,7 @@ mod common;
 use common::*;
 use specula_gpu::vector::{fill, Path, ShapeMesh};
 use specula_gpu::{
-    AdapterPreference, Billboard, Draw2d, DrawItem, Environment, FrameDesc, Material, MaterialTextures, MeshStreams, OverlayQuad,
+    AdapterPreference, Billboard, Decal, DecalMode, Draw2d, DrawItem, Effects, Environment, FrameDesc, Particle, ParticleMaterial, Material, MaterialTextures, MeshStreams, OverlayQuad,
     PointLight, ShapeDraw, SkinVertex, Sprite, SpriteBlend, Surface, TextureFormat, TextureSampler, TileCell, TileChunk, TileGrid,
 };
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -131,6 +131,15 @@ fn warm_frames_do_not_allocate() {
     (g.enabled, g.temperature, g.contrast, g.vibrance, g.lift, g.lut, g.vignette, g.grain) =
         (true, -0.2, 1.1, -0.3, [0.0, 0.0, 0.02], Some(lut), 0.3, 0.2);
     environment.ssao.enabled = true;
+    // Effects: particles (one draw) and decals of both modes (the scene splits around them).
+    let materials = [ParticleMaterial { texture: Some(texture), grid: [1, 1], soft: 0.5, lit: true }, ParticleMaterial::default()];
+    let particles: Vec<Particle> = (0..64)
+        .map(|i| Particle { position: [i as f32 * 0.1 - 3.0, 1.0, 0.5], size: 0.3, color: [2.0, 1.0, 0.5, 0.8], additive: (i % 2) as f32, material: (i % 2) as u16, ..Default::default() })
+        .collect();
+    let decals = [
+        Decal { model: translation([1.0, 0.0, 1.0]), albedo: Some(texture), mode: DecalMode::Multiply, ..Default::default() },
+        Decal { model: translation([-1.0, 0.0, 1.0]), albedo: Some(texture), normal: Some(material), emissive: 1.0, specular: 0.5, ..Default::default() },
+    ];
     gpu.mark_warm();
     let frame = FrameDesc {
         view_proj,
@@ -143,6 +152,7 @@ fn warm_frames_do_not_allocate() {
         overlay: &overlay,
         draws_2d: &draws_2d,
         bones: &bones,
+        effects: Effects { particles: &particles, materials: &materials, decals: &decals },
     };
     for _ in 0..5 {
         gpu.render(target, &frame).unwrap();
@@ -164,6 +174,8 @@ fn warm_frames_do_not_allocate() {
     assert!(graph.passes.iter().any(|p| p.name == "overlay" && p.inline), "{graph}");
     assert!(graph.passes.iter().any(|p| p.name == "sprites" && p.inline), "{graph}");
     assert_eq!((stats.draws.sprites, stats.draws.tile_chunks, stats.draws.shapes, stats.draws.shadow_sprites), (2, 1, 1, 1));
+    assert_eq!((stats.draws.particles, stats.draws.decals), (64, 2));
+    assert!(graph.passes.iter().any(|p| p.name == "particles") && graph.passes.iter().any(|p| p.name == "decals"), "{graph}");
     gpu.destroy_target(target);
     gpu.destroy_texture(texture);
     gpu.destroy_texture(material);

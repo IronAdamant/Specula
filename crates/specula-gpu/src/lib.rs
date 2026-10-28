@@ -112,6 +112,7 @@ mod atlas;
 mod batch;
 mod descriptors;
 mod device;
+mod effects;
 mod gpu;
 mod graph;
 mod idbuffer;
@@ -133,6 +134,7 @@ pub mod vector;
 mod vk;
 
 pub use graph::{Access, GraphBarrier, GraphError, GraphInfo, GraphPass, GraphResource, GraphUse, Load};
+pub use effects::{f16_bits, Decal, DecalMode, Effects, Particle, ParticleMaterial, MAX_DECALS, MAX_PARTICLES, MAX_PARTICLE_MATERIALS};
 pub use idbuffer::{IdCounts, IdCoverage, IdImage};
 pub use atlas::{pack_atlas, Atlas, AtlasError, AtlasImage, AtlasOptions, AtlasRect, Flipbook, Playback};
 pub use sprite::{sprite_sphere, tiles_sphere, view_2d, Billboard, Draw2d, ShapeDraw, Sprite, SpriteBlend, TileChunk, View2d};
@@ -255,6 +257,8 @@ pub enum ErrorReason {
     BadStream { stream: MeshStream, vertex: u32 },
     /// [`GradingSettings::lut`] isn't a 3D LUT strip: `N² × N` (N = 2..=[`MAX_LUT_SIZE`]), RGBA8.
     BadLut { width: u32, height: u32 },
+    /// Particle `particle` names material `material`, but [`Effects::materials`] has `materials`.
+    MaterialOutside { particle: u32, material: u32, materials: u32 },
 }
 
 /// A vertex stream of [`MeshStreams`].
@@ -280,6 +284,12 @@ pub enum Limit {
     BoneMatrices,
     /// Occluder rectangles per ID render ([`MAX_ID_OCCLUDERS`]).
     IdOccluders,
+    /// Particles per frame ([`MAX_PARTICLES`]).
+    Particles,
+    /// Particle materials per frame ([`MAX_PARTICLE_MATERIALS`]).
+    ParticleMaterials,
+    /// Decals per frame ([`MAX_DECALS`]).
+    Decals,
 }
 
 /// What was asked for and what is allowed.
@@ -342,6 +352,9 @@ impl GpuError {
             Limit::OverlayQuads => "overlay quads per frame",
             Limit::BoneMatrices => "bone matrices per frame",
             Limit::IdOccluders => "ID buffer occluder rectangles per capture",
+            Limit::Particles => "particles per frame",
+            Limit::ParticleMaterials => "particle materials per frame",
+            Limit::Decals => "decals per frame",
         };
         GpuError {
             message: format!("{requested} {name} requested; at most {max}"),
@@ -1084,6 +1097,8 @@ pub struct FrameDesc<'a> {
     /// Skinning matrices (column-major, bind pose → pose, object space) of every skinned draw,
     /// palettes one after another (see [`DrawItem::skin`]); at most [`MAX_BONE_MATRICES`].
     pub bones: &'a [[f32; 16]],
+    /// Particles and decals (see [`Effects`]; empty: the frame is exactly as without them).
+    pub effects: Effects<'a>,
 }
 
 impl Default for FrameDesc<'_> {
@@ -1099,6 +1114,7 @@ impl Default for FrameDesc<'_> {
             overlay: &[],
             draws_2d: &[],
             bones: &[],
+            effects: Effects::default(),
         }
     }
 }
@@ -1465,6 +1481,11 @@ impl Gpu {
 
     /// Like [`Gpu::last_frame_stats`], but the latest frame of one path (`None` if it has none
     /// yet): the window's frame rate is not disturbed by agents' offscreen captures.
+    /// The window's last flash watch blocks (see [`FlashGrid`]), borrowed: cheap every frame.
+    pub fn flash_grid(&self) -> &FlashGrid {
+        self.inner.flash_grid()
+    }
+
     pub fn last_frame_stats_of(&self, path: FramePath) -> Option<FrameStats> {
         let stats = self.inner.last_frame_stats(Some(path));
         (stats.frame != 0).then_some(stats)

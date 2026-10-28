@@ -75,6 +75,8 @@ pub(crate) struct ViewOpts<'a> {
 
 /// One rendered view.
 pub(crate) struct Rendered {
+    /// The flash watch over this view's captures (`null` until it has a history).
+    pub flash: Json,
     pub(crate) rgba: Vec<u8>,
     pub(crate) subjects: Vec<Subject>,
     pub(crate) stats: LodStats,
@@ -88,6 +90,8 @@ pub(crate) struct Rendered {
     pub(crate) two_d_problems: Vec<String>,
     /// What streaming left out or merged (see `streaming`); null when streaming is off.
     pub(crate) streaming: Json,
+    /// The effects and decals drawn (see `vfx`): boxes, counts, the frame's budget use.
+    pub(crate) effects: Json,
 }
 
 /// Set once the first lost device has been logged.
@@ -182,7 +186,7 @@ impl Engine {
         let streaming = self.stream_capture(&stream_views(&views));
         // `fresh`: sprite and tileset files in view are checked for changes now, so the capture
         // shows them as they are at the request.
-        if self.building_in(&views) == 0 && self.two_d_waiting(&views, true) == 0 && streaming == 0 {
+        if self.building_in(&views) == 0 && self.two_d_waiting(&views, true) == 0 && streaming == 0 && self.vfx_textures_waiting(true) == 0 {
             let _ = reply.send(self.run_job(&job, &session, wait));
             return;
         }
@@ -211,7 +215,7 @@ impl Engine {
                 Ok(views) => {
                     // Edits since it parked are filed (no old proxy drawn) and its views stay sources.
                     let streaming = self.stream_capture(&stream_views(&views));
-                    self.building_in(&views) + self.two_d_waiting(&views, false) + streaming
+                    self.building_in(&views) + self.two_d_waiting(&views, false) + streaming + self.vfx_textures_waiting(false)
                 }
                 Err(out) => {
                     let _ = w.reply.send(out);
@@ -512,6 +516,11 @@ impl Engine {
             lights.insert(0, l);
             lights.truncate(specula_gpu::MAX_POINT_LIGHTS);
         }
+        // Effects and decals at the capture's time (their lights join the world's).
+        let fx_view = crate::vfx::View::of(&camera, w, h);
+        self.build_effects(&fx_view, opts.time_s, opts.include_ui, &mut lights, false);
+        let fx = self.vfx.take_frame();
+        let effects = self.vfx.packet_json(&self.world, &fx_view);
         let mut subjects = sight::subjects(&self.world, &view_proj, w, h, opts.include_ui);
         // Sprites, tile chunks and shapes: their ids follow the meshes' (render_with_ids takes
         // one id per mesh draw, then one per 2D draw).
@@ -525,8 +534,12 @@ impl Engine {
         // Animated models' bone matrices, posed at time_s by build_draws (returned below; an
         // error path just drops them).
         let bones = self.models.take_bones();
-        let mut frame =
-            FrameDesc { bones: &bones, draws_2d: &draws_2d, ..sight::frame(&self.world, &view_proj, &draws, &lights, opts.time_s as f32) };
+        let mut frame = FrameDesc {
+            bones: &bones,
+            draws_2d: &draws_2d,
+            effects: fx.effects(),
+            ..sight::frame(&self.world, &view_proj, &draws, &lights, opts.time_s as f32)
+        };
         self.luts.apply(&mut self.gpu, self.world.env(), &mut frame, true);
         let painted = !opts.overlays.is_empty() || opts.caption.is_some();
         let second_render = painted && opts.ids && opts.overlays.has(Kind::Bounds);
@@ -595,11 +608,16 @@ impl Engine {
             self.gpu.render(target, &frame).map_err(|e| gpu_failure("render", &e, self.windowed))?;
         }
         let rgba = self.gpu.read_rgba8(target).map_err(|e| gpu_failure("readback", &e, self.windowed))?;
+        // The flash watch over this view's captures, from their own pixels at simulation time.
+        let view_key = view_proj.to_cols_array().iter().fold(u64::from(w) << 32 | u64::from(h), |h, v| h.rotate_left(5) ^ u64::from(v.to_bits()));
+        let flash_report = self.flash.feed_capture(&rgba, w, h, opts.time_s, view_key);
+        let flash = if flash_report.samples >= 2 || flash_report.over { flash_report.to_json() } else { Json::Null };
         self.models.put_bones(bones);
+        self.vfx.put_frame(fx);
         // Subjects drawn merged in a proxy, or not resident, say so.
         self.stream.annotate(&mut subjects, &self.world, &self.models);
         let streaming = self.stream.capture_json(&stats);
-        Ok(Rendered { rgba, subjects, stats, lights: lights.len(), dropped_lights, overlays, ids: ids_json, two_d_problems, streaming })
+        Ok(Rendered { flash, rgba, subjects, stats, lights: lights.len(), dropped_lights, overlays, ids: ids_json, two_d_problems, streaming, effects })
     }
 
     /// The overlay records for one view and what they drew, at most `budget` of them.
@@ -831,6 +849,11 @@ impl Engine {
                 report.details.push((k, d));
             }
         }
+        if spec.has(Kind::Effects) {
+            let d = crate::vfx_tools::paint(&self.vfx, world, &mut p);
+            report.drawn.push("effects");
+            report.details.push(("effects", d));
+        }
         if spec.has(Kind::Labels) {
             for (s, e, _) in shown.iter().take(spec.max_labels * 4) {
                 let at = centre(&p, e, s);
@@ -926,6 +949,16 @@ impl Engine {
         }
         if !r.streaming.is_null() {
             packet.set("streaming", r.streaming.clone());
+        }
+        // Only when the frame had any: worlds without effects keep their packets as they were.
+        if r.effects.get("effects").and_then(Json::as_array).is_some_and(|a| !a.is_empty())
+            || r.effects.get("decals").and_then(Json::as_array).is_some_and(|a| !a.is_empty())
+            || r.effects.get("frame").and_then(|f| f.get("instances")).and_then(Json::as_u64).is_some_and(|n| n > 0)
+        {
+            packet.set("effects", r.effects.clone());
+        }
+        if !r.flash.is_null() {
+            packet.set("flash", r.flash.clone());
         }
         if let Some(path) = &packet_path {
             if let Err(e) = std::fs::write(path, packet.to_pretty()) {

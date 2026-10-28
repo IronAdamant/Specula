@@ -831,6 +831,8 @@ impl Engine {
             overlay: &[],
             draws_2d: &[],
             bones: &bones,
+            // The stage shows assets, never effects.
+            effects: Default::default(),
         };
         // A target per light kind: its render graph stays as built (lit and silhouette frames
         // alternate, and a target rebuilds its graph whenever its settings change).
@@ -1784,7 +1786,7 @@ impl Ctx<'_> {
         let root = self.shared.library.lock().root().to_path_buf();
         let folder = Path::new(&subject.spec.recipe).parent().map(Path::to_path_buf).unwrap_or_default();
         let mut names: Vec<String> = std::fs::read_dir(root.join(&folder))
-            .map(|d| d.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.ends_with(".json")).collect())
+            .map(|d| d.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.ends_with(".json") && !is_texture_graph(&root.join(&folder).join(n))).collect())
             .unwrap_or_default();
         names.sort();
         let mine = Path::new(&subject.spec.recipe).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
@@ -1959,7 +1961,7 @@ impl Ctx<'_> {
         let mut list = subjects;
         if let Some(f) = &folder {
             let mut names: Vec<String> = match std::fs::read_dir(root.join(f)) {
-                Ok(d) => d.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.ends_with(".json")).collect(),
+                Ok(d) => d.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.ends_with(".json") && !is_texture_graph(&root.join(f).join(n))).collect(),
                 Err(e) => return error("not_found", format!("folder '{f}' under the assets root: {e}")),
             };
             if names.len() > crate::studio_tools::MAX_STYLE_SUBJECTS {
@@ -2194,6 +2196,12 @@ fn sheet_answer(sheet: &SheetSpec, out: &SheetOut, format: Format, mark: Option<
         j.set("mark", Json::from(m));
     }
     j
+}
+
+/// Whether a `.json` file is a texture graph (`"texgraph": 1`, procedural modelling) rather than a
+/// model recipe: they live beside the recipes that use them, and a folder sweep must skip them.
+fn is_texture_graph(path: &Path) -> bool {
+    std::fs::read_to_string(path).ok().and_then(|t| Json::parse(&t).ok()).is_some_and(|j| j.get("texgraph").is_some())
 }
 
 #[cfg(test)]

@@ -111,6 +111,8 @@ impl Yours {
             (u.recipe.is_some(), "recipe"),
             (u.params.is_some(), "params"),
             (u.anim.is_some(), "anim"),
+            (u.vfx.is_some(), "vfx"),
+            (u.decal.is_some(), "decal"),
             (u.visible.is_some(), "visible"),
             (u.layer.is_some(), "layer"),
             (u.tiles.is_some(), "tilemap"),

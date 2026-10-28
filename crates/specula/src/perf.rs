@@ -239,6 +239,10 @@ pub fn stats_json(s: &FrameStats) -> Json {
                 ("triangles", Json::from(d.triangles)),
                 ("pipeline_binds", Json::from(d.pipeline_binds)),
                 ("unbatched_draw_calls", Json::from(d.unbatched_draw_calls)),
+                ("particles", Json::from(d.particles)),
+                ("particle_draw_calls", Json::from(d.particle_draw_calls)),
+                ("decals", Json::from(d.decals)),
+                ("decal_draw_calls", Json::from(d.decal_draw_calls)),
             ]),
         ),
         (
@@ -489,6 +493,8 @@ pub struct PerfConfig {
     pub lex_live: crate::lex_live::Limits,
     /// `[streaming]`: upload and memory budgets, cells, HLOD (see [`crate::streaming`]).
     pub streaming: crate::streaming::StreamTable,
+    /// `[vfx]`: particle, emitter, decal, fill and light budgets of effects (see [`crate::vfx`]).
+    pub vfx: crate::vfx::VfxTable,
     base: Json,
     adapters: Vec<(String, Json)>,
 }
@@ -504,6 +510,7 @@ impl Default for PerfConfig {
             window: WindowConfig::default(),
             lex_live: crate::lex_live::LIMITS,
             streaming: crate::streaming::StreamTable::default(),
+            vfx: crate::vfx::VfxTable::default(),
             base: Json::obj::<&str>([]),
             adapters: Vec::new(),
         }
@@ -562,7 +569,8 @@ impl PerfConfig {
                 "window" => cfg.window = WindowConfig::parse(v)?,
                 "lex_live" => cfg.lex_live = crate::lex_live::Limits::parse(v)?,
                 "streaming" => cfg.streaming = crate::streaming::StreamTable::parse(v)?,
-                other => return Err(format!("unknown section '{other}' (known: profiler, budgets, adapter, swarm, window, lex_live, streaming)")),
+                "vfx" => cfg.vfx = crate::vfx::VfxTable::parse(v)?,
+                other => return Err(format!("unknown section '{other}' (known: profiler, budgets, adapter, swarm, window, lex_live, streaming, vfx)")),
             }
         }
         Budgets::from_json(&cfg.base, "budgets")?;

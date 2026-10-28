@@ -48,11 +48,11 @@ pub const FORMAT: &str = "specula.world/v1";
 const INDEX: &str = "world.json";
 const INDEX_TMP: &str = "world.json.tmp";
 /// Keys an entity record may have; anything else is a typo worth reporting.
-const RECORD_KEYS: [&str; 33] = [
+const RECORD_KEYS: [&str; 35] = [
     "path", "id", "shape", "position", "rotation_deg", "scale", "color", "material", "opacity", "emissive",
     "metallic", "roughness", "specular", "seed", "color2", "light", "profile", "segments", "tags", "props",
     "collider", "body", "version", "created_by", "modified_by", "recipe", "params", "visible", "layer", "anim",
-    "sprite", "tilemap", "shape2d",
+    "sprite", "tilemap", "shape2d", "vfx", "decal",
 ];
 const INDEX_KEYS: &[&str] = &["format", "generation", "next_id", "entity_count", "time_s", "env", "subtrees", "cameras", "entities"];
 const CAMERAS_KEYS: &[&str] = &["format", "cameras"];
@@ -480,6 +480,12 @@ fn record(e: &Entity, path: &str) -> Json {
     }
     if let Some(a) = &e.anim {
         f.push(("anim", a.to_json()));
+    }
+    if let Some(v) = &e.vfx {
+        f.push(("vfx", v.to_json()));
+    }
+    if let Some(d) = &e.decal {
+        f.push(("decal", d.to_json()));
     }
     f.push(("version", Json::from(e.version)));
     f.push(("created_by", Json::from(&*e.created_by)));

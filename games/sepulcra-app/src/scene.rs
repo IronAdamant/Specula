@@ -44,6 +44,8 @@ use std::collections::BTreeMap;
 
 #[path = "scene_adopt.rs"]
 mod adopt;
+#[path = "scene_vfx.rs"]
+mod effects;
 
 /// Most point lights the game uses (the engine renders 16; leave room for agents' lights).
 const MAX_GAME_LIGHTS: usize = 12;
@@ -160,6 +162,8 @@ pub struct Scene {
     seen: Vec<u32>,
     /// Scratch: live projectile ids, sorted.
     live: Vec<ProjectileId>,
+    /// Particles and decals (transient presentation; see `scene_vfx`).
+    vfx: effects::Effects,
 }
 
 fn lerp(a: Vec3, b: Vec3, t: f32) -> Vec3 {
@@ -201,6 +205,7 @@ impl Scene {
         let (stones_g, walls_g, roots_g, tombs_g) = (sub(world, units, "stones"), sub(world, units, "walls"), sub(world, units, "roots"), sub(world, units, "tombstones"));
         let live = ents::transient_group(world, agent, "live", Layer::World, &["game", "transient"]);
         let (enemies_g, bolts_g, fx_g) = (sub(world, live, "enemies"), sub(world, live, "bolts"), sub(world, live, "fx"));
+        let vfx = effects::Effects::new(world, agent, live);
         let ui = ents::transient_group(world, agent, "cursor", Layer::Ui, &["ui"]);
         let cursor_part = Part::cube("cell", Vec3::ZERO, Vec3::ONE, highlight::VALID.color).glow(highlight::VALID.emissive);
         let cursor = ents::part(world, agent, ui, &cursor_part);
@@ -236,6 +241,7 @@ impl Scene {
             pace: 1.0,
             seen: Vec::new(),
             live: Vec::new(),
+            vfx,
         };
         scene.build_tombstones(world, state);
         scene
@@ -319,6 +325,7 @@ impl Scene {
             let id = ents::spawn(world, &self.agent, spec);
             self.stones.insert(cell, StoneView { id, kind: s.kind.0, tier: s.tier, lit: light.is_some() });
         }
+        self.vfx.sync_stones(world, &self.agent, state, &self.geo, &self.stones);
     }
 
     fn sync_walls(&mut self, world: &mut GameWorld<'_>, state: &State) {
@@ -491,6 +498,9 @@ impl Scene {
                 spec.anim = Some(AnimSpec { speed: self.pace, start: Some(world_now - phase as f64), ..AnimSpec::graph(play) });
                 let id = ents::spawn(world, &self.agent, spec);
                 let flies = def.flies();
+                if flies && id != 0 {
+                    self.vfx.trail(world, &self.agent, id);
+                }
                 self.enemies.insert(e.id, Mob { id, creature, prev: pos, cur: pos, prev_rot: rot, rot, written: Some((pos, rot)), flies, act, speed, busy_until: 0.0 });
                 continue;
             }
@@ -592,6 +602,9 @@ impl Scene {
                     let [x, y, z] = pos.to_f32();
                     let big = if content.enemy(kind).id == "colossus" { 4.0 } else { 1.0 };
                     self.flash(world, now, Vec3::new(x, y + 0.9 * big, z), 0.2 * big, 1.1 * big, 0.35, GRAVE_GLOW, 1.0, Some(0.25));
+                    if !content.enemy(kind).flies() {
+                        self.vfx.died(world, &self.agent, now, Vec3::new(x, y, z), big);
+                    }
                     // The body plays its death where it fell (or falls as a ragdoll), then goes.
                     if let Some(mut m) = self.enemies.remove(&enemy) {
                         let pace = self.pace.max(1.0);
@@ -613,6 +626,7 @@ impl Scene {
                         let (act, speed, pace) = (m.act, m.speed, self.pace);
                         tell(world, &self.agent, m, act, speed, true, pace);
                         self.flash(world, now, p, 0.15, 0.6, 0.15, RUNE_PALE, 3.0, None);
+                        self.vfx.hit(world, &self.agent, now, p);
                     }
                 }
                 Event::Exploded { projectile, pos } => {
@@ -628,6 +642,7 @@ impl Scene {
                     let flat = |k: f32| Vec3::new(k, k * 0.35, k);
                     self.effect(world, now, Vec3::new(x, y + 0.15, z), flat(0.5), flat(splash * 2.0), 0.3, FIRE_FLAME, 1.6, Some(0.3));
                     self.effect(world, now, Vec3::new(x, y + 0.1, z), flat(0.3), flat(splash * 0.9), 0.18, FIRE_CORE, 3.5, None);
+                    self.vfx.splash(world, &self.agent, now, Vec3::new(x, y, z), splash);
                 }
                 Event::Pulsed { stone, .. } => {
                     if let Some(s) = state.stone(stone) {
@@ -640,8 +655,13 @@ impl Scene {
                     let (a, _) = self.geo.anchor(map, cell);
                     self.disc(world, now, a + Vec3::new(0.0, 0.15, 0.0), 1.6, 0.5);
                 }
+                Event::WallPlaced { cell } => {
+                    let (a, _) = self.geo.anchor(map, cell);
+                    self.vfx.wall_built(world, &self.agent, now, a);
+                }
                 Event::WallBroken { cell } => {
                     let (a, _) = self.geo.anchor(map, cell);
+                    self.vfx.wall_broken(world, &self.agent, now, a);
                     self.flash(world, now, a + Vec3::new(0.0, 0.5, 0.0), 0.6, 2.4, 0.5, BONE_SHADOW, 0.3, Some(0.6));
                 }
                 Event::TombstonesLost { .. } => {
@@ -731,6 +751,7 @@ impl Scene {
             ents::place(world, agent, f.id, None, None, Some(lerp(f.from, f.to, ease_out(t))));
             true
         });
+        self.vfx.expire(world, now);
         self.corpses.retain(|c| {
             if now >= c.until {
                 ents::delete(world, c.id);
@@ -808,6 +829,7 @@ impl Scene {
             ("bolts", Json::from(self.bolts.len())),
             ("flashes", Json::from(self.fx.len())),
             ("lit_stones", Json::from(self.stones.values().filter(|v| v.lit).count())),
+            ("effects", Json::from(self.vfx.count())),
         ])
     }
 

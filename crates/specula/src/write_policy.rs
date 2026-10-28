@@ -227,6 +227,8 @@ pub enum Rule {
     LexLive,
     /// The project tools: project files (`/project`, [`Change::File`]).
     Project,
+    /// vfx_set: the effect library (`/vfx` and its children, the `vfx_effect` tag).
+    Vfx,
 }
 
 /// Writers exempt from claims: the simulation's own rules, journaled under their own names. Claims
@@ -330,8 +332,9 @@ impl Reserved {
 /// The reserved-data rules, for every writer that runs them: `/lex` (and Lex rule data anywhere)
 /// only through the Lex tools, entities in `/lex_live` only from lex_live (deleting there is
 /// anyone's: a run shows what it needs again), `/project` only through the project tools (and no
-/// entity there), `/nav` and navmesh settings only through the nav tools, and (for agents) joint
-/// data only through physics_joint.
+/// entity there), `/nav` and navmesh settings only through the nav tools, the effect library
+/// (`/vfx`, the `vfx_effect` tag) only through vfx_set, and (for agents) joint data only through
+/// physics_joint.
 fn reserved(changes: &[Change], r: Reserved) -> Result<(), WorldError> {
     let owns = |rule| r.owns == Some(rule);
     // The /lex subtree is Lex rule data, written only through the lex_* tools, and /lex_live
@@ -372,6 +375,17 @@ fn reserved(changes: &[Change], r: Reserved) -> Result<(), WorldError> {
         )
         .with("path", c.path().to_owned()));
     }
+    // The effect library: /vfx's children tagged vfx_effect (a claim on /vfx covers every world
+    // effect), written only through vfx_set; the tag marks an effect, so it goes nowhere else.
+    if !owns(Rule::Vfx) {
+        if let Some(c) = changes.iter().find(|c| crate::vfx::touches_library(c)) {
+            return Err(WorldError::new(
+                "reserved",
+                format!("'{}' is the effect library (/vfx and its children, the vfx_effect tag): change effects with vfx_set (vfx_get reads them; world_spawn {{vfx: {{effect}}}} plays one)", c.path()),
+            )
+            .with("path", c.path().to_owned()));
+        }
+    }
     // Likewise /nav and navmesh settings: only the nav tools write them.
     if !owns(Rule::Nav) {
         if let Some(c) = changes.iter().find(|c| crate::claims::touches_nav_data(c)) {
@@ -407,14 +421,15 @@ fn claims_step(claims: &Claims, world: &World, change: &Change, w: Writer, now: 
 }
 
 /// The decision for what an agent caused through the game, a module or live Lex
-/// ([`game_commit`]): the changes recorded since `mark`, made for `w`. Reserved data first (the
-/// whole set), then claims and the joint rules step by step (each change against the world as it
+/// ([`game_commit`]): the changes recorded since `mark`, made for `w`. Reserved data and the
+/// effect rules first (the whole set), then claims and the joint rules step by step (each change against the world as it
 /// was right after it: a later step can't hide what an earlier one did). Claims only run when one
 /// could refuse `w` (a world without other agents' claims examines nothing more). On refusal
 /// everything since `mark` is rolled back.
 fn check_game(world: &mut World, claims: &Claims, mark: Mark, w: Writer) -> Result<(), WorldError> {
     let start = world.mark_changes(mark);
-    if let Err(e) = reserved(&world.pending_changes()[start..], Reserved::GAME) {
+    let rules = reserved(&world.pending_changes()[start..], Reserved::GAME).and_then(|()| crate::vfx::write_rules(world, &world.pending_changes()[start..]));
+    if let Err(e) = rules {
         world.rollback_to(mark);
         return Err(e);
     }
@@ -501,7 +516,8 @@ pub(crate) fn recording_full<T>(world: &mut dyn WorldWrite, f: impl FnOnce(&mut 
 }
 
 /// An agent's tool writing the world. The decision, in order: `command` runs (sealed); its
-/// changes pass the reserved-data rules for `rule`; the joint rules on the result (every body a
+/// changes pass the reserved-data rules for `rule` and the effect rules
+/// ([`crate::vfx::write_rules`]: effects named exist and nothing flashes); the joint rules on the result (every body a
 /// change ties, lets go of or pulls, unless `rule` is [`Rule::Joint`], which checks its bodies
 /// itself); transient entities are refused (they belong to the hosted game); then claims, step by
 /// step. Journaled under `w` (undoable). A failing command or check changes nothing. Returns the
@@ -526,6 +542,7 @@ pub fn commit<T>(
         let start = wd.mark_changes(mark);
         let changes = &wd.pending_changes()[start..];
         reserved(changes, Reserved::agent(rule))?;
+        crate::vfx::write_rules(wd, changes)?;
         // Removing a joint, or a body a joint links, lets go of the joint's other bodies: allowed
         // with the right to change them (physics_joint checks its own writes).
         if rule != Rule::Joint && blocks {
@@ -619,13 +636,14 @@ pub fn game_tool<T>(world: &mut dyn WorldWrite, swarm: &mut Swarm, tick: u64, ga
 }
 
 /// A module's own request (spawn, set, delete, move_character) inside a call: the reserved-data
-/// rules on the changes since `mark`; on refusal they are rolled back (the ids they used are
+/// and effect rules on the changes since `mark`; on refusal they are rolled back (the ids they used are
 /// never handed out again) and the module gets the error. The call as a whole is committed by
 /// the module host's commit ([`module_tick_commit`], [`module_agent_commit`]).
 pub fn module_request(world: &mut dyn WorldWrite, mark: Mark) -> Result<(), WorldError> {
     let world = world.policy_world(&KEY);
     let start = world.mark_changes(mark);
-    if let Err(e) = reserved(&world.pending_changes()[start..], Reserved::GAME) {
+    let rules = reserved(&world.pending_changes()[start..], Reserved::GAME).and_then(|()| crate::vfx::write_rules(world, &world.pending_changes()[start..]));
+    if let Err(e) = rules {
         world.rollback_to(mark);
         return Err(e);
     }

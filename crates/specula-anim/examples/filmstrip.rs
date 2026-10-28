@@ -368,6 +368,7 @@ fn render_tile(gpu: &mut Gpu, target: specula_gpu::TargetId, view_proj: [f32; 16
         overlay: &[],
         draws_2d: &[],
         bones: &[],
+        effects: Default::default(),
     };
     gpu.render(target, &frame).expect("render");
     let px = gpu.read_rgba8(target).expect("read");

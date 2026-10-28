@@ -23,6 +23,16 @@ pub const PASS_ID_BUFFER: &str = "id_buffer";
 /// Sprites, tile chunks and vector shapes, drawn inside the scene pass's rendering (between the
 /// sky and the blended meshes); the scene's time excludes it.
 pub const PASS_SPRITES: &str = "sprites";
+/// Projected decals, between the opaque part of the scene and its blended part (frames with
+/// decals only).
+pub const PASS_DECALS: &str = "decals";
+/// Particles, after the scene (frames with particles only).
+pub const PASS_PARTICLES: &str = "particles";
+/// The flash watch: the final image's per-texel state and its 8x8 blocks, read back.
+pub const PASS_FLASH: &str = "flash";
+/// The flash watch's 8x8 blocks (from its state), and their copy to the host-readable buffer.
+pub const PASS_FLASH_CELLS: &str = "flash_cells";
+pub const PASS_FLASH_COPY: &str = "flash_copy";
 
 /// Which entry point produced a frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -105,6 +115,12 @@ pub struct DrawStats {
     pub triangles_2d: u64,
     /// Sprites drawn into the shadow map (into every cascade).
     pub shadow_sprites: u32,
+    /// Particles drawn ([`crate::Effects::particles`]) and their draw calls (one).
+    pub particles: u32,
+    pub particle_draw_calls: u32,
+    /// Decals drawn and their draw calls (one per run of one mode).
+    pub decals: u32,
+    pub decal_draw_calls: u32,
 }
 
 /// Why a pipeline cache blob given in [`crate::GpuOptions::pipeline_cache`] was not used.
@@ -268,4 +284,26 @@ pub struct FrameStats {
     pub draw_buffer_bytes: u64,
     pub pipelines: PipelineStats,
     pub memory: MemoryStats,
+    /// The last flash grid read back (window frames).
+    pub flash: FlashGrid,
+}
+
+/// The flash watch's blocks of a window frame (read back a frame or two late): for every
+/// 8x8 block of the final image (partial at odd edges), as RGBA16F: its mean relative luminance
+/// and red value / 320 (linear light; the red value of each 2x2 block's mean colour; kept to
+/// 1/255), and the share of its pixels that made a flash transition this frame (luminance, red).
+/// Every pixel weighs once: none is skipped or counted twice.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FlashGrid {
+    /// The window frame it shows (0: none yet).
+    pub frame: u64,
+    /// Blocks across and down, and the final image's size in pixels.
+    pub width: u32,
+    pub height: u32,
+    pub extent: (u32, u32),
+    /// `width × height × 4` half floats, row by row from the top.
+    pub halfs: Vec<u16>,
+    /// The window can't run the watch, and why (its swapchain images can't be sampled; it is
+    /// larger than the readback).
+    pub unsupported: Option<&'static str>,
 }

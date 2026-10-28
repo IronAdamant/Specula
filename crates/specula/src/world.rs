@@ -37,6 +37,7 @@ use specula_core::math::{Mat4, Quat, Vec3};
 use specula_core::Json;
 use crate::two_d::{TileEdits, TwoD};
 use specula_gpu::{Environment, Material, Surface};
+pub use specula_scintilla::{DecalSpec, VfxSpec};
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -1187,6 +1188,11 @@ pub struct Entity {
     pub two_d: Option<TwoD>,
     /// Model entities only: the animation playing (its `start` always set).
     pub anim: Option<AnimSpec>,
+    /// A visual effect playing at the entity (`crate::vfx`; its `start` always set): cosmetic,
+    /// never read by the simulation, but world data (saved, journaled, hashed) like a light.
+    pub vfx: Option<VfxSpec>,
+    /// A decal projected from the entity's box onto the opaque surfaces in it (`start` set).
+    pub decal: Option<DecalSpec>,
     /// `false` hides the entity and everything below it: not drawn, not a sight subject, not in
     /// the world's bounds. Still saved, queried, journaled and claimed like any field.
     pub visible: bool,
@@ -1360,6 +1366,12 @@ impl Entity {
         if let Some(a) = &self.anim {
             fields.push(("anim", a.to_json()));
         }
+        if let Some(v) = &self.vfx {
+            fields.push(("vfx", v.to_json()));
+        }
+        if let Some(d) = &self.decal {
+            fields.push(("decal", d.to_json()));
+        }
         if !self.visible {
             fields.push(("visible", Json::from(false)));
         }
@@ -1460,6 +1472,12 @@ impl Entity {
             h.write_str("anim");
             a.hash_into(h);
         }
+        if let Some(v) = &self.vfx {
+            v.hash_into(h);
+        }
+        if let Some(d) = &self.decal {
+            d.hash_into(h);
+        }
     }
 }
 
@@ -1513,6 +1531,10 @@ pub struct SpawnSpec {
     pub two_d: Option<TwoD>,
     /// Model entities only (see [`AnimSpec`]; an unset `start` becomes 0).
     pub anim: Option<AnimSpec>,
+    /// See [`Entity::vfx`] (an unset `start` becomes the world time now).
+    pub vfx: Option<VfxSpec>,
+    /// See [`Entity::decal`] (an unset `start` becomes the world time now).
+    pub decal: Option<DecalSpec>,
     pub visible: bool,
     pub layer: Layer,
     /// See [`Entity::transient`]. A child of a transient parent is transient whatever this says.
@@ -1541,6 +1563,8 @@ impl SpawnSpec {
             model: None,
             two_d: None,
             anim: None,
+            vfx: None,
+            decal: None,
             visible: true,
             layer: Layer::World,
             transient: false,
@@ -1586,6 +1610,10 @@ pub struct UpdateSpec {
     /// replaces the whole component (unset `start` = the world's clock now; `crossfade` > 0
     /// blends from the animation it replaces).
     pub anim: Option<Option<AnimSpec>>,
+    /// `Some(None)` removes the effect; a new one starts now unless told when.
+    pub vfx: Option<Option<VfxSpec>>,
+    /// `Some(None)` removes the decal; a new one's life starts now unless told when.
+    pub decal: Option<Option<DecalSpec>>,
     pub visible: Option<bool>,
     pub layer: Option<Layer>,
     /// 2D entities only: replaces the component (of the same kind).
@@ -1613,6 +1641,8 @@ impl UpdateSpec {
             && self.recipe.is_none()
             && self.params.is_none()
             && self.anim.is_none()
+            && self.vfx.is_none()
+            && self.decal.is_none()
             && self.visible.is_none()
             && self.layer.is_none()
             && self.two_d.is_none()
@@ -1639,6 +1669,8 @@ impl UpdateSpec {
             && self.recipe.is_none()
             && self.params.is_none()
             && self.anim.is_none()
+            && self.vfx.is_none()
+            && self.decal.is_none()
             && self.visible.is_none()
             && self.layer.is_none()
             && self.two_d.is_none()
@@ -1903,6 +1935,11 @@ impl Change {
                 + e.model.as_ref().map_or(0, |m| {
                     heap(&m.recipe) + ALLOC + m.params.iter().map(|(k, _)| std::mem::size_of::<(String, f64)>() + heap(k)).sum::<usize>()
                 })
+                + e.vfx.as_ref().map_or(0, |v| v.heap_bytes())
+                + e.decal.as_ref().map_or(0, |d| match &d.texture {
+                    specula_scintilla::TextureRef::Asset(p) => heap(p),
+                    _ => 0,
+                })
                 + e.anim.as_ref().map_or(0, |a| {
                     let graph = |a: &AnimSpec| a.graph.as_ref().map_or(0, |g| ALLOC + std::mem::size_of::<specula_anim::play::GraphPlay>() + g.heap_bytes());
                     heap(&a.clip) + graph(a) + a.from.as_ref().map_or(0, |f| ALLOC + std::mem::size_of::<AnimSpec>() + heap(&f.clip) + graph(f))
@@ -2028,11 +2065,11 @@ pub struct QueryPage<'a> {
 }
 
 /// Every field an entity listing can return (see [`World::fields_json`]).
-pub const FIELDS: [&str; 39] = [
+pub const FIELDS: [&str; 41] = [
     "id", "name", "path", "parent", "shape", "position", "rotation_deg", "scale", "world_position", "color",
     "material", "opacity", "emissive", "metallic", "roughness", "specular", "color2", "seed", "light", "profile",
     "tags", "props", "collider", "body", "version", "created_by", "modified_by", "children", "bounds", "recipe",
-    "params", "visible", "layer", "transient", "model_state", "anim", "sprite", "tilemap", "shape2d",
+    "params", "visible", "layer", "transient", "model_state", "anim", "sprite", "tilemap", "shape2d", "vfx", "decal",
 ];
 
 /// Entity changes [`World::draw_changes_since`] remembers.
@@ -2090,6 +2127,9 @@ pub struct World {
     /// Ids of the 2D entities (sprites, tilemaps, shapes), so the window's 2D pass doesn't visit
     /// every 3D entity. Kept by `link` and `unlink` (an entity's `two_d` comes with its shape).
     flat: BTreeSet<u64>,
+    /// Ids of the entities with a `vfx` or `decal` component (see [`World::fx_entities`]). Kept
+    /// by `link`, `unlink` and `update`.
+    fx: BTreeSet<u64>,
     /// Joint data by body: the persistent entities whose `props.joint` names each body as `a` or
     /// `b` (the claims' joint rules ask it per change). Kept by `link`, `unlink` and `update`.
     joints_by_body: BTreeMap<u64, BTreeSet<u64>>,
@@ -2490,6 +2530,11 @@ impl World {
     }
 
     /// The 2D entities (with `two_d`), by id (from an index: no 3D entity is visited).
+    /// The entities with a `vfx` or `decal` component, in id order (persistent and transient).
+    pub fn fx_entities(&self) -> impl Iterator<Item = &Entity> + '_ {
+        self.fx.iter().filter_map(|id| self.entities.get(id))
+    }
+
     pub fn two_d_entities(&self) -> impl Iterator<Item = &Entity> + '_ {
         self.flat.iter().filter_map(|id| self.entities.get(id))
     }
@@ -2933,6 +2978,7 @@ impl World {
     /// Inserts a checked entity under `id` (`None`: the next free id of its kind). Returns its id.
     fn insert(&mut self, spec: SpawnSpec, id: Option<u64>, version: u64, created_by: &str, modified_by: &str) -> Result<u64, WorldError> {
         check_spawn(&spec)?;
+        let now = self.world_time();
         let props = canonical_props(spec.props)?;
         let parent = match &spec.parent {
             Some(key) => Some(self.resolve(key).map_err(|e| e.with("field", "parent"))?),
@@ -3009,6 +3055,15 @@ impl World {
             anim: spec.anim.map(|mut a| {
                 a.start.get_or_insert(0.0);
                 a
+            }),
+            // Effects and decals start when they appear (one-shot bursts play then).
+            vfx: spec.vfx.map(|mut v| {
+                v.start.get_or_insert(now);
+                v
+            }),
+            decal: spec.decal.map(|mut d| {
+                d.start.get_or_insert(now);
+                d
             }),
             visible: spec.visible,
             layer: spec.layer,
@@ -3111,6 +3166,7 @@ impl World {
             )
             .with("field", "anim"));
         }
+        let now = self.world_time();
         // A new animation starts now (unless told when) and fades from the one it replaces.
         if let Some(Some(a)) = &mut change.anim {
             a.start.get_or_insert(self.world_time());
@@ -3301,6 +3357,23 @@ impl World {
         }
         if let Some(a) = change.anim {
             e.anim = a;
+        }
+        if let Some(v) = change.vfx {
+            e.vfx = v.map(|mut v| {
+                v.start.get_or_insert(now);
+                v
+            });
+        }
+        if let Some(d) = change.decal {
+            e.decal = d.map(|mut d| {
+                d.start.get_or_insert(now);
+                d
+            });
+        }
+        if e.vfx.is_some() || e.decal.is_some() {
+            self.fx.insert(id);
+        } else {
+            self.fx.remove(&id);
         }
         if let Some((spec, resolved)) = new_model {
             e.model = Some(spec);
@@ -3539,6 +3612,9 @@ impl World {
         if e.two_d.is_some() {
             self.flat.insert(e.id);
         }
+        if e.vfx.is_some() || e.decal.is_some() {
+            self.fx.insert(e.id);
+        }
         self.draw_touch(e.id);
         if let Some(TwoD::Shape2d(s)) = &e.two_d {
             if e.transient { &mut self.transient_shapes } else { &mut self.shapes }.charge(s);
@@ -3556,6 +3632,7 @@ impl World {
         }
         self.lit.remove(&id);
         self.flat.remove(&id);
+        self.fx.remove(&id);
         self.layout_epoch += 1;
         self.children.remove(&(e.parent.unwrap_or(ROOT), e.name.clone()));
         self.names.remove(&(e.name.clone(), id));
@@ -4221,6 +4298,7 @@ impl World {
         }
         self.lit.remove(&id);
         self.flat.remove(&id);
+        self.fx.remove(&id);
         self.layout_epoch += 1;
         let key = (e.parent.unwrap_or(ROOT), e.name.clone());
         if self.children.get(&key) == Some(&id) {

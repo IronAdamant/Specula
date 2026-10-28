@@ -67,6 +67,8 @@ impl Scene {
         let sub = |world: &mut GameWorld<'_>, parent: u64, name: &str| ents::group(world, agent, Some(parent), name, Vec3::ZERO, Vec3::ZERO, &[], Json::Null);
         let live = ents::transient_group(world, agent, "live", Layer::World, &["game", "transient"]);
         let (enemies_g, bolts_g, fx_g) = (sub(world, live, "enemies"), sub(world, live, "bolts"), sub(world, live, "fx"));
+        let mut vfx = effects::Effects::new(world, agent, live);
+        vfx.sync_stones(world, agent, state, &geo, &stones);
         let ui = ents::transient_group(world, agent, "cursor", Layer::Ui, &["ui"]);
         let cursor_part = Part::cube("cell", Vec3::ZERO, Vec3::ONE, highlight::VALID.color).glow(highlight::VALID.emissive);
         let cursor = ents::part(world, agent, ui, &cursor_part);
@@ -102,6 +104,7 @@ impl Scene {
             pace: 1.0,
             seen: Vec::new(),
             live: Vec::new(),
+            vfx,
         })
     }
 }

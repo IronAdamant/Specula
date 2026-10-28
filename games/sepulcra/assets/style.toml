@@ -105,11 +105,14 @@ max_triangles = 3000
 # A crypt or mausoleum: a building, seen whole from the game camera.
 category = "building"
 max_triangles = 1500
+# Its carved stone is a procedural texture set (256 px, with normals and mips): about 1 MiB.
+max_texture_kb = 1024
 
 [[budget]]
 # Decorative ruins (not the playable lane walls): few per scene, bevelled stone.
 category = "ruin"
 max_triangles = 4000
+max_texture_kb = 1024
 
 [[budget]]
 # Generated ground: eroded heightfield meshes, one per area.

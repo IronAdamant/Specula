@@ -26,7 +26,7 @@ use std::ptr;
 use std::time::Instant;
 
 /// Every shader module, by name (for errors) and SPIR-V; [`Shader`] indexes this table.
-static SHADERS: [(&str, &[u8]); 42] = [
+static SHADERS: [(&str, &[u8]); 48] = [
     ("mesh.vert", include_bytes!("../shaders/mesh.vert.spv")),
     ("mesh.frag", include_bytes!("../shaders/mesh.frag.spv")),
     ("shadow.vert", include_bytes!("../shaders/shadow.vert.spv")),
@@ -69,6 +69,12 @@ static SHADERS: [(&str, &[u8]); 42] = [
     ("ids_shape.vert", include_bytes!("../shaders/ids_shape.vert.spv")),
     ("ids_shape.frag", include_bytes!("../shaders/ids_shape.frag.spv")),
     ("ids_sprite_count.frag", include_bytes!("../shaders/ids_sprite_count.frag.spv")),
+    ("particle.vert", include_bytes!("../shaders/particle.vert.spv")),
+    ("particle.frag", include_bytes!("../shaders/particle.frag.spv")),
+    ("decal.vert", include_bytes!("../shaders/decal.vert.spv")),
+    ("decal.frag", include_bytes!("../shaders/decal.frag.spv")),
+    ("flash_state.frag", include_bytes!("../shaders/flash_state.frag.spv")),
+    ("flash_cells.frag", include_bytes!("../shaders/flash_cells.frag.spv")),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,10 +121,21 @@ enum Shader {
     IdsShapeVert = 39,
     IdsShapeFrag = 40,
     IdsSpriteCountFrag = 41,
+    ParticleVert = 42,
+    ParticleFrag = 43,
+    DecalVert = 44,
+    DecalFrag = 45,
+    FlashStateFrag = 46,
+    FlashCellsFrag = 47,
 }
 
 /// Offscreen targets and the tone mapped image FXAA reads (readback bytes are sRGB RGBA8).
 pub const LDR_FORMAT: VkFormat = VK_FORMAT_R8G8B8A8_SRGB;
+/// The flash watch's per-texel state (`shaders/flash.glsl`): extremes, directions, means and
+/// transitions, so the blocks read only the state.
+pub const FLASH_STATE_FORMAT: VkFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+/// Pixels across one flash block (one texel of the blocks the window reads back).
+pub const FLASH_BLOCK: u32 = 8;
 
 pub const DEPTH_FORMAT: VkFormat = VK_FORMAT_D32_SFLOAT;
 
@@ -606,6 +623,10 @@ pub struct FrameScratch {
     pub linear: LinearCache,
     /// The frame's sprites, tile chunks and shapes (records included).
     pub two_d: Plan2d,
+    /// The frame's particles and decals as records, and the record unit they start at in the
+    /// upload buffer.
+    pub effects: crate::effects::EffectsPlan,
+    pub effects_at: usize,
 }
 
 impl FrameScratch {
@@ -774,6 +795,30 @@ impl FrameUpload {
         self.records_address() + ((records + overlay_units(overlay, RECORD_SIZE as usize)) as u64) * RECORD_SIZE
     }
 
+    /// Write the effect records at record unit `at` (after everything [`FrameUpload::write`]
+    /// wrote): particles, then materials, then decals, each starting on a unit.
+    pub fn write_effects(&self, at: usize, plan: &crate::effects::EffectsPlan) {
+        let (pu, mu, du) = plan.units(RECORD_SIZE as usize);
+        assert!(at + pu + mu + du <= self.sizing.capacity as usize, "reserve() before write_effects()");
+        let unit = RECORD_SIZE as usize;
+        // SAFETY: `mapped` is coherent host memory of RECORDS_OFFSET + capacity × RECORD_SIZE
+        // bytes the GPU no longer reads (see `reserve`); every copy stays within the reserved
+        // units (asserted) and the records are plain `repr(C)` data.
+        unsafe {
+            let base = (self.buffer.mapped as *mut u8).add(RECORDS_OFFSET as usize + at * unit);
+            ptr::copy_nonoverlapping(plan.particles.as_ptr() as *const u8, base, std::mem::size_of_val(plan.particles.as_slice()));
+            ptr::copy_nonoverlapping(plan.materials.as_ptr() as *const u8, base.add(pu * unit), std::mem::size_of_val(plan.materials.as_slice()));
+            ptr::copy_nonoverlapping(plan.decals.as_ptr() as *const u8, base.add((pu + mu) * unit), std::mem::size_of_val(plan.decals.as_slice()));
+        }
+    }
+
+    /// Device addresses of the particle, material and decal records written at unit `at`.
+    pub fn effects_addresses(&self, at: usize, plan: &crate::effects::EffectsPlan) -> (u64, u64, u64) {
+        let (pu, mu, _) = plan.units(RECORD_SIZE as usize);
+        let base = self.records_address() + at as u64 * RECORD_SIZE;
+        (base, base + pu as u64 * RECORD_SIZE, base + (pu + mu) as u64 * RECORD_SIZE)
+    }
+
     /// Device address of the 2D item records that follow `records` draw records, `overlay`
     /// overlay records and `bones` bone matrices.
     pub fn items_address(&self, records: usize, overlay: usize, bones: usize) -> u64 {
@@ -910,6 +955,10 @@ pub enum PipelineKey {
     Composite { format: VkFormat, features: u32 },
     /// FXAA into `format`; `luma_alpha`: the tonemap pass wrote luma into the source's alpha.
     Fxaa { format: VkFormat, luma_alpha: bool },
+    /// The flash watch: its per-texel state (RGBA16F, half resolution) and its blocks
+    /// (RGBA16F, one texel per 8x8 pixels).
+    FlashState,
+    FlashCells,
     /// The sky behind the scene in `format` (+ D32 depth, EQUAL far plane), with or without fog.
     Sky { format: VkFormat, fog: bool },
     /// Overlay quads into `format`, inside the scene pass (`depth`: its D32 attachment, unused)
@@ -936,6 +985,25 @@ pub enum PipelineKey {
     /// cutouts, depth written) or vector shapes (blended), with the scene's 2D cuts (see
     /// `ids_sprite.frag`).
     Ids2d { pass: crate::idbuffer::IdPass, shape: bool },
+    /// Particles into `format` (no depth attachment: they test the sampled scene depth), with
+    /// the scene `features` (fog; SSAO keeps the ambient luminance in alpha).
+    Particle { format: VkFormat, features: u32 },
+    /// Decals into `format` (no depth attachment), lit (shadows, fog) or multiplying.
+    Decal { format: VkFormat, features: u32, multiply: bool },
+}
+
+/// Specialization bit of the multiplying decal pipeline (`MULTIPLY` in `shaders/decal.glsl`).
+pub const FEAT_DECAL_MULTIPLY: u32 = 256;
+
+/// The particle pipeline for a frame's scene `features` (only fog and SSAO matter to it).
+fn particle_key(format: VkFormat, features: u32) -> PipelineKey {
+    PipelineKey::Particle { format, features: features & (FEAT_FOG | FEAT_SSAO) }
+}
+
+/// The decal pipeline for a frame's scene `features` (multiplying ones aren't lit: no shadows).
+fn decal_key(format: VkFormat, features: u32, multiply: bool) -> PipelineKey {
+    let keep = if multiply { FEAT_FOG | FEAT_SSAO } else { FEAT_SHADOWS | FEAT_FOG | FEAT_SSAO };
+    PipelineKey::Decal { format, features: features & keep, multiply }
 }
 
 /// What vertex data a pipeline reads.
@@ -964,6 +1032,8 @@ enum Blend {
     PremultipliedKeepAlpha,
     /// No blending; only these colour components (`VK_COLOR_COMPONENT_*`) are written.
     Mask(VkFlags),
+    /// dst = src × dst, colour and alpha (multiplying decals).
+    Multiply,
 }
 
 /// How a pipeline is built.
@@ -982,6 +1052,8 @@ struct PipelineDesc {
     compare: Option<i32>,
     blend: Blend,
     depth_bias: bool,
+    /// Front faces are culled (decal boxes draw their back faces); everything else culls none.
+    cull_front: bool,
 }
 
 impl PipelineKey {
@@ -1012,6 +1084,7 @@ impl PipelineKey {
                     (true, true) => Blend::PremultipliedKeepAlpha,
                 },
                 depth_bias: false,
+                cull_front: false,
             },
             PipelineKey::Shadow { skinned, masked } => PipelineDesc {
                 vert: match (skinned, masked) {
@@ -1030,6 +1103,7 @@ impl PipelineKey {
                 compare: Some(VK_COMPARE_OP_LESS),
                 blend: Blend::Off,
                 depth_bias: true,
+                cull_front: false,
             },
             PipelineKey::BloomDown => fullscreen(Shader::BloomDownFrag, HDR_FORMAT, Blend::Off),
             PipelineKey::BloomUp => fullscreen(Shader::BloomUpFrag, HDR_FORMAT, Blend::Off),
@@ -1039,6 +1113,8 @@ impl PipelineKey {
             PipelineKey::Fxaa { format, luma_alpha } => {
                 PipelineDesc { spec: if luma_alpha { FXAA_LUMA_ALPHA } else { 0 }, ..fullscreen(Shader::FxaaFrag, format, Blend::Off) }
             }
+            PipelineKey::FlashState => fullscreen(Shader::FlashStateFrag, FLASH_STATE_FORMAT, Blend::Off),
+            PipelineKey::FlashCells => fullscreen(Shader::FlashCellsFrag, HDR_FORMAT, Blend::Off),
             PipelineKey::Sky { format, fog } => PipelineDesc {
                 vert: Shader::SkyVert,
                 frag: Some(Shader::SkyFrag),
@@ -1051,6 +1127,7 @@ impl PipelineKey {
                 compare: Some(VK_COMPARE_OP_EQUAL),
                 blend: Blend::Off,
                 depth_bias: false,
+                cull_front: false,
             },
             PipelineKey::Sprite { format, cutout, features } => PipelineDesc {
                 vert: Shader::SpriteVert,
@@ -1070,6 +1147,7 @@ impl PipelineKey {
                     (false, true) => Blend::PremultipliedKeepAlpha,
                 },
                 depth_bias: false,
+                cull_front: false,
             },
             PipelineKey::Shape { format, fog, ssao } => PipelineDesc {
                 vert: Shader::ShapeVert,
@@ -1083,6 +1161,7 @@ impl PipelineKey {
                 compare: None,
                 blend: if ssao { Blend::PremultipliedKeepAlpha } else { Blend::Premultiplied },
                 depth_bias: false,
+                cull_front: false,
             },
             PipelineKey::SpriteShadow => PipelineDesc {
                 vert: Shader::SpriteShadowVert,
@@ -1096,6 +1175,7 @@ impl PipelineKey {
                 compare: Some(VK_COMPARE_OP_LESS),
                 blend: Blend::Off,
                 depth_bias: true,
+                cull_front: false,
             },
             PipelineKey::Overlay { format, depth } => PipelineDesc {
                 vert: Shader::OverlayVert,
@@ -1109,6 +1189,7 @@ impl PipelineKey {
                 compare: Some(VK_COMPARE_OP_LESS),
                 blend: Blend::Premultiplied,
                 depth_bias: false,
+                cull_front: false,
             },
             PipelineKey::Ssao => fullscreen(Shader::SsaoFrag, crate::ssao::AO_FORMAT, Blend::Off),
             PipelineKey::SsaoBlur => fullscreen(Shader::SsaoBlurFrag, crate::ssao::AO_FORMAT, Blend::Off),
@@ -1137,6 +1218,7 @@ impl PipelineKey {
                     compare: if pass == IdPass::Raster { Some(VK_COMPARE_OP_LESS) } else { None },
                     blend: Blend::Mask(if pass == IdPass::Opaque { VK_COLOR_COMPONENT_RGBA } else { 0 }),
                     depth_bias: false,
+                    cull_front: false,
                 }
             }
             PipelineKey::Ids { pass, skinned, textured } => {
@@ -1171,8 +1253,44 @@ impl PipelineKey {
                     // Only opaque draws write ids; the others write the storage buffers.
                     blend: Blend::Mask(if pass == IdPass::Opaque { VK_COLOR_COMPONENT_RGBA } else { 0 }),
                     depth_bias: false,
+                    cull_front: false,
                 }
             }
+            PipelineKey::Particle { format, features } => PipelineDesc {
+                vert: Shader::ParticleVert,
+                frag: Some(Shader::ParticleFrag),
+                spec: features | if format == HDR_FORMAT { FEAT_HDR } else { 0 },
+                vertex: VertexInput::None,
+                color: Some(format),
+                depth: None,
+                depth_test: false,
+                depth_write: false,
+                compare: Some(VK_COMPARE_OP_LESS),
+                // With SSAO, what particles cover keeps that much less ambient light behind them;
+                // additive ones (alpha 0) keep all of it.
+                blend: if features & FEAT_SSAO != 0 { Blend::PremultipliedKeepAlpha } else { Blend::Premultiplied },
+                depth_bias: false,
+                cull_front: false,
+            },
+            PipelineKey::Decal { format, features, multiply } => PipelineDesc {
+                vert: Shader::DecalVert,
+                frag: Some(Shader::DecalFrag),
+                spec: features | if format == HDR_FORMAT { FEAT_HDR } else { 0 } | if multiply { FEAT_DECAL_MULTIPLY } else { 0 },
+                vertex: VertexInput::None,
+                color: Some(format),
+                depth: None,
+                depth_test: false,
+                depth_write: false,
+                compare: Some(VK_COMPARE_OP_LESS),
+                blend: match (multiply, features & FEAT_SSAO != 0) {
+                    (true, _) => Blend::Multiply,
+                    (false, false) => Blend::Premultiplied,
+                    (false, true) => Blend::PremultipliedKeepAlpha,
+                },
+                depth_bias: false,
+                // The box's back faces: each covered pixel once, the camera inside the box or not.
+                cull_front: true,
+            },
         }
     }
 }
@@ -1191,6 +1309,7 @@ fn fullscreen(frag: Shader, format: VkFormat, blend: Blend) -> PipelineDesc {
         compare: Some(VK_COMPARE_OP_LESS),
         blend,
         depth_bias: false,
+        cull_front: false,
     }
 }
 
@@ -1310,6 +1429,9 @@ pub struct FramePipelines {
     pub bloom_up: VkPipeline,
     pub composite: VkPipeline,
     pub fxaa: VkPipeline,
+    /// The flash watch's passes (null when the frame doesn't run them).
+    pub flash_state: VkPipeline,
+    pub flash_cells: VkPipeline,
     pub overlay: VkPipeline,
     /// 2D: cutout and blended sprites / tile chunks, vector shapes, sprite shadow casters.
     pub sprite_cutout: VkPipeline,
@@ -1318,6 +1440,13 @@ pub struct FramePipelines {
     pub sprite_shadow: VkPipeline,
     pub ssao: VkPipeline,
     pub ssao_blur: VkPipeline,
+    /// Effects: particles, lit and multiplying decals (null when the frame has none).
+    pub particle: VkPipeline,
+    pub decal_lit: VkPipeline,
+    pub decal_multiply: VkPipeline,
+    /// The overlay without a depth attachment, for a direct frame whose last pass (particles or
+    /// decals) renders without one.
+    pub overlay_flat: VkPipeline,
 }
 
 fn spirv_words(bytes: &[u8]) -> Vec<u32> {
@@ -1447,6 +1576,8 @@ impl Pipelines {
         for luma_alpha in [false, true] {
             self.get(dev, PipelineKey::Fxaa { format: color_format, luma_alpha })?;
         }
+        self.get(dev, PipelineKey::FlashState)?;
+        self.get(dev, PipelineKey::FlashCells)?;
         for depth in [false, true] {
             self.get(dev, PipelineKey::Overlay { format: color_format, depth })?;
         }
@@ -1474,6 +1605,16 @@ impl Pipelines {
                 }
             }
         }
+        // Effects: particles and both kinds of decal, every scene feature set they use.
+        for features in FEATURE_SETS {
+            for &ssao in ssao {
+                let features = features | if ssao { FEAT_SSAO } else { 0 };
+                self.get(dev, particle_key(color_format, features))?;
+                for multiply in [false, true] {
+                    self.get(dev, decal_key(color_format, features, multiply))?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1497,7 +1638,9 @@ impl Pipelines {
     }
 
     /// The pipelines of a frame ending in `final_format`, with scene `features` and post `mode`.
-    /// `sky`: the frame draws the sky; `overlay`: it has overlay quads.
+    /// `sky`: the frame draws the sky; `overlay`: it has overlay quads; `effects`: it has
+    /// particles, decals.
+    #[allow(clippy::too_many_arguments)]
     pub fn frame(
         &mut self,
         dev: &Device,
@@ -1506,6 +1649,8 @@ impl Pipelines {
         mode: PostMode,
         sky: bool,
         overlay: bool,
+        effects: (bool, bool),
+        flash: bool,
     ) -> Result<FramePipelines, GpuError> {
         let scene_format = if mode.hdr() {
             HDR_FORMAT
@@ -1544,6 +1689,8 @@ impl Pipelines {
             bloom_up: get(mode.bloom(), PipelineKey::BloomUp)?,
             composite: get(mode.hdr(), PipelineKey::Composite { format: composite_format, features: composite_features(mode) })?,
             fxaa: get(mode.fxaa, PipelineKey::Fxaa { format: final_format, luma_alpha: mode.hdr() })?,
+            flash_state: get(flash, PipelineKey::FlashState)?,
+            flash_cells: get(flash, PipelineKey::FlashCells)?,
             overlay: get(overlay, PipelineKey::Overlay { format: final_format, depth: mode.direct() })?,
             // Prebuilt with the scene's: a lookup, never a creation.
             sprite_cutout: get(true, PipelineKey::Sprite { format: scene_format, cutout: true, features })?,
@@ -1552,6 +1699,11 @@ impl Pipelines {
             sprite_shadow: get(features & FEAT_SHADOWS != 0, PipelineKey::SpriteShadow)?,
             ssao: get(features & FEAT_SSAO != 0, PipelineKey::Ssao)?,
             ssao_blur: get(features & FEAT_SSAO != 0, PipelineKey::SsaoBlur)?,
+            // Prebuilt with the scene's (every feature set): lookups.
+            particle: get(effects.0, particle_key(scene_format, features))?,
+            decal_lit: get(effects.1, decal_key(scene_format, features, false))?,
+            decal_multiply: get(effects.1, decal_key(scene_format, features, true))?,
+            overlay_flat: get(overlay && mode.direct() && (effects.0 || effects.1), PipelineKey::Overlay { format: final_format, depth: false })?,
         })
     }
 
@@ -1887,7 +2039,7 @@ impl Pipelines {
             depth_clamp_enable: VK_FALSE,
             rasterizer_discard_enable: VK_FALSE,
             polygon_mode: VK_POLYGON_MODE_FILL,
-            cull_mode: VK_CULL_MODE_NONE,
+            cull_mode: if d.cull_front { VK_CULL_MODE_FRONT_BIT } else { VK_CULL_MODE_NONE },
             front_face: VK_FRONT_FACE_COUNTER_CLOCKWISE,
             depth_bias_enable: d.depth_bias as VkBool32,
             depth_bias_constant_factor: 0.0,
@@ -1947,6 +2099,16 @@ impl Pipelines {
                 color_write_mask: VK_COLOR_COMPONENT_RGBA,
             },
             Blend::Mask(mask) => VkPipelineColorBlendAttachmentState { blend_enable: VK_FALSE, color_write_mask: mask, ..Default::default() },
+            Blend::Multiply => VkPipelineColorBlendAttachmentState {
+                blend_enable: VK_TRUE,
+                src_color_blend_factor: VK_BLEND_FACTOR_DST_COLOR,
+                dst_color_blend_factor: VK_BLEND_FACTOR_ZERO,
+                color_blend_op: VK_BLEND_OP_ADD,
+                src_alpha_blend_factor: VK_BLEND_FACTOR_DST_ALPHA,
+                dst_alpha_blend_factor: VK_BLEND_FACTOR_ZERO,
+                alpha_blend_op: VK_BLEND_OP_ADD,
+                color_write_mask: VK_COLOR_COMPONENT_RGBA,
+            },
         };
         let blend = VkPipelineColorBlendStateCreateInfo {
             s_type: ST_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
@@ -2039,6 +2201,7 @@ impl Pipelines {
 pub fn check_frame(meshes: &HashMap<u32, Mesh>, textures: &Textures, frame: &FrameDesc) -> Result<(), GpuError> {
     check_overlay(frame.overlay, textures)?;
     check_2d(frame.draws_2d, meshes, textures)?;
+    crate::effects::check_effects(&frame.effects, textures)?;
     crate::post::check_lut(&frame.environment, textures)?;
     if frame.lights.len() > MAX_POINT_LIGHTS {
         return Err(GpuError::limit(Limit::PointLights, frame.lights.len() as u64, MAX_POINT_LIGHTS as u64));
@@ -2090,11 +2253,15 @@ pub fn prepare_frame(
     build_overlay(frame.overlay, textures, &mut scratch.linear, &mut scratch.overlay);
     let shadows = frame.environment.shadow.enabled;
     plan_2d(frame, bounds, textures, &mut scratch.linear, shadows, &mut scratch.two_d);
+    crate::effects::plan_effects(&frame.effects, textures, &mut scratch.linear, &mut scratch.effects);
     let items = &scratch.two_d.records;
-    let units =
+    let before_effects =
         scratch.records.len() + overlay_units(scratch.overlay.len(), RECORD_SIZE as usize) + bone_units(frame.bones.len()) + items.len();
-    upload.reserve(dev, units)?;
+    let (pu, mu, du) = scratch.effects.units(RECORD_SIZE as usize);
+    upload.reserve(dev, before_effects + pu + mu + du)?;
     upload.write(&frame_data(frame, extent, &scratch.shadow.data), &scratch.records, &scratch.overlay, frame.bones, items);
+    upload.write_effects(before_effects, &scratch.effects);
+    scratch.effects_at = before_effects;
     Ok(())
 }
 
@@ -2149,12 +2316,32 @@ pub enum FramePass {
     /// Sprites, tile chunks and vector shapes: inline in the scene pass (recorded between the sky
     /// and the blended meshes, see `sprite.rs`).
     Sprites,
+    /// Decals (`effects.rs`): after the opaque part of the scene, which then ends; the rest of
+    /// the scene follows as `SceneBlend`.
+    Decals,
+    /// The scene's 2D items and blended meshes, after the decals.
+    SceneBlend,
+    /// Particles (`effects.rs`), after the scene.
+    Particles,
     /// Sight's entity ids (offscreen captures that ask for them; see `idbuffer.rs`).
     IdBuffer,
     /// The ids copied to the host-readable buffer.
     IdCopy,
     /// Sight's blended counts resolved from the per-pixel id sets.
     IdResolve,
+    /// The flash watch (`shaders/flash_*.frag`): each half-resolution texel's state moved on
+    /// from the previous frame's (the window keeps two and alternates); the 8x8 blocks from the
+    /// state (means, transition shares); the blocks copied to the host-readable buffer.
+    FlashState,
+    FlashCells,
+    FlashCopy,
+}
+
+/// The flash watch's sizes for a final image of `extent`: its half-resolution state and its
+/// blocks (each [`FLASH_BLOCK`] pixels across, partial ones at odd edges).
+pub fn flash_sizes(extent: VkExtent2D) -> ((u32, u32), (u32, u32)) {
+    let (w, h) = (extent.width.max(1), extent.height.max(1));
+    ((w.div_ceil(2), h.div_ceil(2)), (w.div_ceil(FLASH_BLOCK), h.div_ceil(FLASH_BLOCK)))
 }
 
 impl FramePass {
@@ -2170,6 +2357,12 @@ impl FramePass {
             FramePass::Overlay => PASS_OVERLAY,
             FramePass::IdBuffer | FramePass::IdCopy | FramePass::IdResolve => crate::PASS_ID_BUFFER,
             FramePass::Sprites => PASS_SPRITES,
+            FramePass::SceneBlend => PASS_SCENE,
+            FramePass::Decals => crate::PASS_DECALS,
+            FramePass::Particles => crate::PASS_PARTICLES,
+            FramePass::FlashState => crate::PASS_FLASH,
+            FramePass::FlashCells => crate::PASS_FLASH_CELLS,
+            FramePass::FlashCopy => crate::PASS_FLASH_COPY,
         }
     }
 }
@@ -2199,6 +2392,21 @@ pub struct FrameRes {
     pub ao_raw: Res,
     pub ao_across: Res,
     pub ao: Res,
+    /// The scene pass is split around the decals (`scene`, `decals`, `scene_blend`).
+    pub split: bool,
+    /// A `scene_blend` pass follows the decals.
+    pub scene_blend: bool,
+    /// A particles pass follows the scene.
+    pub particles: bool,
+    /// The flash watch: the previous frame's state (unset when `flash_reset`), this frame's (the
+    /// window's two images, alternating), the blocks (their size) and their readback;
+    /// `flash_reset` starts the state again (a new or resized watch).
+    pub flash_prev: Res,
+    pub flash_next: Res,
+    pub flash_blocks: Res,
+    pub flash_blocks_size: (u32, u32),
+    pub flash_readback: Res,
+    pub flash_reset: bool,
 }
 
 /// What a frame renders into and which passes it runs.
@@ -2218,6 +2426,15 @@ pub struct FrameShape {
     pub two_d: bool,
     /// The SSAO images' size, when the frame renders SSAO ([`crate::ssao::ssao_extent`]).
     pub ssao: Option<VkExtent2D>,
+    /// The frame has decals and particles ([`FrameDesc::effects`]).
+    pub decals: bool,
+    pub particles: bool,
+    /// The scene has blended draws (meshes or 2D items) for a `scene_blend` pass after decals.
+    pub blended: bool,
+    /// Run the flash watch on the final image and read its blocks back (window frames whose
+    /// swapchain can be sampled); `flash_reset`: its state starts again.
+    pub flash: bool,
+    pub flash_reset: bool,
 }
 
 /// Declare a frame's passes into `g`: shadow → scene (+ overlay inline when the scene writes the
@@ -2235,8 +2452,9 @@ pub fn declare_frame(g: &mut FrameGraph, s: &FrameShape) -> FrameRes {
         ..Default::default()
     };
     r.out = g.import_image(s.out_name, s.format, w, h, s.prior, s.fin);
-    // With SSAO the scene's depth is read afterwards (bindless): the occlusion is computed from it.
-    let depth = ImageDesc { bindless: s.ssao.is_some(), ..ImageDesc::depth(DEPTH_FORMAT, w, h, MemoryKind::RenderTargets) };
+    // With SSAO, decals or particles the scene's depth is read afterwards (bindless): the
+    // occlusion is computed from it, decals reconstruct surfaces, particles test against it.
+    let depth = ImageDesc { bindless: s.ssao.is_some() || s.decals || s.particles, ..ImageDesc::depth(DEPTH_FORMAT, w, h, MemoryKind::RenderTargets) };
     r.depth = g.transient("depth", depth);
     if let Some(desc) = s.shadow {
         let map = g.shared("shadow", desc);
@@ -2260,8 +2478,28 @@ pub fn declare_frame(g: &mut FrameGraph, s: &FrameShape) -> FrameRes {
     if let Some(map) = r.shadow {
         scene.sampled(map);
     }
+    if s.decals {
+        // The opaque part ends; decals paint onto it from its depth; the rest of the scene
+        // (2D items, blended meshes) follows against the same depth.
+        r.split = true;
+        let decals = g.pass("decals", FramePass::Decals).sampled(r.depth).color(r.scene, Load::Keep);
+        if let Some(map) = r.shadow {
+            decals.sampled(map);
+        }
+        if s.blended || s.two_d {
+            r.scene_blend = true;
+            let blend = g.pass("scene_blend", FramePass::SceneBlend).color(r.scene, Load::Keep).depth(r.depth, Load::Keep);
+            if let Some(map) = r.shadow {
+                blend.sampled(map);
+            }
+        }
+    }
     if s.two_d {
         g.pass("sprites", FramePass::Sprites).inline().color(r.scene, Load::Keep).depth(r.depth, Load::Keep);
+    }
+    if s.particles {
+        r.particles = true;
+        g.pass("particles", FramePass::Particles).sampled(r.depth).color(r.scene, Load::Keep);
     }
     if let Some(size) = s.ssao {
         crate::ssao::declare(g, &mut r, size);
@@ -2314,7 +2552,78 @@ pub fn declare_frame(g: &mut FrameGraph, s: &FrameShape) -> FrameRes {
         g.pass("post_fxaa", FramePass::Fxaa).sampled(r.ldr).color(r.out, Load::DontCare);
         overlay(g, r.out);
     }
+    if s.flash {
+        // The final image, overlay included, read whole: each half-resolution texel's state
+        // moves on from the previous frame's (with its 2x2 means and transitions); the blocks
+        // average the state's texels, each weighted by its pixels; the blocks are read back.
+        let (half, blocks) = flash_sizes(s.extent);
+        // The window keeps two state images and alternates (no copy): the previous frame's is
+        // read, the other one written whole. Starting again, there's no previous state (it isn't
+        // declared, and `flash_prev` stays unset).
+        if !s.flash_reset {
+            let prior = Prior::Contents { layout: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, stage: VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, access: VK_ACCESS_2_SHADER_SAMPLED_READ_BIT };
+            r.flash_prev = g.import_image("flash_state", FLASH_STATE_FORMAT, half.0, half.1, prior, Final::Sampled);
+        }
+        // Last read by the previous frame's watch (as its previous state): written after that.
+        let after_reads = Prior::Discard { after: VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT };
+        r.flash_next = g.import_image("flash_state_next", FLASH_STATE_FORMAT, half.0, half.1, after_reads, Final::Sampled);
+        r.flash_blocks = g.transient("flash_blocks", ImageDesc::color(HDR_FORMAT, blocks.0, blocks.1, MemoryKind::PostTargets));
+        r.flash_blocks_size = blocks;
+        r.flash_reset = s.flash_reset;
+        let state = g.pass("flash_state", FramePass::FlashState).sampled(r.out);
+        let state = if s.flash_reset { state } else { state.sampled(r.flash_prev) };
+        state.color(r.flash_next, Load::DontCare);
+        g.pass("flash_cells", FramePass::FlashCells).sampled(r.flash_next).color(r.flash_blocks, Load::DontCare);
+        let bytes = u64::from(blocks.0) * u64::from(blocks.1) * 8;
+        r.flash_readback = g.import_buffer("flash_readback", bytes, Prior::Discard { after: VK_PIPELINE_STAGE_2_HOST_BIT }, Final::HostRead);
+        g.pass("flash_copy", FramePass::FlashCopy).transfer_src(r.flash_blocks).transfer_dst(r.flash_readback);
+    }
     r
+}
+
+/// Records a flash watch pass (`shaders/flash_*.frag`, then copies).
+fn record_flash(ctx: &FrameContext, cmd: VkCommandBuffer, g: &FrameGraph, p: usize, res: &FrameRes, tag: FramePass) {
+    let dev = ctx.dev;
+    let layers = VkImageSubresourceLayers { aspect_mask: VK_IMAGE_ASPECT_COLOR_BIT, mip_level: 0, base_array_layer: 0, layer_count: 1 };
+    let slot = |r| g.image(r).slot;
+    let push = |src: Res, src2: u32| crate::post::PostPush {
+        frame: ctx.upload.frame_address(),
+        src: slot(src),
+        src2,
+        texel: [0.0; 2],
+        mode: 0,
+        pad: 0,
+        params: [res.extent.width as f32, res.extent.height as f32, if res.flash_reset { 1.0 } else { 0.0 }, 0.0],
+    };
+    let none = &mut |_: VkCommandBuffer| {};
+    let (half, blocks) = flash_sizes(res.extent);
+    let ext = |s: (u32, u32)| VkExtent2D { width: s.0, height: s.1 };
+    match tag {
+        FramePass::FlashState => {
+            let out = g.color_attachment(p, res.flash_next, [0.0; 4]);
+            // Starting again, the previous state isn't read (nor bound for this frame's graph).
+            let prev = if res.flash_reset { 0 } else { slot(res.flash_prev) };
+            crate::post::fullscreen(dev, cmd, ctx.pipelines.flash_state, ctx.pipelines.layout, &out, ext(half), &push(res.out, prev), none);
+        }
+        FramePass::FlashCells => {
+            let out = g.color_attachment(p, res.flash_blocks, [0.0; 4]);
+            crate::post::fullscreen(dev, cmd, ctx.pipelines.flash_cells, ctx.pipelines.layout, &out, ext(blocks), &push(res.flash_next, 0), none);
+        }
+        FramePass::FlashCopy => {
+            let region = VkBufferImageCopy {
+                buffer_offset: 0,
+                buffer_row_length: 0,
+                buffer_image_height: 0,
+                image_subresource: layers,
+                image_offset: VkOffset3D { x: 0, y: 0, z: 0 },
+                image_extent: VkExtent3D { width: blocks.0, height: blocks.1, depth: 1 },
+            };
+            // SAFETY: recording; the blocks are in TRANSFER_SRC_OPTIMAL, and the bound readback
+            // buffer holds blocks × 8 bytes (the window sizes and checks it).
+            unsafe { (dev.fns.cmd_copy_image_to_buffer)(cmd, g.image(res.flash_blocks).image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g.buffer(res.flash_readback), 1, &region) };
+        }
+        _ => {}
+    }
 }
 
 /// Compile (if changed) and resolve a declared frame graph, and point descriptor binding 0 at the
@@ -2397,6 +2706,25 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, g: &mut FrameGraph
         reverse_z: ctx.frame.reverse_z,
     };
     let mut stats_2d = DrawStats::default();
+    let mut stats_fx = DrawStats::default();
+    let fx_plan = &ctx.scratch.effects;
+    let (particles, materials, decals) = ctx.upload.effects_addresses(ctx.scratch.effects_at, fx_plan);
+    let effects = crate::effects::EffectsDraw {
+        layout: ctx.pipelines.layout,
+        particle: ctx.pipelines.particle,
+        decal_lit: ctx.pipelines.decal_lit,
+        decal_multiply: ctx.pipelines.decal_multiply,
+        plan: fx_plan,
+        frame: ctx.upload.frame_address(),
+        particles,
+        materials,
+        decals,
+        depth: if res.split || res.particles { g.image(res.depth).slot } else { crate::graph::NO_SLOT },
+        reverse_z: ctx.frame.reverse_z,
+        view: crate::sprite::view_2d(&ctx.frame.view_proj, ctx.frame.reverse_z),
+    };
+    // A direct frame's overlay may join the decal or particle pass, which has no depth attachment.
+    let overlay_flat = OverlayDraw { pipeline: ctx.pipelines.overlay_flat, ..overlay };
     for p in 0..g.pass_count() {
         if g.is_inline(p) {
             continue;
@@ -2408,6 +2736,7 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, g: &mut FrameGraph
         // The overlay draws inside the rendering instance of the pass that writes the final
         // image, and is timed on its own; so are the 2D items inside the scene's.
         let with_overlay = overlay.count > 0 && joined_by(g, p, FramePass::Overlay);
+        let overlay = if matches!(tag, FramePass::Particles | FramePass::Decals) { &overlay_flat } else { &overlay };
         let mut hook = |cmd: VkCommandBuffer, at: Hook| -> bool {
             match at {
                 Hook::TwoD => {
@@ -2422,7 +2751,7 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, g: &mut FrameGraph
                 Hook::End => {
                     if with_overlay {
                         timing.end(dev, cmd);
-                        record_overlay(dev, cmd, &overlay, timing.timer.as_deref_mut());
+                        record_overlay(dev, cmd, overlay, timing.timer.as_deref_mut());
                     }
                     with_overlay
                 }
@@ -2470,7 +2799,27 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, g: &mut FrameGraph
                 } else {
                     clear
                 };
-                stats = record_scene(ctx, cmd, g, p, res, clear, &mut hook);
+                let part = if res.split { ScenePart::Opaque } else { ScenePart::All };
+                stats = record_scene(ctx, cmd, g, p, res, clear, part, &mut hook);
+            }
+            FramePass::SceneBlend => {
+                let more = record_scene(ctx, cmd, g, p, res, [0.0; 4], ScenePart::Blended, &mut hook);
+                stats.draw_calls += more.draw_calls;
+                stats.instances += more.instances;
+                stats.triangles += more.triangles;
+                stats.pipeline_binds += more.pipeline_binds;
+            }
+            FramePass::Decals | FramePass::Particles => {
+                let color = g.color_attachment(p, res.scene, [0.0; 4]);
+                let mut end = |cmd: VkCommandBuffer| {
+                    hook(cmd, Hook::End);
+                };
+                if tag == FramePass::Decals {
+                    crate::effects::record_decals(dev, cmd, &effects, &color, res.extent, &mut stats_fx, &mut end);
+                } else {
+                    crate::effects::record_particles(dev, cmd, &effects, &color, res.extent, &mut stats_fx, &mut end);
+                }
+                // The effect passes bound their own pipelines; later passes bind theirs.
             }
             FramePass::Ssao | FramePass::SsaoBlur(_) => crate::ssao::record_pass(ctx, cmd, g, p, res),
             // Inline: recorded inside the scene's rendering / the pass before it.
@@ -2480,6 +2829,7 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, g: &mut FrameGraph
                     crate::idbuffer::record(ctx, cmd, g, p, tag, ids);
                 }
             }
+            FramePass::FlashState | FramePass::FlashCells | FramePass::FlashCopy => record_flash(ctx, cmd, g, p, res, tag),
             _ => record_post_pass(dev, cmd, g, p, res, &ctx.pipelines, env, ctx.textures, ctx.upload.frame_address(), &mut |cmd| {
                 hook(cmd, Hook::End);
             }),
@@ -2499,8 +2849,23 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, g: &mut FrameGraph
     stats.shadow_sprites = if stats.shadow_cascades > 0 { two_d.casters } else { 0 };
     stats.draw_calls_2d = stats_2d.draw_calls_2d;
     stats.triangles_2d = stats_2d.triangles_2d;
-    stats.pipeline_binds += stats_2d.pipeline_binds;
+    stats.pipeline_binds += stats_2d.pipeline_binds + stats_fx.pipeline_binds;
+    stats.particles = stats_fx.particles;
+    stats.particle_draw_calls = stats_fx.particle_draw_calls;
+    stats.decals = stats_fx.decals;
+    stats.decal_draw_calls = stats_fx.decal_draw_calls;
     stats
+}
+
+/// Which part of the scene a scene pass records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScenePart {
+    /// Everything (no decals split it).
+    All,
+    /// The opaque meshes and the sky (the decals follow).
+    Opaque,
+    /// The 2D items and the blended meshes (after the decals).
+    Blended,
 }
 
 /// Where the scene pass hands over to other work inside its rendering instance.
@@ -2520,7 +2885,9 @@ fn joined_by(g: &FrameGraph, p: usize, tag: FramePass) -> bool {
 /// Record the scene pass `p` of `g` (the graph recorded its barriers): clear, one instanced draw
 /// per batch of the frame's plan, the sky and then `hook(Hook::TwoD)` (the 2D items) between the
 /// opaque and blended draws, then `hook(Hook::End)` (the overlay) inside the same rendering
-/// instance. `hook` says whether it drew anything.
+/// instance. `hook` says whether it drew anything. `part` records only the opaque part (and the
+/// sky) or only the rest (2D items first, then blended meshes) when decals split the scene.
+#[allow(clippy::too_many_arguments)]
 pub fn record_scene(
     ctx: &FrameContext,
     cmd: VkCommandBuffer,
@@ -2528,6 +2895,7 @@ pub fn record_scene(
     p: usize,
     res: &FrameRes,
     clear: [f32; 4],
+    part: ScenePart,
     hook: &mut dyn FnMut(VkCommandBuffer, Hook) -> bool,
 ) -> DrawStats {
     let (dev, pipelines, frame, upload) = (ctx.dev, &ctx.pipelines, ctx.frame, ctx.upload);
@@ -2574,8 +2942,8 @@ pub fn record_scene(
         ctx.descriptors.bind(dev, cmd, pipelines.layout);
         let mut bound = VK_NULL_HANDLE;
         let mut bound_mesh = None;
-        let mut sky_pending = pipelines.sky != VK_NULL_HANDLE;
-        let mut two_d_pending = true;
+        let mut sky_pending = pipelines.sky != VK_NULL_HANDLE && part != ScenePart::Blended;
+        let mut two_d_pending = part != ScenePart::Opaque;
         let mesh_compare = if frame.reverse_z { VK_COMPARE_OP_GREATER } else { VK_COMPARE_OP_LESS };
         let bones = upload.bones_address(ctx.scratch.records.len(), ctx.scratch.overlay.len());
         let draw_sky = |cmd: VkCommandBuffer| {
@@ -2600,7 +2968,16 @@ pub fn record_scene(
             );
             (dev.fns.cmd_draw)(cmd, 3, 1, 0, 0);
         };
+        if part == ScenePart::Blended {
+            two_d_pending = false;
+            if hook(cmd, Hook::TwoD) {
+                (dev.fns.cmd_set_depth_compare_op)(cmd, mesh_compare);
+            }
+        }
         for batch in &plan.batches {
+            if part == ScenePart::Blended && !batch.material.blended() {
+                continue;
+            }
             if sky_pending && batch.material.blended() {
                 draw_sky(cmd);
                 // The sky pipeline's depth compare is static, so binding it invalidated the
@@ -2609,6 +2986,10 @@ pub fn record_scene(
                 sky_pending = false;
                 bound = pipelines.sky;
                 stats.pipeline_binds += 1;
+            }
+            if part == ScenePart::Opaque && batch.material.blended() {
+                // The decals come next; the blended part follows them.
+                break;
             }
             if two_d_pending && batch.material.blended() {
                 two_d_pending = false;

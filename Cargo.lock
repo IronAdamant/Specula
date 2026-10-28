@@ -32,6 +32,7 @@ dependencies = [
  "specula-lex",
  "specula-platform",
  "specula-protocol",
+ "specula-scintilla",
  "specula-text",
  "specula-ui",
 ]
@@ -55,6 +56,7 @@ dependencies = [
  "specula-physics",
  "specula-platform",
  "specula-protocol",
+ "specula-scintilla",
  "specula-sdk",
  "specula-studio",
  "specula-sys",
@@ -171,6 +173,13 @@ dependencies = [
 
 [[package]]
 name = "specula-protocol"
+version = "0.3.0"
+dependencies = [
+ "specula-core",
+]
+
+[[package]]
+name = "specula-scintilla"
 version = "0.3.0"
 dependencies = [
  "specula-core",

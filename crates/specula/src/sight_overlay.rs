@@ -40,10 +40,12 @@ pub enum Kind {
     Navmesh,
     /// Nav agents' paths, goals and velocities, and recent nav_path answers.
     Paths,
+    /// Effects' particle boxes and decals' boxes (see [`crate::vfx`]).
+    Effects,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 12] = [
+    pub const ALL: [Kind; 13] = [
         Kind::Grid,
         Kind::Axes,
         Kind::Bounds,
@@ -56,6 +58,7 @@ impl Kind {
         Kind::Joints,
         Kind::Navmesh,
         Kind::Paths,
+        Kind::Effects,
     ];
 
     pub fn name(self) -> &'static str {
@@ -72,6 +75,7 @@ impl Kind {
             Kind::Joints => "joints",
             Kind::Navmesh => "navmesh",
             Kind::Paths => "paths",
+            Kind::Effects => "effects",
         }
     }
 
@@ -215,6 +219,16 @@ impl Painter {
 
     fn to_screen(&self, p: Vec4) -> [f32; 2] {
         [(p.x / p.w + 1.0) * 0.5 * self.w, (p.y / p.w + 1.0) * 0.5 * self.h]
+    }
+
+    /// Whether any of the box `lo..hi` can be in view (conservative frustum test).
+    pub fn sees(&self, lo: Vec3, hi: Vec3) -> bool {
+        let clip: [Vec4; 8] = std::array::from_fn(|i| {
+            let p = Vec3::new(if i & 1 == 0 { lo.x } else { hi.x }, if i & 2 == 0 { lo.y } else { hi.y }, if i & 4 == 0 { lo.z } else { hi.z });
+            self.vp.mul_vec4(p.extend(1.0))
+        });
+        let all = |f: &dyn Fn(&Vec4) -> bool| clip.iter().all(f);
+        !(all(&|p| p.w <= 0.0) || all(&|p| p.x < -p.w) || all(&|p| p.x > p.w) || all(&|p| p.y < -p.w) || all(&|p| p.y > p.w))
     }
 
     /// A world point in pixels, `None` behind the near plane.

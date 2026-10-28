@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-22",
+  "time": "09:51",
+  "date_source": "run",
+  "approximate": false,
+  "milestone": "M4",
+  "commit": "5ef0e31",
+  "subject": "engine-tests",
+  "topic": "effects",
+  "title": "VFX check: particles and decals",
+  "note": "The vfx_check world: built-in effects (fire, embers, smoke, motes, trail, sparks) and decals (rune circle, scorch, cracks with a normal map); then the effects overlay, whose boxes match the sight packet. Captures are byte-identical across fresh engines.",
+  "source": "scripts/vfx_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-on-4.jpg",
+      "caption": "effects and decals",
+      "original": "on_4.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 9187
+    },
+    {
+      "file": "02-on-5.jpg",
+      "caption": "effects overlay",
+      "original": "on_5.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 22131
+    },
+    {
+      "file": "03-preview-impact.jpg",
+      "caption": "vfx_preview contact sheet: impact",
+      "original": "preview_impact.png",
+      "width": 576,
+      "height": 576,
+      "bytes": 10805
+    }
+  ]
+}

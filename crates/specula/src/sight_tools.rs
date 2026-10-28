@@ -357,7 +357,9 @@ pub fn frame_extra_schema() -> Vec<(&'static str, Json)> {
                          static, yellow kinematic, green awake, blue asleep, magenta triggers), contacts (physics contact \
                          points with their normals: red penetrating, orange touching, green speculative), joints (physics \
                          joints: anchors, yellow axes, hinge limit arcs; teal holding, orange strained, red past a limit \
-                         or apart, grey inactive). The packet's 'overlays' says what was drawn.",
+                         or apart, grey inactive), effects (orange boxes around each effect's particles and violet decal \
+                         boxes, labelled; particles and decals never count in the ID buffer). The packet's 'overlays' \
+                         says what was drawn.",
                     ),
                 ),
             ]),

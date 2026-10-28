@@ -1,0 +1,48 @@
+{
+  "date": "2026-10-22",
+  "time": "09:50",
+  "date_source": "run",
+  "approximate": false,
+  "milestone": "M4",
+  "commit": "5ef0e31",
+  "subject": "sepulcra",
+  "topic": "effects",
+  "title": "Effects: fire, trails, binding runes",
+  "note": "First particles and decals in the game (transient presentation, never hashed): fire and embers in the brazier bowl, green wisps trailing wraiths, cyan binding runes under new walls, cyan impacts and dust where the dead fall, and the effects overlay with packet boxes.",
+  "source": "scripts/vfx_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-frame-00001.jpg",
+      "caption": "binding runes under new walls",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 15894
+    },
+    {
+      "file": "02-frame-00004.jpg",
+      "caption": "brazier fire, impacts, a wraith trail",
+      "original": "frame_00004.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 18084
+    },
+    {
+      "file": "03-frame-00003.jpg",
+      "caption": "effects overlay",
+      "original": "frame_00003.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 20869
+    },
+    {
+      "file": "04-frame-00005.jpg",
+      "caption": "wraith trail close up",
+      "original": "frame_00005.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 5180
+    }
+  ]
+}
