@@ -339,7 +339,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
                 eprintln!("specula: removed {removed} /lex_live entities the world files kept (no live Lex run shows them)");
             }
             // At startup nobody holds a claim and no playtest runs.
-            let may = write_policy::may_replace(&engine.swarm, Writer::from("startup"), false).map_err(|e| e.message)?;
+            let may = write_policy::may_replace(&engine.swarm, Writer::from("startup"), &engine.playtests).map_err(|e| e.message)?;
             for problem in engine.replace_world(may, world, &name).into_iter().chain(saved.warnings.iter().cloned()) {
                 eprintln!("specula: {problem}");
             }
@@ -772,15 +772,19 @@ impl Engine {
     fn check_world_replaced(&mut self) {
         if self.world.take_replaced() {
             self.world_changed_wholesale();
+            // The world files on disk describe a world that is gone: the next save rewrites them.
+            self.saved = None;
         }
     }
 
-    /// Calls the hosted game (`call` gets its [`Ctx`]) as one of its own writes, journaled as
-    /// `kind` under its name and exempt from claims ([`sim_writes::game`]). `None` without a
-    /// game.
-    fn game_call<T>(&mut self, kind: Kind, call: impl FnOnce(&mut dyn Game, &mut Ctx) -> T) -> Option<T> {
-        let game = self.game.as_mut()?;
-        Some(sim_writes::game(&mut self.world, &mut self.swarm, game.as_mut(), &self.clock, &self.game_name, self.windowed, kind, call))
+    /// One of the hosted game's own calls, as its own writes: journaled under its name, exempt
+    /// from claims ([`sim_writes::game`]). Whether a game ran it.
+    fn game_call(&mut self, call: sim_writes::GameCall) -> bool {
+        let Some(game) = self.game.as_mut() else { return false };
+        sim_writes::game(&mut self.world, &mut self.swarm, game.as_mut(), &self.clock, &self.game_name, self.windowed, call);
+        // A writer may have replaced the world (a bug the policy recovered from).
+        self.check_world_replaced();
+        true
     }
 
     /// The world's state hash, reusing the last one while nothing changed.
@@ -894,7 +898,7 @@ impl Engine {
                 let _t = profile::zone("tick");
                 let start = Instant::now();
                 // Game updates are journaled replay-only and coalesced per tick (F3).
-                self.game_call(Kind::GameTick, |game, ctx| game.tick(ctx));
+                self.game_call(sim_writes::GameCall::Tick);
                 self.pacing.tick.push(start.elapsed());
             }
             if !self.logic.is_empty() {
@@ -953,7 +957,7 @@ impl Engine {
             agent_view,
             title: &mut self.game_title,
         };
-        sim_writes::game(&mut self.world, &mut self.swarm, game.as_mut(), &self.clock, &self.game_name, self.windowed, Kind::GameFrame, |game, ctx| game.frame(ctx, &mut frame));
+        sim_writes::game(&mut self.world, &mut self.swarm, game.as_mut(), &self.clock, &self.game_name, self.windowed, sim_writes::GameCall::Frame(&mut frame));
         // While the window looks through an agent's camera the game's camera writes don't count
         // (only a human takes the view back, F5): the game was told (`Frame::agent_view`).
         if agent_view {
@@ -974,7 +978,7 @@ impl Engine {
         }
         let _z = profile::zone("game_overlay");
         let mut overlay = game::Overlay { size, camera, capture, quads: out, textures: &mut self.gpu };
-        sim_writes::game(&mut self.world, &mut self.swarm, game.as_mut(), &self.clock, &self.game_name, self.windowed, Kind::GameFrame, |game, ctx| game.overlay(ctx, &mut overlay));
+        sim_writes::game(&mut self.world, &mut self.swarm, game.as_mut(), &self.clock, &self.game_name, self.windowed, sim_writes::GameCall::Overlay(&mut overlay));
         // Past the cap, or naming a texture the GPU doesn't have: dropped (counted), never a
         // failed frame.
         let gpu = &self.gpu;
@@ -1791,7 +1795,7 @@ impl Engine {
             Command::Save { name, overwrite } => self.save(name, overwrite),
             // A playtest owns the clock and the world until it ends (as for save_read): a load
             // would replace the world under it. Not even with force. Nor while others hold claims.
-            Command::Load { name, force } => match write_policy::may_replace(&self.swarm, w, self.playtests.running()) {
+            Command::Load { name, force } => match write_policy::may_replace(&self.swarm, w, &self.playtests) {
                 Ok(may) => self.load(may, name, force),
                 Err(e) => world_error(&e),
             },
@@ -1900,7 +1904,7 @@ impl Engine {
                                 Some(c) => game.restore(c),
                                 None => {
                                     // The game's repair is its own write (its state, shown again).
-                                    sim_writes::game(&mut self.world, &mut self.swarm, game.as_mut(), clock, agent, windowed, Kind::GameTool, |game, ctx| game.world_rolled_back(ctx));
+                                    sim_writes::game(&mut self.world, &mut self.swarm, game.as_mut(), clock, agent, windowed, sim_writes::GameCall::RolledBack);
                                 }
                             }
                             world_error(&self.conflict_help(e, Some(&conflict::Yours { fields: vec![format!("(game tool {name})")] })))
@@ -1949,7 +1953,13 @@ impl Engine {
             },
             Command::ClaimList { owner, mine, path_prefix, after, limit } => {
                 let owner = if mine { Some(by.clone()) } else { owner };
-                let list = self.swarm.claims.list(owner.as_deref(), path_prefix.as_deref(), after, limit, Instant::now());
+                let mut list = self.swarm.claims.list(owner.as_deref(), path_prefix.as_deref(), after, limit, Instant::now());
+                // Writes modules' and live Lex runs' own ticks made inside the caller's claims
+                // (exempt from claims, so never refused): told to the holder.
+                let notices = self.swarm.claim_notices(Some(&by), 20);
+                if notices.as_array().is_some_and(|a| !a.is_empty()) {
+                    list.set("notices", notices);
+                }
                 ToolOutput::text(list.to_string())
             }
             Command::Physics(call) => self.physics_call(call, w, tick),
@@ -2226,7 +2236,9 @@ impl Engine {
     /// The hosted game's `before_capture`: presentation up to the current tick (a headless engine
     /// never runs its per-frame update). Returns the tick it ran at (`None` without a game).
     fn before_capture(&mut self) -> Option<u64> {
-        self.game_call(Kind::GameFrame, |game, ctx| game.before_capture(ctx))?;
+        if !self.game_call(sim_writes::GameCall::BeforeCapture) {
+            return None;
+        }
         Some(self.clock.tick())
     }
 
@@ -2389,6 +2401,7 @@ impl Engine {
                 s.set("unjournaled_writes", Json::from(self.world.strays()));
                 let (n, last) = self.world.replacements();
                 s.set("world_replacements", Json::from(n));
+                s.set("game_reserved_writes", Json::from(self.world.game_reserved_writes()));
                 if let Some((entry, tick)) = last {
                     s.set("last_world_replacement", Json::obj([("entry", Json::from(entry.as_str())), ("tick", Json::from(*tick))]));
                 }

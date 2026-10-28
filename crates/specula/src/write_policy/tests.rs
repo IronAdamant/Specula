@@ -309,8 +309,8 @@ const ROWS: &[(&str, Write, Expect)] = &[
         Ok(())
     }).map(|_| ()), Expect::Exempt("disk")),
     // Replacing the world (world_load, save_read, startup).
-    ("world_load while another agent holds claims (M1)", |f| may_replace(&f.sw, MALLORY, false).map(|_| ()), Expect::Refused("claimed")),
-    ("world_load under a playtest (M3)", |f| may_replace(&f.sw, ALICE, true).map(|_| ()), Expect::Refused("playtest_running")),
+    ("world_load while another agent holds claims (M1)", |f| may_replace(&f.sw, MALLORY, &crate::playtest_engine::Playtests::default()).map(|_| ()), Expect::Refused("claimed")),
+    ("world_load under a playtest (M3)", |f| may_replace(&f.sw, ALICE, &crate::playtest_engine::Playtests::pretend_running()).map(|_| ()), Expect::Refused("playtest_running")),
     // Replacing the live world wholesale (review round 2, probe2.rs: a game tool's
     // `*wd = World::default()` wiped claimed boxes unnoticed). The hosted game can't any more:
     // it gets a GameWorld, never `&mut World` (compile_fail doctests on GameWorld). Writers in
@@ -430,26 +430,100 @@ fn the_table_names_every_writer() {
 }
 
 /// A writer that changes the live world without journaling it is caught when its entry point
-/// ends: a debug assertion, and in release the changes are journaled as `engine:stray` (replay
-/// stays exact) and counted.
+/// ends, and fails closed: the changes are rolled back (full changes carry their state before),
+/// reported and counted (and a debug assertion).
 #[test]
 fn a_writer_that_leaves_changes_unjournaled_is_caught() {
     let mut f = fixture();
+    let before = contents(&f.live);
     let stray = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         f.live.session(&mut f.sw, 1, Opener::LexLive, |wd, _| {
             wd.spawn(cube("forgotten", Vec3::new(70.0, 0.5, 70.0)), "lex:siege").unwrap();
         });
     }));
-    if cfg!(debug_assertions) {
-        assert!(stray.is_err(), "a debug build stops there");
-    } else {
-        assert!(stray.is_ok());
-    }
+    assert_eq!(stray.is_err(), cfg!(debug_assertions), "a debug build stops there");
     assert!(!f.live.has_unjournaled());
     assert_eq!(f.live.strays(), 1);
-    let entry = f.sw.journal.entries().last().unwrap();
-    assert_eq!(&*entry.by, STRAY_AGENT);
+    assert!(f.live.find_path("/forgotten").is_err(), "rolled back");
+    assert_eq!(contents(&f.live), before);
     assert_eq!(f.sw.journal.replay().unwrap().state_hash(), f.live.state_hash());
+}
+
+macro_rules! call0 {
+    ($w:expr, $m:ident) => {
+        $w.$m()
+    };
+}
+
+/// Review round 3 (probes/evasion.rs): writes hidden or the world replaced inside an agent's
+/// commit, spelled every way the text guard can't see. Detection doesn't depend on spelling:
+/// the world is sealed while the command runs (taking its changes or switching recording does
+/// nothing), carries a mark replacements don't, and the policy acknowledges every change it
+/// journals. Each must leave alice's claimed box where it was (or the world consistent), be
+/// counted, refuse, and replay.
+#[test]
+fn hiding_or_replacing_inside_a_commit_is_caught_however_spelled() {
+    type Evasion = fn(&mut World, u64);
+    let rows: &[(&str, Evasion, &str)] = &[
+        ("E1: World::take_changes(wd) in path form", |wd, id| {
+            wd.update(&EntityKey::Id(id), moved(9.0), "mallory").unwrap();
+            World::take_changes(wd);
+        }, "claimed"),
+        ("E5: a macro calling $w.$m()", |wd, id| {
+            wd.update(&EntityKey::Id(id), moved(9.0), "mallory").unwrap();
+            let _ = call0!(wd, take_changes);
+        }, "claimed"),
+        ("recording switched off first", |wd, id| {
+            wd.set_recording(Recording::Off);
+            wd.update(&EntityKey::Id(id), moved(9.0), "mallory").unwrap();
+        }, "claimed"),
+        ("E2: mem::swap with a world built unrecorded", |wd, _| {
+            let mut other = World::default();
+            std::mem::swap(wd, &mut other);
+        }, "unjournaled_write"),
+        ("E2b: through a renamed reference (let t = wd; *t = ..)", |wd, _| {
+            let target = wd;
+            *target = World::default();
+        }, "unjournaled_write"),
+        ("E2c: clone_from", |wd, _| wd.clone_from(&World::default()), "unjournaled_write"),
+        ("E2d: swap imported under another name", |wd, _| {
+            use std::mem::swap as exchange;
+            let mut other = World::default();
+            exchange(wd, &mut other);
+        }, "unjournaled_write"),
+        ("E10: a modified clone put in place", |wd, id| {
+            let mut c = wd.clone();
+            let _ = c.update(&EntityKey::Id(id), moved(21.0), "mallory");
+            *wd = c;
+        }, "unjournaled_write"),
+    ];
+    for (name, evade, code) in rows {
+        let mut f = fixture();
+        let (id, at) = (f.abox, f.live.get(f.abox).unwrap().position);
+        let mut out = None;
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            out = Some(f.live.commit(&mut f.sw, 1, MALLORY, Kind::Set, Rule::World, |wd| {
+                evade(wd, id);
+                Ok(())
+            }));
+        }));
+        if *code == "claimed" {
+            assert!(caught.is_ok(), "{name}: refused, not a crash");
+            assert_eq!(out.and_then(|o| o.err()).map(|e| e.code), Some("claimed"), "{name}: the write reached the claims");
+            assert_eq!(f.live.get(id).unwrap().position, at, "{name}: alice's box didn't move");
+        } else {
+            // A replaced world: reported (a debug build asserts once it recovered), refused.
+            assert_eq!(caught.is_err(), cfg!(debug_assertions), "{name}: reported");
+            if let Some(o) = out {
+                assert_eq!(o.err().map(|e| e.code), Some(*code), "{name}");
+            }
+            assert!(f.live.replacements().0 >= 1, "{name}: counted as a replacement");
+            assert!(f.live.get(id).is_none_or(|e| e.position == at), "{name}: no claimed change got through as a journaled write");
+        }
+        assert!(f.live.strays() >= 1, "{name}: counted");
+        assert!(f.live.is_marked_live() && f.live.is_sealed() && !f.live.has_unjournaled() && !f.live.unacknowledged(), "{name}: the live world is consistent");
+        assert_eq!(f.sw.journal.replay().unwrap().state_hash(), f.live.state_hash(), "{name}: replay stays exact");
+    }
 }
 
 /// The hosted game can't hide its writes: it gets a GameWorld, which has no way to switch
@@ -505,4 +579,46 @@ fn with_no_blocking_claim_a_batch_does_no_claim_work() {
     // Alice holds the only claims: nothing can refuse her.
     agent(&mut f, ALICE, Kind::Batch, Rule::World, |wd| wd.apply_batch(ops, "alice").map(|_| ()).map_err(|(_, e)| e)).unwrap();
     assert_eq!(crate::claims::joint_rule_work() - before, 0);
+}
+
+/// Owner decision pending (coordinator, round 3): module and live Lex ticks stay exempt from
+/// claims (deterministic), but a write one makes inside another agent's claim is told to the
+/// claim's holder: a notice naming the module or run and the agent who started it.
+#[test]
+fn ticks_writing_inside_a_claim_notify_its_holder() {
+    let mut f = fixture();
+    let id = f.abox;
+    f.sw.note_starter("module:nexus", "mallory");
+    f.live.session(&mut f.sw, 1, Opener::Modules, |wd, sw| {
+        let mark = wd.mark();
+        wd.update(&EntityKey::Id(id), moved(4.0), "module:nexus").unwrap();
+        module_tick_commit(sw, 1)(wd, mark, "module:nexus", Phase::Tick).unwrap();
+    });
+    f.live.session(&mut f.sw, 2, Opener::LexLive, |wd, sw| {
+        wd.update(&EntityKey::Path("/rbox".into()), moved(5.0), "lex:siege").unwrap();
+        journal_exempt(wd, sw, 2, Exempt::LexLive { agent: "lex:siege" });
+    });
+    let notices = f.sw.claim_notices(Some("alice"), 20);
+    let n = notices.as_array().unwrap();
+    assert_eq!(n.len(), 2, "{notices}");
+    assert_eq!((n[0].get("by").and_then(Json::as_str), n[0].get("started_by").and_then(Json::as_str), n[0].get("path").and_then(Json::as_str)), (Some("module:nexus"), Some("mallory"), Some("/abox")));
+    assert_eq!(n[1].get("by").and_then(Json::as_str), Some("lex:siege"));
+    assert!(f.sw.claim_notices(Some("mallory"), 20).as_array().unwrap().is_empty(), "only the holder is told");
+    // Not refused: the ticks' writes are journaled as theirs.
+    assert_eq!(f.live.get(id).unwrap().position, moved(4.0).position.unwrap());
+}
+
+/// The hosted game's own calls writing reserved data are reported and counted (not refused).
+#[test]
+fn the_games_own_reserved_writes_are_reported() {
+    let mut f = fixture();
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        f.live.exempt(&mut f.sw, 1, Exempt::Game { name: "sepulcra", kind: Kind::GameTick }, |wd| {
+            wd.spawn(group("/lex"), "sepulcra").unwrap();
+        });
+    }));
+    assert_eq!(caught.is_err(), cfg!(debug_assertions), "a debug build stops there");
+    assert_eq!(f.live.game_reserved_writes(), 1);
+    assert!(f.live.find_path("/lex").is_ok(), "journaled, not refused");
+    assert_eq!(f.sw.journal.replay().unwrap().state_hash(), f.live.state_hash());
 }

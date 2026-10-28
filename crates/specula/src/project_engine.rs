@@ -2,7 +2,7 @@
 //! docs/design/PROJECT_DATA.md): snapshots, commits through the swarm's claims and journal, the
 //! disk kept equal to the store, imports of edits made outside the engine, and hot reload.
 
-use crate::journal::{Kind, Writer};
+use crate::journal::Writer;
 use crate::project::{self, Event, FileKind, Mount, MountKind, ProjectFile, DISK_AGENT};
 use crate::project_tools::{Committed, FixesCommitted, ModuleText, ProjectCall, Snap};
 use crate::world::{Change, WorldError};
@@ -577,7 +577,7 @@ impl Engine {
             self.poll_assets(true);
             done.push("models");
         }
-        if !assets.is_empty() && self.game_call(Kind::GameFrame, |game, ctx| game.assets_changed(ctx, &assets)).is_some() {
+        if !assets.is_empty() && self.game_call(crate::sim_writes::GameCall::AssetsChanged(&assets)) {
             done.push("game");
         }
         done

@@ -241,6 +241,14 @@ impl<'a> GameWorld<'a> {
         GameWorld { world }
     }
 
+    /// Project files aren't the game's to read through the world: they are the project's, read
+    /// from disk (see [`Game::assets_changed`]), and the engine lends them out while the game's
+    /// own calls run, so this is empty then. Kept only to say so.
+    #[deprecated(note = "project files aren't available to the hosted game through the world (empty during its calls): read them from disk, see Game::assets_changed")]
+    pub fn files(&self) -> &std::collections::BTreeMap<String, crate::project::ProjectFile> {
+        self.world.files()
+    }
+
     /// A shorter-lived handle on the same world (to hand to a [`Ctx`] or a helper).
     pub fn reborrow(&mut self) -> GameWorld<'_> {
         GameWorld { world: self.world }

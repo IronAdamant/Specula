@@ -2153,6 +2153,22 @@ pub struct World {
     /// Set on the engine's live world only ([`World::mark_live`]); a default or cloned world
     /// never carries it, so the write policy notices a live world replaced wholesale.
     live: LiveMark,
+    /// The revision as the write policy last acknowledged it (journaled or rolled back): see
+    /// [`World::unacknowledged`].
+    acked: u64,
+}
+
+/// What caches key on in a world (ids, revisions, stamps, epochs): see [`World::advance_past`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Epochs {
+    next_id: u64,
+    revision: u64,
+    stamp: u64,
+    transient_seq: u64,
+    draw_epoch: u64,
+    layout_epoch: u64,
+    mesh_epoch: u64,
+    model_drops: u64,
 }
 
 /// Whether a world is the engine's live one: neither `Default` nor `Clone` carries it.
@@ -2718,12 +2734,6 @@ impl World {
         self.file_floor_order = files.order;
         self.file_floor_seq = files.seq;
         self.file_floor_all = files.floor_all;
-    }
-
-    /// Moves the revision past `revision` (a world that took another's place must never repeat
-    /// one of its revisions: caches key on them).
-    pub(crate) fn revision_past(&mut self, revision: u64) {
-        self.revision = self.revision.max(revision) + 1;
     }
 
     fn child_range(&self, parent: u64) -> std::collections::btree_map::Range<'_, (u64, String), u64> {
@@ -3647,18 +3657,84 @@ impl World {
     /// exempt writer holds the live world), this changes nothing: the attempt is counted
     /// ([`World::seal_breaks`]) and the policy reports it.
     pub fn set_recording(&mut self, recording: Recording) {
-        if self.sealed {
+        if self.sealed && recording != self.recording {
             self.seal_breaks += 1;
             return;
         }
         self.recording = recording;
     }
 
-    /// Seals the world (or unseals it): while sealed, [`World::set_recording`] and
-    /// [`World::take_changes`] change nothing, so code the write policy hands the live world to
-    /// (the hosted game, exempt writers) can't hide its writes from the journal and the checks.
+    /// Seals the world (or unseals it): while sealed, [`World::set_recording`] (to another mode)
+    /// and [`World::take_changes`] change nothing, so code holding the live world can't hide its
+    /// writes from the journal and the checks. The live world is sealed except while the write
+    /// policy journals.
     pub(crate) fn set_sealed(&mut self, sealed: bool) {
         self.sealed = sealed;
+    }
+
+    /// Whether the world is sealed (see [`World::set_sealed`]).
+    pub(crate) fn is_sealed(&self) -> bool {
+        self.sealed
+    }
+
+    /// The write policy acknowledges every change so far: they are journaled, or rolled back.
+    pub(crate) fn acknowledge(&mut self) {
+        self.acked = self.revision;
+    }
+
+    /// Whether the world changed since the policy last acknowledged it. Every change to
+    /// persistent state moves the revision, whatever records it (or doesn't: recording off,
+    /// changes taken), so this doesn't depend on how a writer spelled its write.
+    pub(crate) fn unacknowledged(&self) -> bool {
+        self.revision != self.acked
+    }
+
+    /// Whether every change recorded and not taken yet can be rolled back: all of them full
+    /// changes, which carry their state before (none recorded one per entity, Snapshot).
+    pub(crate) fn can_roll_back_pending(&self) -> bool {
+        self.dirty.is_empty() && self.dirty_removed.is_empty() && self.dirty_env.is_none() && self.changes.iter().all(|c| !matches!(c, Change::Set { before: None, .. } | Change::Pose { .. }))
+    }
+
+    /// Rolls back every change recorded and not taken yet (see
+    /// [`World::can_roll_back_pending`]), as [`World::rollback_to`] a mark taken right after the
+    /// last take.
+    pub(crate) fn rollback_pending(&mut self) {
+        let mark = Mark { next_id: self.next_id, revision: self.revision, changes: 0 };
+        self.rollback_to(mark);
+    }
+
+    /// The counters caches key on (see [`World::advance_past`]).
+    pub(crate) fn epochs(&self) -> Epochs {
+        Epochs {
+            next_id: self.next_id,
+            revision: self.revision,
+            stamp: self.stamp,
+            transient_seq: self.transient_seq,
+            draw_epoch: self.draw_epoch,
+            layout_epoch: self.layout_epoch,
+            mesh_epoch: self.mesh_epoch,
+            model_drops: self.model_drops,
+        }
+    }
+
+    /// Moves every counter past `old` (a world that took another's place must never repeat an
+    /// id, a revision, a subtree stamp or an epoch the old one used: caches key on them), and
+    /// forgets which entities the draw caches saw change.
+    pub(crate) fn advance_past(&mut self, old: Epochs) {
+        self.set_next_id(old.next_id.max(self.next_id));
+        self.revision = self.revision.max(old.revision) + 1;
+        self.stamp = self.stamp.max(old.stamp) + 1;
+        self.transient_seq = self.transient_seq.max(old.transient_seq);
+        self.draw_epoch = self.draw_epoch.max(old.draw_epoch);
+        self.draw_reset();
+        self.layout_epoch = self.layout_epoch.max(old.layout_epoch) + 1;
+        self.mesh_epoch = self.mesh_epoch.max(old.mesh_epoch) + 1;
+        self.model_drops = self.model_drops.max(old.model_drops) + 1;
+        // Every top-level subtree changed: world files rewrite all of them.
+        for top in self.entities.values().filter(|e| e.parent.is_none() && !e.transient).map(|e| e.id).collect::<Vec<_>>() {
+            self.stamp += 1;
+            self.touched.insert(top, self.stamp);
+        }
     }
 
     /// Attempts to change recording or take the recorded changes while sealed, ever.

@@ -297,8 +297,13 @@ pub fn handle(host: &mut LogicHost, call: LogicCall, world: &mut World, clock: &
     let (tick, hz) = (clock.tick(), clock.hz());
     let result = match call {
         LogicCall::Load { code, origin, seed, open_ms } => LogicHost::name_of(&code)
-            .and_then(|name| check_module_owner(swarm, &name, w, "loading"))
-            .and_then(|()| host.load(code, origin, seed, world, tick, hz, &mut agent_commit(swarm, tick, w)))
+            .and_then(|name| check_module_owner(swarm, &name, w, "loading").map(|()| name))
+            .and_then(|name| {
+                let report = host.load(code, origin, seed, world, tick, hz, &mut agent_commit(swarm, tick, w))?;
+                // Who loaded it, for the notices its ticks' writes into claims make.
+                swarm.note_starter(&crate::logic::agent_of(&name), w.name);
+                Ok(report)
+            })
             .map(|mut report| {
             // Opening the library (on the caller's thread) is part of the reload's time.
             let mut timings = report.get("timings_ms").cloned().unwrap_or(Json::Null);

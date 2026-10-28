@@ -5,22 +5,60 @@
 //! new agent tool can't reach an exemption without naming one of these functions, each of which
 //! says whose write it is.
 
-use crate::game::{Clock, Ctx, Game, GameWorld};
+use crate::game::{Clock, Ctx, Frame, Game, GameRequest, GameWorld, Overlay};
 use crate::journal::{Kind, Writer};
 use crate::logic::LogicHost;
 use crate::swarm::Swarm;
 use crate::write_policy::{self, Exempt, Live, Opener};
 use specula_protocol::ToolOutput;
+use specula_core::Json;
+use std::any::Any;
 use std::collections::BTreeSet;
 
-/// The hosted game's own call (a tick, a frame, its overlay, `before_capture`, `apply_state`,
-/// `request_done`, `assets_changed`, or the repair after a refused game tool): `call` gets the
-/// game and its [`Ctx`]; what it changes is journaled as `kind` under `name`, exempt from
-/// claims ([`Exempt::Game`]).
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn game<T>(world: &mut Live, swarm: &mut Swarm, game: &mut dyn Game, clock: &Clock, name: &str, windowed: bool, kind: Kind, call: impl FnOnce(&mut dyn Game, &mut Ctx) -> T) -> T {
-    let why = Exempt::Game { name, kind };
-    world.exempt(swarm, clock.tick(), why, |w| call(game, &mut Ctx { world: GameWorld::new(w), clock, agent: name, windowed }))
+/// One of the hosted game's own calls ([`Game`]'s methods), the only things that run as the
+/// game's exempt writes: no closure, so nothing but the game's own code can be journaled as the
+/// game's (review round 3: any closure could run there).
+pub(crate) enum GameCall<'c, 'f> {
+    Tick,
+    Frame(&'c mut Frame<'f>),
+    Overlay(&'c mut Overlay<'f>),
+    BeforeCapture,
+    AssetsChanged(&'c [String]),
+    ApplyState(Box<dyn Any>),
+    RequestDone(&'c GameRequest, Result<Json, Json>),
+    /// The repair after a refused game tool, for games without checkpoints.
+    RolledBack,
+}
+
+impl GameCall<'_, '_> {
+    /// The journal kind of its entry.
+    fn kind(&self) -> Kind {
+        match self {
+            GameCall::Tick => Kind::GameTick,
+            GameCall::ApplyState(_) => Kind::GameStart,
+            GameCall::RolledBack => Kind::GameTool,
+            GameCall::Frame(_) | GameCall::Overlay(_) | GameCall::BeforeCapture | GameCall::AssetsChanged(_) | GameCall::RequestDone(..) => Kind::GameFrame,
+        }
+    }
+}
+
+/// The hosted game's own call: what it changes is journaled under `name`, exempt from claims
+/// ([`Exempt::Game`]), as the call's kind.
+pub(crate) fn game(world: &mut Live, swarm: &mut Swarm, game: &mut dyn Game, clock: &Clock, name: &str, windowed: bool, call: GameCall) {
+    let why = Exempt::Game { name, kind: call.kind() };
+    world.exempt(swarm, clock.tick(), why, |w| {
+        let ctx = &mut Ctx { world: GameWorld::new(w), clock, agent: name, windowed };
+        match call {
+            GameCall::Tick => game.tick(ctx),
+            GameCall::Frame(frame) => game.frame(ctx, frame),
+            GameCall::Overlay(overlay) => game.overlay(ctx, overlay),
+            GameCall::BeforeCapture => game.before_capture(ctx),
+            GameCall::AssetsChanged(paths) => game.assets_changed(ctx, paths),
+            GameCall::ApplyState(state) => game.apply_state(ctx, state),
+            GameCall::RequestDone(request, result) => game.request_done(ctx, request, result),
+            GameCall::RolledBack => game.world_rolled_back(ctx),
+        }
+    });
 }
 
 /// The hosted game's `start` ([`Exempt::GameStart`]: full states, as made).

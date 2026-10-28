@@ -40,9 +40,23 @@ const HATCHES: &[Rule] = &[
     },
     Rule {
         pattern: ".set_recording(",
-        allowed: &["world.rs", "journal.rs", "write_policy.rs", "desync.rs", "lex_live.rs", "logic/mod.rs"],
-        why: "the policy sets how the live world records; inside a session, live Lex's presentation records one change per entity (Snapshot) and module calls record full changes for their rollbacks, both journaled through the policy",
+        allowed: &["world.rs", "journal.rs", "write_policy.rs", "desync.rs", "logic/mod.rs"],
+        why: "the policy sets how the live world records (the live world refuses other modes while sealed); module calls keep full changes for their rollbacks; live Lex's presentation goes through write_policy::recording_as",
     },
+    Rule {
+        pattern: ".recording_as(",
+        allowed: &["write_policy.rs", "lex_live.rs"],
+        why: "switching how the sealed live world records is the policy's: live Lex's presentation (one change per entity), journaled as the run's",
+    },
+    Rule { pattern: ".mark_live(", allowed: &["world.rs", "write_policy.rs"], why: "only Live marks the live world" },
+    Rule { pattern: ".set_sealed(", allowed: &["world.rs", "write_policy.rs"], why: "only the policy seals and unseals the live world (around its own journaling)" },
+    Rule { pattern: ".acknowledge(", allowed: &["world.rs", "write_policy.rs"], why: "only the policy acknowledges what it journaled or rolled back" },
+    Rule { pattern: ".lend_files(", allowed: &["world.rs", "write_policy.rs"], why: "the policy lends project files out while writers that don't use them run" },
+    Rule { pattern: ".return_files(", allowed: &["world.rs", "write_policy.rs"], why: "the policy lends project files out while writers that don't use them run" },
+    Rule { pattern: ".advance_past(", allowed: &["world.rs", "write_policy.rs"], why: "recovering a replaced world is the policy's" },
+    Rule { pattern: ".set_clock_parts(", allowed: &["world.rs", "write_policy.rs"], why: "recovering a replaced world is the policy's" },
+    Rule { pattern: ".rollback_pending(", allowed: &["world.rs", "write_policy.rs"], why: "rolling back a writer's unjournaled changes is the policy's (settle)" },
+    Rule { pattern: ".clone_from(", allowed: &["world.rs", "models.rs"], why: "clone_from on a world replaces it wholesale (models.rs: pose buffers, not worlds)" },
     Rule {
         pattern: ".rollback_to(",
         allowed: &["world.rs", "journal.rs", "write_policy.rs", "logic/mod.rs"],
@@ -181,6 +195,14 @@ const OWNERS: &[Rule] = &[
     Rule { pattern: "journal_exempt(", allowed: &["lex_live.rs", "write_policy.rs"], why: "exempt writers journal through Live::exempt; live Lex journals its runs' ticks as it goes" },
     Rule { pattern: "write_policy::rolled_back(", allowed: &["lex_live.rs"], why: "live Lex takes a refused command back itself" },
     Rule { pattern: "self.world.disk(", allowed: &["project_engine.rs"], why: "files read from disk" },
+    Rule { pattern: "sim_writes::game(", allowed: &["lib.rs"], why: "the hosted game's own calls (Engine::game_call, frames, overlays, the game tool's repair): a GameCall names a Game method, never a closure" },
+    Rule { pattern: "sim_writes::game_start(", allowed: &["lib.rs"], why: "the hosted game's start" },
+    Rule { pattern: "sim_writes::module_tick(", allowed: &["lib.rs"], why: "module ticks, from the engine's tick loop" },
+    Rule { pattern: "sim_writes::anim_reload(", allowed: &["lib.rs"], why: "anim sets reloaded from disk" },
+    Rule { pattern: "sim_writes::logic_tools(", allowed: &["lib.rs"], why: "the logic_* tools' dispatch" },
+    Rule { pattern: "sim_writes::lex_tools(", allowed: &["lib.rs"], why: "the lex_* tools' dispatch" },
+    Rule { pattern: "game_call(", allowed: &["lib.rs", "project_engine.rs", "save_tools.rs"], why: "the hosted game's own calls (a GameCall: tick, frame, overlay, before_capture, assets_changed, apply_state, request_done)" },
+    Rule { pattern: "Live::new(", allowed: &["lib.rs"], why: "the live world is made once, in Engine::new; later worlds come in through Live::replace (MayReplace)" },
     // Variants are named where they are used: importing them bare would hide the owner check.
     Rule { pattern: "Exempt::*", allowed: &["write_policy.rs"], why: "name Exempt variants in full where they are used" },
     Rule { pattern: "Exempt::{", allowed: &["write_policy.rs"], why: "name Exempt variants in full where they are used" },
@@ -376,13 +398,36 @@ fn engine_code() -> Vec<(String, Vec<(usize, String)>)> {
     let root = src();
     let mut files = Vec::new();
     rust_files(&root, &mut files);
+    let rel = |f: &Path| f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+    let texts: Vec<(String, String)> = files.iter().map(|f| (rel(f), std::fs::read_to_string(f).unwrap())).collect();
+    let tests = test_only_files(&texts);
+    texts.iter().filter(|(r, _)| !tests.iter().any(|t| r == t || r.starts_with(&format!("{}/", t.trim_end_matches(".rs"))))).map(|(r, t)| (r.clone(), non_test_code(t))).collect()
+}
+
+/// The files only tests compile: those a `#[cfg(test)] mod name;` declares (review round 3:
+/// files were skipped by name, so a `sneaky_tests.rs` compiled into the engine went unscanned,
+/// and a test module in a file not named `tests.rs` was scanned).
+fn test_only_files(texts: &[(String, String)]) -> Vec<String> {
     let mut out = Vec::new();
-    for f in files {
-        let rel = f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
-        if rel.ends_with("tests.rs") || rel.contains("/tests/") {
-            continue;
+    for (rel, text) in texts {
+        let code = code_only(&text.replace("\r\n", "\n"));
+        // The folder a file's `mod x;` declarations live in.
+        let (dir, file) = rel.rsplit_once('/').map_or(("", rel.as_str()), |(d, f)| (d, f));
+        let own = if matches!(file, "lib.rs" | "main.rs" | "mod.rs") { dir.to_owned() } else { format!("{}{}", if dir.is_empty() { String::new() } else { format!("{dir}/") }, file.trim_end_matches(".rs")) };
+        for (i, line) in code.iter().enumerate() {
+            let t = line.trim();
+            let decl = match t.strip_prefix("#[cfg(test)]") {
+                Some(rest) if !rest.trim().is_empty() => rest.trim().to_owned(),
+                Some(_) => code.get(i + 1).map(|n| n.trim().to_owned()).unwrap_or_default(),
+                None => continue,
+            };
+            let decl = decl.strip_prefix("pub(crate) ").or_else(|| decl.strip_prefix("pub ")).unwrap_or(&decl).to_owned();
+            if let Some(name) = decl.strip_prefix("mod ").and_then(|n| n.strip_suffix(';')) {
+                let base = if own.is_empty() { name.trim().to_owned() } else { format!("{own}/{}", name.trim()) };
+                out.push(format!("{base}.rs"));
+                out.push(format!("{base}/mod.rs"));
+            }
         }
-        out.push((rel, non_test_code(&std::fs::read_to_string(&f).unwrap())));
     }
     out
 }
@@ -447,6 +492,9 @@ fn ok() -> impl FnMut(&mut World) { |_| {} }
     let code = non_test_code(src);
     let lines_with = |p: &str| code.iter().filter(|(_, l)| holds(l, p)).map(|(n, _)| *n).collect::<Vec<_>>();
     assert_eq!(lines_with(".take_changes("), vec![8, 9], "both call forms; not in strings, raw strings, comments or the test module");
+    assert!(holds("let _ = call0!(wd, take_changes);", ".take_changes("), "a macro naming it");
+    assert!(holds("let f = World::take_changes;", ".take_changes("), "passed as a function");
+    assert!(!holds("let n = w.take_changes_count();", ".take_changes("), "another name");
     assert_eq!(lines_with("Exempt::Game {"), vec![15], "spacing doesn't matter");
     assert_eq!(lines_with(".set_recording("), vec![21], "code after a test module (and after brace and quote char literals) is seen");
     assert!(code.iter().any(|(_, l)| l.contains("other: u8")), "a #[cfg(test)] field skips only itself");
@@ -463,16 +511,19 @@ fn squeeze(s: &str) -> String {
 }
 
 /// Whether `line` holds `pattern` as a whole name (`Rule::Lex` doesn't match `Rule::LexLive`),
-/// whitespace ignored. A method pattern (`.take_changes(`) also matches its path form
-/// (`World::take_changes(w)`).
+/// whitespace ignored. A method pattern (`.take_changes(`) matches the bare name however it is
+/// used: called, in path form (`World::take_changes(w)`), named in a macro (`call!(w,
+/// take_changes)`), passed as a function (`World::take_changes`).
 fn holds(line: &str, pattern: &str) -> bool {
     let ident = |c: char| c.is_alphanumeric() || c == '_';
     let (line, pattern) = (squeeze(line), squeeze(pattern));
-    let found = |p: &str| {
-        let ends_in_name = p.chars().last().is_some_and(ident);
-        line.match_indices(p).any(|(at, _)| !ends_in_name || !line[at + p.len()..].chars().next().is_some_and(ident))
-    };
-    found(&pattern) || pattern.strip_prefix('.').is_some_and(|m| found(&format!("::{m}")))
+    if let Some(name) = pattern.strip_prefix('.') {
+        let name = name.trim_end_matches(')').trim_end_matches('(');
+        return line.match_indices(name).any(|(at, _)| !line[..at].chars().next_back().is_some_and(ident) && !line[at + name.len()..].chars().next().is_some_and(ident));
+    }
+    let ends_in_name = pattern.chars().last().is_some_and(ident);
+    let starts_in_name = pattern.chars().next().is_some_and(ident);
+    line.match_indices(&pattern).any(|(at, _)| (!ends_in_name || !line[at + pattern.len()..].chars().next().is_some_and(ident)) && (!starts_in_name || !line[..at].chars().next_back().is_some_and(ident)))
 }
 
 fn check(rules: &[Rule], code: &[(String, Vec<(usize, String)>)], problems: &mut Vec<String>) {
@@ -534,6 +585,9 @@ fn replaces_world(s: &str) -> bool {
         last.contains("world") || last == "w" || last == "wd"
     };
     let ident = |t: &str| t.chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.').collect::<String>();
+    if s.starts_with("self.world=") || s.starts_with("engine.world=") {
+        return true;
+    }
     if let Some(rest) = s.strip_prefix('*') {
         let name = ident(rest);
         let after = &rest[name.len()..];
@@ -608,4 +662,45 @@ fn the_live_world_has_no_other_way_in() {
     assert!(text.contains("pub struct Live {\n    world: World,"), "Live's world field must stay private");
     assert!(!text.contains("fn world_mut"), "Live must not hand out its world");
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+#[test]
+fn no_hidden_modules_or_renamed_imports() {
+    // Review round 3 (probes/evasion): a `#[path = "hidden.txt"]` module escaped the scan (only
+    // .rs files are read), and `use ... as ...` renamed what the owner rules look for.
+    let root = src();
+    let mut files = Vec::new();
+    rust_files(&root, &mut files);
+    let allowed_paths = [("physics.rs", "#[path = \"physics_save.rs\"]")];
+    let mut problems = Vec::new();
+    for f in &files {
+        let rel = f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+        let text = std::fs::read_to_string(f).unwrap();
+        for (n, line) in text.lines().enumerate() {
+            let t = line.trim();
+            if t.starts_with("#[path") && !allowed_paths.iter().any(|(file, attr)| rel == *file && t == *attr) {
+                problems.push(format!("src/{rel}:{}: #[path] modules are refused in the engine crate (they can point at files the guard doesn't read)\n    {t}", n + 1));
+            }
+        }
+    }
+    for (file, lines) in engine_code() {
+        for (n, line) in lines {
+            let t = line.trim();
+            let renamed = t.starts_with("use ") && t.contains(" as ") && ["write_policy", "mem::", "World", "GameWorld", "Live", "sim_writes"].iter().any(|k| t.contains(k));
+            if renamed {
+                problems.push(format!("src/{file}:{n}: a renamed import of the policy's names, World or mem::swap/take/replace: use the names themselves (the guard looks for them)\n    {t}"));
+            }
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+    // A file only tests compile is skipped; one the engine compiles is scanned, whatever its name.
+    let texts = vec![("a.rs".to_owned(), "#[cfg(test)]\nmod a_tests;\nmod sneaky_tests;\n".to_owned())];
+    assert_eq!(test_only_files(&texts), vec!["a/a_tests.rs".to_owned(), "a/a_tests/mod.rs".to_owned()]);
+}
+
+#[test]
+fn the_live_world_is_made_once() {
+    // E3 (review round 3): `*live = Live::new(World::default())` skips MayReplace.
+    let made: usize = engine_code().iter().map(|(_, lines)| lines.iter().filter(|(_, l)| holds(l, "Live::new(")).count()).sum();
+    assert_eq!(made, 1, "Live::new appears once, in Engine::new");
 }

@@ -23,12 +23,16 @@
 //!   transient entities, claims (path and region, step by step) and the joint rules
 //!   ([`crate::claims::joint_rule_changes`]). Journaling, attribution and the removed-version
 //!   pruning ([`prune_retired`]) follow from the writer too.
-//! - **Nothing is left behind.** Every entry point ends with no change pending: a writer that
-//!   changed the world without journaling it (or rolling it back) is a bug, caught by a debug
-//!   assertion, and journaled as `engine:stray` in release builds so replay stays exact.
-//! - **Nothing can hide.** While the hosted game or an exempt writer holds the live world it is
-//!   sealed ([`World::set_sealed`]): switching recording or taking the recorded changes does
-//!   nothing (and is reported), so their writes stay checked and journaled.
+//! - **Nothing is left behind, nothing can hide, however it's spelled.** The live world is sealed
+//!   except while the policy journals ([`World::set_sealed`]: switching recording or taking the
+//!   recorded changes does nothing), the policy acknowledges every change it journals or rolls
+//!   back ([`World::acknowledge`]: the revision moves with every persistent change, recorded or
+//!   not), and writers' code runs guarded (a world put in the live one's place lacks its mark).
+//!   Every entry point fails closed ([`Live::settle`]): unjournaled changes are rolled back,
+//!   unrecorded ones or a replaced world start the journal over (so replay stays exact); each is
+//!   reported, counted and refused where the caller can be told.
+//! - **The hosted game holds a [`GameWorld`]**, never a `World`: it can't replace the world or
+//!   hide its writes at all.
 //! - **A guard test** (`crates/specula/tests/write_policy_guard.rs`) fails if the escape hatches
 //!   (taking or hiding recorded changes, raw puts, journal appends) or the exempt writers appear
 //!   outside the files that own them, or if anything else gets a field of type `World`.
@@ -263,11 +267,49 @@ fn check_game(world: &mut World, claims: &Claims, mark: Mark, w: Writer) -> Resu
     world.recheck_steps(mark, &mut |world: &World, change: &Change| claims_step(claims, world, change, w, now, true))
 }
 
-/// An agent's tool writing the world. The decision, in order: `command` runs; its changes pass
-/// the reserved-data rules for `rule`; the joint rules on the result (every body a change ties,
-/// lets go of or pulls, unless `rule` is [`Rule::Joint`], which checks its bodies itself);
-/// transient entities are refused (they belong to the hosted game); then claims, step by step.
-/// Journaled under `w` (undoable). A failing command or check changes nothing. Returns the
+/// Runs `f` (a writer's code) with `world` sealed ([`World::set_sealed`]): it can't switch how
+/// the world records or take its recorded changes, so everything it writes reaches the checks
+/// and the journal. The caller's seal is restored after.
+fn sealed<T>(world: &mut World, f: impl FnOnce(&mut World) -> T) -> T {
+    let prev = world.is_sealed();
+    world.set_sealed(true);
+    let out = f(world);
+    world.set_sealed(prev);
+    out
+}
+
+/// Runs `f` (the policy's own journaling: taking the recorded changes, switching recording) with
+/// `world` unsealed, restoring the seal after; everything so far is then acknowledged
+/// ([`World::acknowledge`]): journaled or rolled back.
+fn journaling<T>(world: &mut World, f: impl FnOnce(&mut World) -> T) -> T {
+    let prev = world.is_sealed();
+    world.set_sealed(false);
+    let out = f(world);
+    world.set_sealed(prev);
+    world.acknowledge();
+    out
+}
+
+/// Switches how `world` records for `f` (live Lex's presentation records one change per entity),
+/// back after: the only way to change recording while the live world is sealed. `f` itself runs
+/// sealed; its writes are journaled by the caller.
+pub(crate) fn recording_as<T>(world: &mut World, mode: Recording, f: impl FnOnce(&mut World) -> T) -> T {
+    let (prev_mode, prev_seal) = (world.recording(), world.is_sealed());
+    world.set_sealed(false);
+    world.set_recording(mode);
+    world.set_sealed(true);
+    let out = f(world);
+    world.set_sealed(false);
+    world.set_recording(prev_mode);
+    world.set_sealed(prev_seal);
+    out
+}
+
+/// An agent's tool writing the world. The decision, in order: `command` runs (sealed); its
+/// changes pass the reserved-data rules for `rule`; the joint rules on the result (every body a
+/// change ties, lets go of or pulls, unless `rule` is [`Rule::Joint`], which checks its bodies
+/// itself); transient entities are refused (they belong to the hosted game); then claims, step by
+/// step. Journaled under `w` (undoable). A failing command or check changes nothing. Returns the
 /// command's result and the journal id (`None` when nothing changed). With no claim that could
 /// refuse `w`, only the reserved-data and transient rules run (O(changes)).
 pub fn commit<T>(
@@ -284,7 +326,7 @@ pub fn commit<T>(
     let blocks = claims.could_block(w, now);
     let command = |wd: &mut World| {
         let mark = wd.mark();
-        let v = command(wd)?;
+        let v = sealed(wd, command)?;
         let start = wd.mark_changes(mark);
         let changes = &wd.pending_changes()[start..];
         reserved(changes, Reserved::agent(rule))?;
@@ -301,7 +343,7 @@ pub fn commit<T>(
     let check: Option<&mut journal::Check> = if blocks { Some(&mut check) } else { None };
     // `journal::commit` refuses transient writes, runs `check` step by step, rolls a failed
     // command back and journals the rest.
-    let result = journal::commit(world, &mut swarm.journal, tick, w, kind, check, command);
+    let result = journaling(world, |world| journal::commit(world, &mut swarm.journal, tick, w, kind, check, command));
     prune_retired(world, swarm);
     match &result {
         Err(e) => swarm.count_rejection(w, e),
@@ -318,18 +360,19 @@ pub fn commit<T>(
 /// [`crate::project::DISK_AGENT`]'s. **Exempt from claims:** a human's edit can't be refused
 /// (F5), so it is recorded instead, and agents see it in history and the feed.
 pub fn disk<T>(world: &mut World, swarm: &mut Swarm, tick: u64, command: impl FnOnce(&mut World) -> Result<T, WorldError>) -> Result<(T, Option<u64>), WorldError> {
-    journal::commit(world, &mut swarm.journal, tick, crate::project::DISK_AGENT, Kind::File, None, command)
+    journaling(world, |world| journal::commit(world, &mut swarm.journal, tick, crate::project::DISK_AGENT, Kind::File, None, |wd| sealed(wd, command)))
 }
 
 /// `w` undoes its entries (or forced, others'): checked against claims and the joint rules step
 /// by step like any write (undoing a joint's removal ties its bodies again, restoring a jointed
-/// body pulls the others), journaled as `w`'s undo.
+/// body pulls the others), journaled as `w`'s undo. The journal itself puts the old states back:
+/// no writer's code runs.
 pub fn undo(world: &mut World, swarm: &mut Swarm, tick: u64, w: Writer, req: &UndoRequest) -> Result<Undone, WorldError> {
     let now = Instant::now();
     let claims = &swarm.claims;
     let mut check = |world: &World, change: &Change| claims_step(claims, world, change, w, now, true);
     let check: Option<&mut journal::Check> = if claims.could_block(w, now) { Some(&mut check) } else { None };
-    let result = swarm.journal.undo(world, tick, w, req, check);
+    let result = journaling(world, |world| swarm.journal.undo(world, tick, w, req, check));
     prune_retired(world, swarm);
     match &result {
         Err(e) => swarm.count_rejection(w, e),
@@ -345,12 +388,12 @@ pub fn undo(world: &mut World, swarm: &mut Swarm, tick: u64, w: Writer, req: &Un
 /// (ids it used are never handed out again; the journal notes them) and the caller rolls its own
 /// state back too.
 pub fn game_commit(world: &mut World, swarm: &mut Swarm, mark: Mark, tick: u64, game: &str, w: Writer) -> Result<(), WorldError> {
-    if let Err(e) = check_game(world, &swarm.claims, mark, w) {
+    if let Err(e) = journaling(world, |world| check_game(world, &swarm.claims, mark, w)) {
         swarm.journal.note_next_id(world.next_id());
         swarm.count_rejection(w, &e);
         return Err(e.with("game", game));
     }
-    let changes = world.take_changes();
+    let changes = journaling(world, World::take_changes);
     if changes.is_empty() {
         // Nothing to journal, but ids may have been used (and rolled back): replays must hand
         // out the same ones next.
@@ -365,13 +408,13 @@ pub fn game_commit(world: &mut World, swarm: &mut Swarm, mark: Mark, tick: u64, 
     Ok(())
 }
 
-/// A game tool agent `w` called: `call` runs inside the game, and its world changes pass
-/// [`game_commit`]. On refusal only the **world** is rolled back: the caller must roll the game
-/// back too ([`crate::game::Game::restore`] from a checkpoint taken before the call, or
-/// [`crate::game::Game::world_rolled_back`] for games without checkpoints).
+/// A game tool agent `w` called: `call` runs inside the game (with a [`GameWorld`], sealed), and
+/// its world changes pass [`game_commit`]. On refusal only the **world** is rolled back: the
+/// caller must roll the game back too ([`crate::game::Game::restore`] from a checkpoint taken
+/// before the call, or [`crate::game::Game::world_rolled_back`] for games without checkpoints).
 pub fn game_tool<T>(world: &mut World, swarm: &mut Swarm, tick: u64, game: &str, w: Writer, call: impl FnOnce(&mut GameWorld) -> T) -> Result<T, WorldError> {
     let mark = world.mark();
-    let out = call(&mut GameWorld::new(world));
+    let out = sealed(world, |wd| call(&mut GameWorld::new(wd)));
     game_commit(world, swarm, mark, tick, game, w).map(|()| out)
 }
 
@@ -390,17 +433,28 @@ pub fn module_request(world: &mut World, mark: Mark) -> Result<(), WorldError> {
 
 /// Journals what an [`Exempt`] writer changed (pending since its last journal): replay-only,
 /// under its name. A game's per-tick entries are coalesced to one change per entity by the
-/// [`Recording::Snapshot`] they were recorded with.
-pub fn journal_exempt(world: &mut World, swarm: &mut Swarm, tick: u64, why: Exempt) {
-    let changes = world.take_changes();
+/// [`Recording::Snapshot`] they were recorded with. Returns the reserved-data rule the writer's
+/// changes broke, if any (exempt writers aren't refused: the caller reports it). Writes a module
+/// or a live Lex run made to another agent's claimed entities are reported to the claim's
+/// holder ([`Swarm::note_claim_crossings`]).
+pub fn journal_exempt(world: &mut World, swarm: &mut Swarm, tick: u64, why: Exempt) -> Option<WorldError> {
+    let changes = journaling(world, World::take_changes);
+    let broke = match why {
+        Exempt::Game { .. } | Exempt::GameStart { .. } => reserved(&changes, Reserved::GAME).err(),
+        _ => None,
+    };
+    if matches!(why, Exempt::Module { .. } | Exempt::LexLive { .. }) && !swarm.claims.is_empty() && !changes.is_empty() {
+        swarm.note_claim_crossings(world, &changes, why.by(), tick);
+    }
     swarm.journal.append_snapshot(tick, why.by(), None, why.kind(), changes, world.next_id());
     prune_retired(world, swarm);
+    broke
 }
 
 /// After a writer rolled the world back itself (to a mark it took): ids the rolled-back changes
 /// used are never handed out again, and the journal notes it so replays agree.
 pub fn rolled_back(world: &mut World, swarm: &mut Swarm, mark: Mark) {
-    world.rollback_to(mark);
+    journaling(world, |world| world.rollback_to(mark));
     swarm.journal.note_next_id(world.next_id());
 }
 
@@ -443,6 +497,20 @@ pub fn prune_retired_now(world: &mut World, swarm: &mut Swarm) {
     swarm.retired_prune_at = 2 * world.retired_len();
 }
 
+/// What a live Lex run may present (its `present` rules' spawn specs, checked when the run
+/// starts and when a save brings it back): the presentation is journaled as the run's own writes
+/// ([`Exempt::LexLive`], with no reserved-data or joint checks), so nothing reserved may be in
+/// it: no joint (`props.joint`, which would tie or pull bodies others claimed), no navmesh
+/// settings, no Lex rule data (review round 3: a present rule tied a joint onto a claimed box).
+pub(crate) fn presentation_allowed(spec: &crate::world::SpawnSpec) -> Result<(), String> {
+    for key in [crate::physics::joints::PROP, crate::nav::MESH_KEY, "lex", "lex_set", "lex_live_run"] {
+        if spec.props.get(key).is_some() {
+            return Err(format!("props.{key} is reserved (joints are physics_joint's, navmesh settings nav_build's, Lex rule data the Lex tools'): a live run's presentation can't carry it"));
+        }
+    }
+    Ok(())
+}
+
 /// Proof that the live world may be replaced now ([`may_replace`]): [`Live::replace`] takes one,
 /// so no replacement (world_load, save_read, `--world` at startup) skips the check.
 pub(crate) struct MayReplace(());
@@ -451,9 +519,9 @@ pub(crate) struct MayReplace(());
 /// the clock and the world until it ends; not even with force: its replay would record a run
 /// nobody can reproduce), and `w` only while no other agent holds a live claim (a load replaces
 /// everything they claimed). Checked when the request comes in, and again when a save game
-/// swaps in.
-pub(crate) fn may_replace(swarm: &Swarm, w: Writer, playtest_running: bool) -> Result<MayReplace, WorldError> {
-    if playtest_running {
+/// swaps in. The playtests are read here, not told.
+pub(crate) fn may_replace(swarm: &Swarm, w: Writer, playtests: &crate::playtest_engine::Playtests) -> Result<MayReplace, WorldError> {
+    if playtests.running() {
         return Err(WorldError::new("playtest_running", "a playtest is running (it owns the clock and the world); load after it ends (playtest_report waits for it) or cancel it")
             .with("retry_after_ms", 1000));
     }
@@ -465,7 +533,7 @@ pub(crate) fn may_replace(swarm: &Swarm, w: Writer, playtest_running: bool) -> R
 /// below (see the module docs).
 pub struct Live {
     world: World,
-    /// Changes found pending after an entry point (each a bug), journaled as `engine:stray`.
+    /// Changes found unjournaled after an entry point, or made unrecorded (each a bug).
     strays: u64,
     /// The model library and shape budgets the live world uses: put back on a world that took
     /// its place ([`Live::recover`]).
@@ -476,6 +544,8 @@ pub struct Live {
     last_replaced: Option<(String, u64)>,
     /// A replacement the engine hasn't reset its own caches for yet ([`Live::take_replaced`]).
     unseen_replacement: bool,
+    /// Reserved data the hosted game's own calls wrote (reported, not refused).
+    game_reserved: u64,
 }
 
 impl Deref for Live {
@@ -485,33 +555,40 @@ impl Deref for Live {
     }
 }
 
-/// Runs `f` with `world` sealed ([`World::set_sealed`]): code the policy hands the live world to
-/// (the hosted game, exempt writers) can't change how it records or take its recorded changes,
-/// so nothing it writes escapes the checks and the journal. The policy's own journaling runs
-/// after, unsealed.
-fn sealed<T>(world: &mut World, f: impl FnOnce(&mut World) -> T) -> T {
-    world.set_sealed(true);
-    let out = f(world);
-    world.set_sealed(false);
-    out
-}
-
 /// Attribution of changes a writer left unjournaled (see [`Live::settle`]).
 pub const STRAY_AGENT: &str = "engine:stray";
 
+/// How a [`Live::guarded`] writer uses the project files.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Files {
+    /// It doesn't: they are lent out meanwhile (so a world put in its place keeps them).
+    Lent,
+    /// It writes them (the project tools, disk imports): they stay.
+    Kept,
+}
+
 impl Live {
-    /// The live world, starting as `world` (recording every change).
+    /// The live world, starting as `world` (recording every change, sealed). Made once, at
+    /// startup (`Engine::new`; the guard keeps it there): later worlds come in through
+    /// [`Live::replace`].
     pub(crate) fn new(mut world: World) -> Live {
         world.set_recording(Recording::Full);
         world.mark_live();
+        world.set_sealed(true);
+        world.acknowledge();
         let (models, limits) = (world.model_source().cloned(), world.shape_limits());
-        Live { world, strays: 0, models, limits, replaced: 0, last_replaced: None, unseen_replacement: false }
+        Live { world, strays: 0, models, limits, replaced: 0, last_replaced: None, unseen_replacement: false, game_reserved: 0 }
     }
 
     /// Times a writer replaced the live world wholesale (bugs; 0 in a healthy run), and the
     /// entry point and tick of the last time, for engine_info.
     pub(crate) fn replacements(&self) -> (u64, Option<&(String, u64)>) {
         (self.replaced, self.last_replaced.as_ref())
+    }
+
+    /// Reserved data the hosted game's own calls wrote (reported, never refused).
+    pub(crate) fn game_reserved_writes(&self) -> u64 {
+        self.game_reserved
     }
 
     /// Whether a writer replaced the live world since the last call: the engine then resets
@@ -521,74 +598,111 @@ impl Live {
     }
 
     /// Runs `f`, which holds the live world, so that replacing the world wholesale (`*w =
-    /// World::default()`, `mem::swap`, `mem::take`) can't go unnoticed: the project files are
-    /// lent out meanwhile (`f`'s writers don't use them), and if the world `f` leaves isn't the
-    /// one marked live, [`Live::recover`] takes over.
-    fn guarded<T>(&mut self, swarm: &mut Swarm, tick: u64, entry: &str, f: impl FnOnce(&mut World, &mut Swarm) -> T) -> T {
-        let (next_id, revision, clock, files_revision) = (self.world.next_id(), self.world.revision(), self.world.clock_parts(), self.world.files_revision());
-        let files = self.world.lend_files();
+    /// World::default()`, `mem::swap`, `mem::take`, `clone_from`), however it is spelled, can't
+    /// go unnoticed: if the world `f` leaves isn't the one marked live, [`Live::recover`] takes
+    /// over. Returns whether it had to.
+    fn guarded<T>(&mut self, swarm: &mut Swarm, tick: u64, entry: &str, files: Files, f: impl FnOnce(&mut World, &mut Swarm) -> T) -> (T, bool) {
+        let (epochs, clock, files_revision) = (self.world.epochs(), self.world.clock_parts(), self.world.files_revision());
+        let lent = (files == Files::Lent).then(|| self.world.lend_files());
         let out = f(&mut self.world, swarm);
         if self.world.is_marked_live() {
-            self.world.return_files(files);
-        } else {
-            self.recover(swarm, tick, entry, next_id, revision, clock, (files, files_revision));
+            if let Some(files) = lent {
+                self.world.return_files(files);
+            }
+            return (out, false);
         }
-        out
+        self.recover(swarm, tick, entry, epochs, clock, lent.map(|f| (f, files_revision)));
+        (out, true)
     }
 
     /// A writer replaced the live world wholesale: what it did can't be undone (the old world is
     /// gone), so the world it left becomes the live one, consistently. It is marked live and
-    /// unsealed, records again, gets back the clock, the model library, the shape budgets and the
-    /// project files, never repeats an id or a revision, and the journal starts over from it (so
-    /// replay stays exact). Reported as an error (engine_info `swarm.world_replacements`, a log
-    /// line, a debug assertion) and counted with the strays.
-    #[allow(clippy::too_many_arguments)]
-    fn recover(&mut self, swarm: &mut Swarm, tick: u64, entry: &str, next_id: u64, revision: u64, clock: crate::world::ClockParts, files: (crate::world::ProjectFiles, u64)) {
+    /// sealed, records again, gets back the clock, the model library, the shape budgets and the
+    /// project files (when they were lent), never repeats an id, a revision, a subtree stamp or
+    /// an epoch, and the journal starts over from it (so replay stays exact). Reported as an
+    /// error (engine_info `swarm.world_replacements`, a log line, a debug assertion) and counted
+    /// with the strays.
+    fn recover(&mut self, swarm: &mut Swarm, tick: u64, entry: &str, epochs: crate::world::Epochs, clock: crate::world::ClockParts, files: Option<(crate::world::ProjectFiles, u64)>) {
         self.strays += 1;
         self.replaced += 1;
         self.last_replaced = Some((entry.to_owned(), tick));
         self.unseen_replacement = true;
         let w = &mut self.world;
-        w.set_sealed(false);
-        w.mark_live();
-        w.set_recording(Recording::Full);
-        w.set_clock_parts(clock);
-        let _ = w.set_model_source(self.models.clone());
-        w.set_shape_limits(self.limits);
-        w.adopt_files(files.0, files.1);
-        w.set_next_id(next_id.max(w.next_id()));
-        w.revision_past(revision);
-        // What it recorded since belongs to a world that is gone: the journal starts here.
-        w.set_sealed(false);
-        let _ = w.take_changes();
-        swarm.journal.rebase(w, &format!("engine:replaced_by:{entry}"));
-        swarm.journal.note_next_id(w.next_id());
+        journaling(w, |w| {
+            w.mark_live();
+            w.set_recording(Recording::Full);
+            w.set_clock_parts(clock);
+            let _ = w.set_model_source(self.models.clone());
+            w.set_shape_limits(self.limits);
+            if let Some((files, revision)) = files {
+                w.adopt_files(files, revision);
+            }
+            w.advance_past(epochs);
+            // What it recorded belongs to a world that is gone: the journal starts here.
+            let _ = w.take_changes();
+            swarm.journal.rebase(w, &format!("engine:replaced_by:{entry}"));
+            swarm.journal.note_next_id(w.next_id());
+        });
+        w.set_sealed(true);
         eprintln!(
-            "specula: write_policy: {{\"error\":\"world_replaced\",\"entry\":\"{entry}\",\"tick\":{tick},\"message\":\"a writer replaced the live world wholesale; it is live as left (clock, models, budgets and project files kept) and the journal starts over from it\"}}"
+            "specula: write_policy: {{\"error\":\"world_replaced\",\"entry\":\"{entry}\",\"tick\":{tick},\"message\":\"a writer replaced the live world wholesale; it is live as left (clock, models, budgets and lent project files kept) and the journal starts over from it\"}}"
         );
         debug_assert!(false, "write_policy: {entry} replaced the live world wholesale");
     }
 
-    /// Changes a writer left unjournaled (bugs; 0 in a healthy run).
+    /// Changes a writer left unjournaled or unrecorded, and worlds replaced (bugs; 0 in a
+    /// healthy run).
     pub(crate) fn strays(&self) -> u64 {
         self.strays
     }
 
-    /// Every entry point ends here: the live world records full changes again, and nothing is
-    /// pending (every writer journals or rolls back what it changed). A writer that left changes
-    /// is a bug: a debug assertion, and in release they are journaled as [`STRAY_AGENT`]'s so
-    /// replay stays exact.
-    fn settle(&mut self, swarm: &mut Swarm, tick: u64, entry: &str) {
-        if self.world.recording() != Recording::Full {
-            self.world.set_recording(Recording::Full);
-        }
-        if self.world.has_unjournaled() {
+    /// Every entry point ends here, and fails closed. The live world records full changes again
+    /// and is sealed. Then two checks that don't depend on how a writer spelled its write:
+    /// - **Unjournaled** changes (still recorded, not taken): rolled back when they can be (full
+    ///   changes carry their state before), else (a Snapshot writer's) journaled as
+    ///   [`STRAY_AGENT`]'s so replay stays exact.
+    /// - **Unacknowledged** changes: the world's revision moved since the policy last journaled
+    ///   or rolled back, with nothing recorded to show for it (written while unrecorded, or the
+    ///   records taken). They can't be undone, so the journal starts over from the world as it is.
+    ///
+    /// Either is a bug: reported, counted, a debug assertion; the entry point refuses
+    /// (`unjournaled_write`) when its caller can be told. Returns whether all was clean.
+    fn settle(&mut self, swarm: &mut Swarm, tick: u64, entry: &str) -> bool {
+        let w = &mut self.world;
+        let pending = w.has_unjournaled();
+        let hidden = !pending && w.unacknowledged();
+        journaling(w, |w| {
+            w.set_recording(Recording::Full);
+            if pending {
+                if !w.can_roll_back_pending() {
+                    eprintln!("specula: write_policy: {{\"error\":\"unjournaled_write\",\"entry\":\"{entry}\",\"tick\":{tick},\"message\":\"a writer left changes unjournaled; they can't be rolled back (recorded one per entity), so they are journaled as {STRAY_AGENT}\"}}");
+                    let changes = w.take_changes();
+                    swarm.journal.append_snapshot(tick, STRAY_AGENT, None, Kind::GameFrame, changes, w.next_id());
+                } else {
+                    eprintln!("specula: write_policy: {{\"error\":\"unjournaled_write\",\"entry\":\"{entry}\",\"tick\":{tick},\"message\":\"a writer left changes unjournaled; they were rolled back\"}}");
+                    w.rollback_pending();
+                    swarm.journal.note_next_id(w.next_id());
+                }
+            }
+            if hidden {
+                eprintln!("specula: write_policy: {{\"error\":\"unrecorded_write\",\"entry\":\"{entry}\",\"tick\":{tick},\"message\":\"the world changed with nothing recorded; the journal starts over from it\"}}");
+                swarm.journal.rebase(w, &format!("engine:unrecorded_by:{entry}"));
+                swarm.journal.note_next_id(w.next_id());
+            }
+        });
+        w.set_sealed(true);
+        let clean = !pending && !hidden;
+        if !clean {
             self.strays += 1;
-            eprintln!("specula: write_policy: {entry} left world changes unjournaled (journaled as {STRAY_AGENT})");
-            let changes = self.world.take_changes();
-            swarm.journal.append_snapshot(tick, STRAY_AGENT, None, Kind::GameFrame, changes, self.world.next_id());
-            debug_assert!(false, "write_policy: {entry} left world changes unjournaled");
+            debug_assert!(false, "write_policy: {entry} left world changes unjournaled or unrecorded");
         }
+        clean
+    }
+
+    /// The error an entry point answers with when [`Live::settle`] or [`Live::guarded`] found
+    /// a writer's bug: what the writer did was rolled back, or the journal started over.
+    fn refusal(entry: &str) -> WorldError {
+        WorldError::new("unjournaled_write", format!("{entry}: a writer changed the world outside the write policy (unjournaled, unrecorded, or the world replaced); refused and reported (engine_info swarm.unjournaled_writes)"))
     }
 
     /// [`commit`] on the live world: an agent's tool, under `rule`.
@@ -601,30 +715,48 @@ impl Live {
         rule: Rule,
         command: impl FnOnce(&mut World) -> Result<T, WorldError>,
     ) -> Result<(T, Option<u64>), WorldError> {
-        let out = commit(&mut self.world, swarm, tick, w, kind, rule, command);
-        self.settle(swarm, tick, "commit");
+        let files = if rule == Rule::Project { Files::Kept } else { Files::Lent };
+        let breaks = self.world.seal_breaks();
+        let (out, replaced) = self.guarded(swarm, tick, "commit", files, |world, swarm| commit(world, swarm, tick, w, kind, rule, command));
+        let clean = self.settle(swarm, tick, "commit");
+        self.report_breaks(breaks, "commit");
+        if replaced || !clean {
+            return Err(Live::refusal("commit"));
+        }
         out
     }
 
     /// [`disk`] on the live world.
     pub(crate) fn disk<T>(&mut self, swarm: &mut Swarm, tick: u64, command: impl FnOnce(&mut World) -> Result<T, WorldError>) -> Result<(T, Option<u64>), WorldError> {
-        let out = disk(&mut self.world, swarm, tick, command);
-        self.settle(swarm, tick, "disk");
+        let breaks = self.world.seal_breaks();
+        let (out, replaced) = self.guarded(swarm, tick, "disk", Files::Kept, |world, swarm| disk(world, swarm, tick, command));
+        let clean = self.settle(swarm, tick, "disk");
+        self.report_breaks(breaks, "disk");
+        if replaced || !clean {
+            return Err(Live::refusal("disk"));
+        }
         out
     }
 
-    /// [`undo`] on the live world.
+    /// [`undo`] on the live world (the journal puts states back; no writer's code runs).
     pub(crate) fn undo(&mut self, swarm: &mut Swarm, tick: u64, w: Writer, req: &UndoRequest) -> Result<Undone, WorldError> {
         let out = undo(&mut self.world, swarm, tick, w, req);
-        self.settle(swarm, tick, "undo");
+        if !self.settle(swarm, tick, "undo") {
+            return Err(Live::refusal("undo"));
+        }
         out
     }
 
-    /// [`game_tool`] on the live world. The world is [sealed](sealed) while the game runs.
+    /// [`game_tool`] on the live world. The game gets a GameWorld: it can't replace the world or
+    /// hide what it records.
     pub(crate) fn game_tool<T>(&mut self, swarm: &mut Swarm, tick: u64, game: &str, w: Writer, call: impl FnOnce(&mut GameWorld) -> T) -> Result<T, WorldError> {
-        // The game gets a GameWorld: it can't replace the world or hide what it records.
-        let out = game_tool(&mut self.world, swarm, tick, game, w, call);
-        self.settle(swarm, tick, "game_tool");
+        let breaks = self.world.seal_breaks();
+        let (out, replaced) = self.guarded(swarm, tick, "game_tool", Files::Lent, |world, swarm| game_tool(world, swarm, tick, game, w, call));
+        let clean = self.settle(swarm, tick, "game_tool");
+        self.report_breaks(breaks, "game_tool");
+        if replaced || !clean {
+            return Err(Live::refusal("game_tool"));
+        }
         out
     }
 
@@ -634,35 +766,40 @@ impl Live {
     fn report_breaks(&mut self, before: u64, entry: &str) {
         if self.world.seal_breaks() != before {
             self.strays += 1;
-            eprintln!("specula: write_policy: {entry}: the writer tried to change recording or take the world's recorded changes; refused (its writes are checked and journaled as usual)");
+            eprintln!("specula: write_policy: {{\"error\":\"seal_break\",\"entry\":\"{entry}\",\"message\":\"the writer tried to change recording or take the world's recorded changes; refused (its writes are checked and journaled as usual)\"}}");
         }
     }
 
-    /// An [`Exempt`] writer: `f` runs with the world recording as the writer does (and
-    /// [sealed](sealed)), and what it changed is journaled under the writer's name
-    /// ([`journal_exempt`]).
+    /// An [`Exempt`] writer: `f` runs with the world recording as the writer does (sealed and
+    /// guarded), and what it changed is journaled under the writer's name ([`journal_exempt`]).
+    /// The hosted game's own reserved-data writes are reported and counted (not refused: a tick
+    /// can't be refused halfway).
     pub(crate) fn exempt<T>(&mut self, swarm: &mut Swarm, tick: u64, why: Exempt, f: impl FnOnce(&mut World) -> T) -> T {
-        self.world.set_recording(why.recording());
         let breaks = self.world.seal_breaks();
-        let out = self.guarded(swarm, tick, "exempt", |w, _| sealed(w, f));
-        self.world.set_recording(Recording::Full);
-        journal_exempt(&mut self.world, swarm, tick, why);
+        let (out, _) = self.guarded(swarm, tick, "exempt", Files::Lent, |world, _| recording_as(world, why.recording(), f));
+        if let Some(e) = journal_exempt(&mut self.world, swarm, tick, why) {
+            self.game_reserved += 1;
+            eprintln!("specula: write_policy: {{\"error\":\"game_reserved_write\",\"by\":\"{}\",\"tick\":{tick},\"message\":{}}}", why.by(), specula_core::Json::from(e.message.as_str()));
+            debug_assert!(false, "write_policy: the hosted game wrote reserved data: {}", e.message);
+        }
         self.settle(swarm, tick, "exempt");
         self.report_breaks(breaks, "exempt");
         out
     }
 
-    /// A writer that commits as it goes ([`Opener`]): `f` gets the world and the swarm, and must
-    /// journal or roll back everything it changes through this module's functions before it
-    /// returns ([`Live::settle`] checks).
+    /// A writer that commits as it goes ([`Opener`]): `f` gets the world (sealed and guarded)
+    /// and the swarm, and must journal or roll back everything it changes through this module's
+    /// functions before it returns ([`Live::settle`] checks, and fails closed).
     pub(crate) fn session<T>(&mut self, swarm: &mut Swarm, tick: u64, opener: Opener, f: impl FnOnce(&mut World, &mut Swarm) -> T) -> T {
         let entry = match opener {
             Opener::Modules => "session(modules)",
             Opener::LexLive => "session(lex_live)",
             Opener::LexTools => "session(lex_tools)",
         };
-        let out = self.guarded(swarm, tick, entry, f);
+        let breaks = self.world.seal_breaks();
+        let (out, _) = self.guarded(swarm, tick, entry, Files::Lent, f);
         self.settle(swarm, tick, entry);
+        self.report_breaks(breaks, entry);
         out
     }
 
@@ -680,6 +817,8 @@ impl Live {
         world.adopt_files(self.world.take_files(), files_revision);
         swarm.journal.rebase(&world, label);
         world.mark_live();
+        world.set_sealed(true);
+        world.acknowledge();
         self.models = world.model_source().cloned();
         self.limits = world.shape_limits();
         self.world = world;

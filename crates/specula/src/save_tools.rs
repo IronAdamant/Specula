@@ -9,7 +9,7 @@
 //! temporary file and renamed, so a crash leaves the old save or the new one.
 
 use crate::game::GameRequest;
-use crate::journal::{Kind, Writer};
+use crate::journal::Writer;
 use crate::savegame::{self, SaveError, Section, EXTENSION};
 use crate::tools::{bool_arg, check_keys, int_arg, string_arg};
 use crate::Engine;
@@ -864,7 +864,7 @@ impl Engine {
         // A playtest owns the clock and the world until it ends: a load would move both under it
         // (and its replay would record a run nobody can reproduce). Not even with force. Nor
         // while other agents hold claims.
-        let may = crate::write_policy::may_replace(&self.swarm, Writer::new(by, key), self.playtests.running()).map_err(|e| {
+        let may = crate::write_policy::may_replace(&self.swarm, Writer::new(by, key), &self.playtests).map_err(|e| {
             let mut s = SaveError::new(e.code, e.message.clone());
             s.details = e.details.clone();
             s
@@ -928,7 +928,7 @@ impl Engine {
             }
         }
         if let Some(state) = parsed {
-            self.game_call(Kind::GameStart, |game, ctx| game.apply_state(ctx, state));
+            self.game_call(crate::sim_writes::GameCall::ApplyState(state));
         }
         // The loaded world isn't a world folder: world_save names one.
         self.world_name = None;
@@ -1062,7 +1062,7 @@ impl Engine {
                 if self.game.is_none() {
                     return;
                 }
-                self.game_call(Kind::GameFrame, |game, ctx| game.request_done(ctx, &req, result.map_err(|e| e.to_json())));
+                self.game_call(crate::sim_writes::GameCall::RequestDone(&req, result.map_err(|e| e.to_json())));
             }
         }
     }

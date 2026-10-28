@@ -593,7 +593,9 @@ fn apply_command(run: &mut Run, name: &str, args: &Json, by: &str, w: Option<Wri
                 return Err(j);
             }
         }
-        None => write_policy::journal_exempt(world, swarm, tick, Exempt::LexLive { agent: &agent }),
+        None => {
+            write_policy::journal_exempt(world, swarm, tick, Exempt::LexLive { agent: &agent });
+        }
     }
     logic.keep_staged();
     if input {
@@ -964,6 +966,15 @@ impl Live {
         if let Err(e) = env.swarm.check_claimed_path(&format!("/{ROOT}/{}", s.set), w, "start this live run") {
             return world_error(&e);
         }
+        // What the run will present is journaled as its own writes (exempt from the reserved-data
+        // and joint rules): nothing reserved may be in it (review round 3: a present rule tied a
+        // joint onto another agent's claimed box).
+        for (i, p) in s.present.iter().enumerate() {
+            let checked = crate::tools::parse_spawn_fields(&p.spawn).and_then(|spec| write_policy::presentation_allowed(&spec));
+            if let Err(m) = checked {
+                return error("reserved", format!("present[{i}].spawn: {m}"));
+            }
+        }
         let sim = match Sim::new_hosted(Arc::clone(&s.rules), s.seed, env.natives) {
             Ok(sim) => sim,
             Err(m) => return error("native_failed", m),
@@ -989,6 +1000,8 @@ impl Live {
             Err(e) => return world_error(&e),
         };
         let rules_present = s.present.iter().map(|p| (filter_of(&s.rules, &p.tags), p.spawn.clone())).collect();
+        // Who started it, for the notices its ticks' writes into claims make.
+        env.swarm.note_starter(&format!("lex:{}", s.set), w.name);
         let mut run = Run {
             sim,
             agent: format!("lex:{}", s.set),
@@ -1162,8 +1175,14 @@ fn run_group(wd: &mut World, root: u64, set: &str, seed: u64, by: &str) -> Resul
 /// Shows the run's entities as world entities (journaled replay-only under `lex:<set>`). A
 /// shown entity someone deleted is shown again; a deleted group is made again.
 fn present(world: &mut World, swarm: &mut Swarm, tick: u64, run: &mut Run) {
-    let prev = world.recording();
-    world.set_recording(Recording::Snapshot);
+    // One change per entity (replay-only, cheap), journaled as the run's own.
+    write_policy::recording_as(world, Recording::Snapshot, |world| present_entities(world, run));
+    let agent = run.agent.clone();
+    write_policy::journal_exempt(world, swarm, tick, Exempt::LexLive { agent: &agent });
+}
+
+/// [`present`]'s work on the world (recorded one change per entity).
+fn present_entities(world: &mut World, run: &mut Run) {
     let agent = run.agent.clone();
     let set = agent.trim_start_matches("lex:").to_owned();
     if world.get(run.group).is_none() {
@@ -1173,8 +1192,6 @@ fn present(world: &mut World, swarm: &mut Swarm, tick: u64, run: &mut Run) {
             Ok(g) => run.group = g,
             Err(e) => {
                 run.present_error = Some(format!("the run's group /{ROOT}/{set} can't be made again: {}", e.message));
-                world.set_recording(prev);
-                write_policy::journal_exempt(world, swarm, tick, Exempt::LexLive { agent: &agent });
                 return;
             }
         }
@@ -1272,8 +1289,6 @@ fn present(world: &mut World, swarm: &mut Swarm, tick: u64, run: &mut Run) {
         run.present_error = fail;
     }
     run.presented = Some(run.sim.tick());
-    world.set_recording(prev);
-    write_policy::journal_exempt(world, swarm, tick, Exempt::LexLive { agent: &agent });
 }
 
 fn status_json(set: &str, run: &Run, in_process: &specula_lex::Natives) -> Json {
@@ -1480,7 +1495,8 @@ fn present_arg(args: &Json) -> Result<Vec<Present>, String> {
         if spec_json.get("shape").is_none() {
             spec_json.set("shape", Json::from("cube"));
         }
-        crate::tools::parse_spawn_fields(&spec_json).map_err(|m| format!("present[{i}].spawn: {m}"))?;
+        let spec = crate::tools::parse_spawn_fields(&spec_json).map_err(|m| format!("present[{i}].spawn: {m}"))?;
+        crate::write_policy::presentation_allowed(&spec).map_err(|m| format!("present[{i}].spawn.{m}"))?;
         out.push(Present { tags, spawn: spec_json });
     }
     Ok(out)
@@ -2564,5 +2580,67 @@ mod tests {
         }
         let s = Start { set: "t9".into(), rules: rules(), seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input: None, doc: None };
         assert_eq!(json(&rig.call(LiveCall::Start(Box::new(s)))).get("error"), Some(&Json::from("runs_full")));
+    }
+}
+
+/// Review round 3 (probes/lex_live/probe.rs): a live run's presentation is journaled as the run's
+/// own writes (exempt from the reserved-data and joint rules), so a present rule carrying
+/// props.joint tied a joint onto another agent's claimed box. Present rules are checked when the
+/// run starts (and when a save brings it back): reserved data is refused.
+#[cfg(test)]
+mod presentation_tests {
+    use super::*;
+    use crate::claims::{ClaimSpec, Scope, DEFAULT_LEASE};
+    use crate::world::{Body, BodyKind};
+
+    const RULES: &str = r#"{"lex": 1, "name": "t", "tick_hz": 30, "items": {
+        "lane": {"kind": "path", "points": [[0, 0, 0], [10, 0, 0]]},
+        "walker": {"kind": "archetype", "tags": ["enemy"], "attributes": {"hp": "5pt"},
+                   "behaviours": [{"type": "health", "attribute": "hp"},
+                                  {"type": "follow_path", "path": "@spawn", "speed": "2m/s"}]},
+        "waves": {"kind": "waves", "waves": [{"groups": [{"archetype": "walker", "count": 1, "at": ["lane"], "every": "1s"}]}]}
+    }}"#;
+
+    #[test]
+    fn a_present_rule_cant_carry_reserved_data() {
+        let session = |id: &str| SessionInfo { id: id.into(), client_name: "c".into(), client_version: "1".into(), protocol_version: "x".into() };
+        let (alice, bob) = (session("aaaaaa11"), session("bbbbbb22"));
+        let all = vec![alice.clone(), bob.clone()];
+        let mut swarm = Swarm::default();
+        swarm.hello(&alice, "alice".into(), "builder".into(), None, &all).unwrap();
+        swarm.hello(&bob, "bob".into(), "builder".into(), None, &all).unwrap();
+        let mut world = World::default();
+        world.set_recording(Recording::Full);
+        let mut s = SpawnSpec::new(Shape::Cube);
+        s.name = Some("abox".into());
+        s.body = Some(Body::new(BodyKind::Dynamic, 5.0));
+        let alice_w = Writer { name: "alice", session: Some("aaaaaa11") };
+        let abox = write_policy::commit(&mut world, &mut swarm, 0, alice_w, Kind::Spawn, Rule::World, |wd| wd.spawn(s, "alice").map(|e| e.id)).unwrap().0;
+        swarm.take_claim(&world, &alice, ClaimSpec { scope: Scope::path("/abox").unwrap(), lease: DEFAULT_LEASE, note: String::new() }).unwrap();
+        let bob_w = Writer { name: "bob", session: Some("bbbbbb22") };
+        let doc = specula_lex::Document::parse(RULES).unwrap();
+        let rules = Arc::new(specula_lex::compile(&doc, &Options::default()).unwrap().rules);
+        let logic = &mut LogicHost::new();
+        let natives: specula_lex::Natives = Default::default();
+        for props in [format!(r#"{{"joint": {{"kind": "fixed", "a": null, "b": {abox}}}}}"#), r#"{"navmesh": {}}"#.to_owned(), r#"{"lex": {}}"#.to_owned()] {
+            let spawn = Json::parse(&format!(r#"{{"shape": "sphere", "props": {props}}}"#)).unwrap();
+            let present = vec![Present { tags: vec!["enemy".into()], spawn }];
+            let mut live = Live::default();
+            let start = LiveCall::Start(Box::new(Start { set: "t".into(), rules: Arc::clone(&rules), seed: 3, params: Json::Obj(Vec::new()), present, input: None, doc: None }));
+            let out = live.call(start, "bob", bob_w, Env { world: &mut world, logic, swarm: &mut swarm, natives: &natives, tick: 0, hz: 30 });
+            assert!(out.is_error, "{props}: refused");
+            let text = match &out.content[0] { specula_protocol::Content::Text(t) => t.clone(), _ => String::new() };
+            assert!(text.contains("reserved"), "{props}: {text}");
+            for t in 0..40 {
+                live.tick(Env { world: &mut world, logic, swarm: &mut swarm, natives: &natives, tick: t, hz: 30 }, LIMITS);
+            }
+            assert_eq!(world.joints_on(abox).count(), 0, "{props}: no joint on alice's claimed box");
+            assert!(world.entities().all(|e| e.props.get("navmesh").is_none() && e.props.get("lex").is_none()), "{props}");
+        }
+        // The same run without reserved data presents its walker.
+        let present = vec![Present { tags: vec!["enemy".into()], spawn: Json::parse(r#"{"shape": "sphere"}"#).unwrap() }];
+        let mut live = Live::default();
+        let start = LiveCall::Start(Box::new(Start { set: "t".into(), rules, seed: 3, params: Json::Obj(Vec::new()), present, input: None, doc: None }));
+        assert!(!live.call(start, "bob", bob_w, Env { world: &mut world, logic, swarm: &mut swarm, natives: &natives, tick: 0, hz: 30 }).is_error);
     }
 }

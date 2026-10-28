@@ -25,14 +25,14 @@ use crate::claims::{Claim, ClaimSpec, Claims};
 use crate::intents::Intents;
 use crate::leases::Leases;
 use crate::journal::{Journal, Writer};
-use crate::world::{World, WorldError};
+use crate::world::{Change, World, WorldError};
 
 /// Attribution prefix of game modules' world changes (`module:<name>`): no agent may take a name
 /// starting with it.
 pub const MODULE_PREFIX: &str = "module:";
 use specula_core::Json;
 use specula_protocol::SessionInfo;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::{Duration, Instant};
 
 /// Agent identities remembered (sessions are capped at 1024 by the protocol).
@@ -86,7 +86,20 @@ pub struct Swarm {
     /// Prune the world's removed-entity versions once there are more than this (twice what the
     /// last prune kept; see [`crate::write_policy::prune_retired`]).
     pub(crate) retired_prune_at: usize,
+    /// Who started each module (`module:<name>`) and live Lex run (`lex:<set>`), for claim
+    /// notices (at most [`MAX_AGENTS`]).
+    starters: BTreeMap<String, String>,
+    /// Writes a module's or live Lex run's own ticks made to entities another agent claimed
+    /// (exempt from claims, so never refused), newest last: told to the claim's holder in
+    /// claim_list (at most [`MAX_CLAIM_NOTICES`]).
+    claim_notices: VecDeque<Json>,
+    /// Claim notices ever made.
+    claim_notices_total: u64,
 }
+
+/// Claim notices kept (see `Swarm::claim_notices`), and how many one journaled call may add.
+pub const MAX_CLAIM_NOTICES: usize = 256;
+const NOTICES_PER_CALL: usize = 16;
 
 /// The world's removed-entity versions are pruned once there are at least this many.
 pub const RETIRED_PRUNE_MIN: usize = 1024;
@@ -353,11 +366,63 @@ impl Swarm {
     }
 
     /// Sizes for engine_info.
+    /// Notes that agent `agent` started `writer` (`module:<name>` loaded, `lex:<set>` started),
+    /// for claim notices.
+    pub(crate) fn note_starter(&mut self, writer: &str, agent: &str) {
+        if self.starters.len() >= MAX_AGENTS && !self.starters.contains_key(writer) {
+            self.starters.pop_first();
+        }
+        self.starters.insert(writer.to_owned(), agent.to_owned());
+    }
+
+    /// A module's or live Lex run's own tick (`by`) changed entities another agent holds a claim
+    /// on. Ticks are exempt from claims (the game's rules, deterministic), so nothing is refused;
+    /// the claim's holder is told instead: a notice per change (at most 16 per call, the newest
+    /// 256 kept) naming the writer and the agent who started it, shown in the holder's
+    /// claim_list. Costs nothing while nobody holds a claim.
+    pub(crate) fn note_claim_crossings(&mut self, world: &World, changes: &[Change], by: &str, tick: u64) {
+        let now = Instant::now();
+        let w = Writer::new(by, None);
+        let started_by = self.starters.get(by).cloned();
+        let mut added = 0;
+        for c in changes {
+            if added == NOTICES_PER_CALL {
+                break;
+            }
+            let Err(e) = self.claims.check(world, std::slice::from_ref(c), w, now) else { continue };
+            if e.code != "claimed" {
+                continue;
+            }
+            let notice = Json::obj([
+                ("tick", Json::from(tick)),
+                ("by", Json::from(by)),
+                ("started_by", started_by.as_deref().map_or(Json::Null, Json::from)),
+                ("path", Json::from(c.path())),
+                ("op", Json::from(c.op())),
+                ("claim", e.detail("claim").cloned().unwrap_or(Json::Null)),
+                ("holder", e.detail("owner").cloned().unwrap_or(Json::Null)),
+            ]);
+            if self.claim_notices.len() == MAX_CLAIM_NOTICES {
+                self.claim_notices.pop_front();
+            }
+            self.claim_notices.push_back(notice);
+            self.claim_notices_total += 1;
+            added += 1;
+        }
+    }
+
+    /// The claim notices for `holder` (all of them for `None`), newest last, at most `limit`.
+    pub fn claim_notices(&self, holder: Option<&str>, limit: usize) -> Json {
+        let mine: Vec<&Json> = self.claim_notices.iter().filter(|n| holder.is_none_or(|h| n.get("holder").and_then(Json::as_str) == Some(h))).collect();
+        Json::arr(mine[mine.len().saturating_sub(limit)..].iter().map(|n| (*n).clone()))
+    }
+
     pub fn stats_json(&self) -> Json {
         Json::obj([
             ("journal", self.journal.stats_json()),
             ("claims", Json::from(self.claims.len())),
             ("claim_rejections", Json::from(self.claims.rejected)),
+            ("claim_notices", Json::from(self.claim_notices_total)),
             ("tasks", Json::from(self.board.len())),
             ("notes", Json::from(self.board.notes_len())),
             ("intents", Json::from(self.intents.len())),
