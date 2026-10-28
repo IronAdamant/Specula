@@ -259,9 +259,11 @@ whatever their creator had (on Linux, threads inherit the environment); none of 
 - **Simulation crates** carry one `clippy.toml` (copied from `crates/specula-physics/clippy.toml`): `disallowed-types`
   bans `HashMap`, `HashSet`, `RandomState`; `disallowed-methods` bans the platform maths above (every transcendental,
   `floor`/`ceil`/`round`/`trunc`/`fract`, `powi`, `mul_add`, for `f32` and `f64`), `Instant::now`, `SystemTime::now`,
-  `thread::spawn` and `thread::scope`. Crates: specula-physics, specula-anim, specula-lex, specula-balance,
-  specula-sdk, specula-via, specula-mens, specula-locus, specula-model (recipes build the meshes ragdolls fit their
-  bones to and the hulls bodies collide with), sepulcra, ambulo (the module template). CI's clippy enforces it.
+  `thread::spawn` and `thread::scope`. Crates: specula-physics, specula-scintilla (effects are cosmetic, but
+  captures of them repeat bit for bit on every platform: [VFX.md](VFX.md)), specula-anim, specula-lex,
+  specula-balance, specula-sdk, specula-via, specula-mens, specula-locus, specula-model (recipes build the meshes
+  ragdolls fit their bones to and the hulls bodies collide with), sepulcra, ambulo (the module template). CI's clippy
+  enforces it; `crates/specula/tests/determinism_lints.rs` holds the list.
 - Every hit was fixed (dmath instead of `round`/`floor`/`fract`) or allowed with a reason (specula-model's
   `HashMap`s weld vertices and dedupe edges by lookup, or are iterated only to count or take maxima; each function
   says which): physics' stage timings, Lex's

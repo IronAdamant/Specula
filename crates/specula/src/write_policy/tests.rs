@@ -247,7 +247,7 @@ fn procgen_scatter(f: &mut Fix, at: [f32; 3], parent: Option<&str>) -> Result<()
     let places: Vec<specula_model::scatter::Placement> =
         (0..3).map(|i| specula_model::scatter::Placement { position: [i as f32 * 0.5, 0.0, 0.0], rotation_deg: [0.0, 30.0 * i as f32, 0.0], scale: 1.0, item: 0, variant: i }).collect();
     let spawn = Json::parse(&parent.map_or("{}".to_string(), |p| format!(r#"{{"parent": "{p}", "name": "grave"}}"#))).unwrap();
-    let crate::tools::Command::Batch(ops) = crate::procgen_tools::spawn_command(&items, &places, at, &spawn).unwrap() else { panic!("procgen_scatter sends one world_batch") };
+    let crate::tools::Command::Batch(ops) = crate::procgen_tools::spawn_command(&items, &[], &places, at, &spawn).unwrap() else { panic!("procgen_scatter sends one world_batch") };
     agent(f, MALLORY, Kind::Batch, Rule::World, |wd| wd.apply_batch(ops, "mallory").map(|_| ()).map_err(|(_, e)| e))
 }
 
@@ -271,9 +271,25 @@ fn review_promote(f: &mut Fix, path: &str, to: &str) -> Result<(), WorldError> {
 
 /// A rejection's revert (review_engine): refused unless it takes back only the submission's own
 /// work, then the policy's undo as the decider (mallory here).
+/// The submission is the entry's own author's, recorded in this journal's epoch.
 fn review_revert(f: &mut Fix, seq: u64) -> Result<(), WorldError> {
-    let req = crate::review_engine::revert_request(&f.sw, &f.live, 99, &[seq])?;
+    let author = f.sw.journal().get(seq).map(|e| (e.by.to_string(), e.session.as_deref().map(str::to_owned)));
+    let (name, key) = author.unwrap_or_default();
+    review_revert_as(f, crate::board::Owner { name, key }, seq, None, None)
+}
+
+/// A revert of submission 99 covering `seq`, submitted by `by`: `epoch` and `ids` default to the
+/// live journal's epoch and the entities the entry touches.
+fn review_revert_as(f: &mut Fix, by: crate::board::Owner, seq: u64, epoch: Option<&str>, ids: Option<&[u64]>) -> Result<(), WorldError> {
+    let live_epoch = f.sw.journal().epoch().to_owned();
+    let touched: Vec<u64> = f.sw.journal().get(seq).map(|e| e.ids().to_vec()).unwrap_or_default();
+    let of = crate::review_engine::RevertOf { id: 99, journal: &[seq], epoch: epoch.unwrap_or(&live_epoch), by: &by, ids: Some(ids.unwrap_or(&touched)) };
+    let req = crate::review_engine::revert_request(&f.sw, &f.live, of)?;
     f.live.undo(&mut f.sw, 1, MALLORY, &req).map(|_| ())
+}
+
+fn owner(w: Writer) -> crate::board::Owner {
+    crate::board::Owner { name: w.name.to_owned(), key: w.session.map(str::to_owned) }
 }
 
 const ROWS: &[(&str, Write, Expect)] = &[
@@ -453,6 +469,31 @@ const ROWS: &[(&str, Write, Expect)] = &[
         let spawned = f.sw.journal().entries().find(|e| e.touches(abox)).map_or(0, |e| e.seq);
         review_revert(f, spawned)
     }, Expect::Refused("revert_conflict")),
+    // The M4 integration audit (probe_revert.py): a submission saved with its world named journal
+    // seqs of an earlier run; after a restart the journal counts from 1 again, and the revert
+    // undid another agent's entities. Refs carry their epoch, and each entry must be the
+    // submitter's and touch only what it touched at submit.
+    ("review revert of journal refs from an earlier run (M4 audit)", |f| {
+        let seq = f.unhook;
+        review_revert_as(f, owner(MALLORY), seq, Some("0123456789abcdef.0.1"), None)
+    }, Expect::Refused("journal_from_earlier_run")),
+    ("review revert of journal refs saved before epochs (M4 audit)", |f| {
+        let seq = f.unhook;
+        review_revert_as(f, owner(MALLORY), seq, Some(""), None)
+    }, Expect::Refused("journal_from_earlier_run")),
+    ("review revert of another agent's entry (M4 audit)", |f| {
+        let seq = f.unhook;
+        review_revert_as(f, owner(ALICE), seq, None, None)
+    }, Expect::Refused("not_submitters_entry")),
+    ("review revert touching entities not recorded at submit (M4 audit)", |f| {
+        let seq = f.unhook;
+        review_revert_as(f, owner(MALLORY), seq, None, Some(&[]))
+    }, Expect::Refused("revert_scope_changed")),
+    ("review revert of the submitter's own free entry (M4 audit)", |f| {
+        agent(f, MALLORY, Kind::Spawn, Rule::World, |wd| wd.spawn(group("/junk"), "mallory").map(|_| ()))?;
+        let seq = f.sw.journal().last_seq();
+        review_revert(f, seq)
+    }, Expect::Allowed),
     // Replacing the world (world_load, save_read, startup).
     ("world_load while another agent holds claims (M1)", |f| may_replace(&f.sw, MALLORY, &crate::playtest_engine::Playtests::default()).map(|_| ()), Expect::Refused("claimed")),
     ("world_load under a playtest (M3)", |f| may_replace(&f.sw, ALICE, &crate::playtest_engine::Playtests::pretend_running()).map(|_| ()), Expect::Refused("playtest_running")),

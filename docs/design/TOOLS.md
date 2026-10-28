@@ -22,8 +22,19 @@ An engine hosting Sepulcra lists **82 tools**: 74 of the engine's and 8 of the g
 
 `tools/list` is **96.5 KB** of compact JSON, very roughly 24,000 tokens that every agent's context carries before its
 first call. Since Lex merged (nine `lex_*` tools) it is **91 tools and 105.5 KB**; the counts below are from the
-audit's 82. The biggest definitions: `world_spawn` 9.3 KB, `world_set` 8.6 KB (they describe the same components
-twice), `sight_frame` 5.0 KB, `world_env` 3.5 KB, `sight_compare` 3.3 KB, `sight_orbit` 3.0 KB.
+audit's 82.
+
+**After M4's merges (measured 2026-10-29):** the engine alone lists **143 tools, 194.2 KB** of compact JSON; hosting
+Sepulcra, **151 tools, 200.3 KB** (very roughly 50,000 tokens). By family (tools, KB): `world_` 15, 37.3; `sight_` 4,
+13.9; `lex_` 10, 13.1; `physics_` 11, 12.0; `studio_` 5, 10.3; `anim_` 5, 8.7; `task_` 8, 8.0; `project_` 6, 7.8;
+`nav_` 5, 7.8; `vfx_` 5, 7.2; `play_` 8, 6.1 (the game's); `procgen_` 3, 5.6; `review_` 4, 5.3; `balance_` 3, 5.1;
+`logic_` 6, 5.0; `stream_` 3, 3.8; `ai_` 3, 3.4; `perf_` 4, 3.4; `ragdoll_` 2, 3.3; `playtest_` 2, 3.3; and under 3 KB
+each: `claim_`, `save_`, `model_`, `camera_`, `critique_`, `lease_`, `intent_`, `tilemap_`, `style_check`, `desync_`,
+`note_`, `agent_hello`, `window_view`, `merge_suggest`, `swarm_settings`, `time_control`, `engine_info`. The biggest
+definitions: `world_spawn` 10.4 KB, `world_set` 9.7 KB, `sight_frame` 5.5 KB, `sight_compare` 3.6 KB, `world_env`
+3.5 KB, `lex_live` 3.2 KB, `sight_orbit` 3.2 KB, `world_place` 3.1 KB. The list has doubled since the audit: tool
+search or per-role tool sets (an agent loads the families its role uses) is the lever, not shorter descriptions.
+(`world_spawn` and `world_set` describe the same components twice.)
 
 ## Against the guidance
 

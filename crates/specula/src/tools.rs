@@ -450,14 +450,62 @@ impl ToolHandler for Tools {
     }
 }
 
+/// Tools answered on the calling agent's connection thread instead of by the engine thread (the
+/// routing in `Tools::call_engine` goes through this, so a new one needs a variant here, and with
+/// it the reason a playtest refuses it: playtests run on the engine thread, which these wait for).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallerThread {
+    LogicBuild,
+    LogicReload,
+    MergeSuggest,
+    Lex,
+    Studio,
+    Project,
+    Procgen,
+    Balance,
+}
+
+impl CallerThread {
+    /// The caller-thread route of `name` (not a hosted game's tools, which go to the engine).
+    pub fn of(name: &str) -> Option<CallerThread> {
+        Some(match name {
+            "logic_build" => CallerThread::LogicBuild,
+            "logic_reload" => CallerThread::LogicReload,
+            "merge_suggest" => CallerThread::MergeSuggest,
+            "style_check" => CallerThread::Studio,
+            n if n.starts_with("lex_") => CallerThread::Lex,
+            n if n.starts_with("studio_") => CallerThread::Studio,
+            n if n.starts_with("project_") => CallerThread::Project,
+            n if n.starts_with("procgen_") => CallerThread::Procgen,
+            n if n.starts_with("balance_") => CallerThread::Balance,
+            _ => return None,
+        })
+    }
+
+    /// Why a playtest can't call it, and what to do instead.
+    pub fn playtest_refusal(self) -> &'static str {
+        match self {
+            CallerThread::LogicBuild => "module builds run outside the engine thread: build before the playtest",
+            CallerThread::LogicReload => "module reloads run outside the engine thread: reload before the playtest",
+            CallerThread::MergeSuggest => "merge_suggest is pure and answers on the caller's connection: merge before or after the playtest",
+            CallerThread::Lex => "lex_* tools validate and simulate outside the engine thread: edit rule sets before the playtest (lex_simulate checks a set headless on its own)",
+            CallerThread::Studio => "studio_* and style_check wait for builds and renders outside the engine thread: stage, sheet and check assets before or after the playtest",
+            CallerThread::Project => "project_* tools patch and validate files outside the engine thread: edit project files before the playtest",
+            CallerThread::Procgen => "procgen_* tools bake textures, terrains and scatters outside the engine thread: generate before the playtest (a playtest can world_batch what they make)",
+            CallerThread::Balance => "balance_* tools simulate outside the engine thread: sweep and tune before or after the playtest",
+        }
+    }
+}
+
 impl Tools {
     fn call_engine(&self, session: &SessionInfo, name: &str, arguments: &Json) -> ToolOutput {
-        // Builds and library loads run on this connection's thread; only the swap goes to the engine.
-        match name {
-            "logic_build" => return crate::logic::tools::build(&self.to_engine, session, arguments),
-            "logic_reload" => return crate::logic::tools::reload(&self.to_engine, session, arguments),
+        let route = CallerThread::of(name);
+        match route {
+            // Builds and library loads run on this connection's thread; only the swap goes to the engine.
+            Some(CallerThread::LogicBuild) => return crate::logic::tools::build(&self.to_engine, session, arguments),
+            Some(CallerThread::LogicReload) => return crate::logic::tools::reload(&self.to_engine, session, arguments),
             // Pure: merged on this connection's thread.
-            "merge_suggest" => return crate::review_tools::merge_suggest(arguments),
+            Some(CallerThread::MergeSuggest) => return crate::review_tools::merge_suggest(arguments),
             _ => {}
         }
         // agent_hello {response_format} sets this session's default (once the hello succeeds).
@@ -486,24 +534,22 @@ impl Tools {
         let arguments = shaped.as_ref().map(|(_, a)| a).or(defaulted.as_ref()).unwrap_or(arguments);
         let parsed = if self.game_tools.iter().any(|t| t.name == name) {
             Ok(Command::Game { name: name.to_owned(), args: arguments.clone() })
-        } else if name.starts_with("lex_") {
-            // Lex tools do their heavy work (validation, simulation) on this thread.
-            return crate::lex_tools::call(self, session, name, arguments);
-        } else if name.starts_with("studio_") || name == "style_check" {
-            // The studio waits for its subjects' builds on this thread, then renders on the engine's.
-            return crate::studio_tools::call(self, session, name, arguments);
-        } else if name.starts_with("project_") {
-            // Patching, validation and diffs run on this thread; the engine snapshots and commits.
-            return crate::project_tools::call(self, session, name, arguments);
-        } else if name.starts_with("procgen_") {
-            // Texture bakes, terrains and scatters run on this thread (their world edits go to
-            // the engine as world_set / world_batch).
-            return crate::procgen_tools::call(self, session, name, arguments);
-        } else if name.starts_with("balance_") {
-            // The balance lab runs simulations on this thread (and its workers), like lex_simulate.
-            return crate::balance_tools::call(self, session, name, arguments);
         } else {
-            parse(name, arguments)
+            match route {
+                // Lex tools do their heavy work (validation, simulation) on this thread.
+                Some(CallerThread::Lex) => return crate::lex_tools::call(self, session, name, arguments),
+                // The studio waits for its subjects' builds on this thread, then renders on the engine's.
+                Some(CallerThread::Studio) => return crate::studio_tools::call(self, session, name, arguments),
+                // Patching, validation and diffs run on this thread; the engine snapshots and commits.
+                Some(CallerThread::Project) => return crate::project_tools::call(self, session, name, arguments),
+                // Texture bakes, terrains and scatters run on this thread (their world edits go to
+                // the engine as world_set / world_batch).
+                Some(CallerThread::Procgen) => return crate::procgen_tools::call(self, session, name, arguments),
+                // The balance lab runs simulations on this thread (and its workers), like lex_simulate.
+                Some(CallerThread::Balance) => return crate::balance_tools::call(self, session, name, arguments),
+                // (Answered above.)
+                Some(CallerThread::LogicBuild | CallerThread::LogicReload | CallerThread::MergeSuggest) | None => parse(name, arguments),
+            }
         };
         let command = match parsed {
             Ok(c) => c,
@@ -3064,6 +3110,27 @@ mod tests {
         assert!(parse("model_build", &args("{}")).is_err());
         assert!(parse("model_build", &args(r#"{"recipe":"/abs.json"}"#)).is_err());
         assert!(matches!(parse("model_reload", &args("{}")), Ok(Command::ModelReload)));
+    }
+
+    /// M4 audit: caller-thread tools passed playtest validation and then failed at every step. Each
+    /// tool is either parsed for the engine thread (a playtest can run it) or routed to the
+    /// caller's thread, and then refused by playtests at validation, with a reason.
+    #[test]
+    fn every_caller_thread_tool_is_refused_by_playtests() {
+        let mut caller = 0;
+        for t in definitions() {
+            match CallerThread::of(&t.name) {
+                Some(route) => {
+                    caller += 1;
+                    assert_eq!(crate::playtest::forbidden(&t.name), Some(route.playtest_refusal()), "{}", t.name);
+                }
+                None => {
+                    let unknown = parse(&t.name, &args("{}")).err().is_some_and(|e| e.starts_with("unknown tool"));
+                    assert!(!unknown, "{} is defined but neither parsed for the engine thread nor routed to the caller's", t.name);
+                }
+            }
+        }
+        assert!(caller >= 20, "the caller-thread families are in the definitions ({caller})");
     }
 
     #[test]

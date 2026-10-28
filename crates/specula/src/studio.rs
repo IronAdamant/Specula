@@ -398,11 +398,17 @@ pub struct Studio {
     last_pump: Option<Instant>,
     /// When idle targets and stale pins were last pruned (about once a second, busy or not).
     last_tidy: Option<Instant>,
+    /// Queued `vfx_preview`s, rendered a frame per step within the same budget.
+    pub(crate) previews: VecDeque<Box<crate::vfx_tools::PreviewJob>>,
+    /// Whether a preview's step goes before the next studio render (they take turns).
+    preview_turn: bool,
+    /// Finished previews whose sheets are being encoded on their own threads.
+    pub(crate) encoders: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Studio {
     pub(crate) fn new(library: Arc<SharedLibrary>, capture_dir: PathBuf) -> Studio {
-        Studio { shared: Arc::new(Shared::new(library, capture_dir)), queue: BTreeMap::new(), last_session: None, targets: Vec::new(), pins: BTreeMap::new(), credit_ms: MAX_CREDIT_MS, last_pump: None, last_tidy: None }
+        Studio { shared: Arc::new(Shared::new(library, capture_dir)), queue: BTreeMap::new(), last_session: None, targets: Vec::new(), pins: BTreeMap::new(), credit_ms: MAX_CREDIT_MS, last_pump: None, last_tidy: None, previews: VecDeque::new(), preview_turn: false, encoders: Arc::default() }
     }
 
     /// The next render, round-robin over the sessions with renders queued (in key order after
@@ -910,7 +916,29 @@ impl Engine {
 
     /// Whether studio renders are waiting.
     pub(crate) fn studio_busy(&self) -> bool {
-        !self.studio.queue.is_empty()
+        !self.studio.queue.is_empty() || !self.studio.previews.is_empty()
+    }
+
+    /// One step of the next queued preview (they go round-robin), charged to the render
+    /// credit; whether one ran.
+    fn pump_preview(&mut self) -> bool {
+        let Some(mut job) = self.studio.previews.pop_front() else { return false };
+        if Instant::now() > job.deadline {
+            let _ = job.reply.send(error("timed_out", "the vfx_preview ran out of time while its frames were queued; call again (fewer frames or a smaller tile render sooner)"));
+            return true;
+        }
+        let _z = profile::zone("studio_preview");
+        let started = Instant::now();
+        let step = self.vfx_preview_step(&mut job);
+        self.studio.credit_ms -= started.elapsed().as_secs_f64() * 1000.0;
+        match step {
+            crate::vfx_tools::PreviewStep::Done(answer) => {
+                let _ = job.reply.send(answer);
+            }
+            crate::vfx_tools::PreviewStep::Handed => {}
+            crate::vfx_tools::PreviewStep::More => self.studio.previews.push_back(job),
+        }
+        true
     }
 
     /// Renders queued studio frames, round-robin over sessions, within the render budget:
@@ -929,7 +957,7 @@ impl Engine {
             self.studio.last_tidy = Some(now);
             self.studio_tidy(now, server);
         }
-        if self.studio.queue.is_empty() {
+        if self.studio.queue.is_empty() && self.studio.previews.is_empty() {
             self.studio.credit_ms = MAX_CREDIT_MS;
             return;
         }
@@ -940,8 +968,22 @@ impl Engine {
                 let _ = job.reply.send(Err(error("session_closed", "the session closed; its studio render was dropped")));
             }
         }
+        for job in std::mem::take(&mut self.studio.previews) {
+            // A playtest's preview outlives its starter's session (the playtest goes on); its
+            // deadline bounds it.
+            if job.from_playtest || alive.contains(&job.session) {
+                self.studio.previews.push_back(job);
+            } else {
+                let _ = job.reply.send(error("session_closed", "the session closed; its vfx_preview was dropped"));
+            }
+        }
         self.studio.credit_ms = (self.studio.credit_ms + earned).min(MAX_CREDIT_MS);
         while self.studio.credit_ms > 0.0 {
+            // Previews and the studio's renders take turns (each alone has every turn).
+            self.studio.preview_turn = !self.studio.preview_turn;
+            if (self.studio.preview_turn || self.studio.queue.is_empty()) && self.pump_preview() {
+                continue;
+            }
             let Some(job) = self.studio.next() else { return };
             if Instant::now() > job.deadline {
                 let _ = job.reply.send(Err(error("timed_out", "the studio call ran out of time while its renders were queued; call again")));
@@ -964,6 +1006,8 @@ impl Engine {
                 let uploaded = crate::streaming::upload_next_level(&mut self.gpu, &mut self.models, &self.library, &built);
                 let ms = started.elapsed().as_secs_f64() * 1000.0;
                 self.studio.credit_ms -= ms;
+                // The streamer's resident total counts it (its memory budget holds).
+                self.stream.uploaded_outside(&uploaded);
                 if allowance.is_some() {
                     self.stream.charge(crate::two_d::Used { items: 1, bytes: *uploaded.as_ref().unwrap_or(&0), ms, deferred: 0 });
                 }

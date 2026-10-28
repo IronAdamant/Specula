@@ -106,6 +106,9 @@ pub struct ReviewUi {
     batch_at: f64,
     /// Textures to free (on the next overlay call, which has the GPU).
     retired: Vec<TextureId>,
+    /// The engine's captures folder: only files in it are decoded (a review.json may name any
+    /// path; M4 audit). `None` decodes nothing.
+    captures_root: Option<std::path::PathBuf>,
 }
 
 impl Default for ReviewUi {
@@ -134,7 +137,15 @@ impl Default for ReviewUi {
             batch_ids: Vec::new(),
             batch_at: f64::NEG_INFINITY,
             retired: Vec::new(),
+            captures_root: None,
         }
+    }
+}
+
+impl ReviewUi {
+    /// The screen for an engine whose captures are under `root`.
+    pub fn with_captures(root: &std::path::Path) -> ReviewUi {
+        ReviewUi { captures_root: Some(root.to_path_buf()), ..ReviewUi::default() }
     }
 }
 
@@ -170,8 +181,12 @@ fn viewport(ui: &Ui, size: (u32, u32)) -> Viewport {
     Viewport::new(size, ui.theme().scale.scale(size, None, 1.0))
 }
 
-/// Decodes and scales a capture (on a worker thread).
-fn decode(path: &str) -> Result<specula_core::png::Image, String> {
+/// Decodes and scales a capture (on a worker thread): only a file in the captures folder `root`.
+fn decode(path: &str, root: Option<&std::path::Path>) -> Result<specula_core::png::Image, String> {
+    let root = root.ok_or_else(|| format!("{path}: no captures folder to show captures from"))?;
+    let file = crate::safe_path::capture_file(root, root, path, "the capture").map_err(|r| r.message)?;
+    let path = file.display().to_string();
+    let path = path.as_str();
     let meta = std::fs::metadata(path).map_err(|e| format!("{path}: {e}"))?;
     if meta.len() > MAX_IMAGE_FILE {
         return Err(format!("{path} is {} MB; captures up to {} MB are shown", meta.len() >> 20, MAX_IMAGE_FILE >> 20));
@@ -481,8 +496,9 @@ impl ReviewUi {
         }
         let (tx, rx) = mpsc::channel();
         let path = key.1.clone();
+        let root = self.captures_root.clone();
         match std::thread::Builder::new().name("specula-review-image".into()).spawn(move || {
-            let _ = tx.send(decode(&path));
+            let _ = tx.send(decode(&path, root.as_deref()));
         }) {
             Ok(_) => self.loader = Some((key, rx)),
             Err(e) => {

@@ -271,7 +271,7 @@ mist, so no terrain was put under it.
 | Terrain 129², 20k droplets, 10 thermal | 118 ms | |
 | Scatter 100 × 100 m at 1.5 m | 23 ms | 2,825 placements |
 | Crypt stone 256 px (4 threads / 1) | 80 / 319 ms | 1 MB GPU |
-| Crypt stone 512 px (4 threads / 1) | 245 / 1,228 ms | 4 MB GPU |
+| Crypt stone 512 px | refused: 136.3 M estimated pixel operations against the 75 M work budget (measured before the budget: 245 / 1,228 ms on 4 threads / 1) | bake 256 px (its recipe's size, for the iGPU: 34.1 M, 73 ms on 4 threads, 2026-10-29), or lower octaves and the AO radius for 512 |
 | Recipes: headstone 2 / crypt / ruined wall / rock / ground / plot | 90 / 190 / 350 / 21 / 164 / 674 ms | 466 / 1,110 / 3,658 / 720 / 7,264 / 12,662 triangles |
 
 Live (`procgen_check.py`, Intel iGPU, dev engine): a 1600×900 capture of the scattered graveyard

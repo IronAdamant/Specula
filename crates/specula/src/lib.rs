@@ -784,7 +784,7 @@ impl Engine {
             formats: response::Defaults::new(response::Format::Concise),
             project: project::Disk::default(),
             project_retry: Instant::now(),
-            review_ui: review_screen::ReviewUi::default(),
+            review_ui: review_screen::ReviewUi::with_captures(captures_root),
             game_pads: Vec::new(),
             pad_gate: game::PadGate::default(),
         })
@@ -1808,6 +1808,11 @@ impl Engine {
             }
             Command::StudioDone(call) => {
                 self.studio_done(call);
+                return;
+            }
+            Command::Vfx(call @ vfx_tools::VfxCall::Preview { .. }) => {
+                // Rendered a frame per step within the studio's budget (see `vfx_tools`).
+                self.vfx_preview_start(call, &request.session, request.reply, request.deadline, false);
                 return;
             }
             command => Request { command, ..request },

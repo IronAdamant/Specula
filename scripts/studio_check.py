@@ -224,6 +224,11 @@ def fidelity(a, out):
 
 
 STUDIO_FRAME_LIMIT_MS = 50.0
+# vfx_preview runs a tile (or its checks) per step and encodes on a thread of its own: no frame of
+# the window may take twice a 60 Hz frame for it (review of the M4 fixes: the sheet's encoding
+# took one 36-46 ms frame per preview).
+PREVIEW_FRAME_LIMIT_MS = 2 * 1000.0 / 60.0
+PREVIEW_REPEAT = 4
 
 
 def frames_over(capture_paths):
@@ -256,6 +261,7 @@ def pacing(a, out):
         ("shots_120", "studio_sheet", dict(subjects=subjects, views=["gameplay"] * 10, tile=256)),
         ("check", "studio_check", dict(recipe="recipes/wraith.json", image=True)),
         ("lineup_2048", "studio_lineup", dict(subjects=subjects, width=2048)),
+        ("vfx_preview_16x320", "vfx_preview", dict(effect="fire", frames=16, tile=320)),
     ]
     # Cold: builds no call has uploaded (the biggest recipes, and a glTF with a 1024x1024
     # texture), uploaded a level per step while the window runs.
@@ -285,7 +291,9 @@ def pacing(a, out):
                 c = engine.mcp("caller", detailed=False)
                 started = time.perf_counter()
                 try:
-                    r = c.call(tool, **kw)
+                    # Previews loop (each is short): the window's frames over several in a row.
+                    for _ in range(PREVIEW_REPEAT if tool == "vfx_preview" else 1):
+                        r = c.call(tool, **kw)
                     res["ok"] = True
                     for item in r["content"]:
                         if item["type"] == "text":
@@ -318,16 +326,17 @@ def pacing(a, out):
             th.join()
             frames = frames_over(paths)
             dts = sorted(f[0] for f in frames)
-            slow = [f for f in frames if f[0] > STUDIO_FRAME_LIMIT_MS]
+            limit = PREVIEW_FRAME_LIMIT_MS if tool == "vfx_preview" else STUDIO_FRAME_LIMIT_MS
+            slow = [f for f in frames if f[0] > limit]
             studio_slow = [f for f in slow if f[3] >= 0.5 * f[0] or "studio" in f[1]]
             case = {"ok": res.get("ok"), "call_ms": res.get("ms"), "frames": len(dts), "p50_ms": round(dts[len(dts) // 2], 2), "p95_ms": round(dts[int(len(dts) * 0.95)], 2),
-                    "max_ms": round(dts[-1], 2), "over_50ms": [(round(f[0], 1), f[1], round(f[2], 1)) for f in sorted(slow, reverse=True)[:8]],
-                    "studio_over_50ms": len(studio_slow), "worst_studio_render_ms": round(max((f[3] for f in frames), default=0.0), 1),
+                    "max_ms": round(dts[-1], 2), "limit_ms": round(limit, 1), "over_limit": [(round(f[0], 1), f[1], round(f[2], 1)) for f in sorted(slow, reverse=True)[:8]],
+                    "studio_over_limit": len(studio_slow), "worst_studio_render_ms": round(max((f[3] for f in frames), default=0.0), 1),
                     "renders": res.get("renders")}
             summary["cases"][name] = case
             check(res.get("ok") is True and not studio_slow,
                   f"{name}: {len(dts)} frames over the whole call ({res.get('ms')} ms): p50 {case['p50_ms']} ms, p95 {case['p95_ms']} ms, max {case['max_ms']} ms; "
-                  f"{len(slow)} over 50 ms ({len(studio_slow)} of them the studio's); studio work at most {case['worst_studio_render_ms']} ms in a frame; "
+                  f"{len(slow)} over {limit:.1f} ms ({len(studio_slow)} of them the studio's); studio work at most {case['worst_studio_render_ms']} ms in a frame; "
                   f"the call's renders: {res.get('renders')}", failures)
         m.close()
     v = engine.validation_errors()

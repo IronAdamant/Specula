@@ -76,28 +76,22 @@ const FAILURE_BYTES: (usize, usize) = (6 * 1024, 48 * 1024);
 pub const MAX_REPORT_BYTES: usize = 128 * 1024;
 
 /// Tools a playtest may not call, and why (the error says what to do instead).
-pub const FORBIDDEN: [(&str, &str); 9] = [
+pub const FORBIDDEN: [(&str, &str); 7] = [
     ("time_control", "the playtest owns the clock: schedule calls with 'at' ticks, and end the run with 'ticks' or 'until'"),
     ("playtest_run", "playtests don't nest: run them one after another"),
     ("playtest_report", "playtests don't nest"),
     ("agent_hello", "a playtest acts as the agent that started it: call agent_hello before playtest_run"),
-    ("logic_build", "module builds run outside the engine thread: build before the playtest"),
-    ("logic_reload", "module reloads run outside the engine thread: reload before the playtest"),
     ("save_read", "a load replaces the world the playtest is recording: load the save before playtest_run"),
     ("world_load", "a load replaces the world the playtest is recording: load the world before playtest_run"),
     ("save_delete", "playtests don't delete files: delete saves before or after the playtest"),
 ];
 
-/// Tool namespaces a playtest may not call: they do their work on the caller's connection thread
-/// and then wait for the engine thread, which the playtest is running on.
-const FORBIDDEN_PREFIXES: [(&str, &str); 2] = [
-    ("lex_", "lex_* tools validate and simulate outside the engine thread: edit rule sets before the playtest (lex_simulate checks a set headless on its own)"),
-    ("balance_", "balance_* tools simulate outside the engine thread: sweep and tune before or after the playtest"),
-];
-
-/// Why a playtest can't call `tool`, if it can't.
+/// Why a playtest can't call `tool`, if it can't. Besides [`FORBIDDEN`], every tool that runs on
+/// the caller's connection thread ([`crate::tools::CallerThread`]): it would wait for the engine
+/// thread, which the playtest is running on (M4 audit: studio_*, style_check, procgen_*,
+/// merge_suggest and project_* passed validation and then failed at every step).
 pub fn forbidden(tool: &str) -> Option<&'static str> {
-    FORBIDDEN.iter().find(|(n, _)| *n == tool).or_else(|| FORBIDDEN_PREFIXES.iter().find(|(p, _)| tool.starts_with(p))).map(|(_, why)| *why)
+    FORBIDDEN.iter().find(|(n, _)| *n == tool).map(|(_, why)| *why).or_else(|| crate::tools::CallerThread::of(tool).map(crate::tools::CallerThread::playtest_refusal))
 }
 
 /// A spec (or replay) problem: which field, and what to change.
@@ -1493,6 +1487,12 @@ mod tests {
         assert_eq!(err(r#"{"name": "a", "steps": [{"at": 0, "call": "time_control"}]}"#).field, "steps[0].call");
         assert_eq!(err(r#"{"name": "a", "steps": [{"at": 0}]}"#).field, "steps[0]");
         assert_eq!(err(r#"{"name": "a", "end": [{"call": "lex_edit"}]}"#).field, "end[0].call", "connection-thread tools");
+        // M4 audit (probe_playtest.py): these passed validation, then failed at every step.
+        for tool in ["studio_check", "style_check", "procgen_texture", "procgen_scatter", "merge_suggest", "project_read", "balance_sweep", "logic_build"] {
+            let e = err(&format!(r#"{{"name": "a", "steps": [{{"at": 1, "call": "{tool}"}}]}}"#));
+            assert_eq!(e.field, "steps[0].call", "{tool}");
+            assert!(e.message.contains("can't call") && e.message.contains("before"), "{tool}: says what to do instead: {}", e.message);
+        }
         // Bounds: a matcher (failures quote it), a path, the whole spec.
         let big = "x".repeat(MAX_MATCHER_BYTES);
         assert_eq!(err(&format!(r#"{{"name": "a", "end": [{{"call": "x", "expect": {{"a": "{big}"}}}}]}}"#)).field, "end[0].expect.a");

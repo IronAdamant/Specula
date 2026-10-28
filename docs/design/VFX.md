@@ -31,6 +31,14 @@ Foundations **F3** (the Intel iGPU is the reference), **F2** (determinism: effec
 - **Tools.** `vfx_preview` renders an effect over time as a filmstrip with facts per frame (live particles, estimated
   overdraw, world bounds, screen box); `vfx_check` runs budget and readability checks as data; `vfx_info` reports the
   library, live instances, budgets and the last frame's counts. Answers are concise by default.
+  A preview is queued with the asset studio's renders and runs a step at a time (one frame evaluated, one tile
+  rendered, then the effect's checks) within the studio's render budget, taking turns with studio renders; the
+  finished sheet is PNG-encoded, written and base64-encoded on a thread of its own. A step starts while there is
+  credit and is charged afterwards, so one step (about 1-6 ms on the Intel iGPU) may overrun a frame's share, never
+  the whole sheet. At most 4 are queued or encoding, 2 per agent (`studio_busy` with `retry_after_s` past that). A
+  playtest's preview outlives its starter's session, as the playtest does (its deadline still bounds it). (M4 audit:
+  rendered in one go, 16 tiles of 320 px took Sepulcra's iGPU frame p95 from 8.5 to 43.5 ms; the review of the fix:
+  encoding the sheet in one step still cost a 36 ms frame.)
 - **Sight.** Capture packets list the effects and decals in view (entity, effect, live count, bounds, screen box).
   Particles and decals **never write the ID buffer** (see below), so `visible_px` and `occluded` stay facts about
   geometry. The `effects` overlay draws their boxes.

@@ -16,7 +16,7 @@ use specula_model::scatter::{self, Placement, ScatterSpec};
 use specula_model::texgraph::{self, TexGraph};
 use specula_model::{BuildParams, Model, RecipeError, Style};
 use specula_protocol::{Content, SessionInfo, ToolDef, ToolOutput};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
@@ -377,13 +377,16 @@ pub(crate) fn collider_command(path: &str, cols: usize, rows: usize, cell: [f32;
 /// `procgen_scatter`'s spawns: ONE `world_batch` with a model spawn per placement (each item's
 /// params sampled per placement), committed as the calling agent (`Rule::World`, all or nothing:
 /// a claimed region or reserved parent refuses the whole batch). `spawn` is `{parent?, name?}`.
-pub(crate) fn spawn_command(items: &[Json], places: &[Placement], at: [f32; 3], spawn: &Json) -> Result<crate::tools::Command, String> {
+/// `integers[i]` names item `i`'s recipe parameters declared `integer` (a sampled range lands on
+/// whole numbers there; missing = none).
+pub(crate) fn spawn_command(items: &[Json], integers: &[BTreeSet<String>], places: &[Placement], at: [f32; 3], spawn: &Json) -> Result<crate::tools::Command, String> {
     let parent = spawn.get("parent").and_then(Json::as_str);
     let prefix = spawn.get("name").and_then(Json::as_str).unwrap_or("scatter");
     let mut ops = Vec::with_capacity(places.len());
     for (i, p) in places.iter().enumerate() {
         let item = items.get(p.item as usize).ok_or_else(|| format!("placement {i} names item {} of {}", p.item, items.len()))?;
         let model = item.get("model").ok_or_else(|| format!("items[{}] has no model", p.item))?;
+        let ints = integers.get(p.item as usize);
         let mut params = Vec::new();
         if let Some(Json::Obj(ps)) = model.get("params") {
             let mut rng = specula_core::rng::Rng::new(p.variant, 91);
@@ -391,7 +394,13 @@ pub(crate) fn spawn_command(items: &[Json], places: &[Placement], at: [f32; 3], 
                 let x = match v.as_array() {
                     Some(r) if r.len() == 2 => {
                         let (a, b) = (r[0].as_f64().unwrap_or(0.0), r[1].as_f64().unwrap_or(0.0));
-                        a + (b - a) * rng.f32() as f64
+                        // One draw per range either way, so the other params' samples don't move.
+                        let t = rng.f32() as f64;
+                        if ints.is_some_and(|s| s.contains(k)) {
+                            sample_whole(a, b, t)
+                        } else {
+                            a + (b - a) * t
+                        }
                     }
                     _ => v.as_f64().unwrap_or(0.0),
                 };
@@ -419,6 +428,38 @@ pub(crate) fn spawn_command(items: &[Json], places: &[Placement], at: [f32; 3], 
         ops.push(Json::obj(op));
     }
     crate::tools::parse("world_batch", &Json::obj([("ops", Json::arr(ops))]))
+}
+
+/// A whole number in `a..=b` (either order; ends rounded inward) from `t` in `0..1`, each with the
+/// same chance. A range holding no whole number gives its lower end rounded up (the recipe's
+/// range check then says why).
+fn sample_whole(a: f64, b: f64, t: f64) -> f64 {
+    let (lo, hi) = (a.min(b).ceil(), a.max(b).floor());
+    if hi < lo {
+        return lo;
+    }
+    let n = hi - lo + 1.0;
+    (lo + (t * n).floor()).min(hi)
+}
+
+/// Item by item, its recipe's integer parameters, read only for items that sample a range.
+fn integer_params(ctx: &Context, items: &[Json]) -> Result<Vec<BTreeSet<String>>, ToolOutput> {
+    let mut out = Vec::with_capacity(items.len());
+    for (i, it) in items.iter().enumerate() {
+        let model = it.get("model");
+        let ranged = matches!(model.and_then(|m| m.get("params")), Some(Json::Obj(ps)) if ps.iter().any(|(_, v)| v.as_array().is_some()));
+        let Some(rel) = model.and_then(|m| m.get("recipe")).and_then(Json::as_str).filter(|_| ranged) else {
+            out.push(BTreeSet::new());
+            continue;
+        };
+        let field = format!("items[{i}].model.recipe");
+        let file = inside(ctx, rel, &field)?;
+        let text = read_small(&file).map_err(|m| err("recipe_not_found", m, vec![("field", Json::from(field.as_str()))]))?;
+        let style = style_for(ctx, &file)?;
+        let recipe = specula_model::Recipe::parse(&text, &style).map_err(|e| recipe_err(&e, &format!("{rel}: ")))?;
+        out.push(recipe.params.iter().filter(|p| p.integer).map(|p| p.name.clone()).collect());
+    }
+    Ok(out)
 }
 
 /// An optional whole-number argument.
@@ -731,7 +772,8 @@ fn scatter_tool(tools: &Tools, session: &SessionInfo, ctx: &Context, args: &Json
                 return Err(err("limit", format!("{} placements; one call spawns at most {MAX_SPAWN} (lower count)", places.len()), vec![("field", Json::from("count"))]));
             }
             if !places.is_empty() {
-                let cmd = spawn_command(items, &places, at, sp).map_err(|m| err("invalid_argument", m, vec![]))?;
+                let integers = integer_params(ctx, items)?;
+                let cmd = spawn_command(items, &integers, &places, at, sp).map_err(|m| err("invalid_argument", m, vec![]))?;
                 let out = tools.send(session, cmd);
                 if out.is_error {
                     return Err(out);
@@ -862,6 +904,34 @@ mod tests {
         }
         // Paths can't leave the assets root.
         assert!(texture(&ctx(), &Json::parse(r#"{"file": "../secret.json"}"#).unwrap()).is_error);
+    }
+
+    /// M4 audit: headstone_carved's `variant: [1, 3]` (declared integer) was sampled as a float, so
+    /// the spawn batch failed (batch_failed). Integer params sample whole numbers, deterministically.
+    #[test]
+    fn scatter_samples_integer_params_as_whole_numbers() {
+        assert_eq!([0.0, 0.33, 0.34, 0.99, 0.999_999].map(|t| sample_whole(1.0, 3.0, t)), [1.0, 1.0, 2.0, 3.0, 3.0]);
+        assert_eq!((sample_whole(3.0, 1.0, 0.5), sample_whole(0.5, 2.5, 0.99), sample_whole(1.2, 1.8, 0.5)), (2.0, 2.0, 2.0));
+        let items = vec![Json::parse(r#"{"model": {"recipe": "recipes/headstone_carved.json", "params": {"variant": [1, 3], "tilt": [-1, 1]}}}"#).unwrap()];
+        let ints = integer_params(&ctx(), &items).unwrap();
+        assert!(ints[0].contains("variant") && !ints[0].contains("tilt"), "{ints:?}");
+        let places: Vec<Placement> = (0..60).map(|v| Placement { position: [v as f32, 0.0, 0.0], rotation_deg: [0.0; 3], scale: 1.0, item: 0, variant: v }).collect();
+        let params = |ints: &[BTreeSet<String>]| -> Vec<Vec<(String, f64)>> {
+            let Ok(crate::tools::Command::Batch(ops)) = spawn_command(&items, ints, &places, [0.0; 3], &Json::obj::<&str>([])) else { panic!("one batch") };
+            ops.into_iter().map(|op| match op {
+                crate::world::Op::Spawn(s) => s.model.expect("a model spawn").params,
+                _ => panic!("spawns only"),
+            }).collect()
+        };
+        let (a, b) = (params(&ints), params(&ints));
+        assert_eq!(a, b, "deterministic");
+        let variants: BTreeSet<i64> = a.iter().map(|p| p.iter().find(|(k, _)| k == "variant").unwrap().1).inspect(|v| assert_eq!(v.fract(), 0.0)).map(|v| v as i64).collect();
+        assert_eq!(variants, BTreeSet::from([1, 2, 3]), "every variant in the range turns up");
+        assert!(a.iter().any(|p| p.iter().any(|(k, v)| k == "tilt" && v.fract() != 0.0)), "float params still sample the range");
+        // The float params' samples don't move when integers are known (one draw per range).
+        let floats = params(&[]);
+        let tilt = |p: &[Vec<(String, f64)>]| p.iter().map(|x| x.iter().find(|(k, _)| k == "tilt").unwrap().1).collect::<Vec<f64>>();
+        assert_eq!(tilt(&a), tilt(&floats));
     }
 
     #[test]

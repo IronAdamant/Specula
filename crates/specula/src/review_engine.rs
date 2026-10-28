@@ -3,7 +3,7 @@
 //! critiques' board tasks, plans and their progress, and saving the queue with the board.
 //! See docs/design/REVIEW.md.
 
-use crate::board::{Status as TaskStatus, TaskSpec};
+use crate::board::{Owner, Status as TaskStatus, TaskSpec};
 use crate::conflict::Yours;
 use crate::director::{self, PlanItem};
 use crate::journal::{path_under, Kind, UndoRequest, Writer};
@@ -110,26 +110,69 @@ pub(crate) fn promotion_ops(world: &World, roots: &[Root], p: &review::Promote) 
     Ok((ops, moved))
 }
 
-/// Why a rejection may not revert `journal` (the submission `id`'s entries), if it may not.
+/// What a rejection's revert would take back: a submission's journal entries, the journal epoch
+/// they were recorded in, who submitted them and the entity ids they touched then.
+#[derive(Clone, Copy)]
+pub(crate) struct RevertOf<'a> {
+    pub id: u64,
+    pub journal: &'a [u64],
+    pub epoch: &'a str,
+    pub by: &'a Owner,
+    pub ids: Option<&'a [u64]>,
+}
+
+/// Why a rejection may not revert submission `r.id`'s entries, if it may not.
 /// Reverting must only take back this submission's own work, so it is refused when:
+/// - its entries are from another journal epoch (an earlier run, or before a `world_load`): the
+///   same seqs now name other entries, or none;
+/// - an entry is gone from the journal, wasn't made by the submitter, or touches an entity it
+///   didn't touch when submitted (or there were too many to record);
 /// - another approved submission covers one of the entries;
 /// - any later journal entry not in this submission (by anyone, the submitter included) touched
 ///   the same entities (undoing would also wipe that change, approved or not);
 /// - an entity it touched is at or under an approved submission's roots.
-pub(crate) fn revert_refusal(swarm: &Swarm, world: &World, id: u64, journal: &[u64]) -> Option<WorldError> {
+pub(crate) fn revert_refusal(swarm: &Swarm, world: &World, r: RevertOf) -> Option<WorldError> {
+    let id = r.id;
     let refuse = |code: &'static str, why: String| {
         Some(
             WorldError::new(code, format!("{why}: reverting would undo more than submission {id}'s own work; reject without revert, and the submitter undoes what is only theirs (world_undo)"))
                 .with("submission", id),
         )
     };
-    let mine: BTreeSet<u64> = journal.iter().copied().collect();
+    let epoch = swarm.journal().epoch();
+    if r.journal.is_empty() {
+        return None;
+    }
+    if r.epoch.is_empty() || r.epoch != epoch {
+        return Some(
+            WorldError::new("journal_from_earlier_run", format!("submission {id}: {}; reject without revert", review::STALE_JOURNAL))
+                .with("submission", id)
+                .with("journal_epoch", r.epoch)
+                .with("live_epoch", epoch),
+        );
+    }
+    let Some(recorded) = r.ids else {
+        return refuse("revert_unverifiable", format!("its entries touched more than {} entities, too many to record at submit", review::MAX_JOURNAL_IDS));
+    };
+    let recorded: BTreeSet<u64> = recorded.iter().copied().collect();
+    for seq in r.journal {
+        let Some(e) = swarm.journal().get(*seq) else {
+            return refuse("journal_entry_gone", format!("journal entry {seq} is no longer in the journal (evicted)"));
+        };
+        if !(*e.by == *r.by.name && r.by.key.as_deref().is_none_or(|k| e.session.as_deref() == Some(k))) {
+            return refuse("not_submitters_entry", format!("journal entry {seq} was made by {}, not the submitter {}", e.by, r.by.name));
+        }
+        if let Some(other) = e.ids().iter().find(|i| !recorded.contains(i)) {
+            return refuse("revert_scope_changed", format!("journal entry {seq} touches entity {other}, which it didn't when submitted"));
+        }
+    }
+    let mine: BTreeSet<u64> = r.journal.iter().copied().collect();
     let approved: Vec<&review::Submission> = swarm.review.submissions().filter(|s| s.id != id && s.status == Status::Approved).collect();
-    if let Some(other) = approved.iter().find(|s| s.journal.iter().any(|j| mine.contains(j))) {
+    if let Some(other) = approved.iter().find(|s| s.journal_in(epoch).iter().any(|j| mine.contains(j))) {
         return refuse("revert_overlaps_approved", format!("its journal entries overlap approved submission {}", other.id));
     }
-    let touched: BTreeSet<u64> = journal.iter().filter_map(|s| swarm.journal().get(*s)).flat_map(|e| e.ids().iter().copied()).filter(|i| *i != 0).collect();
-    let first = *journal.iter().min()?;
+    let touched: BTreeSet<u64> = r.journal.iter().filter_map(|s| swarm.journal().get(*s)).flat_map(|e| e.ids().iter().copied()).filter(|i| *i != 0).collect();
+    let first = *r.journal.iter().min()?;
     // Every later agent entry (the journal ring is itself bounded): none may be skipped here.
     if let Some(e) = swarm.journal().entries_after(first, false).find(|e| !mine.contains(&e.seq) && e.ids().iter().any(|i| touched.contains(i))) {
         return refuse("revert_conflict", format!("journal entry {} by {} changed the same entities later", e.seq, e.by));
@@ -146,28 +189,29 @@ pub(crate) fn revert_refusal(swarm: &Swarm, world: &World, id: u64, journal: &[u
     None
 }
 
-/// The undo that reverts submission `id`'s journal entries for a rejection, or why it is refused
+/// The undo that reverts a submission's journal entries for a rejection, or why it is refused
 /// ([`revert_refusal`]). It runs as the decider through the write policy's undo (`Live::undo`):
 /// claims apply step by step as the decider. `force` only lets the decider undo entries that
 /// aren't theirs; everything force would otherwise let through (a later change to the same
-/// entities, by anyone) was refused here first, over the whole journal.
-pub(crate) fn revert_request(swarm: &Swarm, world: &World, id: u64, journal: &[u64]) -> Result<UndoRequest, WorldError> {
-    if let Some(e) = revert_refusal(swarm, world, id, journal) {
+/// entities, by anyone; entries of another epoch or another agent) was refused here first.
+pub(crate) fn revert_request(swarm: &Swarm, world: &World, r: RevertOf) -> Result<UndoRequest, WorldError> {
+    if let Some(e) = revert_refusal(swarm, world, r) {
         return Err(e);
     }
-    Ok(UndoRequest { ids: Some(journal.to_vec()), count: journal.len(), force: true })
+    Ok(UndoRequest { ids: Some(r.journal.to_vec()), count: r.journal.len(), force: true })
 }
 
 impl Engine {
-    /// A capture or packet named by an agent: absolute, relative to the engine's folder, or to this
-    /// run's captures.
-    fn review_file(&self, p: &str) -> PathBuf {
-        let path = PathBuf::from(p);
-        if path.is_absolute() || path.exists() {
-            path
-        } else {
-            self.capture_dir.join(path)
-        }
+    /// The captures folder (every run's captures are below it).
+    pub(crate) fn captures_root(&self) -> &Path {
+        self.capture_dir.parent().unwrap_or(&self.capture_dir)
+    }
+
+    /// A capture or packet named by an agent: a file in the engine's captures folder (the path a
+    /// sight tool returned, or relative to this run's captures or the folder), or a structured
+    /// refusal (`path_not_allowed`, `capture_missing`) naming `field`.
+    fn review_file(&self, p: &str, field: &str) -> Result<PathBuf, WorldError> {
+        crate::safe_path::capture_file(self.captures_root(), &self.capture_dir, p, field).map_err(|r| WorldError::new(r.code, r.message).with("field", field).with("path", p))
     }
 
     /// Critiques carried by board tasks follow them (see `Review::sync_tasks`).
@@ -202,12 +246,12 @@ impl Engine {
             },
             ReviewCall::List { id: Some(id), .. } => {
                 match self.swarm.review.get(id) {
-                    Some(s) => out(s.to_json(&self.swarm.review.critiques_on(id))),
+                    Some(s) => out(s.to_json(&self.swarm.review.critiques_on(id), self.swarm.journal().epoch())),
                     None => fail(&WorldError::new("submission_not_found", format!("there is no submission {id} (see review_list)")).with("submission", id)),
                 }
             }
             ReviewCall::List { query, detailed, .. } => {
-                let mut j = self.swarm.review.list(&query);
+                let mut j = self.swarm.review.list(&query, self.swarm.journal().epoch());
                 if detailed {
                     // Each listed submission in full, within a byte budget (the cursor resumes).
                     let ids: Vec<u64> = j.get("submissions").and_then(Json::as_array).unwrap_or_default().iter().filter_map(|s| s.get("id").and_then(Json::as_u64)).collect();
@@ -215,7 +259,7 @@ impl Engine {
                     let mut bytes = 0usize;
                     for id in &ids {
                         let Some(s) = self.swarm.review.get(*id) else { continue };
-                        let item = s.to_json(&self.swarm.review.critiques_on(*id));
+                        let item = s.to_json(&self.swarm.review.critiques_on(*id), self.swarm.journal().epoch());
                         let n = item.to_string().len();
                         if !full.is_empty() && bytes + n > MAX_DETAILED_BYTES {
                             let last = full.last().and_then(|x| x.get("id")).cloned().unwrap_or(Json::Null);
@@ -381,7 +425,7 @@ impl Engine {
             .review
             .submissions()
             .filter(|s| matches!(s.status, Status::Pending | Status::Approved) && Some(s.id) != a.supersedes)
-            .flat_map(|s| s.journal.iter().copied())
+            .flat_map(|s| s.journal_in(self.swarm.journal().epoch()).iter().copied())
             .collect();
         let journal = match a.journal_since {
             Some(since) => {
@@ -406,22 +450,23 @@ impl Engine {
                 a.journal.clone()
             }
         };
+        // The entities those entries touch now (a revert may touch only these), and their epoch.
+        let mut ids: BTreeSet<u64> = BTreeSet::new();
+        for s in &journal {
+            ids.extend(self.swarm.journal().get(*s).map(|e| e.ids().to_vec()).unwrap_or_default());
+        }
+        let journal_ids = (ids.len() <= review::MAX_JOURNAL_IDS).then(|| ids.into_iter().collect::<Vec<u64>>());
+        let journal_epoch = self.swarm.journal().epoch().to_owned();
         // Its evidence: captures the engine wrote.
         let mut captures: Vec<Capture> = Vec::with_capacity(a.captures.len());
         for (i, c) in a.captures.into_iter().enumerate() {
-            let path = self.review_file(&c.path);
+            let path = self.review_file(&c.path, &format!("captures[{i}]"))?;
             if !is_png(&path) {
-                return Err(WorldError::new("capture_missing", format!("captures[{i}]: '{}' is not a PNG on disk (pass the image.path a sight tool returned)", c.path))
+                return Err(WorldError::new("capture_missing", format!("captures[{i}]: '{}' is not a PNG (pass the image.path a sight tool returned)", c.path))
                     .with("capture", c.path.as_str()));
             }
             let packet = match c.packet {
-                Some(p) => {
-                    let pp = self.review_file(&p);
-                    if !pp.is_file() {
-                        return Err(WorldError::new("capture_missing", format!("captures[{i}].packet: '{p}' is not a file")).with("packet", p.as_str()));
-                    }
-                    Some(pp.display().to_string())
-                }
+                Some(p) => Some(self.review_file(&p, &format!("captures[{i}].packet"))?.display().to_string()),
                 None => None,
             };
             captures.push(Capture { path: path.display().to_string(), packet, ..c });
@@ -466,11 +511,14 @@ impl Engine {
             checks,
             roots,
             journal,
+            journal_epoch,
+            journal_ids,
             promote: a.promote,
             supersedes: a.supersedes,
         };
+        let epoch = self.swarm.journal().epoch().to_owned();
         let s = self.swarm.review.submit(w, tick, spec)?;
-        let mut j = s.summary_json(0);
+        let mut j = s.summary_json(0, &epoch);
         let (id, title, task) = (s.id, s.title.clone(), s.task);
         j.set("pending", Json::from(self.swarm.review.pending_count()));
         j.set("review_seq", Json::from(self.swarm.review.seq()));
@@ -558,6 +606,7 @@ impl Engine {
         let s = self.swarm.review.check_decide(w, role, d.id, d.verdict)?;
         let (roots, promote_spec, journal, task, title, submitter, kind) =
             (s.roots.clone(), s.promote.clone(), s.journal.clone(), s.task, s.title.clone(), s.by.name.clone(), s.kind.clone());
+        let (journal_epoch, journal_ids, by_owner) = (s.journal_epoch.clone(), s.journal_ids.clone(), s.by.clone());
         let mut decision = Decision { verdict: d.verdict, by: w.name.to_owned(), note: d.note.clone(), tick, promoted: None, task: None, reverted: None };
         let mut problems: Vec<Json> = Vec::new();
         match d.verdict {
@@ -581,7 +630,8 @@ impl Engine {
                 }
                 if d.revert && !journal.is_empty() {
                     // The write policy's undo, as the decider (claims apply to them).
-                    let req = revert_request(&self.swarm, &self.world, d.id, &journal)?;
+                    let of = RevertOf { id: d.id, journal: &journal, epoch: &journal_epoch, by: &by_owner, ids: journal_ids.as_deref() };
+                    let req = revert_request(&self.swarm, &self.world, of)?;
                     let u = self.world.undo(&mut self.swarm, tick, w, &req).map_err(|e| self.conflict_help(e, Some(&Yours::named(vec!["(revert)".into()]))))?;
                     self.cameras.prune(&self.world);
                     decision.reverted = Some(u.seq);
@@ -614,8 +664,9 @@ impl Engine {
             Status::Pending => unreachable!("not a verdict"),
         }
         let decision_reverted = decision.reverted.is_some();
+        let epoch = self.swarm.journal().epoch().to_owned();
         let s = self.swarm.review.decide(d.id, decision)?;
-        let mut j = s.summary_json(0);
+        let mut j = s.summary_json(0, &epoch);
         if let Some(dd) = &s.decision {
             if let Some(p) = &dd.promoted {
                 j.set("promoted", p.clone());
@@ -1098,6 +1149,24 @@ mod tests {
         assert_eq!(promotion_ops(&world, &roots, &Promote { to: "/nowhere".into(), ..p }).err().unwrap().code, "no_target");
     }
 
+    fn owner(w: Writer) -> Owner {
+        Owner { name: w.name.to_owned(), key: w.session.map(str::to_owned) }
+    }
+
+    /// Submission `id` by `by` covering `journal`, recorded now (the live epoch, what it touches).
+    fn refusal(swarm: &Swarm, world: &World, id: u64, journal: &[u64], by: Writer) -> Option<WorldError> {
+        let ids: BTreeSet<u64> = journal.iter().filter_map(|s| swarm.journal().get(*s)).flat_map(|e| e.ids().to_vec()).collect();
+        let (ids, epoch, by) = (ids.into_iter().collect::<Vec<u64>>(), swarm.journal().epoch().to_owned(), owner(by));
+        revert_refusal(swarm, world, RevertOf { id, journal, epoch: &epoch, by: &by, ids: Some(&ids) })
+    }
+
+    fn request(swarm: &Swarm, world: &World, id: u64, journal: &[u64], by: Writer) -> Result<UndoRequest, WorldError> {
+        match refusal(swarm, world, id, journal, by) {
+            Some(e) => Err(e),
+            None => Ok(UndoRequest { ids: Some(journal.to_vec()), count: journal.len(), force: true }),
+        }
+    }
+
     /// Review finding: a rejection's revert could undo other agents' or approved work.
     #[test]
     fn reverts_never_undo_approved_or_others_work() {
@@ -1115,13 +1184,14 @@ mod tests {
         let seq = swarm.journal().last_seq();
         // An approved submission covers the entry: a revert of another submission covering it is refused.
         let mut r = Review::default();
-        let spec = |j: Vec<u64>| SubmitSpec { kind: "changes".into(), title: format!("{j:?}"), journal: j, ..Default::default() };
+        let epoch = swarm.journal().epoch().to_owned();
+        let spec = |j: Vec<u64>| SubmitSpec { kind: "changes".into(), title: format!("{j:?}"), journal: j, journal_epoch: epoch.clone(), ..Default::default() };
         let first = r.submit(ann, 0, spec(vec![seq])).unwrap().id;
         r.decide(first, Decision { verdict: Status::Approved, by: "rev".into(), note: String::new(), tick: 0, promoted: None, task: None, reverted: None }).unwrap();
         let second = r.submit(ann, 0, spec(vec![seq])).unwrap().id;
         swarm.review = r;
-        assert_eq!(revert_refusal(&swarm, &world, second, &[seq]).unwrap().code, "revert_overlaps_approved");
-        assert!(revert_refusal(&swarm, &world, first, &[seq]).is_none(), "its own approval doesn't count");
+        assert_eq!(refusal(&swarm, &world, second, &[seq], ann).unwrap().code, "revert_overlaps_approved");
+        assert!(refusal(&swarm, &world, first, &[seq], ann).is_none(), "its own approval doesn't count");
         swarm.review = Review::default();
         // Review round 2: the submitter's own later change (approved as paths only) is safe too.
         spawn(&mut world, &mut swarm, ann, "gate", None, &[]);
@@ -1129,7 +1199,7 @@ mod tests {
         let u = UpdateSpec { position: Some(specula_core::math::Vec3::ONE), ..Default::default() };
         let by_ann = ann.name.to_owned();
         swarm.commit(&mut world, 1, ann, Kind::Set, |wd| wd.update(&EntityKey::Path("/gate".into()), u.clone(), &by_ann).map(|_| ())).unwrap();
-        let e = revert_request(&swarm, &world, 9, &[gate]).unwrap_err();
+        let e = request(&swarm, &world, 9, &[gate], ann).unwrap_err();
         assert_eq!(e.code, "revert_conflict", "ann's later move would be wiped");
         assert!(world.find_path("/gate").is_ok());
         let paths_only = SubmitSpec { roots: vec![root(&world, "/gate")], ..spec(vec![]) };
@@ -1138,13 +1208,61 @@ mod tests {
         // Someone else's later change refuses it as well.
         let by = rev.name.to_owned();
         swarm.commit(&mut world, 3, rev, Kind::Set, |wd| wd.update(&EntityKey::Path("/a".into()), u, &by).map(|_| ())).unwrap();
-        assert_eq!(revert_request(&swarm, &world, 8, &[seq]).unwrap_err().code, "revert_conflict");
+        assert_eq!(request(&swarm, &world, 8, &[seq], ann).unwrap_err().code, "revert_conflict");
         // A clean case reverts, undone as the decider (the journal says who).
         spawn(&mut world, &mut swarm, ann, "junk", None, &[]);
         let junk = swarm.journal().last_seq();
-        let req = revert_request(&swarm, &world, 7, &[junk]).unwrap();
+        assert_eq!(refusal(&swarm, &world, 7, &[junk], rev).unwrap().code, "not_submitters_entry", "only the submitter's own entries");
+        let req = request(&swarm, &world, 7, &[junk], ann).unwrap();
         let undo = swarm.undo(&mut world, 5, rev, &req).unwrap().seq;
         assert!(world.find_path("/junk").is_err() && swarm.journal().get(undo).is_some_and(|e| &*e.by == "rev"));
+    }
+
+    /// M4 integration audit (probe_revert.py): alice's submission was saved with the world naming
+    /// journal seq 4; after a restart the journal numbered entries from 1 again, bob made seq 4,
+    /// and rejecting alice's work with revert deleted bob's entity.
+    #[test]
+    fn reverts_refuse_journal_refs_of_another_run() {
+        let (sa, sb) = (session("aaaaaa01"), session("bbbbbb02"));
+        let live = vec![sa.clone(), sb.clone()];
+        // The first run: alice's entry, recorded with its epoch.
+        let mut world = World::default();
+        world.set_recording(Recording::Full);
+        let mut swarm = Swarm::default();
+        swarm.hello(&sa, "alice".into(), "builder".into(), None, &live).unwrap();
+        let ka = swarm.key(&sa);
+        let alice = Writer::new("alice", Some(&ka));
+        spawn(&mut world, &mut swarm, alice, "alice_box", None, &[]);
+        let seq = swarm.journal().last_seq();
+        let (old_epoch, old_ids) = (swarm.journal().epoch().to_owned(), swarm.journal().get(seq).unwrap().ids().to_vec());
+        assert!(refusal(&swarm, &world, 1, &[seq], alice).is_none(), "in its own run it may revert");
+        // The second run: a new journal, and bob's entry has the same seq.
+        let mut world = World::default();
+        world.set_recording(Recording::Full);
+        let mut swarm = Swarm::default();
+        swarm.hello(&sb, "bob".into(), "builder".into(), None, &live).unwrap();
+        let kb = swarm.key(&sb);
+        let bob = Writer::new("bob", Some(&kb));
+        spawn(&mut world, &mut swarm, bob, "bob_box", None, &[]);
+        assert_eq!(swarm.journal().last_seq(), seq, "the seq is reused");
+        assert_ne!(swarm.journal().epoch(), old_epoch);
+        let alice_owner = Owner { name: "alice".into(), key: None };
+        let of = RevertOf { id: 1, journal: &[seq], epoch: &old_epoch, by: &alice_owner, ids: Some(&old_ids) };
+        assert_eq!(revert_request(&swarm, &world, of).unwrap_err().code, "journal_from_earlier_run");
+        // Even with the live epoch (a forged or mixed-up file), bob's entry isn't alice's to revert.
+        let epoch = swarm.journal().epoch().to_owned();
+        let of = RevertOf { epoch: &epoch, ..of };
+        assert_eq!(revert_request(&swarm, &world, of).unwrap_err().code, "not_submitters_entry");
+        // Bob's own, but touching entities other than the ones recorded at submit.
+        let bob_owner = owner(bob);
+        let of = RevertOf { by: &bob_owner, ids: Some(&[]), ..of };
+        assert_eq!(revert_request(&swarm, &world, of).unwrap_err().code, "revert_scope_changed");
+        assert_eq!(revert_request(&swarm, &world, RevertOf { ids: None, ..of }).unwrap_err().code, "revert_unverifiable");
+        assert!(world.find_path("/bob_box").is_ok(), "nothing was undone");
+        // An entry evicted (or never there) is refused, not skipped.
+        let ids = swarm.journal().get(seq).unwrap().ids().to_vec();
+        let of = RevertOf { journal: &[seq, 999], ids: Some(&ids), ..of };
+        assert_eq!(revert_request(&swarm, &world, of).unwrap_err().code, "journal_entry_gone");
     }
 
     #[test]

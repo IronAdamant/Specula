@@ -376,6 +376,10 @@ def main():
         report["progress"] = prog
         check(prog["complete"] and prog["review"]["approved"] >= 3 and prog["review"]["pending"] == 0, f"task_progress: complete ({prog['next']})")
         report["queue"] = call(rev, "review_list", response_format="concise")
+        # M4 audit (probe_revert.py): a submission saved with the world names this run's journal
+        # seqs; after a restart the journal counts from 1 again, so its revert must be refused.
+        audit_seq = call(b1, "world_spawn", shape="cube", name="audit_box", position=[40, 0, 40])["journal"]
+        audit_sub = call(b1, "review_submit", title="audit box", kind="changes", journal=[audit_seq])["id"]
         call(lead, "world_save")
         wdir = worlds / "review_check"
         check((wdir / "review.json").exists() and (wdir / "board.json").exists(), "review.json is saved beside board.json")
@@ -390,6 +394,27 @@ def main():
         m = eng.mcp("reader")
         back = (call(m, "review_list")["total"], call(m, "critique_list")["total"])
         check(back == totals, f"the queue and critiques come back with the world: {back} == {totals}")
+        # Another agent's entries reuse the saved seqs; rejecting with revert must not undo them.
+        m.hello("bob", role="builder")
+        made = []
+        while len(made) < 600:
+            made.append(call(m, "world_spawn", shape="cube", name=f"bob_{len(made)}", position=[len(made) % 30, 0, -5 - len(made) // 30]))
+            if made[-1]["journal"] >= audit_seq:
+                break
+        check(made[-1]["journal"] >= audit_seq, f"bob's entries reach the saved seq {audit_seq}")
+        item = call(m, "review_list", id=audit_sub)
+        check("earlier run" in item.get("journal_stale", ""), "review_list says the saved journal refs are from an earlier run")
+        r = eng.mcp("reviewer")
+        r.hello("reviewer", role="reviewer")
+        e = refused(r, "review_decide", ids=[audit_sub], verdict="reject", note="audit probe", revert=True)
+        codes = [x.get("error") for x in e.get("results", [])]
+        check(codes == ["journal_from_earlier_run"], f"the revert of an earlier run's refs is refused: {codes}")
+        bobs = call(m, "world_query", created_by="bob", fields=["path"], limit=10)["total"]
+        boxes = call(m, "world_query", path_prefix="/audit_box", fields=["path"], limit=10)["total"]
+        check(bobs == len(made) and boxes == 1, f"nothing was undone (bob's {bobs} of {len(made)} entities and the audit box are there)")
+        ok = call(r, "review_decide", ids=[audit_sub], verdict="reject", note="audit probe: revert by hand")
+        check(ok.get("decided") == 1, "rejecting without revert still works")
+        r.close()
         m.close()
     (out / "report.json").write_text(json.dumps(report, indent=1))
     print(f"\ncaptures and report in {out}")

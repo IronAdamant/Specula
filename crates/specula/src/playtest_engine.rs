@@ -742,7 +742,13 @@ impl Host for EngineHost<'_> {
             crate::tools::parse(tool, args).map_err(|e| ToolOutput::error(argument_error(&e).to_string()))?
         };
         let (reply, answer) = mpsc::channel();
-        let request = Request { session: session.clone(), command, reply, deadline: Instant::now() + Duration::from_secs(25) };
+        let deadline = Instant::now() + Duration::from_secs(25);
+        if let Command::Vfx(call @ crate::vfx_tools::VfxCall::Preview { .. }) = command {
+            // Queued as the playtest's: it outlives the starter's session (review of the M4 fixes).
+            self.e.vfx_preview_start(call, session, reply, deadline, true);
+            return Ok(answer);
+        }
+        let request = Request { session: session.clone(), command, reply, deadline };
         self.e.handle(request, self.server);
         Ok(answer)
     }

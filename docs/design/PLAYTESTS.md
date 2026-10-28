@@ -120,3 +120,8 @@ engine start-up (2-5 s, Vulkan with the validation layer) and shut-down dominate
   connection thread and then wait for the engine thread, which the playtest is running on, so the call would
   deadlock. Edit rule sets before the run. To let specs set rule parameters per run (the balance lab), `lex_edit`
   needs an engine-thread path that a step can take.
+- **Every caller-thread tool** is refused the same way, at validation: `lex_*`, `balance_*`, `studio_*`,
+  `style_check`, `procgen_*`, `project_*`, `merge_suggest`, `logic_build` and `logic_reload`. The list is the
+  routing itself (`tools::CallerThread`: a new caller-thread tool needs a variant there, and with it its refusal
+  reason), and a test checks every defined tool is either parsed for the engine thread or refused (M4 audit: the
+  studio, procgen, project and merge tools passed validation and then failed at every step).

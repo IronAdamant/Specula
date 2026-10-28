@@ -346,7 +346,8 @@ impl Engine {
         match call {
             VfxCall::Get { name, cursor, limit } => self.vfx_get(name.as_deref(), cursor, limit),
             VfxCall::Set { name, effect, expect_version } => self.vfx_set(&name, effect, expect_version, w, tick),
-            VfxCall::Preview { subject, params, frames, duration, start, tile, motion } => self.vfx_preview(subject, params, frames, duration, start, tile, motion),
+            // Queued by `Engine::handle` (`vfx_preview_start`): rendered within the studio's budget.
+            VfxCall::Preview { .. } => error("internal", "vfx_preview is answered through the studio's render queue"),
             VfxCall::Check { subject, params, palette } => self.vfx_check(subject, params, &palette),
             VfxCall::Info => self.vfx_info(),
         }
@@ -541,184 +542,375 @@ impl Engine {
         ToolOutput::text(out.to_string())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn vfx_preview(&mut self, subject: Subject, params: Option<Params>, frames: u32, duration: Option<f32>, start: Option<f32>, tile: u32, motion: [f32; 3]) -> ToolOutput {
+    /// `vfx_preview`: resolves the effect and queues the filmstrip; it is evaluated and rendered
+    /// a frame per step within the studio's render budget (`Engine::pump_studio`), and the answer
+    /// goes to `reply` when the last frame is done.
+    /// `from_playtest`: a playtest's step (it keeps running after its starter's session closes,
+    /// so the session's liveness doesn't drop it; the deadline still does).
+    pub(crate) fn vfx_preview_start(&mut self, call: VfxCall, session: &SessionInfo, reply: mpsc::Sender<ToolOutput>, deadline: Instant, from_playtest: bool) {
+        let VfxCall::Preview { subject, params, frames, duration, start, tile, motion } = call else {
+            let _ = reply.send(error("invalid_argument", "not a vfx_preview"));
+            return;
+        };
+        self.vfx.library.refresh(&self.world, self.world_generation);
+        let queued = |s: &str| self.studio.previews.iter().filter(|j| j.session == s).count();
+        // Sheets still encoding count too (each holds its pixels).
+        let encoding = self.studio.encoders.load(std::sync::atomic::Ordering::Relaxed);
+        if self.studio.previews.len() + encoding >= MAX_PREVIEWS_QUEUED || queued(&session.id) >= MAX_PREVIEWS_PER_AGENT {
+            let _ = reply.send(ToolOutput::error(
+                Json::obj([
+                    ("error", Json::from("studio_busy")),
+                    ("message", Json::from(format!("{} previews are queued ({MAX_PREVIEWS_PER_AGENT} per agent, {MAX_PREVIEWS_QUEUED} in all): call again when one has answered", self.studio.previews.len()))),
+                    ("retry_after_s", Json::from(1)),
+                ])
+                .to_string(),
+            ));
+            return;
+        }
         let (effect, params, name) = match self.subject(subject, params) {
             Ok(s) => s,
-            Err(e) => return e,
+            Err(e) => {
+                let _ = reply.send(e);
+                return;
+            }
         };
         let one_shot = effect.finished_after();
         let start = start.unwrap_or(if one_shot.is_some() { 0.0 } else { effect.max_lifetime() }) as f64;
         let span = duration.unwrap_or_else(|| one_shot.map_or(2.0, |f| (f - start as f32).max(0.1))).clamp(0.0, MAX_PREVIEW_S) as f64;
         let n = frames.max(2) as usize;
         let times: Vec<f64> = (0..n).map(|i| start + span * i as f64 / (n - 1) as f64).collect();
-        let motion_v = Vec3::new(motion[0], motion[1], motion[2]);
         let seed = eval::seed_of(1, 0.0, params.seed);
-        let where_at = |t: f64| motion_v * t as f32;
-        let track_at = |t: f64| {
-            let mut tr = Track::new();
-            let hz = 30.0;
-            let first = ((t - Track::CAPACITY as f64 / hz).max(0.0) * hz).ceil() as u64;
-            let last = (t * hz).floor() as u64;
-            for k in first..=last {
-                let tk = k as f64 / hz;
-                let p = where_at(tk);
-                tr.push(tk, [p.x, p.y, p.z]);
-            }
-            tr
+        let job = PreviewJob {
+            session: session.id.clone(),
+            from_playtest,
+            reply,
+            deadline,
+            effect,
+            params,
+            name,
+            seed,
+            motion: Vec3::new(motion[0], motion[1], motion[2]),
+            times,
+            tile,
+            probed: 0,
+            union: None,
+            stage: None,
+            frame: crate::vfx::Frame::default(),
+            out_frames: Vec::new(),
+            problems: Vec::new(),
+            failed: None,
         };
+        self.studio.previews.push_back(Box::new(job));
+    }
+
+    /// One step of a queued preview: a frame evaluated (to find what to frame), one rendered into
+    /// the sheet, the effect's checks, or the hand-off of the sheet to an encoder thread.
+    pub(crate) fn vfx_preview_step(&mut self, job: &mut PreviewJob) -> PreviewStep {
+        let _z = profile::zone("vfx_preview");
+        let n = job.times.len();
+        let tile = job.tile;
+        if job.out_frames.len() == n {
+            if job.failed.is_none() {
+                let failed = check::check(&job.effect, &job.params, &self.check_limits(), None).iter().filter(|c| !c.ok).map(check::Check::to_json).collect();
+                job.failed = Some(failed);
+                return PreviewStep::More;
+            }
+            return self.vfx_preview_finish(job);
+        }
         // A first pass without a camera finds what to frame.
-        let probe_cam = crate::sight::Camera::new(Vec3::new(0.0, 2.0, 10.0), Vec3::ZERO, 40.0);
-        let probe_view = View::of(&probe_cam, tile, tile);
-        let mut frame = crate::vfx::Frame::default();
-        let mut union: Option<(Vec3, Vec3)> = None;
-        for &t in &times {
-            let track = track_at(t);
-            let p = where_at(t);
-            let inst = Instance { effect: &effect, params, seed, start: 0.0, placement: Placement::at([p.x, p.y, p.z]), track: Some(&track), ground: None };
-            let f = self.vfx.preview_frame(&mut self.gpu, &inst, t, &probe_view, PREVIEW_LIMIT, &mut frame);
+        if job.probed < n {
+            let t = job.times[job.probed];
+            let track = job.track_at(t);
+            let p = job.where_at(t);
+            let probe_cam = crate::sight::Camera::new(Vec3::new(0.0, 2.0, 10.0), Vec3::ZERO, 40.0);
+            let probe_view = View::of(&probe_cam, tile, tile);
+            let inst = Instance { effect: &job.effect, params: job.params, seed: job.seed, start: 0.0, placement: Placement::at([p.x, p.y, p.z]), track: Some(&track), ground: None };
+            let f = self.vfx.preview_frame(&mut self.gpu, &inst, t, &probe_view, PREVIEW_LIMIT, &mut job.frame);
             let b = f.bounds.unwrap_or((p - Vec3::new(0.2, 0.0, 0.2), p + Vec3::new(0.2, 0.4, 0.2)));
-            union = Some(union.map_or(b, |(lo, hi)| (lo.min(b.0), hi.max(b.1))));
+            job.union = Some(job.union.map_or(b, |(lo, hi)| (lo.min(b.0), hi.max(b.1))));
+            job.probed += 1;
+            return PreviewStep::More;
         }
-        let (lo, hi) = union.unwrap_or((Vec3::new(-0.5, 0.0, -0.5), Vec3::new(0.5, 1.0, 0.5)));
-        // Include the ground under it, so a scale is always in view.
-        let lo = lo.min(Vec3::new(lo.x, 0.0, lo.z));
-        let center = (lo + hi) * 0.5;
-        let radius = ((hi - lo).length() * 0.5).max(0.4);
-        let fov = 40.0f32;
-        let dist = radius / (fov.to_radians() * 0.5).sin() * 1.1;
-        let dir = Vec3::new(0.5, 0.35, 0.8).normalize();
-        let camera = crate::sight::Camera::new(center + dir * dist, center, fov);
-        let view = View::of(&camera, tile, tile);
-        let cols = (n as f64).sqrt().ceil() as u32;
-        let rows = (n as u32).div_ceil(cols);
-        let (sw, sh) = (cols * tile, rows * tile);
-        let mut sheet = vec![0u8; (sw * sh * 4) as usize];
-        for px in sheet.chunks_exact_mut(4) {
-            px.copy_from_slice(&[24, 26, 30, 255]);
-        }
+        let union = job.union;
+        let st = job.stage.get_or_insert_with(|| {
+            let (lo, hi) = union.unwrap_or((Vec3::new(-0.5, 0.0, -0.5), Vec3::new(0.5, 1.0, 0.5)));
+            // Include the ground under it, so a scale is always in view.
+            let lo = lo.min(Vec3::new(lo.x, 0.0, lo.z));
+            let center = (lo + hi) * 0.5;
+            let radius = ((hi - lo).length() * 0.5).max(0.4);
+            let fov = 40.0f32;
+            let dist = radius / (fov.to_radians() * 0.5).sin() * 1.1;
+            let dir = Vec3::new(0.5, 0.35, 0.8).normalize();
+            let camera = crate::sight::Camera::new(center + dir * dist, center, fov);
+            let cols = (n as f64).sqrt().ceil() as u32;
+            let rows = (n as u32).div_ceil(cols);
+            let mut sheet = vec![0u8; (cols * tile * rows * tile * 4) as usize];
+            for px in sheet.chunks_exact_mut(4) {
+                px.copy_from_slice(&[24, 26, 30, 255]);
+            }
+            PreviewStage { camera, center, radius, cols, rows, sheet }
+        });
+        let view = View::of(&st.camera, tile, tile);
+        let (cols, sw) = (st.cols, st.cols * tile);
+        let (center, radius) = (st.center, st.radius);
+        let i = job.out_frames.len();
+        let t = job.times[i];
+        let track = job.track_at(t);
+        let p = job.where_at(t);
         let ground = self.meshes.get(Shape::Quad);
         let slab = [0x5b as f32 / 255.0, 0x64 as f32 / 255.0, 0x70 as f32 / 255.0, 1.0];
         let draws: Vec<specula_gpu::DrawItem> = ground
             .map(|m| specula_gpu::DrawItem::new(m, Mat4::from_trs(Vec3::new(center.x, 0.0, center.z), Quat::IDENTITY, Vec3::new(radius * 8.0, 1.0, radius * 8.0)).to_cols_array(), slab))
             .into_iter()
             .collect();
-        let mut out_frames = Vec::new();
-        let mut problems: Vec<String> = Vec::new();
-        for (i, &t) in times.iter().enumerate() {
-            let track = track_at(t);
-            let p = where_at(t);
-            let inst = Instance { effect: &effect, params, seed, start: 0.0, placement: Placement::at([p.x, p.y, p.z]), track: Some(&track), ground: None };
-            let facts = self.vfx.preview_frame(&mut self.gpu, &inst, t, &view, PREVIEW_LIMIT, &mut frame);
-            for m in facts.problems {
-                if !problems.contains(&m) && problems.len() < 8 {
-                    problems.push(m);
-                }
+        let (effect, params, seed) = (&job.effect, job.params, job.seed);
+        let inst = Instance { effect, params, seed, start: 0.0, placement: Placement::at([p.x, p.y, p.z]), track: Some(&track), ground: None };
+        let facts = self.vfx.preview_frame(&mut self.gpu, &inst, t, &view, PREVIEW_LIMIT, &mut job.frame);
+        for m in facts.problems {
+            if !job.problems.contains(&m) && job.problems.len() < 8 {
+                job.problems.push(m);
             }
-            let mut lights = Vec::new();
-            if let (Some(l), true) = (&effect.light, params.light) {
-                let level = l.level(t, seed);
-                if level > 0.0 {
-                    let tint = params.tint;
-                    lights.push(specula_gpu::PointLight {
-                        position: [p.x + l.offset[0], p.y + l.offset[1], p.z + l.offset[2]],
-                        color: [l.color[0] * tint[0], l.color[1] * tint[1], l.color[2] * tint[2]],
-                        intensity: l.intensity * level * params.intensity,
-                        range: l.range,
-                    });
-                }
-            }
-            let target = match self.offscreen_target(tile, tile) {
-                Ok(t) => t,
-                Err(e) => return ToolOutput::error(e),
-            };
-            let srgb = |r: u8, g: u8, b: u8| [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0];
-            let desc = FrameDesc {
-                view_proj: view.view_proj.to_cols_array(),
-                clear_color: srgb(0x0b, 0x10, 0x20),
-                draws: &draws,
-                reverse_z: true,
-                environment: stage(),
-                lights: &lights,
-                time_s: t as f32,
-                effects: frame.effects(),
-                ..Default::default()
-            };
-            if let Err(e) = self.gpu.render(target, &desc) {
-                return ToolOutput::error(capture::gpu_failure("render", &e, self.windowed));
-            }
-            let px = match self.gpu.read_rgba8(target) {
-                Ok(p) => p,
-                Err(e) => return ToolOutput::error(capture::gpu_failure("readback", &e, self.windowed)),
-            };
-            let (x0, y0) = ((i as u32 % cols) * tile, (i as u32 / cols) * tile);
-            for row in 0..tile {
-                let src = (row * tile * 4) as usize;
-                let dst = (((y0 + row) * sw + x0) * 4) as usize;
-                sheet[dst..dst + (tile * 4) as usize].copy_from_slice(&px[src..src + (tile * 4) as usize]);
-            }
-            let mut fj = Json::obj([
-                ("frame", Json::from(i + 1)),
-                ("t", round(t, 3)),
-                ("live", Json::from(facts.stats.live)),
-                ("drawn", Json::from(facts.stats.drawn)),
-                ("work", Json::from(facts.stats.work)),
-                ("overdraw", round(f64::from(facts.fill_px) / f64::from(tile * tile), 3)),
-                ("tile", Json::arr([x0, y0, tile, tile].map(Json::from))),
-            ]);
-            if let Some((lo, hi)) = facts.bounds {
-                fj.set("bounds", Json::obj([("min", v3(lo)), ("max", v3(hi))]));
-                fj.set("screen", view.screen_rect(lo, hi).map_or(Json::Null, |r| Json::arr(r.map(Json::from))));
-            }
-            if facts.stats.dropped > 0 {
-                fj.set("dropped", Json::from(facts.stats.dropped));
-            }
-            out_frames.push(fj);
         }
-        let failed: Vec<Json> = check::check(&effect, &params, &self.check_limits(), None).iter().filter(|c| !c.ok).map(check::Check::to_json).collect();
-        let png_bytes = png::encode_rgba8(sw, sh, &sheet, Level::Fastest);
-        self.frames_captured += 1;
-        let png_path = self.save_capture("png", &png_bytes);
-        let mut warnings: Vec<Json> = problems.into_iter().map(Json::from).collect();
-        if let Err(e) = &png_path {
-            warnings.push(Json::from(format!("capture not saved to disk: {e}")));
+        let mut lights = Vec::new();
+        if let (Some(l), true) = (&effect.light, params.light) {
+            let level = l.level(t, seed);
+            if level > 0.0 {
+                let tint = params.tint;
+                lights.push(specula_gpu::PointLight {
+                    position: [p.x + l.offset[0], p.y + l.offset[1], p.z + l.offset[2]],
+                    color: [l.color[0] * tint[0], l.color[1] * tint[1], l.color[2] * tint[2]],
+                    intensity: l.intensity * level * params.intensity,
+                    range: l.range,
+                });
+            }
         }
+        let target = match self.offscreen_target(tile, tile) {
+            Ok(t) => t,
+            Err(e) => return PreviewStep::Done(ToolOutput::error(e)),
+        };
+        let srgb = |r: u8, g: u8, b: u8| [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0];
+        let desc = FrameDesc {
+            view_proj: view.view_proj.to_cols_array(),
+            clear_color: srgb(0x0b, 0x10, 0x20),
+            draws: &draws,
+            reverse_z: true,
+            environment: stage(),
+            lights: &lights,
+            time_s: t as f32,
+            effects: job.frame.effects(),
+            ..Default::default()
+        };
+        if let Err(e) = self.gpu.render(target, &desc) {
+            return PreviewStep::Done(ToolOutput::error(capture::gpu_failure("render", &e, self.windowed)));
+        }
+        let px = match self.gpu.read_rgba8(target) {
+            Ok(p) => p,
+            Err(e) => return PreviewStep::Done(ToolOutput::error(capture::gpu_failure("readback", &e, self.windowed))),
+        };
+        let stage_ = job.stage.as_mut().expect("made above");
+        let (x0, y0) = ((i as u32 % cols) * tile, (i as u32 / cols) * tile);
+        for row in 0..tile {
+            let src = (row * tile * 4) as usize;
+            let dst = (((y0 + row) * sw + x0) * 4) as usize;
+            stage_.sheet[dst..dst + (tile * 4) as usize].copy_from_slice(&px[src..src + (tile * 4) as usize]);
+        }
+        let mut fj = Json::obj([
+            ("frame", Json::from(i + 1)),
+            ("t", round(t, 3)),
+            ("live", Json::from(facts.stats.live)),
+            ("drawn", Json::from(facts.stats.drawn)),
+            ("work", Json::from(facts.stats.work)),
+            ("overdraw", round(f64::from(facts.fill_px) / f64::from(tile * tile), 3)),
+            ("tile", Json::arr([x0, y0, tile, tile].map(Json::from))),
+        ]);
+        if let Some((lo, hi)) = facts.bounds {
+            fj.set("bounds", Json::obj([("min", v3(lo)), ("max", v3(hi))]));
+            fj.set("screen", view.screen_rect(lo, hi).map_or(Json::Null, |r| Json::arr(r.map(Json::from))));
+        }
+        if facts.stats.dropped > 0 {
+            fj.set("dropped", Json::from(facts.stats.dropped));
+        }
+        job.out_frames.push(fj);
+        PreviewStep::More
+    }
+
+    /// A preview whose frames are rendered and checked: its capture number, paths and packet facts
+    /// are settled here, and the sheet goes to an encoder thread, which writes the PNG and the
+    /// packet and answers. (Review of the M4 fixes: encoding a 1280 px sheet, its base64 and the
+    /// writes took about 36 ms of the engine thread in one step.)
+    fn vfx_preview_finish(&mut self, job: &mut PreviewJob) -> PreviewStep {
+        let Some(stage) = job.stage.take() else { return PreviewStep::Done(error("render_unavailable", "the preview has no frames")) };
+        let (sw, sh) = (stage.cols * job.tile, stage.rows * job.tile);
+        let mut warnings: Vec<Json> = std::mem::take(&mut job.problems).into_iter().map(Json::from).collect();
         for m in self.gpu.take_validation_messages() {
             if m.severity >= Severity::Warning {
                 warnings.push(Json::from(format!("vulkan {:?} {}: {}", m.severity, m.id_name, m.message)));
             }
         }
-        let png_file = png_path.as_ref().ok();
-        let packet_path = png_file.map(|p| p.with_extension("json"));
-        let mut packet = Json::obj([
+        self.frames_captured += 1;
+        let png_path = self.capture_dir.join(format!("frame_{:05}.png", self.frames_captured));
+        let m = job.motion;
+        let packet = Json::obj([
             ("schema", Json::from(sight::SCHEMA)),
             ("kind", Json::from("vfx_preview")),
             ("frame", Json::from(self.frames_captured)),
-            ("effect", Json::from(name.as_str())),
-            ("params", params.to_json()),
-            (
-                "image",
-                Json::obj([
-                    ("width", Json::from(sw)),
-                    ("height", Json::from(sh)),
-                    ("grid", Json::arr([cols, rows].map(Json::from))),
-                    ("path", png_file.map(|p| p.display().to_string()).into()),
-                    ("packet_path", packet_path.as_ref().map(|p| p.display().to_string()).into()),
-                ]),
-            ),
-            ("camera", camera.to_json()),
+            ("effect", Json::from(job.name.as_str())),
+            ("params", job.params.to_json()),
+            // (Filled in by the encoder.)
+            ("image", Json::Null),
+            ("camera", stage.camera.to_json()),
             ("view", Json::from("night stage: ground at y = 0, moonlight, bloom; the emitter starts at the origin")),
-            ("move", Json::arr(motion.map(Json::from))),
-            ("frames", Json::Arr(out_frames)),
-            ("checks_failed", Json::Arr(failed)),
-            ("warnings", Json::Arr(warnings)),
+            ("move", Json::arr([m.x, m.y, m.z].map(Json::from))),
+            ("frames", Json::Arr(std::mem::take(&mut job.out_frames))),
+            ("checks_failed", Json::Arr(job.failed.take().unwrap_or_default())),
+            ("warnings", Json::Null),
         ]);
-        if let Some(p) = &packet_path {
-            if let Err(e) = std::fs::write(p, packet.to_pretty()) {
+        let encode = PreviewEncode { sheet: stage.sheet, width: sw, height: sh, grid: [stage.cols, stage.rows], png_path, warnings, packet };
+        let encoders = std::sync::Arc::clone(&self.studio.encoders);
+        encoders.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let reply = job.reply.clone();
+        let slot: Arc<std::sync::Mutex<Option<PreviewEncode>>> = Arc::new(std::sync::Mutex::new(Some(encode)));
+        let theirs = Arc::clone(&slot);
+        let spawned = std::thread::Builder::new().name("specula-vfx-preview".into()).spawn(move || {
+            // Gives the preview's slot back however the encode ends (a panic included).
+            struct Slot(Arc<std::sync::atomic::AtomicUsize>);
+            impl Drop for Slot {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+            let _slot = Slot(encoders);
+            let e = theirs.lock().ok().and_then(|mut g| g.take());
+            if let Some(e) = e {
+                let _ = reply.send(e.finish());
+            }
+        });
+        match spawned {
+            Ok(_) => PreviewStep::Handed,
+            Err(_) => {
+                // No thread to spare: encoded here, as before.
+                self.studio.encoders.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                let e = slot.lock().ok().and_then(|mut g| g.take());
+                PreviewStep::Done(e.map_or_else(|| error("render_unavailable", "the preview's sheet was lost"), PreviewEncode::finish))
+            }
+        }
+    }
+}
+
+/// What a preview step did.
+pub(crate) enum PreviewStep {
+    /// More steps to go.
+    More,
+    /// The answer (or a failure), for the caller.
+    Done(ToolOutput),
+    /// An encoder thread answers.
+    Handed,
+}
+
+/// A finished preview's sheet and packet, encoded and written off the engine thread.
+struct PreviewEncode {
+    sheet: Vec<u8>,
+    width: u32,
+    height: u32,
+    grid: [u32; 2],
+    png_path: PathBuf,
+    warnings: Vec<Json>,
+    /// Every field but `image` and `warnings` (set once the files are written), in order.
+    packet: Json,
+}
+
+impl PreviewEncode {
+    /// Encodes the sheet, writes the PNG and its packet (paths only for what was written) and
+    /// makes the answer.
+    fn finish(self) -> ToolOutput {
+        let PreviewEncode { sheet, width, height, grid, png_path, mut warnings, mut packet } = self;
+        let png_bytes = png::encode_rgba8(width, height, &sheet, Level::Fastest);
+        let written = png_path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&png_path, &png_bytes));
+        let packet_path = png_path.with_extension("json");
+        let (path, packet_at) = match &written {
+            Ok(()) => (Json::from(png_path.display().to_string()), Json::from(packet_path.display().to_string())),
+            Err(e) => {
+                warnings.push(Json::from(format!("capture not saved to disk: {e}")));
+                (Json::Null, Json::Null)
+            }
+        };
+        packet.set(
+            "image",
+            Json::obj([("width", Json::from(width)), ("height", Json::from(height)), ("grid", Json::arr(grid.map(Json::from))), ("path", path), ("packet_path", packet_at)]),
+        );
+        packet.set("warnings", Json::Arr(warnings));
+        if written.is_ok() {
+            if let Err(e) = std::fs::write(&packet_path, packet.to_pretty()) {
                 packet.set("packet_error", Json::from(e.to_string()));
             }
         }
         ToolOutput { content: vec![Content::Image { mime_type: "image/png".into(), data_base64: base64::encode(&png_bytes) }, Content::Text(packet.to_string())], is_error: false }
+    }
+}
+
+/// Queued previews at most, in all and per agent (each holds its sheet: up to 1280 x 1280 px).
+pub(crate) const MAX_PREVIEWS_QUEUED: usize = 4;
+pub(crate) const MAX_PREVIEWS_PER_AGENT: usize = 2;
+
+/// A `vfx_preview` in progress: its frames are evaluated (to frame the effect), rendered a frame
+/// per step and checked, each step within the asset studio's render budget, round-robin with the
+/// studio's renders (`Engine::pump_studio`); the sheet is then encoded and written on a thread of
+/// its own. A step starts while there is credit and is charged afterwards, so one step (a tile:
+/// about 1-6 ms on the Intel iGPU) can overrun a frame's share, never the whole sheet. (M4 audit:
+/// rendered in one go on the engine thread, 16 tiles of 320 px took Sepulcra's iGPU frame p95
+/// from 8.5 to 43.5 ms; the review of the fix: encoding the sheet in one step still took 36 ms.)
+pub(crate) struct PreviewJob {
+    pub(crate) session: String,
+    /// A playtest's step: kept when the session closes (see [`Engine::vfx_preview_start`]).
+    pub(crate) from_playtest: bool,
+    pub(crate) reply: mpsc::Sender<ToolOutput>,
+    pub(crate) deadline: Instant,
+    effect: Arc<Effect>,
+    params: Params,
+    name: String,
+    seed: u32,
+    motion: Vec3,
+    times: Vec<f64>,
+    tile: u32,
+    /// Frames evaluated so far, and the bounds they found.
+    probed: usize,
+    union: Option<(Vec3, Vec3)>,
+    /// Made once every frame is evaluated.
+    stage: Option<PreviewStage>,
+    frame: crate::vfx::Frame,
+    out_frames: Vec<Json>,
+    problems: Vec<String>,
+    /// The effect's failed checks, run as a step of their own once every frame is rendered.
+    failed: Option<Vec<Json>>,
+}
+
+/// A preview's camera and sheet.
+struct PreviewStage {
+    camera: crate::sight::Camera,
+    center: Vec3,
+    radius: f32,
+    cols: u32,
+    rows: u32,
+    sheet: Vec<u8>,
+}
+
+impl PreviewJob {
+    fn where_at(&self, t: f64) -> Vec3 {
+        self.motion * t as f32
+    }
+
+    /// The trail an emitter moving at `motion` left up to `t`.
+    fn track_at(&self, t: f64) -> Track {
+        let mut tr = Track::new();
+        let hz = 30.0;
+        let first = ((t - Track::CAPACITY as f64 / hz).max(0.0) * hz).ceil() as u64;
+        let last = (t * hz).floor() as u64;
+        for k in first..=last {
+            let tk = k as f64 / hz;
+            let p = self.where_at(tk);
+            tr.push(tk, [p.x, p.y, p.z]);
+        }
+        tr
     }
 }
 

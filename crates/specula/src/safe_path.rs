@@ -82,6 +82,84 @@ impl Roots {
     }
 }
 
+fn capture_not_allowed(what: &str) -> Refusal {
+    refuse(
+        "path_not_allowed",
+        format!("{what} must be a file in this engine's captures folder: the image.path (or packet path) a sight or studio tool returned, or a path relative to the captures folder (no UNC or drive-relative paths, no '..', no links)"),
+    )
+}
+
+/// Whether `path` is `root` or below it, compared component by component (case-insensitively on
+/// Windows), without touching the disk.
+fn lexically_under(path: &Path, root: &Path) -> bool {
+    let key = |c: Component| {
+        let s = c.as_os_str().to_string_lossy().into_owned();
+        if cfg!(windows) {
+            s.to_lowercase()
+        } else {
+            s
+        }
+    };
+    let (mut p, r) = (path.components().filter(|c| *c != Component::CurDir), root.components().filter(|c| *c != Component::CurDir));
+    r.into_iter().all(|rc| p.next().is_some_and(|pc| key(pc) == key(rc)))
+}
+
+/// A capture or packet file an agent names (`review_submit`'s captures, which the window's review
+/// screen later decodes): the absolute path a sight or studio tool returned, or a path relative to
+/// this run's captures (`run`) or the captures `root`. It must be a regular file inside `root`
+/// both as written and canonicalised, with no link or junction on the way. UNC, verbatim and
+/// drive-relative paths, `..` and paths lexically outside `root` are refused before anything
+/// touches the disk. Returns the absolute (not verbatim) path. (M4 audit: any absolute path was
+/// accepted, and the review screen decoded it.)
+pub fn capture_file(root: &Path, run: &Path, name: &str, what: &str) -> Result<PathBuf, Refusal> {
+    let p = Path::new(name);
+    let lexically_ok = !name.is_empty()
+        && name.len() <= 512
+        && !name.contains('\0')
+        && !name.starts_with("\\\\")
+        && !name.starts_with("//")
+        && (!p.has_root() || p.is_absolute())
+        && p.components().all(|c| match c {
+            Component::Prefix(px) => matches!(px.kind(), std::path::Prefix::Disk(_)),
+            Component::ParentDir => false,
+            _ => true,
+        })
+        && name.split(['/', '\\']).all(|part| part != "..")
+        // A ':' only as a drive letter's (no alternate data streams, no `C:x`).
+        && name.char_indices().filter(|(_, c)| *c == ':').all(|(i, _)| i == 1 && p.is_absolute());
+    if !lexically_ok {
+        return Err(capture_not_allowed(what));
+    }
+    let root_abs = std::path::absolute(root).map_err(|_| capture_not_allowed(what))?;
+    // A relative name: in this run's captures, the captures root, or relative to the engine's
+    // working folder (a relative `--captures` makes sight tools return such paths), the last
+    // only when that is inside the root.
+    let candidates: Vec<PathBuf> = if p.is_absolute() { vec![p.to_path_buf()] } else { vec![run.join(p), root.join(p), p.to_path_buf()] };
+    for c in candidates {
+        let abs = std::path::absolute(&c).map_err(|_| capture_not_allowed(what))?;
+        if !lexically_under(&abs, &root_abs) {
+            if p.is_absolute() {
+                return Err(capture_not_allowed(what));
+            }
+            continue;
+        }
+        // What is below the root (its components matched above, whatever their case).
+        let rel: PathBuf = abs.components().filter(|c| *c != Component::CurDir).skip(root_abs.components().filter(|c| *c != Component::CurDir).count()).collect();
+        if !no_links_below(&root_abs, &rel) {
+            return Err(capture_not_allowed(what));
+        }
+        let Ok(meta) = std::fs::symlink_metadata(&abs) else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        return match (abs.canonicalize(), root_abs.canonicalize()) {
+            (Ok(c), Ok(r)) if c.starts_with(&r) => Ok(abs),
+            _ => Err(capture_not_allowed(what)),
+        };
+    }
+    Err(refuse("capture_missing", format!("{what} {name:?} is not a file in this engine's captures folder (pass the image.path a sight tool returned)")))
+}
+
 /// Whether every existing step from `root` along `rel` is a plain file or folder (no symlink,
 /// junction or other reparse point).
 fn no_links_below(root: &Path, rel: &Path) -> bool {
@@ -196,6 +274,47 @@ mod tests {
         let named = Roots::for_files(&caps, &root, &worlds, Some(&cwd));
         assert_eq!(named.0.last(), Some(&cwd), "a named assets root comes last");
         assert!(named.resolve("private.json", ".json", "'file'").is_ok());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// M4 audit (probe_capture_path.py): review_submit took captures and packets at any absolute
+    /// path, and the review screen decoded them. Only files in the captures folder pass.
+    #[test]
+    fn captures_must_be_in_the_captures_folder() {
+        let base = tmp("captures");
+        let (root, outside) = (base.join("captures"), base.join("data"));
+        let run = root.join("run-1");
+        for d in [&run, &outside, &root.join("run-0")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(run.join("a.png"), b"png").unwrap();
+        std::fs::write(root.join("run-0").join("old.png"), b"png").unwrap();
+        std::fs::write(outside.join("secret.png"), b"png").unwrap();
+        let ok = |name: &str| capture_file(&root, &run, name, "captures[0]");
+        // The absolute path a sight tool returned, relative to this run, or to the root.
+        let abs = run.join("a.png").display().to_string();
+        assert_eq!(ok(&abs).unwrap(), std::path::absolute(run.join("a.png")).unwrap());
+        assert!(ok("a.png").is_ok() && ok("run-0/old.png").is_ok() && ok("./a.png").is_ok());
+        let secret = outside.join("secret.png").display().to_string();
+        let sneaky = format!("{}/../data/secret.png", root.display());
+        for bad in [secret.as_str(), sneaky.as_str(), "../data/secret.png", "run-1/../../data/secret.png", r"\\host\share\x.png", r"\\?\C:\x.png", "//host/share/x.png", "C:x.png", "a.png:stream", r"\x.png", ""] {
+            assert_eq!(ok(bad).unwrap_err().code, "path_not_allowed", "{bad}");
+        }
+        assert_eq!(ok("nope.png").unwrap_err().code, "capture_missing");
+        assert_eq!(ok("run-1").unwrap_err().code, "capture_missing", "a folder is not a capture");
+        // A link (or junction) inside the captures folder that leads out is refused.
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_dir(&outside, run.join("ln")).is_ok();
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(&outside, run.join("ln")).is_ok();
+        #[cfg(not(any(windows, unix)))]
+        let made = false;
+        if made {
+            assert_eq!(ok("ln/secret.png").unwrap_err().code, "path_not_allowed");
+            assert_eq!(ok(&run.join("ln").join("secret.png").display().to_string()).unwrap_err().code, "path_not_allowed");
+        } else {
+            eprintln!("captures_must_be_in_the_captures_folder: link part SKIPPED — this account can't make symlinks");
+        }
         let _ = std::fs::remove_dir_all(&base);
     }
 

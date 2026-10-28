@@ -31,6 +31,19 @@ use specula_core::Json;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
+/// Journals made in this process (each one's epoch differs).
+static JOURNALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// This run's identity (wall clock and process id at first use): not simulation state, only what
+/// keeps one run's journal ids from being taken for another's.
+fn run_nonce() -> u64 {
+    static NONCE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *NONCE.get_or_init(|| {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
+        specula_core::hash::hash_bytes(&[nanos.to_le_bytes(), u64::from(std::process::id()).to_le_bytes()].concat())
+    })
+}
+
 /// Vets each change a command made, against the world as it was right after that change (the
 /// engine checks claims there); an error rolls the whole command back.
 pub type Check<'a> = dyn FnMut(&World, &Change) -> Result<(), WorldError> + 'a;
@@ -508,6 +521,11 @@ pub struct Journal {
     file_budget: usize,
     /// What the base is: `"empty"` or `"world:<name>"`.
     base_label: String,
+    /// Which numbering `seq`s belong to (see [`Journal::epoch`]).
+    epoch: String,
+    /// This journal's instance in this run, and how often it was rebased.
+    instance: u64,
+    rebases: u64,
     names: BTreeSet<Arc<str>>,
     /// Prune unreferenced names once there are this many.
     names_prune_at: usize,
@@ -541,6 +559,9 @@ impl Journal {
             file_bytes: 0,
             file_budget: MAX_FILE_TEXT_BYTES,
             base_label: String::new(),
+            epoch: String::new(),
+            instance: JOURNALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            rebases: 0,
             names: BTreeSet::new(),
             names_prune_at: NAMES_PRUNE_AT,
         };
@@ -571,6 +592,16 @@ impl Journal {
         self.next_id_seen = copy.next_id();
         self.base = copy;
         self.base_label = label.to_owned();
+        self.rebases += 1;
+        self.epoch = format!("{:016x}.{}.{}", run_nonce(), self.instance, self.rebases);
+    }
+
+    /// The journal's epoch: which numbering its `seq`s belong to. Ids keep counting across a
+    /// rebase but the entries before it are gone, and a new run (or journal) counts from 1 again,
+    /// so a `seq` saved anywhere (a review submission's entries) means these entries only while
+    /// the epoch is unchanged: a different epoch names other entries, or none (REVIEW.md).
+    pub fn epoch(&self) -> &str {
+        &self.epoch
     }
 
     /// Every entity id an entry still in the journal touches (what an undo could restore; not
@@ -1854,8 +1885,13 @@ mod tests {
         assert_eq!(feed(false).get("next"), Some(&Json::from(j.last_seq().to_string())));
         // A load starts over: cursors from before it see a gap.
         let mut rebased = j;
+        let epoch = rebased.epoch().to_owned();
         rebased.rebase(&w, "world:test");
         assert_eq!(rebased.len(), 0);
+        // M4 audit: seqs saved before the load name nothing now, so the epoch moves on; another
+        // journal (a restart) has its own.
+        assert!(!epoch.is_empty() && rebased.epoch() != epoch);
+        assert!(Journal::new(&w, "empty").epoch() != rebased.epoch() && Journal::new(&w, "empty").epoch() != epoch);
         let after = rebased.changes(&ChangesQuery { since: Cursor::parse("2").unwrap(), limit: 10, path_prefix: None, game: false });
         assert_eq!(after.get("gap"), Some(&Json::from(true)));
         assert_eq!(rebased.replay().unwrap().state_hash(), w.state_hash(), "replays from the loaded base");

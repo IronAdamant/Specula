@@ -29,6 +29,11 @@ pub const MAX_CAPTURES: usize = 8;
 pub const MAX_CHECKS: usize = 64;
 pub const MAX_PATHS: usize = 64;
 pub const MAX_JOURNAL: usize = 256;
+/// What `review_list` says of journal refs from another epoch.
+pub const STALE_JOURNAL: &str = "journal refs from an earlier run (or from before a world_load) can't be reverted: the journal numbers entries afresh; revert by hand";
+/// Entity ids a submission's journal entries touched, recorded at submit (a revert may touch
+/// only these); past this many none are kept and the submission can't be reverted.
+pub const MAX_JOURNAL_IDS: usize = 4096;
 /// Entities under one submission's paths (all roots together).
 pub const MAX_SUBTREE: usize = 10_000;
 pub const MAX_TITLE: usize = 200;
@@ -239,6 +244,12 @@ pub struct Submission {
     pub checks: Vec<Check>,
     pub roots: Vec<Root>,
     pub journal: Vec<u64>,
+    /// The journal epoch `journal`'s seqs belong to ([`crate::journal::Journal::epoch`]): from
+    /// another epoch (an earlier run, or before a `world_load`) they name other entries, or none.
+    pub journal_epoch: String,
+    /// The entity ids those entries touched when it was submitted; `None` when there were more
+    /// than [`MAX_JOURNAL_IDS`].
+    pub journal_ids: Option<Vec<u64>>,
     pub promote: Option<Promote>,
     pub supersedes: Option<u64>,
     pub superseded_by: Option<u64>,
@@ -256,7 +267,7 @@ impl Submission {
         let checks: usize = self.checks.iter().map(|c| 128 + c.kind.len() + c.name.len() + c.detail.len() + c.metric.as_ref().map_or(0, String::len)).sum();
         let roots: usize = self.roots.iter().map(|r| 96 + r.path.len()).sum();
         let decision = self.decision.as_ref().map_or(0, |d| 128 + d.by.len() + d.note.len() + d.promoted.as_ref().map_or(0, |p| p.to_string().len()));
-        512 + self.title.len() + self.summary.len() + self.kind.len() + self.batch.as_ref().map_or(0, String::len) + self.by.name.len() + caps + checks + roots + 12 * self.journal.len() + decision
+        512 + self.title.len() + self.summary.len() + self.kind.len() + self.batch.as_ref().map_or(0, String::len) + self.by.name.len() + caps + checks + roots + 12 * self.journal.len() + 12 * self.journal_ids.as_ref().map_or(0, Vec::len) + self.journal_epoch.len() + decision
             + self.promote.as_ref().map_or(0, |p| 64 + p.to.len())
     }
 
@@ -272,8 +283,23 @@ impl Submission {
         self.by.is(w)
     }
 
-    /// The compact listing item; `open_critiques` from the store.
-    pub fn summary_json(&self, open_critiques: usize) -> Json {
+    /// Its journal entries, while `epoch` (the live journal's) is the one they were submitted in;
+    /// none otherwise (the same seqs now name other entries, or nothing).
+    pub fn journal_in(&self, epoch: &str) -> &[u64] {
+        if self.journal_current(epoch) {
+            &self.journal
+        } else {
+            &[]
+        }
+    }
+
+    /// Whether its journal refs are from the live journal's `epoch`.
+    pub fn journal_current(&self, epoch: &str) -> bool {
+        !self.journal_epoch.is_empty() && self.journal_epoch == epoch
+    }
+
+    /// The compact listing item; `open_critiques` from the store, `epoch` the live journal's.
+    pub fn summary_json(&self, open_critiques: usize, epoch: &str) -> Json {
         let mut f = vec![
             ("id", Json::from(self.id)),
             ("status", Json::from(self.status.name())),
@@ -306,6 +332,9 @@ impl Submission {
         }
         if !self.journal.is_empty() {
             f.push(("journal_entries", Json::from(self.journal.len())));
+            if !self.journal_current(epoch) {
+                f.push(("journal_stale", Json::from(STALE_JOURNAL)));
+            }
         }
         if let Some(p) = &self.promote {
             f.push(("promote_to", Json::from(p.to.as_str())));
@@ -329,9 +358,9 @@ impl Submission {
         Json::obj(f)
     }
 
-    /// Everything.
-    pub fn to_json(&self, critiques: &[&Critique]) -> Json {
-        let mut j = self.summary_json(critiques.iter().filter(|c| c.status.open()).count());
+    /// Everything; `epoch` is the live journal's.
+    pub fn to_json(&self, critiques: &[&Critique], epoch: &str) -> Json {
+        let mut j = self.summary_json(critiques.iter().filter(|c| c.status.open()).count(), epoch);
         j.set("summary", Json::from(self.summary.as_str()));
         j.set("captures", Json::arr(self.captures.iter().map(Capture::to_json)));
         j.set("checks", Json::arr(self.checks.iter().map(Check::to_json)));
@@ -348,6 +377,11 @@ impl Submission {
             })),
         );
         j.set("journal", Json::arr(self.journal.iter().map(|s| Json::from(*s))));
+        if !self.journal.is_empty() {
+            j.set("journal_epoch", Json::from(self.journal_epoch.as_str()));
+            // A count for agents (up to 4,096 ids is tokens); the ids themselves are in the file.
+            j.set("journal_entities", self.journal_ids.as_ref().map_or(Json::Null, |ids| Json::from(ids.len())));
+        }
         if let Some(p) = &self.promote {
             j.set("promote", p.to_json());
         }
@@ -596,6 +630,9 @@ pub struct SubmitSpec {
     pub checks: Vec<Check>,
     pub roots: Vec<Root>,
     pub journal: Vec<u64>,
+    /// See [`Submission::journal_epoch`] and [`Submission::journal_ids`].
+    pub journal_epoch: String,
+    pub journal_ids: Option<Vec<u64>>,
     pub promote: Option<Promote>,
     pub supersedes: Option<u64>,
 }
@@ -773,6 +810,8 @@ impl Review {
             checks: spec.checks,
             roots: spec.roots,
             journal: spec.journal,
+            journal_epoch: spec.journal_epoch,
+            journal_ids: spec.journal_ids,
             promote: spec.promote,
             supersedes: spec.supersedes,
             superseded_by: None,
@@ -845,7 +884,7 @@ impl Review {
     }
 
     /// `review_list`: one page in id order, with counts per status.
-    pub fn list(&self, q: &SubmissionQuery) -> Json {
+    pub fn list(&self, q: &SubmissionQuery, epoch: &str) -> Json {
         let matching = self.subs.values().filter(|s| {
             (q.statuses.is_empty() || q.statuses.contains(&s.status))
                 && q.kind.as_deref().is_none_or(|k| s.kind == k)
@@ -855,7 +894,7 @@ impl Review {
                 && q.changed_since.is_none_or(|c| s.updated_seq > c)
         });
         let total = matching.clone().count();
-        let (items, next) = page(matching.filter(|s| q.after.is_none_or(|a| s.id > a)).map(|s| (s.id, s.summary_json(self.open_on(s.id)))), q.limit);
+        let (items, next) = page(matching.filter(|s| q.after.is_none_or(|a| s.id > a)).map(|s| (s.id, s.summary_json(self.open_on(s.id), epoch))), q.limit);
         let counts: Vec<(&str, Json)> = Status::ALL.iter().map(|st| (st.name(), Json::from(self.subs.values().filter(|s| s.status == *st).count()))).collect();
         let mut batches: BTreeMap<&str, usize> = BTreeMap::new();
         for s in self.pending() {
@@ -1052,9 +1091,12 @@ impl Review {
         let mut out = format!("{{\"format\": \"{FORMAT}\", \"next_submission\": {}, \"next_critique\": {}, \"seq\": {},\n\"submissions\": [", self.next_sub, self.next_crit, self.seq);
         for (i, s) in self.subs.values().enumerate() {
             out.push_str(if i == 0 { "\n" } else { ",\n" });
-            let mut j = s.to_json(&[]);
+            let mut j = s.to_json(&[], &s.journal_epoch);
             // The file keeps every field; critiques are saved on their own.
             j.set("summary", Json::from(s.summary.as_str()));
+            if let Some(ids) = s.journal_ids.as_ref().filter(|_| !s.journal.is_empty()) {
+                j.set("journal_ids", Json::arr(ids.iter().map(|i| Json::from(*i))));
+            }
             out.push_str(&j.to_string());
         }
         out.push_str("\n],\n\"critiques\": [");
@@ -1141,6 +1183,9 @@ impl Review {
                     checks,
                     roots,
                     journal: arr("journal").iter().filter_map(Json::as_u64).take(MAX_JOURNAL).collect(),
+                    // Files from before epochs have none: their refs are never current.
+                    journal_epoch: text(s, "journal_epoch"),
+                    journal_ids: s.get("journal_ids").and_then(Json::as_array).map(|a| a.iter().filter_map(Json::as_u64).take(MAX_JOURNAL_IDS).collect()),
                     promote,
                     supersedes: s.get("supersedes").and_then(Json::as_u64),
                     superseded_by: s.get("superseded_by").and_then(Json::as_u64),
@@ -1239,6 +1284,8 @@ mod tests {
             ],
             roots: vec![Root { path: "/staging/crypt".into(), id: 7, version: 2, stamp: 0xabc, entities: 12 }],
             journal: vec![3, 4],
+            journal_epoch: "00000000000000e1.0.1".into(),
+            journal_ids: Some(vec![7, 8]),
             promote: Some(Promote { to: "/world/props".into(), replace: false, remove_tag: Some("staging".into()) }),
             supersedes: None,
         }
@@ -1271,7 +1318,7 @@ mod tests {
         let id3 = r.submit(ANN, 14, s3).unwrap().id;
         assert_eq!(r.get(id2).unwrap().status, Status::Withdrawn);
         assert_eq!(r.pending_count(), 1);
-        let list = r.list(&SubmissionQuery { statuses: vec![Status::Pending], limit: 10, ..Default::default() });
+        let list = r.list(&SubmissionQuery { statuses: vec![Status::Pending], limit: 10, ..Default::default() }, "");
         assert_eq!(list.get("total"), Some(&Json::from(1)));
         let item = &list.get("submissions").unwrap().as_array().unwrap()[0];
         assert_eq!(item.get("id"), Some(&Json::from(id3)));
@@ -1309,7 +1356,7 @@ mod tests {
         r.apply_critique("ann", 7, 2, CritiqueAction::Reopen, None).unwrap();
         let list = r.list_critiques(&CritiqueQuery { statuses: vec![CStatus::Open], limit: 5, ..Default::default() });
         assert_eq!(list.get("total"), Some(&Json::from(1)));
-        let full = r.get(1).unwrap().to_json(&r.critiques_on(1));
+        let full = r.get(1).unwrap().to_json(&r.critiques_on(1), "");
         assert_eq!(full.get("critiques").unwrap().as_array().unwrap().len(), 2);
         assert_eq!(full.get("open_critiques"), Some(&Json::from(1)));
     }
@@ -1340,6 +1387,24 @@ mod tests {
         assert!(Review::parse("{\"format\": \"x\"}").is_err());
         // A loaded submission's author is matched by name alone.
         assert!(back.get(1).unwrap().submitted_by(Writer { name: "ann", session: Some("new-key") }));
+        // M4 audit (probe_revert.py): journal refs keep their epoch and the ids they touched, and
+        // count only in that epoch (a restart numbers entries from 1 again).
+        let s = back.get(1).unwrap();
+        assert_eq!((s.journal_epoch.as_str(), s.journal_ids.as_deref()), ("00000000000000e1.0.1", Some(&[7u64, 8][..])));
+        assert_eq!(s.journal_in("00000000000000e1.0.1"), &[3, 4]);
+        assert!(s.journal_in("00000000000000e2.0.1").is_empty());
+        assert_eq!(s.summary_json(0, "00000000000000e2.0.1").get("journal_stale").and_then(Json::as_str), Some(STALE_JOURNAL));
+        assert!(s.summary_json(0, "00000000000000e1.0.1").get("journal_stale").is_none());
+        // Review of the M4 fixes: agents see a count, not up to 4,096 ids (the file keeps them).
+        let full = s.to_json(&[], "00000000000000e1.0.1");
+        assert!(full.get("journal_ids").is_none());
+        assert_eq!(full.get("journal_entities"), Some(&Json::from(2)));
+        assert!(text.contains("\"journal_ids\":[7,8]"));
+        // A file from before epochs: its refs are never current.
+        let old = text.replace("\"journal_epoch\":\"00000000000000e1.0.1\",", "");
+        assert_ne!(old, text);
+        let s = Review::parse(&old).unwrap().get(1).unwrap().clone();
+        assert!(s.journal_epoch.is_empty() && s.journal_in("").is_empty());
     }
 
     #[test]
@@ -1348,7 +1413,7 @@ mod tests {
         for i in 0..30 {
             r.submit(ANN, i, SubmitSpec { summary: "x".repeat(MAX_SUMMARY), task: None, ..spec(&format!("s{i}")) }).unwrap();
         }
-        let list = r.list(&SubmissionQuery { limit: 200, ..Default::default() });
+        let list = r.list(&SubmissionQuery { limit: 200, ..Default::default() }, "");
         assert!(list.to_string().len() < MAX_LIST_BYTES + 4096);
         let page1 = list.get("submissions").unwrap().as_array().unwrap().len();
         assert!(page1 >= 1);

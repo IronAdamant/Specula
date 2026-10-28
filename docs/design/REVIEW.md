@@ -38,7 +38,11 @@ approval moves the work into the game, a rejection becomes a task for the agent 
   submitter's own (`not_your_entry`), and an entry another pending or approved submission covers is never covered
   twice (`already_covered`; `journal_since` skips it), so a rejection's revert can't reach anyone else's work.
 - **Evidence**: captures are files the engine wrote (`sight_frame`, `sight_orbit`, `sight_compare`, `anim_filmstrip`,
-  the asset studio's contact sheets): each must exist and be a PNG; its packet (JSON) is optional. Checks are data
+  the asset studio's contact sheets): each must exist and be a PNG; its packet (JSON) is optional. Both must be
+  files in the engine's captures folder (the path the tool returned, or one relative to this run's captures or the
+  folder), checked as written and canonicalised, with no link or junction on the way; anything else is
+  `path_not_allowed` before the disk is touched (M4 audit: any absolute path was taken, and the review screen decoded
+  it). The review screen checks again before it decodes a capture. Checks are data
   from the tools that ran them (`anim_check`, `physics_check`, `style_check`, `taste_check`): kind, name, passed,
   severity, and a metric with value and limit. The engine adds its own checks at submit (`paths_exist`,
   `captures_exist`) and at decision time (`unchanged_since_submit`).
@@ -72,6 +76,16 @@ The submitter may `withdraw` its own.
   the same entities (`revert_conflict`), and when an approved submission covers one of the entries or the entities
   sit under its roots (`revert_overlaps_approved`). With those refused, the undo's `force` only lets the decider undo
   entries that aren't theirs.
+- **Journal refs belong to one epoch.** Journal seqs count from 1 in every run, and a `world_load` drops the entries
+  before it, so a seq saved in `review.json` names other entries (or none) later. Each submission records the
+  journal's epoch (`journal_epoch`: the run, the journal and its rebase count) and the entity ids its entries touched
+  (`journal_ids`). Refs from another epoch never count: they don't block new submissions (`already_covered`), don't
+  overlap approved work, `review_list` marks them `journal_stale` ("journal refs from an earlier run can't be
+  reverted; revert by hand"), and a revert refuses them (`journal_from_earlier_run`). Within the epoch a revert also
+  refuses an entry that is gone from the journal (`journal_entry_gone`), isn't the submitter's
+  (`not_submitters_entry`), or touches an entity it didn't at submit (`revert_scope_changed`; past 4,096 recorded ids,
+  `revert_unverifiable`). (M4 integration audit: after a restart, a rejection's revert deleted another agent's
+  entities.)
 - **The board hears about it**: the submission's task gets `review` events (submitted, approved, rejected), so
   `task_get` and `world_rollup` show where work stands.
 - **Persisted with the board**: `review.json` next to `board.json` in the world's folder, written whenever the board

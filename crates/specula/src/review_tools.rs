@@ -652,7 +652,7 @@ pub fn definitions() -> Vec<ToolDef> {
              verdict (approve, reject, withdraw: your own only) and note, or decisions: [{id, verdict, note, revert}]. Approve: a \
              submission with promote moves its paths under promote.to in one journaled batch as you (claims apply; promote: false \
              records the verdict only). Reject: note required; posts a rework task assigned to the submitter (revert: true also \
-             undoes its journal entries). Refused per submission (others go on): stale_submission when its paths changed since it \
+             undoes its journal entries, refused for refs from an earlier run or world_load: journal_from_earlier_run). Refused per submission (others go on): stale_submission when its paths changed since it \
              was submitted (force: true to decide anyway), already_decided, self_review.",
             schema(
                 vec![

@@ -1768,6 +1768,22 @@ impl Streamer {
         self.textures_2d.deferred += used.deferred;
     }
 
+    /// A build level uploaded outside the pump (the asset studio's [`upload_next_level`]): its
+    /// bytes join the running resident total, so the memory budget sees them; a failed upload
+    /// evicted the build (memory left outside the count), so the total is summed again. (M4 audit:
+    /// studio uploads were charged to the frame's upload budget only, and the pump's cached total
+    /// missed them.)
+    pub fn uploaded_outside(&mut self, uploaded: &Result<u64, String>) {
+        match uploaded {
+            Ok(bytes) => {
+                if let Some(r) = self.resident_cache.as_mut() {
+                    *r += bytes;
+                }
+            }
+            Err(_) => self.resident_cache = None,
+        }
+    }
+
     fn miss(&mut self, j: Json) {
         if self.misses.len() == MAX_MISSES {
             self.misses.pop_front();
@@ -2439,6 +2455,20 @@ mod tests {
         let mut c = StreamConfig::default();
         assert!(c.apply(&Json::obj([("memory_mb", Json::from(1.0))]), "stream_settings").unwrap_err().contains("memory_mb"));
         assert_eq!(c, StreamConfig::default(), "a refused patch changes nothing");
+    }
+
+    /// M4 audit: the asset studio's uploads were charged to the frame's budget but missed the
+    /// pump's cached resident total, so the memory budget undercounted.
+    #[test]
+    fn uploads_outside_the_pump_keep_the_resident_total() {
+        let mut s = Streamer::default();
+        s.uploaded_outside(&Ok(64));
+        assert_eq!(s.resident_cache, None, "an unknown total stays unknown (the pump sums it)");
+        s.resident_cache = Some(1000);
+        s.uploaded_outside(&Ok(64));
+        assert_eq!(s.resident_cache, Some(1064));
+        s.uploaded_outside(&Err("lost".into()));
+        assert_eq!(s.resident_cache, None, "a failed upload evicted the build: summed again");
     }
 
     #[test]

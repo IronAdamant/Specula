@@ -347,6 +347,41 @@ def part_bounds(args, out):
         res["preview_work_bounded"] = bool(frames) and all(f["work"] <= 2 * max_work for f in frames)
         res["preview_seconds"] = round(took, 2)
         res["preview_fast"] = took < 5.0
+        # 1b. Previews are queued and rendered a frame per step within the studio's budget (M4
+        # audit: one call rendered every tile at once and stalled the window's frames). Two agents'
+        # previews at once both answer, with the same facts as one alone (no state leaks between
+        # interleaved steps).
+        import threading
+        alone = json.loads(tool(a, "vfx_preview", effect="fire", frames=6, tile=128)[1])["frames"]
+        got = {}
+
+        def run(m, key):
+            got[key] = tool(m, "vfx_preview", effect="fire", frames=6, tile=128)
+
+        ts = [threading.Thread(target=run, args=(m, k)) for m, k in ((a, "a"), (b, "b"))]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        res["previews_interleave"] = all(not got[k][0] and json.loads(got[k][1])["frames"] == alone for k in ("a", "b"))
+        # 1c. A playtest's preview step still answers after the agent that started the playtest
+        # closed its session (review of the M4 fixes: it failed with session_closed).
+        st = eng.mcp("vfx-pt-starter")
+        st.call("agent_hello", name="pt-starter", role="lead")
+        spec = {"name": "preview_after_close", "ticks": 600, "steps": [
+            {"at": 300, "call": "vfx_preview", "args": {"effect": "fire", "frames": 4, "tile": 96}},
+            {"at": 300, "call": "world_list"}]}
+        rid = st.json("playtest_run", spec=spec, wait_s=0).get("id")
+        st.close()
+        rep = {}
+        for _ in range(300):
+            rep = b.json("playtest_report", id=rid, response_format="detailed")
+            if rep.get("status") not in ("running", None):
+                break
+            time.sleep(0.1)
+        res["playtest_preview_outlives_session"] = rep.get("status") == "passed"
+        if not res["playtest_preview_outlives_session"]:
+            print("  playtest preview after close:", rep.get("status"), json.dumps(rep.get("failures"))[:400])
         # 2. Fill: a burst whose size spikes mid-life (the estimate sees its mean of size^2, the
         # evaluation sees the spike): thinned to the cap after evaluation.
         spike = {"emitters": [{"bursts": [{"count": 300, "cycles": 1}], "lifetime": 1, "speed": 0, "shape": {"kind": "sphere", "radius": 1},
