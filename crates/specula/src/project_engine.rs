@@ -577,10 +577,8 @@ impl Engine {
             self.poll_assets(true);
             done.push("models");
         }
-        if !assets.is_empty() {
-            if self.game_call(Kind::GameFrame, |game, ctx| game.assets_changed(ctx, &assets)).is_some() {
-                done.push("game");
-            }
+        if !assets.is_empty() && self.game_call(Kind::GameFrame, |game, ctx| game.assets_changed(ctx, &assets)).is_some() {
+            done.push("game");
         }
         done
     }

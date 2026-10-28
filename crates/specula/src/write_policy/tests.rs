@@ -123,7 +123,9 @@ type Write = fn(&mut Fix) -> Result<(), WorldError>;
 /// What the world holds (entities by id with their version, path and content, the environment,
 /// project files): a refused write leaves it exactly as it was, while the id counter may move on
 /// (ids a refused write used are never handed out again).
-fn contents(w: &World) -> (Vec<(u64, u64, String, u64)>, String, Vec<(String, u64)>) {
+type Contents = (Vec<(u64, u64, String, u64)>, String, Vec<(String, u64)>);
+
+fn contents(w: &World) -> Contents {
     let entities = w.entities().map(|e| (e.id, e.version, w.path_of(e.id), e.content_hash())).collect();
     let files = w.files().iter().map(|(p, f)| (p.clone(), f.version)).collect();
     (entities, w.env().to_json_exact().to_string(), files)
@@ -158,8 +160,7 @@ fn module_hook(f: &mut Fix, call: impl FnOnce(&mut World)) -> Result<(), WorldEr
         let mark = wd.mark();
         call(wd);
         let mut commit = module_agent_commit(sw, 1, MALLORY);
-        let out = commit(wd, mark, "module:nexus", Phase::Hook);
-        out
+        commit(wd, mark, "module:nexus", Phase::Hook)
     })
 }
 
