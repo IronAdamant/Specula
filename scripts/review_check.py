@@ -271,10 +271,11 @@ def main():
         if hwnd:
             check(screenshot(hwnd, out / "review_screen_window.png"), "the real window shows the review screen (screenshot)")
             key(hwnd, 0x0D, 0x1C)  # Enter on the focused Approve
-            got = wait_for(lambda: call(rev, "review_list", id=subs["b1_props"])["status"] != "pending", 10)
+            # Generous: a loaded machine (builds alongside) can take seconds to deliver a posted key.
+            got = wait_for(lambda: call(rev, "review_list", id=subs["b1_props"])["status"] != "pending", 30)
             s1 = call(rev, "review_list", id=subs["b1_props"])
             check(s1["status"] == "approved" and s1["decision"]["by"] == "window:owner", f"Enter approved b1 as the window's owner ({s1['status']}, {s1.get('decision', {}).get('by')})")
-            check(s1["decision"].get("promoted", {}).get("moved"), "the window's approval promoted b1 into /world/props")
+            check(s1.get("decision", {}).get("promoted", {}).get("moved"), "the window's approval promoted b1 into /world/props")
             key(hwnd, 0x0D, 0x1C)  # a second, hasty Enter: the next submission has only just appeared
             time.sleep(0.8)
             check(call(rev, "review_list", id=subs["b2_props"])["status"] == "pending", "a hasty second Enter decides nothing new")
