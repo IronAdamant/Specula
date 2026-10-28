@@ -1,0 +1,22 @@
+{
+  "texgraph": 1,
+  "name": "crypt_stone",
+  "description": "Coursed carved stone with dark mortar and moss in the low joints (STYLE.md carved stone and moss), tiling, 256 px for the iGPU.",
+  "size": 256,
+  "seed": 17,
+  "nodes": {
+    "blocks": { "op": "bricks", "rows": 6, "cols": 3, "mortar": 0.05, "bevel": 0.07, "offset": 0.5, "jitter": 0.3 },
+    "grain": { "op": "noise", "kind": "fbm", "scale": 8, "octaves": 5, "gain": 0.55 },
+    "pits": { "op": "noise", "kind": "worley", "scale": 12 },
+    "rough_face": { "op": "blend", "a": "grain", "b": "pits", "mode": "multiply", "amount": 0.4 },
+    "height": { "op": "blend", "a": "blocks", "b": "rough_face", "mode": "multiply", "amount": 0.35 },
+    "patches": { "op": "noise", "kind": "fbm", "scale": 3, "octaves": 4 },
+    "patch_mask": { "op": "levels", "in": "patches", "in_range": [0.52, 0.7] },
+    "joints": { "op": "invert", "in": "blocks" },
+    "moss_mask": { "op": "blend", "a": "patch_mask", "b": "joints", "mode": "screen", "amount": 0.25 },
+    "stone": { "op": "gradient_map", "in": "height", "stops": [[0, "strata_dark"], [0.35, "carved_shadow"], [0.75, "carved_stone"], [1, "carved_highlight"]] },
+    "albedo": { "op": "blend", "a": "stone", "b": { "color": "moss" }, "mode": "mix", "mask": "moss_mask", "amount": 0.6 },
+    "rough": { "op": "levels", "in": "height", "out_range": [0.95, 0.72] }
+  },
+  "outputs": { "base_color": "albedo", "height": "height", "normal_strength": 2, "roughness": "rough", "metallic": 0, "ao": { "radius": 4, "strength": 0.7 } }
+}

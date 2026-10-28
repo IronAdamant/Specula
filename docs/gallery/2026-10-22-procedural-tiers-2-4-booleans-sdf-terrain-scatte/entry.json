@@ -1,0 +1,64 @@
+{
+  "date": "2026-10-22",
+  "time": "21:30",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M4",
+  "commit": "",
+  "subject": "assets",
+  "topic": "3D asset",
+  "title": "Procedural tiers 2-4: booleans, SDF, terrain, scatter, buildings",
+  "note": "First captures of tiers 2-4, all built from recipes. Carved headstones are exact CSG with bevelled rims (a bevel loop that can't be cut is left sharp on its own, the rest still bevel); the rock is an SDF sculpt meshed by dual contouring; the crypt and the ruined wall come from the building generator with a brick texture graph baked on CPU workers; the graveyard plot is an eroded heightfield with splat colours and soil sides, with headstones scattered by Poisson-disc rules and rocks kept clear of them. 90 graves and 14 rocks are scattered as entities on the ground's heightfield collider (rays land at their feet; every rock at least 0.9 m from every grave). Close graveyard view: 8.6-10.5 ms GPU on the iGPU.",
+  "source": "scripts/procgen_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-frame-00001.jpg",
+      "caption": "Headstone variants (CSG with bevels) and an SDF rock",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 14964
+    },
+    {
+      "file": "02-frame-00002.jpg",
+      "caption": "Crypt from the building generator, brick texture graph",
+      "original": "frame_00002.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 19382
+    },
+    {
+      "file": "03-frame-00003.jpg",
+      "caption": "Ruined wall: CSG opening, broken top, rubble",
+      "original": "frame_00003.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 18146
+    },
+    {
+      "file": "04-frame-00004.jpg",
+      "caption": "Eroded terrain plot with splat colours and scattered graves",
+      "original": "frame_00004.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 15961
+    },
+    {
+      "file": "05-frame-00006.jpg",
+      "caption": "90 scattered graves and 14 rocks",
+      "original": "frame_00006.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 28416
+    },
+    {
+      "file": "06-frame-00007.jpg",
+      "caption": "Close view of the scattered graveyard",
+      "original": "frame_00007.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 21295
+    }
+  ]
+}

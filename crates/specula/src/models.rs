@@ -20,6 +20,14 @@
 //! drawn from then on (captures wait for builds in flight, so a capture right after a spawn shows
 //! the model). A build that fails (budget, geometry) leaves the entity `failed`.
 //!
+//! Procedural builds (booleans, SDF sculpts, generators, texture graphs, or a recipe including
+//! one) queue apart: one worker takes them first, the light workers but one take them when no
+//! light build waits, and the first light worker never does, so a light build never waits behind
+//! them. Every build is bounded by `specula-model`'s work budget (about 1.5 s of one core, tier-1
+//! ops, LODs and colliders included), and a build nobody wants any more stops: queued ones are
+//! skipped, running ones see their cancel flag ([`specula_model::work`]) at the next budget
+//! check (a build that finished anyway is kept and cached).
+//!
 //! # Cache and sharing
 //!
 //! A build is keyed by **content**: a hash of the recipe file, the files it includes (transitively)
@@ -117,8 +125,9 @@ use specula_model::{build, BuildParams, ErrorCode, MaterialKind, MaterialPreset,
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
 /// Recipe and style files are checked for changes at most this often.
@@ -138,6 +147,10 @@ pub const SPARE_HANDLES: usize = 256;
 const RECENT_BUILDS: usize = 16;
 /// Worker threads that build models.
 const WORKERS: usize = 2;
+/// Worker threads that take procedural builds (booleans, sculpts, generators, textures) first.
+/// The first light worker never takes them, so a light build never waits behind them; the
+/// others take them when no light build waits.
+const HEAVY_WORKERS: usize = 1;
 /// Lists in a reload report stop here (the rest is counted).
 const MAX_LISTED: usize = 20;
 
@@ -259,6 +272,8 @@ struct RecipeInfo {
     anims_mtime: Option<SystemTime>,
     /// The anim-set text (rigged recipes with an anims file).
     anims: Option<Arc<str>>,
+    /// It or something it includes is procedural: built on the heavy worker.
+    heavy: bool,
 }
 
 /// A spec's slot: what it draws now and what it waits for.
@@ -302,6 +317,8 @@ struct Job {
     gltf: Option<PathBuf>,
     /// A rigged recipe's anim-set file text.
     anims: Option<Arc<str>>,
+    /// Set when nobody wants the build any more: a running build stops at its next budget check.
+    cancel: Arc<AtomicBool>,
 }
 
 /// A worker's answer.
@@ -316,7 +333,7 @@ struct Done {
 
 /// How a job ended.
 enum Outcome {
-    Built(Model, Box<Extras>),
+    Built(Box<Model>, Box<Extras>),
     /// The recipe failed to build (budget, geometry, a missing include...).
     Failed(RecipeError),
     /// `specula-model` panicked (a bug there, not in the recipe).
@@ -400,35 +417,102 @@ impl Reload {
     }
 }
 
-/// The worker threads and their channels. Dropping it lets the workers finish and exit.
+/// Jobs waiting for a worker: light ones and procedural (heavy) ones.
+#[derive(Default)]
+struct Queues {
+    light: VecDeque<Job>,
+    heavy: VecDeque<Job>,
+    /// The library is gone: workers exit.
+    closed: bool,
+}
+
+impl Queues {
+    /// The next job a worker of this kind takes, if any.
+    fn take(&mut self, takes: Takes) -> Option<Job> {
+        match takes {
+            Takes::Light => self.light.pop_front(),
+            Takes::LightFirst => self.light.pop_front().or_else(|| self.heavy.pop_front()),
+            Takes::HeavyFirst => self.heavy.pop_front().or_else(|| self.light.pop_front()),
+        }
+    }
+}
+
+/// A job's outcome once its cancel flag is read: a build that finished is kept (and cached) even
+/// if it was dropped meanwhile; anything else from a cancelled job was stopped part way.
+fn settled(o: Outcome, cancelled: bool) -> Outcome {
+    match o {
+        o @ Outcome::Built(..) => o,
+        _ if cancelled => Outcome::Cancelled,
+        o => o,
+    }
+}
+
+/// What a worker takes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Takes {
+    /// Light jobs only: a light build never waits for a free worker behind procedural ones.
+    Light,
+    /// Light jobs first, procedural ones when no light job waits.
+    LightFirst,
+    /// Procedural jobs first, light ones when none waits.
+    HeavyFirst,
+}
+
+/// The worker threads, their queues and their answers. Dropping it lets the workers finish and
+/// exit.
 struct Workers {
-    jobs: Option<Sender<Job>>,
+    queues: Arc<(Mutex<Queues>, Condvar)>,
     done: Receiver<Done>,
     /// Jobs nobody waits for any more: workers skip them.
     cancelled: Arc<Mutex<BTreeSet<u64>>>,
-    /// The job queue's receiving end (kept so a library without workers still queues).
-    _queue: Arc<Mutex<Receiver<Job>>>,
+    /// Cancel flags of jobs queued or running (a running build stops when its flag is set).
+    flags: Arc<Mutex<BTreeMap<u64, Arc<AtomicBool>>>>,
     /// Tests deliver results by hand through this.
     #[cfg(test)]
-    inject: Sender<Done>,
+    inject: mpsc::Sender<Done>,
+}
+
+impl Drop for Workers {
+    fn drop(&mut self) {
+        let (q, cv) = &*self.queues;
+        q.lock().unwrap_or_else(PoisonError::into_inner).closed = true;
+        cv.notify_all();
+    }
 }
 
 impl Workers {
-    fn start(n: usize) -> Workers {
-        let (jobs, rx) = mpsc::channel::<Job>();
+    /// `n` workers for light builds (the first takes nothing else, the rest take procedural
+    /// builds when no light one waits) and `heavy` that take procedural builds first.
+    fn start(n: usize, heavy: usize) -> Workers {
         let (tx, done) = mpsc::channel::<Done>();
-        let rx = Arc::new(Mutex::new(rx));
+        let queues = Arc::new((Mutex::new(Queues::default()), Condvar::new()));
         let cancelled = Arc::new(Mutex::new(BTreeSet::new()));
-        for i in 0..n {
-            let (rx, tx, cancelled) = (Arc::clone(&rx), tx.clone(), Arc::clone(&cancelled));
-            let spawned = std::thread::Builder::new().name(format!("specula-model-{i}")).spawn(move || loop {
-                let job = match rx.lock().unwrap_or_else(PoisonError::into_inner).recv() {
-                    Ok(job) => job,
-                    Err(_) => return, // the library is gone
+        let kinds = (0..n).map(|i| (format!("specula-model-{i}"), if i == 0 { Takes::Light } else { Takes::LightFirst })).chain((0..heavy).map(|i| (format!("specula-model-heavy-{i}"), Takes::HeavyFirst)));
+        for (name, takes) in kinds {
+            let (tx, cancelled, queues) = (tx.clone(), Arc::clone(&cancelled), Arc::clone(&queues));
+            let spawned = std::thread::Builder::new().name(name.clone()).spawn(move || loop {
+                let job = {
+                    let (q, cv) = &*queues;
+                    let mut g = q.lock().unwrap_or_else(PoisonError::into_inner);
+                    loop {
+                        if g.closed {
+                            return; // the library is gone
+                        }
+                        match g.take(takes) {
+                            Some(j) => break j,
+                            None => g = cv.wait(g).unwrap_or_else(PoisonError::into_inner),
+                        }
+                    }
                 };
                 let skip = cancelled.lock().unwrap_or_else(PoisonError::into_inner).remove(&job.id);
                 let started = Instant::now();
-                let outcome = if skip { Outcome::Cancelled } else { run(&job, build) };
+                let outcome = if skip {
+                    Outcome::Cancelled
+                } else {
+                    let _flag = specula_model::work::cancel_on(Arc::clone(&job.cancel));
+                    let o = run(&job, build);
+                    settled(o, job.cancel.load(Ordering::Relaxed))
+                };
                 let done = Done {
                     id: job.id,
                     key: job.key,
@@ -442,18 +526,46 @@ impl Workers {
                 }
             });
             if let Err(e) = spawned {
-                eprintln!("specula: model build thread {i} not started: {e}");
+                eprintln!("specula: model build thread {name} not started: {e}");
             }
         }
         Workers {
-            jobs: Some(jobs),
+            queues,
             done,
             cancelled,
-            _queue: rx,
+            flags: Arc::new(Mutex::new(BTreeMap::new())),
             #[cfg(test)]
             inject: tx,
         }
     }
+
+    /// Queues a job (procedural ones on their own queue).
+    fn push(&self, job: Job, heavy: bool) {
+        let (q, cv) = &*self.queues;
+        let mut g = q.lock().unwrap_or_else(PoisonError::into_inner);
+        if heavy {
+            g.heavy.push_back(job);
+        } else {
+            g.light.push_back(job);
+        }
+        drop(g);
+        cv.notify_all();
+    }
+
+    /// Nobody wants job `id` any more: a queued one is skipped, a running one stops at its next
+    /// budget check.
+    fn cancel(&self, id: u64) {
+        self.cancelled.lock().unwrap_or_else(PoisonError::into_inner).insert(id);
+        if let Some(f) = self.flags.lock().unwrap_or_else(PoisonError::into_inner).get(&id) {
+            f.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Whether a recipe text uses procedural tiers (booleans, sculpts, generators, texture graphs):
+/// such builds go to their own worker. A false positive only changes the queue.
+fn procedural(text: &str) -> bool {
+    ["\"union\"", "\"difference\"", "\"intersection\"", "\"sdf\"", "\"generate\"", "\"textures\"", "\"texgraph\""].iter().any(|k| text.contains(k))
 }
 
 /// The build function workers call (`specula_model::build`; tests pass others).
@@ -473,7 +585,7 @@ fn run(job: &Job, build: BuildFn) -> Outcome {
     }));
     match built {
         Ok(Ok((model, extras))) => match check_uploadable(&model) {
-            Ok(()) => Outcome::Built(model, Box::new(extras)),
+            Ok(()) => Outcome::Built(Box::new(model), Box::new(extras)),
             Err(m) => Outcome::Failed(RecipeError::new("", ErrorCode::InvalidMesh, m)),
         },
         Ok(Err(e)) => Outcome::Failed(e),
@@ -491,6 +603,7 @@ fn run(job: &Job, build: BuildFn) -> Outcome {
 /// The anim set of a rigged recipe model (from its anims file), or why there is none.
 fn recipe_extras(model: &Model, anims: Option<&str>) -> Extras {
     let mut x = Extras::default();
+    procgen_textures(model, &mut x);
     let Some(rig) = &model.rig else { return x };
     match anims {
         None => x.anim_note = Some("rigged, but there is no anims/<name>.json for it: drawn in its bind pose".into()),
@@ -500,6 +613,59 @@ fn recipe_extras(model: &Model, anims: Option<&str>) -> Extras {
         },
     }
     x
+}
+
+/// A recipe's baked texture sets (procedural materials, `specula_model::texgraph`) as the build's
+/// textures (mip chains made here, on the worker) and textured part materials: the texture holds
+/// the absolute colour, roughness and metalness (factors 1), the preset its emission.
+fn procgen_textures(model: &Model, x: &mut Extras) {
+    let sampler = TextureSampler {
+        mag: TextureFilter::Linear,
+        min: TextureFilter::Linear,
+        mipmap: TextureFilter::Linear,
+        wrap_u: TextureWrap::Repeat,
+        wrap_v: TextureWrap::Repeat,
+        anisotropy: true,
+    };
+    // Texture sets shared by several presets upload once (by content hash).
+    let mut by_hash: BTreeMap<u64, [Option<usize>; 4]> = BTreeMap::new();
+    for (key, set) in &model.extras.textures {
+        let slots = *by_hash.entry(set.hash).or_insert_with(|| {
+            let n = set.size;
+            let mut push = |rgba: &[u8], format: TextureFormat| -> Option<usize> {
+                let levels = specula_gpu::generate_mips_owned(n, n, format, rgba.to_vec()).ok()?;
+                x.textures.push(TextureData { width: n, height: n, format, mips: levels.len(), levels: Mutex::new(levels), sampler });
+                Some(x.textures.len() - 1)
+            };
+            [
+                push(&set.base_color, TextureFormat::Rgba8Srgb),
+                set.normal.as_deref().and_then(|n| push(n, TextureFormat::Rgba8Unorm)),
+                push(&set.metallic_roughness, TextureFormat::Rgba8Unorm),
+                set.emissive.as_deref().and_then(|e| push(e, TextureFormat::Rgba8Srgb)),
+            ]
+        });
+        let preset = model.materials.iter().find(|(n, _)| n == key).map(|(_, p)| p);
+        let (emissive_color, emissive_strength) = match preset {
+            Some(p) if p.emissive > 0.0 => ([p.color[0], p.color[1], p.color[2]], p.emissive),
+            _ => ([0.0; 3], 0.0),
+        };
+        x.materials.insert(
+            key.clone(),
+            PartMaterial {
+                color: [1.0; 4],
+                metallic: 1.0,
+                roughness: 1.0,
+                base: slots[0],
+                normal: slots[1],
+                normal_scale: 1.0,
+                metallic_roughness: slots[2],
+                emissive: slots[3],
+                emissive_color,
+                emissive_strength,
+                alpha_cutoff: 0.0,
+            },
+        );
+    }
 }
 
 /// A glTF sampler as the GPU's.
@@ -636,6 +802,11 @@ pub fn asset_streams(root: &Path) -> (bool, bool) {
                 }
             } else if kind.is_file() && is_gltf_path(&path.to_string_lossy()) {
                 *found = (true, true);
+            } else if kind.is_file() && path.extension().is_some_and(|x| x == "json") && e.metadata().is_ok_and(|m| m.len() < 1 << 20) {
+                // A recipe with procedural textures draws textured.
+                if std::fs::read_to_string(&path).is_ok_and(|t| t.contains("\"textures\"")) {
+                    found.1 = true;
+                }
             }
             if *found == (true, true) {
                 return;
@@ -845,7 +1016,7 @@ impl Library {
             next_id: 1,
             generation: 0,
             last_poll: Instant::now(),
-            workers: Workers::start(workers),
+            workers: Workers::start(workers, if workers > 0 { HEAVY_WORKERS } else { 0 }),
             cache_hits: 0,
             cache_misses: 0,
             anim_assets: Arc::new(crate::anim::Assets::new()),
@@ -1148,6 +1319,8 @@ impl Library {
         let id = self.next_id;
         self.next_id += 1;
         self.cache_misses += 1;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut heavy = false;
         let job = match self.gltfs.get(recipe) {
             Some(g) => Job {
                 id,
@@ -1161,9 +1334,11 @@ impl Library {
                 seed: None,
                 gltf: Some(g.path.clone()),
                 anims: None,
+                cancel: Arc::clone(&cancel),
             },
             None => {
                 let info = &self.recipes[recipe];
+                heavy = info.heavy;
                 Job {
                     id,
                     key: key.clone(),
@@ -1176,15 +1351,13 @@ impl Library {
                     seed: spec.seed,
                     gltf: None,
                     anims: info.anims.clone(),
+                    cancel: Arc::clone(&cancel),
                 }
             }
         };
         self.in_flight.insert(key.clone(), InFlight { job: id, pinned: pin });
-        if let Some(tx) = &self.workers.jobs {
-            if tx.send(job).is_err() {
-                eprintln!("specula: model build workers are gone; {recipe} will not build");
-            }
-        }
+        self.workers.flags.lock().unwrap_or_else(PoisonError::into_inner).insert(id, cancel);
+        self.workers.push(job, heavy);
         id
     }
 
@@ -1327,9 +1500,11 @@ impl Library {
             }
             None => h.write_u8(0),
         }
+        let heavy = procedural(&text) || library.values().any(|t| procedural(t));
         Ok(RecipeInfo {
             folder: folder.to_owned(),
             content: h.finish(),
+            heavy,
             text,
             library: Arc::new(library),
             style,
@@ -1586,12 +1761,13 @@ impl Library {
             }
             // Ids of jobs cancelled while already running would otherwise stay in the set.
             self.workers.cancelled.lock().unwrap_or_else(PoisonError::into_inner).remove(&done.id);
+            self.workers.flags.lock().unwrap_or_else(PoisonError::into_inner).remove(&done.id);
             let result = match done.outcome {
                 Outcome::Built(model, extras) => {
                     let Extras { anims, anim_note, textures, materials, warnings } = *extras;
                     let built = Arc::new(Built {
                         id: self.next_id,
-                        model,
+                        model: *model,
                         content: done.key.0,
                         build_ms: done.build_ms,
                         style: done.style_path,
@@ -1625,7 +1801,7 @@ impl Library {
                 // The key's current job is no longer needed by anyone.
                 if let Some(f) = self.in_flight.remove(&done.key) {
                     if !f.pinned {
-                        self.workers.cancelled.lock().unwrap_or_else(PoisonError::into_inner).insert(f.job);
+                        self.workers.cancel(f.job);
                     } else {
                         self.in_flight.insert(done.key.clone(), f);
                     }
@@ -1764,13 +1940,12 @@ impl Library {
             }
             self.unuse(h);
         }
-        let mut cancelled = self.workers.cancelled.lock().unwrap_or_else(PoisonError::into_inner);
         for k in freed {
             if self.waiting.contains_key(&k) || self.in_flight.get(&k).is_none_or(|f| f.pinned) {
                 continue;
             }
             if let Some(f) = self.in_flight.remove(&k) {
-                cancelled.insert(f.job);
+                self.workers.cancel(f.job);
             }
         }
     }
@@ -1782,10 +1957,9 @@ impl Library {
         if dropped.is_empty() {
             return;
         }
-        let mut cancelled = self.workers.cancelled.lock().unwrap_or_else(PoisonError::into_inner);
         for k in dropped {
             if let Some(f) = self.in_flight.remove(&k) {
-                cancelled.insert(f.job);
+                self.workers.cancel(f.job);
             }
         }
     }
@@ -3105,11 +3279,12 @@ mod tests {
     /// A recipe whose only part is `block` (included).
     const HOST: &str = r#"{"recipe":1,"name":"host","parts":[{"name":"b","include":"block"}]}"#;
 
-    /// A heavy-but-legal recipe (from the review's probe): many subdivisions and noise passes.
+    /// A heavy-but-legal recipe (from the review's probe): many subdivisions and noise passes,
+    /// within the work budget (the probe's 30 displaces and 10 cavity passes are over it now).
     fn heavy() -> String {
-        let mut ops = vec![r#"{"op":"subdivide","levels":4}"#.to_string(), r#"{"op":"subdivide","levels":2}"#.to_string()];
-        ops.extend((0..30).map(|_| r#"{"op":"displace","amount":0.01,"scale":0.5,"octaves":6}"#.to_string()));
-        ops.extend((0..10).map(|_| r#"{"op":"ao","amount":0.3}"#.to_string()));
+        let mut ops = vec![r#"{"op":"subdivide","levels":4}"#.to_string(), r#"{"op":"subdivide","levels":1}"#.to_string()];
+        ops.extend((0..8).map(|_| r#"{"op":"displace","amount":0.01,"scale":0.5,"octaves":6}"#.to_string()));
+        ops.extend((0..2).map(|_| r#"{"op":"ao","amount":0.3}"#.to_string()));
         let part = |i: u32| format!(r#"{{"name":"p{i}","material":"stone","shape":{{"op":"box","size":[1,1,1]}},"ops":[{}]}}"#, ops.join(","));
         format!(r#"{{"recipe":1,"name":"heavy","lods":[0.5,0.25],"budget":{{"max_triangles":200000}},"parts":[{},{}]}}"#, part(0), part(1))
     }
@@ -3492,6 +3667,9 @@ mod tests {
             let path = e.unwrap().path();
             let name = path.file_name().unwrap().to_str().unwrap().to_owned();
             let text = std::fs::read_to_string(&path).unwrap();
+            if text.contains("\"texgraph\"") {
+                continue; // a texture graph (recipes use it), not a recipe
+            }
             let tiers: Vec<Option<f64>> = if text.contains("\"tier\"") { vec![Some(1.0), Some(2.0), Some(3.0)] } else { vec![None] };
             for t in tiers {
                 let mut spec = ModelSpec::new(format!("recipes/{name}"));
@@ -3714,6 +3892,89 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    fn job(id: u64) -> Job {
+        Job {
+            id,
+            key: (0, String::new(), None),
+            recipe: "recipes/x.json".into(),
+            text: Arc::from("{}"),
+            library: Arc::new(BTreeMap::new()),
+            style: Arc::new(Style::default()),
+            style_path: PathBuf::new(),
+            params: Vec::new(),
+            seed: None,
+            gltf: None,
+            anims: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Procgen review round 2: one heavy worker halved procedural throughput while light ones sat
+    /// idle. Idle light workers but the first take procedural jobs; the first never does.
+    #[test]
+    fn idle_light_workers_take_procedural_jobs_but_one_never_does() {
+        let mut q = Queues::default();
+        q.heavy.extend([job(1), job(2)]);
+        assert!(q.take(Takes::Light).is_none(), "the first light worker never takes a procedural job");
+        assert_eq!(q.take(Takes::LightFirst).map(|j| j.id), Some(1));
+        assert_eq!(q.take(Takes::HeavyFirst).map(|j| j.id), Some(2));
+        q.light.push_back(job(3));
+        q.heavy.push_back(job(4));
+        q.light.push_back(job(5));
+        assert_eq!(q.take(Takes::HeavyFirst).map(|j| j.id), Some(4));
+        assert_eq!(q.take(Takes::LightFirst).map(|j| j.id), Some(3));
+        assert_eq!(q.take(Takes::Light).map(|j| j.id), Some(5));
+        // A build that finished as it was dropped is kept; a failure from a dropped job is a
+        // cancellation.
+        let failed = || Outcome::Failed(RecipeError::new("", ErrorCode::Limit, "the build was cancelled"));
+        assert!(matches!(settled(failed(), true), Outcome::Cancelled));
+        assert!(matches!(settled(failed(), false), Outcome::Failed(_)));
+        let model = specula_model::build(&block(1.0), &BuildParams::new(&Style::parse(r##"{"materials":{"stone":{"color":"#808080"},"ghost":{"color":"#9cff4f"}}}"##).unwrap())).unwrap();
+        assert!(matches!(settled(Outcome::Built(Box::new(model), Box::default()), true), Outcome::Built(..)));
+    }
+
+    /// Procgen review: two heavy sculpts held both workers while another agent's 1 ms build
+    /// waited 230 s. Procedural builds now have their own worker, and dropping a running one
+    /// stops it (its outcome is a cancellation, not the budget failure it would have reached).
+    #[test]
+    fn procedural_builds_queue_apart_and_stop_when_dropped() {
+        let spheres: Vec<String> = (0..60)
+            .map(|i| format!(r#"{{"op":"sphere","radius":0.6,"at":[{},{},{}],"displace":{{"amount":2,"scale":0.05,"octaves":6}}}}"#, (i * 37 % 100) as f32 * 0.04 - 2.0, (i * 53 % 100) as f32 * 0.04 - 2.0, (i * 71 % 100) as f32 * 0.04 - 2.0))
+            .collect();
+        let sculpt = format!(
+            r#"{{"recipe":1,"name":"sculpt","lods":[],"budget":{{"max_triangles":600000}},"parts":[{{"name":"s","material":"stone","shape":{{"op":"sdf","resolution":160,"bounds":[[-3,-3,-2.8],[3,3,2.8]],"tree":{{"op":"union","of":[{}]}}}}}}]}}"#,
+            spheres.join(",")
+        );
+        let root = scratch("heavyq", &[("sculpt", &sculpt), ("block", &block(1.0))]);
+        let mut lib = Library::new(&root, None);
+        let heavy = ModelSpec::new("recipes/sculpt.json");
+        let hs: Vec<u32> = (0..2).map(|s| lib.resolve(&heavy.clone().with_seed(s)).unwrap().handle).collect();
+        // Both sculpts queue on the heavy worker; the light build doesn't wait for them.
+        let light = lib.resolve(&ModelSpec::new("recipes/block.json")).unwrap().handle;
+        assert!(lib.recipes["recipes/sculpt.json"].heavy && !lib.recipes["recipes/block.json"].heavy);
+        let started = Instant::now();
+        while lib.built(light).is_none() && started.elapsed() < Duration::from_secs(20) {
+            lib.finish(Some(Duration::from_millis(5)));
+        }
+        assert!(lib.built(light).is_some());
+        assert_eq!(lib.in_flight(), 2, "the sculpts were still building when the light build landed");
+        // Their entities go: the running sculpt stops, the queued one never starts.
+        let jobs: BTreeSet<u64> = lib.in_flight.values().map(|f| f.job).collect();
+        lib.collect_garbage(&[light].into_iter().collect());
+        let mut outcomes = Vec::new();
+        let waited = Instant::now();
+        while outcomes.len() < 2 && waited.elapsed() < Duration::from_secs(30) {
+            for f in lib.finish(Some(Duration::from_millis(20))).0 {
+                if jobs.contains(&f.job) {
+                    outcomes.push(f.result.err().map(|e| e.code.to_string()));
+                }
+            }
+        }
+        assert_eq!(outcomes, vec![Some("build_cancelled".to_string()); 2], "{hs:?}");
+        assert!(lib.workers.flags.lock().unwrap().is_empty(), "flags are pruned as jobs end");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Review round 3: deterministic (no workers; results delivered by hand). A job that was
     /// cancelled, then replaced when its key was wanted again, never fails or cancels the entity
     /// now waiting; a good result from it still serves it (and the replacement is dropped).
@@ -3745,7 +4006,7 @@ mod tests {
         // The real build lands.
         let style = Style::parse(&std::fs::read_to_string(root.join(STYLE_FILE)).unwrap()).unwrap();
         let model = || build(&block(1.0), &BuildParams::new(&style)).unwrap();
-        deliver(&mut lib, second, Outcome::Built(model(), Box::default()));
+        deliver(&mut lib, second, Outcome::Built(Box::new(model()), Box::default()));
         assert_eq!(lib.resolve(&spec).unwrap().state, ModelState::Ready);
         // Again, but this time the old job's good result arrives first: it serves the entity and
         // the replacement is cancelled.
@@ -3755,7 +4016,7 @@ mod tests {
         lib.builds.clear();
         lib.resolve(&spec).unwrap();
         let replacement = lib.in_flight[&key].job;
-        deliver(&mut lib, first, Outcome::Built(model(), Box::default()));
+        deliver(&mut lib, first, Outcome::Built(Box::new(model()), Box::default()));
         assert_eq!(lib.resolve(&spec).unwrap().state, ModelState::Ready);
         assert_eq!(lib.in_flight(), 0, "the replacement is dropped");
         assert!(lib.workers.cancelled.lock().unwrap().contains(&replacement));
@@ -3843,6 +4104,7 @@ mod tests {
             seed: None,
             gltf: None,
             anims: None,
+            cancel: Arc::new(AtomicBool::new(false)),
         };
         match run(&job, boom) {
             Outcome::Panicked(why) => assert!(why.contains("kaboom"), "{why}"),

@@ -1,4 +1,9 @@
-//! Specula procedural modelling, tier 1: deterministic **recipes** → meshes, LODs and colliders.
+//! Specula procedural modelling: deterministic **recipes** → meshes, LODs, colliders and texture
+//! sets. Tier 1 (primitives and ops) below; tiers 2-4 add exact mesh booleans ([`csg`]: shapes
+//! `union`, `difference`, `intersection`, bevelled boolean edges), SDF sculpting ([`sdf`]: shape
+//! `sdf`), generators on a part's `generate` ([`building`], [`scatter`], [`terrain`]) and
+//! procedural materials ([`texgraph`]: a recipe's `textures`, a part's `texture`). The design and
+//! the measured costs are in `docs/design/PROCEDURAL_MODELLING.md`.
 //!
 //! Agents can't import outside art, so original 3D content is written as small JSON recipes
 //! (see `docs/design/PROCEDURAL_MODELLING.md`). The recipe is the source; the mesh is a build
@@ -47,7 +52,8 @@
 //! - **Colours** are `#rrggbb[aa]`, a palette name or a material preset name from the style.
 //!   A part starts in its material's colour (or `color`).
 //! - **Shapes** ([`recipe::shape_names`]): `box cylinder cone sphere torus capsule plane extrude
-//!   loft lathe sweep`. Solids rest on y = 0, centred on the Y axis.
+//!   loft lathe sweep union difference intersection sdf`. Solids rest on y = 0, centred on the Y
+//!   axis (SDF primitives are centred on their `at`).
 //! - **Ops** ([`recipe::op_names`]): `move rotate scale mirror array radial subdivide displace
 //!   taper twist lean bend weld color gradient bands noise_tint ao ground_shade bevel_tint`.
 //! - **Outlines** (extrude/loft/sweep profile): `[[x, z], ...]` or `{ "rect" | "sides"+"radius"
@@ -84,9 +90,12 @@
 
 #![forbid(unsafe_code)]
 
+pub mod building;
 pub mod collider;
+pub mod csg;
 pub mod dmath;
 pub mod error;
+pub mod exact;
 pub mod expr;
 pub mod lod;
 pub mod math3;
@@ -95,13 +104,18 @@ pub mod noise;
 pub mod poly;
 pub mod recipe;
 pub mod rig;
+pub mod scatter;
+pub mod sdf;
 pub mod shape;
 pub mod style;
+pub mod terrain;
+pub mod texgraph;
+pub mod work;
 
 pub use collider::{Collider, ColliderKind};
 pub use error::{ErrorCode, RecipeError};
 pub use mesh::{Bounds, MeshData, MeshError, MeshErrorCode, Part};
-pub use recipe::{build, build_recipe, BuildParams, Model, Recipe};
+pub use recipe::{build, build_recipe, BuildParams, Model, ModelExtras, Recipe};
 pub use rig::{Bone, Rig, RigError};
 pub use shape::Shape;
 pub use style::{MaterialKind, MaterialPreset, Style};

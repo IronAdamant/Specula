@@ -100,6 +100,9 @@ pub fn extreme_points(points: &[V3], directions: usize) -> Vec<V3> {
     }
     let mut out: Vec<V3> = Vec::new();
     for d in dirs {
+        if crate::work::cancelled() {
+            break; // the build fails at its next charge
+        }
         let mut best = 0;
         let mut best_v = f32::MIN;
         for (i, p) in points.iter().enumerate() {

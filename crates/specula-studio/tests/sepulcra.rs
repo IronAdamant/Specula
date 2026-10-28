@@ -39,6 +39,10 @@ fn all() -> Vec<(AssetFacts, specula_studio::Report)> {
     let (style, bible, lib) = load();
     let mut out = Vec::new();
     for (stem, text) in &lib {
+        // Texture graphs (`"texgraph": 1`) live beside the recipes that use them; they're not models.
+        if Json::parse(text).ok().is_some_and(|j| j.get("texgraph").is_some()) {
+            continue;
+        }
         let info = RecipeInfo::parse(text).unwrap();
         for params in info.variants(4, 8) {
             let f = facts_of(&style, &lib, stem, &params);

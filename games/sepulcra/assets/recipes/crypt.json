@@ -1,0 +1,24 @@
+{
+  "recipe": 1,
+  "name": "crypt",
+  "category": "building",
+  "description": "A small family crypt from rules (tier 4 building generator): coursed stone walls with a procedural texture (tex_crypt_stone), plinth and cornice, an arched iron door, two arched windows glowing grave-green, a steep slab roof. Chamfered openings.",
+  "seed": 23,
+  "params": { "length": { "default": 4.4, "min": 3, "max": 7, "description": "metres, door to back wall" } },
+  "budget": { "max_triangles": 2500 },
+  "lods": [0.5, 0.25],
+  "collider": "convex_hull",
+  "smooth_angle": 25,
+  "textures": { "stone": "tex_crypt_stone" },
+  "parts": [
+    { "name": "crypt", "material": "carved_stone", "texture": "stone", "uv_scale": 1.6,
+      "generate": { "op": "building", "plan": { "rect": [3.2, "length"] }, "floors": 1, "floor_height": 2.7, "wall": 0.35,
+        "plinth": [0.28, 0.1], "cornice": [0.2, 0.12],
+        "doors": [ { "side": 0, "width": 1.0, "height": 1.95, "arch": true } ],
+        "windows": { "width": 0.36, "height": 0.8, "sill": 1.15, "spacing": 1.7, "margin": 0.8, "depth": 0.2, "arch": true, "glass": true, "trim": 0.06 },
+        "roof": { "kind": "gable", "pitch": 42, "overhang": 0.18 },
+        "bevel": 0.02,
+        "materials": { "roof": "slab_stone", "door": "iron", "glass": "grave_glow" } } }
+  ],
+  "finish": [ { "op": "ground_shade", "amount": 0.25, "height": 0.6 } ]
+}

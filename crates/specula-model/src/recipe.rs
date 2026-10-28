@@ -71,9 +71,27 @@ enum Kind {
     Colors,
     Outline,
     Jitter,
+    /// Boolean operands: shape nodes, each with optional `ops` (tier 2).
+    Operands,
+    /// An SDF node or a list of them (tier 3).
+    Sdf,
+    Sdfs,
+    /// A sub-object with its own schema, or a list of them.
+    Obj(&'static [Field]),
+    Objs(&'static [Field]),
+    /// A material preset name of the style.
+    Material,
+    /// One of these strings.
+    Choice(&'static [&'static str]),
+    /// One shape node with optional `ops` (scatter items).
+    ShapeOps,
+    /// Parameter ranges: `{name: n | [min, max]}`.
+    Ranges,
+    /// An identifier (a part name, a texture name).
+    Name,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Field {
     name: &'static str,
     kind: Kind,
@@ -143,6 +161,10 @@ const SHAPES: &[(&str, &[Field])] = &[
             o("smooth", Int),
         ],
     ),
+    ("union", procgen::CSG_FIELDS),
+    ("difference", procgen::CSG_FIELDS),
+    ("intersection", procgen::CSG_FIELDS),
+    ("sdf", procgen::SDF_FIELDS),
 ];
 
 /// Operations (a part's `ops`, the recipe's `finish`).
@@ -222,6 +244,8 @@ pub struct ParamDef {
 enum Source {
     Shape(Node),
     Include { asset: String, params: Vec<(String, Expr)> },
+    /// A tier-4 generator (building, scatter, terrain): several pieces.
+    Generate(Node),
 }
 
 #[derive(Clone, Debug)]
@@ -239,6 +263,9 @@ struct PartDef {
     bones: Vec<String>,
     /// Joint blend band in metres (overrides the rig's `blend`).
     blend: Option<Expr>,
+    /// A texture graph (by name in `textures`) and its metres per repeat.
+    texture: Option<String>,
+    uv_scale: Option<Expr>,
 }
 
 /// A bone as written in the recipe (a `mirror` bone also produces a twin with `mirror_x`).
@@ -275,6 +302,14 @@ pub struct Recipe {
     parts: Vec<PartDef>,
     finish: Vec<Node>,
     rig: Option<RigDef>,
+    /// Texture graphs by name: parsed inline, or a library recipe's name.
+    textures: Vec<(String, TexSource)>,
+}
+
+#[derive(Clone, Debug)]
+enum TexSource {
+    Inline(Box<crate::texgraph::TexGraph>),
+    Library(String),
 }
 
 fn e(path: &str, code: ErrorCode, msg: impl Into<String>) -> RecipeError {
@@ -389,6 +424,7 @@ impl Parser<'_> {
                 _ => return Err(type_err(path, "an outline: a list of [x, z] points or an object")),
             },
             Jitter => Val::Obj(self.node(path, v, "jitter", JITTER, false)?),
+            Operands | Sdf | Sdfs | Obj(_) | Objs(_) | Material | Choice(_) | ShapeOps | Ranges | Name => self.procgen_value(path, kind, v)?,
         })
     }
 
@@ -544,8 +580,16 @@ impl Recipe {
             .iter()
             .filter_map(|p| match &p.source {
                 Source::Include { asset, .. } => Some(asset.clone()),
-                Source::Shape(_) => None,
+                Source::Shape(_) | Source::Generate(_) => None,
             })
+            .chain(self.textures.iter().filter_map(|(_, t)| match t {
+                TexSource::Library(n) => Some(n.clone()),
+                TexSource::Inline(_) => None,
+            }))
+            .chain(self.parts.iter().filter_map(|p| match &p.source {
+                Source::Generate(n) => procgen::generator_includes(n),
+                _ => None,
+            }).flatten())
             .collect();
         out.sort();
         out.dedup();
@@ -575,8 +619,11 @@ impl Recipe {
         let json = Json::parse(text).map_err(|er| e("", ErrorCode::Json, er.message.clone()).with_offset(er.offset))?;
         crate::error::check_duplicate_keys(&json, "")?;
         let obj = json.as_object().ok_or_else(|| type_err("", "a recipe object"))?;
+        if obj.iter().any(|(k, _)| k == "texgraph") {
+            return Err(e("texgraph", ErrorCode::WrongType, "this file is a texture graph, not a recipe: use it from a recipe's \"textures\" (\"textures\": {\"stone\": \"<this file's name>\"}) and a part's \"texture\""));
+        }
         const TOP: &[&str] =
-            &["recipe", "name", "description", "category", "seed", "params", "let", "budget", "lods", "collider", "smooth_angle", "rig", "parts", "finish"];
+            &["recipe", "name", "description", "category", "seed", "params", "let", "budget", "lods", "collider", "smooth_angle", "rig", "parts", "finish", "textures"];
         for (k, _) in obj {
             if !TOP.contains(&k.as_str()) {
                 return Err(e(k, ErrorCode::UnknownField, format!("a recipe accepts: {}", TOP.join(", "))));
@@ -695,6 +742,25 @@ impl Recipe {
         };
         let smooth_angle = get("smooth_angle").map(|v| p.expr("smooth_angle", v)).transpose()?;
         let rig = get("rig").map(|v| p.rig(v)).transpose()?;
+        let mut textures = Vec::new();
+        if let Some(v) = get("textures") {
+            let o = v.as_object().ok_or_else(|| type_err("textures", "{name: a texture graph object or a library texture graph's name}"))?;
+            if o.len() > 16 {
+                return Err(e("textures", ErrorCode::Limit, format!("{} texture graphs; at most 16", o.len())).with_numbers(o.len() as f64, 16.0));
+            }
+            for (k, x) in o {
+                let path = format!("textures.{k}");
+                if !is_ident(k) {
+                    return Err(e(&path, ErrorCode::WrongType, "texture names are identifiers"));
+                }
+                let src = match x {
+                    Json::Str(lib) => TexSource::Library(lib.clone()),
+                    Json::Obj(_) => TexSource::Inline(Box::new(crate::texgraph::TexGraph::parse_json(x, style, &path)?)),
+                    _ => return Err(type_err(&path, "a texture graph object or a library texture graph's name")),
+                };
+                textures.push((k.clone(), src));
+            }
+        }
         // Parts.
         let parts_json = get("parts").ok_or_else(|| e("parts", ErrorCode::MissingField, "a recipe needs \"parts\""))?;
         let items = parts_json.as_array().ok_or_else(|| type_err("parts", "a list of parts"))?;
@@ -709,7 +775,7 @@ impl Recipe {
             let path = format!("parts[{i}]");
             let po = pj.as_object().ok_or_else(|| type_err(&path, "a part object"))?;
             const PART: &[&str] =
-                &["name", "material", "color", "when", "shape", "include", "params", "ops", "smooth_angle", "lod_detail", "bones", "blend", "note"];
+                &["name", "material", "color", "when", "shape", "include", "generate", "params", "ops", "smooth_angle", "lod_detail", "bones", "blend", "texture", "uv_scale", "note"];
             for (k, _) in po {
                 if !PART.contains(&k.as_str()) {
                     return Err(e(&format!("{path}.{k}"), ErrorCode::UnknownField, format!("a part accepts: {}", PART.join(", "))));
@@ -733,8 +799,18 @@ impl Recipe {
             };
             let color = pget("color").map(|v| p.color_name(&format!("{path}.color"), v)).transpose()?;
             let when = pget("when").map(|v| p.expr(&format!("{path}.when"), v)).transpose()?;
-            let source = match (pget("shape"), pget("include")) {
-                (Some(s), None) => {
+            let source = match (pget("shape"), pget("include"), pget("generate")) {
+                (None, None, Some(g)) => {
+                    if pget("params").is_some() {
+                        return Err(e(&format!("{path}.params"), ErrorCode::UnknownField, "params belong to include parts"));
+                    }
+                    let node = p.op_node(&format!("{path}.generate"), g, procgen::GENERATORS, "generator")?;
+                    if material.is_none() && node.op != "building" {
+                        return Err(e(&format!("{path}.material"), ErrorCode::MissingField, format!("a {} part needs a material preset (scatter: the default for its shape items)", node.op)));
+                    }
+                    Source::Generate(node)
+                }
+                (Some(s), None, None) => {
                     if material.is_none() {
                         return Err(e(&format!("{path}.material"), ErrorCode::MissingField, "a shape part needs a material preset"));
                     }
@@ -743,7 +819,7 @@ impl Recipe {
                     }
                     Source::Shape(p.op_node(&format!("{path}.shape"), s, SHAPES, "shape")?)
                 }
-                (None, Some(inc)) => {
+                (None, Some(inc), None) => {
                     if material.is_some() || color.is_some() {
                         return Err(e(&format!("{path}.material"), ErrorCode::UnknownField, "include parts keep the included recipe's materials"));
                     }
@@ -756,7 +832,7 @@ impl Recipe {
                     }
                     Source::Include { asset, params: ps }
                 }
-                _ => return Err(e(&path, ErrorCode::MissingField, "a part needs exactly one of \"shape\" or \"include\"")),
+                _ => return Err(e(&path, ErrorCode::MissingField, "a part needs exactly one of \"shape\", \"include\" or \"generate\"")),
             };
             let ops = p.ops(&format!("{path}.ops"), pget("ops"))?;
             let smooth_angle = pget("smooth_angle").map(|v| p.expr(&format!("{path}.smooth_angle"), v)).transpose()?;
@@ -789,10 +865,25 @@ impl Recipe {
             if blend.is_some() && rig.is_none() {
                 return Err(e(&format!("{path}.blend"), ErrorCode::MissingField, "blend needs a \"rig\" section in the recipe"));
             }
-            parts.push(PartDef { path, name: pname.to_string(), material, color, when, source, ops, smooth_angle, lod_detail, bones, blend });
+            let texture = match pget("texture") {
+                Some(v) => {
+                    let t = v.as_str().ok_or_else(|| type_err(&format!("{path}.texture"), "a texture name from the recipe's \"textures\""))?;
+                    if !textures.iter().any(|(n, _)| n == t) {
+                        let known: Vec<&str> = textures.iter().map(|(n, _)| n.as_str()).collect();
+                        return Err(e(&format!("{path}.texture"), ErrorCode::UnknownName, format!("no texture '{t}' in the recipe's \"textures\" (has: {})", known.join(", "))));
+                    }
+                    if matches!(source, Source::Include { .. }) {
+                        return Err(e(&format!("{path}.texture"), ErrorCode::UnknownField, "include parts keep the included recipe's textures"));
+                    }
+                    Some(t.to_string())
+                }
+                None => None,
+            };
+            let uv_scale = pget("uv_scale").map(|v| p.expr(&format!("{path}.uv_scale"), v)).transpose()?;
+            parts.push(PartDef { path, name: pname.to_string(), material, color, when, source, ops, smooth_angle, lod_detail, bones, blend, texture, uv_scale });
         }
         let finish = p.ops("finish", get("finish"))?;
-        Ok(Recipe { name, category, seed, params, lets, max_triangles, min_triangles, lod_ratios, collider, smooth_angle, parts, finish, rig })
+        Ok(Recipe { name, category, seed, params, lets, max_triangles, min_triangles, lod_ratios, collider, smooth_angle, parts, finish, rig, textures })
     }
 }
 
@@ -845,6 +936,25 @@ pub struct Model {
     /// `joints`/`weights` into it. Included recipes' rigs are not merged (their parts bind to the
     /// including part's bones).
     pub rig: Option<Rig>,
+    /// Tiers 2-4 output beyond the meshes: baked texture sets, a terrain, generator stats.
+    pub extras: ModelExtras,
+}
+
+/// What procedural tiers 2-4 add to a [`Model`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ModelExtras {
+    /// Baked texture sets by part material key (`preset+texture`, the name in `MeshData` parts).
+    pub textures: Vec<(String, std::sync::Arc<crate::texgraph::TextureSet>)>,
+    /// The first terrain a `terrain` generator made (heights for physics, navigation and a terrain
+    /// renderer), in the part's space before its ops.
+    pub terrain: Option<std::sync::Arc<crate::terrain::Terrain>>,
+    /// Where that terrain sits in the model: the rigid transform its part's ops and the
+    /// recipe's `finish` moved it by (colour ops don't), or `None` when an op reshaped it
+    /// (displace, bend, ...), so its heights no longer describe the mesh. Colliders and
+    /// scatters built from the heights apply this transform, or refuse.
+    pub terrain_transform: Option<Affine>,
+    /// Per generator or boolean: its path and what it did (counts, work), bounded.
+    pub stats: Vec<(String, Json)>,
 }
 
 impl Model {
@@ -888,6 +998,7 @@ impl Model {
                     None => Json::Null,
                 },
             ),
+            ("procgen", procgen::extras_report(&self.extras)),
         ])
     }
 }
@@ -910,7 +1021,7 @@ pub fn build_rig_only(recipe: &Recipe, params: &BuildParams) -> Result<Option<Ri
     let Some(def) = &recipe.rig else { return Ok(None) };
     let seed = params.seed.unwrap_or(recipe.seed);
     let vars = eval_vars(recipe, params.values)?;
-    let (rig, _) = build_rig(recipe, def, &Ctx { vars: &vars, style: params.style, seed, tally: &Tally::default(), coarse: false })?;
+    let (rig, _) = build_rig(recipe, def, &Ctx { vars: &vars, style: params.style, seed, tally: &Tally::default(), coarse: false, paint: std::cell::Cell::new([1.0; 4]) })?;
     Ok(Some(rig))
 }
 
@@ -942,7 +1053,7 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
     let (built, vars) = build_parts(recipe, params.values, seed, params, &mut stack, &tally, false)?;
     let mut notes = Vec::new();
     let rig = match &recipe.rig {
-        Some(def) => Some(build_rig(recipe, def, &Ctx { vars: &vars, style: params.style, seed, tally: &Tally::default(), coarse: false })?),
+        Some(def) => Some(build_rig(recipe, def, &Ctx { vars: &vars, style: params.style, seed, tally: &Tally::default(), coarse: false, paint: std::cell::Cell::new([1.0; 4]) })?),
         None => None,
     };
     let bindings: Vec<Binding> = match &rig {
@@ -953,6 +1064,7 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
         None => Vec::new(),
     };
     let skin = rig.as_ref().map(|(r, _)| (r, &bindings[..]));
+    charge(&tally, "parts", built.iter().map(|b| b.shape.positions.len() as u64).sum::<u64>() * crate::work::ASSEMBLE_VERTEX)?;
     let lod0 = assemble(&built.iter().map(|b| (&b.shape, b)).collect::<Vec<_>>(), skin);
     lod0.validate().map_err(|er| e("parts", ErrorCode::InvalidMesh, er.to_string()))?;
     if lod0.triangle_count() == 0 {
@@ -992,12 +1104,34 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
     let mut lods = vec![lod0];
     let mut ratios = vec![1.0f32];
     let mut coarse_used = false;
+    // Booleans, sculpts and generators rebuild cleanly at lower detail (no bevels, half the SDF
+    // resolution, a coarser terrain grid), where clustering would fold their cuts and recesses:
+    // their first LOD is the coarse rebuild when it saves enough.
+    // The coarse rebuild, made at most once (procedural rebuilds aren't cheap).
+    let mut coarse = CoarseOnce::default();
+    let procedural = recipe.parts.iter().any(|p| match &p.source {
+        Source::Generate(_) => true,
+        Source::Shape(n) => matches!(n.op.as_str(), "union" | "difference" | "intersection" | "sdf"),
+        Source::Include { .. } => false,
+    });
     for (i, &ratio) in recipe.lod_ratios.iter().enumerate() {
         let inputs: Vec<LodInput> = built.iter().map(|b| LodInput { shape: &b.shape, cell_scale: b.lod_detail }).collect();
         let prev = lods.last().map_or(0, |m| m.triangle_count());
         // An LOD that saves under 10% over the previous one is dropped: it would cost memory and
         // a switch for nothing (parts kept with lod_detail 0 can make a model irreducible).
         let saves = |m: &MeshData| m.triangle_count() > 0 && m.triangle_count() as f32 <= 0.9 * prev as f32;
+        if i == 0 && procedural {
+            if let Some(mesh) = coarse.get_or_init(recipe, params, seed, &built, skin, &lods[0], &tally)? {
+                if saves(&mesh) {
+                    coarse_used = true;
+                    notes.push(format!("lods[{i}] ({ratio}): {COARSE_NOTE}, {} triangles (procedural parts)", mesh.triangle_count()));
+                    lods.push(mesh);
+                    ratios.push(ratio);
+                    continue;
+                }
+            }
+        }
+        charge(&tally, &format!("lods[{i}]"), inputs.iter().map(|p| p.shape.triangle_count() as u64).sum::<u64>() * crate::work::SIMPLIFY_TRIANGLE)?;
         let simplified = match lod::simplify(&inputs, ratio, bounds.min, extent) {
             None => Err("no simplification keeps every part within tolerance"),
             Some((shapes, _cell)) => {
@@ -1011,8 +1145,8 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
             Ok(mesh) => mesh,
             // Clustering can't reduce small bevelled parts (each part's cell is capped by its
             // size): try the recipe rebuilt coarse instead, once, as the far level.
-            Err(why) => match (coarse_used, coarse_level(recipe, params, seed, &built, skin, &lods[0])?) {
-                (false, Some(mesh)) if saves(&mesh) => {
+            Err(why) => match if coarse_used { None } else { coarse.get_or_init(recipe, params, seed, &built, skin, &lods[0], &tally)? } {
+                Some(mesh) if saves(&mesh) => {
                     coarse_used = true;
                     notes.push(format!("lods[{i}] ({ratio}): {COARSE_NOTE}, {} triangles (clustering: {why})", mesh.triangle_count()));
                     mesh
@@ -1026,24 +1160,39 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
         lods.push(mesh);
         ratios.push(ratio);
     }
+    let per_point = if recipe.collider == ColliderKind::ConvexHull { crate::work::HULL_POINT } else { crate::work::TIER1_POINT };
+    charge(&tally, "collider", lods[0].positions.len() as u64 * per_point)?;
     let (collider, note) = collider::fit(recipe.collider, &lods[0].positions);
+    // A cancel during the fit (it stops early) fails here.
+    charge(&tally, "collider", 0)?;
     notes.extend(note);
     let mut materials = Vec::new();
     for p in &lods[0].parts {
         if !materials.iter().any(|(n, _): &(String, MaterialPreset)| n == &p.material) {
-            materials.push((p.material.clone(), params.style.materials[&p.material].clone()));
+            // A textured part's key is `preset+texture`.
+            let preset = p.material.split('+').next().unwrap_or(&p.material);
+            materials.push((p.material.clone(), params.style.materials[preset].clone()));
         }
     }
+    let textures = procgen::bake_textures(recipe, params, &lods[0], tally.work.get())?;
     let mut h = StableHasher::new();
     for m in &lods {
         h.write_u64(m.content_hash());
     }
     hash_collider(&mut h, &collider);
+    // Models without textures hash exactly as they did before textures existed.
+    for (k, t) in &textures {
+        h.write_str(k);
+        h.write_u64(t.hash);
+    }
     // Unrigged models hash exactly as they did before rigs existed.
     if let Some((r, _)) = &rig {
         h.write_u8(1);
         r.hash_into(&mut h);
     }
+    let terrain = tally.terrain.borrow().clone();
+    let terrain_transform = tally.terrain_transform.get();
+    let stats = tally.stats.borrow().clone();
     let mut used: Vec<(String, f64)> = recipe.params.iter().map(|p| (p.name.clone(), vars[&p.name])).collect();
     used.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(Model {
@@ -1059,6 +1208,7 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
         budget: (min_t, max_t),
         notes,
         rig: rig.map(|(r, _)| r),
+        extras: ModelExtras { textures, terrain, terrain_transform, stats },
     })
 }
 
@@ -1136,6 +1286,21 @@ fn blend_value(ctx: &Ctx, x: &Expr, path: &str) -> Result<f32, RecipeError> {
     Ok(v as f32)
 }
 
+/// Charges `units` of the build's work ([`crate::work`]) for a stage outside the procedural
+/// tiers (tier-1 ops, assembling, LOD simplification, colliders), or fails with a Limit error
+/// at `path`; a cancelled build fails here too.
+fn charge(tally: &Tally, path: &str, units: u64) -> Result<(), RecipeError> {
+    let used = tally.work.get().saturating_add(units);
+    if used > procgen::MAX_BUILD_WORK {
+        return Err(e(path, ErrorCode::Limit, format!("the model needs more than {} work units (about 1.5 s) here: fewer vertices, ops, octaves or LODs", procgen::MAX_BUILD_WORK)).with_numbers(used as f64, procgen::MAX_BUILD_WORK as f64));
+    }
+    if crate::work::cancelled() {
+        return Err(e(path, ErrorCode::Limit, crate::work::CANCELLED));
+    }
+    tally.work.set(used);
+    Ok(())
+}
+
 /// Running totals for one build, shared by every part and include, so limits hold across the
 /// whole model and are checked *before* allocating.
 #[derive(Default)]
@@ -1143,6 +1308,13 @@ struct Tally {
     /// Triangles of every piece built so far (the current one included once generated).
     triangles: std::cell::Cell<usize>,
     includes: std::cell::Cell<usize>,
+    /// What booleans, sculpts and generators did (for the report), bounded.
+    stats: std::cell::RefCell<Vec<(String, Json)>>,
+    /// The first terrain built, and its transform in the model (`None`: reshaped).
+    terrain: std::cell::RefCell<Option<std::sync::Arc<crate::terrain::Terrain>>>,
+    terrain_transform: std::cell::Cell<Option<Affine>>,
+    /// Boolean and texture work spent so far (all budgets are per build).
+    work: std::cell::Cell<u64>,
 }
 
 impl Tally {
@@ -1207,18 +1379,34 @@ pub const COARSE_NOTE: &str = "the recipe rebuilt coarse (no bevels, about half 
 /// `built` and keeps LOD 0's bounds and volume within the auto-LOD tolerances (the model's
 /// bounds within [`lod::MODEL_BOUNDS_TOLERANCE`] of its size, a closed model's volume within
 /// [`lod::VOLUME_TOLERANCE`]); `None` otherwise.
-fn coarse_level(
-    recipe: &Recipe,
-    params: &BuildParams,
-    seed: u64,
-    built: &[BuiltPart],
-    skin: Option<(&Rig, &[Binding])>,
-    lod0: &MeshData,
-) -> Result<Option<MeshData>, RecipeError> {
+/// [`coarse_level`] computed on first use and kept.
+#[derive(Default)]
+struct CoarseOnce(Option<Option<MeshData>>);
+
+impl CoarseOnce {
+    #[allow(clippy::too_many_arguments)]
+    fn get_or_init(&mut self, recipe: &Recipe, params: &BuildParams, seed: u64, built: &[BuiltPart], skin: Option<(&Rig, &[Binding])>, lod0: &MeshData, main: &Tally) -> Result<Option<MeshData>, RecipeError> {
+        if self.0.is_none() {
+            self.0 = Some(coarse_level(recipe, params, seed, built, skin, lod0, main)?);
+        }
+        Ok(self.0.as_ref().and_then(|m| m.clone()))
+    }
+}
+
+/// `main`: the build's tally; the coarse rebuild continues its work budget and what it spends
+/// is added back (its triangles are counted apart).
+fn coarse_level(recipe: &Recipe, params: &BuildParams, seed: u64, built: &[BuiltPart], skin: Option<(&Rig, &[Binding])>, lod0: &MeshData, main: &Tally) -> Result<Option<MeshData>, RecipeError> {
     let mut stack = vec![recipe.name.clone()];
-    let Ok((coarse, _)) = build_parts(recipe, params.values, seed, params, &mut stack, &Tally::default(), true) else {
+    let tally = Tally::default();
+    tally.work.set(main.work.get());
+    let rebuilt = build_parts(recipe, params.values, seed, params, &mut stack, &tally, true);
+    main.work.set(tally.work.get());
+    // A cancelled build stops here rather than going on without its coarse level.
+    charge(main, "lods", 0)?;
+    let Ok((coarse, _)) = rebuilt else {
         return Ok(None);
     };
+    charge(main, "lods", coarse.iter().map(|c| c.shape.positions.len() as u64).sum::<u64>() * crate::work::ASSEMBLE_VERTEX)?;
     if coarse.len() != built.len() {
         return Ok(None);
     }
@@ -1250,6 +1438,8 @@ struct BuiltPart {
     /// Bone names from the (top-level) part that produced this piece.
     bones: Vec<String>,
     blend: Option<f32>,
+    /// Box-projected UVs at this many metres per repeat (textured parts).
+    uv_scale: Option<f32>,
 }
 
 /// Meshes every part and merges them by material. With a rig, each part's vertices are bound
@@ -1257,7 +1447,7 @@ struct BuiltPart {
 fn assemble(parts: &[(&Shape, &BuiltPart)], skin: Option<(&Rig, &[Binding])>) -> MeshData {
     let mut mesh = MeshData::default();
     for (k, (shape, info)) in parts.iter().enumerate() {
-        let mut m = shape.finalize(info.smooth_angle, &info.material);
+        let mut m = shape.finalize_with_uvs(info.smooth_angle, &info.material, info.uv_scale);
         if let Some((rig, binds)) = skin {
             let (j, w) = rig.bind(&m.positions, &binds[k].bones, binds[k].blend);
             m.joints = j;
@@ -1287,7 +1477,7 @@ fn build_parts(
     coarse: bool,
 ) -> Result<(Vec<BuiltPart>, BTreeMap<String, f64>), RecipeError> {
     let vars = eval_vars(recipe, values)?;
-    let ctx = Ctx { vars: &vars, style: params.style, seed, tally, coarse };
+    let ctx = Ctx { vars: &vars, style: params.style, seed, tally, coarse, paint: std::cell::Cell::new([1.0; 4]) };
     let smooth_of = |x: &Expr, path: &str| -> Result<f32, RecipeError> {
         let v = ctx.eval(x, path)?;
         if !(0.0..=180.0).contains(&v) {
@@ -1300,27 +1490,38 @@ fn build_parts(
         None => 30.0,
     };
     let mut out: Vec<BuiltPart> = Vec::new();
+    let mut terrains: Vec<(String, std::sync::Arc<crate::terrain::Terrain>, bool)> = Vec::new();
+    let mut scattered: Vec<(String, Vec<crate::math3::V2>)> = Vec::new();
+    // The model's terrain is the first one made, here or in an include; its transform gathers
+    // the ops of every part and `finish` it passes through on the way out.
+    let had_before = tally.terrain.borrow().is_some();
     for part in &recipe.parts {
         if let Some(w) = &part.when {
             if ctx.eval(w, &format!("{}.when", part.path))? == 0.0 {
                 continue;
             }
         }
+        let had = tally.terrain.borrow().is_some();
         let pseed = stream_seed(seed, &part.name);
         let mut pieces: Vec<BuiltPart> = match &part.source {
             Source::Shape(node) => {
                 let material = part.material.clone().unwrap_or_default();
-                let mut shape = ctx.shape(node)?;
                 let col = match &part.color {
                     Some(c) => params.style.color(c).unwrap_or([1.0; 4]),
                     None => params.style.materials[&material].color,
                 };
-                shape.set_color(col);
+                ctx.paint.set(col);
+                let mut shape = ctx.shape(node)?;
+                // Booleans and sculpts were painted as they were built (their operands' and
+                // nodes' own colours kept); everything else takes the part's colour.
+                if !matches!(node.op.as_str(), "union" | "difference" | "intersection" | "sdf") {
+                    shape.set_color(col);
+                }
                 let smooth = match &part.smooth_angle {
                     Some(x) => smooth_of(x, &format!("{}.smooth_angle", part.path))?,
                     None => default_smooth,
                 };
-                vec![BuiltPart { shape, material, smooth_angle: smooth, lod_detail: 1.0, bones: Vec::new(), blend: None }]
+                vec![BuiltPart { shape, material, smooth_angle: smooth, lod_detail: 1.0, bones: Vec::new(), blend: None, uv_scale: None }]
             }
             Source::Include { asset, params: inc_params } => {
                 let path = format!("{}.include", part.path);
@@ -1346,7 +1547,41 @@ fn build_parts(
                 stack.pop();
                 res.map_err(|er| RecipeError { path: format!("{path}({asset}).{}", er.path), ..er })?.0
             }
+            Source::Generate(node) => {
+                let smooth = match &part.smooth_angle {
+                    Some(x) => smooth_of(x, &format!("{}.smooth_angle", part.path))?,
+                    None => default_smooth,
+                };
+                let mut gen = procgen::Gen { ctx: &ctx, part, params, stack: &mut *stack, tally, coarse, seed: pseed, smooth, terrains: &mut terrains, scattered: &mut scattered };
+                gen.run(node)?
+            }
         };
+        // Textures: the part's material key names its texture set; UVs from its scale.
+        if let Some(t) = &part.texture {
+            let scale = match &part.uv_scale {
+                Some(x) => {
+                    let v = ctx.eval(x, &format!("{}.uv_scale", part.path))?;
+                    if !(0.01..=1000.0).contains(&v) {
+                        return Err(e(&format!("{}.uv_scale", part.path), ErrorCode::OutOfRange, format!("uv_scale {v} is outside 0.01..1000 m per repeat")).with_numbers(v, 1000.0));
+                    }
+                    v as f32
+                }
+                None => 1.0,
+            };
+            // The key names the graph wherever the part ends up (an including recipe has its own
+            // texture names): a library graph by its file, an inline one by its recipe.
+            let key = match recipe.textures.iter().find(|(n, _)| n == t).map(|(_, s)| s) {
+                Some(TexSource::Library(lib)) => format!("lib:{lib}"),
+                _ => format!("{}/{t}", recipe.name),
+            };
+            // The texture dresses the part's own material (a building without one: its walls);
+            // a generator's other roles (a building's door, glass) keep theirs.
+            let dressed = part.material.clone().or_else(|| pieces.first().map(|p| p.material.clone()));
+            for p in pieces.iter_mut().filter(|p| dressed.as_ref() == Some(&p.material)) {
+                p.material = format!("{}+{key}", p.material);
+                p.uv_scale = Some(scale);
+            }
+        }
         if let Some(d) = &part.lod_detail {
             let v = ctx.eval(d, &format!("{}.lod_detail", part.path))? as f32;
             if !(0.0..=4.0).contains(&v) {
@@ -1365,12 +1600,36 @@ fn build_parts(
                 ctx.apply(&mut piece.shape, op, stream_seed(pseed, &format!("op{i}")))?;
             }
         }
+        if !had {
+            match &part.source {
+                // This part's own terrain, as generated.
+                Source::Generate(node) if node.op == "terrain" => {
+                    if let Some((_, t, _)) = terrains.last() {
+                        tally.terrain.replace(Some(std::sync::Arc::clone(t)));
+                        tally.terrain_transform.set(Some(Affine::IDENTITY));
+                    }
+                }
+                // An include's terrain, with the transform its own parts and finish gave it.
+                Source::Include { .. } => {}
+                // A scatter's included items are copies, not the ground.
+                _ => {
+                    tally.terrain.replace(None);
+                    tally.terrain_transform.set(None);
+                }
+            }
+            if tally.terrain.borrow().is_some() {
+                tally.terrain_transform.set(ctx.terrain_transform(&part.ops, tally.terrain_transform.get()));
+            }
+        }
         out.extend(pieces);
     }
     for (i, op) in recipe.finish.iter().enumerate() {
         for (k, piece) in out.iter_mut().enumerate() {
             ctx.apply(&mut piece.shape, op, stream_seed(seed, &format!("finish{i}/{k}")))?;
         }
+    }
+    if !had_before && tally.terrain.borrow().is_some() {
+        tally.terrain_transform.set(ctx.terrain_transform(&recipe.finish, tally.terrain_transform.get()));
     }
     Ok((out, vars))
 }
@@ -1383,6 +1642,9 @@ struct Ctx<'a> {
     /// Building the coarse far level ([`COARSE_NOTE`]): no bevels, half the segments and sides,
     /// no subdivision or displacement. Values are still checked as given.
     coarse: bool,
+    /// The colour a part's boolean operands and uncoloured SDF nodes start in (the part's
+    /// colour), so colours they are given themselves survive.
+    paint: std::cell::Cell<Rgba>,
 }
 
 fn axis_index(s: &str) -> usize {
@@ -1750,6 +2012,8 @@ impl Ctx<'_> {
                     }),
                 )
             }
+            "union" | "difference" | "intersection" => return self.csg_shape(n),
+            "sdf" => return self.sdf_shape(n),
             other => return Err(e(&n.path, ErrorCode::UnknownOp, format!("unknown shape '{other}'"))),
         };
         self.tally.grow(&n.path, 0, predicted)?;
@@ -1757,6 +2021,29 @@ impl Ctx<'_> {
         self.tally.settle(predicted, s.triangle_count());
         check_extent(&s, &n.path)?;
         Ok(s)
+    }
+
+    /// A terrain's transform after `ops` (rigid ones compose onto `start`; colour ops leave it
+    /// where it is), or `None` when one reshapes it (or it was reshaped already).
+    fn terrain_transform(&self, ops: &[Node], start: Option<Affine>) -> Option<Affine> {
+        let mut t = start?;
+        for n in ops {
+            if procgen::COLOUR_OPS.contains(&n.op.as_str()) {
+                continue;
+            }
+            if let Some(w) = &n.when {
+                match self.eval(w, &format!("{}.when", n.path)) {
+                    Ok(0.0) => continue,
+                    Ok(_) => {}
+                    Err(_) => return None,
+                }
+            }
+            match self.rig_affine(n) {
+                Ok(Some(a)) => t = a.then_after(&t),
+                _ => return None,
+            }
+        }
+        Some(t)
     }
 
     /// The rigid transform a `finish` op applies, so a rig can follow it: `move`, `rotate`,
@@ -1828,6 +2115,19 @@ impl Ctx<'_> {
             _ => before,
         };
         self.tally.grow(&n.path, before, predicted)?;
+        // Charged before it runs, by the vertices it visits or the triangles it makes.
+        let v = s.positions.len() as u64;
+        let units = match n.op.as_str() {
+            "displace" if self.coarse => 0,
+            "displace" => v * (crate::work::TIER1_DISPLACE + crate::work::TIER1_OCTAVE * self.int(n, "octaves", 2, 1, 6)? as u64),
+            "subdivide" => predicted as u64 * crate::work::TIER1_SUBDIVIDE,
+            "array" | "radial" | "mirror" => predicted as u64 * crate::work::TIER1_COPY + v * crate::work::TIER1_POINT,
+            "weld" => v * crate::work::TIER1_WELD,
+            "ao" => v * crate::work::TIER1_CAVITY,
+            "noise_tint" | "bands" => v * crate::work::TIER1_TINT,
+            _ => v * crate::work::TIER1_POINT,
+        };
+        charge(self.tally, &n.path, units)?;
         match n.op.as_str() {
             "move" => s.transform(&Affine::translate(within("by", self.vec3(n, "by", [0.0; 3])?, MAX_EXTENT_M)?)),
             "rotate" => {
@@ -1907,6 +2207,8 @@ impl Ctx<'_> {
             other => return Err(e(&n.path, ErrorCode::UnknownOp, format!("unknown op '{other}'"))),
         }
         self.tally.settle(predicted, s.triangle_count());
+        // An op stopped part way by a cancel fails here.
+        charge(self.tally, &n.path, 0)?;
         check_extent(s, &n.path)
     }
 }
@@ -1976,6 +2278,9 @@ fn smooth_path(path: &[V3], scales: &[f32], smooth: u32, closed: bool) -> (Vec<V
     }
     (out, sc)
 }
+
+mod procgen;
+pub use procgen::{generator_names, sdf_names};
 
 #[cfg(test)]
 mod tests;

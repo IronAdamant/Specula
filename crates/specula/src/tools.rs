@@ -322,6 +322,8 @@ pub struct Tools {
     pub(crate) lex_natives: specula_lex::Natives,
     /// Kept `balance_tune` jobs.
     pub(crate) balance_jobs: crate::balance_tools::Jobs,
+    /// Where the procgen tools find recipes and write images.
+    pub(crate) procgen: crate::procgen_tools::Context,
     /// Where `lex_export` writes documents too big to answer inline.
     pub(crate) lex_exports: crate::lex_tools::Exports,
     /// Default response formats, the engine's and each session's (see [`crate::response`]).
@@ -349,6 +351,7 @@ impl Tools {
             lex_locks: Default::default(),
             lex_natives: Default::default(),
             balance_jobs: Default::default(),
+            procgen: Default::default(),
             lex_exports: Default::default(),
             formats: crate::response::Defaults::new(crate::response::Format::Concise),
             native_format,
@@ -367,6 +370,12 @@ impl Tools {
     /// Uses `formats` for default response formats (shared with the engine thread).
     pub fn with_formats(mut self, formats: std::sync::Arc<crate::response::Defaults>) -> Tools {
         self.formats = formats;
+        self
+    }
+
+    /// Where the procgen tools find recipes, styles and the captures folder.
+    pub fn with_procgen(mut self, ctx: crate::procgen_tools::Context) -> Tools {
+        self.procgen = ctx;
         self
     }
 
@@ -479,6 +488,10 @@ impl Tools {
         } else if name.starts_with("project_") {
             // Patching, validation and diffs run on this thread; the engine snapshots and commits.
             return crate::project_tools::call(self, session, name, arguments);
+        } else if name.starts_with("procgen_") {
+            // Texture bakes, terrains and scatters run on this thread (their world edits go to
+            // the engine as world_set / world_batch).
+            return crate::procgen_tools::call(self, session, name, arguments);
         } else if name.starts_with("balance_") {
             // The balance lab runs simulations on this thread (and its workers), like lex_simulate.
             return crate::balance_tools::call(self, session, name, arguments);
@@ -2506,6 +2519,7 @@ fn definitions() -> Vec<ToolDef> {
     .chain(crate::lex_live::definitions())
     .chain(crate::save_tools::definitions())
     .chain(crate::balance_tools::definitions())
+    .chain(crate::procgen_tools::definitions())
     .chain(crate::anim_tools::definitions())
     .chain(crate::studio_tools::definitions())
     .collect()

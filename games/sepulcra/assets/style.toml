@@ -46,7 +46,7 @@ sample_hz = 60
 case = "snake"
 max_len = 32
 file_matches_name = true
-categories = ["stone", "enemy", "boss", "wall", "graveyard", "slab", "vfx_placeholder", "component"]
+categories = ["stone", "enemy", "boss", "wall", "graveyard", "slab", "vfx_placeholder", "component", "building", "ruin", "terrain", "set"]
 parts_named = true
 
 # Triangle budgets at LOD 0 (STYLE.md "Performance budget"; the rest from style.json's proposals).
@@ -98,6 +98,33 @@ max_triangles = 700
 [[budget]]
 category = "slab"
 max_triangles = 3000
+
+# Claude's proposal, 2026-10-29 (owner to confirm): the procedural modelling tiers brought kinds of
+# asset the prop rules weren't written for. Each gets its own category instead of loosening the props.
+[[budget]]
+# A crypt or mausoleum: a building, seen whole from the game camera.
+category = "building"
+max_triangles = 1500
+
+[[budget]]
+# Decorative ruins (not the playable lane walls): few per scene, bevelled stone.
+category = "ruin"
+max_triangles = 4000
+
+[[budget]]
+# Generated ground: eroded heightfield meshes, one per area.
+category = "terrain"
+max_triangles = 8000
+
+[[budget]]
+# Set pieces: a whole scattered plot (graves, rocks) built as one model.
+category = "set"
+max_triangles = 15000
+
+[[budget]]
+# Scattered rocks, half-buried among the graves.
+name = "grave_rock"
+max_triangles = 800
 
 # Proportions (STYLE.md, 1 lane cell = 2 m; gameplay pieces are slightly oversized on purpose).
 # Heights are extents (lowest to highest point); float_m is how high the lowest point may be
@@ -186,6 +213,29 @@ height_m = [0.3, 1.4]
 [[scale]]
 name = "tombstone"
 height_m = [0.65, 1.0]
+
+# Claude's proposal, 2026-10-29 (owner to confirm), as for the budgets above.
+[[scale]]
+category = "building"
+height_m = [3.0, 6.0]
+
+[[scale]]
+# Ruins stand taller than lane walls and settle into the ground.
+category = "ruin"
+height_m = [0.5, 3.0]
+sink_m = [0.0, 0.3]
+
+[[scale]]
+# Terrain meets the ground plane from below as well as above.
+category = "terrain"
+float_m = [0.0, 0.5]
+sink_m = [0.0, 0.5]
+
+[[scale]]
+# A plot's rocks and graves settle into its ground.
+category = "set"
+height_m = [0.3, 2.0]
+sink_m = [0.0, 0.3]
 
 [palette]
 # The three families (STYLE.md: "you can tell whose a thing is from its colour alone"); every other

@@ -50,6 +50,8 @@ def recipes():
     out = []
     for path in sorted((ASSETS / "recipes").glob("*.json")):
         text = path.read_text()
+        if '"texgraph"' in text:
+            continue  # a texture graph that recipes use, not a recipe
         rel = f"recipes/{path.name}"
         if '"tier"' in text:
             out += [(f"{path.stem} {t}", rel, {"tier": t}) for t in (1, 2, 3)]

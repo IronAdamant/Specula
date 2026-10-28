@@ -59,7 +59,9 @@ fn every_recipe_in_the_folder_is_covered() {
         let known = STONES.contains(&name.as_str())
             || ENEMIES.iter().any(|(e, _)| e == name)
             || OTHERS.contains(&name.as_str())
-            || ["rune_glyph", "rune_column"].contains(&name.as_str());
+            || ["rune_glyph", "rune_column"].contains(&name.as_str())
+            || PROCGEN.iter().any(|(p, _, _)| p == name)
+            || lib[name].contains("\"texgraph\"");
         assert!(known, "recipe {name} has no budget test");
     }
 }
@@ -288,3 +290,65 @@ fn no_grave_green_on_player_stones() {
         }
     }
 }
+
+/// Procedural tier 2-4 assets (booleans, SDF, generators, texture graphs): name, a parameter
+/// value if any, and the STYLE.md-style triangle budget.
+/// (recipe, a parameter, triangle budget).
+type Asset = (&'static str, Option<(&'static str, f64)>, usize);
+
+const PROCGEN: [Asset; 8] = [
+    ("headstone_carved", Some(("variant", 1.0)), 900),
+    ("headstone_carved", Some(("variant", 2.0)), 900),
+    ("headstone_carved", Some(("variant", 3.0)), 900),
+    ("crypt", None, 2500),
+    ("ruined_wall", None, 4000),
+    ("grave_rock", None, 1600),
+    ("graveyard_plot", None, 30000),
+    ("graveyard_ground", None, 12000),
+];
+
+fn procgen_models(style: &Style, lib: &BTreeMap<String, String>) -> Vec<(String, Model, usize)> {
+    PROCGEN
+        .iter()
+        .map(|(name, p, max)| {
+            let vals: Vec<(&str, f64)> = p.iter().copied().collect();
+            let t = std::time::Instant::now();
+            let m = build(&lib[*name], &BuildParams { values: &vals, library: Some(lib), ..BuildParams::new(style) }).unwrap_or_else(|e| panic!("{name} {p:?}: {e}"));
+            println!("{name:<18} {p:?}: {:?} triangles, {} texture sets, {:.1} ms", m.lods.iter().map(|l| l.triangle_count()).collect::<Vec<_>>(), m.extras.textures.len(), t.elapsed().as_secs_f64() * 1000.0);
+            (format!("{name} {p:?}"), m, *max)
+        })
+        .collect()
+}
+
+#[test]
+fn procgen_assets_build_in_budget_and_pinned() {
+    let (style, lib) = load();
+    let models = procgen_models(&style, &lib);
+    let mut h = StableHasher::new();
+    for (name, m, max) in &models {
+        let n0 = m.lods[0].triangle_count();
+        assert!(n0 <= *max, "{name}: {n0} triangles, budget {max}");
+        assert!(m.lods.len() >= 2, "{name}: no LOD ({:?})", m.notes);
+        for (i, l) in m.lods.iter().enumerate() {
+            l.validate().unwrap_or_else(|e| panic!("{name} LOD{i}: {e}"));
+        }
+        // Every boolean's bevel went through (a failed one leaves the whole shape sharp).
+        let report = m.report().to_string();
+        assert!(!report.contains("bevel_failed"), "{name}: {report}");
+        h.write_str(name);
+        h.write_u64(m.hash);
+    }
+    // The crypt dresses its walls with the baked crypt stone and keeps the iGPU budget.
+    let crypt = &models[3].1;
+    assert_eq!(crypt.extras.textures.len(), 1);
+    assert!(crypt.extras.textures[0].1.gpu_bytes() <= 1 << 20);
+    // The plot's ground is a terrain the engine can collide with and walk on.
+    let plot = &models[6].1;
+    let t = plot.extras.terrain.as_ref().expect("terrain");
+    assert!(t.walkable_cells(30.0).iter().filter(|w| **w).count() * 2 > t.walkable_cells(90.0).len());
+    let again: Vec<u64> = procgen_models(&style, &lib).iter().map(|(_, m, _)| m.hash).collect();
+    assert_eq!(again, models.iter().map(|(_, m, _)| m.hash).collect::<Vec<_>>(), "two builds differ");
+    assert_eq!(format!("{:016x}", h.finish()), PROCGEN_PINNED, "procgen asset hash changed");
+}
+
+const PROCGEN_PINNED: &str = "dc0693c52fd8b422";

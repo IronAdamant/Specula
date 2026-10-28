@@ -1,0 +1,22 @@
+{
+  "recipe": 1,
+  "name": "graveyard_ground",
+  "category": "terrain",
+  "description": "The graveyard's ground alone (tier 4 terrain): gently rolling, eroded, a flat pad at the centre, moss in the hollows, earth on the banks, stone on the steep. A closed slab 0.6 m deep. Its heightfield is the ground procgen_terrain puts on an entity as a collider and procgen_scatter places graves on.",
+  "seed": 52,
+  "budget": { "max_triangles": 12000 },
+  "lods": [0.5, 0.25],
+  "collider": "aabb",
+  "smooth_angle": 40,
+  "parts": [
+    { "name": "ground", "material": "slab_stone",
+      "generate": { "op": "terrain", "size": [24, 18], "samples": [65, 49], "base": 0.6, "depth": 0.6,
+        "layers": [ { "kind": "fbm", "scale": 9, "octaves": 4, "amplitude": 0.55 }, { "kind": "ridged", "scale": 3, "octaves": 2, "amplitude": 0.08 } ],
+        "pads": [ { "at": [0, 0], "radius": 1.5, "height": 0.7, "blend": 2.5 } ],
+        "erosion": { "droplets": 12000, "strength": 0.5, "steps": 48 },
+        "thermal": { "iterations": 6, "talus": 33 },
+        "splat": [ { "name": "moss", "color": "moss", "slope": [0, 12], "soft": 4, "noise": 0.5, "noise_scale": 2 },
+                   { "name": "earth", "color": "roots", "slope": [9, 24], "soft": 4 },
+                   { "name": "stone", "color": "strata_light", "slope": [22, 90], "soft": 4 } ] } }
+  ]
+}

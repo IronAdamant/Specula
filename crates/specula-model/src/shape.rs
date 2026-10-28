@@ -789,7 +789,11 @@ impl Shape {
     pub fn displace(&mut self, amount: f32, scale: f32, octaves: u32, seed: u64, axis_weight: V3) {
         let normals = self.smooth_normals();
         let inv = 1.0 / scale.max(1e-4);
-        for (p, n) in self.positions.iter_mut().zip(&normals) {
+        for (i, (p, n)) in self.positions.iter_mut().zip(&normals).enumerate() {
+            // A cancelled build stops here; its caller fails it at the next charge.
+            if i % 4096 == 0 && crate::work::cancelled() {
+                return;
+            }
             let d = noise::fbm3(seed, math3::scale(*p, inv), octaves) * amount;
             *p = math3::add(*p, math3::mul(math3::scale(*n, d), axis_weight));
         }
@@ -914,6 +918,9 @@ impl Shape {
             })
             .collect();
         let mut edges: HashMap<(u32, u32), Vec<(usize, usize)>> = HashMap::new(); // → (face, far corner)
+        if crate::work::cancelled() {
+            return;
+        }
         for (f, t) in self.tris.iter().enumerate() {
             for k in 0..3 {
                 let (a, b) = (gid[t[k] as usize], gid[t[(k + 1) % 3] as usize]);
@@ -967,6 +974,14 @@ impl Shape {
     /// the bevel tint and quantises colours to sRGB8.
     #[allow(clippy::disallowed_types, reason = "lookup and insert only: the output follows the input order, never the map's")]
     pub fn finalize(&self, smooth_angle_deg: f32, material: &str) -> MeshData {
+        self.finalize_with_uvs(smooth_angle_deg, material, None)
+    }
+
+    /// [`Shape::finalize`], plus box-projected UVs when `uv_scale` (metres per texture repeat) is
+    /// given: each face projects along its normal's largest axis, oriented so textures stand
+    /// upright on walls and read unmirrored from outside; vertices split where the projection
+    /// changes.
+    pub fn finalize_with_uvs(&self, smooth_angle_deg: f32, material: &str, uv_scale: Option<f32>) -> MeshData {
         let mut s = self.clone();
         // Weld points closer than 10 µm (a taper to almost 0, float noise) so no seam opens.
         s.weld(1e-5);
@@ -997,9 +1012,13 @@ impl Shape {
         }
         let cos_t = dmath::cos((smooth_angle_deg.max(1.0) as f64 * dmath::PI / 180.0) as f32);
         let mut out = MeshData::default();
-        let mut ids: HashMap<(u32, [u32; 3], [u8; 4]), u32> = HashMap::new();
+        // A render vertex: position index, normal, colour and UV (as bits).
+        type VertexKey = (u32, [u32; 3], [u8; 4], [u32; 2]);
+        #[allow(clippy::disallowed_types, reason = "lookup and insert only: vertices are numbered in triangle order, never the map's")]
+        let mut ids: HashMap<VertexKey, u32> = HashMap::new();
         for (f, t) in s.tris.iter().enumerate() {
             let mut tri = [0u32; 3];
+            let fu = face_u[f];
             for k in 0..3 {
                 let v = t[k] as usize;
                 let mut n = [0.0f32; 3];
@@ -1017,11 +1036,15 @@ impl Shape {
                     c = mix(c, tint, amt);
                 }
                 let c8 = quantize(c);
-                let key = (v as u32, [n[0].to_bits(), n[1].to_bits(), n[2].to_bits()], c8);
+                let uv = uv_scale.map_or([0.0, 0.0], |sc| box_uv(s.positions[v], fu, sc));
+                let key = (v as u32, [n[0].to_bits(), n[1].to_bits(), n[2].to_bits()], c8, [uv[0].to_bits(), uv[1].to_bits()]);
                 tri[k] = *ids.entry(key).or_insert_with(|| {
                     out.positions.push(s.positions[v]);
                     out.normals.push(n);
                     out.colors.push(c8);
+                    if uv_scale.is_some() {
+                        out.uvs.push(uv);
+                    }
                     out.positions.len() as u32 - 1
                 });
             }
@@ -1067,6 +1090,22 @@ impl Shape {
         }
         edges.iter().filter(|(&(a, b), &n)| n != 1 || edges.get(&(b, a)).copied().unwrap_or(0) != 1).count()
     }
+}
+
+/// A box-projected texture coordinate of `p` on a face with unit normal `n` (`scale` metres per
+/// repeat): +X faces see -z to their right, +Z faces +x, tops +x right and +z down; v grows
+/// downwards (towards -y on walls).
+pub fn box_uv(p: V3, n: V3, scale: f32) -> [f32; 2] {
+    let inv = 1.0 / scale.max(1e-4);
+    let a = [n[0].abs(), n[1].abs(), n[2].abs()];
+    let uv = if a[0] >= a[1] && a[0] >= a[2] {
+        [if n[0] > 0.0 { -p[2] } else { p[2] }, -p[1]]
+    } else if a[2] >= a[1] {
+        [if n[2] > 0.0 { p[0] } else { -p[0] }, -p[1]]
+    } else {
+        [p[0], if n[1] > 0.0 { p[2] } else { -p[2] }]
+    };
+    [uv[0] * inv, uv[1] * inv]
 }
 
 /// Per-copy random transform for arrays: offsets up to ±`offset`, rotations up to ±`rotate_deg`

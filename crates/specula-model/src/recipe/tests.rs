@@ -215,6 +215,10 @@ fn every_shape_and_op_builds() {
         r#"{"op":"lathe","profile":[[0,0],[0.4,0],[0.3,0.5],[0,0.6]],"segments":10}"#,
         r#"{"op":"sweep","profile":{"sides":5,"radius":0.05},"path":[[0,0,0],[0,1,0],[0.5,1.5,0]],"scales":[1,0],"smooth":4}"#,
         r#"{"op":"sweep","profile":[[0.05,0],[0,0.05],[-0.05,0],[0,-0.05]],"path":[[1,0,0],[0,0,-1],[-1,0,0],[0,0,1]],"closed":true,"smooth":3}"#,
+        r#"{"op":"difference","of":[{"op":"box","size":[1,1,1]},{"op":"box","size":[0.4,2,0.4],"ops":[{"op":"move","by":[0,-0.5,0]}]}],"bevel":0.03}"#,
+        r#"{"op":"union","of":[{"op":"box","size":[1,1,1]},{"op":"box","size":[0.5,0.5,0.5],"ops":[{"op":"move","by":[0.5,0.25,0]}]}]}"#,
+        r#"{"op":"intersection","of":[{"op":"box","size":[1,1,1]},{"op":"sphere","radius":0.65,"subdivisions":2}]}"#,
+        r#"{"op":"sdf","resolution":24,"tree":{"op":"union","smooth":0.1,"of":[{"op":"sphere","radius":0.4},{"op":"box","size":[0.5,0.5,0.5],"at":[0.3,0,0]}]}}"#,
     ];
     for s in shapes {
         let m = build_with(&one_part(s, ""), &[]).unwrap_or_else(|e| panic!("{s}: {e}"));

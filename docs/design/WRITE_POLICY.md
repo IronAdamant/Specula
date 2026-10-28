@@ -178,6 +178,7 @@ point it goes through now. Behaviour is unchanged on every path (same checks, sa
 | camera_set, camera_delete | agent | `Swarm::commit` | `Live::commit`, `Rule::World` |
 | world_place (Locus), physics component sets, ragdoll_set, nav_agent and ai_set, anim batches | agent | `Swarm::commit` | `Live::commit`, `Rule::World` |
 | nav_build (and remove) | agent | `Swarm::commit_nav` | `Live::commit`, `Rule::Nav` |
+| procgen_scatter `spawn`, procgen_terrain `collider` (M4) | agent | a world_batch / world_set the tool sends as the caller | `Live::commit`, `Rule::World`: the scatter's spawns are ONE batch, all or nothing (`procgen_tools::spawn_command`, `collider_command`; table rows) |
 | physics_joint | agent | `Swarm::commit_joint` (+ its own body checks) | `Live::commit`, `Rule::Joint` |
 | lex_edit, lex_import | agent | `Swarm::commit_lex` | session (`Opener::LexTools`) + `commit`, `Rule::Lex` |
 | lex_live start and stop | agent | `Swarm::commit_lex_live` | session (`Opener::LexLive`) + `commit`, `Rule::LexLive` |

@@ -1,0 +1,32 @@
+{
+  "recipe": 1,
+  "name": "graveyard_plot",
+  "category": "set",
+  "description": "A plot of old graves as one model (tier 4): eroded ground with moss in the hollows and bare stone on the slopes, carved headstones scattered on it by Poisson-disc rules (flat enough ground, a path kept clear), mossy fieldstones between. For instanced placement in the world use procgen_scatter instead.",
+  "seed": 52,
+  "params": { "graves": { "default": 14, "min": 1, "max": 40, "integer": true } },
+  "budget": { "max_triangles": 30000 },
+  "lods": [0.5, 0.25],
+  "collider": "aabb",
+  "smooth_angle": 35,
+  "parts": [
+    { "name": "ground", "material": "slab_stone",
+      "generate": { "op": "terrain", "size": [10, 8], "samples": [41, 33], "base": 0.4, "depth": 0.5,
+        "layers": [ { "kind": "fbm", "scale": 6, "octaves": 4, "amplitude": 0.35 }, { "kind": "ridged", "scale": 2.5, "octaves": 2, "amplitude": 0.06 } ],
+        "pads": [ { "at": [0, 0], "radius": 0.6, "height": 0.45, "blend": 1.2 } ],
+        "erosion": { "droplets": 4000, "strength": 0.5, "steps": 40 },
+        "splat": [ { "name": "moss", "color": "moss", "slope": [0, 14], "soft": 4, "noise": 0.5, "noise_scale": 1.5 },
+                   { "name": "earth", "color": "roots", "slope": [10, 26], "soft": 4 },
+                   { "name": "stone", "color": "strata_light", "slope": [24, 90], "soft": 4 } ] } },
+    { "name": "graves", "material": "graveyard_stone",
+      "generate": { "op": "scatter", "on": "ground", "area": { "rect": [9, 7] }, "min_distance": 1.25, "count": "graves",
+        "slope": [0, 18], "avoid": [[0, 0, 1.1], [0, 3, 0.9], [0, -3, 0.9]], "yaw": [-12, 12], "tilt": 4, "align": 0.6, "sink": 0.03,
+        "items": [ { "include": "headstone_carved", "params": { "variant": 1, "tilt": [-1, 1] }, "variants": 3, "weight": 3 },
+                   { "include": "headstone_carved", "params": { "variant": 2, "tilt": [-1, 1] }, "variants": 2, "weight": 1.5 },
+                   { "include": "headstone_carved", "params": { "variant": 3, "tilt": [-1, 1] }, "variants": 2, "weight": 1 } ] } },
+    { "name": "stones", "material": "slab_stone",
+      "generate": { "op": "scatter", "on": "ground", "area": { "rect": [9.5, 7.5] }, "min_distance": 1.8, "count": 6,
+        "avoid": [[0, 0, 1.0]], "clear_of": { "part": "graves", "radius": 0.8 }, "align": 1, "sink": 0.05, "scale": [0.35, 0.7],
+        "items": [ { "include": "grave_rock", "variants": 3 } ] } }
+  ]
+}

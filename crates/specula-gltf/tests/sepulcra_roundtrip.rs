@@ -33,6 +33,9 @@ fn all_models() -> Vec<(String, Model)> {
     let (style, lib) = library();
     let mut out = Vec::new();
     for (name, text) in &lib {
+        if text.contains("\"texgraph\"") {
+            continue; // a texture graph that recipes use, not a recipe
+        }
         let tiered = text.contains("\"tier\"");
         for tier in if tiered { vec![Some(1.0), Some(2.0), Some(3.0)] } else { vec![None] } {
             let vals: Vec<(&str, f64)> = tier.map(|t| vec![("tier", t)]).unwrap_or_default();

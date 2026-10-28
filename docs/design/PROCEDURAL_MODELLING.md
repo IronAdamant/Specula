@@ -1,6 +1,7 @@
 # Design: procedural modelling and the taste loop
 
-Status: designed 2026-10-13, not yet implemented. Tier 1 lands in M2 and tiers 2–4 in M4
+Status: designed 2026-10-13. Tier 1 built in M2 (2026-10-13); tiers 2–4 and procedural materials
+built for M4 on 2026-10-22: see [Tiers 2-4 as built](#tiers-2-4-as-built-2026-10-22)
 ([ROADMAP.md](../ROADMAP.md)).
 
 **Goal:** agents author original, on-style, efficient 3D content directly in the engine, with no external modelling
@@ -61,6 +62,234 @@ Notes:
   - exact plane-based CSG with robust predicates for hard surfaces
   - SDF booleans for organic work, where small inexactness is invisible
   - every boolean result validated (watertight, no degenerate triangles) before acceptance
+
+## Tiers 2-4 as built (2026-10-22)
+
+Everything below is recipe data (`model_build` builds it on the model workers, never the engine
+thread) plus three agent tools. Every field is validated with a path (`parts[0].shape.of[2].ops[0]`),
+an error code and a reason; every size that drives work or memory is capped and charged before the
+work runs; everything is deterministic (exact integer predicates, the crate's own trig and noise,
+ordered containers, per-pixel-independent threads). `cargo test -p specula-model` covers it
+(`tests/procgen_recipes.rs`, `tests/sepulcra_assets.rs` pins the Sepulcra assets' hashes);
+`scripts/procgen_check.py` proves it live.
+
+### Tier 2: booleans (`crate::csg`)
+
+```json
+"shape": { "op": "difference", "bevel": 0.012, "bevel_segments": 1, "of": [
+  { "op": "extrude", "outline": { "arch": [0.52, 0.86] }, "height": 0.16, "ops": [ { "op": "rotate", "deg": [-90, 0, 0] } ] },
+  { "op": "box", "size": [0.34, 0.22, 0.08], "ops": [ { "op": "move", "by": [0, 0.2, 0.1] } ] } ] }
+```
+
+- Shapes `union`, `difference` (the first minus the rest) and `intersection`; operands are any
+  shapes (booleans nest) with their own `ops` and `when`. Operands must be closed solids.
+- **Exact plane-based CSG.** Each tree is snapped once to an integer grid (±2^18 steps across its
+  bounds: micrometres for a prop), every triangle becomes a support plane plus edge planes, and every
+  vertex stays an intersection of three input planes, so nesting never loses precision. The BSP
+  clipping (csg.js's scheme) classifies with a 256-bit orientation determinant behind a proven
+  float filter: coplanar faces (boxes sharing a face, a cutter flush with a wall) are decided exactly.
+  Disjoint operands are united by concatenation, and many disjoint cutters are cut with one tree of
+  the target (a wall's windows in one pass).
+- **Output:** exact welding (candidates confirmed against the other point's planes), T-junctions split
+  exactly, pieces of one face re-merged and triangulated with their holes (hole bridging, ear
+  clipping that respects collinear points), straight-edge points dropped, then sub-20 µm features
+  collapsed or flipped away. The result is checked closed (every directed edge balanced); an open
+  result is an `InvalidMesh` error with the count. Colours and bevel tags come from the operand each
+  piece was cut from, so a cutter can colour its cut faces.
+- **Bevels on boolean edges** (`bevel` metres, `bevel_segments` 1 = chamfer, up to 8 = rounds): the
+  edges where faces from different operands meet are chained into runs, each chain swept into one
+  closed tube (mitred at joints, squared at chain ends) and applied in the same exact plane space:
+  cut from convex edges, added into concave ones. A tube that would fold on itself is skipped and
+  counted. When the pass's booleans fail, each tube is tried on its own and only those that fail
+  alone are left sharp (counted in `skipped`); `bevel_failed` says so only if even the rest fail.
+  Concave fillets are costly where curved operands meet (a ring on a cross more than tripled its
+  triangles), so bevel such parts before the union instead.
+- **Limits:** 24,000 operand triangles, 200,000 live polygons, the build's work budget (below), 8
+  levels of nesting, 64 operands, 2,048 bevel runs.
+- **Degenerate input and output:** an operand that loses triangles on the grid while being only a
+  few grid steps across is refused (a 1 cm cut on a 10 km slab used to vanish silently); any other
+  triangles the grid drops are counted (`dropped_triangles`). A connected piece of the result whose
+  mean thickness (2·|volume| / area) is under 40 µm is a sliver: it is dropped and counted
+  (`slivers_dropped`), and a result that is all slivers (a solid minus itself nudged by a micron, or
+  turned 0.001°) is refused as having no volume.
+
+### Tier 3: SDF modelling (`crate::sdf`)
+
+```json
+"shape": { "op": "sdf", "resolution": 40, "tree": { "op": "union", "smooth": 0.12,
+  "displace": { "amount": 0.03, "scale": 0.15 }, "of": [
+    { "op": "ellipsoid", "radii": [0.42, 0.28, 0.34], "color": "carved_shadow" },
+    { "op": "sphere", "radius": 0.2, "at": [-0.05, 0.3, -0.04], "color": "moss" } ] } }
+```
+
+- Primitives `sphere box cylinder cone capsule torus ellipsoid halfspace`, **centred on `at`** (mesh
+  shapes rest on y = 0; sculpts are placed point by point); groups `union difference intersection`
+  with `smooth` (Quilez's polynomial smooth minimum, colours blended the same way).
+- Modifiers on any node: `at rotate scale mirror repeat elongate twist bend round shell displace
+  color`. Uncoloured nodes take the part's colour.
+- **Meshing:** dual contouring on a grid of `resolution` cells along the longest side (≤ 160, ≤ 4 M
+  samples), sparse: 8³-cell blocks whose centre is farther from the surface than the tree's
+  conservative Lipschitz reach are filled by sign. The reach (Lipschitz factor and slack) folds in
+  every node, bounded or not: an unbounded displaced cutter (a half-space with noise) counts as
+  much as a bounded one. Each sample costs the tree's evaluation weight (`sdf::eval_cost`: a noise
+  octave about as much as a primitive). One vertex per surface cell (a QEF of the
+  crossings' planes regularised towards their mass point, clamped to the cell): flat faces stay flat
+  and creases sharp. The outer sample layer counts as outside, so the mesh is always closed (it may
+  have edges where two sheets touch: still balanced). Unbounded trees (a half-space in a union) need
+  `bounds`. The triangle count is known before any is made.
+- **LOD:** the coarse rebuild halves the resolution and drops displacement.
+
+### Tier 4: generators (`generate` on a part)
+
+A part takes exactly one of `shape`, `include` or `generate`; a generator may make several pieces.
+
+- **`building`** (`crate::building`): `plan` (any outline), `floors`, `floor_height`, `wall`,
+  `hollow`, `plinth`/`band`/`cornice` `[height, out]`, `windows` (bays: width, height, sill, spacing,
+  margin, depth, arch, trim, glass, floors), `doors` (side, at, width, height, arch), `roof` (flat
+  with parapet, gable, hip, shed on rectangular plans, pyramid on convex ones, none), `ruin` (broken
+  tops, no roof, seeded), `bevel` on the openings, and `materials` per role (walls, roof, trim, door,
+  glass; the part's material by default). Openings are cut with the tier-2 booleans in one pass.
+- **`terrain`** (`crate::terrain`): `size`, `samples` (≤ 257 a side), `base`, noise `layers`
+  (fbm, ridged, billow), `warp`, `island`, `terrace`, flat `pads`, hydraulic `erosion` (seeded
+  droplets one after another) and `thermal` relaxation (double-buffered), up to four `splat` layers by
+  slope, height and noise, `depth` (a closed slab whose sides are soil-coloured from a lip 3 cm under the rim), `mesh_step`. The heights use **the physics
+  heightfield's convention** (centred; cell split v10-v01), so `Terrain::height_at` is exactly the
+  collider's surface. `Model.extras.terrain` keeps the heights and splat weights (RGBA8 per sample)
+  for the future terrain renderer; `physics_heightfield(max_side)` resamples for the engine's
+  129-a-side colliders; `walkable_cells(max_slope)` marks cells a navmesh builder may walk.
+- **`scatter`** (`crate::scatter`): Poisson-disc (Bridson) in an `area` outline, `min_distance`,
+  `count`, rules (`slope`, `height`, noise `mask`, a `splat` layer's weight, `avoid` circles, `clear_of` an
+  earlier scatter part's placements by a radius, 256 circles in all), items
+  by `weight` (a `shape` with ops, or an `include` with params sampled from `[min, max]`, `variants`
+  built once each), `scale`, `yaw`, `tilt`, `align` to the ground, `sink`; `on` an earlier terrain
+  part of the same recipe (a terrain part whose ops do more than colour it is refused there: scatter
+  and the exported heightfield use the generator's own heights, before the part's ops). Copies merge
+  into one mesh per material: for many separate, instanced, culled entities use the
+  `procgen_scatter` tool instead. At most 256 `avoid` circles (with `clear_of`'s). Rules run as each
+  Poisson sample is accepted, so a scatter stops at its `count`; polygon areas (≤ 1,024 points) are
+  tested on a grid of their edges (a candidate meets a handful, not all of them).
+
+### Work budget and cancelling (`crate::work`)
+
+Every build shares one work budget, `work::MAX_BUILD` = 1.5·10^9 **work units**, across booleans,
+sculpts, generators, scatters and texture bakes, and the tier-1 stages every recipe has: shape ops
+(per vertex: a displace about 750 plus 50 an octave, cavity shading 3,200, weld 650; per output
+triangle: subdivisions and copies), assembling the mesh (2,500 a vertex), each LOD simplification
+(3,000 an input triangle: 24 clustering passes) and the collider (600 a hull point), includes
+too. A unit is an estimated nanosecond of
+one core of the reference laptop: each tier counts its own operations and weighs them by what they
+cost there (a CSG classification 200 and each exact predicate 100 more; an SDF sample its tree's
+`eval_cost`, a 6-octave displaced sphere about 680; a terrain noise octave 50, a droplet step 150; a
+scatter candidate 280 plus 10 per polygon edge tested; a texture pixel operation 20 on one core,
+since low-end devices may have one or two, with per-op costs measured per op). Units are counted, never timed, so where a build runs out is the same on every
+machine; the weights make that about 1-2 s of wall time on the reference laptop, even with other
+work running (`cargo run --release -p specula-model --example work_calibration` prints each tier's
+worst cases as wall ns per unit charged: 0.2-1.1 measured on 2026-10-22, noisy with other sessions
+on the machine). Before the units, a capped boolean took 9-12 s, a capped sculpt 212 s and a comb
+scatter 7 s.
+
+The engine queues procedural recipes apart: one worker takes them first, the other light workers
+take them when no light build waits, and the first light worker never does, so a light build never
+waits behind a sculpt (tier-1 recipes stay on the light queue: they are bounded like everything
+else). Each build has a cancel flag (`work::cancel_on`) that every budget check and the long tier-1
+loops (displace, cavity shading, LOD passes, hull directions) read: a build no entity wants any more
+stops within milliseconds, and one that finished anyway is kept and cached.
+
+### Procedural materials: texture graphs (`crate::texgraph`)
+
+```json
+"textures": { "stone": "tex_crypt_stone" },
+"parts": [ { "name": "walls", "material": "carved_stone", "texture": "stone", "uv_scale": 1.6, ... } ]
+```
+
+- A graph is text: named nodes, each an op over earlier ones (no cycles by construction): `noise`
+  (value, perlin, fbm, ridged, billow, worley, worley_edge, tiling), `bricks`, `gradient`,
+  `constant`, `blend` (mix, multiply, add, subtract, screen, overlay, max, min, difference; mask),
+  `curve`, `levels`, `invert`, `warp`, `blur`, `normal`, `ao`, `curvature`, `gradient_map` (palette
+  colours). Outputs: `base_color`, `height` or `normal` (+ `normal_strength`), `roughness`,
+  `metallic`, `ao` (a node, or `{radius, strength}` from the height; multiplied into the base
+  colour: the engine has no occlusion slot) and `emissive`.
+- Inline in a recipe's `textures`, or a library file with `"texgraph": 1` (a recipe folder's other
+  files are its library; such a file is refused as a recipe with a pointer to how to use it). A
+  textured part's material key is `preset+lib:<file>` or `preset+<recipe>/<name>`, so an including
+  recipe's own texture names never repaint an included one; included recipes' *inline* graphs
+  aren't baked (an error says to make them library files).
+- Baked on the model worker into RGBA8 sets (sRGB base, unorm normal in the engine's convention,
+  glTF metallic-roughness), rows split across up to 4 threads (the bits don't depend on the count),
+  mip chains made on the worker and drawn with the engine's textured pipeline. Textured parts get
+  box-projected UVs (`uv_scale` metres per repeat; split where the projection changes). The texture
+  dresses the part's own material only (a building's door and glass keep theirs).
+- Sizes are powers of two 16..1024 (256 suits the iGPU: about 1 MB of GPU memory per set with
+  mips); every node's cost (derived normals and emissive included) is charged to the build's work
+  budget before it runs, all of a model's sets together take at most 32 MiB of GPU memory with mips
+  (two 1024 sets with normal maps), and images are freed after their last use (160 MB live at
+  most).
+
+### LODs
+
+Recipes with booleans, sculpts or generators take **the coarse rebuild as LOD 1** (no bevels, half
+the SDF resolution, a coarser terrain grid) when it saves at least 10%: clustering would fold their
+cuts and recesses. Later LODs cluster as before.
+
+### Agent tools
+
+| Tool | Does |
+|---|---|
+| `model_build` | Builds any recipe: per-LOD triangles, the procedural steps each part took (`procgen.steps`: work, grid, placements...), texture sets (size, GPU bytes, hash), the terrain |
+| `procgen_texture` | Bakes a texture graph (inline or a file) and returns stats plus an image strip: base, normal, roughness, metallic; `save` writes it to the captures folder |
+| `procgen_terrain` | Builds a terrain (a recipe's or an inline spec) and reports it: height range, splat coverage, walkable share (at `max_slope`, default 45° as `nav_build`'s agents); `collider: {entity}` puts its heightfield collider on an entity through `world_set`; `preview` adds an image |
+| `procgen_scatter` | Poisson-disc placements with rules on flat ground or a terrain recipe; `spawn` makes one model entity per placement in one `world_batch` (journaled, claim-checked, undoable; one recipe instances on the GPU) |
+
+The three tools run on the calling agent's protocol thread (two at a time across all agents), each
+bounded by the build work budget; their world edits go through the engine like any agent's. Every
+argument object is key-checked, nested ones too (`area`, `mask`, `ground`, `spawn`, `items[i]`,
+`items[i].model`, `collider`), and seeds must be whole numbers: a typo is an error, never a default.
+A terrain part's `move` and `scale` ops (and the recipe's `finish`, and through an `include` the
+including part's ops and the outer `finish`; the first terrain is the model's) are carried in
+`Model.extras.terrain_transform`, so the collider and a scatter's ground follow them; a rotation,
+mirror or reshaping op (displace, bend...) is refused with `terrain_rotated` / `terrain_reshaped`.
+
+### Sepulcra dogfood
+
+Recipes only, in `games/sepulcra/assets/recipes`: `headstone_carved` (arched with a sunk panel and
+a carved cross, a ringed cross of bevelled boxes, a broken obelisk; bevelled booleans; half the
+graveyard's tombstones in the game now), `crypt` (building generator, textured with `tex_crypt_stone`), `ruined_wall`
+(booleans plus an SDF rubble heap, textured), `grave_rock` (SDF), `graveyard_ground` (terrain) and
+`graveyard_plot` (terrain plus scattered headstones and rocks in one model). The slab floats over
+mist, so no terrain was put under it.
+
+### Measured (2026-10-22, this machine shared with other sessions, release build, best of 3-5)
+
+`cargo run --release -p specula-model --example procgen_bench`:
+
+| Case | Time | Output |
+|---|---|---|
+| Wall minus 12 windows | 5.5 ms | 312 triangles |
+| ... chamfered (96 runs) | 55 ms | 1,752 triangles |
+| Sphere (1,280) minus 3 cylinders | 587 ms; 1.25 s to the work budget since it | refused since the work budget (the heavy case: curved operands; use an SDF) |
+| SDF rock, resolution 24 / 48 / 96 | 8 / 43 / 241 ms | 1,792 / 7,200 / 28,888 triangles |
+| Terrain 129², 20k droplets, 10 thermal | 118 ms | |
+| Scatter 100 × 100 m at 1.5 m | 23 ms | 2,825 placements |
+| Crypt stone 256 px (4 threads / 1) | 80 / 319 ms | 1 MB GPU |
+| Crypt stone 512 px (4 threads / 1) | 245 / 1,228 ms | 4 MB GPU |
+| Recipes: headstone 2 / crypt / ruined wall / rock / ground / plot | 90 / 190 / 350 / 21 / 164 / 674 ms | 466 / 1,110 / 3,658 / 720 / 7,264 / 12,662 triangles |
+
+Live (`procgen_check.py`, Intel iGPU, dev engine): a 1600×900 capture of the scattered graveyard
+(90 headstones and 14 rocks as instanced entities on the heightfield) takes 8.8 ms of GPU, 58 draw
+calls for 22,610 triangles.
+
+### Not done yet
+
+- The bevel pass leaves more triangles than it needs where a merged face fails to re-triangulate
+  (it falls back to the pieces); a chamfered wall is about 5× its sharp self.
+- Curved, dense operands are slow in the BSP (a 1,280-triangle sphere is a 1,280-deep chain);
+  organic work belongs in SDFs.
+- Textures of an included recipe's inline graphs aren't baked (name a library graph instead).
+- A recipe's own scatter `on` a terrain part whose ops do more than colour it is refused (the tools
+  follow moves and scales, the recipe generator doesn't yet), and `mesh_step` > 1 draws a coarser
+  surface than the heights a scatter or collider uses.
+- Road and path layout along splines (tier 4 in the plan above) isn't built.
+- A terrain renderer (LOD, splat materials) is a separate lane: it reads `Model.extras.terrain`.
 
 ## Materials
 

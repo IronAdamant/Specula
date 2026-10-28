@@ -54,6 +54,7 @@ mod nav_tools;
 mod locus;
 pub mod playtest;
 mod playtest_engine;
+mod procgen_tools;
 pub mod project;
 mod project_engine;
 mod project_kinds;
@@ -389,7 +390,8 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
                 .with_formats(Arc::clone(&engine.formats))
                 .with_lex_natives(engine.lex_natives.clone())
                 .with_capture_dir(engine.capture_dir.clone(), safe_path::Roots::for_files(&engine.capture_dir, &captures_root, &engine.worlds_dir, named_assets.as_deref()))
-                .with_studio(Arc::clone(&engine.studio.shared)),
+                .with_studio(Arc::clone(&engine.studio.shared))
+                .with_procgen(procgen_tools::Context { assets: assets.clone(), style: args.style.clone(), captures: engine.capture_dir.clone() }),
         ),
     )
     .map_err(|e| format!("MCP server: {e}"))?;

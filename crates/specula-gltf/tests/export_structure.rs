@@ -296,6 +296,9 @@ fn every_sepulcra_export_is_structurally_valid() {
     }
     let mut checked = 0;
     for (name, text) in &lib {
+        if text.contains("\"texgraph\"") {
+            continue; // a texture graph that recipes use, not a recipe
+        }
         let model = build(text, &BuildParams { library: Some(&lib), ..BuildParams::new(&style) }).unwrap();
         let set = model.rig.as_ref().and_then(|r| std::fs::read_to_string(root.join(format!("anims/{name}.json"))).ok().map(|a| AnimSet::load(&a, Skeleton::from_rig(r).unwrap()).unwrap()));
         let clips: Vec<_> = set.as_ref().map(|s| s.clips().map(|(_, c)| c.clone()).collect()).unwrap_or_default();

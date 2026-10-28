@@ -191,10 +191,16 @@ pub fn wall_spec(seed: u32) -> ModelSpec {
     ModelSpec::new("recipes/wall_segment.json").with_seed(u64::from(seed % 1_000_000))
 }
 
-/// A tombstone of the graveyard; `index` varies its stones and lean.
+/// A tombstone of the graveyard; `index` varies its stones and lean. Every other one is a carved
+/// headstone (`headstone_carved`, cut with bevelled booleans): arched with a sunk panel, a ringed
+/// cross, or a broken obelisk.
 pub fn tombstone_spec(index: usize) -> ModelSpec {
     let tilt = ((index * 37) % 13) as f64 / 6.0 - 1.0;
-    ModelSpec::new("recipes/tombstone.json").with_seed(606 + index as u64 * 7).with_param("tilt", tilt)
+    match index % 4 {
+        1 => ModelSpec::new("recipes/headstone_carved.json").with_param("variant", 1.0).with_param("tilt", tilt),
+        3 => ModelSpec::new("recipes/headstone_carved.json").with_param("variant", if (index / 4) % 2 == 0 { 2.0 } else { 3.0 }).with_param("tilt", tilt),
+        _ => ModelSpec::new("recipes/tombstone.json").with_seed(606 + index as u64 * 7).with_param("tilt", tilt),
+    }
 }
 
 /// A 2 m fence segment (along X).

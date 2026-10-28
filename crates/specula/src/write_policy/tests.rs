@@ -195,7 +195,31 @@ fn exempt_move(f: &mut Fix, why: Exempt<'static>) -> Result<(), WorldError> {
     f.live.exempt(&mut f.sw, 1, why, |wd| wd.update(&EntityKey::Id(id), moved(3.0), why.by()).map(|_| ()))
 }
 
+/// What `procgen_scatter` sends for three placements at `at` (one `world_batch` of model spawns,
+/// under `parent` if given), committed as mallory's world_batch.
+fn procgen_scatter(f: &mut Fix, at: [f32; 3], parent: Option<&str>) -> Result<(), WorldError> {
+    let items = vec![Json::parse(r#"{"model": {"recipe": "recipes/tombstone.json", "params": {"tier": [1, 3]}}}"#).unwrap()];
+    let places: Vec<specula_model::scatter::Placement> =
+        (0..3).map(|i| specula_model::scatter::Placement { position: [i as f32 * 0.5, 0.0, 0.0], rotation_deg: [0.0, 30.0 * i as f32, 0.0], scale: 1.0, item: 0, variant: i }).collect();
+    let spawn = Json::parse(&parent.map_or("{}".to_string(), |p| format!(r#"{{"parent": "{p}", "name": "grave"}}"#))).unwrap();
+    let crate::tools::Command::Batch(ops) = crate::procgen_tools::spawn_command(&items, &places, at, &spawn).unwrap() else { panic!("procgen_scatter sends one world_batch") };
+    agent(f, MALLORY, Kind::Batch, Rule::World, |wd| wd.apply_batch(ops, "mallory").map(|_| ()).map_err(|(_, e)| e))
+}
+
+/// What `procgen_terrain` sends to put a heightfield collider on `path`, committed as mallory's
+/// world_set.
+fn procgen_collider(f: &mut Fix, path: &str) -> Result<(), WorldError> {
+    let crate::tools::Command::Set(key, change) = crate::procgen_tools::collider_command(path, 3, 3, [1.0, 1.0], &[0.0; 9], [0.0; 3]).unwrap() else { panic!("procgen_terrain sends one world_set") };
+    agent(f, MALLORY, Kind::Set, Rule::World, |wd| wd.update(&key, change, "mallory").map(|_| ()))
+}
+
 const ROWS: &[(&str, Write, Expect)] = &[
+    // The procgen tools (procgen_tools.rs): exactly what they send, as the calling agent.
+    ("procgen_scatter's spawn batch into a claimed region", |f| procgen_scatter(f, [5.0, 0.0, 5.0], None), Expect::Refused("claimed")),
+    ("procgen_scatter's spawn batch under a claimed parent", |f| procgen_scatter(f, [90.0, 0.0, 90.0], Some("/abox")), Expect::Refused("claimed")),
+    ("procgen_scatter's spawn batch on free ground", |f| procgen_scatter(f, [90.0, 0.0, 90.0], None), Expect::Allowed),
+    ("procgen_terrain's collider on a region-claimed entity", |f| procgen_collider(f, "/rbox"), Expect::Refused("claimed")),
+    ("procgen_terrain's collider on a free entity", |f| procgen_collider(f, "/mg"), Expect::Allowed),
     // Agents' tools (Live::commit).
     ("world_set on a path-claimed entity", |f| set_abox(f, Rule::World), Expect::Refused("claimed")),
     ("world_set on a region-claimed entity", |f| {

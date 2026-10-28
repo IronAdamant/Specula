@@ -187,6 +187,10 @@ pub fn simplify(parts: &[LodInput], ratio: f32, origin: V3, extent: f32) -> Opti
     let (mut lo, mut hi) = (extent * 1e-4, extent * 0.5);
     let mut best: Option<(Vec<Shape>, f32, usize)> = None;
     for _ in 0..24 {
+        // A cancelled build stops between passes (its caller fails it).
+        if crate::work::cancelled() {
+            return None;
+        }
         let mid = (lo * hi).sqrt();
         let r = run(mid);
         if !reference.accepts(&r) {

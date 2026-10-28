@@ -1,0 +1,53 @@
+{
+  "recipe": 1,
+  "name": "headstone_carved",
+  "category": "graveyard",
+  "description": "Carved headstones cut with booleans (tier 2), chamfered where the cuts meet the stone: 1 an arched stone with a sunk panel and a carved cross, 2 a ringed cross, 3 a broken obelisk. Graveyard neutrals with lichen from the ground (STYLE.md).",
+  "seed": 611,
+  "params": {
+    "variant": { "default": 1, "min": 1, "max": 3, "integer": true, "description": "1 arched, 2 ringed cross, 3 broken obelisk" },
+    "tilt": { "default": 0, "min": -1, "max": 1, "description": "-1..1, scales the lean" }
+  },
+  "budget": { "max_triangles": 900 },
+  "lods": [0.5, 0.25],
+  "collider": "aabb",
+  "smooth_angle": 30,
+  "parts": [
+    { "name": "footing", "material": "graveyard_stone", "color": "lichen",
+      "shape": { "op": "box", "size": [0.66, 0.08, 0.3], "bevel": 0.02 },
+      "ops": [ { "op": "displace", "amount": 0.008, "scale": 0.15 } ] },
+    { "name": "arched", "material": "graveyard_stone", "when": "variant == 1",
+      "shape": { "op": "difference", "bevel": 0.012, "of": [
+        { "op": "extrude", "outline": { "arch": [0.52, 0.86], "segments": 10 }, "height": 0.16, "corner_bevel": 0.015,
+          "ops": [ { "op": "rotate", "deg": [-90, 0, 0] }, { "op": "move", "by": [0, 0.07, 0.08] } ] },
+        { "op": "box", "size": [0.34, 0.22, 0.08], "ops": [ { "op": "move", "by": [0, 0.2, 0.1] } ] },
+        { "op": "box", "size": [0.05, 0.24, 0.08], "ops": [ { "op": "move", "by": [0, 0.5, 0.1] } ] },
+        { "op": "box", "size": [0.17, 0.05, 0.08], "ops": [ { "op": "move", "by": [0, 0.64, 0.1] } ] } ] },
+      "ops": [ { "op": "rotate", "deg": ["-4 * tilt", 0, "3 * tilt"], "pivot": [0, 0.07, 0] },
+               { "op": "gradient", "from": "lichen", "to": "grave_stone", "range": [0, 0.45], "strength": 0.6 },
+               { "op": "bevel_tint", "color": "#c4c0b6", "amount": 0.7 },
+               { "op": "noise_tint", "amount": 0.07, "scale": 0.12 } ] },
+    { "name": "cross", "material": "graveyard_stone", "when": "variant == 2",
+      "shape": { "op": "union", "of": [
+        { "op": "box", "size": [0.16, 1.05, 0.13], "bevel": 0.015 },
+        { "op": "box", "size": [0.56, 0.15, 0.13], "bevel": 0.015, "ops": [ { "op": "move", "by": [0, 0.66, 0] } ] },
+        { "op": "torus", "radius": 0.19, "tube": 0.035, "segments": 16, "sides": 4,
+          "ops": [ { "op": "move", "by": [0, -0.035, 0] }, { "op": "rotate", "deg": [90, 0, 0] }, { "op": "move", "by": [0, 0.735, 0] } ] } ] },
+      "ops": [ { "op": "move", "by": [0, 0.07, 0] },
+               { "op": "rotate", "deg": ["-3 * tilt", 0, "4 * tilt"], "pivot": [0, 0.07, 0] },
+               { "op": "gradient", "from": "lichen", "to": "grave_stone", "range": [0, 0.35], "strength": 0.6 },
+               { "op": "bevel_tint", "color": "#c4c0b6", "amount": 0.7 },
+               { "op": "noise_tint", "amount": 0.07, "scale": 0.12 } ] },
+    { "name": "obelisk", "material": "graveyard_stone", "when": "variant == 3",
+      "shape": { "op": "difference", "bevel": 0.012, "of": [
+        { "op": "extrude", "outline": { "rect": [0.3, 0.3] }, "height": 1.15, "taper": 0.7, "bevel": 0.02 },
+        { "op": "box", "size": [0.8, 0.5, 0.8], "ops": [ { "op": "rotate", "deg": [18, 0, 24] }, { "op": "move", "by": [0, 0.95, 0] } ] },
+        { "op": "box", "size": [0.12, 0.12, 0.2], "ops": [ { "op": "rotate", "deg": [0, 45, 30] }, { "op": "move", "by": [0.15, 0.45, 0.12] } ] } ] },
+      "ops": [ { "op": "move", "by": [0, 0.07, 0] },
+               { "op": "rotate", "deg": ["-5 * tilt", 0, "2 * tilt"], "pivot": [0, 0.07, 0] },
+               { "op": "gradient", "from": "lichen", "to": "grave_stone", "range": [0, 0.4], "strength": 0.7 },
+               { "op": "bevel_tint", "color": "#c4c0b6", "amount": 0.7 },
+               { "op": "noise_tint", "amount": 0.08, "scale": 0.12 } ] }
+  ],
+  "finish": [ { "op": "ground_shade", "amount": 0.3, "height": 0.25 } ]
+}

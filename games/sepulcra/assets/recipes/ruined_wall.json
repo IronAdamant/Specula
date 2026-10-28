@@ -1,0 +1,36 @@
+{
+  "recipe": 1,
+  "name": "ruined_wall",
+  "category": "ruin",
+  "description": "A broken stretch of old wall (tiers 2 and 3): carved stone cut by an arched window and broken off at the top with booleans, rubble at its foot sculpted as a smooth SDF heap with moss. Change the seed for other breaks.",
+  "seed": 31,
+  "params": { "length": { "default": 3.2, "min": 2, "max": 5, "description": "metres" } },
+  "budget": { "max_triangles": 4000 },
+  "lods": [0.5, 0.25],
+  "collider": "convex_hull",
+  "smooth_angle": 30,
+  "let": { "half": "length * 0.5" },
+  "textures": { "stone": "tex_crypt_stone" },
+  "parts": [
+    { "name": "wall", "material": "carved_stone", "texture": "stone", "uv_scale": 1.6,
+      "shape": { "op": "difference", "bevel": 0.02, "of": [
+        { "op": "box", "size": ["length", 2.5, 0.42], "bevel": 0.03 },
+        { "op": "extrude", "outline": { "arch": [0.7, 1.3], "segments": 8 }, "height": 1.0,
+          "ops": [ { "op": "rotate", "deg": [-90, 0, 0] }, { "op": "move", "by": ["half * 0.25", 0.7, 0.5] } ] },
+        { "op": "box", "size": [1.6, 1.4, 1.0], "ops": [ { "op": "rotate", "deg": [0, 0, 32], "pivot": [0, 0.7, 0] }, { "op": "move", "by": ["half * 0.85", 1.75, 0] } ] },
+        { "op": "box", "size": [0.9, 0.8, 1.0], "ops": [ { "op": "rotate", "deg": [0, 0, -24], "pivot": [0, 0.4, 0] }, { "op": "move", "by": ["-half * 0.35", 2.3, 0] } ] },
+        { "op": "box", "size": [1.0, 1.6, 1.0], "ops": [ { "op": "rotate", "deg": [0, 0, -14], "pivot": [0, 0.8, 0] }, { "op": "move", "by": ["-half * 1.05", 1.6, 0] } ] } ] },
+      "ops": [ { "op": "gradient", "from": "carved_shadow", "to": "carved_stone", "range": [0, 0.5], "strength": 0.8 },
+               { "op": "bevel_tint", "color": "carved_highlight", "amount": 0.7 },
+               { "op": "noise_tint", "amount": 0.08, "scale": 0.3 } ] },
+    { "name": "rubble", "material": "carved_stone",
+      "shape": { "op": "sdf", "resolution": 56, "tree": { "op": "union", "smooth": 0.06, "displace": { "amount": 0.025, "scale": 0.12, "octaves": 3 }, "of": [
+        { "op": "ellipsoid", "radii": [0.55, 0.22, 0.4], "at": ["half * 0.55", 0.05, 0.45], "color": "carved_shadow" },
+        { "op": "box", "size": [0.3, 0.22, 0.26], "corner": 0.03, "at": ["half * 0.4", 0.18, 0.5], "rotate": [10, 35, 18], "color": "carved_stone" },
+        { "op": "box", "size": [0.26, 0.18, 0.22], "corner": 0.03, "at": ["half * 0.8", 0.12, 0.62], "rotate": [-8, 70, -12], "color": "carved_stone" },
+        { "op": "sphere", "radius": 0.16, "at": ["half * 0.2", 0.03, 0.35], "color": "moss" },
+        { "op": "ellipsoid", "radii": [0.3, 0.12, 0.25], "at": ["-half * 0.6", 0.02, 0.4], "color": "moss_light" },
+        { "op": "box", "size": [0.22, 0.16, 0.2], "corner": 0.025, "at": ["-half * 0.65", 0.12, 0.5], "rotate": [0, 20, 25], "color": "carved_stone" } ] } } }
+  ],
+  "finish": [ { "op": "ground_shade", "amount": 0.3, "height": 0.4 } ]
+}

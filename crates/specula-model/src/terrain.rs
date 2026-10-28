@@ -1,0 +1,747 @@
+//! Tier-4 terrain: heightfields from noise layers, shaping and erosion, all as data, with splat
+//! masks, a render mesh and exports for physics and navigation.
+//!
+//! A [`TerrainSpec`] (from a recipe's `terrain` generator or the `procgen_terrain` tool) builds a
+//! [`Terrain`]: `columns × rows` heights centred on the origin, the **same convention as the
+//! physics heightfield** (`specula_physics::shape::Heightfield`): sample `(x, z)` sits at
+//! `((x - (columns-1)/2) · cell.0, heights[z·columns + x], (z - (rows-1)/2) · cell.1)`, and each
+//! cell is the two triangles `[v00, v01, v10]` and `[v10, v01, v11]`. [`Terrain::height_at`]
+//! interpolates on exactly those triangles, so what stands on the terrain stands on its collider.
+//!
+//! - **Shape:** fBm, ridged and billow noise layers (feature size in metres), domain warp, an
+//!   island falloff, terraces, and flat pads (`flatten`: building sites, a slab's footprint).
+//! - **Erosion:** hydraulic droplets (deterministic: one seeded stream, droplets one after
+//!   another) and thermal relaxation (double-buffered), each bounded in work.
+//! - **Splat:** up to four layers by slope, height and noise, normalised per sample (RGBA8):
+//!   what a terrain renderer blends materials by; the mesh's vertex colours mix the layers'
+//!   colours for today's renderer.
+//! - **Exports:** [`Terrain::physics_heightfield`] (resampled to a side limit, e.g. the
+//!   engine's 129), [`Terrain::walkable_cells`] for navmesh building, [`Terrain::mesh`] (optionally
+//!   a closed slab with sides and a bottom).
+
+use specula_core::rng::Rng;
+
+use crate::math3::{self, V3};
+use crate::noise;
+use crate::shape::{Rgba, Shape, TAG_FACE};
+
+/// Most samples per side.
+pub const MAX_SIDE: u32 = 257;
+/// Most noise layers, splat layers and flat pads.
+pub const MAX_LAYERS: usize = 8;
+pub const MAX_SPLAT: usize = 4;
+pub const MAX_PADS: usize = 32;
+/// Most hydraulic droplets and thermal iterations.
+pub const MAX_DROPLETS: u32 = 200_000;
+pub const MAX_THERMAL: u32 = 200;
+/// Most work units one terrain may spend on its own ([`crate::work`]: sample visits weighed by
+/// [`crate::work::TERRAIN_VISIT`], a noise octave being one visit); a recipe's terrain gets
+/// what is left of its build.
+pub const MAX_WORK: u64 = crate::work::MAX_BUILD;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoiseKind {
+    Fbm,
+    Ridged,
+    Billow,
+}
+
+/// One noise layer, added to the height field.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NoiseLayer {
+    pub kind: NoiseKind,
+    /// Feature size (metres): the first octave's wavelength.
+    pub scale: f32,
+    pub octaves: u32,
+    /// Height of this layer (metres, peak to centre).
+    pub amplitude: f32,
+}
+
+/// A flat pad: the terrain eased to `height` within `radius`, blending out over `blend`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pad {
+    pub at: [f32; 2],
+    pub radius: f32,
+    pub height: f32,
+    pub blend: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hydraulic {
+    pub droplets: u32,
+    /// Strength 0..1 of how much each step erodes and deposits.
+    pub strength: f32,
+    /// Most steps of one droplet.
+    pub steps: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Thermal {
+    pub iterations: u32,
+    /// Slopes steeper than this slide (degrees).
+    pub talus_deg: f32,
+}
+
+/// A splat layer: where it shows (slope and height ranges, soft edges) and its colour.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SplatLayer {
+    pub name: String,
+    pub color: Rgba,
+    /// Degrees (0 = flat).
+    pub slope: [f32; 2],
+    /// Metres (world y).
+    pub height: [f32; 2],
+    /// Softness of the range edges (degrees for slope, metres for height).
+    pub soft: f32,
+    /// Noise breaking up the layer: amount 0..1 and feature size (metres).
+    pub noise: f32,
+    pub noise_scale: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TerrainSpec {
+    pub size: [f32; 2],
+    pub samples: [u32; 2],
+    pub base: f32,
+    pub seed: u64,
+    pub layers: Vec<NoiseLayer>,
+    /// Domain warp (metres).
+    pub warp: f32,
+    /// Island falloff 0..1: heights eased down towards the edges.
+    pub island: f32,
+    /// Terrace step (metres; 0 = none) and sharpness 0..1.
+    pub terrace: (f32, f32),
+    pub pads: Vec<Pad>,
+    pub hydraulic: Option<Hydraulic>,
+    pub thermal: Option<Thermal>,
+    pub splat: Vec<SplatLayer>,
+}
+
+/// Why a terrain failed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TerrainError {
+    pub field: &'static str,
+    pub message: String,
+    pub limit: bool,
+    pub measured: Option<f64>,
+    pub max: Option<f64>,
+}
+
+impl TerrainError {
+    fn bad(field: &'static str, m: impl Into<String>) -> TerrainError {
+        TerrainError { field, message: m.into(), limit: false, measured: None, max: None }
+    }
+    fn limit(field: &'static str, m: impl Into<String>, measured: f64, max: f64) -> TerrainError {
+        TerrainError { field, message: m.into(), limit: true, measured: Some(measured), max: Some(max) }
+    }
+}
+
+/// A built terrain: heights, splat weights and what it took.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Terrain {
+    pub columns: usize,
+    pub rows: usize,
+    pub cell: [f32; 2],
+    pub heights: Vec<f32>,
+    /// Splat weights per sample (RGBA8 = layers 0..3, summing to about 255).
+    pub splat: Vec<[u8; 4]>,
+    pub splat_names: Vec<String>,
+    pub splat_colors: Vec<Rgba>,
+    pub work: u64,
+}
+
+impl TerrainSpec {
+    /// Checks every number (the recipe layer checks types and paths first).
+    pub fn check(&self) -> Result<(), TerrainError> {
+        if !(self.size.iter().all(|s| *s > 0.0 && *s <= crate::recipe::MAX_EXTENT_M)) {
+            return Err(TerrainError::bad("size", format!("sizes must be in (0, {}] m", crate::recipe::MAX_EXTENT_M)));
+        }
+        if !self.samples.iter().all(|n| (2..=MAX_SIDE).contains(n)) {
+            return Err(TerrainError::limit("samples", format!("samples per side must be 2..{MAX_SIDE}"), self.samples[0].max(self.samples[1]) as f64, MAX_SIDE as f64));
+        }
+        if self.layers.len() > MAX_LAYERS || self.splat.len() > MAX_SPLAT || self.pads.len() > MAX_PADS {
+            return Err(TerrainError::limit("layers", format!("at most {MAX_LAYERS} noise layers, {MAX_SPLAT} splat layers, {MAX_PADS} flat pads"), 0.0, 0.0));
+        }
+        for l in &self.layers {
+            if !(l.scale > 0.0 && l.octaves >= 1 && l.octaves <= 10 && l.amplitude.abs() <= 10_000.0) {
+                return Err(TerrainError::bad("noise", "noise layers need scale > 0, octaves 1..10 and |amplitude| <= 10000 m"));
+            }
+        }
+        if let Some(h) = self.hydraulic {
+            if h.droplets > MAX_DROPLETS || h.steps > 256 || !(0.0..=1.0).contains(&h.strength) {
+                return Err(TerrainError::limit("erosion", format!("hydraulic erosion: droplets <= {MAX_DROPLETS}, steps <= 256, strength 0..1"), h.droplets as f64, MAX_DROPLETS as f64));
+            }
+        }
+        if let Some(t) = self.thermal {
+            if t.iterations > MAX_THERMAL || !(1.0..=89.0).contains(&t.talus_deg) {
+                return Err(TerrainError::limit("thermal", format!("thermal erosion: iterations <= {MAX_THERMAL}, talus 1..89 degrees"), t.iterations as f64, MAX_THERMAL as f64));
+            }
+        }
+        Ok(())
+    }
+
+    /// Builds the terrain (deterministic in the spec).
+    pub fn build(&self, max_work: u64) -> Result<Terrain, TerrainError> {
+        self.check()?;
+        let (cols, rows) = (self.samples[0] as usize, self.samples[1] as usize);
+        let cell = [self.size[0] / (cols - 1) as f32, self.size[1] / (rows - 1) as f32];
+        let n = cols * rows;
+        let mut work = 0u64;
+        let mut charge = |visits: u64| -> Result<(), TerrainError> {
+            work += visits * crate::work::TERRAIN_VISIT;
+            if work > max_work {
+                return Err(TerrainError::limit("erosion", format!("the terrain needs more than {max_work} work units (sample visits, noise octaves, droplet steps); use fewer samples, octaves, droplets or iterations"), work as f64, max_work as f64));
+            }
+            if crate::work::cancelled() {
+                return Err(TerrainError::limit("erosion", crate::work::CANCELLED, work as f64, max_work as f64));
+            }
+            Ok(())
+        };
+        let x0 = -((cols - 1) as f32) * cell[0] * 0.5;
+        let z0 = -((rows - 1) as f32) * cell[1] * 0.5;
+        let pos = |i: usize, j: usize| [x0 + i as f32 * cell[0], z0 + j as f32 * cell[1]];
+        // Per sample: each layer's octaves (five visits each), the warp's two 2-octave lookups,
+        // the rest.
+        let per_sample = self.layers.iter().map(|l| 5 * l.octaves.max(1) as u64 + 1).sum::<u64>() + if self.warp > 0.0 { 20 } else { 0 } + 2;
+        charge(n as u64 * per_sample)?;
+        let mut h = vec![self.base; n];
+        let warp_seed = self.seed ^ 0x5741_5250;
+        for j in 0..rows {
+            for i in 0..cols {
+                let mut p = pos(i, j);
+                if self.warp > 0.0 {
+                    let s = 1.0 / (self.layers.first().map_or(50.0, |l| l.scale));
+                    let wx = noise::fbm3(warp_seed, [p[0] * s, 0.0, p[1] * s], 2);
+                    let wz = noise::fbm3(warp_seed ^ 1, [p[0] * s, 7.3, p[1] * s], 2);
+                    p = [p[0] + wx * self.warp, p[1] + wz * self.warp];
+                }
+                let mut y = self.base;
+                for (li, l) in self.layers.iter().enumerate() {
+                    let s = 1.0 / l.scale;
+                    let seed = self.seed.wrapping_add((li as u64 + 1).wrapping_mul(0x9e37_79b9));
+                    let v = noise::fbm3(seed, [p[0] * s, 0.0, p[1] * s], l.octaves);
+                    y += l.amplitude
+                        * match l.kind {
+                            NoiseKind::Fbm => v,
+                            NoiseKind::Ridged => 1.0 - 2.0 * v.abs(),
+                            NoiseKind::Billow => 2.0 * v.abs() - 1.0,
+                        };
+                }
+                if self.island > 0.0 {
+                    let u = [p[0] / (self.size[0] * 0.5), p[1] / (self.size[1] * 0.5)];
+                    let r = (u[0] * u[0] + u[1] * u[1]).sqrt().min(1.0);
+                    let fall = 1.0 - self.island * r * r * (3.0 - 2.0 * r);
+                    y = self.base + (y - self.base) * fall;
+                }
+                h[j * cols + i] = y;
+            }
+        }
+        if let Some(hy) = self.hydraulic {
+            charge(hy.droplets as u64 * hy.steps as u64 * 15)?;
+            hydraulic(&mut h, cols, rows, cell, &hy, self.seed);
+        }
+        if let Some(t) = self.thermal {
+            charge(t.iterations as u64 * n as u64 * 5)?;
+            thermal(&mut h, cols, rows, cell, &t);
+        }
+        if self.terrace.0 > 0.0 {
+            let (step, sharp) = (self.terrace.0, self.terrace.1.clamp(0.0, 1.0));
+            for y in &mut h {
+                let k = (*y - self.base) / step;
+                let f = crate::dmath::floor(k);
+                let t = k - f;
+                // Twice-applied smoothstep, mixed in by `sharp`: flat treads, steep risers.
+                let s1 = t * t * (3.0 - 2.0 * t);
+                let s2 = s1 * s1 * (3.0 - 2.0 * s1);
+                let tt = t + (s2 - t) * sharp;
+                *y = self.base + (f + tt.clamp(0.0, 1.0)) * step;
+            }
+        }
+        // Pads, and the splat weights (a noise lookup per layer).
+        charge(n as u64 * (self.pads.len() as u64 + 3 * self.splat.len() as u64 + 1))?;
+        for pad in &self.pads {
+            for j in 0..rows {
+                for i in 0..cols {
+                    let p = pos(i, j);
+                    let (ddx, ddz) = (p[0] - pad.at[0], p[1] - pad.at[1]);
+                let d = (ddx * ddx + ddz * ddz).sqrt();
+                    let w = if d <= pad.radius {
+                        1.0
+                    } else if pad.blend > 0.0 && d < pad.radius + pad.blend {
+                        let t = 1.0 - (d - pad.radius) / pad.blend;
+                        t * t * (3.0 - 2.0 * t)
+                    } else {
+                        0.0
+                    };
+                    let y = &mut h[j * cols + i];
+                    *y += (pad.height - *y) * w;
+                }
+            }
+        }
+        let mut t = Terrain { columns: cols, rows, cell, heights: h, splat: Vec::new(), splat_names: Vec::new(), splat_colors: Vec::new(), work };
+        t.compute_splat(&self.splat, self.seed);
+        if !t.heights.iter().all(|y| y.is_finite() && y.abs() <= crate::recipe::MAX_EXTENT_M) {
+            return Err(TerrainError::bad("noise", format!("heights left ±{} m", crate::recipe::MAX_EXTENT_M)));
+        }
+        Ok(t)
+    }
+}
+
+/// Bilinear height and gradient on a grid (for erosion droplets), at cell coordinates.
+fn sample_grad(h: &[f32], cols: usize, x: f32, z: f32) -> (f32, [f32; 2]) {
+    let (i, j) = (x as usize, z as usize);
+    let (u, v) = (x - i as f32, z - j as f32);
+    let at = |a: usize, b: usize| h[b * cols + a];
+    let (h00, h10, h01, h11) = (at(i, j), at(i + 1, j), at(i, j + 1), at(i + 1, j + 1));
+    let gx = (h10 - h00) * (1.0 - v) + (h11 - h01) * v;
+    let gz = (h01 - h00) * (1.0 - u) + (h11 - h10) * u;
+    let hh = h00 * (1.0 - u) * (1.0 - v) + h10 * u * (1.0 - v) + h01 * (1.0 - u) * v + h11 * u * v;
+    (hh, [gx, gz])
+}
+
+/// Droplet erosion (after Hans Theobald Beyer's method): each droplet runs downhill carrying
+/// sediment, eroding where it speeds up and depositing where it slows; one seeded stream, one
+/// droplet after another, so the result is the same everywhere.
+fn hydraulic(h: &mut [f32], cols: usize, rows: usize, cell: [f32; 2], p: &Hydraulic, seed: u64) {
+    let mut rng = Rng::new(seed ^ 0x4859_4452, 11);
+    let (inertia, capacity_k, deposit, erode, evaporate, gravity) = (0.05f32, 4.0f32, 0.3f32, 0.3f32 * p.strength, 0.02f32, 4.0f32);
+    let min_slope = 0.01f32;
+    // Heights in cell units for the dynamics, so the result doesn't depend on the cell size.
+    let scale = 1.0 / cell[0].min(cell[1]);
+    for _ in 0..p.droplets {
+        let mut x = rng.f32() * (cols - 2) as f32;
+        let mut z = rng.f32() * (rows - 2) as f32;
+        let (mut dx, mut dz) = (0.0f32, 0.0f32);
+        let (mut speed, mut water, mut sediment) = (1.0f32, 1.0f32, 0.0f32);
+        for _ in 0..p.steps {
+            let (i, j) = (x as usize, z as usize);
+            let (u, v) = (x - i as f32, z - j as f32);
+            let (height, g) = sample_grad(h, cols, x, z);
+            dx = dx * inertia - g[0] * scale * (1.0 - inertia);
+            dz = dz * inertia - g[1] * scale * (1.0 - inertia);
+            let len = (dx * dx + dz * dz).sqrt();
+            if len < 1e-9 {
+                break;
+            }
+            dx /= len;
+            dz /= len;
+            let (nx, nz) = (x + dx, z + dz);
+            if nx < 0.0 || nz < 0.0 || nx >= (cols - 1) as f32 || nz >= (rows - 1) as f32 {
+                break;
+            }
+            let (new_h, _) = sample_grad(h, cols, nx, nz);
+            let dh = (new_h - height) * scale;
+            let cap = (-dh).max(min_slope) * speed * water * capacity_k;
+            let w = [(1.0 - u) * (1.0 - v), u * (1.0 - v), (1.0 - u) * v, u * v];
+            let idx = [j * cols + i, j * cols + i + 1, (j + 1) * cols + i, (j + 1) * cols + i + 1];
+            if sediment > cap || dh > 0.0 {
+                let amount = if dh > 0.0 { dh.min(sediment) } else { (sediment - cap) * deposit };
+                sediment -= amount;
+                for k in 0..4 {
+                    h[idx[k]] += amount * w[k] / scale;
+                }
+            } else {
+                let amount = ((cap - sediment) * erode).min(-dh);
+                for k in 0..4 {
+                    let take = amount * w[k] / scale;
+                    h[idx[k]] -= take;
+                }
+                sediment += amount;
+            }
+            speed = (speed * speed + dh.abs() * gravity).sqrt().min(50.0);
+            water *= 1.0 - evaporate;
+            x = nx;
+            z = nz;
+        }
+    }
+}
+
+/// Thermal relaxation: material on slopes steeper than the talus angle slides to the lowest
+/// neighbour, double-buffered (the same at any thread count).
+fn thermal(h: &mut [f32], cols: usize, rows: usize, cell: [f32; 2], t: &Thermal) {
+    let talus = crate::dmath::tan(t.talus_deg * std::f32::consts::PI / 180.0);
+    let mut delta = vec![0.0f32; h.len()];
+    for _ in 0..t.iterations {
+        delta.iter_mut().for_each(|d| *d = 0.0);
+        for j in 0..rows {
+            for i in 0..cols {
+                let c = j * cols + i;
+                let mut best: Option<(usize, f32)> = None;
+                for (di, dj, dist) in [(1isize, 0isize, cell[0]), (-1, 0, cell[0]), (0, 1, cell[1]), (0, -1, cell[1])] {
+                    let (a, b) = (i as isize + di, j as isize + dj);
+                    if a < 0 || b < 0 || a >= cols as isize || b >= rows as isize {
+                        continue;
+                    }
+                    let nb = b as usize * cols + a as usize;
+                    let drop = h[c] - h[nb];
+                    let excess = drop - talus * dist;
+                    if excess > 0.0 && best.is_none_or_less(excess) {
+                        best = Some((nb, excess));
+                    }
+                }
+                if let Some((nb, excess)) = best {
+                    let mv = excess * 0.25;
+                    delta[c] -= mv;
+                    delta[nb] += mv;
+                }
+            }
+        }
+        for (y, d) in h.iter_mut().zip(&delta) {
+            *y += d;
+        }
+    }
+}
+
+trait BestExcess {
+    fn is_none_or_less(&self, x: f32) -> bool;
+}
+
+impl BestExcess for Option<(usize, f32)> {
+    fn is_none_or_less(&self, x: f32) -> bool {
+        match self {
+            None => true,
+            Some((_, b)) => x > *b,
+        }
+    }
+}
+
+/// Soft membership of `v` in `[lo, hi]` with edges `soft` wide.
+fn band(v: f32, r: [f32; 2], soft: f32) -> f32 {
+    if soft <= 0.0 {
+        return if v >= r[0] && v <= r[1] { 1.0 } else { 0.0 };
+    }
+    let a = ((v - (r[0] - soft)) / soft).clamp(0.0, 1.0);
+    let b = (((r[1] + soft) - v) / soft).clamp(0.0, 1.0);
+    a.min(b)
+}
+
+impl Terrain {
+    fn x0(&self) -> f32 {
+        -((self.columns - 1) as f32) * self.cell[0] * 0.5
+    }
+    fn z0(&self) -> f32 {
+        -((self.rows - 1) as f32) * self.cell[1] * 0.5
+    }
+
+    /// The sample's position.
+    pub fn sample_pos(&self, i: usize, j: usize) -> V3 {
+        [self.x0() + i as f32 * self.cell[0], self.heights[j * self.columns + i], self.z0() + j as f32 * self.cell[1]]
+    }
+
+    /// Extent in x and z (metres).
+    pub fn size(&self) -> [f32; 2] {
+        [(self.columns - 1) as f32 * self.cell[0], (self.rows - 1) as f32 * self.cell[1]]
+    }
+
+    /// The cell and the barycentric place of (x, z) on its triangle (`None` off the terrain).
+    fn locate(&self, x: f32, z: f32) -> Option<(usize, usize, f32, f32)> {
+        let u = (x - self.x0()) / self.cell[0];
+        let v = (z - self.z0()) / self.cell[1];
+        if !(u >= 0.0 && v >= 0.0 && u <= (self.columns - 1) as f32 && v <= (self.rows - 1) as f32) {
+            return None;
+        }
+        let i = (crate::dmath::floor(u) as usize).min(self.columns - 2);
+        let j = (crate::dmath::floor(v) as usize).min(self.rows - 2);
+        Some((i, j, u - i as f32, v - j as f32))
+    }
+
+    /// The surface height at (x, z), on the same triangles as the physics heightfield.
+    pub fn height_at(&self, x: f32, z: f32) -> Option<f32> {
+        let (i, j, fu, fv) = self.locate(x, z)?;
+        let at = |a: usize, b: usize| self.heights[b * self.columns + a];
+        let (h00, h10, h01, h11) = (at(i, j), at(i + 1, j), at(i, j + 1), at(i + 1, j + 1));
+        Some(if fu + fv <= 1.0 { h00 + fu * (h10 - h00) + fv * (h01 - h00) } else { h11 + (1.0 - fu) * (h01 - h11) + (1.0 - fv) * (h10 - h11) })
+    }
+
+    /// The surface normal at (x, z) (of the triangle there).
+    pub fn normal_at(&self, x: f32, z: f32) -> Option<V3> {
+        let (i, j, fu, fv) = self.locate(x, z)?;
+        let p = |a: usize, b: usize| self.sample_pos(a, b);
+        let n = if fu + fv <= 1.0 { math3::tri_normal(p(i, j), p(i, j + 1), p(i + 1, j)) } else { math3::tri_normal(p(i + 1, j), p(i, j + 1), p(i + 1, j + 1)) };
+        Some(math3::normalize(n))
+    }
+
+    /// Slope at (x, z) in degrees (0 = flat).
+    pub fn slope_deg_at(&self, x: f32, z: f32) -> Option<f32> {
+        let n = self.normal_at(x, z)?;
+        Some(crate::dmath::acos(n[1].clamp(-1.0, 1.0)) * (180.0 / std::f32::consts::PI))
+    }
+
+    /// The splat weights at (x, z) (nearest sample).
+    pub fn splat_at(&self, x: f32, z: f32) -> Option<[u8; 4]> {
+        let (i, j, fu, fv) = self.locate(x, z)?;
+        let (a, b) = (if fu < 0.5 { i } else { i + 1 }, if fv < 0.5 { j } else { j + 1 });
+        self.splat.get(b * self.columns + a).copied()
+    }
+
+    fn compute_splat(&mut self, layers: &[SplatLayer], seed: u64) {
+        self.splat_names = layers.iter().map(|l| l.name.clone()).collect();
+        self.splat_colors = layers.iter().map(|l| l.color).collect();
+        if layers.is_empty() {
+            self.splat = vec![[255, 0, 0, 0]; self.heights.len()];
+            return;
+        }
+        let mut out = Vec::with_capacity(self.heights.len());
+        for j in 0..self.rows {
+            for i in 0..self.columns {
+                let p = self.sample_pos(i, j);
+                let slope = self.sample_slope(i, j);
+                let mut w = [0.0f32; 4];
+                for (k, l) in layers.iter().enumerate() {
+                    let mut v = band(slope, l.slope, l.soft) * band(p[1], l.height, l.soft);
+                    if l.noise > 0.0 {
+                        let s = 1.0 / l.noise_scale.max(1e-3);
+                        let nz = noise::fbm3(seed ^ (0x5350_4c00 + k as u64), [p[0] * s, 0.0, p[2] * s], 3);
+                        v *= (1.0 + l.noise * nz).clamp(0.0, 2.0);
+                    }
+                    w[k] = v;
+                }
+                let sum: f32 = w.iter().sum();
+                // Nothing matched: the first layer.
+                let w = if sum <= 1e-6 { [1.0, 0.0, 0.0, 0.0] } else { w.map(|x| x / sum) };
+                // Round, then give the remainder to the largest so the bytes sum to 255.
+                let mut b = w.map(|x| (x * 255.0) as u8);
+                let total: u32 = b.iter().map(|x| *x as u32).sum();
+                let big = (0..4).max_by(|&x, &y| w[x].total_cmp(&w[y]).then(y.cmp(&x))).expect("four");
+                b[big] = (b[big] as u32 + 255 - total.min(255)) as u8;
+                out.push(b);
+            }
+        }
+        self.splat = out;
+    }
+
+    /// Slope at a sample (from central differences), degrees.
+    fn sample_slope(&self, i: usize, j: usize) -> f32 {
+        let at = |a: usize, b: usize| self.heights[b * self.columns + a];
+        let (il, ir) = (i.saturating_sub(1), (i + 1).min(self.columns - 1));
+        let (jl, jr) = (j.saturating_sub(1), (j + 1).min(self.rows - 1));
+        let gx = (at(ir, j) - at(il, j)) / ((ir - il).max(1) as f32 * self.cell[0]);
+        let gz = (at(i, jr) - at(i, jl)) / ((jr - jl).max(1) as f32 * self.cell[1]);
+        crate::dmath::atan((gx * gx + gz * gz).sqrt()) * (180.0 / std::f32::consts::PI)
+    }
+
+    /// The heights for a physics heightfield collider of at most `max_side` samples per side
+    /// (resampled on the surface when larger), centred like this terrain: `(columns, rows,
+    /// heights, cell)`.
+    pub fn physics_heightfield(&self, max_side: usize) -> (usize, usize, Vec<f32>, [f32; 2]) {
+        let max_side = max_side.max(2);
+        if self.columns <= max_side && self.rows <= max_side {
+            return (self.columns, self.rows, self.heights.clone(), self.cell);
+        }
+        let size = self.size();
+        let (c, r) = (self.columns.min(max_side), self.rows.min(max_side));
+        let cell = [size[0] / (c - 1) as f32, size[1] / (r - 1) as f32];
+        let mut h = Vec::with_capacity(c * r);
+        for j in 0..r {
+            for i in 0..c {
+                let (x, z) = (-size[0] * 0.5 + i as f32 * cell[0], -size[1] * 0.5 + j as f32 * cell[1]);
+                // Clamp onto the terrain (float rounding at the far edge).
+                let (x, z) = (x.min(size[0] * 0.5), z.min(size[1] * 0.5));
+                h.push(self.height_at(x, z).unwrap_or(0.0));
+            }
+        }
+        (c, r, h, cell)
+    }
+
+    /// Per cell (`(columns-1) × (rows-1)`, row by row along +z): both triangles no steeper than
+    /// `max_slope_deg` — what a navmesh builder may walk on.
+    pub fn walkable_cells(&self, max_slope_deg: f32) -> Vec<bool> {
+        let lim = crate::dmath::cos(max_slope_deg.clamp(0.0, 90.0) * std::f32::consts::PI / 180.0);
+        let mut out = Vec::with_capacity((self.columns - 1) * (self.rows - 1));
+        for j in 0..self.rows - 1 {
+            for i in 0..self.columns - 1 {
+                let p = |a: usize, b: usize| self.sample_pos(a, b);
+                let n1 = math3::normalize(math3::tri_normal(p(i, j), p(i, j + 1), p(i + 1, j)));
+                let n2 = math3::normalize(math3::tri_normal(p(i + 1, j), p(i, j + 1), p(i + 1, j + 1)));
+                out.push(n1[1] >= lim && n2[1] >= lim);
+            }
+        }
+        out
+    }
+
+    /// The render mesh: every `step`-th sample (1 = all), vertex colours from the splat layers.
+    /// With `depth` > 0 it is a closed slab: sides down to `min height - depth` and a bottom.
+    pub fn mesh(&self, step: usize, depth: f32) -> Shape {
+        let step = step.max(1);
+        let pick = |n: usize| -> Vec<usize> {
+            let mut v: Vec<usize> = (0..n).step_by(step).collect();
+            if *v.last().expect("n >= 2") != n - 1 {
+                v.push(n - 1);
+            }
+            v
+        };
+        let (xs, zs) = (pick(self.columns), pick(self.rows));
+        let mut s = Shape::default();
+        let colour = |i: usize, j: usize| -> Rgba {
+            let w = self.splat[j * self.columns + i];
+            if self.splat_colors.is_empty() {
+                return [1.0; 4];
+            }
+            let mut c = [0.0f32; 4];
+            for (k, col) in self.splat_colors.iter().enumerate() {
+                for q in 0..4 {
+                    c[q] += col[q] * w[k] as f32 / 255.0;
+                }
+            }
+            c
+        };
+        for &j in &zs {
+            for &i in &xs {
+                s.positions.push(self.sample_pos(i, j));
+                s.colors.push(colour(i, j));
+            }
+        }
+        let (nx, nz) = (xs.len(), zs.len());
+        for b in 0..nz - 1 {
+            for a in 0..nx - 1 {
+                let v00 = (b * nx + a) as u32;
+                let (v10, v01, v11) = (v00 + 1, v00 + nx as u32, v00 + nx as u32 + 1);
+                s.tris.push([v00, v01, v10]);
+                s.tris.push([v10, v01, v11]);
+            }
+        }
+        if depth > 0.0 {
+            let floor = self.heights.iter().fold(f32::MAX, |m, h| m.min(*h)) - depth;
+            // The rim, counter-clockwise seen from above: along -z edge (+x), +x edge (+z),
+            // +z edge (-x), -x edge (-z).
+            let mut rim: Vec<u32> = Vec::new();
+            for a in 0..nx - 1 {
+                rim.push(a as u32);
+            }
+            for b in 0..nz - 1 {
+                rim.push((b * nx + nx - 1) as u32);
+            }
+            for a in (1..nx).rev() {
+                rim.push(((nz - 1) * nx + a) as u32);
+            }
+            for b in (1..nz).rev() {
+                rim.push((b * nx) as u32);
+            }
+            let side = [0.42, 0.40, 0.38, 1.0];
+            // A lip a few centimetres under the rim already takes the soil colour, so the
+            // splat doesn't smear down the sides (colours belong to points, which weld).
+            let lip_drop = (depth * 0.25).min(0.03);
+            let lip = s.positions.len() as u32;
+            for &r in &rim {
+                let p = s.positions[r as usize];
+                s.positions.push([p[0], p[1] - lip_drop, p[2]]);
+                s.colors.push(side);
+            }
+            let base = s.positions.len() as u32;
+            for &r in &rim {
+                let p = s.positions[r as usize];
+                s.positions.push([p[0], floor, p[2]]);
+                s.colors.push(side);
+            }
+            let m = rim.len() as u32;
+            for k in 0..m {
+                let (a, b) = (rim[k as usize], rim[((k + 1) % m) as usize]);
+                let (l, l2) = (lip + k, lip + (k + 1) % m);
+                s.tris.push([a, b, l2]);
+                s.tris.push([a, l2, l]);
+                let (a, b) = (l, l2);
+                let (a2, b2) = (base + k, base + (k + 1) % m);
+                // The rim runs clockwise seen from above (+x along the -z edge first); the top
+                // holds each rim edge reversed, so the sides hold it forwards.
+                s.tris.push([a, b, b2]);
+                s.tris.push([a, b2, a2]);
+            }
+            // The bottom: a fan from its centre (the rim's points along each side are
+            // collinear, so a fan from a corner would hold slivers).
+            let centre = s.positions.len() as u32;
+            s.positions.push([self.x0() + self.size()[0] * 0.5, floor, self.z0() + self.size()[1] * 0.5]);
+            s.colors.push(side);
+            for k in 0..m {
+                s.tris.push([centre, base + k, base + (k + 1) % m]);
+            }
+        }
+        s.tags = vec![TAG_FACE; s.tris.len()];
+        s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec() -> TerrainSpec {
+        TerrainSpec {
+            size: [40.0, 30.0],
+            samples: [41, 31],
+            base: 0.0,
+            seed: 7,
+            layers: vec![NoiseLayer { kind: NoiseKind::Fbm, scale: 12.0, octaves: 4, amplitude: 3.0 }],
+            warp: 2.0,
+            island: 0.0,
+            terrace: (0.0, 0.0),
+            pads: vec![Pad { at: [5.0, 0.0], radius: 4.0, height: 1.0, blend: 2.0 }],
+            hydraulic: Some(Hydraulic { droplets: 2000, strength: 0.5, steps: 32 }),
+            thermal: Some(Thermal { iterations: 5, talus_deg: 35.0 }),
+            splat: vec![
+                SplatLayer { name: "grass".into(), color: [0.3, 0.5, 0.2, 1.0], slope: [0.0, 25.0], height: [-100.0, 100.0], soft: 5.0, noise: 0.0, noise_scale: 1.0 },
+                SplatLayer { name: "rock".into(), color: [0.5, 0.5, 0.5, 1.0], slope: [25.0, 90.0], height: [-100.0, 100.0], soft: 5.0, noise: 0.3, noise_scale: 4.0 },
+            ],
+        }
+    }
+
+    #[test]
+    fn builds_deterministically_with_pads_and_splat() {
+        let t = spec().build(MAX_WORK).unwrap();
+        assert_eq!(t, spec().build(MAX_WORK).unwrap());
+        assert_eq!(t.heights.len(), 41 * 31);
+        // The pad is flat at its height.
+        assert!((t.height_at(5.0, 0.0).unwrap() - 1.0).abs() < 1e-4);
+        assert!(t.slope_deg_at(5.0, 0.5).unwrap() < 1.0);
+        // Splat bytes sum to 255.
+        assert!(t.splat.iter().all(|w| w.iter().map(|x| *x as u32).sum::<u32>() == 255));
+        // Off the terrain: nothing.
+        assert!(t.height_at(30.0, 0.0).is_none());
+    }
+
+    #[test]
+    fn height_at_matches_the_mesh_triangles() {
+        let t = spec().build(MAX_WORK).unwrap();
+        let m = t.mesh(1, 0.0);
+        // Every triangle's centroid lies on height_at.
+        for tri in m.tris.iter().step_by(7) {
+            let p = tri.map(|i| m.positions[i as usize]);
+            let c = [(p[0][0] + p[1][0] + p[2][0]) / 3.0, (p[0][1] + p[1][1] + p[2][1]) / 3.0, (p[0][2] + p[1][2] + p[2][2]) / 3.0];
+            assert!((t.height_at(c[0], c[2]).unwrap() - c[1]).abs() < 1e-4);
+        }
+        // Faces up.
+        assert!(m.tris.iter().all(|tri| math3::tri_normal(m.positions[tri[0] as usize], m.positions[tri[1] as usize], m.positions[tri[2] as usize])[1] > 0.0));
+    }
+
+    #[test]
+    fn closed_slab_and_exports() {
+        let t = spec().build(MAX_WORK).unwrap();
+        let slab = t.mesh(2, 1.5);
+        assert_eq!(slab.open_edge_count(), 0);
+        assert!(slab.signed_volume() > 0.0);
+        // The sides are soil from just under the rim down: no splat smeared down them.
+        let top = t.heights.iter().fold(f32::MAX, |m, h| m.min(*h));
+        let soil = [0.42, 0.40, 0.38, 1.0];
+        for (p, c) in slab.positions.iter().zip(&slab.colors) {
+            if p[1] < top - 0.05 {
+                assert_eq!(*c, soil, "{p:?}");
+            }
+        }
+        let (c, r, h, cell) = t.physics_heightfield(17);
+        assert_eq!((c, r, h.len()), (17, 17, 17 * 17));
+        assert!((cell[0] * 16.0 - 40.0).abs() < 1e-4);
+        // Corners agree with the terrain.
+        assert!((h[0] - t.heights[0]).abs() < 1e-4);
+        let w = t.walkable_cells(30.0);
+        assert_eq!(w.len(), 40 * 30);
+        assert!(w.iter().any(|x| *x));
+    }
+
+    #[test]
+    fn limits() {
+        let mut s = spec();
+        s.samples = [MAX_SIDE + 1, 3];
+        assert!(s.build(MAX_WORK).unwrap_err().limit);
+        let s = spec();
+        assert!(s.build(1000).unwrap_err().limit);
+    }
+}

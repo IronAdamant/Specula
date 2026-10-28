@@ -1,0 +1,21 @@
+{
+  "recipe": 1,
+  "name": "grave_rock",
+  "category": "graveyard",
+  "description": "A mossy fieldstone sculpted as a distance field (tier 3): two smoothly blended lumps, flattened underneath, noise-weathered, moss on top. The seed changes the weathering; `size` scales it.",
+  "seed": 41,
+  "params": { "size": { "default": 1, "min": 0.4, "max": 2.5 } },
+  "budget": { "max_triangles": 1600 },
+  "lods": [0.5, 0.25],
+  "collider": "convex_hull",
+  "smooth_angle": 60,
+  "parts": [
+    { "name": "rock", "material": "slab_stone",
+      "shape": { "op": "sdf", "resolution": 20, "tree": { "op": "intersection", "scale": "size", "displace": { "amount": 0.03, "scale": 0.15, "octaves": 3 }, "of": [
+        { "op": "union", "smooth": 0.12, "of": [
+          { "op": "ellipsoid", "radii": [0.42, 0.28, 0.34], "at": [0, 0.12, 0], "color": "carved_shadow" },
+          { "op": "ellipsoid", "radii": [0.26, 0.24, 0.24], "at": [0.24, 0.16, 0.08], "rotate": [0, 30, 15], "color": "slab_top" },
+          { "op": "sphere", "radius": 0.2, "at": [-0.05, 0.3, -0.04], "color": "moss" } ] },
+        { "op": "halfspace", "normal": [0, -1, 0], "offset": 0.0 } ] } } }
+  ]
+}
