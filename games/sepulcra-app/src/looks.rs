@@ -375,7 +375,7 @@ mod tests {
     #[test]
     fn highlights_read_as_player_cyan() {
         let mut world = specula::world::World::default();
-        crate::game::night(&mut world);
+        crate::game::night(&mut specula::game::GameWorld::new(&mut world));
         let env = &world.env().light;
         let ambient = lin(env.ambient_color).map(|c| c * env.ambient_intensity);
         // The moon on a flat top face.

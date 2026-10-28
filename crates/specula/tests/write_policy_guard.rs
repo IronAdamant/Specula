@@ -74,6 +74,11 @@ const HATCHES: &[Rule] = &[
         why: "raw puts skip a write's validation: the journal's undo and replay only",
     },
     Rule {
+        pattern: ".put_file_raw(",
+        allowed: &["world.rs", "journal.rs", "project_engine.rs"],
+        why: "project files are written by the project tools and disk imports (Rule::Project, Live::disk); other writers hold the world while its files are lent out",
+    },
+    Rule {
         pattern: ".remove_raw(",
         allowed: &["world.rs", "journal.rs"],
         why: "raw removes skip a write's validation: the journal's undo and replay only",
@@ -110,8 +115,8 @@ const HATCHES: &[Rule] = &[
     },
     Rule {
         pattern: ".set_next_id(",
-        allowed: &["world.rs", "persist.rs"],
-        why: "the id counter of a detached world read from its files",
+        allowed: &["world.rs", "persist.rs", "write_policy.rs"],
+        why: "the id counter of a detached world read from its files, or of a world the policy recovered (never below ids already handed out)",
     },
     Rule {
         pattern: "journal::commit(",
@@ -519,6 +524,53 @@ fn engine_code_never_uses_swarms_write_methods() {
         }
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// Whether a (squeezed) line replaces a world wholesale: assigns through a world reference
+/// (`*world = ..`, `*wd = ..`, `*w = ..`) or swaps, takes or replaces one (`mem::swap(world, ..)`).
+fn replaces_world(s: &str) -> bool {
+    let worldish = |name: &str| {
+        let last = name.rsplit('.').next().unwrap_or(name);
+        last.contains("world") || last == "w" || last == "wd"
+    };
+    let ident = |t: &str| t.chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.').collect::<String>();
+    if let Some(rest) = s.strip_prefix('*') {
+        let name = ident(rest);
+        let after = &rest[name.len()..];
+        if !name.is_empty() && worldish(&name) && after.starts_with('=') && !after.starts_with("==") {
+            return true;
+        }
+    }
+    ["mem::swap(", "mem::take(", "mem::replace("].iter().any(|m| {
+        s.match_indices(m).any(|(at, _)| {
+            let arg = &s[at + m.len()..];
+            let arg = arg.strip_prefix('&').unwrap_or(arg);
+            let arg = arg.strip_prefix("mut").unwrap_or(arg);
+            worldish(&ident(arg))
+        })
+    })
+}
+
+#[test]
+fn the_live_world_is_never_replaced_wholesale() {
+    // Review round 2 (probe2.rs): `*wd = World::default()` in a writer replaced the live world.
+    // The hosted game can't (GameWorld); in the crate, only Live itself swaps worlds.
+    let code = engine_code();
+    let mut problems = Vec::new();
+    for (file, lines) in &code {
+        if file == "write_policy.rs" {
+            continue;
+        }
+        for (n, line) in lines {
+            if replaces_world(&squeeze(line)) {
+                problems.push(format!("src/{file}:{n}: replaces a world wholesale: only write_policy::Live may (Live::replace)\n    {}", line.trim()));
+            }
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+    for (bad, line) in [(true, "*wd = World::default();"), (true, "*world = other;"), (true, "std::mem::swap(wd, &mut w2);"), (true, "let old = std::mem::take(&mut self.world);"), (true, "mem::replace(world, World::default())"), (false, "*count = 3;"), (false, "let w = std::mem::take(&mut self.files);"), (false, "*w == x")] {
+        assert_eq!(replaces_world(&squeeze(line)), bad, "{line}");
+    }
 }
 
 #[test]

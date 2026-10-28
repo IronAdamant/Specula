@@ -508,7 +508,7 @@ fn command(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOu
                 scratch.clear();
                 s.apply(&cmd, &mut scratch)?;
             }
-            None => game.command(ctx.world, cmd)?,
+            None => game.command(&mut ctx.world, cmd)?,
         }
         let mut j = command_to_json(&cmd, &content);
         j.set("tick", Json::from(tick));
@@ -621,7 +621,7 @@ fn new(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOutput
             Some((name.to_owned(), Player::new(script)))
         }
     };
-    game.restart(ctx.world, ctx.agent, content, seed, autoplay);
+    game.restart(&mut ctx.world, ctx.agent, content, seed, autoplay);
     let mut out = game.status_json();
     out.set("seed", Json::from(seed.to_string()));
     out.set("layout", game.autoplay.as_ref().map_or(Json::Null, |(n, _)| Json::from(n.as_str())));
@@ -746,7 +746,7 @@ fn replay(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOut
         });
     }
     if load {
-        game.load(ctx.world, ctx.agent, replayed.state, rec.journal);
+        game.load(&mut ctx.world, ctx.agent, replayed.state, rec.journal);
         game.say(format!("Loaded replay {rel}"));
     }
     Ok(ToolOutput::text(out.to_pretty()))
@@ -761,10 +761,10 @@ fn control(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOu
         }
     }
     if let Some(p) = bool_arg(args, "paused")? {
-        game.set_paused(ctx.world, p);
+        game.set_paused(&mut ctx.world, p);
     }
     if let Some(sp) = speed {
-        game.set_speed(ctx.world, sp as u32);
+        game.set_speed(&mut ctx.world, sp as u32);
     }
     Ok(ToolOutput::text(game.status_json().to_pretty()))
 }
@@ -785,7 +785,7 @@ fn ui(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOutput,
         out.set("selected", Json::from(name));
     }
     if let Some(id) = str_arg(args, "press")? {
-        match game.press(ctx.world, ctx.agent, id) {
+        match game.press(&mut ctx.world, ctx.agent, id) {
             Ok(action) => {
                 out.set("pressed", Json::from(id));
                 out.set("action", action.map_or(Json::Null, Json::from));

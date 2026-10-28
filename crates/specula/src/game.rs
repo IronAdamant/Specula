@@ -203,12 +203,85 @@ pub type StateParser = Box<dyn FnOnce(&[u8]) -> Result<Box<dyn Any + Send>, Stri
 /// kept replay-only, so hundreds of updates a tick stay cheap. The game is the simulation's rules,
 /// so its writes are never checked against agents' claims.
 pub struct Ctx<'a> {
-    pub world: &'a mut World,
+    /// The world, to read in full and write entities and the environment through
+    /// ([`GameWorld`]): never the `World` itself.
+    pub world: GameWorld<'a>,
     pub clock: &'a Clock,
     /// Attribution for world changes: the game's name.
     pub agent: &'a str,
     /// A human's window is open (false headless): e.g. skip presentation only people see.
     pub windowed: bool,
+}
+
+/// The hosted game's handle on a world (docs/design/WRITE_POLICY.md): it reads like a
+/// [`World`] (`Deref`) and writes entities and the environment, each write recorded for the
+/// engine's write policy to check (claims, for a tool an agent called) and journal. It never
+/// hands out the `World` itself: no `DerefMut`, no accessor, so a game can't replace the world,
+/// stop it recording or take its recorded changes.
+///
+/// ```compile_fail
+/// fn reset(ctx: &mut specula::game::Ctx) {
+///     *ctx.world = specula::world::World::default(); // no DerefMut: refused by the compiler
+/// }
+/// ```
+///
+/// ```compile_fail
+/// fn hide(ctx: &mut specula::game::Ctx) {
+///     ctx.world.take_changes(); // a `World` method that needs `&mut World`: not reachable
+/// }
+/// ```
+pub struct GameWorld<'a> {
+    world: &'a mut World,
+}
+
+impl<'a> GameWorld<'a> {
+    /// A handle on `world`. The engine makes one for each of the game's calls; a game's own
+    /// tests make one over a world they hold.
+    pub fn new(world: &'a mut World) -> GameWorld<'a> {
+        GameWorld { world }
+    }
+
+    /// A shorter-lived handle on the same world (to hand to a [`Ctx`] or a helper).
+    pub fn reborrow(&mut self) -> GameWorld<'_> {
+        GameWorld { world: self.world }
+    }
+
+    /// [`World::spawn`].
+    pub fn spawn(&mut self, spec: crate::world::SpawnSpec, by: &str) -> Result<&crate::world::Entity, crate::world::WorldError> {
+        self.world.spawn(spec, by)
+    }
+
+    /// [`World::update`].
+    pub fn update(&mut self, key: &crate::world::EntityKey, change: crate::world::UpdateSpec, by: &str) -> Result<&crate::world::Entity, crate::world::WorldError> {
+        self.world.update(key, change, by)
+    }
+
+    /// [`World::delete`].
+    pub fn delete(&mut self, key: &crate::world::EntityKey, expect_version: Option<u64>) -> Result<crate::world::Deleted, crate::world::WorldError> {
+        self.world.delete(key, expect_version)
+    }
+
+    /// [`World::apply_batch`].
+    pub fn apply_batch(&mut self, ops: Vec<crate::world::Op>, by: &str) -> Result<Vec<crate::world::OpResult>, (usize, crate::world::WorldError)> {
+        self.world.apply_batch(ops, by)
+    }
+
+    /// [`World::set_env`].
+    pub fn set_env(&mut self, patch: &crate::world::EnvPatch) -> Result<(), crate::world::WorldError> {
+        self.world.set_env(patch)
+    }
+
+    /// [`World::set_motion`].
+    pub fn set_motion(&mut self, id: u64, position: Option<specula_core::math::Vec3>, rotation_deg: Option<specula_core::math::Vec3>, body: crate::world::Body, by: &str) -> Result<&crate::world::Entity, crate::world::WorldError> {
+        self.world.set_motion(id, position, rotation_deg, body, by)
+    }
+}
+
+impl std::ops::Deref for GameWorld<'_> {
+    type Target = World;
+    fn deref(&self) -> &World {
+        self.world
+    }
 }
 
 impl Ctx<'_> {

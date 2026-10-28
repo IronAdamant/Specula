@@ -104,6 +104,13 @@ fn fixture() -> Fix {
     sw.take_claim(&live, &s1, ClaimSpec { scope: Scope::path("/abox").unwrap(), lease: DEFAULT_LEASE, note: String::new() }).unwrap();
     let region = Scope::region(Vec3::new(3.0, -1.0, 3.0), Vec3::new(7.0, 4.0, 7.0)).unwrap();
     sw.take_claim(&live, &s1, ClaimSpec { scope: region, lease: DEFAULT_LEASE, note: String::new() }).unwrap();
+    // A project file (read from disk) and a clock: kept even if a writer replaces the world.
+    live.disk(&mut sw, 0, |wd| {
+        wd.put_file_raw("assets/recipes/fixture.json", Some(crate::project::ProjectFile::new(crate::project::FileKind::Recipe, Arc::from("{}"), 1, Arc::from("disk"))), true);
+        Ok(())
+    })
+    .unwrap();
+    live.set_clock_s(12.5);
     Fix { live, sw, abox, rbox, hook: hook1, edit, unjoint, unhook }
 }
 
@@ -116,6 +123,10 @@ enum Expect {
     Exempt(&'static str),
     /// Allowed, journaled under the writer.
     Allowed,
+    /// The writer replaced the live world wholesale (a bug): reported and counted, and the world
+    /// it left is live consistently (marked, recording, unsealed, the clock, project files and id
+    /// counter kept, the journal started over from it).
+    Replaced,
 }
 
 type Write = fn(&mut Fix) -> Result<(), WorldError>;
@@ -150,7 +161,7 @@ fn undo(f: &mut Fix, seq: u64) -> Result<(), WorldError> {
 
 /// A game tool (or a module call, or a live Lex command an agent made: they share
 /// `game_commit`) doing `call` for mallory.
-fn for_mallory(f: &mut Fix, game: &str, call: impl FnOnce(&mut World)) -> Result<(), WorldError> {
+fn for_mallory(f: &mut Fix, game: &str, call: impl FnOnce(&mut crate::game::GameWorld)) -> Result<(), WorldError> {
     f.live.game_tool(&mut f.sw, 1, game, MALLORY, call)
 }
 
@@ -300,6 +311,29 @@ const ROWS: &[(&str, Write, Expect)] = &[
     // Replacing the world (world_load, save_read, startup).
     ("world_load while another agent holds claims (M1)", |f| may_replace(&f.sw, MALLORY, false).map(|_| ()), Expect::Refused("claimed")),
     ("world_load under a playtest (M3)", |f| may_replace(&f.sw, ALICE, true).map(|_| ()), Expect::Refused("playtest_running")),
+    // Replacing the live world wholesale (review round 2, probe2.rs: a game tool's
+    // `*wd = World::default()` wiped claimed boxes unnoticed). The hosted game can't any more:
+    // it gets a GameWorld, never `&mut World` (compile_fail doctests on GameWorld). Writers in
+    // the crate still could, so the policy notices and recovers.
+    ("an exempt writer replacing the live world (*w = World::default())", |f| {
+        f.live.exempt(&mut f.sw, 1, Exempt::Physics, |wd| *wd = World::default());
+        Ok(())
+    }, Expect::Replaced),
+    ("an exempt writer swapping the live world out (mem::swap)", |f| {
+        f.live.exempt(&mut f.sw, 1, Exempt::Nav, |wd| {
+            let mut other = World::default();
+            std::mem::swap(wd, &mut other)
+        });
+        Ok(())
+    }, Expect::Replaced),
+    ("an exempt writer taking the live world (mem::take)", |f| {
+        f.live.exempt(&mut f.sw, 1, Exempt::AnimReload, |wd| drop(std::mem::take(wd)));
+        Ok(())
+    }, Expect::Replaced),
+    ("a session putting a copy in the live world's place (clone)", |f| {
+        f.live.session(&mut f.sw, 1, Opener::LexLive, |wd, _| *wd = wd.clone());
+        Ok(())
+    }, Expect::Replaced),
 ];
 
 /// Every row from the same fixture: refused rows leave the world and journal exactly as they
@@ -310,7 +344,15 @@ fn every_write_path_holds_the_policy() {
     for (name, write, expect) in ROWS {
         let mut f = fixture();
         let (before, last, next_id) = (contents(&f.live), f.sw.journal.last_seq(), f.live.next_id());
-        let out = write(&mut f);
+        let (time, files, revision) = (f.live.world_time(), f.live.files().len(), f.live.revision());
+        let out = if *expect == Expect::Replaced {
+            // (A debug build asserts once it has recovered.)
+            let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| write(&mut f)));
+            assert_eq!(caught.is_err(), cfg!(debug_assertions), "{name}: reported");
+            Ok(())
+        } else {
+            write(&mut f)
+        };
         assert!(!f.live.has_unjournaled(), "{name}: nothing left pending");
         match expect {
             Expect::Refused(code) => {
@@ -330,6 +372,15 @@ fn every_write_path_holds_the_policy() {
                 out.unwrap_or_else(|e| panic!("{name}: {e}"));
                 let entry = f.sw.journal.entries().last().unwrap();
                 assert!(entry.seq > last && entry.is_by(MALLORY), "{name}: journaled as the agent's");
+            }
+            Expect::Replaced => {
+                out.unwrap();
+                assert_eq!((f.live.strays(), f.live.replacements().0), (1, 1), "{name}: reported and counted");
+                assert!(f.live.take_replaced(), "{name}: the engine is told (its caches start over)");
+                assert!(f.live.is_marked_live() && f.live.recording() == Recording::Full, "{name}: live and recording");
+                assert_eq!((f.live.world_time(), f.live.files().len()), (time, files), "{name}: the clock and project files are kept");
+                assert!(f.live.revision() > revision, "{name}: no revision repeats");
+                assert!(f.sw.journal.stats_json().get("base").and_then(Json::as_str).is_some_and(|b| b.starts_with("engine:replaced_by:")), "{name}: the journal starts over");
             }
         }
         assert!(f.live.next_id() >= next_id, "{name}: ids are never handed out again");
@@ -401,53 +452,25 @@ fn a_writer_that_leaves_changes_unjournaled_is_caught() {
     assert_eq!(f.sw.journal.replay().unwrap().state_hash(), f.live.state_hash());
 }
 
-/// A hosted game (external code holding the live world in a game tool or its own calls) that
-/// takes the world's recorded changes itself, or switches recording (off, or to Snapshot, where
-/// writes leave no step-by-step trace), would hide its writes from the journal and the claims
-/// (review round 1, probe1.rs: Snapshot got mallory onto alice's claimed box). The world is
-/// sealed while the game holds it: the attempt changes nothing, the write is checked and refused
-/// as usual, and the attempt is reported and counted. The same for
-/// an exempt writer.
+/// The hosted game can't hide its writes: it gets a GameWorld, which has no way to switch
+/// recording or take the recorded changes (compile_fail doctests on GameWorld; review round 1's
+/// probe1.rs switched to Snapshot). Writers in the crate that hold `&mut World` run sealed:
+/// trying either changes nothing, the writes are journaled as usual, and the attempt is reported
+/// and counted.
 #[test]
-fn a_game_that_tries_to_hide_its_writes_is_refused() {
-    for how in ["take", "off", "snapshot"] {
-        let mut f = fixture();
-        let (id, before) = (f.abox, f.live.get(f.abox).unwrap().position);
-        let mut result = None;
-        let tried = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            result = Some(f.live.game_tool(&mut f.sw, 1, "sepulcra", MALLORY, |wd| {
-                match how {
-                    "off" => wd.set_recording(Recording::Off),
-                    "snapshot" => wd.set_recording(Recording::Snapshot),
-                    _ => {}
-                }
-                wd.update(&EntityKey::Id(id), moved(8.0), "sepulcra").unwrap();
-                if how == "take" {
-                    assert!(wd.take_changes().is_empty(), "nothing to take while sealed");
-                }
-            }));
-        }));
-        assert!(tried.is_ok(), "{how}: refused, not a crash");
-        assert_eq!(result.map(|r| r.map_err(|e| e.code)), Some(Err("claimed")), "{how}: the write was checked and refused");
-        assert_eq!(f.live.get(id).unwrap().position, before, "{how}: alice's box didn't move");
-        assert_eq!((f.live.strays(), f.live.recording()), (1, Recording::Full), "{how}");
-        assert!(!f.live.has_unjournaled(), "{how}");
-        assert_eq!(f.sw.journal.replay().unwrap().state_hash(), f.live.state_hash(), "{how}");
-    }
-    // An exempt writer can't hide its writes either: they are journaled under its name.
+fn a_sealed_writer_cant_hide_its_writes() {
     let mut f = fixture();
     let id = f.abox;
     let last = f.sw.journal.last_seq();
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        f.live.exempt(&mut f.sw, 1, Exempt::Physics, |wd| {
-            wd.set_recording(Recording::Off);
-            wd.update(&EntityKey::Id(id), moved(6.0), "physics").unwrap();
-            wd.take_changes();
-        })
-    }));
+    f.live.exempt(&mut f.sw, 1, Exempt::Physics, |wd| {
+        wd.set_recording(Recording::Off);
+        wd.update(&EntityKey::Id(id), moved(6.0), "physics").unwrap();
+        assert!(wd.take_changes().is_empty(), "nothing to take while sealed");
+        wd.set_recording(Recording::Snapshot);
+    });
     let entry = f.sw.journal.entries().last().unwrap();
     assert!(entry.seq > last && &*entry.by == "physics" && entry.touches(id), "journaled as physics'");
-    assert_eq!(f.live.strays(), 1);
+    assert_eq!((f.live.strays(), f.live.recording()), (1, Recording::Full));
     assert_eq!(f.sw.journal.replay().unwrap().state_hash(), f.live.state_hash());
 }
 

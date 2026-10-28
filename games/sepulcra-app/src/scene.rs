@@ -33,6 +33,7 @@ use sepulcra::content::Attack;
 use sepulcra::map::{CellKind, Face};
 use sepulcra::sim::{EnemyId, ProjectileId};
 use sepulcra::{CellId, Enemy, Event, Motion, Projectile, State};
+use specula::game::GameWorld;
 use specula::world::{AnimSpec, EntityKey, Layer, LookPatch, SpawnSpec, UpdateSpec, World};
 use specula_anim::graph::Value;
 use specula_anim::play::GraphPlay;
@@ -185,7 +186,7 @@ fn tint(c: [f32; 3], k: f32) -> [f32; 3] {
 
 impl Scene {
     /// Builds the slab and the empty groups the game fills (replacing any from an earlier run).
-    pub fn build(world: &mut World, agent: &str, state: &State) -> Scene {
+    pub fn build(world: &mut GameWorld<'_>, agent: &str, state: &State) -> Scene {
         let map = &state.content().map;
         let geo = SlabGeo::new(map);
         slab::build(world, agent, map, &geo);
@@ -196,7 +197,7 @@ impl Scene {
             }
         }
         let units = ents::group(world, agent, None, "units", Vec3::ZERO, Vec3::ZERO, &["game"], Json::Null);
-        let sub = |world: &mut World, parent: u64, name: &str| ents::group(world, agent, Some(parent), name, Vec3::ZERO, Vec3::ZERO, &[], Json::Null);
+        let sub = |world: &mut GameWorld<'_>, parent: u64, name: &str| ents::group(world, agent, Some(parent), name, Vec3::ZERO, Vec3::ZERO, &[], Json::Null);
         let (stones_g, walls_g, roots_g, tombs_g) = (sub(world, units, "stones"), sub(world, units, "walls"), sub(world, units, "roots"), sub(world, units, "tombstones"));
         let live = ents::transient_group(world, agent, "live", Layer::World, &["game", "transient"]);
         let (enemies_g, bolts_g, fx_g) = (sub(world, live, "enemies"), sub(world, live, "bolts"), sub(world, live, "fx"));
@@ -240,7 +241,7 @@ impl Scene {
         scene
     }
 
-    fn build_tombstones(&mut self, world: &mut World, state: &State) {
+    fn build_tombstones(&mut self, world: &mut GameWorld<'_>, state: &State) {
         let map = &state.content().map;
         let n = state.content().rules.tombstones.max(0) as usize;
         let [cx, _, cz] = map.graveyard_centre.to_f32();
@@ -264,7 +265,7 @@ impl Scene {
 
     /// Brings the world in line with `state` (structure and the motion targets), and turns this
     /// tick's `events` into flourishes. `now` is presentation time in seconds.
-    pub fn sync(&mut self, world: &mut World, state: &State, events: &[Event], now: f32) {
+    pub fn sync(&mut self, world: &mut GameWorld<'_>, state: &State, events: &[Event], now: f32) {
         self.sync_structure(world, state, events, now);
         self.sync_enemies(world, state, events, now);
         self.sync_bolts(world, state);
@@ -272,7 +273,7 @@ impl Scene {
 
     /// Everything but motion: stones, walls, roots, tombstones and flashes. Cheap enough to run
     /// right after a command, so a build shows at once even while the clock is paused.
-    pub fn sync_structure(&mut self, world: &mut World, state: &State, events: &[Event], now: f32) {
+    pub fn sync_structure(&mut self, world: &mut GameWorld<'_>, state: &State, events: &[Event], now: f32) {
         // Flourishes first: they read the enemies and projectiles that are about to go.
         self.flourishes(world, state, events, now);
         self.sync_stones(world, state);
@@ -281,7 +282,7 @@ impl Scene {
         self.sync_tombstones(world, state);
     }
 
-    fn sync_stones(&mut self, world: &mut World, state: &State) {
+    fn sync_stones(&mut self, world: &mut GameWorld<'_>, state: &State) {
         let content = state.content();
         let gone: Vec<CellId> = self.stones.iter().filter(|(c, v)| state.stone(**c).is_none_or(|s| s.kind.0 != v.kind)).map(|(c, _)| *c).collect();
         for c in gone {
@@ -320,7 +321,7 @@ impl Scene {
         }
     }
 
-    fn sync_walls(&mut self, world: &mut World, state: &State) {
+    fn sync_walls(&mut self, world: &mut GameWorld<'_>, state: &State) {
         let map = &state.content().map;
         let gone: Vec<CellId> = self.walls.keys().copied().filter(|c| state.wall(*c).is_none()).collect();
         for c in gone {
@@ -364,7 +365,7 @@ impl Scene {
         }
     }
 
-    fn sync_roots(&mut self, world: &mut World, state: &State) {
+    fn sync_roots(&mut self, world: &mut GameWorld<'_>, state: &State) {
         let map = &state.content().map;
         let gone: Vec<CellId> = self.roots.keys().copied().filter(|c| !state.is_rooted(*c)).collect();
         for c in gone {
@@ -389,7 +390,7 @@ impl Scene {
         }
     }
 
-    fn sync_tombstones(&mut self, world: &mut World, state: &State) {
+    fn sync_tombstones(&mut self, world: &mut GameWorld<'_>, state: &State) {
         let left = state.tombstones().max(0) as usize;
         for (i, (id, pos, rot, down)) in self.tombs.iter_mut().enumerate() {
             let should = i >= left;
@@ -446,7 +447,7 @@ impl Scene {
         }
     }
 
-    fn sync_enemies(&mut self, world: &mut World, state: &State, events: &[Event], now: f32) {
+    fn sync_enemies(&mut self, world: &mut GameWorld<'_>, state: &State, events: &[Event], now: f32) {
         let content = state.content();
         // Gone without dying (they reached the graveyard, or were stranded): no body.
         self.seen.clear();
@@ -527,7 +528,7 @@ impl Scene {
 
     /// Sets how fast the game runs (0 while paused, else 1, 2 or 4 steps per tick): every
     /// creature's graph follows (its time scale; the play settles, so nothing jumps).
-    pub fn set_pace(&mut self, world: &mut World, pace: f32) {
+    pub fn set_pace(&mut self, world: &mut GameWorld<'_>, pace: f32) {
         if pace == self.pace {
             return;
         }
@@ -542,7 +543,7 @@ impl Scene {
         }
     }
 
-    fn sync_bolts(&mut self, world: &mut World, state: &State) {
+    fn sync_bolts(&mut self, world: &mut GameWorld<'_>, state: &State) {
         let content = state.content();
         self.seen.clear();
         // After the end the simulation stops, so its last projectiles would hang in the air: hide them.
@@ -582,7 +583,7 @@ impl Scene {
         }
     }
 
-    fn flourishes(&mut self, world: &mut World, state: &State, events: &[Event], now: f32) {
+    fn flourishes(&mut self, world: &mut GameWorld<'_>, state: &State, events: &[Event], now: f32) {
         let content = state.content();
         let map = &content.map;
         for ev in events {
@@ -654,19 +655,19 @@ impl Scene {
 
     /// A growing glow sphere (`opacity`: glass when given).
     #[allow(clippy::too_many_arguments)]
-    fn flash(&mut self, world: &mut World, now: f32, pos: Vec3, from: f32, to: f32, dur: f32, color: [f32; 3], emissive: f32, opacity: Option<f32>) {
+    fn flash(&mut self, world: &mut GameWorld<'_>, now: f32, pos: Vec3, from: f32, to: f32, dur: f32, color: [f32; 3], emissive: f32, opacity: Option<f32>) {
         let (s0, s1) = (Vec3::new(from, from, from), Vec3::new(to, to, to));
         self.effect(world, now, pos, s0, s1, dur, color, emissive, opacity);
     }
 
     /// A flat ring of light spreading to `radius` (a rune pillar's pulse).
-    fn disc(&mut self, world: &mut World, now: f32, pos: Vec3, radius: f32, dur: f32) {
+    fn disc(&mut self, world: &mut GameWorld<'_>, now: f32, pos: Vec3, radius: f32, dur: f32) {
         let (s0, s1) = (Vec3::new(0.6, 0.06, 0.6), Vec3::new(radius * 2.0, 0.06, radius * 2.0));
         self.effect(world, now, pos, s0, s1, dur, RUNE_GLOW, 1.0, Some(0.12));
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn effect(&mut self, world: &mut World, now: f32, pos: Vec3, from: Vec3, to: Vec3, dur: f32, color: [f32; 3], emissive: f32, opacity: Option<f32>) {
+    fn effect(&mut self, world: &mut GameWorld<'_>, now: f32, pos: Vec3, from: Vec3, to: Vec3, dur: f32, color: [f32; 3], emissive: f32, opacity: Option<f32>) {
         let mut part = Part::sphere("", pos, from, color).glow(emissive);
         if let Some(o) = opacity {
             part = part.glass(o);
@@ -699,7 +700,7 @@ impl Scene {
 
     /// Moves enemies and projectiles to `alpha` of the way between the last two ticks, advances
     /// the flashes and clears away finished bodies. `now` is presentation time in seconds.
-    pub fn animate(&mut self, world: &mut World, alpha: f32, now: f32) {
+    pub fn animate(&mut self, world: &mut GameWorld<'_>, alpha: f32, now: f32) {
         let a = alpha.clamp(0.0, 1.0);
         for (eid, m) in self.enemies.iter_mut() {
             let mut p = lerp(m.prev, m.cur, a);
@@ -740,7 +741,7 @@ impl Scene {
     }
 
     /// Shows the build cursor on a cell (valid, invalid or selected), or hides it.
-    pub fn show_cursor(&mut self, world: &mut World, state: &State, look: CursorLook) {
+    pub fn show_cursor(&mut self, world: &mut GameWorld<'_>, state: &State, look: CursorLook) {
         if look == self.cursor_shown {
             return;
         }
@@ -779,7 +780,7 @@ impl Scene {
     }
 
     /// A ring of dots showing a range around a cell (`None` hides it).
-    pub fn show_range(&mut self, world: &mut World, state: &State, ring: Option<(CellId, f32)>) {
+    pub fn show_range(&mut self, world: &mut GameWorld<'_>, state: &State, ring: Option<(CellId, f32)>) {
         let key = ring.map(|(c, r)| (u32::from(c.0), r.to_bits()));
         if key == self.ring_shown {
             return;
@@ -839,7 +840,7 @@ fn graph_params(act: Act, speed: f32, hit: bool) -> GraphPlay {
 
 /// Tells a creature's graph what it does now: the world settles the play at the write and the
 /// graph blends (parameters not given, like the look target, keep their values).
-fn tell(world: &mut World, agent: &str, m: &mut Mob, act: Act, speed: f32, hit: bool, pace: f32) {
+fn tell(world: &mut GameWorld<'_>, agent: &str, m: &mut Mob, act: Act, speed: f32, hit: bool, pace: f32) {
     m.act = act;
     m.speed = speed;
     tell_id(world, agent, m.id, graph_params(act, speed, hit), pace);
@@ -851,7 +852,7 @@ fn tell(world: &mut World, agent: &str, m: &mut Mob, act: Act, speed: f32, hit: 
 /// touches the simulation. Its play stays what it was (only `ragdoll` changes): the ragdoll
 /// moves on at the velocity of what the body was doing, and a death clip blending in at the
 /// same tick would read as a fling (the shambler's hands left at 17 m/s).
-fn ragdoll_death(world: &mut World, agent: &str, m: &Mob, pace: f32) {
+fn ragdoll_death(world: &mut GameWorld<'_>, agent: &str, m: &Mob, pace: f32) {
     let yaw = m.rot.y.to_radians();
     let back = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
     // N·s on the chest: about 1.2 m/s on the whole 69 kg body, enough to topple a hunched one onto
@@ -867,7 +868,7 @@ fn ragdoll_death(world: &mut World, agent: &str, m: &Mob, pace: f32) {
     tell_id(world, agent, m.id, play, pace);
 }
 
-fn tell_id(world: &mut World, agent: &str, id: u64, play: GraphPlay, pace: f32) {
+fn tell_id(world: &mut GameWorld<'_>, agent: &str, id: u64, play: GraphPlay, pace: f32) {
     let anim = AnimSpec { speed: pace.clamp(0.0, 8.0), ..AnimSpec::graph(play) };
     ents::update(world, agent, id, UpdateSpec { anim: Some(Some(anim)), ..UpdateSpec::default() });
 }
@@ -917,7 +918,7 @@ mod tests {
     fn cursor_and_range_dots_wear_the_highlight_glows() {
         let state = State::new(Arc::new(Content::builtin()), 7);
         let mut world = World::default();
-        let mut scene = Scene::build(&mut world, "test", &state);
+        let mut scene = Scene::build(&mut GameWorld::new(&mut world), "test", &state);
         let cell = state.content().map.cell_ref("top:10,12").unwrap();
         let glow_of = |world: &World, id: u64| {
             let e = world.get(id).expect("entity");
@@ -930,10 +931,10 @@ mod tests {
             (CursorLook::Selected(cell), highlight::SELECTED),
             (CursorLook::Valid(cell), highlight::VALID),
         ] {
-            scene.show_cursor(&mut world, &state, look);
+            scene.show_cursor(&mut GameWorld::new(&mut world), &state, look);
             assert_eq!(glow_of(&world, scene.cursor), (want.color, want.emissive, true), "{look:?}");
         }
-        scene.show_range(&mut world, &state, Some((cell, 6.5)));
+        scene.show_range(&mut GameWorld::new(&mut world), &state, Some((cell, 6.5)));
         for &d in &scene.ring {
             assert_eq!(glow_of(&world, d), (highlight::RANGE_DOT.color, highlight::RANGE_DOT.emissive, true));
         }

@@ -586,7 +586,7 @@ mod tests {
         let shape = |w: &World| w.entities().map(|e| (e.id, e.version, w.path_of(e.id))).collect::<Vec<_>>();
         let before = shape(&w);
         let bob = Writer::new("bob", Some("bbbbbb22"));
-        let tool = |w: &mut World| {
+        let tool = |w: &mut crate::game::GameWorld| {
             w.spawn(spec("/tower"), "game").unwrap();
             w.update(&EntityKey::Path("/q".into()), UpdateSpec { name: Some("razed".into()), ..Default::default() }, "game").unwrap();
             "built"

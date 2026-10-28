@@ -5,7 +5,7 @@
 //! new agent tool can't reach an exemption without naming one of these functions, each of which
 //! says whose write it is.
 
-use crate::game::{Clock, Ctx, Game};
+use crate::game::{Clock, Ctx, Game, GameWorld};
 use crate::journal::{Kind, Writer};
 use crate::logic::LogicHost;
 use crate::swarm::Swarm;
@@ -20,13 +20,13 @@ use std::collections::BTreeSet;
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn game<T>(world: &mut Live, swarm: &mut Swarm, game: &mut dyn Game, clock: &Clock, name: &str, windowed: bool, kind: Kind, call: impl FnOnce(&mut dyn Game, &mut Ctx) -> T) -> T {
     let why = Exempt::Game { name, kind };
-    world.exempt(swarm, clock.tick(), why, |w| call(game, &mut Ctx { world: w, clock, agent: name, windowed }))
+    world.exempt(swarm, clock.tick(), why, |w| call(game, &mut Ctx { world: GameWorld::new(w), clock, agent: name, windowed }))
 }
 
 /// The hosted game's `start` ([`Exempt::GameStart`]: full states, as made).
 pub(crate) fn game_start(world: &mut Live, swarm: &mut Swarm, game: &mut dyn Game, clock: &Clock, name: &str, windowed: bool) {
     let why = Exempt::GameStart { name };
-    world.exempt(swarm, clock.tick(), why, |w| game.start(&mut Ctx { world: w, clock, agent: name, windowed }));
+    world.exempt(swarm, clock.tick(), why, |w| game.start(&mut Ctx { world: GameWorld::new(w), clock, agent: name, windowed }));
 }
 
 /// One tick of every running module: each call journaled under its module, exempt from claims

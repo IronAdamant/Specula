@@ -744,6 +744,13 @@ impl Engine {
         let failed = self.world.replace(may, &mut self.swarm, world, &format!("world:{name}"), self.clock.seconds(), models);
         let problems =
             failed.iter().map(|(id, e)| format!("model {} ({id}) not built: {e}", self.world.path_of(*id))).collect();
+        self.world_changed_wholesale();
+        problems
+    }
+
+    /// What the engine keys on the live world starts over after it was replaced (a load, or a
+    /// writer's bug the write policy recovered from: [`Engine::check_world_replaced`]).
+    fn world_changed_wholesale(&mut self) {
         // Follow cameras resolve afresh in the new world (its cameras came with it).
         self.cameras = cameras::Cameras::default();
         self.world_generation += 1;
@@ -758,7 +765,14 @@ impl Engine {
         // Navigation reads the loaded world now: its navmeshes are built (in slices, the clock
         // held) before the first tick, as they were in the run that saved it.
         self.nav.sync(&self.world, self.world_generation);
-        problems
+    }
+
+    /// After writers ran: if one replaced the live world wholesale (a bug; the write policy
+    /// recovered and reported it), the engine's own caches start over as after a load.
+    fn check_world_replaced(&mut self) {
+        if self.world.take_replaced() {
+            self.world_changed_wholesale();
+        }
     }
 
     /// Calls the hosted game (`call` gets its [`Ctx`]) as one of its own writes, journaled as
@@ -899,6 +913,7 @@ impl Engine {
             self.nav_tick();
             // Physics steps on the same fixed tick, after the game moved what it moves.
             self.physics_tick();
+            self.check_world_replaced();
             self.clock.finish_tick();
             let _h = profile::zone("tick_hash");
             self.record_tick_hash();
@@ -945,6 +960,7 @@ impl Engine {
             self.window_camera = shown;
         }
         self.pacing.game_frame.push(start.elapsed());
+        self.check_world_replaced();
         // The game's menu may have asked for a save or a load.
         self.serve_game_requests();
     }
@@ -1875,7 +1891,7 @@ impl Engine {
                     // A claim can only reject the tool when claims exist: checkpoint only then.
                     let checkpoint = if self.swarm.claims.is_empty() { None } else { game.checkpoint() };
                     let (clock, agent, windowed) = (&self.clock, self.game_name.as_str(), self.windowed);
-                    let call = |wd: &mut World| game.call_tool(&mut Ctx { world: wd, clock, agent, windowed }, &name, &args);
+                    let call = |gw: &mut game::GameWorld| game.call_tool(&mut Ctx { world: gw.reborrow(), clock, agent, windowed }, &name, &args);
                     match self.world.game_tool(&mut self.swarm, tick, agent, w, call) {
                         Ok(out) => out,
                         Err(e) => {
@@ -1952,6 +1968,7 @@ impl Engine {
             Command::Anim(call) => self.anim_call(call, w, tick),
             Command::Project(call) => self.project_call(call, w, &by),
         };
+        self.check_world_replaced();
         // Undo (or anything else) changed project files: the disk follows before the answer.
         self.project_after_request();
         if game_call {
@@ -2367,7 +2384,16 @@ impl Engine {
             ("captures", Json::from(self.capture_dir.display().to_string())),
             ("agents", Json::arr(agents)),
             ("clock", self.clock_json()),
-            ("swarm", { let mut s = self.swarm.stats_json(); s.set("unjournaled_writes", Json::from(self.world.strays())); s }),
+            ("swarm", {
+                let mut s = self.swarm.stats_json();
+                s.set("unjournaled_writes", Json::from(self.world.strays()));
+                let (n, last) = self.world.replacements();
+                s.set("world_replacements", Json::from(n));
+                if let Some((entry, tick)) = last {
+                    s.set("last_world_replacement", Json::obj([("entry", Json::from(entry.as_str())), ("tick", Json::from(*tick))]));
+                }
+                s
+            }),
             ("models", self.models_json()),
             ("window", self.window_json()),
             // The floating-point environment guard: what it checks and what it had to restore,

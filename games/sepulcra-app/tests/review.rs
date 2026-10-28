@@ -5,7 +5,7 @@ use sepulcra::{Content, Outcome};
 use sepulcra_app::controls::Controls;
 use sepulcra_app::slab::SlabGeo;
 use sepulcra_app::SepulcraGame;
-use specula::game::{Clock, Ctx, Frame, Game};
+use specula::game::{Clock, Ctx, Frame, Game, GameWorld};
 use specula::world::World;
 use specula_core::Json;
 use specula_platform::GamepadState;
@@ -29,18 +29,18 @@ impl Host {
         let mut game = SepulcraGame::new(Arc::new(Content::builtin()), seed);
         let mut world = World::default();
         let clock = Clock::new(game.tick_hz());
-        game.start(&mut Ctx { world: &mut world, clock: &clock, agent: "sepulcra", windowed: false });
+        game.start(&mut Ctx { world: GameWorld::new(&mut world), clock: &clock, agent: "sepulcra", windowed: false });
         Host { game, world, clock }
     }
 
     fn call(&mut self, name: &str, args: &Json) -> specula_protocol::ToolOutput {
         let Host { game, world, clock } = self;
-        game.call_tool(&mut Ctx { world, clock, agent: "sepulcra", windowed: false }, name, args)
+        game.call_tool(&mut Ctx { world: GameWorld::new(world), clock, agent: "sepulcra", windowed: false }, name, args)
     }
 
     fn tick(&mut self) {
         let Host { game, world, clock } = self;
-        game.tick(&mut Ctx { world, clock, agent: "sepulcra", windowed: false });
+        game.tick(&mut Ctx { world: GameWorld::new(world), clock, agent: "sepulcra", windowed: false });
         self.clock.finish_tick();
     }
 
@@ -48,7 +48,7 @@ impl Host {
         let Host { game, world, clock } = self;
         let (mut cam, mut title) = (None, None);
         let mut f = Frame { input: &[], size, alpha, dt_s: 0.016, camera: &mut cam, agent_view: false, title: &mut title };
-        game.frame(&mut Ctx { world, clock, agent: "sepulcra", windowed: false }, &mut f);
+        game.frame(&mut Ctx { world: GameWorld::new(world), clock, agent: "sepulcra", windowed: false }, &mut f);
     }
 
     /// Flashes alive (transient: they go when they end).

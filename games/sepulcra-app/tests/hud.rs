@@ -4,7 +4,7 @@
 
 use sepulcra::{Content, Outcome};
 use sepulcra_app::SepulcraGame;
-use specula::game::{Clock, Ctx, Frame, Game};
+use specula::game::{Clock, Ctx, Frame, Game, GameWorld};
 use specula::world::World;
 use specula_core::Json;
 use specula_platform::{Event, MouseButton};
@@ -23,7 +23,7 @@ impl Host {
         let mut game = SepulcraGame::new(Arc::new(Content::builtin()), seed);
         let mut world = World::default();
         let clock = Clock::new(game.tick_hz());
-        game.start(&mut Ctx { world: &mut world, clock: &clock, agent: "sepulcra", windowed: false });
+        game.start(&mut Ctx { world: GameWorld::new(&mut world), clock: &clock, agent: "sepulcra", windowed: false });
         Host { game, world, clock }
     }
 
@@ -31,12 +31,12 @@ impl Host {
         let Host { game, world, clock } = self;
         let (mut cam, mut title) = (None, None);
         let mut f = Frame { input, size: SIZE, alpha: 1.0, dt_s: 0.016, camera: &mut cam, agent_view: false, title: &mut title };
-        game.frame(&mut Ctx { world, clock, agent: "sepulcra", windowed: false }, &mut f);
+        game.frame(&mut Ctx { world: GameWorld::new(world), clock, agent: "sepulcra", windowed: false }, &mut f);
     }
 
     fn tick(&mut self) {
         let Host { game, world, clock } = self;
-        game.tick(&mut Ctx { world, clock, agent: "sepulcra", windowed: false });
+        game.tick(&mut Ctx { world: GameWorld::new(world), clock, agent: "sepulcra", windowed: false });
         clock.finish_tick();
     }
 
@@ -149,7 +149,7 @@ fn the_menu_button_reaches_settings_and_restart() {
     }
     let press = |h: &mut Host, id: &str| {
         let Host { game, world, clock } = h;
-        let out = game.call_tool(&mut Ctx { world, clock, agent: "sepulcra", windowed: false }, "play_ui", &Json::obj([("press", Json::from(id))]));
+        let out = game.call_tool(&mut Ctx { world: GameWorld::new(world), clock, agent: "sepulcra", windowed: false }, "play_ui", &Json::obj([("press", Json::from(id))]));
         assert!(!out.is_error, "{id}: {:?}", out.content);
     };
     for _ in 0..40 {
@@ -182,13 +182,13 @@ fn a_placed_stone_opens_its_panel_and_its_buttons_upgrade_and_sell() {
     let place = Json::obj([("action", Json::from("place")), ("stone", Json::from("warding")), ("cell", Json::from("top:12,9"))]);
     {
         let Host { game, world, clock } = &mut h;
-        let out = game.call_tool(&mut Ctx { world, clock, agent: "sepulcra", windowed: false }, "play_command", &place);
+        let out = game.call_tool(&mut Ctx { world: GameWorld::new(world), clock, agent: "sepulcra", windowed: false }, "play_command", &place);
         assert!(!out.is_error);
     }
     // Agents press the HUD by id; a player clicks the stone to select it (here: the same action).
     let press = |h: &mut Host, id: &str| {
         let Host { game, world, clock } = h;
-        game.call_tool(&mut Ctx { world, clock, agent: "sepulcra", windowed: false }, "play_ui", &Json::obj([("press", Json::from(id))]))
+        game.call_tool(&mut Ctx { world: GameWorld::new(world), clock, agent: "sepulcra", windowed: false }, "play_ui", &Json::obj([("press", Json::from(id))]))
     };
     // Nothing selected: no panel, so its buttons can't be pressed.
     let out = press(&mut h, "sell");

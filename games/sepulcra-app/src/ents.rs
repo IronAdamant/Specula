@@ -3,6 +3,7 @@
 //! player errors: they are logged and the frame goes on.
 
 use crate::looks::Part;
+use specula::game::GameWorld;
 use specula::world::{EntityKey, Layer, ModelSpec, Shape, SpawnSpec, UpdateSpec, World};
 use specula_core::math::Vec3;
 use specula_core::Json;
@@ -13,7 +14,7 @@ fn log(what: &str, e: impl std::fmt::Display) {
 }
 
 /// Spawns anything; returns its id, or 0 when the world refused it (logged).
-pub fn spawn(world: &mut World, agent: &str, spec: SpawnSpec) -> u64 {
+pub fn spawn(world: &mut GameWorld<'_>, agent: &str, spec: SpawnSpec) -> u64 {
     let name = spec.name.clone().unwrap_or_default();
     match world.spawn(spec, agent) {
         Ok(e) => e.id,
@@ -40,7 +41,7 @@ pub fn model_spec(parent: u64, name: &str, model: ModelSpec, pos: Vec3, rot: Vec
 
 /// A group for game presentation that is never saved, journaled or hashed (moving things:
 /// enemies, bolts, flashes, the cursor). Everything spawned below it is transient too.
-pub fn transient_group(world: &mut World, agent: &str, name: &str, layer: Layer, tag_list: &[&str]) -> u64 {
+pub fn transient_group(world: &mut GameWorld<'_>, agent: &str, name: &str, layer: Layer, tag_list: &[&str]) -> u64 {
     let mut spec = SpawnSpec::new(Shape::Group);
     spec.name = Some(name.to_owned());
     spec.transient = true;
@@ -50,7 +51,7 @@ pub fn transient_group(world: &mut World, agent: &str, name: &str, layer: Layer,
 }
 
 /// Shows or hides an entity and its subtree.
-pub fn show(world: &mut World, agent: &str, id: u64, visible: bool) {
+pub fn show(world: &mut GameWorld<'_>, agent: &str, id: u64, visible: bool) {
     update(world, agent, id, UpdateSpec { visible: Some(visible), ..UpdateSpec::default() });
 }
 
@@ -60,7 +61,7 @@ pub fn tags(list: &[&str]) -> BTreeSet<String> {
 
 /// A group (a transform with no mesh). Returns its id, or 0 when the world refused it.
 #[allow(clippy::too_many_arguments)]
-pub fn group(world: &mut World, agent: &str, parent: Option<u64>, name: &str, pos: Vec3, rot: Vec3, tag_list: &[&str], props: Json) -> u64 {
+pub fn group(world: &mut GameWorld<'_>, agent: &str, parent: Option<u64>, name: &str, pos: Vec3, rot: Vec3, tag_list: &[&str], props: Json) -> u64 {
     let mut spec = SpawnSpec::new(Shape::Group);
     spec.name = Some(name.to_owned());
     spec.parent = parent.map(EntityKey::Id);
@@ -78,11 +79,11 @@ pub fn group(world: &mut World, agent: &str, parent: Option<u64>, name: &str, po
 }
 
 /// One part as a child of `parent`.
-pub fn part(world: &mut World, agent: &str, parent: u64, p: &Part) -> u64 {
+pub fn part(world: &mut GameWorld<'_>, agent: &str, parent: u64, p: &Part) -> u64 {
     part_named(world, agent, parent, p.name, p)
 }
 
-pub fn part_named(world: &mut World, agent: &str, parent: u64, name: &str, p: &Part) -> u64 {
+pub fn part_named(world: &mut GameWorld<'_>, agent: &str, parent: u64, name: &str, p: &Part) -> u64 {
     let mut spec = SpawnSpec::new(p.shape);
     spec.name = Some(name.to_owned());
     spec.parent = (parent != 0).then_some(EntityKey::Id(parent));
@@ -103,7 +104,7 @@ pub fn part_named(world: &mut World, agent: &str, parent: u64, name: &str, p: &P
 }
 
 /// Moves, turns and scales an entity (fields left `None` stay).
-pub fn place(world: &mut World, agent: &str, id: u64, pos: Option<Vec3>, rot: Option<Vec3>, scale: Option<Vec3>) {
+pub fn place(world: &mut GameWorld<'_>, agent: &str, id: u64, pos: Option<Vec3>, rot: Option<Vec3>, scale: Option<Vec3>) {
     if id == 0 {
         return;
     }
@@ -114,7 +115,7 @@ pub fn place(world: &mut World, agent: &str, id: u64, pos: Option<Vec3>, rot: Op
 }
 
 /// Any other change.
-pub fn update(world: &mut World, agent: &str, id: u64, change: UpdateSpec) {
+pub fn update(world: &mut GameWorld<'_>, agent: &str, id: u64, change: UpdateSpec) {
     if id == 0 {
         return;
     }
@@ -123,7 +124,7 @@ pub fn update(world: &mut World, agent: &str, id: u64, change: UpdateSpec) {
     }
 }
 
-pub fn delete(world: &mut World, id: u64) {
+pub fn delete(world: &mut GameWorld<'_>, id: u64) {
     if id == 0 {
         return;
     }

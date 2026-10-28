@@ -38,6 +38,7 @@
 //! undo enforce them for every world, so the policy relies on them rather than re-checking.
 
 use crate::claims::Claims;
+use crate::game::GameWorld;
 use crate::journal::{self, Kind, UndoRequest, Undone, Writer};
 use crate::logic::Phase;
 use crate::swarm::Swarm;
@@ -368,9 +369,9 @@ pub fn game_commit(world: &mut World, swarm: &mut Swarm, mark: Mark, tick: u64, 
 /// [`game_commit`]. On refusal only the **world** is rolled back: the caller must roll the game
 /// back too ([`crate::game::Game::restore`] from a checkpoint taken before the call, or
 /// [`crate::game::Game::world_rolled_back`] for games without checkpoints).
-pub fn game_tool<T>(world: &mut World, swarm: &mut Swarm, tick: u64, game: &str, w: Writer, call: impl FnOnce(&mut World) -> T) -> Result<T, WorldError> {
+pub fn game_tool<T>(world: &mut World, swarm: &mut Swarm, tick: u64, game: &str, w: Writer, call: impl FnOnce(&mut GameWorld) -> T) -> Result<T, WorldError> {
     let mark = world.mark();
-    let out = call(world);
+    let out = call(&mut GameWorld::new(world));
     game_commit(world, swarm, mark, tick, game, w).map(|()| out)
 }
 
@@ -466,6 +467,15 @@ pub struct Live {
     world: World,
     /// Changes found pending after an entry point (each a bug), journaled as `engine:stray`.
     strays: u64,
+    /// The model library and shape budgets the live world uses: put back on a world that took
+    /// its place ([`Live::recover`]).
+    models: Option<Arc<dyn ModelSource>>,
+    limits: crate::two_d::ShapeLimits,
+    /// Times a writer replaced the live world wholesale (each a bug), and the last one.
+    replaced: u64,
+    last_replaced: Option<(String, u64)>,
+    /// A replacement the engine hasn't reset its own caches for yet ([`Live::take_replaced`]).
+    unseen_replacement: bool,
 }
 
 impl Deref for Live {
@@ -493,7 +503,70 @@ impl Live {
     /// The live world, starting as `world` (recording every change).
     pub(crate) fn new(mut world: World) -> Live {
         world.set_recording(Recording::Full);
-        Live { world, strays: 0 }
+        world.mark_live();
+        let (models, limits) = (world.model_source().cloned(), world.shape_limits());
+        Live { world, strays: 0, models, limits, replaced: 0, last_replaced: None, unseen_replacement: false }
+    }
+
+    /// Times a writer replaced the live world wholesale (bugs; 0 in a healthy run), and the
+    /// entry point and tick of the last time, for engine_info.
+    pub(crate) fn replacements(&self) -> (u64, Option<&(String, u64)>) {
+        (self.replaced, self.last_replaced.as_ref())
+    }
+
+    /// Whether a writer replaced the live world since the last call: the engine then resets
+    /// what it keyed on the old one (as after a load).
+    pub(crate) fn take_replaced(&mut self) -> bool {
+        std::mem::take(&mut self.unseen_replacement)
+    }
+
+    /// Runs `f`, which holds the live world, so that replacing the world wholesale (`*w =
+    /// World::default()`, `mem::swap`, `mem::take`) can't go unnoticed: the project files are
+    /// lent out meanwhile (`f`'s writers don't use them), and if the world `f` leaves isn't the
+    /// one marked live, [`Live::recover`] takes over.
+    fn guarded<T>(&mut self, swarm: &mut Swarm, tick: u64, entry: &str, f: impl FnOnce(&mut World, &mut Swarm) -> T) -> T {
+        let (next_id, revision, clock, files_revision) = (self.world.next_id(), self.world.revision(), self.world.clock_parts(), self.world.files_revision());
+        let files = self.world.lend_files();
+        let out = f(&mut self.world, swarm);
+        if self.world.is_marked_live() {
+            self.world.return_files(files);
+        } else {
+            self.recover(swarm, tick, entry, next_id, revision, clock, (files, files_revision));
+        }
+        out
+    }
+
+    /// A writer replaced the live world wholesale: what it did can't be undone (the old world is
+    /// gone), so the world it left becomes the live one, consistently. It is marked live and
+    /// unsealed, records again, gets back the clock, the model library, the shape budgets and the
+    /// project files, never repeats an id or a revision, and the journal starts over from it (so
+    /// replay stays exact). Reported as an error (engine_info `swarm.world_replacements`, a log
+    /// line, a debug assertion) and counted with the strays.
+    #[allow(clippy::too_many_arguments)]
+    fn recover(&mut self, swarm: &mut Swarm, tick: u64, entry: &str, next_id: u64, revision: u64, clock: crate::world::ClockParts, files: (crate::world::ProjectFiles, u64)) {
+        self.strays += 1;
+        self.replaced += 1;
+        self.last_replaced = Some((entry.to_owned(), tick));
+        self.unseen_replacement = true;
+        let w = &mut self.world;
+        w.set_sealed(false);
+        w.mark_live();
+        w.set_recording(Recording::Full);
+        w.set_clock_parts(clock);
+        let _ = w.set_model_source(self.models.clone());
+        w.set_shape_limits(self.limits);
+        w.adopt_files(files.0, files.1);
+        w.set_next_id(next_id.max(w.next_id()));
+        w.revision_past(revision);
+        // What it recorded since belongs to a world that is gone: the journal starts here.
+        w.set_sealed(false);
+        let _ = w.take_changes();
+        swarm.journal.rebase(w, &format!("engine:replaced_by:{entry}"));
+        swarm.journal.note_next_id(w.next_id());
+        eprintln!(
+            "specula: write_policy: {{\"error\":\"world_replaced\",\"entry\":\"{entry}\",\"tick\":{tick},\"message\":\"a writer replaced the live world wholesale; it is live as left (clock, models, budgets and project files kept) and the journal starts over from it\"}}"
+        );
+        debug_assert!(false, "write_policy: {entry} replaced the live world wholesale");
     }
 
     /// Changes a writer left unjournaled (bugs; 0 in a healthy run).
@@ -548,11 +621,10 @@ impl Live {
     }
 
     /// [`game_tool`] on the live world. The world is [sealed](sealed) while the game runs.
-    pub(crate) fn game_tool<T>(&mut self, swarm: &mut Swarm, tick: u64, game: &str, w: Writer, call: impl FnOnce(&mut World) -> T) -> Result<T, WorldError> {
-        let breaks = self.world.seal_breaks();
-        let out = game_tool(&mut self.world, swarm, tick, game, w, |wd| sealed(wd, call));
+    pub(crate) fn game_tool<T>(&mut self, swarm: &mut Swarm, tick: u64, game: &str, w: Writer, call: impl FnOnce(&mut GameWorld) -> T) -> Result<T, WorldError> {
+        // The game gets a GameWorld: it can't replace the world or hide what it records.
+        let out = game_tool(&mut self.world, swarm, tick, game, w, call);
         self.settle(swarm, tick, "game_tool");
-        self.report_breaks(breaks, "game_tool");
         out
     }
 
@@ -572,7 +644,7 @@ impl Live {
     pub(crate) fn exempt<T>(&mut self, swarm: &mut Swarm, tick: u64, why: Exempt, f: impl FnOnce(&mut World) -> T) -> T {
         self.world.set_recording(why.recording());
         let breaks = self.world.seal_breaks();
-        let out = sealed(&mut self.world, f);
+        let out = self.guarded(swarm, tick, "exempt", |w, _| sealed(w, f));
         self.world.set_recording(Recording::Full);
         journal_exempt(&mut self.world, swarm, tick, why);
         self.settle(swarm, tick, "exempt");
@@ -584,12 +656,13 @@ impl Live {
     /// journal or roll back everything it changes through this module's functions before it
     /// returns ([`Live::settle`] checks).
     pub(crate) fn session<T>(&mut self, swarm: &mut Swarm, tick: u64, opener: Opener, f: impl FnOnce(&mut World, &mut Swarm) -> T) -> T {
-        let out = f(&mut self.world, swarm);
-        self.settle(swarm, tick, match opener {
+        let entry = match opener {
             Opener::Modules => "session(modules)",
             Opener::LexLive => "session(lex_live)",
             Opener::LexTools => "session(lex_tools)",
-        });
+        };
+        let out = self.guarded(swarm, tick, entry, f);
+        self.settle(swarm, tick, entry);
         out
     }
 
@@ -606,6 +679,9 @@ impl Live {
         let files_revision = self.world.files_revision();
         world.adopt_files(self.world.take_files(), files_revision);
         swarm.journal.rebase(&world, label);
+        world.mark_live();
+        self.models = world.model_source().cloned();
+        self.limits = world.shape_limits();
         self.world = world;
         failed
     }
@@ -629,6 +705,7 @@ impl Live {
 
     /// The vector-shape budgets (perf.toml), checked by later writes.
     pub(crate) fn set_shape_limits(&mut self, limits: crate::two_d::ShapeLimits) {
+        self.limits = limits;
         self.world.set_shape_limits(limits);
     }
 }
@@ -678,7 +755,7 @@ impl Swarm {
     }
 
     /// [`game_tool`].
-    pub fn game_tool<T>(&mut self, world: &mut World, tick: u64, game: &str, w: Writer, call: impl FnOnce(&mut World) -> T) -> Result<T, WorldError> {
+    pub fn game_tool<T>(&mut self, world: &mut World, tick: u64, game: &str, w: Writer, call: impl FnOnce(&mut GameWorld) -> T) -> Result<T, WorldError> {
         game_tool(world, self, tick, game, w, call)
     }
 

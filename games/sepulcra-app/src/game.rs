@@ -23,9 +23,9 @@ use sepulcra::script::{Journal, Player};
 use sepulcra::sim::{DustSource, Stone, Wall};
 use sepulcra::{CellId, Command, Content, Event, Motion, Outcome, Rejection, State, TICK_HZ};
 use specula::effects::{BloomPatch, FogPatch, GradingFields, GradingPatch, ShadowPatch, SkyPatch, SsaoPatch};
-use specula::game::{Ctx, Frame, Game, Overlay};
+use specula::game::{Ctx, Frame, Game, Overlay, GameWorld};
 use specula::sight::Camera;
-use specula::world::{EnvPatch, World};
+use specula::world::EnvPatch;
 use specula_core::math::Vec3;
 use specula_core::Json;
 use specula_input::PadStyle;
@@ -280,7 +280,7 @@ impl SepulcraGame {
     }
 
     /// Applies a command now (at the current tick) and journals it.
-    pub fn command(&mut self, world: &mut World, cmd: Command) -> Result<(), Rejection> {
+    pub fn command(&mut self, world: &mut GameWorld<'_>, cmd: Command) -> Result<(), Rejection> {
         let tick = self.state.tick();
         // With the Lex rules on, they decide (the state is their reference).
         if let Some(lex) = &mut self.lex {
@@ -313,7 +313,7 @@ impl SepulcraGame {
 
     /// Starts over: a fresh state (and slab) for `content` and `seed`, optionally following a
     /// build order.
-    pub fn restart(&mut self, world: &mut World, agent: &str, content: Arc<Content>, seed: u64, autoplay: Option<(String, Player)>) {
+    pub fn restart(&mut self, world: &mut GameWorld<'_>, agent: &str, content: Arc<Content>, seed: u64, autoplay: Option<(String, Player)>) {
         self.state = State::new(content, seed);
         self.start_lex();
         self.journal.clear();
@@ -332,7 +332,7 @@ impl SepulcraGame {
     }
 
     /// Replaces the state (a loaded replay) and rebuilds the scene.
-    pub(crate) fn load(&mut self, world: &mut World, agent: &str, state: State, journal: Journal) {
+    pub(crate) fn load(&mut self, world: &mut GameWorld<'_>, agent: &str, state: State, journal: Journal) {
         // The Lex rules replay the same commands to the same tick.
         if self.rules_lex {
             self.lex = match crate::lexmode::LexRules::replayed(state.content(), state.seed(), &journal, state.tick()) {
@@ -355,7 +355,7 @@ impl SepulcraGame {
         self.rebuild(world, agent);
     }
 
-    fn rebuild(&mut self, world: &mut World, agent: &str) {
+    fn rebuild(&mut self, world: &mut GameWorld<'_>, agent: &str) {
         self.hover_key = None;
         let mut scene = Scene::build(world, agent, &self.state);
         scene.set_pace(world, self.pace());
@@ -376,7 +376,7 @@ impl SepulcraGame {
     /// Pauses or resumes the game (the P key, the HUD's button, `play_control`).
     /// Active pause (DESIGN.md): the dead stand still, building still works. The pause *menu* is
     /// [`SepulcraGame::open_menu`].
-    pub(crate) fn set_paused(&mut self, world: &mut World, paused: bool) {
+    pub(crate) fn set_paused(&mut self, world: &mut GameWorld<'_>, paused: bool) {
         self.paused = paused;
         if !paused {
             self.hud.show("pause", false);
@@ -388,14 +388,14 @@ impl SepulcraGame {
     }
 
     /// The pause menu (Escape, the pad's Start): pauses the game under it.
-    pub(crate) fn open_menu(&mut self, world: &mut World) {
+    pub(crate) fn open_menu(&mut self, world: &mut GameWorld<'_>) {
         if self.running() {
             self.set_paused(world, true);
             self.hud.show("pause", true);
         }
     }
 
-    pub(crate) fn set_speed(&mut self, world: &mut World, speed: u32) {
+    pub(crate) fn set_speed(&mut self, world: &mut GameWorld<'_>, speed: u32) {
         self.speed = speed;
         let pace = self.pace();
         if let Some(scene) = &mut self.scene {
@@ -502,7 +502,7 @@ impl SepulcraGame {
     }
 
     /// Plays a command from the player (mouse, pad, touch, HUD): refusals are said and buzzed.
-    fn try_command(&mut self, world: &mut World, cmd: Command) -> bool {
+    fn try_command(&mut self, world: &mut GameWorld<'_>, cmd: Command) -> bool {
         match self.command(world, cmd) {
             Ok(()) => true,
             Err(r) => {
@@ -514,7 +514,7 @@ impl SepulcraGame {
         }
     }
 
-    fn act(&mut self, world: &mut World, agent: &str, action: Action) {
+    fn act(&mut self, world: &mut GameWorld<'_>, agent: &str, action: Action) {
         let n = self.state.content().stones.len() as u8;
         let cmd = match action {
             Action::Select(i) => {
@@ -589,14 +589,14 @@ impl SepulcraGame {
         self.try_command(world, cmd);
     }
 
-    fn new_run(&mut self, world: &mut World, agent: &str) {
+    fn new_run(&mut self, world: &mut GameWorld<'_>, agent: &str) {
         let seed = self.state.seed().wrapping_add(1);
         let content = self.content();
         self.restart(world, agent, content, seed, None);
     }
 
     /// What the HUD's buttons and menus asked for.
-    fn ui_events(&mut self, world: &mut World, agent: &str, events: &UiEvents) {
+    fn ui_events(&mut self, world: &mut GameWorld<'_>, agent: &str, events: &UiEvents) {
         for ev in &events.events {
             match ev {
                 UiEvent::Action { action, .. } => {
@@ -613,7 +613,7 @@ impl SepulcraGame {
     }
 
     /// One HUD action (also what agents press with `play_ui`).
-    pub(crate) fn ui_action(&mut self, world: &mut World, agent: &str, action: &str) {
+    pub(crate) fn ui_action(&mut self, world: &mut GameWorld<'_>, agent: &str, action: &str) {
         let content = self.content();
         let stone_of = |icon: &str| content.stones.iter().position(|s| hud::icon_of(&s.id) == icon).map(|i| i as u8);
         match action {
@@ -731,7 +731,7 @@ impl SepulcraGame {
     }
 
     /// Cursor and range ring for the hovered (or selected) cell.
-    fn hover(&mut self, world: &mut World) {
+    fn hover(&mut self, world: &mut GameWorld<'_>) {
         let Some(scene) = self.scene.as_mut() else { return };
         let content = Arc::clone(self.state.content_arc());
         let tier_range = |s: &Stone| content.stone(s.kind).tiers.get(usize::from(s.tier)).map(|t| t.range as f32 / 1000.0);
@@ -934,7 +934,7 @@ impl SepulcraGame {
     }
 
     /// Presses a HUD widget by id, as a click would (`play_ui`). Returns the action it sent.
-    pub(crate) fn press(&mut self, world: &mut World, agent: &str, id: &str) -> Result<Option<String>, String> {
+    pub(crate) fn press(&mut self, world: &mut GameWorld<'_>, agent: &str, id: &str) -> Result<Option<String>, String> {
         let cam = self.camera;
         self.fill_hud(cam.as_ref(), (1280, 720));
         let action = self.hud.press(id)?;
@@ -963,7 +963,7 @@ pub fn outcome_name(o: Outcome) -> &'static str {
 }
 
 /// STYLE.md lighting: a low cool moon, dim blue-violet ambient, ACES tone mapping, night sky.
-pub fn night(world: &mut World) {
+pub fn night(world: &mut GameWorld<'_>) {
     // A low moon (about 30 degrees up) from the east-south-east: the east and south faces catch
     // it, the north and west fall into blue shadow, so turning the slab shows which face is which.
     let (elev, az) = (30f32.to_radians(), 60f32.to_radians());
@@ -1162,7 +1162,7 @@ impl Game for SepulcraGame {
     }
 
     fn start(&mut self, ctx: &mut Ctx) {
-        night(ctx.world);
+        night(&mut ctx.world);
         // Screens and sounds from the assets folder (agents edit them there), else the built-in
         // copies.
         let assets = self.assets.clone().unwrap_or_else(SepulcraGame::default_assets);
@@ -1181,7 +1181,7 @@ impl Game for SepulcraGame {
         } else {
             self.sfx = Sfx::off("headless");
         }
-        self.rebuild(ctx.world, ctx.agent);
+        self.rebuild(&mut ctx.world, ctx.agent);
         self.say(format!("Seed {}: carve stones before wave 1", self.state.seed()));
     }
 
@@ -1231,12 +1231,12 @@ impl Game for SepulcraGame {
         let born = (self.pres_ticks - advance) as f32 / TICK_HZ as f32;
         let framed = self.last_frame.is_some_and(|t| t.elapsed() < FRAMED_WITHIN);
         if let Some(scene) = &mut self.scene {
-            scene.sync(ctx.world, &self.state, &events, born);
+            scene.sync(&mut ctx.world, &self.state, &events, born);
             // Without window frames (headless), or while agents step a paused clock (a capture
             // may come before the next frame), put everything where it is at this tick.
             // Otherwise the next window frame moves things anyway: don't write them twice.
             if !framed || ctx.clock.paused() {
-                scene.animate(ctx.world, 1.0, self.now);
+                scene.animate(&mut ctx.world, 1.0, self.now);
             }
         }
         self.events = events;
@@ -1262,19 +1262,19 @@ impl Game for SepulcraGame {
         self.fill_hud(cam.as_ref(), frame.size);
         let mut ui_events = std::mem::take(&mut self.ui_frame);
         self.hud.frame(self.controls.input(), frame.size, &mut ui_events);
-        self.ui_events(ctx.world, ctx.agent, &ui_events);
+        self.ui_events(&mut ctx.world, ctx.agent, &ui_events);
         let map = Arc::clone(self.state.content_arc());
         let Some(scene) = &self.scene else { return };
         let actions = self.controls.act(ui_events.consumed, frame.dt_s.min(0.25), frame.size, &scene.geo, &map.map);
         self.ui_frame = ui_events;
         for a in actions {
-            self.act(ctx.world, ctx.agent, a);
+            self.act(&mut ctx.world, ctx.agent, a);
         }
         self.controls.sync_camera(frame.camera, frame.agent_view);
         self.camera = *frame.camera;
-        self.hover(ctx.world);
+        self.hover(&mut ctx.world);
         if let Some(scene) = &mut self.scene {
-            scene.animate(ctx.world, alpha, self.now);
+            scene.animate(&mut ctx.world, alpha, self.now);
         }
         if let Some(cam) = &self.camera {
             self.sfx.listen(cam);
@@ -1300,7 +1300,7 @@ impl Game for SepulcraGame {
 
     fn before_capture(&mut self, ctx: &mut Ctx) {
         if let Some(scene) = &mut self.scene {
-            scene.animate(ctx.world, 1.0, self.now);
+            scene.animate(&mut ctx.world, 1.0, self.now);
         }
     }
 
@@ -1346,7 +1346,7 @@ impl Game for SepulcraGame {
 
     fn apply_state(&mut self, ctx: &mut Ctx, state: Box<dyn Any>) {
         if let Ok(l) = state.downcast::<saves::Loaded>() {
-            self.apply_saved(ctx.world, ctx.agent, *l);
+            self.apply_saved(&mut ctx.world, ctx.agent, *l);
         }
     }
 
@@ -1355,7 +1355,7 @@ impl Game for SepulcraGame {
     }
 
     fn request_done(&mut self, ctx: &mut Ctx, request: &specula::game::GameRequest, result: Result<Json, Json>) {
-        self.request_result(ctx.world, request, result);
+        self.request_result(&mut ctx.world, request, result);
     }
 
     fn checkpoint(&self) -> Option<Box<dyn Any>> {
@@ -1449,12 +1449,13 @@ mod desync_tests {
 mod lex_rules_tests {
     use super::*;
     use specula::game::Clock;
+    use specula::world::World;
 
     fn lex_game(seed: u64) -> (SepulcraGame, World, Clock) {
         let mut g = SepulcraGame::new(Arc::new(Content::builtin()), seed);
         let mut world = World::default();
         let clock = Clock::new(g.tick_hz());
-        g.start(&mut Ctx { world: &mut world, clock: &clock, agent: "sepulcra", windowed: false });
+        g.start(&mut Ctx { world: GameWorld::new(&mut world), clock: &clock, agent: "sepulcra", windowed: false });
         g.rules_lex = true;
         g.start_lex();
         assert!(g.lex.is_some());
@@ -1462,7 +1463,7 @@ mod lex_rules_tests {
     }
 
     fn tick(g: &mut SepulcraGame, world: &mut World, clock: &mut Clock) {
-        g.tick(&mut Ctx { world, clock, agent: "sepulcra", windowed: false });
+        g.tick(&mut Ctx { world: GameWorld::new(world), clock, agent: "sepulcra", windowed: false });
         clock.finish_tick();
     }
 
@@ -1491,7 +1492,7 @@ mod lex_rules_tests {
         let rules = g.status_json().get("rules").cloned().unwrap();
         assert_eq!(rules.get("parity").and_then(Json::as_str), Some("desync"), "{rules}");
         // Commands are refused, with the reason as data.
-        let r = g.command(&mut world, Command::CallWave);
+        let r = g.command(&mut GameWorld::new(&mut world), Command::CallWave);
         assert_eq!(r, Err(Rejection::GameOver));
         assert_eq!(g.lex.as_ref().unwrap().last_refusal.as_ref().map(|r| r.0.as_str()), Some("desync"));
     }
@@ -1504,7 +1505,7 @@ mod lex_rules_tests {
         let warding = content.stone_kind("warding").unwrap();
         // Both refuse: the game's rejection with Lex's own code beside it.
         let lane = Command::PlaceStone { cell: content.map.cell_ref("top:9,14").unwrap(), stone: warding };
-        let r = g.command(&mut world, lane).unwrap_err();
+        let r = g.command(&mut GameWorld::new(&mut world), lane).unwrap_err();
         assert_eq!(r, Rejection::NotBuildable);
         assert!(g.lex.as_ref().unwrap().last_refusal.is_some());
         assert!(g.running(), "agreeing refusals are no desync");
@@ -1512,7 +1513,7 @@ mod lex_rules_tests {
         let mut pending = Vec::new();
         g.state.apply(&Command::PlaceStone { cell, stone: warding }, &mut pending).unwrap();
         let hash = g.lex.as_ref().unwrap().sim.hash();
-        let r = g.command(&mut world, Command::PlaceStone { cell, stone: warding });
+        let r = g.command(&mut GameWorld::new(&mut world), Command::PlaceStone { cell, stone: warding });
         assert_eq!(r, Err(Rejection::Occupied));
         assert_eq!(g.lex.as_ref().unwrap().sim.hash(), hash, "... and the Lex run takes it back");
         assert!(!g.running(), "a desync");
@@ -1523,7 +1524,7 @@ mod lex_rules_tests {
         let lex = g.lex.as_mut().unwrap();
         let call = sepulcra::lex::command_call(&lex.sim, &content, &Command::PlaceStone { cell, stone: warding }).unwrap();
         lex.sim.apply(&call).unwrap();
-        let r = g.command(&mut world, Command::PlaceStone { cell, stone: warding });
+        let r = g.command(&mut GameWorld::new(&mut world), Command::PlaceStone { cell, stone: warding });
         assert_eq!(r, Err(Rejection::Occupied));
         assert!(g.state.stone(cell).is_none(), "the reference didn't take it either");
         assert!(!g.running());
@@ -1538,7 +1539,7 @@ mod lex_rules_tests {
         let content = g.state.content().clone();
         let warding = content.stone_kind("warding").unwrap();
         for c in ["top:8,12", "top:12,8"] {
-            g.command(&mut world, Command::PlaceStone { cell: content.map.cell_ref(c).unwrap(), stone: warding }).unwrap();
+            g.command(&mut GameWorld::new(&mut world), Command::PlaceStone { cell: content.map.cell_ref(c).unwrap(), stone: warding }).unwrap();
         }
         for _ in 0..1_200 {
             tick(&mut g, &mut world, &mut clock);
@@ -1548,7 +1549,7 @@ mod lex_rules_tests {
         let resume = |bytes: &[u8]| {
             let (mut h, mut world2, clock2) = lex_game(6);
             let loaded = h.parse_saved(bytes).unwrap();
-            h.apply_saved(&mut world2, "sepulcra", loaded);
+            h.apply_saved(&mut GameWorld::new(&mut world2), "sepulcra", loaded);
             (h, world2, clock2)
         };
         let (mut h, mut world2, mut clock2) = resume(&bytes);
@@ -1590,7 +1591,7 @@ mod lex_rules_tests {
         let bytes = g.save_bytes().unwrap();
         let (mut h, mut world2, _clock2) = lex_game(3);
         let loaded = h.parse_saved(&bytes).unwrap();
-        h.apply_saved(&mut world2, "sepulcra", loaded);
+        h.apply_saved(&mut GameWorld::new(&mut world2), "sepulcra", loaded);
         assert!(!h.running(), "stopped");
         assert_eq!(h.confirm, Some(Confirm::Desync));
         assert!(h.hud.visible("confirm"), "the dialog is up after the load");

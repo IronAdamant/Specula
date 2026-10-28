@@ -2150,6 +2150,26 @@ pub struct World {
     sealed: bool,
     /// Attempts to do either while sealed.
     seal_breaks: u64,
+    /// Set on the engine's live world only ([`World::mark_live`]); a default or cloned world
+    /// never carries it, so the write policy notices a live world replaced wholesale.
+    live: LiveMark,
+}
+
+/// Whether a world is the engine's live one: neither `Default` nor `Clone` carries it.
+#[derive(Debug, Default)]
+struct LiveMark(bool);
+
+impl Clone for LiveMark {
+    fn clone(&self) -> LiveMark {
+        LiveMark(false)
+    }
+}
+
+/// The engine's clock as a world holds it (see [`World::world_time`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ClockParts {
+    clock_s: f64,
+    time_offset: f64,
 }
 
 /// A pose supplied from outside the animation (a ragdoll's).
@@ -2654,6 +2674,56 @@ impl World {
     pub(crate) fn set_next_id(&mut self, next_id: u64) {
         let max = self.entities.range(..TRANSIENT_ID_BASE).next_back().map_or(0, |(id, _)| *id);
         self.next_id = next_id.max(max).min(MAX_NEXT_ID);
+    }
+
+    /// Marks this world as the engine's live one (the write policy: `Live::new`, `Live::replace`).
+    pub(crate) fn mark_live(&mut self) {
+        self.live = LiveMark(true);
+    }
+
+    /// Whether this is still the world the write policy marked live (a world put in its place,
+    /// default or cloned, isn't).
+    pub(crate) fn is_marked_live(&self) -> bool {
+        self.live.0
+    }
+
+    /// The clock as this world holds it.
+    pub(crate) fn clock_parts(&self) -> ClockParts {
+        ClockParts { clock_s: self.clock_s, time_offset: self.time_offset }
+    }
+
+    /// Puts back a clock taken with [`World::clock_parts`].
+    pub(crate) fn set_clock_parts(&mut self, c: ClockParts) {
+        self.clock_s = c.clock_s;
+        self.time_offset = c.time_offset;
+    }
+
+    /// Lends the project files out without moving [`World::files_revision`] (so the disk sync
+    /// sees nothing): the write policy keeps them while writers that don't use them hold the
+    /// live world, and gives them back with [`World::return_files`].
+    pub(crate) fn lend_files(&mut self) -> ProjectFiles {
+        ProjectFiles {
+            files: std::mem::take(&mut self.files),
+            floor: std::mem::take(&mut self.file_floor),
+            order: std::mem::take(&mut self.file_floor_order),
+            seq: self.file_floor_seq,
+            floor_all: self.file_floor_all,
+        }
+    }
+
+    /// Gives back what [`World::lend_files`] lent (the revision stays).
+    pub(crate) fn return_files(&mut self, files: ProjectFiles) {
+        self.files = files.files;
+        self.file_floor = files.floor;
+        self.file_floor_order = files.order;
+        self.file_floor_seq = files.seq;
+        self.file_floor_all = files.floor_all;
+    }
+
+    /// Moves the revision past `revision` (a world that took another's place must never repeat
+    /// one of its revisions: caches key on them).
+    pub(crate) fn revision_past(&mut self, revision: u64) {
+        self.revision = self.revision.max(revision) + 1;
     }
 
     fn child_range(&self, parent: u64) -> std::collections::btree_map::Range<'_, (u64, String), u64> {
