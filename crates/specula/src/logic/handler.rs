@@ -73,7 +73,7 @@ impl specula_logic::Handler for ModuleHandler<'_> {
             // `/project`, `/nav`): a write that breaks one is undone and refused.
             let mark = self.world.mark();
             let out = self.answer(op, req)?;
-            crate::swarm::check_module_changes(self.world, mark).map_err(|e| error_value(&e))?;
+            crate::write_policy::module_request(self.world, mark).map_err(|e| error_value(&e))?;
             return Ok(out);
         }
         self.answer(op, req)

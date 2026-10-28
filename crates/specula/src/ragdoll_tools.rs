@@ -224,7 +224,7 @@ impl crate::Engine {
                     }
                 }
                 let by = w.name.to_owned();
-                match self.swarm.commit(&mut self.world, tick, w, JKind::Set, |wd| wd.update(&EntityKey::Id(id), change, &by).map(|e| e.id)) {
+                match self.world.commit(&mut self.swarm, tick, w, JKind::Set, crate::write_policy::Rule::World, |wd| wd.update(&EntityKey::Id(id), change, &by).map(|e| e.id)) {
                     Ok((id, seq)) => {
                         let mut out = Json::obj([
                             ("id", Json::from(id)),

@@ -1,8 +1,9 @@
 //! The swarm layer: who agents are, what they claimed, and the journal of what they did.
 //!
-//! The engine routes every agent write through here: identity ([`Swarm::hello`],
-//! [`Swarm::agent_name`]), claims ([`crate::claims`]) and the journal ([`crate::journal`]). It
-//! holds no GPU or window state, so all of it is tested headless.
+//! It holds identity ([`Swarm::hello`], [`Swarm::agent_name`]), claims ([`crate::claims`]) and
+//! the journal ([`crate::journal`]); the rules every world write passes (claims, reserved data,
+//! joints, journaling) are [`crate::write_policy`]'s. It holds no GPU or window state, so all of
+//! it is tested headless.
 //!
 //! **Identity rules.** An agent's name is what `agent_hello` set, unique among open sessions
 //! (idle ones included: a name another open session uses is refused with `name_taken` and a free
@@ -23,8 +24,8 @@ use crate::board::Board;
 use crate::claims::{Claim, ClaimSpec, Claims};
 use crate::intents::Intents;
 use crate::leases::Leases;
-use crate::journal::{self, Journal, Kind, UndoRequest, Undone, Writer};
-use crate::world::{Change, Mark, World, WorldError};
+use crate::journal::{Journal, Writer};
+use crate::world::{World, WorldError};
 
 /// Attribution prefix of game modules' world changes (`module:<name>`): no agent may take a name
 /// starting with it.
@@ -66,94 +67,6 @@ fn random_hex() -> String {
 }
 
 
-/// Which reserved subtree a commit may write.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Owns {
-    Neither,
-    /// `/lex`: the Lex tools.
-    Lex,
-    /// `/lex_live`: lex_live start and stop.
-    LexLive,
-    /// Joint data (`props.joint`): physics_joint, which checks the joint's bodies itself.
-    Joint,
-    /// Project files (`/project`): the project tools.
-    Project,
-    /// `/nav` and `props.navmesh`: the nav tools.
-    Nav,
-}
-
-/// The reserved-data rules, for every writer: `/lex` (and Lex rule data anywhere) only through
-/// the Lex tools, entities in `/lex_live` only from lex_live (deleting there is anyone's: a run
-/// shows what it needs again), `/project` only through the project tools (and no entity there),
-/// `/nav` and navmesh settings only through the nav tools, and (with `joints`) joint data only
-/// through physics_joint. `owns` is the one subtree the caller may write. Agents' commits, game
-/// tools, module loads and hooks ([`Swarm::check_game_changes`]) and module requests
-/// ([`check_module_changes`]) all run it, so nothing can hide in a subtree's claim exemptions.
-/// Hosted games and modules may make joints (their bodies are checked by `check_joint_rules`).
-fn check_reserved(changes: &[Change], owns: Owns, joints: bool) -> Result<(), WorldError> {
-    // The /lex subtree is Lex rule data, written only through the lex_* tools, and /lex_live
-    // holds live runs' groups and output, spawned only by lex_live (so both can be exempt from
-    // region claims without letting anything hide there); joint data only through physics_joint
-    // (a joint moves the bodies it links).
-    if owns != Owns::Lex {
-        if let Some(c) = changes.iter().find(|c| crate::claims::touches_rule_data(c)) {
-            return Err(WorldError::new("reserved", format!("'{}' is in /lex, which holds Lex rule data: change it with lex_edit / lex_import (lex_get and lex_list read it)", c.path()))
-                .with("path", c.path().to_owned()));
-        }
-    }
-    if owns != Owns::LexLive {
-        if let Some(c) = changes.iter().find(|c| crate::claims::touches_lex_live(c)) {
-            return Err(WorldError::new(
-                "reserved",
-                format!("'{}' is in /lex_live, where live Lex runs show their entities: lex_live starts and stops runs (world_delete works there; a run shows what it needs again)", c.path()),
-            )
-            .with("path", c.path().to_owned()));
-        }
-    }
-    if joints && owns != Owns::Joint {
-        if let Some(c) = changes.iter().find(|c| crate::claims::touches_joint_data(c) && !matches!(c, Change::Delete { .. })) {
-            return Err(WorldError::new(
-                "reserved",
-                format!("'{}' is a joint (props.joint): make, change or remove joints with physics_joint, which checks the right to move both bodies", c.path()),
-            )
-            .with("path", c.path().to_owned())
-            .with("field", "props.joint"));
-        }
-    }
-    // /project holds project files, written only through the project tools; no entity may live
-    // there (a claim on a file must never cover something else).
-    if let Some(c) = changes.iter().find(|c| (owns != Owns::Project && matches!(c, Change::File { .. })) || (!matches!(c, Change::File { .. }) && crate::project::under_root(c.path()))) {
-        return Err(WorldError::new(
-            "reserved",
-            format!("'{}' is in /project, which holds project files: change them with project_write / project_patch / project_delete (project_list and project_read read them)", c.path()),
-        )
-        .with("path", c.path().to_owned()));
-    }
-    // Likewise /nav and navmesh settings: only the nav tools write them.
-    if owns != Owns::Nav {
-        if let Some(c) = changes.iter().find(|c| crate::claims::touches_nav_data(c)) {
-            return Err(WorldError::new(
-                "reserved",
-                format!("'{}' is navmesh data (/nav, props.navmesh): change it with nav_build (nav_build remove: true deletes one; nav_info reads them)", c.path()),
-            )
-            .with("path", c.path().to_owned()));
-        }
-    }
-    Ok(())
-}
-
-/// [`check_reserved`] for a module's own request (the module handler), on the changes recorded
-/// since `mark`: on a refusal they are rolled back (the ids they used are never handed out again)
-/// and the module gets the error.
-pub(crate) fn check_module_changes(world: &mut World, mark: Mark) -> Result<(), WorldError> {
-    let start = world.mark_changes(mark);
-    if let Err(e) = check_reserved(&world.pending_changes()[start..], Owns::Neither, false) {
-        world.rollback_to(mark);
-        return Err(e);
-    }
-    Ok(())
-}
-
 #[derive(Default)]
 pub struct Swarm {
     pub journal: Journal,
@@ -171,8 +84,8 @@ pub struct Swarm {
     /// Agent name → refused writes by error code, for roll-ups (at most [`MAX_AGENTS`] names).
     refused: BTreeMap<String, BTreeMap<&'static str, u64>>,
     /// Prune the world's removed-entity versions once there are more than this (twice what the
-    /// last prune kept; see [`Swarm::prune_retired`]).
-    retired_prune_at: usize,
+    /// last prune kept; see [`crate::write_policy::prune_retired`]).
+    pub(crate) retired_prune_at: usize,
 }
 
 /// The world's removed-entity versions are pruned once there are at least this many.
@@ -341,7 +254,7 @@ impl Swarm {
         self.claims.expire(now, Some(&ids));
     }
 
-    fn count_rejection(&mut self, w: Writer, e: &WorldError) {
+    pub(crate) fn count_rejection(&mut self, w: Writer, e: &WorldError) {
         if matches!(e.code, "claimed" | "claims_overlap") {
             self.claims.rejected += 1;
         }
@@ -360,259 +273,15 @@ impl Swarm {
         self.refused.get(name)
     }
 
-    /// Applies an agent's world command: rejected (and rolled back) when it wrote inside another
-    /// agent's claim, journaled otherwise. Returns the result and the journal id.
-    pub fn commit<T>(
-        &mut self,
-        world: &mut World,
-        tick: u64,
-        w: Writer,
-        kind: Kind,
-        command: impl FnOnce(&mut World) -> Result<T, WorldError>,
-    ) -> Result<(T, Option<u64>), WorldError> {
-        self.commit_with(world, tick, w, kind, Owns::Neither, command)
-    }
-
-    /// [`Swarm::commit`] for `physics_joint`: the only writer of joint data (`props.joint`),
-    /// which checks the joint's bodies against claims itself.
-    pub fn commit_joint<T>(
-        &mut self,
-        world: &mut World,
-        tick: u64,
-        w: Writer,
-        kind: Kind,
-        command: impl FnOnce(&mut World) -> Result<T, WorldError>,
-    ) -> Result<(T, Option<u64>), WorldError> {
-        self.commit_with(world, tick, w, kind, Owns::Joint, command)
-    }
-
-    /// [`Swarm::commit`] for the navigation tools: the only writer of `/nav` and of
-    /// `props.navmesh` (navmesh settings, exempt from region claims as data that sits nowhere).
-    pub fn commit_nav<T>(
-        &mut self,
-        world: &mut World,
-        tick: u64,
-        w: Writer,
-        kind: Kind,
-        command: impl FnOnce(&mut World) -> Result<T, WorldError>,
-    ) -> Result<(T, Option<u64>), WorldError> {
-        self.commit_with(world, tick, w, kind, Owns::Nav, command)
-    }
-
-    /// [`Swarm::commit`] for the Lex tools: the only writer of the `/lex` subtree, which holds
-    /// rule data (see `lex_tools`).
-    pub fn commit_lex<T>(
-        &mut self,
-        world: &mut World,
-        tick: u64,
-        w: Writer,
-        kind: Kind,
-        command: impl FnOnce(&mut World) -> Result<T, WorldError>,
-    ) -> Result<(T, Option<u64>), WorldError> {
-        self.commit_with(world, tick, w, kind, Owns::Lex, command)
-    }
-
-    /// [`Swarm::commit`] for the project tools: the only writer of project files (see
-    /// [`crate::project`]); claims on `/project/...` paths apply as for entities.
-    pub fn commit_project<T>(
-        &mut self,
-        world: &mut World,
-        tick: u64,
-        w: Writer,
-        command: impl FnOnce(&mut World) -> Result<T, WorldError>,
-    ) -> Result<(T, Option<u64>), WorldError> {
-        self.commit_with(world, tick, w, Kind::File, Owns::Project, command)
-    }
-
-    /// Journals project files read from disk (edits made outside the engine, mounts) as
-    /// [`crate::project::DISK_AGENT`]'s: a human's edit can't be refused, so no claim applies.
-    pub fn commit_disk<T>(&mut self, world: &mut World, tick: u64, command: impl FnOnce(&mut World) -> Result<T, WorldError>) -> Result<(T, Option<u64>), WorldError> {
-        journal::commit(world, &mut self.journal, tick, crate::project::DISK_AGENT, Kind::File, None, command)
-    }
-
-    /// [`Swarm::commit`] for `lex_live` start and stop: the only agent writer that spawns in the
-    /// `/lex_live` subtree (a run's groups; its presentation is the run's own output).
-    pub fn commit_lex_live<T>(
-        &mut self,
-        world: &mut World,
-        tick: u64,
-        w: Writer,
-        kind: Kind,
-        command: impl FnOnce(&mut World) -> Result<T, WorldError>,
-    ) -> Result<(T, Option<u64>), WorldError> {
-        self.commit_with(world, tick, w, kind, Owns::LexLive, command)
-    }
-
-    fn commit_with<T>(
-        &mut self,
-        world: &mut World,
-        tick: u64,
-        w: Writer,
-        kind: Kind,
-        owns: Owns,
-        command: impl FnOnce(&mut World) -> Result<T, WorldError>,
-    ) -> Result<(T, Option<u64>), WorldError> {
-        let now = Instant::now();
-        let claims = &self.claims;
-        // The /lex subtree is Lex rule data, written only through the lex_* tools, and /lex_live
-        // holds live runs' groups and output, spawned only by lex_live (so both can be exempt
-        // from region claims without letting anything hide there); joint data only through
-        // physics_joint (a joint moves the bodies it links). A failing command is rolled back by
-        // the journal.
-        let command = |wd: &mut World| {
-            let mark = wd.mark();
-            let v = command(wd)?;
-            let start = wd.mark_changes(mark);
-            let changes = &wd.pending_changes()[start..];
-            check_reserved(changes, owns, true)?;
-            // Removing a joint, or a body a joint links, lets go of the joint's other bodies:
-            // allowed with the right to change them (physics_joint checks its own writes).
-            if owns != Owns::Joint && claims.could_block(w, now) {
-                for c in changes {
-                    check_joint_rules(claims, wd, c, w, now)?;
-                }
-            }
-            Ok(v)
-        };
-        let mut check = |world: &World, change: &Change| claims.check(world, std::slice::from_ref(change), w, now);
-        let check: Option<&mut journal::Check> = if claims.could_block(w, now) { Some(&mut check) } else { None };
-        let result = journal::commit(world, &mut self.journal, tick, w, kind, check, command);
-        self.prune_retired(world);
-        match &result {
-            Err(e) => self.count_rejection(w, e),
-            Ok((_, Some(seq))) => {
-                let changes = self.journal.get(*seq).map_or(0, |e| e.changes.len());
-                self.board.note_entry(w, *seq, changes);
-            }
-            Ok(_) => {}
-        }
-        result
-    }
-
-    /// Undoes `w`'s entries, checked against claims like any write (and the joint rules: undoing
-    /// a joint's removal ties its bodies again, restoring a jointed body pulls the others).
-    pub fn undo(&mut self, world: &mut World, tick: u64, w: Writer, req: &UndoRequest) -> Result<Undone, WorldError> {
-        let now = Instant::now();
-        let claims = &self.claims;
-        // An undo that makes, changes or removes a joint moves (or lets go of) the joint's bodies,
-        // as physics_joint does: it needs the right to change them, before and after.
-        let mut check = |world: &World, change: &Change| {
-            claims.check(world, std::slice::from_ref(change), w, now)?;
-            check_joint_rules(claims, world, change, w, now)
-        };
-        let check: Option<&mut journal::Check> = if claims.could_block(w, now) { Some(&mut check) } else { None };
-        let result = self.journal.undo(world, tick, w, req, check);
-        self.prune_retired(world);
-        match &result {
-            Err(e) => self.count_rejection(w, e),
-            Ok(u) => self.board.note_entry(w, u.seq, u.changes),
-        }
-        result
-    }
-
-    /// Runs a game tool agent `w` called: the game's changes are checked against claims as `w`'s,
-    /// step by step, and journaled under the game's name, `via` the agent.
-    ///
-    /// On rejection only the **world** is rolled back (ids it used are never handed out again).
-    /// The tool has still run inside the game, so the caller must roll the game back too:
-    /// [`crate::game::Game::restore`] from a checkpoint taken before the call, or
-    /// [`crate::game::Game::world_rolled_back`] for games without checkpoints.
-    pub fn game_tool<T>(
-        &mut self,
-        world: &mut World,
-        tick: u64,
-        game: &str,
-        w: Writer,
-        call: impl FnOnce(&mut World) -> T,
-    ) -> Result<T, WorldError> {
-        let mark = world.mark();
-        let out = call(world);
-        self.check_game_changes(world, mark, tick, game, w).map(|()| out)
-    }
-
-    /// The tail of [`Swarm::game_tool`] for changes already made since `mark` (a module's load,
-    /// unload or hook an agent asked for): checks them as `w`'s against claims, step by step, and
-    /// journals them under `game`, via `w`. On rejection the world is back at `mark` (ids it used
-    /// are never handed out again; the journal notes them).
-    pub fn check_game_changes(&mut self, world: &mut World, mark: Mark, tick: u64, game: &str, w: Writer) -> Result<(), WorldError> {
-        // The reserved-data rules hold for the game and modules as for agents (joints aside:
-        // the game and modules may make them, checked below).
-        let start = world.mark_changes(mark);
-        if let Err(e) = check_reserved(&world.pending_changes()[start..], Owns::Neither, false) {
-            world.rollback_to(mark);
-            self.journal.note_next_id(world.next_id());
-            self.count_rejection(w, &e);
-            return Err(e.with("game", game));
-        }
-        let now = Instant::now();
-        let claims = &self.claims;
-        // Joint rules too: a module or game that makes a joint, or removes a body one links, moves
-        // the joint's bodies (it needs the right to change them, as physics_joint does).
-        let mut check = |world: &World, change: &Change| {
-            claims.check(world, std::slice::from_ref(change), w, now)?;
-            check_joint_rules(claims, world, change, w, now)
-        };
-        let checked = if claims.could_block(w, now) { world.recheck_steps(mark, &mut check) } else { Ok(()) };
-        if let Err(e) = checked {
-            self.journal.note_next_id(world.next_id());
-            self.count_rejection(w, &e);
-            return Err(e.with("game", game));
-        }
-        let changes = world.take_changes();
-        if changes.is_empty() {
-            // Nothing to journal, but ids may have been used (and rolled back): replays must
-            // hand out the same ones next.
-            self.journal.note_next_id(world.next_id());
-        } else {
-            let count = changes.len();
-            if let Some(seq) = self.journal.append_game(tick, game, Some(w.name), Kind::GameTool, changes, world.next_id()) {
-                self.board.note_entry(w, seq, count);
-            }
-        }
-        self.prune_retired(world);
-        Ok(())
+    #[cfg(test)]
+    pub(crate) fn journal(&self) -> &Journal {
+        &self.journal
     }
 
     /// Refuses `w` acting on what `path` names (a module's root, `/<name>`) while another agent
     /// holds a live claim covering it.
-    /// After a caller rolled the world back itself (to a mark): ids the rolled-back changes used
-    /// are never handed out again, and the journal notes it so replays agree.
-    pub fn note_rolled_back(&mut self, world: &World) {
-        self.journal.note_next_id(world.next_id());
-    }
-
-    #[cfg(test)]
-    pub(crate) fn journal(&self) -> &journal::Journal {
-        &self.journal
-    }
-
     pub fn check_claimed_path(&self, path: &str, w: Writer, what: &str) -> Result<(), WorldError> {
         self.claims.check_path(path, w, Instant::now(), what)
-    }
-
-    /// Journals the hosted game's own changes (ticks, frames, start): exempt from claims.
-    pub fn game_changes(&mut self, world: &mut World, tick: u64, game: &str, kind: Kind) {
-        let changes = world.take_changes();
-        self.journal.append_snapshot(tick, game, None, kind, changes, world.next_id());
-        self.prune_retired(world);
-    }
-
-    /// Keeps the world's record of removed entities' versions (what restores go past, see
-    /// [`World::version_floor`]) to what the journal can still restore: once it has grown past
-    /// twice what was kept last time (and [`RETIRED_PRUNE_MIN`]), ids no entry in the ring
-    /// touches go. Amortized: each prune costs about the ring's ids, and runs only after as many
-    /// deletes. Called after every journaled write.
-    pub fn prune_retired(&mut self, world: &mut World) {
-        if world.retired_len() > self.retired_prune_at.max(RETIRED_PRUNE_MIN) {
-            self.prune_retired_now(world);
-        }
-    }
-
-    /// [`Swarm::prune_retired`] at once.
-    pub fn prune_retired_now(&mut self, world: &mut World) {
-        let keep = self.journal.ids_in_ring();
-        world.retain_retired(|id| keep.contains(&id));
-        self.retired_prune_at = 2 * world.retired_len();
     }
 
     /// Whether `w` may replace the whole world (world_load).
@@ -697,21 +366,11 @@ impl Swarm {
     }
 }
 
-/// The joint rules for one change ([`crate::claims::joint_rule_changes`]): every body it moves
-/// through a joint must be one `w` may change.
-fn check_joint_rules(claims: &Claims, world: &World, change: &Change, w: Writer, now: Instant) -> Result<(), WorldError> {
-    for body in crate::claims::joint_rule_changes(world, change) {
-        claims.check(world, std::slice::from_ref(&body), w, now).map_err(|e| {
-            e.with("note", "this change ties, lets go of or pulls bodies linked by a joint (props.joint), so it needs the right to change them").with("joint_change", change.path().to_owned())
-        })?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::claims::{Scope, DEFAULT_LEASE};
+    use crate::journal::{Kind, UndoRequest};
     use crate::world::{EntityKey, Recording, Shape, SpawnSpec, UpdateSpec};
 
     fn session(id: &str, client: &str) -> SessionInfo {

@@ -3644,6 +3644,12 @@ impl World {
         &self.changes
     }
 
+    /// Whether anything is recorded and not taken yet, in either recording mode (the write
+    /// policy's check that every writer journals or rolls back what it changed).
+    pub(crate) fn has_unjournaled(&self) -> bool {
+        !self.changes.is_empty() || !self.dirty.is_empty() || !self.dirty_removed.is_empty() || self.dirty_env.is_some()
+    }
+
     /// Remembers the current state, so [`World::rollback_to`] can return to it. Needs
     /// [`Recording::Full`] for every change in between.
     pub(crate) fn mark(&self) -> Mark {

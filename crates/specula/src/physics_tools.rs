@@ -726,7 +726,7 @@ impl crate::Engine {
                 let new = Body { velocity: body.velocity + dv, angular_velocity: body.angular_velocity + dw, sleeping: false, ..body };
                 let change = UpdateSpec { body: Some(Some(new)), ..Default::default() };
                 let by = w.name.to_owned();
-                match self.swarm.commit(&mut self.world, tick, w, JKind::Set, |wd| wd.update(&EntityKey::Id(id), change, &by).map(|e| e.id)) {
+                match self.world.commit(&mut self.swarm, tick, w, JKind::Set, crate::write_policy::Rule::World, |wd| wd.update(&EntityKey::Id(id), change, &by).map(|e| e.id)) {
                     Ok((id, seq)) => {
                         let b = self.world.get(id).and_then(|e| e.body).unwrap_or(new);
                         ToolOutput::text(

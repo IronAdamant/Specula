@@ -1051,7 +1051,7 @@ impl crate::Engine {
         }
         let by = w.name.to_owned();
         let apply = |wd: &mut World| wd.apply_batch(ops, &by).map_err(|(i, e)| e.with("op_index", i));
-        match self.swarm.commit(&mut self.world, tick, w, JKind::Batch, apply) {
+        match self.world.commit(&mut self.swarm, tick, w, JKind::Batch, crate::write_policy::Rule::World, apply) {
             Ok((results, seq)) => {
                 if let Json::Obj(pairs) = &mut out {
                     if let Some((_, Json::Arr(list))) = pairs.iter_mut().find(|(k, _)| k == "placements") {

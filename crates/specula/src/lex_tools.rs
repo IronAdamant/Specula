@@ -389,7 +389,7 @@ fn commit(c: Commit, world: &mut World, swarm: &mut Swarm, tick: u64, w: Writer,
         ops.push(Op::Delete(EntityKey::Path(format!("{sp}/{id}")), base_version(id)));
     }
     let apply = |wd: &mut World| wd.apply_batch(ops, by).map_err(|(i, e): (usize, WorldError)| e.with("op_index", i));
-    match swarm.commit_lex(world, tick, w, Kind::Batch, apply) {
+    match crate::write_policy::commit(world, swarm, tick, w, Kind::Batch, crate::write_policy::Rule::Lex, apply) {
         Ok((_, seq)) => {
             let v = versions(world, &c.set).map(|v| v.items).unwrap_or_default();
             let touched: Vec<(String, Json)> = c.puts.iter().map(|(id, _, _)| (id.clone(), Json::from(v.get(id).map(|(_, ver)| *ver)))).collect();

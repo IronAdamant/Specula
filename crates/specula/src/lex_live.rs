@@ -52,6 +52,7 @@ use crate::schedule::Class;
 use crate::swarm::Swarm;
 use crate::tools::{check_keys, Command, Tools};
 use crate::world::{EntityKey, Mark, Recording, Shape, SpawnSpec, UpdateSpec, World, WorldError};
+use crate::write_policy::{self, Exempt, Opener, Rule};
 use specula_core::math::Vec3;
 use specula_core::Json;
 use specula_lex::rules::{NativeDef, Rules, TagFilter};
@@ -446,7 +447,7 @@ impl NativeHost for Host<'_> {
         let (swarm, agent, tick, staged) = (&mut *self.swarm, self.agent, self.tick, self.staged);
         let commit = &mut |w: &mut World, _: Mark, _: &str, _| {
             if !staged {
-                swarm.game_changes(w, tick, agent, Kind::GameTick);
+                write_policy::journal_exempt(w, swarm, tick, Exempt::LexLive { agent });
             }
             Ok(())
         };
@@ -476,7 +477,7 @@ impl crate::Engine {
     pub(crate) fn lex_live_call(&mut self, call: LiveCall, by: &str, w: Writer) -> ToolOutput {
         let (tick, hz) = (self.clock.tick(), self.clock.hz());
         let crate::Engine { lex_live, world, logic, swarm, lex_natives, .. } = self;
-        lex_live.call(call, by, w, Env { world, logic, swarm, natives: lex_natives, tick, hz })
+        world.session(swarm, tick, Opener::LexLive, |world, swarm| lex_live.call(call, by, w, Env { world, logic, swarm, natives: lex_natives, tick, hz }))
     }
 
     /// Ends live-input holds whose agents are gone (each frame while any hold is on).
@@ -492,7 +493,8 @@ impl crate::Engine {
     pub(crate) fn lex_live_tick(&mut self) {
         let (tick, hz) = (self.clock.tick(), self.clock.hz());
         let crate::Engine { lex_live, world, logic, swarm, lex_natives, .. } = self;
-        lex_live.tick(Env { world, logic, swarm, natives: lex_natives, tick, hz }, lex_live.limits);
+        let limits = lex_live.limits;
+        world.session(swarm, tick, Opener::LexLive, |world, swarm| lex_live.tick(Env { world, logic, swarm, natives: lex_natives, tick, hz }, limits));
     }
 }
 
@@ -555,8 +557,7 @@ fn apply_command(run: &mut Run, name: &str, args: &Json, by: &str, w: Option<Wri
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sim.apply_undoable(&call, &mut host)))
     };
     let undo = |world: &mut World, swarm: &mut Swarm, logic: &mut LogicHost| {
-        world.rollback_to(mark);
-        swarm.note_rolled_back(world);
+        write_policy::rolled_back(world, swarm, mark);
         logic.drop_staged();
     };
     let before = match result {
@@ -580,7 +581,7 @@ fn apply_command(run: &mut Run, name: &str, args: &Json, by: &str, w: Option<Wri
     };
     match w {
         Some(w) => {
-            if let Err(e) = swarm.check_game_changes(world, mark, tick, &agent, w) {
+            if let Err(e) = write_policy::game_commit(world, swarm, mark, tick, &agent, w) {
                 // The world is back at the mark; the run and the modules go back with it.
                 logic.drop_staged();
                 if let Some(u) = before {
@@ -592,7 +593,7 @@ fn apply_command(run: &mut Run, name: &str, args: &Json, by: &str, w: Option<Wri
                 return Err(j);
             }
         }
-        None => swarm.game_changes(world, tick, &agent, Kind::GameTick),
+        None => write_policy::journal_exempt(world, swarm, tick, Exempt::LexLive { agent: &agent }),
     }
     logic.keep_staged();
     if input {
@@ -785,7 +786,7 @@ impl Live {
                 }
                 let group = run.group;
                 if env.world.get(group).is_some() {
-                    if let Err(e) = env.swarm.commit_lex_live(env.world, env.tick, w, Kind::Delete, |wd| wd.delete(&EntityKey::Id(group), None).map(|_| ())) {
+                    if let Err(e) = write_policy::commit(env.world, env.swarm, env.tick, w, Kind::Delete, Rule::LexLive, |wd| wd.delete(&EntityKey::Id(group), None).map(|_| ())) {
                         return world_error(&e);
                     }
                 }
@@ -883,7 +884,7 @@ impl Live {
                 }
                 let group = run.group;
                 if env.world.get(group).is_some() {
-                    if let Err(e) = env.swarm.commit_lex_live(env.world, env.tick, w, Kind::Delete, |wd| wd.delete(&EntityKey::Id(group), None).map(|_| ())) {
+                    if let Err(e) = write_policy::commit(env.world, env.swarm, env.tick, w, Kind::Delete, Rule::LexLive, |wd| wd.delete(&EntityKey::Id(group), None).map(|_| ())) {
                         return world_error(&e);
                     }
                 }
@@ -976,7 +977,7 @@ impl Live {
         };
         let set = s.set.clone();
         // The group: /lex_live/<set>, replacing a leftover one (a saved world, say).
-        let made = env.swarm.commit_lex_live(env.world, env.tick, w, Kind::Batch, |wd| {
+        let made = write_policy::commit(env.world, env.swarm, env.tick, w, Kind::Batch, Rule::LexLive, |wd| {
             let root = root_group(wd, w.name)?;
             if let Ok(old) = wd.find_path(&format!("/{ROOT}/{set}")) {
                 wd.delete(&EntityKey::Id(old), None)?;
@@ -1173,7 +1174,7 @@ fn present(world: &mut World, swarm: &mut Swarm, tick: u64, run: &mut Run) {
             Err(e) => {
                 run.present_error = Some(format!("the run's group /{ROOT}/{set} can't be made again: {}", e.message));
                 world.set_recording(prev);
-                swarm.game_changes(world, tick, &agent, Kind::GameTick);
+                write_policy::journal_exempt(world, swarm, tick, Exempt::LexLive { agent: &agent });
                 return;
             }
         }
@@ -1272,7 +1273,7 @@ fn present(world: &mut World, swarm: &mut Swarm, tick: u64, run: &mut Run) {
     }
     run.presented = Some(run.sim.tick());
     world.set_recording(prev);
-    swarm.game_changes(world, tick, &agent, Kind::GameTick);
+    write_policy::journal_exempt(world, swarm, tick, Exempt::LexLive { agent: &agent });
 }
 
 fn status_json(set: &str, run: &Run, in_process: &specula_lex::Natives) -> Json {

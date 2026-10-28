@@ -2,11 +2,10 @@
 //! docs/design/PROJECT_DATA.md): snapshots, commits through the swarm's claims and journal, the
 //! disk kept equal to the store, imports of edits made outside the engine, and hot reload.
 
-use crate::game::Ctx;
 use crate::journal::{Kind, Writer};
 use crate::project::{self, Event, FileKind, Mount, MountKind, ProjectFile, DISK_AGENT};
 use crate::project_tools::{Committed, FixesCommitted, ModuleText, ProjectCall, Snap};
-use crate::world::{Change, Recording, WorldError};
+use crate::world::{Change, WorldError};
 use crate::Engine;
 use specula_core::Json;
 use specula_protocol::ToolOutput;
@@ -178,7 +177,7 @@ impl Engine {
             None => None,
         };
         let tick = self.clock.tick();
-        match self.swarm.commit_project(&mut self.world, tick, w, |wd| {
+        match self.world.commit(&mut self.swarm, tick, w, crate::journal::Kind::File, crate::write_policy::Rule::Project, |wd| {
             wd.put_file_raw(path, new, false);
             Ok(())
         }) {
@@ -426,7 +425,7 @@ impl Engine {
         }
         let paths: Vec<String> = puts.iter().map(|(p, _)| p.clone()).collect();
         let tick = self.clock.tick();
-        match self.swarm.commit_project(&mut self.world, tick, w, |wd| {
+        match self.world.commit(&mut self.swarm, tick, w, crate::journal::Kind::File, crate::write_policy::Rule::Project, |wd| {
             for (p, f) in puts {
                 wd.put_file_raw(&p, Some(f), false);
             }
@@ -511,7 +510,7 @@ impl Engine {
         let tick = self.clock.tick();
         let changed: Vec<String> = puts.iter().map(|(p, _, _)| p.clone()).collect();
         if !puts.is_empty() {
-            let result = self.swarm.commit_disk(&mut self.world, tick, |wd| {
+            let result = self.world.disk(&mut self.swarm, tick, |wd| {
                 for (p, f, import) in puts {
                     wd.put_file_raw(&p, f, import);
                 }
@@ -579,11 +578,7 @@ impl Engine {
             done.push("models");
         }
         if !assets.is_empty() {
-            if let Some(game) = self.game.as_mut() {
-                self.world.set_recording(Recording::Snapshot);
-                game.assets_changed(&mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name, windowed: self.windowed }, &assets);
-                self.world.set_recording(Recording::Full);
-                self.journal_game(Kind::GameFrame);
+            if self.game_call(Kind::GameFrame, |game, ctx| game.assets_changed(ctx, &assets)).is_some() {
                 done.push("game");
             }
         }

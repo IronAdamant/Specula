@@ -73,6 +73,7 @@ mod tools;
 pub mod two_d;
 mod ui;
 pub mod world;
+pub mod write_policy;
 
 use game::{Clock, Ctx, Game, MAX_GAME_OVERLAY_QUADS};
 use journal::{Kind, Writer};
@@ -95,7 +96,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tools::{Command, FrameSpec, QuerySpec, Request, TimeOp};
 use ui::UiThread;
-use world::{Recording, World, WorldError};
+use world::{World, WorldError};
 
 const DEFAULT_PORT: u16 = 7471;
 
@@ -336,7 +337,9 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
             if removed > 0 {
                 eprintln!("specula: removed {removed} /lex_live entities the world files kept (no live Lex run shows them)");
             }
-            for problem in engine.replace_world(world, &name).into_iter().chain(saved.warnings.iter().cloned()) {
+            // At startup nobody holds a claim and no playtest runs.
+            let may = write_policy::may_replace(&engine.swarm, Writer::from("startup"), false).map_err(|e| e.message)?;
+            for problem in engine.replace_world(may, world, &name).into_iter().chain(saved.warnings.iter().cloned()) {
                 eprintln!("specula: {problem}");
             }
             if let Some(problem) = engine.load_board(&dir) {
@@ -489,7 +492,7 @@ struct Engine {
     last_gc: (Instant, u64),
     /// When builds nobody waits for were last cancelled, at which `World::model_drops`.
     last_unwanted: (Instant, u64),
-    world: World,
+    world: write_policy::Live,
     /// The grading LUT the world names, loaded from the assets root.
     luts: luts::Luts,
     /// The human's window camera; `None` = auto-frame the world.
@@ -636,7 +639,6 @@ impl Engine {
         let luts = luts::Luts::new(library.root());
         let library = Arc::new(SharedLibrary::new(library));
         let mut world = World::default();
-        world.set_recording(Recording::Full);
         world.set_model_source(Some(Arc::clone(&library) as Arc<dyn world::ModelSource>));
         Ok(Engine {
             gpu,
@@ -661,7 +663,7 @@ impl Engine {
             labeler: sight_overlay::Labeler::default(),
             last_gc: (Instant::now(), 0),
             last_unwanted: (Instant::now(), 0),
-            world,
+            world: write_policy::Live::new(world),
             window_camera: None,
             window_follow: None,
             window_released_by: None,
@@ -732,19 +734,15 @@ impl Engine {
 
     /// Makes a loaded world the live one: it records changes, builds its models with the
     /// engine's library, and the journal starts over from it. Returns a message per model entity
-    /// whose recipe failed (it loads anyway and draws nothing until fixed).
-    fn replace_world(&mut self, mut world: World, name: &str) -> Vec<String> {
-        // World time resumes where it was saved; the engine's clock joins it.
-        world.adopt_clock(self.clock.seconds());
-        world.set_recording(Recording::Full);
-        let failed = world.set_model_source(Some(Arc::clone(&self.library) as Arc<dyn world::ModelSource>));
+    /// whose recipe failed (it loads anyway and draws nothing until fixed). `may`: the check that
+    /// it may be replaced now ([`write_policy::may_replace`]).
+    fn replace_world(&mut self, may: write_policy::MayReplace, world: World, name: &str) -> Vec<String> {
+        // World time resumes where it was saved (the engine's clock joins it); project files are
+        // the project's, not the world's: they stay (see `Live::replace`).
+        let models = Some(Arc::clone(&self.library) as Arc<dyn world::ModelSource>);
+        let failed = self.world.replace(may, &mut self.swarm, world, &format!("world:{name}"), self.clock.seconds(), models);
         let problems =
-            failed.iter().map(|(id, e)| format!("model {} ({id}) not built: {e}", world.path_of(*id))).collect();
-        // Project files are the project's, not the world's: they stay.
-        let files_revision = self.world.files_revision();
-        world.adopt_files(self.world.take_files(), files_revision);
-        self.swarm.journal.rebase(&world, &format!("world:{name}"));
-        self.world = world;
+            failed.iter().map(|(id, e)| format!("model {} ({id}) not built: {e}", self.world.path_of(*id))).collect();
         // Follow cameras resolve afresh in the new world (its cameras came with it).
         self.cameras = cameras::Cameras::default();
         self.world_generation += 1;
@@ -762,9 +760,14 @@ impl Engine {
         problems
     }
 
-    /// Journals what the hosted game just changed on its own (exempt from claims).
-    fn journal_game(&mut self, kind: Kind) {
-        self.swarm.game_changes(&mut self.world, self.clock.tick(), &self.game_name, kind);
+    /// Calls the hosted game (`call` gets its [`Ctx`]) as one of its own writes, journaled as
+    /// `kind` under its name and exempt from claims ([`write_policy::Exempt::Game`]). `None`
+    /// without a game.
+    fn game_call<T>(&mut self, kind: Kind, call: impl FnOnce(&mut dyn Game, &mut Ctx) -> T) -> Option<T> {
+        let game = self.game.as_mut()?;
+        let (clock, agent, windowed) = (&self.clock, self.game_name.as_str(), self.windowed);
+        let why = write_policy::Exempt::Game { name: agent, kind };
+        Some(self.world.exempt(&mut self.swarm, clock.tick(), why, |w| call(game.as_mut(), &mut Ctx { world: w, clock, agent, windowed })))
     }
 
     /// The world's state hash, reusing the last one while nothing changed.
@@ -787,11 +790,10 @@ impl Engine {
         for ev in self.logic.take_module_events() {
             self.trace.note_module(&ev);
             let module = logic::agent_of(&ev.module);
-            let next_id = self.world.next_id();
             match by {
-                Some(w) if ev.event != "disabled" => self.swarm.journal.append_module(w, None, ev, next_id),
-                Some(w) => self.swarm.journal.append_module(module.as_str(), Some(w.name), ev, next_id),
-                None => self.swarm.journal.append_module(module.as_str(), None, ev, next_id),
+                Some(w) if ev.event != "disabled" => write_policy::module_event(&self.world, &mut self.swarm, w, None, ev),
+                Some(w) => write_policy::module_event(&self.world, &mut self.swarm, Writer::from(module.as_str()), Some(w.name), ev),
+                None => write_policy::module_event(&self.world, &mut self.swarm, Writer::from(module.as_str()), None, ev),
             };
         }
     }
@@ -819,8 +821,9 @@ impl Engine {
     /// Calls the game's `start` once the engine is ready.
     fn start_game(&mut self) {
         let Some(game) = self.game.as_mut() else { return };
-        game.start(&mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name, windowed: self.windowed });
-        self.journal_game(Kind::GameStart);
+        let (clock, agent, windowed) = (&self.clock, self.game_name.as_str(), self.windowed);
+        let why = write_policy::Exempt::GameStart { name: agent };
+        self.world.exempt(&mut self.swarm, clock.tick(), why, |w| game.start(&mut Ctx { world: w, clock, agent, windowed }));
         self.last_advance = Instant::now();
     }
 
@@ -876,26 +879,21 @@ impl Engine {
             self.fp.check(self.clock.tick(), "between_ticks");
             // Animations set during the tick start at its time.
             self.world.set_clock_s(self.clock.seconds());
-            if let Some(game) = self.game.as_mut() {
+            if self.game.is_some() {
                 let _t = profile::zone("tick");
                 let start = Instant::now();
                 // Game updates are journaled replay-only and coalesced per tick (F3).
-                self.world.set_recording(Recording::Snapshot);
-                game.tick(&mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name, windowed: self.windowed });
-                self.world.set_recording(Recording::Full);
-                self.journal_game(Kind::GameTick);
+                self.game_call(Kind::GameTick, |game, ctx| game.tick(ctx));
                 self.pacing.tick.push(start.elapsed());
             }
             if !self.logic.is_empty() {
                 let _l = profile::zone("modules");
                 self.lend_physics();
-                let (tick, swarm) = (self.clock.tick(), &mut self.swarm);
+                let (tick, hz, logic) = (self.clock.tick(), self.clock.hz(), &mut self.logic);
                 // The game's rules: journaled, exempt from claims.
-                let commit = &mut |w: &mut World, _: world::Mark, agent: &str, phase| {
-                    swarm.game_changes(w, tick, agent, logic::tools::kind(phase));
-                    Ok(())
-                };
-                self.logic.tick(&mut self.world, tick, self.clock.hz(), commit);
+                self.world.session(&mut self.swarm, tick, write_policy::Opener::Modules, |w, swarm| {
+                    logic.tick(w, tick, hz, &mut write_policy::module_tick_commit(swarm, tick));
+                });
                 self.return_physics();
             }
             // Live Lex rule sets step on the same tick, after the modules (whose hooks they call).
@@ -946,16 +944,14 @@ impl Engine {
             agent_view,
             title: &mut self.game_title,
         };
-        self.world.set_recording(Recording::Snapshot);
-        let ctx = &mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name, windowed: self.windowed };
-        game.frame(ctx, &mut frame);
-        self.world.set_recording(Recording::Full);
+        let (clock, agent, windowed) = (&self.clock, self.game_name.as_str(), self.windowed);
+        let why = write_policy::Exempt::Game { name: agent, kind: Kind::GameFrame };
+        self.world.exempt(&mut self.swarm, clock.tick(), why, |w| game.frame(&mut Ctx { world: w, clock, agent, windowed }, &mut frame));
         // While the window looks through an agent's camera the game's camera writes don't count
         // (only a human takes the view back, F5): the game was told (`Frame::agent_view`).
         if agent_view {
             self.window_camera = shown;
         }
-        self.journal_game(Kind::GameFrame);
         self.pacing.game_frame.push(start.elapsed());
         // The game's menu may have asked for a save or a load.
         self.serve_game_requests();
@@ -969,12 +965,10 @@ impl Engine {
             return;
         }
         let _z = profile::zone("game_overlay");
-        self.world.set_recording(Recording::Snapshot);
-        let ctx = &mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name, windowed: self.windowed };
+        let (clock, agent, windowed) = (&self.clock, self.game_name.as_str(), self.windowed);
         let mut overlay = game::Overlay { size, camera, capture, quads: out, textures: &mut self.gpu };
-        game.overlay(ctx, &mut overlay);
-        self.world.set_recording(Recording::Full);
-        self.journal_game(Kind::GameFrame);
+        let why = write_policy::Exempt::Game { name: agent, kind: Kind::GameFrame };
+        self.world.exempt(&mut self.swarm, clock.tick(), why, |w| game.overlay(&mut Ctx { world: w, clock, agent, windowed }, &mut overlay));
         // Past the cap, or naming a texture the GPU doesn't have: dropped (counted), never a
         // failed frame.
         let gpu = &self.gpu;
@@ -1200,8 +1194,8 @@ impl Engine {
             );
         }
         // Anim sets that changed reach the world here, journaled (never when a build lands).
-        if !reload.anim_handles.is_empty() && anim::resettle(&mut self.world, &reload.anim_handles) > 0 {
-            self.swarm.game_changes(&mut self.world, self.clock.tick(), anim::RELOAD_AGENT, Kind::Set);
+        if !reload.anim_handles.is_empty() {
+            self.world.exempt(&mut self.swarm, self.clock.tick(), write_policy::Exempt::AnimReload, |w| anim::resettle(w, &reload.anim_handles));
         }
         Some(reload)
     }
@@ -1718,19 +1712,19 @@ impl Engine {
         // A game tool (play_ui pressing a menu's Save) may queue requests for the engine.
         let game_call = matches!(request.command, Command::Game { .. });
         let output = match request.command {
-            Command::Spawn(spec) => match self.swarm.commit(&mut self.world, tick, w, Kind::Spawn, |wd| wd.spawn(spec, &by).map(|e| e.id)) {
+            Command::Spawn(spec) => match self.world.commit(&mut self.swarm, tick, w, Kind::Spawn, crate::write_policy::Rule::World, |wd| wd.spawn(spec, &by).map(|e| e.id)) {
                 Ok((id, seq)) => self.entity_output(id, seq),
                 Err(e) => world_error(&self.conflict_help(e, Some(&conflict::Yours::spawn()))),
             },
             Command::Set(key, change) => {
                 // A refused write says what changed (conflict help): only these can be refused so.
                 let yours = (change.expect_version.is_some() || !self.swarm.claims.is_empty()).then(|| conflict::Yours::of_update(&change));
-                match self.swarm.commit(&mut self.world, tick, w, Kind::Set, |wd| wd.update(&key, change, &by).map(|e| e.id)) {
+                match self.world.commit(&mut self.swarm, tick, w, Kind::Set, crate::write_policy::Rule::World, |wd| wd.update(&key, change, &by).map(|e| e.id)) {
                     Ok((id, seq)) => self.entity_output(id, seq),
                     Err(e) => world_error(&self.conflict_help(e, yours.as_ref())),
                 }
             }
-            Command::Delete(key, expect) => match self.swarm.commit(&mut self.world, tick, w, Kind::Delete, |wd| wd.delete(&key, expect)) {
+            Command::Delete(key, expect) => match self.world.commit(&mut self.swarm, tick, w, Kind::Delete, crate::write_policy::Rule::World, |wd| wd.delete(&key, expect)) {
                 Ok((d, seq)) => ToolOutput::text(
                     Json::obj([
                         ("deleted", Json::from(d.removed.len())),
@@ -1747,14 +1741,15 @@ impl Engine {
             Command::Lex(call) => {
                 let hooks: Vec<String> = self.logic.hooks().iter().map(logic::HookInfo::qualified).collect();
                 let in_process: Vec<String> = self.lex_natives.keys().cloned().collect();
-                lex_tools::handle(call, &mut self.world, &mut self.swarm, tick, w, &by, &hooks, &in_process)
+                let by = by.as_str();
+                self.world.session(&mut self.swarm, tick, write_policy::Opener::LexTools, |wd, swarm| lex_tools::handle(call, wd, swarm, tick, w, by, &hooks, &in_process))
             }
             Command::LexLive(call) => self.lex_live_call(call, &by, w),
             Command::Batch(ops) => {
                 let count = ops.len();
                 let yours = self.batch_yours(&ops);
                 let apply = |wd: &mut World| wd.apply_batch(ops, &by).map_err(|(i, e)| e.with("op_index", i));
-                match self.swarm.commit(&mut self.world, tick, w, Kind::Batch, apply) {
+                match self.world.commit(&mut self.swarm, tick, w, Kind::Batch, crate::write_policy::Rule::World, apply) {
                     Ok((results, seq)) => {
                         let mut summary = batch_summary(&results);
                         summary.set("journal", Json::from(seq));
@@ -1790,13 +1785,9 @@ impl Engine {
             }
             Command::Save { name, overwrite } => self.save(name, overwrite),
             // A playtest owns the clock and the world until it ends (as for save_read): a load
-            // would replace the world under it. Not even with force.
-            Command::Load { .. } if self.playtests.running() => world_error(
-                &WorldError::new("playtest_running", "a playtest is running (it owns the clock and the world); load after it ends (playtest_report waits for it) or cancel it")
-                    .with("retry_after_ms", 1000),
-            ),
-            Command::Load { name, force } => match self.swarm.check_replace_world(w) {
-                Ok(()) => self.load(name, force),
+            // would replace the world under it. Not even with force. Nor while others hold claims.
+            Command::Load { name, force } => match write_policy::may_replace(&self.swarm, w, self.playtests.running()) {
+                Ok(may) => self.load(may, name, force),
                 Err(e) => world_error(&e),
             },
             Command::Hello { name, role, resume } => match self.swarm.hello(&request.session, name, role, resume, &server.all_sessions()) {
@@ -1808,7 +1799,7 @@ impl Engine {
                 .grading
                 .and_then(|g| g.lut)
                 .map_or(Ok(()), |lut| self.luts.check(&lut))
-                .and_then(|()| self.swarm.commit(&mut self.world, tick, w, Kind::Env, |wd| wd.set_env(&patch)))
+                .and_then(|()| self.world.commit(&mut self.swarm, tick, w, Kind::Env, crate::write_policy::Rule::World, |wd| wd.set_env(&patch)))
             {
                 Ok(((), seq)) => {
                     let mut env = self.world.env().to_json();
@@ -1896,17 +1887,16 @@ impl Engine {
                     let checkpoint = if self.swarm.claims.is_empty() { None } else { game.checkpoint() };
                     let (clock, agent, windowed) = (&self.clock, self.game_name.as_str(), self.windowed);
                     let call = |wd: &mut World| game.call_tool(&mut Ctx { world: wd, clock, agent, windowed }, &name, &args);
-                    match self.swarm.game_tool(&mut self.world, tick, agent, w, call) {
+                    match self.world.game_tool(&mut self.swarm, tick, agent, w, call) {
                         Ok(out) => out,
                         Err(e) => {
                             // The world was rolled back; the game goes back with it.
                             match checkpoint {
                                 Some(c) => game.restore(c),
                                 None => {
-                                    self.world.set_recording(Recording::Snapshot);
-                                    game.world_rolled_back(&mut Ctx { world: &mut self.world, clock, agent, windowed });
-                                    self.world.set_recording(Recording::Full);
-                                    self.swarm.game_changes(&mut self.world, tick, agent, Kind::GameTool);
+                                    // The game's repair is its own write (its state, shown again).
+                                    let why = write_policy::Exempt::Game { name: agent, kind: Kind::GameTool };
+                                    self.world.exempt(&mut self.swarm, tick, why, |wd| game.world_rolled_back(&mut Ctx { world: wd, clock, agent, windowed }));
                                 }
                             }
                             world_error(&self.conflict_help(e, Some(&conflict::Yours { fields: vec![format!("(game tool {name})")] })))
@@ -1917,7 +1907,7 @@ impl Engine {
             },
             Command::History(q) => ToolOutput::text(self.swarm.journal.history(&q).to_string()),
             Command::Changes(q) => ToolOutput::text(self.swarm.journal.changes_text(&q)),
-            Command::Undo(req) => match self.swarm.undo(&mut self.world, tick, w, &req) {
+            Command::Undo(req) => match self.world.undo(&mut self.swarm, tick, w, &req) {
                 Ok(u) => {
                     // Cameras an undo removed (or re-pointed) leave no stale follow state.
                     self.cameras.prune(&self.world);
@@ -1966,7 +1956,8 @@ impl Engine {
             Command::ModelBuild(_) | Command::ModelReload => unreachable!("answered by handle_model_call"),
             Command::Logic(call) => {
                 self.lend_physics();
-                let out = logic::tools::handle(&mut self.logic, call, &mut self.world, &self.clock, &mut self.swarm, w);
+                let (logic, clock) = (&mut self.logic, &self.clock);
+                let out = self.world.session(&mut self.swarm, tick, write_policy::Opener::Modules, |wd, swarm| logic::tools::handle(logic, call, wd, clock, swarm, w));
                 self.return_physics();
                 self.journal_module_events(Some(w));
                 out
@@ -2161,7 +2152,7 @@ impl Engine {
         }
     }
 
-    fn load(&mut self, name: String, force: bool) -> ToolOutput {
+    fn load(&mut self, may: write_policy::MayReplace, name: String, force: bool) -> ToolOutput {
         self.finish_autosave(true);
         // The outgoing world's task board is kept with it (a world without a folder can't keep one).
         self.save_board_now();
@@ -2198,7 +2189,7 @@ impl Engine {
                 // they stop, and what the files kept of /lex_live (nothing would update it) goes.
                 let removed = lex_live::remove_presentation(&mut world);
                 let stopped = self.lex_live.stop_all();
-                let mut problems = self.replace_world(world, &name);
+                let mut problems = self.replace_world(may, world, &name);
                 problems.extend(saved.warnings.iter().cloned());
                 problems.extend(self.load_board(&dir));
                 self.saved = Some(saved);
@@ -2231,12 +2222,7 @@ impl Engine {
     /// The hosted game's `before_capture`: presentation up to the current tick (a headless engine
     /// never runs its per-frame update). Returns the tick it ran at (`None` without a game).
     fn before_capture(&mut self) -> Option<u64> {
-        let game = self.game.as_mut()?;
-        self.world.set_recording(Recording::Snapshot);
-        let ctx = &mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name, windowed: self.windowed };
-        game.before_capture(ctx);
-        self.world.set_recording(Recording::Full);
-        self.journal_game(Kind::GameFrame);
+        self.game_call(Kind::GameFrame, |game, ctx| game.before_capture(ctx))?;
         Some(self.clock.tick())
     }
 
@@ -2394,7 +2380,7 @@ impl Engine {
             ("captures", Json::from(self.capture_dir.display().to_string())),
             ("agents", Json::arr(agents)),
             ("clock", self.clock_json()),
-            ("swarm", self.swarm.stats_json()),
+            ("swarm", { let mut s = self.swarm.stats_json(); s.set("unjournaled_writes", Json::from(self.world.strays())); s }),
             ("models", self.models_json()),
             ("window", self.window_json()),
             // The floating-point environment guard: what it checks and what it had to restore,

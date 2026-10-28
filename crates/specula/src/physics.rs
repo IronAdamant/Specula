@@ -1028,7 +1028,7 @@ pub fn space_settings(s: &PhysicsSettings, hz: u32) -> specula_physics::Settings
 // ---------------------------------------------------------------------------------------------
 // The engine's physics: world <-> space
 
-use crate::world::{EntityKey, Recording, UpdateSpec, World};
+use crate::world::{EntityKey, UpdateSpec, World};
 use specula_core::math::Quat;
 use specula_physics::{BodyDesc, ColliderDesc, Event, EventKind, Pose, Shape, Space, StepReport};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -1841,10 +1841,9 @@ impl crate::Engine {
         let tick = self.clock.tick();
         let dt = 1.0 / self.clock.hz() as f32;
         let _z = specula_core::profile::zone("physics");
-        self.world.set_recording(Recording::Snapshot);
-        self.physics.tick(&mut self.world, self.world_generation, &settings, tick, dt);
-        self.world.set_recording(Recording::Full);
-        self.swarm.game_changes(&mut self.world, tick, AGENT, crate::journal::Kind::Physics);
+        // Pose write-back, the hot path: journaled replay-only under `physics`, exempt from claims.
+        let (physics, generation) = (&mut self.physics, self.world_generation);
+        self.world.exempt(&mut self.swarm, tick, crate::write_policy::Exempt::Physics, |w| physics.tick(w, generation, &settings, tick, dt));
     }
 }
 
@@ -1852,7 +1851,7 @@ impl crate::Engine {
 mod tests {
     use super::*;
     use crate::journal::{Journal, Kind};
-    use crate::world::{Shape as WShape, SpawnSpec};
+    use crate::world::{Recording, Shape as WShape, SpawnSpec};
 
     const DT: f32 = 1.0 / 60.0;
 

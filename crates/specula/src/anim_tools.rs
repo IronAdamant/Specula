@@ -872,7 +872,7 @@ impl Engine {
             ops.push(Op::Delete(EntityKey::Id(existing.expect("checked")), expect_version));
         }
         let by = w.name.to_string();
-        let result = self.swarm.commit(&mut self.world, tick, w, Kind::Batch, |wd| wd.apply_batch(ops, &by).map_err(|(_, e)| e));
+        let result = self.world.commit(&mut self.swarm, tick, w, Kind::Batch, crate::write_policy::Rule::World, |wd| wd.apply_batch(ops, &by).map_err(|(_, e)| e));
         let (results, seq) = match result {
             Ok(r) => r,
             Err(mut e) => {

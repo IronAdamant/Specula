@@ -8,11 +8,10 @@
 //! Saves are files `<saves dir>/<name>.specsave` (`--saves`, default `./saves`), written to a
 //! temporary file and renamed, so a crash leaves the old save or the new one.
 
-use crate::game::{Ctx, GameRequest};
+use crate::game::GameRequest;
 use crate::journal::{Kind, Writer};
 use crate::savegame::{self, SaveError, Section, EXTENSION};
 use crate::tools::{bool_arg, check_keys, int_arg, string_arg};
-use crate::world::Recording;
 use crate::Engine;
 use specula_core::hash::hash_str;
 use specula_core::Json;
@@ -861,20 +860,17 @@ impl Engine {
 
     /// Claims and unsaved changes: checked when a load starts and again when it swaps in
     /// (`since`: the world's revision when it started; changes after it are unsaved too).
-    fn check_load_allowed(&mut self, force: bool, by: &str, key: Option<&str>, since: Option<u64>) -> Result<(), SaveError> {
+    fn check_load_allowed(&mut self, force: bool, by: &str, key: Option<&str>, since: Option<u64>) -> Result<crate::write_policy::MayReplace, SaveError> {
         // A playtest owns the clock and the world until it ends: a load would move both under it
-        // (and its replay would record a run nobody can reproduce). Not even with force.
-        if self.playtests.running() {
-            return Err(SaveError::new("playtest_running", "a playtest is running (it owns the clock and the world); load after it ends (playtest_report waits for it) or cancel it")
-                .with("retry_after_ms", 1000));
-        }
-        self.swarm.check_replace_world(Writer::new(by, key)).map_err(|e| {
-            let mut s = SaveError::new("claimed", e.message.clone());
+        // (and its replay would record a run nobody can reproduce). Not even with force. Nor
+        // while other agents hold claims.
+        let may = crate::write_policy::may_replace(&self.swarm, Writer::new(by, key), self.playtests.running()).map_err(|e| {
+            let mut s = SaveError::new(e.code, e.message.clone());
             s.details = e.details.clone();
             s
         })?;
         if force {
-            return Ok(());
+            return Ok(may);
         }
         if since.is_some_and(|r| r != self.world.revision()) {
             return Err(SaveError::new("unsaved_changes", "the world changed while the save was loading; save_write first, or load with force: true to discard the changes"));
@@ -885,14 +881,14 @@ impl Engine {
             return Err(SaveError::new("unsaved_changes", "the live world has changes not in a world folder or save; world_save or save_write first, or pass force: true to discard them")
                 .with("current_world", self.world_name.clone().map_or(Json::Null, Json::from)));
         }
-        Ok(())
+        Ok(may)
     }
 
     /// Swaps a prepared save in (engine thread): checks again, then the clock, world, physics,
     /// modules and game, and reports the hashes now against the saved ones.
     fn finish_load(&mut self, l: &Loading, p: Prepared) -> Result<Json, SaveError> {
         let t1 = Instant::now();
-        self.check_load_allowed(l.force, &l.by, l.key.as_deref(), Some(l.revision))?;
+        let may = self.check_load_allowed(l.force, &l.by, l.key.as_deref(), Some(l.revision))?;
         // Parsed on the worker when the game has a parser; otherwise (a game without one) here.
         let parsed: Option<Box<dyn std::any::Any>> = match (p.game_parsed, &p.game_bytes, self.game.as_ref()) {
             (Some(state), _, _) => Some(state),
@@ -910,7 +906,7 @@ impl Engine {
         // Everything checks: make it live.
         self.clock.set_tick(p.tick);
         let mut notes: Vec<Json> = p.notes;
-        notes.extend(self.replace_world(p.world, &format!("save:{}", l.name)).into_iter().map(Json::from));
+        notes.extend(self.replace_world(may, p.world, &format!("save:{}", l.name)).into_iter().map(Json::from));
         // The machine's thread count stays (it isn't in saves: results never depend on it).
         physics.threads = self.physics.threads;
         self.physics = physics;
@@ -931,11 +927,8 @@ impl Engine {
                 Err(e) => notes.push(Json::obj([("warning", Json::from("nav_not_restored")), ("error", Json::from(e.code)), ("message", Json::from(e.message.as_str()))])),
             }
         }
-        if let (Some(state), Some(game)) = (parsed, self.game.as_mut()) {
-            self.world.set_recording(Recording::Snapshot);
-            game.apply_state(&mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name, windowed: self.windowed }, state);
-            self.world.set_recording(Recording::Full);
-            self.journal_game(Kind::GameStart);
+        if let Some(state) = parsed {
+            self.game_call(Kind::GameStart, |game, ctx| game.apply_state(ctx, state));
         }
         // The loaded world isn't a world folder: world_save names one.
         self.world_name = None;
@@ -1066,11 +1059,10 @@ impl Engine {
                     }
                     (r, None) => r,
                 };
-                let Some(game) = self.game.as_mut() else { return };
-                self.world.set_recording(Recording::Snapshot);
-                game.request_done(&mut Ctx { world: &mut self.world, clock: &self.clock, agent: &self.game_name, windowed: self.windowed }, &req, result.map_err(|e| e.to_json()));
-                self.world.set_recording(Recording::Full);
-                self.journal_game(Kind::GameFrame);
+                if self.game.is_none() {
+                    return;
+                }
+                self.game_call(Kind::GameFrame, |game, ctx| game.request_done(ctx, &req, result.map_err(|e| e.to_json())));
             }
         }
     }

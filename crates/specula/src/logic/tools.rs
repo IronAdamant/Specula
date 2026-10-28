@@ -279,7 +279,7 @@ fn open(library: &Path) -> Result<ModuleCode, WorldError> {
 /// What an agent's load, unload or hook commits: the module's changes checked against other
 /// agents' claims as `w`'s, and journaled under the module's name via `w`.
 fn agent_commit<'a>(swarm: &'a mut Swarm, tick: u64, w: Writer<'a>) -> impl FnMut(&mut World, Mark, &str, Phase) -> Result<(), WorldError> + 'a {
-    move |world: &mut World, mark: Mark, agent: &str, _: Phase| swarm.check_game_changes(world, mark, tick, agent, w)
+    crate::write_policy::module_agent_commit(swarm, tick, w)
 }
 
 /// Who may load, replace or unload a module: anyone, unless another agent holds a live claim

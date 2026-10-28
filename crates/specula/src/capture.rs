@@ -342,7 +342,7 @@ impl Engine {
                 let persisted = self.swarm.introduced(&session.id);
                 let w = Writer::new(&name, Some(&key));
                 let tick = self.clock.tick();
-                let set = self.swarm.commit(&mut self.world, tick, w, journal::Kind::Camera, |wd| wd.set_camera(&name, spec, persisted).cloned());
+                let set = self.world.commit(&mut self.swarm, tick, w, journal::Kind::Camera, crate::write_policy::Rule::World, |wd| wd.set_camera(&name, spec, persisted).cloned());
                 let (cam, seq) = match set {
                     Ok(ok) => ok,
                     Err(e) => return world_error(&e),
@@ -396,7 +396,7 @@ impl Engine {
             SightCall::CameraDelete { name: cam } => {
                 let w = Writer::new(&name, Some(&key));
                 let tick = self.clock.tick();
-                match self.swarm.commit(&mut self.world, tick, w, journal::Kind::Camera, |wd| wd.delete_cameras(&name, cam.as_deref())) {
+                match self.world.commit(&mut self.swarm, tick, w, journal::Kind::Camera, crate::write_policy::Rule::World, |wd| wd.delete_cameras(&name, cam.as_deref())) {
                     Ok((n, seq)) => {
                         self.cameras.prune(&self.world);
                         ToolOutput::text(Json::obj([("deleted", Json::from(n)), ("journal", seq.map_or(Json::Null, Json::from))]).to_string())
