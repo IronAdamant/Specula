@@ -1,0 +1,28 @@
+{
+  "recipe": 1,
+  "name": "barrel_t1",
+  "category": "benchmark",
+  "description": "Fidelity T1 (stylised flat): a bulging banded barrel, a lathe of staves with grain bands and darker ends, four iron hoops, a recessed lid.",
+  "seed": 12,
+  "lods": [0.5, 0.25],
+  "collider": "convex_hull",
+  "smooth_angle": 40,
+  "parts": [
+    { "name": "staves", "material": "wood",
+      "shape": { "op": "lathe", "segments": 20,
+                 "profile": [[0, 0.02], [0.33, 0.0], [0.38, 0.12], [0.42, 0.3], [0.44, 0.5], [0.42, 0.7], [0.38, 0.88], [0.33, 1.0], [0, 0.98]] },
+      "ops": [ { "op": "bands", "axis": "y", "colors": ["wood", "wood_light", "wood"], "width": 0.08, "wobble": 0.3 },
+               { "op": "gradient", "from": "wood_dark", "to": "wood", "range": [0, 0.15], "strength": 0.6 },
+               { "op": "noise_tint", "amount": 0.07, "scale": 0.15 } ] },
+    { "name": "hoops", "material": "iron",
+      "shape": { "op": "torus", "radius": 0.395, "tube": 0.018, "segments": 20, "sides": 4 },
+      "ops": [ { "op": "move", "by": [0, 0.1, 0] }, { "op": "array", "count": 2, "offset": [0, 0.76, 0] }, { "op": "color", "color": "iron_dark" } ] },
+    { "name": "mid_hoops", "material": "iron",
+      "shape": { "op": "torus", "radius": 0.435, "tube": 0.018, "segments": 20, "sides": 4 },
+      "ops": [ { "op": "move", "by": [0, 0.31, 0] }, { "op": "array", "count": 2, "offset": [0, 0.36, 0] }, { "op": "bevel_tint", "color": "rust", "amount": 0.4 } ] },
+    { "name": "lid", "material": "wood", "color": "wood_dark",
+      "shape": { "op": "cylinder", "radius": 0.31, "height": 0.02, "sides": 20 },
+      "ops": [ { "op": "move", "by": [0, 0.965, 0] } ] }
+  ],
+  "finish": [ { "op": "ground_shade", "amount": 0.25, "height": 0.2 } ]
+}

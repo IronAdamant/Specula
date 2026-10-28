@@ -1,0 +1,56 @@
+{
+  "date": "2026-10-22",
+  "time": "18:10",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M4",
+  "commit": "",
+  "subject": "assets",
+  "topic": "3D asset",
+  "title": "The asset studio: stage, shot sets and the taste loop",
+  "note": "First captures of the M4 asset studio: Sepulcra's recipes on the isolated stage (neutral, game and worst-light rigs, a 1.8 m figure and 1 m cube), the five-shot set at true pixel size, a turntable with value and silhouette passes, a line-up with silhouette distinctness, and a studio_check that catches a drafted bone pile (raw brown reads as reserved fire, too small from the game camera, over budget) and passes its revision. Previous entries showed recipes in a moonlit world scene only.",
+  "source": "scripts/studio_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-frame-00001.jpg",
+      "caption": "studio_check of the warding stone: silhouettes, value, colour, then gameplay, worst light and phone at true pixel size, beside its sibling stones",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 378,
+      "bytes": 25224
+    },
+    {
+      "file": "02-frame-00015.jpg",
+      "caption": "The shot set for six subjects: close-up, gameplay, worst light, phone and iGPU",
+      "original": "frame_00015.png",
+      "width": 640,
+      "height": 874,
+      "bytes": 50091
+    },
+    {
+      "file": "03-frame-00016.jpg",
+      "caption": "Turntable of the brazier cairn (tier II): colour, value and silhouette, scale figures always at the left",
+      "original": "frame_00016.png",
+      "width": 640,
+      "height": 261,
+      "bytes": 24134
+    },
+    {
+      "file": "04-frame-00018.jpg",
+      "caption": "Creature line-up at true scale beside the 1.8 m figure and 1 m cube",
+      "original": "frame_00018.png",
+      "width": 640,
+      "height": 736,
+      "bytes": 24909
+    },
+    {
+      "file": "05-frame-00024.jpg",
+      "caption": "Before over after: a drafted bone pile caught by the checks, then its revision passing",
+      "original": "frame_00024.png",
+      "width": 640,
+      "height": 706,
+      "bytes": 39305
+    }
+  ]
+}

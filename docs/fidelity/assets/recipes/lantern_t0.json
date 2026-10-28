@@ -1,0 +1,22 @@
+{
+  "recipe": 1,
+  "name": "lantern_t0",
+  "category": "benchmark",
+  "description": "Fidelity T0 (greybox): an iron lantern as a base, a glass box, a pyramid roof and a glowing flame.",
+  "seed": 3,
+  "lods": [0.5],
+  "collider": "aabb",
+  "parts": [
+    { "name": "base", "material": "flat", "color": "iron",
+      "shape": { "op": "box", "size": [0.22, 0.04, 0.22] } },
+    { "name": "glass", "material": "glass",
+      "shape": { "op": "box", "size": [0.18, 0.24, 0.18] },
+      "ops": [ { "op": "move", "by": [0, 0.04, 0] } ] },
+    { "name": "flame", "material": "flame",
+      "shape": { "op": "sphere", "radius": 0.035, "subdivisions": 1 },
+      "ops": [ { "op": "move", "by": [0, 0.1, 0] } ] },
+    { "name": "roof", "material": "flat", "color": "iron",
+      "shape": { "op": "cone", "radius": 0.17, "height": 0.12, "sides": 4 },
+      "ops": [ { "op": "rotate", "deg": [0, 45, 0] }, { "op": "move", "by": [0, 0.28, 0] } ] }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "recipe": 1,
+  "name": "barrel_t0",
+  "category": "benchmark",
+  "description": "Fidelity T0 (greybox): a banded wooden barrel as a brown cylinder with two grey bands.",
+  "seed": 2,
+  "lods": [0.5],
+  "collider": "aabb",
+  "parts": [
+    { "name": "staves", "material": "flat", "color": "wood",
+      "shape": { "op": "cylinder", "radius": 0.4, "height": 1.0, "sides": 12 } },
+    { "name": "bands", "material": "flat", "color": "iron",
+      "shape": { "op": "cylinder", "radius": 0.415, "height": 0.06, "sides": 12 },
+      "ops": [ { "op": "move", "by": [0, 0.15, 0] }, { "op": "array", "count": 2, "offset": [0, 0.64, 0] } ] }
+  ]
+}

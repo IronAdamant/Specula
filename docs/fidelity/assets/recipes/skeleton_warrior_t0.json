@@ -1,0 +1,29 @@
+{
+  "recipe": 1,
+  "name": "skeleton_warrior_t0",
+  "category": "benchmark",
+  "description": "Fidelity T0 (greybox): a skeleton warrior as capsules and a sphere, with a box sword and a disc shield, standing in its bind pose (rig and animation come at a later tier).",
+  "seed": 5,
+  "lods": [0.5],
+  "collider": "capsule",
+  "parts": [
+    { "name": "legs", "material": "flat", "color": "bone",
+      "shape": { "op": "capsule", "radius": 0.06, "height": 0.9, "segments": 6, "rings": 1 },
+      "ops": [ { "op": "move", "by": [0.12, 0, 0] }, { "op": "mirror", "axis": "x" } ] },
+    { "name": "torso", "material": "flat", "color": "bone",
+      "shape": { "op": "box", "size": [0.38, 0.55, 0.22] },
+      "ops": [ { "op": "move", "by": [0, 0.92, 0] } ] },
+    { "name": "arms", "material": "flat", "color": "bone",
+      "shape": { "op": "capsule", "radius": 0.045, "height": 0.62, "segments": 6, "rings": 1 },
+      "ops": [ { "op": "move", "by": [0.26, 0.82, 0] }, { "op": "mirror", "axis": "x" } ] },
+    { "name": "skull", "material": "flat", "color": "bone",
+      "shape": { "op": "sphere", "radius": 0.13, "subdivisions": 1 },
+      "ops": [ { "op": "move", "by": [0, 1.52, 0] } ] },
+    { "name": "sword", "material": "flat", "color": "iron",
+      "shape": { "op": "box", "size": [0.05, 0.8, 0.02] },
+      "ops": [ { "op": "move", "by": [0.3, 0.55, 0.12] } ] },
+    { "name": "shield", "material": "flat", "color": "wood",
+      "shape": { "op": "cylinder", "radius": 0.28, "height": 0.04, "sides": 10 },
+      "ops": [ { "op": "rotate", "deg": [90, 0, 0] }, { "op": "move", "by": [-0.34, 1.0, 0.1] } ] }
+  ]
+}

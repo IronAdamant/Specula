@@ -2339,6 +2339,9 @@ pub struct GpuModels {
     sets_from: Option<Arc<crate::anim::Assets>>,
     /// The world's ground and anim assets as last read (see [`crate::anim::AnimEnv`]).
     env: crate::anim::AnimEnv,
+    /// Builds kept uploaded though no entity wants them: the asset studio's calls in progress
+    /// render them between frames (see [`GpuModels::set_pinned`]).
+    pinned: BTreeSet<u64>,
 }
 
 impl GpuModels {
@@ -2368,7 +2371,7 @@ impl GpuModels {
             wanted.insert(b.id, Arc::clone(b));
         }
         drop(lib);
-        let stale: Vec<u64> = self.uploaded.keys().copied().filter(|id| !wanted.contains_key(id)).collect();
+        let stale: Vec<u64> = self.uploaded.keys().copied().filter(|id| !wanted.contains_key(id) && !self.pinned.contains(id)).collect();
         let mut released = Vec::new();
         for id in stale {
             if let Some(m) = self.uploaded.remove(&id) {
@@ -2477,14 +2480,23 @@ impl GpuModels {
     /// offscreen image (filmstrips): the build is uploaded if no entity has it on the GPU yet (it
     /// goes again at the next sync if none does then). The palette goes into `bones`.
     pub fn posed_draws(&mut self, gpu: &mut Gpu, built: &Arc<Built>, skin: &[Affine], world: &Mat4, bones: &mut Vec<[f32; 16]>, out: &mut Vec<DrawItem>) -> Result<(), String> {
+        self.posed_draws_lod(gpu, built, skin, world, 0, bones, out)
+    }
+
+    /// [`GpuModels::posed_draws`] at level of detail `lod` (clamped to the model's last; the
+    /// asset studio's shots choose it from the subject's size on screen, as the game does).
+    #[allow(clippy::too_many_arguments)]
+    pub fn posed_draws_lod(&mut self, gpu: &mut Gpu, built: &Arc<Built>, skin: &[Affine], world: &Mat4, lod: usize, bones: &mut Vec<[f32; 16]>, out: &mut Vec<DrawItem>) -> Result<(), String> {
         if let std::collections::btree_map::Entry::Vacant(slot) = self.uploaded.entry(built.id) {
             let m = upload(gpu, built).map_err(|e| match e {
                 UploadError::Released => "the model's textures were released; spawn an entity of it (or model_reload) and try again".to_string(),
                 UploadError::Gpu(e) => format!("model upload failed: {e}"),
             })?;
             slot.insert(m);
-            // The next sync drops it again unless an entity wants it.
-            self.synced = None;
+            if !self.pinned.contains(&built.id) {
+                // The next sync drops it again unless an entity wants it.
+                self.synced = None;
+            }
         }
         let model = &self.uploaded[&built.id];
         if let Some(h) = self.held_back_by(true, model) {
@@ -2497,10 +2509,27 @@ impl GpuModels {
         bones.extend(skin.iter().map(Affine::to_cols_array));
         let cols = world.to_cols_array();
         // (Streaming may have only coarser levels on the GPU so far: the finest one there is.)
-        for p in &model.lods[model.resident_from.min(model.lods.len().saturating_sub(1))] {
+        let last = model.lods.len().saturating_sub(1);
+        for p in &model.lods[lod.max(model.resident_from).min(last)] {
             out.push(DrawItem { mesh: p.mesh, model: cols, color: p.color, material: p.material, surface: p.surface, skin: model.needs.skinned.then_some(first), bounds: None });
         }
         Ok(())
+    }
+
+    /// Builds to keep uploaded while no entity wants them (the asset studio's calls in progress):
+    /// the sync between frames would otherwise drop each upload, and a textured glTF's texture
+    /// pixels leave the CPU when uploaded. Builds that leave the set go at the next sync unless an
+    /// entity wants them.
+    /// Whether build `id` is pinned (see [`GpuModels::set_pinned`]): no sync or eviction drops it.
+    pub(crate) fn is_pinned(&self, id: u64) -> bool {
+        self.pinned.contains(&id)
+    }
+
+    pub fn set_pinned(&mut self, pinned: BTreeSet<u64>) {
+        if self.pinned.iter().any(|id| !pinned.contains(id)) {
+            self.synced = None;
+        }
+        self.pinned = pinned;
     }
 
     /// Each live (`uploaded_only`: uploaded) build's anim set from the library (the world's

@@ -1,0 +1,432 @@
+//! `style.toml`'s rules on an asset's facts: budgets, scale ranges, palette distance, neutral
+//! saturation, forbidden families, emissive presets and naming. Every rule that applies gives a
+//! [`Finding`] (passed or not), so an agent sees what was checked as well as what failed.
+
+use crate::colour::{chroma, hex};
+use crate::facts::AssetFacts;
+use crate::palette::Palette;
+use crate::rules::StyleRules;
+use crate::{Bound, Finding, Report};
+use specula_core::Json;
+
+/// Colours a palette finding lists (the largest offenders).
+const LISTED_COLOURS: usize = 5;
+/// The 1.8 m reference figure scale findings compare against.
+pub const FIGURE_M: f32 = 1.8;
+
+fn at(rules: &StyleRules, rule: &str) -> String {
+    format!("{} {rule}", rules.source)
+}
+
+/// Every rule of `rules` that applies to `facts`.
+pub fn check(facts: &AssetFacts, rules: &StyleRules, palette: &Palette) -> Report {
+    check_with(facts, rules, palette, &|| false)
+}
+
+/// [`check`], asking `stop` every [`STOP_EVERY`] colours whether to give up the palette search.
+pub fn check_with(facts: &AssetFacts, rules: &StyleRules, palette: &Palette, stop: &dyn Fn() -> bool) -> Report {
+    let mut r = Report::default();
+    naming(facts, rules, &mut r);
+    budget(facts, rules, &mut r);
+    scale(facts, rules, &mut r);
+    colours(facts, rules, palette, &mut r, stop);
+    r
+}
+
+/// How many surface colours are searched between asking whether to stop.
+pub const STOP_EVERY: usize = 32;
+
+fn is_snake(s: &str) -> bool {
+    s.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+        && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        && !s.contains("__")
+        && !s.ends_with('_')
+}
+
+fn naming(f: &AssetFacts, rules: &StyleRules, r: &mut Report) {
+    let n = &rules.naming;
+    let s = f.subject.as_str();
+    if n.snake_case {
+        let bad = !is_snake(&f.name);
+        r.findings.push(Finding::flag("name_case", s, bad, at(rules, "naming.case"), format!("'{}' is not snake_case (lower case letters, digits and single underscores, starting with a letter)", f.name), format!("rename it, e.g. '{}'", snake_of(&f.name))));
+    }
+    if let Some(max) = n.max_len {
+        let len = f.name.chars().count();
+        r.findings.push(Finding::measure("name_length", s, len as f64, max as f64, Bound::Max, "characters", at(rules, "naming.max_len"), format!("'{}' is {len} characters long", f.name), "shorten the name".into()));
+    }
+    if n.file_matches_name {
+        if let Some(stem) = &f.file_stem {
+            let bad = *stem != f.name;
+            r.findings.push(Finding::flag("name_file", s, bad, at(rules, "naming.file_matches_name"), format!("the recipe '{}' is in {stem}.json", f.name), format!("rename the file to {}.json or the recipe to '{stem}'", f.name)));
+        }
+    }
+    if let Some(cats) = &n.categories {
+        let bad = f.category.as_ref().is_none_or(|c| !cats.contains(c));
+        let msg = match &f.category {
+            Some(c) => format!("category '{c}' is not one of {}", cats.join(", ")),
+            None => format!("no category (one of {})", cats.join(", ")),
+        };
+        r.findings.push(Finding::flag("category", s, bad, at(rules, "naming.categories"), msg, "set the recipe's \"category\" to one of the list".into()));
+    }
+    if n.parts_named && !f.part_names.is_empty() {
+        let unnamed = f.part_names.iter().filter(|p| p.is_none()).count();
+        r.findings.push(Finding::measure("parts_named", s, unnamed as f64, 0.0, Bound::Max, "unnamed parts", at(rules, "naming.parts_named"), format!("{unnamed} of {} parts have no name", f.part_names.len()), "give every part a \"name\" (agents and critiques refer to parts by name)".into()));
+    }
+}
+
+fn snake_of(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.chars() {
+        if c.is_ascii_uppercase() && !out.is_empty() && !out.ends_with('_') {
+            out.push('_');
+        }
+        match c {
+            c if c.is_ascii_alphanumeric() => out.push(c.to_ascii_lowercase()),
+            _ if !out.ends_with('_') => out.push('_'),
+            _ => {}
+        }
+    }
+    out.trim_matches('_').to_string()
+}
+
+fn budget(f: &AssetFacts, rules: &StyleRules, r: &mut Report) {
+    let b = rules.budget_for(&f.name, f.category.as_deref(), &f.params);
+    let s = f.subject.as_str();
+    let tris = f.lod_triangles.first().copied().unwrap_or(0) as f64;
+    if let Some(l) = &b.max_triangles {
+        r.findings.push(Finding::measure("triangles", s, tris, l.value as f64, Bound::Max, "triangles", at(rules, &l.rule), format!("{tris} triangles at LOD 0, budget {}", l.value), "fewer segments or subdivisions, smaller bevels, or merge small parts".into()));
+    }
+    if let Some(l) = &b.min_triangles {
+        r.findings.push(Finding::measure("triangles_min", s, tris, l.value as f64, Bound::Min, "triangles", at(rules, &l.rule), format!("{tris} triangles at LOD 0, at least {} expected", l.value), "more segments or bevels: the silhouette needs the detail at this size".into()));
+    }
+    if let Some(l) = &b.max_lod_triangles {
+        for (i, max) in l.value.iter().enumerate() {
+            if let Some(n) = f.lod_triangles.get(i + 1) {
+                r.findings.push(Finding::measure("lod_triangles", s, *n as f64, *max as f64, Bound::Max, "triangles", at(rules, &format!("{}[{i}]", l.rule)), format!("LOD {} has {n} triangles, budget {max}", i + 1), "lower the recipe's lods ratios".into()));
+            }
+        }
+    }
+    if let Some(l) = &b.max_texture_kb {
+        let kb = f.texture_bytes as f64 / 1024.0;
+        r.findings.push(Finding::measure("texture_kb", s, kb, l.value, Bound::Max, "KiB", at(rules, &l.rule), format!("textures take {kb:.0} KiB with mips, budget {:.0}", l.value), "smaller or fewer textures, or vertex colour".into()));
+    }
+    if let Some(l) = &b.max_materials {
+        let n = f.materials.len() as f64;
+        r.findings.push(Finding::measure("materials", s, n, l.value as f64, Bound::Max, "materials", at(rules, &l.rule), format!("{n} material presets, budget {}", l.value), "reuse presets (each one is a draw per LOD)".into()));
+    }
+}
+
+fn scale(f: &AssetFacts, rules: &StyleRules, r: &mut Report) {
+    let sc = rules.scale_for(&f.name, f.category.as_deref(), &f.params);
+    let s = f.subject.as_str();
+    let figure = format!("{:.2}x the {FIGURE_M} m figure", f.size_m[1] / FIGURE_M);
+    let ranges = [("height", 1usize, &sc.height_m), ("width", 0, &sc.width_m), ("depth", 2, &sc.depth_m)];
+    for (what, axis, lim) in ranges {
+        let Some(l) = lim else { continue };
+        let v = f.size_m[axis] as f64;
+        let [lo, hi] = l.value;
+        let (bound, limit) = if v < lo as f64 { (Bound::Min, lo) } else { (Bound::Max, hi) };
+        let check = match what {
+            "height" => "height",
+            "width" => "width",
+            _ => "depth",
+        };
+        let mut fd = Finding::measure(check, s, v, limit as f64, bound, "m", at(rules, &l.rule), format!("{what} {v:.2} m, the style says {lo}..{hi} m{}", if axis == 1 { format!(" ({figure})") } else { String::new() }), format!("scale the recipe's {what} into {lo}..{hi} m"));
+        fd.detail = Some(Json::obj([("range_m", Json::arr([Json::from(lo), Json::from(hi)])), ("figure_ratio", Json::from(((f.size_m[1] / FIGURE_M) as f64 * 1000.0).round() / 1000.0))]));
+        r.findings.push(fd);
+    }
+    if let Some(l) = &sc.aspect {
+        let v = f.aspect() as f64;
+        let [lo, hi] = l.value;
+        let (bound, limit) = if v < lo as f64 { (Bound::Min, lo) } else { (Bound::Max, hi) };
+        let fix = if v < lo as f64 { "make it taller or its footprint narrower".to_string() } else { "make it lower or its footprint wider".to_string() };
+        let bible = rules.bible_for(f.category.as_deref()).iter().find(|(k, _)| k == "shape").map(|(_, t)| format!(" (bible: {t})")).unwrap_or_default();
+        r.findings.push(Finding::measure("aspect", s, v, limit as f64, bound, "height/footprint", at(rules, &l.rule), format!("height over footprint {v:.2}, the style says {lo}..{hi}{bible}"), fix));
+    }
+    // Floating: things stand on the ground unless their [[scale]] entry gives a band (flyers).
+    let v = f.float_m as f64;
+    let (band, rule) = match &sc.float_m {
+        Some(l) => (l.value, at(rules, &l.rule)),
+        None => ([0.0, crate::rules::DEFAULT_MAX_FLOAT_M], format!("{} scale.float_m (default 0..{} m)", rules.source, crate::rules::DEFAULT_MAX_FLOAT_M)),
+    };
+    let (bound, limit) = if v < band[0] as f64 { (Bound::Min, band[0]) } else { (Bound::Max, band[1]) };
+    r.findings.push(Finding::measure(
+        "float",
+        s,
+        v,
+        limit as f64,
+        bound,
+        "m",
+        rule,
+        format!("its lowest point is {v:.2} m above the ground; the style allows {}..{} m", band[0], band[1]),
+        "stand it on the ground (y = 0), or give its [[scale]] entry a float_m band if it really hovers".into(),
+    ));
+    // Sinking: the same the other way (most of a stone below the slab still counts as its size).
+    let v = f.sink_m as f64;
+    let (band, rule) = match &sc.sink_m {
+        Some(l) => (l.value, at(rules, &l.rule)),
+        None => ([0.0, crate::rules::DEFAULT_MAX_SINK_M], format!("{} scale.sink_m (default 0..{} m)", rules.source, crate::rules::DEFAULT_MAX_SINK_M)),
+    };
+    let (bound, limit) = if v < band[0] as f64 { (Bound::Min, band[0]) } else { (Bound::Max, band[1]) };
+    r.findings.push(Finding::measure(
+        "sink",
+        s,
+        v,
+        limit as f64,
+        bound,
+        "m",
+        rule,
+        format!("its lowest point is {v:.2} m below the ground; the style allows {}..{} m", band[0], band[1]),
+        "stand it on the ground (y = 0), or give its [[scale]] entry a sink_m band if it is meant to reach below".into(),
+    ));
+}
+
+fn colours(f: &AssetFacts, rules: &StyleRules, palette: &Palette, r: &mut Report, stop: &dyn Fn() -> bool) {
+    let p = &rules.palette;
+    let s = f.subject.as_str();
+    if f.total_area <= 0.0 {
+        return;
+    }
+    // Emissive presets: only those the style lets glow.
+    if !p.emissive.is_empty() {
+        let glowing: Vec<&str> = f.materials.iter().filter(|m| m.emissive > 0.0 && !p.emissive.contains(&m.name)).map(|m| m.name.as_str()).collect();
+        r.findings.push(Finding::flag(
+            "emissive_preset",
+            s,
+            !glowing.is_empty(),
+            at(rules, "palette.emissive"),
+            format!("glowing presets the style doesn't allow: {}", glowing.join(", ")),
+            format!("emission is for gameplay meaning only; use one of {}", p.emissive.join(", ")),
+        ));
+    }
+    if palette.is_empty() {
+        return;
+    }
+    if f.textured {
+        // Vertex colours don't say what a base-colour texture paints: not measured, said so.
+        r.notes.push(format!("{s}: palette distance, neutral chroma and families not measured (a base-colour texture colours the surface)"));
+        return;
+    }
+    let total = f.total_area as f64;
+    let (mut off, mut sat, mut forbidden) = (0.0f64, 0.0f64, 0.0f64);
+    let mut off_list = Vec::new();
+    let mut sat_list = Vec::new();
+    let mut forb_list = Vec::new();
+    // Families this asset must not use: its category's, and any reserved for other assets.
+    let mut forbid: Vec<&String> = f.category.as_ref().and_then(|c| p.forbid.iter().find(|(k, _)| k == c)).map(|(_, v)| v.iter().collect()).unwrap_or_default();
+    let mut reserved = Vec::new();
+    for (fam, globs) in &p.reserve {
+        if !globs.iter().any(|g| crate::rules::glob(g, &f.name)) && !forbid.contains(&fam) {
+            forbid.push(fam);
+            reserved.push(fam.as_str());
+        }
+    }
+    for (i, c) in f.colours.iter().enumerate() {
+        if i % STOP_EVERY == STOP_EVERY - 1 && stop() {
+            r.cut_short = true;
+            r.notes.push(format!("{s}: palette checks stopped after {i} of {} colours (out of time)", f.colours.len()));
+            return;
+        }
+        let rgb = c.rgb();
+        let Some(n) = palette.nearest(rgb, &f.named_colours) else { continue };
+        let share = c.area as f64 / total;
+        let row = |extra: (&str, Json)| Json::obj([("hex", Json::from(hex(rgb))), ("share", Json::from((share * 10_000.0).round() / 10_000.0)), ("nearest", Json::from(n.blend.as_str())), ("delta_e", Json::from((n.delta_e as f64 * 1000.0).round() / 1000.0)), extra]);
+        if n.delta_e > p.max_delta_e {
+            off += share;
+            if off_list.len() < LISTED_COLOURS {
+                off_list.push(row(("material", f.materials.get(c.material).map_or(Json::Null, |m| Json::from(m.name.as_str())))));
+            }
+            continue;
+        }
+        // The family it reads as: its nearer end's; a neutral tinted towards a family colour
+        // reads as that family once it is colourful (not as an over-saturated neutral).
+        let sv = chroma(rgb);
+        let colourful = sv > p.neutral_max_chroma;
+        let reads_as = n.family.as_ref().or(if colourful { n.touches.as_ref() } else { None });
+        match reads_as {
+            None => {
+                let exempt = n.names.iter().any(|nm| p.exempt.iter().any(|(e, _)| e == nm));
+                if colourful && !exempt {
+                    sat += share;
+                    if sat_list.len() < LISTED_COLOURS {
+                        sat_list.push(row(("chroma", Json::from((sv as f64 * 1000.0).round() / 1000.0))));
+                    }
+                }
+            }
+            Some(fam) if forbid.contains(&fam) => {
+                forbidden += share;
+                if forb_list.len() < LISTED_COLOURS {
+                    forb_list.push(row(("family", Json::from(fam.as_str()))));
+                }
+            }
+            Some(_) => {}
+        }
+    }
+    let pct = |x: f64| format!("{:.1}%", x * 100.0);
+    r.findings.push(
+        Finding::measure(
+            "palette_distance",
+            s,
+            off,
+            p.max_off_palette as f64,
+            Bound::Max,
+            "share of surface",
+            at(rules, "palette.max_off_palette"),
+            format!("{} of the surface is more than {} (Oklab) from every palette blend", pct(off), p.max_delta_e),
+            "colour those parts with palette names (style.json), not raw colours; blend only within a family".into(),
+        )
+        .with_detail(Json::obj([("max_delta_e", Json::from(p.max_delta_e)), ("colours", Json::Arr(off_list))])),
+    );
+    r.findings.push(
+        Finding::measure(
+            "neutral_saturation",
+            s,
+            sat,
+            p.max_off_palette as f64,
+            Bound::Max,
+            "share of surface",
+            at(rules, "palette.neutral_max_chroma"),
+            format!("{} of the surface is a neutral more colourful than chroma {} (saturation belongs to the families)", pct(sat), p.neutral_max_chroma),
+            "pull those neutrals towards grey (a less saturated palette entry)".into(),
+        )
+        .with_detail(Json::obj([("max_chroma", Json::from(p.neutral_max_chroma)), ("colours", Json::Arr(sat_list))])),
+    );
+    if !forbid.is_empty() {
+        r.findings.push(
+            Finding::measure(
+                "family_forbidden",
+                s,
+                forbidden,
+                0.0,
+                Bound::Max,
+                "share of surface",
+                at(rules, &if reserved.is_empty() { format!("palette.forbid.{}", f.category.as_deref().unwrap_or("")) } else { format!("palette.forbid.{} / palette.reserve", f.category.as_deref().unwrap_or("")) }),
+                format!("{} of the surface uses a family this asset must not ({}{})", pct(forbidden), forbid.iter().map(|x| x.as_str()).collect::<Vec<_>>().join(", "), if reserved.is_empty() { String::new() } else { format!("; reserved for other assets: {}", reserved.join(", ")) }),
+                if reserved.is_empty() {
+                    "use this side's own family: you can tell whose a thing is from its colour alone".to_string()
+                } else {
+                    let keep: Vec<String> = p.reserve.iter().filter(|(fam, _)| reserved.contains(&fam.as_str())).map(|(fam, g)| format!("{fam} for {}", g.join(", "))).collect();
+                    format!("the style keeps {}: colour it with its own palette names (style.json) instead", keep.join("; "))
+                },
+            )
+            .with_detail(Json::obj([("colours", Json::Arr(forb_list))])),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::colour::parse_hex;
+    use crate::facts::{ColourArea, MaterialFact};
+
+    fn pal(n: &str) -> Option<[f32; 3]> {
+        match n {
+            "carved_stone" => parse_hex("#8c96a3"),
+            "rune_glow" => parse_hex("#3fe0d0"),
+            "grave_glow" => parse_hex("#9cff4f"),
+            "moss" => parse_hex("#4f6b3a"),
+            _ => None,
+        }
+    }
+
+    fn rules() -> StyleRules {
+        StyleRules::parse(
+            r#"
+[[budget]]
+category = "stone"
+max_triangles = 1500
+[[scale]]
+category = "stone"
+height_m = [2.2, 2.6]
+aspect = [1.5, 4]
+[palette]
+families = { player = ["rune_glow"], enemy = ["grave_glow"] }
+forbid = { stone = ["enemy"] }
+reserve = { enemy = ["shambler*"] }
+emissive = ["rune_glow"]
+exempt = { moss = "the bible calls moss neutral" }
+[naming]
+case = "snake"
+file_matches_name = true
+categories = ["stone", "enemy"]
+"#,
+            "style.toml",
+            &pal,
+        )
+        .unwrap()
+    }
+
+    fn palette(r: &StyleRules) -> Palette {
+        Palette::new(["carved_stone", "rune_glow", "grave_glow", "moss"].map(|n| (n, pal(n).unwrap())), r)
+    }
+
+    fn stone(colours: &[(&str, f32)]) -> AssetFacts {
+        AssetFacts {
+            subject: "warding_stone".into(),
+            name: "warding_stone".into(),
+            file_stem: Some("warding_stone".into()),
+            category: Some("stone".into()),
+            lod_triangles: vec![1200, 600],
+            size_m: [1.0, 2.4, 1.0],
+            materials: vec![MaterialFact { name: "carved_stone".into(), emissive: 0.0, glass: false }, MaterialFact { name: "rune_glow".into(), emissive: 2.5, glass: false }],
+            colours: colours.iter().map(|(h, a)| ColourArea { rgb: parse_hex(h).unwrap().map(|c| (c * 255.0).round() as u8), material: 0, area: *a }).collect(),
+            total_area: colours.iter().map(|c| c.1).sum(),
+            ..AssetFacts::default()
+        }
+    }
+
+    #[test]
+    fn a_clean_stone_passes_everything() {
+        let r = rules();
+        let rep = check(&stone(&[("#8c96a3", 9.0), ("#3fe0d0", 1.0)]), &r, &palette(&r));
+        assert!(rep.passed(), "{:?}", rep.errors().collect::<Vec<_>>());
+        // naming (case, file, category), triangles, height, aspect, float, sink, emissive,
+        // palette, saturation, family
+        assert_eq!(rep.findings.len(), 12);
+    }
+
+    #[test]
+    fn violations_are_errors_with_numbers() {
+        let r = rules();
+        let mut f = stone(&[("#8c96a3", 8.0), ("#9cff4f", 1.0), ("#d02020", 1.0)]);
+        f.lod_triangles = vec![2100];
+        f.size_m = [1.6, 1.8, 1.6];
+        f.name = "WardingStone".into();
+        f.materials.push(MaterialFact { name: "fire".into(), emissive: 3.0, glass: false });
+        let rep = check(&f, &r, &palette(&r));
+        let failed: Vec<&str> = rep.errors().map(|e| e.check).collect();
+        assert_eq!(failed, vec!["name_case", "name_file", "triangles", "height", "aspect", "emissive_preset", "palette_distance", "family_forbidden"]);
+        let tri = rep.errors().find(|e| e.check == "triangles").unwrap();
+        assert_eq!((tri.value, tri.limit, tri.rule.as_str()), (2100.0, 1500.0, "style.toml budget[0].max_triangles"));
+        let off = rep.errors().find(|e| e.check == "palette_distance").unwrap();
+        assert!((off.value - 0.1).abs() < 1e-6);
+        assert!(rep.errors().find(|e| e.check == "name_case").unwrap().fix.contains("warding_stone"));
+    }
+
+    #[test]
+    fn reserved_families_belong_to_their_assets() {
+        let r = rules();
+        // A tombstone (no forbid for its category) with grave green: reserved for shamblers here.
+        let mut f = stone(&[("#a7a39a", 9.0), ("#9cff4f", 1.0)]);
+        f.name = "tombstone".into();
+        f.category = Some("graveyard".into());
+        let e = check(&f, &r, &palette(&r)).findings.into_iter().find(|x| x.check == "family_forbidden").expect("checked");
+        assert!(!e.passed && e.rule.ends_with("palette.reserve") && e.message.contains("reserved"), "{e:?}");
+        f.name = "shambler".into();
+        assert!(check(&f, &r, &palette(&r)).findings.iter().all(|x| x.check != "family_forbidden"));
+    }
+
+    #[test]
+    fn saturated_neutrals_fail_unless_exempt() {
+        let r = rules();
+        // Moss is a neutral (no family) at 46% saturation: allowed only by its exemption.
+        let rep = check(&stone(&[("#8c96a3", 5.0), ("#4f6b3a", 5.0)]), &r, &palette(&r));
+        assert!(rep.passed(), "moss is exempt: {:?}", rep.errors().collect::<Vec<_>>());
+        let mut r2 = rules();
+        r2.palette.exempt.clear();
+        let rep = check(&stone(&[("#8c96a3", 5.0), ("#4f6b3a", 5.0)]), &r2, &palette(&r2));
+        let e = rep.errors().find(|e| e.check == "neutral_saturation").expect("moss over 25%");
+        assert!((e.value - 0.5).abs() < 1e-6);
+    }
+}

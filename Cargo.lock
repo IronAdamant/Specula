@@ -56,6 +56,7 @@ dependencies = [
  "specula-platform",
  "specula-protocol",
  "specula-sdk",
+ "specula-studio",
  "specula-sys",
  "specula-text",
  "specula-ui",
@@ -180,6 +181,14 @@ name = "specula-sdk"
 version = "0.3.0"
 dependencies = [
  "specula-core",
+]
+
+[[package]]
+name = "specula-studio"
+version = "0.3.0"
+dependencies = [
+ "specula-core",
+ "specula-model",
 ]
 
 [[package]]

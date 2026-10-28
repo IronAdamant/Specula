@@ -1,0 +1,22 @@
+{
+  "recipe": 1,
+  "name": "runestone_t0",
+  "category": "benchmark",
+  "description": "Fidelity T0 (greybox): a carved runestone as coloured primitives. A grey slab on a footing, a green moss band, the rune panel as a flat glowing strip.",
+  "seed": 1,
+  "lods": [0.5],
+  "collider": "aabb",
+  "parts": [
+    { "name": "footing", "material": "flat", "color": "stone_dark",
+      "shape": { "op": "box", "size": [1.0, 0.15, 0.5] } },
+    { "name": "slab", "material": "flat", "color": "stone",
+      "shape": { "op": "box", "size": [0.8, 1.55, 0.32] },
+      "ops": [ { "op": "move", "by": [0, 0.15, 0] } ] },
+    { "name": "moss", "material": "flat", "color": "moss",
+      "shape": { "op": "box", "size": [0.84, 0.25, 0.36] },
+      "ops": [ { "op": "move", "by": [0, 0.15, 0] } ] },
+    { "name": "runes", "material": "glyph",
+      "shape": { "op": "box", "size": [0.12, 0.9, 0.02] },
+      "ops": [ { "op": "move", "by": [0, 0.55, 0.165] } ] }
+  ]
+}

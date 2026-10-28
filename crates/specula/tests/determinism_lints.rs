@@ -30,7 +30,7 @@ const SIMULATION: [&str; 11] = [
 
 /// Crates outside the simulation (rendering, platform, tools, presentation; or the engine, whose
 /// simulated parts are checked by review and the replay tests rather than one crate-wide config).
-const NOT_SIMULATION: [&str; 13] = [
+const NOT_SIMULATION: [&str; 14] = [
     "crates/specula-sys",
     "crates/specula-core",
     "crates/specula-gltf",
@@ -42,6 +42,8 @@ const NOT_SIMULATION: [&str; 13] = [
     "crates/specula-audio",
     "crates/specula-ui",
     "crates/specula-logic",
+    // The asset studio measures renders and recipes for review; nothing in it runs in the simulation.
+    "crates/specula-studio",
     "crates/specula",
     "games/sepulcra-app",
 ];

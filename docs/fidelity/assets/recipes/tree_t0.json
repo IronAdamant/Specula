@@ -1,0 +1,16 @@
+{
+  "recipe": 1,
+  "name": "tree_t0",
+  "category": "benchmark",
+  "description": "Fidelity T0 (greybox): a gnarled tree as a brown trunk and a green ball of foliage.",
+  "seed": 4,
+  "lods": [0.5],
+  "collider": "aabb",
+  "parts": [
+    { "name": "trunk", "material": "flat", "color": "bark",
+      "shape": { "op": "cylinder", "radius": 0.22, "height": 2.4, "sides": 8 } },
+    { "name": "crown", "material": "flat", "color": "leaf",
+      "shape": { "op": "sphere", "radius": 1.3, "subdivisions": 1 },
+      "ops": [ { "op": "move", "by": [0, 2.1, 0] } ] }
+  ]
+}

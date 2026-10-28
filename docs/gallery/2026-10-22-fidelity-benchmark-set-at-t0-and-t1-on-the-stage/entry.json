@@ -1,0 +1,32 @@
+{
+  "date": "2026-10-22",
+  "time": "18:00",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M4",
+  "commit": "",
+  "subject": "assets",
+  "topic": "3D asset",
+  "title": "Fidelity benchmark set at T0 and T1 on the stage",
+  "note": "The Fidelity track's benchmark subjects beyond the lava lamp, as recipes: runestone, barrel, lantern, tree and skeleton warrior, each as T0 greybox and T1 stylised, rendered from the asset studio's fixed cameras in daylight and checked against the set's own style.toml (all pass). The skeleton warrior is unrigged at these tiers.",
+  "source": "scripts/studio_check.py --fidelity",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-frame-00011.jpg",
+      "caption": "T0 then T1 of each subject from front, three-quarter, top and the third-person game camera",
+      "original": "frame_00011.png",
+      "width": 540,
+      "height": 1542,
+      "bytes": 91433
+    },
+    {
+      "file": "02-frame-00012.jpg",
+      "caption": "The T1 set side by side at true scale beside the 1.8 m figure and 1 m cube",
+      "original": "frame_00012.png",
+      "width": 540,
+      "height": 458,
+      "bytes": 15013
+    }
+  ]
+}

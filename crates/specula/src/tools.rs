@@ -244,6 +244,10 @@ pub enum Command {
     SaveGame(crate::save_tools::SaveCall),
     /// The animation tools (see [`crate::anim_tools`]).
     Anim(crate::anim_tools::AnimCall),
+    /// One of a studio call's renders, with where its pixels go (see [`crate::studio`]).
+    StudioRender(Box<crate::studio::RenderJob>),
+    /// A studio call ended: its builds needn't stay pinned on the GPU.
+    StudioDone(u64),
     /// Project files (see [`crate::project_tools`]).
     Project(crate::project_tools::ProjectCall),
 }
@@ -324,6 +328,8 @@ pub struct Tools {
     formats: std::sync::Arc<crate::response::Defaults>,
     /// Tools that take `response_format` themselves (a session's detailed default is passed on).
     native_format: Vec<String>,
+    /// The asset studio's state shared with the engine (its calls run on this side).
+    studio: Option<std::sync::Arc<crate::studio::Shared>>,
 }
 
 impl Tools {
@@ -346,6 +352,7 @@ impl Tools {
             lex_exports: Default::default(),
             formats: crate::response::Defaults::new(crate::response::Format::Concise),
             native_format,
+            studio: None,
         }
     }
 
@@ -367,6 +374,22 @@ impl Tools {
     pub fn with_lex_natives(mut self, natives: specula_lex::Natives) -> Tools {
         self.lex_natives = natives;
         self
+    }
+
+    pub fn with_studio(mut self, studio: std::sync::Arc<crate::studio::Shared>) -> Tools {
+        self.studio = Some(studio);
+        self
+    }
+
+    pub(crate) fn studio(&self) -> Option<&crate::studio::Shared> {
+        self.studio.as_deref()
+    }
+
+    /// Sends a command without waiting for an answer (its reply channel is dropped); false when
+    /// the engine is gone.
+    pub(crate) fn post(&self, session: &SessionInfo, command: Command) -> bool {
+        let (reply, _) = mpsc::channel();
+        self.to_engine.send(Request { session: session.clone(), command, reply, deadline: Instant::now() + APPLY_DEADLINE }).is_ok()
     }
 
     pub(crate) fn lex_native_names(&self) -> Vec<String> {
@@ -450,6 +473,9 @@ impl Tools {
         } else if name.starts_with("lex_") {
             // Lex tools do their heavy work (validation, simulation) on this thread.
             return crate::lex_tools::call(self, session, name, arguments);
+        } else if name.starts_with("studio_") || name == "style_check" {
+            // The studio waits for its subjects' builds on this thread, then renders on the engine's.
+            return crate::studio_tools::call(self, session, name, arguments);
         } else if name.starts_with("project_") {
             // Patching, validation and diffs run on this thread; the engine snapshots and commits.
             return crate::project_tools::call(self, session, name, arguments);
@@ -1051,7 +1077,7 @@ fn tags_arg(args: &Json, key: &str) -> Result<Option<Vec<String>>, String> {
 }
 
 /// `params`: an object of numbers (`{"tier": 2}`), sorted by name.
-fn params_arg(args: &Json) -> Result<Option<Vec<(String, f64)>>, String> {
+pub(crate) fn params_arg(args: &Json) -> Result<Option<Vec<(String, f64)>>, String> {
     const ERR: &str = "'params' must be an object of recipe parameters to numbers, e.g. {\"tier\": 2}";
     let Some(v) = args.get("params").filter(|v| !v.is_null()) else { return Ok(None) };
     let pairs = v.as_object().ok_or(ERR)?;
@@ -2481,6 +2507,7 @@ fn definitions() -> Vec<ToolDef> {
     .chain(crate::save_tools::definitions())
     .chain(crate::balance_tools::definitions())
     .chain(crate::anim_tools::definitions())
+    .chain(crate::studio_tools::definitions())
     .collect()
 }
 

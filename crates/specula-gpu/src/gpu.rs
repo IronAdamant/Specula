@@ -149,7 +149,9 @@ fn run_sync(dev: &Device, cmd: VkCommandBuffer, fence: VkFence, record: impl FnO
     // A failed submit queues nothing and leaves the fence untouched.
     dev.submit(cmd, None, None, fence)?;
     let t2 = Instant::now();
+    let zw = specula_core::profile::zone("vk.wait_fence");
     let waited = dev.wait_fence(fence);
+    drop(zw);
     if waited.is_err() {
         // Timed out (work may still be running) or the device was lost: drain the queue before
         // anyone frees the resources this work touches.
@@ -769,6 +771,7 @@ impl GpuInner {
     ) -> Result<TextureId, GpuError> {
         let (offsets, total) = self.level_plan(width, height, format, levels)?;
         let slot = self.descriptors.alloc_slot()?;
+        let zi = specula_core::profile::zone("gpu.create_image");
         let image = match self.device.create_image_with(
             vk_format(format),
             width,
@@ -786,6 +789,8 @@ impl GpuInner {
                 return Err(e);
             }
         };
+        drop(zi);
+        let zs = specula_core::profile::zone("gpu.stage");
         let staged = match self.uploads.stage(&self.device, total) {
             Ok(s) => s,
             Err(e) => {
@@ -794,6 +799,8 @@ impl GpuInner {
                 return Err(e);
             }
         };
+        drop(zs);
+        let _zw = specula_core::profile::zone("gpu.write");
         for (level, &at) in levels.iter().zip(&offsets) {
             // SAFETY: `staged.dst` holds `total` bytes no submitted batch uses; each level fits at
             // its offset.
@@ -977,9 +984,13 @@ impl GpuInner {
     }
 
     fn render_frame(&mut self, target: TargetId, frame: &FrameDesc, ids: Option<(&[u32], &[[u32; 4]])>) -> Result<(), GpuError> {
+        let zp = specula_core::profile::zone("gpu.prepare");
         check_frame(&self.meshes, &self.textures, frame)?;
         // Queued uploads go first on the queue: the frame draws with them.
-        self.flush_uploads()?;
+        {
+            let _z = specula_core::profile::zone("gpu.flush_uploads");
+            self.flush_uploads()?;
+        }
         self.poll_pipelines();
         let Some(t) = self.targets.get_mut(&target.0) else {
             return Err(GpuError::unknown(crate::IdKind::Target, target.0, ""));
@@ -990,12 +1001,16 @@ impl GpuInner {
         let start = Instant::now();
         let upload = self.upload.as_mut().expect("created in new");
         // Offscreen work is synchronous: no earlier frame still reads this buffer.
+        let zf = specula_core::profile::zone("gpu.prepare_frame");
         prepare_frame(&self.device, &self.meshes, &self.textures, frame, extent, upload, &mut self.scratch)?;
+        drop(zf);
         let env = &frame.environment;
         let shadow = (env.shadow.enabled && self.scratch.shadow.data.count > 0).then(|| shadow_desc(&env.shadow));
         let features = frame_features(frame, &self.scratch, shadow.is_some());
         let mode = PostMode::of(env).fit(extent);
+        let zpl = specula_core::profile::zone("gpu.pipelines");
         let pipelines = self.pipelines.frame(&self.device, TARGET_FORMAT, features, mode, env.sky.enabled, !frame.overlay.is_empty())?;
+        drop(zpl);
         // Graph images replaced (or long unused) are freed once no pending frame can use them.
         self.pool.collect(&self.device, &mut self.descriptors, self.completed);
         let shape = FrameShape {
@@ -1017,7 +1032,10 @@ impl GpuInner {
             self.ids.bucket = crate::idbuffer::bucket_for(extent, self.ids.bucket);
             crate::idbuffer::declare(&mut t.graph, extent, self.ids.bucket)
         });
-        prepare_graph(&self.device, &mut self.descriptors, &mut self.pool, &mut t.graph, &res)?;
+        {
+            let _z = specula_core::profile::zone("gpu.prepare_graph");
+            prepare_graph(&self.device, &mut self.descriptors, &mut self.pool, &mut t.graph, &res)?;
+        }
         t.graph.bind_image(res.out, t.color.handle, t.color.view);
         let id_frame = match (ids, id_res) {
             (Some((ids, occluders)), Some(id_res)) => {
@@ -1028,6 +1046,7 @@ impl GpuInner {
             _ => None,
         };
         let prepare_ms = start.elapsed().as_secs_f64() * 1e3;
+        drop(zp);
         let frame_no = self.frame_no + 1;
         let upload = self.upload.as_ref().expect("created in new");
         let mut timer = self.timer.take();

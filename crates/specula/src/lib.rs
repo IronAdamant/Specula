@@ -65,6 +65,8 @@ pub mod sight;
 pub mod sight_overlay;
 mod sight_tools;
 mod stream_tools;
+mod studio;
+mod studio_tools;
 pub mod streaming;
 pub mod swarm;
 mod swarm_engine;
@@ -382,7 +384,13 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
             server_version: env!("CARGO_PKG_VERSION").into(),
             instructions: Some(tools::INSTRUCTIONS.into()),
         },
-        Arc::new(tools::Tools::new(to_engine, game_tools).with_formats(Arc::clone(&engine.formats)).with_lex_natives(engine.lex_natives.clone()).with_capture_dir(engine.capture_dir.clone(), safe_path::Roots::for_files(&engine.capture_dir, &captures_root, &engine.worlds_dir, named_assets.as_deref()))),
+        Arc::new(
+            tools::Tools::new(to_engine, game_tools)
+                .with_formats(Arc::clone(&engine.formats))
+                .with_lex_natives(engine.lex_natives.clone())
+                .with_capture_dir(engine.capture_dir.clone(), safe_path::Roots::for_files(&engine.capture_dir, &captures_root, &engine.worlds_dir, named_assets.as_deref()))
+                .with_studio(Arc::clone(&engine.studio.shared)),
+        ),
     )
     .map_err(|e| format!("MCP server: {e}"))?;
     eprintln!("specula: MCP at http://{}/mcp — Ctrl+C to stop", server.local_addr());
@@ -487,6 +495,8 @@ struct Engine {
     cameras: cameras::Cameras,
     /// sight_compare's "before" captures.
     marks: compare::Marks,
+    /// The asset studio: marks, queued calls and their renders (see `studio`).
+    studio: studio::Studio,
     /// Font and glyph atlas for overlay text.
     labeler: sight_overlay::Labeler,
     /// When the model library last dropped what no entity uses, at which world mesh epoch.
@@ -639,6 +649,7 @@ impl Engine {
         let capture_dir = captures_root.join(format!("run-{started}-{}", std::process::id()));
         let luts = luts::Luts::new(library.root());
         let library = Arc::new(SharedLibrary::new(library));
+        let studio = studio::Studio::new(Arc::clone(&library), capture_dir.clone());
         let mut world = World::default();
         world.set_model_source(Some(Arc::clone(&library) as Arc<dyn world::ModelSource>));
         Ok(Engine {
@@ -661,6 +672,7 @@ impl Engine {
             capture_waiters: Vec::new(),
             cameras: cameras::Cameras::default(),
             marks: compare::Marks::default(),
+            studio,
             labeler: sight_overlay::Labeler::default(),
             last_gc: (Instant::now(), 0),
             last_unwanted: (Instant::now(), 0),
@@ -1386,6 +1398,7 @@ impl Engine {
         if let Some(f) = self.fly.take() {
             f.abort();
         }
+        self.studio_shutting_down();
         // A perf_capture in progress answers with the frames it has.
         self.profiler.abort_capture();
     }
@@ -1531,6 +1544,7 @@ impl Engine {
             self.project_pump();
             self.serve_captures();
             self.pump_playtests(server, playtest_engine::WINDOW_SLICE);
+            self.pump_studio(studio::WINDOW_SHARE, server);
             self.advance_clock();
             let now = Instant::now();
             let dt = now - last_frame;
@@ -1636,6 +1650,10 @@ impl Engine {
                 // A load builds back to back (calls are still read between slices).
                 wait = Duration::ZERO;
             }
+            if self.studio_busy() {
+                // Studio renders run in slices, with calls read between them.
+                wait = Duration::ZERO;
+            }
             if self.playtests.running() {
                 // Flat out, unless it waits for a deferred answer.
                 wait = if self.playtests.waiting_on_call() { wait.min(Duration::from_millis(1)) } else { Duration::ZERO };
@@ -1666,6 +1684,7 @@ impl Engine {
             self.project_pump();
             self.serve_captures();
             self.pump_playtests(server, playtest_engine::HEADLESS_SLICE);
+            self.pump_studio(studio::HEADLESS_SHARE, server);
         }
         Ok(())
     }
@@ -1698,6 +1717,15 @@ impl Engine {
             }
             Command::Playtest(call) => {
                 self.playtest_call(call, request.session, request.reply, server);
+                return;
+            }
+            Command::StudioRender(job) => {
+                // Rendered between frames within the studio's budget (see `studio`).
+                self.studio_enqueue(job);
+                return;
+            }
+            Command::StudioDone(call) => {
+                self.studio_done(call);
                 return;
             }
             command => Request { command, ..request },
@@ -1980,6 +2008,7 @@ impl Engine {
                 out
             }
             Command::Anim(call) => self.anim_call(call, w, tick),
+            Command::StudioRender(_) | Command::StudioDone(_) => unreachable!("queued by studio_enqueue"),
             Command::Project(call) => self.project_call(call, w, &by),
         };
         self.check_world_replaced();
@@ -2440,6 +2469,7 @@ fn call_class(command: &Command) -> Class {
     match command {
         Command::Frame(_) | Command::Sight(_) => Class::Render,
         Command::Anim(call) => anim_tools::call_class(call),
+        Command::StudioRender(_) | Command::StudioDone(_) => Class::Read,
         Command::Save { .. } | Command::Load { .. } | Command::ModelBuild(_) | Command::ModelReload => Class::Disk,
         Command::Hash { verify: true, .. } => Class::Big,
         Command::Swarm(call) => call.class(),

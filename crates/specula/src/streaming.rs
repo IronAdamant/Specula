@@ -1065,7 +1065,8 @@ impl Streamer {
         if !reboxed.is_empty() {
             self.index.rebox(world, &reboxed);
         }
-        let stale: Vec<u64> = models.uploaded.keys().copied().filter(|id| !self.live.contains_key(id)).collect();
+        // (Pinned builds stay: the asset studio renders them between frames; see GpuModels::set_pinned.)
+        let stale: Vec<u64> = models.uploaded.keys().copied().filter(|id| !self.live.contains_key(id) && !models.is_pinned(*id)).collect();
         let mut released = Vec::new();
         for id in stale {
             if evict_build(gpu, models, id) {
@@ -1804,6 +1805,11 @@ impl Streamer {
             Some(c) => models.uploaded.range((std::ops::Bound::Excluded(c), std::ops::Bound::Unbounded)),
         };
         for (n, &id) in range.map(|(id, _)| id).enumerate() {
+            if models.is_pinned(id) {
+                // The asset studio's: never a victim while pinned.
+                scan.cursor = Some(id);
+                continue;
+            }
             match self.want.get(&id) {
                 Some(e) if e.1 >= self.done_pass => {
                     if !e.2 {
@@ -1844,6 +1850,8 @@ impl Streamer {
                 // (The queue may be older than this pass: a build it now wants hard stays, and
                 // one it wants at all isn't taken as unwanted.)
                 Victim::Build(id) if self.want.get(&id).is_some_and(|e| e.1 >= self.done_pass && e.2) => 0,
+                // (The queue may be older than a pin.)
+                Victim::Build(id) if models.is_pinned(id) => 0,
                 Victim::Build(id) if gone && self.wanted_now(id) => 0,
                 // A soft one the latest wanted set puts no farther than the item: it stays.
                 Victim::Build(id) if !gone && self.want.get(&id).is_some_and(|e| e.1 >= self.done_pass && e.0 <= prio) => 0,
@@ -2298,7 +2306,7 @@ fn evict_build(gpu: &mut Gpu, models: &mut GpuModels, id: u64) -> bool {
 
 /// Uploads the next (finer) level of `built`, coarsest first, through the queued path; the
 /// first upload brings the textures. Returns the bytes uploaded.
-fn upload_next_level(gpu: &mut Gpu, models: &mut GpuModels, library: &SharedLibrary, built: &Arc<Built>) -> Result<u64, String> {
+pub(crate) fn upload_next_level(gpu: &mut Gpu, models: &mut GpuModels, library: &SharedLibrary, built: &Arc<Built>) -> Result<u64, String> {
     let model = &built.model;
     let count = model.lods.len();
     if count == 0 {

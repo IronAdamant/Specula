@@ -1,0 +1,16 @@
+[package]
+name = "specula-studio"
+description = "The asset studio's measures: style.toml rules, asset facts, palette and saturation, silhouettes, value contrast, flat lighting and critiques as data"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+specula-core = { workspace = true }
+specula-model = { workspace = true }
+
+[lints]
+workspace = true

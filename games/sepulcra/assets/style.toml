@@ -37,3 +37,254 @@ sample_hz = 60
 # (the shroud's hem) keeps to a band above the ground, in cm (STYLE.md: the shroud floats a hand
 # over the ground and never drags through it, even in a dive).
 "wraith/*" = [3, 90]
+
+# ---------------------------------------------------------------------------------------------
+# The asset studio's rules (docs/design/ASSET_STUDIO.md), from STYLE.md. Read by specula-studio:
+# style_check, studio_check and the studio sheets. The palette itself is in style.json.
+
+[naming]
+case = "snake"
+max_len = 32
+file_matches_name = true
+categories = ["stone", "enemy", "boss", "wall", "graveyard", "slab", "vfx_placeholder", "component"]
+parts_named = true
+
+# Triangle budgets at LOD 0 (STYLE.md "Performance budget"; the rest from style.json's proposals).
+# Later entries override earlier ones key by key.
+[[budget]]
+# Every asset: STYLE.md's largest budget is a tier III stone, "up to 3k" triangles.
+max_triangles = 3000
+max_texture_kb = 256
+max_materials = 6
+
+[[budget]]
+category = "stone"
+max_triangles = 1500
+
+[[budget]]
+category = "stone"
+when = { tier = 3 }
+max_triangles = 3000
+
+[[budget]]
+category = "enemy"
+min_triangles = 300
+max_triangles = 800
+
+[[budget]]
+category = "boss"
+max_triangles = 2500
+
+[[budget]]
+category = "graveyard"
+max_triangles = 600
+
+[[budget]]
+name = "wall_segment"
+max_triangles = 1000
+
+[[budget]]
+name = "tombstone"
+max_triangles = 400
+
+[[budget]]
+name = "graveyard_fence"
+max_triangles = 700
+
+[[budget]]
+name = "brazier_fire"
+max_triangles = 700
+
+[[budget]]
+category = "slab"
+max_triangles = 3000
+
+# Proportions (STYLE.md, 1 lane cell = 2 m; gameplay pieces are slightly oversized on purpose).
+# Heights are extents (lowest to highest point); float_m is how high the lowest point may be
+# above the ground (default 0..0.05 m: things stand on the slab). aspect = height over the larger
+# footprint side: the shape language as a number.
+[[scale]]
+# Every asset: nothing is taller than the slab's 15 m cliffs or wider than a 40 m slab face.
+height_m = [0.02, 16.0]
+width_m = [0.01, 40.0]
+depth_m = [0.01, 40.0]
+
+[[scale]]
+category = "stone"
+height_m = [2.0, 4.6]
+aspect = [1.4, 6.0]
+
+[[scale]]
+name = "warding_stone"
+height_m = [2.2, 2.6]
+
+[[scale]]
+name = "warding_stone"
+when = { tier = 3 }
+height_m = [2.6, 3.4]
+
+[[scale]]
+name = "sky_obelisk"
+height_m = [3.6, 4.6]
+
+[[scale]]
+# "Low dry-stone rows ... knee to waist high; never hides an enemy behind it."
+category = "wall"
+height_m = [0.4, 1.2]
+width_m = [0.5, 4.0]
+depth_m = [0.3, 1.0]
+
+[[scale]]
+name = "wall_segment"
+height_m = [0.7, 1.0]
+width_m = [1.8, 2.2]
+depth_m = [0.5, 0.8]
+
+[[scale]]
+name = "shambler"
+height_m = [1.5, 1.9]
+
+[[scale]]
+name = "skeleton_runner"
+height_m = [1.6, 2.0]
+
+[[scale]]
+# 2.2 m tall (STYLE.md) counts its hover: a 1.94 m body whose hem floats a hand over the ground.
+name = "wraith"
+height_m = [1.7, 2.3]
+float_m = [0.1, 0.5]
+
+[[scale]]
+category = "boss"
+height_m = [6.5, 9.5]
+
+[[scale]]
+# "Cliffs about 15 m high."
+category = "slab"
+height_m = [10.0, 20.0]
+
+[[scale]]
+# Carved pieces included in stones (rune columns, glyphs): no taller than a stone's face. They
+# hang from where a stone attaches them, so they needn't stand on the ground.
+category = "component"
+height_m = [0.05, 1.5]
+width_m = [0.05, 1.0]
+float_m = [0.0, 5.0]
+sink_m = [0.0, 5.0]
+
+[[scale]]
+# The brazier's flame until particles: inside the bowl.
+category = "vfx_placeholder"
+height_m = [0.2, 1.5]
+width_m = [0.1, 1.2]
+
+[[scale]]
+# "Small, dense" graveyard pieces: below the knee to about chest high.
+category = "graveyard"
+height_m = [0.3, 1.4]
+
+[[scale]]
+name = "tombstone"
+height_m = [0.65, 1.0]
+
+[palette]
+# The three families (STYLE.md: "you can tell whose a thing is from its colour alone"); every other
+# palette colour is neutral and stays under neutral_max_chroma.
+families = { player = ["rune_glow", "rune_deep", "rune_pale"], enemy = ["grave_glow", "grave_deep", "grave_sickly"], fire = ["fire_core", "fire_flame", "fire_ember"] }
+max_delta_e = 0.05
+max_off_palette = 0.02
+# STYLE.md: "Neutrals stay below ~25% saturation". Measured as Oklch chroma, where 0.05 is about a
+# 25%-saturated mid-tone: HSV saturation calls the near-black sky (#0b1020) 66% saturated, chroma
+# 0.034. Every bible neutral is under 0.05 except moss (exempt below).
+neutral_max_chroma = 0.05
+# Never green on the player side or cyan on the enemy side.
+forbid = { stone = ["enemy"], wall = ["enemy"], enemy = ["player"], boss = ["player"] }
+# Fire is "brazier cairn flames and splash only; the single warm accent in the scene".
+reserve = { fire = ["brazier_*"] }
+# "Emissive only for gameplay meaning": runes, eyes, bolts, fire.
+emissive = ["rune_glow", "grave_glow", "fire", "wraith"]
+
+[palette.exempt]
+# STYLE.md lists moss as a neutral, but it is clearly green (chroma 0.08 and 0.10, 46% HSV
+# saturation), above its own rule. Exempt until the owner decides (lane report, 2026-10-22).
+moss = "STYLE.md neutral above its own ~25% saturation rule; owner to decide"
+moss_light = "STYLE.md neutral above its own ~25% saturation rule; owner to decide"
+
+[stage.game]
+# The game's night (sepulcra-app game.rs `night`): a low moon 30 degrees up from the
+# east-south-east, 25 degrees to the right of the default camera; a blue fill does most of the
+# lighting.
+key_color = "#d0d9f0"
+key_intensity = 0.55
+key_elevation_deg = 30
+key_azimuth_deg = 25
+ambient_color = "#2f3850"
+ambient_intensity = 1.7
+exposure = 1.0
+bloom = true
+shadows = true
+background = "sky"
+ground = "slab_top"
+
+[shots.gameplay]
+# The default orbit camera (sepulcra-app controls.rs): 42 degrees down, 56 m away, 45 degree fov.
+pitch_deg = 42
+yaw_deg = 35
+distance_m = 56
+fov_deg = 45
+viewport = [1920, 1080]
+
+[shots.phone]
+viewport = [854, 480]
+
+[shots.igpu]
+viewport = [1280, 720]
+
+[taste]
+thumb_px = 64
+silhouette_max_iou = 0.9
+thumb_min_solidity = 0.6
+min_px_gameplay = 16
+min_px_phone = 8
+value_contrast_min = 0.05
+value_contrast_worst_min = 0.03
+ring_px = 3
+flat_min_range = 0.06
+
+[taste.allow]
+# Deliberate style, each with its reason (subject globs, like [motion.allow]).
+# The fence is thin wrought iron (STYLE.md's `iron` preset: "brazier bowl, fence"; metallic 0.9, so
+# the dim moon gives it almost no diffuse light to turn): it reads as a dark outline against the
+# slab (value_contrast 0.16 in the gameplay shot), not as lit form. STYLE.md's neutrals table gives
+# the fence the pale graveyard stone instead: owner to decide (lane report, 2026-10-22).
+"graveyard_fence*" = ["flat_lighting"]
+# The slab is the ground: on the stage its cliff stands on its own colour, so the contrast with the
+# ground around it measures nothing (in play it is seen against the mist).
+"slab_cliff*" = ["value_contrast"]
+
+# The bible's rules per category, quoted back in critiques (STYLE.md "Shape language").
+[bible.stone]
+shape = "Vertical, rectangular monoliths with chamfered edges. Upright and stable. Each type has a distinct top: warding stone pointed, rune pillar flat with a ring, brazier cairn a bowl, sky obelisk a tall needle."
+tier = "Tiers I-III: more carved runes, then a capstone, then a floating rune ring. You can read the tier from the default camera without the UI."
+colour = "Carved stone #8c96a3 with chamfer highlights #aab4c0; runes glow rune cyan. Never grave green."
+general = "Bevel everything: no hard 90 degree edges (about 4-8% of the smallest dimension)."
+
+[bible.enemy]
+shape = "Organic, hunched, broken outlines. Shambler wide and low; runner thin, leaning forward; wraith a tattered inverted cone with no feet."
+colour = "Bone #d8cfb8; eyes and wounds glow grave green. Never rune cyan."
+size = "Shambler 1.7 m, runner 1.8 m, wraith 2.2 m: slightly oversized so they read from 30-60 m."
+
+[bible.boss]
+shape = "A giant ribcage and spine, about 8 m tall."
+colour = "Bone with grave-green glow. Never rune cyan."
+
+[bible.wall]
+shape = "Low dry-stone rows, slightly irregular blocks. Knee to waist high; never hides an enemy behind it."
+size = "2 m long, 0.6 m deep, 0.9 m high."
+
+[bible.graveyard]
+shape = "Small, dense, pale tombstones inside a low fence: the pale centre of the slab is the eye of the composition."
+size = "Tombstone 0.5 x 0.15 x 0.8 m."
+
+[bible.slab]
+shape = "Thick, layered stone with sharp fractures: flat top, vertical cliffs with horizontal strata, a jagged underside fading into the mist."

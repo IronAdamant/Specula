@@ -1,0 +1,78 @@
+# The Fidelity benchmark set's measurable rules (docs/design/ASSET_STUDIO.md). Each tier of each
+# subject is checked against them by `python scripts/studio_check.py --fidelity`, which also renders
+# the set's contact sheet from the stage's fixed cameras.
+
+[naming]
+case = "snake"
+max_len = 32
+file_matches_name = true
+categories = ["benchmark"]
+parts_named = true
+
+# Triangle budgets per tier: T0 is greybox (a few primitives), T1 stylised low-poly.
+[[budget]]
+name = "*_t0"
+max_triangles = 600
+max_materials = 4
+
+[[budget]]
+name = "*_t1"
+max_triangles = 3000
+max_materials = 6
+
+[[scale]]
+name = "runestone_*"
+height_m = [1.3, 2.2]
+aspect = [1.4, 5.0]
+
+[[scale]]
+name = "barrel_*"
+height_m = [0.8, 1.3]
+
+[[scale]]
+name = "lantern_*"
+height_m = [0.3, 0.8]
+
+[[scale]]
+name = "tree_*"
+height_m = [3.0, 8.0]
+# Roots are planted: they go into the ground, up to 0.25 m.
+sink_m = [0.0, 0.25]
+
+[[scale]]
+name = "skeleton_warrior_*"
+height_m = [1.6, 2.0]
+
+[palette]
+# Natural colours are allowed to be colourful; the neutrals (stone, iron, bone, glass) stay grey.
+families = { nature = ["moss", "moss_dark", "leaf", "leaf_dark", "leaf_light"], wood = ["wood", "wood_dark", "wood_light", "bark", "bark_dark", "rust", "cloth"], metal = ["brass"], fire = ["flame", "flame_core"], magic = ["glyph"] }
+max_delta_e = 0.05
+max_off_palette = 0.02
+neutral_max_chroma = 0.05
+reserve = { fire = ["lantern_*"], magic = ["runestone_*"] }
+emissive = ["flame", "glyph"]
+
+[stage.game]
+# Overcast daylight: the benchmark is judged in plain light.
+key_color = "#fff4e0"
+key_intensity = 1.8
+key_elevation_deg = 45
+key_azimuth_deg = -35
+ambient_color = "#b8c8dc"
+ambient_intensity = 0.7
+exposure = 1.0
+bloom = true
+shadows = true
+background = "#9fb4c8"
+ground = "#6f7a5a"
+
+[shots.gameplay]
+# A third-person camera: 25 degrees down, 12 m away.
+pitch_deg = 25
+yaw_deg = 30
+distance_m = 12
+fov_deg = 50
+viewport = [1920, 1080]
+
+[bible.benchmark]
+general = "One subject per recipe, rebuilt at every tier (docs/ROADMAP.md Fidelity track): T0 greybox coloured primitives; T1 stylised flat: low-poly, vertex colour, bevels."

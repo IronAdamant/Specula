@@ -1,0 +1,196 @@
+//! Taste checks as data (docs/design/ASSET_STUDIO.md): what the engine measured on its stage
+//! renders, against `[taste]` thresholds, reported like budget errors.
+//!
+//! - `silhouette_distinct`: the highest silhouette IoU with any sibling (thumbnail masks fitted
+//!   to their own boxes, averaged over the angles).
+//! - `thumb_solidity`: the share of the thumbnail silhouette that survives a one-pixel opening.
+//! - `px_gameplay`, `px_phone`: the subject's height in pixels from the game camera.
+//! - `value_contrast`, `value_contrast_worst`: how the outline separates from the ground around
+//!   it (median lightness difference across the silhouette's edge, [`crate::image::Edge`]), in
+//!   the gameplay shot and under the worst-case light.
+//! - `flat_lighting`: the lightness spread inside the silhouette under the game light.
+//!
+//! Scale against the reference figure and palette measures come from [`crate::check`].
+
+use crate::image::{Edge, Lightness, Mask};
+use crate::rules::StyleRules;
+use crate::{Bound, Finding};
+use specula_core::Json;
+
+/// The taste checks `[taste.allow]` may exempt.
+pub const CHECKS: [&str; 7] = ["silhouette_distinct", "thumb_solidity", "px_gameplay", "px_phone", "value_contrast", "value_contrast_worst", "flat_lighting"];
+
+/// One shot's measures of a subject.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ShotMeasure {
+    /// Height of the silhouette's box, in pixels of the shot's viewport.
+    pub px_height: f32,
+    pub subject: Lightness,
+    /// The ring of background just outside the silhouette.
+    pub ring: Lightness,
+    /// Contrast along the outline.
+    pub edge: Edge,
+}
+
+impl ShotMeasure {
+    /// Value contrast: the median lightness difference across the outline.
+    pub fn contrast(&self) -> f32 {
+        self.edge.median
+    }
+
+    /// Mean lightness of the subject against the mean of its surround (a light or dark shape
+    /// overall; reported, not checked).
+    pub fn mean_contrast(&self) -> f32 {
+        (self.subject.mean - self.ring.mean).abs()
+    }
+
+    pub fn to_json(&self) -> Json {
+        let r = |x: f32| Json::from((x as f64 * 1000.0).round() / 1000.0);
+        Json::obj([
+            ("px_height", r(self.px_height)),
+            ("contrast", r(self.contrast())),
+            ("edge_p25", r(self.edge.p25)),
+            ("subject_l", r(self.subject.mean)),
+            ("surround_l", r(self.ring.mean)),
+            ("mean_contrast", r(self.mean_contrast())),
+            ("spread", r(self.subject.spread())),
+        ])
+    }
+}
+
+/// What the engine measured about one subject for the taste checks.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Measured {
+    pub subject: String,
+    /// Thumbnail silhouettes, fitted, one per angle (the same angles for every sibling).
+    pub silhouettes: Vec<Mask>,
+    pub gameplay: Option<ShotMeasure>,
+    pub phone: Option<ShotMeasure>,
+    pub worst: Option<ShotMeasure>,
+    /// The subject under the game light (close framing), for flat lighting.
+    pub lit: Option<Lightness>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finding(rules: &StyleRules, check: &'static str, subject: &str, value: f32, limit: f32, bound: Bound, unit: &'static str, key: &str, message: String, fix: &str) -> Finding {
+    let mut f = Finding::measure(check, subject, value as f64, limit as f64, bound, unit, format!("{} taste.{key}", rules.source), message, fix.to_string()).with_margin();
+    if !f.passed && rules.taste.allows(subject, check) {
+        f.exempt = true;
+    }
+    f
+}
+
+/// The mean IoU per pair of subjects (rows and columns in input order; 1 on the diagonal).
+pub fn iou_matrix(subjects: &[Measured]) -> Vec<Vec<f32>> {
+    let n = subjects.len();
+    let mut m = vec![vec![1.0f32; n]; n];
+    for i in 0..n {
+        for j in i + 1..n {
+            let (a, b) = (&subjects[i].silhouettes, &subjects[j].silhouettes);
+            let k = a.len().min(b.len());
+            let v = if k == 0 { 0.0 } else { a.iter().zip(b).map(|(x, y)| x.iou(y)).sum::<f32>() / k as f32 };
+            m[i][j] = v;
+            m[j][i] = v;
+        }
+    }
+    m
+}
+
+/// The per-subject taste checks (everything but distinctness).
+pub fn check_subject(m: &Measured, rules: &StyleRules) -> Vec<Finding> {
+    let t = &rules.taste;
+    let s = m.subject.as_str();
+    let mut out = Vec::new();
+    if let Some(thumb) = m.silhouettes.last() {
+        let v = thumb.solidity();
+        out.push(finding(rules, "thumb_solidity", s, v, t.thumb_min_solidity, Bound::Min, "share", "thumb_min_solidity", format!("only {:.0}% of the {}-px silhouette is thicker than a few pixels: thin parts vanish at thumbnail size", v * 100.0, t.thumb_px), "thicken the thin parts or drop them; read it as a silhouette at 64 px first"));
+    }
+    if let Some(g) = &m.gameplay {
+        out.push(finding(rules, "px_gameplay", s, g.px_height, t.min_px_gameplay, Bound::Min, "px", "min_px_gameplay", format!("{:.0} px tall from the game camera", g.px_height), "scale it up (gameplay pieces are oversized on purpose) or give it a taller silhouette"));
+        out.push(finding(rules, "value_contrast", s, g.contrast(), t.value_contrast_min, Bound::Min, "lightness", "value_contrast_min", format!("its outline differs from the ground around it by {:.3} lightness (median; weakest quarter {:.3}) in the gameplay shot", g.contrast(), g.edge.p25), "separate it from the ground: lighter tops or chamfer highlights, or a darker base"));
+    }
+    if let Some(p) = &m.phone {
+        out.push(finding(rules, "px_phone", s, p.px_height, t.min_px_phone, Bound::Min, "px", "min_px_phone", format!("{:.0} px tall on a phone-sized screen", p.px_height), "a bigger, simpler silhouette: on a phone this is all of it a player sees"));
+    }
+    if let Some(w) = &m.worst {
+        out.push(finding(rules, "value_contrast_worst", s, w.contrast(), t.value_contrast_worst_min, Bound::Min, "lightness", "value_contrast_worst_min", format!("its outline differs from the ground by {:.3} lightness (median; weakest quarter {:.3}) when backlit", w.contrast(), w.edge.p25), "it disappears when backlit: a lighter body colour, a rim of highlight colour, or a glow with gameplay meaning"));
+    }
+    if let Some(l) = &m.lit {
+        out.push(finding(rules, "flat_lighting", s, l.spread(), t.flat_min_range, Bound::Min, "lightness", "flat_min_range", format!("lightness spread {:.3} (10th {:.2} to 90th {:.2}): the form doesn't turn in the light", l.spread(), l.p10, l.p90), "bevel the edges, add a gradient (darker at the foot) or break the big flat faces"));
+    }
+    out
+}
+
+/// Distinctness: per subject, its highest mean IoU with any sibling.
+pub fn check_siblings(subjects: &[Measured], rules: &StyleRules) -> Vec<Finding> {
+    if subjects.len() < 2 {
+        return Vec::new();
+    }
+    let m = iou_matrix(subjects);
+    let t = &rules.taste;
+    let mut out = Vec::new();
+    for (i, s) in subjects.iter().enumerate() {
+        let Some((j, v)) = m[i].iter().enumerate().filter(|(j, _)| *j != i).max_by(|a, b| a.1.total_cmp(b.1).then(b.0.cmp(&a.0))) else { continue };
+        let other = &subjects[j].subject;
+        let f = finding(rules, "silhouette_distinct", &s.subject, *v, t.silhouette_max_iou, Bound::Max, "iou", "silhouette_max_iou", format!("its silhouette overlaps {other}'s by {:.0}% (mean over {} angles)", v * 100.0, s.silhouettes.len()), "change the outline, not the detail: a different top, width or lean")
+            .with_detail(Json::obj([("closest", Json::from(other.as_str()))]));
+        out.push(f);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rules() -> StyleRules {
+        StyleRules::parse("[taste]\nallow = { \"fence*\" = [\"thumb_solidity\"] }\n", "style.toml", &|_| None).unwrap()
+    }
+
+    fn rect(r: [u32; 4]) -> Mask {
+        let mut m = Mask::empty(64, 64);
+        for y in r[1]..r[1] + r[3] {
+            for x in r[0]..r[0] + r[2] {
+                m.on[(y * 64 + x) as usize] = true;
+            }
+        }
+        m.fitted(64)
+    }
+
+    #[test]
+    fn alike_siblings_fail_and_distinct_ones_pass() {
+        let tall = Measured { subject: "a".into(), silhouettes: vec![rect([10, 0, 20, 60])], ..Default::default() };
+        let tall2 = Measured { subject: "b".into(), silhouettes: vec![rect([12, 4, 19, 58])], ..Default::default() };
+        let wide = Measured { subject: "c".into(), silhouettes: vec![rect([0, 40, 64, 16])], ..Default::default() };
+        let f = check_siblings(&[tall.clone(), tall2, wide.clone()], &rules());
+        assert!(!f[0].passed && !f[1].passed && f[2].passed, "{f:?}");
+        assert_eq!(f[0].detail.as_ref().and_then(|d| d.get("closest")).and_then(Json::as_str), Some("b"));
+        assert!(check_siblings(&[tall, wide], &rules()).iter().all(|f| f.passed));
+        assert!(check_siblings(&[], &rules()).is_empty());
+    }
+
+    #[test]
+    fn subject_checks_and_exemptions() {
+        let flat = Lightness { count: 100, mean: 0.5, p10: 0.49, p50: 0.5, p90: 0.51 };
+        let ring = Lightness { count: 50, mean: 0.51, ..flat };
+        let edge = crate::image::Edge { count: 40, median: 0.01, p25: 0.0 };
+        let mut comb = Mask::empty(64, 64);
+        for x in (2..62).step_by(5) {
+            for y in 0..64 {
+                comb.on[y * 64 + x] = true;
+            }
+        }
+        let m = Measured {
+            subject: "fence_a".into(),
+            silhouettes: vec![comb],
+            gameplay: Some(ShotMeasure { px_height: 9.0, subject: flat, ring, edge }),
+            phone: Some(ShotMeasure { px_height: 4.0, subject: flat, ring, edge }),
+            worst: Some(ShotMeasure { px_height: 30.0, subject: flat, ring, edge }),
+            lit: Some(flat),
+        };
+        let f = check_subject(&m, &rules());
+        let failed: Vec<&str> = f.iter().filter(|x| x.is_error()).map(|x| x.check).collect();
+        assert_eq!(failed, vec!["px_gameplay", "value_contrast", "px_phone", "value_contrast_worst", "flat_lighting"]);
+        assert!(f.iter().any(|x| x.check == "thumb_solidity" && x.exempt));
+    }
+}
