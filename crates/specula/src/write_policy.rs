@@ -581,6 +581,7 @@ pub fn commit<T>(
         Ok((_, Some(seq))) => {
             let changes = swarm.journal().get(*seq).map_or(0, |e| e.changes.len());
             swarm.board.note_entry(w, *seq, changes);
+            swarm.note_agent_commit(w);
             crate::trace_engine::write_committed(w, crate::trace_engine::rule_name(rule), Some(*seq), changes);
         }
         Ok(_) => {}
@@ -615,6 +616,7 @@ pub fn undo(world: &mut dyn WorldWrite, swarm: &mut Swarm, tick: u64, w: Writer,
         }
         Ok(u) => {
             swarm.board.note_entry(w, u.seq, u.changes);
+            swarm.note_agent_commit(w);
             crate::trace_engine::write_committed(w, "undo", Some(u.seq), u.changes);
         }
     }
@@ -644,6 +646,7 @@ pub fn game_commit(world: &mut dyn WorldWrite, swarm: &mut Swarm, mark: Mark, ti
         let count = changes.len();
         if let Some(seq) = swarm.journal_mut(&KEY).append_game(tick, game, Some(w.name), Kind::GameTool, changes, world.next_id()) {
             swarm.board.note_entry(w, seq, count);
+            swarm.note_agent_commit(w);
         }
     }
     prune_retired(world, swarm);

@@ -3,6 +3,7 @@
 //! critiques' board tasks, plans and their progress, and saving the queue with the board.
 //! See docs/design/REVIEW.md.
 
+use crate::authority::Authority;
 use crate::board::{Owner, Status as TaskStatus, TaskSpec};
 use crate::conflict::Yours;
 use crate::director::{self, PlanItem};
@@ -225,7 +226,7 @@ impl Engine {
         let key = self.swarm.key(session);
         let w = Writer::new(&by, Some(&key));
         let named = self.swarm.introduced(&session.id);
-        let role = self.swarm.role(&session.id).to_owned();
+        let authority = crate::authority::authority(&self.swarm, &session.id);
         self.sync_critiques();
         match call {
             ReviewCall::Submit(_) | ReviewCall::Decide { .. } | ReviewCall::CritiqueAdd(_) | ReviewCall::CritiqueUpdate { .. } | ReviewCall::Plan(_) if !named => {
@@ -275,7 +276,7 @@ impl Engine {
                     Ok(l) => l,
                     Err(e) => return fail(&e),
                 };
-                let mut j = self.decide_all(w, Some(&role), list, promote, force);
+                let mut j = self.decide_all(w, authority, list, promote, force);
                 // Every one refused: an error (some decided: the answer lists the refusals).
                 if j.get("decided").and_then(Json::as_u64) == Some(0) {
                     let code = j.get("results").and_then(Json::as_array).and_then(|r| r.first()).and_then(|r| r.get("error")).cloned();
@@ -290,9 +291,9 @@ impl Engine {
                     out(j)
                 }
             }
-            ReviewCall::Screen(op) if op != ScreenOp::Status && !(named && review::DECIDER_ROLES.contains(&role.as_str())) => fail(
-                &WorldError::new("not_reviewer", "putting work on the owner's review screen needs agent_hello with role owner, reviewer, lead or director; anyone may ask for its status")
-                    .with("role", role.as_str()),
+            ReviewCall::Screen(op) if op != ScreenOp::Status && crate::authority::authority(&self.swarm, &session.id) < Authority::Reviewer => fail(
+                &crate::authority::require(authority, Authority::Reviewer, crate::authority::Site::ReviewScreen, "putting work on the owner's review screen (anyone may ask for its status)")
+                    .expect_err("checked"),
             ),
             ReviewCall::Screen(ScreenOp::Open(_)) if self.review_ui.closed_by_human_recently() => fail(&WorldError::new(
                 "owner_closed",
@@ -345,7 +346,7 @@ impl Engine {
                     specs.push(spec);
                 }
                 let tasks: Vec<Option<u64>> = specs.iter().map(|s| s.submission.and_then(|id| self.swarm.review.get(id)).and_then(|s| s.task)).collect();
-                match self.swarm.review.add_critiques(w, tick, specs) {
+                match self.swarm.review.add_critiques(w, authority, tick, specs) {
                     Ok(ids) => {
                         for (id, task) in ids.iter().zip(tasks) {
                             if task.is_some() {
@@ -366,7 +367,7 @@ impl Engine {
             ReviewCall::CritiqueUpdate { ids, action, expect } => {
                 let mut results = Vec::with_capacity(ids.len());
                 for id in ids {
-                    results.push(match self.update_critique(w, id, action.clone(), expect) {
+                    results.push(match self.update_critique(w, authority, id, action.clone(), expect) {
                         Ok(j) => j,
                         Err(e) => {
                             let mut j = e.to_json();
@@ -494,29 +495,33 @@ impl Engine {
             None => self.swarm.board.current(w).map(|t| t.id),
         };
         let mut checks = a.checks;
+        // What the submitter typed in is theirs: reported, never an engine result.
+        for c in &mut checks {
+            if let review::Fact::Claimed(cl) = &mut c.passed {
+                cl.by = w.name.to_owned();
+            }
+        }
         if !roots.is_empty() {
             checks.push(Check {
                 kind: "other".into(),
                 name: "paths_exist".into(),
-                passed: true,
+                passed: review::Fact::Engine(true),
                 severity: "error".into(),
                 metric: Some("entities".into()),
                 value: Some(total as f64),
                 limit: None,
                 detail: format!("{total} entities under {} path(s)", roots.len()),
-                engine: true,
             });
         }
         checks.push(Check {
             kind: "other".into(),
             name: "captures_exist".into(),
-            passed: !captures.is_empty(),
+            passed: review::Fact::Engine(!captures.is_empty()),
             severity: "warning".into(),
             metric: Some("captures".into()),
             value: Some(captures.len() as f64),
             limit: None,
             detail: if captures.is_empty() { "no captures: the reviewer has nothing to look at".into() } else { String::new() },
-            engine: true,
         });
         let spec = SubmitSpec {
             kind: a.kind,
@@ -560,9 +565,9 @@ impl Engine {
         Ok(ids.into_iter().map(|id| DecideOne { id, verdict, note: note.clone(), revert }).collect())
     }
 
-    /// Decides each submission (one refused doesn't stop the others). `role`: the agent's (`None`:
-    /// the human at the window).
-    pub(crate) fn decide_all(&mut self, w: Writer, role: Option<&str>, list: Vec<DecideOne>, promote: bool, force: bool) -> Json {
+    /// Decides each submission (one refused doesn't stop the others). `authority`: the agent's
+    /// ([`crate::authority::authority`]), or the owner's for the human at the window.
+    pub(crate) fn decide_all(&mut self, w: Writer, authority: Authority, list: Vec<DecideOne>, promote: bool, force: bool) -> Json {
         self.sync_critiques();
         let mut results = Vec::with_capacity(list.len());
         let (mut ok, mut refused) = (0usize, 0usize);
@@ -572,7 +577,7 @@ impl Engine {
                 continue;
             }
             let id = d.id;
-            match self.decide_one(w, role, d, promote, force) {
+            match self.decide_one(w, authority, d, promote, force) {
                 Ok(j) => {
                     ok += 1;
                     results.push(j);
@@ -618,9 +623,9 @@ impl Engine {
             .collect()
     }
 
-    fn decide_one(&mut self, w: Writer, role: Option<&str>, d: DecideOne, promote: bool, force: bool) -> Result<Json, WorldError> {
+    fn decide_one(&mut self, w: Writer, authority: Authority, d: DecideOne, promote: bool, force: bool) -> Result<Json, WorldError> {
         let tick = self.clock.tick();
-        let s = self.swarm.review.check_decide(w, role, d.id, d.verdict)?;
+        let s = self.swarm.review.check_decide(w, authority, d.id, d.verdict)?;
         let (roots, promote_spec, journal, task, title, submitter, kind) =
             (s.roots.clone(), s.promote.clone(), s.journal.clone(), s.task, s.title.clone(), s.by.name.clone(), s.kind.clone());
         let (journal_epoch, journal_ids, by_owner) = (s.journal_epoch.clone(), s.journal_ids.clone(), s.by.clone());
@@ -721,9 +726,10 @@ impl Engine {
 
     // ---- critiques ----
 
-    fn update_critique(&mut self, w: Writer, id: u64, action: CritiqueAction, expect: Option<u64>) -> Result<Json, WorldError> {
+    fn update_critique(&mut self, w: Writer, authority: Authority, id: u64, action: CritiqueAction, expect: Option<u64>) -> Result<Json, WorldError> {
         let tick = self.clock.tick();
-        let c = self.swarm.review.check_critique(id, &action, expect)?;
+        let check = self.swarm.review.check_critique(w, authority, id, &action, expect)?;
+        let c = self.swarm.review.critique(id).expect("checked");
         let mut task = None;
         if let CritiqueAction::ToTask { assign } = &action {
             let (paths, entities) = match &c.target {
@@ -753,7 +759,7 @@ impl Engine {
             };
             task = Some(self.swarm.board.post(w, tick, spec)?.id);
         }
-        let c = self.swarm.review.apply_critique(w.name, tick, id, action, task)?;
+        let c = self.swarm.review.apply_critique(check, w.name, tick, action, task)?;
         Ok(c.summary_json())
     }
 
@@ -1080,7 +1086,7 @@ impl Engine {
     /// The window's human decides (the review screen's buttons).
     pub(crate) fn window_decide(&mut self, id: u64, verdict: Status, note: String) -> Json {
         let w = Writer::new(WINDOW_OWNER, Some(WINDOW_OWNER));
-        self.decide_all(w, None, vec![DecideOne { id, verdict, note, revert: false }], true, false)
+        self.decide_all(w, Authority::Owner, vec![DecideOne { id, verdict, note, revert: false }], true, false)
     }
 
     /// The window's human approves a batch's pending submissions, as the screen counted them.
@@ -1091,7 +1097,7 @@ impl Engine {
             .take(MAX_DECISIONS)
             .map(|id| DecideOne { id: *id, verdict: Status::Approved, note: "approved as a batch at the review screen".into(), revert: false })
             .collect();
-        self.decide_all(w, None, list, true, false)
+        self.decide_all(w, Authority::Owner, list, true, false)
     }
 }
 
@@ -1132,7 +1138,8 @@ mod tests {
         let (sa, sr) = (session("aaaaaa01"), session("rrrrrr02"));
         let live = vec![sa.clone(), sr.clone()];
         swarm.hello(&sa, "ann".into(), "builder".into(), None, &live).unwrap();
-        swarm.hello(&sr, "rev".into(), "reviewer".into(), None, &live).unwrap();
+        swarm.grants.grant("rev", Authority::Reviewer).unwrap();
+        swarm.hello(&sr, "rev".into(), crate::authority::ROLE_REVIEWER.into(), None, &live).unwrap();
         let (ka, kr) = (swarm.key(&sa), swarm.key(&sr));
         let (ann, rev) = (Writer::new("ann", Some(&ka)), Writer::new("rev", Some(&kr)));
         spawn(&mut world, &mut swarm, rev, "staging", None, &[]);
@@ -1194,7 +1201,8 @@ mod tests {
         let (sa, sr) = (session("aaaaaa01"), session("rrrrrr02"));
         let live = vec![sa.clone(), sr.clone()];
         swarm.hello(&sa, "ann".into(), "builder".into(), None, &live).unwrap();
-        swarm.hello(&sr, "rev".into(), "reviewer".into(), None, &live).unwrap();
+        swarm.grants.grant("rev", Authority::Reviewer).unwrap();
+        swarm.hello(&sr, "rev".into(), crate::authority::ROLE_REVIEWER.into(), None, &live).unwrap();
         let (ka, kr) = (swarm.key(&sa), swarm.key(&sr));
         let (ann, rev) = (Writer::new("ann", Some(&ka)), Writer::new("rev", Some(&kr)));
         spawn(&mut world, &mut swarm, ann, "a", None, &[]);

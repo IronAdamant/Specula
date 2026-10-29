@@ -18,8 +18,8 @@ fn read_json(path: &Path) -> Json {
     Json::parse(&text).unwrap_or_else(|e| panic!("{}: not JSON: {e:?}", path.display()))
 }
 
-const TASK_KEYS: [&str; 21] = [
-    "eval", "id", "title", "set", "area", "summary", "game", "engine_args", "engine_cwd", "needs", "files", "setup", "actors", "brief",
+const TASK_KEYS: [&str; 22] = [
+    "eval", "id", "title", "set", "area", "summary", "game", "engine_args", "engine_cwd", "solver_role", "needs", "files", "setup", "actors", "brief",
     "tools", "limits", "verify", "reference", "broken", "cheats", "notes",
 ];
 

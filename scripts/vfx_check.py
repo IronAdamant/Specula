@@ -115,6 +115,7 @@ def part_cosmetic(args, out):
         with Engine(args.exe, args.port, d / "engine.log", "--headless", "--paused", "--adapter", args.adapter,
                     "--captures", str(d / "captures"), *flags, cwd=d) as eng:
             m = eng.mcp("vfx-check")
+            m.hello("vfx-check", role="lead")  # force and overwrite of other worlds are the lead's (docs/design/AUTHORITY.md)
             hashes, digests = scripted(m, d, label != "off", label)
             info = m.json("vfx_info")
         runs[label] = {"hashes": hashes, "digests": digests, "validation_errors": eng.validation_errors(), "info": info}
@@ -144,6 +145,7 @@ def part_budgets(args, out):
     with Engine(args.exe, args.port, d / "engine.log", "--headless", "--paused", "--adapter", args.adapter,
                 "--captures", str(d / "captures"), "--perf", str(perf), "--assets", str(assets), "--worlds", str(d / "worlds"), cwd=d) as eng:
         m = eng.mcp("vfx-budget")
+        m.hello("vfx-budget", role="lead")  # its edge probes overwrite a world folder: the lead's (docs/design/AUTHORITY.md)
         m.json("world_env", tonemap=True, background="#0b1020")
         heavy = {"emitters": [{"rate": 600, "lifetime": [1, 2], "speed": [0.5, 1.5], "spread_deg": 60, "size": 0.6, "color": "#ff7a1f",
                                "texture": "soft", "blend": "additive"}]}
@@ -331,7 +333,7 @@ def part_bounds(args, out):
                 "--captures", str(d / "captures"), "--worlds", str(d / "worlds"), cwd=d) as eng:
         a = eng.mcp("vfx-bounds-a")
         b = eng.mcp("vfx-bounds-b")
-        a.call("agent_hello", name="alpha")
+        a.call("agent_hello", name="alpha", role="lead")  # force and overwrite of other worlds are the lead's (docs/design/AUTHORITY.md)
         b.call("agent_hello", name="beta")
         budget = json.loads(a.text("vfx_info"))["budget"]
         max_work = budget["max_work"]
@@ -367,7 +369,7 @@ def part_bounds(args, out):
         # 1c. A playtest's preview step still answers after the agent that started the playtest
         # closed its session (review of the M4 fixes: it failed with session_closed).
         st = eng.mcp("vfx-pt-starter")
-        st.call("agent_hello", name="pt-starter", role="lead")
+        st.call("agent_hello", name="pt-starter", role="playtester")
         spec = {"name": "preview_after_close", "ticks": 600, "steps": [
             {"at": 300, "call": "vfx_preview", "args": {"effect": "fire", "frames": 4, "tile": 96}},
             {"at": 300, "call": "world_list"}]}

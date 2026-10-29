@@ -6,7 +6,7 @@
   "modal": true,
   "focus": "rv_approve",
   "back": "review_close",
-  "notes": "The engine's review screen (docs/design/REVIEW.md). Actions: review_approve, review_reject (then reject:<reason> or reject_cancel), review_batch, review_prev, review_next, review_close. State: position, has_item, has_prev, has_next, title, meta, checks_line, fail_1..fail_4, critiques_line, summary, promote_line, image_note, status_line, status_good, rejecting, batch_pending. The capture is drawn by the engine inside rv_image.",
+  "notes": "The engine's review screen (docs/design/REVIEW.md). Actions: review_approve, review_reject (then reject:<reason> or reject_cancel), review_batch, review_prev, review_next, review_close. State: position, has_item, has_prev, has_next, title, meta, checks_line, checks_engine, engine_failed, checks_reported (the submitter's claims, shown neutral), reported_failed, fail_1..fail_4, critiques_line, summary, promote_line, image_note, status_line, status_good, rejecting, batch_pending. The capture is drawn by the engine inside rv_image.",
   "root": {
     "type": "box",
     "children": [
@@ -45,8 +45,10 @@
                 "children": [
                   { "type": "label", "id": "rv_title", "text": "{title}", "role": "heading", "wrap": true },
                   { "type": "label", "text": "{meta}", "role": "small", "wrap": true },
-                  { "type": "label", "text": "{checks_line}", "role": "good", "visible": "!fail_1", "wrap": true },
-                  { "type": "label", "text": "{checks_line}", "role": "warn", "visible": "fail_1", "wrap": true },
+                  { "type": "label", "text": "{checks_engine}", "role": "good", "visible": "!engine_failed", "wrap": true },
+                  { "type": "label", "text": "{checks_engine}", "role": "warn", "visible": "engine_failed", "wrap": true },
+                  { "type": "label", "text": "{checks_reported}", "role": "small", "visible": "!reported_failed", "wrap": true },
+                  { "type": "label", "text": "{checks_reported}", "role": "warn", "visible": "reported_failed", "wrap": true },
                   { "type": "label", "text": "{fail_1}", "role": "small", "visible": "fail_1", "wrap": true },
                   { "type": "label", "text": "{fail_2}", "role": "small", "visible": "fail_2", "wrap": true },
                   { "type": "label", "text": "{fail_3}", "role": "small", "visible": "fail_3", "wrap": true },

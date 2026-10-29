@@ -17,13 +17,12 @@ use crate::sight_tools::{CompareCall, OrbitSpec, OrbitTarget, QuerySpec, SightCa
 use specula_core::math::{Mat4, Vec3};
 use specula_gpu::OverlayQuad;
 use std::collections::BTreeMap;
-use std::sync::mpsc::Sender;
 
 /// A capture-like call parked until the models it would show are built.
 pub(crate) struct CaptureWaiter {
     pub(crate) job: Job,
     pub(crate) session: SessionInfo,
-    pub(crate) reply: Sender<ToolOutput>,
+    pub(crate) reply: crate::jobs::Reply,
     /// Rendered then whatever is still building.
     pub(crate) until: Instant,
     pub(crate) wait: CaptureWait,
@@ -94,6 +93,8 @@ pub(crate) struct Rendered {
     pub(crate) streaming: Json,
     /// The effects and decals drawn (see `vfx`): boxes, counts, the frame's budget use.
     pub(crate) effects: Json,
+    /// What this frame actually drew (the only source of drawing facts; see `sight::FrameRecord`).
+    pub(crate) record: sight::FrameRecord,
     /// The entities the colour pass was given (the packet monitor's independent record).
     pub(crate) drawn: Option<crate::trace_engine::DrawnRecord>,
 }
@@ -563,7 +564,7 @@ impl Engine {
         self.build_draws_2d(&view_proj, opts.include_ui, opts.time_s as f32, &mut draws_2d, Some(&mut owners_2d));
         let two_d_problems: Vec<String> = self.two_d.problems().to_vec();
         owners.extend_from_slice(&owners_2d);
-
+        let mut record = sight::FrameRecord::new(&owners);
         let (ids, entities) = sight::dense_ids(&owners);
         let target = self.offscreen_target(w, h)?;
         // Animated models' bone matrices, posed at time_s by build_draws (returned below; an
@@ -595,7 +596,7 @@ impl Engine {
         // Debug overlays get what the game's interface leaves of the GPU's limit.
         let budget = specula_gpu::MAX_OVERLAY_QUADS - hud;
         if painted && !second_render {
-            let (q, report) = self.paint_overlays(camera, view_proj, w, h, &subjects, opts, budget);
+            let (q, report) = self.paint_overlays(camera, view_proj, w, h, &subjects, opts, budget, None);
             quads.extend(q);
             overlays = (!opts.overlays.is_empty()).then_some(report);
         }
@@ -622,10 +623,12 @@ impl Engine {
                 self.gpu.id_coverage(target, entities.len() as u32).map_err(|e| gpu_failure("id readback", &e, self.windowed))?
             };
             sight::apply_visibility(&mut subjects, &entities, &counts.per_id);
+            record.set_ids(&entities, &counts.per_id);
             let cpu_ms = counted.elapsed().as_secs_f64() * 1e3;
             let mut j = Json::obj([
-                ("entities", Json::from(entities.len())),
-                ("visible", Json::from(counts.per_id.iter().filter(|c| c.pixels > 0 || c.approx).count())),
+                // Entities only (HLOD proxies have ID-pass owners of their own, past every entity).
+                ("entities", Json::from(entities.iter().filter(|e| !sight::is_proxy_owner(**e)).count())),
+                ("visible", Json::from(entities.iter().zip(&counts.per_id).filter(|(e, c)| !sight::is_proxy_owner(**e) && (c.pixels > 0 || c.approx)).count())),
                 ("blended_counted", Json::from(counts.blended_counted)),
                 ("gpu_ms", Json::from(gpu_ms)),
                 ("readback_count_ms", Json::from((cpu_ms * 1000.0).round() / 1000.0)),
@@ -641,8 +644,13 @@ impl Engine {
         } else {
             Json::obj([("off", Json::from(true))])
         };
+        // Subjects drawn merged in a proxy, or not resident, say so (before the bounds overlay is
+        // painted: its colours come from the record, review round 2).
+        self.stream.annotate(&mut subjects, &self.world, &self.models);
+        record.set_streaming(&subjects);
+        record.set_proxies(&self.stream.hlod.capture_groups);
         if second_render {
-            let (q, report) = self.paint_overlays(camera, view_proj, w, h, &subjects, opts, budget);
+            let (q, report) = self.paint_overlays(camera, view_proj, w, h, &subjects, opts, budget, Some(&record));
             overlays = (!opts.overlays.is_empty()).then_some(report);
             let mut both = quads[..hud].to_vec();
             both.extend(q);
@@ -658,27 +666,29 @@ impl Engine {
         self.models.put_bones(bones);
         self.vfx.put_frame(fx);
         self.terrain.frame = terrains;
-        // Terrain and water subjects say what they are (and how a terrain was drawn).
+        // Terrain and water subjects say what they are (and how a terrain was drawn); the frame
+        // record knows them too (their passes draw outside the mesh lists).
         for s in subjects.iter_mut() {
             if self.terrain.covers(s.id) {
                 s.json.set("kind", Json::from("terrain"));
-                if let Some(d) = self.terrain.drawn(s.id) {
-                    s.json.set("terrain_patches", Json::from(d.patches));
+                let patches = self.terrain.drawn(s.id).map(|d| d.patches);
+                if let Some(p) = patches {
+                    s.json.set("terrain_patches", Json::from(p));
                 }
+                record.set_terrain(s.id, patches.unwrap_or(0));
             } else if let Some(w) = self.world.get(s.id).and_then(|e| e.water.as_ref()) {
                 s.json.set("kind", Json::from("water"));
                 s.json.set("water", Json::from(w.preset.as_str()));
+                record.set_water(s.id);
             }
         }
-        // Subjects drawn merged in a proxy, or not resident, say so.
-        self.stream.annotate(&mut subjects, &self.world, &self.models);
         let streaming = self.stream.capture_json(&stats);
-        Ok(Rendered { flash, rgba, subjects, stats, lights: lights.len(), dropped_lights, overlays, ids: ids_json, two_d_problems, streaming, effects, drawn })
+        Ok(Rendered { flash, rgba, subjects, stats, lights: lights.len(), dropped_lights, overlays, ids: ids_json, two_d_problems, streaming, effects, record, drawn })
     }
 
     /// The overlay records for one view and what they drew, at most `budget` of them.
     #[allow(clippy::too_many_arguments)]
-    fn paint_overlays(&mut self, camera: Camera, vp: Mat4, w: u32, h: u32, subjects: &[Subject], opts: &ViewOpts, budget: usize) -> (Vec<OverlayQuad>, Json) {
+    fn paint_overlays(&mut self, camera: Camera, vp: Mat4, w: u32, h: u32, subjects: &[Subject], opts: &ViewOpts, budget: usize, record: Option<&sight::FrameRecord>) -> (Vec<OverlayQuad>, Json) {
         let spec = opts.overlays;
         let mut p = Painter::new(vp, w, h);
         p.limit = p.limit.min(budget.saturating_sub(ov::LABEL_QUADS));
@@ -766,7 +776,7 @@ impl Engine {
             let (mut boxes, mut hidden_boxes) = (0, 0);
             for (s, e, _) in shown.iter().take(ov::MAX_BOXES) {
                 let Some(corners) = e.world_corners() else { continue };
-                let hidden = sight::shows(&s.json) == Some(false);
+                let hidden = fully_hidden(s, record);
                 p.box_edges(&corners, if hidden { ov::OCCLUDED } else { ov::VISIBLE }, 1.5);
                 boxes += 1;
                 hidden_boxes += usize::from(hidden);
@@ -1284,26 +1294,9 @@ impl Engine {
         let Some(s) = r.subjects.into_iter().find(|s| s.id == id) else {
             return ToolOutput::error(format!("{path} was not in the frame it was queried in"));
         };
-        // Streaming: not on the GPU (not drawn), or drawn merged in its cell's HLOD proxy (drawn,
-        // its own pixels not counted).
-        match s.json.get("drawn_as").and_then(Json::as_str) {
-            Some("not_resident") => {
-                out.set("drawn", Json::from(false));
-                out.set("drawn_as", Json::from("not_resident"));
-                out.set(
-                    "reason",
-                    Json::from("built but not on the GPU (streaming: too far and too small for every camera, or evicted under memory_mb; stream_state shows why)"),
-                );
-            }
-            Some("hlod") => {
-                out.set("drawn", Json::from(true));
-                out.set("drawn_as", Json::from("hlod"));
-                out.set("reason", Json::from("drawn merged in its cell's HLOD proxy: its own pixels aren't counted (visible_px null)"));
-            }
-            _ => {
-                out.set("drawn", Json::from(true));
-            }
-        }
+        // Drawn or not, from what the frame drew (its draw lists, the ID pass, streaming), never
+        // from the world: an entity behind the camera is submitted but reaches no pixel.
+        r.record.drawn(id).write(&mut out);
         for key in ["on_screen", "screen", "distance_m", "visible_px", "visible_px_approx", "screen_box_exact", "no_pixels", "occluded", "resident_lods_from"] {
             if let Some(v) = s.json.get(key) {
                 out.set(key, v.clone());
@@ -1321,6 +1314,20 @@ impl Engine {
             out.set("warning", Json::from(w.as_str()));
         }
         ToolOutput::text(out.to_string())
+    }
+}
+
+/// Whether the bounds overlay paints `s` as fully hidden: once the frame is measured, exactly the
+/// subjects the packet marks `no_pixels` (review round 2: HLOD members were painted red);
+/// before, from the subject's own counted pixels.
+fn fully_hidden(s: &Subject, record: Option<&sight::FrameRecord>) -> bool {
+    match record {
+        // Measured: in view and drawn, yet no pixel shows (`no_pixels`, the packet's own word). An
+        // HLOD member has no pixels of its own (its proxy's are counted, `drawn` says whether it
+        // reached the image), and an entity the frame never drew isn't hidden behind anything:
+        // neither is painted red.
+        Some(_) => s.json.get("no_pixels").and_then(Json::as_bool) == Some(true),
+        None => sight::shows(&s.json) == Some(false),
     }
 }
 
@@ -1441,5 +1448,199 @@ mod tests {
         let other = specula_gpu::GpuError { message: "out of memory".into(), vk_result: Some(-2), limit: None, reason: None };
         let j = Json::parse(&gpu_failure("readback", &other, false)).unwrap();
         assert_eq!((j.get("error"), j.get("recovery")), (Some(&Json::from("gpu_failed")), None));
+    }
+}
+
+/// Drawn facts through the engine's real capture path (`Engine::render_view`, the frame record
+/// sight_query answers from), on a real GPU (skipped without Vulkan): each way an entity can fail
+/// to reach the image is knocked out, and the record must agree with an independent readback of
+/// the ID image. Review of the authority lane: an HLOD cell behind the camera said `drawn: true`
+/// (proxies are chosen by distance, not view); the hand-built record in
+/// `tests/frame_record_gpu.rs` never saw HLOD, streaming or the real draw lists.
+#[cfg(test)]
+mod frame_record_engine_tests {
+    use super::*;
+    use crate::journal::Writer;
+    use std::collections::BTreeSet;
+    use std::time::{Duration, Instant};
+
+    const W: u32 = 320;
+    const H: u32 = 180;
+
+    fn engine(tag: &str) -> Option<Engine> {
+        if !specula_gpu::is_available() {
+            crate::skip_test(&format!("frame_record_engine_tests::{tag}"), "Vulkan is not available");
+            return None;
+        }
+        let gpu = match specula_gpu::Gpu::new(&specula_gpu::GpuOptions { validation: specula_gpu::Validation::Auto, ..Default::default() }) {
+            Ok(g) => g,
+            Err(e) => {
+                crate::skip_test(&format!("frame_record_engine_tests::{tag}"), &e.to_string());
+                return None;
+            }
+        };
+        let assets = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../games/sepulcra/assets");
+        let captures = std::env::temp_dir().join(format!("specula-frame-record-{tag}-{}", std::process::id()));
+        Some(Engine::new(gpu, &captures, crate::models::Library::new(&assets, None)).expect("engine"))
+    }
+
+    fn spawn(e: &mut Engine, spec: &str) -> u64 {
+        let spec = crate::tools::parse_spawn(&Json::parse(spec).unwrap()).unwrap();
+        let w = Writer::new("t", Some("t"));
+        e.world.commit(&mut e.swarm, 0, w, journal::Kind::Spawn, crate::write_policy::Rule::World, |wd| wd.spawn(spec, "t").map(|x| x.id)).unwrap().0
+    }
+
+    /// Renders `cam` through the capture path; the record and the entities (or proxy owners)
+    /// the readback of the ID image saw.
+    fn render(e: &mut Engine, cam: Camera, ids: bool) -> (sight::FrameRecord, BTreeSet<u64>) {
+        let none = ov::Spec::default();
+        let opts = ViewOpts { include_ui: false, lod: None, time_s: 0.0, overlays: &none, caption: None, ids, fill: None };
+        let r = e.render_view(cam, W, H, &opts).expect("render");
+        let mut seen = BTreeSet::new();
+        if ids {
+            let target = e.offscreen_target(W, H).unwrap();
+            let image = e.gpu.read_ids(target).unwrap();
+            seen = image.ids.iter().filter_map(|&i| r.record.owner_of_id(i)).collect();
+        }
+        (r.record, seen)
+    }
+
+    /// Lets builds, uploads and streaming run (capture sources: `cams`) until `done`.
+    fn settle(e: &mut Engine, cams: &[Camera], what: &str, mut done: impl FnMut(&mut Engine) -> bool) {
+        let start = Instant::now();
+        loop {
+            e.pump_builds(Some(Duration::from_millis(20)));
+            let views: Vec<(Camera, u32, u32)> = cams.iter().map(|c| (*c, W, H)).collect();
+            e.stream_capture(&views);
+            e.stream_tick(None);
+            if done(e) {
+                return;
+            }
+            assert!(start.elapsed() < Duration::from_secs(300), "{what}: not settled in 300 s");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// The record agrees with the readback: anything seen is drawn; anything said not drawn is
+    /// never seen. HLOD members through their proxy's owner.
+    fn agrees(record: &sight::FrameRecord, seen: &BTreeSet<u64>, ids: &[u64], proxy: impl Fn(u64) -> Option<u64>) {
+        for &id in ids {
+            let fact = record.drawn(id).drawn();
+            let shown = seen.contains(&id) || proxy(id).is_some_and(|p| seen.contains(&p));
+            if shown {
+                assert_eq!(fact, Some(true), "entity {id} is in the image, but the record says {fact:?}");
+            }
+            if fact == Some(false) {
+                assert!(!shown, "entity {id}: the record says not drawn, yet the image shows it");
+            }
+        }
+    }
+
+    #[test]
+    fn drawn_facts_through_render_view_match_the_readback() {
+        let Some(mut e) = engine("plain") else { return };
+        let front = spawn(&mut e, r#"{"name": "front", "shape": "cube", "position": [-2, 0, 0]}"#);
+        let behind = spawn(&mut e, r#"{"name": "behind", "shape": "cube", "position": [0, 0, 20]}"#);
+        let hidden = spawn(&mut e, r#"{"name": "hidden", "shape": "cube", "position": [0, 0, 0], "visible": false}"#);
+        let wall = spawn(&mut e, r#"{"name": "wall", "shape": "cube", "position": [2.5, 0, 4], "scale": [3, 3, 0.2]}"#);
+        let occluded = spawn(&mut e, r#"{"name": "occluded", "shape": "cube", "position": [2.5, 0, -2], "scale": 0.5}"#);
+        // A sprite whose texture file is missing.
+        let missing = spawn(&mut e, r#"{"name": "missing", "shape": "sprite", "sprite": {"texture": "no_such_texture.png", "size": [2, 2]}, "position": [0, 2, 0]}"#);
+        let cam = Camera::new(Vec3::new(0.0, 0.0, 10.0), Vec3::new(0.0, 0.0, 0.0), 60.0);
+        settle(&mut e, &[cam], "the scene", |e| e.library.lock().in_flight() == 0);
+        // A model still building when the frame renders (spawned now, no pump in between).
+        let unbuilt = spawn(&mut e, r#"{"name": "unbuilt", "shape": "model", "recipe": "recipes/tombstone.json", "seed": 77, "position": [0, -1, 2]}"#);
+        let (record, seen) = render(&mut e, cam, true);
+        let all = [front, behind, hidden, wall, occluded, unbuilt, missing];
+        agrees(&record, &seen, &all, |_| None);
+        assert!(seen.contains(&front) && seen.contains(&wall));
+        assert_eq!(record.drawn(front).drawn(), Some(true));
+        assert_eq!(record.drawn(behind).drawn(), Some(false), "M4 finding: drawn: true behind the camera");
+        assert_eq!(record.drawn(hidden).drawn(), Some(false));
+        if !record.submitted().contains(&unbuilt) {
+            assert_eq!(record.drawn(unbuilt).drawn(), Some(false), "not built yet: not drawn");
+        }
+        assert!(!seen.contains(&missing) || record.drawn(missing).drawn() == Some(true), "a missing texture: whatever it draws, the record agrees");
+        assert!(!seen.contains(&occluded));
+        // The ID pass off, through the same path: drawn is unmeasured, never assumed.
+        let (unmeasured, _) = render(&mut e, cam, false);
+        let mut j = Json::Obj(Vec::new());
+        unmeasured.drawn(front).write(&mut j);
+        assert_eq!((j.get("drawn"), j.get("measured_by").and_then(Json::as_str)), (Some(&Json::Null), Some("draw_list")), "{j}");
+        assert_eq!(unmeasured.drawn(hidden).drawn(), Some(false), "not submitted is known without the ID pass");
+    }
+
+    #[test]
+    fn hlod_members_behind_the_camera_are_not_drawn() {
+        let Some(mut e) = engine("hlod") else { return };
+        let patch = Json::parse(r#"{"settle_s": 0, "upload_ms": 50, "upload_mb": 64, "hlod_min_m": 0}"#).unwrap();
+        e.stream.set(&patch, "test", &mut e.gpu, &mut e.models).unwrap();
+        let mut members = Vec::new();
+        for i in 0..16u64 {
+            let spec = format!(
+                r#"{{"name": "stone{i}", "shape": "model", "recipe": "recipes/tombstone.json", "seed": {}, "position": [{}, 0, {}], "scale": 4}}"#,
+                100 + i,
+                300 + (i % 4) * 6,
+                (i / 4) * 6
+            );
+            members.push(spawn(&mut e, &spec));
+        }
+        let toward = Camera::new(Vec3::new(0.0, 30.0, 10.0), Vec3::new(300.0, 0.0, 10.0), 40.0);
+        let away = Camera::new(Vec3::new(0.0, 30.0, 10.0), Vec3::new(-300.0, 0.0, 10.0), 40.0);
+        let first = members[0];
+        settle(&mut e, &[toward], "the far cell gets a proxy", |e| {
+            let (record, _) = render(e, toward, true);
+            let mut j = Json::Obj(Vec::new());
+            record.drawn(first).write(&mut j);
+            j.get("drawn_as").and_then(Json::as_str) == Some("hlod")
+        });
+        let proxy = |r: &sight::FrameRecord| {
+            let r = r.clone();
+            move |id: u64| r.proxy_owner_of(id)
+        };
+        let (record, seen) = render(&mut e, toward, true);
+        agrees(&record, &seen, &members, proxy(&record));
+        assert!(members.iter().any(|m| record.drawn(*m).drawn() == Some(true)), "the cell in view is drawn as its proxy");
+        // Review round 2: the bounds overlay painted HLOD members red (no pixels of their own).
+        let bounds = ov::Spec { kinds: vec![Kind::Bounds], entities: Vec::new(), max_labels: 0 };
+        let opts = ViewOpts { include_ui: false, lod: None, time_s: 0.0, overlays: &bounds, caption: None, ids: true, fill: None };
+        let r = e.render_view(toward, W, H, &opts).expect("render");
+        let hidden = r.overlays.as_ref().and_then(|o| o.get("bounds")).and_then(|b| b.get("fully_hidden")).and_then(Json::as_u64);
+        let in_view_merged = members.iter().filter(|m| r.record.drawn(**m).drawn() == Some(true) && r.record.drawn(**m).drawn_as() == Some("hlod")).count();
+        assert!(in_view_merged > 0);
+        let subjects_hidden = r.subjects.iter().filter(|s| members.contains(&s.id) && s.on_screen && fully_hidden(s, Some(&r.record))).count();
+        assert_eq!(subjects_hidden, 0, "an HLOD member drawn in its proxy isn't fully hidden");
+        assert_eq!(hidden, Some(0), "the bounds overlay paints none of them red: {:?}", r.overlays);
+        // The same cell behind the camera: still drawn as a proxy (distance decides), culled.
+        let (record, seen) = render(&mut e, away, true);
+        agrees(&record, &seen, &members, proxy(&record));
+        let mut merged = 0;
+        for &m in &members {
+            let mut j = Json::Obj(Vec::new());
+            record.drawn(m).write(&mut j);
+            if j.get("drawn_as").and_then(Json::as_str) == Some("hlod") {
+                merged += 1;
+                assert_eq!(j.get("drawn"), Some(&Json::Bool(false)), "a proxy behind the camera: {j}");
+                assert_eq!(j.get("measured_by").and_then(Json::as_str), Some("id_buffer"), "{j}");
+            }
+        }
+        assert!(merged > 0, "the cell behind the camera is still drawn as its proxy (distance decides): the case under test");
+    }
+
+    #[test]
+    fn not_resident_models_are_not_drawn() {
+        let Some(mut e) = engine("resident") else { return };
+        let patch = Json::parse(r#"{"settle_s": 0, "upload_ms": 50, "upload_mb": 64, "hlod": false, "radius_m": 20}"#).unwrap();
+        e.stream.set(&patch, "test", &mut e.gpu, &mut e.models).unwrap();
+        let far = spawn(&mut e, r#"{"name": "far", "shape": "model", "recipe": "recipes/tombstone.json", "seed": 5, "position": [0, 0, -400]}"#);
+        let cam = Camera::new(Vec3::new(0.0, 2.0, 10.0), Vec3::new(0.0, 0.0, -400.0), 60.0);
+        settle(&mut e, &[cam], "the build", |e| e.library.lock().in_flight() == 0);
+        let (record, seen) = render(&mut e, cam, true);
+        agrees(&record, &seen, &[far], |_| None);
+        let mut j = Json::Obj(Vec::new());
+        record.drawn(far).write(&mut j);
+        assert_eq!(j.get("drawn_as").and_then(Json::as_str), Some("not_resident"), "400 m out with a 20 m radius: left off the GPU: {j}");
+        assert_eq!(j.get("drawn"), Some(&Json::Bool(false)), "{j}");
+        assert!(!seen.contains(&far));
     }
 }

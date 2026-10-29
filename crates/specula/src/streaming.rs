@@ -1936,6 +1936,7 @@ impl Streamer {
             self.hlod.capture(camera.eye, camera.fov_y_deg, viewport_h, self.cfg.hlod_min_m, stale, out)
         } else {
             self.hlod.capture_cover.clear();
+            self.hlod.capture_groups.clear();
             (0, 0)
         };
     }

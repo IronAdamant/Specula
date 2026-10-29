@@ -480,6 +480,7 @@ def run_adapter(exe, adapter, out, port, assets, windowed=False):
     with Engine(exe, port, log, *mode, "--adapter", adapter, "--assets", str(assets), "--captures", str(out / "captures"),
                 "--worlds", str(worlds), cwd=str(out)) as engine:
         with engine.mcp("two_d_check") as m:
+            m.hello("two-d-check", role="lead")  # force and overwrite of other worlds are the lead's (docs/design/AUTHORITY.md)
             info = m.json("engine_info")
             gpu = info["gpu"]["name"]
             print(f"adapter {adapter}: {gpu} (validation {'on' if info.get('validation') else 'OFF'})")

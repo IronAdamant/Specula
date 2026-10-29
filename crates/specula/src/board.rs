@@ -1107,14 +1107,16 @@ impl Board {
         Ok(&self.notes[&id])
     }
 
-    /// `note_delete`: the author's own, or anyone's with `force`.
-    pub fn delete_note(&mut self, w: Writer, tick: u64, id: u64, force: bool) -> Result<Note, WorldError> {
+    /// `note_delete`: the author's own, or another's with `force` and lead authority.
+    pub fn delete_note(&mut self, w: Writer, authority: crate::authority::Authority, tick: u64, id: u64, force: bool) -> Result<Note, WorldError> {
         let n = self.notes.get(&id).ok_or_else(|| err("note_not_found", format!("there is no note {id}")).with("note", id))?;
-        if !(n.by == w.name && n.by_key.as_deref().is_none_or(|k| w.session == Some(k))) && !force {
-            return Err(err("not_yours", format!("note {id} was left by {} (in another session, or another agent); pass force: true to delete someone else's note", n.by))
+        let own = n.by == w.name && n.by_key.as_deref().is_none_or(|k| w.session == Some(k));
+        if !own && !force {
+            return Err(err("not_yours", format!("note {id} was left by {} (in another session, or another agent); a lead may delete it with force: true", n.by))
                 .with("note", id)
                 .with("by", n.by.as_str()));
         }
+        crate::authority::may_force(authority, own, "note_delete").map_err(|e| e.with("note", id).with("by", n.by.as_str()))?;
         let n = self.notes.remove(&id).expect("checked");
         self.bytes = self.bytes.saturating_sub(n.measure());
         let task = match &n.target {
@@ -1471,8 +1473,8 @@ mod tests {
         assert_eq!(east.get("total"), Some(&Json::from(2)));
         assert_eq!(b.notes_on_task(id, 5).len(), 1);
         assert_eq!(b.notes_at("/east/gate", Some(5)), 1);
-        assert_eq!(b.delete_note(BOB, 2, 1, false).unwrap_err().code, "not_yours");
-        b.delete_note(ANN, 2, 1, false).unwrap();
+        assert_eq!(b.delete_note(BOB, crate::authority::Authority::Agent, 2, 1, false).unwrap_err().code, "not_yours");
+        b.delete_note(ANN, crate::authority::Authority::Agent, 2, 1, false).unwrap();
         assert_eq!(b.notes_len(), 2);
     }
 
@@ -1510,7 +1512,7 @@ mod tests {
         assert_eq!(b.update(heir, 1, id, reopen.clone()).unwrap_err().code, "not_task_owner");
         assert_eq!(b.update(heir, 1, id, TaskPatch { title: Some("hijacked".into()), ..TaskPatch::default() }).unwrap_err().code, "not_poster");
         assert_eq!(b.done(heir, 1, id, String::new(), true, None).unwrap_err().code, "not_poster");
-        assert_eq!(b.delete_note(heir, 1, 1, false).unwrap_err().code, "not_yours");
+        assert_eq!(b.delete_note(heir, crate::authority::Authority::Agent, 1, 1, false).unwrap_err().code, "not_yours");
         // The real poster still can.
         b.update(PARENT, 1, id, reopen).unwrap();
         // Loaded: name-only until they act, then bound.

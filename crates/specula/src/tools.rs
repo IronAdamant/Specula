@@ -325,8 +325,12 @@ pub struct FrameSpec {
 
 pub struct Request {
     pub session: SessionInfo,
+    /// The agent's tool call this request belongs to ([`current_call`]; 0: none): the engine
+    /// counts commits per call (one call, one commit).
+    pub call: u64,
     pub command: Command,
-    pub reply: Sender<ToolOutput>,
+    /// Where the answer goes (made by `jobs::channel`; deferred jobs keep it).
+    pub reply: crate::jobs::Reply,
     /// Past this instant the caller has given up; the engine drops the command unapplied.
     pub deadline: Instant,
     /// The call (and span) it is part of: the engine thread works inside it
@@ -463,8 +467,8 @@ impl Tools {
     /// Sends a command without waiting for an answer (its reply channel is dropped); false when
     /// the engine is gone.
     pub(crate) fn post(&self, session: &SessionInfo, command: Command) -> bool {
-        let (reply, _) = mpsc::channel();
-        self.to_engine.send(Request { session: session.clone(), command, reply, deadline: Instant::now() + APPLY_DEADLINE, trace: specula_core::trace::Ctx::current() }).is_ok()
+        let (reply, _) = crate::jobs::channel();
+        self.to_engine.send(Request { session: session.clone(), call: current_call(), command, reply, deadline: Instant::now() + APPLY_DEADLINE, trace: specula_core::trace::Ctx::current() }).is_ok()
     }
 
     pub(crate) fn lex_native_names(&self) -> Vec<String> {
@@ -486,9 +490,9 @@ impl Tools {
     }
 
     pub(crate) fn send(&self, session: &SessionInfo, command: Command) -> ToolOutput {
-        let (reply, answer) = mpsc::channel();
+        let (reply, answer) = crate::jobs::channel();
         let deadline = Instant::now() + APPLY_DEADLINE;
-        let request = Request { session: session.clone(), command, reply, deadline, trace: specula_core::trace::Ctx::current() };
+        let request = Request { session: session.clone(), call: current_call(), command, reply, deadline, trace: specula_core::trace::Ctx::current() };
         if self.to_engine.send(request).is_err() {
             return ToolOutput::error("the engine is shutting down");
         }
@@ -503,12 +507,25 @@ impl Tools {
     }
 }
 
+std::thread_local! {
+    /// The tool call this connection thread is serving (see [`Request::call`]).
+    static CALL: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+static NEXT_CALL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// The tool call this thread serves (0 outside one).
+pub(crate) fn current_call() -> u64 {
+    CALL.with(std::cell::Cell::get)
+}
+
 impl ToolHandler for Tools {
     fn tools(&self) -> Vec<ToolDef> {
         self.scopes.catalog.defs().to_vec()
     }
 
     fn call(&self, session: &SessionInfo, name: &str, arguments: &Json) -> ToolOutput {
+        let id = NEXT_CALL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let outer = CALL.with(|c| c.replace(id));
         // Every call gets an id its work carries everywhere (docs/design/TRACE.md).
         let call = crate::trace_sink::begin_call(session, name, arguments);
         let _ctx = specula_core::trace::Ctx { call, span: 0 }.enter();
@@ -517,6 +534,7 @@ impl ToolHandler for Tools {
         // per session (in the answer to the write that crossed the line). Scopes first (the cap, the
         // catalog tools, agent_hello {tools}).
         let out = crate::disk::book().annotate(&session.id, crate::response::tidy(crate::toolscope_tools::call(self, session, name, arguments)));
+        CALL.with(|c| c.set(outer));
         crate::trace_sink::end_call(call, &out);
         out
     }
@@ -2337,7 +2355,7 @@ fn definitions() -> Vec<ToolDef> {
             input_schema: schema(
                 vec![
                     ("name", string("Your agent name, up to 64 characters")),
-                    ("role", string(&format!("builder (default), reviewer, playtester, director, ...; {tag_rule}"))),
+                    ("role", string(&format!("A job label: builder (default), playtester, artist, ... The authority roles owner, lead (or director) and reviewer are granted by the operator (--owner/--lead/--reviewer NAME; the first lead hello holds the lead when none was named), never self-declared: asking without a grant is refused. The reply says your authority; {tag_rule}"))),
                     ("resume_token", string("The resume_token an earlier agent_hello returned: continue as that agent")),
                 ],
                 &["name"],
@@ -2629,7 +2647,7 @@ fn definitions() -> Vec<ToolDef> {
                         ("items", Json::obj([("type", Json::from("integer"))])),
                         ("description", Json::from("Specific journal entry ids (from world_history); others' entries need force")),
                     ])),
-                    ("force", boolean("Undo even over other agents' later changes, or their entries (default false)")),
+                    ("force", boolean("Undo even over other agents' later changes, or their entries: lead authority only (default false)")),
                 ],
                 &[],
             ),

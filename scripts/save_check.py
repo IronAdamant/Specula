@@ -261,7 +261,7 @@ def run(args, work):
     with Engine(exe, pa, work / "a.log", *common, "--captures", str(work / "cap-a"), "--worlds", str(work / "worlds-a"),
                 "--", "--seed", "7", cwd=str(ROOT)):
         a = Mcp(url_for(pa), "save-check-a")
-        a.json("agent_hello", name="saver", role="lead")
+        a.json("agent_hello", name="saver", role="builder")
         a.json("time_control", action="pause")
         a.call("play_new", seed=7, layout="centre")
         crates(a)
@@ -314,7 +314,7 @@ def run(args, work):
     with Engine(exe, pb, work / "b.log", *common, "--captures", str(work / "cap-b"), "--worlds", str(work / "worlds-b"),
                 "--", "--seed", "99", cwd=str(ROOT)):
         b = Mcp(url_for(pb), "save-check-b")
-        b.json("agent_hello", name="loader", role="lead")
+        b.json("agent_hello", name="loader", role="lead")  # force and overwrite of other worlds are the lead's (docs/design/AUTHORITY.md)
         b.json("time_control", action="pause")
         build_ambulo(b)
         started = time.perf_counter()

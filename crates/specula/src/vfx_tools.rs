@@ -547,24 +547,27 @@ impl Engine {
     /// goes to `reply` when the last frame is done.
     /// `from_playtest`: a playtest's step (it keeps running after its starter's session closes,
     /// so the session's liveness doesn't drop it; the deadline still does).
-    pub(crate) fn vfx_preview_start(&mut self, call: VfxCall, session: &SessionInfo, reply: mpsc::Sender<ToolOutput>, deadline: Instant, from_playtest: bool) {
+    pub(crate) fn vfx_preview_start(&mut self, call: VfxCall, session: &SessionInfo, reply: crate::jobs::Reply, deadline: Instant, from_playtest: bool) {
         let VfxCall::Preview { subject, params, frames, duration, start, tile, motion } = call else {
             let _ = reply.send(error("invalid_argument", "not a vfx_preview"));
             return;
         };
         self.vfx.library.refresh(&self.world, self.world_generation);
-        let queued = |s: &str| self.studio.previews.iter().filter(|j| j.session == s).count();
+        // Each preview is its caller's job (identity key, which a resume keeps): counted per agent,
+        // and a refusal names whose previews fill the queue.
+        let owner = crate::jobs::JobOwner { name: self.swarm.agent_name(session), key: self.swarm.key(session) };
+        let queued = |o: &crate::jobs::JobOwner| self.studio.previews.iter().filter(|j| j.owner.is(o)).count();
         // Sheets still encoding count too (each holds its pixels).
         let encoding = self.studio.encoders.load(std::sync::atomic::Ordering::Relaxed);
-        if self.studio.previews.len() + encoding >= MAX_PREVIEWS_QUEUED || queued(&session.id) >= MAX_PREVIEWS_PER_AGENT {
-            let _ = reply.send(ToolOutput::error(
-                Json::obj([
-                    ("error", Json::from("studio_busy")),
-                    ("message", Json::from(format!("{} previews are queued ({MAX_PREVIEWS_PER_AGENT} per agent, {MAX_PREVIEWS_QUEUED} in all): call again when one has answered", self.studio.previews.len()))),
-                    ("retry_after_s", Json::from(1)),
-                ])
-                .to_string(),
-            ));
+        if self.studio.previews.len() + encoding >= MAX_PREVIEWS_QUEUED || queued(&owner) >= MAX_PREVIEWS_PER_AGENT {
+            let owners: std::collections::BTreeSet<&str> = self.studio.previews.iter().map(|j| j.owner.name.as_str()).collect();
+            let e = crate::authority::refusal(
+                crate::authority::Site::JobBusy,
+                format!("{} previews are queued ({MAX_PREVIEWS_PER_AGENT} per agent, {MAX_PREVIEWS_QUEUED} in all; yours: {}): call again when one has answered", self.studio.previews.len(), queued(&owner)),
+            )
+            .with("queued_by", Json::arr(owners.into_iter().map(Json::from)))
+            .with("retry_after_s", 1);
+            let _ = reply.send(ToolOutput::error(e.to_json().to_string()));
             return;
         }
         let (effect, params, name) = match self.subject(subject, params) {
@@ -582,6 +585,7 @@ impl Engine {
         let seed = eval::seed_of(1, 0.0, params.seed);
         let job = PreviewJob {
             session: session.id.clone(),
+            owner,
             from_playtest,
             reply,
             deadline,
@@ -863,9 +867,11 @@ pub(crate) const MAX_PREVIEWS_PER_AGENT: usize = 2;
 /// from 8.5 to 43.5 ms; the review of the fix: encoding the sheet in one step still took 36 ms.)
 pub(crate) struct PreviewJob {
     pub(crate) session: String,
+    /// Who asked for it (counted per agent; named when the queue is full).
+    pub(crate) owner: crate::jobs::JobOwner,
     /// A playtest's step: kept when the session closes (see [`Engine::vfx_preview_start`]).
     pub(crate) from_playtest: bool,
-    pub(crate) reply: mpsc::Sender<ToolOutput>,
+    pub(crate) reply: crate::jobs::Reply,
     pub(crate) deadline: Instant,
     effect: Arc<Effect>,
     params: Params,

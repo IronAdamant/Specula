@@ -608,16 +608,14 @@ fn scope(tools: &Tools, session: &SessionInfo, args: &Json) -> ToolOutput {
         Some(Content::Text(t)) if !found.is_error => Json::parse(t).unwrap_or(Json::Null),
         _ => return found,
     };
-    let role = found.get("role").and_then(Json::as_str).unwrap_or("builder");
-    let introduced = found.get("introduced").and_then(Json::as_bool).unwrap_or(false);
-    if !introduced || !matches!(role, "lead" | "director") {
-        return fail(
-            &ScopeError::new(
-                "lead_only",
-                "the lead picks other agents' tools: say agent_hello with role \"lead\" (or \"director\") first; anyone may activate their own (tools_activate)",
-            )
-            .with("role", role),
-        );
+    // Authority from the engine's one authority function (never the self-declared role).
+    let have = found.get("authority").and_then(Json::as_str).and_then(crate::authority::Authority::parse).unwrap_or_default();
+    if let Err(e) = crate::authority::require(have, crate::authority::Authority::Lead, crate::authority::Site::ToolsScope, "picking other agents' tools (anyone may activate their own: tools_activate)") {
+        let mut s = ScopeError::new(e.code, e.message.clone());
+        for (k, v) in e.details {
+            s = s.with(k, v);
+        }
+        return fail(&s);
     }
     let by = found.get("caller").and_then(Json::as_str).unwrap_or("").to_owned();
     let sessions: Vec<String> = found.get("sessions").and_then(Json::as_array).unwrap_or(&[]).iter().filter_map(|s| s.as_str().map(str::to_owned)).collect();
@@ -676,6 +674,7 @@ pub(crate) fn lookup(swarm: &Swarm, caller: &SessionInfo, agent: &str, live: &[S
         Json::obj([
             ("caller", Json::from(swarm.agent_name(caller))),
             ("role", Json::from(swarm.role(&caller.id))),
+            ("authority", Json::from(crate::authority::authority(swarm, &caller.id).name())),
             ("introduced", Json::from(swarm.introduced(&caller.id))),
             ("sessions", Json::arr(sessions)),
         ])
@@ -715,6 +714,7 @@ mod tests {
                         ToolOutput::text(
                             Json::obj([
                                 ("caller", Json::from(caller)),
+                                ("authority", Json::from(if matches!(role.as_str(), "lead" | "director") { "lead" } else { "agent" })),
                                 ("role", Json::from(role)),
                                 ("introduced", Json::from(agents.contains_key(&r.session.id))),
                                 ("sessions", Json::arr(sessions)),

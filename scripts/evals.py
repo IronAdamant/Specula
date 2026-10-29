@@ -60,7 +60,7 @@ EXE_SUFFIX = ".exe" if sys.platform == "win32" else ""
 # The binary per hosted game (null: the bare engine).
 GAME_EXES = {None: "specula", "sepulcra": "sepulcra"}
 
-TASK_KEYS = {"eval", "id", "title", "set", "area", "summary", "game", "engine_args", "engine_cwd", "needs", "files",
+TASK_KEYS = {"eval", "id", "title", "set", "area", "summary", "game", "engine_args", "engine_cwd", "needs", "files", "solver_role",
              "setup", "actors", "brief", "tools", "limits", "verify", "reference", "broken", "cheats", "notes"}
 STEP_KEYS = {"call", "args", "args_files", "as", "expect", "expect_files", "expect_error", "save", "select", "label",
              "wait_until", "write", "text", "text_file", "repeat", "every_s", "timeout_s", "note"}
@@ -518,6 +518,10 @@ def validate_task(t, path_name=None, root=ROOT):
     for k in ("needs", "engine_args"):
         if k in t and not (isinstance(t[k], list) and all(isinstance(x, str) for x in t[k])):
             errors.append(f"'{k}' must be an array of strings")
+    # The solver's authority (docs/design/AUTHORITY.md): "lead" grants the solver the lead
+    # (--lead solver) and its hello says so; default "builder", no authority.
+    if t.get("solver_role", "builder") not in ("builder", "lead"):
+        errors.append("'solver_role' must be \"builder\" (default) or \"lead\"")
     if "limits" in t:
         if not isinstance(t["limits"], dict) or any(k not in LIMIT_KEYS for k in t["limits"]):
             errors.append(f"'limits' takes {', '.join(sorted(LIMIT_KEYS))}")
@@ -739,8 +743,9 @@ class Ctx:
     """What a task run's steps share: the engine URL, its folder, the transcript, the clients
     (one per agent name, so claims and identity belong to that agent), variables."""
 
-    def __init__(self, url, workdir, transcript, allowed, deadline, max_calls):
+    def __init__(self, url, workdir, transcript, allowed, deadline, max_calls, solver_role="builder"):
         self.url, self.workdir, self.transcript, self.allowed = url, Path(workdir), transcript, allowed
+        self.solver_role = solver_role
         self.deadline, self.max_calls = deadline, max_calls
         self.clients, self.lock = {}, threading.Lock()
         self.snapshot = None
@@ -754,9 +759,16 @@ class Ctx:
             if c is None:
                 c = Client(self.url, agent, self.transcript, phase, self.allowed if restricted else None)
                 if agent not in ("verifier", "snapshot"):
-                    err, ans = c.call("agent_hello", {"name": agent, "role": "builder" if restricted else "lead"})
+                    err, ans = c.call("agent_hello", {"name": agent, "role": self.solver_role if restricted else "harness"})
                     if err:
                         raise StepFailed(f"agent_hello as {agent}: {cut(ans, 300)}")
+                elif agent == "verifier":
+                    # The verifier checks as the operator would: the run's lead (granted with
+                    # --lead verifier), so a verifying save_read {force} may discard the solver's
+                    # unsaved work (docs/design/AUTHORITY.md).
+                    err, ans = c.call("agent_hello", {"name": "verifier", "role": "lead"})
+                    if err:
+                        raise StepFailed(f"agent_hello as verifier: {cut(ans, 300)}")
                 self.clients[key] = c
             c.phase = phase
             return c
@@ -1269,6 +1281,7 @@ def brief_text(task, files_root, port):
     lines = [f"Specula agent eval: {task['title']} ({task['id']})", "", task["brief"].replace("{work}", str(rel).replace("\\", "/")), "",
              f"Engine: MCP at http://127.0.0.1:{port}/mcp (headless; the clock is paused: time_control steps it).",
              f"Tools you may use: {tools} (and agent_hello, engine_info).",
+             *([f"You are this run's lead: say agent_hello {{name: \"solver\", role: \"lead\"}} first."] if task.get("solver_role") == "lead" else []),
              f"Limits: {task.get('limits', {}).get('calls', MAX_CALLS_DEFAULT)} tool calls, {task.get('limits', {}).get('wall_s', MAX_WALL_DEFAULT)} s.",
              "Call eval_done when you have finished."]
     return "\n".join(lines)
@@ -1307,6 +1320,18 @@ def run_task(task, mode, port, run_dir, exe_dir, log=print, cache=None, agent_po
         # crate name) would otherwise build into one target/debug/<name>.dll and load each other's
         # library (review round 3: a cheat ran the broken solution's build).
         env = dict(os.environ, CARGO_TARGET_DIR=str(run_dir / "cargo-target"))
+    # Role words (lead, reviewer, owner, director) are reserved as agent names unless the operator
+    # grants them (docs/design/AUTHORITY.md): a task whose harness agent is called "lead" gets that
+    # name granted. Its hello still says role "harness", so the grant carries no authority.
+    role_words = {"lead", "reviewer", "owner", "director"}
+    steps = [s for k in ("setup", "reference", "verify") for s in task.get(k, []) if isinstance(s, dict)]
+    for name in sorted({s.get("as") for s in steps} & role_words):
+        args += ["--reviewer", name]
+    # A task whose solver acts as the lead (force on other agents' entries, say); the verifier
+    # is always a lead (it may load over the solver's work).
+    if task.get("solver_role") == "lead":
+        args += ["--lead", "solver"]
+    args += ["--lead", "verifier"]
     eng = Engine(exe, port, run_dir / "engine.log", *args, cwd=str(cwd), env=env)
     try:
         eng.__enter__()
@@ -1317,7 +1342,7 @@ def run_task(task, mode, port, run_dir, exe_dir, log=print, cache=None, agent_po
         return {**result, "status": "error", "error": ascii(text)[-800:]}
     proxy = None
     ctx = Ctx(url_for(port), files_root, transcript, task["tools"], time.perf_counter() + float(limits.get("wall_s", MAX_WALL_DEFAULT)),
-              int(limits.get("calls", MAX_CALLS_DEFAULT)))
+              int(limits.get("calls", MAX_CALLS_DEFAULT)), task.get("solver_role", "builder"))
     # `${work}`: the task's folder, relative to the engine's working directory (logic_build paths).
     ctx.vars["work"] = os.path.relpath(files_root, cwd).replace("\\", "/")
     actors = []

@@ -18,40 +18,31 @@ const FOLLOW_LIMIT: (usize, usize) = (50, 200);
 const INCIDENT_LIMIT: (usize, usize) = (20, 100);
 /// Nodes a call's tree lists.
 const TREE_NODES: usize = 200;
-/// The roles this lane treats as authority (see [`authority`]).
-const LEADS: [&str; 2] = ["lead", "director"];
-/// Roles that may resolve any incident (besides its owner and the agents it names).
-/// Roles that may resolve any incident, besides an agent the incident names. The debugger role
-/// reviews incidents (docs/design/DEBUGGER.md). Self-declared until the authority lane merges.
-const RESOLVERS: [&str; 4] = ["lead", "director", "reviewer", "debugger"];
-
 /// Who is asking, for what they may change. (What they may see is the same for everyone: call
 /// digests hold no text, only keys, types, sizes and numbers: public metadata.)
 struct Viewer {
-    /// Engine-wide authority ([`authority`]).
-    lead: bool,
-    role: Option<String>,
+    /// What the session may do: the engine's one answer, read on this (the caller's) thread
+    /// (`authority::of_session`; roles are granted, never self-declared, docs/design/AUTHORITY.md).
+    authority: crate::authority::Authority,
     agent: String,
 }
 
 impl Viewer {
     fn of(session: &SessionInfo) -> Viewer {
         let named = trace_sink::name_of(&session.id);
-        Viewer {
-            lead: authority(session),
-            role: named.as_ref().map(|(_, r)| r.clone()),
-            agent: named.map_or_else(|| crate::swarm::default_name(session), |(a, _)| a),
-        }
+        Viewer { authority: crate::authority::of_session(&session.id), agent: named.map_or_else(|| crate::swarm::default_name(session), |(a, _)| a) }
     }
-}
 
-/// **The trace's one authority check: REPLACE with `authority::authority(swarm, session)` (and
-/// its operator grants) when the authority lane merges.** Until then a session that said
-/// agent_hello with role lead or director counts as the lead, as everywhere else in the engine:
-/// a self-declared role, so nothing here is security against a hostile agent (rule 12: local
-/// only until M6's per-agent tokens).
-fn authority(session: &SessionInfo) -> bool {
-    trace_sink::name_of(&session.id).is_some_and(|(_, role)| LEADS.contains(&role.as_str()))
+    /// Engine-wide trace settings are the lead's.
+    fn lead(&self) -> bool {
+        self.authority >= crate::authority::Authority::Lead
+    }
+
+    /// Any incident may be resolved or reopened by a reviewer (the debugger job reviews
+    /// incidents: grant it with --reviewer NAME) or the lead.
+    fn resolver(&self) -> bool {
+        self.authority >= crate::authority::Authority::Reviewer
+    }
 }
 
 /// Names in trace settings: at most 64 characters of `[a-z0-9_.:*-]`.
@@ -420,10 +411,10 @@ fn settings(session: &SessionInfo, args: &Json) -> Result<ToolOutput, String> {
     }
     let changing = level.is_some() || !subs.is_empty() || ["file", "stderr", "budgets_ms"].iter().any(|k| args.get(k).is_some());
     if changing {
-        if !authority(session) {
+        if !Viewer::of(session).lead() {
             return Ok(error(
                 "not_lead",
-                "engine-wide trace settings belong to the lead: say agent_hello {role: \"lead\"} first, or use scope \"session\" to change only what your own queries show",
+                "engine-wide trace settings belong to the lead (granted by the operator: --lead NAME, docs/design/AUTHORITY.md), or use scope \"session\" to change only what your own queries show",
             ));
         }
         let mut s = trace_sink::settings();
@@ -586,7 +577,7 @@ fn incident(session: &SessionInfo, args: &Json) -> Result<ToolOutput, String> {
         // debugger role reviews incidents) or the lead; an incident naming nobody, only for a
         // reviewer or the lead.
         let Some(inc) = incidents::get(id) else { return Ok(error("no_incident", format!("no incident {id} (trace_incidents lists them)"))) };
-        let allowed = viewer.lead || viewer.role.as_deref().is_some_and(|r| RESOLVERS.contains(&r)) || inc.agents.iter().any(|a| *a == by);
+        let allowed = viewer.resolver() || inc.agents.iter().any(|a| *a == by);
         if !allowed {
             let named = if inc.agents.is_empty() { "it names no agent".to_owned() } else { format!("it names {}", inc.agents.iter().cloned().collect::<Vec<_>>().join(", ")) };
             return Ok(error("not_owner", format!("incident {id} is resolved or reopened by an agent it names, a reviewer or the lead ({named}); ack, note or link it instead")));
@@ -812,6 +803,7 @@ mod tests {
         assert_eq!(trace_sink::view("trace-tools-builder").level, Some(Level::Warn));
         let lead = session("trace-tools-lead");
         trace_sink::set_name("trace-tools-lead", "ann", "lead");
+        crate::authority::publish("trace-tools-lead", crate::authority::Authority::Lead);
         let ok = answer(call(&lead, "trace_settings", &Json::parse(r#"{"subsystems":{"test.tools.lead":"debug"},"budgets_ms":{"render":45}}"#).unwrap()));
         assert_eq!(ok.get("budgets_ms").and_then(|b| b.get("render")).and_then(Json::as_f64), Some(45.0));
         static LEAD: trace::Subsystem = trace::Subsystem::new("test.tools.lead");
@@ -893,6 +885,7 @@ mod tests {
         // A reviewer may resolve one that names nobody.
         let reviewer = session("trace-tools-reviewer");
         trace_sink::set_name("trace-tools-reviewer", "rev", "reviewer");
+        crate::authority::publish("trace-tools-reviewer", crate::authority::Authority::Reviewer);
         let done = answer(call(&reviewer, "trace_incident", &Json::parse(&format!(r#"{{"id":{id},"action":"resolve"}}"#)).unwrap()));
         assert_eq!(done.get("status").and_then(Json::as_str), Some("resolved"));
         let gone = answer(call(&s, "trace_incidents", &Json::parse(r#"{"code":"test.tools_incident"}"#).unwrap()));

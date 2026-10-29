@@ -262,7 +262,9 @@ def main():
         png2, packet2 = m.frame()
         total2, entities2 = m.everything()
         # world_load must restore a world that has really changed. Save a copy first, so autosave
-        # now targets the copy and can never write the damage into e2e.
+        # now targets the copy and can never write the damage into e2e. Renaming the live world is
+        # the lead's call (docs/design/AUTHORITY.md): this session says so (the first lead).
+        m.call("agent_hello", name="keeper", role="lead")
         m.call("world_save", name="e2e_copy")
         m.call("world_delete", path="/slab/lamp")
         damaged, _ = m.frame()

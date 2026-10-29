@@ -277,10 +277,16 @@ fn plain_error(text: &str) -> String {
     j.to_string()
 }
 
-/// Keeps only `keys` of an object (in its own order); anything else passes through.
+/// Provenance keys: who did, said or measured something. Concise shaping never drops them
+/// ([`keep`] keeps them wherever they appear), so an agent's claim never reads like an engine
+/// result in a concise answer (`docs/design/AUTHORITY.md`, "Provenance by type").
+pub const PROVENANCE: [&str; 10] = ["by", "source", "resolved_by", "engine", "submitted_by", "decided_by", "set_by", "flown_by", "reported_by", "authority"];
+
+/// Keeps only `keys` of an object (in its own order), and its [`PROVENANCE`] keys; anything else
+/// passes through.
 fn keep(v: &Json, keys: &[&str]) -> Json {
     match v {
-        Json::Obj(pairs) => Json::Obj(pairs.iter().filter(|(k, _)| keys.contains(&k.as_str())).cloned().collect()),
+        Json::Obj(pairs) => Json::Obj(pairs.iter().filter(|(k, _)| keys.contains(&k.as_str()) || PROVENANCE.contains(&k.as_str())).cloned().collect()),
         other => other.clone(),
     }
 }

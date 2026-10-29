@@ -236,7 +236,7 @@ pub struct RenderJob {
     call: u64,
     session: String,
     req: RenderReq,
-    reply: mpsc::Sender<Result<Rendered, ToolOutput>>,
+    reply: crate::jobs::Reply<Result<Rendered, ToolOutput>>,
     deadline: Instant,
     /// The agent call it renders for (docs/design/TRACE.md).
     trace: specula_core::trace::Ctx,
@@ -1276,7 +1276,7 @@ impl Ctx<'_> {
                 Light::Silhouette => None,
             },
         };
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = crate::jobs::channel();
         let job = RenderJob { call: self.call, session: self.session.id.clone(), req, reply: tx, deadline: self.deadline, trace: specula_core::trace::Ctx::current() };
         if !self.tools.post(self.session, Command::StudioRender(Box::new(job))) {
             return Err(ToolOutput::error("the engine is shutting down; the call was not completed"));

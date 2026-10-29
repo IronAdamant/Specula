@@ -464,7 +464,7 @@ def comms_check(lead, workers, problems):
 def verify(url, workers):
     """Every district holds exactly what its agent built; the journal replays to the live hash."""
     v = Agent(url, "verifier")
-    v.ok("agent_hello", name="drill_verifier", role="reviewer")
+    v.ok("agent_hello", name="drill_verifier", role="verifier")
     problems = []
     for w in workers:
         home = district(w.index)
@@ -533,6 +533,8 @@ def main():
               "cpu_busy_pct_before": cpu_busy_pct()}
     try:
         mode = [] if args.windowed else ["--headless"]
+        # The lead sets the frame floor: granted by the operator (docs/design/AUTHORITY.md).
+        mode += ["--lead", "drill_lead"]
         if args.adapter:
             mode += ["--adapter", args.adapter]
         with Engine(exe, args.port, work / "engine.log", *mode, "--captures", str(work / "captures"),

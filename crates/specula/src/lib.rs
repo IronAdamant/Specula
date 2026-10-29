@@ -13,6 +13,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod authority;
+pub mod jobs;
 mod balance_tools;
 pub mod board;
 pub mod anim;
@@ -141,7 +143,8 @@ const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 
 const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|integrated|<index>] [--size WxH] \
 [--captures DIR] [--worlds DIR] [--world NAME] [--saves DIR] [--cache DIR] [--assets DIR] [--style FILE] [--perf FILE] \
-[--paused] [--max-fps N] [--response-format concise|detailed] [--tools-default core|all] [--physics-threads N] [--vfx on|off] [--terrain on|off] \n[--trace DIR] [--trace-file on|off] [--strict-budget] [-- GAME ARGS...]";
+[--paused] [--max-fps N] [--response-format concise|detailed] [--tools-default core|all] [--physics-threads N] [--vfx on|off] [--terrain on|off] \n[--trace DIR] [--trace-file on|off] [--strict-budget] \
+[--owner NAME] [--lead NAME] [--reviewer NAME] [-- GAME ARGS...]";
 
 /// How long a capture waits (parked, the engine serving others) for models still building.
 const CAPTURE_BUILD_WAIT: Duration = Duration::from_secs(10);
@@ -206,6 +209,9 @@ struct Args {
     physics_threads: usize,
     /// The window's frame cap (`--max-fps`, 20..1000; over `perf.toml` `[window] max_fps`).
     max_fps: Option<u32>,
+    /// Authority the operator grants agent names (`--owner`, `--lead`, `--reviewer`, each
+    /// repeatable; see [`authority`]).
+    grants: authority::Grants,
     /// The trace folder: crash reports and the JSONL sink (`--trace`, default `./.specula-trace`).
     trace: Option<PathBuf>,
     /// The JSONL trace sink (`--trace-file on|off`, on by default).
@@ -242,6 +248,7 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
         terrain: true,
         physics_threads: 1,
         max_fps: None,
+        grants: authority::Grants::default(),
         trace: None,
         trace_file: true,
         strict_budget: false,
@@ -317,6 +324,16 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
                 let v = value()?;
                 let parsed = v.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)));
                 args.window_size = parsed.ok_or_else(|| format!("bad size '{v}'\n{USAGE}"))?;
+            }
+            "--owner" | "--lead" | "--reviewer" => {
+                let a = match flag.as_str() {
+                    "--owner" => authority::Authority::Owner,
+                    "--lead" => authority::Authority::Lead,
+                    _ => authority::Authority::Reviewer,
+                };
+                let name = value()?;
+                args.grants.grant(&name, a).map_err(|e| format!("{flag}: {e}
+{USAGE}"))?;
             }
             "--captures" => args.captures = Some(PathBuf::from(value()?)),
             "--cache" => args.cache = Some(PathBuf::from(value()?)),
@@ -479,6 +496,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
             eprintln!("specula: new world '{name}'; autosaving to {}", dir.display());
         }
         engine.saved_revision = engine.world.revision();
+        engine.saved_seq = engine.swarm.journal().last_seq();
         engine.world_name = Some(name);
     }
     // The review screen shows the captures and the current queue's evidence.
@@ -497,6 +515,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     engine.project_mount_assets(assets.clone());
     if clean {
         engine.saved_revision = engine.world.revision();
+        engine.saved_seq = engine.swarm.journal().last_seq();
     }
 
     if let Some(g) = &game {
@@ -507,6 +526,8 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     }
     // The window's human, in the review queue's attribution.
     engine.swarm.reserve(review::WINDOW_OWNER);
+    // Who the operator made owner, lead or reviewer (never self-declared; see `authority`).
+    engine.swarm.grants = args.grants.clone();
     let game_tools = game.as_ref().map(|g| g.tools()).unwrap_or_default();
     engine.lex_natives = game.as_ref().map(|g| g.lex_natives()).unwrap_or_default();
     let (to_engine, requests) = mpsc::channel();
@@ -697,6 +718,11 @@ struct Engine {
     world_name: Option<String>,
     /// `world.revision()` as last saved or loaded.
     saved_revision: u64,
+    /// The journal's last entry when the world was last written to its files or a save
+    /// (`saved_revision`'s): whose work a forced load would discard ([`Engine::others_unsaved`]).
+    saved_seq: u64,
+    /// The journal's last entry when a save game last captured the state (`begin_save`).
+    checkpoint_seq: u64,
     last_autosave: Instant,
     /// What was last written to or read from the current world's folder, so saves only rewrite
     /// what changed.
@@ -773,7 +799,18 @@ struct Engine {
     /// Terrains drawn by the terrain renderer, and water surfaces (see [`terrain`]).
     terrain: terrain::Terrains,
     /// A stream_fly flight of the window camera in progress.
-    fly: Option<stream_tools::Fly>,
+    fly: jobs::Slot<stream_tools::Fly>,
+    /// Who last paused, resumed, stepped or scaled the clock, and how (time_control is open to
+    /// every agent on purpose; its answer says who moved it last: provenance, not a lock).
+    clock_set_by: Option<(String, &'static str)>,
+    /// World folders saved in this run, and the identity key that first saved each (its creator
+    /// may overwrite it; anyone else needs the lead).
+    world_folders: std::collections::BTreeMap<String, String>,
+    /// Agents' commits per tool call: one call, one commit (see [`authority::CallCommits`]).
+    commits: authority::CallCommits,
+    /// Tool calls that committed more than once outside a session (each a bug: a call that
+    /// can fail halfway). In engine_info.
+    multi_commit_calls: u64,
     /// Headless playtests: the running one and recent reports (see [`playtest`]).
     playtests: playtest_engine::Playtests,
     /// Particles, effects and decals (see [`vfx`]): cosmetic, never simulation.
@@ -815,14 +852,15 @@ struct BuildWaiter {
     spec: Option<world::ModelSpec>,
     /// model_reload: the report so far.
     reload: models::Reload,
-    reply: std::sync::mpsc::Sender<ToolOutput>,
+    reply: jobs::Reply,
     deadline: Instant,
     answer: Option<ToolOutput>,
 }
 
 struct AutosaveJob {
-    /// The world revision the job is writing.
+    /// The world revision the job is writing, and the journal's last entry then.
     revision: u64,
+    seq: u64,
     done: Receiver<Result<(persist::Saved, persist::SaveReport), persist::PersistError>>,
 }
 
@@ -878,6 +916,8 @@ impl Engine {
             game_save_notes: Vec::new(),
             world_name: None,
             saved_revision: 0,
+            saved_seq: 0,
+            checkpoint_seq: 0,
             last_autosave: Instant::now(),
             saved: None,
             world_lock: None,
@@ -925,7 +965,11 @@ impl Engine {
             lex_natives: specula_lex::Natives::new(),
             stream: streaming::Streamer::default(),
             terrain: terrain::Terrains::default(),
-            fly: None,
+            fly: jobs::Slot::new(jobs::Kind::StreamFly),
+            clock_set_by: None,
+            world_folders: std::collections::BTreeMap::new(),
+            commits: authority::CallCommits::default(),
+            multi_commit_calls: 0,
             playtests: Default::default(),
             vfx,
             flash: flashwatch::FlashWatch::default(),
@@ -953,6 +997,10 @@ impl Engine {
         // the project's, not the world's: they stay (see `Live::replace`).
         let models = Some(Arc::clone(&self.library) as Arc<dyn world::ModelSource>);
         let failed = self.world.replace(may, &mut self.swarm, world, &format!("world:{name}"), self.clock.seconds(), models);
+        // The journal starts over: what a forced load would discard is counted from here.
+        let last = self.swarm.journal().last_seq();
+        self.saved_seq = self.saved_seq.min(last);
+        self.checkpoint_seq = last;
         let problems =
             failed.iter().map(|(id, e)| format!("model {} ({id}) not built: {e}", self.world.path_of(*id))).collect();
         self.world_changed_wholesale();
@@ -1082,7 +1130,16 @@ impl Engine {
     }
 
     /// Turns the real time since the last call into whole ticks and runs them.
+    /// Runs the ticks due. Inside a request (`time_control step`) the ticks are the
+    /// simulation's, not the caller's call: commits they make (held input firing as its holder)
+    /// aren't counted toward one call, one commit.
     fn advance_clock(&mut self) {
+        let paused = self.swarm.pause_dispatch();
+        self.advance_clock_ticks();
+        self.swarm.resume_dispatch(paused);
+    }
+
+    fn advance_clock_ticks(&mut self) {
         // The world's anim assets reach the library (graph writes settle against them) without
         // waiting for a draw: headless engines never draw.
         self.models.refresh_anim_env(&self.library, &self.world, self.world_generation);
@@ -1234,6 +1291,26 @@ impl Engine {
         self.world.revision() != self.saved_revision
     }
 
+    /// Another agent whose unsaved work (journal entries since the last write to the world's
+    /// files or the last save game) a forced load by the identity `key` would discard: an entry it wrote
+    /// itself, or that a game, module or live Lex run made because it asked. The simulation's
+    /// own writers (physics, ticks) and the caller's entries don't count; an entry the journal
+    /// no longer holds does (conservatively).
+    fn others_unsaved(&self, key: &str) -> Option<String> {
+        let journal = self.swarm.journal();
+        let last = journal.last_seq();
+        // Bounded: the journal keeps at most its ring of entries.
+        for seq in (self.saved_seq.max(self.checkpoint_seq) + 1..=last).rev().take(1 << 16) {
+            let Some(e) = journal.get(seq) else { return Some("(an entry no longer in the journal)".into()) };
+            let other_session = e.session.as_deref().is_some_and(|k| k != key);
+            let other_via = e.via.as_deref().is_some_and(|v| e.session.as_deref() != Some(key) && !v.is_empty());
+            if other_session || (other_via && e.session.is_none()) {
+                return Some(e.via.as_deref().unwrap_or(&e.by).to_owned());
+            }
+        }
+        None
+    }
+
     /// Saves the current world, if there is one and it changed. The engine thread only takes the
     /// changed subtrees off the world ([`persist::plan`]); rendering and writing happen on a worker
     /// thread, unless `wait` (shutdown).
@@ -1264,7 +1341,7 @@ impl Engine {
             eprintln!("specula: could not start the autosave thread: {e}");
             return;
         }
-        self.autosave_job = Some(AutosaveJob { revision, done });
+        self.autosave_job = Some(AutosaveJob { revision, seq: self.swarm.journal().last_seq(), done });
         self.finish_autosave(wait);
     }
 
@@ -1284,12 +1361,13 @@ impl Engine {
             Some(r) => r,
             None => Err(persist::PersistError::new("io", "the autosave thread stopped without reporting")),
         };
-        let revision = job.revision;
+        let (revision, seq) = (job.revision, job.seq);
         self.autosave_job = None;
         match result {
             Ok((saved, report)) => {
                 self.saved = Some(saved);
                 self.saved_revision = revision;
+                self.saved_seq = seq;
                 self.autosave_error = None;
                 self.note_leftovers(&report);
             }
@@ -1367,6 +1445,9 @@ impl Engine {
     fn clock_json(&self) -> Json {
         let mut j = self.clock.to_json();
         j.set("world_time_s", Json::from(self.world.world_time()));
+        if let Some((by, op)) = &self.clock_set_by {
+            j.set("set_by", Json::obj([("agent", Json::from(by.as_str())), ("op", Json::from(*op))]));
+        }
         j
     }
 
@@ -1624,7 +1705,7 @@ impl Engine {
             let _ = w.reply.send(out());
         }
         if let Some(f) = self.fly.take() {
-            f.abort();
+            stream_tools::Fly::abort(f);
         }
         self.studio_shutting_down();
         // A perf_capture in progress answers with the frames it has.
@@ -1728,9 +1809,18 @@ impl Engine {
         self.terrain.append_draws(&self.models, quad, &self.world, &camera, out, owners.as_deref_mut());
         drop(zt);
         out.extend_from_slice(&proxies);
-        // Proxy draws belong to no one entity: id 0, which the ID buffer doesn't count.
+        // A capture's proxy draws belong to their cell: one owner per proxy (past every entity
+        // id, see `sight::proxy_owner`), so the ID pass counts the proxy's pixels and its
+        // members' drawing facts come from them. The window's draw no owners.
         if let Some(o) = owners {
-            o.resize(out.len(), 0);
+            if window {
+                o.resize(out.len(), 0);
+            } else {
+                for (i, (draws, _)) in self.stream.hlod.capture_groups.iter().enumerate() {
+                    o.extend(std::iter::repeat_n(sight::proxy_owner(i), *draws as usize));
+                }
+                o.resize(out.len(), 0);
+            }
         }
         self.stream.scratch = proxies;
         (stats, errors)
@@ -1978,11 +2068,13 @@ impl Engine {
                     budgets: self.perf_cfg.budgets(kind),
                     adapter: kind.to_owned(),
                 };
-                self.profiler.start_capture(spec, request.reply, request.deadline, ctx);
+                let owner = crate::jobs::JobOwner { name: self.swarm.agent_name(&request.session), key: self.swarm.key(&request.session) };
+                self.profiler.start_capture(spec, owner, request.reply, request.deadline, ctx);
                 return;
             }
             Command::Stream(stream_tools::StreamCall::Fly(spec)) => {
-                self.start_fly(spec, request.reply, request.deadline);
+                let owner = jobs::JobOwner { name: self.swarm.agent_name(&request.session), key: self.swarm.key(&request.session) };
+                self.start_fly(spec, owner, request.reply, request.deadline);
                 return;
             }
             Command::Playtest(call) => {
@@ -2018,8 +2110,11 @@ impl Engine {
             return;
         }
         let by = self.swarm.agent_name(&request.session);
+        // One tool call, one commit: counted around the dispatch (see `count_commits`).
+        let (call_id, independent) = (request.call, commits_independently(&request.command));
         // Ownership (claims, undo) goes by identity key, which a resumed agent keeps.
         let session = self.swarm.key(&request.session);
+        self.swarm.begin_dispatch(&session);
         let w = Writer::new(&by, Some(&session));
         let tick = self.clock.tick();
         // A game tool (play_ui pressing a menu's Save) may queue requests for the engine.
@@ -2095,10 +2190,43 @@ impl Engine {
                     }
                 }
             }
-            Command::Save { name, overwrite } => self.save(name, overwrite),
+            Command::Save { name, overwrite } => {
+                // Saving under the current name is a checkpoint anyone may make. Another name
+                // renames the live world (its autosave target, evidence and board files), and
+                // overwrite of an existing world folder the caller didn't save in this run (another
+                // agent's, or an earlier run's: creators aren't recorded across runs) replaces
+                // that world: the lead's call.
+                let current = name.as_ref().is_none_or(|n| Some(n) == self.world_name.as_ref());
+                let renames = !current && self.world_name.is_some();
+                let replaces = !current
+                    && overwrite
+                    && name.as_ref().is_some_and(|n| self.worlds_dir.join(n).join("world.json").exists() && self.world_folders.get(n) != Some(&session));
+                let have = authority::authority(&self.swarm, &request.session.id);
+                let what = if renames { "world_save under another name (it renames the live world)" } else { "world_save with overwrite over a world folder another agent (or an earlier run) made" };
+                match (renames || replaces).then(|| authority::require(have, authority::Authority::Lead, authority::Site::WorldSave, what)) {
+                    Some(Err(e)) => world_error(&e.with("current", self.world_name.as_deref().unwrap_or(""))),
+                    _ => {
+                        let out = self.save(name.clone(), overwrite);
+                        if let (false, Some(n)) = (out.is_error, name.or_else(|| self.world_name.clone())) {
+                            // Who made each world folder this run (at most a few hundred names).
+                            if self.world_folders.len() < 512 || self.world_folders.contains_key(&n) {
+                                self.world_folders.entry(n).or_insert_with(|| session.clone());
+                            }
+                        }
+                        out
+                    }
+                }
+            }
             // A playtest owns the clock and the world until it ends (as for save_read): a load
             // would replace the world under it. Not even with force. Nor while others hold claims.
             Command::Load { name, force } => match write_policy::may_replace(&self.swarm, w, &self.playtests) {
+                // Force discards every agent's unsaved changes (coordinator, 2026-10-29): the
+                // lead's call; with nothing unsaved it changes nothing.
+                Ok(_) if force && self.dirty() && authority::authority(&self.swarm, &request.session.id) < authority::Authority::Lead && self.others_unsaved(&session).is_some() => world_error(
+                    &authority::may_force(authority::authority(&self.swarm, &request.session.id), false, "world_load {force} (it discards another agent's unsaved changes)")
+                        .expect_err("not the lead")
+                        .with("unsaved_by", self.others_unsaved(&session).unwrap_or_default()),
+                ),
                 Ok(may) => self.load(may, name, force),
                 Err(e) => world_error(&e),
             },
@@ -2163,10 +2291,16 @@ impl Engine {
             Command::ScopeLookup { agent } => toolscope_tools::lookup(&self.swarm, &request.session, &agent, &server.all_sessions()),
             Command::Perf { budget_ms, graph } => self.perf(budget_ms, graph),
             Command::PerfZones(q) => {
-                if let Some(on) = q.enabled {
-                    profile::set_enabled(on);
+                let owner = crate::jobs::JobOwner::of(w);
+                match q.enabled.and_then(|_| self.profiler.captured_by_other(&owner)) {
+                    Some(e) => world_error(&e),
+                    None => {
+                        if let Some(on) = q.enabled {
+                            profile::set_enabled(on);
+                        }
+                        ToolOutput::text(perf::zones_json(&self.profiler, &q).to_string())
+                    }
                 }
-                ToolOutput::text(perf::zones_json(&self.profiler, &q).to_string())
             }
             Command::PerfMemory { limit } => {
                 let stats = self.gpu.last_frame_stats_of(FramePath::Window);
@@ -2178,6 +2312,16 @@ impl Engine {
             // Steps wait for a load to finish (bounded); they are never queued behind it.
             Command::Time(TimeOp::Step(_)) if self.nav.loading() && !self.build_nav_load(nav::LOAD_CALL_WAIT) => self.nav_loading_error(),
             Command::Time(op) => {
+                let name = match op {
+                    TimeOp::Pause => Some("pause"),
+                    TimeOp::Resume => Some("resume"),
+                    TimeOp::Step(_) => Some("step"),
+                    TimeOp::Scale(_) => Some("scale"),
+                    TimeOp::Info => None,
+                };
+                if let Some(n) = name {
+                    self.clock_set_by = Some((by.clone(), n));
+                }
                 match op {
                     TimeOp::Pause => self.clock.set_paused(true),
                     TimeOp::Resume => self.clock.set_paused(false),
@@ -2219,7 +2363,19 @@ impl Engine {
             },
             Command::History(q) => ToolOutput::text(self.swarm.journal().history(&q).to_string()),
             Command::Changes(q) => ToolOutput::text(self.swarm.journal().changes_text(&q)),
-            Command::Undo(req) => match self.world.undo(&mut self.swarm, tick, w, &req) {
+            Command::Undo(mut req) => {
+                // Owner, 2026-10-29: force over other agents' entries or their later changes needs
+                // lead authority. Without it the undo runs unforced: the caller's own clean undo
+                // still works, and one that needed force is refused as such.
+                let have = authority::authority(&self.swarm, &request.session.id);
+                let unforced = req.force && have < authority::Authority::Lead;
+                if unforced {
+                    req.force = false;
+                }
+                match self.world.undo(&mut self.swarm, tick, w, &req) {
+                Err(e) if unforced && matches!(e.code, "not_yours" | "undo_conflict") => {
+                    world_error(&authority::may_force(have, false, "world_undo").expect_err("not the lead").with("cause", e.code))
+                }
                 Ok(u) => {
                     // Cameras an undo removed (or re-pointed) leave no stale follow state.
                     self.cameras.prune(&self.world);
@@ -2233,7 +2389,8 @@ impl Engine {
                     )
                 }
                 Err(e) => world_error(&self.conflict_help(e, Some(&conflict::Yours::named(vec!["(undo)".into()])))),
-            },
+                }
+            }
             Command::Hash { recent, tick, verify } => self.hash_report(recent, tick, verify),
             Command::ClaimTake(spec) => {
                 let scope = spec.scope.clone();
@@ -2276,7 +2433,7 @@ impl Engine {
             Command::Place(call) => self.place_call(call, w, tick),
             Command::Stream(call) => self.stream_call(call, &request.session),
             Command::Terrain(call) => self.terrain_call(call),
-            Command::SaveGame(call) => self.handle_save(call, w, &by),
+            Command::SaveGame(call) => self.handle_save(call, w, &by, authority::authority(&self.swarm, &request.session.id)),
             Command::ModelBuild(_) | Command::ModelReload => unreachable!("answered by handle_model_call"),
             Command::Logic(call) => {
                 self.lend_physics();
@@ -2300,6 +2457,13 @@ impl Engine {
             self.serve_game_requests();
         }
         debug_assert!(self.world.pending_changes().is_empty(), "every world change is journaled");
+        // The caller's commits made by this dispatch (ticks it ran were paused: the simulation's).
+        let made = self.swarm.end_dispatch();
+        if let Some(total) = self.commits.count(call_id, made, independent) {
+            self.multi_commit_calls += 1;
+            specula_core::trace_event!(&trace_sink::WRITES, Warn, "write.multi_commit", call = call_id, by = by.as_str(), commits = total, why = "one tool call committed more than once: it can fail halfway");
+            debug_assert!(total <= 1, "one tool call committed {total} times (by {by})");
+        }
         // The caller may have timed out; nothing to do then.
         let _ = request.reply.send(output);
     }
@@ -2452,6 +2616,7 @@ impl Engine {
                 let old_root = self.evidence_root();
                 self.world_name = Some(name.clone());
                 self.saved_revision = self.world.revision();
+                self.saved_seq = self.swarm.journal().last_seq();
                 self.last_autosave = Instant::now();
                 self.autosave_error = None;
                 self.note_leftovers(&report);
@@ -2534,6 +2699,7 @@ impl Engine {
                 self.saved = Some(saved);
                 self.world_name = Some(name.clone());
                 self.saved_revision = self.world.revision();
+                self.saved_seq = self.swarm.journal().last_seq();
                 self.last_autosave = Instant::now();
                 let mut out = vec![
                     ("loaded", Json::from(name)),
@@ -2717,6 +2883,7 @@ impl Engine {
             Json::obj([
                 ("name", Json::from(self.swarm.agent_name(s))),
                 ("role", Json::from(role)),
+                ("authority", Json::from(authority::authority(&self.swarm, &s.id).name())),
                 ("client", Json::from(s.client_name.as_str())),
                 ("version", Json::from(s.client_version.as_str())),
             ])
@@ -2748,6 +2915,10 @@ impl Engine {
                 let (n, last) = self.world.replacements();
                 s.set("world_replacements", Json::from(n));
                 s.set("game_reserved_writes", Json::from(self.world.game_reserved_writes()));
+                // One tool call, one commit (see `count_commits`): calls that committed more.
+                s.set("multi_commit_calls", Json::from(self.multi_commit_calls));
+                // Who the operator made owner, lead or reviewer, and the fallback lead.
+                s.set("grants", self.swarm.grants.json());
                 if let Some((entry, tick)) = last {
                     s.set("last_world_replacement", Json::obj([("entry", Json::from(entry.as_str())), ("tick", Json::from(*tick))]));
                 }
@@ -2759,6 +2930,12 @@ impl Engine {
             // The floating-point environment guard: what it checks and what it had to restore,
             // at startup and between ticks (`engine`) and around module calls (`modules`).
             ("determinism", Json::obj([("fp_env", self.fp.to_json()), ("fp_env_modules", self.logic.fp_log().to_json())])),
+            // The authority table (detailed only; see `authority::access`): what each tool may do, and
+            // the one-at-a-time jobs running.
+            ("access", Json::obj([
+                ("tools", authority::access_json()),
+                ("jobs", Json::arr(self.fly.get().map(jobs::Job::json).into_iter().chain(self.profiler.capture_job()))),
+            ])),
         ]);
         let mut info = info;
         if let Some(e) = &self.board_io.error {
@@ -2779,6 +2956,17 @@ impl Engine {
 
 /// What kind of cost a call has, for the window's schedule: a serve window only starts a call
 /// when it has room for what calls of its class cost lately (see `schedule`).
+/// Commands that commit once per independent item, each answered on its own (exempt from one
+/// call, one commit): review_decide (each submission is decided, promoted or reverted by
+/// itself; refusals are per item in `results`), and logic_build's fix rounds (each round's
+/// fixes are one commit; the answer lists what was applied and skipped).
+fn commits_independently(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Review(review_tools::ReviewCall::Decide { .. }) | Command::Project(project_tools::ProjectCall::CommitFixes { .. })
+    )
+}
+
 fn call_class(command: &Command) -> Class {
     match command {
         Command::Frame(_) | Command::Sight(_) => Class::Render,
@@ -2918,6 +3106,13 @@ fn prune_capture_runs(root: &Path, keep: usize, current: &Path) {
             Err(e) => eprintln!("specula: could not prune old captures {}: {e}", path.display()),
         }
     }
+}
+
+/// A GPU test that can't run here says why and passes (AGENTS rule 7): a warning-level trace
+/// event, which the trace's stderr sink prints (the print guard: no new console output).
+#[cfg(test)]
+pub(crate) fn skip_test(test: &str, why: &str) {
+    specula_core::trace_event!(&trace_sink::ENGINE, Warn, "test.skipped", test = test, why = why);
 }
 
 #[cfg(test)]

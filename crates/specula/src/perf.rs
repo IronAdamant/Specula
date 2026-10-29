@@ -13,7 +13,6 @@ use specula_gpu::{CacheRejection, FramePath, FrameStats, Gpu, GraphInfo, MemoryK
 use specula_protocol::ToolOutput;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 /// Frames of history for pacing statistics (about two seconds at 60 Hz).
@@ -870,7 +869,6 @@ struct CapturedFrame {
 
 struct PendingCapture {
     spec: CaptureSpec,
-    reply: Sender<ToolOutput>,
     /// Reply by then whatever was recorded (the caller gives up soon after).
     deadline: Instant,
     started: Instant,
@@ -887,17 +885,37 @@ pub struct Profiler {
     collector: Collector,
     frame: u64,
     last_collect: Instant,
-    capture: Option<PendingCapture>,
+    /// The capture recording (one at a time, owned by the agent that started it; see `jobs`).
+    capture: crate::jobs::Slot<PendingCapture>,
     captures: u32,
 }
 
 impl Profiler {
     pub fn new(history_frames: usize) -> Profiler {
-        Profiler { collector: Collector::new(history_frames), frame: 0, last_collect: Instant::now(), capture: None, captures: 0 }
+        Profiler { collector: Collector::new(history_frames), frame: 0, last_collect: Instant::now(), capture: crate::jobs::Slot::new(crate::jobs::Kind::PerfCapture), captures: 0 }
     }
 
     pub fn capturing(&self) -> bool {
-        self.capture.is_some()
+        self.capture.is_busy()
+    }
+
+    /// The capture recording, as a job listing item.
+    pub fn capture_job(&self) -> Option<Json> {
+        self.capture.get().map(crate::jobs::Job::json)
+    }
+
+    /// Who is capturing, when someone other than `owner` is (perf_zones may not switch the
+    /// profiler under their capture).
+    pub fn captured_by_other(&self, owner: &crate::jobs::JobOwner) -> Option<crate::world::WorldError> {
+        let job = self.capture.get().filter(|_| self.capture.held_by_other(owner))?;
+        Some(
+            crate::authority::refusal(
+                crate::authority::Site::ProfilerBusy,
+                format!("{}'s perf_capture (job {}) is recording: switching the profiler now would spoil it; try again when it has answered", job.owner.name, job.id),
+            )
+            .with("owner", job.owner.name.as_str())
+            .with("job", job.id),
+        )
     }
 
     pub fn latest(&self) -> Option<&FrameProfile> {
@@ -935,7 +953,7 @@ impl Profiler {
         self.last_collect = now;
         self.frame += 1;
         let fp = self.collector.collect(self.frame);
-        let Some(cap) = &mut self.capture else { return };
+        let Some(cap) = self.capture.get_mut().map(|j| &mut j.state) else { return };
         // The capture's own copies are not the frames' allocations.
         let before = alloc::thread_counts();
         cap.frames.push(CapturedFrame { profile: fp.clone(), gpu: gpu_stats(), dt_ms });
@@ -943,9 +961,9 @@ impl Profiler {
         self.collector.discount_allocations(after.0 - before.0, after.1 - before.1);
         let done = cap.frames.len() as u64 >= cap.spec.frames;
         if done || now >= cap.deadline {
-            let cap = self.capture.take().expect("checked above");
+            let job = self.capture.take().expect("checked above");
             self.captures += 1;
-            finish_capture(cap, self.captures, (!done).then_some("time_limit"));
+            finish_capture(job, self.captures, (!done).then_some("time_limit"));
         }
     }
 
@@ -953,32 +971,20 @@ impl Profiler {
     /// drops its reply channel), so neither its caller nor the server's connection thread waits
     /// out the timeout.
     pub fn abort_capture(&mut self) {
-        if let Some(cap) = self.capture.take() {
+        if let Some(job) = self.capture.take() {
             self.captures += 1;
-            finish_capture(cap, self.captures, Some("shutting_down"));
+            finish_capture(job, self.captures, Some("shutting_down"));
         }
     }
 
-    /// Starts perf_capture; the reply is sent when it finishes. Refused while one runs.
-    pub fn start_capture(&mut self, spec: CaptureSpec, reply: Sender<ToolOutput>, deadline: Instant, ctx: CaptureContext) {
-        if self.capture.is_some() {
-            let _ = reply.send(ToolOutput::error(
-                Json::obj([
-                    ("error", Json::from("capture_in_progress")),
-                    ("message", Json::from("another perf_capture is recording; try again when it has answered")),
-                ])
-                .to_pretty(),
-            ));
-            return;
-        }
-        let was_disabled = !profile::enabled();
-        profile::set_enabled(true);
-        if spec.trace {
-            profile::set_tracing(true);
-        }
-        self.capture = Some(PendingCapture {
+    /// Starts perf_capture for `owner`; the reply is sent when it finishes. Refused while
+    /// another agent's runs (naming it); the owner's own new capture replaces the old one.
+    pub fn start_capture(&mut self, spec: CaptureSpec, owner: crate::jobs::JobOwner, reply: crate::jobs::Reply, deadline: Instant, ctx: CaptureContext) {
+        let busy = self.capture.is_busy();
+        let was_disabled = if busy { self.capture.get().is_some_and(|j| j.state.was_disabled) } else { !profile::enabled() };
+        let trace = spec.trace;
+        let state = || PendingCapture {
             spec,
-            reply,
             // Leave time to write the files and answer before the caller's timeout.
             deadline: deadline.checked_sub(Duration::from_secs(2)).unwrap_or(deadline),
             started: Instant::now(),
@@ -987,7 +993,14 @@ impl Profiler {
             adapter: ctx.adapter,
             frames: Vec::new(),
             was_disabled,
-        });
+        };
+        let replaced = || ToolOutput::error(crate::authority::refusal(crate::authority::Site::JobBusy, "perf_capture: replaced by your newer capture").to_json().to_string());
+        if self.capture.start(owner, reply, || Ok(()), state, replaced).is_err() {
+            return;
+        }
+        profile::set_enabled(true);
+        // A replaced capture of the owner's may have left tracing on: the new one decides.
+        profile::set_tracing(trace);
     }
 }
 
@@ -1121,7 +1134,8 @@ fn gpu_memory_json(s: &FrameStats) -> Json {
 }
 
 /// Writes a finished capture and answers its caller.
-fn finish_capture(cap: PendingCapture, n: u32, stopped_early: Option<&'static str>) {
+fn finish_capture(job: crate::jobs::Job<PendingCapture>, n: u32, stopped_early: Option<&'static str>) {
+    let cap = &job.state;
     if cap.spec.trace {
         profile::set_tracing(false);
     }
@@ -1137,7 +1151,7 @@ fn finish_capture(cap: PendingCapture, n: u32, stopped_early: Option<&'static st
     let write = |path: &Path, text: String| -> Result<(), String> {
         crate::disk::book().write(crate::disk::Category::Captures, "perf", path, text.as_bytes(), crate::disk::Need::Agent).map_err(|e| e.to_string())
     };
-    if let Err(e) = write(&data_path, capture_json(&cap).to_string()) {
+    if let Err(e) = write(&data_path, capture_json(cap).to_string()) {
         warnings.push(Json::from(format!("capture not saved to {}: {e}", data_path.display())));
     }
     let mut trace_events = 0;
@@ -1148,13 +1162,13 @@ fn finish_capture(cap: PendingCapture, n: u32, stopped_early: Option<&'static st
             warnings.push(Json::from(format!("trace not saved to {}: {e}", trace_path.display())));
         }
     }
-    let summary = capture_summary(&cap, stopped_early);
+    let summary = capture_summary(cap, stopped_early);
     let mut out = summary;
     out.set("path", Json::from(data_path.display().to_string()));
     out.set("trace_path", if cap.spec.trace { Json::from(trace_path.display().to_string()) } else { Json::Null });
     out.set("trace_events", Json::from(trace_events));
     out.set("warnings", Json::Arr(warnings));
-    let _ = cap.reply.send(ToolOutput::text(out.to_string()));
+    job.answer(ToolOutput::text(out.to_string()));
 }
 
 /// A capture's numbers for the budget check.
@@ -1742,14 +1756,19 @@ gpu_ms_per_s = 2000
         let ctx = || CaptureContext { dir: dir.clone(), budgets: Budgets::default(), adapter: "integrated".into() };
         let later = Instant::now() + Duration::from_secs(60);
         let mut p = Profiler::new(8);
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = crate::jobs::channel();
         assert!(!profile::enabled());
-        p.start_capture(CaptureSpec { frames: 3, trace: true, label: Some("t".into()) }, tx, later, ctx());
+        let ann = crate::jobs::JobOwner { name: "ann".into(), key: "k-ann".into() };
+        let bob = crate::jobs::JobOwner { name: "bob".into(), key: "k-bob".into() };
+        p.start_capture(CaptureSpec { frames: 3, trace: true, label: Some("t".into()) }, ann.clone(), tx, later, ctx());
         assert!(profile::enabled() && profile::tracing() && p.capturing());
-        let (tx2, rx2) = std::sync::mpsc::channel();
-        p.start_capture(CaptureSpec { frames: 3, trace: false, label: None }, tx2, later, ctx());
+        let (tx2, rx2) = crate::jobs::channel();
+        p.start_capture(CaptureSpec { frames: 3, trace: false, label: None }, bob.clone(), tx2, later, ctx());
         let refused = rx2.try_recv().unwrap();
-        assert!(refused.is_error && format!("{:?}", refused.content).contains("capture_in_progress"));
+        // Another agent's capture is refused, naming its owner (never replaced).
+        assert!(refused.is_error && format!("{:?}", refused.content).contains("job_busy") && format!("{:?}", refused.content).contains("ann"));
+        assert!(p.captured_by_other(&bob).is_some_and(|e| e.code == "capture_in_progress"));
+        assert!(p.captured_by_other(&ann).is_none());
         let slow_gpu = || {
             let passes = vec![PassTiming { name: "scene", gpu_ms: 20.0 }];
             Some(FrameStats { gpu: Some(GpuTiming { frame: 1, total_ms: 20.0, passes }), ..FrameStats::default() })
@@ -1783,8 +1802,8 @@ gpu_ms_per_s = 2000
         assert_eq!(events.iter().filter(|e| e.get("name") == Some(&Json::from("scene"))).count(), 3);
 
         // Out of time: answers with what it has.
-        let (tx, rx) = std::sync::mpsc::channel();
-        p.start_capture(CaptureSpec { frames: 100, trace: false, label: None }, tx, Instant::now(), ctx());
+        let (tx, rx) = crate::jobs::channel();
+        p.start_capture(CaptureSpec { frames: 100, trace: false, label: None }, ann.clone(), tx, Instant::now(), ctx());
         p.end_frame_with(|| None);
         let reply = rx.try_recv().expect("answered at the deadline");
         let specula_protocol::Content::Text(text) = &reply.content[0] else { panic!("text reply") };
@@ -1794,8 +1813,8 @@ gpu_ms_per_s = 2000
         assert!(out.get("path").and_then(Json::as_str).unwrap().ends_with("perf-capture-002.json"));
 
         // Shutting down: answers with what it has, then the reply channel is gone.
-        let (tx, rx) = std::sync::mpsc::channel();
-        p.start_capture(CaptureSpec { frames: 100, trace: true, label: None }, tx, later, ctx());
+        let (tx, rx) = crate::jobs::channel();
+        p.start_capture(CaptureSpec { frames: 100, trace: true, label: None }, ann.clone(), tx, later, ctx());
         p.end_frame_with(|| None);
         p.abort_capture();
         let reply = rx.try_recv().expect("answered on abort");

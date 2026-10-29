@@ -76,12 +76,17 @@ def main():
     with Engine(exe, args.port, work / "playtest.log", *common, cwd=work) as eng:
         a, b = eng.mcp("pt-a"), eng.mcp("pt-b")
         a.hello("tester")
-        b.hello("other")
+        b.hello("other", role="lead")  # force and overwrite of other worlds are the lead's (docs/design/AUTHORITY.md)
         b.json("world_spawn", shape="cube", name="other_world_marker", position=[5, 0, 0])
         b.json("world_save", name="otherw", overwrite=True)
         b.json("world_delete", path="/other_world_marker")
         a.json("world_spawn", shape="cube", name="ball", position=[0, 3, 0])
-        long_spec = {"name": "long", "ticks": 400000, "checkpoint_every": 300,
+        # A headless playtest of a near-empty world runs ~1M ticks a second, so give it work that
+        # never settles (bodies falling with no ground) and cancel it once the refusals are checked.
+        for i in range(200):
+            a.json("world_spawn", shape="cube", name=f"faller_{i}", position=[(i % 20) * 2.0, 50 + i // 20 * 2.0, 0],
+                   collider={"shape": "box"}, body={"kind": "dynamic", "mass": 1})
+        long_spec = {"name": "long", "ticks": 1000000, "checkpoint_every": 1000,
                      "steps": [{"at": 1, "call": "world_query", "args": {"path_prefix": "/ball"}, "expect": {"total": 1}}],
                      "end": [{"call": "world_query", "args": {"path_prefix": "/ball"}, "expect": {"total": 1}}]}
         a.json("playtest_run", spec=long_spec, wait_s=0)
@@ -91,8 +96,10 @@ def main():
         check(e.get("error") == "playtest_running" and e.get("retry_after_ms"), f"world_load is refused: {e.get('error')}, retry_after_ms {e.get('retry_after_ms')}")
         e = refused(b, "save_read", name="whatever", force=True)
         check(e.get("error") == "playtest_running", "save_read too")
-        r = wait_playtest(a, a.json("playtest_report", wait_s=20))
-        check(r.get("status") == "passed", f"the playtest ends passed ({r.get('status')})")
+        check(a.json("playtest_report", wait_s=0).get("status") == "running", "the playtest was still running for both refusals")
+        r = a.json("playtest_report", cancel=True)
+        r = wait_playtest(a, r)
+        check(r.get("status") == "cancelled", f"its starter cancels it ({r.get('status')})")
         in_spec = {"name": "loads", "ticks": 10, "steps": [{"at": 1, "call": "world_load", "args": {"name": "otherw", "force": True}}]}
         e = refused(a, "playtest_run", spec=in_spec)
         check("world_load" in json.dumps(e), "a spec that calls world_load is refused up front")
@@ -102,7 +109,7 @@ def main():
     print("2. live Lex runs across world_load")
     with Engine(exe, args.port, work / "livelex.log", *common, cwd=work) as eng:
         m = eng.mcp("ll")
-        m.hello("ll", role="lead")
+        m.hello("ll", role="lead")  # force and overwrite of other worlds are the lead's (docs/design/AUTHORITY.md)
         save_check.start_live(m)
         m.json("time_control", action="step", ticks=300)
         shown = m.json("lex_live", action="status", set="save_live")["runs"][0]["shown"]
@@ -131,7 +138,7 @@ def main():
     def run(label, rate, **pt):
         with Engine(exe, args.port, work / f"{label}.log", "--headless", "--paused", "--captures", str(work / "captures"), cwd=work) as eng:
             m = eng.mcp(label)
-            m.hello("pt", role="lead")
+            m.hello("pt", role="playtester")
             m.json("lex_import", set="coins", document=COINS)
             m.json("lex_live", action="start", set="coins", seed=1, params={"rate": rate})
             r = wait_playtest(m, m.json("playtest_run", wait_s=20, **pt))

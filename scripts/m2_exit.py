@@ -581,7 +581,7 @@ def criterion_instances(exe, adapter, port, out, check):
     results = []
     with Engine(exe, port, log, *args, cwd=str(ROOT)) as engine:
         mcp = engine.mcp("m2-exit-instances")
-        mcp.call("agent_hello", name="m2_exit", role="reviewer")
+        mcp.call("agent_hello", name="m2_exit", role="checker")
         mcp.call("world_env", **night_env())
         # The window camera: from the field's near edge, looking over it.
         mcp.call("window_view", eye=FIELD_EYE, target=FIELD_TARGET, fov_y_deg=50)
@@ -612,7 +612,7 @@ def run_scene(exe, adapter, port, out, attach, run):
             "--worlds", str(out / "worlds")]
     with Engine(exe, port, out / f"engine_scene_{adapter}.log", *args, cwd=str(ROOT)) as engine:
         mcp = engine.mcp("m2-exit")
-        mcp.call("agent_hello", name="m2_exit", role="reviewer")
+        mcp.call("agent_hello", name="m2_exit", role="checker")
         summary["gpu"] = mcp.json("engine_info").get("gpu")
         body(mcp)
     errs = engine.validation_errors()

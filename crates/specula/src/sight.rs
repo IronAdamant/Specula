@@ -565,6 +565,193 @@ pub fn dense_ids(owners: &[u64]) -> (Vec<u32>, Vec<u64>) {
     (ids, entities)
 }
 
+/// What one rendered frame actually drew, measured: the entities its draw lists submitted (mesh
+/// and 2D draws), the ID buffer's coverage per entity when the ID pass ran, and what streaming
+/// drew merged (HLOD) or left off the GPU. Facts about drawing are a [`DrawnFact`], which only
+/// [`FrameRecord::drawn`] makes: an answer can't say "drawn" from the world's intent
+/// (`docs/design/AUTHORITY.md`, "Drawn facts come from a frame record").
+///
+/// Passes added later (terrain, water) record their entities here when they submit a draw, never
+/// in the packet directly.
+#[derive(Clone, Debug, Default)]
+pub struct FrameRecord {
+    submitted: std::collections::BTreeSet<u64>,
+    /// The ID pass's coverage per entity (`None`: the pass didn't run).
+    ids: Option<BTreeMap<u64, specula_gpu::IdCoverage>>,
+    /// The ID pass's dense ids: `entities[i]` drew as id `i + 1`.
+    dense: Vec<u64>,
+    hlod: std::collections::BTreeSet<u64>,
+    /// Terrains the terrain pass drew this frame, and how many patches (0: none in view).
+    terrain: BTreeMap<u64, u32>,
+    /// Water surfaces outside the mesh lists (their pass records no per-entity pixels).
+    water: std::collections::BTreeSet<u64>,
+    /// HLOD member → its proxy's owner ([`proxy_owner`]).
+    proxy_of: BTreeMap<u64, u64>,
+    not_resident: std::collections::BTreeSet<u64>,
+}
+
+/// The ID-pass owner of a capture's `i`-th HLOD proxy: past every entity id, so it never names
+/// an entity (proxies draw many at once).
+pub fn proxy_owner(i: usize) -> u64 {
+    (1 << 62) + i as u64
+}
+
+/// Whether an owner is a proxy's ([`proxy_owner`]), not an entity's.
+pub fn is_proxy_owner(owner: u64) -> bool {
+    owner >= 1 << 62
+}
+
+/// Whether an entity reached the image, and how that is known (made only by
+/// [`FrameRecord::drawn`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DrawnFact {
+    drawn: Option<bool>,
+    drawn_as: Option<&'static str>,
+    measured_by: &'static str,
+    reason: Option<&'static str>,
+}
+
+impl DrawnFact {
+    /// `Some(true)`: it reached the image; `Some(false)`: it didn't; `None`: unmeasured.
+    pub fn drawn(&self) -> Option<bool> {
+        self.drawn
+    }
+
+    /// How it was drawn when not on its own (`hlod`, `not_resident`).
+    pub fn drawn_as(&self) -> Option<&'static str> {
+        self.drawn_as
+    }
+
+    /// Writes `drawn`, `measured_by`, and `drawn_as`/`reason` when there are any.
+    pub fn write(&self, out: &mut Json) {
+        out.set("drawn", self.drawn.map_or(Json::Null, Json::Bool));
+        out.set("measured_by", Json::from(self.measured_by));
+        if let Some(a) = self.drawn_as {
+            out.set("drawn_as", Json::from(a));
+        }
+        if let Some(r) = self.reason {
+            out.set("reason", Json::from(r));
+        }
+    }
+}
+
+impl FrameRecord {
+    /// The frame's draw owners (one entity id per draw, 0 for a draw of many, such as an HLOD
+    /// proxy), as `draw_list` and the 2D lists give them.
+    pub fn new(owners: &[u64]) -> FrameRecord {
+        FrameRecord { submitted: owners.iter().copied().filter(|&e| e != 0).collect(), ..FrameRecord::default() }
+    }
+
+    /// The ID pass's counts (`entities` from [`dense_ids`], `coverage` per dense id).
+    pub fn set_ids(&mut self, entities: &[u64], coverage: &[specula_gpu::IdCoverage]) {
+        self.ids = Some(entities.iter().zip(coverage).map(|(e, c)| (*e, *c)).collect());
+        self.dense = entities.to_vec();
+    }
+
+    /// The capture's HLOD proxies (`Hlod::capture_groups`, in draw order): each member's facts
+    /// come from its proxy's pixels.
+    pub fn set_proxies(&mut self, groups: &[(u32, Vec<u64>)]) {
+        for (i, (_, members)) in groups.iter().enumerate() {
+            for &m in members {
+                self.proxy_of.insert(m, proxy_owner(i));
+                self.hlod.insert(m);
+            }
+        }
+    }
+
+    /// The ID-pass owner of the proxy HLOD member `id` was merged in, if it was.
+    pub fn proxy_owner_of(&self, id: u64) -> Option<u64> {
+        self.proxy_of.get(&id).copied()
+    }
+
+    /// A terrain the terrain pass drew with `patches` patches in view (its draws are the pass's
+    /// own, outside the mesh lists).
+    pub fn set_terrain(&mut self, id: u64, patches: u32) {
+        self.terrain.insert(id, patches);
+    }
+
+    /// A water surface (its pass draws outside the mesh lists when it isn't one of them).
+    pub fn set_water(&mut self, id: u64) {
+        self.water.insert(id);
+    }
+
+    /// The entity (or proxy owner) the ID pass drew as dense id `id` (1-based), for readbacks.
+    pub fn owner_of_id(&self, id: u32) -> Option<u64> {
+        (id > 0).then(|| self.dense.get(id as usize - 1).copied()).flatten()
+    }
+
+    /// What streaming said of the frame's subjects (`drawn_as`: `hlod` or `not_resident`).
+    pub fn set_streaming(&mut self, subjects: &[Subject]) {
+        for s in subjects {
+            match s.json.get("drawn_as").and_then(Json::as_str) {
+                Some("hlod") => {
+                    self.hlod.insert(s.id);
+                }
+                Some("not_resident") => {
+                    self.not_resident.insert(s.id);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Whether the ID pass ran.
+    pub fn measured(&self) -> bool {
+        self.ids.is_some()
+    }
+
+    /// Entities the draw lists submitted.
+    pub fn submitted(&self) -> &std::collections::BTreeSet<u64> {
+        &self.submitted
+    }
+
+    /// The drawing facts of entity `id` in this frame.
+    pub fn drawn(&self, id: u64) -> DrawnFact {
+        let fact = |drawn, drawn_as, measured_by, reason| DrawnFact { drawn, drawn_as, measured_by, reason };
+        if self.not_resident.contains(&id) {
+            return fact(Some(false), Some("not_resident"), "streaming", Some("built but not on the GPU (streaming: too far and too small for every camera, or evicted under memory_mb; stream_state shows why)"));
+        }
+        if let Some(&patches) = self.terrain.get(&id) {
+            return if patches > 0 {
+                fact(Some(true), Some("terrain"), "terrain_pass", Some("drawn by the terrain pass (patches in view: terrain_patches); its pixels aren't counted per entity"))
+            } else {
+                fact(Some(false), Some("terrain"), "terrain_pass", Some("the terrain pass drew none of its patches: none in view"))
+            };
+        }
+        if self.water.contains(&id) && !self.submitted.contains(&id) {
+            return fact(None, Some("water"), "water_pass", Some("drawn by the water pass, which records no per-entity pixels: unmeasured"));
+        }
+        if self.hlod.contains(&id) {
+            // Merged in its cell's proxy: the proxy's pixels say whether it reached the image
+            // (the proxy is chosen by distance, not by view: a cell behind the camera is drawn
+            // as a proxy and culled).
+            let Some(owner) = self.proxy_of.get(&id) else {
+                return fact(None, Some("hlod"), "streaming", Some("merged in its cell's HLOD proxy; which proxy is unknown, so whether it reached the image is unmeasured"));
+            };
+            return match self.ids.as_ref().map(|ids| ids.get(owner)) {
+                None => fact(None, Some("hlod"), "streaming", Some("merged in its cell's HLOD proxy; the ID pass didn't run, so whether it reached the image is unmeasured")),
+                Some(Some(c)) if c.pixels > 0 || c.approx || c.rasterized == Some(true) => {
+                    fact(Some(true), Some("hlod"), "id_buffer", Some("drawn merged in its cell's HLOD proxy, which reached the image: its own pixels aren't counted (visible_px null)"))
+                }
+                Some(Some(c)) if !c.counted => fact(None, Some("hlod"), "id_buffer", Some("merged in its cell's HLOD proxy, whose blended draws weren't counted on this GPU")),
+                Some(_) => fact(Some(false), Some("hlod"), "id_buffer", Some("merged in its cell's HLOD proxy, which reached no pixel: outside the view (behind the camera, culled)")),
+            };
+        }
+        if !self.submitted.contains(&id) {
+            return fact(Some(false), None, "draw_list", Some("not in the frame's draw lists (nothing to draw: not built, hidden, or no geometry)"));
+        }
+        let Some(ids) = &self.ids else {
+            return fact(None, None, "draw_list", Some("submitted, but the ID pass didn't run (ids: false): whether it reached the image is unmeasured"));
+        };
+        match ids.get(&id) {
+            Some(c) if !c.counted => fact(None, None, "id_buffer", Some("its blended draws weren't counted on this GPU (no fragment atomics): unknown, not 0")),
+            Some(c) if c.pixels > 0 || c.approx => fact(Some(true), None, "id_buffer", None),
+            Some(c) if c.rasterized == Some(true) => fact(Some(true), None, "id_buffer", Some("rasterized, but nearer surfaces hide all of it (occluded)")),
+            _ => fact(Some(false), None, "id_buffer", Some("submitted, but no fragment reached the image: outside the view (behind the camera, culled) or too small")),
+        }
+    }
+}
+
 /// Adds what the ID buffer saw to each subject:
 /// - `visible_px`: pixels it covers after occlusion (its nearest opaque pixels plus its blended
 ///   pixels in front of the opaque depth; glass behind glass counts, glass hides nothing);

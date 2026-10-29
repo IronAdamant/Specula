@@ -110,10 +110,10 @@ const fn role(name: &'static str, about: &'static str, families: &'static [&'sta
 /// Role templates: what each kind of agent lists. `agent_hello {role}` with one of these names
 /// applies it (unless something else chose); the lead hands them out with `tools_scope`.
 pub const ROLES: &[Role] = &[
-    Role { name: "lead", about: "everything (picks the others' tools)", all: true, families: &[], tools: &[] },
-    Role { name: "director", about: "everything (plans and reviews the swarm)", all: true, families: &[], tools: &[] },
+    Role { name: crate::authority::ROLE_LEAD, about: "everything (picks the others' tools)", all: true, families: &[], tools: &[] },
+    Role { name: crate::authority::ROLE_DIRECTOR, about: "everything (plans and reviews the swarm)", all: true, families: &[], tools: &[] },
     role("builder", "builds the world", &["world", "sight", "claim", "board", "journal", "model", "engine", "terrain"], &[]),
-    role("reviewer", "checks finished work", &["sight", "journal", "board", "review", "studio"], &["world_query", "world_list"]),
+    role(crate::authority::ROLE_REVIEWER, "checks finished work", &["sight", "journal", "board", "review", "studio"], &["world_query", "world_list"]),
     role("playtester", "plays and records runs", &["game", "playtest", "sight", "board", "save", "engine"], &["world_query", "world_hash"]),
     role("art_director", "holds the look", &["sight", "studio", "review", "model", "procgen", "vfx", "terrain", "project", "board"], &["world_env", "world_query"]),
     role("sight_skeptic", "verifies visual claims", &["sight"], &["world_query", "world_list", "critique_add"]),
@@ -708,7 +708,7 @@ impl Origin {
             Origin::Role => "role",
             Origin::Connect => "connect",
             Origin::Agent => "agent",
-            Origin::Lead => "lead",
+            Origin::Lead => crate::authority::ROLE_LEAD,
         }
     }
 }

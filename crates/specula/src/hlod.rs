@@ -378,6 +378,10 @@ pub struct Hlod {
     pub window_cover: Vec<u64>,
     /// The last capture's.
     pub capture_cover: Vec<u64>,
+    /// The last capture's proxies, in draw order: `(draws, members)` per cell. Their draws get
+    /// a cell owner in the ID pass, so a member's drawing facts come from its proxy's pixels
+    /// (`sight::FrameRecord::set_proxies`).
+    pub capture_groups: Vec<(u32, Vec<u64>)>,
     pub stats: HlodStats,
     /// The last proxy build's error.
     pub last_error: Option<String>,
@@ -715,6 +719,7 @@ impl Hlod {
     /// the proxies' draws. Returns `(cells, covered entities)`.
     pub fn capture(&mut self, eye: Vec3, fov_y_deg: f32, viewport_h: u32, min_m: f32, stale: impl Fn(CellKey) -> bool, out: &mut Vec<DrawItem>) -> (u32, u32) {
         self.capture_cover.clear();
+        self.capture_groups.clear();
         let (mut cells, mut covered) = (0, 0);
         for (&k, c) in &self.cells {
             let Some(u) = c.current() else { continue };
@@ -728,7 +733,8 @@ impl Hlod {
                 }
                 cells += 1;
                 covered += u.members.len() as u32;
-                push_draws(u, out);
+                let draws = push_draws(u, out);
+                self.capture_groups.push((draws, u.members.clone()));
             }
         }
         (cells, covered)

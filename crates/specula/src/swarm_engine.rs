@@ -215,7 +215,7 @@ impl Engine {
             }
             SwarmCall::NoteAdd { .. } => hello_required("notes"),
             SwarmCall::NoteList(q) => out(self.swarm.board.list_notes(&q)),
-            SwarmCall::NoteDelete { id, force } => match self.swarm.board.delete_note(w, tick, id, force) {
+            SwarmCall::NoteDelete { id, force } => match self.swarm.board.delete_note(w, crate::authority::authority(&self.swarm, &session.id), tick, id, force) {
                 Ok(n) => out(Json::obj([("deleted", Json::from(n.id))])),
                 Err(e) => fail(&e),
             },
@@ -270,14 +270,15 @@ impl Engine {
                 );
                 out(j)
             }
-            SwarmCall::Settings { frame_floor_fps: Some(_) } if !named || !matches!(self.swarm.role(&session.id), "lead" | "director") => {
-                fail(&WorldError::new(
-                    "lead_only",
-                    "the frame floor is chosen by the lead agent before it deploys a swarm: say agent_hello with role \"lead\" \
-                     (or \"director\") first; anyone may read swarm_settings",
+            SwarmCall::Settings { frame_floor_fps: Some(_) } if crate::authority::authority(&self.swarm, &session.id) < crate::authority::Authority::Lead => fail(
+                &crate::authority::require(
+                    crate::authority::authority(&self.swarm, &session.id),
+                    crate::authority::Authority::Lead,
+                    crate::authority::Site::FrameFloor,
+                    "the frame floor (chosen by the lead before it deploys a swarm; anyone may read swarm_settings)",
                 )
-                .with("role", self.swarm.role(&session.id)))
-            }
+                .expect_err("checked"),
+            ),
             SwarmCall::Settings { frame_floor_fps } => {
                 if let Some(fps) = frame_floor_fps {
                     self.frame_floor = (fps, Some(by.clone()));

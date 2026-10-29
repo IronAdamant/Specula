@@ -228,13 +228,13 @@ fn checks_arg(args: &Json) -> Result<Vec<Check>, String> {
             Ok(Check {
                 kind: one_of(c, "kind", &CHECK_KINDS, Some("other"))?.unwrap_or_default(),
                 name: text_arg(c, "name", 100, true).map_err(|e| format!("checks[{i}]: {e}"))?.unwrap_or_default(),
-                passed: bool_arg(c, "passed")?.ok_or(format!("checks[{i}] needs 'passed': true or false"))?,
+                // Reported by the submitter (filled in at submit): never counted as the engine's.
+                passed: review::Fact::Claimed(review::Claimed { by: String::new(), value: bool_arg(c, "passed")?.ok_or(format!("checks[{i}] needs 'passed': true or false"))? }),
                 severity: one_of(c, "severity", &SEVERITIES, Some("error"))?.unwrap_or_default(),
                 metric: text_arg(c, "metric", 100, false)?,
                 value: num_arg(c, "value")?,
                 limit: num_arg(c, "limit")?,
                 detail: text_arg(c, "detail", 500, false)?.unwrap_or_default(),
-                engine: false,
             })
         })
         .collect()

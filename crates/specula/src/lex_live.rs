@@ -885,20 +885,18 @@ impl Live {
                 if let Err(e) = env.swarm.check_claimed_path(&format!("/{ROOT}/{set}"), w, "restart this live run") {
                     return world_error(&e);
                 }
-                let group = run.group;
-                if env.world.get(group).is_some() {
-                    if let Err(e) = write_policy::commit(env.world, env.swarm, env.tick, w, Kind::Delete, Rule::LexLive, |wd| wd.delete(&EntityKey::Id(group), None).map(|_| ())) {
-                        return world_error(&e);
-                    }
-                }
-                self.runs.remove(&set);
+                // One call, one commit (review of the authority lane): start's own batch deletes
+                // the old group and makes the new one, all or nothing. A start refused before its
+                // commit leaves the old run as it was.
+                let old = self.runs.remove(&set).expect("found above");
                 let out = self.start(s, w, env);
-                if !out.is_error {
-                    let mut j = crate::lex_tools::output_json(&out);
-                    j.set("restarted", Json::Bool(true));
-                    return ToolOutput::text(j.to_pretty());
+                if out.is_error {
+                    self.runs.insert(set, old);
+                    return out;
                 }
-                out
+                let mut j = crate::lex_tools::output_json(&out);
+                j.set("restarted", Json::Bool(true));
+                ToolOutput::text(j.to_pretty())
             }
             LiveCall::Status { set } => {
                 let list: Vec<Json> = match &set {
@@ -1999,7 +1997,7 @@ mod tests {
     /// command with the value). A window key press, or an agent holding the action, fires the
     /// command at the run's tick, journaled as `input` and replayable headless.
     /// A linked-in module whose `bump` hook keeps a counter and spawns `/counter/made` (n).
-    fn load_counter(rig: &mut Rig) {
+    fn counter_code() -> specula_logic::ModuleCode {
         use specula_sdk::{Cx, HookDef, Module, ModuleInfo, SdkError, Spawn, Value};
         #[derive(Default)]
         struct Counter;
@@ -2017,10 +2015,14 @@ mod tests {
                 Ok(Value::from(n))
             }
         }
+        specula_logic::ModuleCode::of::<Counter>()
+    }
+
+    fn load_counter(rig: &mut Rig) {
         let journal = &mut |w: &mut dyn WorldWrite, _: Mark, _: &str, _| {
             crate::write_policy::drop_changes(w)
         };
-        rig.logic.load(specula_logic::ModuleCode::of::<Counter>(), crate::logic::Origin::default(), None, &mut rig.world, 0, 30, journal).unwrap();
+        rig.logic.load(counter_code(), crate::logic::Origin::default(), None, &mut rig.world, 0, 30, journal).unwrap();
     }
 
     /// A set whose `bump` command calls `counter/bump`, with input bindings: `go` (held) and
@@ -2075,6 +2077,80 @@ mod tests {
         assert_eq!(cmds.len(), 1, "{j}");
         assert_eq!(cmds[0].get("by"), Some(&Json::from("bob")));
         assert!(rig.world.find_path("/counter/made1").is_ok());
+    }
+
+    /// Review of the authority lane, round 2: held input fires as its holder during ticks, and
+    /// a time_control step runs those ticks inside the holder's own request: counted, ten ticks
+    /// were ten commits for one call (a debug panic). Ticks pause the count
+    /// (`Engine::advance_clock`); the holder's own commands still count.
+    #[test]
+    fn held_input_fires_are_not_the_holders_call() {
+        let mut rig = Rig::new(30);
+        load_counter(&mut rig);
+        let (rules, input) = bump_set(false);
+        let s = Start { set: "t".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input, doc: None };
+        assert!(!rig.call(LiveCall::Start(Box::new(s))).is_error);
+        assert!(!rig.call(LiveCall::Input { set: "t".into(), actions: Json::obj([("go", Json::Bool(true))]), ticks: 100 }).is_error);
+        let key = ANN.session.unwrap_or(ANN.name);
+        // Unpaused, the fires would count against ann (what the engine used to do).
+        rig.swarm.begin_dispatch(key);
+        rig.ticks(3);
+        assert!(rig.swarm.end_dispatch() >= 2, "held input commits as its holder (the case under test)");
+        // As a step inside ann's request runs them: paused.
+        let entries = rig.swarm.journal().len();
+        rig.swarm.begin_dispatch(key);
+        let paused = rig.swarm.pause_dispatch();
+        rig.ticks(10);
+        rig.swarm.resume_dispatch(paused);
+        assert!(rig.swarm.journal().len() >= entries + 2, "the held input really fired");
+        assert_eq!(rig.swarm.end_dispatch(), 0, "a step's ticks are never the caller's call");
+        // ann's own command in a request: one.
+        rig.swarm.begin_dispatch(key);
+        assert!(!rig.call(LiveCall::Command { set: "t".into(), name: "bump".into(), args: Json::Null }).is_error);
+        assert_eq!(rig.swarm.end_dispatch(), 1);
+    }
+
+    /// The same through the engine (GPU; skipped without Vulkan): ann holds input on a live run
+    /// and steps 10 ticks the way `time_control {action: step}` does (`Engine::advance_clock`
+    /// inside her request's count): her held input fires and commits, yet her call counts none,
+    /// so one call, one commit stays quiet (multi_commit_calls 0).
+    #[test]
+    fn a_step_over_held_input_is_one_call_in_the_engine() {
+        if !specula_gpu::is_available() {
+            crate::skip_test("a_step_over_held_input_is_one_call_in_the_engine", "Vulkan is not available");
+            return;
+        }
+        let Ok(gpu) = specula_gpu::Gpu::new(&specula_gpu::GpuOptions { validation: specula_gpu::Validation::Auto, ..Default::default() }) else {
+            crate::skip_test("a_step_over_held_input_is_one_call_in_the_engine", "no GPU");
+            return;
+        };
+        let assets = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../games/sepulcra/assets");
+        let captures = std::env::temp_dir().join(format!("specula-held-input-{}", std::process::id()));
+        let mut e = crate::Engine::new(gpu, &captures, crate::models::Library::new(&assets, None)).expect("engine");
+        {
+            let crate::Engine { world, swarm, logic, .. } = &mut e;
+            // Loaded as ann's (what logic_build/logic_reload do).
+            world
+                .session(swarm, 0, Opener::Modules, |wd, swarm| logic.load(counter_code(), crate::logic::Origin::default(), None, wd, 0, 30, &mut crate::write_policy::module_agent_commit(swarm, 0, ANN)))
+                .unwrap()
+                .unwrap();
+        }
+        let (rules, input) = bump_set(false);
+        let s = Start { set: "t".into(), rules, seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input, doc: None };
+        assert!(!e.lex_live_call(LiveCall::Start(Box::new(s)), "ann", ANN).is_error);
+        assert!(!e.lex_live_call(LiveCall::Input { set: "t".into(), actions: Json::obj([("go", Json::Bool(true))]), ticks: 100 }, "ann", ANN).is_error);
+        let key = ANN.session.unwrap_or(ANN.name);
+        let entries = e.swarm.journal().len();
+        // What Engine::handle does around time_control {action: step, ticks: 10}.
+        e.swarm.begin_dispatch(key);
+        e.clock.set_paused(true);
+        e.clock.step(10);
+        e.advance_clock();
+        let made = e.swarm.end_dispatch();
+        assert!(e.swarm.journal().len() >= entries + 2, "ann's held input fired and was journaled");
+        assert_eq!(made, 0, "a step's ticks are the simulation's, not ann's call");
+        assert_eq!(e.commits.count(42, made, false), None, "no multi_commit");
+        assert_eq!(e.multi_commit_calls, 0);
     }
 
     /// Review round 3 (finding 2, input3.py flood): 64 held bindings fire once per Lex tick, at
@@ -2578,6 +2654,33 @@ mod tests {
         }
         let s = Start { set: "t9".into(), rules: rules(), seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input: None, doc: None };
         assert_eq!(json(&rig.call(LiveCall::Start(Box::new(s)))).get("error"), Some(&Json::from("runs_full")));
+    }
+
+    /// Review of the authority lane: restart committed twice (a delete, then start's batch), and
+    /// a start refused after the delete left the run half gone. Now one journal entry, and a
+    /// refused start leaves the old run as it was.
+    #[test]
+    fn restart_is_one_commit() {
+        let mut rig = Rig::new(30);
+        assert!(!rig.call(start(walkers_as_spheres())).is_error);
+        rig.ticks(5);
+        let entries = rig.swarm.journal().len();
+        rig.swarm.begin_dispatch("aaaaaa11");
+        let out = rig.call(LiveCall::Restart { set: "t".into() });
+        assert!(!out.is_error, "{}", json(&out));
+        assert_eq!(rig.swarm.journal().len(), entries + 1, "one journal entry for the restart");
+        assert_eq!(rig.swarm.end_dispatch(), 1, "one commit counted for the caller");
+        assert_eq!(rig.run_status("t").get("tick").and_then(Json::as_u64), Some(0));
+        // A restart whose start is refused (here: a present rule with reserved data) changes
+        // nothing.
+        let group = rig.world.find_path("/lex_live/t").unwrap();
+        rig.live.runs.get_mut("t").unwrap().present_src.push(Present { tags: vec!["enemy".into()], spawn: Json::obj([("shape", Json::from("cube")), ("props", Json::obj([("joint", Json::Obj(Vec::new()))]))]) });
+        let entries = rig.swarm.journal().len();
+        let out = rig.call(LiveCall::Restart { set: "t".into() });
+        assert!(out.is_error, "a reserved present rule refuses the start");
+        assert_eq!(rig.swarm.journal().len(), entries, "nothing journaled");
+        assert!(rig.live.runs.contains_key("t"), "the old run stays");
+        assert_eq!(rig.world.find_path("/lex_live/t").ok(), Some(group), "and its group");
     }
 }
 

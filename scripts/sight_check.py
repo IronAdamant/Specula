@@ -111,7 +111,7 @@ def main():
         other = eng.mcp("sight-check-b")
         other.json("agent_hello", name="builder_b", role="builder")
         reviewer = eng.mcp("sight-check-review")
-        reviewer.json("agent_hello", name="reviewer", role="reviewer")
+        reviewer.json("agent_hello", name="checker-r", role="checker")
         build_scene(builder)
         builder.json("claim_take", region={"min": [-12, 0, -12], "max": [-2, 4, -2]}, note="west district")
         other.json("claim_take", path="/district_east", note="east district")
@@ -425,7 +425,7 @@ def persistent_cameras(args, failures, summary):
         owners = [o["owner"] for o in ann.json("camera_list", all=True)["owners"]]
         check(owners == ["ann"], f"the unnamed session's camera wasn't saved ({owners})", failures)
         other = eng.mcp("cams-reviewer")
-        other.json("agent_hello", name="reviewer")
+        other.json("agent_hello", name="checker-r")
         pk = other.frame(camera="overview", camera_of="ann", width=320, height=240, time_s=1)
         check(pk["camera"]["owner"] == "ann" and any(s["path"] == "/cart" for s in pk["subjects"]),
               "another agent looks through ann's saved camera", failures)

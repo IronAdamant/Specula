@@ -20,7 +20,7 @@ use specula_core::Json;
 use specula_protocol::{Server, SessionInfo, ToolDef, ToolOutput};
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 /// Longest a call waits for a playtest to finish before answering with its progress (tool calls
@@ -141,14 +141,14 @@ pub fn definitions() -> Vec<ToolDef> {
             description: "A playtest's report: status (running, passed, failed, diverged, error, cancelled), ticks, steps \
                           passed and failed, failures (part, index, tick, call, kind, path, expected, actual), captures, \
                           hashes and, for a replay, whether it verified. Without id: the running playtest, else the latest. \
-                          wait_s waits for it to finish; cancel stops it (only its starter, or anyone with force: true, \
+                          wait_s waits for it to finish; cancel stops it (only its starter, or a lead with force: true, \
                           which is logged on the board)."
                 .into(),
             input_schema: schema(vec![
                 ("id", t("integer", "The playtest (from playtest_run)")),
                 ("wait_s", t("number", "Seconds to wait for it to finish, 0..20 (default 0)")),
                 ("cancel", t("boolean", "Stop it (the report says cancelled)")),
-                ("force", t("boolean", "With cancel: stop another agent's playtest")),
+                ("force", t("boolean", "With cancel: stop another agent's playtest (lead authority only)")),
                 ("response_format", Format::schema()),
             ]),
         },
@@ -170,6 +170,9 @@ pub(crate) trait Host {
     fn game_file_tools(&self) -> Vec<String>;
     /// A session's agent name and identity key.
     fn identity(&self, session: &SessionInfo) -> (String, String);
+    /// What the session may do ([`crate::authority::authority`]): a forced cancel of another
+    /// agent's playtest needs lead authority.
+    fn authority(&self, session: &SessionInfo) -> crate::authority::Authority;
     fn format_default(&self, session: &SessionInfo) -> Format;
     /// Pauses the clock and drops queued steps; whether it was paused before.
     fn take_clock(&mut self) -> bool;
@@ -198,7 +201,7 @@ pub fn clock_refused(op: TimeOp, running: bool) -> bool {
 }
 
 struct Waiter {
-    reply: Sender<ToolOutput>,
+    reply: crate::jobs::Reply,
     until: Instant,
     format: Format,
 }
@@ -332,7 +335,7 @@ impl Active {
 
     /// Answers now (`wait` zero, or too many callers waiting already) or when the playtest ends
     /// or `wait` runs out.
-    fn wait_or_answer(&mut self, reply: Sender<ToolOutput>, wait: Duration, format: Format) {
+    fn wait_or_answer(&mut self, reply: crate::jobs::Reply, wait: Duration, format: Format) {
         if wait.is_zero() || self.waiters.len() >= MAX_WAITERS {
             let _ = reply.send(ToolOutput::text(self.report(format, None).to_string()));
         } else {
@@ -362,7 +365,7 @@ impl Playtests {
     }
 
     /// playtest_run and playtest_report (answered now or once the playtest ends).
-    pub(crate) fn call(&mut self, host: &mut dyn Host, call: PlaytestCall, session: &SessionInfo, reply: Sender<ToolOutput>) {
+    pub(crate) fn call(&mut self, host: &mut dyn Host, call: PlaytestCall, session: &SessionInfo, reply: crate::jobs::Reply) {
         match call {
             PlaytestCall::Run { source, record, overwrite, wait, format, allow_module_mismatch } => match self.start(host, source, record, overwrite, allow_module_mismatch, session) {
                 Ok(()) => self.active.as_mut().expect("just started").wait_or_answer(reply, wait, format),
@@ -375,8 +378,12 @@ impl Playtests {
                     if cancel {
                         let (by, key) = host.identity(session);
                         if key != a.key && !force {
-                            let msg = format!("playtest {} is {}'s; only they cancel it (or pass force: true, which is logged)", a.id, a.by);
+                            let msg = format!("playtest {} is {}'s; only they cancel it (a lead may with force: true, which is logged)", a.id, a.by);
                             let _ = reply.send(error("not_yours", msg, vec![("id", Json::from(a.id)), ("started_by", Json::from(a.by.as_str()))]));
+                            return;
+                        }
+                        if let Err(e) = crate::authority::may_force(host.authority(session), key == a.key, "playtest_report cancel") {
+                            let _ = reply.send(ToolOutput::error(e.with("id", a.id).with("started_by", a.by.as_str()).to_json().to_string()));
                             return;
                         }
                         if key != a.key {
@@ -694,6 +701,10 @@ impl Host for EngineHost<'_> {
         (self.e.swarm.agent_name(session), self.e.swarm.key(session))
     }
 
+    fn authority(&self, session: &SessionInfo) -> crate::authority::Authority {
+        crate::authority::authority(&self.e.swarm, &session.id)
+    }
+
     fn format_default(&self, session: &SessionInfo) -> Format {
         self.e.formats.get(&session.id)
     }
@@ -765,14 +776,14 @@ impl Host for EngineHost<'_> {
         } else {
             crate::tools::parse(tool, args).map_err(|e| ToolOutput::error(argument_error(&e).to_string()))?
         };
-        let (reply, answer) = mpsc::channel();
+        let (reply, answer) = crate::jobs::channel();
         let deadline = Instant::now() + Duration::from_secs(25);
         if let Command::Vfx(call @ crate::vfx_tools::VfxCall::Preview { .. }) = command {
             // Queued as the playtest's: it outlives the starter's session (review of the M4 fixes).
             self.e.vfx_preview_start(call, session, reply, deadline, true);
             return Ok(answer);
         }
-        let request = Request { session: session.clone(), command, reply, deadline, trace: specula_core::trace::Ctx::current() };
+        let request = Request { session: session.clone(), call: 0, command, reply, deadline, trace: specula_core::trace::Ctx::current() };
         self.e.handle(request, self.server);
         Ok(answer)
     }
@@ -789,7 +800,7 @@ impl Host for EngineHost<'_> {
 
 impl Engine {
     /// playtest_run and playtest_report.
-    pub(crate) fn playtest_call(&mut self, call: PlaytestCall, session: SessionInfo, reply: Sender<ToolOutput>, server: &Server) {
+    pub(crate) fn playtest_call(&mut self, call: PlaytestCall, session: SessionInfo, reply: crate::jobs::Reply, server: &Server) {
         let mut p = std::mem::take(&mut self.playtests);
         p.call(&mut EngineHost { e: self, server }, call, &session, reply);
         self.playtests = p;
@@ -809,6 +820,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc::{self, Sender};
 
     /// A host without an engine: tools answer from a table, the clock is a counter.
     struct Fake {
@@ -865,6 +877,9 @@ mod tests {
         }
         fn identity(&self, s: &SessionInfo) -> (String, String) {
             (format!("agent-{}", s.id), format!("key-{}", s.id))
+        }
+        fn authority(&self, s: &SessionInfo) -> crate::authority::Authority {
+            if s.id == "lead" { crate::authority::Authority::Lead } else { crate::authority::Authority::Agent }
         }
         fn format_default(&self, _: &SessionInfo) -> Format {
             self.format
@@ -932,7 +947,7 @@ mod tests {
 
     /// Calls and returns the answer, if there is one yet.
     fn ask(p: &mut Playtests, h: &mut Fake, call: PlaytestCall, s: &SessionInfo) -> (Receiver<ToolOutput>, Option<Json>) {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = crate::jobs::channel();
         p.call(h, call, s, tx);
         let now = rx.try_recv().ok().map(|o| Json::parse(match &o.content[0] {
             specula_protocol::Content::Text(t) => t,
@@ -1044,11 +1059,15 @@ mod tests {
         assert_eq!(code(&ans.unwrap()), Some("not_yours"));
         p.pump(&mut h, Duration::from_millis(1));
         assert!(p.running(), "still running");
-        let (rx, _) = ask(&mut p, &mut h, report_call(true, true, Duration::ZERO), &b);
+        // Owner, 2026-10-29: force on another agent's playtest needs lead authority.
+        let (_, ans) = ask(&mut p, &mut h, report_call(true, true, Duration::ZERO), &b);
+        assert_eq!(code(&ans.unwrap()), Some("force_needs_lead"));
+        assert!(p.running() && h.logs.is_empty(), "refused: still running, nothing logged");
+        let (rx, _) = ask(&mut p, &mut h, report_call(true, true, Duration::ZERO), &session("lead"));
         assert_eq!(h.logs.len(), 1, "a forced cancel is logged: {:?}", h.logs);
         finish(&mut p, &mut h);
         let out = rx.try_recv().expect("answered at the end");
-        assert!(format!("{:?}", out.content).contains("cancelled by agent-b"));
+        assert!(format!("{:?}", out.content).contains("cancelled by agent-lead"));
         // The starter needs no force.
         ask(&mut p, &mut h, run_call(r#"{"name": "c", "ticks": 1000000}"#, None, false), &a);
         ask(&mut p, &mut h, report_call(true, false, Duration::ZERO), &a);

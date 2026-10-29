@@ -655,7 +655,7 @@ pub fn definitions() -> Vec<ToolDef> {
         ),
         def(
             "note_delete",
-            "Delete a note you left (force: true for someone else's).",
+            "Delete a note you left (a lead may delete someone else's with force: true).",
             schema(vec![("id", t("integer", "Note id")), ("force", t("boolean", "Delete another agent's note"))], &["id"]),
         ),
         def(

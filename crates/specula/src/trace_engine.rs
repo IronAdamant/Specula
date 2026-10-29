@@ -592,7 +592,7 @@ impl DrawnRecord {
     /// `owners` (mesh draws first, `mesh_count` of them, then the 2D draws; 0 = no entity).
     pub fn from_recorded(owners: &[u64], mesh_count: usize, mesh: &[u32], two_d: &[u32]) -> DrawnRecord {
         let of = |i: usize| owners.get(i).copied().unwrap_or(0);
-        let mut colour: Vec<u64> = mesh.iter().map(|&d| of(d as usize)).chain(two_d.iter().map(|&d| of(mesh_count + d as usize))).filter(|id| *id != 0).collect();
+        let mut colour: Vec<u64> = mesh.iter().map(|&d| of(d as usize)).chain(two_d.iter().map(|&d| of(mesh_count + d as usize))).filter(|id| *id != 0 && !crate::sight::is_proxy_owner(*id)).collect();
         colour.sort_unstable();
         colour.dedup();
         DrawnRecord { colour }

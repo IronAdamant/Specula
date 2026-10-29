@@ -210,7 +210,7 @@ def locus(m, failures):
 
 def run(m, failures, label, big):
     print(f"[{label}]")
-    m.hello("nav-check")
+    m.hello("nav-check", role="lead")  # force and overwrite of other worlds are the lead's (docs/design/AUTHORITY.md)
     m.json("time_control", action="pause")
     m.json("world_batch", ops=courtyard_ops())
     m.json("world_env", sun_direction=[-0.4, -1, -0.3], ambient_intensity=0.6)

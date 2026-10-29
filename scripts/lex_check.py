@@ -60,7 +60,7 @@ def main():
     work = Path(tempfile.mkdtemp(prefix="lex_check_"))
     with Engine(args.exe, args.port, work / "engine.log", "--headless", "--worlds", str(work / "worlds"), "--captures", str(work / "captures")) as eng:
         ann, bob = eng.mcp("lex-check-ann"), eng.mcp("lex-check-bob")
-        ann.hello("ann")
+        ann.hello("ann", role="lead")  # force and overwrite of other worlds are the lead's (docs/design/AUTHORITY.md)
         bob.hello("bob")
         names = ann.tools()
         lex = sorted(n for n in names if n.startswith("lex_"))

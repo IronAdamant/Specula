@@ -10,7 +10,6 @@ use crate::Engine;
 use specula_core::math::Vec3;
 use specula_core::Json;
 use specula_protocol::{SessionInfo, ToolDef, ToolOutput};
-use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 /// Points a flight path may have.
@@ -203,7 +202,6 @@ pub struct Fly {
     along: Vec<f32>,
     started: Option<Instant>,
     frames: Vec<FlyFrame>,
-    reply: Sender<ToolOutput>,
     deadline: Instant,
     budget_ms: f64,
     released: bool,
@@ -245,8 +243,8 @@ impl Fly {
     }
 
     /// Answers the caller: the engine is stopping.
-    pub fn abort(self) {
-        let _ = self.reply.send(ToolOutput::error("stream_fly: the engine is shutting down; the flight did not finish"));
+    pub fn abort(job: crate::jobs::Job<Fly>) {
+        job.answer(ToolOutput::error("stream_fly: the engine is shutting down; the flight did not finish"));
     }
 
     fn summary(&self) -> Json {
@@ -308,14 +306,13 @@ impl Fly {
 }
 
 impl Engine {
-    /// stream_fly: starts a flight (answered when it ends).
-    pub(crate) fn start_fly(&mut self, spec: FlySpec, reply: Sender<ToolOutput>, deadline: Instant) {
+    /// stream_fly: starts a flight for `owner` (answered when it ends). One flies at a time:
+    /// another agent's flight is refused while one flies (naming its owner); the owner's own
+    /// new flight replaces its old one.
+    pub(crate) fn start_fly(&mut self, spec: FlySpec, owner: crate::jobs::JobOwner, reply: crate::jobs::Reply, deadline: Instant) {
         if !self.windowed {
-            let _ = reply.send(crate::world_error(&WorldError::new("no_window", "stream_fly flies the window's camera: run the engine with a window (no --headless)")));
+            reply.send(crate::world_error(&WorldError::new("no_window", "stream_fly flies the window's camera: run the engine with a window (no --headless)")));
             return;
-        }
-        if let Some(old) = self.fly.take() {
-            let _ = old.reply.send(ToolOutput::error("stream_fly: replaced by a newer flight"));
         }
         let mut along = vec![0.0];
         for w in spec.path.windows(2) {
@@ -323,13 +320,15 @@ impl Engine {
         }
         let kind = crate::perf::adapter_kind(self.gpu.adapter().kind);
         let budget_ms = self.perf_cfg.budgets(kind).frame_ms;
-        self.fly = Some(Fly { spec, along, started: None, frames: Vec::new(), reply, deadline, budget_ms, released: false });
+        let fly = || Fly { spec, along, started: None, frames: Vec::new(), deadline, budget_ms, released: false };
+        let replaced = || ToolOutput::error("stream_fly: replaced by your newer flight");
+        let _ = self.fly.start(owner, reply, || Ok(()), fly, replaced);
     }
 
     /// The flight's camera for this window frame (the window camera follows it); ends a flight
     /// that is done, past its caller's deadline, or taken over by a human.
     pub(crate) fn fly_camera(&mut self, human: bool) -> Option<Camera> {
-        let fly = self.fly.as_mut()?;
+        let fly = &mut self.fly.get_mut()?.state;
         let now = Instant::now();
         let started = *fly.started.get_or_insert(now);
         let s = now.duration_since(started).as_secs_f32() * fly.spec.speed_mps;
@@ -337,10 +336,11 @@ impl Engine {
         let cam = fly.camera(s);
         if done {
             fly.released = human;
-            let fly = self.fly.take().expect("checked");
-            let mut out = fly.summary();
+            let job = self.fly.take().expect("checked");
+            let mut out = job.state.summary();
             out.set("streaming_now", self.stream.json(&self.gpu, &self.models));
-            let _ = fly.reply.send(ToolOutput::text(out.to_pretty()));
+            out.set("flown_by", Json::from(job.owner.name.as_str()));
+            job.answer(ToolOutput::text(out.to_pretty()));
             self.window_follow = None;
             self.window_camera = Some(cam);
             return None;
@@ -350,7 +350,7 @@ impl Engine {
 
     /// Records a presented frame of the flight.
     pub(crate) fn fly_frame(&mut self, dt: Duration, cpu: Duration) {
-        let Some(fly) = self.fly.as_mut() else { return };
+        let Some(fly) = self.fly.get_mut().map(|j| &mut j.state) else { return };
         if fly.started.is_none() {
             return;
         }
@@ -378,15 +378,11 @@ impl Engine {
             StreamCall::State { near, limit } => ToolOutput::text(self.stream.state_json(&self.gpu, &self.models, &self.world, near, limit).to_string()),
             StreamCall::Settings(patch) => {
                 let changing = patch.as_object().is_some_and(|o| !o.is_empty());
-                if changing && (!self.swarm.introduced(&session.id) || !matches!(self.swarm.role(&session.id), "lead" | "director")) {
-                    return crate::world_error(
-                        &WorldError::new(
-                            "lead_only",
-                            "streaming budgets shape the human's window too: say agent_hello with role \"lead\" (or \"director\") \
-                             first; anyone may read stream_settings",
-                        )
-                        .with("role", self.swarm.role(&session.id)),
-                    );
+                if changing {
+                    let have = crate::authority::authority(&self.swarm, &session.id);
+                    if let Err(e) = crate::authority::require(have, crate::authority::Authority::Lead, crate::authority::Site::StreamSettings, "changing streaming budgets (they shape the human's window too; anyone may read stream_settings)") {
+                        return crate::world_error(&e);
+                    }
                 }
                 if changing {
                     let by = self.swarm.agent_name(session);

@@ -81,7 +81,15 @@ impl Engine {
                 let _ = reply.send(done);
                 ToolOutput::text("{}")
             }
-            ProjectCall::Mount { dir, name } => self.project_mount(dir, name),
+            ProjectCall::Mount { dir, name } => {
+                // Its files are imported under /project/<name> as `disk` (claims exempt: a human's
+                // edit can't be refused), so the agent asking is checked there first: a (re)mount
+                // can't overwrite files another agent claimed.
+                if let Err(e) = self.swarm.claims.check_subtree(&project::journal_path(&name), w, Instant::now(), "project_mount") {
+                    return crate::world_error(&e);
+                }
+                self.project_mount(dir, name)
+            }
             ProjectCall::FixGate { dir } => self.project_fix_gate(&dir, w),
             ProjectCall::ModuleTexts { dir, reply } => {
                 let texts = self.project_module_texts(&dir);

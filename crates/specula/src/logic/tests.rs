@@ -456,12 +456,12 @@ fn claims_guard_module_loads_unloads_and_hooks() {
     let (so, si) = (session("owner0001"), session("intrud002"));
     let live = vec![so.clone(), si.clone()];
     let mut swarm = Swarm::default();
-    swarm.hello(&so, "owner".into(), "builder".into(), None, &live).unwrap();
+    swarm.hello(&so, "modder".into(), "builder".into(), None, &live).unwrap();
     swarm.hello(&si, "intruder".into(), "builder".into(), None, &live).unwrap();
     let e = swarm.hello(&session("sneaky03"), "module:walker2".into(), "builder".into(), None, &live).unwrap_err();
-    assert_eq!(e.code, "name_reserved", "the whole module: prefix is reserved, loaded or not");
+    assert!(matches!(e.code, "name_reserved" | "name_invalid"), "the whole module: prefix is refused, loaded or not");
     let (ko, ki) = (swarm.key(&so), swarm.key(&si));
-    let (owner, intruder) = (Writer::new("owner", Some(&ko)), Writer::new("intruder", Some(&ki)));
+    let (owner, intruder) = (Writer::new("modder", Some(&ko)), Writer::new("intruder", Some(&ki)));
     let mut world = World::default();
     world.set_recording(Recording::Full);
     let clock = crate::game::Clock::new(30);

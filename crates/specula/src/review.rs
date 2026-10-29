@@ -17,6 +17,7 @@
 //! `board.json`. Bounded: every text and list has a cap, the store has [`MAX_BYTES`], listings
 //! are paged by bytes.
 
+use crate::authority::Authority;
 use crate::board::Owner;
 use crate::journal::{path_under, Writer};
 use crate::world::{World, WorldError};
@@ -48,10 +49,8 @@ pub const MAX_BYTES: usize = 16 << 20;
 /// Listings stop adding items past this many bytes and hand back a cursor.
 const MAX_LIST_BYTES: usize = 48 * 1024;
 pub const FORMAT: &str = "specula.review/v1";
-/// Roles that may decide submissions (besides the human at the window).
-pub const DECIDER_ROLES: [&str; 4] = ["owner", "reviewer", "lead", "director"];
 /// The window's human, in attribution.
-pub const WINDOW_OWNER: &str = "window:owner";
+pub const WINDOW_OWNER: &str = crate::authority::WINDOW_OWNER;
 
 fn err(code: &'static str, message: impl Into<String>) -> WorldError {
     WorldError::new(code, message)
@@ -119,20 +118,56 @@ impl Capture {
     }
 }
 
+/// What an agent said, and who said it: never shown as an engine result.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Claimed<T> {
+    pub by: String,
+    pub value: T,
+}
+
+/// A fact as data: measured by the engine, or claimed by an agent. Renderers and listings
+/// count the two apart ("2 engine checks passed; 2 reported by bob").
+#[derive(Clone, Debug, PartialEq)]
+pub enum Fact<T> {
+    Engine(T),
+    Claimed(Claimed<T>),
+}
+
+impl<T: Copy> Fact<T> {
+    pub fn value(&self) -> T {
+        match self {
+            Fact::Engine(v) => *v,
+            Fact::Claimed(c) => c.value,
+        }
+    }
+
+    pub fn by_engine(&self) -> bool {
+        matches!(self, Fact::Engine(_))
+    }
+
+    /// Who claimed it (`None`: the engine measured it).
+    pub fn claimed_by(&self) -> Option<&str> {
+        match self {
+            Fact::Engine(_) => None,
+            Fact::Claimed(c) => Some(&c.by),
+        }
+    }
+}
+
 /// A check's result, as data from the tool that ran it (or the engine).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Check {
     pub kind: String,
     pub name: String,
-    pub passed: bool,
+    /// Passed: measured by the engine (`paths_exist`, `captures_exist`), or reported by the
+    /// submitter (everything in `review_submit {checks}`).
+    pub passed: Fact<bool>,
     /// `error`, `warning` or `note` (how much a failure matters).
     pub severity: String,
     pub metric: Option<String>,
     pub value: Option<f64>,
     pub limit: Option<f64>,
     pub detail: String,
-    /// Added by the engine (`paths_exist`, `captures_exist`), not the submitter.
-    pub engine: bool,
 }
 
 impl Check {
@@ -140,7 +175,7 @@ impl Check {
         let mut f = vec![
             ("kind", Json::from(self.kind.as_str())),
             ("name", Json::from(self.name.as_str())),
-            ("passed", Json::Bool(self.passed)),
+            ("passed", Json::Bool(self.passed.value())),
             ("severity", Json::from(self.severity.as_str())),
         ];
         if let Some(m) = &self.metric {
@@ -155,8 +190,9 @@ impl Check {
         if !self.detail.is_empty() {
             f.push(("detail", Json::from(self.detail.as_str())));
         }
-        if self.engine {
-            f.push(("engine", Json::Bool(true)));
+        match &self.passed {
+            Fact::Engine(_) => f.push(("engine", Json::Bool(true))),
+            Fact::Claimed(c) => f.push(("reported_by", Json::from(c.by.as_str()))),
         }
         Json::obj(f)
     }
@@ -273,9 +309,52 @@ impl Submission {
 
     /// Failed checks, errors first (then warnings, then notes), in check order.
     pub fn failed(&self) -> Vec<&Check> {
-        let mut v: Vec<&Check> = self.checks.iter().filter(|c| !c.passed).collect();
+        let mut v: Vec<&Check> = self.checks.iter().filter(|c| !c.passed.value()).collect();
         v.sort_by_key(|c| SEVERITIES.iter().position(|s| *s == c.severity).unwrap_or(3));
         v
+    }
+
+    /// `(passed, failed)` of the engine's checks and of the reported ones.
+    pub fn check_counts(&self) -> ((usize, usize), (usize, usize)) {
+        let count = |engine: bool| {
+            let of: Vec<&Check> = self.checks.iter().filter(|c| c.passed.by_engine() == engine).collect();
+            let passed = of.iter().filter(|c| c.passed.value()).count();
+            (passed, of.len() - passed)
+        };
+        (count(true), count(false))
+    }
+
+    /// The checks in two parts for the review screen, so they can't look alike (STYLE.md: an
+    /// agent's claim never looks like an engine pass): the engine's results (`""` when none),
+    /// and what the submitter reported (`""` when nothing).
+    pub fn checks_parts(&self) -> (String, String) {
+        let ((ep, ef), (rp, rf)) = self.check_counts();
+        let part = |p: usize, f: usize| match (p, f) {
+            (p, 0) => format!("{p} passed"),
+            (0, f) => format!("{f} failed"),
+            (p, f) => format!("{p} passed, {f} failed"),
+        };
+        let engine = if ep + ef == 0 { String::new() } else { format!("Engine checks: {}", part(ep, ef)) };
+        let reported = if rp + rf == 0 { String::new() } else { format!("Reported by {} (not checked by the engine): {}", self.by.name, part(rp, rf)) };
+        (engine, reported)
+    }
+
+    /// The checks as one line, engine results and reported ones apart (listings, tests).
+    pub fn checks_line(&self) -> String {
+        let ((ep, ef), (rp, rf)) = self.check_counts();
+        let part = |p: usize, f: usize, what: &str| match (p, f) {
+            (0, 0) => None,
+            (p, 0) => Some(format!("{p} {what} passed")),
+            (0, f) => Some(format!("{f} {what} failed")),
+            (p, f) => Some(format!("{p} {what} passed, {f} failed")),
+        };
+        let reported = format!("reported by {}", self.by.name);
+        let parts: Vec<String> = [part(ep, ef, "engine check(s)"), part(rp, rf, &reported)].into_iter().flatten().collect();
+        if parts.is_empty() {
+            "Checks: none".into()
+        } else {
+            format!("Checks: {}", parts.join("; "))
+        }
     }
 
     /// Whether `w` submitted it (name and identity; a loaded submission's by name alone).
@@ -314,12 +393,16 @@ impl Submission {
             f.push(("task", Json::from(t)));
         }
         let failed = self.failed();
+        let ((ep, ef), (rp, rf)) = self.check_counts();
         f.push((
             "checks",
             Json::obj([
                 ("total", Json::from(self.checks.len())),
                 ("failed", Json::from(failed.len())),
                 ("failed_names", Json::arr(failed.iter().take(4).map(|c| Json::from(format!("{}:{}", c.kind, c.name))))),
+                // Measured by the engine vs reported by the submitter (never added together as passes).
+                ("engine", Json::obj([("passed", Json::from(ep)), ("failed", Json::from(ef))])),
+                ("reported", Json::obj([("passed", Json::from(rp)), ("failed", Json::from(rf)), ("by", Json::from(self.by.name.as_str()))])),
             ]),
         ));
         f.push(("captures", Json::from(self.captures.len())));
@@ -469,9 +552,14 @@ pub struct Critique {
     pub version: u64,
     pub status: CStatus,
     pub severity: String,
-    /// Who found it: `sight-skeptic`, `lane-reviewer`, an agent, the owner.
+    /// Who found it, as its author says (`sight-skeptic`, `lane-reviewer`, a check's name):
+    /// a claim, always shown with `by` beside it. Only the owner may say `owner` (or another
+    /// authority role): see [`Review::add_critiques`].
     pub source: String,
     pub by: Owner,
+    /// The author's authority when it was added: who else may close or reopen it
+    /// ([`Review::check_critique`]).
+    pub authority: Authority,
     pub text: String,
     pub capture: Option<String>,
     pub packet: Option<String>,
@@ -512,8 +600,15 @@ impl Critique {
             ("status", Json::from(self.status.name())),
             ("severity", Json::from(self.severity.as_str())),
             ("source", Json::from(self.source.as_str())),
+            ("by", Json::from(self.by.name.as_str())),
             ("text", Json::from(short(&self.text, 200))),
         ];
+        if self.authority > Authority::Agent {
+            f.push(("authority", Json::from(self.authority.name())));
+        }
+        if let Some(r) = &self.resolved_by {
+            f.push(("resolved_by", Json::from(r.as_str())));
+        }
         match &self.target {
             Some(Target::Entity { id, path }) => f.push(("entity", Json::obj([("id", Json::from(*id)), ("path", Json::from(path.as_str()))]))),
             Some(Target::Path(p)) => f.push(("path", Json::from(p.as_str()))),
@@ -548,15 +643,11 @@ impl Critique {
     pub fn to_json(&self) -> Json {
         let mut j = self.summary_json();
         j.set("text", Json::from(self.text.as_str()));
-        j.set("by", Json::from(self.by.name.as_str()));
         if let Some(p) = &self.packet {
             j.set("packet", Json::from(p.as_str()));
         }
         if !self.resolution.is_empty() {
             j.set("resolution", Json::from(self.resolution.as_str()));
-        }
-        if let Some(r) = &self.resolved_by {
-            j.set("resolved_by", Json::from(r.as_str()));
         }
         j.set("tick", Json::from(self.tick));
         j.set("updated_tick", Json::from(self.updated_tick));
@@ -577,6 +668,20 @@ pub struct CritiqueSpec {
     pub target: Option<Target>,
     pub submission: Option<u64>,
     pub assignee: Option<String>,
+}
+
+/// A `critique_update` that passed [`Review::check_critique`] (who may, and the critique's
+/// state); [`Review::apply_critique`] takes it. Only `check_critique` makes one.
+#[derive(Debug)]
+pub struct CritiqueCheck {
+    id: u64,
+    version: u64,
+}
+
+impl CritiqueCheck {
+    pub fn id(&self) -> u64 {
+        self.id
+    }
 }
 
 /// `critique_update`'s action.
@@ -821,8 +926,10 @@ impl Review {
     pub fn submit(&mut self, w: Writer, tick: u64, spec: SubmitSpec) -> Result<&Submission, WorldError> {
         if let Some(old) = spec.supersedes {
             let o = self.subs.get(&old).ok_or_else(|| err("submission_not_found", format!("supersedes {old}: there is no submission {old}")).with("submission", old))?;
-            if !o.submitted_by(w) {
-                return Err(err("not_yours", format!("submission {old} was submitted by {}; only they may supersede it", o.by.name)).with("submission", old));
+            // A submission read back after a restart knows its submitter by name alone: it can't
+            // be superseded (a namesake would withdraw it); submit anew and let a reviewer decide it.
+            if !o.submitted_by(w) || o.by.key.is_none() {
+                return Err(err("not_yours", format!("submission {old} was submitted by {}; only they may supersede it, and only in the run it was made in", o.by.name)).with("submission", old));
             }
             if matches!(o.status, Status::Approved | Status::Withdrawn) {
                 return Err(err("already_decided", format!("submission {old} is {}; supersede a pending or rejected one", o.status.name())).with("submission", old));
@@ -883,8 +990,9 @@ impl Review {
         Ok(&self.subs[&id])
     }
 
-    /// Why `w` (of `role`) may not decide submission `id` with `verdict`, if it may not.
-    pub fn check_decide(&self, w: Writer, role: Option<&str>, id: u64, verdict: Status) -> Result<&Submission, WorldError> {
+    /// Why `w` (with `authority`, from [`crate::authority::authority`]) may not decide
+    /// submission `id` with `verdict`, if it may not.
+    pub fn check_decide(&self, w: Writer, authority: Authority, id: u64, verdict: Status) -> Result<&Submission, WorldError> {
         let s = self.subs.get(&id).ok_or_else(|| err("submission_not_found", format!("there is no submission {id} (see review_list)")).with("submission", id))?;
         if s.status != Status::Pending {
             return Err(err("already_decided", format!("submission {id} is already {}", s.status.name()))
@@ -892,20 +1000,14 @@ impl Review {
                 .with("status", s.status.name()));
         }
         if verdict == Status::Withdrawn {
-            if !s.submitted_by(w) {
-                return Err(err("not_yours", format!("only {} (who submitted {id}) may withdraw it", s.by.name)).with("submission", id));
+            // After a restart the submitter is known by name alone: a namesake withdraws it only
+            // with reviewer authority.
+            if !s.submitted_by(w) || (s.by.key.is_none() && authority < Authority::Reviewer) {
+                return Err(crate::authority::refusal(crate::authority::Site::CritiqueUpdate, format!("only {} (who submitted {id}) may withdraw it; after a restart the submitter is known by name alone, so withdrawing then needs reviewer authority", s.by.name)).with("submission", id));
             }
             return Ok(s);
         }
-        if let Some(r) = role {
-            if !DECIDER_ROLES.contains(&r) {
-                return Err(err(
-                    "not_reviewer",
-                    format!("deciding submissions needs agent_hello with role owner, reviewer, lead or director (you are \"{r}\"); the owner can also decide at the window's review screen"),
-                )
-                .with("role", r));
-            }
-        }
+        crate::authority::require(authority, Authority::Reviewer, crate::authority::Site::ReviewDecide, "deciding submissions (the owner can also decide at the window's review screen)")?;
         if s.submitted_by(w) {
             return Err(err("self_review", format!("you submitted {id}: another reviewer (or the owner) decides it")).with("submission", id));
         }
@@ -954,8 +1056,18 @@ impl Review {
 
     // ---- critiques ----
 
-    /// `critique_add`: all or nothing.
-    pub fn add_critiques(&mut self, w: Writer, tick: u64, specs: Vec<CritiqueSpec>) -> Result<Vec<u64>, WorldError> {
+    /// `critique_add`: all or nothing. `authority`: the author's ([`crate::authority::authority`];
+    /// the owner's at the window). A source naming an authority role (`owner`, `lead`...) is
+    /// refused unless the author has it: a source is the author's claim, never a credential.
+    pub fn add_critiques(&mut self, w: Writer, authority: Authority, tick: u64, specs: Vec<CritiqueSpec>) -> Result<Vec<u64>, WorldError> {
+        if let Some((i, s)) = specs.iter().enumerate().find(|(_, s)| Authority::of_role(&s.source).is_some_and(|a| a > authority)) {
+            return Err(crate::authority::refusal(
+                crate::authority::Site::CritiqueSource,
+                format!("items[{i}]: source '{}' names an authority you don't have ({}); name the check or agent that found it (it defaults to you)", s.source, authority.name()),
+            )
+            .with("item", i)
+            .with("source", s.source.as_str()));
+        }
         if let Some((i, s)) = specs.iter().enumerate().find(|(_, s)| s.submission.is_some_and(|id| !self.subs.contains_key(&id))) {
             let id = s.submission.unwrap_or(0);
             return Err(err("submission_not_found", format!("items[{i}]: there is no submission {id}")).with("item", i).with("submission", id));
@@ -977,6 +1089,7 @@ impl Review {
                     severity: s.severity,
                     source: s.source,
                     by: Owner { name: w.name.to_owned(), key: w.session.map(str::to_owned) },
+                    authority,
                     text: s.text,
                     capture: s.capture,
                     packet: s.packet,
@@ -999,9 +1112,44 @@ impl Review {
         Ok(ids)
     }
 
-    /// Checks a `critique_update` action on `id` without applying it.
-    pub fn check_critique(&self, id: u64, action: &CritiqueAction, expect: Option<u64>) -> Result<&Critique, WorldError> {
+    /// Checks a `critique_update` action on `id` by `w` (with `authority`) without applying it;
+    /// [`Review::apply_critique`] needs what it returns, so no change skips the check.
+    ///
+    /// Who may: its author anything; its assignee may resolve it; anyone else needs reviewer
+    /// authority and at least its author's (an owner's critique is closed by the owner or
+    /// resolved by its assignee).
+    ///
+    /// ```compile_fail
+    /// // A check can't be made up: only check_critique returns one.
+    /// let c = specula::review::CritiqueCheck { id: 1, version: 1 };
+    /// ```
+    pub fn check_critique(&self, w: Writer, authority: Authority, id: u64, action: &CritiqueAction, expect: Option<u64>) -> Result<CritiqueCheck, WorldError> {
         let c = self.crits.get(&id).ok_or_else(|| err("critique_not_found", format!("there is no critique {id} (see critique_list)")).with("critique", id))?;
+        // After a restart the author is known by name alone (identity keys are per run): a
+        // namesake is the author only with the authority the critique was made with.
+        let author = c.by.is(w) && (c.by.key.is_some() || authority >= c.authority);
+        let assignee = c.assignee.as_deref() == Some(w.name) && matches!(action, CritiqueAction::Resolve(_));
+        let need = c.authority.max(Authority::Reviewer);
+        if !author && !assignee && authority < need {
+            return Err(crate::authority::refusal(
+                crate::authority::Site::CritiqueUpdate,
+                format!(
+                    "critique {id} is {}'s{}: only its author, its assignee (to resolve it) or {} authority may change it (you have {})",
+                    c.by.name,
+                    if c.authority > Authority::Agent { format!(" (made with {} authority)", c.authority.name()) } else { String::new() },
+                    need.name(),
+                    authority.name()
+                ),
+            )
+            .with("critique", id)
+            .with("by", c.by.name.as_str())
+            .with("needs", need.name()));
+        }
+        self.check_critique_state(c, id, action, expect)?;
+        Ok(CritiqueCheck { id, version: c.version })
+    }
+
+    fn check_critique_state(&self, c: &Critique, id: u64, action: &CritiqueAction, expect: Option<u64>) -> Result<(), WorldError> {
         if let Some(v) = expect.filter(|v| *v != c.version) {
             return Err(err("stale_critique", format!("critique {id} is at version {}, not {v}: re-read it (critique_list) and retry", c.version))
                 .with("critique", id)
@@ -1010,17 +1158,22 @@ impl Review {
         }
         match action {
             CritiqueAction::Reopen if c.status.open() => Err(err("not_closed", format!("critique {id} is {}; only a resolved or dismissed one reopens", c.status.name())).with("critique", id)),
-            CritiqueAction::Reopen => Ok(c),
+            CritiqueAction::Reopen => Ok(()),
             _ if !c.status.open() => Err(err("closed", format!("critique {id} is {}; reopen it first", c.status.name())).with("critique", id)),
             CritiqueAction::ToTask { .. } if c.status == CStatus::InTask => {
                 Err(err("already_in_task", format!("critique {id} is already carried by task {}", c.task.unwrap_or(0))).with("critique", id).with("task", c.task.unwrap_or(0)))
             }
-            _ => Ok(c),
+            _ => Ok(()),
         }
     }
 
-    /// Applies a checked `critique_update` (`task`: the board task `ToTask` posted).
-    pub fn apply_critique(&mut self, by: &str, tick: u64, id: u64, action: CritiqueAction, task: Option<u64>) -> Result<&Critique, WorldError> {
+    /// Applies a checked `critique_update` (`task`: the board task `ToTask` posted). Refused when
+    /// the critique changed since `check` was made.
+    pub fn apply_critique(&mut self, check: CritiqueCheck, by: &str, tick: u64, action: CritiqueAction, task: Option<u64>) -> Result<&Critique, WorldError> {
+        let id = check.id;
+        if self.crits.get(&id).map(|c| c.version) != Some(check.version) {
+            return Err(err("stale_critique", format!("critique {id} changed since it was checked: re-read it and retry")).with("critique", id));
+        }
         let seq = self.bump();
         let c = self.crits.get_mut(&id).ok_or_else(|| err("critique_not_found", format!("there is no critique {id}")).with("critique", id))?;
         match action {
@@ -1174,13 +1327,19 @@ impl Review {
                 .map(|c| Check {
                     kind: text(c, "kind"),
                     name: text(c, "name"),
-                    passed: c.get("passed").and_then(Json::as_bool).unwrap_or(false),
+                    passed: {
+                        let v = c.get("passed").and_then(Json::as_bool).unwrap_or(false);
+                        if c.get("engine").and_then(Json::as_bool) == Some(true) {
+                            Fact::Engine(v)
+                        } else {
+                            Fact::Claimed(Claimed { by: opt(c, "reported_by").unwrap_or_else(|| text(s, "submitted_by")), value: v })
+                        }
+                    },
                     severity: text(c, "severity"),
                     metric: opt(c, "metric"),
                     value: f64_of(c, "value"),
                     limit: f64_of(c, "limit"),
                     detail: text(c, "detail"),
-                    engine: c.get("engine").and_then(Json::as_bool).unwrap_or(false),
                 })
                 .collect();
             let roots = arr("roots")
@@ -1255,6 +1414,7 @@ impl Review {
                     status,
                     severity: text(c, "severity"),
                     source: text(c, "source"),
+                    authority: c.get("authority").and_then(Json::as_str).and_then(Authority::parse).or_else(|| crate::authority::of_writer_name(&text(c, "by"))).unwrap_or_default(),
                     by: Owner { name: text(c, "by"), key: None },
                     text: text(c, "text"),
                     capture: opt(c, "capture"),
@@ -1318,9 +1478,9 @@ mod tests {
             task: Some(4),
             captures: vec![Capture { path: "c/orbit.png".into(), kind: "contact_sheet".into(), packet: None, caption: String::new() }],
             checks: vec![
-                Check { kind: "style".into(), name: "budget".into(), passed: true, severity: "error".into(), metric: None, value: None, limit: None, detail: String::new(), engine: false },
-                Check { kind: "taste".into(), name: "silhouette".into(), passed: false, severity: "warning".into(), metric: Some("iou".into()), value: Some(0.8), limit: Some(0.75), detail: String::new(), engine: false },
-                Check { kind: "style".into(), name: "palette".into(), passed: false, severity: "error".into(), metric: None, value: None, limit: None, detail: String::new(), engine: false },
+                Check { kind: "style".into(), name: "budget".into(), passed: Fact::Claimed(Claimed { by: "ann".into(), value: true }), severity: "error".into(), metric: None, value: None, limit: None, detail: String::new() },
+                Check { kind: "taste".into(), name: "silhouette".into(), passed: Fact::Claimed(Claimed { by: "ann".into(), value: false }), severity: "warning".into(), metric: Some("iou".into()), value: Some(0.8), limit: Some(0.75), detail: String::new() },
+                Check { kind: "style".into(), name: "palette".into(), passed: Fact::Claimed(Claimed { by: "ann".into(), value: false }), severity: "error".into(), metric: None, value: None, limit: None, detail: String::new() },
             ],
             roots: vec![Root { path: "/staging/crypt".into(), id: 7, version: 2, stamp: 0xabc, entities: 12 }],
             journal: vec![3, 4],
@@ -1337,16 +1497,16 @@ mod tests {
         let s = r.submit(ANN, 10, spec("crypt props")).unwrap();
         assert_eq!((s.id, s.status), (1, Status::Pending));
         assert_eq!(s.failed().iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["palette", "silhouette"], "errors first");
-        assert_eq!(r.check_decide(ANN, Some("reviewer"), 1, Status::Approved).unwrap_err().code, "self_review");
-        assert_eq!(r.check_decide(BOB, Some("builder"), 1, Status::Approved).unwrap_err().code, "not_reviewer");
-        assert_eq!(r.check_decide(BOB, None, 1, Status::Withdrawn).unwrap_err().code, "not_yours");
-        assert!(r.check_decide(BOB, Some("reviewer"), 1, Status::Approved).is_ok());
-        assert!(r.check_decide(BOB, None, 1, Status::Rejected).is_ok(), "the window decides without a role");
+        assert_eq!(r.check_decide(ANN, Authority::Reviewer, 1, Status::Approved).unwrap_err().code, "self_review");
+        assert_eq!(r.check_decide(BOB, Authority::Agent, 1, Status::Approved).unwrap_err().code, "not_reviewer");
+        assert_eq!(r.check_decide(BOB, Authority::Owner, 1, Status::Withdrawn).unwrap_err().code, "not_yours");
+        assert!(r.check_decide(BOB, Authority::Reviewer, 1, Status::Approved).is_ok());
+        assert!(r.check_decide(BOB, Authority::Owner, 1, Status::Rejected).is_ok(), "the window is the owner");
         // A second identical pending submission for the task is refused.
         assert_eq!(r.submit(ANN, 11, spec("crypt props")).unwrap_err().code, "duplicate_submission");
         let d = Decision { verdict: Status::Rejected, by: "bob".into(), note: "palette".into(), tick: 12, promoted: None, task: Some(9), reverted: None };
         r.decide(1, d).unwrap();
-        assert_eq!(r.check_decide(BOB, Some("reviewer"), 1, Status::Approved).unwrap_err().code, "already_decided");
+        assert_eq!(r.check_decide(BOB, Authority::Reviewer, 1, Status::Approved).unwrap_err().code, "already_decided");
         // Resubmitting links the rejected one; a pending one superseded is withdrawn.
         let mut s2 = spec("crypt props v2");
         s2.supersedes = Some(1);
@@ -1371,14 +1531,17 @@ mod tests {
         let mut r = Review::default();
         r.submit(ANN, 1, spec("x")).unwrap();
         let c = CritiqueSpec { text: "the rim light is flat".into(), severity: "warning".into(), source: "sight-skeptic".into(), submission: Some(1), ..Default::default() };
-        assert_eq!(r.add_critiques(BOB, 2, vec![CritiqueSpec { submission: Some(99), ..c.clone() }]).unwrap_err().code, "submission_not_found");
-        let ids = r.add_critiques(BOB, 2, vec![c.clone(), c.clone()]).unwrap();
+        assert_eq!(r.add_critiques(BOB, Authority::Agent, 2, vec![CritiqueSpec { submission: Some(99), ..c.clone() }]).unwrap_err().code, "submission_not_found");
+        let ids = r.add_critiques(BOB, Authority::Agent, 2, vec![c.clone(), c.clone()]).unwrap();
         assert_eq!(ids, [1, 2]);
-        assert!(r.check_critique(1, &CritiqueAction::Reopen, None).is_err());
-        assert_eq!(r.check_critique(1, &CritiqueAction::Resolve("x".into()), Some(5)).unwrap_err().code, "stale_critique");
-        r.apply_critique("bob", 3, 1, CritiqueAction::ToTask { assign: Some("ann".into()) }, Some(40)).unwrap();
-        r.apply_critique("bob", 3, 2, CritiqueAction::ToTask { assign: None }, Some(41)).unwrap();
-        assert_eq!(r.check_critique(1, &CritiqueAction::ToTask { assign: None }, None).unwrap_err().code, "already_in_task");
+        let a = Authority::Agent;
+        assert!(r.check_critique(BOB, a, 1, &CritiqueAction::Reopen, None).is_err());
+        assert_eq!(r.check_critique(BOB, a, 1, &CritiqueAction::Resolve("x".into()), Some(5)).unwrap_err().code, "stale_critique");
+        let k = r.check_critique(BOB, a, 1, &CritiqueAction::ToTask { assign: Some("ann".into()) }, None).unwrap();
+        r.apply_critique(k, "bob", 3, CritiqueAction::ToTask { assign: Some("ann".into()) }, Some(40)).unwrap();
+        let k = r.check_critique(BOB, a, 2, &CritiqueAction::ToTask { assign: None }, None).unwrap();
+        r.apply_critique(k, "bob", 3, CritiqueAction::ToTask { assign: None }, Some(41)).unwrap();
+        assert_eq!(r.check_critique(BOB, a, 1, &CritiqueAction::ToTask { assign: None }, None).unwrap_err().code, "already_in_task");
         use crate::board::Status as T;
         let n = r.sync_tasks(4, |t| match t {
             40 => Some((T::Done, "ann".into(), "lit from the left".into())),
@@ -1391,9 +1554,13 @@ mod tests {
         assert!(c1.resolution.contains("lit from the left"));
         assert_eq!(r.critique(2).unwrap().status, CStatus::Open);
         assert_eq!(r.sync_tasks(5, |_| None), 0, "nothing in tasks any more");
-        r.apply_critique("ann", 6, 2, CritiqueAction::Dismiss("by design".into()), None).unwrap();
-        assert!(r.check_critique(2, &CritiqueAction::Assign("x".into()), None).is_err());
-        r.apply_critique("ann", 7, 2, CritiqueAction::Reopen, None).unwrap();
+        // Ann didn't write critique 2 and isn't its assignee: a reviewer may close it.
+        assert_eq!(r.check_critique(ANN, a, 2, &CritiqueAction::Dismiss("by design".into()), None).unwrap_err().code, "not_yours");
+        let k = r.check_critique(ANN, Authority::Reviewer, 2, &CritiqueAction::Dismiss("by design".into()), None).unwrap();
+        r.apply_critique(k, "ann", 6, CritiqueAction::Dismiss("by design".into()), None).unwrap();
+        assert!(r.check_critique(BOB, a, 2, &CritiqueAction::Assign("x".into()), None).is_err());
+        let k = r.check_critique(BOB, a, 2, &CritiqueAction::Reopen, None).unwrap();
+        r.apply_critique(k, "bob", 7, CritiqueAction::Reopen, None).unwrap();
         let list = r.list_critiques(&CritiqueQuery { statuses: vec![CStatus::Open], limit: 5, ..Default::default() });
         assert_eq!(list.get("total"), Some(&Json::from(1)));
         let full = r.get(1).unwrap().to_json(&r.critiques_on(1), "");
@@ -1416,7 +1583,7 @@ mod tests {
             target: Some(Target::Entity { id: 7, path: "/staging/crypt".into() }),
             ..Default::default()
         };
-        r.add_critiques(BOB, 4, vec![c]).unwrap();
+        r.add_critiques(BOB, Authority::Owner, 4, vec![c]).unwrap();
         let text = r.render();
         let back = Review::parse(&text).unwrap();
         assert_eq!(back.render(), text, "render(parse(render)) is stable");
@@ -1460,5 +1627,142 @@ mod tests {
         // Byte budget: a full store refuses more, after dropping what is decided.
         r.bytes = MAX_BYTES;
         assert_eq!(r.submit(ANN, 99, spec("late")).unwrap_err().code, "review_full");
+    }
+
+    /// Every provenance key a detailed item has, its concise item has too.
+    fn provenance_kept(detailed: &Json, concise: &Json, what: &str) {
+        let Json::Obj(pairs) = detailed else { panic!("{what}: an object") };
+        for (k, _) in pairs {
+            if crate::response::PROVENANCE.contains(&k.as_str()) {
+                assert!(concise.get(k).is_some(), "{what}: the concise item drops provenance '{k}' (detailed has it): {concise}");
+            }
+        }
+    }
+
+    const CARL: Writer = Writer { name: "carl", session: Some("k-carl") };
+
+    #[test]
+    fn critiques_belong_to_their_authors() {
+        let mut r = Review::default();
+        r.submit(ANN, 1, spec("x")).unwrap();
+        let c = CritiqueSpec { text: "too dark".into(), severity: "warning".into(), source: "sight-skeptic".into(), submission: Some(1), assignee: Some("ann".into()), ..Default::default() };
+        // M4 finding: carl (no authority) resolved, dismissed and reopened anyone's critique,
+        // even the owner's.
+        let window = Writer::new(crate::authority::WINDOW_OWNER, Some(crate::authority::WINDOW_OWNER));
+        let owner_c = r.add_critiques(window, Authority::Owner, 2, vec![CritiqueSpec { source: crate::authority::ROLE_OWNER.into(), ..c.clone() }]).unwrap()[0];
+        let bobs = r.add_critiques(BOB, Authority::Agent, 2, vec![c.clone()]).unwrap()[0];
+        let dismiss = CritiqueAction::Dismiss("meh".into());
+        for (id, action) in [(owner_c, &dismiss), (bobs, &dismiss), (bobs, &CritiqueAction::Assign("carl".into())), (bobs, &CritiqueAction::ToTask { assign: None })] {
+            let e = r.check_critique(CARL, Authority::Agent, id, action, None).unwrap_err();
+            assert_eq!((e.code, e.detail("refused_at")), ("not_yours", Some(&Json::from("critique_update"))), "critique {id} {action:?}");
+        }
+        // A reviewer may close bob's, not the owner's; the assignee may resolve either.
+        assert!(r.check_critique(CARL, Authority::Reviewer, bobs, &dismiss, None).is_ok());
+        assert_eq!(r.check_critique(CARL, Authority::Lead, owner_c, &dismiss, None).unwrap_err().code, "not_yours");
+        assert!(r.check_critique(ANN, Authority::Agent, owner_c, &CritiqueAction::Resolve("fixed".into()), None).is_ok());
+        assert_eq!(r.check_critique(ANN, Authority::Agent, owner_c, &dismiss, None).unwrap_err().code, "not_yours", "an assignee resolves, never dismisses");
+        assert!(r.check_critique(BOB, Authority::Agent, bobs, &dismiss, None).is_ok(), "the author may");
+        // A check made before the critique changed is refused at apply.
+        let k = r.check_critique(BOB, Authority::Agent, bobs, &dismiss, None).unwrap();
+        let k2 = r.check_critique(BOB, Authority::Agent, bobs, &CritiqueAction::Assign("x".into()), None).unwrap();
+        r.apply_critique(k2, "bob", 3, CritiqueAction::Assign("x".into()), None).unwrap();
+        assert_eq!(r.apply_critique(k, "bob", 4, dismiss.clone(), None).unwrap_err().code, "stale_critique");
+        // A source is a claim, not a credential: only the owner says "owner".
+        for (who, a) in [(CARL, Authority::Agent), (CARL, Authority::Lead)] {
+            let e = r.add_critiques(who, a, 5, vec![CritiqueSpec { source: crate::authority::ROLE_OWNER.into(), ..c.clone() }]).unwrap_err();
+            assert_eq!(e.code, "source_reserved");
+        }
+        assert!(r.add_critiques(CARL, Authority::Lead, 5, vec![CritiqueSpec { source: crate::authority::ROLE_LEAD.into(), ..c.clone() }]).is_ok());
+        // The owner's critique keeps its authority through the file.
+        let back = Review::parse(&r.render()).unwrap();
+        assert_eq!(back.critique(owner_c).unwrap().authority, Authority::Owner);
+        assert_eq!(back.critique(bobs).unwrap().authority, Authority::Agent);
+    }
+
+    #[test]
+    fn provenance_survives_concise_listings() {
+        let mut r = Review::default();
+        let mut s = spec("crypt");
+        s.checks = vec![Check { kind: "style".into(), name: "palette".into(), passed: Fact::Claimed(Claimed { by: "ann".into(), value: true }), severity: "error".into(), metric: None, value: None, limit: None, detail: String::new() }];
+        let id = r.submit(ANN, 1, s).unwrap().id;
+        r.decide(id, Decision { verdict: Status::Approved, by: "bob".into(), note: "ok".into(), tick: 2, promoted: None, task: None, reverted: None }).unwrap();
+        let c = CritiqueSpec { text: "x".into(), severity: "note".into(), source: "taste".into(), submission: Some(id), ..Default::default() };
+        let cid = r.add_critiques(BOB, Authority::Agent, 3, vec![c]).unwrap()[0];
+        let k = r.check_critique(BOB, Authority::Agent, cid, &CritiqueAction::Resolve("done".into()), None).unwrap();
+        r.apply_critique(k, "bob", 4, CritiqueAction::Resolve("done".into()), None).unwrap();
+        let crit = r.critique(cid).unwrap();
+        provenance_kept(&crit.to_json(), &crit.summary_json(), "critique_list");
+        assert_eq!(crit.summary_json().get("by"), Some(&Json::from("bob")));
+        assert_eq!(crit.summary_json().get("resolved_by"), Some(&Json::from("bob")));
+        let sub = r.get(id).unwrap();
+        provenance_kept(&sub.to_json(&r.critiques_on(id), ""), &sub.summary_json(1, ""), "review_list");
+        // The listing's counts keep engine results and reported ones apart.
+        let checks = sub.summary_json(0, "").get("checks").cloned().unwrap();
+        assert_eq!(checks.get("reported").and_then(|r| r.get("passed")), Some(&Json::from(1)));
+        assert_eq!(checks.get("engine").and_then(|r| r.get("passed")), Some(&Json::from(0)));
+    }
+
+    #[test]
+    fn the_checks_line_never_counts_reported_checks_as_the_engines() {
+        let mut r = Review::default();
+        let mut s = spec("crypt");
+        let check = |name: &str, passed: Fact<bool>| Check { kind: "style".into(), name: name.into(), passed, severity: "error".into(), metric: None, value: None, limit: None, detail: String::new() };
+        s.checks = vec![
+            check("paths_exist", Fact::Engine(true)),
+            check("captures_exist", Fact::Engine(true)),
+            check("palette", Fact::Claimed(Claimed { by: "bob".into(), value: true })),
+            check("budget", Fact::Claimed(Claimed { by: "bob".into(), value: true })),
+        ];
+        let id = r.submit(BOB, 1, s).unwrap().id;
+        // M4 finding: the screen said "all 4 passed".
+        assert_eq!(r.get(id).unwrap().checks_line(), "Checks: 2 engine check(s) passed; 2 reported by bob passed");
+        // The screen shows them as two lines (the reported one in a neutral colour; review.json).
+        let (engine, reported) = r.get(id).unwrap().checks_parts();
+        assert_eq!(engine, "Engine checks: 2 passed");
+        assert_eq!(reported, "Reported by bob (not checked by the engine): 2 passed");
+        let ui = include_str!("../ui/review.json");
+        assert!(ui.contains(r#""text": "{checks_reported}", "role": "small""#), "the reported part is neutral, never the engine's green");
+        let text = r.render();
+        let back = Review::parse(&text).unwrap();
+        assert_eq!(back.get(id).unwrap().checks, r.get(id).unwrap().checks, "provenance round-trips through the file");
+    }
+
+    /// Review of the authority lane: after a restart (keys are per run) anyone with the owner's
+    /// name could dismiss the owner's critique, and a namesake could withdraw or supersede a
+    /// submission.
+    #[test]
+    fn namesakes_after_a_restart_are_not_the_author() {
+        let mut r = Review::default();
+        let boss = Writer::new("boss", Some("k-boss"));
+        let c = CritiqueSpec { text: "too dark".into(), severity: "warning".into(), source: "taste".into(), ..Default::default() };
+        let id = r.add_critiques(boss, Authority::Owner, 1, vec![c.clone()]).unwrap()[0];
+        let imposter = Writer::new("boss", Some("k-other"));
+        let dismiss = CritiqueAction::Dismiss("meh".into());
+        assert!(r.check_critique(imposter, Authority::Agent, id, &dismiss, None).is_err());
+        let mut back = Review::parse(&r.render()).unwrap();
+        assert_eq!(back.check_critique(imposter, Authority::Agent, id, &dismiss, None).unwrap_err().code, "not_yours", "a namesake after reload");
+        assert!(back.check_critique(imposter, Authority::Owner, id, &dismiss, None).is_ok(), "the owner (by authority) may");
+        // An agent's own critique after a restart: its namesake with the same (agent) authority
+        // is taken as its author (nothing better is known), as before.
+        let mine = back.add_critiques(ANN, Authority::Agent, 2, vec![c]).unwrap()[0];
+        let back2 = Review::parse(&back.render()).unwrap();
+        assert!(back2.check_critique(Writer::new("ann", Some("k-x")), Authority::Agent, mine, &dismiss, None).is_ok());
+        // Submissions: a namesake can't withdraw or supersede one read back from the file.
+        r.submit(ANN, 3, spec("crypt")).unwrap();
+        let mut back = Review::parse(&r.render()).unwrap();
+        let ann2 = Writer::new("ann", Some("k-ann-2"));
+        assert_eq!(back.check_decide(ann2, Authority::Agent, 1, Status::Withdrawn).unwrap_err().code, "not_yours");
+        assert!(back.check_decide(ann2, Authority::Reviewer, 1, Status::Withdrawn).is_ok());
+        assert_eq!(back.submit(ann2, 4, SubmitSpec { supersedes: Some(1), ..spec("crypt again") }).unwrap_err().code, "not_yours");
+    }
+
+    #[test]
+    fn reserved_sources_are_compared_as_they_look() {
+        let mut r = Review::default();
+        r.submit(ANN, 1, spec("x")).unwrap();
+        for src in ["Owner", "OWNER", "window:owner", "Window:Owner", "\u{043e}wner", "LEAD", "Reviewer"] {
+            let c = CritiqueSpec { text: "x".into(), severity: "note".into(), source: src.into(), ..Default::default() };
+            assert_eq!(r.add_critiques(BOB, Authority::Agent, 2, vec![c]).unwrap_err().code, "source_reserved", "{src:?}");
+        }
     }
 }

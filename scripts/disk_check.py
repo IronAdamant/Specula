@@ -214,7 +214,7 @@ def phase_budget(exe, port, adapter, work, out):
     write_perf(perf, {"captures_mb": 1, "free_floor_mb": 0, "warn_percent": 50, "scratch_grace_s": 60})
     with Engine(exe, port, out / "engine_budget.log", *engine_args(work, perf, adapter), cwd=str(ROOT)) as eng:
         lead = eng.mcp("disk-lead")
-        lead.hello("lead", role="lead")
+        lead.hello("disk-lead", role="lead")
         a = eng.mcp("disk-ann")
         a.hello("ann")
         st = lead.json("disk_status", detailed=True, measure=True)
@@ -554,7 +554,7 @@ def phase_evidence(exe, port, adapter, out):
     ev_a = w / "worlds" / "alpha" / "evidence"
     with Engine(exe, port, out / "engine_ev1.log", *engine_args(w, p0, adapter), "--world", "alpha", cwd=str(ROOT)) as eng:
         lead = eng.mcp("ev-lead")
-        lead.hello("lead", role="lead")
+        lead.hello("disk-lead", role="lead")
         a = eng.mcp("ev-ann")
         a.hello("ann")
         a.json("world_spawn", shape="group", name="staging")
@@ -679,7 +679,8 @@ def phase_robustness(exe, port, adapter, out):
     # P4/P5: 32 critiques naming the same two 16 MiB files: copied once, off the engine thread.
     with Engine(exe, port + 3, out / "engine_rb4.log", *engine_args(w, p0, adapter), "--world", "big", cwd=str(ROOT)) as eng:
         a = eng.mcp("rb-ann2")
-        a.hello("ann")
+        # ann renames the world below (world_save under a new name): the lead's call.
+        a.hello("ann", role="lead")
         run = Path(body(a.call("sight_frame", width=64, height=64))["image"]["path"]).parent
         big, big2 = run / "big.bin", run / "big2.bin"
         big.write_bytes(os.urandom(16 << 20))
@@ -790,7 +791,7 @@ def phase_refusals(exe, port, adapter, out):
         print("   recordings:", json.dumps(rec))
         check(replay.is_file() and rec and (rec.get("files", 0) >= 1 or rec.get("mb", 0) > 0), "the playtest's replay is counted under recordings")
         lead = eng.mcp("rf-lead")
-        lead.hello("lead", role="lead")
+        lead.hello("disk-lead", role="lead")
         lead.json("disk_prune", free_mb=4096)
         check(replay.is_file(), "a prune never takes a replay")
         lead.close()

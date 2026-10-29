@@ -134,12 +134,12 @@ def engine_args(a, out, sub, extra=()):
 
 def part_swarm(a, out, summary):
     print("swarm, correlation and the debugger:")
-    with Engine(a.exe, a.port, out / "engine-swarm.log", *engine_args(a, out, "swarm", ["--", "--seed", "7"]), cwd=str(ROOT)) as eng:
+    with Engine(a.exe, a.port, out / "engine-swarm.log", *engine_args(a, out, "swarm", ["--lead", "trace-lead", "--reviewer", "debugger", "--", "--seed", "7"]), cwd=str(ROOT)) as eng:
         lead, ann, bob, dbg = (eng.mcp(n) for n in ("trace-lead", "trace-ann", "trace-bob", "trace-debugger"))
-        lead.hello("lead", role="lead")
+        lead.hello("trace-lead", role="lead")  # granted: authority comes from the operator (docs/design/AUTHORITY.md)
         ann.hello("ann")
         bob.hello("bob")
-        dbg.hello("debugger", role="debugger")
+        dbg.hello("debugger", role="reviewer")  # the debugger job reviews incidents: granted --reviewer debugger
         debugger = Debugger(dbg)
         # Mixed work.
         for group in ("/trace_check", "/trace_check/ann", "/trace_check/bob"):

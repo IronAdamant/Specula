@@ -344,7 +344,7 @@ def main():
     args = ["--headless", "--paused", "--captures", str(lead_dir / "captures"), "--perf", str(perf), "--", "--mute"]
     with TrackedEngine(a.exe, a.lead_port, lead_dir / "lead.log", *args, cwd=str(lead_dir.parent)) as lead:
         lab = lead.mcp("balance-lab")
-        lab.hello("balance-lab", role="lead")
+        lab.hello("balance-lab", role="balancer")
         lab.json("lex_import", set=SET, document=json.loads(SLICE.read_text()))
         sweep = lab.json("balance_sweep", set=SET, targets=targets, points=[point], seeds=seeds, runs=True)
         lab.close()

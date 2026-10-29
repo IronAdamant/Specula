@@ -189,7 +189,7 @@ def main():
     summary = {"filmstrip": [], "crossfade": [], "reports": {}}
     with Engine(a.exe, a.port, out / "engine.log", *args, cwd=str(ROOT)) as engine:
         mcp = engine.mcp("anim-check")
-        mcp.call("agent_hello", name="anim_check", role="reviewer")
+        mcp.call("agent_hello", name="anim_check", role="checker")
         mcp.call("world_env", **NIGHT)
 
         # 1. Reports: bones and clips.

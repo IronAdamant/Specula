@@ -144,7 +144,7 @@ pub fn definitions() -> Vec<ToolDef> {
              world first (as the next tick would). Returns the tick, hashes, section sizes and timings. An existing save \
              is only replaced with overwrite: true (another agent's only with force: true too). At most two saves are \
              written at once (busy: call again).",
-            schema(vec![name(), ("label", t("string", "A note shown by save_list (\"before wave 4\"), up to 200 characters")), ("overwrite", t("boolean", "Replace an existing save of that name")), ("force", t("boolean", "Replace another agent's save"))], &["name"]),
+            schema(vec![name(), ("label", t("string", "A note shown by save_list (\"before wave 4\"), up to 200 characters")), ("overwrite", t("boolean", "Replace an existing save of that name")), ("force", t("boolean", "Replace another agent's save (lead authority only)"))], &["name"]),
         ),
         def(
             "save_read",
@@ -164,8 +164,8 @@ pub fn definitions() -> Vec<ToolDef> {
         ),
         def(
             "save_delete",
-            "Delete a save game. Only the agent that wrote it may, unless force: true.",
-            schema(vec![name(), ("force", t("boolean", "Delete another agent's save"))], &["name"]),
+            "Delete a save game. Only the agent that wrote it may (a lead may with force: true).",
+            schema(vec![name(), ("force", t("boolean", "Delete another agent's save (lead authority only)"))], &["name"]),
         ),
     ]
 }
@@ -222,6 +222,20 @@ enum Owner {
     Unknown,
 }
 
+/// `force` on save `name` by identity `key` with `authority`: allowed on the caller's own (or a
+/// missing) save; on another agent's it needs lead authority (owner, 2026-10-29).
+fn force_on_save(path: &std::path::Path, key: &str, force: bool, authority: crate::authority::Authority, what: &str) -> Result<bool, SaveError> {
+    if !force || !path.exists() {
+        return Ok(force);
+    }
+    let own = matches!(owner_of(path, key), Owner::Mine);
+    crate::authority::may_force(authority, own, what).map(|()| true).map_err(|e| {
+        let mut s = SaveError::new(e.code, e.message);
+        s.details = e.details;
+        s
+    })
+}
+
 fn owner_of(path: &std::path::Path, key: &str) -> Owner {
     let Ok((_, h)) = read_head(path).and_then(|(_, h)| savegame::peek(&h)) else { return Owner::Unknown };
     match h.get("owner").and_then(Json::as_str) {
@@ -241,7 +255,7 @@ fn whose(o: &Owner) -> String {
 /// Where a background save's or load's answer goes.
 pub(crate) enum Dest {
     /// An agent's tool call.
-    Tool(std::sync::mpsc::Sender<ToolOutput>),
+    Tool(crate::jobs::Reply),
     /// The hosted game's request (its menu): answered with `Game::request_done`.
     Game(GameRequest),
 }
@@ -638,10 +652,10 @@ impl Engine {
     }
 
     /// The save tools answered on the engine thread at once (`save_list`, `save_delete`).
-    pub(crate) fn handle_save(&mut self, call: SaveCall, w: Writer, by: &str) -> ToolOutput {
+    pub(crate) fn handle_save(&mut self, call: SaveCall, w: Writer, by: &str, authority: crate::authority::Authority) -> ToolOutput {
         match call {
             SaveCall::List { cursor, limit } => out(self.list_saves(cursor, limit)),
-            SaveCall::Delete { name, force } => match self.delete_save(&name, force, w.session.unwrap_or(by)) {
+            SaveCall::Delete { name, force } => match force_on_save(&self.save_path(&name), w.session.unwrap_or(by), force, authority, "save_delete").and_then(|force| self.delete_save(&name, force, w.session.unwrap_or(by))) {
                 Ok(j) => out(j),
                 Err(e) => fail(&e),
             },
@@ -656,9 +670,13 @@ impl Engine {
         let crate::tools::Command::SaveGame(call) = request.command else { return };
         let by = self.swarm.agent_name(&request.session);
         let key = self.swarm.key(&request.session);
+        let authority = crate::authority::authority(&self.swarm, &request.session.id);
         let reply = request.reply;
         let started = match call {
-            SaveCall::Write { name, label, overwrite, force } => self.start_save(&name, label, overwrite, force, &by, &key, Dest::Tool(reply.clone())),
+            SaveCall::Write { name, label, overwrite, force } => match force_on_save(&self.save_path(&name), &key, force && overwrite, authority, "save_write") {
+                Ok(force) => self.start_save(&name, label, overwrite, force, &by, &key, Dest::Tool(reply.clone())),
+                Err(e) => Err(e),
+            },
             SaveCall::Read { name, inspect: true, .. } => {
                 // Reading and checking a file needs nothing of the engine's: on a worker, at most
                 // MAX_INSPECTS at once (each streams with a small buffer).
@@ -690,7 +708,7 @@ impl Engine {
             }
             SaveCall::Read { name, force, .. } => self.start_load(&name, force, &by, Some(key), Dest::Tool(reply.clone())),
             other => {
-                let _ = reply.send(self.handle_save(other, Writer::new(&by, Some(&key)), &by));
+                let _ = reply.send(self.handle_save(other, Writer::new(&by, Some(&key)), &by, authority));
                 return;
             }
         };
@@ -820,6 +838,9 @@ impl Engine {
         if self.game.is_some() && !sections.iter().any(|s| s.name == "game") {
             notes.push(Json::from("the hosted game keeps no save state: a load restores the world, physics and modules, and the game starts from what the world shows"));
         }
+        // What this save holds: work up to here is kept somewhere (a forced load discards only
+        // what came after; see `Engine::others_unsaved`).
+        self.checkpoint_seq = self.swarm.journal().last_seq();
         Ok(SaveJob {
             name: name.to_owned(),
             dir: self.saves_dir.clone(),
@@ -883,6 +904,20 @@ impl Engine {
             s
         })?;
         if force {
+            // Coordinator, 2026-10-29: force discarding another agent's unsaved work is the
+            // lead's call (the simulation's own changes and the caller's are anyone's; the
+            // game's own menu, `key` None, is the player's).
+            if let Some(k) = key.filter(|_| self.dirty()) {
+                if let Some(other) = self.others_unsaved(k) {
+                    let have = self.swarm.authority_of_key(k);
+                    crate::authority::may_force(have, false, "save_read {force} (it discards another agent's unsaved changes)").map_err(|e| {
+                        let mut s = SaveError::new(e.code, e.message);
+                        s.details = e.details;
+                        s.details.push(("unsaved_by", Json::from(other.as_str())));
+                        s
+                    })?;
+                }
+            }
             return Ok(may);
         }
         if since.is_some_and(|r| r != self.world.revision()) {
@@ -948,6 +983,7 @@ impl Engine {
         self.saved = None;
         self.world_lock = None;
         self.saved_revision = self.world.revision();
+        self.saved_seq = self.swarm.journal().last_seq();
         self.hash_cache = None;
         self.last_advance = Instant::now();
         let apply_ms = t1.elapsed().as_secs_f64() * 1000.0;

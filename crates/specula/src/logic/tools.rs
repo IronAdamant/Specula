@@ -637,8 +637,8 @@ fn tools_call(to_engine: &Sender<Request>, session: &SessionInfo, call: crate::p
 
 /// Sends a project command to the engine thread: `(answer as JSON, is_error)`.
 fn project_call(to_engine: &Sender<Request>, session: &SessionInfo, call: crate::project_tools::ProjectCall) -> (Json, bool) {
-    let (reply, answer) = mpsc::channel();
-    let request = Request { session: session.clone(), command: Command::Project(call), reply, deadline: Instant::now() + RELOAD_TIMEOUT, trace: specula_core::trace::Ctx::current() };
+    let (reply, answer) = crate::jobs::channel();
+    let request = Request { session: session.clone(), call: crate::tools::current_call(), command: Command::Project(call), reply, deadline: Instant::now() + RELOAD_TIMEOUT, trace: specula_core::trace::Ctx::current() };
     let out = if to_engine.send(request).is_err() {
         ToolOutput::error("the engine is shutting down")
     } else {
@@ -653,8 +653,8 @@ fn project_call(to_engine: &Sender<Request>, session: &SessionInfo, call: crate:
 
 /// Sends a command to the engine thread and waits for its answer: `(answer as JSON, is_error)`.
 fn engine_call(to_engine: &Sender<Request>, session: &SessionInfo, call: LogicCall) -> (Json, bool) {
-    let (reply, answer) = mpsc::channel();
-    let request = Request { session: session.clone(), command: Command::Logic(call), reply, deadline: Instant::now() + RELOAD_TIMEOUT, trace: specula_core::trace::Ctx::current() };
+    let (reply, answer) = crate::jobs::channel();
+    let request = Request { session: session.clone(), call: crate::tools::current_call(), command: Command::Logic(call), reply, deadline: Instant::now() + RELOAD_TIMEOUT, trace: specula_core::trace::Ctx::current() };
     let out = if to_engine.send(request).is_err() {
         ToolOutput::error("the engine is shutting down; nothing was loaded")
     } else {

@@ -6,6 +6,7 @@
  "title": "Undo exactly one agent's damage",
  "summary": "Journal forensics: find which entries one agent made, undo them (force over others' later work where needed) and keep everything others built afterwards.",
  "game": null,
+ "solver_role": "lead",
  "setup": [
   {
    "as": "builder",

@@ -65,17 +65,16 @@ fn prune(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<ToolOutput
 impl crate::Engine {
     /// The lead check before a forced prune.
     pub(crate) fn disk_gate(&self, session: &SessionInfo) -> ToolOutput {
-        if self.swarm.introduced(&session.id) && matches!(self.swarm.role(&session.id), "lead" | "director") {
-            return ToolOutput::text("{}");
+        let have = crate::authority::authority(&self.swarm, &session.id);
+        match crate::authority::require(
+            have,
+            crate::authority::Authority::Lead,
+            crate::authority::Site::DiskPrune,
+            "free_mb (it deletes more than the budget needs, the oldest captures first; anyone may prune what the budget needs, without free_mb, or dry_run)",
+        ) {
+            Ok(()) => ToolOutput::text("{}"),
+            Err(e) => ToolOutput::error(e.to_json().to_string()),
         }
-        ToolOutput::error(
-            Json::obj([
-                ("error", Json::from("lead_only")),
-                ("message", Json::from("free_mb deletes more than the budget needs (the oldest captures first): only the lead (agent_hello role \"lead\" or \"director\") may; anyone may prune what the budget needs (no free_mb) or dry_run")),
-                ("role", Json::from(self.swarm.role(&session.id))),
-            ])
-            .to_string(),
-        )
     }
 
     /// `engine_info.disk`: the book's summary, plus what only the engine knows (the journal's

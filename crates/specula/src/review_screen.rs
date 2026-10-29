@@ -448,11 +448,15 @@ impl ReviewUi {
         }
         st.set_str("meta", &meta);
         let failed = s.failed();
-        let passed = s.checks.len() - failed.len();
-        st.set_str(
-            "checks_line",
-            &if failed.is_empty() { format!("Checks: all {} passed", s.checks.len()) } else { format!("Checks: {passed} passed, {} failed", failed.len()) },
-        );
+        // Engine results and the submitter's reported ones apart (never "all N passed"), and in
+        // different colours: the engine's green (amber when one failed), the reported neutral.
+        let ((_, ef), (_, rf)) = s.check_counts();
+        let (engine, reported) = s.checks_parts();
+        st.set_str("checks_line", &s.checks_line());
+        st.set_str("checks_engine", &engine);
+        st.set_bool("engine_failed", ef > 0);
+        st.set_str("checks_reported", &reported);
+        st.set_bool("reported_failed", rf > 0);
         for (k, c) in failed.iter().take(4).enumerate() {
             let mut line = format!("{} {}:{}", c.severity, c.kind, c.name);
             if let (Some(m), Some(v)) = (&c.metric, c.value) {

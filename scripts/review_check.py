@@ -173,7 +173,9 @@ def main():
         shutil.rmtree(worlds)
     out.mkdir(parents=True, exist_ok=True)
     args = ["--adapter", a.adapter, "--size", "1280x800", "--assets", str(ROOT / "games" / "sepulcra" / "assets"),
-            "--captures", str(out / "captures"), "--worlds", str(worlds), "--world", "review_check"]
+            "--captures", str(out / "captures"), "--worlds", str(worlds), "--world", "review_check",
+            # Authority is granted by the operator, never self-declared (docs/design/AUTHORITY.md).
+            "--lead", "lead", "--reviewer", "reviewer"]
     report = {}
     with Engine(exe, a.port, out / "engine.log", *args, cwd=str(ROOT)) as eng:
         lead, b1, b2, b3, rev, sk = (eng.mcp(n) for n in ("lead", "builder-1", "builder-2", "builder-3", "reviewer", "skeptic"))
@@ -393,7 +395,7 @@ def main():
 
     # -- a fresh headless engine reads the queue back --
     with Engine(exe, a.port, out / "engine_reload.log", "--headless", "--worlds", str(worlds), "--world", "review_check",
-                "--captures", str(out / "captures"), cwd=str(ROOT)) as eng:
+                "--captures", str(out / "captures"), "--reviewer", "reviewer", cwd=str(ROOT)) as eng:
         m = eng.mcp("reader")
         back = (call(m, "review_list")["total"], call(m, "critique_list")["total"])
         check(back == totals, f"the queue and critiques come back with the world: {back} == {totals}")

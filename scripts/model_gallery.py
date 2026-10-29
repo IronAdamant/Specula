@@ -137,7 +137,7 @@ def main():
 
     with Engine(a.exe, a.port, out / "engine.log", *args, cwd=str(ROOT)) as engine:
         mcp = engine.mcp("model-gallery")
-        mcp.call("agent_hello", name="gallery", role="reviewer")
+        mcp.call("agent_hello", name="gallery", role="checker")
         mcp.call("world_env", **NIGHT)
 
         # 1. Reports.

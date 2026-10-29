@@ -10,9 +10,11 @@ agents' claimed work**.
 
 ## Identity
 
-`agent_hello {name: "debugger", role: "debugger"}`. The role is free text to the engine today; when the scoped-tools
-lane's role templates (`toolscope::ROLES`) merge, the integrator adds a `debugger` template with the families
-below.
+`agent_hello {name: "debugger", role: "debugger"}`: a job label, which carries no authority. To resolve or reopen
+incidents it names no agent for, the debugger needs reviewer authority, which only the operator grants
+(`--reviewer debugger`, then `agent_hello {name: "debugger", role: "reviewer"}`; [AUTHORITY.md](AUTHORITY.md)).
+When the scoped-tools lane's role templates (`toolscope::ROLES`) merge, the integrator adds a `debugger` template
+with the families below.
 
 **Tool families it needs** (for the role template):
 
