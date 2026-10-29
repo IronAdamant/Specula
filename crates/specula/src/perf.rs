@@ -243,6 +243,9 @@ pub fn stats_json(s: &FrameStats) -> Json {
                 ("particle_draw_calls", Json::from(d.particle_draw_calls)),
                 ("decals", Json::from(d.decals)),
                 ("decal_draw_calls", Json::from(d.decal_draw_calls)),
+                ("terrain_patches", Json::from(d.terrain_patches)),
+                ("terrain_triangles", Json::from(d.terrain_triangles)),
+                ("water_draws", Json::from(d.water_draws)),
             ]),
         ),
         (

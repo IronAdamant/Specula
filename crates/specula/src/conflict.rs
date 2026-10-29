@@ -113,6 +113,7 @@ impl Yours {
             (u.anim.is_some(), "anim"),
             (u.vfx.is_some(), "vfx"),
             (u.decal.is_some(), "decal"),
+            (u.water.is_some(), "water"),
             (u.visible.is_some(), "visible"),
             (u.layer.is_some(), "layer"),
             (u.tiles.is_some(), "tilemap"),

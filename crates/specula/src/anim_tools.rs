@@ -1168,6 +1168,7 @@ impl Engine {
             draws_2d: &[],
             bones,
             effects: Default::default(),
+            terrains: &[],
         };
         self.gpu.render(target_id, &frame).map_err(|e| capture::gpu_failure("render", &e, self.windowed))?;
         let px = self.gpu.read_rgba8(target_id).map_err(|e| capture::gpu_failure("readback", &e, self.windowed))?;

@@ -18,6 +18,12 @@
 //! - **Exports:** [`Terrain::physics_heightfield`] (resampled to a side limit, e.g. the
 //!   engine's 129), [`Terrain::walkable_cells`] for navmesh building, [`Terrain::mesh`] (optionally
 //!   a closed slab with sides and a bottom).
+//! - **Tiles and edits** (the terrain renderer's, docs/design/TERRAIN.md): `offset` moves the
+//!   noise domain (tiles of one terrain line up), `edge_lock` eases erosion out at the border (so
+//!   neighbouring tiles share their edge heights), and `edits` are sculpt and paint strokes as data,
+//!   applied in order after everything else, in domain coordinates (local + offset).
+//! - **Render settings** ([`TerrainRender`]): how the terrain renderer draws it (layer materials,
+//!   skirt, grain); `None` draws the mesh as before.
 
 use specula_core::rng::Rng;
 
@@ -31,6 +37,10 @@ pub const MAX_SIDE: u32 = 257;
 pub const MAX_LAYERS: usize = 8;
 pub const MAX_SPLAT: usize = 4;
 pub const MAX_PADS: usize = 32;
+/// Most sculpt and paint strokes one terrain holds.
+pub const MAX_EDITS: usize = 512;
+/// Most samples the border easing (`edge_lock`) spans.
+pub const MAX_EDGE_LOCK: u32 = 64;
 /// Most hydraulic droplets and thermal iterations.
 pub const MAX_DROPLETS: u32 = 200_000;
 pub const MAX_THERMAL: u32 = 200;
@@ -98,6 +108,85 @@ pub struct SplatLayer {
     pub noise_scale: f32,
 }
 
+/// What a stroke does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditOp {
+    /// Heights up by `amount` metres at the centre.
+    Raise,
+    /// Heights down by `amount` metres at the centre.
+    Lower,
+    /// Heights towards `height` by `amount` (0..1) at the centre.
+    Flatten,
+    /// Heights towards their neighbours' mean by `amount` (0..1) at the centre.
+    Smooth,
+    /// Splat layer `layer`'s weight up by `amount` (0..1) at the centre (the others make room).
+    Paint,
+}
+
+impl EditOp {
+    pub const ALL: [EditOp; 5] = [EditOp::Raise, EditOp::Lower, EditOp::Flatten, EditOp::Smooth, EditOp::Paint];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            EditOp::Raise => "raise",
+            EditOp::Lower => "lower",
+            EditOp::Flatten => "flatten",
+            EditOp::Smooth => "smooth",
+            EditOp::Paint => "paint",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<EditOp> {
+        EditOp::ALL.into_iter().find(|o| o.name() == s)
+    }
+}
+
+/// A sculpt or paint stroke: a disc of `radius` metres at `at` (domain coordinates: the
+/// terrain's local x, z plus its `offset`), full strength at the centre, easing out to its rim.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Edit {
+    pub op: EditOp,
+    pub at: [f32; 2],
+    pub radius: f32,
+    pub amount: f32,
+    /// `flatten`'s target height (metres).
+    pub height: f32,
+    /// `paint`'s splat layer.
+    pub layer: u32,
+}
+
+/// How the terrain renderer draws a splat layer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RenderLayer {
+    /// The model's texture key of its base colour (and normal) texture set (`terrain+<graph>`),
+    /// baked with the build.
+    pub texture: Option<String>,
+    /// Metres per texture repeat.
+    pub uv_scale: f32,
+    pub roughness: f32,
+    pub specular: f32,
+    /// Slope (degrees) from which the texture is projected from the sides too (90 = never).
+    pub triplanar_deg: f32,
+    pub normal_strength: f32,
+}
+
+impl Default for RenderLayer {
+    fn default() -> Self {
+        RenderLayer { texture: None, uv_scale: 4.0, roughness: 0.9, specular: 0.05, triplanar_deg: 35.0, normal_strength: 1.0 }
+    }
+}
+
+/// A terrain the terrain renderer draws (its recipe said `"render": "terrain"`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TerrainRender {
+    /// One per splat layer (at least one).
+    pub layers: Vec<RenderLayer>,
+    /// Skirt depth (metres) under the terrain's border, hiding seams between tiles (0 = none).
+    pub skirt: f32,
+    /// Procedural grain on untextured layers, 0..1.
+    pub grain: f32,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct TerrainSpec {
     pub size: [f32; 2],
@@ -115,6 +204,12 @@ pub struct TerrainSpec {
     pub hydraulic: Option<Hydraulic>,
     pub thermal: Option<Thermal>,
     pub splat: Vec<SplatLayer>,
+    /// The noise domain's offset (metres): tiles of one terrain set it to their centre.
+    pub offset: [f32; 2],
+    /// Samples over which erosion is eased out to the noise-only heights at the border (0 = none).
+    pub edge_lock: u32,
+    /// Sculpt and paint strokes, applied in order after everything else.
+    pub edits: Vec<Edit>,
 }
 
 /// Why a terrain failed.
@@ -148,6 +243,10 @@ pub struct Terrain {
     pub splat_names: Vec<String>,
     pub splat_colors: Vec<Rgba>,
     pub work: u64,
+    /// The noise domain's offset ([`TerrainSpec::offset`]).
+    pub offset: [f32; 2],
+    /// Set by the recipe when the terrain renderer draws it.
+    pub render: Option<TerrainRender>,
 }
 
 impl TerrainSpec {
@@ -177,6 +276,33 @@ impl TerrainSpec {
                 return Err(TerrainError::limit("thermal", format!("thermal erosion: iterations <= {MAX_THERMAL}, talus 1..89 degrees"), t.iterations as f64, MAX_THERMAL as f64));
             }
         }
+        if !self.offset.iter().all(|o| o.is_finite() && o.abs() <= crate::recipe::MAX_EXTENT_M) {
+            return Err(TerrainError::bad("offset", format!("offset must be within ±{} m", crate::recipe::MAX_EXTENT_M)));
+        }
+        if self.edge_lock > MAX_EDGE_LOCK {
+            return Err(TerrainError::limit("edge_lock", format!("edge_lock is at most {MAX_EDGE_LOCK} samples"), self.edge_lock as f64, MAX_EDGE_LOCK as f64));
+        }
+        if self.edits.len() > MAX_EDITS {
+            return Err(TerrainError::limit("edits", format!("at most {MAX_EDITS} sculpt and paint strokes"), self.edits.len() as f64, MAX_EDITS as f64));
+        }
+        let reach = self.size[0].max(self.size[1]) * 0.25;
+        for ed in &self.edits {
+            let ok = ed.at.iter().all(|v| v.is_finite() && v.abs() <= crate::recipe::MAX_EXTENT_M)
+                && ed.radius.is_finite()
+                && ed.radius > 0.0
+                && ed.radius <= reach.max(0.5)
+                && ed.amount.is_finite()
+                && ed.amount.abs() <= 1e3
+                && ed.height.is_finite()
+                && ed.height.abs() <= crate::recipe::MAX_EXTENT_M
+                && (ed.op != EditOp::Paint || (ed.layer as usize) < MAX_SPLAT);
+            if !ok {
+                return Err(TerrainError::bad(
+                    "edits",
+                    format!("a stroke needs a finite centre, a radius in (0, {}] m (a quarter of the terrain), |amount| <= 1000, and paint a layer 0..{}", reach.max(0.5), MAX_SPLAT - 1),
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -200,6 +326,7 @@ impl TerrainSpec {
         let x0 = -((cols - 1) as f32) * cell[0] * 0.5;
         let z0 = -((rows - 1) as f32) * cell[1] * 0.5;
         let pos = |i: usize, j: usize| [x0 + i as f32 * cell[0], z0 + j as f32 * cell[1]];
+        let domain = |i: usize, j: usize| domain_of(i, j, cols, rows, cell, self.offset);
         // Per sample: each layer's octaves (five visits each), the warp's two 2-octave lookups,
         // the rest.
         let per_sample = self.layers.iter().map(|l| 5 * l.octaves.max(1) as u64 + 1).sum::<u64>() + if self.warp > 0.0 { 20 } else { 0 } + 2;
@@ -208,7 +335,8 @@ impl TerrainSpec {
         let warp_seed = self.seed ^ 0x5741_5250;
         for j in 0..rows {
             for i in 0..cols {
-                let mut p = pos(i, j);
+                let local = pos(i, j);
+                let mut p = domain(i, j);
                 if self.warp > 0.0 {
                     let s = 1.0 / (self.layers.first().map_or(50.0, |l| l.scale));
                     let wx = noise::fbm3(warp_seed, [p[0] * s, 0.0, p[1] * s], 2);
@@ -228,7 +356,7 @@ impl TerrainSpec {
                         };
                 }
                 if self.island > 0.0 {
-                    let u = [p[0] / (self.size[0] * 0.5), p[1] / (self.size[1] * 0.5)];
+                    let u = [local[0] / (self.size[0] * 0.5), local[1] / (self.size[1] * 0.5)];
                     let r = (u[0] * u[0] + u[1] * u[1]).sqrt().min(1.0);
                     let fall = 1.0 - self.island * r * r * (3.0 - 2.0 * r);
                     y = self.base + (y - self.base) * fall;
@@ -236,6 +364,8 @@ impl TerrainSpec {
                 h[j * cols + i] = y;
             }
         }
+        // Erosion eased out at the border: tiles keep the noise's edge heights.
+        let before = (self.edge_lock > 0 && (self.hydraulic.is_some() || self.thermal.is_some())).then(|| h.clone());
         if let Some(hy) = self.hydraulic {
             charge(hy.droplets as u64 * hy.steps as u64 * 15)?;
             hydraulic(&mut h, cols, rows, cell, &hy, self.seed);
@@ -243,6 +373,19 @@ impl TerrainSpec {
         if let Some(t) = self.thermal {
             charge(t.iterations as u64 * n as u64 * 5)?;
             thermal(&mut h, cols, rows, cell, &t);
+        }
+        if let Some(base) = before {
+            charge(n as u64)?;
+            let lock = self.edge_lock as f32;
+            for j in 0..rows {
+                for i in 0..cols {
+                    let b = i.min(j).min(cols - 1 - i).min(rows - 1 - j) as f32;
+                    let t = (b / lock).clamp(0.0, 1.0);
+                    let w = t * t * (3.0 - 2.0 * t);
+                    let k = j * cols + i;
+                    h[k] = base[k] + (h[k] - base[k]) * w;
+                }
+            }
         }
         if self.terrace.0 > 0.0 {
             let (step, sharp) = (self.terrace.0, self.terrace.1.clamp(0.0, 1.0));
@@ -278,8 +421,31 @@ impl TerrainSpec {
                 }
             }
         }
-        let mut t = Terrain { columns: cols, rows, cell, heights: h, splat: Vec::new(), splat_names: Vec::new(), splat_colors: Vec::new(), work };
+        let mut t = Terrain {
+            columns: cols,
+            rows,
+            cell,
+            heights: h,
+            splat: Vec::new(),
+            splat_names: Vec::new(),
+            splat_colors: Vec::new(),
+            work: 0,
+            offset: self.offset,
+            render: None,
+        };
+        // Strokes: the samples each covers, charged before it runs.
+        for ed in &self.edits {
+            let (i0, i1, j0, j1) = t.stroke_range(ed);
+            charge(((i1 + 1 - i0.min(i1 + 1)) * (j1 + 1 - j0.min(j1 + 1))) as u64 * 4)?;
+            if ed.op != EditOp::Paint {
+                t.sculpt(ed);
+            }
+        }
         t.compute_splat(&self.splat, self.seed);
+        for ed in self.edits.iter().filter(|e| e.op == EditOp::Paint) {
+            t.paint(ed);
+        }
+        t.work = work;
         if !t.heights.iter().all(|y| y.is_finite() && y.abs() <= crate::recipe::MAX_EXTENT_M) {
             return Err(TerrainError::bad("noise", format!("heights left ±{} m", crate::recipe::MAX_EXTENT_M)));
         }
@@ -405,6 +571,29 @@ impl BestExcess for Option<(usize, f32)> {
     }
 }
 
+/// Sample `(i, j)`'s position in the noise domain: its local x, z plus `offset`, computed in f64
+/// from the whole sample index so tiles that share a border sample get the same bits there.
+/// With no offset it is exactly the local position (terrains built before offsets hash the same).
+fn domain_of(i: usize, j: usize, cols: usize, rows: usize, cell: [f32; 2], offset: [f32; 2]) -> [f32; 2] {
+    if offset == [0.0, 0.0] {
+        let x0 = -((cols - 1) as f32) * cell[0] * 0.5;
+        let z0 = -((rows - 1) as f32) * cell[1] * 0.5;
+        return [x0 + i as f32 * cell[0], z0 + j as f32 * cell[1]];
+    }
+    let x = (i as f64 - (cols - 1) as f64 * 0.5) * cell[0] as f64 + offset[0] as f64;
+    let z = (j as f64 - (rows - 1) as f64 * 0.5) * cell[1] as f64 + offset[1] as f64;
+    [x as f32, z as f32]
+}
+
+/// A stroke's strength at `t` = distance / radius: 1 at the centre, easing to 0 at the rim.
+fn falloff(t: f32) -> f32 {
+    if t >= 1.0 {
+        return 0.0;
+    }
+    let u = 1.0 - t * t;
+    u * u
+}
+
 /// Soft membership of `v` in `[lo, hi]` with edges `soft` wide.
 fn band(v: f32, r: [f32; 2], soft: f32) -> f32 {
     if soft <= 0.0 {
@@ -421,6 +610,94 @@ impl Terrain {
     }
     fn z0(&self) -> f32 {
         -((self.rows - 1) as f32) * self.cell[1] * 0.5
+    }
+
+    /// Sample `(i, j)` in the noise domain (local x, z plus the terrain's offset).
+    pub fn domain(&self, i: usize, j: usize) -> [f32; 2] {
+        domain_of(i, j, self.columns, self.rows, self.cell, self.offset)
+    }
+
+    /// The samples a stroke may touch: `(i0, i1, j0, j1)`, inclusive (empty when `i0 > i1`).
+    fn stroke_range(&self, ed: &Edit) -> (usize, usize, usize, usize) {
+        let (cx, cz) = (ed.at[0] - self.offset[0] - self.x0(), ed.at[1] - self.offset[1] - self.z0());
+        let span = |c: f32, cell: f32, n: usize| -> (usize, usize) {
+            let lo = crate::dmath::floor((c - ed.radius) / cell);
+            let hi = crate::dmath::ceil((c + ed.radius) / cell);
+            if hi < 0.0 || lo > (n - 1) as f32 {
+                return (1, 0);
+            }
+            (lo.max(0.0) as usize, (hi as usize).min(n - 1))
+        };
+        let (i0, i1) = span(cx, self.cell[0], self.columns);
+        let (j0, j1) = span(cz, self.cell[1], self.rows);
+        (i0, i1, j0, j1)
+    }
+
+    /// Applies a height stroke (raise, lower, flatten, smooth).
+    fn sculpt(&mut self, ed: &Edit) {
+        let (i0, i1, j0, j1) = self.stroke_range(ed);
+        if i0 > i1 || j0 > j1 {
+            return;
+        }
+        let c = self.columns;
+        // Smoothing reads the heights as they were before the stroke.
+        let snapshot: Vec<f32> = if ed.op == EditOp::Smooth { self.heights.clone() } else { Vec::new() };
+        for j in j0..=j1 {
+            for i in i0..=i1 {
+                let d = self.domain(i, j);
+                let (dx, dz) = (d[0] - ed.at[0], d[1] - ed.at[1]);
+                let f = falloff((dx * dx + dz * dz).sqrt() / ed.radius);
+                if f <= 0.0 {
+                    continue;
+                }
+                let h = &mut self.heights[j * c + i];
+                match ed.op {
+                    EditOp::Raise => *h += ed.amount * f,
+                    EditOp::Lower => *h -= ed.amount * f,
+                    EditOp::Flatten => *h += (ed.height - *h) * (ed.amount.clamp(0.0, 1.0) * f),
+                    EditOp::Smooth => {
+                        let at = |a: usize, b: usize| snapshot[b * c + a];
+                        let (il, ir) = (i.saturating_sub(1), (i + 1).min(c - 1));
+                        let (jl, jr) = (j.saturating_sub(1), (j + 1).min(self.rows - 1));
+                        let mean = (at(il, j) + at(ir, j) + at(i, jl) + at(i, jr)) * 0.25;
+                        *h += (mean - *h) * (ed.amount.clamp(0.0, 1.0) * f);
+                    }
+                    EditOp::Paint => {}
+                }
+            }
+        }
+    }
+
+    /// Applies a paint stroke to the splat weights (they keep summing to 255).
+    fn paint(&mut self, ed: &Edit) {
+        let (i0, i1, j0, j1) = self.stroke_range(ed);
+        let layer = ed.layer as usize;
+        if i0 > i1 || j0 > j1 || layer >= 4 {
+            return;
+        }
+        for j in j0..=j1 {
+            for i in i0..=i1 {
+                let d = self.domain(i, j);
+                let (dx, dz) = (d[0] - ed.at[0], d[1] - ed.at[1]);
+                let f = falloff((dx * dx + dz * dz).sqrt() / ed.radius) * ed.amount.clamp(-1.0, 1.0);
+                if f == 0.0 {
+                    continue;
+                }
+                let w = &mut self.splat[j * self.columns + i];
+                let mut v = w.map(|x| x as f32 / 255.0);
+                v[layer] = (v[layer] + f).clamp(0.0, 1.0);
+                let rest: f32 = (0..4).filter(|k| *k != layer).map(|k| v[k]).sum();
+                let room = 1.0 - v[layer];
+                for k in (0..4).filter(|k| *k != layer) {
+                    v[k] = if rest > 1e-6 { v[k] / rest * room } else if room > 0.0 && k == if layer == 0 { 1 } else { 0 } { room } else { 0.0 };
+                }
+                let mut b = v.map(|x| (x * 255.0) as u8);
+                let total: u32 = b.iter().map(|x| *x as u32).sum();
+                let big = (0..4).max_by(|&x, &y| v[x].total_cmp(&v[y]).then(y.cmp(&x))).expect("four");
+                b[big] = (b[big] as u32 + 255 - total.min(255)) as u8;
+                *w = b;
+            }
+        }
     }
 
     /// The sample's position.
@@ -485,13 +762,14 @@ impl Terrain {
         for j in 0..self.rows {
             for i in 0..self.columns {
                 let p = self.sample_pos(i, j);
+                let dm = self.domain(i, j);
                 let slope = self.sample_slope(i, j);
                 let mut w = [0.0f32; 4];
                 for (k, l) in layers.iter().enumerate() {
                     let mut v = band(slope, l.slope, l.soft) * band(p[1], l.height, l.soft);
                     if l.noise > 0.0 {
                         let s = 1.0 / l.noise_scale.max(1e-3);
-                        let nz = noise::fbm3(seed ^ (0x5350_4c00 + k as u64), [p[0] * s, 0.0, p[2] * s], 3);
+                        let nz = noise::fbm3(seed ^ (0x5350_4c00 + k as u64), [dm[0] * s, 0.0, dm[1] * s], 3);
                         v *= (1.0 + l.noise * nz).clamp(0.0, 2.0);
                     }
                     w[k] = v;
@@ -677,6 +955,9 @@ mod tests {
             pads: vec![Pad { at: [5.0, 0.0], radius: 4.0, height: 1.0, blend: 2.0 }],
             hydraulic: Some(Hydraulic { droplets: 2000, strength: 0.5, steps: 32 }),
             thermal: Some(Thermal { iterations: 5, talus_deg: 35.0 }),
+            offset: [0.0, 0.0],
+            edge_lock: 0,
+            edits: Vec::new(),
             splat: vec![
                 SplatLayer { name: "grass".into(), color: [0.3, 0.5, 0.2, 1.0], slope: [0.0, 25.0], height: [-100.0, 100.0], soft: 5.0, noise: 0.0, noise_scale: 1.0 },
                 SplatLayer { name: "rock".into(), color: [0.5, 0.5, 0.5, 1.0], slope: [25.0, 90.0], height: [-100.0, 100.0], soft: 5.0, noise: 0.3, noise_scale: 4.0 },
@@ -743,5 +1024,62 @@ mod tests {
         assert!(s.build(MAX_WORK).unwrap_err().limit);
         let s = spec();
         assert!(s.build(1000).unwrap_err().limit);
+        let mut s = spec();
+        s.edits = vec![Edit { op: EditOp::Raise, at: [0.0, 0.0], radius: 1.0, amount: 1.0, height: 0.0, layer: 0 }; MAX_EDITS + 1];
+        assert!(s.build(MAX_WORK).unwrap_err().limit);
+        let mut s = spec();
+        s.edits = vec![Edit { op: EditOp::Raise, at: [0.0, 0.0], radius: 100.0, amount: 1.0, height: 0.0, layer: 0 }];
+        assert_eq!(s.build(MAX_WORK).unwrap_err().field, "edits", "a radius past a quarter of the terrain");
+        let mut s = spec();
+        s.edits = vec![Edit { op: EditOp::Paint, at: [0.0, 0.0], radius: 1.0, amount: 1.0, height: 0.0, layer: 4 }];
+        assert_eq!(s.build(MAX_WORK).unwrap_err().field, "edits");
+        let mut s = spec();
+        s.edge_lock = MAX_EDGE_LOCK + 1;
+        assert!(s.build(MAX_WORK).unwrap_err().limit);
+    }
+
+    /// Two tiles of one terrain (offsets one tile apart, erosion eased out at the border) share
+    /// their border samples exactly (splat weights, which follow the slope, may differ along that row).
+    #[test]
+    fn tiles_share_their_border_heights() {
+        let tile = |ox: f32| TerrainSpec { size: [32.0, 32.0], samples: [33, 33], offset: [ox, 0.0], edge_lock: 4, pads: vec![], ..spec() };
+        let a = tile(100.0).build(MAX_WORK).unwrap();
+        let b = tile(132.0).build(MAX_WORK).unwrap();
+        for j in 0..33 {
+            let (ea, eb) = (a.heights[j * 33 + 32], b.heights[j * 33]);
+            assert_eq!(ea.to_bits(), eb.to_bits(), "row {j}: {ea} vs {eb}");
+            assert_eq!(a.domain(32, j), b.domain(0, j));
+        }
+        // Without the lock, erosion breaks the border.
+        let free = |ox: f32| TerrainSpec { edge_lock: 0, ..tile(ox) };
+        let (a, b) = (free(100.0).build(MAX_WORK).unwrap(), free(132.0).build(MAX_WORK).unwrap());
+        assert!((0..33).any(|j| a.heights[j * 33 + 32] != b.heights[j * 33]));
+        // No offset: exactly the terrain as built before offsets existed.
+        assert_eq!(spec().build(MAX_WORK).unwrap().domain(3, 4), [-20.0 + 3.0, -15.0 + 4.0]);
+    }
+
+    #[test]
+    fn strokes_sculpt_and_paint_in_order() {
+        let base = TerrainSpec { hydraulic: None, thermal: None, pads: vec![], ..spec() };
+        let plain = base.build(MAX_WORK).unwrap();
+        let at = |t: &Terrain| t.height_at(0.0, 0.0).unwrap();
+        let raise = Edit { op: EditOp::Raise, at: [0.0, 0.0], radius: 4.0, amount: 2.0, height: 0.0, layer: 0 };
+        let raised = TerrainSpec { edits: vec![raise], ..base.clone() }.build(MAX_WORK).unwrap();
+        assert!((at(&raised) - at(&plain) - 2.0).abs() < 1e-4, "full strength at the centre");
+        assert_eq!(raised.height_at(8.0, 0.0), plain.height_at(8.0, 0.0), "nothing outside the radius");
+        let flat = Edit { op: EditOp::Flatten, height: 5.0, amount: 1.0, ..raise };
+        let flattened = TerrainSpec { edits: vec![raise, flat], ..base.clone() }.build(MAX_WORK).unwrap();
+        assert!((at(&flattened) - 5.0).abs() < 1e-4, "in order: raised, then flattened to 5 m");
+        let smooth = Edit { op: EditOp::Smooth, amount: 1.0, ..raise };
+        let smoothed = TerrainSpec { edits: vec![smooth], ..base.clone() }.build(MAX_WORK).unwrap();
+        assert!(smoothed.heights.iter().all(|h| h.is_finite()));
+        let paint = Edit { op: EditOp::Paint, layer: 1, amount: 1.0, ..raise };
+        let painted = TerrainSpec { edits: vec![paint], ..base.clone() }.build(MAX_WORK).unwrap();
+        let w = painted.splat_at(0.0, 0.0).unwrap();
+        assert_eq!(w[1], 255, "painted fully at the centre: {w:?}");
+        assert!(painted.splat.iter().all(|w| w.iter().map(|x| *x as u32).sum::<u32>() == 255));
+        assert_eq!(painted.heights, plain.heights, "paint never moves the ground");
+        // Deterministic.
+        assert_eq!(TerrainSpec { edits: vec![raise, smooth, paint], ..base.clone() }.build(MAX_WORK).unwrap(), TerrainSpec { edits: vec![raise, smooth, paint], ..base }.build(MAX_WORK).unwrap());
     }
 }

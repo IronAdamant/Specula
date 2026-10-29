@@ -111,6 +111,9 @@ fn main() {
         hydraulic: Some(Hydraulic { droplets: 20_000, strength: 0.5, steps: 48 }),
         thermal: Some(Thermal { iterations: 10, talus_deg: 35.0 }),
         splat: vec![],
+        offset: [0.0, 0.0],
+        edge_lock: 0,
+        edits: vec![],
     };
     time("terrain: 129x129, 20k droplets, 10 thermal", 3, || spec.build(specula_model::terrain::MAX_WORK), |r| match r {
         Ok(t) => format!("{} samples, work {}", t.heights.len(), t.work),

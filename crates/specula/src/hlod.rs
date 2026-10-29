@@ -179,6 +179,10 @@ fn surface_key(m: Material, s: &Surface) -> [u32; 5] {
 /// Whether part materials of `built`'s level `level` can all be merged: `standard` presets,
 /// no textures.
 pub fn mergeable(built: &Built, level: usize) -> bool {
+    // Terrains the terrain renderer draws have their own LOD (and their mesh is only a stand-in).
+    if built.model.extras.terrain.as_ref().is_some_and(|t| t.render.is_some()) {
+        return false;
+    }
     let Some(lod) = built.model.lods.get(level) else { return false };
     !lod.parts.is_empty()
         && lod.parts.iter().all(|p| {

@@ -258,6 +258,39 @@ fn procgen_collider(f: &mut Fix, path: &str) -> Result<(), WorldError> {
     agent(f, MALLORY, Kind::Set, Rule::World, |wd| wd.update(&key, change, "mallory").map(|_| ()))
 }
 
+/// terrain_edit's commit (project_engine::file_commit): the recipe at its new text and, in the
+/// same entry, the collider procgen_terrain's command would set on `collider_on`, as mallory.
+/// `recipe_claimed`: alice claims the recipe first.
+fn terrain_edit(f: &mut Fix, collider_on: &str, recipe_claimed: bool) -> Result<(), WorldError> {
+    if recipe_claimed {
+        let s1 = session("aaaaaa11");
+        f.sw.take_claim(&f.live, &s1, ClaimSpec { scope: Scope::path("/project/assets/recipes/fixture.json").unwrap(), lease: DEFAULT_LEASE, note: String::new() }).unwrap();
+    }
+    let crate::tools::Command::Set(key, change) = crate::procgen_tools::collider_command(collider_on, 3, 3, [1.0, 1.0], &[0.5; 9], [0.0; 3]).unwrap() else { panic!("one world_set") };
+    let file = crate::project::ProjectFile::new(crate::project::FileKind::Recipe, Arc::from("{\"edited\": true}"), 2, Arc::from("mallory"));
+    agent(f, MALLORY, Kind::File, Rule::Project, |wd| crate::project_engine::file_commit(wd, "assets/recipes/fixture.json", Some(file), Some(Box::new((key, change))), "mallory"))
+}
+
+/// terrain_edit's recipe and collider are one journal entry: one undo takes both back (review of
+/// a89b5eb, probe6: an undo used to revert only the collider, leaving it 8 m off the drawn
+/// surface).
+#[test]
+fn terrain_edit_undoes_recipe_and_collider_together() {
+    let mut f = fixture();
+    let hook = f.live.find_path("/mg").unwrap();
+    let before = (f.live.files().get("assets/recipes/fixture.json").map(|x| x.version), f.live.get(hook).map(|e| e.collider.is_some()));
+    terrain_edit(&mut f, "/mg", false).unwrap();
+    let seq = f.sw.journal().last_seq();
+    let entry = f.sw.journal().get(seq).unwrap();
+    assert!(entry.changes.iter().any(|c| matches!(c, crate::world::Change::File { .. })) && entry.touches(hook), "one entry holds both");
+    assert_eq!((f.live.files().get("assets/recipes/fixture.json").map(|x| x.version), f.live.get(hook).map(|e| e.collider.is_some())), (Some(2), Some(true)));
+    f.live.undo(&mut f.sw, 1, MALLORY, &UndoRequest { ids: None, count: 1, force: false }).unwrap();
+    let after = (f.live.files().get("assets/recipes/fixture.json").map(|x| x.version), f.live.get(hook).map(|e| e.collider.is_some()));
+    assert_eq!(after.1, before.1, "the collider is back");
+    assert_ne!(after.0, Some(2), "and so is the recipe (a new version of the old text)");
+    assert_eq!(f.live.files().get("assets/recipes/fixture.json").map(|x| x.text.to_string()).as_deref(), Some("{}"));
+}
+
 /// The review queue's promotion (review_engine): the roots at `path` move under `to` in one
 /// Rule::World batch, as the decider (mallory here).
 fn review_promote(f: &mut Fix, path: &str, to: &str) -> Result<(), WorldError> {
@@ -299,6 +332,11 @@ const ROWS: &[(&str, Write, Expect)] = &[
     ("procgen_scatter's spawn batch on free ground", |f| procgen_scatter(f, [90.0, 0.0, 90.0], None), Expect::Allowed),
     ("procgen_terrain's collider on a region-claimed entity", |f| procgen_collider(f, "/rbox"), Expect::Refused("claimed")),
     ("procgen_terrain's collider on a free entity", |f| procgen_collider(f, "/mg"), Expect::Allowed),
+    // terrain_edit (terrain_tools.rs, review of a89b5eb): the recipe and the collider in one
+    // Rule::Project entry, claims checked on both; a refusal leaves both as they were.
+    ("terrain_edit's recipe with its collider on a claimed entity", |f| terrain_edit(f, "/rbox", false), Expect::Refused("claimed")),
+    ("terrain_edit on a claimed recipe", |f| terrain_edit(f, "/mg", true), Expect::Refused("claimed")),
+    ("terrain_edit's recipe and collider on free ones", |f| terrain_edit(f, "/mg", false), Expect::Allowed),
     // Agents' tools (Live::commit).
     ("world_set on a path-claimed entity", |f| set_abox(f, Rule::World), Expect::Refused("claimed")),
     ("world_set on a region-claimed entity", |f| {

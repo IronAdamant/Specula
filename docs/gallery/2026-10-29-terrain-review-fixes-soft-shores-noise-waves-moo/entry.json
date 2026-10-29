@@ -1,0 +1,56 @@
+{
+  "date": "2026-10-29",
+  "time": "23:30",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M4",
+  "commit": "",
+  "subject": "terrain",
+  "topic": "engine test",
+  "title": "Terrain review fixes: soft shores, noise waves, moonlight",
+  "note": "After the review of a89b5eb: the waterline fades in over its first 20 cm and shore foam is sparse clumps (no white outline tracing coarse triangles); waves are four rotated, drifting noise octaves plus a gentle swell (no grid or bands); swamp is peat-brown; Sepulcra's moonlit set over the same terrain; detail near the camera.",
+  "source": "scripts/terrain_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-frame-00017.jpg",
+      "caption": "Shore up close: soft waterline, sparse foam",
+      "original": "frame_00017.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 30867
+    },
+    {
+      "file": "02-frame-00031.jpg",
+      "caption": "Open water, mid distance: no interference grid",
+      "original": "frame_00031.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 15947
+    },
+    {
+      "file": "03-frame-00027.jpg",
+      "caption": "Moonlit, Sepulcra's night: the murk pool of map 1",
+      "original": "frame_00027.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 18613
+    },
+    {
+      "file": "04-frame-00024.jpg",
+      "caption": "Swamp: peat-brown water",
+      "original": "frame_00024.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 28801
+    },
+    {
+      "file": "05-frame-00033.jpg",
+      "caption": "Near ground: detail where a pixel covers centimetres",
+      "original": "frame_00033.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 33328
+    }
+  ]
+}

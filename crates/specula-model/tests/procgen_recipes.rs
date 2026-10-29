@@ -227,6 +227,40 @@ fn texture_names_are_per_recipe() {
     assert!(mats.contains(&"stone+lib:stone_tex") && mats.contains(&"wood") && mats.contains(&"glass"), "{mats:?}");
 }
 
+/// `"render": "terrain"`: the terrain renderer's settings ride on the model's terrain, layer
+/// textures bake with the build (`terrain+<graph>`), the stand-in mesh is coarser, and tiles,
+/// edits and unknown names are checked.
+#[test]
+fn a_terrain_for_the_terrain_renderer() {
+    let recipe = |extra: &str| {
+        format!(
+            r#"{{ "name": "field", "textures": {{ "stone": "stone_tex" }}, "parts": [ {{ "name": "ground", "material": "stone", "generate": {{ "op": "terrain",
+            "size": [64, 64], "samples": [65, 65], "layers": [ {{ "scale": 20, "amplitude": 3 }} ], {extra}
+            "splat": [ {{ "name": "grass", "color": "grass" }}, {{ "name": "rock", "color": "rock", "slope": [25, 90], "texture": "stone", "uv_scale": 3, "roughness": 0.7, "triplanar": 30 }} ] }} }} ] }}"#
+        )
+    };
+    let mesh = make(&recipe("")).unwrap_or_else(|e| panic!("{e}"));
+    assert!(mesh.extras.terrain.as_ref().unwrap().render.is_none(), "mesh by default");
+    let m = make(&recipe(r#""render": "terrain", "skirt": 0.25, "offset": [64, 0], "edge_lock": 2,
+        "edits": [ { "op": "raise", "at": [64, 0], "radius": 6, "amount": 2 }, { "op": "paint", "at": [70, 4], "radius": 4, "layer": 1 } ],"#))
+    .unwrap_or_else(|e| panic!("{e}"));
+    let t = m.extras.terrain.as_ref().unwrap();
+    let r = t.render.as_ref().expect("render settings");
+    assert_eq!(r.layers.len(), 2);
+    assert_eq!(r.layers[1].texture.as_deref(), Some("terrain+lib:stone_tex"));
+    assert_eq!((r.layers[1].uv_scale, r.layers[1].triplanar_deg, r.skirt), (3.0, 30.0, 0.25));
+    assert!(m.extras.textures.iter().any(|(k, _)| k == "terrain+lib:stone_tex"), "the layer's texture is baked");
+    assert!(m.lods[0].triangle_count() * 8 < mesh.lods[0].triangle_count(), "a coarser stand-in mesh: {} vs {}", m.lods[0].triangle_count(), mesh.lods[0].triangle_count());
+    assert_eq!(t.offset, [64.0, 0.0]);
+    // The stroke at the domain's (64, 0) is the local origin.
+    assert!(t.height_at(0.0, 0.0).unwrap() > mesh.extras.terrain.as_ref().unwrap().height_at(0.0, 0.0).unwrap() - 3.0);
+    let e = make(&recipe(r#""render": "terrain", "edits": [ { "op": "dig", "at": [0, 0], "radius": 1 } ],"#)).unwrap_err();
+    assert!(e.path.contains("edits[0].op"), "{e}");
+    let bad = recipe(r#""render": "terrain","#).replace(r#""texture": "stone""#, r#""texture": "marble""#);
+    let e = make(&bad).unwrap_err();
+    assert!(e.path.contains("texture"), "{e}");
+}
+
 #[test]
 fn hostile_procgen_is_bounded() {
     // A boolean of many dense operands runs out of budget with a structured error.

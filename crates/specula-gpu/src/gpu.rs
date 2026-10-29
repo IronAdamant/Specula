@@ -30,6 +30,12 @@ use std::time::Instant;
 /// Offscreen colour format (readback bytes are sRGB RGBA8).
 pub const TARGET_FORMAT: VkFormat = crate::render::LDR_FORMAT;
 
+/// The meshes every `Gpu` holds for its whole life (the sprite quad, the terrain patch grids):
+/// never destroyed through the API.
+fn shared_mesh(mesh: MeshId) -> bool {
+    mesh.0 == crate::sprite::QUAD_MESH || mesh == crate::terrain::GRID_MESH || mesh == crate::terrain::QUARTER_MESH
+}
+
 /// Where `run_sync` spent its time, in milliseconds.
 #[derive(Clone, Copy, Debug, Default)]
 struct SyncTimes {
@@ -223,6 +229,13 @@ impl GpuInner {
         let quad = gpu.upload_mesh(&[Vertex::default(); 4], &[0, 1, 2, 0, 2, 3], &MeshStreams::default())?;
         let mesh = gpu.meshes.remove(&quad.0).expect("just uploaded");
         gpu.meshes.insert(crate::sprite::QUAD_MESH, mesh);
+        // The terrain's patch grids (`terrain.rs`), likewise.
+        for (id, n) in [(crate::terrain::GRID_MESH, crate::terrain::GRID), (crate::terrain::QUARTER_MESH, crate::terrain::GRID / 2)] {
+            let (v, i) = crate::terrain::grid_mesh(n);
+            let grid = gpu.upload_mesh(&v, &i, &MeshStreams::default())?;
+            let mesh = gpu.meshes.remove(&grid.0).expect("just uploaded");
+            gpu.meshes.insert(id.0, mesh);
+        }
         // Every offscreen pipeline variant now, so no frame ever waits for one.
         gpu.pipelines.prebuild(&gpu.device, TARGET_FORMAT)?;
         gpu.pipelines.prebuild_common(&gpu.device)?;
@@ -254,8 +267,9 @@ impl GpuInner {
 
     fn next_id(&mut self) -> u32 {
         let id = self.next_id;
-        // Ids run 1 ..= u32::MAX - 1 (u32::MAX is the shared sprite quad).
-        self.next_id = if self.next_id >= crate::sprite::QUAD_MESH - 1 { 1 } else { self.next_id + 1 };
+        // Ids run 1 ..= u32::MAX - 3 (u32::MAX is the shared sprite quad, the two below it the
+        // terrain's patch grids).
+        self.next_id = if self.next_id >= crate::terrain::QUARTER_MESH.0 - 1 { 1 } else { self.next_id + 1 };
         id
     }
 
@@ -356,7 +370,7 @@ impl GpuInner {
         // its draws are skipped until they exist (`pipeline_variants`), no frame waits.
         if layout.skin.is_some() || layout.surface.is_some() {
             let formats = self.formats();
-            let want = Variants { skinned: layout.skin.is_some(), textured: layout.surface.is_some() };
+            let want = Variants { skinned: layout.skin.is_some(), textured: layout.surface.is_some(), terrain: false };
             self.pipelines.request_variants(&self.device, want, &formats);
         }
         let id = self.next_id();
@@ -381,7 +395,7 @@ impl GpuInner {
 
     /// Frees a mesh once no submitted frame can read it, without waiting (see `stream.rs`).
     pub fn retire_mesh(&mut self, mesh: MeshId) {
-        if mesh.0 == crate::sprite::QUAD_MESH {
+        if shared_mesh(mesh) {
             return;
         }
         if let Some(m) = self.meshes.remove(&mesh.0) {
@@ -449,7 +463,23 @@ impl GpuInner {
     /// of them exist).
     pub fn prepare_variants(&mut self, skinned: bool, textured: bool) -> Result<(), GpuError> {
         let formats = self.formats();
-        self.pipelines.build_variants(&self.device, Variants { skinned, textured }, &formats)
+        self.pipelines.build_variants(&self.device, Variants { skinned, textured, terrain: false }, &formats)
+    }
+
+    /// Starts building the terrain and water pipelines on a worker (a no-op once built or while
+    /// building); their draws are skipped until [`Gpu::pipeline_variants`] says `terrain`.
+    pub fn request_terrain_pipelines(&mut self) {
+        if self.pipelines.variants.terrain {
+            return;
+        }
+        let formats = self.formats();
+        self.pipelines.request_variants(&self.device, Variants { terrain: true, ..Variants::default() }, &formats);
+    }
+
+    /// The terrain and water pipelines now, on this thread (loading time and tests).
+    pub fn prepare_terrain_pipelines(&mut self) -> Result<(), GpuError> {
+        let formats = self.formats();
+        self.pipelines.build_variants(&self.device, Variants { terrain: true, ..Variants::default() }, &formats)
     }
 
     /// The pipeline variants ready to draw with (a finished background build is taken first).
@@ -462,7 +492,7 @@ impl GpuInner {
         self.poll_pipelines();
         let Some(f) = self.pipelines.ready().failed else { return false };
         let formats = self.formats();
-        self.pipelines.request_variants(&self.device, Variants { skinned: f.skinned, textured: f.textured }, &formats);
+        self.pipelines.request_variants(&self.device, Variants { skinned: f.skinned, textured: f.textured, terrain: f.terrain }, &formats);
         true
     }
 
@@ -491,7 +521,7 @@ impl GpuInner {
     }
 
     pub fn destroy_mesh(&mut self, mesh: MeshId) {
-        if mesh.0 == crate::sprite::QUAD_MESH {
+        if shared_mesh(mesh) {
             return; // the shared sprite quad lives as long as the GPU
         }
         self.settle_upload_of(mesh.0);
@@ -1027,7 +1057,8 @@ impl GpuInner {
             ssao: crate::ssao::ssao_extent(env, extent),
             particles: !frame.effects.particles.is_empty(),
             decals: !self.scratch.effects.decals.is_empty(),
-            blended: self.scratch.plan.batches.iter().any(|b| b.material.blended()),
+            water: self.scratch.plan.batches.iter().any(|b| b.material == crate::Material::Water),
+            blended: self.scratch.plan.batches.iter().any(|b| b.material.blended() && b.material != crate::Material::Water),
             flash: false,
             flash_reset: false,
         };
@@ -1641,6 +1672,7 @@ mod tests {
             ssao: None,
             particles: false,
             decals: false,
+            water: false,
             blended: false,
             flash: false,
             flash_reset: false,

@@ -91,6 +91,9 @@ mod ui;
 pub mod flashwatch;
 pub mod vfx;
 mod vfx_tools;
+pub mod terrain;
+mod terrain_tools;
+pub mod water;
 mod sim_writes;
 pub mod world;
 pub mod write_policy;
@@ -134,8 +137,7 @@ const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 
 const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|integrated|<index>] [--size WxH] \
 [--captures DIR] [--worlds DIR] [--world NAME] [--saves DIR] [--cache DIR] [--assets DIR] [--style FILE] [--perf FILE] \
-[--paused] [--max-fps N] [--response-format concise|detailed] [--tools-default core|all] [--physics-threads N] [--vfx on|off] \
-[-- GAME ARGS...]";
+[--paused] [--max-fps N] [--response-format concise|detailed] [--tools-default core|all] [--physics-threads N] [--vfx on|off] [--terrain on|off] [-- GAME ARGS...]";
 
 /// How long a capture waits (parked, the engine serving others) for models still building.
 const CAPTURE_BUILD_WAIT: Duration = Duration::from_secs(10);
@@ -192,6 +194,9 @@ struct Args {
     tools_default_all: bool,
     /// Effects and decals drawn (`--vfx on|off`; on by default). Never changes the simulation.
     vfx: bool,
+    /// The terrain renderer (`--terrain on|off`; on by default): off, terrains draw their
+    /// recipes' meshes. Never changes the simulation.
+    terrain: bool,
     /// Threads physics may use (`--physics-threads`, 1..64, default 1): the narrowphase, and
     /// with the world's `physics.coloured` the contact solver. The results never depend on it.
     physics_threads: usize,
@@ -223,6 +228,7 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
         response_format: response::Format::Concise,
         tools_default_all: false,
         vfx: true,
+        terrain: true,
         physics_threads: 1,
         max_fps: None,
     };
@@ -239,6 +245,13 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--port" => args.port = value()?.parse().map_err(|_| format!("bad port\n{USAGE}"))?,
             "--headless" => args.headless = true,
             "--paused" => args.paused = true,
+            "--terrain" => {
+                args.terrain = match value()?.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    other => return Err(format!("--terrain must be on or off, not '{other}'\n{USAGE}")),
+                }
+            }
             "--vfx" => {
                 args.vfx = match value()?.as_str() {
                     "on" => true,
@@ -366,6 +379,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     engine.stream = streaming::Streamer::new(perf_cfg.streaming.clone(), kind);
     engine.vfx.budget = perf_cfg.vfx.budget(kind);
     engine.vfx.enabled = args.vfx;
+    engine.terrain.disabled = !args.terrain;
     engine.perf_cfg = perf_cfg;
     engine.worlds_dir = args.worlds.unwrap_or_else(|| cwd.join("worlds"));
     engine.saves_dir = args.saves.unwrap_or_else(|| cwd.join("saves"));
@@ -704,6 +718,8 @@ struct Engine {
     lex_natives: specula_lex::Natives,
     /// What of the world is on the GPU: budgeted uploads, eviction, HLOD (see [`streaming`]).
     stream: streaming::Streamer,
+    /// Terrains drawn by the terrain renderer, and water surfaces (see [`terrain`]).
+    terrain: terrain::Terrains,
     /// A stream_fly flight of the window camera in progress.
     fly: Option<stream_tools::Fly>,
     /// Headless playtests: the running one and recent reports (see [`playtest`]).
@@ -855,6 +871,7 @@ impl Engine {
             lex_live: lex_live::Live::default(),
             lex_natives: specula_lex::Natives::new(),
             stream: streaming::Streamer::default(),
+            terrain: terrain::Terrains::default(),
             fly: None,
             playtests: Default::default(),
             vfx,
@@ -1618,6 +1635,21 @@ impl Engine {
         }
         let hlod = &mut self.stream.hlod;
         std::mem::swap(&mut self.models.cover, if window { &mut hlod.window_cover } else { &mut hlod.capture_cover });
+        // Terrains the terrain renderer draws (their stand-in meshes are skipped) and water.
+        let budget = terrain::Budget {
+            allowance: if window { self.stream.allowance() } else { None },
+            radius: (self.stream.cfg.radius_m, self.stream.cfg.hlod_radius_m),
+            memory: self.stream.terrain_room(),
+        };
+        // (A zone of its own: what terrain and water cost a frame, perf_capture's "terrain".)
+        let zt = profile::zone("terrain");
+        let used = self.terrain.prepare(&mut self.gpu, &self.library, self.models.synced, &self.world, &camera, include_ui, window, budget);
+        drop(zt);
+        if window && budget.allowance.is_some() && used.items > 0 {
+            self.stream.charge(used);
+        }
+        self.stream.terrain_bytes = self.terrain.bytes();
+        std::mem::swap(&mut self.models.terrain_cover, &mut self.terrain.cover);
         let meshes = Meshes { shapes: &self.meshes, lathes: &self.lathes, models: &self.models };
         // The window's cache remembers each model's level itself (hysteresis); captures choose
         // afresh (reproducible).
@@ -1631,6 +1663,14 @@ impl Engine {
         };
         let hlod = &mut self.stream.hlod;
         std::mem::swap(&mut self.models.cover, if window { &mut hlod.window_cover } else { &mut hlod.capture_cover });
+        std::mem::swap(&mut self.models.terrain_cover, &mut self.terrain.cover);
+        if let Some(o) = owners.as_deref_mut() {
+            o.resize(out.len(), 0);
+        }
+        let quad = self.meshes.get(world::Shape::Quad);
+        let zt = profile::zone("terrain_draws");
+        self.terrain.append_draws(&self.models, quad, &self.world, &camera, out, owners.as_deref_mut());
+        drop(zt);
         out.extend_from_slice(&proxies);
         // Proxy draws belong to no one entity: id 0, which the ID buffer doesn't count.
         if let Some(o) = owners {
@@ -1767,11 +1807,13 @@ impl Engine {
             self.build_effects(&fx_view, time_s, true, &mut lights, true);
             let fx = self.vfx.take_frame();
             let bones = self.models.take_bones();
+            let terrains = std::mem::take(&mut self.terrain.frame);
             let mut frame = FrameDesc {
                 bones: &bones,
                 draws_2d: &draws_2d,
                 overlay: &game_quads,
                 effects: fx.effects(),
+                terrains: &terrains,
                 ..sight::frame(&self.world, &view_proj, &draws, &lights, time_s as f32)
             };
             self.luts.apply(&mut self.gpu, self.world.env(), &mut frame, false);
@@ -1791,6 +1833,7 @@ impl Engine {
             schedule.presented(frame_no, served, blocked, Instant::now());
             self.models.put_bones(bones);
             self.vfx.put_frame(fx);
+            self.terrain.frame = terrains;
             drop(present);
             self.draws = draws;
             self.lights = lights;
@@ -2173,6 +2216,7 @@ impl Engine {
             Command::Nav(call) => self.nav_call(call, w, tick),
             Command::Place(call) => self.place_call(call, w, tick),
             Command::Stream(call) => self.stream_call(call, &request.session),
+            Command::Terrain(call) => self.terrain_call(call),
             Command::SaveGame(call) => self.handle_save(call, w, &by),
             Command::ModelBuild(_) | Command::ModelReload => unreachable!("answered by handle_model_call"),
             Command::Logic(call) => {
@@ -2563,6 +2607,8 @@ impl Engine {
             ("streaming", self.stream.json(&self.gpu, &self.models)),
             // Effects: the window frame's budget use (vfx_info has more).
             ("vfx", Json::obj([("enabled", Json::from(self.vfx.enabled)), ("budget", self.vfx.budget.to_json()), ("window", self.vfx.window.to_json())])),
+            // Terrains and water of the last frame drawn (terrain_info has one terrain's detail).
+            ("terrain", self.terrain.stats_json()),
             // WCAG 2.3.1 on the final image (the window's grid and each view's captures).
             ("flash", self.flash.to_json(window.as_ref().and_then(|w| w.flash.unsupported))),
             ("render_graph", perf::graph_json(self.gpu.last_graph().as_ref(), graph)),
@@ -2690,6 +2736,7 @@ fn call_class(command: &Command) -> Class {
         Command::Nav(call) => call.class(),
         Command::Place(call) => call.class(),
         Command::Stream(call) => call.class(),
+        Command::Terrain(call) => call.class(),
         Command::SaveGame(call) => call.class(),
         Command::Playtest(_) => Class::Sim,
         Command::Project(call) => call.class(),

@@ -27,7 +27,7 @@ layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Fr
     vec4 sky_zenith;    // linear RGB x intensity, w cos(disc radius)
     vec4 sky_horizon;   // linear RGB x intensity, w disc intensity
     vec4 sky_ground;    // linear RGB x intensity, w glow strength
-    vec4 sky_params;    // horizon sharpness
+    vec4 sky_params;    // horizon sharpness, y: the sky is drawn (1)
 };
 
 // Fraction of light that crosses the height fog from `dist` metres along `dir` to the camera

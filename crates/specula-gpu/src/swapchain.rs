@@ -417,7 +417,8 @@ impl Window {
             ssao: crate::ssao::ssao_extent(env, self.extent),
             particles: !frame.effects.particles.is_empty(),
             decals: !scratch.effects.decals.is_empty(),
-            blended: scratch.plan.batches.iter().any(|b| b.material.blended()),
+            water: scratch.plan.batches.iter().any(|b| b.material == crate::Material::Water),
+            blended: scratch.plan.batches.iter().any(|b| b.material.blended() && b.material != crate::Material::Water),
             flash: self.flash_unsupported.is_none() && fits,
             flash_reset: self.flash_extent != Some(self.extent) || self.flash_slots_for != self.swapchain,
         };

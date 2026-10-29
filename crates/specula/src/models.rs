@@ -2502,6 +2502,9 @@ pub struct GpuModels {
     /// Entities drawn in an HLOD proxy this frame, one bit per persistent entity id (see
     /// `hlod`): their own draws are skipped. Empty when no HLOD applies.
     pub(crate) cover: Vec<u64>,
+    /// Terrain entities the terrain renderer draws this frame (see `terrain`): their recipe's
+    /// stand-in mesh is skipped. One bit per entity id.
+    pub(crate) terrain_cover: Vec<u64>,
     /// Animation state, written while drawing (drawing takes `&self`).
     anim: RefCell<AnimFrame>,
     /// The GPU's pipeline variants as of the last sync: a model needing one not built yet (it is
@@ -2928,6 +2931,9 @@ impl GpuModels {
         if crate::hlod::covers(&self.cover, m.id) {
             stats.hlod += 1;
             return;
+        }
+        if crate::hlod::covers(&self.terrain_cover, m.id) {
+            return; // drawn as terrain patches
         }
         let Some((id, model)) = self.model_of_handle(m.handle) else {
             // Built but not on the GPU (streaming) vs nothing built to draw.

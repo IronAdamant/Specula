@@ -114,6 +114,9 @@ fn main() {
         hydraulic: None,
         thermal: None,
         splat: vec![],
+        offset: [0.0, 0.0],
+        edge_lock: 0,
+        edits: vec![],
     };
     for (name, spec) in [
         ("terrain 257², 2x8 octaves and warp", base_t.clone()),

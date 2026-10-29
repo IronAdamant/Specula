@@ -380,7 +380,7 @@ fn commit_upload(tools: &Tools, session: &SessionInfo, store: &ContentStore, by:
             return Ok(ToolOutput::text(Json::obj([("path", Json::from(path.as_str())), ("version", Json::from(cur_v)), ("unchanged", Json::Bool(true)), ("content", Json::from(id.hex()))]).to_string()));
         }
         let (tx, rx) = mpsc::channel();
-        let out = tools.send(session, Command::Project(ProjectCall::Commit { path: path.clone(), base: (cur_v, cur_h), file: Some((kind, Arc::from(text))), replace_unreadable: false, reply: tx }));
+        let out = tools.send(session, Command::Project(ProjectCall::Commit { path: path.clone(), base: (cur_v, cur_h), file: Some((kind, Arc::from(text))), replace_unreadable: false, also: None, reply: tx }));
         if out.is_error {
             return Ok(out);
         }

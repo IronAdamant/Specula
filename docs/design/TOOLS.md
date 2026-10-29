@@ -183,11 +183,11 @@ nothing.
 **Role templates** are data (`ROLES`); `tools_catalog {roles: true}` shows them with their sizes:
 
 - `lead` and `director`: everything.
-- `builder`: world, sight, claim, board, journal, model, engine.
+- `builder`: world, sight, claim, board, journal, model, engine, terrain.
 - `reviewer`: sight, journal, board, review, studio, plus `world_query` and `world_list`.
 - `playtester`: game, playtest, sight, board, save, engine, plus `world_query` and `world_hash`.
-- `art_director`: sight, studio, review, model, procgen, vfx, project (so it can `project_upload` the textures it
-  directs), board, plus `world_env` and `world_query`.
+- `art_director`: sight, studio, review, model, procgen, vfx, terrain, project (so it can `project_upload` the
+  textures it directs), board, plus `world_env` and `world_query`.
 - `sight_skeptic`: sight, plus `world_query`, `world_list` and `critique_add`.
 - `performance`: perf, engine, stream, sight, disk, plus the world reads.
 - `designer`: lex, balance, playtest, game, board, save.

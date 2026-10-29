@@ -95,7 +95,23 @@ const LAYER: &[Field] = &[o("kind", Choice(&["fbm", "ridged", "billow"])), r("sc
 const PAD: &[Field] = &[r("at", Vec2), r("radius", Num), r("height", Num), o("blend", Num)];
 const EROSION: &[Field] = &[r("droplets", Int), o("strength", Num), o("steps", Int)];
 const THERMAL: &[Field] = &[r("iterations", Int), o("talus", Num)];
-const SPLAT: &[Field] = &[r("name", Name), r("color", Color), o("slope", Vec2), o("height", Vec2), o("soft", Num), o("noise", Num), o("noise_scale", Num)];
+const SPLAT: &[Field] = &[
+    r("name", Name),
+    r("color", Color),
+    o("slope", Vec2),
+    o("height", Vec2),
+    o("soft", Num),
+    o("noise", Num),
+    o("noise_scale", Num),
+    // The terrain renderer's layer material (`"render": "terrain"`).
+    o("texture", Name),
+    o("uv_scale", Num),
+    o("roughness", Num),
+    o("specular", Num),
+    o("triplanar", Num),
+    o("normal_strength", Num),
+];
+const EDIT: &[Field] = &[r("op", Choice(&["raise", "lower", "flatten", "smooth", "paint"])), r("at", Vec2), r("radius", Num), o("amount", Num), o("height", Num), o("layer", Int)];
 const TERRAIN: &[Field] = &[
     r("size", Vec2),
     r("samples", Vec2),
@@ -110,6 +126,13 @@ const TERRAIN: &[Field] = &[
     o("splat", Objs(SPLAT)),
     o("depth", Num),
     o("mesh_step", Int),
+    // The terrain renderer (docs/design/TERRAIN.md): drawn as a CDLOD heightfield, tiles, edits.
+    o("render", Choice(&["mesh", "terrain"])),
+    o("offset", Vec2),
+    o("edge_lock", Int),
+    o("edits", Objs(EDIT)),
+    o("skirt", Num),
+    o("grain", Num),
 ];
 
 const MASK: &[Field] = &[r("scale", Num), r("threshold", Num), o("octaves", Int)];
@@ -570,6 +593,9 @@ pub(super) struct Gen<'c, 'p> {
     pub terrains: &'c mut Vec<(String, Arc<Terrain>, bool)>,
     /// Scatters placed so far: part name and each placement's x, z (for a later `clear_of`).
     pub scattered: &'c mut Vec<(String, Vec<V2>)>,
+    /// The recipe's name and texture graphs (terrain layers name them).
+    pub recipe_name: &'c str,
+    pub textures: &'c [(String, TexSource)],
 }
 
 impl Gen<'_, '_> {
@@ -760,6 +786,22 @@ impl Gen<'_, '_> {
             });
         }
         let terrace = c.vec2(n, "terrace", [0.0, 0.0])?;
+        let edit_nodes = c.subs(n, "edits");
+        if edit_nodes.len() > terrain::MAX_EDITS {
+            return Err(e(&n.at("edits"), ErrorCode::Limit, format!("{} strokes; at most {}", edit_nodes.len(), terrain::MAX_EDITS)).with_numbers(edit_nodes.len() as f64, terrain::MAX_EDITS as f64));
+        }
+        let mut edits = Vec::with_capacity(edit_nodes.len());
+        for ed in &edit_nodes {
+            let op = terrain::EditOp::parse(c.str(ed, "op", "raise")).unwrap_or(terrain::EditOp::Raise);
+            edits.push(terrain::Edit {
+                op,
+                at: c.vec2(ed, "at", [0.0, 0.0])?,
+                radius: c.ranged(ed, "radius", 1.0, 0.01, 1e4)?,
+                amount: c.ranged(ed, "amount", if matches!(op, terrain::EditOp::Raise | terrain::EditOp::Lower) { 0.5 } else { 1.0 }, -1e3, 1e3)?,
+                height: c.ranged(ed, "height", 0.0, -1e4, 1e4)?,
+                layer: c.int(ed, "layer", 0, 0, terrain::MAX_SPLAT as i64 - 1)?,
+            });
+        }
         let spec = TerrainSpec {
             size,
             samples: [samples[0] as u32, samples[1] as u32],
@@ -773,15 +815,54 @@ impl Gen<'_, '_> {
             hydraulic,
             thermal,
             splat,
+            offset: c.vec2(n, "offset", [0.0, 0.0])?,
+            edge_lock: c.int(n, "edge_lock", 0, 0, terrain::MAX_EDGE_LOCK as i64)?,
+            edits,
         };
-        let t = spec.build(c.work_left(&n.path, terrain::MAX_WORK)?).map_err(|er| {
+        let mut t = spec.build(c.work_left(&n.path, terrain::MAX_WORK)?).map_err(|er| {
             let mut out = e(&n.at(er.field), if er.limit { ErrorCode::Limit } else { ErrorCode::OutOfRange }, er.message);
             out.measured = er.measured;
             out.limit = er.max;
             out
         })?;
         c.spend(t.work);
-        let mut step = c.int(n, "mesh_step", 1, 1, 64)? as usize;
+        let render = c.str(n, "render", "mesh") == "terrain";
+        if render {
+            // Each layer's material; a texture names one of the recipe's graphs (baked with the
+            // build under the key `terrain+<graph>`).
+            let mut layers = Vec::new();
+            for (k, sp) in c.subs(n, "splat").iter().enumerate() {
+                let texture = match sp.get("texture") {
+                    Some(Val::Str(name)) => {
+                        let key = match self.textures.iter().find(|(tn, _)| tn == name).map(|(_, s)| s) {
+                            Some(TexSource::Library(lib)) => format!("lib:{lib}"),
+                            Some(TexSource::Inline(_)) => format!("{}/{name}", self.recipe_name),
+                            None => {
+                                let known: Vec<&str> = self.textures.iter().map(|(tn, _)| tn.as_str()).collect();
+                                return Err(e(&format!("{}.splat[{k}].texture", n.path), ErrorCode::UnknownName, format!("no texture '{name}' in the recipe's \"textures\" (has: {})", known.join(", "))));
+                            }
+                        };
+                        Some(format!("terrain+{key}"))
+                    }
+                    _ => None,
+                };
+                layers.push(terrain::RenderLayer {
+                    texture,
+                    uv_scale: c.ranged(sp, "uv_scale", 4.0, 0.01, 1000.0)?,
+                    roughness: c.ranged(sp, "roughness", 0.9, 0.0, 1.0)?,
+                    specular: c.ranged(sp, "specular", 0.05, 0.0, 1.0)?,
+                    triplanar_deg: c.ranged(sp, "triplanar", 35.0, 0.0, 90.0)?,
+                    normal_strength: c.ranged(sp, "normal_strength", 1.0, 0.0, 4.0)?,
+                });
+            }
+            if layers.is_empty() {
+                layers.push(terrain::RenderLayer::default());
+            }
+            t.render = Some(terrain::TerrainRender { layers, skirt: c.ranged(n, "skirt", 0.5, 0.0, 100.0)?, grain: c.ranged(n, "grain", 0.35, 0.0, 1.0)? });
+        }
+        // Drawn by the terrain renderer, the mesh is only its stand-in (before the textures
+        // land, the asset studio, HLOD): every 4th sample unless the recipe says otherwise.
+        let mut step = c.int(n, "mesh_step", if render { 4 } else { 1 }, 1, 64)? as usize;
         if self.coarse {
             step *= 2;
         }
@@ -997,15 +1078,16 @@ fn build_include(asset: &str, vals: &[(String, f64)], seed: u64, params: &BuildP
 /// texture once.
 /// `spent`: the build's work so far; the bakes get what is left of [`MAX_BUILD_WORK`], and all
 /// the sets together at most [`texgraph::MAX_MODEL_GPU_BYTES`].
-pub(super) fn bake_textures(recipe: &Recipe, params: &BuildParams, lod0: &MeshData, spent: u64) -> Result<Vec<(String, Arc<TextureSet>)>, RecipeError> {
+pub(super) fn bake_textures(recipe: &Recipe, params: &BuildParams, lod0: &MeshData, extra: &[String], spent: u64) -> Result<Vec<(String, Arc<TextureSet>)>, RecipeError> {
     let mut baked: std::collections::BTreeMap<String, Arc<TextureSet>> = std::collections::BTreeMap::new();
     let mut out = Vec::new();
     let threads = std::thread::available_parallelism().map_or(2, |n| n.get()).clamp(1, 4);
     let mut work = spent;
     let mut gpu = 0u64;
-    for p in &lod0.parts {
-        let Some((_, tex)) = p.material.split_once('+') else { continue };
-        if out.iter().any(|(k, _): &(String, Arc<TextureSet>)| k == &p.material) {
+    // The parts' material keys, then `extra` keys (the terrain renderer's layers: `terrain+<graph>`).
+    for key in lod0.parts.iter().map(|p| &p.material).chain(extra) {
+        let Some((_, tex)) = key.split_once('+') else { continue };
+        if out.iter().any(|(k, _): &(String, Arc<TextureSet>)| k == key) {
             continue;
         }
         let set = match baked.get(tex) {
@@ -1039,7 +1121,7 @@ pub(super) fn bake_textures(recipe: &Recipe, params: &BuildParams, lod0: &MeshDa
                 s
             }
         };
-        out.push((p.material.clone(), set));
+        out.push((key.clone(), set));
     }
     Ok(out)
 }

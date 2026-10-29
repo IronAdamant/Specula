@@ -45,7 +45,9 @@ pub enum ProjectCall {
     /// Writes `file` (`None`: deletes) if the file is still at `base` (version, hash; version 0 =
     /// absent), then syncs the disk and hot-reloads. `replace_unreadable`: replace a file held
     /// because the disk holds something that can't be mirrored (its bytes are backed up first).
-    Commit { path: String, base: (u64, u64), file: Option<(FileKind, Arc<str>)>, replace_unreadable: bool, reply: Sender<Committed> },
+    /// `also`: an entity change committed with the file in the same journal entry (claims
+    /// checked on both, one undo takes both back): terrain_edit's collider.
+    Commit { path: String, base: (u64, u64), file: Option<(FileKind, Arc<str>)>, replace_unreadable: bool, also: Option<Also>, reply: Sender<Committed> },
     /// Mirrors a module crate's folder as `modules/<name>`.
     Mount { dir: PathBuf, name: String },
     /// Before `logic_build {fix: true}` writes fixes into a module: refused while another agent
@@ -59,6 +61,13 @@ pub enum ProjectCall {
     /// Who the caller is (its identity key): uploads belong to it.
     Owner { reply: Sender<String> },
 }
+
+/// An entity change committed with a project file ([`ProjectCall::Commit`]'s `also`).
+pub type Also = Box<(crate::world::EntityKey, crate::world::UpdateSpec)>;
+
+/// Makes [`ProjectCall::Commit`]'s `also` from the file's new text (before anything is
+/// committed; an error answers the call and nothing changes).
+pub type AlsoFrom<'a> = &'a dyn Fn(&str) -> Result<Option<Also>, ToolOutput>;
 
 /// One mounted module file (see [`ProjectCall::ModuleTexts`]).
 pub struct ModuleText {
@@ -133,9 +142,9 @@ pub fn call(tools: &Tools, session: &SessionInfo, name: &str, args: &Json) -> To
     let out = match name {
         "project_list" => list_tool(tools, session, args),
         "project_read" => read_tool(tools, session, args),
-        "project_write" => edit_tool(tools, session, args, "project_write"),
-        "project_patch" => edit_tool(tools, session, args, "project_patch"),
-        "project_delete" => edit_tool(tools, session, args, "project_delete"),
+        "project_write" => edit_tool(tools, session, args, "project_write", None),
+        "project_patch" => edit_tool(tools, session, args, "project_patch", None),
+        "project_delete" => edit_tool(tools, session, args, "project_delete", None),
         "project_mount" => mount_tool(tools, session, args),
         "project_upload" => crate::project_binary::upload_tool(tools, session, args),
         other => Err(format!("unknown project tool '{other}'")),
@@ -497,7 +506,13 @@ fn stale(path: &str, kind: FileKind, expected: u64, snap: &Snap, yours: Yours, t
     ToolOutput::error(j.to_string())
 }
 
-fn edit_tool(tools: &Tools, session: &SessionInfo, args: &Json, tool: &'static str) -> Result<ToolOutput, String> {
+/// `project_patch` with an entity change made from the patched text and committed with it (one
+/// journal entry): terrain_edit's recipe and collider.
+pub(crate) fn patch_with(tools: &Tools, session: &SessionInfo, args: &Json, also: AlsoFrom) -> ToolOutput {
+    edit_tool(tools, session, args, "project_patch", Some(also)).unwrap_or_else(|m| ToolOutput::error(argument_error(&m).to_string()))
+}
+
+fn edit_tool(tools: &Tools, session: &SessionInfo, args: &Json, tool: &'static str, also_from: Option<AlsoFrom>) -> Result<ToolOutput, String> {
     let common: &[&str] = &["path", "expect_version", "allow_errors", "dry_run", "build", "replace_unreadable"];
     let extra: &[&str] = match tool {
         "project_write" => &["text"],
@@ -606,6 +621,14 @@ fn edit_tool(tools: &Tools, session: &SessionInfo, args: &Json, tool: &'static s
             ));
         }
         let change = diff(kind, old.as_deref().unwrap_or(""), next.as_deref().unwrap_or(""));
+        // The entity change that goes with this text (checked on a dry run too).
+        let also = match (also_from, next.as_deref()) {
+            (Some(f), Some(n)) => match f(n) {
+                Ok(a) => a,
+                Err(out) => return Ok(out),
+            },
+            _ => None,
+        };
         if dry_run {
             let mut j = vec![("dry_run", Json::Bool(true)), ("path", Json::from(path.as_str())), ("kind", Json::from(kind.name())), ("version", Json::from(current_version)), ("changes", change.to_json(24))];
             if !problems.is_empty() {
@@ -615,7 +638,7 @@ fn edit_tool(tools: &Tools, session: &SessionInfo, args: &Json, tool: &'static s
         }
         let (tx, rx) = mpsc::channel();
         let file = next.map(|n| (kind, Arc::<str>::from(n)));
-        let out = tools.send(session, Command::Project(ProjectCall::Commit { path: path.clone(), base: (current_version, current_hash), file, replace_unreadable, reply: tx }));
+        let out = tools.send(session, Command::Project(ProjectCall::Commit { path: path.clone(), base: (current_version, current_hash), file, replace_unreadable, also, reply: tx }));
         if out.is_error {
             return Ok(out);
         }

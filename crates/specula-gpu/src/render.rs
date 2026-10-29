@@ -26,7 +26,7 @@ use std::ptr;
 use std::time::Instant;
 
 /// Every shader module, by name (for errors) and SPIR-V; [`Shader`] indexes this table.
-static SHADERS: [(&str, &[u8]); 48] = [
+static SHADERS: [(&str, &[u8]); 53] = [
     ("mesh.vert", include_bytes!("../shaders/mesh.vert.spv")),
     ("mesh.frag", include_bytes!("../shaders/mesh.frag.spv")),
     ("shadow.vert", include_bytes!("../shaders/shadow.vert.spv")),
@@ -75,6 +75,11 @@ static SHADERS: [(&str, &[u8]); 48] = [
     ("decal.frag", include_bytes!("../shaders/decal.frag.spv")),
     ("flash_state.frag", include_bytes!("../shaders/flash_state.frag.spv")),
     ("flash_cells.frag", include_bytes!("../shaders/flash_cells.frag.spv")),
+    ("terrain.vert", include_bytes!("../shaders/terrain.vert.spv")),
+    ("terrain.frag", include_bytes!("../shaders/terrain.frag.spv")),
+    ("terrain_shadow.vert", include_bytes!("../shaders/terrain_shadow.vert.spv")),
+    ("ids_terrain.vert", include_bytes!("../shaders/ids_terrain.vert.spv")),
+    ("water.frag", include_bytes!("../shaders/water.frag.spv")),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,6 +132,11 @@ enum Shader {
     DecalFrag = 45,
     FlashStateFrag = 46,
     FlashCellsFrag = 47,
+    TerrainVert = 48,
+    TerrainFrag = 49,
+    TerrainShadowVert = 50,
+    IdsTerrainVert = 51,
+    WaterFrag = 52,
 }
 
 /// Offscreen targets and the tone mapped image FXAA reads (readback bytes are sRGB RGBA8).
@@ -186,6 +196,9 @@ const BLENDED_VARIANTS: [(bool, bool); 2] = [(false, false), (true, false)];
 pub struct Variants {
     pub skinned: bool,
     pub textured: bool,
+    /// The terrain and water pipelines (scene, shadow, ID buffer), asked for when a frame first
+    /// has terrain patches or water ([`crate::Gpu::request_terrain_pipelines`]).
+    pub terrain: bool,
 }
 
 impl Variants {
@@ -247,6 +260,27 @@ pub(crate) fn id_keys(include: impl Fn(bool, bool) -> bool, counting: bool) -> V
 
 /// Feature combinations built for every colour format.
 const FEATURE_SETS: [u32; 4] = [0, FEAT_SHADOWS, FEAT_FOG, FEAT_SHADOWS | FEAT_FOG];
+
+/// The terrain variant's pipelines: terrain patches and water for every scene format and
+/// feature set (SSAO with HDR), the terrain shadow caster and its ID passes.
+fn terrain_keys(formats: &[VkFormat], counting: bool) -> Vec<PipelineKey> {
+    let mut keys = Vec::new();
+    for &format in formats {
+        for features in FEATURE_SETS {
+            let sets: &[u32] = if format == HDR_FORMAT { &[0, FEAT_SSAO] } else { &[0] };
+            for &ssao in sets {
+                keys.push(PipelineKey::Terrain { format, features: features | ssao });
+                keys.push(PipelineKey::Water { format, features: features | ssao });
+            }
+        }
+    }
+    keys.push(PipelineKey::TerrainShadow);
+    keys.push(PipelineKey::IdsTerrain { raster: false });
+    if counting {
+        keys.push(PipelineKey::IdsTerrain { raster: true });
+    }
+    keys
+}
 
 /// Push constant bytes every pipeline layout reserves (the minimum every device supports).
 pub const PUSH_BYTES: u32 = 128;
@@ -363,6 +397,8 @@ const MAT_LIT: u32 = 0;
 const MAT_GLASS: u32 = 1;
 const MAT_BLOB_SHADOW: u32 = 2;
 const MAT_LAVA_LAMP: u32 = 3;
+const MAT_TERRAIN: u32 = 4;
+const MAT_WATER: u32 = 5;
 
 fn material_id(m: Material) -> u32 {
     match m {
@@ -370,6 +406,8 @@ fn material_id(m: Material) -> u32 {
         Material::Glass => MAT_GLASS,
         Material::BlobShadow => MAT_BLOB_SHADOW,
         Material::LavaLamp => MAT_LAVA_LAMP,
+        Material::Terrain => MAT_TERRAIN,
+        Material::Water => MAT_WATER,
     }
 }
 
@@ -439,7 +477,8 @@ pub fn frame_data(frame: &FrameDesc, extent: VkExtent2D, shadow: &ShadowData) ->
             c[3] = sky_s.glow.max(0.0);
             c
         },
-        sky_params: [sky_s.horizon_sharpness.clamp(0.1, 64.0), 0.0, 0.0, 0.0],
+        // y: the sky is drawn (water mirrors its gradient).
+        sky_params: [sky_s.horizon_sharpness.clamp(0.1, 64.0), if sky_s.enabled { 1.0 } else { 0.0 }, 0.0, 0.0],
     }
 }
 
@@ -485,6 +524,21 @@ pub fn draw_record(draw: &DrawItem) -> DrawRecord {
 
 fn draw_record_with(draw: &DrawItem, linear: &mut impl FnMut([f32; 3]) -> [f32; 3], slot: &impl Fn(TextureId) -> Option<u32>) -> DrawRecord {
     let s = &draw.surface;
+    match (draw.material, &s.ext) {
+        (Material::Terrain, crate::MaterialExt::Terrain(p)) => {
+            let (color, color2, ext) = crate::terrain::patch_fields(p);
+            return DrawRecord { model: draw.model, color, color2, params: [0.0; 4], ext };
+        }
+        (Material::Water, ext) => {
+            let style = match ext {
+                crate::MaterialExt::Water(w) => *w,
+                _ => crate::WaterStyle::default(),
+            };
+            let (color, color2, params, ext) = crate::water::fields(&style, linear);
+            return DrawRecord { model: draw.model, color, color2, params, ext };
+        }
+        _ => {}
+    }
     let c = linear([draw.color[0], draw.color[1], draw.color[2]]);
     let mut c2 = linear(s.color2);
     let mut color2_a = s.seed;
@@ -627,6 +681,10 @@ pub struct FrameScratch {
     /// upload buffer.
     pub effects: crate::effects::EffectsPlan,
     pub effects_at: usize,
+    /// The frame's terrain material records ([`FrameDesc::terrains`]) and the record unit they
+    /// start at (after the effects).
+    pub terrains: Vec<crate::terrain::TerrainRecord>,
+    pub terrains_at: usize,
 }
 
 impl FrameScratch {
@@ -812,6 +870,24 @@ impl FrameUpload {
         }
     }
 
+    /// Write the terrain material records at record unit `at` (after the effects).
+    pub fn write_terrains(&self, at: usize, records: &[crate::terrain::TerrainRecord]) {
+        let units = terrain_units(records.len());
+        assert!(at + units <= self.sizing.capacity as usize, "reserve() before write_terrains()");
+        // SAFETY: `mapped` is coherent host memory of RECORDS_OFFSET + capacity × RECORD_SIZE
+        // bytes the GPU no longer reads (see `reserve`); the copy stays within the reserved units
+        // (asserted) and the records are plain `repr(C)` data.
+        unsafe {
+            let base = (self.buffer.mapped as *mut u8).add(RECORDS_OFFSET as usize + at * RECORD_SIZE as usize);
+            ptr::copy_nonoverlapping(records.as_ptr() as *const u8, base, std::mem::size_of_val(records));
+        }
+    }
+
+    /// Device address of the terrain material records written at unit `at`.
+    pub fn terrains_address(&self, at: usize) -> u64 {
+        self.records_address() + at as u64 * RECORD_SIZE
+    }
+
     /// Device addresses of the particle, material and decal records written at unit `at`.
     pub fn effects_addresses(&self, at: usize, plan: &crate::effects::EffectsPlan) -> (u64, u64, u64) {
         let (pu, mu, _) = plan.units(RECORD_SIZE as usize);
@@ -840,6 +916,11 @@ impl FrameUpload {
     pub fn destroy(&self, dev: &Device) {
         dev.destroy_buffer(&self.buffer);
     }
+}
+
+/// Record units that `n` terrain material records take in the upload buffer.
+pub fn terrain_units(n: usize) -> usize {
+    (n * size_of::<crate::terrain::TerrainRecord>()).div_ceil(RECORD_SIZE as usize)
 }
 
 /// Record units (of [`DrawRecord`]'s size) that `bones` matrices take in the upload buffer.
@@ -990,6 +1071,16 @@ pub enum PipelineKey {
     Particle { format: VkFormat, features: u32 },
     /// Decals into `format` (no depth attachment), lit (shadows, fog) or multiplying.
     Decal { format: VkFormat, features: u32, multiply: bool },
+    /// Terrain patches (`terrain.rs`) into `format` (+ D32 depth, compare op dynamic), opaque,
+    /// with the scene `features`.
+    Terrain { format: VkFormat, features: u32 },
+    /// Terrain patches into a shadow map layer (depth only).
+    TerrainShadow,
+    /// Sight's ID buffer for terrain patches: opaque ids, or (`raster`) marks of what rasterized.
+    IdsTerrain { raster: bool },
+    /// Water surfaces into `format` (no depth attachment: they test the sampled scene depth),
+    /// with the scene `features`.
+    Water { format: VkFormat, features: u32 },
 }
 
 /// Specialization bit of the multiplying decal pipeline (`MULTIPLY` in `shaders/decal.glsl`).
@@ -1291,6 +1382,64 @@ impl PipelineKey {
                 // The box's back faces: each covered pixel once, the camera inside the box or not.
                 cull_front: true,
             },
+            PipelineKey::Terrain { format, features } => PipelineDesc {
+                vert: Shader::TerrainVert,
+                frag: Some(Shader::TerrainFrag),
+                spec: features | if format == HDR_FORMAT { FEAT_HDR } else { 0 } | FEAT_OPAQUE,
+                // The grid's positions hold its coordinates (`terrain::grid_mesh`).
+                vertex: VertexInput::Position { skinned: false, uv: false },
+                color: Some(format),
+                depth: Some(DEPTH_FORMAT),
+                depth_test: true,
+                depth_write: true,
+                compare: None,
+                blend: Blend::Off,
+                depth_bias: false,
+                cull_front: false,
+            },
+            PipelineKey::TerrainShadow => PipelineDesc {
+                vert: Shader::TerrainShadowVert,
+                frag: None,
+                spec: 0,
+                vertex: VertexInput::Position { skinned: false, uv: false },
+                color: None,
+                depth: Some(SHADOW_FORMAT),
+                depth_test: true,
+                depth_write: true,
+                compare: Some(VK_COMPARE_OP_LESS),
+                blend: Blend::Off,
+                depth_bias: true,
+                cull_front: false,
+            },
+            PipelineKey::IdsTerrain { raster } => PipelineDesc {
+                vert: Shader::IdsTerrainVert,
+                frag: Some(if raster { Shader::IdsCountFrag } else { Shader::IdsFrag }),
+                // ids_count.frag's MODE: 1 raster.
+                spec: raster as u32,
+                vertex: VertexInput::Position { skinned: false, uv: false },
+                color: Some(crate::idbuffer::ID_FORMAT),
+                depth: Some(DEPTH_FORMAT),
+                depth_test: !raster,
+                depth_write: !raster,
+                compare: if raster { Some(VK_COMPARE_OP_LESS) } else { None },
+                blend: Blend::Mask(if raster { 0 } else { VK_COLOR_COMPONENT_RGBA }),
+                depth_bias: false,
+                cull_front: false,
+            },
+            PipelineKey::Water { format, features } => PipelineDesc {
+                vert: Shader::MeshVert,
+                frag: Some(Shader::WaterFrag),
+                spec: features | if format == HDR_FORMAT { FEAT_HDR } else { 0 },
+                vertex: VertexInput::Mesh { skinned: false, textured: false },
+                color: Some(format),
+                depth: None,
+                depth_test: false,
+                depth_write: false,
+                compare: Some(VK_COMPARE_OP_LESS),
+                blend: if features & FEAT_SSAO != 0 { Blend::PremultipliedKeepAlpha } else { Blend::Premultiplied },
+                depth_bias: false,
+                cull_front: false,
+            },
         }
     }
 }
@@ -1398,6 +1547,8 @@ struct Background {
 pub struct PipelineVariants {
     pub skinned: bool,
     pub textured: bool,
+    /// Terrain and water ([`crate::Gpu::request_terrain_pipelines`]).
+    pub terrain: bool,
     /// The last background build's failure: its variants are not ready and won't be until a
     /// retry ([`crate::Gpu::retry_failed_variants`], or uploading a mesh needing them).
     pub failed: Option<VariantFailure>,
@@ -1409,6 +1560,7 @@ pub struct VariantFailure {
     /// The variants that are unavailable because of it.
     pub skinned: bool,
     pub textured: bool,
+    pub terrain: bool,
     /// The pipeline that failed (its key), or `worker thread panicked`.
     pub pipeline: String,
     pub error: GpuError,
@@ -1444,6 +1596,10 @@ pub struct FramePipelines {
     pub particle: VkPipeline,
     pub decal_lit: VkPipeline,
     pub decal_multiply: VkPipeline,
+    /// Terrain patches, their shadow casters and water (null until the terrain variant is built).
+    pub terrain: VkPipeline,
+    pub terrain_shadow: VkPipeline,
+    pub water: VkPipeline,
     /// The overlay without a depth attachment, for a direct frame whose last pass (particles or
     /// decals) renders without one.
     pub overlay_flat: VkPipeline,
@@ -1703,7 +1859,12 @@ impl Pipelines {
             particle: get(effects.0, particle_key(scene_format, features))?,
             decal_lit: get(effects.1, decal_key(scene_format, features, false))?,
             decal_multiply: get(effects.1, decal_key(scene_format, features, true))?,
-            overlay_flat: get(overlay && mode.direct() && (effects.0 || effects.1), PipelineKey::Overlay { format: final_format, depth: false })?,
+            // Water's pass has no depth attachment either.
+            overlay_flat: get(overlay && mode.direct() && (effects.0 || effects.1 || built.terrain), PipelineKey::Overlay { format: final_format, depth: false })?,
+            // Built with the terrain variant (in the background): lookups.
+            terrain: get(built.terrain, PipelineKey::Terrain { format: scene_format, features })?,
+            terrain_shadow: get(built.terrain && shadows, PipelineKey::TerrainShadow)?,
+            water: get(built.terrain, PipelineKey::Water { format: scene_format, features })?,
         })
     }
 
@@ -1755,6 +1916,9 @@ impl Pipelines {
         }
         // Sight's ID passes follow the scene's variants (captures draw what the scene draws).
         keys.extend(id_keys(new, self.ids_counting));
+        if want.terrain {
+            keys.extend(terrain_keys(formats, self.ids_counting));
+        }
         keys.retain(|k| !self.by_key.iter().any(|(b, _)| b == k));
         keys
     }
@@ -1763,12 +1927,16 @@ impl Pipelines {
     /// ordinary creation). `variants` changes only when every pipeline was created.
     pub fn build_variants(&mut self, dev: &Device, want: Variants, formats: &[VkFormat]) -> Result<(), GpuError> {
         self.poll_background(true);
-        let want = Variants { skinned: want.skinned || self.variants.skinned, textured: want.textured || self.variants.textured };
+        let want = Variants {
+            skinned: want.skinned || self.variants.skinned,
+            textured: want.textured || self.variants.textured,
+            terrain: want.terrain || self.variants.terrain,
+        };
         for key in self.variant_keys(want, formats) {
             self.get(dev, key)?;
         }
         self.variants = want;
-        if self.background.failure.as_ref().is_some_and(|f| (!f.skinned || want.skinned) && (!f.textured || want.textured)) {
+        if self.background.failure.as_ref().is_some_and(|f| (!f.skinned || want.skinned) && (!f.textured || want.textured) && (!f.terrain || want.terrain)) {
             self.background.failure = None; // built after all
         }
         Ok(())
@@ -1780,7 +1948,11 @@ impl Pipelines {
     /// draws needing a variant not built yet are skipped until [`Pipelines::poll_background`]
     /// hands the pipelines back. These don't count as created after warm (no frame stalls).
     pub fn request_variants(&mut self, dev: &Device, want: Variants, formats: &[VkFormat]) {
-        let mut want = Variants { skinned: want.skinned || self.variants.skinned, textured: want.textured || self.variants.textured };
+        let mut want = Variants {
+            skinned: want.skinned || self.variants.skinned,
+            textured: want.textured || self.variants.textured,
+            terrain: want.terrain || self.variants.terrain,
+        };
         if want == self.variants {
             return;
         }
@@ -1789,6 +1961,7 @@ impl Pipelines {
             let q = &mut self.background.queued;
             q.skinned |= want.skinned && !p.want.skinned;
             q.textured |= want.textured && !p.want.textured;
+            q.terrain |= want.terrain && !p.want.terrain;
             return;
         }
         // A build that starts retries what failed before, once (the failure is folded into it,
@@ -1796,6 +1969,7 @@ impl Pipelines {
         if let Some(f) = self.background.failure.take() {
             want.skinned |= f.skinned;
             want.textured |= f.textured;
+            want.terrain |= f.terrain;
         }
         let keys = self.variant_keys(want, formats);
         if keys.is_empty() {
@@ -1841,7 +2015,11 @@ impl Pipelines {
         let panicked = p.job.join().is_err();
         let results = std::mem::take(&mut *p.results.lock().unwrap_or_else(|e| e.into_inner()));
         // Variants unavailable: those a failed pipeline belongs to (all new ones if the worker died).
-        let new = Variants { skinned: p.want.skinned && !self.variants.skinned, textured: p.want.textured && !self.variants.textured };
+        let new = Variants {
+            skinned: p.want.skinned && !self.variants.skinned,
+            textured: p.want.textured && !self.variants.textured,
+            terrain: p.want.terrain && !self.variants.terrain,
+        };
         let mut lost = if panicked { new } else { Variants::default() };
         let mut failure = panicked.then(|| (String::from("worker thread panicked"), GpuError::new("background pipeline build: the worker thread panicked")));
         for (key, r) in results {
@@ -1854,14 +2032,16 @@ impl Pipelines {
                 }
                 Err(e) => {
                     self.background.failed += 1;
-                    let (skinned, textured) = match key {
-                        PipelineKey::Mesh { skinned, textured, .. } => (skinned, textured),
-                        PipelineKey::Shadow { skinned, masked } => (skinned, masked),
-                        PipelineKey::Ids { skinned, textured, .. } => (skinned, textured),
-                        _ => (new.skinned, new.textured),
+                    let (skinned, textured, terrain) = match key {
+                        PipelineKey::Mesh { skinned, textured, .. } => (skinned, textured, false),
+                        PipelineKey::Shadow { skinned, masked } => (skinned, masked, false),
+                        PipelineKey::Ids { skinned, textured, .. } => (skinned, textured, false),
+                        PipelineKey::Terrain { .. } | PipelineKey::TerrainShadow | PipelineKey::IdsTerrain { .. } | PipelineKey::Water { .. } => (false, false, true),
+                        _ => (new.skinned, new.textured, new.terrain),
                     };
                     lost.skinned |= skinned && new.skinned;
                     lost.textured |= textured && new.textured;
+                    lost.terrain |= terrain && new.terrain;
                     failure.get_or_insert((format!("{key:?}"), e));
                 }
             }
@@ -1873,9 +2053,13 @@ impl Pipelines {
         let ok = failure.is_none();
         // What did get built becomes usable (every pipeline of a variant set not touched by a
         // failure exists).
-        self.variants = Variants { skinned: p.want.skinned && !lost.skinned, textured: p.want.textured && !lost.textured };
+        self.variants = Variants {
+            skinned: p.want.skinned && !lost.skinned,
+            textured: p.want.textured && !lost.textured,
+            terrain: p.want.terrain && !lost.terrain,
+        };
         if let Some((pipeline, error)) = failure {
-            self.background.failure = Some(VariantFailure { skinned: lost.skinned, textured: lost.textured, pipeline, error });
+            self.background.failure = Some(VariantFailure { skinned: lost.skinned, textured: lost.textured, terrain: lost.terrain, pipeline, error });
         }
         let queued = std::mem::take(&mut self.background.queued);
         if queued != Variants::default() {
@@ -1894,7 +2078,7 @@ impl Pipelines {
 
     /// The variants ready to draw with, and the last background failure.
     pub fn ready(&self) -> PipelineVariants {
-        PipelineVariants { skinned: self.variants.skinned, textured: self.variants.textured, failed: self.background.failure.clone() }
+        PipelineVariants { skinned: self.variants.skinned, textured: self.variants.textured, terrain: self.variants.terrain, failed: self.background.failure.clone() }
     }
 
     /// Makes the next background build fail (tests).
@@ -2209,10 +2393,37 @@ pub fn check_frame(meshes: &HashMap<u32, Mesh>, textures: &Textures, frame: &Fra
     if frame.bones.len() > MAX_BONE_MATRICES {
         return Err(GpuError::limit(Limit::BoneMatrices, frame.bones.len() as u64, MAX_BONE_MATRICES as u64));
     }
+    if frame.terrains.len() > crate::terrain::MAX_TERRAINS {
+        return Err(GpuError::limit(Limit::Terrains, frame.terrains.len() as u64, crate::terrain::MAX_TERRAINS as u64));
+    }
+    for (i, t) in frame.terrains.iter().enumerate() {
+        if let Some(id) = crate::terrain::textures(t).find(|t| textures.slot(*t).is_none()) {
+            return Err(GpuError::unknown(IdKind::Texture, id.0, &format!(" in terrain {i}")));
+        }
+        let max = crate::terrain::MAX_SIDE;
+        if !(2..=max).contains(&t.columns) || !(2..=max).contains(&t.rows) || !t.cell.iter().all(|c| c.is_finite() && *c > 0.0) {
+            let reason = ErrorReason::TerrainOutside { draw: u32::MAX, terrain: i as u32, terrains: frame.terrains.len() as u32 };
+            return Err(GpuError::rejected(reason, format!("terrain {i}: {} x {} samples (2..={max} a side) of cell {:?} (finite, > 0)", t.columns, t.rows, t.cell)));
+        }
+    }
     for (i, d) in frame.draws.iter().enumerate() {
         let Some(mesh) = meshes.get(&d.mesh.0) else {
             return Err(GpuError::unknown(IdKind::Mesh, d.mesh.0, " in draw list"));
         };
+        if d.material == Material::Terrain {
+            let n = frame.terrains.len() as u32;
+            match d.surface.ext {
+                crate::MaterialExt::Terrain(p) if p.terrain < n && p.level < 31 => {}
+                crate::MaterialExt::Terrain(p) => {
+                    let reason = ErrorReason::TerrainOutside { draw: i as u32, terrain: p.terrain, terrains: n };
+                    return Err(GpuError::rejected(reason, format!("draw {i}: its terrain patch names terrain {} (level {}), but the frame has {n} terrains", p.terrain, p.level)));
+                }
+                _ => {
+                    let reason = ErrorReason::TerrainOutside { draw: i as u32, terrain: u32::MAX, terrains: n };
+                    return Err(GpuError::rejected(reason, format!("draw {i}: a terrain draw needs Surface::ext = MaterialExt::Terrain (use terrain::patch_draw)")));
+                }
+            }
+        }
         if let Some(t) = d.surface.textures.ids().find(|t| textures.slot(*t).is_none()) {
             return Err(GpuError::unknown(IdKind::Texture, t.0, " in draw list (material textures)"));
         }
@@ -2258,10 +2469,15 @@ pub fn prepare_frame(
     let before_effects =
         scratch.records.len() + overlay_units(scratch.overlay.len(), RECORD_SIZE as usize) + bone_units(frame.bones.len()) + items.len();
     let (pu, mu, du) = scratch.effects.units(RECORD_SIZE as usize);
-    upload.reserve(dev, before_effects + pu + mu + du)?;
+    scratch.terrains.clear();
+    scratch.terrains.extend(frame.terrains.iter().map(|t| crate::terrain::record(t, &mut |c| scratch.linear.get(c), &|id| textures.slot(id))));
+    let terrains_at = before_effects + pu + mu + du;
+    upload.reserve(dev, terrains_at + terrain_units(scratch.terrains.len()))?;
     upload.write(&frame_data(frame, extent, &scratch.shadow.data), &scratch.records, &scratch.overlay, frame.bones, items);
     upload.write_effects(before_effects, &scratch.effects);
+    upload.write_terrains(terrains_at, &scratch.terrains);
     scratch.effects_at = before_effects;
+    scratch.terrains_at = terrains_at;
     Ok(())
 }
 
@@ -2323,6 +2539,8 @@ pub enum FramePass {
     SceneBlend,
     /// Particles (`effects.rs`), after the scene.
     Particles,
+    /// Water surfaces (`water.rs`), after the decals: they read the opaque scene's depth.
+    Water,
     /// Sight's entity ids (offscreen captures that ask for them; see `idbuffer.rs`).
     IdBuffer,
     /// The ids copied to the host-readable buffer.
@@ -2360,6 +2578,7 @@ impl FramePass {
             FramePass::SceneBlend => PASS_SCENE,
             FramePass::Decals => crate::PASS_DECALS,
             FramePass::Particles => crate::PASS_PARTICLES,
+            FramePass::Water => crate::PASS_WATER,
             FramePass::FlashState => crate::PASS_FLASH,
             FramePass::FlashCells => crate::PASS_FLASH_CELLS,
             FramePass::FlashCopy => crate::PASS_FLASH_COPY,
@@ -2398,6 +2617,8 @@ pub struct FrameRes {
     pub scene_blend: bool,
     /// A particles pass follows the scene.
     pub particles: bool,
+    /// A water pass follows the decals.
+    pub water: bool,
     /// The flash watch: the previous frame's state (unset when `flash_reset`), this frame's (the
     /// window's two images, alternating), the blocks (their size) and their readback;
     /// `flash_reset` starts the state again (a new or resized watch).
@@ -2429,6 +2650,8 @@ pub struct FrameShape {
     /// The frame has decals and particles ([`FrameDesc::effects`]).
     pub decals: bool,
     pub particles: bool,
+    /// The frame has water draws ([`Material::Water`]): the scene splits around a water pass.
+    pub water: bool,
     /// The scene has blended draws (meshes or 2D items) for a `scene_blend` pass after decals.
     pub blended: bool,
     /// Run the flash watch on the final image and read its blocks back (window frames whose
@@ -2454,7 +2677,7 @@ pub fn declare_frame(g: &mut FrameGraph, s: &FrameShape) -> FrameRes {
     r.out = g.import_image(s.out_name, s.format, w, h, s.prior, s.fin);
     // With SSAO, decals or particles the scene's depth is read afterwards (bindless): the
     // occlusion is computed from it, decals reconstruct surfaces, particles test against it.
-    let depth = ImageDesc { bindless: s.ssao.is_some() || s.decals || s.particles, ..ImageDesc::depth(DEPTH_FORMAT, w, h, MemoryKind::RenderTargets) };
+    let depth = ImageDesc { bindless: s.ssao.is_some() || s.decals || s.particles || s.water, ..ImageDesc::depth(DEPTH_FORMAT, w, h, MemoryKind::RenderTargets) };
     r.depth = g.transient("depth", depth);
     if let Some(desc) = s.shadow {
         let map = g.shared("shadow", desc);
@@ -2478,13 +2701,22 @@ pub fn declare_frame(g: &mut FrameGraph, s: &FrameShape) -> FrameRes {
     if let Some(map) = r.shadow {
         scene.sampled(map);
     }
-    if s.decals {
-        // The opaque part ends; decals paint onto it from its depth; the rest of the scene
-        // (2D items, blended meshes) follows against the same depth.
+    if s.decals || s.water {
+        // The opaque part ends; decals paint onto it from its depth, then water reads it; the
+        // rest of the scene (2D items, blended meshes) follows against the same depth.
         r.split = true;
-        let decals = g.pass("decals", FramePass::Decals).sampled(r.depth).color(r.scene, Load::Keep);
-        if let Some(map) = r.shadow {
-            decals.sampled(map);
+        if s.decals {
+            let decals = g.pass("decals", FramePass::Decals).sampled(r.depth).color(r.scene, Load::Keep);
+            if let Some(map) = r.shadow {
+                decals.sampled(map);
+            }
+        }
+        if s.water {
+            r.water = true;
+            let water = g.pass("water", FramePass::Water).sampled(r.depth).color(r.scene, Load::Keep);
+            if let Some(map) = r.shadow {
+                water.sampled(map);
+            }
         }
         if s.blended || s.two_d {
             r.scene_blend = true;
@@ -2707,6 +2939,7 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, g: &mut FrameGraph
     };
     let mut stats_2d = DrawStats::default();
     let mut stats_fx = DrawStats::default();
+    let mut stats_water = DrawStats::default();
     let fx_plan = &ctx.scratch.effects;
     let (particles, materials, decals) = ctx.upload.effects_addresses(ctx.scratch.effects_at, fx_plan);
     let effects = crate::effects::EffectsDraw {
@@ -2736,7 +2969,7 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, g: &mut FrameGraph
         // The overlay draws inside the rendering instance of the pass that writes the final
         // image, and is timed on its own; so are the 2D items inside the scene's.
         let with_overlay = overlay.count > 0 && joined_by(g, p, FramePass::Overlay);
-        let overlay = if matches!(tag, FramePass::Particles | FramePass::Decals) { &overlay_flat } else { &overlay };
+        let overlay = if matches!(tag, FramePass::Particles | FramePass::Decals | FramePass::Water) { &overlay_flat } else { &overlay };
         let mut hook = |cmd: VkCommandBuffer, at: Hook| -> bool {
             match at {
                 Hook::TwoD => {
@@ -2786,6 +3019,7 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, g: &mut FrameGraph
                         ctx.upload.bones_address(ctx.scratch.records.len(), ctx.scratch.overlay.len()),
                         env.shadow.bias,
                         casters,
+                        (ctx.pipelines.terrain_shadow, ctx.upload.terrains_address(ctx.scratch.terrains_at)),
                         &mut shadow_stats,
                     );
                 }
@@ -2808,6 +3042,14 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, g: &mut FrameGraph
                 stats.instances += more.instances;
                 stats.triangles += more.triangles;
                 stats.pipeline_binds += more.pipeline_binds;
+            }
+            FramePass::Water => {
+                let color = g.color_attachment(p, res.scene, [0.0; 4]);
+                let depth_slot = g.image(res.depth).slot;
+                let mut end = |cmd: VkCommandBuffer| {
+                    hook(cmd, Hook::End);
+                };
+                crate::water::record_water(ctx, cmd, &color, res.extent, depth_slot, &mut stats_water, &mut end);
             }
             FramePass::Decals | FramePass::Particles => {
                 let color = g.color_attachment(p, res.scene, [0.0; 4]);
@@ -2854,6 +3096,9 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, g: &mut FrameGraph
     stats.particle_draw_calls = stats_fx.particle_draw_calls;
     stats.decals = stats_fx.decals;
     stats.decal_draw_calls = stats_fx.decal_draw_calls;
+    stats.water_draws = stats_water.water_draws;
+    stats.pipeline_binds += stats_water.pipeline_binds;
+    stats.draw_calls += stats_water.draw_calls;
     stats
 }
 
@@ -2946,6 +3191,7 @@ pub fn record_scene(
         let mut two_d_pending = part != ScenePart::Opaque;
         let mesh_compare = if frame.reverse_z { VK_COMPARE_OP_GREATER } else { VK_COMPARE_OP_LESS };
         let bones = upload.bones_address(ctx.scratch.records.len(), ctx.scratch.overlay.len());
+        let terrains = upload.terrains_address(ctx.scratch.terrains_at);
         let draw_sky = |cmd: VkCommandBuffer| {
             // Behind everything opaque, before anything blended (glass shows the sky through it).
             (dev.fns.cmd_bind_pipeline)(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.sky);
@@ -3000,12 +3246,18 @@ pub fn record_scene(
                     bound_mesh = None;
                 }
             }
+            if batch.material == Material::Water {
+                continue; // drawn in the water pass (it reads this pass's depth)
+            }
             let Some(mesh) = ctx.meshes.get(&batch.mesh.0) else { continue };
             let skinned = batch.skinned && mesh.skin_offset.is_some();
             // Textured only when the draws have textures (a mesh with UVs drawn without them
             // keeps its vertex colours in the plain pipeline).
             let textured = batch.textured && mesh.surface_offset.is_some();
-            let pipeline = if batch.material.blended() {
+            let terrain = batch.material == Material::Terrain;
+            let pipeline = if terrain {
+                pipelines.terrain
+            } else if batch.material.blended() {
                 pipelines.blended[skinned as usize]
             } else {
                 pipelines.opaque[skinned as usize | (textured as usize) << 1]
@@ -3023,7 +3275,8 @@ pub fn record_scene(
                 draws: upload.records_address(),
                 material: material_id(batch.material),
                 pass: batch.pass,
-                bones,
+                // Terrain patches read their terrain's material record there.
+                bones: if terrain { terrains } else { bones },
             };
             (dev.fns.cmd_push_constants)(
                 cmd,
@@ -3041,6 +3294,10 @@ pub fn record_scene(
             stats.draw_calls += 1;
             stats.instances += batch.count;
             stats.triangles += (mesh.index_count / 3) as u64 * batch.count as u64;
+            if terrain {
+                stats.terrain_patches += batch.count;
+                stats.terrain_triangles += (mesh.index_count / 3) as u64 * batch.count as u64;
+            }
         }
         if sky_pending {
             draw_sky(cmd);

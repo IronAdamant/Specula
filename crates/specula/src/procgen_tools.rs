@@ -374,6 +374,47 @@ pub(crate) fn collider_command(path: &str, cols: usize, rows: usize, cell: [f32;
     crate::tools::parse("world_set", &set)
 }
 
+/// terrain_edit's collider: the heightfield collider `procgen_terrain` would put on `entity` for
+/// the recipe at `rel` (under the assets root) if its text were `text`, built with the entity's
+/// model `params` and `seed` (its style and include folder as the file's). Nothing is sent: the
+/// change is committed with the recipe ([`crate::project_tools::patch_with`]). Returns the
+/// world_set change and its summary.
+pub(crate) fn collider_for_text(ctx: &Context, rel: &str, text: &str, params: &Json, seed: Option<u64>, entity: &str) -> Result<(crate::world::EntityKey, crate::world::UpdateSpec, Json), ToolOutput> {
+    let Some(_slot) = Slot::take() else {
+        return Err(err("busy", format!("{MAX_CONCURRENT} procgen calls are running; try again in a moment (nothing was changed)"), vec![]));
+    };
+    let file = inside(ctx, rel, "recipe")?;
+    let style = style_for(ctx, &file)?;
+    let lib = library(&file);
+    let vals = params_of(&Json::obj([("params", params.clone())]), "params")?;
+    let refs: Vec<(&str, f64)> = vals.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+    let model = specula_model::build(text, &BuildParams { values: &refs, seed, library: Some(&lib), ..BuildParams::new(&style) }).map_err(|e| recipe_err(&e, &format!("{rel}: ")))?;
+    let Some(t) = model.extras.terrain.as_ref() else {
+        return Err(err("no_terrain", format!("'{}' has no terrain part", model.name), vec![]));
+    };
+    let (offset, scale) = terrain_frame(&model, "collider")?;
+    let (cols, rows, heights, cell) = t.physics_heightfield(COLLIDER_SIDE);
+    let cell = [cell[0] * scale[0], cell[1] * scale[2]];
+    let heights: Vec<f32> = heights.iter().map(|h| h * scale[1]).collect();
+    let (lo, hi) = heights.iter().fold((f32::MAX, f32::MIN), |(a, b), h| (a.min(*h), b.max(*h)));
+    match collider_command(entity, cols, rows, cell, &heights, offset) {
+        Ok(crate::tools::Command::Set(key, change)) => Ok((
+            key,
+            change,
+            Json::obj([
+                ("entity", Json::from(entity)),
+                ("columns", Json::from(cols)),
+                ("rows", Json::from(rows)),
+                ("cell", Json::arr(cell.map(|v| Json::Num(v as f64)))),
+                ("offset", Json::arr(offset.map(|v| Json::Num(v as f64)))),
+                ("height_range_m", Json::arr([Json::Num(lo as f64), Json::Num(hi as f64)])),
+            ]),
+        )),
+        Ok(_) => Err(err("internal", "the collider isn't one world_set", vec![])),
+        Err(m) => Err(err("invalid_argument", m, vec![("field", Json::from("collider"))])),
+    }
+}
+
 /// `procgen_scatter`'s spawns: ONE `world_batch` with a model spawn per placement (each item's
 /// params sampled per placement), committed as the calling agent (`Rule::World`, all or nothing:
 /// a claimed region or reserved parent refuses the whole batch). `spawn` is `{parent?, name?}`.

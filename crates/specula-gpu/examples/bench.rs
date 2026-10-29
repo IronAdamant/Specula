@@ -977,6 +977,7 @@ fn run_scene(gpu: &mut Gpu, args: &Args, scene: &Scene) -> Result<String, specul
             draws_2d: &scene.draws_2d,
             bones: &scene.bones,
             effects: Default::default(),
+            terrains: &[],
         };
         let start = Instant::now();
         gpu.render(target, &frame)?;

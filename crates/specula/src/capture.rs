@@ -186,7 +186,7 @@ impl Engine {
         let streaming = self.stream_capture(&stream_views(&views));
         // `fresh`: sprite and tileset files in view are checked for changes now, so the capture
         // shows them as they are at the request.
-        if self.building_in(&views) == 0 && self.two_d_waiting(&views, true) == 0 && streaming == 0 && self.vfx_textures_waiting(true) == 0 {
+        if self.building_in(&views) == 0 && self.two_d_waiting(&views, true) == 0 && streaming == 0 && self.vfx_textures_waiting(true) == 0 && self.terrain_waiting(&views) == 0 {
             let _ = reply.send(self.run_job(&job, &session, wait));
             return;
         }
@@ -215,7 +215,7 @@ impl Engine {
                 Ok(views) => {
                     // Edits since it parked are filed (no old proxy drawn) and its views stay sources.
                     let streaming = self.stream_capture(&stream_views(&views));
-                    self.building_in(&views) + self.two_d_waiting(&views, false) + streaming + self.vfx_textures_waiting(false)
+                    self.building_in(&views) + self.two_d_waiting(&views, false) + streaming + self.vfx_textures_waiting(false) + self.terrain_waiting(&views)
                 }
                 Err(out) => {
                     let _ = w.reply.send(out);
@@ -229,6 +229,24 @@ impl Engine {
                 self.capture_waiters.push(w);
             }
         }
+    }
+
+    /// Terrain sets `views` want that aren't on the GPU yet (and the terrain pipelines, while
+    /// they build): their texels are asked of the worker, and those it has made are uploaded, so
+    /// a capture never makes terrain texels on the engine thread; it waits for them parked.
+    fn terrain_waiting(&mut self, views: &[ViewReq]) -> usize {
+        let _z = profile::zone("terrain_wait");
+        // Copies of what the worker made, a few milliseconds' worth per pass: the window's
+        // frames run between the passes.
+        let allowance = Some(crate::two_d::Allowance { ms: 3.0, bytes: 8 << 20, first_free: true });
+        let budget = crate::terrain::Budget { allowance, radius: (self.stream.cfg.radius_m, self.stream.cfg.hlod_radius_m), memory: self.stream.terrain_room() };
+        let mut pending = 0;
+        for v in views {
+            self.terrain.prepare(&mut self.gpu, &self.library, self.models.synced, &self.world, &v.camera, v.include_ui, false, budget);
+            pending += self.terrain.stats.pending as usize;
+        }
+        self.stream.terrain_bytes = self.terrain.bytes();
+        pending
     }
 
     /// 2D textures and shapes still loading that `views` would show (see `two_d_loading`).
@@ -470,6 +488,13 @@ impl Engine {
                 if r.stats.missing == 1 { "y" } else { "ies" },
             )));
         }
+        // Terrains drawn by their stand-in meshes: their sets weren't up when the wait ran out
+        // (or the frame's 256 terrain records were full).
+        let t = &self.terrain.stats;
+        if t.waiting > 0 {
+            let why = if t.pending > 0 { format!("{} terrain set(s) still being made when the wait ran out", t.pending) } else { format!("{} terrain records in use (at most 256 a frame)", t.records) };
+            warnings.push(Json::from(format!("{} terrain entit{} drawn by {} stand-in mesh: {why} (perf_frame terrain, terrain_info)", t.waiting, if t.waiting == 1 { "y" } else { "ies" }, if t.waiting == 1 { "its" } else { "their" })));
+        }
         {
             let lib = self.library.lock();
             let problems = self.world.entities().filter(|e| e.anim.is_some()).filter_map(|e| models::anim_problem(&lib, e));
@@ -534,10 +559,12 @@ impl Engine {
         // Animated models' bone matrices, posed at time_s by build_draws (returned below; an
         // error path just drops them).
         let bones = self.models.take_bones();
+        let terrains = std::mem::take(&mut self.terrain.frame);
         let mut frame = FrameDesc {
             bones: &bones,
             draws_2d: &draws_2d,
             effects: fx.effects(),
+            terrains: &terrains,
             ..sight::frame(&self.world, &view_proj, &draws, &lights, opts.time_s as f32)
         };
         self.luts.apply(&mut self.gpu, self.world.env(), &mut frame, true);
@@ -614,6 +641,19 @@ impl Engine {
         let flash = if flash_report.samples >= 2 || flash_report.over { flash_report.to_json() } else { Json::Null };
         self.models.put_bones(bones);
         self.vfx.put_frame(fx);
+        self.terrain.frame = terrains;
+        // Terrain and water subjects say what they are (and how a terrain was drawn).
+        for s in subjects.iter_mut() {
+            if self.terrain.covers(s.id) {
+                s.json.set("kind", Json::from("terrain"));
+                if let Some(d) = self.terrain.drawn(s.id) {
+                    s.json.set("terrain_patches", Json::from(d.patches));
+                }
+            } else if let Some(w) = self.world.get(s.id).and_then(|e| e.water.as_ref()) {
+                s.json.set("kind", Json::from("water"));
+                s.json.set("water", Json::from(w.preset.as_str()));
+            }
+        }
         // Subjects drawn merged in a proxy, or not resident, say so.
         self.stream.annotate(&mut subjects, &self.world, &self.models);
         let streaming = self.stream.capture_json(&stats);

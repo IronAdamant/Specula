@@ -71,6 +71,7 @@ SUBJECTS = {
     "two-d": ("2D over time", "Sprites, tilemaps and vector shapes."),
     "physics": ("Physics over time", "specula-physics scenes with their collider and contact overlays."),
     "navigation": ("Navigation over time", "Navmeshes, paths and agents."),
+    "terrain": ("Terrain and water over time", "The terrain renderer (CDLOD heightfields, splat layers) and stylised water."),
     "bevy-era": ("Before Specula: the Bevy era", "Grok-Bevy, the tooling Specula grew out of."),
 }
 TOPICS = ["game", "engine test", "3D asset", "animation", "physics", "navigation", "UI", "effects", "2D", "sight",

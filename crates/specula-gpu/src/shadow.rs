@@ -287,6 +287,8 @@ pub struct ShadowBatch {
     pub skinned: bool,
     /// Its draws are alpha-masked ([`masked`]): cut by their base colour's alpha.
     pub masked: bool,
+    /// Its draws are terrain patches (the terrain caster pipeline, see `terrain.rs`).
+    pub terrain: bool,
     pub first: u32,
     pub count: u32,
 }
@@ -318,7 +320,7 @@ pub struct ShadowPlan {
     pub batches: Vec<ShadowBatch>,
     /// Light-space sphere of every draw (`None` = doesn't cast), scratch.
     spheres: Vec<Option<([f32; 3], f32)>>,
-    keys: Vec<(u32, bool, bool, u32, usize)>,
+    keys: Vec<(u32, bool, bool, bool, u32, usize)>,
 }
 
 /// A shadow caster cut by its base colour's alpha (an alpha-masked textured `Lit` draw).
@@ -370,7 +372,7 @@ pub fn plan_shadows(frame: &FrameDesc, plan: &Plan, bounds: impl Fn(MeshId) -> O
     // Casters: opaque draws, as light-space spheres.
     out.spheres.clear();
     out.spheres.extend(frame.draws.iter().map(|d| {
-        if d.material != Material::Lit {
+        if !matches!(d.material, Material::Lit | Material::Terrain) {
             return None;
         }
         let (c, r) = match bounds(d.mesh) {
@@ -391,17 +393,17 @@ pub fn plan_shadows(frame: &FrameDesc, plan: &Plan, bounds: impl Fn(MeshId) -> O
                 // Near the light first (early depth rejection), batched by mesh.
                 let depth = (l[2] - r - cascade.z_near + MAX_CASTER_REACH).max(0.0);
                 let d = &frame.draws[i];
-                out.keys.push((d.mesh.0, d.skin.is_some(), masked(d), depth.to_bits(), i));
+                out.keys.push((d.mesh.0, d.skin.is_some(), masked(d), d.material == Material::Terrain, depth.to_bits(), i));
             }
         }
         cascade.z_near = z_near.max(cascade.z_far - 2.0 * cascade.radius - MAX_CASTER_REACH);
         out.keys.sort_unstable();
         let base = out.entries.len() as u32;
-        for (n, &(mesh, skinned, masked, _, i)) in out.keys.iter().enumerate() {
+        for (n, &(mesh, skinned, masked, terrain, _, i)) in out.keys.iter().enumerate() {
             out.entries.push(i);
             match out.batches.last_mut() {
-                Some(b) if b.cascade == k as u32 && b.mesh.0 == mesh && b.skinned == skinned && b.masked == masked => b.count += 1,
-                _ => out.batches.push(ShadowBatch { cascade: k as u32, mesh: MeshId(mesh), skinned, masked, first: base + n as u32, count: 1 }),
+                Some(b) if b.cascade == k as u32 && b.mesh.0 == mesh && b.skinned == skinned && b.masked == masked && b.terrain == terrain => b.count += 1,
+                _ => out.batches.push(ShadowBatch { cascade: k as u32, mesh: MeshId(mesh), skinned, masked, terrain, first: base + n as u32, count: 1 }),
             }
         }
     }
@@ -473,6 +475,7 @@ pub fn record_shadow_pass(
     bones: u64,
     bias: f32,
     sprites: Option<SpriteCasters>,
+    terrain: (VkPipeline, u64),
     stats: &mut DrawStats,
 ) {
     let img = g.image(map);
@@ -517,20 +520,27 @@ pub fn record_shadow_pass(
                 &pc as *const PushConstants as *const c_void,
             );
             let mut bound = None;
+            // Terrain casters read their terrain's material record through the bones address.
+            let mut pushed_terrain = false;
             for b in plan.batches.iter().filter(|b| b.cascade == k) {
                 let Some(mesh) = meshes.get(&b.mesh.0) else { continue };
                 let skinned = b.skinned && mesh.skin_offset.is_some();
                 let masked = b.masked && mesh.surface_offset.is_some();
-                let mut want = pipeline[skinned as usize | (masked as usize) << 1];
-                if want == VK_NULL_HANDLE {
+                let mut want = if b.terrain { terrain.0 } else { pipeline[skinned as usize | (masked as usize) << 1] };
+                if want == VK_NULL_HANDLE && !b.terrain {
                     want = pipeline[skinned as usize]; // masking not built yet: cast solid
                 }
                 if want == VK_NULL_HANDLE {
-                    continue; // skinning not built yet: the draw is skipped in the scene too
+                    continue; // skinning (terrain) not built yet: the draw is skipped in the scene too
                 }
                 if want != bound_pipeline {
                     (dev.fns.cmd_bind_pipeline)(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, want);
                     bound_pipeline = want;
+                }
+                if b.terrain != pushed_terrain {
+                    let pc = PushConstants { bones: if b.terrain { terrain.1 } else { bones }, ..pc };
+                    (dev.fns.cmd_push_constants)(cmd, layout, PUSH_STAGES, 0, size_of::<PushConstants>() as u32, &pc as *const PushConstants as *const c_void);
+                    pushed_terrain = b.terrain;
                 }
                 if bound != Some(b.mesh) {
                     mesh.bind(dev, cmd);

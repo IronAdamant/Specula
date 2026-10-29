@@ -1174,7 +1174,10 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
             materials.push((p.material.clone(), params.style.materials[preset].clone()));
         }
     }
-    let textures = procgen::bake_textures(recipe, params, &lods[0], tally.work.get())?;
+    // The terrain renderer's layer textures bake with the parts' (keys `terrain+<graph>`).
+    let terrain_keys: Vec<String> =
+        tally.terrain.borrow().as_ref().and_then(|t| t.render.as_ref()).map(|r| r.layers.iter().filter_map(|l| l.texture.clone()).collect()).unwrap_or_default();
+    let textures = procgen::bake_textures(recipe, params, &lods[0], &terrain_keys, tally.work.get())?;
     let mut h = StableHasher::new();
     for m in &lods {
         h.write_u64(m.content_hash());
@@ -1552,7 +1555,20 @@ fn build_parts(
                     Some(x) => smooth_of(x, &format!("{}.smooth_angle", part.path))?,
                     None => default_smooth,
                 };
-                let mut gen = procgen::Gen { ctx: &ctx, part, params, stack: &mut *stack, tally, coarse, seed: pseed, smooth, terrains: &mut terrains, scattered: &mut scattered };
+                let mut gen = procgen::Gen {
+                    ctx: &ctx,
+                    part,
+                    params,
+                    stack: &mut *stack,
+                    tally,
+                    coarse,
+                    seed: pseed,
+                    smooth,
+                    terrains: &mut terrains,
+                    scattered: &mut scattered,
+                    recipe_name: &recipe.name,
+                    textures: &recipe.textures,
+                };
                 gen.run(node)?
             }
         };

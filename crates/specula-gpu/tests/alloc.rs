@@ -153,6 +153,7 @@ fn warm_frames_do_not_allocate() {
         draws_2d: &draws_2d,
         bones: &bones,
         effects: Effects { particles: &particles, materials: &materials, decals: &decals },
+        terrains: &[],
     };
     for _ in 0..5 {
         gpu.render(target, &frame).unwrap();

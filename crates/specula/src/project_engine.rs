@@ -55,6 +55,17 @@ fn at_version(journal: &crate::journal::Journal, path: &str, version: u64) -> (O
     (base, later)
 }
 
+/// A project commit's writes: the file, then (`also`) the entity change that goes with it, in
+/// one journal entry: both are checked against claims, and one undo takes both back.
+pub(crate) fn file_commit(wd: &mut dyn crate::write_policy::WorldWrite, path: &str, file: Option<ProjectFile>, also: Option<crate::project_tools::Also>, by: &str) -> Result<(), WorldError> {
+    wd.put_file(path, file, false);
+    if let Some(a) = also {
+        let (key, change) = *a;
+        wd.update(&key, change, by)?;
+    }
+    Ok(())
+}
+
 impl Engine {
     /// Answers a project call on the main thread.
     pub(crate) fn project_call(&mut self, call: ProjectCall, w: Writer, by: &str) -> ToolOutput {
@@ -65,8 +76,8 @@ impl Engine {
                 let _ = reply.send(snap);
                 ToolOutput::text("{}")
             }
-            ProjectCall::Commit { path, base, file, replace_unreadable, reply } => {
-                let done = self.project_commit(&path, base, file, replace_unreadable, w, by);
+            ProjectCall::Commit { path, base, file, replace_unreadable, also, reply } => {
+                let done = self.project_commit(&path, base, file, replace_unreadable, also, w, by);
                 let _ = reply.send(done);
                 ToolOutput::text("{}")
             }
@@ -124,7 +135,8 @@ impl Engine {
         Snap { kind, module_dir, current, at_version: at, later, context: ctx, error: None, held }
     }
 
-    fn project_commit(&mut self, path: &str, base: (u64, u64), file: Option<(FileKind, Arc<str>)>, replace_unreadable: bool, w: Writer, by: &str) -> Committed {
+    #[allow(clippy::too_many_arguments)]
+    fn project_commit(&mut self, path: &str, base: (u64, u64), file: Option<(FileKind, Arc<str>)>, replace_unreadable: bool, also: Option<crate::project_tools::Also>, w: Writer, by: &str) -> Committed {
         if let Some(e) = self.project_case_clash(path) {
             return Committed::Refused(e);
         }
@@ -201,10 +213,7 @@ impl Engine {
             None => None,
         };
         let tick = self.clock.tick();
-        match self.world.commit(&mut self.swarm, tick, w, crate::journal::Kind::File, crate::write_policy::Rule::Project, |wd| {
-            wd.put_file(path, new, false);
-            Ok(())
-        }) {
+        match self.world.commit(&mut self.swarm, tick, w, crate::journal::Kind::File, crate::write_policy::Rule::Project, |wd| file_commit(wd, path, new, also, by)) {
             Err(e) => Committed::Refused(e),
             Ok((_, seq)) => {
                 let (disk, reloaded) = self.project_sync_for(Some(path));

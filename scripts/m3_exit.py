@@ -157,6 +157,8 @@ def main():
     ap.add_argument("--exe", default=str(EXE))
     ap.add_argument("--out", default=None)
     ap.add_argument("--max-fps", type=int, default=None, help="the window's frame cap (the engine's --max-fps)")
+    ap.add_argument("--water", default=None, help="a water preset (murk, ...): an agent spawns a pool round the slab's "
+                    "foot (the `water` component; cosmetic, never simulation) to measure the water pass in play")
     args = ap.parse_args()
     if args.port == 7471:
         sys.exit("use another port than 7471 (reserved for your working engine)")
@@ -182,6 +184,10 @@ def main():
         run = Run(mcp, out)
         mcp.call("time_control", action="pause")
         mcp.json("play_new", seed=args.seed)
+        if args.water:
+            # A still pool under the slab's top, showing in its broken corners and round its foot.
+            mcp.json("world_spawn", shape="group", path="/pool", position=[0, -1.6, 0], water={"preset": args.water, "size": [70, 70]})
+            summary["water"] = args.water
         busy = boss = False
         while True:
             st = run.state()

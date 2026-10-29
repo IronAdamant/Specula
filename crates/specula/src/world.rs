@@ -857,6 +857,10 @@ pub fn material_name(m: Material) -> &'static str {
         Material::Glass => "glass",
         Material::BlobShadow => "blob_shadow",
         Material::LavaLamp => "lava_lamp",
+        // Drawn by the terrain renderer and the `water` component, never an entity's look
+        // (parse_material refuses them).
+        Material::Terrain => "terrain",
+        Material::Water => "water",
     }
 }
 
@@ -1193,6 +1197,8 @@ pub struct Entity {
     pub vfx: Option<VfxSpec>,
     /// A decal projected from the entity's box onto the opaque surfaces in it (`start` set).
     pub decal: Option<DecalSpec>,
+    /// A water surface on the entity's local XZ plane (`crate::water`): cosmetic world data.
+    pub water: Option<crate::water::WaterSpec>,
     /// `false` hides the entity and everything below it: not drawn, not a sight subject, not in
     /// the world's bounds. Still saved, queried, journaled and claimed like any field.
     pub visible: bool,
@@ -1282,7 +1288,11 @@ impl Entity {
     /// engine could not build).
     pub fn local_bounds(&self) -> Option<(Vec3, Vec3)> {
         match (self.shape, &self.profile) {
-            (Shape::Group, _) => None,
+            // A group carrying a water surface is that surface.
+            (Shape::Group, _) => self.water.as_ref().map(|w| {
+                let (_, half) = w.local_box();
+                (Vec3::new(-half[0], -half[1], -half[2]), Vec3::new(half[0], half[1], half[2]))
+            }),
             (Shape::Model, _) => self.resolved.and_then(|r| r.bounds),
             (Shape::Lathe, Some(p)) => Some(p.bounds()),
             (Shape::Quad, _) => Some((Vec3::new(-0.5, 0.0, -0.5), Vec3::new(0.5, 0.0, 0.5))),
@@ -1371,6 +1381,9 @@ impl Entity {
         }
         if let Some(d) = &self.decal {
             fields.push(("decal", d.to_json()));
+        }
+        if let Some(w) = &self.water {
+            fields.push(("water", w.to_json()));
         }
         if !self.visible {
             fields.push(("visible", Json::from(false)));
@@ -1478,6 +1491,9 @@ impl Entity {
         if let Some(d) = &self.decal {
             d.hash_into(h);
         }
+        if let Some(w) = &self.water {
+            w.hash_into(h);
+        }
     }
 }
 
@@ -1535,6 +1551,8 @@ pub struct SpawnSpec {
     pub vfx: Option<VfxSpec>,
     /// See [`Entity::decal`] (an unset `start` becomes the world time now).
     pub decal: Option<DecalSpec>,
+    /// See [`Entity::water`].
+    pub water: Option<crate::water::WaterSpec>,
     pub visible: bool,
     pub layer: Layer,
     /// See [`Entity::transient`]. A child of a transient parent is transient whatever this says.
@@ -1565,6 +1583,7 @@ impl SpawnSpec {
             anim: None,
             vfx: None,
             decal: None,
+            water: None,
             visible: true,
             layer: Layer::World,
             transient: false,
@@ -1614,6 +1633,8 @@ pub struct UpdateSpec {
     pub vfx: Option<Option<VfxSpec>>,
     /// `Some(None)` removes the decal; a new one's life starts now unless told when.
     pub decal: Option<Option<DecalSpec>>,
+    /// `Some(None)` removes the water surface.
+    pub water: Option<Option<crate::water::WaterSpec>>,
     pub visible: Option<bool>,
     pub layer: Option<Layer>,
     /// 2D entities only: replaces the component (of the same kind).
@@ -1643,6 +1664,7 @@ impl UpdateSpec {
             && self.anim.is_none()
             && self.vfx.is_none()
             && self.decal.is_none()
+            && self.water.is_none()
             && self.visible.is_none()
             && self.layer.is_none()
             && self.two_d.is_none()
@@ -1671,6 +1693,7 @@ impl UpdateSpec {
             && self.anim.is_none()
             && self.vfx.is_none()
             && self.decal.is_none()
+            && self.water.is_none()
             && self.visible.is_none()
             && self.layer.is_none()
             && self.two_d.is_none()
@@ -2074,11 +2097,12 @@ pub struct QueryPage<'a> {
 }
 
 /// Every field an entity listing can return (see [`World::fields_json`]).
-pub const FIELDS: [&str; 41] = [
+pub const FIELDS: [&str; 42] = [
     "id", "name", "path", "parent", "shape", "position", "rotation_deg", "scale", "world_position", "color",
     "material", "opacity", "emissive", "metallic", "roughness", "specular", "color2", "seed", "light", "profile",
     "tags", "props", "collider", "body", "version", "created_by", "modified_by", "children", "bounds", "recipe",
     "params", "visible", "layer", "transient", "model_state", "anim", "sprite", "tilemap", "shape2d", "vfx", "decal",
+    "water",
 ];
 
 /// Entity changes [`World::draw_changes_since`] remembers.
@@ -2139,6 +2163,9 @@ pub struct World {
     /// Ids of the entities with a `vfx` or `decal` component (see [`World::fx_entities`]). Kept
     /// by `link`, `unlink` and `update`.
     fx: BTreeSet<u64>,
+    /// Ids of the entities with a `water` surface (see [`World::water_entities`]), so frames find
+    /// water without visiting every entity. Kept by `link`, `unlink` and `update`.
+    wet: BTreeSet<u64>,
     /// Joint data by body: the persistent entities whose `props.joint` names each body as `a` or
     /// `b` (the claims' joint rules ask it per change). Kept by `link`, `unlink` and `update`.
     joints_by_body: BTreeMap<u64, BTreeSet<u64>>,
@@ -2542,6 +2569,12 @@ impl World {
     /// The entities with a `vfx` or `decal` component, in id order (persistent and transient).
     pub fn fx_entities(&self) -> impl Iterator<Item = &Entity> + '_ {
         self.fx.iter().filter_map(|id| self.entities.get(id))
+    }
+
+    /// The entities with a `water` surface, in id order (from an index: no other entity is
+    /// visited).
+    pub fn water_entities(&self) -> impl Iterator<Item = &Entity> + '_ {
+        self.wet.iter().filter_map(|id| self.entities.get(id))
     }
 
     pub fn two_d_entities(&self) -> impl Iterator<Item = &Entity> + '_ {
@@ -3074,6 +3107,7 @@ impl World {
                 d.start.get_or_insert(now);
                 d
             }),
+            water: spec.water,
             visible: spec.visible,
             layer: spec.layer,
             transient,
@@ -3379,10 +3413,18 @@ impl World {
                 d
             });
         }
+        if let Some(w) = change.water {
+            e.water = w;
+        }
         if e.vfx.is_some() || e.decal.is_some() {
             self.fx.insert(id);
         } else {
             self.fx.remove(&id);
+        }
+        if e.water.is_some() {
+            self.wet.insert(id);
+        } else {
+            self.wet.remove(&id);
         }
         if let Some((spec, resolved)) = new_model {
             e.model = Some(spec);
@@ -3624,6 +3666,9 @@ impl World {
         if e.vfx.is_some() || e.decal.is_some() {
             self.fx.insert(e.id);
         }
+        if e.water.is_some() {
+            self.wet.insert(e.id);
+        }
         self.draw_touch(e.id);
         if let Some(TwoD::Shape2d(s)) = &e.two_d {
             if e.transient { &mut self.transient_shapes } else { &mut self.shapes }.charge(s);
@@ -3642,6 +3687,7 @@ impl World {
         self.lit.remove(&id);
         self.flat.remove(&id);
         self.fx.remove(&id);
+        self.wet.remove(&id);
         self.layout_epoch += 1;
         self.children.remove(&(e.parent.unwrap_or(ROOT), e.name.clone()));
         self.names.remove(&(e.name.clone(), id));
@@ -4308,6 +4354,7 @@ impl World {
         self.lit.remove(&id);
         self.flat.remove(&id);
         self.fx.remove(&id);
+        self.wet.remove(&id);
         self.layout_epoch += 1;
         let key = (e.parent.unwrap_or(ROOT), e.name.clone());
         if self.children.get(&key) == Some(&id) {

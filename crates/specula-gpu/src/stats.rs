@@ -28,6 +28,8 @@ pub const PASS_SPRITES: &str = "sprites";
 pub const PASS_DECALS: &str = "decals";
 /// Particles, after the scene (frames with particles only).
 pub const PASS_PARTICLES: &str = "particles";
+/// Water surfaces, after the decals (frames with water only).
+pub const PASS_WATER: &str = "water";
 /// The flash watch: the final image's per-texel state and its 8x8 blocks, read back.
 pub const PASS_FLASH: &str = "flash";
 /// The flash watch's 8x8 blocks (from its state), and their copy to the host-readable buffer.
@@ -121,6 +123,11 @@ pub struct DrawStats {
     /// Decals drawn and their draw calls (one per run of one mode).
     pub decals: u32,
     pub decal_draw_calls: u32,
+    /// Terrain patches drawn by the camera (instances of the patch grids) and their triangles.
+    pub terrain_patches: u32,
+    pub terrain_triangles: u64,
+    /// Water surfaces drawn (the `water` pass).
+    pub water_draws: u32,
 }
 
 /// Why a pipeline cache blob given in [`crate::GpuOptions::pipeline_cache`] was not used.

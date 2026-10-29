@@ -186,6 +186,7 @@ const VK_WHOLE_SIZE: u64 = u64::MAX;
 pub fn faces_for(material: crate::Material) -> u32 {
     match material {
         crate::Material::LavaLamp => FACES_LAVA,
+        crate::Material::Terrain | crate::Material::Water => FACES_ALL,
         _ => FACES_ALL,
     }
 }
@@ -228,6 +229,13 @@ pub struct IdFrame {
     pub insert: [VkPipeline; 2],
     pub raster: [VkPipeline; 4],
     pub resolve: VkPipeline,
+    /// Terrain patches: opaque, raster (`VK_NULL_HANDLE` until the terrain variant is built, or
+    /// when the counting passes don't run).
+    pub terrain: [VkPipeline; 2],
+    /// Water draws are counted: its pipeline (the terrain variant) is built, so the scene draws
+    /// them. Until then the ID buffer leaves them out, as the scene does: a packet never reports
+    /// what isn't on screen.
+    pub water: bool,
     /// 2D items: sprites and tile chunks by step (opaque = cutouts, insert, raster) and vector
     /// shapes (insert, raster); `VK_NULL_HANDLE` where they don't run.
     pub sprite: [VkPipeline; 3],
@@ -382,8 +390,15 @@ enum Step {
 impl Step {
     /// The pipeline for a batch with these streams (`VK_NULL_HANDLE`: not drawn, as in the
     /// scene, whose variant isn't built either).
-    fn pipeline(self, f: &IdFrame, skinned: bool, textured: bool) -> VkPipeline {
+    fn pipeline(self, f: &IdFrame, skinned: bool, textured: bool, terrain: bool) -> VkPipeline {
         let streams = skinned as usize | (textured as usize) << 1;
+        if terrain {
+            return match self {
+                Step::Opaque => f.terrain[0],
+                Step::Insert => VK_NULL_HANDLE, // opaque: never in the sets
+                Step::Raster => f.terrain[1],
+            };
+        }
         match self {
             Step::Opaque => f.opaque[streams],
             // Blended draws are never textured (`batch::textured`).
@@ -423,11 +438,21 @@ unsafe fn draw_batches(ctx: &FrameContext, cmd: VkCommandBuffer, f: &IdFrame, st
         // The scene's choice of streams (render.rs), so the same variants draw.
         let skinned = batch.skinned && mesh.skin_offset.is_some();
         let textured = batch.textured && mesh.surface_offset.is_some();
-        let pipeline = step.pipeline(f, skinned, textured);
+        let terrain = batch.material == crate::Material::Terrain;
+        if batch.material == crate::Material::Water && !f.water {
+            continue;
+        }
+        let pipeline = step.pipeline(f, skinned, textured, terrain);
         if pipeline == VK_NULL_HANDLE {
             continue;
         }
         push.faces = if step == Step::Opaque { FACES_ALL } else { faces_for(batch.material) };
+        // Terrain patches read their terrain's material record through the bones address.
+        let bones = if terrain { ctx.upload.terrains_address(ctx.scratch.terrains_at) } else { push_for(ctx, f).bones };
+        if push.bones != bones {
+            push.bones = bones;
+            pushed = None;
+        }
         // SAFETY: as the caller promises; every referenced struct outlives its call.
         unsafe {
             if pipeline != bound {
@@ -813,7 +838,18 @@ impl IdResources {
             params_address = p.address;
         }
         self.pending = Some(Last { target, extent, max_id, blended_counted: count_blended, has_blended, cleared: seen_clear });
+        // Terrain patches (opaque ids, rasterized marks), with the terrain variant.
+        let terrain_ids = |raster: bool| {
+            if ready.terrain {
+                pipelines.built(PipelineKey::IdsTerrain { raster }).unwrap_or(VK_NULL_HANDLE)
+            } else {
+                VK_NULL_HANDLE
+            }
+        };
+        let terrain = [terrain_ids(false), if count_blended { terrain_ids(true) } else { VK_NULL_HANDLE }];
         Ok(IdFrame {
+            terrain,
+            water: ready.terrain,
             opaque: streams(IdPass::Opaque),
             insert,
             raster,

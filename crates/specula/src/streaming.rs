@@ -829,6 +829,9 @@ pub struct Streamer {
     /// Bytes on the GPU (builds and proxies) as of the last pump, kept up to date by it; `None`:
     /// worked out again (after a sync, a pass end or new settings).
     resident_cache: Option<u64>,
+    /// Bytes the terrain renderer's height, normal and splat sets hold (set by the engine each
+    /// frame): they count against `memory_mb` too.
+    pub terrain_bytes: u64,
 }
 
 impl Default for Streamer {
@@ -889,6 +892,7 @@ impl Streamer {
             victims_for: None,
             memory_full: false,
             resident_cache: None,
+            terrain_bytes: 0,
         }
     }
 
@@ -1565,10 +1569,13 @@ impl Streamer {
         let budget_bytes = (self.cfg.upload_mb * 1_048_576.0) as u64;
         let memory = (self.cfg.memory_mb * 1_048_576.0) as u64;
         let zs = specula_core::profile::zone("resident");
-        let mut resident = match self.resident_cache {
-            Some(r) => r,
-            None => models.uploaded.values().map(|m| m.bytes).sum::<u64>() + self.hlod.resident_bytes(),
-        };
+        // Terrain sets count against the budget too (outside the cache: the engine sets them).
+        let terrain = self.terrain_bytes;
+        let mut resident = terrain
+            + match self.resident_cache {
+                Some(r) => r,
+                None => models.uploaded.values().map(|m| m.bytes).sum::<u64>() + self.hlod.resident_bytes(),
+            };
         drop(zs);
         let mut blocked = 0u64;
         // The lowest eviction threshold found to leave nothing to evict: an item whose threshold
@@ -1700,7 +1707,7 @@ impl Streamer {
         self.memory_full = full;
         // Proxy uploads that replaced older ones retired memory the count doesn't see.
         recount |= self.hlod.take_retired();
-        self.resident_cache = (!recount).then_some(resident);
+        self.resident_cache = (!recount).then_some(resident.saturating_sub(terrain));
         self.blocked_bytes = blocked;
         self.blocked.sort_unstable();
         self.blocked_cells.sort_unstable();
@@ -1750,6 +1757,13 @@ impl Streamer {
 
     /// What is left of this frame's upload budget for other uploads (2D textures): `None` when
     /// streaming is off (no budget).
+    /// Bytes the terrain renderer's sets may hold in all: the memory budget less the builds and
+    /// proxies resident as of the last pump (`None` while streaming is off).
+    pub fn terrain_room(&self) -> Option<u64> {
+        let memory = (self.cfg.memory_mb * 1_048_576.0) as u64;
+        self.cfg.enabled.then(|| memory.saturating_sub(self.resident_cache.unwrap_or(0)))
+    }
+
     pub fn allowance(&self) -> Option<crate::two_d::Allowance> {
         self.cfg.enabled.then(|| crate::two_d::Allowance {
             ms: (self.cfg.upload_ms - self.spent_ms).max(0.0),
@@ -2066,7 +2080,7 @@ impl Streamer {
     /// perf_frame's `streaming`.
     pub fn json(&self, gpu: &Gpu, models: &GpuModels) -> Json {
         let model_bytes: u64 = models.uploaded.values().map(|m| m.bytes).sum();
-        let resident = model_bytes + self.hlod.resident_bytes();
+        let resident = model_bytes + self.hlod.resident_bytes() + self.terrain_bytes;
         let wanted = self.want.values().filter(|e| e.1 >= self.done_pass).count();
         let soft = self.want.values().filter(|e| e.1 >= self.done_pass && !e.2).count();
         let pending = self.pending.len();
@@ -2114,6 +2128,7 @@ impl Streamer {
             ("resident_mb", mb(resident)),
             ("passes", Json::from(self.updates)),
             ("models_mb", mb(model_bytes)),
+            ("terrain_mb", mb(self.terrain_bytes)),
             ("memory_budget_mb", Json::from(self.cfg.memory_mb)),
             ("blocked_mb", mb(self.blocked_bytes)),
             ("live_builds", Json::from(self.live.len())),

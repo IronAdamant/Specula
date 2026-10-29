@@ -128,10 +128,12 @@ mod ssao;
 mod stats;
 mod stream;
 mod swapchain;
+pub mod terrain;
 mod tilemap;
 mod timing;
 pub mod vector;
 mod vk;
+mod water;
 
 pub use graph::{Access, GraphBarrier, GraphError, GraphInfo, GraphPass, GraphResource, GraphUse, Load};
 pub use effects::{f16_bits, Decal, DecalMode, Effects, Particle, ParticleMaterial, MAX_DECALS, MAX_PARTICLES, MAX_PARTICLE_MATERIALS};
@@ -143,6 +145,8 @@ pub use material::{generate_mips, generate_mips_owned, generate_tangents, mip_co
 pub use render::{BackgroundFault, PipelineVariants, VariantFailure};
 pub use stats::*;
 pub use stream::{UploadStats, ARENA_BYTES as UPLOAD_ARENA_BYTES};
+pub use terrain::{TerrainLayer, TerrainMaterial, TerrainPatch};
+pub use water::{WaterPattern, WaterStyle, WATER_PRESETS};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Validation {
@@ -259,6 +263,9 @@ pub enum ErrorReason {
     BadLut { width: u32, height: u32 },
     /// Particle `particle` names material `material`, but [`Effects::materials`] has `materials`.
     MaterialOutside { particle: u32, material: u32, materials: u32 },
+    /// Draw `draw`'s terrain patch names terrain `terrain`, but [`FrameDesc::terrains`] has
+    /// `terrains`; or a terrain material is malformed (`terrain` = its index, `draw` = u32::MAX).
+    TerrainOutside { draw: u32, terrain: u32, terrains: u32 },
 }
 
 /// A vertex stream of [`MeshStreams`].
@@ -290,6 +297,8 @@ pub enum Limit {
     ParticleMaterials,
     /// Decals per frame ([`MAX_DECALS`]).
     Decals,
+    /// Terrains per frame ([`terrain::MAX_TERRAINS`]).
+    Terrains,
 }
 
 /// What was asked for and what is allowed.
@@ -355,6 +364,7 @@ impl GpuError {
             Limit::Particles => "particles per frame",
             Limit::ParticleMaterials => "particle materials per frame",
             Limit::Decals => "decals per frame",
+            Limit::Terrains => "terrains per frame",
         };
         GpuError {
             message: format!("{requested} {name} requested; at most {max}"),
@@ -655,13 +665,32 @@ pub enum Material {
     /// Ray-marched lava lamp inside the unit-cube proxy: glass vessel, liquid (`Surface::color2`)
     /// and moving wax (`color`), with a glow halo. Animated by [`FrameDesc::time_s`].
     LavaLamp,
+    /// Opaque: one CDLOD patch of a terrain ([`terrain`]): its mesh is the shared grid, its
+    /// [`Surface::ext`] the [`TerrainPatch`] (which names its [`FrameDesc::terrains`] entry), its
+    /// model the terrain's local → world matrix. Made by [`terrain::patch_draw`].
+    Terrain,
+    /// Blended: a water surface on the mesh (a quad), drawn in the frame's water pass after the
+    /// opaque scene and decals (it reads their depth); [`Surface::ext`] holds its [`WaterStyle`].
+    /// Animated by [`FrameDesc::time_s`].
+    Water,
 }
 
 impl Material {
-    /// Drawn in the blended pass.
+    /// Drawn after the opaque part of the scene (blended, never writing depth).
     pub fn blended(self) -> bool {
-        self != Material::Lit
+        !matches!(self, Material::Lit | Material::Terrain)
     }
+}
+
+/// What a material needs beyond [`Surface`]'s common fields.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum MaterialExt {
+    #[default]
+    None,
+    /// [`Material::Terrain`]'s patch.
+    Terrain(TerrainPatch),
+    /// [`Material::Water`]'s look.
+    Water(WaterStyle),
 }
 
 /// Per-draw material parameters. The default gives M0's matte look.
@@ -681,11 +710,22 @@ pub struct Surface {
     pub seed: f32,
     /// Material textures (`Lit` on meshes with UVs; ignored otherwise).
     pub textures: MaterialTextures,
+    /// The terrain patch or water look of those materials (ignored by the others).
+    pub ext: MaterialExt,
 }
 
 impl Default for Surface {
     fn default() -> Self {
-        Surface { emissive: 0.0, metallic: 0.0, roughness: 0.5, specular: 0.0, color2: [0.0; 3], seed: 0.0, textures: MaterialTextures::NONE }
+        Surface {
+            emissive: 0.0,
+            metallic: 0.0,
+            roughness: 0.5,
+            specular: 0.0,
+            color2: [0.0; 3],
+            seed: 0.0,
+            textures: MaterialTextures::NONE,
+            ext: MaterialExt::None,
+        }
     }
 }
 
@@ -1099,6 +1139,9 @@ pub struct FrameDesc<'a> {
     pub bones: &'a [[f32; 16]],
     /// Particles and decals (see [`Effects`]; empty: the frame is exactly as without them).
     pub effects: Effects<'a>,
+    /// The terrains the frame's [`Material::Terrain`] patches draw (at most
+    /// [`terrain::MAX_TERRAINS`]; see [`terrain`]).
+    pub terrains: &'a [TerrainMaterial],
 }
 
 impl Default for FrameDesc<'_> {
@@ -1115,6 +1158,7 @@ impl Default for FrameDesc<'_> {
             draws_2d: &[],
             bones: &[],
             effects: Effects::default(),
+            terrains: &[],
         }
     }
 }
@@ -1511,6 +1555,19 @@ impl Gpu {
     /// until its variant is here.
     pub fn pipeline_variants(&mut self) -> PipelineVariants {
         self.inner.pipeline_variants()
+    }
+
+    /// Starts building the terrain and water pipelines (scene, shadow, ID buffer) on a worker
+    /// thread, as the skinned and textured variants are when their first mesh arrives: call it
+    /// when a world first has terrain or water. Their draws are skipped until
+    /// [`PipelineVariants::terrain`]; no frame ever waits. A no-op once built or while building.
+    pub fn request_terrain_pipelines(&mut self) {
+        self.inner.request_terrain_pipelines()
+    }
+
+    /// The terrain and water pipelines now, on this thread (loading screens and tests).
+    pub fn prepare_terrain_pipelines(&mut self) -> Result<(), GpuError> {
+        self.inner.prepare_terrain_pipelines()
     }
 
     /// Starts building again, in the background, the variants the last background build failed

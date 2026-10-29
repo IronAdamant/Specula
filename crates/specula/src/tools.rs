@@ -106,7 +106,7 @@ pub const DEFAULT_FIELDS: [&str; 6] = ["id", "path", "shape", "position", "tags"
 // Arguments each tool accepts. Anything else is rejected (with the closest valid name), so a typo
 // like `rotation` for `rotation_deg` is an error instead of a silently ignored value.
 const LOOK_KEYS: &[&str] = &["material", "opacity", "emissive", "metallic", "roughness", "specular", "color2", "seed", "light"];
-const COMPONENT_KEYS: &[&str] = &["tags", "props", "collider", "body", "anim", "vfx", "decal"];
+const COMPONENT_KEYS: &[&str] = &["tags", "props", "collider", "body", "anim", "vfx", "decal", "water"];
 pub(crate) const SPAWN_KEYS: &[&str] = &[
     "shape", "name", "parent", "path", "position", "rotation_deg", "scale", "color", "profile", "segments", "recipe",
     "params", "visible", "layer", "transient", "sprite", "tilemap", "shape2d",
@@ -243,6 +243,8 @@ pub enum Command {
     Place(crate::locus::PlaceCall),
     /// The streaming tools (see [`crate::stream_tools`]).
     Stream(crate::stream_tools::StreamCall),
+    /// `terrain_info` (see [`crate::terrain_tools`]).
+    Terrain(crate::terrain_tools::TerrainCall),
     /// playtest_run and playtest_report (see [`crate::playtest_engine`]).
     Playtest(crate::playtest_engine::PlaytestCall),
     /// Lex rule sets: snapshots and edits (see [`crate::lex_tools`]).
@@ -544,6 +546,7 @@ pub enum CallerThread {
     Studio,
     Project,
     Procgen,
+    Terrain,
     Balance,
     /// The `tools_*` tools (a session's tool list: see [`crate::toolscope_tools`]); answered
     /// before routing, in `ToolHandler::call`.
@@ -559,6 +562,7 @@ impl CallerThread {
             "logic_reload" => CallerThread::LogicReload,
             "merge_suggest" => CallerThread::MergeSuggest,
             "style_check" => CallerThread::Studio,
+            "terrain_edit" => CallerThread::Terrain,
             n if n.starts_with("lex_") => CallerThread::Lex,
             n if n.starts_with("studio_") => CallerThread::Studio,
             n if n.starts_with("project_") => CallerThread::Project,
@@ -580,6 +584,7 @@ impl CallerThread {
             CallerThread::Studio => "studio_* and style_check wait for builds and renders outside the engine thread: stage, sheet and check assets before or after the playtest",
             CallerThread::Project => "project_* tools patch and validate files outside the engine thread: edit project files before the playtest",
             CallerThread::Procgen => "procgen_* tools bake textures, terrains and scatters outside the engine thread: generate before the playtest (a playtest can world_batch what they make)",
+            CallerThread::Terrain => "terrain_edit patches the recipe and waits for its rebuild outside the engine thread: sculpt and paint before the playtest (terrain_info works inside one)",
             CallerThread::Balance => "balance_* tools simulate outside the engine thread: sweep and tune before or after the playtest",
             CallerThread::Scope => {
                 "tools_* tools change your session's tool list on your connection: activate before the playtest (its steps may call any tool within your cap, listed or not)"
@@ -660,6 +665,8 @@ impl Tools {
                 // Texture bakes, terrains and scatters run on this thread (their world edits go to
                 // the engine as world_set / world_batch).
                 Some(CallerThread::Procgen) => return crate::procgen_tools::call(self, session, name, arguments),
+                // The recipe patch goes through the project store; the collider through world_set.
+                Some(CallerThread::Terrain) => return crate::terrain_tools::call(self, session, name, arguments),
                 // The balance lab runs simulations on this thread (and its workers), like lex_simulate.
                 Some(CallerThread::Balance) => return crate::balance_tools::call(self, session, name, arguments),
                 // The disk budget is shared: answered on this thread.
@@ -863,7 +870,10 @@ pub(crate) fn parse(name: &str, args: &Json) -> Result<Command, String> {
                                         Some(call) => call.map(Command::Vfx),
                                         None => match crate::stream_tools::parse(other, args) {
                                             Some(call) => call.map(Command::Stream),
-                                            None => crate::logic::tools::parse(other, args).unwrap_or_else(|| Err(format!("unknown tool '{other}'"))),
+                                            None => match crate::terrain_tools::parse(other, args) {
+                                                Some(call) => call.map(Command::Terrain),
+                                                None => crate::logic::tools::parse(other, args).unwrap_or_else(|| Err(format!("unknown tool '{other}'"))),
+                                            },
                                         },
                                     },
                                 },
@@ -1257,6 +1267,7 @@ pub(crate) fn parse_spawn_fields(args: &Json) -> Result<SpawnSpec, String> {
     spec.anim = anim_arg(args)?.flatten();
     spec.vfx = crate::vfx::vfx_arg(args)?.flatten();
     spec.decal = crate::vfx::decal_arg(args)?.flatten();
+    spec.water = crate::water::water_arg(args)?.flatten();
     // Value ranges are the world's to decide (the same checks guard in-process game code).
     world::check_spawn(&spec).map_err(value_error)?;
     Ok(spec)
@@ -1535,6 +1546,7 @@ fn parse_set_fields(args: &Json) -> Result<(EntityKey, UpdateSpec), String> {
         anim: anim_arg(args)?,
         vfx: crate::vfx::vfx_arg(args)?,
         decal: crate::vfx::decal_arg(args)?,
+        water: crate::water::water_arg(args)?,
         recipe: string_arg(args, "recipe")?.map(str::to_owned),
         params: params_arg(args)?,
         visible: bool_arg(args, "visible")?,
@@ -1546,7 +1558,7 @@ fn parse_set_fields(args: &Json) -> Result<(EntityKey, UpdateSpec), String> {
     if change.is_empty() {
         return Err("world_set needs at least one change: rename, parent, position, rotation_deg, scale, color, a \
                     look field (material, opacity, emissive, metallic, roughness, specular, color2, seed), light, \
-                    profile, tags, add_tags, remove_tags, props, collider, body, anim, vfx, decal, recipe, params, visible or layer"
+                    profile, tags, add_tags, remove_tags, props, collider, body, anim, vfx, decal, water, recipe, params, visible or layer"
             .into());
     }
     world::check_update(&change).map_err(value_error)?;
@@ -2001,6 +2013,7 @@ fn definitions() -> Vec<ToolDef> {
                     "A decal: the entity's box (size [x, y, z] m, default [1, 0.4, 1], centred on it) projects a texture along its local -Y onto the opaque surfaces inside it. A texture name (scorch, rune_circle, cracks; or a .png under the assets folder) or {texture, size, color (sRGB tint), opacity, mode (\"lit\": re-lit albedo, or \"multiply\": darkens; scorch defaults to multiply), normal (a normal map: cracks_normal or a .png), normal_strength, roughness, specular, emissive, angle_fade (cosine to the box's up below which surfaces get nothing; default 0.3), order (draw order), uv [u0, v0, u1, v1], life (s after start; then gone), fade_in, fade_out (s), start}; false removes it",
                 ),
             ),
+            ("water", described(crate::water::WATER_DOC)),
         ]);
     };
     // Model, visibility and layer fields shared by world_spawn and world_set.
@@ -2729,6 +2742,7 @@ fn definitions() -> Vec<ToolDef> {
     .chain(crate::anim_tools::definitions())
     .chain(crate::studio_tools::definitions())
     .chain(crate::vfx_tools::definitions())
+    .chain(crate::terrain_tools::definitions())
     .collect()
 }
 
