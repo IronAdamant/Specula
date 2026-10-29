@@ -314,5 +314,67 @@ class Geometry(unittest.TestCase):
         self.assertAlmostEqual(evals._box_gap(a, {"min": [4, 0, 5], "max": [5, 1, 6]}), 5.0)
 
 
+class ProxyStreams(unittest.TestCase):
+    """Review probe (toolscope lane): the proxy relayed an event-stream answer (list_changed, then
+    the response) labelled application/json, which an eval agent couldn't parse. It now asks
+    upstream for JSON only, and turns a stream it gets anyway into the response's JSON."""
+
+    def test_event_streams_are_relayed_as_json(self):
+        import http.server
+        import socket
+        import threading
+        import urllib.request
+
+        seen = []
+
+        class Upstream(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                msg = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                seen.append(self.headers.get("Accept"))
+                note = {"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}
+                answer = {"jsonrpc": "2.0", "id": msg.get("id"), "result": {"content": [{"type": "text", "text": "{\"agent\": \"ev\"}"}], "isError": False}}
+                body = f"event: message\ndata: {json.dumps(note)}\n\nevent: message\ndata: {json.dumps(answer)}\n\n".encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Mcp-Session-Id", "s1")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        up = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
+        threading.Thread(target=up.serve_forever, daemon=True).start()
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+
+        class Log:
+            def add(self, *a):
+                pass
+
+        class Ctx:
+            lock = threading.Lock()
+
+        proxy = evals.Proxy(port, f"http://127.0.0.1:{up.server_address[1]}/mcp", ["world_*", "agent_hello"], Log(), Ctx())
+        proxy.start()
+        try:
+            body = {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "agent_hello", "arguments": {"name": "ev", "tools": ["world"]}}}
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/mcp", json.dumps(body).encode(),
+                                         {"Content-Type": "application/json", "Accept": "application/json, text/event-stream", "Mcp-Session-Id": "s1"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                ctype, text = r.headers.get("Content-Type"), r.read().decode()
+            self.assertEqual(ctype, "application/json")
+            reply = json.loads(text)  # an eval agent's client parses it as JSON
+            self.assertEqual(reply["id"], 2)
+            self.assertFalse(reply["result"]["isError"])
+            self.assertEqual(seen, ["application/json"], "the proxy asks upstream for JSON only")
+        finally:
+            proxy.stop()
+            up.shutdown()
+            up.server_close()
+
+
 if __name__ == "__main__":
     unittest.main()

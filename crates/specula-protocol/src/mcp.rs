@@ -49,10 +49,22 @@ pub(crate) struct State {
     id_counter: AtomicU64,
 }
 
+/// One open session.
+struct Open {
+    /// Creation sequence (listing order).
+    seq: u64,
+    info: SessionInfo,
+    /// Its last request.
+    used: Instant,
+    /// The handler's [`ToolHandler::list_version`] the session last saw (in `tools/list`, or
+    /// told about with `notifications/tools/list_changed`).
+    listed: u64,
+}
+
 #[derive(Default)]
 struct Sessions {
-    /// id → (creation sequence, info, last request).
-    map: HashMap<String, (u64, SessionInfo, Instant)>,
+    /// id → the session.
+    map: HashMap<String, Open>,
     next_seq: u64,
 }
 
@@ -90,18 +102,17 @@ impl State {
     pub fn sessions(&self) -> Vec<SessionInfo> {
         let sessions = lock(&self.sessions);
         let now = Instant::now();
-        let mut list: Vec<&(u64, SessionInfo, Instant)> =
-            sessions.map.values().filter(|(_, _, used)| now.duration_since(*used) < SESSION_IDLE_TIMEOUT).collect();
-        list.sort_by_key(|(seq, _, _)| *seq);
-        list.into_iter().map(|(_, info, _)| info.clone()).collect()
+        let mut list: Vec<&Open> = sessions.map.values().filter(|o| now.duration_since(o.used) < SESSION_IDLE_TIMEOUT).collect();
+        list.sort_by_key(|o| o.seq);
+        list.into_iter().map(|o| o.info.clone()).collect()
     }
 
     /// Every open session, idle ones included (they stay usable), oldest first.
     pub fn all_sessions(&self) -> Vec<SessionInfo> {
         let sessions = lock(&self.sessions);
-        let mut list: Vec<&(u64, SessionInfo, Instant)> = sessions.map.values().collect();
-        list.sort_by_key(|(seq, _, _)| *seq);
-        list.into_iter().map(|(_, info, _)| info.clone()).collect()
+        let mut list: Vec<&Open> = sessions.map.values().collect();
+        list.sort_by_key(|o| o.seq);
+        list.into_iter().map(|o| o.info.clone()).collect()
     }
 
     pub fn clear_sessions(&self) {
@@ -138,10 +149,20 @@ impl State {
         let Some(id) = req.header("mcp-session-id") else {
             return error_response(400, TRANSPORT_ERROR, "Bad Request: DELETE needs an Mcp-Session-Id header");
         };
-        match lock(&self.sessions).map.remove(id) {
-            Some(_) => Response::new(200),
+        let removed = lock(&self.sessions).map.remove(id);
+        match removed {
+            Some(_) => {
+                self.closed(id);
+                Response::new(200)
+            }
             None => error_response(404, SESSION_NOT_FOUND, "Session not found"),
         }
+    }
+
+    /// Tells the handler a session ended (a panic in it is the handler's bug; the session is gone
+    /// either way).
+    fn closed(&self, id: &str) {
+        let _ = panic::catch_unwind(AssertUnwindSafe(|| self.handler.session_closed(id)));
     }
 
     fn post(&self, req: &Request) -> Response {
@@ -181,7 +202,8 @@ impl State {
         };
 
         if let Message::Request { id, method: "initialize", params } = message {
-            return self.initialize(id, params);
+            let query = req.head.target.split_once('?').map_or("", |(_, q)| q);
+            return self.initialize(id, params, query);
         }
         let session = match self.session_for(req) {
             Ok(s) => s,
@@ -190,10 +212,20 @@ impl State {
         match message {
             Message::Notification | Message::Response => Response::new(202),
             Message::Request { id, method, params } => {
+                // tools/list reads the version first: a change while it builds the list is told
+                // at the next request rather than lost.
+                let listing = method == "tools/list";
+                let before = if listing { Some(self.list_version(&session)) } else { None };
                 let reply = match self.dispatch(&session, method, params) {
                     Ok(result) => rpc_result(id.clone(), result),
                     Err((code, message)) => rpc_error(id.clone(), code, &message),
                 };
+                let sse = req.header("accept").is_some_and(accepts_event_stream);
+                let version = before.unwrap_or_else(|| self.list_version(&session));
+                if self.list_changed(&session.id, version, listing || !sse) {
+                    let note = Json::obj([("jsonrpc", Json::from("2.0")), ("method", Json::from("notifications/tools/list_changed"))]);
+                    return event_stream_response(&[note, reply]);
+                }
                 json_response(200, &reply)
             }
         }
@@ -211,9 +243,9 @@ impl State {
         let session = {
             let mut sessions = lock(&self.sessions);
             match sessions.map.get_mut(id) {
-                Some((_, info, used)) => {
-                    *used = Instant::now();
-                    info.clone()
+                Some(open) => {
+                    open.used = Instant::now();
+                    open.info.clone()
                 }
                 None => return Err(error_response(404, SESSION_NOT_FOUND, "Session not found")),
             }
@@ -233,7 +265,7 @@ impl State {
         Ok(session)
     }
 
-    fn initialize(&self, id: &Json, params: Option<&Json>) -> Response {
+    fn initialize(&self, id: &Json, params: Option<&Json>, query: &str) -> Response {
         let empty = Json::obj::<&str>([]);
         let params = params.unwrap_or(&empty);
         let Some(requested) = params.get("protocolVersion").and_then(Json::as_str) else {
@@ -249,24 +281,36 @@ impl State {
             client_version: field("version"),
             protocol_version: negotiated.to_owned(),
         };
-        {
+        let opened = panic::catch_unwind(AssertUnwindSafe(|| self.handler.session_opened(&info, query)))
+            .unwrap_or_else(|p| Err(format!("Internal error: session_opened panicked: {}", panic_message(&*p))));
+        if let Err(message) = opened {
+            return json_response(200, &rpc_error(id.clone(), INVALID_PARAMS, &format!("initialize: {message}")));
+        }
+        let listed = self.list_version(&info);
+        let evicted = {
             let mut sessions = lock(&self.sessions);
+            let mut evicted = None;
             if sessions.map.len() >= MAX_SESSIONS {
                 // Evict the least recently *used* session, so an active agent is never pushed out
                 // by clients that open sessions and never DELETE them.
-                let stalest = sessions.map.iter().min_by_key(|(_, (_, _, used))| *used).map(|(k, _)| k.clone());
+                let stalest = sessions.map.iter().min_by_key(|(_, o)| o.used).map(|(k, _)| k.clone());
                 if let Some(stalest) = stalest {
                     sessions.map.remove(&stalest);
+                    evicted = Some(stalest);
                 }
             }
             let seq = sessions.next_seq;
             sessions.next_seq += 1;
-            sessions.map.insert(info.id.clone(), (seq, info.clone(), Instant::now()));
+            sessions.map.insert(info.id.clone(), Open { seq, info: info.clone(), used: Instant::now(), listed });
+            evicted
+        };
+        if let Some(gone) = evicted {
+            self.closed(&gone);
         }
 
         let mut result = Json::obj([
             ("protocolVersion", Json::from(negotiated)),
-            ("capabilities", Json::obj([("tools", Json::obj([("listChanged", Json::from(false))]))])),
+            ("capabilities", Json::obj([("tools", Json::obj([("listChanged", Json::from(true))]))])),
             (
                 "serverInfo",
                 Json::obj([
@@ -281,18 +325,34 @@ impl State {
         json_response(200, &rpc_result(id.clone(), result)).header("Mcp-Session-Id", info.id)
     }
 
+    /// The handler's list version for `session` (0 if asking it panics).
+    fn list_version(&self, session: &SessionInfo) -> u64 {
+        panic::catch_unwind(AssertUnwindSafe(|| self.handler.list_version(session))).unwrap_or(0)
+    }
+
+    /// Whether to tell session `id` about list `version` now. With `just_seen` (it was just
+    /// listed, or the client can't take an event stream and will see the change at its next
+    /// `tools/list`) the version is only recorded; otherwise news is recorded and told.
+    fn list_changed(&self, id: &str, version: u64, just_seen: bool) -> bool {
+        let mut sessions = lock(&self.sessions);
+        let Some(open) = sessions.map.get_mut(id) else { return false };
+        let news = open.listed != version;
+        open.listed = version;
+        news && !just_seen
+    }
+
     fn dispatch(&self, session: &SessionInfo, method: &str, params: Option<&Json>) -> Result<Json, (i64, String)> {
         match method {
             "ping" => Ok(Json::obj::<&str>([])),
-            "tools/list" => self.tools_list(),
+            "tools/list" => self.tools_list(session),
             "tools/call" => self.tools_call(session, params),
             _ => Err((METHOD_NOT_FOUND, format!("Method not found: {method}"))),
         }
     }
 
-    /// Valid tool definitions; invalid names are dropped with a one-time stderr warning.
-    fn valid_tools(&self) -> Result<Vec<crate::ToolDef>, (i64, String)> {
-        let tools = panic::catch_unwind(AssertUnwindSafe(|| self.handler.tools()))
+    /// `session`'s valid tool definitions; invalid names are dropped with a one-time stderr warning.
+    fn valid_tools(&self, session: &SessionInfo) -> Result<Vec<crate::ToolDef>, (i64, String)> {
+        let tools = panic::catch_unwind(AssertUnwindSafe(|| self.handler.tools_for(session)))
             .map_err(|p| (INTERNAL_ERROR, format!("Internal error: tool list panicked: {}", panic_message(&*p))))?;
         let mut warned = lock(&self.warned_names);
         Ok(tools
@@ -310,8 +370,8 @@ impl State {
             .collect())
     }
 
-    fn tools_list(&self) -> Result<Json, (i64, String)> {
-        let tools = self.valid_tools()?;
+    fn tools_list(&self, session: &SessionInfo) -> Result<Json, (i64, String)> {
+        let tools = self.valid_tools(session)?;
         let list = tools.into_iter().map(|t| {
             Json::obj([
                 ("name", Json::from(t.name)),
@@ -334,7 +394,11 @@ impl State {
             Some(args @ Json::Obj(_)) => args,
             Some(_) => return Err((INVALID_PARAMS, "tools/call: params.arguments must be an object".to_owned())),
         };
-        if !self.valid_tools()?.iter().any(|t| t.name == name) {
+        // Any tool the handler has, listed for this session or not (the handler decides what a
+        // session may call).
+        let known = panic::catch_unwind(AssertUnwindSafe(|| self.handler.has_tool(name)))
+            .map_err(|p| (INTERNAL_ERROR, format!("Internal error: tool lookup panicked: {}", panic_message(&*p))))?;
+        if !known || !is_valid_tool_name(name) {
             return Err((INVALID_PARAMS, format!("Unknown tool: {name}")));
         }
         let output = panic::catch_unwind(AssertUnwindSafe(|| self.handler.call(session, name, arguments)))
@@ -440,6 +504,21 @@ pub(crate) fn origin_allowed(origin: &str) -> bool {
 
 fn media_type_is(value: &str, want: &str) -> bool {
     value.split(';').next().unwrap_or("").trim().eq_ignore_ascii_case(want)
+}
+
+/// Whether the client takes an event stream as a request's answer (`text/event-stream` named).
+fn accepts_event_stream(accept: &str) -> bool {
+    accept.split(',').any(|range| range.split(';').next().unwrap_or("").trim().eq_ignore_ascii_case("text/event-stream"))
+}
+
+/// A request's answer as a short SSE stream: `messages` in order (notifications, then the
+/// response), each one `message` event.
+fn event_stream_response(messages: &[Json]) -> Response {
+    let mut body = String::new();
+    for m in messages {
+        let _ = write!(body, "event: message\ndata: {m}\n\n");
+    }
+    Response::with_body(200, "text/event-stream", body).header("Cache-Control", "no-cache")
 }
 
 fn accepts_json(accept: &str) -> bool {
@@ -581,6 +660,49 @@ mod tests {
         assert!(lock(&state.sessions).map.len() <= MAX_SESSIONS);
     }
 
+    /// Review probe (toolscope lane): the handler never heard of ended sessions, so per-session
+    /// state (tool scopes) piled up. DELETE and the server's own eviction tell it.
+    #[test]
+    fn ended_sessions_are_told_to_the_handler() {
+        #[derive(Default)]
+        struct Closes(Mutex<Vec<String>>);
+        impl ToolHandler for Closes {
+            fn tools(&self) -> Vec<crate::ToolDef> {
+                Vec::new()
+            }
+            fn call(&self, _: &SessionInfo, _: &str, _: &Json) -> ToolOutput {
+                ToolOutput::text("")
+            }
+            fn session_closed(&self, id: &str) {
+                lock(&self.0).push(id.to_owned());
+            }
+        }
+        let handler = Arc::new(Closes::default());
+        let config = ServerConfig { bind: String::new(), server_name: "t".into(), server_version: "0".into(), instructions: None };
+        let state = State::new(config, handler.clone());
+        let request = |method: &str, session: Option<&str>, body: &str| {
+            let mut headers = vec![("Content-Type".to_string(), "application/json".to_string())];
+            if let Some(s) = session {
+                headers.push(("Mcp-Session-Id".to_string(), s.to_string()));
+            }
+            let head = crate::http::Head { method: method.into(), target: ENDPOINT.into(), minor_version: 1, headers };
+            state.handle(&Request { head, body: body.as_bytes().to_vec() })
+        };
+        let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#;
+        let session_of = |r: &Response| r.headers.iter().find(|(k, _)| k == "Mcp-Session-Id").unwrap().1.clone();
+        let first = session_of(&request("POST", None, init));
+        assert_eq!(request("DELETE", Some(&first), "").status, 200);
+        assert_eq!(*lock(&handler.0), std::slice::from_ref(&first), "DELETE");
+        assert_eq!(request("DELETE", Some(&first), "").status, 404);
+        assert_eq!(lock(&handler.0).len(), 1, "an unknown session isn't told twice");
+        for _ in 0..MAX_SESSIONS + 10 {
+            request("POST", None, init);
+        }
+        let closed = lock(&handler.0).len() - 1;
+        assert_eq!(closed, 10, "every eviction is told");
+        assert_eq!(lock(&state.sessions).map.len(), MAX_SESSIONS);
+    }
+
     /// Review finding: idle sessions stay usable, so identity checks must see them
     /// (`all_sessions`), while listings leave them out (`sessions`).
     #[test]
@@ -609,8 +731,8 @@ mod tests {
         let old = Instant::now().checked_sub(SESSION_IDLE_TIMEOUT + Duration::from_secs(1));
         if let Some(old) = old {
             let mut sessions = lock(&state.sessions);
-            let first = sessions.map.values().map(|(seq, _, _)| *seq).min().unwrap();
-            sessions.map.values_mut().filter(|(seq, _, _)| *seq == first).for_each(|entry| entry.2 = old);
+            let first = sessions.map.values().map(|o| o.seq).min().unwrap();
+            sessions.map.values_mut().filter(|o| o.seq == first).for_each(|o| o.used = old);
             drop(sessions);
             assert_eq!(state.sessions().len(), 1, "the idle one isn't listed");
         }

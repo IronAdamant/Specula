@@ -20,7 +20,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from specula_mcp import ROOT, Engine, detailed
+from specula_mcp import ROOT, Engine, detailed, reply_of
 
 PORT = 7486
 
@@ -44,7 +44,7 @@ class KeepAlive:
         r = self.conn.getresponse()
         self.session = self.session or r.getheader("Mcp-Session-Id")
         body = r.read()
-        return json.loads(body) if body else None
+        return reply_of(body)
 
     def rpc(self, method, params):
         reply = self.post({"jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params})

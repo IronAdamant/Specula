@@ -50,7 +50,7 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from specula_mcp import ROOT, Engine, Mcp, server_up, url_for  # noqa: E402
+from specula_mcp import ROOT, Engine, Mcp, reply_of, server_up, url_for  # noqa: E402
 
 EVAL_FORMAT = 1
 EVALS_DIR = ROOT / "evals"
@@ -1431,6 +1431,10 @@ class Proxy:
 
     def __init__(self, port, upstream, allowed, transcript, ctx, max_calls=MAX_CALLS_DEFAULT):
         self.port, self.upstream, self.allowed, self.transcript, self.ctx = port, upstream, allowed, transcript, ctx
+        # The proxy hides tools itself, from the whole list (the engine lists only the core
+        # tools to a client that doesn't ask for more).
+        if "?" not in self.upstream:
+            self.upstream += "?tools=all"
         # The brief's call limit: past it, calls are refused with call_limit (eval_done still works).
         self.max_calls, self.calls = max_calls, 0
         self.done, self.summary = threading.Event(), None
@@ -1453,16 +1457,26 @@ class Proxy:
                 self.wfile.write(body)
 
             def forward(self, method, body):
-                headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+                # JSON answers only: the proxy relays every answer as application/json and filters
+                # the tool list itself, so it never asks for event streams (which carry
+                # notifications/tools/list_changed ahead of the answer).
+                headers = {"Content-Type": "application/json", "Accept": "application/json"}
                 sid = self.headers.get("Mcp-Session-Id")
                 if sid:
                     headers["Mcp-Session-Id"] = sid
                 req = urllib.request.Request(proxy.upstream, body, headers, method=method)
                 try:
                     with urllib.request.urlopen(req, timeout=300) as r:
-                        return r.status, r.read(), [(k, v) for k, v in r.headers.items() if k.lower() == "mcp-session-id"]
+                        status, rbody = r.status, r.read()
+                        sse = (r.headers.get("Content-Type") or "").startswith("text/event-stream")
+                        hdrs = [(k, v) for k, v in r.headers.items() if k.lower() == "mcp-session-id"]
                 except urllib.error.HTTPError as e:
                     return e.code, e.read(), []
+                if sse:
+                    # An upstream that streams anyway: relay its response as the JSON it labels.
+                    msg = reply_of(rbody)
+                    rbody = json.dumps(msg).encode() if msg is not None else b""
+                return status, rbody, hdrs
 
             def do_DELETE(self):
                 code, body, hdrs = self.forward("DELETE", None)
@@ -1507,7 +1521,7 @@ class Proxy:
                     code, rbody, hdrs = self.forward("POST", body)
                     ms = (time.perf_counter() - t0) * 1000
                     try:
-                        reply = json.loads(rbody)
+                        reply = reply_of(rbody)
                     except ValueError:
                         reply = None
                     res = reply.get("result") if isinstance(reply, dict) else None

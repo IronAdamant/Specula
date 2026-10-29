@@ -6,7 +6,14 @@
 //!   Requests get a single `application/json` response; notifications and responses get `202 Accepted`.
 //! - `initialize` creates a session and returns its id in the `Mcp-Session-Id` header; later requests
 //!   must send it (missing → 400, unknown → 404). `DELETE /mcp` ends a session. `GET /mcp` → 405
-//!   (no server-initiated SSE stream yet).
+//!   (no server-initiated SSE stream yet). The URL's query (`/mcp?tools=world,sight`) is handed to
+//!   [`ToolHandler::session_opened`] at `initialize`.
+//! - **Tool list changes** (`capabilities.tools.listChanged: true`): when a session's
+//!   [`ToolHandler::list_version`] has changed since it last read `tools/list`, the answer to its
+//!   next request (the call that changed it, or any later one) is a `text/event-stream` carrying
+//!   `notifications/tools/list_changed` and then the response, as Streamable HTTP allows. Only
+//!   clients whose `Accept` names `text/event-stream` get one; others see the change at their next
+//!   `tools/list`.
 //! - Methods: `initialize`, `notifications/initialized`, `ping`, `tools/list`, `tools/call`.
 //!   Unknown method → JSON-RPC `-32601`; bad params / unknown tool → `-32602`.
 //! - Security: binds loopback only; requests whose `Origin` header is present and not a localhost
@@ -99,9 +106,43 @@ pub struct SessionInfo {
 }
 
 /// Implemented by the engine. Called from server threads, possibly concurrently.
+///
+/// Only `tools` and `call` are required; the rest give each session its own tool list (a scope):
+/// `session_opened` reads the connect-time options from the URL, `tools_for` answers that
+/// session's `tools/list`, and when `list_version` changes the server tells the session with
+/// `notifications/tools/list_changed` (see [`crate`]'s docs).
 pub trait ToolHandler: Send + Sync + 'static {
+    /// Every tool (what `tools/call` accepts, whether or not a session lists it).
     fn tools(&self) -> Vec<ToolDef>;
     fn call(&self, session: &SessionInfo, name: &str, arguments: &Json) -> ToolOutput;
+
+    /// The tools `session`'s `tools/list` shows (default: all of them).
+    fn tools_for(&self, _session: &SessionInfo) -> Vec<ToolDef> {
+        self.tools()
+    }
+
+    /// Whether a tool of this name exists (`tools/call` refuses others with -32602). Override it
+    /// when building [`ToolHandler::tools`] is costly: it is asked on every call.
+    fn has_tool(&self, name: &str) -> bool {
+        self.tools().iter().any(|t| t.name == name)
+    }
+
+    /// A session was created by `initialize` posted to `/mcp?<query>` (`query` without the `?`,
+    /// empty when there was none). `Err(message)` refuses the `initialize` with that message (the
+    /// session isn't created), so a client with a mistyped option finds out when it connects.
+    fn session_opened(&self, _session: &SessionInfo, _query: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// The session with this id ended: a client's `DELETE`, or the server evicting it past its
+    /// session limit. Per-session state kept for it can go.
+    fn session_closed(&self, _session_id: &str) {}
+
+    /// Changes whenever `session`'s tool list does; the server then sends the session
+    /// `notifications/tools/list_changed` (default: never changes).
+    fn list_version(&self, _session: &SessionInfo) -> u64 {
+        0
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

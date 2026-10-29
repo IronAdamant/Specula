@@ -1,0 +1,291 @@
+{
+  "schema": "specula.drill/v1",
+  "label": "toolscope-after-2",
+  "agents": 64,
+  "rounds": 12,
+  "batch": 20,
+  "feed": true,
+  "build": "release",
+  "windowed": false,
+  "adapter": "integrated",
+  "frame_floor": null,
+  "comms": {
+    "intent_overlaps_flagged": 64,
+    "intent_overlaps_missed": 0,
+    "conflict_help": 64,
+    "leases": 128,
+    "notes": 64,
+    "progress": 192,
+    "questions": 64,
+    "tasks_done": 64,
+    "questions_answered": 64,
+    "rollup_ms": 53.3,
+    "rollup_sample": "agent_00: 322 changes in 23 entries (13 delete, 55 set, 254 spawn) on 254 entities under /district_00, 5 undone; 13 refused; tasks: 1 done (last done: 'build /district_00')",
+    "task_rollup_sample": "task 1 'build /district_00' (done, agent_00): 321 changes in 22 entries (13 delete, 55 set, 253 spawn) on 253 entities under /district_00, 5 undone; 13 refused; result: 241 entities in /district_00",
+    "tasks_with_changes": 64,
+    "board_counts": {
+      "open": 0,
+      "taken": 0,
+      "blocked": 0,
+      "done": 64,
+      "cancelled": 0
+    }
+  },
+  "when": "2026-10-29T09:00:25",
+  "cpu_busy_pct_before": 46.2,
+  "swarm_settings": {
+    "frame_floor_fps": 60,
+    "hardware": {
+      "gpu": "Intel(R) RaptorLake-S Mobile Graphics Controller",
+      "gpu_kind": "integrated",
+      "vendor_id": "0x8086",
+      "vram_mb": 16253,
+      "vram_note": "shared with the CPU (system memory)",
+      "cpu_threads": 32,
+      "has_battery": true,
+      "on_ac_power": true,
+      "display_refresh_hz": null,
+      "refresh_from": null
+    },
+    "suggested_frame_floor_fps": 60,
+    "windowed": false
+  },
+  "attacks": {
+    "rejected": 23,
+    "leaked": [],
+    "wrong": []
+  },
+  "overload": {
+    "held": 256,
+    "extra_requests": 20,
+    "statuses": {
+      "503+retry-after": 20
+    },
+    "service_resumed": true
+  },
+  "wall_s": 14.785,
+  "world_ops": 20096,
+  "ops_per_s": 1359.2,
+  "tool_calls": 6438,
+  "calls_per_s": 435.4,
+  "latency_ms": {
+    "agent_hello": {
+      "p50": 32.65,
+      "p95": 53.38,
+      "max": 65.28,
+      "n": 64
+    },
+    "claim_release": {
+      "p50": 15.17,
+      "p95": 25.12,
+      "max": 27.18,
+      "n": 64
+    },
+    "claim_renew": {
+      "p50": 95.21,
+      "p95": 163.25,
+      "max": 197.12,
+      "n": 64
+    },
+    "claim_take": {
+      "p50": 33.66,
+      "p95": 60.24,
+      "max": 68.87,
+      "n": 64
+    },
+    "intent_clear": {
+      "p50": 55.43,
+      "p95": 130.04,
+      "max": 189.17,
+      "n": 128
+    },
+    "intent_declare": {
+      "p50": 39.68,
+      "p95": 93.64,
+      "max": 137.6,
+      "n": 128
+    },
+    "lease_release": {
+      "p50": 40.99,
+      "p95": 117.7,
+      "max": 138.71,
+      "n": 64
+    },
+    "lease_take": {
+      "p50": 28.31,
+      "p95": 56.21,
+      "max": 83.62,
+      "n": 128
+    },
+    "note_add": {
+      "p50": 25.79,
+      "p95": 61.83,
+      "max": 78.12,
+      "n": 64
+    },
+    "task_done": {
+      "p50": 50.3,
+      "p95": 142.06,
+      "max": 194.41,
+      "n": 64
+    },
+    "task_list": {
+      "p50": 31.73,
+      "p95": 53.5,
+      "max": 58.92,
+      "n": 64
+    },
+    "task_take": {
+      "p50": 33.38,
+      "p95": 60.57,
+      "max": 78.11,
+      "n": 64
+    },
+    "task_update": {
+      "p50": 103.26,
+      "p95": 165.9,
+      "max": 343.73,
+      "n": 256
+    },
+    "world_batch": {
+      "p50": 132.92,
+      "p95": 240.07,
+      "max": 871.3,
+      "n": 1216
+    },
+    "world_changes": {
+      "p50": 154.52,
+      "p95": 269.38,
+      "max": 902.55,
+      "n": 2918
+    },
+    "world_set": {
+      "p50": 125.45,
+      "p95": 235.64,
+      "max": 466.98,
+      "n": 320
+    },
+    "world_spawn": {
+      "p50": 138.23,
+      "p95": 498.74,
+      "max": 883.48,
+      "n": 448
+    },
+    "world_undo": {
+      "p50": 126.19,
+      "p95": 241.66,
+      "max": 869.31,
+      "n": 320
+    }
+  },
+  "intrusions_rejected": 768,
+  "intrusions_leaked": 0,
+  "intrusion_other_errors": [],
+  "undos": 320,
+  "feed_items": 1299251,
+  "feed_gaps": 0,
+  "entities": 15424,
+  "state_hash": "5f13ec0cdbc24e02",
+  "replay": {
+    "replayable": true,
+    "entries": 1472,
+    "replay_hash": "5f13ec0cdbc24e02",
+    "matches": true,
+    "ms": 106.5925
+  },
+  "replay_check_s": 0.146,
+  "journal": {
+    "first_id": 1,
+    "last_id": 1472,
+    "agent_entries": 1472,
+    "game_entries": 0,
+    "approx_bytes": 37793600,
+    "evicted": 0,
+    "replayable": true,
+    "base": "empty",
+    "base_hash": "ee9471e83e35674b"
+  },
+  "claim_rejections_engine": 768,
+  "history_sample": [
+    {
+      "id": 1419,
+      "tick": 451,
+      "by": "agent_00",
+      "kind": "undo",
+      "changes": 5,
+      "items": [
+        {
+          "op": "delete",
+          "id": 16353,
+          "path": "/district_00/tmp_11_4"
+        },
+        {
+          "op": "delete",
+          "id": 16352,
+          "path": "/district_00/tmp_11_3"
+        },
+        {
+          "op": "delete",
+          "id": 16351,
+          "path": "/district_00/tmp_11_2"
+        },
+        {
+          "op": "delete",
+          "id": 16350,
+          "path": "/district_00/tmp_11_1"
+        },
+        {
+          "op": "delete",
+          "id": 16349,
+          "path": "/district_00/tmp_11_0"
+        }
+      ],
+      "undoes": [
+        1389
+      ]
+    },
+    {
+      "id": 1389,
+      "tick": 447,
+      "by": "agent_00",
+      "kind": "batch",
+      "changes": 5,
+      "items": [
+        {
+          "op": "spawn",
+          "id": 16349,
+          "path": "/district_00/tmp_11_0",
+          "version": 1
+        },
+        {
+          "op": "spawn",
+          "id": 16350,
+          "path": "/district_00/tmp_11_1",
+          "version": 1
+        },
+        {
+          "op": "spawn",
+          "id": 16351,
+          "path": "/district_00/tmp_11_2",
+          "version": 1
+        },
+        {
+          "op": "spawn",
+          "id": 16352,
+          "path": "/district_00/tmp_11_3",
+          "version": 1
+        },
+        {
+          "op": "spawn",
+          "id": 16353,
+          "path": "/district_00/tmp_11_4",
+          "version": 1
+        }
+      ],
+      "undone_by": 1419
+    }
+  ],
+  "agent_errors": [],
+  "problems": [],
+  "cpu_busy_pct_after": 36.5
+}

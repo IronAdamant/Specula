@@ -44,7 +44,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from specula_mcp import ROOT, Engine, detailed, url_for
+from specula_mcp import ROOT, Engine, detailed, reply_of, url_for
 
 PORT = 7488
 # --no-comms: skip the swarm communication steps (for comparing with engines that predate them).
@@ -69,7 +69,7 @@ class Agent:
         with urllib.request.urlopen(req, timeout=120) as r:
             self.session = self.session or r.headers.get("Mcp-Session-Id")
             body = r.read()
-        return json.loads(body) if body else None
+        return reply_of(body)
 
     def rpc(self, method, params):
         reply = self.post({"jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params})

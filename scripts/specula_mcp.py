@@ -30,10 +30,28 @@ def detailed(tool, args):
     return args
 
 
+def reply_of(body):
+    """The JSON-RPC message of a POST's answer body: plain JSON, or an event stream (the engine
+    answers as one when it tells the session notifications/tools/list_changed first; the response
+    is the event with an id). None for an empty body."""
+    if not body:
+        return None
+    text = body.decode() if isinstance(body, bytes) else body
+    if not text.lstrip().startswith(("event:", "data:", "id:", ":")):
+        return json.loads(text)
+    messages = [json.loads(line[5:].strip()) for line in text.splitlines() if line.startswith("data:") and line[5:].strip()]
+    return next((m for m in reversed(messages) if "id" in m), messages[-1] if messages else None)
+
+
 class Mcp:
     """Minimal MCP client over Streamable HTTP (JSON responses)."""
 
-    def __init__(self, url, client_name, detailed=True):
+    def __init__(self, url, client_name, detailed=True, tools="all"):
+        # Scripts list every tool (`?tools=all`): the engine's default for a client that says
+        # nothing is the core tools only (docs/design/TOOLS.md, "Scoped tool lists"). Pass
+        # tools=None to connect as an unconfigured agent would, or a URL with its own query.
+        if tools and "?" not in url:
+            url = f"{url}?tools={tools}"
         self.url, self.session, self.next_id = url, None, 1
         self.detailed = detailed
         self.request("initialize", {
@@ -51,7 +69,7 @@ class Mcp:
         with urllib.request.urlopen(req, timeout=120) as r:
             self.session = self.session or r.headers.get("Mcp-Session-Id")
             body = r.read()
-        return json.loads(body) if body else None
+        return reply_of(body)
 
     def request(self, method, params):
         reply = self.post({"jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params})

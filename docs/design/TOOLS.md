@@ -7,6 +7,12 @@
 > `response_format: "detailed"` itself. Other ways to get detailed answers by default: `agent_hello
 > {response_format: "detailed"}` (for one session) or start the engine with `--response-format detailed` (for every
 > session). New heavy tools should take `response_format` too (see "Changed").
+>
+> **Scoped tool lists (2026-10-29):** a client that says nothing now lists only the **core** tools (`agent_hello`
+> and `tools_*`); every other tool is still callable. Scripts that read `tools/list` connect to `/mcp?tools=all`
+> (`specula_mcp.Mcp` does it for you; `.mcp.json` does it for Claude Code). A new tool needs a family (its name
+> prefix) and a one-line catalog entry in `crates/specula/src/toolscope.rs`, or
+> `every_tool_has_a_family_and_a_brief` fails. See "Scoped tool lists" below.
 
 Status: audit of 2026-10-18 (M3, tool ergonomics), against the agent-tool guidance summarised in
 [research/AGENT_GAMEMAKING.md](../research/AGENT_GAMEMAKING.md) ("Tool design for agents"). The changes listed under
@@ -109,12 +115,202 @@ A typical builder session of 20 calls (hello, info, a new run, a step, state, a 
 listing, a task, a capture, perf, history, physics info, two moves, the hash, a release) went from **27,475 bytes on
 main to 12,900 bytes** with the new defaults and compact JSON: **53% less** for the same information an agent acts on.
 
+## Scoped tool lists (2026-10-29)
+
+By the M4 audit the engine had 143 tools (151 with Sepulcra's), and `tools/list` was about 200 KB of compact JSON,
+roughly 50,000 tokens that every agent read before its first call. A swarm pays that once per agent (F1), so the
+list is now **scoped per session**. Code: `crates/specula/src/toolscope.rs` (families, roles, the catalog, each
+session's scope), `toolscope_tools.rs` (the `tools_*` tools and the call gate), and `specula-protocol` (connect
+options and `notifications/tools/list_changed`). Live check: `scripts/toolscope_check.py`; numbers in
+`perf/tools/20261029-toolscope.json`.
+
+**The owner's model (2026-10-29), kept as it was given.** The lead agent knows the engine and picks the tools for
+each subagent, or tells it to activate only the tools its task needs. Subagents see only names with one-line
+descriptions until they activate something. If no tool exists for a need, the request goes to the lead, who builds
+or composes one. Claude Code already defers MCP tool schemas, loading names first and schemas on demand, but other
+vendors' clients may not, so the engine does it itself.
+
+### What a session lists
+
+A session lists the **core** plus its **scope**. The core is `agent_hello`, `tools_catalog`, `tools_activate`,
+`tools_deactivate`, `tools_invoke` and `tools_request`: about 4.7 KB, always listed, never capped. The scope is an
+**active** set, and optionally a **cap** set by the lead. A session lists core + (active ∩ cap).
+
+**Calls are not limited to the list.** A session may call any tool within its cap, whether it is listed or not.
+Without a cap, that means every tool. So scripts, older clients and agents that know a tool's name keep working.
+Calls beyond a cap are refused with `not_in_scope`, which names the tool and points to `tools_request`. The cap
+holds on direct calls, inside `tools_invoke` and `tools_activate`, and for a playtest's calls. `playtest_run` is
+refused when its spec calls a tool beyond its starter's cap, and each step is checked again when it runs, so a
+cap the lead sets mid-run applies (the step fails with `not_in_scope`). A playtest can't call `tools_*` at all:
+they answer on the caller's connection (`CallerThread::Scope`, refused with a reason like the other caller-thread
+tools).
+
+**A hello never widens a cap.** A session capped as `will` that says `agent_hello` as `bob` keeps will's cap,
+narrowed further by bob's cap if bob has one. Only the lead's own `tools_scope` (or `clear`) on the session's
+agent can widen it.
+
+**Bounds.** A selection names at most 256 entries. An entry over 64 characters names nothing and gets no
+suggestion. An error names at most 8 unknown entries, then gives a count. Echoed names and labels are cut to 64
+and 200 characters. The lead's label is built from the deduplicated entries.
+
+**Who chooses the list:**
+
+| Source | How | Notes |
+|---|---|---|
+| Engine default | `--tools-default core\|all` | `core` unless set (see below) |
+| Connect URL | `/mcp?tools=world,sight,anim_check`, `/mcp?role=builder`, or both (their union) | Applied at `initialize`, so the client's first `tools/list` is already right. An unknown option or entry refuses the `initialize` and suggests the closest name (`'wrld' (did you mean 'world'?)`). |
+| `agent_hello {tools}` | Families or tool names | Replaces the active set |
+| `agent_hello {role}` | A template's name, given explicitly (a hello with only a name keeps the core) | Only while nothing explicit chose: the default, or an earlier role. A URL's choice stands. |
+| `tools_activate` / `tools_deactivate` | At runtime | Within the cap |
+| The lead's `tools_scope {agent, tools\|role, cap}` | Overrides all of the above | Applies now to the agent's open sessions. It is also kept by name for any session that later says `agent_hello` as that agent. A hello's own `tools` are then added within the cap. `clear: true` removes it. |
+
+**Families** come from the name prefix (`world_`, `sight_`, `camera_`, ...), with a few tools placed by name: the
+journal's `world_history`, `world_undo`, `world_changes`, `world_hash` and `world_rollup` form `journal`, and
+`window_view` belongs to `sight`. There are 24 engine families, plus `game` for the hosted game's tools. A new tool
+joins its family by its prefix. A new prefix, or a tool without a one-line catalog entry (`BRIEFS`), fails
+`every_tool_has_a_family_and_a_brief`. That test also catches stale entries, empty families and roles that name
+nothing.
+
+**Role templates** are data (`ROLES`); `tools_catalog {roles: true}` shows them with their sizes:
+
+- `lead` and `director`: everything.
+- `builder`: world, sight, claim, board, journal, model, engine.
+- `reviewer`: sight, journal, board, review, studio, plus `world_query` and `world_list`.
+- `playtester`: game, playtest, sight, board, save, engine, plus `world_query` and `world_hash`.
+- `art_director`: sight, studio, review, model, procgen, vfx, board, plus `world_env` and `world_query`.
+- `sight_skeptic`: sight, plus `world_query`, `world_list` and `critique_add`.
+- `performance`: perf, engine, stream, sight, plus the world reads.
+- `designer`: lex, balance, playtest, game, board, save.
+- `animator`: anim, physics, sight, world, claim, board.
+- `coder`: logic, project, world, sight, engine, claim, board.
+
+**The default is core-only**, so a client that says nothing gets the core. That is the point of this work: an
+unconfigured agent in a swarm pays 4.7 KB instead of 209 KB. The engine's `instructions` (sent at `initialize`)
+and the core tools' descriptions say how to find and activate the rest. Backward compatibility holds in three
+ways:
+
+- Calls to unlisted tools still work.
+- `scripts/specula_mcp.py` connects with `?tools=all`. The evals proxy forwards to `?tools=all` and asks
+  upstream for JSON answers only, because it filters the list itself and relays every answer as
+  `application/json`. A stream it gets anyway is relayed as the response's JSON.
+- `.mcp.json` asks for `?tools=all`. Claude Code defers MCP schemas, so the full list costs it only names, and
+  Claude Code subagents share their parent's MCP session, so per-subagent scopes there need separate sessions.
+
+`--tools-default all` restores the old behaviour for an operator who wants it.
+
+### The tools
+
+- **`tools_catalog {filter, family, roles, cursor}`**: every tool by family with one line each. The whole catalog
+  is 9.6 KB in one page (capped at 16 KB a page, paged by family). It also gives your scope: how many tools you
+  list, their bytes, where the scope came from, and the cap. `filter` matches words against names, lines and full
+  descriptions. When nothing matches, the answer gives the closest partial matches and points to `tools_request`.
+- **`tools_activate {tools, role, schemas}`**: adds tools to your list. It answers with what was added and the full
+  definitions of the tools asked for, up to 32 KB; any others are named. `schemas: false` leaves the definitions
+  out, for clients that refresh their list anyway.
+- **`tools_deactivate {tools | all}`**: removes tools from your list. The core stays.
+- **`tools_invoke {tool, arguments}`**: calls any tool by name. It is for clients that don't re-read `tools/list`,
+  or can only call tools they list. The cap applies.
+- **`tools_request {need, why}`**: searches the catalog for `need`, then posts a board task tagged `tool_request`
+  for the lead (priority 4). The task carries the need, the reason, what the search found (marking matches beyond
+  the requester's cap) and the requester's scope. The answer gives the task id and the matches. Gaps become data
+  the lead works through. It needs `agent_hello`, like every board write. Because it is core and uncapped, a
+  looping agent must not be able to fill the board, so:
+  - A request the agent already has open (same need, ignoring case and spacing) answers with that task and
+    `duplicate: true`.
+  - An agent may have at most 8 requests open; the next is refused with `too_many_requests`, which lists the
+    open ones.
+  - Requests are serialised, so two identical requests sent at once still make one task.
+- **`tools_scope {agent, role, tools, cap, clear}`**: for the lead only (role `lead` or `director` after
+  `agent_hello`). Anyone else gets `lead_only`. It is not core: an agent capped without it can't call it.
+
+### list_changed: how it reaches clients, verified
+
+The server now declares `capabilities.tools.listChanged: true`. Each session remembers the list version it last
+saw. When the version has changed, the answer to that session's next request is a short `text/event-stream`:
+first `notifications/tools/list_changed`, then the response. Streamable HTTP allows a POST to be answered this way.
+The session's next request is usually the call that changed the list (`tools_activate`, or an `agent_hello` that
+applied a role). For a change the lead made, it is whatever the session sends next. Only clients whose `Accept`
+names `text/event-stream` get an event stream; others get plain JSON and see the change at their next
+`tools/list`. There is still no standalone `GET` stream, so a session that sends nothing is told when it next
+does.
+
+**Claude Code 2.1.312 re-reads the list on the notification.** In a live run (`claude -p` through a logging proxy,
+`perf/tools/20261029-toolscope-claude-code.txt`):
+
+1. It listed the 6 core tools.
+2. It called `tools_activate {tools: ["world_hash"]}`, and the answer came back as an event stream.
+3. It re-read `tools/list` within the same second, and now saw 7 tools.
+4. It called `world_hash` natively; its tool search found the newly listed tool.
+
+Grok Build, OpenAI's clients and others aren't verified yet (M6 cloud swarms). For a client that doesn't refresh,
+this is exactly what still works:
+
+- The activation answer carries the schemas.
+- `tools_invoke {tool, arguments}` calls any tool within the cap.
+- A direct call to an unlisted tool works if the client allows calling a name it doesn't list.
+
+The repo's own MCP clients (`specula_mcp.py`, `call_rate.py`, `swarm_drill.py`, `window_check.py` and
+`world_roundtrip.py`) accepted `text/event-stream` but parsed only JSON. They now read both
+(`specula_mcp.reply_of`). The evals proxy asks for JSON only (above); `evals_test.py ProxyStreams` covers it.
+
+### Not a security boundary (yet)
+
+Until per-agent auth tokens exist (M6), anyone can open a session with `?tools=all`, and anyone can say they are
+the lead. Scopes save tokens and keep agents focused; they don't contain a hostile agent. The design leaves room
+for tokens: the lead's assignment is kept by **agent name** and applied at `agent_hello`. In M6 a token will carry
+it instead, so a session authenticated with that token gets that cap whatever its URL or name.
+
+**The scope store holds open sessions only.** The protocol tells the handler when a session ends, by `DELETE` or
+by its own eviction past 1,024 sessions (`ToolHandler::session_closed`). So the store never holds more than the
+protocol's 1,024 sessions, well under its own bound of 4,096. If that bound is ever reached, uncapped scopes go
+first, then the least recently used capped one, and never the entry just stored.
+
+**A session the store doesn't know** (none from the protocol; internal callers and tests) has the engine's
+default scope: core or all per `--tools-default`, never a cap. This is deliberate. Caps come only from a lead's
+assignment, and the protocol's sessions are always in the store while they are open, so there is no capped session
+to fall back from.
+
+### Measured (Sepulcra hosted, 157 tools; compact `tools/list` JSON; tokens are roughly bytes / 4)
+
+| List | Tools | Bytes | ~Tokens |
+|---|---:|---:|---:|
+| all (`?tools=all`, the old default) | 157 | 209,317 | 52,300 |
+| **core (the new default)** | 6 | **4,674** | **1,170** |
+| role builder | 51 | 79,627 | 19,900 |
+| role reviewer | 45 | 62,248 | 15,600 |
+| role playtester | 40 | 47,444 | 11,900 |
+| role art_director | 49 | 73,530 | 18,400 |
+| role sight_skeptic | 17 | 26,508 | 6,600 |
+| role performance | 25 | 34,532 | 8,600 |
+| role designer | 42 | 45,965 | 11,500 |
+| role animator | 57 | 93,652 | 23,400 |
+| role coder | 53 | 83,451 | 20,900 |
+| `tools_catalog` (every tool, one line each) | 157 | 9,612 | 2,400 |
+
+So an agent that starts from the core and reads the catalog pays about 14 KB before it activates anything: 7% of
+the old list. The role templates are still 25-95 KB, because `world_spawn` (10.7 KB) and `world_set` (10 KB) are
+in most of them. Sharing their component schemas (below) is now the biggest remaining saving.
+
+Each tool call used to rebuild all of the engine's tool definitions, about 200 KB of JSON, just to check that the
+name exists. That check is now a map lookup (`ToolHandler::has_tool`), and the definitions are built once.
+
+**64-agent drill**, headless, on the Intel iGPU, release builds, run back to back on the same machine
+(`perf/drills/20261029-*-toolscope-*`):
+
+| Build | Calls/s | World ops/s |
+|---|---:|---:|
+| main (15ea288), run 1 | 209.5 | 658 |
+| main (15ea288), run 2 | 190.5 | 598 |
+| this lane, run 1 | 426.3 | 1,332 |
+| this lane, run 2 | 435.4 | 1,359 |
+
+Scoping added nothing measurable, and the drill runs **about 2.2 times faster**. The drill's own sessions say
+`agent_hello {role: "builder"}`, so they also exercise the role path and its event-stream answers.
+
 ## Not changed (recommendations)
 
 1. **The tool list itself is the biggest cost** (96.5 KB, about 24,000 tokens per agent). Options, roughly by payoff:
-   - **Role-scoped tool lists**: `agent_hello {role}` (or the MCP client name) selects the tools `tools/list` shows,
-     e.g. a playtester sees `play_*`, `playtest_*`, `sight_*`, `world_query`, `world_hash`, the board; the rest stay
-     callable. This needs `tools/list_changed` notifications per session in `specula-protocol`.
+   - **Role-scoped tool lists**: *done 2026-10-29*, see "Scoped tool lists" above.
    - **Share the component schemas** of `world_spawn` and `world_set` (about 8 KB duplicated): describe components
      once (in `world_spawn`) and refer to them from `world_set`.
    - **Shorter descriptions** for the longest (`sight_frame` 1.5 KB, `world_env` 1.3 KB, `playtest_run` 1.1 KB).

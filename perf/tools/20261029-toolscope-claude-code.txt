@@ -1,0 +1,25 @@
+Claude Code (2.1.312, headless `claude -p`) against a scoped engine, 2026-10-29.
+
+Setup: Sepulcra headless; Claude Code's MCP config pointed at a logging proxy in front of the engine's
+/mcp with no query (so the session gets the default: the core tools only). The prompt asked it to call
+tools_activate {tools: ["world_hash"], schemas: false}, then world_hash directly (not through tools_invoke).
+
+What crossed the wire (method [status content type], from the proxy):
+
+08:01:45 server/discover [400 application/json]        (its 2026-07-28 probe; falls back to initialize)
+08:01:45 initialize [200 application/json]
+08:01:45 notifications/initialized [202 None]
+08:01:45 GET [405 application/json]                    (no standalone SSE stream; it carries on)
+08:01:45 tools/list [200 application/json] -> 6 tools  (the core)
+08:01:49 tools/call tools_activate [200 text/event-stream]   (list_changed, then the answer)
+08:01:49 tools/list [200 application/json] -> 7 tools  (re-read at once, on the notification)
+08:01:52 tools/call world_hash [200 application/json]  (called natively)
+
+The model's tool calls: ToolSearch select:mcp__specula__tools_activate, mcp__specula__tools_activate,
+ToolSearch select:mcp__specula__world_hash, mcp__specula__world_hash. Its report: world_hash "was not in
+my deferred tool list at the start. After tools_activate, a tool search for it found it, and I called it
+directly without tools_invoke".
+
+Conclusion: Claude Code honours notifications/tools/list_changed delivered in a POST's event-stream
+answer, re-reads tools/list within the same second, and the activated tool becomes callable (deferred,
+found by its tool search). Clients that don't refresh use tools_invoke {tool, arguments}.

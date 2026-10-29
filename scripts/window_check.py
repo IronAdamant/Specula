@@ -35,7 +35,7 @@ from ctypes import wintypes
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from specula_mcp import detailed  # noqa: E402
+from specula_mcp import detailed, reply_of  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 # Its own port by default, so the check can never touch an engine you are working in (7471).
@@ -75,7 +75,7 @@ class Mcp:
         with urllib.request.urlopen(req, timeout=60) as r:
             self.session = self.session or r.headers.get("Mcp-Session-Id")
             body = r.read()
-        return json.loads(body) if body else None
+        return reply_of(body)
 
     def request(self, method, params):
         reply = self.post({"jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params})

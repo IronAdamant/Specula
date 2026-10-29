@@ -104,7 +104,11 @@ impl Client {
     }
 
     fn request(&mut self, method: &str, headers: &[(&str, &str)], body: &[u8]) -> Resp {
-        let mut head = format!("{method} /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n");
+        self.request_at("/mcp", method, headers, body)
+    }
+
+    fn request_at(&mut self, target: &str, method: &str, headers: &[(&str, &str)], body: &[u8]) -> Resp {
+        let mut head = format!("{method} {target} HTTP/1.1\r\nHost: 127.0.0.1\r\n");
         for (k, v) in headers {
             head.push_str(&format!("{k}: {v}\r\n"));
         }
@@ -197,7 +201,7 @@ fn full_flow_on_one_keep_alive_connection() {
     assert_eq!(v.get("id").and_then(Json::as_u64), Some(1));
     let result = v.get("result").unwrap();
     assert_eq!(result.get("protocolVersion").and_then(Json::as_str), Some("2025-06-18"));
-    assert_eq!(result.get("capabilities").unwrap().to_string(), r#"{"tools":{"listChanged":false}}"#);
+    assert_eq!(result.get("capabilities").unwrap().to_string(), r#"{"tools":{"listChanged":true}}"#);
     assert_eq!(result.get("serverInfo").unwrap().to_string(), r#"{"name":"specula-test","version":"9.9.9"}"#);
     assert_eq!(result.get("instructions").and_then(Json::as_str), Some("Be nice."));
 
@@ -661,4 +665,128 @@ fn shutdown_is_prompt_with_rejections_queued() {
     server.shutdown();
     assert!(t.elapsed() < Duration::from_secs(3), "shutdown took {:?}", t.elapsed());
     drop((held, queued));
+}
+
+// ── scoped tool lists ────────────────────────────────────────────────────────
+
+/// Each session lists `echo` only until it calls `widen` (or connected with `?all`); `widen`
+/// changes its list version, so the server tells it `notifications/tools/list_changed`.
+struct ScopedTools {
+    wide: std::sync::Mutex<std::collections::BTreeMap<String, u64>>,
+    /// Sessions the server said ended.
+    closed: std::sync::Mutex<Vec<String>>,
+}
+
+impl ToolHandler for ScopedTools {
+    fn tools(&self) -> Vec<ToolDef> {
+        let schema = Json::obj([("type", Json::from("object"))]);
+        ["echo", "widen", "hidden"].iter().map(|n| ToolDef { name: (*n).into(), description: String::new(), input_schema: schema.clone() }).collect()
+    }
+
+    fn call(&self, session: &SessionInfo, name: &str, _: &Json) -> ToolOutput {
+        if name == "widen" {
+            *self.wide.lock().unwrap().entry(session.id.clone()).or_insert(0) += 1;
+        }
+        ToolOutput::text(name)
+    }
+
+    fn tools_for(&self, session: &SessionInfo) -> Vec<ToolDef> {
+        let wide = self.list_version(session) > 0;
+        self.tools().into_iter().filter(|t| wide || t.name != "hidden").collect()
+    }
+
+    fn session_opened(&self, session: &SessionInfo, query: &str) -> Result<(), String> {
+        match query {
+            "" => Ok(()),
+            "all" => {
+                self.wide.lock().unwrap().insert(session.id.clone(), 1);
+                Ok(())
+            }
+            other => Err(format!("unknown option '{other}'")),
+        }
+    }
+
+    fn session_closed(&self, session_id: &str) {
+        self.wide.lock().unwrap().remove(session_id);
+        self.closed.lock().unwrap().push(session_id.to_owned());
+    }
+
+    fn list_version(&self, session: &SessionInfo) -> u64 {
+        self.wide.lock().unwrap().get(&session.id).copied().unwrap_or(0)
+    }
+}
+
+/// The JSON-RPC messages of an event-stream answer, in order.
+fn events(r: &Resp) -> Vec<Json> {
+    let text = std::str::from_utf8(&r.body).unwrap();
+    text.split("\n\n").filter(|e| !e.trim().is_empty()).map(|e| {
+        let data = e.lines().find_map(|l| l.strip_prefix("data: ")).expect("a data line");
+        Json::parse(data).unwrap()
+    }).collect()
+}
+
+#[test]
+fn scoped_lists_options_and_list_changed() {
+    let config = ServerConfig { bind: "127.0.0.1:0".into(), server_name: "t".into(), server_version: "0".into(), instructions: None };
+    let handler = Arc::new(ScopedTools { wide: Default::default(), closed: Default::default() });
+    let server = Server::start(config, handler.clone()).unwrap();
+    let mut c = Client::connect(server.local_addr());
+    let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#;
+    let headers = [("Content-Type", "application/json"), ("Accept", "application/json, text/event-stream")];
+    let list = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
+    let names = |r: &Resp| -> Vec<String> {
+        r.json().get("result").unwrap().get("tools").unwrap().as_array().unwrap().iter().map(|t| t.get("name").unwrap().as_str().unwrap().to_owned()).collect()
+    };
+
+    // A bad connect option refuses the initialize (no session) with the handler's message.
+    let bad = c.request_at("/mcp?nope", "POST", &headers, init.as_bytes());
+    assert!(bad.header("Mcp-Session-Id").is_none());
+    let err = bad.json();
+    assert_eq!(err.get("error").unwrap().get("code").and_then(Json::as_i64), Some(-32602));
+    assert!(err.to_string().contains("unknown option 'nope'"), "{err}");
+
+    // The URL's query reaches session_opened.
+    let wide = c.request_at("/mcp?all", "POST", &headers, init.as_bytes());
+    let wide = wide.header("Mcp-Session-Id").unwrap().to_owned();
+    assert_eq!(names(&post(&mut c, Some(&wide), list)), ["echo", "widen", "hidden"]);
+
+    // A session's own list; tools it doesn't list are still callable.
+    let narrow = session(&mut c);
+    assert_eq!(names(&post(&mut c, Some(&narrow), list)), ["echo", "widen"]);
+    let hidden = call(&mut c, &narrow, 3, "hidden", "{}");
+    assert_eq!(hidden.header("Content-Type"), Some("application/json"));
+    assert_eq!(hidden.json().get("result").unwrap().get("isError").and_then(Json::as_bool), Some(false));
+
+    // The call that changes the list answers as an event stream: the notification, then the answer.
+    let widen = call(&mut c, &narrow, 4, "widen", "{}");
+    assert_eq!(widen.header("Content-Type"), Some("text/event-stream"));
+    let ev = events(&widen);
+    assert_eq!(ev.len(), 2);
+    assert_eq!(ev[0].to_string(), r#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#);
+    assert_eq!(ev[1].get("id").and_then(Json::as_u64), Some(4));
+    assert_eq!(ev[1].get("result").unwrap().get("isError").and_then(Json::as_bool), Some(false));
+    // Told once: the next answers are plain JSON again.
+    assert_eq!(call(&mut c, &narrow, 5, "echo", "{}").header("Content-Type"), Some("application/json"));
+    assert_eq!(names(&post(&mut c, Some(&narrow), list)), ["echo", "widen", "hidden"]);
+
+    // A change made while the session wasn't asking is told at its next request (any method).
+    call(&mut c, &narrow, 6, "widen", "{}");
+    let ping = post(&mut c, Some(&narrow), r#"{"jsonrpc":"2.0","id":7,"method":"ping"}"#);
+    assert_eq!(ping.header("Content-Type"), Some("application/json"), "already told by the widen call itself");
+
+    // A client that doesn't take event streams gets plain JSON; it sees changes at tools/list.
+    let json_only = [("Content-Type", "application/json"), ("Accept", "application/json")];
+    let body = r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"widen","arguments":{}}}"#;
+    let plain = c.request_at("/mcp", "POST", &[json_only[0], json_only[1], ("Mcp-Session-Id", &narrow)], body.as_bytes());
+    assert_eq!(plain.header("Content-Type"), Some("application/json"));
+    assert_eq!(plain.json().get("id").and_then(Json::as_u64), Some(8));
+    // Listing marks it seen: no stale notification afterwards.
+    post(&mut c, Some(&narrow), list);
+    assert_eq!(call(&mut c, &narrow, 9, "echo", "{}").header("Content-Type"), Some("application/json"));
+    // DELETE tells the handler, so per-session state goes with the session.
+    let gone = c.request("DELETE", &[("Mcp-Session-Id", &narrow)], b"");
+    assert_eq!(gone.status, 200);
+    assert_eq!(*handler.closed.lock().unwrap(), std::slice::from_ref(&narrow));
+    assert!(!handler.wide.lock().unwrap().contains_key(&narrow));
+    server.shutdown();
 }

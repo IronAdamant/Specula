@@ -185,6 +185,11 @@ pub(crate) trait Host {
     fn windowed(&self) -> bool;
     /// Records something other agents should be able to see (a cancel of another's playtest).
     fn log(&mut self, by: &str, text: String);
+    /// Whether `session` may call `tool` (the lead's cap; see `toolscope`): a playtest calls only
+    /// what its starter may.
+    fn in_scope(&self, _session: &SessionInfo, _tool: &str) -> bool {
+        true
+    }
 }
 
 /// time_control is refused while a playtest runs, except `info`.
@@ -462,6 +467,13 @@ impl Playtests {
         if let Some(unknown) = spec.calls().find(|c| !game_tools.iter().any(|t| t == c) && !engine_tools.iter().any(|t| t == c)) {
             return Err(error("unknown_tool", format!("the spec calls '{unknown}', which this engine doesn't have (tools/list shows them)"), vec![("call", Json::from(unknown))]));
         }
+        if let Some(beyond) = spec.calls().find(|c| !host.in_scope(session, c)) {
+            return Err(error(
+                "not_in_scope",
+                format!("the spec calls '{beyond}', beyond the tools the lead capped you to (tools_request asks for it)"),
+                vec![("call", Json::from(beyond))],
+            ));
+        }
         let record = match record {
             Some(rel) => {
                 // Only .json files under playtests/, and never over an existing one unasked.
@@ -587,6 +599,14 @@ impl Playtests {
         if let Some(why) = playtest::forbidden(tool) {
             return Err(error("forbidden", format!("a playtest can't call {tool}: {why}"), vec![]));
         }
+        // Checked at every step, not only at the start: the lead may cap the starter mid-run.
+        if !host.in_scope(&a.session, tool) {
+            return Err(error(
+                "not_in_scope",
+                format!("'{tool}' is beyond the tools the lead capped you to (tools_request asks for it)"),
+                vec![("call", Json::from(tool))],
+            ));
+        }
         if a.file_tools.iter().any(|t| t == tool) {
             if a.file_calls >= playtest::MAX_CAPTURES {
                 let msg = format!("a playtest makes at most {} calls that write files (captures, traces)", playtest::MAX_CAPTURES);
@@ -655,6 +675,10 @@ impl Host for EngineHost<'_> {
 
     fn engine_tools(&self) -> Vec<String> {
         crate::tools::engine_tool_names()
+    }
+
+    fn in_scope(&self, session: &SessionInfo, tool: &str) -> bool {
+        self.e.scopes.as_ref().is_none_or(|s| s.allowed_name(&session.id, tool))
     }
 
     fn native_format_tools(&self) -> Vec<String> {
@@ -801,6 +825,8 @@ mod tests {
         args: Vec<Json>,
         /// The modules "loaded".
         modules: Vec<(String, u64)>,
+        /// Tools beyond the starter's cap from a tick on (a cap the lead sets mid-run).
+        deny: Vec<(String, u64)>,
     }
 
     impl Fake {
@@ -808,7 +834,7 @@ mod tests {
             let root = std::env::temp_dir().join(format!("specula-playtest-engine-{label}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(&root).unwrap();
-            Fake { root, tick: 0, paused: false, calls: Vec::new(), logs: Vec::new(), held: Vec::new(), format: Format::Concise, args: Vec::new(), modules: Vec::new() }
+            Fake { root, tick: 0, paused: false, calls: Vec::new(), logs: Vec::new(), held: Vec::new(), format: Format::Concise, args: Vec::new(), modules: Vec::new(), deny: Vec::new() }
         }
     }
 
@@ -880,6 +906,9 @@ mod tests {
         fn log(&mut self, by: &str, text: String) {
             self.logs.push(format!("{by}: {text}"));
         }
+        fn in_scope(&self, _: &SessionInfo, tool: &str) -> bool {
+            !self.deny.iter().any(|(d, from)| d == tool && self.tick >= *from)
+        }
     }
 
     fn session(id: &str) -> SessionInfo {
@@ -924,6 +953,26 @@ mod tests {
 
     fn code(j: &Json) -> Option<&str> {
         j.get("error").and_then(Json::as_str)
+    }
+
+    /// The starter's cap holds at the start and at every step (review probe: a cap set mid-run
+    /// was only checked when the playtest started).
+    #[test]
+    fn a_playtest_calls_only_what_its_starter_may_at_every_step() {
+        let (mut p, mut h, a) = (Playtests::default(), Fake::new("scope"), session("a"));
+        h.deny = vec![("world_spawn".into(), 0)];
+        let spec = r#"{"name": "s", "steps": [{"at": 0, "call": "world_query"}, {"at": 60, "call": "world_spawn", "args": {"shape": "cube"}}], "ticks": 120}"#;
+        let (_, ans) = ask(&mut p, &mut h, run_call(spec, None, false), &a);
+        assert_eq!(code(&ans.unwrap()), Some("not_in_scope"), "refused at the start");
+        // The lead caps the starter mid-run (from tick 30): the step at 60 is refused when it runs.
+        h.deny = vec![("world_spawn".into(), 30)];
+        ask(&mut p, &mut h, run_call(spec, None, false), &a);
+        finish(&mut p, &mut h);
+        assert!(!h.calls.iter().any(|c| c == "world_spawn"), "never dispatched: {:?}", h.calls);
+        let (_, r) = ask(&mut p, &mut h, report_call(false, false, Duration::ZERO), &a);
+        let r = r.unwrap();
+        assert_eq!(r.get("status").and_then(Json::as_str), Some("failed"), "{r}");
+        assert!(r.to_string().contains("not_in_scope"), "{r}");
     }
 
     #[test]

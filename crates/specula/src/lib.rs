@@ -79,6 +79,8 @@ pub mod swarm;
 mod swarm_engine;
 mod swarm_tools;
 mod tools;
+mod toolscope;
+mod toolscope_tools;
 pub mod two_d;
 mod ui;
 pub mod flashwatch;
@@ -127,7 +129,8 @@ const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 
 const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|integrated|<index>] [--size WxH] \
 [--captures DIR] [--worlds DIR] [--world NAME] [--saves DIR] [--cache DIR] [--assets DIR] [--style FILE] [--perf FILE] \
-[--paused] [--max-fps N] [--response-format concise|detailed] [--physics-threads N] [--vfx on|off] [-- GAME ARGS...]";
+[--paused] [--max-fps N] [--response-format concise|detailed] [--tools-default core|all] [--physics-threads N] [--vfx on|off] \
+[-- GAME ARGS...]";
 
 /// How long a capture waits (parked, the engine serving others) for models still building.
 const CAPTURE_BUILD_WAIT: Duration = Duration::from_secs(10);
@@ -179,6 +182,9 @@ struct Args {
     paused: bool,
     /// The default `response_format` of every session (`--response-format`; concise unless set).
     response_format: response::Format,
+    /// What sessions nobody configured list (`--tools-default core|all`; core unless set): see
+    /// `toolscope`.
+    tools_default_all: bool,
     /// Effects and decals drawn (`--vfx on|off`; on by default). Never changes the simulation.
     vfx: bool,
     /// Threads physics may use (`--physics-threads`, 1..64, default 1): the narrowphase, and
@@ -210,6 +216,7 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
         game_args: Vec::new(),
         paused: false,
         response_format: response::Format::Concise,
+        tools_default_all: false,
         vfx: true,
         physics_threads: 1,
         max_fps: None,
@@ -241,6 +248,13 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
                     format!("--max-fps must be {}..{} frames a second
 {USAGE}", schedule::MIN_MAX_FPS, schedule::MAX_MAX_FPS)
                 })?);
+            }
+            "--tools-default" => {
+                args.tools_default_all = match value()?.as_str() {
+                    "core" => false,
+                    "all" => true,
+                    other => return Err(format!("--tools-default must be core or all, not '{other}'\n{USAGE}")),
+                }
             }
             "--response-format" => {
                 args.response_format = match value()?.as_str() {
@@ -409,14 +423,17 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
             server_version: env!("CARGO_PKG_VERSION").into(),
             instructions: Some(tools::INSTRUCTIONS.into()),
         },
-        Arc::new(
-            tools::Tools::new(to_engine, game_tools)
+        {
+            let tools = tools::Tools::new(to_engine, game_tools)
+                .with_tools_default_all(args.tools_default_all)
                 .with_formats(Arc::clone(&engine.formats))
                 .with_lex_natives(engine.lex_natives.clone())
                 .with_capture_dir(engine.capture_dir.clone(), safe_path::Roots::for_files(&engine.capture_dir, &captures_root, &engine.worlds_dir, named_assets.as_deref()))
                 .with_studio(Arc::clone(&engine.studio.shared))
-                .with_procgen(procgen_tools::Context { assets: assets.clone(), style: args.style.clone(), captures: engine.capture_dir.clone() }),
-        ),
+                .with_procgen(procgen_tools::Context { assets: assets.clone(), style: args.style.clone(), captures: engine.capture_dir.clone() });
+            engine.scopes = Some(tools.shared_scopes());
+            Arc::new(tools)
+        },
     )
     .map_err(|e| format!("MCP server: {e}"))?;
     eprintln!("specula: MCP at http://{}/mcp — Ctrl+C to stop", server.local_addr());
@@ -648,6 +665,9 @@ struct Engine {
     flash_epoch: Instant,
     /// Default response formats (`--response-format`, `agent_hello`), shared with the tools.
     formats: Arc<response::Defaults>,
+    /// Each session's tool scope, shared with the tools: a playtest calls only what its starter
+    /// may (see `toolscope`).
+    scopes: Option<Arc<toolscope::Scopes>>,
     /// Project files on disk: mounts, the watcher, failed writes (see [`project`]).
     project: project::Disk,
     /// When failed project writes were last tried.
@@ -782,6 +802,7 @@ impl Engine {
             flash: flashwatch::FlashWatch::default(),
             flash_epoch: Instant::now(),
             formats: response::Defaults::new(response::Format::Concise),
+            scopes: None,
             project: project::Disk::default(),
             project_retry: Instant::now(),
             review_ui: review_screen::ReviewUi::with_captures(captures_root),
@@ -1972,6 +1993,7 @@ impl Engine {
                 }
             },
             Command::Info => self.info(&server.sessions()),
+            Command::ScopeLookup { agent } => toolscope_tools::lookup(&self.swarm, &request.session, &agent, &server.all_sessions()),
             Command::Perf { budget_ms, graph } => self.perf(budget_ms, graph),
             Command::PerfZones(q) => {
                 if let Some(on) = q.enabled {
@@ -2618,6 +2640,7 @@ fn call_class(command: &Command) -> Class {
         | Command::History(_)
         | Command::Changes(_)
         | Command::Hash { .. }
+        | Command::ScopeLookup { .. }
         | Command::ClaimList { .. } => Class::Read,
     }
 }

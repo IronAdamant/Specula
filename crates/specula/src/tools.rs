@@ -19,7 +19,10 @@ use std::collections::BTreeSet;
 use std::sync::mpsc::{self, Sender};
 use std::time::{Duration, Instant};
 
-pub const INSTRUCTIONS: &str = "Specula is a live game engine you build in. The world is a tree of entities: \
+pub const INSTRUCTIONS: &str = "Specula is a live game engine you build in. Your tool list may show only the core \
+tools: tools_catalog lists every tool by family with one line each, tools_activate {tools: [families or names]} adds \
+them (answering their schemas), tools_invoke calls a tool your client doesn't list, and tools_request asks the lead for \
+a tool that doesn't exist; connect to /mcp?tools=all (or ?role=builder, ?tools=world,sight) to choose at once. The world is a tree of entities: \
 each has a name unique among its siblings and a path like /slab/stones/ward_03; transforms are local to the \
 parent, and 'group' entities hold children without drawing anything. Add things with world_spawn (or many at \
 once, all-or-nothing, with world_batch; or by relations instead of coordinates, with world_place: on, against, along, \
@@ -229,6 +232,9 @@ pub enum Command {
     Review(crate::review_tools::ReviewCall),
     /// The module host's tools (see [`crate::logic::tools`]).
     Logic(crate::logic::tools::LogicCall),
+    /// tools_scope: the caller's name and role and the open sessions named `agent` (internal;
+    /// see [`crate::toolscope_tools::lookup`]).
+    ScopeLookup { agent: String },
     /// The physics tools (see [`crate::physics_tools`]).
     Physics(crate::physics_tools::PhysicsCall),
     /// The navigation and AI tools (see [`crate::nav_tools`]).
@@ -337,18 +343,28 @@ pub struct Tools {
     native_format: Vec<String>,
     /// The asset studio's state shared with the engine (its calls run on this side).
     studio: Option<std::sync::Arc<crate::studio::Shared>>,
+    /// Every tool (built once) and each session's scope (see [`crate::toolscope`]).
+    scopes: std::sync::Arc<crate::toolscope::Scopes>,
 }
 
 impl Tools {
     /// Game tools whose names clash with an engine tool are dropped, with a message.
     pub fn new(to_engine: Sender<Request>, game_tools: Vec<ToolDef>) -> Tools {
-        let engine: Vec<String> = definitions().into_iter().map(|t| t.name).collect();
+        let engine: Vec<String> = definitions().into_iter().chain(crate::toolscope_tools::definitions()).map(|t| t.name).collect();
         let (game_tools, clashes): (Vec<ToolDef>, Vec<ToolDef>) =
             game_tools.into_iter().partition(|t| !engine.contains(&t.name));
         for t in clashes {
             eprintln!("specula: the game's tool '{}' clashes with an engine tool and is ignored", t.name);
         }
         let native_format = definitions().iter().chain(&game_tools).filter(|d| crate::response::takes_format(d)).map(|d| d.name.clone()).collect();
+        // The scope tools first, so a core-only list reads in order; then the engine's, the game's.
+        let mut all = crate::toolscope_tools::definitions();
+        all.extend(definitions());
+        crate::response::add_to_schemas(&mut all);
+        crate::toolscope::add_to_schemas(&mut all);
+        all.extend(game_tools.iter().cloned());
+        let game_names: Vec<String> = game_tools.iter().map(|t| t.name.clone()).collect();
+        let scopes = std::sync::Arc::new(crate::toolscope::Scopes::new(crate::toolscope::Catalog::new(all, &game_names), false));
         Tools {
             to_engine,
             game_tools,
@@ -361,7 +377,28 @@ impl Tools {
             formats: crate::response::Defaults::new(crate::response::Format::Concise),
             native_format,
             studio: None,
+            scopes,
         }
+    }
+
+    /// Sessions nobody configured list every tool (`--tools-default all`) instead of the core.
+    pub fn with_tools_default_all(mut self, all: bool) -> Tools {
+        if all != self.scopes.default_all() {
+            let c = &self.scopes.catalog;
+            let game: Vec<String> = (0..c.len()).filter(|&i| c.family_name(i) == crate::toolscope::GAME_FAMILY).map(|i| c.name(i).to_owned()).collect();
+            self.scopes = std::sync::Arc::new(crate::toolscope::Scopes::new(crate::toolscope::Catalog::new(c.defs().to_vec(), &game), all));
+        }
+        self
+    }
+
+    /// Every tool and each session's scope.
+    pub(crate) fn scopes(&self) -> &crate::toolscope::Scopes {
+        &self.scopes
+    }
+
+    /// The same, shared with the engine thread (playtests' calls keep their starter's cap).
+    pub(crate) fn shared_scopes(&self) -> std::sync::Arc<crate::toolscope::Scopes> {
+        std::sync::Arc::clone(&self.scopes)
     }
 
     /// The engine's captures folder (`lex_export` writes big documents there) and the folders
@@ -437,16 +474,34 @@ impl Tools {
 
 impl ToolHandler for Tools {
     fn tools(&self) -> Vec<ToolDef> {
-        let mut all = definitions();
-        crate::response::add_to_schemas(&mut all);
-        all.extend(self.game_tools.iter().cloned());
-        all
+        self.scopes.catalog.defs().to_vec()
     }
 
     fn call(&self, session: &SessionInfo, name: &str, arguments: &Json) -> ToolOutput {
         // Every answer leaves as compact JSON, every error as {error: code, message} (tokens and
-        // machine-readable codes, whoever built the answer).
-        crate::response::tidy(self.call_engine(session, name, arguments))
+        // machine-readable codes, whoever built the answer). Scopes first (the cap, the
+        // catalog tools, agent_hello {tools}).
+        crate::response::tidy(crate::toolscope_tools::call(self, session, name, arguments))
+    }
+
+    fn tools_for(&self, session: &SessionInfo) -> Vec<ToolDef> {
+        self.scopes.tools_for(&session.id)
+    }
+
+    fn has_tool(&self, name: &str) -> bool {
+        self.scopes.catalog.index(name).is_some()
+    }
+
+    fn session_opened(&self, session: &SessionInfo, query: &str) -> Result<(), String> {
+        self.scopes.opened(&session.id, query)
+    }
+
+    fn list_version(&self, session: &SessionInfo) -> u64 {
+        self.scopes.version(&session.id)
+    }
+
+    fn session_closed(&self, session_id: &str) {
+        self.scopes.closed(session_id);
     }
 }
 
@@ -463,6 +518,9 @@ pub enum CallerThread {
     Project,
     Procgen,
     Balance,
+    /// The `tools_*` tools (a session's tool list: see [`crate::toolscope_tools`]); answered
+    /// before routing, in `ToolHandler::call`.
+    Scope,
 }
 
 impl CallerThread {
@@ -478,6 +536,7 @@ impl CallerThread {
             n if n.starts_with("project_") => CallerThread::Project,
             n if n.starts_with("procgen_") => CallerThread::Procgen,
             n if n.starts_with("balance_") => CallerThread::Balance,
+            n if n.starts_with("tools_") => CallerThread::Scope,
             _ => return None,
         })
     }
@@ -493,12 +552,16 @@ impl CallerThread {
             CallerThread::Project => "project_* tools patch and validate files outside the engine thread: edit project files before the playtest",
             CallerThread::Procgen => "procgen_* tools bake textures, terrains and scatters outside the engine thread: generate before the playtest (a playtest can world_batch what they make)",
             CallerThread::Balance => "balance_* tools simulate outside the engine thread: sweep and tune before or after the playtest",
+            CallerThread::Scope => {
+                "tools_* tools change your session's tool list on your connection: activate before the playtest (its steps may call any tool within your cap, listed or not)"
+            }
         }
     }
 }
 
 impl Tools {
-    fn call_engine(&self, session: &SessionInfo, name: &str, arguments: &Json) -> ToolOutput {
+    /// A tool call past the scope checks (see [`crate::toolscope_tools::call`]).
+    pub(crate) fn call_engine(&self, session: &SessionInfo, name: &str, arguments: &Json) -> ToolOutput {
         let route = CallerThread::of(name);
         match route {
             // Builds and library loads run on this connection's thread; only the swap goes to the engine.
@@ -548,7 +611,8 @@ impl Tools {
                 // The balance lab runs simulations on this thread (and its workers), like lex_simulate.
                 Some(CallerThread::Balance) => return crate::balance_tools::call(self, session, name, arguments),
                 // (Answered above.)
-                Some(CallerThread::LogicBuild | CallerThread::LogicReload | CallerThread::MergeSuggest) | None => parse(name, arguments),
+                // tools_* reach here only from a caller that skipped `ToolHandler::call` (tests).
+                Some(CallerThread::LogicBuild | CallerThread::LogicReload | CallerThread::MergeSuggest | CallerThread::Scope) | None => parse(name, arguments),
             }
         };
         let command = match parsed {

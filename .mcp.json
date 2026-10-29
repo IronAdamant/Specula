@@ -2,7 +2,7 @@
   "mcpServers": {
     "specula": {
       "type": "http",
-      "url": "http://127.0.0.1:7471/mcp"
+      "url": "http://127.0.0.1:7471/mcp?tools=all"
     }
   }
 }
