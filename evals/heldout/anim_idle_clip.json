@@ -84,8 +84,15 @@
     "graph": "creature"
    },
    "expect": {
-    "graph.states.#": 5,
-    "graph.transitions.#": 6
+    "graph.states.#": 7,
+    "graph.states.ragdoll": {
+     "exists": true
+    },
+    "graph.states.getup": {
+     "exists": true
+    },
+    "graph.transitions.#": 13,
+    "graph.layers.0.name": "flinch"
    }
   },
   {

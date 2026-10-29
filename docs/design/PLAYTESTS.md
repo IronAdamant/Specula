@@ -48,8 +48,9 @@ when a condition holds:
   `force: true`, and the cancel is logged on the board's event feed.
 - **Replay files** are written only under `playtests/` in the engine's working directory, only as `.json`, and never
   over an existing file unless `overwrite: true`. A link or junction inside `playtests/` can't carry the write
-  elsewhere: the resolved folder must still be under `playtests/`. Sepulcra's `play_record` follows the same rule: `.json` only, and
-  no overwrite unasked.
+  elsewhere: the resolved folder must still be under `playtests/`. Sepulcra's `play_record` follows the same rule
+  under `recordings/` (`.json` only, no overwrite unasked, never through a link out of `recordings/`). Both folders
+  are the disk budget's `recordings` category: measured, never pruned ([DISK.md](DISK.md)).
 
 `playtest_run {spec | path | replay, record?, wait_s?}` starts one (one at a time per engine) and answers when it ends
 or after `wait_s` (at most 20) with its progress; `playtest_report {id?, wait_s?, cancel?}` polls, waits or cancels.

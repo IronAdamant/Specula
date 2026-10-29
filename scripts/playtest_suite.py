@@ -192,8 +192,8 @@ def suite():
         "description": "The game's own recording of the run so far replays and verifies inside the playtest.",
         "steps": [
             new(11, "centre"),
-            {"at": 6000, "call": "play_record", "args": {"path": "rec_s11.json"}, "expect": {"commands": {"gte": 1}}},
-            {"at": 6001, "call": "play_replay", "args": {"path": "rec_s11.json"}, "expect": {"status": "verified"}},
+            {"at": 6000, "call": "play_record", "args": {"path": "recordings/rec_s11.json"}, "expect": {"commands": {"gte": 1}}},
+            {"at": 6001, "call": "play_replay", "args": {"path": "recordings/rec_s11.json"}, "expect": {"status": "verified"}},
         ],
         "ticks": 6010,
     })
@@ -258,6 +258,7 @@ def main():
     ap.add_argument("--results", default=str(ROOT / "perf" / "playtests"), help="folder for the kept results file")
     ap.add_argument("--keep-scratch", action="store_true")
     ap.add_argument("--adapter", default=None, help="engine --adapter for every engine (discrete, integrated or an index)")
+    ap.add_argument("--perf", default=None, help="engine --perf for every engine (e.g. a perf.toml whose [swarm] lease_ports keeps the workers in your port range)")
     ap.add_argument("--session-format", choices=["concise", "detailed"], default=None,
                     help="each playtesting session's default response_format (agent_hello), which the playtests' calls inherit")
     a = ap.parse_args()
@@ -273,6 +274,7 @@ def main():
     for label, workers in [("parallel", a.workers)] + ([("serial", 1)] if a.serial else []):
         out = Path(a.out) / label
         engine_args = ["--adapter", a.adapter] if a.adapter else []
+        engine_args += ["--perf", a.perf] if a.perf else []
         swarm = Swarm(exe, out, workers, a.lead_port, engine_args=engine_args, game_args=["--mute"], keep_scratch=a.keep_scratch,
                       session_format=a.session_format)
         r = swarm.run(specs)

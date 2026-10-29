@@ -385,6 +385,9 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
             (disk::Category::Worlds, engine.worlds_dir.clone()),
             // Never walked (the project's own folder): only its free space is read.
             (disk::Category::Project, assets.clone()),
+            // Playtest replays and the hosted game's recordings: measured, never pruned.
+            (disk::Category::Recordings, cwd.join(playtest_engine::RECORD_DIR)),
+            (disk::Category::Recordings, cwd.join(disk::RECORDINGS_DIR)),
         ],
         Some(engine.capture_dir.clone()),
     );
@@ -2179,6 +2182,7 @@ impl Engine {
             Command::Project(call) => self.project_call(call, w, &by),
             Command::DiskGate => self.disk_gate(&request.session),
             Command::ReviewRoots => self.review_roots_json(),
+            Command::EvidenceRefused(made) => self.evidence_refused(made),
         };
         self.check_world_replaced();
         // Undo (or anything else) changed project files: the disk follows before the answer.
@@ -2683,7 +2687,7 @@ fn call_class(command: &Command) -> Class {
         Command::SaveGame(call) => call.class(),
         Command::Playtest(_) => Class::Sim,
         Command::Project(call) => call.class(),
-        Command::DiskGate | Command::ReviewRoots => Class::Read,
+        Command::DiskGate | Command::ReviewRoots | Command::EvidenceRefused(_) => Class::Read,
         Command::Lex(call) if call.is_read() => Class::Read,
         Command::Lex(_) => Class::Edit,
         Command::LexLive(call) => call.class(),

@@ -82,6 +82,13 @@ newlines; text that isn't JSON, such as `play_map`'s map, is untouched).
 `engine_busy` (with `"retry": true`), `no_game`, `unknown_tool`, and the generic `error` for the rest (a failed render,
 a module host's timeout), so an agent can branch on a code everywhere.
 
+**`disk_warning` rides on answers.** When the engine's output crosses the disk budget's soft line, every session
+hears it once: a structured `disk_warning` object (`code: disk_budget`, what crossed, the biggest categories with
+what to do about each, a hint) is added to the next answer it gets, any tool's, in the answer's first text item (a
+sight tool's packet, after its image). Answers to sessions already told pass through untouched. The `disk` family
+(`disk_status`, `disk_prune`) reports and frees space; `project_upload` brings binary project files (PNG, GLB/glTF,
+WAV) in through the protocol in chunks ([DISK.md](DISK.md), [PROJECT_DATA.md](PROJECT_DATA.md)).
+
 **Scripts keep detailed answers.** `scripts/specula_mcp.py` asks for `response_format: "detailed"` on the tools with a
 format unless a call passes its own, and the scripts with their own MCP clients (`call_rate.py`, `swarm_drill.py`,
 `world_roundtrip.py`, `window_check.py`, `lex_check.py` and the raw calls in `anim_graph_check.py`, `model_gallery.py`, `physics_check.py`,
@@ -166,7 +173,9 @@ and 200 characters. The lead's label is built from the deduplicated entries.
 
 **Families** come from the name prefix (`world_`, `sight_`, `camera_`, ...), with a few tools placed by name: the
 journal's `world_history`, `world_undo`, `world_changes`, `world_hash` and `world_rollup` form `journal`, and
-`window_view` belongs to `sight`. There are 24 engine families, plus `game` for the hosted game's tools. A new tool
+`window_view` belongs to `sight`. There are 25 engine families, plus `game` for the hosted game's tools (the
+newest, `disk`: `disk_status` and `disk_prune`, the disk footprint budget, [DISK.md](DISK.md); and `project` gained
+`project_upload`, binary project files in chunks, [PROJECT_DATA.md](PROJECT_DATA.md)). A new tool
 joins its family by its prefix. A new prefix, or a tool without a one-line catalog entry (`BRIEFS`), fails
 `every_tool_has_a_family_and_a_brief`. That test also catches stale entries, empty families and roles that name
 nothing.
@@ -177,15 +186,16 @@ nothing.
 - `builder`: world, sight, claim, board, journal, model, engine.
 - `reviewer`: sight, journal, board, review, studio, plus `world_query` and `world_list`.
 - `playtester`: game, playtest, sight, board, save, engine, plus `world_query` and `world_hash`.
-- `art_director`: sight, studio, review, model, procgen, vfx, board, plus `world_env` and `world_query`.
+- `art_director`: sight, studio, review, model, procgen, vfx, project (so it can `project_upload` the textures it
+  directs), board, plus `world_env` and `world_query`.
 - `sight_skeptic`: sight, plus `world_query`, `world_list` and `critique_add`.
-- `performance`: perf, engine, stream, sight, plus the world reads.
+- `performance`: perf, engine, stream, sight, disk, plus the world reads.
 - `designer`: lex, balance, playtest, game, board, save.
 - `animator`: anim, physics, sight, world, claim, board.
 - `coder`: logic, project, world, sight, engine, claim, board.
 
 **The default is core-only**, so a client that says nothing gets the core. That is the point of this work: an
-unconfigured agent in a swarm pays 4.7 KB instead of 209 KB. The engine's `instructions` (sent at `initialize`)
+unconfigured agent in a swarm pays 4.7 KB instead of 215 KB. The engine's `instructions` (sent at `initialize`)
 and the core tools' descriptions say how to find and activate the rest. Backward compatibility holds in three
 ways:
 
@@ -270,22 +280,25 @@ default scope: core or all per `--tools-default`, never a cap. This is deliberat
 assignment, and the protocol's sessions are always in the store while they are open, so there is no capped session
 to fall back from.
 
-### Measured (Sepulcra hosted, 157 tools; compact `tools/list` JSON; tokens are roughly bytes / 4)
+### Measured (Sepulcra hosted, 160 tools; compact `tools/list` JSON; tokens are roughly bytes / 4)
+
+Re-measured with `scripts/toolscope_check.py` after the disk budget merged (2026-10-29, the `disk` family,
+`project_upload`, and `project` in the art director's role); the engine alone lists 152 tools.
 
 | List | Tools | Bytes | ~Tokens |
 |---|---:|---:|---:|
-| all (`?tools=all`, the old default) | 157 | 209,317 | 52,300 |
+| all (`?tools=all`, the old default) | 160 | 214,679 | 53,700 |
 | **core (the new default)** | 6 | **4,674** | **1,170** |
-| role builder | 51 | 79,627 | 19,900 |
-| role reviewer | 45 | 62,248 | 15,600 |
-| role playtester | 40 | 47,444 | 11,900 |
-| role art_director | 49 | 73,530 | 18,400 |
+| role builder | 51 | 79,674 | 19,900 |
+| role reviewer | 45 | 62,326 | 15,600 |
+| role playtester | 40 | 47,588 | 11,900 |
+| role art_director | 56 | 84,488 | 21,100 |
 | role sight_skeptic | 17 | 26,508 | 6,600 |
-| role performance | 25 | 34,532 | 8,600 |
-| role designer | 42 | 45,965 | 11,500 |
+| role performance | 27 | 36,611 | 9,200 |
+| role designer | 42 | 46,062 | 11,500 |
 | role animator | 57 | 93,652 | 23,400 |
-| role coder | 53 | 83,451 | 20,900 |
-| `tools_catalog` (every tool, one line each) | 157 | 9,612 | 2,400 |
+| role coder | 54 | 86,345 | 21,600 |
+| `tools_catalog` (every tool, one line each) | 160 | 9,862 | 2,500 |
 
 So an agent that starts from the core and reads the catalog pays about 14 KB before it activates anything: 7% of
 the old list. The role templates are still 25-95 KB, because `world_spawn` (10.7 KB) and `world_set` (10 KB) are

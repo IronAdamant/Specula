@@ -320,7 +320,7 @@ impl Engine {
             ReviewCall::CritiqueAdd(items) => {
                 let tick = self.clock.tick();
                 let mut specs = Vec::with_capacity(items.len());
-                let mut call = crate::evidence::CallCopies::default();
+                let mut call = crate::evidence::CallCopies::engine_thread();
                 for (i, (mut spec, assign)) in items.into_iter().enumerate() {
                     if let Some(Target::Entity { id, path }) = &mut spec.target {
                         match self.world.get(*id) {
@@ -469,8 +469,10 @@ impl Engine {
         let journal_ids = (ids.len() <= review::MAX_JOURNAL_IDS).then(|| ids.into_iter().collect::<Vec<u64>>());
         let journal_epoch = self.swarm.journal().epoch().to_owned();
         // Its evidence: captures the engine wrote, copied beside the queue (see `evidence`; the
-        // connection thread copied them already): they stay as long as the queue names them.
-        let mut call = crate::evidence::CallCopies::default();
+        // connection thread copied them already): they stay as long as the queue names them. A
+        // call that didn't come through the connection thread (a playtest step's) copies here, on
+        // the engine thread, so at most 4 MiB.
+        let mut call = crate::evidence::CallCopies::engine_thread();
         let mut captures: Vec<Capture> = Vec::with_capacity(a.captures.len());
         for (i, c) in a.captures.into_iter().enumerate() {
             let path = self.keep_evidence(&c.path, true, &mut call).map_err(|e| {

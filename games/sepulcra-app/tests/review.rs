@@ -153,7 +153,7 @@ fn a_dry_run_batch_matches_the_real_batch() {
 #[test]
 fn recordings_refuse_device_names_and_streams() {
     let mut h = Host::new(3);
-    for p in ["NUL", "sub/CON.json", "rec.json:stream", "CONIN$", "lpt1.txt", "nul .json", "aux."] {
+    for p in ["NUL", "recordings/sub/CON.json", "recordings/rec.json:stream", "CONIN$", "lpt1.txt", "recordings/nul .json", "aux.", "rec.json", "sub/rec.json", "recordings"] {
         let out = h.call("play_record", &Json::obj([("path", Json::from(p))]));
         assert!(out.is_error && text(&out).contains("bad_path"), "{p}: {}", text(&out));
     }
@@ -165,7 +165,7 @@ fn recordings_are_json_and_never_overwrite_unasked() {
     let mut h = Host::new(3);
     let not_json = h.call("play_record", &Json::obj([("path", Json::from("AGENTS.md"))]));
     assert!(not_json.is_error && text(&not_json).contains("bad_path"), "{}", text(&not_json));
-    let dir = format!("sepulcra-app-review-overwrite-{}", std::process::id());
+    let dir = format!("recordings/sepulcra-app-review-overwrite-{}", std::process::id());
     let path = format!("{dir}/rec.json");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(&path, "keep me").unwrap();
@@ -185,17 +185,33 @@ fn recordings_are_json_and_never_overwrite_unasked() {
 fn recordings_do_not_follow_junctions_out_of_the_working_directory() {
     let outside = std::env::temp_dir().join(format!("sepulcra-app-review-outside-{}", std::process::id()));
     std::fs::create_dir_all(&outside).unwrap();
-    let link = format!("review-junction-{}", std::process::id());
+    std::fs::create_dir_all("recordings").unwrap();
+    let name = format!("review-junction-{}", std::process::id());
+    let link = format!("recordings\\{name}");
     let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J", &link, outside.to_str().unwrap()]).output();
     if !made.as_ref().is_ok_and(|o| o.status.success()) {
         eprintln!("skipped: could not create a junction ({made:?})");
         return;
     }
     let mut h = Host::new(3);
-    let out = h.call("play_record", &Json::obj([("path", Json::from(format!("{link}/escaped.json")))]));
+    let out = h.call("play_record", &Json::obj([("path", Json::from(format!("recordings/{name}/escaped.json")))]));
     let escaped = outside.join("escaped.json").exists();
     let _ = std::fs::remove_dir(&link);
     let _ = std::fs::remove_dir_all(&outside);
     assert!(!escaped, "wrote outside the working directory");
     assert!(out.is_error && text(&out).contains("bad_path"), "{}", text(&out));
+    // Integration check (2026-10-29): recordings stay under recordings/ (the disk budget measures
+    // that folder), even through a junction to elsewhere in the working directory.
+    let cwd = std::env::current_dir().unwrap();
+    let back = format!("recordings\\{name}-cwd");
+    let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J", &back, cwd.to_str().unwrap()]).output();
+    if made.as_ref().is_ok_and(|o| o.status.success()) {
+        let file = format!("sepulcra-app-review-escaped-{}.json", std::process::id());
+        let out = h.call("play_record", &Json::obj([("path", Json::from(format!("recordings/{name}-cwd/{file}")))]));
+        let escaped = cwd.join(&file).exists();
+        let _ = std::fs::remove_dir(&back);
+        let _ = std::fs::remove_file(cwd.join(&file));
+        assert!(!escaped, "wrote outside recordings/");
+        assert!(out.is_error && text(&out).contains("bad_path"), "{}", text(&out));
+    }
 }

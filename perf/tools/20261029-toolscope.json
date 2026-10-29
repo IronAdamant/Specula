@@ -6,20 +6,20 @@
    "bytes": 4674
   },
   "all": {
-   "tools": 157,
-   "bytes": 209395
+   "tools": 160,
+   "bytes": 214679
   },
   "role lead": {
-   "tools": 157,
-   "bytes": 209395
+   "tools": 160,
+   "bytes": 214679
   },
   "role director": {
-   "tools": 157,
-   "bytes": 209395
+   "tools": 160,
+   "bytes": 214679
   },
   "role builder": {
    "tools": 51,
-   "bytes": 79627
+   "bytes": 79674
   },
   "role reviewer": {
    "tools": 45,
@@ -27,40 +27,40 @@
   },
   "role playtester": {
    "tools": 40,
-   "bytes": 47444
+   "bytes": 47588
   },
   "role art_director": {
-   "tools": 49,
-   "bytes": 73608
+   "tools": 56,
+   "bytes": 84488
   },
   "role sight_skeptic": {
    "tools": 17,
    "bytes": 26508
   },
   "role performance": {
-   "tools": 25,
-   "bytes": 34532
+   "tools": 27,
+   "bytes": 36611
   },
   "role designer": {
    "tools": 42,
-   "bytes": 45965
+   "bytes": 46062
   },
   "role animator": {
    "tools": 57,
    "bytes": 93652
   },
   "role coder": {
-   "tools": 53,
-   "bytes": 83451
+   "tools": 54,
+   "bytes": 86345
   },
   "tools_catalog": {
-   "bytes": 9612
+   "bytes": 9862
   }
  },
  "timing": {
-  "tools_list_all_ms": 16.37,
-  "tools_list_core_ms": 8.81,
-  "tools_catalog_ms": 5.61
+  "tools_list_all_ms": 19.2,
+  "tools_list_core_ms": 8.41,
+  "tools_catalog_ms": 8.55
  },
  "failures": []
 }

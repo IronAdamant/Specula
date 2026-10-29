@@ -252,6 +252,13 @@ def phase_budget(exe, port, adapter, work, out):
         b = eng.mcp("disk-bob")
         jb = b.hello("bob")
         check("disk_warning" in jb, "every session hears it (bob's first call)")
+        # Integration check (2026-10-29): a sight tool answers its image first; the warning rides
+        # on its packet (the first text item), never lost.
+        c = eng.mcp("disk-carol")
+        sight = c.call("sight_frame", width=64, height=64)
+        kinds = [x.get("type") for x in sight.get("content", [])]
+        check(kinds[:1] == ["image"] and "disk_warning" in body(sight), f"a session whose first call is sight_frame hears it on the packet ({kinds})")
+        c.close()
         # More big captures push past the 1 MB cap: the walker prunes, oldest first.
         for n in range(5):
             body(a.call("procgen_texture", file="recipes/tex_crypt_stone.json", size=256, save=True, name=f"crypt_stone_{n}"))
@@ -713,6 +720,83 @@ def phase_robustness(exe, port, adapter, out):
         b.close()
 
 
+def phase_refusals(exe, port, adapter, out):
+    """Integration check (2026-10-29): a refused review call leaves no evidence behind for good,
+    a playtest step's evidence is capped on the engine thread, and replays and recordings are
+    measured in their own never-pruned category."""
+    print("== 7. refused reviews leave nothing behind; a playtest's evidence is capped; recordings measured")
+    w = out / "work_refusals"
+    if w.exists():
+        remove_tree(w)
+    for d in ("assets", "captures", "cache", "worlds", "saves"):
+        (w / d).mkdir(parents=True)
+    p0 = w / "p0.toml"
+    write_perf(p0, {"free_floor_mb": 0, "capture_min_age_s": 0})
+    ev = w / "worlds" / "gamma" / "evidence"
+    # The engine's working directory holds playtests/ (replays): a scratch one, never the repo's.
+    cwd = w / "cwd"
+    cwd.mkdir()
+    with Engine(exe, port, out / "engine_refusals.log", *engine_args(w, p0, adapter), "--world", "gamma", cwd=str(cwd)) as eng:
+        a = eng.mcp("rf-ann")
+        a.hello("ann")
+        a.json("world_spawn", shape="group", name="staging")
+        a.json("world_spawn", shape="cube", name="crate", parent="/staging")
+        frames = [Path(body(a.call("sight_frame", width=64 + 8 * i, height=64))["image"]["path"]) for i in range(4)]
+        kept = a.json("review_submit", title="Kept", kind="asset", paths=["/staging/crate"], captures=[str(frames[3])])
+        names = lambda: sorted(p.name for p in ev.iterdir()) if ev.exists() else []  # noqa: E731
+        before = names()
+        check(len(before) == 1, f"an accepted submission keeps its one copy ({len(before)})")
+        # An argument error: refused before anything is copied.
+        e, r = raw(a, "review_submit", title="x", kind="asset", paths=["/staging/crate"], captures=[str(frames[0])], bogus=1)
+        check(e and names() == before, f"a call with a bad argument copies nothing ({r.get('error')})")
+        # The brief's repro: three captures, a journal entry that doesn't exist.
+        e, r = raw(a, "review_submit", title="x", kind="asset", paths=["/staging/crate"], captures=[str(f) for f in frames[:3]], journal=[424242])
+        orphans = sorted(set(names()) - set(before))
+        check(e and r.get("error") == "journal_not_found" and len(orphans) == 3, f"journal_not_found after copying 3 files ({r.get('error')}, {len(orphans)} new)")
+        # A later file refused after an earlier one was copied.
+        fresh = Path(body(a.call("sight_frame", width=100, height=72))["image"]["path"])
+        e, r = raw(a, "review_submit", title="x", kind="asset", paths=["/staging/crate"], captures=[str(fresh), str(fresh.parent / "gone.png")])
+        orphans = sorted(set(names()) - set(before))
+        check(e and len(orphans) == 4, f"a later missing file refuses the call after one copy ({r.get('error')}, {len(orphans)} new)")
+        # Collection waits for a file to be a minute old: age the orphans, then wait for a pass.
+        old = time.time() - 7200
+        for n in orphans:
+            os.utime(ev / n, (old, old))
+        deadline = time.time() + 150
+        while time.time() < deadline and set(orphans) & set(names()):
+            time.sleep(2)
+        left = names()
+        check(not set(orphans) & set(left), f"collection removed every refused call's copy ({len(set(orphans) & set(left))} left)")
+        sub = a.json("review_list", id=kept["id"])
+        k = in_evidence(sub["captures"][0]["path"], w / "worlds" / "gamma")
+        check(k is not None and k.exists() and left == before, "the accepted submission's copy stays")
+        # A playtest step's review: copied on the engine thread, so at most 4 MiB.
+        big = frames[0].parent / "big.png"
+        big.write_bytes(png(8, 8, (1, 2, 3)) + os.urandom(5 << 20))
+        spec = {"name": "evidence_cap", "ticks": 4, "steps": [
+            {"at": 1, "call": "review_submit", "args": {"title": "big", "kind": "asset", "paths": ["/staging/crate"], "captures": [str(big)]},
+             "expect_error": "evidence_budget"},
+            {"at": 2, "call": "review_submit", "args": {"title": "small", "kind": "asset", "paths": ["/staging/crate"], "captures": [str(frames[1])]},
+             "expect": {"id": {"exists": True}}}]}
+        t0 = time.perf_counter()
+        rep = a.json("playtest_run", spec=spec, record="evidence_cap.json", wait_s=20)
+        print(f"   playtest with a 5 MiB capture in a review step: {time.perf_counter() - t0:.2f} s, status {rep.get('status')}")
+        check(rep.get("status") == "passed", f"a playtest step's review of a 5 MiB capture is refused (evidence_budget), a small one kept ({rep.get('status')}, {json.dumps(rep.get('failures'))[:300]})")
+        # The replay it wrote is a recording: measured, never pruned.
+        replay = cwd / "playtests" / "evidence_cap.json"
+        time.sleep(1)
+        st = a.json("disk_status", detailed=True, measure=True)
+        rec = (st.get("categories") or {}).get("recordings") or {}
+        print("   recordings:", json.dumps(rec))
+        check(replay.is_file() and rec and (rec.get("files", 0) >= 1 or rec.get("mb", 0) > 0), "the playtest's replay is counted under recordings")
+        lead = eng.mcp("rf-lead")
+        lead.hello("lead", role="lead")
+        lead.json("disk_prune", free_mb=4096)
+        check(replay.is_file(), "a prune never takes a replay")
+        lead.close()
+        a.close()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=7620)
@@ -741,6 +825,7 @@ def main():
     phase_restarts(exe, a.port + 3, a.adapter, out)
     phase_evidence(exe, a.port + 6, a.adapter, out)
     phase_robustness(exe, a.port + 3, a.adapter, out)
+    phase_refusals(exe, a.port + 7, a.adapter, out)
     print()
     if FAILS:
         print(f"{len(FAILS)} check(s) failed:")

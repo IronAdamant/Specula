@@ -10,7 +10,11 @@
 //! - **Off the engine thread.** `review_submit` and `critique_add` copy their files on the calling
 //!   agent's connection thread ([`prepare`]) before the engine sees the call: each named file is
 //!   read once per call, its copy compared by length before it is read, at most 64 MiB per call
-//!   (`evidence_budget`). The engine then only checks that the copies are there.
+//!   (`evidence_budget`). The engine then only checks that the copies are there. A call that
+//!   doesn't come through there (a playtest step's, run on the engine thread) reads at most 4 MiB.
+//! - **Refused calls leave nothing behind.** The arguments are checked before anything is copied;
+//!   a call refused after copying (a journal entry, a claim, a later file) hands its copies back
+//!   ([`Made`]), and collection removes them once a minute old unless the queue names them.
 //! - **Relative references.** The queue names `evidence/<hash>-<len>.<ext>`, relative to its own
 //!   folder: a world folder copied or moved keeps its evidence, and no home path lands in world
 //!   files. Copies, not hard links: a link shares the capture's bytes, so pruning would free
@@ -24,8 +28,9 @@
 //!   another world's evidence) are matched against `evidence/<file name>` with the same bytes
 //!   first, then copied in while their files exist; references whose file is gone are reported
 //!   (`missing: true` in review_list, a warning in the world_load answer).
-//! - **Collection never guesses.** Only files this run's queue named and then dropped are
-//!   removed (at most once a minute, only files older than a minute); nothing is removed while the
+//! - **Collection never guesses.** Only files this run's queue named and then dropped, or a
+//!   refused call copied, are removed (at most once a minute, only files older than a minute; a
+//!   copy found again is marked as just used); nothing is removed while the
 //!   load reported a problem, the queue isn't saved, or an `.unreadable-*` queue sits in the folder.
 
 use crate::disk::{self, Category, Need};
@@ -47,6 +52,11 @@ const REF_PREFIX: &str = "evidence/";
 pub const MAX_FILE: u64 = 16 << 20;
 pub const MAX_BYTES: u64 = 2 << 30;
 pub const MAX_CALL_BYTES: u64 = 64 << 20;
+/// What one call copied on the engine thread (a playtest step's) may read in all.
+pub const MAX_ENGINE_CALL_BYTES: u64 = 4 << 20;
+/// Refused calls' copies remembered for a queue folder that isn't the current one (a world
+/// switched between the copy and the answer), until that folder is current again.
+const MAX_STRAYS: usize = 4096;
 /// An unsaved world's queue folder: `<worlds>/.review-unsaved-<run>`, with its heartbeat file.
 const UNSAVED_PREFIX: &str = ".review-unsaved-";
 const ALIVE_FILE: &str = ".alive";
@@ -136,12 +146,42 @@ pub struct CallCopies {
     budget: u64,
     /// Sources read (a test counts them).
     pub reads: usize,
+    /// The references this call copied in or found already copied (`evidence/<file>`): what a
+    /// refused call hands back to collection (see [`Made`]).
+    made: Vec<String>,
+    /// On the engine thread (a playtest step's call, see [`CallCopies::engine_thread`]): every
+    /// read counts against the budget, not only the copies.
+    engine: bool,
 }
 
 impl Default for CallCopies {
     fn default() -> Self {
-        CallCopies { done: BTreeMap::new(), budget: MAX_CALL_BYTES, reads: 0 }
+        CallCopies { done: BTreeMap::new(), budget: MAX_CALL_BYTES, reads: 0, made: Vec::new(), engine: false }
     }
+}
+
+impl CallCopies {
+    /// A call whose files are copied on the engine thread (one that didn't come through
+    /// [`prepare`]: a playtest step's `review_submit` or `critique_add`). At most
+    /// [`MAX_ENGINE_CALL_BYTES`] read in all (copies, and the reads that find a copy already
+    /// there), so a step holds the engine up for a few milliseconds at most.
+    pub fn engine_thread() -> CallCopies {
+        CallCopies { budget: MAX_ENGINE_CALL_BYTES, engine: true, ..CallCopies::default() }
+    }
+
+    /// The references this call made.
+    #[cfg(test)]
+    pub fn made(&self) -> &[String] {
+        &self.made
+    }
+}
+
+/// What a call through [`prepare`] copied into which queue's evidence. When the call is refused
+/// (an argument, a journal entry, a claim...), its copies go back to collection
+/// ([`Engine::evidence_refused`]): nothing it copied stays behind unnamed for good.
+pub struct Made {
+    pub queue: PathBuf,
+    pub refs: Vec<String>,
 }
 
 /// Keeps the file an agent named as evidence of the queue in `roots.queue`; returns its reference
@@ -164,10 +204,25 @@ pub fn copy_in(roots: &ReviewRoots, given: &str, png: bool, call: &mut CallCopie
         return Err(refuse("too_large", format!("'{given}' is {} MB; evidence files are at most {} MB", len >> 20, MAX_FILE >> 20), given).with("bytes", len));
     }
     if len > call.budget {
+        if call.engine {
+            return Err(refuse(
+                "evidence_budget",
+                format!(
+                    "a call run on the engine thread (a playtest step) reads at most {} MB of review evidence; '{given}' would pass it: submit big captures over MCP (copied off the engine thread), or capture smaller frames in the playtest",
+                    MAX_ENGINE_CALL_BYTES >> 20
+                ),
+                given,
+            )
+            .with("limit_mb", MAX_ENGINE_CALL_BYTES >> 20)
+            .with("engine_thread", true));
+        }
         return Err(refuse("evidence_budget", format!("one call copies at most {} MB of evidence; '{given}' would pass it: submit in smaller parts", MAX_CALL_BYTES >> 20), given).with("limit_mb", MAX_CALL_BYTES >> 20));
     }
     let bytes = std::fs::read(&source).map_err(|_| refuse("capture_missing", format!("'{given}' can't be read"), given))?;
     call.reads += 1;
+    if call.engine {
+        call.budget -= len;
+    }
     if png && !is_png(&bytes) {
         return Err(refuse("capture_missing", format!("'{given}' is not a PNG (pass the image.path a sight tool returned)"), given));
     }
@@ -182,8 +237,14 @@ pub fn copy_in(roots: &ReviewRoots, given: &str, png: bool, call: &mut CallCopie
             // Same name and length: read it only now, to be sure it is the same content.
             Ok(m) if m.is_file() && m.len() == len => {
                 if std::fs::read(&p).is_ok_and(|there| there == bytes) {
+                    // Named again: collection (which waits for a file to be a minute old) leaves
+                    // it alone until this call's answer has named it or handed it back.
+                    if let Err(e) = disk::touch_inside(&disk::canonical(&worlds), &disk::canonical(&p)) {
+                        eprintln!("specula: review evidence {name} not marked as used: {e}");
+                    }
                     let r = format!("{REF_PREFIX}{name}");
                     call.done.insert(given.to_owned(), r.clone());
+                    call.made.push(r.clone());
                     return Ok(r);
                 }
             }
@@ -195,9 +256,12 @@ pub fn copy_in(roots: &ReviewRoots, given: &str, png: bool, call: &mut CallCopie
                 }
                 disk::book().write(Category::Worlds, "evidence", &p, &bytes, Need::Agent).map_err(|e| e.to_world())?;
                 add_used(&dir, len as i64);
-                call.budget -= len;
+                if !call.engine {
+                    call.budget -= len;
+                }
                 let r = format!("{REF_PREFIX}{name}");
                 call.done.insert(given.to_owned(), r.clone());
+                call.made.push(r.clone());
                 return Ok(r);
             }
         }
@@ -207,19 +271,27 @@ pub fn copy_in(roots: &ReviewRoots, given: &str, png: bool, call: &mut CallCopie
 
 /// `review_submit` and `critique_add`, on the calling agent's connection thread: copies the files
 /// they name into the queue's evidence and answers the arguments naming the copies, so the
-/// engine thread never copies. Errors are the tool's answer.
-pub fn prepare(tools: &crate::tools::Tools, session: &SessionInfo, name: &str, args: &Json) -> Result<Json, ToolOutput> {
-    let fail = |e: WorldError| ToolOutput::error(e.to_json().to_string());
+/// engine thread never copies. Errors are the tool's answer. Also answers what it copied (even
+/// when a later file is refused), so a refused call hands its copies back to collection.
+pub fn prepare(tools: &crate::tools::Tools, session: &SessionInfo, name: &str, args: &Json) -> (Result<Json, ToolOutput>, Option<Made>) {
     let out = tools.send(session, crate::tools::Command::ReviewRoots);
     let text = out.content.iter().find_map(|c| if let specula_protocol::Content::Text(t) = c { Some(t.clone()) } else { None }).unwrap_or_default();
-    let j = Json::parse(&text).map_err(|_| out.clone())?;
+    let Ok(j) = Json::parse(&text) else { return (Err(out), None) };
     let path = |k: &str| PathBuf::from(j.get(k).and_then(Json::as_str).unwrap_or_default());
     let roots = ReviewRoots { captures: path("captures"), run: path("run"), worlds: path("worlds"), queue: path("queue") };
     let mut call = CallCopies::default();
+    let answer = prepare_in(&roots, name, args, &mut call);
+    let made = (!call.made.is_empty()).then(|| Made { queue: roots.queue.clone(), refs: std::mem::take(&mut call.made) });
+    (answer, made)
+}
+
+/// [`prepare`]'s copies, given the roots (`call` records what was made).
+pub fn prepare_in(roots: &ReviewRoots, name: &str, args: &Json, call: &mut CallCopies) -> Result<Json, ToolOutput> {
+    let fail = |e: WorldError| ToolOutput::error(e.to_json().to_string());
     let mut args = args.clone();
     let one = |v: &mut Json, png: bool, field: String, call: &mut CallCopies| -> Result<(), ToolOutput> {
         if let Some(given) = v.as_str().map(str::to_owned) {
-            let r = copy_in(&roots, &given, png, call).map_err(|e| fail(WorldError { message: format!("{field}: {}", e.message), ..e }.with("field", field.as_str())))?;
+            let r = copy_in(roots, &given, png, call).map_err(|e| fail(WorldError { message: format!("{field}: {}", e.message), ..e }.with("field", field.as_str())))?;
             *v = Json::from(r);
         }
         Ok(())
@@ -230,14 +302,14 @@ pub fn prepare(tools: &crate::tools::Tools, session: &SessionInfo, name: &str, a
                 let mut new = Vec::with_capacity(caps.len());
                 for (i, mut c) in caps.into_iter().enumerate() {
                     if c.as_str().is_some() {
-                        one(&mut c, true, format!("captures[{i}]"), &mut call)?;
+                        one(&mut c, true, format!("captures[{i}]"), call)?;
                     } else {
                         if let Some(mut p) = c.get("path").cloned() {
-                            one(&mut p, true, format!("captures[{i}]"), &mut call)?;
+                            one(&mut p, true, format!("captures[{i}]"), call)?;
                             c.set("path", p);
                         }
                         if let Some(mut p) = c.get("packet").cloned() {
-                            one(&mut p, false, format!("captures[{i}].packet"), &mut call)?;
+                            one(&mut p, false, format!("captures[{i}].packet"), call)?;
                             c.set("packet", p);
                         }
                     }
@@ -252,7 +324,7 @@ pub fn prepare(tools: &crate::tools::Tools, session: &SessionInfo, name: &str, a
                 for (i, mut it) in items.into_iter().enumerate() {
                     for k in ["capture", "packet"] {
                         if let Some(mut p) = it.get(k).cloned() {
-                            one(&mut p, false, format!("items[{i}].{k}"), &mut call)?;
+                            one(&mut p, false, format!("items[{i}].{k}"), call)?;
                             it.set(k, p);
                         }
                     }
@@ -278,8 +350,57 @@ pub struct EvidenceState {
     blocked: bool,
     /// The queue revision last collected after, and when.
     gc: Option<(u64, Instant)>,
+    /// `seen` may hold references the queue doesn't name that weren't old enough to remove yet
+    /// (or a refused call just handed some back): collect again a minute on, even if the queue
+    /// didn't change.
+    pending: bool,
+    /// Refused calls' copies in queue folders that aren't the current one (a world switched
+    /// between the copy and the answer): handed to `seen` when that folder is current again.
+    strays: BTreeMap<PathBuf, BTreeSet<String>>,
     /// The unsaved folder's last heartbeat.
     alive: Option<Instant>,
+}
+
+impl EvidenceState {
+    /// Takes the strays of `root`, which just became the current queue's folder.
+    fn adopt_strays(&mut self, root: &Path) {
+        if let Some(s) = self.strays.remove(root) {
+            self.seen.extend(s);
+            self.pending = true;
+        }
+    }
+
+    /// One collection pass over `dir` (the current queue's evidence folder, inside `worlds`):
+    /// removes the files `seen` holds that the queue doesn't name (`named`) and that weren't
+    /// modified since `old`. Returns whether some of them were too young (collect again later).
+    fn collect(&mut self, worlds: &Path, dir: &Path, named: &BTreeSet<String>, old: SystemTime) -> bool {
+        let mut young = false;
+        let dropped: Vec<String> = self.seen.iter().filter(|r| !named.contains(*r)).cloned().collect();
+        for r in dropped {
+            let Some(f) = ref_file(&r) else {
+                self.seen.remove(&r);
+                continue;
+            };
+            let p = disk::canonical(&dir.join(f));
+            let Ok(m) = std::fs::symlink_metadata(&p) else {
+                self.seen.remove(&r);
+                continue;
+            };
+            if !m.is_file() {
+                continue;
+            }
+            if m.modified().is_ok_and(|t| t > old) {
+                young = true;
+                continue;
+            }
+            if let Ok(b) = disk::remove_file_inside(worlds, &p) {
+                disk::book().wrote(Category::Worlds, "evidence", -(b as i64), -1);
+                add_used(dir, -(b as i64));
+                self.seen.remove(&r);
+            }
+        }
+        young
+    }
 }
 
 impl Engine {
@@ -318,6 +439,8 @@ impl Engine {
         };
         self.note_root();
         self.evidence.seen.insert(r.clone());
+        // Named, or about to be: if the call is refused, a later pass collects it.
+        self.evidence.pending = true;
         Ok(r)
     }
 
@@ -325,11 +448,32 @@ impl Engine {
     fn note_root(&mut self) {
         let root = self.evidence_root();
         if self.evidence.root.as_ref() != Some(&root) {
-            self.evidence.root = Some(root);
             self.evidence.seen.clear();
             self.evidence.blocked = false;
             self.evidence.gc = None;
+            self.evidence.pending = false;
+            self.evidence.adopt_strays(&root);
+            self.evidence.root = Some(root);
         }
+    }
+
+    /// `Command::EvidenceRefused`: a review_submit or critique_add was refused after
+    /// [`prepare`] copied its files. They go to collection like dropped evidence: removed once
+    /// a minute old unless the queue names them (another call may have named the same content).
+    pub(crate) fn evidence_refused(&mut self, made: Made) -> ToolOutput {
+        self.note_root();
+        let refs = made.refs.into_iter().filter(|r| ref_file(r).is_some());
+        if made.queue == self.evidence_root() {
+            self.evidence.seen.extend(refs);
+            self.evidence.pending = true;
+        } else {
+            let room = MAX_STRAYS.saturating_sub(self.evidence.strays.values().map(BTreeSet::len).sum());
+            let kept: BTreeSet<String> = refs.take(room).collect();
+            if !kept.is_empty() {
+                self.evidence.strays.entry(made.queue).or_default().extend(kept);
+            }
+        }
+        ToolOutput::text("{}")
     }
 
     /// Makes the queue's evidence live in `root` (a world just loaded, or just named by
@@ -379,6 +523,8 @@ impl Engine {
         self.evidence.seen = self.swarm.review.file_refs().into_iter().filter(|r| ref_file(r).is_some()).map(str::to_owned).collect();
         self.evidence.blocked = load_problem;
         self.evidence.gc = None;
+        self.evidence.pending = false;
+        self.evidence.adopt_strays(root);
         self.review_ui.changed(&self.swarm.review);
         self.review_ui.set_roots(ReviewRoots { queue: root.to_path_buf(), ..self.review_roots() });
         // The queue in that folder names its evidence from now on.
@@ -422,9 +568,10 @@ impl Engine {
     }
 
     /// Removes evidence this run's queue named in its folder and no longer names (submissions
-    /// and critiques it dropped): at most once a minute after the queue changed, only files older
-    /// than a minute, never while the load reported a problem, the queue isn't saved, or an
-    /// `.unreadable-*` queue sits in the folder. Also beats the unsaved folder's heartbeat.
+    /// and critiques it dropped), and what refused calls copied that it doesn't name: at most once
+    /// a minute after the queue changed (or while such files wait to be a minute old), only
+    /// files older than a minute, never while the load reported a problem, the queue isn't saved,
+    /// or an `.unreadable-*` queue sits in the folder. Also beats the unsaved folder's heartbeat.
     pub(crate) fn evidence_gc(&mut self) {
         self.note_root();
         let root = self.evidence_root();
@@ -432,37 +579,25 @@ impl Engine {
             self.evidence.alive = Some(Instant::now());
             let _ = disk::book().write(Category::Worlds, "evidence", &root.join(ALIVE_FILE), b"alive", Need::Essential);
         }
-        let named: BTreeSet<String> = self.swarm.review.file_refs().into_iter().filter(|r| ref_file(r).is_some()).map(str::to_owned).collect();
-        self.evidence.seen.extend(named.iter().cloned());
         let rev = self.swarm.review.revision();
-        if self.evidence.gc.is_some_and(|(r, at)| r == rev || at.elapsed() < GC_EVERY) {
+        let pending = self.evidence.pending;
+        if self.evidence.gc.is_some_and(|(r, at)| (r == rev && !pending) || at.elapsed() < GC_EVERY) {
             return;
         }
         self.evidence.gc = Some((rev, Instant::now()));
+        // (Everything the queue names went through keep_evidence or a load's adoption, so it is
+        // in `seen` already; this only makes sure.)
+        let named: BTreeSet<String> = self.swarm.review.file_refs().into_iter().filter(|r| ref_file(r).is_some()).map(str::to_owned).collect();
+        self.evidence.seen.extend(named.iter().cloned());
         let unreadable = std::fs::read_dir(&root).map(|it| it.flatten().any(|e| e.file_name().to_string_lossy().contains(".unreadable-"))).unwrap_or(false);
         if self.evidence.blocked || self.board_io.review_blocked || unreadable {
+            self.evidence.pending = false;
             return;
         }
         let dir = std::path::absolute(&root).unwrap_or(root).join(EVIDENCE_DIR);
         let worlds = disk::canonical(&self.worlds_dir);
         let old = SystemTime::now().checked_sub(GC_MIN_AGE).unwrap_or(SystemTime::UNIX_EPOCH);
-        let dropped: Vec<String> = self.evidence.seen.iter().filter(|r| !named.contains(*r)).cloned().collect();
-        for r in dropped {
-            let Some(f) = ref_file(&r) else { continue };
-            let p = disk::canonical(&dir.join(f));
-            let Ok(m) = std::fs::symlink_metadata(&p) else {
-                self.evidence.seen.remove(&r);
-                continue;
-            };
-            if !m.is_file() || m.modified().is_ok_and(|t| t > old) {
-                continue;
-            }
-            if let Ok(b) = disk::remove_file_inside(&worlds, &p) {
-                disk::book().wrote(Category::Worlds, "evidence", -(b as i64), -1);
-                add_used(&dir, -(b as i64));
-                self.evidence.seen.remove(&r);
-            }
-        }
+        self.evidence.pending = self.evidence.collect(&worlds, &dir, &named, old);
     }
 
     /// Marks review files that are gone (`missing: true` on each capture, `capture_missing` /
@@ -545,6 +680,121 @@ mod tests {
         assert_eq!(copy_in(&roots, &wj, false, &mut CallCopies::default()).unwrap_err().code, "path_not_allowed");
         let mut tight = CallCopies { budget: 10, ..CallCopies::default() };
         assert_eq!(copy_in(&roots, &a, true, &mut tight).unwrap_err().code, "evidence_budget");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A scratch layout: (base, roots, this run's capture folder).
+    fn layout(label: &str) -> (PathBuf, ReviewRoots, PathBuf) {
+        let base = std::env::temp_dir().join(format!("specula-evidence-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (caps, worlds) = (base.join("captures"), base.join("worlds"));
+        let run = caps.join("run-1-1");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::create_dir_all(worlds.join("w")).unwrap();
+        let roots = ReviewRoots { captures: caps, run: run.clone(), worlds: worlds.clone(), queue: worlds.join("w") };
+        (base, roots, run)
+    }
+
+    fn set_age(p: &Path, secs: u64) {
+        let t = std::fs::FileTimes::new().set_modified(SystemTime::now() - Duration::from_secs(secs));
+        std::fs::File::options().write(true).open(p).unwrap().set_times(t).unwrap();
+    }
+
+    /// Integration check (2026-10-29): a refused review_submit left its copies in the evidence
+    /// for good (the cap's advice couldn't free them). A call refused after copying hands back
+    /// what it copied, even when a later file is the refusal; collection removes those copies
+    /// once they are a minute old unless the queue names them.
+    #[test]
+    fn refused_calls_hand_their_copies_back_to_collection() {
+        let (base, roots, run) = layout("refused");
+        let mk = |n: u8| {
+            let png = specula_core::png::encode_rgba8(2, 2, &[n; 16], specula_core::deflate::Level::Fastest);
+            let p = run.join(format!("c{n}.png"));
+            std::fs::write(&p, &png).unwrap();
+            p.display().to_string()
+        };
+        let (a, b, c) = (mk(1), mk(2), mk(3));
+        // The third capture isn't there: the call is refused after two copies.
+        let args = Json::obj([("title", Json::from("x")), ("captures", Json::arr([Json::from(a.as_str()), Json::from(b.as_str()), Json::from(run.join("gone.png").display().to_string())]))]);
+        let mut call = CallCopies::default();
+        let err = prepare_in(&roots, "review_submit", &args, &mut call).unwrap_err();
+        assert!(err.is_error);
+        assert_eq!(call.made().len(), 2, "both copies are handed back");
+        let dir = std::path::absolute(&roots.queue).unwrap().join(EVIDENCE_DIR);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+        // An accepted call names c (and a again: one content, one file, named).
+        let mut ok = CallCopies::default();
+        let named_args = Json::obj([("captures", Json::arr([Json::from(c.as_str()), Json::from(a.as_str())]))]);
+        let named_args = prepare_in(&roots, "review_submit", &named_args, &mut ok).unwrap();
+        let named: BTreeSet<String> = named_args.get("captures").and_then(Json::as_array).unwrap().iter().filter_map(Json::as_str).map(str::to_owned).collect();
+        let mut st = EvidenceState { seen: call.made().iter().cloned().chain(named.iter().cloned()).collect(), ..EvidenceState::default() };
+        let worlds = disk::canonical(&roots.worlds);
+        // Too young: kept, and the pass says to come back.
+        assert!(st.collect(&worlds, &dir, &named, SystemTime::now() - Duration::from_secs(60)));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 3);
+        // A minute on: the refused call's copy that nothing names goes; a's (named again) and c's stay.
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            set_age(&e.path(), 120);
+        }
+        assert!(!st.collect(&worlds, &dir, &named, SystemTime::now() - Duration::from_secs(60)));
+        let left: BTreeSet<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| format!("evidence/{}", e.file_name().to_string_lossy())).collect();
+        assert_eq!(left, named, "only what the queue names is left");
+        // Strays (a world switched in between) are kept for their folder.
+        st.strays.insert(roots.queue.clone(), ["evidence/x.png".to_owned()].into());
+        st.adopt_strays(&roots.queue);
+        assert!(st.pending && st.seen.contains("evidence/x.png") && st.strays.is_empty());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Integration check (2026-10-29): arguments are refused before anything is copied, and a
+    /// copy found again is marked as just used, so collection can't take it from under the call
+    /// that named it again.
+    #[test]
+    fn a_copy_found_again_is_marked_used() {
+        let (base, roots, run) = layout("touch");
+        let png = specula_core::png::encode_rgba8(2, 2, &[5u8; 16], specula_core::deflate::Level::Fastest);
+        std::fs::write(run.join("a.png"), &png).unwrap();
+        let r = copy_in(&roots, "a.png", true, &mut CallCopies::default()).unwrap();
+        let copy = std::path::absolute(&roots.queue).unwrap().join(r.replace('/', std::path::MAIN_SEPARATOR_STR));
+        set_age(&copy, 7200);
+        let mut again = CallCopies::default();
+        assert_eq!(copy_in(&roots, "a.png", true, &mut again).unwrap(), r);
+        assert_eq!(again.made(), [r]);
+        let age = SystemTime::now().duration_since(std::fs::metadata(&copy).unwrap().modified().unwrap()).unwrap_or_default();
+        assert!(age < Duration::from_secs(60), "found again: marked as used ({age:?} old)");
+        // The tool checks its arguments before copying (tools.rs runs parse first): a bad one is
+        // refused by the parser without touching the disk.
+        let bad = Json::obj([("title", Json::from("x")), ("kind", Json::from("asset")), ("paths", Json::arr([Json::from("/a")])), ("captures", Json::from("not an array"))]);
+        let e = crate::tools::parse("review_submit", &bad).err().expect("refused");
+        assert!(e.contains("captures"), "{e}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Integration check (2026-10-29): a playtest step's review copied up to 64 MiB on the engine
+    /// thread. On the engine thread a call reads at most 4 MiB of evidence in all (copies, and
+    /// sources whose copy is already there), refused before the read with a structured error.
+    #[test]
+    fn engine_thread_calls_read_at_most_four_mib() {
+        let (base, roots, run) = layout("engine");
+        std::fs::write(run.join("big.bin"), vec![1u8; 5 << 20]).unwrap();
+        std::fs::write(run.join("three.bin"), vec![2u8; 3 << 20]).unwrap();
+        std::fs::write(run.join("two.bin"), vec![3u8; 2 << 20]).unwrap();
+        let mut call = CallCopies::engine_thread();
+        let e = copy_in(&roots, "big.bin", false, &mut call).unwrap_err();
+        assert_eq!((e.code, call.reads), ("evidence_budget", 0), "refused before reading");
+        assert_eq!(e.to_json().get("limit_mb").and_then(Json::as_u64), Some(4));
+        assert_eq!(e.to_json().get("engine_thread"), Some(&Json::Bool(true)));
+        copy_in(&roots, "three.bin", false, &mut call).unwrap();
+        assert_eq!(copy_in(&roots, "two.bin", false, &mut call).unwrap_err().code, "evidence_budget");
+        // A copy already there still costs its read.
+        let mut again = CallCopies::engine_thread();
+        copy_in(&roots, "three.bin", false, &mut again).unwrap();
+        assert_eq!(copy_in(&roots, "two.bin", false, &mut again).unwrap_err().code, "evidence_budget");
+        // Off the engine thread the same files fit (64 MiB, copies only).
+        let mut off = CallCopies::default();
+        copy_in(&roots, "three.bin", false, &mut off).unwrap();
+        copy_in(&roots, "two.bin", false, &mut off).unwrap();
+        copy_in(&roots, "big.bin", false, &mut off).unwrap();
         let _ = std::fs::remove_dir_all(&base);
     }
 }

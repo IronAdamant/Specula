@@ -37,7 +37,7 @@ library copies, fixes written into a module's sources, a restored `Cargo.lock`) 
 
 | Category | Folders | Writers | Pruned |
 |---|---|---|---|
-| `captures` | `--captures` (every run's `run-<secs>-<pid>`) | sight frames and packets, orbit and compare sheets, studio sheets, VFX previews, anim filmstrips, procgen images, perf captures, playtest replays, desync traces, Lex exports, Sepulcra's `play_record` | yes: oldest first |
+| `captures` | `--captures` (every run's `run-<secs>-<pid>`) | sight frames and packets, orbit and compare sheets, studio sheets, VFX previews, anim filmstrips, procgen images, perf captures, desync traces, Lex exports | yes: oldest first |
 | `cache` | `--cache` (minus the two below) | the pipeline cache | yes (via pruners) |
 | `content` | `<cache>/content` | the content store: binary project files' versions and uploads in progress | yes: what nothing needs |
 | `modules` | `<cache>/modules` | module builds' Cargo targets and loaded library copies | `logic_build` drops stale artefacts |
@@ -45,6 +45,7 @@ library copies, fixes written into a module's sources, a restored `Cargo.lock`) 
 | `saves` | `--saves` | save games | never |
 | `worlds` | `--worlds` | world files, the task board, the review queue | never |
 | `project` | the assets root and mounted modules | project files (the store's size is reported; the folders are never walked) | never |
+| `recordings` | `playtests/` and `recordings/` in the engine's working directory | playtest replays (`playtest_run {record}`), the hosted game's recordings (Sepulcra's `play_record`, which writes only under `recordings/`) | never: they are evidence and replays |
 
 A walk of one category never counts another's folder inside it (the default scratch root is inside the captures
 root; the content store and module targets are inside the cache).
@@ -83,7 +84,8 @@ capture_min_age_s = 300 # captures younger than this are never pruned
   space under twice the floor, is answered with a structured `disk_warning` (`code: disk_budget`, `message`,
   `crossed`, `biggest`: the largest categories with their folders and what to do about each, `hint`). Every session
   hears it once (in the answer to the write that crossed it, as a rule; another session on its next call), and
-  again when it gets worse (a new line crossed). Answers to sessions already told are passed through untouched
+  again when it gets worse (a new line crossed). It rides on the answer's first text item (a sight tool's packet,
+  after its image). Answers to sessions already told are passed through untouched
   (no parse), and free space is read from the OS outside the book's lock. `engine_info.disk` and `disk_status` carry it while it lasts.
 - **Over a line, the walker prunes**, at most every 30 s, down to 85% of the line it crossed, in this order: the
   oldest captures, cache entries (content nothing needs), expired scratch. A lead can free more with
@@ -131,14 +133,24 @@ exists any more, and nothing the disk budget prunes is ever named by a review.
 - **Off the engine thread** (round 3): the copies are made on the calling agent's connection thread before the
   engine sees the call; the engine only checks they are there. Within a call each file is read once, an existing
   copy is read only when its name and length match, and one call copies at most 64 MiB (`evidence_budget`).
-  `world_save` under a new name copies the queue's evidence on a worker thread.
+  `world_save` under a new name copies the queue's evidence on a worker thread. A call that doesn't come through
+  a connection thread (a playtest step's `review_submit` or `critique_add`, run on the engine thread in tick order)
+  reads at most 4 MiB of evidence in all, refused before the read (`evidence_budget` with `engine_thread: true`):
+  a few milliseconds of the engine's time at most, and plenty for a playtest's frames (integration check,
+  2026-10-29: such a step could copy 64 MiB on the engine thread).
+- **Refused calls leave nothing behind** (integration check, 2026-10-29: a refused `review_submit` left its copies
+  for good, and the 2 GiB cap's advice couldn't free them). The arguments are checked before anything is copied;
+  a call refused after copying (a journal entry, a claim, a later file of the same call) hands what it copied back
+  to the engine, and collection removes those copies like dropped evidence, unless the queue names the same content.
+  A copy a new call finds already there is marked as just used, so collection can't take it from under that call.
 - **Cost.** One copy per distinct file (the same PNG submitted twice, or critiqued, is one file). Captures are
   typically 50-500 KB and contact sheets a few MB; each evidence file is at most 16 MiB and a world's evidence at most
   2 GiB (`evidence_full`), counted under `worlds`. Copies, not hard links: a hard link shares the capture's bytes, so
   pruning the capture would free nothing while the budget counted the bytes twice, and links are what the deletion
   rules refuse to follow.
 - **Collection never guesses** (round 3): only files this run's queue named and then dropped (decided submissions
-  and resolved critiques it lets go at its caps) are removed, at most once a minute, only files older than a minute;
+  and resolved critiques it lets go at its caps), or a refused call copied, are removed, at most once a minute (again
+  a minute on while some wait to be old enough), only files older than a minute;
   nothing at all while the load reported a problem, the queue isn't being saved, or an `.unreadable-*` queue sits in
   the folder (an unreadable queue set aside keeps its evidence).
 - **Unsaved worlds** keep their queue's evidence in this run's `<worlds>/.review-unsaved-run-<secs>-<pid>/evidence/`,
@@ -153,7 +165,8 @@ exists any more, and nothing the disk budget prunes is ever named by a review.
 
 ## Never pruned
 
-Saves, world files and journals (review evidence among them), project files, captures younger than
+Saves, world files and journals (review evidence among them), project files, playtest replays and game
+recordings, captures younger than
 `capture_min_age_s`, another running engine's captures (only this
 run's and finished runs' folders are candidates), scratch folders still leased or released with `keep: true`, and
 content a current file, a kept journal entry or an upload still needs.

@@ -113,7 +113,7 @@ pub const ROLES: &[Role] = &[
     role("builder", "builds the world", &["world", "sight", "claim", "board", "journal", "model", "engine"], &[]),
     role("reviewer", "checks finished work", &["sight", "journal", "board", "review", "studio"], &["world_query", "world_list"]),
     role("playtester", "plays and records runs", &["game", "playtest", "sight", "board", "save", "engine"], &["world_query", "world_hash"]),
-    role("art_director", "holds the look", &["sight", "studio", "review", "model", "procgen", "vfx", "board"], &["world_env", "world_query"]),
+    role("art_director", "holds the look", &["sight", "studio", "review", "model", "procgen", "vfx", "project", "board"], &["world_env", "world_query"]),
     role("sight_skeptic", "verifies visual claims", &["sight"], &["world_query", "world_list", "critique_add"]),
     role("performance", "measures frame cost and disk use", &["perf", "engine", "stream", "sight", "disk"], &["world_query", "world_list"]),
     role("designer", "gameplay rules and balance", &["lex", "balance", "playtest", "game", "board", "save"], &["world_query"]),

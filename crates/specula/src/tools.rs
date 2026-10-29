@@ -266,6 +266,9 @@ pub enum Command {
     /// Where a review's files may be (captures, the queue's evidence): for copying evidence on
     /// the connection thread (see `evidence::prepare`).
     ReviewRoots,
+    /// A refused review_submit or critique_add hands back the evidence it copied: collected
+    /// unless the queue names it (see `evidence::Made`).
+    EvidenceRefused(crate::evidence::Made),
 }
 
 /// time_control's actions on the simulation clock.
@@ -470,6 +473,13 @@ impl Tools {
     }
 
     /// Sends a command to the main thread and waits for its answer.
+    /// A refused call's evidence copies go back to collection (see `evidence::Made`).
+    fn evidence_refused(&self, session: &SessionInfo, made: Option<crate::evidence::Made>) {
+        if let Some(m) = made.filter(|m| !m.refs.is_empty()) {
+            self.send(session, Command::EvidenceRefused(m));
+        }
+    }
+
     pub(crate) fn send(&self, session: &SessionInfo, command: Command) -> ToolOutput {
         let (reply, answer) = mpsc::channel();
         let deadline = Instant::now() + APPLY_DEADLINE;
@@ -615,12 +625,23 @@ impl Tools {
         };
         let defaulted = if shaped.is_none() && self.native_format.iter().any(|t| t == name) { crate::response::with_default(arguments, default) } else { None };
         let arguments = shaped.as_ref().map(|(_, a)| a).or(defaulted.as_ref()).unwrap_or(arguments);
-        // Review evidence is copied here, on this connection's thread, never the engine's.
+        // Review evidence is copied here, on this connection's thread, never the engine's: only
+        // once the arguments are valid, and a call refused after copying hands its copies back
+        // to collection (nothing it copied stays behind unnamed).
         let prepared;
+        let mut made = None;
         let arguments = if matches!(name, "review_submit" | "critique_add") {
-            prepared = match crate::evidence::prepare(self, session, name, arguments) {
+            if let Err(e) = parse(name, arguments) {
+                return ToolOutput::error(argument_error(&e).to_pretty());
+            }
+            let (answer, m) = crate::evidence::prepare(self, session, name, arguments);
+            made = m;
+            prepared = match answer {
                 Ok(a) => a,
-                Err(out) => return out,
+                Err(out) => {
+                    self.evidence_refused(session, made);
+                    return out;
+                }
             };
             &prepared
         } else {
@@ -650,9 +671,15 @@ impl Tools {
         };
         let command = match parsed {
             Ok(c) => c,
-            Err(e) => return ToolOutput::error(argument_error(&e).to_pretty()),
+            Err(e) => {
+                self.evidence_refused(session, made);
+                return ToolOutput::error(argument_error(&e).to_pretty());
+            }
         };
         let out = self.send(session, command);
+        if out.is_error {
+            self.evidence_refused(session, made);
+        }
         if name == "agent_hello" && !out.is_error {
             // The default belongs to the identity (its resume token), so a resume keeps it.
             let token = out.content.iter().find_map(|c| match c {

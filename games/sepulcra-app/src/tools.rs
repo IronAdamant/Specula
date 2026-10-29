@@ -124,13 +124,13 @@ pub fn defs() -> Vec<ToolDef> {
         ToolDef {
             name: "play_record".into(),
             description: "Save the run so far as a self-checking recording (seed, content hash, every command with its tick, \
-                          end tick and state hash) to a file under the engine's working directory (default \
-                          recordings/sepulcra-<seed>-<tick>.json). The name ends in .json; an existing file is only \
-                          replaced with overwrite: true."
+                          end tick and state hash) to a file under recordings/ in the engine's working directory \
+                          (default recordings/sepulcra-<seed>-<tick>.json; counted in the disk budget's recordings, \
+                          never pruned). The name ends in .json; an existing file is only replaced with overwrite: true."
                 .into(),
             input_schema: schema(
                 vec![
-                    ("path", prop("string", "Relative path for the recording, ending in .json")),
+                    ("path", prop("string", "Relative path under recordings/, ending in .json (e.g. recordings/run.json)")),
                     ("overwrite", prop("boolean", "Replace an existing file (refused otherwise)")),
                 ],
                 &[],
@@ -316,7 +316,7 @@ pub(crate) fn safe_path(rel: &str, write: bool) -> Result<PathBuf, ToolOutput> {
         existing = existing.parent().unwrap_or(&cwd);
     }
     inside(&existing.canonicalize().map_err(io)?)?;
-    specula::disk::book().make_dir(specula::disk::Category::Captures, &parent, specula::disk::Need::Agent).map_err(|e| error(e.code, e.message, e.detail))?;
+    specula::disk::book().make_dir(specula::disk::Category::Recordings, &parent, specula::disk::Need::Agent).map_err(|e| error(e.code, e.message, e.detail))?;
     let real_parent = parent.canonicalize().map_err(io)?;
     inside(&real_parent)?;
     let target = real_parent.join(full.file_name().unwrap_or_default());
@@ -655,14 +655,25 @@ fn record(game: &SepulcraGame, args: &Json) -> Result<ToolOutput, ToolOutput> {
     if !rel.to_ascii_lowercase().ends_with(".json") {
         return Err(bad_path(&rel, "a recording's file name must end in .json"));
     }
+    // Recordings live under recordings/ (the engine's disk budget measures that folder and never
+    // prunes it): checked before any folder is made, and again once links are followed.
+    let dir = specula::disk::RECORDINGS_DIR;
+    let under = Path::new(&rel).components().find(|c| !matches!(c, Component::CurDir)).is_some_and(|c| c.as_os_str() == dir);
+    if !under || Path::new(&rel).components().filter(|c| matches!(c, Component::Normal(_))).count() < 2 {
+        return Err(bad_path(&rel, &format!("recordings are written under {dir}/ (e.g. {dir}/my-run.json)")));
+    }
     let path = safe_path(&rel, true)?;
+    let confined = std::env::current_dir().and_then(|d| d.canonicalize()).map(|d| d.join(dir)).ok().is_some_and(|d| path.parent().is_some_and(|p| p.starts_with(&d)));
+    if !confined {
+        return Err(bad_path(&rel, &format!("resolves outside {dir}/ (through a link or junction)")));
+    }
     if path.exists() && !bool_arg(args, "overwrite")?.unwrap_or(false) {
         return Err(error("exists", format!("{rel} already exists; pass overwrite: true to replace it"), vec![("path", Json::from(rel.as_str()))]));
     }
     let (rec, advanced) = recording(game);
     let text = rec.to_json(game.state.content()).to_pretty();
     // Through the engine's disk budget (refused below the free-space floor, with the numbers).
-    specula::disk::book().write(specula::disk::Category::Captures, "play_record", &path, text.as_bytes(), specula::disk::Need::Agent).map_err(|e| error(e.code, e.message, e.detail))?;
+    specula::disk::book().write(specula::disk::Category::Recordings, "play_record", &path, text.as_bytes(), specula::disk::Need::Agent).map_err(|e| error(e.code, e.message, e.detail))?;
     let end = rec.end.expect("set above");
     let mut out = obj([
         ("path", Json::from(show(&path))),

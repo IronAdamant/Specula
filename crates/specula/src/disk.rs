@@ -58,12 +58,15 @@ const PRUNE_LOG: usize = 32;
 const MAX_TOLD: usize = 1024;
 /// A scratch folder's marker file (its lease and when it ends).
 pub const LEASE_MARKER: &str = ".specula-lease";
+/// Where a hosted game writes its recordings, under the engine's working directory (Sepulcra's
+/// `play_record`): the `recordings` category, with playtest replays.
+pub const RECORDINGS_DIR: &str = "recordings";
 
 /// What the engine writes, by where it goes and whether it may be pruned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Category {
-    /// Sight frames and packets, studio sheets, VFX previews, procgen images, playtest reports,
-    /// desync traces, perf captures, Lex exports (`--captures`).
+    /// Sight frames and packets, studio sheets, VFX previews, procgen images, desync traces,
+    /// perf captures, Lex exports (`--captures`).
     Captures,
     /// The pipeline cache and other rebuildable caches (`--cache`).
     Cache,
@@ -79,10 +82,13 @@ pub enum Category {
     Worlds,
     /// Mounted project files (the store's own size; their folders are the project's, never walked).
     Project,
+    /// Playtest replays (`<cwd>/playtests`) and the hosted game's recordings (Sepulcra's
+    /// `play_record`, `<cwd>/recordings`): evidence and replays, measured, never pruned.
+    Recordings,
 }
 
 impl Category {
-    pub const ALL: [Category; 8] = [
+    pub const ALL: [Category; 9] = [
         Category::Captures,
         Category::Cache,
         Category::Content,
@@ -91,6 +97,7 @@ impl Category {
         Category::Saves,
         Category::Worlds,
         Category::Project,
+        Category::Recordings,
     ];
 
     pub fn name(self) -> &'static str {
@@ -103,6 +110,7 @@ impl Category {
             Category::Saves => "saves",
             Category::Worlds => "worlds",
             Category::Project => "project",
+            Category::Recordings => "recordings",
         }
     }
 
@@ -126,6 +134,7 @@ impl Category {
             Category::Saves => "save_delete removes save games you no longer need (never pruned)",
             Category::Worlds => "world folders are never pruned: delete worlds you no longer need by hand",
             Category::Project => "project files are never pruned: project_delete removes files you no longer need",
+            Category::Recordings => "playtest replays and game recordings are evidence, never pruned: delete ones you no longer need from playtests/ and recordings/ by hand",
         }
     }
 }
@@ -580,14 +589,20 @@ impl DiskBook {
                 Some(_) => {}
             }
         }
-        let Some(specula_protocol::Content::Text(t)) = out.content.first() else { return out };
+        // The answer's first text item: sight tools answer the image first, then the packet.
+        let Some((i, t)) = out.content.iter().enumerate().find_map(|(i, c)| match c {
+            specula_protocol::Content::Text(t) => Some((i, t)),
+            specula_protocol::Content::Image { .. } => None,
+        }) else {
+            return out;
+        };
         let Ok(mut j) = Json::parse(t) else { return out };
         if j.as_object().is_none() {
             return out;
         }
         let Some(w) = self.warning_for(session) else { return out };
         j.set("disk_warning", w);
-        out.content[0] = specula_protocol::Content::Text(j.to_string());
+        out.content[i] = specula_protocol::Content::Text(j.to_string());
         out
     }
 
@@ -1351,6 +1366,18 @@ pub fn remove_file_inside(root: &Path, path: &Path) -> Result<u64, String> {
     Ok(m.len())
 }
 
+/// Marks one regular file inside `root` as just used (its modified time, now; no bytes written),
+/// so age-based collection (review evidence a new call named again) leaves it alone a while.
+pub fn touch_inside(root: &Path, path: &Path) -> Result<(), String> {
+    check_inside(root, path)?;
+    let m = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if !m.is_file() {
+        return Err(format!("{} is not a regular file", path.display()));
+    }
+    let f = std::fs::OpenOptions::new().write(true).open(path).map_err(|e| e.to_string())?;
+    f.set_modified(SystemTime::now()).map_err(|e| e.to_string())
+}
+
 /// Removes an empty folder inside `root` (never the root).
 pub fn remove_empty_dir_inside(root: &Path, dir: &Path) -> Result<(), String> {
     check_inside(root, dir)?;
@@ -1460,6 +1487,30 @@ mod tests {
         assert!(crate::perf::PerfConfig::parse("[disk]\ntotal_mb = 5\n").is_ok_and(|p| p.disk.total_mb == 5));
     }
 
+    /// Integration check (2026-10-29): playtest replays and Sepulcra's recordings were booked as
+    /// captures but written outside every root (never measured, never capped). They are their
+    /// own category now: both folders measured, and never pruned, even far over budget.
+    #[test]
+    fn recordings_are_measured_and_never_pruned() {
+        let base = scratch("recordings");
+        let book = DiskBook::default();
+        let (caps, plays, recs) = (base.join("captures"), base.join("playtests"), base.join(RECORDINGS_DIR));
+        let mut cfg = DiskConfig { free_floor_mb: 0, total_mb: 1, capture_min_age_s: 0, ..DiskConfig::default() };
+        cfg.caps_mb.insert(Category::Recordings, 1);
+        book.configure_local(cfg, vec![(Category::Captures, caps.clone()), (Category::Recordings, plays.clone()), (Category::Recordings, recs.clone())], None);
+        assert!(!Category::Recordings.prunable() && Category::parse("recordings") == Some(Category::Recordings));
+        book.write(Category::Recordings, "playtest", &plays.join("r.json"), &vec![1u8; 700 << 10], Need::Agent).unwrap();
+        book.write(Category::Recordings, "play_record", &recs.join("a.json"), &vec![2u8; 700 << 10], Need::Agent).unwrap();
+        book.write(Category::Captures, "sight", &caps.join("run-1-1").join("a.png"), &[0u8; 1000], Need::Agent).unwrap();
+        book.measure_now();
+        assert_eq!(book.used(Category::Recordings), (1400 << 10, 2), "both folders are measured");
+        let pruned = book.prune(false, "test", 64 << 20);
+        assert!(plays.join("r.json").is_file() && recs.join("a.json").is_file(), "never pruned: {pruned}");
+        let r = book.report(true);
+        assert!(r.to_string().contains("recordings"), "{r}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// The accounting point: writes move the numbers at once; the walker's measurement replaces
     /// them; other categories' folders inside a root are not counted twice.
     #[test]
@@ -1531,6 +1582,14 @@ mod tests {
         let out = book.annotate("s3", specula_protocol::ToolOutput::text("{\"ok\":true}"));
         let Some(specula_protocol::Content::Text(t)) = out.content.first() else { panic!() };
         assert!(t.contains("disk_warning"), "{t}");
+        // Integration check (2026-10-29): a sight tool answers its image first, then the packet:
+        // the warning rides on the first text item, the image is untouched.
+        let image = specula_protocol::Content::Image { mime_type: "image/png".into(), data_base64: "AAAA".into() };
+        let sight = specula_protocol::ToolOutput { content: vec![image.clone(), specula_protocol::Content::Text("{\"image\":{}}".into())], is_error: false };
+        let out = book.annotate("s4", sight);
+        assert_eq!(out.content[0], image);
+        let specula_protocol::Content::Text(t) = &out.content[1] else { panic!() };
+        assert!(Json::parse(t).unwrap().get("disk_warning").is_some(), "{t}");
         let _ = std::fs::remove_dir_all(&base);
     }
 
