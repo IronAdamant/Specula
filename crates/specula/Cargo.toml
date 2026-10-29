@@ -31,6 +31,7 @@ specula-audio = { workspace = true }
 specula-balance = { workspace = true }
 specula-studio = { workspace = true }
 specula-scintilla = { workspace = true }
+specula-gustus = { workspace = true }
 specula-lux = { workspace = true }
 
 [lints]

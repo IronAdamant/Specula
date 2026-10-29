@@ -322,6 +322,18 @@ pub fn validate(path: &str, kind: FileKind, text: &str, old: Option<&str>, conte
             }
         }
         FileKind::AnimSet | FileKind::Json => out.extend(json_syntax(path, text)),
+        FileKind::Taste => {
+            if let Err(e) = crate::taste::validate_file(path, text) {
+                out.push(Problem { file: path.to_owned(), severity: "error", code: e.code.into(), at: e.field.clone().unwrap_or_default(), message: e.message, offset: None });
+            }
+        }
+        FileKind::StyleData => {
+            if let Err(e) = specula_gustus::Priors::parse(text) {
+                out.push(Problem { file: path.to_owned(), severity: "error", code: e.code.into(), at: e.field.clone().unwrap_or_default(), message: e.message, offset: None });
+            }
+        }
+        // Notes are prose (the style configurator's): any text.
+        FileKind::StyleNotes => {}
         // Binary files' bytes are checked by project_upload (project_binary::inspect); their
         // store text must name content.
         FileKind::Png | FileKind::Glb | FileKind::Gltf | FileKind::Wav => {

@@ -1,0 +1,48 @@
+{
+  "date": "2026-10-29",
+  "time": "07:41",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M4",
+  "commit": "",
+  "subject": "sepulcra",
+  "topic": "game",
+  "title": "Galleries over Sepulcra: moonlight, headstones, can't afford, base styles",
+  "note": "New: gallery round sheets rendered through the asset studio's queue on the iGPU: the live scene under 9 moonlight/fog variants, tombstone proportions at true scale beside the 1.8 m figure, the can't-afford label colour on the HUD panel over the game, and the five base styles of the style configurator.",
+  "source": "scripts/gallery_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-gallery-moonlight-r1.jpg",
+      "caption": "Moonlight round 1: key colour, strength and fog spread across 9 variants",
+      "original": "gallery-moonlight-r1.png",
+      "width": 640,
+      "height": 381,
+      "bytes": 24714
+    },
+    {
+      "file": "02-gallery-headstones-r1.jpg",
+      "caption": "Headstone proportions (scale x/y) under the game light",
+      "original": "gallery-headstones-r1.png",
+      "width": 640,
+      "height": 440,
+      "bytes": 20373
+    },
+    {
+      "file": "03-gallery-cant-afford-r1.jpg",
+      "caption": "Can't afford: only the label's colour changes; the packet has each contrast ratio",
+      "original": "gallery-cant_afford-r1.png",
+      "width": 640,
+      "height": 381,
+      "bytes": 28961
+    },
+    {
+      "file": "04-gallery-onboarding1-base-r1.jpg",
+      "caption": "Base styles: moonlit, storybook, muted, noir, clean",
+      "original": "gallery-onboarding1_base-r1.png",
+      "width": 640,
+      "height": 259,
+      "bytes": 18338
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-29",
+  "time": "07:40",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M4",
+  "commit": "",
+  "subject": "ui",
+  "topic": "UI",
+  "title": "Gallery screen: choose, don't describe",
+  "note": "New: the engine's gallery screen over Sepulcra (M4 taste lane). A round's sheet with numbered variants, the selected tile framed in cyan, This one / This one, with edits (a typed note and one-tap chips such as darker), None of these, Not this one, and the breadcrumb of rounds; the style configurator's last step (interface colours incl. can't afford). Driven by posted mouse clicks and typed text, as a human would.",
+  "source": "scripts/gallery_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-window-01-moonlight-edit.jpg",
+      "caption": "The moonlight gallery: variant 5 selected, the note typed and the darker chip on",
+      "original": "window_01_moonlight_edit.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 27465
+    },
+    {
+      "file": "02-window-02-moonlight-round2.jpg",
+      "caption": "Round 2 around the pick (marked CURRENT), with the breadcrumb",
+      "original": "window_02_moonlight_round2.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 26083
+    },
+    {
+      "file": "03-window-09-onboarding-interface.jpg",
+      "caption": "The style configurator's last step: the accent and can't afford colours on the HUD's panel",
+      "original": "window_09_onboarding_interface.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 27784
+    }
+  ]
+}

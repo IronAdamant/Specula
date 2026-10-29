@@ -52,3 +52,12 @@ worlds/.review-unsaved-*/
 # Save games written by engines run from the checkout (--saves defaults to ./saves)
 /saves/
 .specula-trace/
+
+# Taste history is private (docs/design/GALLERIES.md "Privacy"): raw picks, notes, galleries,
+# boards and onboarding state. What the human approved from them (style.toml, ui/theme.json,
+# assets/style/) is tracked. Every default assets root's taste/ folder: the working directory's
+# (a plain `cargo run -p specula`), any game's assets/ and Sepulcra's. A private project may
+# track its history by removing these lines.
+/taste/
+**/assets/taste/
+/games/sepulcra/assets/taste/

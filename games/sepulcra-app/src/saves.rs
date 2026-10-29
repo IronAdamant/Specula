@@ -198,6 +198,8 @@ impl SepulcraGame {
         self.journal = l.journal;
         self.autoplay = l.autoplay;
         self.paused = l.paused;
+        // A load's pause is the save's: a screen open meanwhile no longer resumes it.
+        self.modal_paused = false;
         self.speed = l.speed;
         self.pres_ticks = l.pres_ticks;
         self.now = self.pres_ticks as f32 / TICK_HZ as f32;

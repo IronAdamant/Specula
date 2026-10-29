@@ -1,0 +1,15 @@
+[package]
+name = "specula-gustus"
+description = "Taste direction as data: galleries and the pick flow, pick-driven preferential Bayesian optimisation, the preference store, reference-board measures and base styles for onboarding"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+specula-core = { workspace = true }
+
+[lints]
+workspace = true

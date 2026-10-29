@@ -399,6 +399,11 @@ impl Engine {
     // ---- submissions ----
 
     fn submit(&mut self, w: Writer, a: SubmitArgs) -> Result<Json, WorldError> {
+        // Taste results reach the queue only from the taste tools (approving one writes the
+        // project's style; a review probe approved a fence model under that batch).
+        if a.batch.as_deref().is_some_and(crate::taste::is_taste_batch) {
+            return Err(WorldError::new("reserved", "batches starting with \"taste\" are the taste tools' (suggestions, the style configurator): pick another batch name").with("field", "batch"));
+        }
         let tick = self.clock.tick();
         // What it covers: subtrees, recorded with their stamps.
         let mut roots: Vec<Root> = Vec::with_capacity(a.paths.len());
@@ -626,6 +631,13 @@ impl Engine {
     fn decide_one(&mut self, w: Writer, authority: Authority, d: DecideOne, promote: bool, force: bool) -> Result<Json, WorldError> {
         let tick = self.clock.tick();
         let s = self.swarm.review.check_decide(w, authority, d.id, d.verdict)?;
+        // Taste results are the human's to approve or turn down: the window, or an agent the
+        // operator granted owner; not a reviewer or a lead.
+        if s.batch.as_deref().is_some_and(crate::taste::is_taste_batch) && w.name != review::WINDOW_OWNER && crate::taste::taste_authority(authority) != crate::taste::TasteAuthority::Owner {
+            return Err(WorldError::new("owner_only", "this submission writes the project's style (a taste result): the owner decides it, at the window's review screen or as an agent the operator granted owner")
+                .with("submission", d.id)
+                .with("authority", authority.name()));
+        }
         let (roots, promote_spec, journal, task, title, submitter, kind) =
             (s.roots.clone(), s.promote.clone(), s.journal.clone(), s.task, s.title.clone(), s.by.name.clone(), s.kind.clone());
         let (journal_epoch, journal_ids, by_owner) = (s.journal_epoch.clone(), s.journal_ids.clone(), s.by.clone());
@@ -686,6 +698,8 @@ impl Engine {
             Status::Pending => unreachable!("not a verdict"),
         }
         let decision_reverted = decision.reverted.is_some();
+        let batch = self.swarm.review.get(d.id).and_then(|s| s.batch.clone());
+        let verdict = d.verdict;
         let epoch = self.swarm.journal().epoch().to_owned();
         let s = self.swarm.review.decide(d.id, decision)?;
         let mut j = s.summary_json(0, &epoch);
@@ -703,6 +717,11 @@ impl Engine {
         let reverted = if decision_reverted { " (its entries reverted)" } else { "" };
         let text = format!("{} #{} ({kind}){reverted}: {}", d.verdict.name(), d.id, cut(&title, 120));
         self.swarm.board.log(w.name, tick, "review", task, text);
+        // Taste results waiting for approval (a suggestion, the style configurator's) are written
+        // as the decider (docs/design/GALLERIES.md).
+        if let Some(applied) = self.taste_review_decided(batch.as_deref(), d.id, verdict == Status::Approved, w) {
+            j.set(if verdict == Status::Approved { "applied" } else { "taste" }, applied);
+        }
         Ok(j)
     }
 

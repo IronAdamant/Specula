@@ -1,0 +1,137 @@
+{
+  "format": "specula.ui.screen.v1",
+  "name": "gallery",
+  "input": "menu",
+  "layer": 85,
+  "modal": true,
+  "focus": "gl_v0",
+  "back": "gallery_close",
+  "notes": "The engine's gallery screen (docs/design/GALLERIES.md): pick a variant, then This one or This one, with edits (a note and chips). Actions: gallery_pick:<i>, gallery_accept, gallery_edit, gallery_none, gallery_dislike, gallery_crumb:<i>, gallery_chip:<i>, gallery_chips_more, gallery_crumbs_earlier, gallery_crumbs_later, gallery_retry, gallery_note_clear, gallery_send, gallery_cancel, gallery_close. The round's sheet is drawn by the engine inside gl_image; clicks on it select, right-clicks mark what is disliked.",
+  "root": {
+    "type": "box",
+    "children": [
+      {
+        "type": "panel",
+        "style": "sheet",
+        "id": "gl_sheet",
+        "anchor": "top",
+        "margin": ["5.5%", 0, 0, 0],
+        "width": "96%",
+        "max_width": "72em",
+        "layout": "column",
+        "align": "stretch",
+        "gap": 5,
+        "children": [
+          {
+            "type": "box", "layout": "row", "align": "center", "gap": 12,
+            "children": [
+              { "type": "label", "text": "{title}", "role": "title" },
+              { "type": "label", "text": "{round_line}", "role": "small", "width": "fill" },
+              { "type": "button", "id": "gl_close", "text": "Close", "action": "gallery_close", "tooltip": "Back to the game (F8)." }
+            ]
+          },
+          {
+            "type": "box", "layout": "row", "align": "center", "gap": 6, "visible": "crumbs",
+            "children": [
+              { "type": "label", "text": "Rounds", "role": "small" },
+              { "type": "button", "id": "gl_cprev", "text": "<", "action": "gallery_crumbs_earlier", "visible": "crumbs_earlier", "tooltip": "Earlier rounds." },
+              { "type": "button", "id": "gl_c0", "text": "{c0}", "action": "gallery_crumb:0", "visible": "c0", "enabled": "c0_back", "tooltip": "Show this round's variants again." },
+              { "type": "button", "id": "gl_c1", "text": "{c1}", "action": "gallery_crumb:1", "visible": "c1", "enabled": "c1_back" },
+              { "type": "button", "id": "gl_c2", "text": "{c2}", "action": "gallery_crumb:2", "visible": "c2", "enabled": "c2_back" },
+              { "type": "button", "id": "gl_c3", "text": "{c3}", "action": "gallery_crumb:3", "visible": "c3", "enabled": "c3_back" },
+              { "type": "button", "id": "gl_c4", "text": "{c4}", "action": "gallery_crumb:4", "visible": "c4", "enabled": "c4_back" },
+              { "type": "button", "id": "gl_c5", "text": "{c5}", "action": "gallery_crumb:5", "visible": "c5", "enabled": "c5_back" },
+              { "type": "button", "id": "gl_c6", "text": "{c6}", "action": "gallery_crumb:6", "visible": "c6", "enabled": "c6_back" },
+              { "type": "button", "id": "gl_c7", "text": "{c7}", "action": "gallery_crumb:7", "visible": "c7", "enabled": "c7_back" },
+              { "type": "button", "id": "gl_cnext", "text": ">", "action": "gallery_crumbs_later", "visible": "crumbs_later", "tooltip": "Later rounds." }
+            ]
+          },
+          {
+            "type": "panel", "id": "gl_image", "style": "inset", "width": "fill", "height": "19em", "layout": "column", "align": "center", "justify": "center",
+            "children": [
+              { "type": "label", "text": "{image_note}", "role": "small", "visible": "image_note", "text_align": "center", "wrap": true }
+            ]
+          },
+          {
+            "type": "box", "layout": "row", "justify": "center", "gap": 5, "visible": "has_round",
+            "children": [
+              { "type": "button", "id": "gl_v0", "text": "{v0}", "action": "gallery_pick:0", "visible": "v0" },
+              { "type": "button", "id": "gl_v1", "text": "{v1}", "action": "gallery_pick:1", "visible": "v1" },
+              { "type": "button", "id": "gl_v2", "text": "{v2}", "action": "gallery_pick:2", "visible": "v2" },
+              { "type": "button", "id": "gl_v3", "text": "{v3}", "action": "gallery_pick:3", "visible": "v3" },
+              { "type": "button", "id": "gl_v4", "text": "{v4}", "action": "gallery_pick:4", "visible": "v4" },
+              { "type": "button", "id": "gl_v5", "text": "{v5}", "action": "gallery_pick:5", "visible": "v5" },
+              { "type": "button", "id": "gl_v6", "text": "{v6}", "action": "gallery_pick:6", "visible": "v6" },
+              { "type": "button", "id": "gl_v7", "text": "{v7}", "action": "gallery_pick:7", "visible": "v7" },
+              { "type": "button", "id": "gl_v8", "text": "{v8}", "action": "gallery_pick:8", "visible": "v8" },
+              { "type": "button", "id": "gl_v9", "text": "{v9}", "action": "gallery_pick:9", "visible": "v9" },
+              { "type": "button", "id": "gl_v10", "text": "{v10}", "action": "gallery_pick:10", "visible": "v10" },
+              { "type": "button", "id": "gl_v11", "text": "{v11}", "action": "gallery_pick:11", "visible": "v11" }
+            ]
+          },
+          { "type": "label", "text": "{selected_line}", "role": "body", "visible": "selected_line", "wrap": true },
+          { "type": "label", "text": "{chips_line}", "role": "small", "visible": "chips_line", "wrap": true },
+          {
+            "type": "box", "layout": "row", "align": "center", "gap": 10, "visible": "failed",
+            "children": [
+              { "type": "label", "text": "{failure_line}", "role": "warn", "width": "fill", "wrap": true },
+              { "type": "button", "id": "gl_retry", "style": "primary", "text": "Try again", "action": "gallery_retry", "tooltip": "Make this round again." }
+            ]
+          },
+          { "type": "label", "text": "{applies_line}", "role": "small", "visible": "applies_line", "wrap": true },
+          { "type": "label", "text": "{status_line}", "role": "good", "visible": ["status_line", "status_good"], "wrap": true },
+          { "type": "label", "text": "{status_line}", "role": "warn", "visible": ["status_line", "!status_good"], "wrap": true },
+          {
+            "type": "box", "layout": "row", "justify": "center", "gap": 10, "visible": "!editing",
+            "children": [
+              { "type": "button", "id": "gl_accept", "style": "primary", "text": "This one", "action": "gallery_accept", "enabled": "can_pick", "tooltip": "{tip_accept}" },
+              { "type": "button", "id": "gl_edit", "text": "This one, with edits", "action": "gallery_edit", "enabled": "can_pick", "tooltip": "{tip_edit}" },
+              { "type": "button", "id": "gl_none", "text": "None of these", "action": "gallery_none", "enabled": "can_decide", "tooltip": "A new spread, away from all of these." },
+              { "type": "button", "id": "gl_dislike", "text": "Not this one", "action": "gallery_dislike", "enabled": "can_pick", "tooltip": "{tip_dislike}" }
+            ]
+          },
+          {
+            "type": "box", "layout": "column", "align": "stretch", "gap": 6, "visible": "editing",
+            "children": [
+              {
+                "type": "box", "layout": "row", "align": "center", "gap": 8,
+                "children": [
+                  { "type": "label", "text": "Note", "role": "heading" },
+                  { "type": "panel", "id": "gl_note", "style": "inset", "width": "fill", "children": [ { "type": "label", "text": "{note_display}", "role": "body", "wrap": true } ] },
+                  { "type": "button", "id": "gl_clear", "text": "Clear", "action": "gallery_note_clear", "enabled": "note" }
+                ]
+              },
+              {
+                "type": "box", "layout": "row", "justify": "center", "gap": 6,
+                "children": [
+                  { "type": "button", "id": "gl_k0", "text": "{k0}", "action": "gallery_chip:0", "visible": "k0" },
+                  { "type": "button", "id": "gl_k1", "text": "{k1}", "action": "gallery_chip:1", "visible": "k1" },
+                  { "type": "button", "id": "gl_k2", "text": "{k2}", "action": "gallery_chip:2", "visible": "k2" },
+                  { "type": "button", "id": "gl_k3", "text": "{k3}", "action": "gallery_chip:3", "visible": "k3" },
+                  { "type": "button", "id": "gl_k4", "text": "{k4}", "action": "gallery_chip:4", "visible": "k4" },
+                  { "type": "button", "id": "gl_k5", "text": "{k5}", "action": "gallery_chip:5", "visible": "k5" },
+                  { "type": "button", "id": "gl_kmore", "text": "More", "action": "gallery_chips_more", "visible": "chips_more", "tooltip": "More chips." }
+                ]
+              },
+              {
+                "type": "box", "layout": "row", "justify": "center", "gap": 10,
+                "children": [
+                  { "type": "button", "id": "gl_send", "style": "primary", "text": "Send", "action": "gallery_send", "tooltip": "A new round around the selected variant, with your chips and note." },
+                  { "type": "button", "id": "gl_cancel", "text": "Cancel", "action": "gallery_cancel" }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "box", "layout": "row", "justify": "center", "gap": 18,
+            "children": [
+              { "type": "prompt", "action": "ui_accept", "text": "Select" },
+              { "type": "prompt", "action": "ui_back", "text": "Close", "visible": "!editing" },
+              { "type": "prompt", "action": "ui_back", "text": "Leave the note", "visible": "editing" }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

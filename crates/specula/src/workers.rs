@@ -62,6 +62,8 @@ pub enum JobKind {
     TraceWrite,
     ReplayWrite,
     PerfWrite,
+    /// A gallery round's sheet packet read back after a restart (the taste tools).
+    SheetRead,
 }
 
 impl JobKind {
@@ -77,6 +79,7 @@ impl JobKind {
             JobKind::TraceWrite => "desync_trace_write",
             JobKind::ReplayWrite => "playtest_replay_write",
             JobKind::PerfWrite => "perf_capture_write",
+            JobKind::SheetRead => "gallery_sheet_read",
         }
     }
 }

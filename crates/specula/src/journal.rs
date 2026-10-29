@@ -262,6 +262,11 @@ impl Entry {
         &*self.by == w.name && self.session.as_deref() == w.session
     }
 
+    /// Whether this entry changed taste state ([`crate::project::is_taste_state`]).
+    pub fn touches_taste(&self) -> bool {
+        self.changes.iter().any(|c| matches!(c, Change::File { path, .. } if crate::project::is_taste_state(path)))
+    }
+
     /// Whether every change kept its previous state (game updates don't; module events are
     /// records of code, not world changes).
     pub fn undoable(&self) -> bool {
@@ -1138,6 +1143,11 @@ impl Journal {
         let targets = self.select(by, req)?;
         if !req.force {
             self.check_conflicts(world, by, &targets)?;
+        } else {
+            // Force never reaches past later changes to taste state (undoing your own gallery's
+            // creation must not erase the owner's picks made since).
+            let taste: Vec<u64> = targets.iter().copied().filter(|&s| self.get(s).is_some_and(Entry::touches_taste)).collect();
+            self.check_conflicts(world, by, &taste)?;
         }
         let mark = world.mark();
         let previous = world.recording();
@@ -1214,6 +1224,17 @@ impl Journal {
                         return Err(WorldError::new(
                             "not_yours",
                             format!("journal entry {seq} changed {other}'s cameras; only they change their cameras"),
+                        )
+                        .with("entry", seq)
+                        .with("by", &*e.by));
+                    }
+                    // Taste state (the human's picks) belongs to whoever made each entry: nobody
+                    // else undoes it, not even by force (taste review 2: a forced world_undo
+                    // erased the owner's pick).
+                    if !e.is_by(by) && e.touches_taste() {
+                        return Err(WorldError::new(
+                            "not_yours",
+                            format!("journal entry {seq} changed taste state (the human's picks); only its maker undoes it, never by force"),
                         )
                         .with("entry", seq)
                         .with("by", &*e.by));

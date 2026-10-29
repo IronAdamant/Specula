@@ -532,6 +532,9 @@ pub enum Store {
     /// Trace incidents: resolved or reopened by an agent the incident names, a reviewer or the
     /// lead; anyone acks, notes or links.
     Incidents,
+    /// Galleries: the maker opens, closes, replaces a round of and deletes its own; the owner, a
+    /// lead or a reviewer any (`crate::taste::taste_authority`).
+    Galleries,
 }
 
 /// What a tool may do, declared once per tool ([`access`]): the authority table.
@@ -613,6 +616,15 @@ pub fn access(tool: &str) -> Option<Access> {
         "project_upload" => Owned(Store::Uploads),
         "tools_request" => Owned(Store::Board),
         "trace_incident" => Owned(Store::Incidents),
+        // Galleries (docs/design/GALLERIES.md): taste state through the taste rule; picks are the
+        // owner's; results reach the game's files through the project rule.
+        "gallery_get" | "gallery_list" | "gallery_wait" | "taste_query" | "board_check" => ReadOnly,
+        "gallery_create" | "board_measure" => World("taste"),
+        "gallery_open" | "gallery_close" | "gallery_round" | "gallery_delete" => Owned(Store::Galleries),
+        "gallery_decide" => Owner,
+        "gallery_apply" => World("project"),
+        "taste_suggest" => Open("lists suggestions and files them for the owner (submit puts one on the review queue, which only the owner decides); apply needs the owner and dismiss a lead or reviewer"),
+        "style_onboard" => Open("starts the style configurator, whose galleries the owner picks from; its result reaches style.toml only when the owner approves it on the review queue; cancelling is its starter's, the owner's, a lead's or a reviewer's"),
         // Authority.
         // trace_settings: engine-wide changes are the lead's; scope "session" is the caller's own view.
         "swarm_settings" | "stream_settings" | "tools_scope" | "trace_settings" | "gi_settings" => Lead,

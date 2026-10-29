@@ -47,6 +47,7 @@ dependencies = [
  "specula-core",
  "specula-gltf",
  "specula-gpu",
+ "specula-gustus",
  "specula-input",
  "specula-lex",
  "specula-locus",
@@ -111,6 +112,13 @@ dependencies = [
  "specula-core",
  "specula-lux",
  "specula-sys",
+]
+
+[[package]]
+name = "specula-gustus"
+version = "0.3.0"
+dependencies = [
+ "specula-core",
 ]
 
 [[package]]

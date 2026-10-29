@@ -251,7 +251,9 @@ max_off_palette = 0.02
 # 0.034. Every bible neutral is under 0.05 except moss (exempt below).
 neutral_max_chroma = 0.05
 # Never green on the player side or cyan on the enemy side.
-forbid = { stone = ["enemy"], wall = ["enemy"], enemy = ["player"], boss = ["player"] }
+# The interface ("ui", gallery colours) never uses the dead's green either (owner, 2026-10-22: green
+# is for the dead; fire is reserved below).
+forbid = { stone = ["enemy"], wall = ["enemy"], enemy = ["player"], boss = ["player"], ui = ["enemy"] }
 # Fire is "brazier cairn flames and splash only; the single warm accent in the scene".
 reserve = { fire = ["brazier_*"] }
 # "Emissive only for gameplay meaning": runes, eyes, bolts, fire.

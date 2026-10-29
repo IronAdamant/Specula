@@ -42,6 +42,10 @@ pub const MAX_FILE_BYTES: usize = 1 << 20;
 /// Files in the store, and their text in all.
 pub const MAX_FILES: usize = 4096;
 pub const MAX_STORE_BYTES: usize = 32 << 20;
+/// Taste state's own budget (galleries, suggestions, boards, onboarding), apart from the above:
+/// 512 galleries and their boards fit; filling it never stops a project_write.
+pub const MAX_TASTE_FILES: usize = 1024;
+pub const MAX_TASTE_BYTES: usize = 64 << 20;
 /// Module crates mounted at once.
 pub const MAX_MODULE_MOUNTS: usize = 16;
 /// Scans go at most this deep and look at most this many directory entries per mount.
@@ -68,6 +72,14 @@ pub enum FileKind {
     Rust,
     Cargo,
     Json,
+    /// `*.json` under `taste/` at the assets root: galleries, suggestions, boards, onboarding
+    /// (docs/design/GALLERIES.md). Reserved data: only the taste tools and the window write it
+    /// (`Rule::Taste`); private by default (raw picks and notes).
+    Taste,
+    /// `*.json` under `style/` at the assets root: approved priors (tracked, not private).
+    StyleData,
+    /// `*.md` under `style/`: the style configurator's notes, once approved.
+    StyleNotes,
     /// Binary files (see [`FileKind::is_binary`]).
     Png,
     Glb,
@@ -76,7 +88,7 @@ pub enum FileKind {
 }
 
 impl FileKind {
-    pub const ALL: [FileKind; 14] = [
+    pub const ALL: [FileKind; 17] = [
         FileKind::Recipe,
         FileKind::Style,
         FileKind::StyleRules,
@@ -87,6 +99,9 @@ impl FileKind {
         FileKind::Rust,
         FileKind::Cargo,
         FileKind::Json,
+        FileKind::Taste,
+        FileKind::StyleData,
+        FileKind::StyleNotes,
         FileKind::Png,
         FileKind::Glb,
         FileKind::Gltf,
@@ -105,6 +120,9 @@ impl FileKind {
             FileKind::Rust => "rust",
             FileKind::Cargo => "cargo",
             FileKind::Json => "json",
+            FileKind::Taste => "taste",
+            FileKind::StyleData => "style_data",
+            FileKind::StyleNotes => "style_notes",
             FileKind::Png => "png",
             FileKind::Glb => "glb",
             FileKind::Gltf => "gltf",
@@ -118,7 +136,7 @@ impl FileKind {
 
     /// JSON text: patched by JSON path, diffed by path.
     pub fn is_json(self) -> bool {
-        !matches!(self, FileKind::StyleRules | FileKind::Rust | FileKind::Cargo) && !self.is_binary()
+        !matches!(self, FileKind::StyleRules | FileKind::Rust | FileKind::Cargo | FileKind::StyleNotes) && !self.is_binary()
     }
 
     /// Bytes, not text: the store holds a pointer into the content store ([`crate::blobs`]);
@@ -156,6 +174,16 @@ pub fn text_hash(text: &str) -> u64 {
     let mut h = StableHasher::with_seed(0x7072_6f6a_6563_7400);
     h.write_str(text);
     h.finish()
+}
+
+/// Whether a journal path is taste state (`/project/assets/taste/...`): galleries, picks,
+/// suggestions, boards and onboarding, written only through the taste tools and the window
+/// (`Rule::Taste`, docs/design/GALLERIES.md). Approved results live elsewhere. Compared folded
+/// (`assets/Taste/` is the same folder on Windows and macOS: taste review 2), and the folder
+/// itself counts (a claim on it).
+pub fn is_taste_state(journal: &str) -> bool {
+    let f = fold_case(journal);
+    f.starts_with("/PROJECT/ASSETS/TASTE/") || f == "/PROJECT/ASSETS/TASTE"
 }
 
 /// `/project/<path>`.
@@ -229,12 +257,17 @@ pub fn room_for(files: &BTreeMap<String, ProjectFile>, path: &str, bytes: usize)
         return Err(bad("too_large", format!("{path} would be {bytes} bytes; project files are at most {MAX_FILE_BYTES}"), path).with("bytes", bytes).with("limit", MAX_FILE_BYTES));
     }
     let old = files.get(path).map(|f| f.text.len());
-    if old.is_none() && files.len() >= MAX_FILES {
-        return Err(bad("store_full", format!("the project store holds {MAX_FILES} files, its limit; delete some first"), path).with("limit", MAX_FILES));
+    // Taste state has a budget of its own (taste review 2: galleries filled the shared store and
+    // broke everyone's project_write); each pool counts only its own files.
+    let taste = is_taste_state(&journal_path(path));
+    let (max_files, max_bytes, what) = if taste { (MAX_TASTE_FILES, MAX_TASTE_BYTES, "taste state (galleries: gallery_delete)") } else { (MAX_FILES, MAX_STORE_BYTES, "the project store") };
+    let pool = || files.iter().filter(|(p, _)| is_taste_state(&journal_path(p)) == taste);
+    if old.is_none() && pool().count() >= max_files {
+        return Err(bad("store_full", format!("{what} holds {max_files} files, its limit; delete some first"), path).with("limit", max_files));
     }
-    let total: usize = files.values().map(|f| f.text.len()).sum::<usize>() - old.unwrap_or(0) + bytes;
-    if total > MAX_STORE_BYTES {
-        return Err(bad("store_full", format!("the project store would hold {total} bytes of text; at most {MAX_STORE_BYTES}"), path).with("limit", MAX_STORE_BYTES));
+    let total: usize = pool().map(|(_, f)| f.text.len()).sum::<usize>() - old.unwrap_or(0) + bytes;
+    if total > max_bytes {
+        return Err(bad("store_full", format!("{what} would hold {total} bytes of text; at most {max_bytes}"), path).with("limit", max_bytes));
     }
     Ok(())
 }
@@ -320,6 +353,18 @@ pub fn kind_for(mount: MountKind, rel: &str) -> Option<FileKind> {
             }
             if name == "style.toml" {
                 return Some(FileKind::StyleRules);
+            }
+            // The taste folder at the assets root (galleries, picks, boards, onboarding: private),
+            // and the style folder (what the human approved from them: tracked).
+            if segments.len() >= 2 && segments[0] == "taste" {
+                return (ext.as_deref() == Some("json")).then_some(FileKind::Taste);
+            }
+            if segments.len() == 2 && segments[0] == "style" {
+                return match ext.as_deref() {
+                    Some("json") => Some(FileKind::StyleData),
+                    Some("md") => Some(FileKind::StyleNotes),
+                    _ => None,
+                };
             }
             if let Some(k) = binary_kind(&segments[..segments.len() - 1], ext.as_deref()) {
                 return Some(k);
@@ -1105,6 +1150,12 @@ mod tests {
         assert_eq!(kind_for(a, "docs/gallery/shot.png"), None, "binary files only in their folders");
         assert_eq!(kind_for(a, "luts/grade.png"), None);
         assert_eq!(kind_for(a, "data/waves.json"), None);
+        assert_eq!(kind_for(a, "taste/galleries/moon.json"), Some(FileKind::Taste));
+        assert_eq!(kind_for(a, "taste/style_notes.md"), None, "notes are approved results: style/");
+        assert_eq!(kind_for(a, "style/notes.md"), Some(FileKind::StyleNotes));
+        assert_eq!(kind_for(a, "style/priors.json"), Some(FileKind::StyleData));
+        assert_eq!(kind_for(a, "taste/boards/moonlit/a.png"), None, "board images are on disk, not in the store");
+        assert_eq!(kind_for(a, "recipes/taste/x.json"), None);
         let m = MountKind::Module;
         assert_eq!(kind_for(m, "Cargo.toml"), Some(FileKind::Cargo));
         assert_eq!(kind_for(m, "actions.json"), Some(FileKind::Json));
@@ -1112,6 +1163,19 @@ mod tests {
         assert_eq!(kind_for(m, "src/a/b.rs"), Some(FileKind::Rust));
         assert_eq!(kind_for(m, "lib.rs"), None);
         assert_eq!(kind_for(m, "target/x.json"), None);
+    }
+
+    /// Taste review 2: galleries shared the project store's budget, so any agent could fill it
+    /// and break everyone's project_write. Each pool counts only its own files.
+    #[test]
+    fn taste_state_has_a_budget_of_its_own() {
+        let mut files = BTreeMap::new();
+        for i in 0..MAX_TASTE_FILES {
+            files.insert(format!("assets/taste/galleries/g{i}.json"), ProjectFile::new(FileKind::Taste, Arc::from("{}"), 1, Arc::from("t")));
+        }
+        assert_eq!(room_for(&files, "assets/taste/galleries/one_more.json", 2).unwrap_err().code, "store_full", "taste state is full");
+        assert!(room_for(&files, "assets/ui/hud.json", 2).is_ok(), "the project's own files still have room");
+        assert!(room_for(&files, "assets/taste/galleries/g0.json", 4).is_ok(), "rewriting one is fine");
     }
 
     #[test]

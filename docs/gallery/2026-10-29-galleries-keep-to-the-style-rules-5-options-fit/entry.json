@@ -1,0 +1,32 @@
+{
+  "date": "2026-10-29",
+  "time": "21:00",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M4",
+  "commit": "",
+  "subject": "ui",
+  "topic": "UI",
+  "title": "Galleries keep to the style rules: 5 options fit",
+  "note": "Since the gallery screen entry: interface colours keep to Sepulcra's palette rules by hue as well as nearest colour (no grave green or fire on a label or accent), labels count as different only 0.06 Oklab apart, and a guarded colour with no room of its own is dropped and replanned among the greys the rules allow, so the can't-afford round shows 5 that read apart and says so on its round line. Sheet headers carry the question in the UI font; onboarding steps say which of four they are.",
+  "source": "scripts/gallery_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-window-05-cant-afford-round1.jpg",
+      "caption": "Can't afford: 5 options fit the style rules, each label 0.06 or more apart",
+      "original": "window_05_cant_afford_round1.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 30180
+    },
+    {
+      "file": "02-window-09-onboarding-interface.jpg",
+      "caption": "Step 4 of 4: accents kept to the runes' cyans and blues (sage and mint guarded)",
+      "original": "window_09_onboarding_interface.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 32274
+    }
+  ]
+}

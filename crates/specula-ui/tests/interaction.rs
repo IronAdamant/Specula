@@ -147,6 +147,33 @@ fn mouse_click_activates_and_hover_focuses() {
     assert!(actions(&e).is_empty());
 }
 
+/// A click whose press and release land in one frame (a window that renders slowly or idles
+/// between frames) activates once, on the next frame: the press counts as held for the frame it
+/// came in (taste review 2 looked here for gallery_check's restart flake).
+#[test]
+fn a_click_within_one_frame_activates() {
+    let mut ui = menu_ui();
+    let mut h = Harness::new();
+    let mut s = StateMap::new();
+    s.set_bool("allow_settings", true);
+    let v = view(800, 600);
+    h.frame(&mut ui, &[], &s, &v);
+    let q = centre(&ui, "quit");
+    let e = h.frame(&mut ui, &[mv(q[0], q[1]), down(q[0], q[1]), up(q[0], q[1])], &s, &v);
+    let mut fired = actions(&e);
+    let e = h.frame(&mut ui, &[], &s, &v);
+    fired.extend(actions(&e));
+    assert_eq!(fired, vec!["quit"]);
+    let e = h.frame(&mut ui, &[], &s, &v);
+    assert!(actions(&e).is_empty());
+    // A disabled button still refuses such a click.
+    let p = centre(&ui, "settings");
+    s.set_bool("allow_settings", false);
+    h.frame(&mut ui, &[mv(p[0], p[1])], &s, &v);
+    let e = h.frame(&mut ui, &[down(p[0], p[1]), up(p[0], p[1])], &s, &v);
+    assert!(actions(&e).is_empty());
+}
+
 #[test]
 fn touch_tap_activates() {
     let mut ui = menu_ui();

@@ -23,6 +23,9 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Mutex};
 
+/// Gallery rounds rendered through the stage (docs/design/GALLERIES.md).
+pub(crate) mod gallery;
+
 /// Marks one agent identity keeps (the least recently used goes first).
 pub const MAX_MARKS_PER_AGENT: usize = 8;
 /// Every agent's marks together (pixels, estimated).
@@ -215,6 +218,8 @@ pub(crate) struct PlacedOwned {
     yaw: f32,
     lod: usize,
     radius: f32,
+    /// Non-uniform scale (galleries vary proportions; the studio's own renders use one).
+    scale: Vec3,
 }
 
 /// One stage render: everything the engine needs to draw it.
@@ -229,6 +234,8 @@ pub(crate) struct RenderReq {
     aspect: f32,
     /// `None`: a silhouette.
     light: Option<(Rig, bool)>,
+    /// A gallery variant's extras: fog, or the live world as the subject (see `gallery`).
+    extra: Option<Box<gallery::Extra>>,
 }
 
 /// A render on its way to the engine, and where its pixels go.
@@ -343,6 +350,14 @@ impl Shared {
     /// [`CALL_LIMIT`] at the engine's share. Checked before any work.
     fn admit(&self, session: &str, renders: usize) -> Result<u64, ToolOutput> {
         locked(&self.calls).admit(session, renders)
+    }
+
+    /// A call needs `n` renders more than it was admitted with (a gallery round replacing tiles
+    /// that rendered alike): counted, so the queue's waits and shares see them.
+    pub(crate) fn more_renders(&self, call: u64, n: usize) {
+        if let Some(r) = locked(&self.calls).running.get_mut(&call) {
+            r.1 += n;
+        }
     }
 
     fn rendered(&self, call: u64) {
@@ -784,6 +799,10 @@ struct Render {
 impl Engine {
     /// Renders one recorded request on the GPU (the studio's own targets).
     fn render_req(&mut self, req: &RenderReq) -> Result<Vec<u8>, ToolOutput> {
+        if let Some(scene) = req.extra.as_ref().and_then(|x| x.scene.as_ref()) {
+            // A gallery variant of the live world (read only).
+            return self.render_scene_variant(req, scene);
+        }
         let (w, h, cam) = (req.w, req.h, &req.cam);
         let vp = cam.view_proj(req.aspect);
         let mut draws: Vec<DrawItem> = Vec::new();
@@ -807,7 +826,11 @@ impl Engine {
                         draws.push(d);
                     }
                 }
-                (environment(rig, cam, igpu, reach, studio_shadow_map(&self.world.env().light.shadow)), [rig.background[0], rig.background[1], rig.background[2], 1.0])
+                let mut env = environment(rig, cam, igpu, reach, studio_shadow_map(&self.world.env().light.shadow));
+                if let Some(fog) = req.extra.as_ref().and_then(|x| x.fog) {
+                    env.fog = fog;
+                }
+                (env, [rig.background[0], rig.background[1], rig.background[2], 1.0])
             }
             None => (
                 specula_gpu::Environment { sun_intensity: 0.0, ambient_intensity: 0.0, tonemap: false, ..specula_gpu::Environment::default() },
@@ -816,7 +839,7 @@ impl Engine {
         };
         let first_subject = draws.len();
         for p in &req.subjects {
-            let m = Mat4::from_trs(p.at, Quat::from_axis_angle(Vec3::Y, p.yaw.to_radians()), Vec3::ONE);
+            let m = Mat4::from_trs(p.at, Quat::from_axis_angle(Vec3::Y, p.yaw.to_radians()), p.scale);
             if let Err(e) = self.models.posed_draws_lod(&mut self.gpu, &p.built, &p.skin, &m, p.lod, &mut bones, &mut draws) {
                 return Err(error("render_unavailable", e));
             }
@@ -976,7 +999,8 @@ impl Engine {
             self.studio.credit_ms = MAX_CREDIT_MS;
             return;
         }
-        let alive: BTreeSet<String> = server.all_sessions().into_iter().map(|s| s.id).collect();
+        // (The gallery worker's renders belong to no MCP session: it is always alive.)
+        let alive: BTreeSet<String> = server.all_sessions().into_iter().map(|s| s.id).chain([gallery::WORKER_SESSION.to_owned()]).collect();
         let gone: Vec<String> = self.studio.queue.keys().filter(|k| !alive.contains(*k)).cloned().collect();
         for k in gone {
             for job in self.studio.queue.remove(&k).into_iter().flatten() {
@@ -1074,7 +1098,7 @@ impl Engine {
         if self.studio.pins.is_empty() {
             return;
         }
-        let alive: BTreeSet<String> = server.all_sessions().into_iter().map(|s| s.id).collect();
+        let alive: BTreeSet<String> = server.all_sessions().into_iter().map(|s| s.id).chain([gallery::WORKER_SESSION.to_owned()]).collect();
         let before = self.studio.pins.len();
         self.studio.pins.retain(|_, p| alive.contains(&p.session) && now - p.last <= if p.done { PIN_GRACE } else { PIN_IDLE });
         if self.studio.pins.len() != before {
@@ -1277,7 +1301,7 @@ impl Ctx<'_> {
             self.render_scale = self.render_scale.min(rw as f32 / w as f32);
         }
         let req = RenderReq {
-            subjects: placed.iter().map(|p| PlacedOwned { built: Arc::clone(&p.s.built), skin: p.s.skin.clone(), at: p.at, yaw: p.yaw, lod: p.lod, radius: p.s.radius() }).collect(),
+            subjects: placed.iter().map(|p| PlacedOwned { built: Arc::clone(&p.s.built), skin: p.s.skin.clone(), at: p.at, yaw: p.yaw, lod: p.lod, radius: p.s.radius(), scale: Vec3::ONE }).collect(),
             refs,
             cam: *cam,
             w: rw,
@@ -1287,7 +1311,15 @@ impl Ctx<'_> {
                 Light::Rig(rig, igpu) => Some((rig.clone(), igpu)),
                 Light::Silhouette => None,
             },
+            extra: None,
         };
+        self.send_render(req, w, h)
+    }
+
+    /// Sends a render request to the engine and waits for its pixels (scaled up to `w`×`h` when
+    /// it rendered smaller).
+    fn send_render(&mut self, req: RenderReq, w: u32, h: u32) -> Result<Vec<u8>, ToolOutput> {
+        let (rw, rh) = (req.w, req.h);
         let (tx, rx) = crate::jobs::channel();
         let job = RenderJob { call: self.call, session: self.session.id.clone(), req, reply: tx, deadline: self.deadline, trace: specula_core::trace::Ctx::current() };
         if !self.tools.post(self.session, Command::StudioRender(Box::new(job))) {

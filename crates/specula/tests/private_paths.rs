@@ -143,3 +143,28 @@ fn tracked_files_hold_no_private_paths() {
     }
     assert!(found.is_empty(), "tracked files hold private paths or ids (the repo is public):\n{}", found.join("\n"));
 }
+
+/// Taste history is private (docs/design/GALLERIES.md "Privacy"; taste review 2): the `taste/`
+/// folder of every default assets root is ignored by git (the working directory's, which a plain
+/// `cargo run -p specula` uses as its assets root; any game's `assets/`; Sepulcra's), and
+/// nothing tracked sits in one.
+#[test]
+fn taste_history_is_never_tracked() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let paths = ["taste/galleries/g1.json", "taste/onboarding.json", "games/sepulcra/assets/taste/galleries/g1.json", "games/other/assets/taste/suggestions.json", "assets/taste/boards/b.json"];
+    let out = match Command::new("git").arg("-C").arg(&root).args(["check-ignore", "--no-index"]).args(paths).output() {
+        Ok(o) if o.status.code().is_some_and(|c| c == 0 || c == 1) => o.stdout,
+        _ => {
+            println!("skipping: git is not available here");
+            return;
+        }
+    };
+    let ignored = String::from_utf8_lossy(&out).replace('\\', "/");
+    for p in paths {
+        assert!(ignored.lines().any(|l| l.trim() == p), "{p} must be ignored (.gitignore): picks and notes are private");
+    }
+    let tracked = Command::new("git").arg("-C").arg(&root).args(["ls-files"]).output().expect("git ran above").stdout;
+    let tracked = String::from_utf8_lossy(&tracked);
+    let leaked: Vec<&str> = tracked.lines().filter(|l| l.starts_with("taste/") || l.contains("/assets/taste/") || l.starts_with("assets/taste/")).collect();
+    assert!(leaked.is_empty(), "taste history is tracked: {leaked:?}");
+}

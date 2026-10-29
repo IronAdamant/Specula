@@ -94,6 +94,8 @@ struct Fix {
     edit: u64,
     unjoint: u64,
     unhook: u64,
+    /// Alice's entry writing taste state (the window's or the worker's, as far as undo goes).
+    taste: u64,
 }
 
 fn fixture() -> Fix {
@@ -140,11 +142,21 @@ fn fixture() -> Fix {
     // A project file (read from disk) and a clock: kept even if a writer replaces the world.
     live.disk(&mut sw, 0, |wd| {
         wd.put_file("assets/recipes/fixture.json", Some(crate::project::ProjectFile::new(crate::project::FileKind::Recipe, Arc::from("{}"), 1, Arc::from("disk"))), true);
+        // Taste state (the human's picks), as a rows' target.
+        wd.put_file("assets/taste/onboarding.json", Some(crate::project::ProjectFile::new(crate::project::FileKind::Taste, Arc::from("{}"), 1, Arc::from("disk"))), true);
         Ok(())
     })
     .unwrap();
+    let taste = live
+        .commit(&mut sw, 0, ALICE, Kind::File, Rule::Taste, |wd| {
+            wd.put_file("assets/taste/galleries/a1.json", Some(crate::project::ProjectFile::new(crate::project::FileKind::Taste, Arc::from("{}"), 1, Arc::from("alice"))), false);
+            Ok(())
+        })
+        .unwrap()
+        .1
+        .unwrap();
     live.set_clock_s(12.5);
-    Fix { live, sw, abox, rbox, hook: hook1, edit, unjoint, unhook }
+    Fix { live, sw, abox, rbox, hook: hook1, edit, unjoint, unhook, taste }
 }
 
 /// What a row must come to.
@@ -182,6 +194,29 @@ fn agent(f: &mut Fix, w: Writer, kind: Kind, rule: Rule, command: impl FnOnce(&m
 fn set_abox(f: &mut Fix, rule: Rule) -> Result<(), WorldError> {
     let id = f.abox;
     agent(f, MALLORY, Kind::Set, rule, |wd| wd.update(&EntityKey::Id(id), moved(9.0), "mallory").map(|_| ()))
+}
+
+/// Mallory writes project file `path` under `rule` (the taste tools commit through
+/// `Engine::project_put` exactly so).
+fn taste_file(f: &mut Fix, rule: Rule, path: &'static str) -> Result<(), WorldError> {
+    agent(f, MALLORY, Kind::File, rule, |wd| {
+        wd.put_file(path, Some(crate::project::ProjectFile::new(crate::project::FileKind::Taste, Arc::from("{}"), 1, Arc::from("mallory"))), false);
+        Ok(())
+    })
+}
+
+/// Alice claims the assets folder; mallory writes taste state under the taste rule, as the
+/// window and the gallery worker do.
+fn taste_under_claim(f: &mut Fix) -> Result<(), WorldError> {
+    let s1 = session("aaaaaa11");
+    f.sw.take_claim(&f.live, &s1, ClaimSpec { scope: Scope::path("/project/assets").unwrap(), lease: DEFAULT_LEASE, note: String::new() })?;
+    taste_file(f, Rule::Taste, "assets/taste/galleries/g1.json")
+}
+
+/// Mallory claims the taste folder (spelled in another case).
+fn claim_taste(f: &mut Fix) -> Result<(), WorldError> {
+    let s2 = session("bbbbbb22");
+    f.sw.take_claim(&f.live, &s2, ClaimSpec { scope: Scope::path("/project/assets/Taste").unwrap(), lease: DEFAULT_LEASE, note: String::new() }).map(|_| ())
 }
 
 fn spawn_at(f: &mut Fix, w: Writer, path: &'static str) -> Result<(), WorldError> {
@@ -401,6 +436,26 @@ const ROWS: &[(&str, Write, Expect)] = &[
         })
     }, Expect::Refused("reserved")),
     ("vfx_set's rule on a claimed entity", |f| set_abox(f, Rule::Vfx), Expect::Refused("claimed")),
+    // Taste state (M4, taste lane review: a builder forged the human's pick with project_write,
+    // and gallery_apply wrote it into style.toml): only the taste rule writes /project/assets/taste,
+    // and it writes nothing else.
+    ("the project tools' rule writing taste state (a forged pick)", |f| taste_file(f, Rule::Project, "assets/taste/galleries/g1.json"), Expect::Refused("reserved")),
+    ("the project tools' rule deleting taste state", |f| {
+        agent(f, MALLORY, Kind::File, Rule::Project, |wd| {
+            wd.put_file("assets/taste/onboarding.json", None, false);
+            Ok(())
+        })
+    }, Expect::Refused("reserved")),
+    ("the taste tools' rule writing taste state (project_put, the window, the gallery worker)", |f| taste_file(f, Rule::Taste, "assets/taste/galleries/g1.json"), Expect::Allowed),
+    ("the taste tools' rule writing outside taste state", |f| taste_file(f, Rule::Taste, "assets/style.toml"), Expect::Refused("reserved")),
+    ("the taste tools' rule on a claimed entity", |f| set_abox(f, Rule::Taste), Expect::Refused("reserved")),
+    // Taste review 2: a builder's claim locked the human's picks out (F5), and a forced
+    // world_undo erased the owner's pick. No agent claims taste state, claims on what holds it
+    // don't apply to the taste rule, and nobody undoes another's taste entry, even by force.
+    ("the taste tools' rule under another agent's claim on the assets folder (the window's pick)", taste_under_claim, Expect::Allowed),
+    ("a claim on taste state (in another case)", claim_taste, Expect::Refused("reserved")),
+    ("world_undo of another's taste entry, forced (an erased pick)", |f| undo(f, f.taste), Expect::Refused("not_yours")),
+    ("the project tools' rule writing taste state in another case (assets/Taste)", |f| taste_file(f, Rule::Project, "assets/Taste/galleries/g1.json"), Expect::Refused("reserved")),
     ("the GI tools' rule on a claimed entity", |f| set_abox(f, Rule::Gi), Expect::Refused("claimed")),
     // Baked GI volumes (/gi, props.gi_volume: only gi_bake).
     ("world_spawn in /gi", |f| spawn_at(f, MALLORY, "/gi"), Expect::Refused("reserved")),
@@ -684,7 +739,7 @@ fn every_write_path_holds_the_policy() {
 fn the_table_names_every_writer() {
     let names: Vec<&str> = ROWS.iter().map(|(n, _, _)| *n).collect();
     let has = |s: &str| names.iter().any(|n| n.contains(s));
-    for rule in [Rule::World, Rule::Joint, Rule::Nav, Rule::Lex, Rule::LexLive, Rule::Project, Rule::Vfx, Rule::Gi] {
+    for rule in [Rule::World, Rule::Joint, Rule::Nav, Rule::Lex, Rule::LexLive, Rule::Project, Rule::Vfx, Rule::Taste, Rule::Gi] {
         let row = match rule {
             Rule::World => "world_set",
             Rule::Joint => "physics_joint's rule",
@@ -693,6 +748,7 @@ fn the_table_names_every_writer() {
             Rule::LexLive => "lex_live's rule",
             Rule::Project => "the project tools' rule",
             Rule::Vfx => "vfx_set's rule",
+            Rule::Taste => "the taste tools' rule",
             Rule::Gi => "the GI tools' rule",
         };
         assert!(has(row), "{rule:?} has a row");

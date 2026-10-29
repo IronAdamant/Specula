@@ -270,6 +270,8 @@ pub enum Command {
     Gi(crate::gi_tools::GiCall),
     /// Project files (see [`crate::project_tools`]).
     Project(crate::project_tools::ProjectCall),
+    /// Galleries, preferences, boards and onboarding (see [`crate::taste`]).
+    Taste(crate::taste::TasteCall),
     /// Whether the caller may force a prune (`disk_prune {free_mb}`: the lead only).
     DiskGate,
     /// Where a review's files may be (captures, the queue's evidence): for copying evidence on
@@ -589,6 +591,7 @@ pub enum CallerThread {
     Procgen,
     Terrain,
     Balance,
+    Taste,
     Trace,
     /// The `tools_*` tools (a session's tool list: see [`crate::toolscope_tools`]); answered
     /// before routing, in `ToolHandler::call`.
@@ -610,6 +613,7 @@ impl CallerThread {
             n if n.starts_with("project_") => CallerThread::Project,
             n if n.starts_with("procgen_") => CallerThread::Procgen,
             n if n.starts_with("balance_") => CallerThread::Balance,
+            n if crate::taste_tools::is_taste_tool(n) => CallerThread::Taste,
             n if n.starts_with("trace_") => CallerThread::Trace,
             n if n.starts_with("tools_") => CallerThread::Scope,
             n if n.starts_with("disk_") => CallerThread::Disk,
@@ -629,6 +633,7 @@ impl CallerThread {
             CallerThread::Procgen => "procgen_* tools bake textures, terrains and scatters outside the engine thread: generate before the playtest (a playtest can world_batch what they make)",
             CallerThread::Terrain => "terrain_edit patches the recipe and waits for its rebuild outside the engine thread: sculpt and paint before the playtest (terrain_info works inside one)",
             CallerThread::Balance => "balance_* tools simulate outside the engine thread: sweep and tune before or after the playtest",
+            CallerThread::Taste => "gallery_*, taste_*, board_* and style_onboard wait for renders and the owner's picks outside the engine thread: run galleries before or after the playtest",
             CallerThread::Trace => "trace_* tools read the trace on your own connection: query it before or after the playtest (the playtest's work is traced under its call)",
             CallerThread::Scope => {
                 "tools_* tools change your session's tool list on your connection: activate before the playtest (its steps may call any tool within your cap, listed or not)"
@@ -713,6 +718,8 @@ impl Tools {
                 Some(CallerThread::Terrain) => return crate::terrain_tools::call(self, session, name, arguments),
                 // The balance lab runs simulations on this thread (and its workers), like lex_simulate.
                 Some(CallerThread::Balance) => return crate::balance_tools::call(self, session, name, arguments),
+                // Spaces are validated, boards measured and waits polled on this thread.
+                Some(CallerThread::Taste) => return crate::taste_tools::call(self, session, name, arguments),
                 // The trace is read on this thread: it answers while the engine is stalled.
                 Some(CallerThread::Trace) => return crate::trace_tools::call(session, name, arguments),
                 // The disk budget is shared: answered on this thread.
@@ -2804,6 +2811,7 @@ pub(crate) fn definitions() -> Vec<ToolDef> {
     .chain(crate::anim_tools::definitions())
     .chain(crate::studio_tools::definitions())
     .chain(crate::vfx_tools::definitions())
+    .chain(crate::taste_tools::definitions())
     .chain(crate::gi_tools::definitions())
     .chain(crate::terrain_tools::definitions())
     .chain(crate::trace_tools::definitions())

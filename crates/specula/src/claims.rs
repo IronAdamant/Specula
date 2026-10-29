@@ -272,6 +272,13 @@ impl Claims {
     /// another agent's live claim.
     pub fn take(&mut self, world: &World, owner: &str, session: &str, spec: ClaimSpec, now: Instant) -> Result<&Claim, WorldError> {
         let ClaimSpec { scope, lease, note } = spec;
+        // Taste state (the human's picks) is reserved: claims don't apply to it, so none is taken
+        // on it (taste review 2: a builder's claim locked the owner's picks out).
+        if let Scope::Path(p) = &scope {
+            if crate::project::is_taste_state(p) {
+                return Err(WorldError::new("reserved", format!("{p} is taste state (the human's picks): only the taste tools and the window write it, and no agent claims it")).with("path", p.as_str()));
+            }
+        }
         self.expire(now, None);
         let me = Writer::new(owner, Some(session));
         let mine = self.claims.values().filter(|c| c.held_by(me)).count();

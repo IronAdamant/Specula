@@ -229,6 +229,10 @@ pub enum Rule {
     Project,
     /// vfx_set: the effect library (`/vfx` and its children, the `vfx_effect` tag).
     Vfx,
+    /// The taste tools and the window's gallery screen: taste state (`/project/assets/taste/`:
+    /// galleries, picks, suggestions, boards, onboarding), and nothing else. The project tools
+    /// may not write it, so no agent can forge the human's picks (docs/design/GALLERIES.md).
+    Taste,
     /// gi_bake: baked GI volumes (`/gi` and its children, `props.gi_volume` anywhere).
     Gi,
 }
@@ -244,6 +248,7 @@ impl Rule {
             Rule::LexLive => "lex_live",
             Rule::Project => "project",
             Rule::Vfx => "vfx",
+            Rule::Taste => "taste",
             Rule::Gi => "gi",
         }
     }
@@ -386,12 +391,28 @@ fn reserved(changes: &[Change], r: Reserved) -> Result<(), WorldError> {
     }
     // /project holds project files, written only through the project tools; no entity may live
     // there (a claim on a file must never cover something else).
-    if let Some(c) = changes.iter().find(|c| (!owns(Rule::Project) && matches!(c, Change::File { .. })) || (!matches!(c, Change::File { .. }) && crate::project::under_root(c.path()))) {
+    if let Some(c) = changes.iter().find(|c| (!owns(Rule::Project) && !owns(Rule::Taste) && matches!(c, Change::File { .. })) || (!matches!(c, Change::File { .. }) && crate::project::under_root(c.path()))) {
         return Err(WorldError::new(
             "reserved",
             format!("'{}' is in /project, which holds project files: change them with project_write / project_patch / project_delete (project_list and project_read read them)", c.path()),
         )
         .with("path", c.path().to_owned()));
+    }
+    // Taste state: the human's picks and notes, the taste tools' and the window's only (a
+    // forged decision written with project_write would apply as if the human had chosen it).
+    if !owns(Rule::Taste) {
+        if let Some(c) = changes.iter().find(|c| matches!(c, Change::File { .. }) && crate::project::is_taste_state(c.path())) {
+            return Err(WorldError::new(
+                "reserved",
+                format!("'{}' is taste state (galleries, picks, suggestions, boards, onboarding): only the taste tools and the window write it (gallery_*, taste_*, board_*, style_onboard)", c.path()),
+            )
+            .with("path", c.path().to_owned()));
+        }
+    }
+    if owns(Rule::Taste) {
+        if let Some(c) = changes.iter().find(|c| !(matches!(c, Change::File { .. }) && crate::project::is_taste_state(c.path()))) {
+            return Err(WorldError::new("reserved", format!("'{}' isn't taste state: the taste rule writes /project/assets/taste/ only", c.path())).with("path", c.path().to_owned()));
+        }
     }
     // The effect library: /vfx's children tagged vfx_effect (a claim on /vfx covers every world
     // effect), written only through vfx_set; the tag marks an effect, so it goes nowhere else.
@@ -564,7 +585,9 @@ pub fn commit<T>(
     let world = world.policy_world(&KEY);
     let now = Instant::now();
     let (claims, journal) = swarm.claims_and_journal(&KEY);
-    let blocks = claims.could_block(w, now);
+    // Taste state is reserved (only the taste tools write it, and only it): no agent's claim
+    // applies to it, so a builder's claim can't lock the human's picks out (F5; taste review 2).
+    let blocks = rule != Rule::Taste && claims.could_block(w, now);
     let command = |wd: &mut World| {
         let mark = wd.mark();
         let v = checked(wd, |w| command(w))?;
@@ -993,8 +1016,8 @@ impl Live {
     /// tools keep the files), or (`None`) as a disk import.
     #[cfg(test)]
     pub(crate) fn raw_commit_for_test(&mut self, swarm: &mut Swarm, tick: u64, w: Writer, rule: Rule, f: impl FnOnce(&mut World)) -> bool {
-        let files = if rule == Rule::Project { Files::Kept } else { Files::Lent };
-        let kind = if rule == Rule::Project { Kind::File } else { Kind::Set };
+        let files = if matches!(rule, Rule::Project | Rule::Taste) { Files::Kept } else { Files::Lent };
+        let kind = if matches!(rule, Rule::Project | Rule::Taste) { Kind::File } else { Kind::Set };
         let (out, clean) = self.run(swarm, tick, "raw writer (test)", files, Records::Full, |world, swarm| {
             commit(world, swarm, tick, w, kind, rule, |h| {
                 f(h.policy_world(&KEY));
@@ -1094,7 +1117,7 @@ impl Live {
         rule: Rule,
         command: impl FnOnce(&mut dyn WorldWrite) -> Result<T, WorldError>,
     ) -> Result<(T, Option<u64>), WorldError> {
-        let files = if rule == Rule::Project { Files::Kept } else { Files::Lent };
+        let files = if matches!(rule, Rule::Project | Rule::Taste) { Files::Kept } else { Files::Lent };
         let (out, clean) = self.run(swarm, tick, "commit", files, Records::Full, |world, swarm| commit(world, swarm, tick, w, kind, rule, command));
         if !clean {
             return Err(Live::refusal("commit"));

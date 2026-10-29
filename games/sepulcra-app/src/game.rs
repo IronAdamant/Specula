@@ -80,6 +80,10 @@ pub struct SepulcraGame {
     radial_cell: Option<CellId>,
     confirm: Option<Confirm>,
     pub(crate) paused: bool,
+    /// Paused because an engine screen (review, gallery) holds the window; resumed when it
+    /// closes. Cleared by any other pause or resume, a new run and a load (taste review 2: an
+    /// agent's explicit pause was undone when the screen closed).
+    pub(crate) modal_paused: bool,
     pub(crate) speed: u32,
     events: Vec<Event>,
     /// Events from commands applied between ticks (flashes on the next sync).
@@ -175,6 +179,7 @@ impl SepulcraGame {
             radial_cell: None,
             confirm: None,
             paused: false,
+            modal_paused: false,
             speed: 1,
             events: Vec::new(),
             pending: Vec::new(),
@@ -322,6 +327,7 @@ impl SepulcraGame {
         self.pending.clear();
         self.log.clear();
         self.paused = false;
+        self.modal_paused = false;
         self.inspect = None;
         self.sfx.reset();
         for screen in ["pause", "victory", "defeat", "radial", "confirm"] {
@@ -377,6 +383,13 @@ impl SepulcraGame {
     /// Active pause (DESIGN.md): the dead stand still, building still works. The pause *menu* is
     /// [`SepulcraGame::open_menu`].
     pub(crate) fn set_paused(&mut self, world: &mut GameWorld<'_>, paused: bool) {
+        // Anyone else's pause or resume is theirs to keep: the screen no longer resumes it.
+        self.modal_paused = false;
+        self.apply_pause(world, paused);
+    }
+
+    /// The pause itself (the modal screen's, which remembers that it paused).
+    fn apply_pause(&mut self, world: &mut GameWorld<'_>, paused: bool) {
         self.paused = paused;
         if !paused {
             self.hud.show("pause", false);
@@ -1132,6 +1145,19 @@ impl Game for SepulcraGame {
         Ok(())
     }
 
+    fn modal_changed(&mut self, ctx: &mut Ctx, open: bool) {
+        // The engine's review or gallery screen holds the window: the run waits (the same active
+        // pause as P, journaled like any frame), and resumes when it closes unless the player had
+        // paused it already.
+        if open && self.running() && !self.paused {
+            self.apply_pause(&mut ctx.world, true);
+            self.modal_paused = true;
+        } else if !open && self.modal_paused {
+            self.modal_paused = false;
+            self.apply_pause(&mut ctx.world, false);
+        }
+    }
+
     fn assets_changed(&mut self, _ctx: &mut Ctx, paths: &[String]) {
         // Screens, the theme and sounds come from the assets folder: reload what changed (the
         // engine reloads recipes itself).
@@ -1390,6 +1416,7 @@ impl Game for SepulcraGame {
         self.selected = c.selected;
         self.inspect = c.inspect;
         self.paused = c.paused;
+        self.modal_paused = false;
         self.speed = c.speed;
         self.events = c.events;
         self.pending = c.pending;

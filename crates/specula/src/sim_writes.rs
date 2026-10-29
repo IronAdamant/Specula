@@ -28,6 +28,8 @@ pub(crate) enum GameCall<'c, 'f> {
     RequestDone(&'c GameRequest, Result<Json, Json>),
     /// The repair after a refused game tool, for games without checkpoints.
     RolledBack,
+    /// An engine screen took (`true`) or gave back the window's input.
+    ModalChanged(bool),
 }
 
 impl GameCall<'_, '_> {
@@ -37,7 +39,7 @@ impl GameCall<'_, '_> {
             GameCall::Tick => Kind::GameTick,
             GameCall::ApplyState(_) => Kind::GameStart,
             GameCall::RolledBack => Kind::GameTool,
-            GameCall::Frame(_) | GameCall::Overlay(_) | GameCall::BeforeCapture | GameCall::AssetsChanged(_) | GameCall::RequestDone(..) => Kind::GameFrame,
+            GameCall::Frame(_) | GameCall::Overlay(_) | GameCall::BeforeCapture | GameCall::AssetsChanged(_) | GameCall::RequestDone(..) | GameCall::ModalChanged(_) => Kind::GameFrame,
         }
     }
 }
@@ -57,6 +59,7 @@ pub(crate) fn game(world: &mut Live, swarm: &mut Swarm, game: &mut dyn Game, clo
             GameCall::ApplyState(state) => game.apply_state(ctx, state),
             GameCall::RequestDone(request, result) => game.request_done(ctx, request, result),
             GameCall::RolledBack => game.world_rolled_back(ctx),
+            GameCall::ModalChanged(open) => game.modal_changed(ctx, open),
         }
     });
 }

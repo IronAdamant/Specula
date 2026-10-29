@@ -115,7 +115,7 @@ impl Engine {
                 ToolOutput::text("{}")
             }
             ProjectCall::Commit { path, base, file, replace_unreadable, also, reply } => {
-                match self.project_commit(&path, base, file, replace_unreadable, also, w, by) {
+                match self.project_commit(&path, base, file, replace_unreadable, also, w, by, crate::write_policy::Rule::Project) {
                     CommitStep::Now(done) => {
                         let _ = reply.send(done);
                     }
@@ -211,9 +211,11 @@ impl Engine {
         Snap { kind, module_dir, current, at_version: at, later, context: ctx, error: None, held }
     }
 
+    /// One file's commit under `rule`: the project tools' (`Rule::Project`), or the taste tools'
+    /// for taste state (`Rule::Taste`, through [`Engine::project_put`]).
     #[allow(clippy::too_many_arguments)]
-    fn project_commit(&mut self, path: &str, base: (u64, u64), file: Option<(FileKind, Arc<str>)>, replace_unreadable: bool, also: Option<crate::project_tools::Also>, w: Writer, by: &str) -> CommitStep {
-        match self.project_commit_now(path, base, file, replace_unreadable, also, w, by) {
+    fn project_commit(&mut self, path: &str, base: (u64, u64), file: Option<(FileKind, Arc<str>)>, replace_unreadable: bool, also: Option<crate::project_tools::Also>, w: Writer, by: &str, rule: crate::write_policy::Rule) -> CommitStep {
+        match self.project_commit_now(path, base, file, replace_unreadable, also, w, by, rule) {
             Ok((seq, backup)) => CommitStep::Synced { seq, backup },
             Err(c) => CommitStep::Now(c),
         }
@@ -221,7 +223,7 @@ impl Engine {
 
     /// The commit itself: `Ok((journal entry, backup))`, or why not.
     #[allow(clippy::too_many_arguments)]
-    fn project_commit_now(&mut self, path: &str, base: (u64, u64), file: Option<(FileKind, Arc<str>)>, replace_unreadable: bool, also: Option<crate::project_tools::Also>, w: Writer, by: &str) -> Result<(Option<u64>, Option<String>), Committed> {
+    fn project_commit_now(&mut self, path: &str, base: (u64, u64), file: Option<(FileKind, Arc<str>)>, replace_unreadable: bool, also: Option<crate::project_tools::Also>, w: Writer, by: &str, rule: crate::write_policy::Rule) -> Result<(Option<u64>, Option<String>), Committed> {
         if let Some(e) = self.project_case_clash(path) {
             return Err(Committed::Refused(e));
         }
@@ -298,9 +300,69 @@ impl Engine {
             None => None,
         };
         let tick = self.clock.tick();
-        match self.world.commit(&mut self.swarm, tick, w, crate::journal::Kind::File, crate::write_policy::Rule::Project, |wd| file_commit(wd, path, new, also, by)) {
+        match self.world.commit(&mut self.swarm, tick, w, crate::journal::Kind::File, rule, |wd| file_commit(wd, path, new, also, by)) {
             Err(e) => Err(Committed::Refused(e)),
             Ok((_, seq)) => Ok((seq, backup)),
+        }
+    }
+
+    /// Writes project file `path` as `w` from its current text (`None`: it doesn't exist yet),
+    /// validated by kind like an agent's write, then committed through the write policy
+    /// (`Rule::Project`: claim-checked, journaled, undoable) and synced to disk. The taste tools'
+    /// files (galleries, picks, boards, onboarding) and what their approvals edit (style.toml, a
+    /// theme) go through here (docs/design/GALLERIES.md).
+    pub(crate) fn project_put(&mut self, path: &str, edit: impl FnOnce(Option<&str>) -> Result<String, WorldError>, w: Writer, by: &str, rule: crate::write_policy::Rule) -> Result<Json, WorldError> {
+        let snap = self.project_snapshot(path, None, true);
+        if let Some(e) = snap.error {
+            return Err(e);
+        }
+        let Some(kind) = snap.kind else {
+            return Err(WorldError::new("not_mirrored", format!("{path} isn't a kind of file the project mirrors")).with("path", path));
+        };
+        let old = snap.current.as_ref().map(|f| Arc::clone(&f.text));
+        let text = edit(old.as_deref())?;
+        if old.as_deref() == Some(text.as_str()) {
+            return Ok(Json::obj([("path", Json::from(path)), ("version", Json::from(snap.current.as_ref().map(|f| f.version))), ("unchanged", Json::Bool(true))]));
+        }
+        let problems = crate::project_kinds::validate(path, kind, &text, old.as_deref(), &snap.context);
+        if let Some(p) = problems.iter().find(|p| p.is_error()) {
+            return Err(WorldError::new("invalid_file", format!("{path}: {} ({}); nothing was changed", p.message, p.code)).with("path", path).with("problem", p.to_json()));
+        }
+        let base = snap.current.as_ref().map_or((0, 0), |f| (f.version, f.hash));
+        // The caller names its rule: the taste savers (galleries, suggestions, boards,
+        // onboarding) pass `Rule::Taste`, writers of results `Rule::Project`. Never derived from
+        // the path (taste review 2: gallery_apply into a taste file got the taste rule).
+        let step = self.project_commit(path, base, Some((kind, Arc::from(text))), false, None, w, by, rule);
+        self.project_step_now(path, step, "written")
+    }
+
+    /// Deletes project file `path` as `w` under the caller's `rule` (claims, journal and undo as
+    /// any write; `gallery_delete` deletes taste state so).
+    pub(crate) fn project_remove(&mut self, path: &str, w: Writer, by: &str, rule: crate::write_policy::Rule) -> Result<Json, WorldError> {
+        let snap = self.project_snapshot(path, None, true);
+        if let Some(e) = snap.error {
+            return Err(e);
+        }
+        let Some(current) = snap.current.as_ref() else {
+            return Err(WorldError::new("not_found", format!("{path} doesn't exist")).with("path", path));
+        };
+        let step = self.project_commit(path, (current.version, current.hash), None, false, None, w, by, rule);
+        self.project_step_now(path, step, "deleted")
+    }
+
+    /// A commit's answer for engine-thread callers (the taste tools): at once, with the journal
+    /// entry and version; the disk follows on the project lane (`disk: syncing`), as for any
+    /// project write, so the engine thread never waits for a file.
+    fn project_step_now(&mut self, path: &str, step: CommitStep, what: &str) -> Result<Json, WorldError> {
+        match step {
+            CommitStep::Now(Committed::Done(j)) => Ok(j),
+            CommitStep::Now(Committed::Refused(e)) => Err(e),
+            CommitStep::Now(Committed::Changed) => Err(WorldError::new("busy", format!("{path} changed while it was being {what}; nothing was changed (try again)")).with("path", path)),
+            CommitStep::Synced { seq, .. } => {
+                self.project_sync_then(Some(path), |_, _, _| {});
+                let version = self.world.files().get(path).map(|f| f.version);
+                Ok(Json::obj([("path", Json::from(path)), ("version", Json::from(version)), ("journal", Json::from(seq)), ("disk", Json::from("syncing"))]))
+            }
         }
     }
 

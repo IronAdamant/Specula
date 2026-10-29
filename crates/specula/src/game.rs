@@ -172,6 +172,11 @@ pub trait Game {
     /// recipes, styles and anim sets are reloaded by the engine. Default: nothing.
     fn assets_changed(&mut self, _ctx: &mut Ctx, _paths: &[String]) {}
 
+    /// An engine screen that takes the window's input (the review or the gallery screen) opened
+    /// (`true`) or closed: a real-time game pauses itself through its own pause path, so the
+    /// human doesn't lose while deciding (the call is journaled like any frame's). Default: nothing.
+    fn modal_changed(&mut self, _ctx: &mut Ctx, _open: bool) {}
+
     /// The engine undid the world changes of a rejected game tool and the game had no checkpoint:
     /// make the world show the game's own state again. The entities those changes created are
     /// gone and their ids are **never reused**, so the game must drop every id it cached from the

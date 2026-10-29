@@ -233,6 +233,19 @@ def main():
         else:
             d.check("ann started a playtest", False, json.dumps(pt)[:300])
         d.probed.add("playtest_run")
+        # Galleries (docs/design/GALLERIES.md): the maker opens, closes, replaces a round of and
+        # deletes its own; the owner, a lead or a reviewer any; bob none of ann's.
+        space = [{"name": "s", "target": "light.key_intensity", "min": 0.3, "max": 1.0}]
+        d.ok("ann", "gallery_create", id="anns", subject={"stage": {}}, space=space, wait=False)
+        d.expect("bob puts ann's gallery on the owner's screen", "bob", "gallery_open", {"id": "anns"}, ["not_allowed"])
+        d.check("ann puts her own gallery on the screen", d.raw(d.agent("ann"), "gallery_open", {"id": "anns"})[0] is None)
+        d.expect("bob closes the screen showing ann's gallery", "bob", "gallery_close", {}, ["not_allowed"])
+        rev_close = d.raw(d.agent("rev"), "gallery_close", {})
+        d.check("the granted reviewer closes it", rev_close[0] is None, json.dumps(rev_close[1])[:200])
+        d.expect("bob replaces ann's gallery round", "bob", "gallery_round", {"id": "anns", "variants": [{"s": 0.3}, {"s": 0.9}]}, ["not_allowed"])
+        d.expect("bob deletes ann's gallery", "bob", "gallery_delete", {"id": "anns"}, ["not_allowed"])
+        ann_del = d.raw(d.agent("ann"), "gallery_delete", {"id": "anns"})
+        d.check("ann deletes her own gallery", ann_del[0] is None and (ann_del[1] or {}).get("deleted") is True, json.dumps(ann_del[1])[:200])
 
         lead_note = d.raw(d.agent("lee"), "note_delete", {"id": note, "force": True})
         d.check("the lead may force the deletion of ann's note", lead_note[0] is None, json.dumps(lead_note[1])[:200])

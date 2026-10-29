@@ -74,6 +74,9 @@ mod response;
 pub mod review;
 mod review_engine;
 mod review_screen;
+mod gallery_screen;
+mod taste;
+mod taste_tools;
 mod review_tools;
 mod schedule;
 pub mod sight;
@@ -543,11 +546,15 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     }
     // The window's human, in the review queue's attribution.
     engine.swarm.reserve(review::WINDOW_OWNER);
+    // The gallery worker's rendered rounds, in the journal.
+    engine.swarm.reserve(taste::TASTE_AGENT);
     // Who the operator made owner, lead or reviewer (never self-declared; see `authority`).
     engine.swarm.grants = args.grants.clone();
     let game_tools = game.as_ref().map(|g| g.tools()).unwrap_or_default();
     engine.lex_natives = game.as_ref().map(|g| g.lex_natives()).unwrap_or_default();
     let (to_engine, requests) = mpsc::channel();
+    // The gallery worker sends its renders through the same channel as agents.
+    engine.taste.connect(to_engine.clone(), Arc::clone(&engine.studio.shared));
     let server = Server::start(
         ServerConfig {
             bind: format!("127.0.0.1:{}", args.port),
@@ -862,6 +869,10 @@ struct Engine {
     evidence: evidence::EvidenceState,
     /// The window's review screen (see `review_screen`).
     review_ui: review_screen::ReviewUi,
+    /// Galleries, the preference store, boards and the style configurator (see `taste`).
+    taste: taste::Taste,
+    /// An engine screen (review, gallery) held the window's input at the last frame.
+    modal_open: bool,
     /// The gamepads handed to the hosted game each window frame (reused), and the gate that
     /// releases them while the review screen holds the input.
     game_pads: Vec<specula_platform::GamepadState>,
@@ -1021,6 +1032,8 @@ impl Engine {
             disk_last: Instant::now(),
             evidence: Default::default(),
             review_ui: review_screen::ReviewUi::with_captures(captures_root),
+            taste: taste::Taste::default(),
+            modal_open: false,
             game_pads: Vec::new(),
             pad_gate: game::PadGate::default(),
             workers: workers::Workers::default(),
@@ -1257,6 +1270,15 @@ impl Engine {
         // The review screen reads input first; while it is open the game, modules and live Lex
         // runs get none (no keys, pointer or pads).
         let modal = self.review_frame(size);
+        // The gallery screen next: under an open review screen it gets no input (no keys, pointer
+        // or pads).
+        let modal = self.gallery_frame(size, modal) || modal;
+        // A hosted game pauses itself while an engine screen holds the window (it is told once
+        // per change).
+        if modal != self.modal_open {
+            self.modal_open = modal;
+            self.game_call(sim_writes::GameCall::ModalChanged(modal));
+        }
         if modal {
             self.logic.feed_window_idle(dt.as_secs_f32());
         } else {
@@ -1933,6 +1955,7 @@ impl Engine {
             self.pump_builds(None);
             self.poll_saves();
             self.project_pump();
+            self.taste_pump();
             self.disk_pump();
             self.serve_captures();
             self.pump_workers(Some(server));
@@ -1986,6 +2009,7 @@ impl Engine {
             // The game's interface (its own zone, outside the draw list's).
             let mut game_quads = std::mem::take(&mut self.game_quads);
             self.game_overlay(size, camera, false, &mut game_quads);
+            self.gallery_overlay(size, false, &mut game_quads);
             self.review_overlay(size, false, &mut game_quads);
             let draw_list = profile::zone("draw_list");
             let mut draws = std::mem::take(&mut self.draws);
@@ -2106,6 +2130,7 @@ impl Engine {
             }
             self.poll_saves();
             self.project_pump();
+            self.taste_pump();
             self.disk_pump();
             self.serve_captures();
             self.pump_workers(Some(server));
@@ -2512,6 +2537,7 @@ impl Engine {
             Command::Vfx(call) => self.vfx_call(call, w, tick),
             Command::Gi(call) => self.gi_call(call, w, tick, &request.session),
             Command::Project(call) => self.project_call(call, w, &by),
+            Command::Taste(call) => self.handle_taste(call, &request.session),
             Command::DiskGate => self.disk_gate(&request.session),
             Command::ReviewRoots => self.review_roots_json(),
             Command::EvidenceRefused(made) => self.evidence_refused(made),
@@ -2962,6 +2988,7 @@ fn call_class(command: &Command) -> Class {
         Command::SaveGame(call) => call.class(),
         Command::Playtest(_) => Class::Sim,
         Command::Project(call) => call.class(),
+        Command::Taste(call) => call.class(),
         Command::DiskGate | Command::ReviewRoots | Command::EvidenceRefused(_) => Class::Read,
         Command::Lex(call) if call.is_read() => Class::Read,
         Command::Lex(_) => Class::Edit,

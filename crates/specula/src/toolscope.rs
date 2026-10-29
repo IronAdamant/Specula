@@ -85,6 +85,7 @@ pub const FAMILIES: &[Family] = &[
     fam("anim", "clips, graphs, motion checks, filmstrips", &["anim_"], &[]),
     fam("studio", "the asset studio: stage, sheets, line-ups, taste and style checks", &["studio_", "style_"], &[]),
     fam("review", "the owner's review queue, critiques, merges", &["review_", "critique_", "merge_"], &[]),
+    fam("taste", "galleries the owner picks from, the preference store, reference boards, the style configurator", &["gallery_", "taste_", "board_"], &["style_onboard"]),
     fam("vfx", "particles, effects and decals", &["vfx_"], &[]),
     fam("gi", "baked global illumination: bake probe volumes, check them, the runtime tier", &["gi_"], &[]),
     fam("logic", "game logic modules (Rust): build, reload, inspect, drive", &["logic_"], &[]),
@@ -116,7 +117,7 @@ pub const ROLES: &[Role] = &[
     role("builder", "builds the world", &["world", "sight", "claim", "board", "journal", "model", "engine", "terrain"], &[]),
     role(crate::authority::ROLE_REVIEWER, "checks finished work", &["sight", "journal", "board", "review", "studio"], &["world_query", "world_list"]),
     role("playtester", "plays and records runs", &["game", "playtest", "sight", "board", "save", "engine"], &["world_query", "world_hash"]),
-    role("art_director", "holds the look", &["sight", "studio", "review", "model", "procgen", "vfx", "gi", "terrain", "project", "board"], &["world_env", "world_query"]),
+    role("art_director", "holds the look", &["sight", "studio", "review", "taste", "model", "procgen", "vfx", "gi", "terrain", "project", "board"], &["world_env", "world_query"]),
     role("sight_skeptic", "verifies visual claims", &["sight"], &["world_query", "world_list", "critique_add"]),
     role("performance", "measures frame cost and disk use", &["perf", "engine", "stream", "sight", "disk"], &["world_query", "world_list", "gi_info", "gi_settings"]),
     role("designer", "gameplay rules and balance", &["lex", "balance", "playtest", "game", "board", "save"], &["world_query"]),
@@ -274,6 +275,21 @@ pub(crate) const BRIEFS: &[(&str, &str)] = &[
     ("studio_compare", "before/after on the stage"),
     ("studio_check", "the taste loop in one call"),
     ("style_check", "style.toml rules on recipes"),
+    ("gallery_create", "show the owner variants to choose from"),
+    ("gallery_get", "a gallery: round, picks, sheet"),
+    ("gallery_delete", "delete a gallery and its picks"),
+    ("gallery_list", "galleries by status"),
+    ("gallery_open", "show a gallery in the window"),
+    ("gallery_close", "close the window's gallery screen"),
+    ("gallery_wait", "wait for the owner's next pick"),
+    ("gallery_decide", "pick for the owner (role owner)"),
+    ("gallery_round", "your own variants as the next round"),
+    ("gallery_apply", "write the accepted values"),
+    ("taste_query", "the owner's past picks and notes"),
+    ("taste_suggest", "priors suggested by agreeing picks"),
+    ("board_measure", "measure a reference board"),
+    ("board_check", "a capture against a reference board"),
+    ("style_onboard", "the first-run style configurator"),
     ("review_submit", "put work on the review queue"),
     ("review_list", "the review queue"),
     ("review_decide", "approve or reject submissions"),
@@ -1191,6 +1207,8 @@ mod tests {
         assert_eq!(family_of("world_history"), Some("journal"), "placed by name over the world_ prefix");
         assert_eq!(family_of("window_view"), Some("sight"));
         assert_eq!(family_of("style_check"), Some("studio"));
+        assert_eq!(family_of("style_onboard"), Some("taste"), "placed by name over the style_ prefix");
+        assert_eq!(family_of("board_check"), Some("taste"));
         assert_eq!(family_of("agent_hello"), Some("tools"));
         assert_eq!(family_of("zzz_new"), None);
         let c = catalog();
