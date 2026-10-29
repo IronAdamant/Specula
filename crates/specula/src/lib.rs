@@ -97,6 +97,8 @@ mod ui;
 pub mod flashwatch;
 pub mod vfx;
 mod vfx_tools;
+mod gi;
+mod gi_tools;
 pub mod terrain;
 mod terrain_tools;
 pub mod water;
@@ -423,6 +425,10 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     engine.stream = streaming::Streamer::new(perf_cfg.streaming.clone(), kind);
     engine.vfx.budget = perf_cfg.vfx.budget(kind);
     engine.vfx.enabled = args.vfx;
+    // Baked GI files live with the pipeline cache, by hash (the world keeps only the hash).
+    engine.gi.store.dir = cache_dir.join("gi");
+    // The iGPU samples GI per draw by default (its budget); other adapters per pixel.
+    engine.gi.quality = gi::Quality::default_for(engine.gpu.adapter().kind == specula_gpu::AdapterKind::Integrated);
     engine.terrain.disabled = !args.terrain;
     engine.perf_cfg = perf_cfg;
     engine.worlds_dir = args.worlds.unwrap_or_else(|| cwd.join("worlds"));
@@ -498,6 +504,12 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         engine.saved_revision = engine.world.revision();
         engine.saved_seq = engine.swarm.journal().last_seq();
         engine.world_name = Some(name);
+    }
+    // A world with baked GI: its GI pipelines start building now, before any model upload asks
+    // for the skinned and textured ones (a background build runs one request at a time, so a GI
+    // request behind them waited 40 to 130 s on a busy iGPU).
+    if engine.gi.has_volumes(&engine.world) && engine.gi.quality != gi::Quality::Off {
+        engine.gpu.request_gi_variants(engine.gi.quality.gpu());
     }
     // The review screen shows the captures and the current queue's evidence.
     engine.review_ui.set_roots(engine.review_roots());
@@ -815,6 +827,8 @@ struct Engine {
     playtests: playtest_engine::Playtests,
     /// Particles, effects and decals (see [`vfx`]): cosmetic, never simulation.
     vfx: vfx::Vfx,
+    /// Baked GI (see [`gi`]): volumes, bake jobs, the store, resident chunks.
+    gi: gi::Gi,
     /// WCAG 2.3.1 on the final image: the window's frames and each view's captures.
     flash: flashwatch::FlashWatch,
     /// Zero of the window flash watch's clock.
@@ -972,6 +986,7 @@ impl Engine {
             multi_commit_calls: 0,
             playtests: Default::default(),
             vfx,
+            gi: gi::Gi::new(std::env::temp_dir().join("specula-gi")),
             flash: flashwatch::FlashWatch::default(),
             flash_epoch: Instant::now(),
             formats: response::Defaults::new(response::Format::Concise),
@@ -1022,6 +1037,7 @@ impl Engine {
         // perf.toml's [lex_live] limits.
         self.nav.reset();
         self.vfx.reset();
+        self.gi.reset();
         // Navigation reads the loaded world now: its navmeshes are built (in slices, the clock
         // held) before the first tick, as they were in the run that saved it.
         self.nav.sync(&self.world, self.world_generation);
@@ -1888,6 +1904,7 @@ impl Engine {
             self.serve_captures();
             self.pump_playtests(server, playtest_engine::WINDOW_SLICE);
             self.pump_studio(studio::WINDOW_SHARE, server);
+            self.gi_pump();
             self.advance_clock();
             let now = Instant::now();
             let dt = now - last_frame;
@@ -1954,12 +1971,20 @@ impl Engine {
             self.build_effects(&fx_view, time_s, true, &mut lights, true);
             let fx = self.vfx.take_frame();
             let bones = self.models.take_bones();
+            // Baked GI: the chunks around this camera (and a recent capture's).
+            self.gi.update(&self.world, camera.eye, false);
+            if self.gi.wants_pipelines() {
+                // Built on a worker ahead of the first GI frame (frames draw the flat ambient meanwhile).
+                self.gpu.request_gi_variants(self.gi.quality.gpu());
+            }
+            let (gi_volumes, gi_count) = self.gi.volumes();
             let terrains = std::mem::take(&mut self.terrain.frame);
             let mut frame = FrameDesc {
                 bones: &bones,
                 draws_2d: &draws_2d,
                 overlay: &game_quads,
                 effects: fx.effects(),
+                gi: self.gi.frame(&gi_volumes[..gi_count], gi::CaptureView::Lit),
                 terrains: &terrains,
                 ..sight::frame(&self.world, &view_proj, &draws, &lights, time_s as f32)
             };
@@ -2044,6 +2069,7 @@ impl Engine {
             self.serve_captures();
             self.pump_playtests(server, playtest_engine::HEADLESS_SLICE);
             self.pump_studio(studio::HEADLESS_SHARE, server);
+            self.gi_pump();
             self.trace_idle_checks();
         }
         Ok(())
@@ -2445,6 +2471,7 @@ impl Engine {
             Command::Anim(call) => self.anim_call(call, w, tick),
             Command::StudioRender(_) | Command::StudioDone(_) => unreachable!("queued by studio_enqueue"),
             Command::Vfx(call) => self.vfx_call(call, w, tick),
+            Command::Gi(call) => self.gi_call(call, w, tick, &request.session),
             Command::Project(call) => self.project_call(call, w, &by),
             Command::DiskGate => self.disk_gate(&request.session),
             Command::ReviewRoots => self.review_roots_json(),
@@ -2973,6 +3000,7 @@ fn call_class(command: &Command) -> Class {
         Command::Anim(call) => anim_tools::call_class(call),
         Command::StudioRender(_) | Command::StudioDone(_) => Class::Read,
         Command::Vfx(call) => vfx_tools::call_class(call),
+        Command::Gi(call) => gi_tools::call_class(call),
         Command::Save { .. } | Command::Load { .. } | Command::ModelBuild(_) | Command::ModelReload => Class::Disk,
         Command::Hash { verify: true, .. } => Class::Big,
         Command::Swarm(call) => call.class(),

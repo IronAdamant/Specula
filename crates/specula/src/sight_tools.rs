@@ -389,6 +389,15 @@ pub fn frame_extra_schema() -> Vec<(&'static str, Json)> {
                  by the ID buffer)",
             ),
         ),
+        (
+            "gi",
+            described(
+                "string",
+                "Baked GI in this capture: lit (default, as the window draws it), off (the flat ambient: before/after \
+                 pairs), irradiance (the indirect light alone) or probes (that, with the probes as small spheres). \
+                 The packet's gi lists the volumes and whether they are stale (see gi_info)",
+            ),
+        ),
     ]
 }
 

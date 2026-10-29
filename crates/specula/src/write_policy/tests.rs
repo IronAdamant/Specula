@@ -401,6 +401,23 @@ const ROWS: &[(&str, Write, Expect)] = &[
         })
     }, Expect::Refused("reserved")),
     ("vfx_set's rule on a claimed entity", |f| set_abox(f, Rule::Vfx), Expect::Refused("claimed")),
+    ("the GI tools' rule on a claimed entity", |f| set_abox(f, Rule::Gi), Expect::Refused("claimed")),
+    // Baked GI volumes (/gi, props.gi_volume: only gi_bake).
+    ("world_spawn in /gi", |f| spawn_at(f, MALLORY, "/gi"), Expect::Refused("reserved")),
+    ("world_spawn of GI volume settings outside /gi", |f| {
+        let mut s = group("/sneak");
+        s.props = Json::obj([(crate::gi::PROP, Json::obj([("min", Json::arr([0.0, 0.0, 0.0].map(Json::from))), ("max", Json::arr([1.0, 1.0, 1.0].map(Json::from)))]))]);
+        agent(f, MALLORY, Kind::Spawn, Rule::World, |wd| wd.spawn(s, "mallory").map(|_| ()))
+    }, Expect::Refused("reserved")),
+    ("a game tool writing /gi", |f| for_mallory(f, "sepulcra", |wd| {
+        wd.spawn(group("/gi"), "sepulcra").unwrap();
+    }), Expect::Refused("reserved")),
+    ("the GI tools' rule adding /gi", |f| agent(f, MALLORY, Kind::Spawn, Rule::Gi, |wd| wd.spawn(group("/gi"), "mallory").map(|_| ())), Expect::Allowed),
+    ("the GI tools' rule placing a volume in a claimed region", |f| agent(f, MALLORY, Kind::Spawn, Rule::Gi, |wd| {
+        let mut g = group("/gi");
+        g.position = Vec3::new(5.0, 0.5, 5.0);
+        wd.spawn(g, "mallory").map(|_| ())
+    }), Expect::Refused("claimed")),
     // The effect library (/vfx, the vfx_effect tag: only vfx_set) and the effect rules
     // (crate::vfx::write_rules: effects named must exist; nothing may flash more than 3 times a
     // second) on every checked path.
@@ -576,6 +593,38 @@ const ROWS: &[(&str, Write, Expect)] = &[
     }, Expect::Replaced),
 ];
 
+/// GI bakes (review of the GI lane, finding 5): a bake whose settings are unchanged writes
+/// nothing at its start, yet it occupies the baker and lands its result in the volume, so the
+/// volume's claims hold there too; a running bake is cancelled only by its starter or by an agent
+/// who may write the volume, naming it. (Checks, not writes: so tests beside the table.)
+#[test]
+fn gi_bakes_and_their_cancels_hold_claims() {
+    use crate::gi_tools::{may_cancel, may_write_volume};
+    let mut f = fixture();
+    let mut yard = group("/gi/yard");
+    yard.position = Vec3::new(5.0, 0.5, 5.0); // inside Alice's region claim
+    let mut free = group("/gi/free");
+    free.position = Vec3::new(90.0, 0.5, 90.0);
+    agent(&mut f, ALICE, Kind::Batch, Rule::Gi, |wd| {
+        wd.spawn(group("/gi"), "alice")?;
+        wd.spawn(yard, "alice")?;
+        wd.spawn(free, "alice").map(|_| ())
+    })
+    .unwrap();
+    assert_eq!(may_write_volume(&f.sw, &f.live, "yard", MALLORY).unwrap_err().code, "claimed", "an unchanged bake of a claimed volume");
+    assert!(may_write_volume(&f.sw, &f.live, "yard", ALICE).is_ok());
+    assert!(may_write_volume(&f.sw, &f.live, "free", MALLORY).is_ok());
+    assert!(may_write_volume(&f.sw, &f.live, "new", MALLORY).is_ok(), "a new volume: its spawn is checked when written");
+    // Alice's bake of the yard.
+    let alice = ALICE.session.unwrap();
+    assert_eq!(may_cancel(&f.sw, &f.live, "yard", alice, "yard", MALLORY, false).unwrap_err().code, "not_job_owner", "another agent's bake needs force");
+    assert_eq!(may_cancel(&f.sw, &f.live, "yard", alice, "yard", MALLORY, true).unwrap_err().code, "force_needs_lead", "and force the lead (authority::may_force)");
+    assert_eq!(may_cancel(&f.sw, &f.live, "yard", alice, "free", ALICE, false).unwrap_err().code, "wrong_volume", "the volume named must be the one baking");
+    assert!(may_cancel(&f.sw, &f.live, "yard", alice, "yard", ALICE, false).is_ok());
+    // Alice's bake of a free volume: still hers (force, the lead's, for anyone else).
+    assert_eq!(may_cancel(&f.sw, &f.live, "free", alice, "free", MALLORY, true).unwrap_err().code, "force_needs_lead");
+}
+
 /// Every row from the same fixture: refused rows leave the world and journal exactly as they
 /// were (nothing pending), allowed and exempt ones journal under the right name, and the journal
 /// replays to the live world afterwards.
@@ -635,7 +684,7 @@ fn every_write_path_holds_the_policy() {
 fn the_table_names_every_writer() {
     let names: Vec<&str> = ROWS.iter().map(|(n, _, _)| *n).collect();
     let has = |s: &str| names.iter().any(|n| n.contains(s));
-    for rule in [Rule::World, Rule::Joint, Rule::Nav, Rule::Lex, Rule::LexLive, Rule::Project, Rule::Vfx] {
+    for rule in [Rule::World, Rule::Joint, Rule::Nav, Rule::Lex, Rule::LexLive, Rule::Project, Rule::Vfx, Rule::Gi] {
         let row = match rule {
             Rule::World => "world_set",
             Rule::Joint => "physics_joint's rule",
@@ -644,6 +693,7 @@ fn the_table_names_every_writer() {
             Rule::LexLive => "lex_live's rule",
             Rule::Project => "the project tools' rule",
             Rule::Vfx => "vfx_set's rule",
+            Rule::Gi => "the GI tools' rule",
         };
         assert!(has(row), "{rule:?} has a row");
     }

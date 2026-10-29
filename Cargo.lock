@@ -51,6 +51,7 @@ dependencies = [
  "specula-lex",
  "specula-locus",
  "specula-logic",
+ "specula-lux",
  "specula-mens",
  "specula-model",
  "specula-physics",
@@ -108,6 +109,7 @@ name = "specula-gpu"
 version = "0.3.0"
 dependencies = [
  "specula-core",
+ "specula-lux",
  "specula-sys",
 ]
 
@@ -140,6 +142,13 @@ dependencies = [
  "specula-core",
  "specula-sdk",
  "specula-sys",
+]
+
+[[package]]
+name = "specula-lux"
+version = "0.3.0"
+dependencies = [
+ "specula-core",
 ]
 
 [[package]]

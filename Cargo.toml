@@ -23,6 +23,7 @@ members = [
     "crates/specula-balance",
     "crates/specula-studio",
     "crates/specula-scintilla",
+    "crates/specula-lux",
     "crates/specula",
     "games/sepulcra",
     "games/sepulcra-app",
@@ -72,6 +73,7 @@ specula-lex = { path = "crates/specula-lex" }
 specula-balance = { path = "crates/specula-balance" }
 specula-studio = { path = "crates/specula-studio" }
 specula-scintilla = { path = "crates/specula-scintilla" }
+specula-lux = { path = "crates/specula-lux" }
 
 [profile.dev]
 opt-level = 1
@@ -117,6 +119,8 @@ opt-level = 2
 opt-level = 2
 [profile.dev.package.specula-scintilla]
 opt-level = 2
+[profile.dev.package.specula-lux]
+opt-level = 3
 [profile.dev.package.specula]
 opt-level = 2
 

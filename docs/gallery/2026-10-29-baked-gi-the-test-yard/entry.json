@@ -1,0 +1,56 @@
+{
+  "date": "2026-10-29",
+  "time": "18:00",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M4",
+  "commit": "",
+  "subject": "engine-tests",
+  "topic": "engine test",
+  "title": "Baked GI: the test yard",
+  "note": "First baked global illumination (irradiance probe volumes, docs/design/GI.md). A hut with 0.2 m walls, a door and a brazier, and a closed shed, under moonlight: flat ambient vs GI, the indirect term alone, and inside the hut (darker with GI; nothing leaks through the walls). The irradiance view still shows probe-sized mottling on the hut front.",
+  "source": "scripts/gi_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-yard-off.jpg",
+      "caption": "GI off (flat ambient)",
+      "original": "yard_off.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 7795
+    },
+    {
+      "file": "02-yard-lit.jpg",
+      "caption": "GI on",
+      "original": "yard_lit.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 7930
+    },
+    {
+      "file": "03-yard-irradiance.jpg",
+      "caption": "the indirect light alone",
+      "original": "yard_irradiance.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 6074
+    },
+    {
+      "file": "04-hut-inside-off.jpg",
+      "caption": "inside the hut, GI off",
+      "original": "hut_inside_off.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 4674
+    },
+    {
+      "file": "05-hut-inside-lit.jpg",
+      "caption": "inside the hut, GI on",
+      "original": "hut_inside_lit.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 4495
+    }
+  ]
+}

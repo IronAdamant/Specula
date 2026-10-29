@@ -125,6 +125,10 @@ pub enum Site {
     WorldSave,
     /// disk_prune {free_mb}: deleting past what the budget needs.
     DiskPrune,
+    /// gi_settings with changes (the GI tier shapes the human's window too).
+    GiSettings,
+    /// gi_bake `threads` past the default (they slow the frame thread and other agents).
+    GiThreads,
 }
 
 impl Site {
@@ -135,7 +139,7 @@ impl Site {
             Site::HelloGrantBound => "grant_bound",
             Site::HelloLeadTaken => "lead_taken",
             Site::HelloReservedName => "name_reserved",
-            Site::FrameFloor | Site::StreamSettings | Site::ToolsScope | Site::DiskPrune | Site::WorldSave => "lead_only",
+            Site::FrameFloor | Site::StreamSettings | Site::ToolsScope | Site::DiskPrune | Site::WorldSave | Site::GiSettings | Site::GiThreads => "lead_only",
             Site::HelloBadName => "name_invalid",
             Site::ForceOverride => "force_needs_lead",
             Site::ReviewDecide | Site::ReviewScreen => "not_reviewer",
@@ -168,6 +172,8 @@ impl Site {
             Site::ForceOverride => "force",
             Site::WorldSave => "world_save.name",
             Site::DiskPrune => "disk_prune.free_mb",
+            Site::GiSettings => "gi_settings",
+            Site::GiThreads => "gi_bake.threads",
         }
     }
 }
@@ -565,7 +571,8 @@ pub fn access(tool: &str) -> Option<Access> {
         | "physics_contacts" | "physics_events" | "physics_info" | "physics_explain" | "physics_check" | "stream_state" | "save_list" | "project_list"
         | "project_read" | "studio_stage" | "studio_sheet" | "studio_lineup" | "studio_compare" | "studio_check" | "style_check" | "review_list" | "critique_list"
         | "merge_suggest" | "vfx_get" | "vfx_check" | "vfx_info" | "logic_status" | "perf_frame" | "perf_memory" | "engine_info" | "balance_targets"
-        | "disk_status" | "tools_catalog" | "trace_query" | "trace_follow" | "trace_call" | "trace_crash" | "trace_incidents" | "terrain_info" => ReadOnly,
+        | "disk_status" | "tools_catalog" | "trace_query" | "trace_follow" | "trace_call" | "trace_crash" | "trace_incidents" | "terrain_info" | "gi_info"
+        | "gi_check" => ReadOnly,
         // The world, through the write policy.
         "world_spawn" | "world_set" | "world_delete" | "world_batch" | "world_env" | "world_undo" | "world_place" | "tilemap_set" | "nav_agent" | "ai_set"
         | "model_collider" | "anim_set" | "ragdoll_set" | "physics_impulse" | "procgen_terrain" | "procgen_scatter" => World("world"),
@@ -578,6 +585,10 @@ pub fn access(tool: &str) -> Option<Access> {
         // Its files land under /project/<name>: the caller's claims are checked there first.
         "project_mount" => World("project"),
         "vfx_set" => World("vfx"),
+        // A bake writes /gi/<volume> as the caller (claims checked when it starts and when its
+        // result lands); cancelling another agent's bake needs force, and force the lead
+        // (authority::may_force); threads past the default are the lead's (Site::GiThreads).
+        "gi_bake" => World("gi"),
         // A terrain recipe's strokes (and its collider, in the same journal entry) through the
         // project store, as the caller.
         "terrain_edit" => World("project"),
@@ -604,7 +615,7 @@ pub fn access(tool: &str) -> Option<Access> {
         "trace_incident" => Owned(Store::Incidents),
         // Authority.
         // trace_settings: engine-wide changes are the lead's; scope "session" is the caller's own view.
-        "swarm_settings" | "stream_settings" | "tools_scope" | "trace_settings" => Lead,
+        "swarm_settings" | "stream_settings" | "tools_scope" | "trace_settings" | "gi_settings" => Lead,
         "review_decide" | "review_screen" => Reviewer,
         // Open, with the reason.
         "agent_hello" => Open("names the caller's own session; engine writer names, granted names and authority roles are refused"),

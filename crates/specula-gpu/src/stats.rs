@@ -203,10 +203,12 @@ pub enum MemoryKind {
     PostTargets,
     /// Textures uploaded with `Gpu::upload_texture`.
     Textures,
+    /// Baked GI probes resident for the shaders (`gi.rs`).
+    Gi,
 }
 
 impl MemoryKind {
-    pub const ALL: [MemoryKind; 8] = [
+    pub const ALL: [MemoryKind; 9] = [
         MemoryKind::Meshes,
         MemoryKind::RenderTargets,
         MemoryKind::Readback,
@@ -215,6 +217,7 @@ impl MemoryKind {
         MemoryKind::ShadowMaps,
         MemoryKind::PostTargets,
         MemoryKind::Textures,
+        MemoryKind::Gi,
     ];
 
     pub(crate) fn index(self) -> usize {

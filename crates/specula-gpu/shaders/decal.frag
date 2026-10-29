@@ -7,11 +7,13 @@
 // box's up axis fade out (`angle_fade`), and so do the box's top and bottom ends.
 // Compile with shaders/build.sh.
 #extension GL_EXT_nonuniform_qualifier : require
+#define GI_FIELDS
 #include "decal.glsl"
 #define SUN_SHADOW
 layout(set = 0, binding = 0) uniform sampler2DArrayShadow shadow_map;
 layout(set = 0, binding = 1) uniform sampler2D textures[];
 #include "effects_light.glsl"
+#include "gi.glsl"
 
 layout(location = 0) flat in vec4 v_inv0;
 layout(location = 1) flat in vec4 v_inv1;
@@ -110,7 +112,7 @@ void main() {
     // +Y of a normal map is the image's top; the image's rows run along +Z, so -B is its up.
     vec3 sn = normalize(t * (nmap.x * k) - b * (nmap.y * k) + n * max(nmap.z, 1e-3));
     vec3 view = normalize(pc.cam_pos.xyz - p);
-    vec3 diffuse = pc.frame.ambient.rgb;
+    vec3 diffuse = gi_ambient(p, n, view);
     float ndl = max(dot(sn, pc.frame.sun_dir.xyz), 0.0);
     float shadow = 1.0;
     if (SHADOWS && ndl > 0.0) {

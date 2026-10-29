@@ -11,5 +11,9 @@ rust-version.workspace = true
 specula-sys = { workspace = true }
 specula-core = { workspace = true }
 
+[dev-dependencies]
+# Tests bake real scenes (tests/gi_low.rs); a workspace crate, nothing third-party.
+specula-lux = { workspace = true }
+
 [lints]
 workspace = true

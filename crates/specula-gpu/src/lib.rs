@@ -113,6 +113,7 @@ mod batch;
 mod descriptors;
 mod device;
 mod effects;
+mod gi;
 mod gpu;
 mod graph;
 mod idbuffer;
@@ -137,6 +138,7 @@ mod water;
 
 pub use graph::{Access, GraphBarrier, GraphError, GraphInfo, GraphPass, GraphResource, GraphUse, Load};
 pub use effects::{f16_bits, Decal, DecalMode, Effects, Particle, ParticleMaterial, MAX_DECALS, MAX_PARTICLES, MAX_PARTICLE_MATERIALS};
+pub use gi::{check as gi_check, GiFrame, GiQuality, GiView, GiVolume, GI_PROBE_BYTES, MAX_GI_PROBES, MAX_GI_VOLUMES};
 pub use idbuffer::{IdCounts, IdCoverage, IdImage};
 pub use atlas::{pack_atlas, Atlas, AtlasError, AtlasImage, AtlasOptions, AtlasRect, Flipbook, Playback};
 pub use sprite::{sprite_sphere, tiles_sphere, view_2d, Billboard, Draw2d, ShapeDraw, Sprite, SpriteBlend, TileChunk, View2d};
@@ -297,6 +299,10 @@ pub enum Limit {
     ParticleMaterials,
     /// Decals per frame ([`MAX_DECALS`]).
     Decals,
+    /// Baked GI volumes per frame ([`MAX_GI_VOLUMES`]).
+    GiVolumes,
+    /// Baked GI probes resident at once ([`MAX_GI_PROBES`]).
+    GiProbes,
     /// Terrains per frame ([`terrain::MAX_TERRAINS`]).
     Terrains,
 }
@@ -364,6 +370,8 @@ impl GpuError {
             Limit::Particles => "particles per frame",
             Limit::ParticleMaterials => "particle materials per frame",
             Limit::Decals => "decals per frame",
+            Limit::GiVolumes => "GI volumes per frame",
+            Limit::GiProbes => "GI probes resident at once",
             Limit::Terrains => "terrains per frame",
         };
         GpuError {
@@ -1139,6 +1147,8 @@ pub struct FrameDesc<'a> {
     pub bones: &'a [[f32; 16]],
     /// Particles and decals (see [`Effects`]; empty: the frame is exactly as without them).
     pub effects: Effects<'a>,
+    /// Baked GI (see [`GiFrame`]; no volumes: the flat ambient, exactly as without it).
+    pub gi: GiFrame<'a>,
     /// The terrains the frame's [`Material::Terrain`] patches draw (at most
     /// [`terrain::MAX_TERRAINS`]; see [`terrain`]).
     pub terrains: &'a [TerrainMaterial],
@@ -1158,6 +1168,7 @@ impl Default for FrameDesc<'_> {
             draws_2d: &[],
             bones: &[],
             effects: Effects::default(),
+            gi: GiFrame::default(),
             terrains: &[],
         }
     }
@@ -1562,6 +1573,36 @@ impl Gpu {
     /// game will use such meshes from its first frame.
     pub fn prepare_variants(&mut self, skinned: bool, textured: bool) -> Result<(), GpuError> {
         self.inner.prepare_variants(skinned, textured)
+    }
+
+    /// Starts building the baked GI pipelines `quality` draws with on a worker, ahead of the first
+    /// frame with GI (window frames draw the flat ambient until they exist; offscreen renders
+    /// build them).
+    pub fn request_gi_variants(&mut self, quality: GiQuality) {
+        self.inner.request_gi_variants(quality)
+    }
+
+    /// Bytes the resident GI volumes take on the GPU, and how often their buffer was rebuilt.
+    pub fn gi_stats(&self) -> (u64, u64) {
+        self.inner.gi_stats()
+    }
+
+    /// Whether the last render drew baked GI: its set bound and its pipelines ready (false: the
+    /// flat ambient; [`Gpu::gi_failure`] says why when binding failed).
+    pub fn gi_drawn(&self) -> bool {
+        self.inner.gi_drawn()
+    }
+
+    /// Tier low's per-draw records kept across frames: entries, their bytes, and how many draws
+    /// the last frame sampled (zero when its draws were last frame's or cached).
+    pub fn gi_cache_stats(&self) -> (usize, usize, usize) {
+        self.inner.gi_cache_stats()
+    }
+
+    /// Why the last GI set couldn't be bound, if it couldn't: its frames draw the flat ambient
+    /// (GI never fails a frame), until a set with another key binds.
+    pub fn gi_failure(&self) -> Option<&str> {
+        self.inner.gi_failure()
     }
 
     /// The pipeline variants ready to draw with (a finished background build is taken first).

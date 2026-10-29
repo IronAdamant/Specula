@@ -12,10 +12,12 @@
 use std::path::{Path, PathBuf};
 
 /// Crates whose code runs in (or decides) the simulation: they carry the determinism clippy.toml.
-const SIMULATION: [&str; 12] = [
+const SIMULATION: [&str; 13] = [
     "crates/specula-physics",
     // Cosmetic, but reproducible: captures repeat bit for bit on every platform (docs/design/VFX.md).
     "crates/specula-scintilla",
+    // Rendering data, but reproducible: the same scene bakes to the same bytes everywhere (docs/design/GI.md).
+    "crates/specula-lux",
     "crates/specula-anim",
     "crates/specula-lex",
     "crates/specula-balance",

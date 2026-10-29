@@ -97,6 +97,9 @@ pub(crate) struct Rendered {
     pub(crate) record: sight::FrameRecord,
     /// The entities the colour pass was given (the packet monitor's independent record).
     pub(crate) drawn: Option<crate::trace_engine::DrawnRecord>,
+    /// Whether this render drew baked GI, and why not when its set failed to bind.
+    pub(crate) gi_drawn: bool,
+    pub(crate) gi_error: Option<String>,
 }
 
 /// Set once the first lost device has been logged.
@@ -545,6 +548,18 @@ impl Engine {
         let mut owners = Vec::new();
         let (stats, _) = self.build_draws(camera, h, opts.include_ui, opts.lod, false, opts.time_s, &mut draws, Some(&mut owners));
         self.lod_capture = stats;
+        // Baked GI: the chunks around this camera; `sight_frame gi: "probes"` adds the probes
+        // (not counted in the ID buffer).
+        // A bake that just landed loads on a worker: a capture waits for it (at most 30 s).
+        self.gi.wait_loads(&self.world, std::time::Duration::from_secs(30));
+        self.gi.update(&self.world, camera.eye, true);
+        let gi_view = self.gi.capture_view;
+        if gi_view == crate::gi::CaptureView::Probes {
+            self.gi.marks_drawn = self.gi_probe_draws(camera.eye, &mut draws);
+            owners.resize(draws.len(), 0);
+        }
+        let gi_snapshot = self.gi.snapshot();
+        let gi_volumes = gi_snapshot.volumes();
         let mut lights = Vec::new();
         let dropped_lights = sight::lights(&self.world, opts.include_ui, &mut lights);
         if let Some(l) = opts.fill {
@@ -575,6 +590,7 @@ impl Engine {
             bones: &bones,
             draws_2d: &draws_2d,
             effects: fx.effects(),
+            gi: gi_snapshot.frame(&gi_volumes, gi_view),
             terrains: &terrains,
             ..sight::frame(&self.world, &view_proj, &draws, &lights, opts.time_s as f32)
         };
@@ -606,6 +622,7 @@ impl Engine {
             let rendered = if opts.ids { self.gpu.render_with_ids_occluded(target, &frame, &ids, &occluders) } else { self.gpu.render(target, &frame) };
             rendered.map_err(|e| gpu_failure("render", &e, self.windowed))?;
         }
+        let (gi_drawn, gi_error) = (self.gpu.gi_drawn(), self.gpu.gi_failure().map(str::to_string));
         // What the colour passes actually recorded (the GPU's own list, after every readiness
         // check): the packet monitor's record, independent of the ID buffer's counts.
         let drawn = opts.ids.then(|| {
@@ -683,7 +700,7 @@ impl Engine {
             }
         }
         let streaming = self.stream.capture_json(&stats);
-        Ok(Rendered { flash, rgba, subjects, stats, lights: lights.len(), dropped_lights, overlays, ids: ids_json, two_d_problems, streaming, effects, record, drawn })
+        Ok(Rendered { flash, rgba, subjects, stats, lights: lights.len(), dropped_lights, overlays, ids: ids_json, two_d_problems, streaming, effects, record, drawn, gi_drawn, gi_error })
     }
 
     /// The overlay records for one view and what they drew, at most `budget` of them.
@@ -963,7 +980,12 @@ impl Engine {
         let (w, h) = (spec.width, spec.height);
         let time_s = spec.time_s.map_or_else(|| self.time_s(), f64::from);
         let opts = ViewOpts { include_ui: spec.include_ui, lod: spec.lod, time_s, overlays: &spec.overlays, caption: None, ids: spec.ids, fill: None };
-        let r = match self.render_view(view.camera, w, h, &opts) {
+        // How this capture shows baked GI (lit, off, irradiance, probes): for this render only.
+        self.gi.capture_view = spec.gi;
+        self.gi.marks_drawn = (0, 0);
+        let rendered = self.render_view(view.camera, w, h, &opts);
+        self.gi.capture_view = crate::gi::CaptureView::Lit;
+        let r = match rendered {
             Ok(r) => r,
             Err(e) => return ToolOutput::error(e),
         };
@@ -1019,6 +1041,15 @@ impl Engine {
         }
         if !r.streaming.is_null() {
             packet.set("streaming", r.streaming.clone());
+        }
+        // Only when the world has GI volumes: other worlds keep their packets as they were.
+        let gi_json = {
+            let lib = self.library.lock();
+            self.gi.packet_json(&self.world, &lib, spec.gi)
+        };
+        if let Some(mut g) = gi_json {
+            crate::gi::drawn_json(&mut g, spec.gi, r.gi_drawn, r.gi_error.as_deref());
+            packet.set("gi", g);
         }
         // Only when the frame had any: worlds without effects keep their packets as they were.
         if r.effects.get("effects").and_then(Json::as_array).is_some_and(|a| !a.is_empty())

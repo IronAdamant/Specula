@@ -904,6 +904,26 @@ fn num(x: f64) -> String {
     }
 }
 
+/// A synthetic baked GI chunk: origin, dims and probe records.
+type GiChunk = ([f32; 3], [u32; 3], Vec<[u32; 12]>);
+
+/// Synthetic baked GI over x, z in [-21.5, 21.5], y in [-1.5, 6.5] at 1 m: one 64 m chunk, as the
+/// engine streams Sepulcra's top face (varied SH, a few hidden corners in the cells' masks).
+fn gi_chunks() -> Vec<GiChunk> {
+    let h2 = |a: f32, b: f32| u32::from(specula_gpu::f16_bits(a)) | (u32::from(specula_gpu::f16_bits(b)) << 16);
+    let mut rng = Rng(77);
+    let dims = [44u32, 9, 44];
+    let probes = (0..(dims[0] * dims[1] * dims[2]) as usize)
+        .map(|_| {
+            let c = rng.range(0.02, 0.2);
+            let (gx, gy) = (rng.range(-0.02, 0.02), rng.range(0.0, 0.05));
+            let mask = if rng.range(0.0, 1.0) < 0.15 { 0x00ff_ff00_ffff_00ffu64 } else { u64::MAX };
+            [h2(c, c * 1.1), h2(c * 1.3, gx), h2(gx, gx), h2(gy, gy), h2(gy, 0.0), h2(0.0, 0.0), h2(0.0, 0.0), h2(0.0, 1.0), mask as u32, (mask >> 32) as u32, u32::MAX, 0x00ff_ffff]
+        })
+        .collect();
+    vec![([-21.5, -1.5, -21.5], dims, probes)]
+}
+
 fn run_scene(gpu: &mut Gpu, args: &Args, scene: &Scene) -> Result<String, specula_gpu::GpuError> {
     let (w, h) = args.size;
     let target = gpu.create_target(w, h)?;
@@ -943,6 +963,19 @@ fn run_scene(gpu: &mut Gpu, args: &Args, scene: &Scene) -> Result<String, specul
             (true, -1.0, [-0.01, -0.004, 0.012], [1.03, 1.0, 0.97], 0.25, 0.55);
     }
     let overlay: &[OverlayQuad] = if off("overlay") { &[] } else { &scene.overlay };
+    // `--with gi` (or gi_low): baked GI over the 42 m slab at 1 m, one chunk as the engine
+    // streams it (`specula/src/gi.rs`): varied SH, a few hidden corners in the cells' masks.
+    let gi_chunks = if with("gi") || with("gi_low") { gi_chunks() } else { Vec::new() };
+    let gi_volumes: Vec<specula_gpu::GiVolume> = gi_chunks
+        .iter()
+        .map(|(origin, dims, probes)| specula_gpu::GiVolume { origin: *origin, spacing: 1.0, dims: *dims, intensity: 1.0, probes })
+        .collect();
+    let gi = specula_gpu::GiFrame {
+        key: if gi_volumes.is_empty() { 0 } else { 1 },
+        volumes: &gi_volumes,
+        quality: if with("gi_low") { specula_gpu::GiQuality::Low } else { specula_gpu::GiQuality::High },
+        view: specula_gpu::GiView::Lit,
+    };
     // Without skinning every creature draws its bind pose; without textures every material is flat.
     let stripped: Vec<DrawItem>;
     let draws: &[DrawItem] = if off("skinning") || off("textures") {
@@ -977,6 +1010,7 @@ fn run_scene(gpu: &mut Gpu, args: &Args, scene: &Scene) -> Result<String, specul
             draws_2d: &scene.draws_2d,
             bones: &scene.bones,
             effects: Default::default(),
+            gi,
             terrains: &[],
         };
         let start = Instant::now();

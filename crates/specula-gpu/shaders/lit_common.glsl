@@ -4,14 +4,18 @@
 // pipelines stay bit for bit). Included after the stage's push block (`pc.frame`); declares the
 // FEATURES constant and the shadow map binding. Not compiled on its own.
 //
-// GI seam: `lit_ambient(p, n)` is the ambient light at a surface; the baked-GI lane replaces its
-// body with a probe lookup (terrain and water both read it through gather_light).
+// Baked GI: `lit_ambient(p, n, v)` is the ambient light at a surface: the probes per pixel
+// (shaders/gi.glsl; the lean copy at tier low, the full sampler at high), or the frame's flat
+// ambient without GI. Callers compute it once and hand it to gather_light. The stage defines
+// GI_FIELDS before including frame.glsl.
 
 layout(constant_id = 0) const uint FEATURES = 0u;
 const bool SHADOWS = (FEATURES & 1u) != 0u;
 const bool FOG = (FEATURES & 2u) != 0u;
 const bool HDR = (FEATURES & 4u) != 0u;
 const bool SSAO = (FEATURES & 32u) != 0u;
+
+#include "gi.glsl"
 
 layout(set = 0, binding = 0) uniform sampler2DArrayShadow shadow_map;
 
@@ -56,9 +60,13 @@ vec3 display(vec3 c) {
     return max(c, vec3(0.0));
 }
 
-// The GI seam: ambient light reaching `p` with normal `n` (today the frame's ambient).
-vec3 lit_ambient(vec3 p, vec3 n) {
-    return pc.frame.ambient.rgb;
+// Ambient light reaching `p` with normal `n`, seen from unit `v`: the baked probes (tier high's
+// full sampler; tier low's lean one: terrain is wide), else the frame's ambient.
+vec3 lit_ambient(vec3 p, vec3 n, vec3 v) {
+    if (GI_PIXEL) {
+        return gi_ambient(p, n, v);
+    }
+    return gi_ambient_lean(p, n, v);
 }
 
 // What the surroundings reflect (mesh_frag.glsl's `env_radiance`).
@@ -121,11 +129,11 @@ float sun_shadow(vec3 p, vec3 n) {
     return 1.0;
 }
 
-// Diffuse irradiance and specular radiance at a surface (mesh_frag.glsl's `gather_light`, its
-// ambient from `lit_ambient`). `sun` returns the sun's visibility (shadow) for callers that
-// reuse it.
-void gather_light(vec3 p, vec3 n, vec3 v, float rough, out vec3 diffuse, out vec3 specular, out float sun) {
-    diffuse = lit_ambient(p, n);
+// Diffuse irradiance and specular radiance at a surface (mesh_frag.glsl's `gather_light`), its
+// ambient `ambient` (`lit_ambient`). `sun` returns the sun's visibility (shadow) for callers
+// that reuse it.
+void gather_light(vec3 p, vec3 n, vec3 v, float rough, vec3 ambient, out vec3 diffuse, out vec3 specular, out float sun) {
+    diffuse = ambient;
     specular = vec3(0.0);
     vec3 l = pc.frame.sun_dir.xyz;
     float ndl = max(dot(n, l), 0.0);

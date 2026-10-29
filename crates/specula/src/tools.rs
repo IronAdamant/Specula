@@ -123,7 +123,7 @@ const QUERY_KEYS: &[&str] = &["limit", "fields", "path_prefix", "tags", "shape",
 const FRAME_KEYS: &[&str] =
     &["width", "height", "eye", "target", "fov_y_deg", "ortho", "view_2d", "max_subjects", "time_s", "include_ui", "lod"];
 /// sight_frame's arguments beyond the view itself (cameras, overlays, subject filter).
-pub(crate) const FRAME_EXTRA_KEYS: &[&str] = &["camera", "camera_of", "overlays", "overlay_entities", "max_labels", "subjects", "ids"];
+pub(crate) const FRAME_EXTRA_KEYS: &[&str] = &["camera", "camera_of", "overlays", "overlay_entities", "max_labels", "subjects", "ids", "gi"];
 pub(crate) const ENV_KEYS: &[&str] = &[
     "sun_direction", "sun_color", "sun_intensity", "ambient_color", "ambient_intensity", "exposure", "tonemap",
     "background", "shadow", "bloom", "fxaa", "sky", "fog", "grading", "ssao", "physics",
@@ -261,6 +261,8 @@ pub enum Command {
     StudioDone(u64),
     /// The effect tools (see [`crate::vfx_tools`]).
     Vfx(crate::vfx_tools::VfxCall),
+    /// The baked GI tools (see [`crate::gi_tools`]).
+    Gi(crate::gi_tools::GiCall),
     /// Project files (see [`crate::project_tools`]).
     Project(crate::project_tools::ProjectCall),
     /// Whether the caller may force a prune (`disk_prune {free_mb}`: the lead only).
@@ -321,6 +323,8 @@ pub struct FrameSpec {
     pub subjects: crate::sight_tools::SubjectFilter,
     /// Render the ID buffer: per-subject visible pixels (default true; `ids: false` saves its cost).
     pub ids: bool,
+    /// How the capture shows baked GI (`gi`: lit, off, irradiance, probes; see [`crate::gi`]).
+    pub gi: crate::gi::CaptureView,
 }
 
 pub struct Request {
@@ -908,11 +912,14 @@ pub(crate) fn parse(name: &str, args: &Json) -> Result<Command, String> {
                                     Some(call) => call.map(Command::Anim),
                                     None => match crate::vfx_tools::parse(other, args) {
                                         Some(call) => call.map(Command::Vfx),
-                                        None => match crate::stream_tools::parse(other, args) {
-                                            Some(call) => call.map(Command::Stream),
-                                            None => match crate::terrain_tools::parse(other, args) {
-                                                Some(call) => call.map(Command::Terrain),
-                                                None => crate::logic::tools::parse(other, args).unwrap_or_else(|| Err(format!("unknown tool '{other}'"))),
+                                        None => match crate::gi_tools::parse(other, args) {
+                                            Some(call) => call.map(Command::Gi),
+                                            None => match crate::stream_tools::parse(other, args) {
+                                                Some(call) => call.map(Command::Stream),
+                                                None => match crate::terrain_tools::parse(other, args) {
+                                                    Some(call) => call.map(Command::Terrain),
+                                                    None => crate::logic::tools::parse(other, args).unwrap_or_else(|| Err(format!("unknown tool '{other}'"))),
+                                                },
                                             },
                                         },
                                     },
@@ -1799,6 +1806,10 @@ pub(crate) fn parse_frame(args: &Json) -> Result<FrameSpec, String> {
         overlays: crate::sight_overlay::Spec::default(),
         subjects: crate::sight_tools::SubjectFilter::All,
         ids: true,
+        gi: match string_arg(args, "gi")? {
+            Some(v) => crate::gi::CaptureView::parse(v)?,
+            None => crate::gi::CaptureView::Lit,
+        },
     })
     .and_then(|mut spec| {
         crate::sight_tools::frame_extras(args, &mut spec)?;
@@ -2782,6 +2793,7 @@ fn definitions() -> Vec<ToolDef> {
     .chain(crate::anim_tools::definitions())
     .chain(crate::studio_tools::definitions())
     .chain(crate::vfx_tools::definitions())
+    .chain(crate::gi_tools::definitions())
     .chain(crate::terrain_tools::definitions())
     .chain(crate::trace_tools::definitions())
     .collect()

@@ -101,6 +101,8 @@ pub struct GpuInner {
     colour_record: std::cell::RefCell<crate::render::ColourRecord>,
     /// Queued uploads and deferred frees (`stream.rs`): submitted before each frame.
     uploads: crate::stream::Uploads,
+    /// The resident baked GI volumes (`gi.rs`).
+    gi: crate::gi::GiBuffer,
     // Dropped after `Drop::drop` released everything above, device before instance.
     device: Device,
     instance: Instance,
@@ -218,6 +220,7 @@ impl GpuInner {
             last_window: FrameStats::default(),
             colour_record: Default::default(),
             uploads: crate::stream::Uploads::default(),
+            gi: crate::gi::GiBuffer::default(),
             device,
             instance,
         };
@@ -374,7 +377,7 @@ impl GpuInner {
         // its draws are skipped until they exist (`pipeline_variants`), no frame waits.
         if layout.skin.is_some() || layout.surface.is_some() {
             let formats = self.formats();
-            let want = Variants { skinned: layout.skin.is_some(), textured: layout.surface.is_some(), terrain: false };
+            let want = Variants { skinned: layout.skin.is_some(), textured: layout.surface.is_some(), ..Variants::default() };
             self.pipelines.request_variants(&self.device, want, &formats);
         }
         let id = self.next_id();
@@ -467,7 +470,79 @@ impl GpuInner {
     /// of them exist).
     pub fn prepare_variants(&mut self, skinned: bool, textured: bool) -> Result<(), GpuError> {
         let formats = self.formats();
-        self.pipelines.build_variants(&self.device, Variants { skinned, textured, terrain: false }, &formats)
+        self.pipelines.build_variants(&self.device, Variants { skinned, textured, ..Variants::default() }, &formats)
+    }
+
+    /// Starts building the GI pipelines on a worker (window frames draw the flat ambient until
+    /// they exist; offscreen renders build them at once). Nothing if they exist or are coming.
+    /// Only the set `quality` draws with (lean for low, per pixel for high).
+    pub fn request_gi_variants(&mut self, quality: crate::GiQuality) {
+        let per_pixel = quality.per_pixel();
+        if self.pipelines.gi_asked(per_pixel) {
+            return; // cheap: callers may ask every frame
+        }
+        let formats = self.formats();
+        self.pipelines.request_variants(&self.device, gi_variants(per_pixel), &formats);
+    }
+
+    /// Bytes the resident GI volumes take on the GPU, and how often the buffer was rebuilt.
+    pub fn gi_stats(&self) -> (u64, u64) {
+        (self.gi.bytes(), self.gi.rebuilds)
+    }
+
+    /// Whether the last render drew baked GI (its set bound and its pipelines ready).
+    pub fn gi_drawn(&self) -> bool {
+        self.scratch.gi.active()
+    }
+
+    /// Tier low's per-draw records kept across frames: entries, their bytes, and how many draws
+    /// the last frame sampled (zero for a frame whose draws didn't change).
+    pub fn gi_cache_stats(&self) -> (usize, usize, usize) {
+        let c = &self.scratch.gi_cache;
+        (c.len(), c.bytes(), c.made)
+    }
+
+    /// Why the last GI set couldn't be bound (its frames draw the flat ambient), if it couldn't.
+    pub fn gi_failure(&self) -> Option<&str> {
+        self.gi.failure.as_ref().map(|(_, e)| e.as_str())
+    }
+
+    /// Binds `frame`'s GI for the next prepare. GI never fails a frame: any error (limits, memory,
+    /// the pipelines) leaves that set unbound, the frame draws the flat ambient, and
+    /// [`Gpu::gi_failure`] says why (the same set isn't retried until its key changes).
+    fn bind_gi(&mut self, frame: &FrameDesc, offscreen: bool) {
+        if let Err(e) = self.try_bind_gi(frame, offscreen) {
+            self.gi.fail(frame.gi.key, e.to_string());
+            self.scratch.gi = crate::gi::GiBinding::default();
+        }
+    }
+
+    /// [`Gpu::bind_gi`]'s work: rebuilds the buffer if its key changed. `offscreen`: build missing
+    /// GI pipelines now (the capture must show what it asked for), and a frame without GI leaves
+    /// the window's buffer alone; otherwise ask a worker and draw this frame without GI.
+    fn try_bind_gi(&mut self, frame: &FrameDesc, offscreen: bool) -> Result<(), GpuError> {
+        let per_pixel = frame.gi.quality.per_pixel();
+        let has = |v: crate::PipelineVariants| if per_pixel { v.gi_pixel } else { v.gi };
+        let mut ready = has(self.pipelines.ready());
+        if frame.gi.active() && !ready && !self.gi.failed(&frame.gi) {
+            if offscreen {
+                // `build_variants` first waits for a background build (one making this set takes
+                // its pipelines; only the missing ones are created here).
+                let formats = self.formats();
+                self.pipelines.build_variants(&self.device, gi_variants(per_pixel), &formats)?;
+                ready = has(self.pipelines.ready());
+            } else {
+                self.request_gi_variants(frame.gi.quality);
+            }
+        }
+        if self.gi.stale(&frame.gi) {
+            let words = crate::gi::words(&frame.gi)?;
+            let (cmd, fence) = (self.sync_cmd, self.sync_fence);
+            let buffer = crate::gi::upload(&self.device, &words, |dev, record| run_sync(dev, cmd, fence, |d, c| record(d, c)).map(|_| ()))?;
+            self.gi.install(&mut self.uploads, &self.device, buffer, &frame.gi);
+        }
+        self.scratch.gi = self.gi.bind(&mut self.uploads, &frame.gi, ready, offscreen);
+        Ok(())
     }
 
     /// Starts building the terrain and water pipelines on a worker (a no-op once built or while
@@ -496,7 +571,7 @@ impl GpuInner {
         self.poll_pipelines();
         let Some(f) = self.pipelines.ready().failed else { return false };
         let formats = self.formats();
-        self.pipelines.request_variants(&self.device, Variants { skinned: f.skinned, textured: f.textured, terrain: f.terrain }, &formats);
+        self.pipelines.request_variants(&self.device, Variants { skinned: f.skinned, textured: f.textured, gi: f.gi, gi_pixel: f.gi_pixel, terrain: f.terrain }, &formats);
         true
     }
 
@@ -1040,6 +1115,10 @@ impl GpuInner {
             self.flush_uploads()?;
         }
         self.poll_pipelines();
+        if !self.targets.contains_key(&target.0) {
+            return Err(GpuError::unknown(crate::IdKind::Target, target.0, ""));
+        }
+        self.bind_gi(frame, true);
         let Some(t) = self.targets.get_mut(&target.0) else {
             return Err(GpuError::unknown(crate::IdKind::Target, target.0, ""));
         };
@@ -1243,6 +1322,7 @@ impl GpuInner {
         // Queued uploads go first on the queue: the frame draws with them.
         self.flush_uploads()?;
         self.poll_pipelines();
+        self.bind_gi(frame, false);
         let window = self.window.as_mut().expect("checked");
         let frame_no = self.frame_no + 1;
         let presented = window.present(
@@ -1332,6 +1412,7 @@ impl Drop for GpuInner {
             u.destroy(dev);
         }
         self.ids.destroy(dev);
+        self.gi.destroy(dev);
         if let Some(mut t) = self.timer.take() {
             t.destroy(dev);
         }
@@ -1502,6 +1583,11 @@ fn snorm16_tangent(t: [f32; 4]) -> [i16; 4] {
     let n = |v: f32| if len > 1e-20 && len.is_finite() { v / len } else { 0.0 };
     let q = |v: f32| (v.clamp(-1.0, 1.0) * 32767.0).round() as i16;
     [q(n(t[0])), q(n(t[1])), q(n(t[2])), if t[3] < 0.0 { -32767 } else { 32767 }]
+}
+
+/// The GI pipeline set a tier draws with: the lean one (`low`) or the per-pixel one (`high`).
+fn gi_variants(per_pixel: bool) -> Variants {
+    Variants { gi: !per_pixel, gi_pixel: per_pixel, ..Variants::default() }
 }
 
 #[cfg(test)]

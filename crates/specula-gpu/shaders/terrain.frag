@@ -6,6 +6,7 @@
 // shaders/build.sh.
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_control_flow_attributes : require
+#define GI_FIELDS
 #include "frame.glsl"
 #include "terrain.glsl"
 
@@ -26,10 +27,10 @@ layout(location = 2) flat in uint v_terrain;
 layout(location = 3) flat in vec3 v_cof0;
 layout(location = 4) flat in vec3 v_cof1;
 layout(location = 5) flat in vec3 v_cof2;
+layout(location = 6) in vec3 v_gi; // tier low's ambient, per vertex (terrain.vert)
 
 layout(location = 0) out vec4 out_color;
 
-// The GI seam for terrain (see lit_common.glsl's `lit_ambient`, which gather_light reads).
 
 // Grain: value noise on a float hash ("hash without sine", Dave Hoskins): integer multiplies are
 // slow on the iGPU, and grain needs no bit-exact hash (the same GPU repeats it exactly).
@@ -159,14 +160,17 @@ void main() {
     vec3 v = normalize(camera_pos() - v_world);
     vec3 diffuse, specular;
     float sun;
-    gather_light(v_world, n, v, rough, diffuse, specular, sun);
+    // Baked GI: per vertex at tier low (terrain.vert), per pixel at high, the flat ambient without.
+    vec3 amb = (GI && !GI_PIXEL) ? v_gi : lit_ambient(v_world, n, v);
+    gather_light(v_world, n, v, rough, amb, diffuse, specular, sun);
     vec3 c = albedo * diffuse;
-    vec3 ambient = SSAO ? albedo * lit_ambient(v_world, n) : vec3(0.0);
+    vec3 ambient = SSAO ? albedo * amb : vec3(0.0);
     if (spec > 0.0) {
         float mm = 1.0 - max(dot(n, v), 0.0);
         float m2 = mm * mm;
         float fresnel = 0.04 + 0.96 * (m2 * m2 * mm);
-        vec3 reflected = mix(env_radiance(reflect(-v, n)), pc.frame.ambient.rgb, rough);
+        // Baked GI dims what the surroundings reflect where they are dark (a cave, a crypt).
+        vec3 reflected = mix(env_radiance(reflect(-v, n)) * gi_occlusion(amb), amb, rough);
         c += spec * fresnel * (specular + reflected * (1.0 - 0.7 * rough));
     }
     if (FOG) {

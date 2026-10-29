@@ -8,6 +8,7 @@
 // reproducible. Reflections: the sky and ambient with the sun's highlight, by Fresnel.
 // Compile with shaders/build.sh.
 #extension GL_EXT_nonuniform_qualifier : require
+#define GI_FIELDS
 #include "frame.glsl"
 
 // Must match `PushConstants` in src/render.rs (src/water.rs `record_water`).
@@ -38,7 +39,7 @@ const uint PATTERN_WAVES = 0u;
 const uint PATTERN_ICE = 1u;
 const uint PATTERN_LAVA = 2u;
 
-// The GI seam for water's reflections: what the surface mirrors along `dir`. With the sky drawn,
+// What the surface mirrors along `dir` (the caller dims it by the baked GI's occlusion). With the sky drawn,
 // the sky's own gradient (the moonlit sky at night: the ambient fill is brighter than that sky,
 // and mirrored it turned night water pale) plus the sun's or moon's glint; without, the ambient,
 // as glossy meshes reflect.
@@ -217,7 +218,11 @@ void main() {
     float fresnel = (0.02 + 0.98 * (m2 * m2 * mm)) * reflect_k;
     vec3 diffuse, specular;
     float sun;
-    gather_light(v_world, n, v, rough, diffuse, specular, sun);
+    // The baked GI's ambient (once: the body, foam and depths reuse it): per pixel at tier high,
+    // the water draw's ambient cube at low (src/render.rs samples water draws so whatever their
+    // size: per pixel, the lean probes cost the iGPU 2.2 ms of a pond filling the view).
+    vec3 amb = GI_PIXEL ? gi_ambient(v_world, n, v) : gi_cube_draw(v_draw, n);
+    gather_light(v_world, n, v, rough, amb, diffuse, specular, sun);
 
     // Body: colour by depth, opacity by thickness; lit by what reaches the surface.
     float mix_k = 1.0 - exp(-depth / clarity);
@@ -229,7 +234,7 @@ void main() {
     // Shallow water still takes its own colour quickly: through clear water a bright floor right
     // under the surface (a bank, a submerged crest) showed as a pale line at a distance.
     body_a = max(body_a, c0.a * 0.45 * smoothstep(0.0, 0.5, depth));
-    vec3 body_light = body * (0.35 * diffuse + 0.15 * lit_ambient(v_world, n));
+    vec3 body_light = body * (0.35 * diffuse + 0.15 * amb);
     // Shore foam: soft, broken patches in shallow water, never an outline. It fades out with
     // distance: past the terrain's fine rings the floor under the water is coarse triangles, and
     // foam would trace them (straight runs, plates over low ground); the shallow colour and the
@@ -273,19 +278,20 @@ void main() {
         // The reflection takes some of the water's own colour, so a preset still reads at the
         // horizon (where Fresnel makes every water a mirror of the same sky).
         vec3 tint = (deep + shallow) / max(max(deep.r + shallow.r, max(deep.g + shallow.g, deep.b + shallow.b)), 1e-3);
-        vec3 refl = water_reflection(v_world, reflect(-v, n)) * mix(vec3(1.0), tint, 0.6) + specular * (1.0 - rough);
+        // Baked GI dims the mirrored sky where the surroundings are dark (a pool in a cave).
+        vec3 refl = water_reflection(v_world, reflect(-v, n)) * gi_occlusion(amb) * mix(vec3(1.0), tint, 0.6) + specular * (1.0 - rough);
         if (pattern == PATTERN_ICE) {
             // Ice has body: frosted and nearly opaque where it is thick, thinning to clear at the
             // shore. Cracks are part of that body (paler, never more opaque than the ice), and
             // fade where it is thin, so they never draw a white net over the ground beneath.
             float thick = sky ? 1.0 : smoothstep(0.0, 1.2, depth);
             body_a = max(body_a, mix(0.25, 0.92, thick) * smoothstep(0.0, 0.15, depth));
-            body_light = mix(body_light, foam_col * (0.5 * diffuse + 0.3 * lit_ambient(v_world, n)), crack * 0.22 * thick);
+            body_light = mix(body_light, foam_col * (0.5 * diffuse + 0.3 * amb), crack * 0.22 * thick);
         }
         c = body_light * body_a * (1.0 - fresnel) + refl * fresnel;
         alpha = body_a + fresnel * (1.0 - body_a);
         if (foam > 0.0) {
-            vec3 f = foam_col * (0.5 * diffuse + 0.5 * lit_ambient(v_world, n));
+            vec3 f = foam_col * (0.5 * diffuse + 0.5 * amb);
             c = mix(c, f, foam);
             alpha = mix(alpha, 1.0, foam);
         }
@@ -298,7 +304,7 @@ void main() {
         alpha *= soft;
         if (below) {
             // From below: a plain tinted ceiling.
-            c = deep * lit_ambient(v_world, n) * c0.a;
+            c = deep * amb * c0.a;
             alpha = c0.a;
         }
     }

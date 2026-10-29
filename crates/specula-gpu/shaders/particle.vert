@@ -5,9 +5,11 @@
 // (lit materials: ambient, sun and point lights, no normal: volumes), fog. The fragment stage
 // gets flat varyings only (no record reads per fragment).
 // Compile with shaders/build.sh.
+#define GI_FIELDS
 #include "particle.glsl"
 #define NO_DISPLAY
 #include "effects_light.glsl"
+#include "gi.glsl"
 
 layout(location = 0) out vec2 v_uv;
 layout(location = 1) out vec3 v_world;
@@ -54,7 +56,7 @@ void main() {
     v_uv = (cell + vec2(q.x + 0.5, 0.5 - q.y)) / vec2(float(cols), float(rows));
     vec3 c = color.rgb;
     if ((m.info.w & MAT_LIT) != 0u) {
-        c *= pc.frame.ambient.rgb + pc.frame.sun_color.rgb * 0.55 + point_lights(pos, vec3(0.0));
+        c *= gi_ambient(pos, vec3(0.0), vec3(0.0)) + pc.frame.sun_color.rgb * 0.55 + point_lights(pos, vec3(0.0));
     }
     float additive = clamp(r.c.w, 0.0, 1.0);
     if (FOG) {

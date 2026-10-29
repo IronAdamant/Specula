@@ -701,7 +701,7 @@ mod tests {
 
     #[test]
     fn casters_are_chosen_per_cascade_and_reach_towards_the_light() {
-        let unit = Bounds { center: [0.0; 3], radius: 0.87 };
+        let unit = Bounds { center: [0.0; 3], radius: 0.87, half: [0.5; 3] };
         let mut draws = vec![
             DrawItem::new(MeshId(1), at(0.0, 0.0, 0.0), [1.0; 4]),       // visible, casts
             DrawItem::new(MeshId(2), at(0.0, 40.0, 0.0), [1.0; 4]),      // high above, out of view: still casts

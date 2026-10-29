@@ -2,6 +2,21 @@
 // Included by the stage sources (glslc resolves #include); not compiled on its own.
 #extension GL_EXT_buffer_reference : require
 
+#ifdef GI_FIELDS
+#extension GL_EXT_control_flow_attributes : require
+// Baked GI volumes and probes (src/gi.rs, shaders/gi.glsl), read through the frame's address.
+// Declared only by the stages that sample GI (they define GI_FIELDS first): the others read a
+// prefix of the same buffer and compile exactly as before.
+layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer GiData {
+    uvec4 words[];
+};
+// Per draw record: its GI sampled on the CPU (src/gi.rs `DrawGi`, three words each), then the
+// wide draws' grids (two words a sample).
+layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer GiDraws {
+    uvec4 d[];
+};
+#endif
+
 // Per-frame data; must match `FrameData` in src/render.rs.
 struct PointLight {
     vec4 pos_range; // xyz world position, w range (m)
@@ -28,6 +43,11 @@ layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Fr
     vec4 sky_horizon;   // linear RGB x intensity, w disc intensity
     vec4 sky_ground;    // linear RGB x intensity, w glow strength
     vec4 sky_params;    // horizon sharpness, y: the sky is drawn (1)
+#ifdef GI_FIELDS
+    vec4 gi_params;     // GI volumes, visibility on, irradiance view, unused
+    GiData gi_data;     // the GI buffer (unused without GI)
+    GiDraws gi_draws;   // per-draw GI (gi_params.w = 1), else unused
+#endif
 };
 
 // Fraction of light that crosses the height fog from `dist` metres along `dir` to the camera

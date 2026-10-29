@@ -10,8 +10,8 @@ mod common;
 use common::*;
 use specula_gpu::terrain::{self, HeightTree, Selection};
 use specula_gpu::{
-    AdapterPreference, DrawItem, Environment, FrameDesc, Gpu, Material, MaterialExt, Surface, TerrainLayer, TerrainMaterial, TextureFormat, TextureSampler,
-    TextureWrap, Vertex, WaterStyle,
+    AdapterPreference, DrawItem, Environment, FrameDesc, GiFrame, GiQuality, GiView, GiVolume, Gpu, Material, MaterialExt, Surface, TerrainLayer, TerrainMaterial,
+    TextureFormat, TextureSampler, TextureWrap, Vertex, WaterStyle,
 };
 
 const W: u32 = 320;
@@ -267,7 +267,9 @@ fn terrain_and_water_draw_lit_counted_and_reproducibly() {
 
 /// Timing report: a screen-filling terrain at 1600x900 in a Sepulcra-like HDR frame (shadows,
 /// bloom, FXAA), median GPU ms over 40 frames: a lit ground quad (the baseline), the terrain
-/// untextured without grain, with grain, with a textured triplanar layer, and with a lake.
+/// untextured without grain, with grain, with a textured triplanar layer, and with a lake; then
+/// the terrain and the lake under a baked GI volume (2 m spacing over the whole terrain) at tiers
+/// low and high.
 /// `cargo test --release -p specula-gpu --test terrain terrain_cost -- --ignored --nocapture`.
 #[test]
 #[ignore = "timing report"]
@@ -319,18 +321,30 @@ fn terrain_cost_report() {
         with_lake.push(lake);
         let mut flat = env;
         flat.shadow.enabled = false;
-        let cases: [(&str, &[DrawItem], Option<TerrainMaterial>, Environment); 7] = [
-            ("lit ground quad", std::slice::from_ref(&ground), None, env),
-            ("lit ground quad, no shadows", std::slice::from_ref(&ground), None, flat),
-            ("terrain plain", &patches, Some(plain), env),
-            ("terrain plain, no shadows", &patches, Some(plain), flat),
-            ("terrain grain", &patches, Some(grain), env),
-            ("terrain textured", &patches, Some(textured), env),
-            ("terrain + lake", &with_lake, Some(grain), env),
+        let h2 = |a: f32, b: f32| u32::from(specula_gpu::f16_bits(a)) | (u32::from(specula_gpu::f16_bits(b)) << 16);
+        let probe = [h2(0.1, 0.12), h2(0.15, 0.0), 0, 0, 0, 0, h2(0.0, 0.0), h2(0.0, 1.0), u32::MAX, u32::MAX, u32::MAX, 0x00ff_ffff];
+        let probes = vec![probe; 65 * 9 * 65];
+        let volumes = [GiVolume { origin: [-64.0, -6.0, -64.0], spacing: 2.0, dims: [65, 9, 65], intensity: 1.0, probes: &probes }];
+        let gi = |q: GiQuality| GiFrame { key: 77, volumes: &volumes, quality: q, view: GiView::Lit };
+        type Case<'a> = (&'a str, &'a [DrawItem], Option<TerrainMaterial>, Environment, GiFrame<'a>);
+        let cases: [Case; 11] = [
+            ("lit ground quad", std::slice::from_ref(&ground), None, env, GiFrame::default()),
+            ("lit ground quad, no shadows", std::slice::from_ref(&ground), None, flat, GiFrame::default()),
+            ("terrain plain", &patches, Some(plain), env, GiFrame::default()),
+            ("terrain plain, no shadows", &patches, Some(plain), flat, GiFrame::default()),
+            ("terrain grain", &patches, Some(grain), env, GiFrame::default()),
+            ("terrain textured", &patches, Some(textured), env, GiFrame::default()),
+            ("terrain + lake", &with_lake, Some(grain), env, GiFrame::default()),
+            ("terrain grain, GI low", &patches, Some(grain), env, gi(GiQuality::Low)),
+            ("terrain grain, GI high", &patches, Some(grain), env, gi(GiQuality::High)),
+            ("terrain + lake, GI low", &with_lake, Some(grain), env, gi(GiQuality::Low)),
+            ("terrain + lake, GI high", &with_lake, Some(grain), env, gi(GiQuality::High)),
         ];
-        for (label, draws, material, environment) in cases {
+        for (label, draws, material, environment, gi) in cases {
             let mats: Vec<TerrainMaterial> = material.into_iter().collect();
-            let frame = FrameDesc { view_proj, clear_color: [0.05, 0.07, 0.12, 1.0], draws, reverse_z: true, environment, terrains: &mats, time_s: 1.0, ..Default::default() };
+            let frame = FrameDesc { view_proj, clear_color: [0.05, 0.07, 0.12, 1.0], draws, reverse_z: true, environment, terrains: &mats, time_s: 1.0, gi, ..Default::default() };
+            // The GI pipelines first (a timing report measures frames, not building them).
+            gpu.render(target, &frame).unwrap();
             let mut totals = Vec::new();
             let mut passes: std::collections::BTreeMap<&str, Vec<f64>> = Default::default();
             for _ in 0..40 {
@@ -372,6 +386,57 @@ fn bad_terrain_frames_are_structured_errors() {
         let bad = TerrainMaterial { columns: 1, ..t.material };
         let frame = FrameDesc { view_proj: view_proj(), reverse_z: true, terrains: std::slice::from_ref(&bad), ..Default::default() };
         assert!(gpu.render(target, &frame).is_err(), "{test}: a 1-column terrain is refused");
+        gpu.destroy_target(target);
+        assert!(validation_errors(test, gpu).is_empty(), "{test}: validation errors");
+    });
+}
+
+/// Terrain and water take the baked GI at both tiers (lit_common.glsl's `lit_ambient`: the full
+/// sampler at high, the lean probes at low): under a volume of uniform green probes the hills and
+/// the pond turn green against the frame without GI, and the tiers agree (uniform probes: the
+/// lean sampler's missing reaches and backface weights change nothing).
+#[test]
+fn terrain_and_water_take_the_baked_gi_at_both_tiers() {
+    every_adapter("terrain_gi", |test, adapter| {
+        let Some(mut gpu) = gpu_or_skip(test, adapter) else { return };
+        gpu.prepare_terrain_pipelines().unwrap();
+        let t = upload_terrain(&mut gpu);
+        let n = [0.0, 1.0, 0.0];
+        let quad_v = [[-0.5, 0.0, 0.5], [0.5, 0.0, 0.5], [0.5, 0.0, -0.5], [-0.5, 0.0, -0.5]].map(|p| Vertex::new(p, n));
+        let quad = gpu.upload_mesh(&quad_v, &[0, 1, 2, 0, 2, 3]).unwrap();
+        let h = |a: f32, b: f32| u32::from(specula_gpu::f16_bits(a)) | (u32::from(specula_gpu::f16_bits(b)) << 16);
+        // Green irradiance 2.0, every probe valid and visible, nothing in reach.
+        let probe = [h(0.0, 2.0), h(0.0, 0.0), 0, 0, 0, 0, h(0.0, 0.0), h(0.0, 1.0), u32::MAX, u32::MAX, u32::MAX, 0x00ff_ffff];
+        let probes = vec![probe; 17 * 5 * 17];
+        let volumes = [GiVolume { origin: [-64.0, -16.0, -64.0], spacing: 8.0, dims: [17, 5, 17], intensity: 1.0, probes: &probes }];
+        let draws = draws(&t, quad, true, Some(WaterStyle::preset("lake").unwrap()));
+        let terrains = [t.material];
+        let target = gpu.create_target(W, H).unwrap();
+        let mut shots = Vec::new();
+        for (name, quality) in [("none", None), ("high", Some(GiQuality::High)), ("low", Some(GiQuality::Low))] {
+            let gi = quality.map_or(GiFrame::default(), |q| GiFrame { key: 31, volumes: &volumes, quality: q, view: GiView::Lit });
+            let frame = FrameDesc {
+                view_proj: view_proj(),
+                clear_color: [0.05, 0.07, 0.12, 1.0],
+                draws: &draws,
+                reverse_z: true,
+                environment: env(),
+                time_s: 3.25,
+                terrains: &terrains,
+                gi,
+                ..Default::default()
+            };
+            gpu.render(target, &frame).unwrap();
+            assert_eq!(gpu.gi_drawn(), quality.is_some(), "{test} {name}: GI drawn");
+            let rgba = gpu.read_rgba8(target).unwrap();
+            write_png(&format!("terrain_gi_{name}.png"), &rgba, W, H);
+            shots.push(rgba);
+        }
+        for (what, p) in [("hill", [30.0, 3.0, -20.0]), ("pond", [0.0, 0.2, 0.0])] {
+            let [none, high, low] = [0, 1, 2].map(|i| px(&shots[i], p));
+            assert!(high[1] as i32 > none[1] as i32 + 20, "{test} {what}: green with GI at high: {none:?} -> {high:?}");
+            assert!((0..3).all(|c| (low[c] as i32 - high[c] as i32).abs() <= 6), "{test} {what}: low {low:?} as high {high:?}");
+        }
         gpu.destroy_target(target);
         assert!(validation_errors(test, gpu).is_empty(), "{test}: validation errors");
     });

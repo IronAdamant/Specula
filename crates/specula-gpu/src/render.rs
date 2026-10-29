@@ -182,6 +182,14 @@ fn composite_features(mode: PostMode) -> u32 {
 
 /// Skinned pipelines (their fragment stage leaves the lava lamp's ray marcher out).
 pub const FEAT_SKINNED: u32 = 64;
+/// Baked GI (`gi.rs`, `shaders/gi.glsl`): the lit paths' ambient term comes from the probes.
+/// Mesh, particle and lit decal pipelines only (bits 128 and 256 are the sprite cutout and the
+/// multiplying decal); built on a worker the first time a frame has GI (`Variants::gi`).
+pub const FEAT_GI: u32 = 512;
+/// With [`FEAT_GI`]: the fragment shader carries the full per-pixel probe sampler (tier high).
+/// Without it (tier low) GI comes from an ambient cube per draw and the lean probe sampler on wide
+/// draws and terrain, whose registers the iGPU affords.
+pub const FEAT_GI_PIXEL: u32 = 1024;
 /// Vertex stream variants of the scene pipelines: (skinned, textured). Blended materials are
 /// never textured (a textured mesh drawn blended uses the untextured variant). Shadow casters
 /// come in the same four: (skinned, alpha-masked).
@@ -196,6 +204,12 @@ const BLENDED_VARIANTS: [(bool, bool); 2] = [(false, false), (true, false)];
 pub struct Variants {
     pub skinned: bool,
     pub textured: bool,
+    /// The scene's lean GI feature sets ([`FEAT_GI`]: tier low; every stream variant built, and
+    /// the effects' lit pipelines).
+    pub gi: bool,
+    /// The per-pixel GI feature sets ([`FEAT_GI`] | [`FEAT_GI_PIXEL`]: tier high). Built only
+    /// when a frame at that tier asks: building both sets doubled the wait for the first GI frame.
+    pub gi_pixel: bool,
     /// The terrain and water pipelines (scene, shadow, ID buffer), asked for when a frame first
     /// has terrain patches or water ([`crate::Gpu::request_terrain_pipelines`]).
     pub terrain: bool,
@@ -205,14 +219,30 @@ impl Variants {
     fn has(self, skinned: bool, textured: bool) -> bool {
         (!skinned || self.skinned) && (!textured || self.textured)
     }
+
+    fn or(self, o: Variants) -> Variants {
+        Variants { skinned: self.skinned || o.skinned, textured: self.textured || o.textured, gi: self.gi || o.gi, gi_pixel: self.gi_pixel || o.gi_pixel, terrain: self.terrain || o.terrain }
+    }
+
+    /// Either GI set (the effects' lit GI pipelines come with both).
+    fn any_gi(self) -> bool {
+        self.gi || self.gi_pixel
+    }
+}
+
+/// The scene feature sets built: [`FEATURE_SETS`], each with [`FEAT_GI`] when `v.gi`, and with
+/// [`FEAT_GI`] | [`FEAT_GI_PIXEL`] when `v.gi_pixel`.
+fn feature_sets(v: Variants) -> impl Iterator<Item = u32> {
+    let with = move |on: bool, extra: u32| FEATURE_SETS.into_iter().filter(move |_| on).map(move |f| f | extra);
+    FEATURE_SETS.into_iter().chain(with(v.gi, FEAT_GI)).chain(with(v.gi_pixel, FEAT_GI | FEAT_GI_PIXEL))
 }
 
 /// The scene pipelines built for `format`, of the stream variants `include` accepts.
-fn scene_keys(format: VkFormat, include: impl Fn(bool, bool) -> bool) -> Vec<PipelineKey> {
+fn scene_keys(format: VkFormat, include: impl Fn(bool, bool) -> bool, v: Variants) -> Vec<PipelineKey> {
     let mut keys = Vec::new();
     for blended in [false, true] {
         let variants: &[(bool, bool)] = if blended { &BLENDED_VARIANTS } else { &OPAQUE_VARIANTS };
-        for features in FEATURE_SETS {
+        for features in feature_sets(v) {
             for &(skinned, textured) in variants.iter().filter(|(s, t)| include(*s, *t)) {
                 keys.push(PipelineKey::Mesh { format, blended, features, skinned, textured });
                 if format == HDR_FORMAT {
@@ -263,10 +293,11 @@ const FEATURE_SETS: [u32; 4] = [0, FEAT_SHADOWS, FEAT_FOG, FEAT_SHADOWS | FEAT_F
 
 /// The terrain variant's pipelines: terrain patches and water for every scene format and
 /// feature set (SSAO with HDR), the terrain shadow caster and its ID passes.
-fn terrain_keys(formats: &[VkFormat], counting: bool) -> Vec<PipelineKey> {
+fn terrain_keys(formats: &[VkFormat], counting: bool, v: Variants) -> Vec<PipelineKey> {
     let mut keys = Vec::new();
     for &format in formats {
-        for features in FEATURE_SETS {
+        // With each GI set built: terrain and water read the baked probes too (lit_common.glsl).
+        for features in feature_sets(v) {
             let sets: &[u32] = if format == HDR_FORMAT { &[0, FEAT_SSAO] } else { &[0] };
             for &ssao in sets {
                 keys.push(PipelineKey::Terrain { format, features: features | ssao });
@@ -377,6 +408,12 @@ pub struct FrameData {
     pub sky_ground: [f32; 4],
     /// Horizon sharpness, unused ×3.
     pub sky_params: [f32; 4],
+    /// Baked GI (`gi.rs`): volume count, visibility on, irradiance view, unused.
+    pub gi_params: [f32; 4],
+    /// Device address of the GI buffer (0: none).
+    pub gi_address: u64,
+    /// Device address of the per-draw GI ([`crate::gi::DrawGi`] per draw record; 0: none).
+    pub gi_draws: u64,
 }
 
 pub const FRAME_DATA_SIZE: u64 = size_of::<FrameData>() as u64;
@@ -479,6 +516,9 @@ pub fn frame_data(frame: &FrameDesc, extent: VkExtent2D, shadow: &ShadowData) ->
         },
         // y: the sky is drawn (water mirrors its gradient).
         sky_params: [sky_s.horizon_sharpness.clamp(0.1, 64.0), if sky_s.enabled { 1.0 } else { 0.0 }, 0.0, 0.0],
+        gi_params: [0.0; 4],
+        gi_address: 0,
+        gi_draws: 0,
     }
 }
 
@@ -681,6 +721,12 @@ pub struct FrameScratch {
     /// upload buffer.
     pub effects: crate::effects::EffectsPlan,
     pub effects_at: usize,
+    /// The frame's GI binding (set by the caller before [`prepare_frame`]; inactive: none).
+    pub gi: crate::gi::GiBinding,
+    /// Per camera draw record: its GI as the CPU sampled it (`gi.rs` `DrawGi`), as 16-byte
+    /// words, and what is kept across frames.
+    pub gi_words: Vec<[u32; 4]>,
+    pub gi_cache: crate::gi::DrawGiCache,
     /// The frame's terrain material records ([`FrameDesc::terrains`]) and the record unit they
     /// start at (after the effects).
     pub terrains: Vec<crate::terrain::TerrainRecord>,
@@ -867,6 +913,24 @@ impl FrameUpload {
             ptr::copy_nonoverlapping(plan.particles.as_ptr() as *const u8, base, std::mem::size_of_val(plan.particles.as_slice()));
             ptr::copy_nonoverlapping(plan.materials.as_ptr() as *const u8, base.add(pu * unit), std::mem::size_of_val(plan.materials.as_slice()));
             ptr::copy_nonoverlapping(plan.decals.as_ptr() as *const u8, base.add((pu + mu) * unit), std::mem::size_of_val(plan.decals.as_slice()));
+        }
+    }
+
+    /// Device address of record unit `at`.
+    pub fn unit_address(&self, at: usize) -> u64 {
+        self.records_address() + at as u64 * RECORD_SIZE
+    }
+
+    /// Writes plain records at record unit `at` (after everything else this frame wrote).
+    pub fn write_units<T: Copy>(&self, at: usize, items: &[T]) {
+        let bytes = std::mem::size_of_val(items);
+        assert!(at * RECORD_SIZE as usize + bytes <= self.sizing.capacity as usize * RECORD_SIZE as usize, "reserve() before write_units()");
+        // SAFETY: `mapped` is coherent host memory of RECORDS_OFFSET + capacity × RECORD_SIZE
+        // bytes the GPU no longer reads (see `reserve`); the copy stays within it (asserted) and
+        // `T` is plain data.
+        unsafe {
+            let base = (self.buffer.mapped as *mut u8).add(RECORDS_OFFSET as usize + at * RECORD_SIZE as usize);
+            ptr::copy_nonoverlapping(items.as_ptr() as *const u8, base, bytes);
         }
     }
 
@@ -1088,12 +1152,12 @@ pub const FEAT_DECAL_MULTIPLY: u32 = 256;
 
 /// The particle pipeline for a frame's scene `features` (only fog and SSAO matter to it).
 fn particle_key(format: VkFormat, features: u32) -> PipelineKey {
-    PipelineKey::Particle { format, features: features & (FEAT_FOG | FEAT_SSAO) }
+    PipelineKey::Particle { format, features: features & (FEAT_FOG | FEAT_SSAO | FEAT_GI) }
 }
 
 /// The decal pipeline for a frame's scene `features` (multiplying ones aren't lit: no shadows).
 fn decal_key(format: VkFormat, features: u32, multiply: bool) -> PipelineKey {
-    let keep = if multiply { FEAT_FOG | FEAT_SSAO } else { FEAT_SHADOWS | FEAT_FOG | FEAT_SSAO };
+    let keep = if multiply { FEAT_FOG | FEAT_SSAO } else { FEAT_SHADOWS | FEAT_FOG | FEAT_SSAO | FEAT_GI };
     PipelineKey::Decal { format, features: features & keep, multiply }
 }
 
@@ -1547,6 +1611,10 @@ struct Background {
 pub struct PipelineVariants {
     pub skinned: bool,
     pub textured: bool,
+    /// The lean GI feature sets (tier low; built on a worker the first time a frame wants them).
+    pub gi: bool,
+    /// The per-pixel GI feature sets (tier high).
+    pub gi_pixel: bool,
     /// Terrain and water ([`crate::Gpu::request_terrain_pipelines`]).
     pub terrain: bool,
     /// The last background build's failure: its variants are not ready and won't be until a
@@ -1560,6 +1628,8 @@ pub struct VariantFailure {
     /// The variants that are unavailable because of it.
     pub skinned: bool,
     pub textured: bool,
+    pub gi: bool,
+    pub gi_pixel: bool,
     pub terrain: bool,
     /// The pipeline that failed (its key), or `worker thread panicked`.
     pub pipeline: String,
@@ -1742,7 +1812,7 @@ impl Pipelines {
 
     fn prebuild_scene(&mut self, dev: &Device, color_format: VkFormat) -> Result<(), GpuError> {
         let built = self.variants;
-        for key in scene_keys(color_format, |s, t| built.has(s, t)) {
+        for key in scene_keys(color_format, |s, t| built.has(s, t), built) {
             self.get(dev, key)?;
         }
         // SSAO always renders the scene in HDR.
@@ -1762,7 +1832,7 @@ impl Pipelines {
             }
         }
         // Effects: particles and both kinds of decal, every scene feature set they use.
-        for features in FEATURE_SETS {
+        for features in feature_sets(Variants { gi: built.any_gi(), gi_pixel: false, ..built }) {
             for &ssao in ssao {
                 let features = features | if ssao { FEAT_SSAO } else { 0 };
                 self.get(dev, particle_key(color_format, features))?;
@@ -1849,8 +1919,8 @@ impl Pipelines {
             flash_cells: get(flash, PipelineKey::FlashCells)?,
             overlay: get(overlay, PipelineKey::Overlay { format: final_format, depth: mode.direct() })?,
             // Prebuilt with the scene's: a lookup, never a creation.
-            sprite_cutout: get(true, PipelineKey::Sprite { format: scene_format, cutout: true, features })?,
-            sprite_blended: get(true, PipelineKey::Sprite { format: scene_format, cutout: false, features })?,
+            sprite_cutout: get(true, PipelineKey::Sprite { format: scene_format, cutout: true, features: features & !(FEAT_GI | FEAT_GI_PIXEL) })?,
+            sprite_blended: get(true, PipelineKey::Sprite { format: scene_format, cutout: false, features: features & !(FEAT_GI | FEAT_GI_PIXEL) })?,
             shape: get(true, PipelineKey::Shape { format: scene_format, fog: features & FEAT_FOG != 0, ssao: features & FEAT_SSAO != 0 })?,
             sprite_shadow: get(features & FEAT_SHADOWS != 0, PipelineKey::SpriteShadow)?,
             ssao: get(features & FEAT_SSAO != 0, PipelineKey::Ssao)?,
@@ -1910,14 +1980,27 @@ impl Pipelines {
     /// `formats` (scene) and the shadow pass, not yet created.
     fn variant_keys(&self, want: Variants, formats: &[VkFormat]) -> Vec<PipelineKey> {
         let new = |s: bool, t: bool| want.has(s, t);
-        let mut keys: Vec<PipelineKey> = formats.iter().flat_map(|&f| scene_keys(f, new)).collect();
+        let mut keys: Vec<PipelineKey> = formats.iter().flat_map(|&f| scene_keys(f, new, want)).collect();
+        if want.any_gi() {
+            // The effects' lit pipelines with GI, as prebuild_scene makes them for the others.
+            for &format in formats {
+                let ssao: &[bool] = if format == HDR_FORMAT { &[false, true] } else { &[false] };
+                for features in feature_sets(Variants { gi: true, ..Variants::default() }).filter(|f| f & FEAT_GI != 0) {
+                    for &ssao in ssao {
+                        let features = features | if ssao { FEAT_SSAO } else { 0 };
+                        keys.push(particle_key(format, features));
+                        keys.push(decal_key(format, features, false));
+                    }
+                }
+            }
+        }
         for (skinned, masked) in OPAQUE_VARIANTS.into_iter().filter(|(s, m)| new(*s, *m)) {
             keys.push(PipelineKey::Shadow { skinned, masked });
         }
         // Sight's ID passes follow the scene's variants (captures draw what the scene draws).
         keys.extend(id_keys(new, self.ids_counting));
         if want.terrain {
-            keys.extend(terrain_keys(formats, self.ids_counting));
+            keys.extend(terrain_keys(formats, self.ids_counting, want));
         }
         keys.retain(|k| !self.by_key.iter().any(|(b, _)| b == k));
         keys
@@ -1927,16 +2010,12 @@ impl Pipelines {
     /// ordinary creation). `variants` changes only when every pipeline was created.
     pub fn build_variants(&mut self, dev: &Device, want: Variants, formats: &[VkFormat]) -> Result<(), GpuError> {
         self.poll_background(true);
-        let want = Variants {
-            skinned: want.skinned || self.variants.skinned,
-            textured: want.textured || self.variants.textured,
-            terrain: want.terrain || self.variants.terrain,
-        };
+        let want = want.or(self.variants);
         for key in self.variant_keys(want, formats) {
             self.get(dev, key)?;
         }
         self.variants = want;
-        if self.background.failure.as_ref().is_some_and(|f| (!f.skinned || want.skinned) && (!f.textured || want.textured) && (!f.terrain || want.terrain)) {
+        if self.background.failure.as_ref().is_some_and(|f| (!f.skinned || want.skinned) && (!f.textured || want.textured) && (!f.terrain || want.terrain) && (!f.gi || want.gi) && (!f.gi_pixel || want.gi_pixel)) {
             self.background.failure = None; // built after all
         }
         Ok(())
@@ -1948,11 +2027,7 @@ impl Pipelines {
     /// draws needing a variant not built yet are skipped until [`Pipelines::poll_background`]
     /// hands the pipelines back. These don't count as created after warm (no frame stalls).
     pub fn request_variants(&mut self, dev: &Device, want: Variants, formats: &[VkFormat]) {
-        let mut want = Variants {
-            skinned: want.skinned || self.variants.skinned,
-            textured: want.textured || self.variants.textured,
-            terrain: want.terrain || self.variants.terrain,
-        };
+        let mut want = want.or(self.variants);
         if want == self.variants {
             return;
         }
@@ -1961,6 +2036,8 @@ impl Pipelines {
             let q = &mut self.background.queued;
             q.skinned |= want.skinned && !p.want.skinned;
             q.textured |= want.textured && !p.want.textured;
+            q.gi |= want.gi && !p.want.gi;
+            q.gi_pixel |= want.gi_pixel && !p.want.gi_pixel;
             q.terrain |= want.terrain && !p.want.terrain;
             return;
         }
@@ -1969,6 +2046,8 @@ impl Pipelines {
         if let Some(f) = self.background.failure.take() {
             want.skinned |= f.skinned;
             want.textured |= f.textured;
+            want.gi |= f.gi;
+            want.gi_pixel |= f.gi_pixel;
             want.terrain |= f.terrain;
         }
         let keys = self.variant_keys(want, formats);
@@ -2018,6 +2097,8 @@ impl Pipelines {
         let new = Variants {
             skinned: p.want.skinned && !self.variants.skinned,
             textured: p.want.textured && !self.variants.textured,
+            gi: p.want.gi && !self.variants.gi,
+            gi_pixel: p.want.gi_pixel && !self.variants.gi_pixel,
             terrain: p.want.terrain && !self.variants.terrain,
         };
         let mut lost = if panicked { new } else { Variants::default() };
@@ -2032,15 +2113,18 @@ impl Pipelines {
                 }
                 Err(e) => {
                     self.background.failed += 1;
-                    let (skinned, textured, terrain) = match key {
-                        PipelineKey::Mesh { skinned, textured, .. } => (skinned, textured, false),
-                        PipelineKey::Shadow { skinned, masked } => (skinned, masked, false),
-                        PipelineKey::Ids { skinned, textured, .. } => (skinned, textured, false),
-                        PipelineKey::Terrain { .. } | PipelineKey::TerrainShadow | PipelineKey::IdsTerrain { .. } | PipelineKey::Water { .. } => (false, false, true),
-                        _ => (new.skinned, new.textured, new.terrain),
+                    let (skinned, textured, gi, gi_pixel, terrain) = match key {
+                        PipelineKey::Mesh { skinned, textured, features, .. } => (skinned, textured, features & FEAT_GI != 0 && features & FEAT_GI_PIXEL == 0, features & FEAT_GI_PIXEL != 0, false),
+                        PipelineKey::Shadow { skinned, masked } => (skinned, masked, false, false, false),
+                        PipelineKey::Ids { skinned, textured, .. } => (skinned, textured, false, false, false),
+                        PipelineKey::Particle { features, .. } | PipelineKey::Decal { features, .. } if features & FEAT_GI != 0 => (false, false, true, true, false),
+                        PipelineKey::Terrain { .. } | PipelineKey::TerrainShadow | PipelineKey::IdsTerrain { .. } | PipelineKey::Water { .. } => (false, false, false, false, true),
+                        _ => (new.skinned, new.textured, new.gi, new.gi_pixel, new.terrain),
                     };
                     lost.skinned |= skinned && new.skinned;
                     lost.textured |= textured && new.textured;
+                    lost.gi |= gi && new.gi;
+                    lost.gi_pixel |= gi_pixel && new.gi_pixel;
                     lost.terrain |= terrain && new.terrain;
                     failure.get_or_insert((format!("{key:?}"), e));
                 }
@@ -2056,10 +2140,12 @@ impl Pipelines {
         self.variants = Variants {
             skinned: p.want.skinned && !lost.skinned,
             textured: p.want.textured && !lost.textured,
+            gi: p.want.gi && !lost.gi,
+            gi_pixel: p.want.gi_pixel && !lost.gi_pixel,
             terrain: p.want.terrain && !lost.terrain,
         };
         if let Some((pipeline, error)) = failure {
-            self.background.failure = Some(VariantFailure { skinned: lost.skinned, textured: lost.textured, terrain: lost.terrain, pipeline, error });
+            self.background.failure = Some(VariantFailure { skinned: lost.skinned, textured: lost.textured, gi: lost.gi, gi_pixel: lost.gi_pixel, terrain: lost.terrain, pipeline, error });
         }
         let queued = std::mem::take(&mut self.background.queued);
         if queued != Variants::default() {
@@ -2076,9 +2162,26 @@ impl Pipelines {
         self.background.requeue.take()
     }
 
+    /// Whether the GI feature sets exist, are being built or queued, or failed to build (then
+    /// only an explicit retry asks again): asking for them again would do nothing.
+    pub fn gi_asked(&self, per_pixel: bool) -> bool {
+        let has = |v: Variants| if per_pixel { v.gi_pixel } else { v.gi };
+        has(self.variants)
+            || self.background.pending.as_ref().is_some_and(|p| has(p.want))
+            || has(self.background.queued)
+            || self.background.failure.as_ref().is_some_and(|f| if per_pixel { f.gi_pixel } else { f.gi })
+    }
+
     /// The variants ready to draw with, and the last background failure.
     pub fn ready(&self) -> PipelineVariants {
-        PipelineVariants { skinned: self.variants.skinned, textured: self.variants.textured, terrain: self.variants.terrain, failed: self.background.failure.clone() }
+        PipelineVariants {
+            skinned: self.variants.skinned,
+            textured: self.variants.textured,
+            gi: self.variants.gi,
+            gi_pixel: self.variants.gi_pixel,
+            terrain: self.variants.terrain,
+            failed: self.background.failure.clone(),
+        }
     }
 
     /// Makes the next background build fail (tests).
@@ -2469,12 +2572,83 @@ pub fn prepare_frame(
     let before_effects =
         scratch.records.len() + overlay_units(scratch.overlay.len(), RECORD_SIZE as usize) + bone_units(frame.bones.len()) + items.len();
     let (pu, mu, du) = scratch.effects.units(RECORD_SIZE as usize);
+    let mut data = frame_data(frame, extent, &scratch.shadow.data);
+    // Per-draw GI (tier low): each camera record's ambient cube sampled around its draw's box, or
+    // for a wide draw the lean probes per pixel (`gi.rs`). Kept across frames by the draw's mesh,
+    // model and bounds (`DrawGiCache`): a frame whose draws are last frame's looks nothing up.
+    scratch.gi_words.clear();
+    if let (true, Some(span)) = (scratch.gi.active(), scratch.gi.quality.per_draw_span()) {
+        let _z = specula_core::profile::zone("gpu.gi_draws");
+        let flat = [data.ambient[0], data.ambient[1], data.ambient[2]];
+        let spacing = frame.gi.volumes.iter().map(|v| v.spacing).fold(f32::MAX, f32::min);
+        let (cache, words, plan) = (&mut scratch.gi_cache, &mut scratch.gi_words, &scratch.plan);
+        cache.begin(frame.gi.key, flat, scratch.gi.quality);
+        for &(i, _) in &plan.entries {
+            let d = &frame.draws[i];
+            let own = d.bounds.filter(|b| b.iter().all(|v| v.is_finite()) && b[3] >= 0.0);
+            let mut raw = [0u32; 21];
+            raw[0] = d.mesh.0;
+            for (r, v) in raw[1..17].iter_mut().zip(d.model) {
+                *r = v.to_bits();
+            }
+            if let Some(b) = d.bounds {
+                for (r, v) in raw[17..].iter_mut().zip(b) {
+                    *r = v.to_bits();
+                }
+            }
+            let id = || {
+                let mut h = specula_core::hash::StableHasher::with_seed(0x4749_4452_4157_0002);
+                for w in raw {
+                    h.write_u32(w);
+                }
+                h.finish()
+            };
+            let rec = cache.get(i, raw, id, || {
+                let mesh = bounds(d.mesh);
+                // The draw's own bounds, else its mesh's placed by its model (a skinned draw's
+                // bind pose too: its pose stays near it).
+                let (center, r) = match (own, mesh) {
+                    (Some(b), _) => ([b[0], b[1], b[2]], b[3]),
+                    (None, Some(b)) => crate::batch::world_sphere(&d.model, b),
+                    (None, None) => ([d.model[12], d.model[13], d.model[14]], f32::INFINITY),
+                };
+                // Water reads its draw's cube whatever its size (water.frag: per pixel, the lean
+                // probes cost the iGPU as much again as the water pass).
+                let water = d.material == crate::Material::Water;
+                // (A NaN radius is wide.)
+                let small = r <= span * spacing;
+                if !small && !water {
+                    return crate::gi::lean_draw();
+                }
+                // The mesh's own box placed by its model (its faces), else the bounds' cube.
+                let (lo, hi) = match (mesh, own) {
+                    (Some(b), _) if b.half.iter().all(|h| h.is_finite()) => crate::batch::world_box(&d.model, b),
+                    _ => ([center[0] - r, center[1] - r, center[2] - r], [center[0] + r, center[1] + r, center[2] + r]),
+                };
+                if !lo.iter().chain(&hi).all(|v| v.is_finite()) {
+                    return crate::gi::lean_draw();
+                }
+                crate::gi::sample_cube(frame.gi.volumes, lo, hi, spacing, flat)
+            });
+            words.extend_from_slice(&[[rec[0], rec[1], rec[2], rec[3]], [rec[4], rec[5], rec[6], rec[7]], [rec[8], rec[9], rec[10], rec[11]]]);
+        }
+        cache.end();
+    }
+    let gu = (scratch.gi_words.len() * 16).div_ceil(RECORD_SIZE as usize);
     scratch.terrains.clear();
     scratch.terrains.extend(frame.terrains.iter().map(|t| crate::terrain::record(t, &mut |c| scratch.linear.get(c), &|id| textures.slot(id))));
-    let terrains_at = before_effects + pu + mu + du;
+    let gi_at = before_effects + pu + mu + du;
+    let terrains_at = gi_at + gu;
     upload.reserve(dev, terrains_at + terrain_units(scratch.terrains.len()))?;
-    upload.write(&frame_data(frame, extent, &scratch.shadow.data), &scratch.records, &scratch.overlay, frame.bones, items);
+    data.gi_params = scratch.gi.params();
+    data.gi_address = if scratch.gi.active() { scratch.gi.address } else { 0 };
+    data.gi_draws = if gu > 0 { upload.unit_address(gi_at) } else { 0 };
+    if gu == 0 {
+        data.gi_params[3] = 0.0; // no per-draw data: every draw per pixel
+    }
+    upload.write(&data, &scratch.records, &scratch.overlay, frame.bones, items);
     upload.write_effects(before_effects, &scratch.effects);
+    upload.write_units(gi_at, &scratch.gi_words);
     upload.write_terrains(terrains_at, &scratch.terrains);
     scratch.effects_at = before_effects;
     scratch.terrains_at = terrains_at;
@@ -2526,6 +2700,12 @@ pub fn frame_features(frame: &FrameDesc, scratch: &FrameScratch, have_shadow_map
     }
     if frame.environment.ssao.enabled {
         f |= FEAT_SSAO;
+    }
+    if scratch.gi.active() {
+        f |= FEAT_GI;
+        if scratch.gi.quality.per_pixel() {
+            f |= FEAT_GI_PIXEL;
+        }
     }
     f
 }
@@ -3399,7 +3579,10 @@ mod tests {
         assert_eq!(offset_of!(FrameData, shadow_fade), 1040);
         assert_eq!(offset_of!(FrameData, fog_color), 1056);
         assert_eq!(offset_of!(FrameData, sky_params), 1136);
-        assert_eq!(size_of::<FrameData>(), 1152);
+        assert_eq!(offset_of!(FrameData, gi_params), 1152);
+        assert_eq!(offset_of!(FrameData, gi_address), 1168);
+        assert_eq!(offset_of!(FrameData, gi_draws), 1176);
+        assert_eq!(size_of::<FrameData>(), 1184);
     }
 
     #[test]

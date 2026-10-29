@@ -1168,6 +1168,7 @@ impl Engine {
             draws_2d: &[],
             bones,
             effects: Default::default(),
+            gi: Default::default(),
             terrains: &[],
         };
         self.gpu.render(target_id, &frame).map_err(|e| capture::gpu_failure("render", &e, self.windowed))?;

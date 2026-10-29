@@ -128,6 +128,7 @@ fn kind_name(k: MemoryKind) -> &'static str {
         MemoryKind::ShadowMaps => "shadow_maps",
         MemoryKind::PostTargets => "post_targets",
         MemoryKind::Textures => "textures",
+        MemoryKind::Gi => "gi",
     }
 }
 

@@ -7,11 +7,12 @@
 use crate::render::camera_position;
 use crate::{FrameDesc, Material, MeshId, Vertex};
 
-/// A bounding sphere in a mesh's object space.
+/// A bounding sphere in a mesh's object space, and its box's half extents (around `center`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Bounds {
     pub center: [f32; 3],
     pub radius: f32,
+    pub half: [f32; 3],
 }
 
 /// Sphere around the vertices' axis-aligned box centre that contains every vertex.
@@ -26,7 +27,7 @@ pub fn mesh_bounds(vertices: &[Vertex]) -> Bounds {
     }
     if vertices.is_empty() || !lo.iter().chain(&hi).all(|x| x.is_finite()) {
         // Never cull what we cannot bound.
-        return Bounds { center: [0.0; 3], radius: f32::INFINITY };
+        return Bounds { center: [0.0; 3], radius: f32::INFINITY, half: [f32::INFINITY; 3] };
     }
     let center = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5];
     let r2 = vertices
@@ -36,7 +37,21 @@ pub fn mesh_bounds(vertices: &[Vertex]) -> Bounds {
             d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
         })
         .fold(0.0f32, f32::max);
-    Bounds { center, radius: r2.sqrt() }
+    Bounds { center, radius: r2.sqrt(), half: [(hi[0] - lo[0]) * 0.5, (hi[1] - lo[1]) * 0.5, (hi[2] - lo[2]) * 0.5] }
+}
+
+/// `bounds`' box placed by `model`: the world box around it (low, high corners).
+pub fn world_box(model: &[f32; 16], bounds: Bounds) -> ([f32; 3], [f32; 3]) {
+    let c = bounds.center;
+    let mut lo = [0.0; 3];
+    let mut hi = [0.0; 3];
+    for i in 0..3 {
+        let centre = model[i] * c[0] + model[4 + i] * c[1] + model[8 + i] * c[2] + model[12 + i];
+        let ext = model[i].abs() * bounds.half[0] + model[4 + i].abs() * bounds.half[1] + model[8 + i].abs() * bounds.half[2];
+        lo[i] = centre - ext;
+        hi[i] = centre + ext;
+    }
+    (lo, hi)
 }
 
 /// `bounds` placed by `model`: world centre and a radius covering any scale or shear.
@@ -131,6 +146,9 @@ pub struct Plan {
     /// Sort scratch: visible opaque draws as keys, visible blended draws as (distance², index).
     opaque_keys: Vec<(u32, u32, bool, bool, u32, usize)>,
     blended_keys: Vec<(f32, usize)>,
+    /// Opaque batches to order near to far: (skinned, textured, nearest distance² bits, material,
+    /// mesh, first key, keys).
+    opaque_groups: Vec<(bool, bool, u32, u32, u32, usize, usize)>,
 }
 
 /// Sort key for opaque draws: material (and so pipeline), mesh, skinned or not, then near to far
@@ -156,9 +174,12 @@ pub fn draw_sphere(d: &crate::DrawItem, bounds: Bounds) -> ([f32; 3], f32) {
 /// Cull, order and batch `frame`'s draws. `bounds` gives a mesh's object-space sphere (`None` =
 /// never cull it).
 ///
-/// Order: opaque draws first, sorted by (material, mesh) so equal ones batch, and near to far
-/// within a batch (by bounding-sphere centre) so hidden surfaces fail the depth test early. Depth
-/// testing makes their order irrelevant except for exactly coplanar overlaps. Then blended draws
+/// Order: opaque draws first, grouped by (material, mesh) so equal ones batch, near to far within
+/// a batch (by bounding-sphere centre), and the batches themselves near to far by their nearest
+/// draw within each pipeline variant (plain, skinned, textured), so hidden surfaces fail the
+/// depth test early instead of being shaded and then covered (on the iGPU most of a busy scene's
+/// fragment cost is that overdraw). Depth testing makes their order irrelevant except for exactly
+/// coplanar overlaps. Then blended draws
 /// far to near by model origin; glass appears twice, back faces (pass 0) then front faces (pass 1).
 /// Blended draws sharing an origin are nested shells listed outermost first: all their back faces
 /// in list order, then their front faces in reverse, so an inner liquid sits inside its glass.
@@ -175,11 +196,12 @@ pub fn plan_into(frame: &FrameDesc, bounds: impl Fn(MeshId) -> Option<Bounds>, o
     let frustum = Frustum::from_view_proj(&frame.view_proj);
     let c = camera_position(&frame.view_proj);
     let mut culled = 0u32;
-    let Plan { entries, batches, opaque_keys: opaque, blended_keys: blended, .. } = out;
+    let Plan { entries, batches, opaque_keys: opaque, blended_keys: blended, opaque_groups: groups, .. } = out;
     entries.clear();
     batches.clear();
     opaque.clear();
     blended.clear();
+    groups.clear();
     for (i, d) in frame.draws.iter().enumerate() {
         let (center, keep) = match bounds(d.mesh) {
             Some(b) => {
@@ -206,7 +228,18 @@ pub fn plan_into(frame: &FrameDesc, bounds: impl Fn(MeshId) -> Option<Bounds>, o
     // Both sorts are in place (no allocation) and total: keys end in the list index, so equal
     // distances keep list order exactly as a stable sort would.
     opaque.sort_unstable();
-    entries.extend(opaque.iter().map(|k| (k.5, 0)));
+    // Batches near to far within each pipeline variant (a batch's first key is its nearest draw).
+    let mut start = 0;
+    while start < opaque.len() {
+        let k = opaque[start];
+        let len = opaque[start..].iter().take_while(|o| (o.0, o.1, o.2, o.3) == (k.0, k.1, k.2, k.3)).count();
+        groups.push((k.2, k.3, k.4, k.0, k.1, start, len));
+        start += len;
+    }
+    groups.sort_unstable();
+    for g in groups.iter() {
+        entries.extend(opaque[g.5..g.5 + g.6].iter().map(|k| (k.5, 0)));
+    }
     blended.sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1))); // far to near
     for group in blended.chunk_by(|a, b| a.0 == b.0) {
         entries.extend(group.iter().map(|&(_, i)| (i, 0)));
@@ -263,7 +296,7 @@ mod tests {
         mul(&proj, &at(0.0, 0.0, -z))
     }
 
-    const UNIT: Bounds = Bounds { center: [0.0; 3], radius: 0.87 };
+    const UNIT: Bounds = Bounds { center: [0.0; 3], radius: 0.87, half: [0.5; 3] };
 
     #[test]
     fn mesh_bounds_cover_every_vertex() {
@@ -276,18 +309,26 @@ mod tests {
     }
 
     #[test]
+    fn world_boxes_follow_rotation_and_scale() {
+        // A 2 x 2 x 2 box scaled 3 in x and turned 90 degrees about y: 2 wide in x, 6 deep in z.
+        let m = [0.0, 0.0, -3.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 1.0];
+        let (lo, hi) = world_box(&m, Bounds { center: [0.0; 3], radius: 1.8, half: [1.0; 3] });
+        assert_eq!((lo, hi), ([9.0, -1.0, -3.0], [11.0, 1.0, 3.0]));
+    }
+
+    #[test]
     fn world_sphere_follows_scale_and_shear() {
         let mut m = at(1.0, 2.0, 3.0);
         m[0] = 2.0;
         m[5] = 3.0;
-        let (c, r) = world_sphere(&m, Bounds { center: [1.0, 1.0, 0.0], radius: 1.0 });
+        let (c, r) = world_sphere(&m, Bounds { center: [1.0, 1.0, 0.0], radius: 1.0, half: [0.5; 3] });
         assert_eq!(c, [3.0, 5.0, 3.0]);
         assert_eq!(r, 3.0, "largest axis scale");
         // A shear (x += y) stretches some vectors by the golden ratio, more than any column's
         // length (√2): the bound must cover that.
         let mut s = IDENTITY;
         s[4] = 1.0;
-        let (_, r) = world_sphere(&s, Bounds { center: [0.0; 3], radius: 1.0 });
+        let (_, r) = world_sphere(&s, Bounds { center: [0.0; 3], radius: 1.0, half: [0.5; 3] });
         let golden = (1.0 + 5f32.sqrt()) / 2.0;
         assert!(r >= golden && (r - 3f32.sqrt()).abs() < 1e-6, "{r}");
     }
@@ -337,16 +378,33 @@ mod tests {
         let frame = FrameDesc { draws: &draws, view_proj: camera(0.0, true), reverse_z: true, ..Default::default() };
         let p = plan(&frame, |_| Some(UNIT));
         assert_eq!(p.culled, 1);
-        assert_eq!(p.entries, vec![(1, 0), (3, 0), (0, 0), (2, 0)]);
+        // Mesh 2's nearest draw (x = 0) is nearer than mesh 1's (x = 1): its batch goes first.
+        assert_eq!(p.entries, vec![(0, 0), (2, 0), (1, 0), (3, 0)]);
         assert_eq!(
             p.batches,
             vec![
-                Batch { mesh: MeshId(1), material: Material::Lit, pass: 0, skinned: false, textured: false, first: 0, count: 2 },
-                Batch { mesh: MeshId(2), material: Material::Lit, pass: 0, skinned: false, textured: false, first: 2, count: 2 },
+                Batch { mesh: MeshId(2), material: Material::Lit, pass: 0, skinned: false, textured: false, first: 0, count: 2 },
+                Batch { mesh: MeshId(1), material: Material::Lit, pass: 0, skinned: false, textured: false, first: 2, count: 2 },
             ]
         );
         // Without bounds nothing is culled.
         assert_eq!(plan(&frame, |_| None).culled, 0);
+    }
+
+    #[test]
+    fn opaque_batches_draw_near_to_far_and_keep_instancing() {
+        // A far ground (mesh 9) listed first, near props of two meshes after it.
+        let draws = [
+            draw(9, at(0.0, 0.0, -40.0), Material::Lit),
+            draw(1, at(0.0, 0.0, -8.0), Material::Lit),
+            draw(2, at(0.0, 0.0, -4.0), Material::Lit),
+            draw(1, at(1.0, 0.0, -20.0), Material::Lit),
+        ];
+        let frame = FrameDesc { draws: &draws, view_proj: camera(0.0, true), reverse_z: true, ..Default::default() };
+        let p = plan(&frame, |_| Some(UNIT));
+        assert_eq!(p.entries, vec![(2, 0), (1, 0), (3, 0), (0, 0)]);
+        // Three batches, mesh 1's two draws still one instanced call.
+        assert_eq!(p.batches.iter().map(|b| (b.mesh.0, b.count)).collect::<Vec<_>>(), vec![(2, 1), (1, 2), (9, 1)]);
     }
 
     #[test]
@@ -440,7 +498,7 @@ mod tests {
         let p = plan(&frame, |_| Some(UNIT));
         let shape: Vec<_> = p.batches.iter().map(|b| (b.skinned, b.count)).collect();
         assert_eq!(shape, vec![(false, 1), (true, 2)], "one mesh, two batches: plain and skinned");
-        let small = |_| Some(Bounds { center: [0.0; 3], radius: 0.5 });
+        let small = |_| Some(Bounds { center: [0.0; 3], radius: 0.5, half: [0.25; 3] });
         let culled = |d: DrawItem| plan(&FrameDesc { draws: &[d], view_proj: camera(0.0, true), ..Default::default() }, small).culled;
         // Far outside the right plane at rest: culled.
         let mut edge = draw(1, at(30.0, 0.0, -5.0), Material::Lit);
@@ -460,7 +518,7 @@ mod tests {
         let draws: Vec<DrawItem> =
             (0..10_000).map(|i| draw(3, at((i % 100) as f32 * 0.1 - 5.0, (i / 100) as f32 * 0.1 - 5.0, -20.0), Material::Lit)).collect();
         let frame = FrameDesc { draws: &draws, view_proj: camera(0.0, true), ..Default::default() };
-        let p = plan(&frame, |_| Some(Bounds { center: [0.0; 3], radius: 0.05 }));
+        let p = plan(&frame, |_| Some(Bounds { center: [0.0; 3], radius: 0.05, half: [0.03; 3] }));
         assert_eq!((p.culled, p.entries.len(), p.batches.len()), (0, 10_000, 1));
         assert_eq!(p.batches[0].count, 10_000);
     }

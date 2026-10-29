@@ -194,6 +194,7 @@ const OWNERS: &[Rule] = &[
     Rule { pattern: "Rule::LexLive", allowed: &["lex_live.rs", "write_policy.rs"], why: "/lex_live is lex_live's" },
     Rule { pattern: "Rule::Project", allowed: &["project_engine.rs", "write_policy.rs"], why: "project files are the project tools'" },
     Rule { pattern: "Rule::Vfx", allowed: &["vfx_tools.rs", "write_policy.rs"], why: "the effect library (/vfx, the vfx_effect tag) is vfx_set's" },
+    Rule { pattern: "Rule::Gi", allowed: &["gi_tools.rs", "write_policy.rs"], why: "baked GI volumes (/gi, props.gi_volume) are gi_bake's" },
     Rule { pattern: "Opener::Modules", allowed: &["sim_writes.rs", "write_policy.rs"], why: "the engine opens the module host's sessions (ticks, logic tools)" },
     Rule { pattern: "Opener::LexLive", allowed: &["lex_live.rs", "write_policy.rs"], why: "live Lex's sessions" },
     Rule { pattern: "Opener::LexTools", allowed: &["sim_writes.rs", "write_policy.rs"], why: "the Lex tools' session" },

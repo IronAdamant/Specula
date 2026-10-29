@@ -190,7 +190,8 @@ def main():
     (assets / "recipes" / "small_t.json").write_text(json.dumps(SMALL_RECIPE, indent=1))
     (assets / "recipes" / "hill.json").write_text(json.dumps(HILL_RECIPE, indent=1))
     (assets / "recipes" / "big_t.json").write_text(json.dumps(BIG_RECIPE, indent=1))
-    args = ["--assets", str(assets), "--captures", str(out / "captures"), "--worlds", str(out / "worlds")]
+    # The operator grants the lead its name (agent_hello role lead needs the grant).
+    args = ["--assets", str(assets), "--captures", str(out / "captures"), "--worlds", str(out / "worlds"), "--lead", "terrain"]
     args += ["--size", "1600x900"] if a.window else ["--headless"]
     if a.adapter:
         args += ["--adapter", a.adapter]

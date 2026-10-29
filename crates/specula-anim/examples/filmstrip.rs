@@ -369,6 +369,7 @@ fn render_tile(gpu: &mut Gpu, target: specula_gpu::TargetId, view_proj: [f32; 16
         draws_2d: &[],
         bones: &[],
         effects: Default::default(),
+        gi: Default::default(),
         terrains: &[],
     };
     gpu.render(target, &frame).expect("render");

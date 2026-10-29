@@ -18,7 +18,12 @@ GPU while it measured (the 3D engine's utilisation from the OS's GPU counters; D
 engine's window there).
 
     cargo build -p sepulcra-app --release
-    python scripts/m3_exit.py [--adapter integrated] [--port 7488] [--frames 600] [--out DIR] [--max-fps N]
+    python scripts/m3_exit.py [--adapter integrated] [--port 7488] [--frames 600] [--out DIR] [--max-fps N] [--gi]
+
+With `--gi` the game's top face gets a baked GI volume (`gi_bake`, rebaked at each measured wave),
+and each measured wave is captured six times back to back with `gi_settings` alternating off, low,
+high, off, low, high (the frame-level budgets then decide on the off and low captures: low is the
+integrated GPU's default tier). Each capture also prints the scene pass's mean and p95.
 
 Output (summary.json, captures, engine log) goes to target/m3-exit/<adapter>/. Keep output ASCII.
 """
@@ -136,8 +141,10 @@ def measure(mcp, eng, label, frames, st):
         "desktop_apps": desktop_apps(), "gpu_3d_percent_mean_max": users,
     }
     gpu, fr = cap.get("gpu_ms") or {}, cap.get("frame_ms") or {}
+    scene = (cap.get("gpu_passes_ms") or {}).get("scene") or {}
     print(f"  {label} (wave {st['wave']}, {st['enemies']} enemies): {cap.get('frames')} frames, "
-          f"frame p95 {fr.get('p95')} ms, GPU p95 {gpu.get('p95')} ms; "
+          f"frame p95 {fr.get('p95')} ms, GPU mean {gpu.get('mean')} p95 {gpu.get('p95')} ms, "
+          f"scene mean {scene.get('mean')} p95 {scene.get('p95')} ms; "
           f"other engines {result['other_engines_running']}, compilers {result['compilers_running']}")
     print(f"    desktop apps: {result['desktop_apps']}; GPU 3D % (mean/max) on the engine's GPU: {users}")
     for e in required:
@@ -146,6 +153,55 @@ def measure(mcp, eng, label, frames, st):
         print(f"    note (per-pass or other CPU budget; doesn't decide the criterion): {e}")
     result["passed"] = bool(cap.get("frames", 0) >= frames // 2) and not required
     return result
+
+
+GI_CYCLE = ("off", "low", "high", "off", "low", "high")
+
+
+def bake_top(mcp):
+    """Bakes the slab's top face (and a few metres above it) as GI volume "top"; returns the bake's
+    wall seconds and how long the GI pipelines took after it (the pipeline cache under --cache
+    makes that near zero from the second run on)."""
+    q = mcp.json("world_query", path_prefix="/slab/graveyard/ground", fields=["position", "scale"], limit=4)
+    items = q.get("entities") or q.get("items") or []
+    ground = items[0] if items else {"position": [0, 0, 0], "scale": [8, 0.2, 8]}
+    top = ground["position"][1] + ground["scale"][1] / 2
+    start = time.time()
+    mcp.json("gi_bake", volume="top", min=[-22, top - 1.0, -22], max=[22, top + 7.0, 22], spacing=1.0,
+             rays=256, bounces=2, sky_below=0.6)
+    while mcp.json("gi_info")["job"] is not None:
+        if time.time() - start > 1200:
+            raise RuntimeError("the GI bake did not finish")
+        time.sleep(0.25)
+    baked = time.time() - start
+    waited = wait_gi_pipelines(mcp)
+    return {"bake_s": round(baked, 2), "pipelines_after_bake_s": waited}
+
+
+def wait_gi_pipelines(mcp, timeout=900):
+    """Seconds until the active tier's GI pipelines exist (a tier switch starts building its set
+    on a worker; measuring before they exist measures the flat ambient)."""
+    start = time.time()
+    while not mcp.json("gi_info")["runtime"]["pipelines_ready"]:
+        if time.time() - start > timeout:
+            raise RuntimeError("the GI pipelines never became ready")
+        time.sleep(0.25)
+    return round(time.time() - start, 2)
+
+
+def measure_gi(mcp, eng, label, frames, st):
+    """Rebakes the top face, then GI off, low and high back to back, twice each (alternated)."""
+    times = bake_top(mcp)
+    print(f"  GI bake {times}")
+    out = []
+    for i, q in enumerate(GI_CYCLE):
+        mcp.json("gi_settings", quality=q)
+        waited = wait_gi_pipelines(mcp) if q != "off" else 0.0
+        r = measure(mcp, eng, f"{label}_gi_{q}_{i // 3 + 1}", frames, st)
+        r["gi"], r["gi_bake"], r["gi_pipelines_wait_s"] = q, times, waited
+        out.append(r)
+    mcp.json("gi_settings", quality="low")
+    return out
 
 
 def main():
@@ -157,6 +213,7 @@ def main():
     ap.add_argument("--exe", default=str(EXE))
     ap.add_argument("--out", default=None)
     ap.add_argument("--max-fps", type=int, default=None, help="the window's frame cap (the engine's --max-fps)")
+    ap.add_argument("--gi", action="store_true", help="bake GI and alternate its tiers off/low/high per measured wave")
     ap.add_argument("--water", default=None, help="a water preset (murk, ...): an agent spawns a pool round the slab's "
                     "foot (the `water` component; cosmetic, never simulation) to measure the water pass in play")
     args = ap.parse_args()
@@ -169,9 +226,9 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     cap = ["--max-fps", str(args.max_fps)] if args.max_fps else []
     extra = [*cap, "--adapter", args.adapter, "--size", "1280x720", "--perf", str(PERF_TOML),
-             "--captures", str(out / "captures"), "--", "--seed", str(args.seed), "--mute", "--rules", "lex"]
+             "--captures", str(out / "captures"), "--lead", "m3-exit", "--", "--seed", str(args.seed), "--mute", "--rules", "lex"]
     summary = {"adapter": args.adapter, "seed": args.seed, "rules": "lex", "frames_per_capture": args.frames,
-               "max_fps": args.max_fps}
+               "max_fps": args.max_fps, "gi": args.gi}
     measured = []
     with Engine(exe, args.port, out / "engine.log", *extra, cwd=out) as eng:
         mcp = eng.mcp("m3-exit")
@@ -182,6 +239,13 @@ def main():
         summary["gpu"] = mcp.json("engine_info")["gpu"]["name"]
         print(f"GPU: {summary['gpu']}")
         run = Run(mcp, out)
+        if args.gi:
+            # The game loads its models first: the engine may answer "busy" for a while.
+            for attempt in range(120):
+                r = mcp.request("tools/call", {"name": "agent_hello", "arguments": {"name": "m3-exit", "role": "lead"}})
+                if not r.get("isError"):
+                    break
+                time.sleep(1.0)
         mcp.call("time_control", action="pause")
         mcp.json("play_new", seed=args.seed)
         if args.water:
@@ -196,12 +260,18 @@ def main():
             run.drive()
             st = run.state()
             if not busy and st["wave"] >= 6 and st["enemies"] >= 18:
-                measured.append(measure(mcp, eng, "busy_wave", args.frames, st))
+                if args.gi:
+                    measured.extend(measure_gi(mcp, eng, "busy_wave", args.frames, st))
+                else:
+                    measured.append(measure(mcp, eng, "busy_wave", args.frames, st))
                 run.capture("busy_wave", eye=[38, 27, 52], target=[0, -9, 1])
                 busy = True
                 continue
             if not boss and st["wave"] == 10 and st["enemies"] >= 1:
-                measured.append(measure(mcp, eng, "boss_wave", args.frames, st))
+                if args.gi:
+                    measured.extend(measure_gi(mcp, eng, "boss_wave", args.frames, st))
+                else:
+                    measured.append(measure(mcp, eng, "boss_wave", args.frames, st))
                 run.capture("boss_wave", eye=[38, 27, 52], target=[0, -9, 1])
                 boss = True
                 continue
@@ -221,7 +291,9 @@ def main():
     summary["measured"] = measured
     replay_ok = (summary["replay"]["status"] == "verified" and summary["replay"]["lex_parity"] == "ok"
                  and summary["replay"]["lex_hash_recorded"] == summary["replay"]["lex_hash_replayed"])
-    ok = len(measured) == 2 and all(m["passed"] for m in measured) and errors == 0 and replay_ok
+    # With --gi the budgets decide on the default tiers (off, and low: the iGPU's); high is reported.
+    deciding = [m for m in measured if m.get("gi", "off") in ("off", "low")]
+    ok = len(deciding) == (8 if args.gi else 2) and all(m["passed"] for m in deciding) and errors == 0 and replay_ok
     summary["passed"] = ok
     (out / "summary.json").write_text(json.dumps(summary, indent=2))
     print(f"validation errors at shutdown: {errors}; replay verified: {replay_ok}")

@@ -1,0 +1,80 @@
+{
+  "date": "2026-10-29",
+  "time": "17:45",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M4",
+  "commit": "",
+  "subject": "engine-tests",
+  "topic": "engine test",
+  "title": "Baked GI: tiers, a fire's bounce, no leaks",
+  "note": "Second GI round after the review: the hut front's irradiance is smooth (a visibility-aware denoise; no probe-sized blotches), a brazier in a pale corner shows its bounce in the irradiance view (subtle in the lit image), and tier low (per-draw SH and grids sampled on the CPU, the iGPU's default) beside tier high. Low still tints the sealed crypt's interior navy where high shows the windows' green bounce.",
+  "source": "scripts/gi_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-yard-irradiance.jpg",
+      "caption": "Irradiance, tier high: the hut front smooth",
+      "original": "yard_irradiance.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 5657
+    },
+    {
+      "file": "02-yard-irradiance-low.jpg",
+      "caption": "Irradiance, tier low",
+      "original": "yard_irradiance_low.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 5491
+    },
+    {
+      "file": "03-corner-irradiance.jpg",
+      "caption": "A brazier's bounce in a pale corner (irradiance)",
+      "original": "corner_irradiance.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 9735
+    },
+    {
+      "file": "04-corner-lit.jpg",
+      "caption": "The same corner, lit",
+      "original": "corner_lit.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 9890
+    },
+    {
+      "file": "05-graveyard-lit.jpg",
+      "caption": "Sepulcra, tier high",
+      "original": "graveyard_lit.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 15005
+    },
+    {
+      "file": "06-graveyard-lit-low.jpg",
+      "caption": "Sepulcra, tier low",
+      "original": "graveyard_lit_low.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 14776
+    },
+    {
+      "file": "07-crypt-inside-lit.jpg",
+      "caption": "Sealed crypt, tier high",
+      "original": "crypt_inside_lit.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 8934
+    },
+    {
+      "file": "08-crypt-inside-lit-low.jpg",
+      "caption": "Sealed crypt, tier low (navy: still a limit)",
+      "original": "crypt_inside_lit_low.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 10618
+    }
+  ]
+}

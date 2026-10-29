@@ -76,7 +76,7 @@ const FAILURE_BYTES: (usize, usize) = (6 * 1024, 48 * 1024);
 pub const MAX_REPORT_BYTES: usize = 128 * 1024;
 
 /// Tools a playtest may not call, and why (the error says what to do instead).
-pub const FORBIDDEN: [(&str, &str); 7] = [
+pub const FORBIDDEN: [(&str, &str); 8] = [
     ("time_control", "the playtest owns the clock: schedule calls with 'at' ticks, and end the run with 'ticks' or 'until'"),
     ("playtest_run", "playtests don't nest: run them one after another"),
     ("playtest_report", "playtests don't nest"),
@@ -84,6 +84,7 @@ pub const FORBIDDEN: [(&str, &str); 7] = [
     ("save_read", "a load replaces the world the playtest is recording: load the save before playtest_run"),
     ("world_load", "a load replaces the world the playtest is recording: load the world before playtest_run"),
     ("save_delete", "playtests don't delete files: delete saves before or after the playtest"),
+    ("gi_bake", "a bake runs on worker threads and lands by wall clock, not at a tick (a replay couldn't reproduce it): bake before the playtest"),
 ];
 
 /// Why a playtest can't call `tool`, if it can't. Besides [`FORBIDDEN`], every tool that runs on

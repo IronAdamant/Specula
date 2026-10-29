@@ -839,8 +839,9 @@ impl Engine {
             overlay: &[],
             draws_2d: &[],
             bones: &bones,
-            // The stage shows assets, never effects.
+            // The stage shows assets, never effects (nor baked GI: its own lights only).
             effects: Default::default(),
+            gi: Default::default(),
             terrains: &[],
         };
         // A target per light kind: its render graph stays as built (lit and silhouette frames

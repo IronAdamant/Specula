@@ -1,0 +1,56 @@
+{
+  "date": "2026-10-29",
+  "time": "18:30",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M4",
+  "commit": "",
+  "subject": "sepulcra",
+  "topic": "game",
+  "title": "Baked GI in Sepulcra",
+  "note": "The graveyard face baked with GI (46 x 10 x 46 probes at 1 m, 4.5 s on four threads). The night stays readable with GI on; a hollow crypt (an agent's variant of the crypt recipe) goes from flat sky-blue inside to dark with the green bounce of its glowing windows. The probes view shows the lattice.",
+  "source": "scripts/gi_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-graveyard-off.jpg",
+      "caption": "GI off",
+      "original": "graveyard_off.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 15044
+    },
+    {
+      "file": "02-graveyard-lit.jpg",
+      "caption": "GI on",
+      "original": "graveyard_lit.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 15023
+    },
+    {
+      "file": "03-crypt-inside-off.jpg",
+      "caption": "inside the crypt, GI off",
+      "original": "crypt_inside_off.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 16918
+    },
+    {
+      "file": "04-crypt-inside-lit.jpg",
+      "caption": "inside the crypt, GI on",
+      "original": "crypt_inside_lit.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 9108
+    },
+    {
+      "file": "05-graveyard-probes.jpg",
+      "caption": "the probes",
+      "original": "graveyard_probes.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 21893
+    }
+  ]
+}

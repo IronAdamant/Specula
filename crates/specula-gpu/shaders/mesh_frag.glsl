@@ -2,6 +2,7 @@
 // the entry files mesh.frag and mesh_tex.frag (TEXTURED: the Lit path samples the draw's material
 // textures with the mesh's UVs and tangents). Compile with shaders/build.sh.
 
+#define GI_FIELDS
 #include "frame.glsl"
 
 // Features (src/render.rs FEAT_*), specialized per pipeline: a pipeline without a feature runs
@@ -52,6 +53,9 @@ vec4 material_texture(uint slot) {
 #endif
 
 layout(location = 0) out vec4 out_color;
+
+// Baked GI (FEATURES bit 512): the ambient term from the probes.
+#include "gi.glsl"
 
 // This fragment's draw record.
 #define DRAW pc.draws.items[v_draw]
@@ -215,9 +219,9 @@ float sun_shadow(vec3 p, vec3 n) {
     return 1.0;
 }
 
-// Diffuse irradiance (ambient + sun + point lights) and specular radiance at a surface.
-void gather_light(vec3 p, vec3 n, vec3 v, float rough, out vec3 diffuse, out vec3 specular) {
-    diffuse = pc.frame.ambient.rgb;
+// Diffuse irradiance (`ambient` + sun + point lights) and specular radiance at a surface.
+void gather_light(vec3 p, vec3 n, vec3 v, float rough, vec3 ambient, out vec3 diffuse, out vec3 specular) {
+    diffuse = ambient;
     specular = vec3(0.0);
     vec3 l = pc.frame.sun_dir.xyz;
     float ndl = max(dot(n, l), 0.0);
@@ -311,17 +315,25 @@ vec4 shade_lit() {
     if (dot(n, v) < 0.0) {
         n = -n; // the inside of an open shape
     }
+    // The ambient term: the flat ambient, or the baked GI's irradiance here (per draw or per
+    // pixel, by the tier: gi.glsl).
+    vec3 amb = gi_ambient_draw(v_draw, v_world, n, v);
+    if (gi_irradiance_view()) {
+        // sight_frame gi: "irradiance": the indirect light alone (albedo 1, no direct light).
+        const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+        return vec4(display(amb), SSAO && HDR ? clamp(dot(amb, LUMA) * pc.frame.ambient.w, 0.0, 60000.0) : 1.0);
+    }
     vec3 diffuse, specular;
-    gather_light(v_world, n, v, rough, diffuse, specular);
+    gather_light(v_world, n, v, rough, amb, diffuse, specular);
     vec3 c = albedo * (1.0 - metallic) * diffuse;
     // The ambient part (gather_light started `diffuse` at ambient): what occlusion may take.
-    vec3 ambient = SSAO ? albedo * (1.0 - metallic) * pc.frame.ambient.rgb : vec3(0.0);
+    vec3 ambient = SSAO ? albedo * (1.0 - metallic) * amb : vec3(0.0);
     if (spec_weight > 0.0) {
         vec3 f0 = mix(vec3(0.04), albedo, metallic);
         float m = 1.0 - max(dot(n, v), 0.0);
         float m2 = m * m;
         vec3 fresnel = f0 + (1.0 - f0) * (m2 * m2 * m); // Schlick's fifth power, by multiplication
-        vec3 reflected = mix(env_radiance(reflect(-v, n)), pc.frame.ambient.rgb, rough);
+        vec3 reflected = mix(env_radiance(reflect(-v, n)) * gi_occlusion(amb), amb, rough);
         c += spec_weight * fresnel * (specular + reflected * (1.0 - 0.7 * rough));
         if (SSAO) {
             ambient += spec_weight * fresnel * reflected * (1.0 - 0.7 * rough); // the surroundings' reflection
@@ -381,8 +393,9 @@ vec4 shade_glass() {
     float ndv = clamp(dot(n, v), 0.0, 1.0);
     float fresnel = 0.04 + 0.96 * pow(1.0 - ndv, 5.0);
     vec3 diffuse, specular;
-    gather_light(v_world, n, v, 0.05, diffuse, specular);
-    vec3 reflected = env_radiance(reflect(-v, n)) + specular;
+    vec3 amb = gi_ambient_draw(v_draw, v_world, n, v);
+    gather_light(v_world, n, v, 0.05, amb, diffuse, specular);
+    vec3 reflected = env_radiance(reflect(-v, n)) * gi_occlusion(amb) + specular;
     // A tinted body: the path through a thin shell grows at grazing angles.
     float body = clamp(DRAW.color.a, 0.0, 1.0);
     float path = 1.0 - pow(1.0 - body, 1.0 / max(ndv, 0.2));
@@ -557,7 +570,7 @@ vec4 shade_lava_lamp() {
     vec3 nw = normalize(rot * n);
     vec3 vw = normalize(camera_pos() - pw);
     vec3 diffuse, specular;
-    gather_light(pw, nw, vw, 0.04, diffuse, specular);
+    gather_light(pw, nw, vw, 0.04, gi_ambient_draw(v_draw, pw, nw, vw), diffuse, specular);
     vec3 reflected = env_radiance(reflect(-vw, nw)) + specular;
 
     // Refract into the liquid (the thin glass wall barely bends the ray on its own).

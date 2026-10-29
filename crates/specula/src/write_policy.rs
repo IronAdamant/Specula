@@ -229,6 +229,8 @@ pub enum Rule {
     Project,
     /// vfx_set: the effect library (`/vfx` and its children, the `vfx_effect` tag).
     Vfx,
+    /// gi_bake: baked GI volumes (`/gi` and its children, `props.gi_volume` anywhere).
+    Gi,
 }
 
 impl Rule {
@@ -242,6 +244,7 @@ impl Rule {
             Rule::LexLive => "lex_live",
             Rule::Project => "project",
             Rule::Vfx => "vfx",
+            Rule::Gi => "gi",
         }
     }
 }
@@ -397,6 +400,17 @@ fn reserved(changes: &[Change], r: Reserved) -> Result<(), WorldError> {
             return Err(WorldError::new(
                 "reserved",
                 format!("'{}' is the effect library (/vfx and its children, the vfx_effect tag): change effects with vfx_set (vfx_get reads them; world_spawn {{vfx: {{effect}}}} plays one)", c.path()),
+            )
+            .with("path", c.path().to_owned()));
+        }
+    }
+    // Baked GI volumes: /gi and props.gi_volume, written only through gi_bake (a volume's
+    // settings and the hash of its bake; the probes are derived data in the store).
+    if !owns(Rule::Gi) {
+        if let Some(c) = changes.iter().find(|c| crate::gi::touches_gi_data(c)) {
+            return Err(WorldError::new(
+                "reserved",
+                format!("'{}' is baked GI data (/gi, props.gi_volume): change volumes with gi_bake (gi_info reads them)", c.path()),
             )
             .with("path", c.path().to_owned()));
         }
