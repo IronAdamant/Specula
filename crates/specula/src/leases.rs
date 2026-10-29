@@ -151,6 +151,10 @@ fn safe(name: &str) -> String {
     }
 }
 
+/// What `Leases::release` did: the leases released, the folders deleted, and where each deleted
+/// folder went (the trash, emptied on a worker).
+pub type Released = (Vec<u64>, Vec<String>, Vec<std::path::PathBuf>);
+
 impl Leases {
     pub fn len(&self) -> usize {
         self.leases.len()
@@ -288,20 +292,24 @@ impl Leases {
 
     /// `lease_release`: one lease, or all of `w`'s; `delete` removes scratch folders too (only
     /// folders inside `scratch_root`, never through a link); `keep` keeps a released folder from
-    /// the disk budget's cleanup. Returns the ids released and the folders deleted.
-    pub fn release(&mut self, w: Writer, id: Option<u64>, (delete, keep): (bool, bool), scratch_root: &Path, now: Instant) -> Result<(Vec<u64>, Vec<String>), WorldError> {
+    /// the disk budget's cleanup. Returns the ids released, the folders deleted, and where each
+    /// went: a deleted folder is moved into the scratch root's trash in one rename (gone from its
+    /// path at once), and the caller empties the trash on a worker (deleting 20,000 files took
+    /// 8.5 s of the engine thread: class C, 2026-10-29).
+    pub fn release(&mut self, w: Writer, id: Option<u64>, (delete, keep): (bool, bool), scratch_root: &Path, now: Instant) -> Result<Released, WorldError> {
         let ids: Vec<u64> = match id {
             Some(id) => vec![self.owned(w, id, now)?.id],
             None => self.leases.values().filter(|l| l.held_by(w)).map(|l| l.id).collect(),
         };
         let mut deleted = Vec::new();
+        let mut trash = Vec::new();
         for id in &ids {
             if let Some(l) = self.leases.remove(id) {
                 let Resource::Scratch(dir) = &l.resource else { continue };
                 if delete {
                     let root = crate::disk::canonical(scratch_root);
-                    if let Ok((files, bytes)) = crate::disk::remove_tree_inside(&root, &crate::disk::canonical(dir)) {
-                        crate::disk::book().wrote(crate::disk::Category::Scratch, "lease", -(bytes as i64), -(files as i64));
+                    if let Ok(t) = crate::disk::move_to_trash(&root, &crate::disk::canonical(dir)) {
+                        trash.push(t);
                         deleted.push(dir.display().to_string());
                     }
                 } else {
@@ -310,7 +318,7 @@ impl Leases {
                 }
             }
         }
-        Ok((ids, deleted))
+        Ok((ids, deleted, trash))
     }
 
     /// Live leases, filtered, one page in id order.
@@ -414,9 +422,12 @@ mod tests {
         assert!(da.is_dir(), "kept without delete");
         let marker = std::fs::read_to_string(da.join(crate::disk::LEASE_MARKER)).unwrap();
         assert!(marker.contains("\"keep\":true"), "{marker}");
-        let (_, deleted) = l.release(BOB, None, (true, false), &root, now).unwrap();
+        let (_, deleted, trash) = l.release(BOB, None, (true, false), &root, now).unwrap();
         assert_eq!(deleted.len(), 1);
-        assert!(!db.exists());
+        assert!(!db.exists(), "gone from its path at once");
+        assert_eq!(trash.len(), 1);
+        let (files, _) = crate::disk::remove_tree_inside(&crate::disk::canonical(&root), &trash[0]).unwrap();
+        assert!(files >= 1 && !trash[0].exists(), "the trash is emptied by the caller");
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(l.list(None, None, None, 10, now).get("total"), Some(&Json::from(0)));
     }

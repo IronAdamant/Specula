@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 /// A board write's outcome: the folder and the error on failure.
-type WriteResult = Result<(), (String, String)>;
+pub(crate) type WriteResult = Result<(), (String, String)>;
 
 /// Writing `board.json`: the revision last written, a write running on a worker thread, and the
 /// last failure (shown by engine_info and world_save until a write succeeds).
@@ -243,14 +243,22 @@ impl Engine {
             SwarmCall::LeaseRelease { id, delete, keep } => {
                 let root = self.lease_pools(server).scratch_root;
                 match self.swarm.leases.release(w, id, (delete, keep), &root, now) {
-                    Ok((ids, deleted)) => {
+                    Ok((ids, deleted, trash)) => {
                         if !ids.is_empty() {
                             self.swarm.board.log(&by, tick, "lease_release", None, format!("{ids:?}"));
                         }
-                        out(Json::obj([
+                        // Moved aside at once; the files go on a worker (accounted when they do).
+                        if !trash.is_empty() {
+                            self.empty_trash_later(crate::disk::canonical(&root));
+                        }
+                        let mut j = Json::obj([
                             ("released", Json::arr(ids.into_iter().map(Json::from))),
-                            ("deleted_dirs", Json::arr(deleted.into_iter().map(Json::from))),
-                        ]))
+                            ("deleted_dirs", Json::arr(deleted.iter().map(|d| Json::from(d.as_str())))),
+                        ]);
+                        if !deleted.is_empty() {
+                            j.set("deletion", Json::from("the folders are gone from their paths; their files are removed in the background (disk_status counts them until then)"));
+                        }
+                        out(j)
                     }
                     Err(e) => fail(&e),
                 }
@@ -287,33 +295,7 @@ impl Engine {
                 }
                 out(self.settings_json())
             }
-            SwarmCall::DesyncTrace { from, to } => {
-                let trace = self.live_trace(from, to);
-                if trace.ticks.is_empty() {
-                    let range = self.trace.range().map_or(Json::Null, |(a, b)| Json::arr([Json::from(a), Json::from(b)]));
-                    return fail(
-                        &WorldError::new("no_ticks", "no recorded ticks in that range (the clock may be paused: time_control step runs ticks)")
-                            .with("recorded", range),
-                    );
-                }
-                self.traces_written += 1;
-                let (lo, hi) = (trace.ticks.keys().next().copied().unwrap_or(0), trace.ticks.keys().next_back().copied().unwrap_or(0));
-                let path = self.capture_dir.join(format!("trace_{:04}_{lo}-{hi}.json", self.traces_written));
-                let text = trace.render();
-                let written = crate::disk::book().write(crate::disk::Category::Captures, "trace", &path, text.as_bytes(), crate::disk::Need::Agent);
-                match written {
-                    Ok(()) => {
-                        let mut j = trace.summary();
-                        j.set("file", Json::from(path.display().to_string()));
-                        j.set("bytes", Json::from(text.len()));
-                        if let Some((_, (w, _))) = trace.ticks.iter().next_back() {
-                            j.set("last_world_hash", Json::from(crate::journal::hex(*w)));
-                        }
-                        out(j)
-                    }
-                    Err(e) => fail(&WorldError::new("io", format!("could not write {}: {e}", path.display())).with("file", path.display().to_string())),
-                }
-            }
+            SwarmCall::DesyncTrace { .. } => unreachable!("started by start_desync_trace"),
             SwarmCall::DesyncCompare { a, b, from_tick } => {
                 if b == TraceRef::Replay {
                     let mut j = desync::against_replay(&self.trace, self.swarm.journal(), &self.world, from_tick);
@@ -367,8 +349,13 @@ impl Engine {
 
     fn lease_pools(&self, server: &Server) -> Pools {
         let cfg = &self.perf_cfg.swarm;
-        let root = cfg.scratch_root.clone().unwrap_or_else(|| self.capture_dir.parent().unwrap_or(&self.capture_dir).join("scratch"));
-        Pools { ports: cfg.lease_ports, reserved_port: Some(server.local_addr().port()), gpu_ms_per_s: cfg.gpu_ms_per_s, scratch_root: root }
+        Pools { ports: cfg.lease_ports, reserved_port: Some(server.local_addr().port()), gpu_ms_per_s: cfg.gpu_ms_per_s, scratch_root: self.scratch_root() }
+    }
+
+    /// Where scratch leases' folders live (`perf.toml` `[swarm] scratch_root`, else next to the
+    /// captures).
+    pub(crate) fn scratch_root(&self) -> std::path::PathBuf {
+        self.perf_cfg.swarm.scratch_root.clone().unwrap_or_else(|| self.capture_dir.parent().unwrap_or(&self.capture_dir).join("scratch"))
     }
 
     /// `swarm_settings`' answer: the frame floor, the operator's hardware and a suggestion.
@@ -489,6 +476,82 @@ impl Engine {
             self.trace.scratch.push(("lex_live", h));
         }
         self.trace.record(tick, hash, self.world.next_id());
+    }
+
+    /// The board (and the review queue) as they are now, to write into `dir` on a worker (an
+    /// explicit world_save): its revision and the write. `None` while a board write runs (it
+    /// covers the board; the next autosave catches up) or the board's file is blocked.
+    pub(crate) fn board_write_for(&mut self, dir: &Path) -> Option<(u64, Box<dyn FnOnce() -> WriteResult + Send>)> {
+        if self.board_io.blocked || self.board_io.job.is_some() {
+            return None;
+        }
+        let text = {
+            let _z = specula_core::profile::zone("board.render");
+            self.swarm.board.render_cached()
+        };
+        let review = self.review_text(dir);
+        let revision = self.board_revision();
+        let dir = dir.to_path_buf();
+        Some((
+            revision,
+            Box::new(move || {
+                let _z = specula_core::profile::zone("board.write");
+                let written = write_board(&dir, &text).and_then(|()| review.map_or(Ok(()), |r| crate::review_engine::write_review(&dir, &r)));
+                written.map_err(|e| (dir.display().to_string(), e.to_string()))
+            }),
+        ))
+    }
+
+    /// A board write made on a worker ended: noted, and the board's error now (if any).
+    pub(crate) fn board_written(&mut self, revision: u64, result: WriteResult) -> Option<Json> {
+        self.board_io.note(revision, result);
+        self.board_io.error.clone()
+    }
+
+    /// `desync_trace`: the ticks are taken here; the file (11.7 MB took 1.3 s of the engine thread
+    /// to render and write, review of 998af3d) is rendered and written on a worker, which answers.
+    pub(crate) fn start_desync_trace(&mut self, request: crate::tools::Request) {
+        let crate::tools::Request { command: crate::tools::Command::Swarm(SwarmCall::DesyncTrace { from, to }), session, reply, call, .. } = request else {
+            unreachable!("only desync_trace comes here")
+        };
+        let trace = self.live_trace(from, to);
+        if trace.ticks.is_empty() {
+            let range = self.trace.range().map_or(Json::Null, |(a, b)| Json::arr([Json::from(a), Json::from(b)]));
+            let _ = reply.send(fail(&WorldError::new("no_ticks", "no recorded ticks in that range (the clock may be paused: time_control step runs ticks)").with("recorded", range)));
+            return;
+        }
+        self.traces_written += 1;
+        let (lo, hi) = (trace.ticks.keys().next().copied().unwrap_or(0), trace.ticks.keys().next_back().copied().unwrap_or(0));
+        let path = self.capture_dir.join(format!("trace_{:04}_{lo}-{hi}.json", self.traces_written));
+        let theirs = reply.clone();
+        let work = move |_: &crate::workers::Cancel| {
+            let text = trace.render();
+            let written = crate::disk::book().write(crate::disk::Category::Captures, "trace", &path, text.as_bytes(), crate::disk::Need::Agent);
+            let answer = match written {
+                Ok(()) => {
+                    let mut j = trace.summary();
+                    j.set("file", Json::from(path.display().to_string()));
+                    j.set("bytes", Json::from(text.len()));
+                    if let Some((_, (w, _))) = trace.ticks.iter().next_back() {
+                        j.set("last_world_hash", Json::from(crate::journal::hex(*w)));
+                    }
+                    out(j)
+                }
+                Err(e) => fail(&WorldError::new("io", format!("could not write {}: {e}", path.display())).with("file", path.display().to_string())),
+            };
+            let _ = theirs.send(answer);
+        };
+        let owner = crate::jobs::JobOwner { name: self.swarm.agent_name(&session), key: self.swarm.key(&session) };
+        let kind = crate::workers::JobKind::TraceWrite;
+        let o = crate::workers::Offload::agent(kind, owner, &session.id, call).class(crate::schedule::Class::Disk);
+        let refused = reply.clone();
+        if let Err(e) = self.offload(o, work, move |_, r| {
+            if let Err(f) = r {
+                let _ = reply.send(f.to_output(kind));
+            }
+        }) {
+            refused.refuse(&e);
+        }
     }
 
     /// Whether the board has changes not yet written next to the world.

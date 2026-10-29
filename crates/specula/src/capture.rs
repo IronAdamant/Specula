@@ -28,6 +28,8 @@ pub(crate) struct CaptureWaiter {
     pub(crate) wait: CaptureWait,
     /// The call it belongs to (its render is traced under it when served).
     pub(crate) trace: specula_core::trace::Ctx,
+    /// The request's call id (0: a playtest's step; see `workers::Offload::agent`).
+    pub(crate) call: u64,
 }
 
 /// How a capture waited for models, for its packet.
@@ -160,7 +162,7 @@ pub(crate) fn subtree_bounds(world: &World, id: u64) -> Option<(Vec3, Vec3)> {
 impl Engine {
     /// sight_frame, the sight tools and the camera tools.
     pub(crate) fn handle_sight(&mut self, request: Request) {
-        let Request { command, session, reply, deadline, .. } = request;
+        let Request { command, session, reply, deadline, call, .. } = request;
         let job = match command {
             Command::Frame(spec) => Job::Frame(spec),
             Command::Sight(call) => match call {
@@ -196,7 +198,7 @@ impl Engine {
         // `fresh`: sprite and tileset files in view are checked for changes now, so the capture
         // shows them as they are at the request.
         if self.building_in(&views) == 0 && self.two_d_waiting(&views, true) == 0 && streaming == 0 && self.vfx_textures_waiting(true) == 0 && self.terrain_waiting(&views) == 0 {
-            let _ = reply.send(self.run_job(&job, &session, wait));
+            self.run_job(&job, &session, wait, reply, call);
             return;
         }
         // Answer before the caller's own deadline, building or not.
@@ -204,7 +206,7 @@ impl Engine {
         let latest = deadline.checked_sub(Duration::from_secs(2)).unwrap_or(deadline);
         wait.parked_at = Some(Instant::now());
         wait.cut_by_deadline = latest < usual;
-        self.capture_waiters.push(CaptureWaiter { job, session, reply, until: usual.min(latest), wait, trace: specula_core::trace::Ctx::current() });
+        self.capture_waiters.push(CaptureWaiter { job, session, reply, until: usual.min(latest), wait, trace: specula_core::trace::Ctx::current(), call });
     }
 
     /// Renders parked captures whose models are built (or whose wait ran out).
@@ -235,7 +237,7 @@ impl Engine {
                 let wait = CaptureWait { cut_by_deadline: w.wait.cut_by_deadline && now >= w.until, ..w.wait };
                 let _c = w.trace.enter();
                 let started = Instant::now();
-                let _ = w.reply.send(self.run_job(&w.job, &w.session, wait));
+                self.run_job(&w.job, &w.session, wait, w.reply, w.call);
                 self.engine_work_done(w.trace.call, Some(crate::schedule::Class::Render), "parked_capture", started.elapsed());
             } else {
                 self.capture_waiters.push(w);
@@ -455,7 +457,21 @@ impl Engine {
         }
     }
 
-    fn run_job(&mut self, job: &Job, session: &SessionInfo, wait: CaptureWait) -> ToolOutput {
+    /// Renders a job and answers it: at once (sight_query), or from a worker once its image is
+    /// encoded and written (the rest; see [`Engine::offload_capture`]).
+    fn run_job(&mut self, job: &Job, session: &SessionInfo, wait: CaptureWait, reply: crate::jobs::Reply, call: u64) {
+        // An image goes to a worker: with no slot free the call is refused before it renders.
+        if !matches!(job, Job::Query(_)) {
+            // What its pixels hold until encoded: the frame, or a sheet within the sheet cap.
+            let bytes = match job {
+                Job::Frame(s) | Job::Mark { frame: s, .. } => u64::from(s.width) * u64::from(s.height) * 4,
+                _ => u64::from(orbit::MAX_SHEET) * u64::from(orbit::MAX_SHEET) * 4,
+            };
+            if let Err(e) = self.workers_room(&self.capture_owner(session), call, bytes) {
+                reply.refuse(&e);
+                return;
+            }
+        }
         // Presentation again only if the simulation moved on while the capture was parked.
         if self.game.is_some() && wait.presented_at != Some(self.clock.tick()) {
             self.before_capture();
@@ -463,15 +479,72 @@ impl Engine {
         self.pump_builds(None);
         let views = match self.job_views(job, session) {
             Ok(v) => v,
-            Err(out) => return out,
+            Err(out) => {
+                let _ = reply.send(out);
+                return;
+            }
         };
         let building = self.building_in(&views);
+        let to = Answer { reply, call };
         match job {
-            Job::Frame(spec) => self.capture_frame(spec, session, wait, &views[0], building),
-            Job::Mark { name, frame } => self.compare_mark(name, frame, session, &views[0]),
-            Job::Diff { name, threshold, max_subjects } => self.compare_diff(name, *threshold, *max_subjects, session),
-            Job::Orbit(o) => self.orbit(o, session, &views, building),
-            Job::Query(q) => self.sight_query(q, &views[0]),
+            Job::Frame(spec) => self.capture_frame(spec, session, wait, &views[0], building, to),
+            Job::Mark { name, frame } => self.compare_mark(name, frame, session, &views[0], to),
+            Job::Diff { name, threshold, max_subjects } => self.compare_diff(name, *threshold, *max_subjects, session, to),
+            Job::Orbit(o) => self.orbit(o, session, &views, building, to),
+            Job::Query(q) => {
+                let out = self.sight_query(q, &views[0]);
+                let _ = to.reply.send(out);
+            }
+        }
+    }
+
+    /// Whose a capture's worker job is.
+    pub(crate) fn capture_owner(&self, session: &SessionInfo) -> crate::jobs::JobOwner {
+        crate::jobs::JobOwner { name: self.swarm.agent_name(session), key: self.swarm.key(session) }
+    }
+
+    /// The next capture's number and PNG path (`frame_NNNNN.png` in this run's folder).
+    pub(crate) fn next_capture_path(&mut self) -> PathBuf {
+        self.frames_captured += 1;
+        self.capture_dir.join(format!("frame_{:05}.png", self.frames_captured))
+    }
+
+    /// Hands a capture's pixels to a worker: it encodes the PNG, writes it to `png` through the
+    /// disk budget, and calls `finish` with the PNG's bytes, where it landed (`None`: not saved)
+    /// and the warnings so far; `finish` makes (and writes) the packet and the answer, which the
+    /// worker sends. Encoding a 2048 x 2048 frame took about 290 ms of the engine thread (class C,
+    /// 2026-10-29).
+    pub(crate) fn offload_capture(&mut self, session: &SessionInfo, to: Answer, image: (u32, u32, Vec<u8>), png: PathBuf, source: &'static str, finish: impl FnOnce(Vec<u8>, Option<PathBuf>, Vec<Json>) -> ToolOutput + Send + 'static) {
+        let Answer { reply, call } = to;
+        let theirs = reply.clone();
+        let (w, h, rgba) = image;
+        let bytes = rgba.len() as u64;
+        let work = move |_: &crate::workers::Cancel| {
+            let bytes = encode_png(w, h, &rgba);
+            drop(rgba);
+            let mut warnings = Vec::new();
+            let saved = {
+                let _z = profile::zone("sight.save");
+                crate::disk::book().write(crate::disk::Category::Captures, source, &png, &bytes, crate::disk::Need::Agent)
+            };
+            let saved = match saved {
+                Ok(()) => Some(png),
+                Err(e) => {
+                    warnings.push(Json::from(format!("capture not saved to disk: {e}")));
+                    None
+                }
+            };
+            let _ = theirs.send(finish(bytes, saved, warnings));
+        };
+        let kind = crate::workers::JobKind::CaptureEncode;
+        let job = crate::workers::Offload::agent(kind, self.capture_owner(session), &session.id, call).class(crate::schedule::Class::Render).bytes(bytes);
+        let refused = reply.clone();
+        if let Err(e) = self.offload(job, work, move |_, r| {
+            if let Err(f) = r {
+                let _ = reply.send(f.to_output(kind));
+            }
+        }) {
+            refused.refuse(&e);
         }
     }
 
@@ -546,7 +619,9 @@ impl Engine {
         let view_proj = camera.view_proj(w, h);
         let mut draws = Vec::new();
         let mut owners = Vec::new();
+        let draw_zone = profile::zone("sight.draws");
         let (stats, _) = self.build_draws(camera, h, opts.include_ui, opts.lod, false, opts.time_s, &mut draws, Some(&mut owners));
+        drop(draw_zone);
         self.lod_capture = stats;
         // Baked GI: the chunks around this camera; `sight_frame gi: "probes"` adds the probes
         // (not counted in the ID buffer).
@@ -571,7 +646,10 @@ impl Engine {
         self.build_effects(&fx_view, opts.time_s, opts.include_ui, &mut lights, false);
         let fx = self.vfx.take_frame();
         let effects = self.vfx.packet_json(&self.world, &fx_view);
-        let mut subjects = sight::subjects(&self.world, &view_proj, w, h, opts.include_ui);
+        let mut subjects = {
+            let _z = profile::zone("sight.subjects");
+            sight::subjects(&self.world, &view_proj, w, h, opts.include_ui)
+        };
         // Sprites, tile chunks and shapes: their ids follow the meshes' (render_with_ids takes
         // one id per mesh draw, then one per 2D draw).
         let mut draws_2d = Vec::new();
@@ -663,8 +741,10 @@ impl Engine {
         };
         // Subjects drawn merged in a proxy, or not resident, say so (before the bounds overlay is
         // painted: its colours come from the record, review round 2).
+        let annotate = profile::zone("sight.annotate");
         self.stream.annotate(&mut subjects, &self.world, &self.models);
         record.set_streaming(&subjects);
+        drop(annotate);
         record.set_proxies(&self.stream.hlod.capture_groups);
         if second_render {
             let (q, report) = self.paint_overlays(camera, view_proj, w, h, &subjects, opts, budget, Some(&record));
@@ -675,7 +755,10 @@ impl Engine {
             let _z = profile::zone("sight.render");
             self.gpu.render(target, &frame).map_err(|e| gpu_failure("render", &e, self.windowed))?;
         }
-        let rgba = self.gpu.read_rgba8(target).map_err(|e| gpu_failure("readback", &e, self.windowed))?;
+        let rgba = {
+            let _z = profile::zone("sight.readback");
+            self.gpu.read_rgba8(target).map_err(|e| gpu_failure("readback", &e, self.windowed))?
+        };
         // The flash watch over this view's captures, from their own pixels at simulation time.
         let view_key = view_proj.to_cols_array().iter().fold(u64::from(w) << 32 | u64::from(h), |h, v| h.rotate_left(5) ^ u64::from(v.to_bits()));
         let flash_report = self.flash.feed_capture(&rgba, w, h, opts.time_s, view_key);
@@ -975,8 +1058,8 @@ impl Engine {
         (quads, report.to_json())
     }
 
-    /// sight_frame.
-    fn capture_frame(&mut self, spec: &FrameSpec, session: &SessionInfo, wait: CaptureWait, view: &ViewReq, building: usize) -> ToolOutput {
+    /// sight_frame: rendered here, encoded, written and answered on a worker.
+    fn capture_frame(&mut self, spec: &FrameSpec, session: &SessionInfo, wait: CaptureWait, view: &ViewReq, building: usize, to: Answer) {
         let (w, h) = (spec.width, spec.height);
         let time_s = spec.time_s.map_or_else(|| self.time_s(), f64::from);
         let opts = ViewOpts { include_ui: spec.include_ui, lod: spec.lod, time_s, overlays: &spec.overlays, caption: None, ids: spec.ids, fill: None };
@@ -987,30 +1070,19 @@ impl Engine {
         self.gi.capture_view = crate::gi::CaptureView::Lit;
         let r = match rendered {
             Ok(r) => r,
-            Err(e) => return ToolOutput::error(e),
+            Err(e) => {
+                let _ = to.reply.send(ToolOutput::error(e));
+                return;
+            }
         };
-        let mut warnings = self.capture_warnings(&r, wait, building, view);
-        let png_bytes = encode_png(w, h, &r.rgba);
-        self.frames_captured += 1;
-        let png_path = self.save_png(&png_bytes);
-        if let Err(e) = &png_path {
-            warnings.push(Json::from(format!("capture not saved to disk: {e}")));
-        }
-        // The full packet is saved next to its PNG so a verifier can re-check both later.
-        let png_file = png_path.as_ref().ok();
-        let packet_path = png_file.map(|p| p.with_extension("json"));
-        let show = |p: Option<&PathBuf>| -> Json { p.map(|p| p.display().to_string()).into() };
-        let image = Json::obj([
-            ("width", Json::from(w)),
-            ("height", Json::from(h)),
-            ("png_bytes", Json::from(png_bytes.len())),
-            ("path", show(png_file)),
-            ("packet_path", show(packet_path.as_ref())),
-        ]);
+        let packet_zone = profile::zone("sight.packet");
+        let warnings = self.capture_warnings(&r, wait, building, view);
+        let png = self.next_capture_path();
+        let planned_packet = png.with_extension("json");
         let on_screen = r.subjects.iter().filter(|s| s.on_screen).count();
         // The packet must agree with its own ID buffer (a monitor, docs/design/TRACE.md).
         if spec.ids {
-            crate::trace_engine::report_packet(r.subjects.iter().map(|s| &s.json), w, h, r.drawn.as_ref(), packet_path.as_deref());
+            crate::trace_engine::report_packet(r.subjects.iter().map(|s| &s.json), w, h, r.drawn.as_ref(), Some(&planned_packet));
         }
         let mut camera = view.camera.to_json();
         if let Json::Obj(src) = &view.source {
@@ -1022,7 +1094,8 @@ impl Engine {
             ("schema", Json::from(sight::SCHEMA)),
             ("frame", Json::from(self.frames_captured)),
             ("requested_by", Json::from(self.swarm.agent_name(session))),
-            ("image", image),
+            // (Set once the PNG is written.)
+            ("image", Json::Null),
             ("camera", camera),
             ("time_s", Json::from(time_s)),
             ("include_ui", Json::from(spec.include_ui)),
@@ -1031,8 +1104,9 @@ impl Engine {
             ("id_buffer", r.ids.clone()),
             ("subjects_total", Json::from(r.subjects.len())),
             ("subjects_on_screen", Json::from(on_screen)),
-            ("subjects", Json::arr(r.subjects.iter().map(|s| s.json.clone()))),
-            ("warnings", Json::Arr(warnings.clone())),
+            // (Every subject, set on the worker: 20,000 of them took about 100 ms to copy here.)
+            ("subjects", Json::Null),
+            ("warnings", Json::Null),
             // Structured problems (objects), next to the plain-text warnings.
             ("problems", Json::Arr(self.luts.warning(self.world.env()).into_iter().chain(self.models.pipeline_failure_json()).collect())),
         ]);
@@ -1061,34 +1135,56 @@ impl Engine {
         if !r.flash.is_null() {
             packet.set("flash", r.flash.clone());
         }
-        if let Some(path) = &packet_path {
-            if let Err(e) = crate::disk::book().write(crate::disk::Category::Captures, "sight", path, packet.to_pretty().as_bytes(), crate::disk::Need::Agent) {
-                warnings.push(Json::from(format!("packet not saved to disk: {e}")));
-                packet.set("warnings", Json::Arr(warnings));
+        let (subject_filter, max_subjects) = (spec.subjects, spec.max_subjects);
+        let filter = (subject_filter != SubjectFilter::All).then(|| subject_filter.name());
+        let subjects = r.subjects;
+        drop(packet_zone);
+        self.offload_capture(session, to, (w, h, r.rgba), png, "sight", move |png_bytes, saved, more| {
+            packet.set("subjects", Json::arr(subjects.iter().map(|s| s.json.clone())));
+            // The response carries the most relevant subjects only; agents' context is precious.
+            let filtered: Vec<Subject> = subjects.iter().filter(|s| passes(s, subject_filter)).cloned().collect();
+            let (chosen, omitted) = sight::most_relevant(&filtered, max_subjects);
+            let omitted = omitted + (subjects.len() - filtered.len());
+            let mut warnings = warnings;
+            warnings.extend(more);
+            let packet_path = saved.as_ref().map(|p| p.with_extension("json"));
+            let show = |p: Option<&PathBuf>| -> Json { p.map(|p| p.display().to_string()).into() };
+            let image = Json::obj([
+                ("width", Json::from(w)),
+                ("height", Json::from(h)),
+                ("png_bytes", Json::from(png_bytes.len())),
+                ("path", show(saved.as_ref())),
+                ("packet_path", show(packet_path.as_ref())),
+            ]);
+            packet.set("image", image);
+            packet.set("warnings", Json::Arr(warnings.clone()));
+            // The full packet is saved next to its PNG so a verifier can re-check both later.
+            if let Some(path) = &packet_path {
+                if let Err(e) = crate::disk::book().write(crate::disk::Category::Captures, "sight", path, packet.to_pretty().as_bytes(), crate::disk::Need::Agent) {
+                    warnings.push(Json::from(format!("packet not saved to disk: {e}")));
+                    packet.set("warnings", Json::Arr(warnings));
+                }
             }
-        }
-        // The response carries the most relevant subjects only; agents' context is precious.
-        let filtered: Vec<Subject> = r.subjects.iter().filter(|s| passes(s, spec.subjects)).cloned().collect();
-        let (chosen, omitted) = sight::most_relevant(&filtered, spec.max_subjects);
-        packet.set("subjects", Json::Arr(chosen));
-        packet.set("subjects_omitted", Json::from(omitted + (r.subjects.len() - filtered.len())));
-        if spec.subjects != SubjectFilter::All {
-            packet.set("subjects_filter", Json::from(spec.subjects.name()));
-        }
-        ToolOutput {
-            content: vec![
-                Content::Image { mime_type: "image/png".into(), data_base64: base64::encode(&png_bytes) },
-                Content::Text(packet.to_pretty()),
-            ],
-            is_error: false,
-        }
+            packet.set("subjects", Json::Arr(chosen));
+            packet.set("subjects_omitted", Json::from(omitted));
+            if let Some(f) = filter {
+                packet.set("subjects_filter", Json::from(f));
+            }
+            ToolOutput {
+                content: vec![Content::Image { mime_type: "image/png".into(), data_base64: base64::encode(&png_bytes) }, Content::Text(packet.to_pretty())],
+                is_error: false,
+            }
+        });
     }
 
     /// sight_orbit.
-    fn orbit(&mut self, o: &OrbitSpec, session: &SessionInfo, views: &[ViewReq], building: usize) -> ToolOutput {
+    fn orbit(&mut self, o: &OrbitSpec, session: &SessionInfo, views: &[ViewReq], building: usize, to: Answer) {
         let (center, radius, path) = match self.orbit_target(&o.target) {
             Ok(t) => t,
-            Err(out) => return out,
+            Err(out) => {
+                let _ = to.reply.send(out);
+                return;
+            }
         };
         let distance = o.distance.unwrap_or_else(|| orbit::fit_distance(radius, o.fov_y_deg));
         let (tw, th, sw, sh) = orbit::layout(o.views, o.tile);
@@ -1106,7 +1202,10 @@ impl Engine {
             let opts = ViewOpts { include_ui: o.include_ui, lod: o.lod, time_s, overlays: &o.overlays, caption: Some(caption), ids: true, fill: None };
             let r = match self.render_view(v.camera, tw, th, &opts) {
                 Ok(r) => r,
-                Err(e) => return ToolOutput::error(e),
+                Err(e) => {
+                    let _ = to.reply.send(ToolOutput::error(e));
+                    return;
+                }
             };
             if i == 0 {
                 warnings = self.capture_warnings(&r, CaptureWait { presented_at: None, parked_at: None, cut_by_deadline: false }, building, v);
@@ -1134,66 +1233,61 @@ impl Engine {
             }
             out_views.push(view);
         }
-        let png_bytes = encode_png(sw, sh, &sheet);
-        self.frames_captured += 1;
-        let png_path = self.save_png(&png_bytes);
-        if let Err(e) = &png_path {
-            warnings.push(Json::from(format!("capture not saved to disk: {e}")));
-        }
-        let png_file = png_path.as_ref().ok();
-        let packet_path = png_file.map(|p| p.with_extension("json"));
-        let mut packet = Json::obj([
-            ("schema", Json::from(sight::SCHEMA)),
-            ("kind", Json::from("orbit")),
-            ("frame", Json::from(self.frames_captured)),
-            ("requested_by", Json::from(self.swarm.agent_name(session))),
-            (
-                "image",
-                Json::obj([
-                    ("width", Json::from(sw)),
-                    ("height", Json::from(sh)),
-                    ("png_bytes", Json::from(png_bytes.len())),
-                    ("path", png_file.map(|p| p.display().to_string()).into()),
-                    ("packet_path", packet_path.as_ref().map(|p| p.display().to_string()).into()),
-                    ("grid", Json::arr({
-                        let (c, r) = orbit::grid(o.views);
-                        [c, r].map(Json::from)
-                    })),
-                ]),
-            ),
-            ("target", Json::obj([("path", Json::from(path)), ("center", world::vec3_json(center)), ("radius_m", Json::from(radius))])),
-            ("distance_m", Json::from(distance)),
-            ("elevation_deg", Json::from(o.elevation_deg)),
-            ("fov_y_deg", Json::from(o.fov_y_deg)),
-            ("time_s", Json::from(time_s)),
-            ("views", Json::Arr(out_views)),
-            ("warnings", Json::Arr(warnings)),
-        ]);
-        if let Some(ov) = overlays {
-            packet.set("overlays", ov);
-        }
-        save_packet(&mut packet, packet_path.as_ref());
-        ToolOutput {
-            content: vec![
-                Content::Image { mime_type: "image/png".into(), data_base64: base64::encode(&png_bytes) },
-                Content::Text(packet.to_string()),
-            ],
-            is_error: false,
-        }
+        let png = self.next_capture_path();
+        let frame = self.frames_captured;
+        let requested_by = self.swarm.agent_name(session);
+        let (elevation_deg, fov_y_deg, grid) = (o.elevation_deg, o.fov_y_deg, orbit::grid(o.views));
+        self.offload_capture(session, to, (sw, sh, sheet), png, "sight", move |png_bytes, saved, more| {
+            warnings.extend(more);
+            let packet_path = saved.as_ref().map(|p| p.with_extension("json"));
+            let mut packet = Json::obj([
+                ("schema", Json::from(sight::SCHEMA)),
+                ("kind", Json::from("orbit")),
+                ("frame", Json::from(frame)),
+                ("requested_by", Json::from(requested_by)),
+                (
+                    "image",
+                    Json::obj([
+                        ("width", Json::from(sw)),
+                        ("height", Json::from(sh)),
+                        ("png_bytes", Json::from(png_bytes.len())),
+                        ("path", saved.as_ref().map(|p| p.display().to_string()).into()),
+                        ("packet_path", packet_path.as_ref().map(|p| p.display().to_string()).into()),
+                        ("grid", Json::arr([grid.0, grid.1].map(Json::from))),
+                    ]),
+                ),
+                ("target", Json::obj([("path", Json::from(path)), ("center", world::vec3_json(center)), ("radius_m", Json::from(radius))])),
+                ("distance_m", Json::from(distance)),
+                ("elevation_deg", Json::from(elevation_deg)),
+                ("fov_y_deg", Json::from(fov_y_deg)),
+                ("time_s", Json::from(time_s)),
+                ("views", Json::Arr(out_views)),
+                ("warnings", Json::Arr(warnings)),
+            ]);
+            if let Some(ov) = overlays {
+                packet.set("overlays", ov);
+            }
+            save_packet(&mut packet, packet_path.as_ref());
+            ToolOutput {
+                content: vec![Content::Image { mime_type: "image/png".into(), data_base64: base64::encode(&png_bytes) }, Content::Text(packet.to_string())],
+                is_error: false,
+            }
+        });
     }
 
-    /// sight_compare mark.
-    fn compare_mark(&mut self, name: &str, spec: &FrameSpec, session: &SessionInfo, view: &ViewReq) -> ToolOutput {
+    /// sight_compare mark: the "before" is kept here; its PNG is encoded and written on a worker.
+    fn compare_mark(&mut self, name: &str, spec: &FrameSpec, session: &SessionInfo, view: &ViewReq, to: Answer) {
         let time_s = spec.time_s.map_or_else(|| self.time_s(), f64::from);
         let opts = ViewOpts { include_ui: spec.include_ui, lod: spec.lod, time_s, overlays: &spec.overlays, caption: None, ids: spec.ids, fill: None };
         let r = match self.render_view(view.camera, spec.width, spec.height, &opts) {
             Ok(r) => r,
-            Err(e) => return ToolOutput::error(e),
+            Err(e) => {
+                let _ = to.reply.send(ToolOutput::error(e));
+                return;
+            }
         };
         let warnings = self.capture_warnings(&r, CaptureWait { presented_at: None, parked_at: None, cut_by_deadline: false }, 0, view);
-        let png_bytes = encode_png(spec.width, spec.height, &r.rgba);
-        self.frames_captured += 1;
-        let png_path = self.save_png(&png_bytes).ok().map(|p| p.display().to_string());
+        let png = self.next_capture_path();
         // Only what was on screen, plus every entity's id (to tell new entities from old ones).
         let subjects = r.subjects.iter().filter(|s| s.on_screen).filter_map(|s| SubjectState::from_json(&s.json)).collect();
         let mut ids: Vec<u64> = self.world.entities().map(|e| e.id).collect();
@@ -1209,34 +1303,49 @@ impl Engine {
             ids: spec.ids,
         };
         let key = self.swarm.key(session);
-        let data = MarkData { rgba: r.rgba, subjects, ids, frame: self.frames_captured, tick: self.clock.tick(), png_path: png_path.clone() };
+        let on_screen = r.subjects.iter().filter(|s| s.on_screen).count();
+        let pixels = r.rgba.clone();
+        // The mark keeps the PNG's planned path (informational: a diff compares its pixels).
+        let data = MarkData { rgba: r.rgba, subjects, ids, frame: self.frames_captured, tick: self.clock.tick(), png_path: Some(png.display().to_string()) };
         let evicted = self.marks.put(&key, name, mark_view, data);
-        let out = Json::obj([
+        let mut out = Json::obj([
             ("marked", Json::from(name)),
             ("frame", Json::from(self.frames_captured)),
             ("tick", Json::from(self.clock.tick())),
             ("camera", view.camera.to_json()),
             ("size", Json::arr([spec.width, spec.height].map(Json::from))),
             ("time_s", spec.time_s.map_or(Json::from("live"), Json::from)),
-            ("subjects_on_screen", Json::from(r.subjects.iter().filter(|s| s.on_screen).count())),
-            ("path", Json::from(png_path)),
+            ("subjects_on_screen", Json::from(on_screen)),
+            ("path", Json::Null),
             ("evicted", Json::arr(evicted.into_iter().map(Json::from))),
-            ("warnings", Json::Arr(warnings)),
+            ("warnings", Json::Null),
         ]);
-        ToolOutput::text(out.to_pretty())
+        self.offload_capture(session, to, (spec.width, spec.height, pixels), png, "sight", move |_, saved, more| {
+            let mut warnings = warnings;
+            warnings.extend(more);
+            out.set("path", saved.map(|p| p.display().to_string()).into());
+            out.set("warnings", Json::Arr(warnings));
+            ToolOutput::text(out.to_pretty())
+        });
     }
 
     /// sight_compare diff.
-    fn compare_diff(&mut self, name: &str, threshold: u8, max_subjects: usize, session: &SessionInfo) -> ToolOutput {
+    fn compare_diff(&mut self, name: &str, threshold: u8, max_subjects: usize, session: &SessionInfo, to: Answer) {
         let key = self.swarm.key(session);
-        let Some(mark) = self.marks.get(&key, name) else { return mark_missing(name) };
+        let Some(mark) = self.marks.get(&key, name) else {
+            let _ = to.reply.send(mark_missing(name));
+            return;
+        };
         let view = mark.view.clone();
         let (marked_frame, marked_tick) = (mark.data.frame, mark.data.tick);
         let time_s = view.time_s.map_or_else(|| self.time_s(), f64::from);
         let opts = ViewOpts { include_ui: view.include_ui, lod: view.lod, time_s, overlays: &view.overlays, caption: None, ids: view.ids, fill: None };
         let r = match self.render_view(view.camera, view.width, view.height, &opts) {
             Ok(r) => r,
-            Err(e) => return ToolOutput::error(e),
+            Err(e) => {
+                let _ = to.reply.send(ToolOutput::error(e));
+                return;
+            }
         };
         let req = ViewReq { camera: view.camera, width: view.width, height: view.height, include_ui: view.include_ui, source: source("mark"), warning: None };
         let mut warnings = self.capture_warnings(&r, CaptureWait { presented_at: None, parked_at: None, cut_by_deadline: false }, 0, &req);
@@ -1249,46 +1358,43 @@ impl Engine {
         let world = &self.world;
         let subjects = compare::subject_diff(&mark.subjects, &mark.ids, &after, &|id| world.get(id).is_some(), 2, max_subjects);
         let (sheet, sw, sh, factor) = compare::side_by_side(&[&mark.rgba, &r.rgba, &heat], w, h, 4, orbit::MAX_SHEET);
-        let png_bytes = encode_png(sw, sh, &sheet);
-        self.frames_captured += 1;
-        let png_path = self.save_png(&png_bytes);
-        if let Err(e) = &png_path {
-            warnings.push(Json::from(format!("capture not saved to disk: {e}")));
-        }
-        let png_file = png_path.as_ref().ok();
-        let packet_path = png_file.map(|p| p.with_extension("json"));
-        let mut packet = Json::obj([
-            ("schema", Json::from(sight::SCHEMA)),
-            ("kind", Json::from("compare")),
-            ("name", Json::from(name)),
-            ("frame", Json::from(self.frames_captured)),
-            ("marked_frame", Json::from(marked_frame)),
-            ("ticks_since_mark", Json::from(self.clock.tick().saturating_sub(marked_tick))),
-            ("camera", view.camera.to_json()),
-            (
-                "image",
-                Json::obj([
-                    ("width", Json::from(sw)),
-                    ("height", Json::from(sh)),
-                    ("panels", Json::arr(["before", "after", "heat"].map(Json::from))),
-                    ("scale", Json::from(1.0 / factor as f64)),
-                    ("path", png_file.map(|p| p.display().to_string()).into()),
-                    ("packet_path", packet_path.as_ref().map(|p| p.display().to_string()).into()),
-                ]),
-            ),
-            ("threshold", Json::from(u32::from(threshold))),
-            ("pixels", d.to_json()),
-            ("subjects", subjects),
-            ("warnings", Json::Arr(warnings)),
-        ]);
-        save_packet(&mut packet, packet_path.as_ref());
-        ToolOutput {
-            content: vec![
-                Content::Image { mime_type: "image/png".into(), data_base64: base64::encode(&png_bytes) },
-                Content::Text(packet.to_pretty()),
-            ],
-            is_error: false,
-        }
+        let png = self.next_capture_path();
+        let frame = self.frames_captured;
+        let ticks_since = self.clock.tick().saturating_sub(marked_tick);
+        let (name, camera, pixels) = (name.to_owned(), view.camera.to_json(), d.to_json());
+        self.offload_capture(session, to, (sw, sh, sheet), png, "sight", move |png_bytes, saved, more| {
+            warnings.extend(more);
+            let packet_path = saved.as_ref().map(|p| p.with_extension("json"));
+            let mut packet = Json::obj([
+                ("schema", Json::from(sight::SCHEMA)),
+                ("kind", Json::from("compare")),
+                ("name", Json::from(name)),
+                ("frame", Json::from(frame)),
+                ("marked_frame", Json::from(marked_frame)),
+                ("ticks_since_mark", Json::from(ticks_since)),
+                ("camera", camera),
+                (
+                    "image",
+                    Json::obj([
+                        ("width", Json::from(sw)),
+                        ("height", Json::from(sh)),
+                        ("panels", Json::arr(["before", "after", "heat"].map(Json::from))),
+                        ("scale", Json::from(1.0 / factor as f64)),
+                        ("path", saved.as_ref().map(|p| p.display().to_string()).into()),
+                        ("packet_path", packet_path.as_ref().map(|p| p.display().to_string()).into()),
+                    ]),
+                ),
+                ("threshold", Json::from(u32::from(threshold))),
+                ("pixels", pixels),
+                ("subjects", subjects),
+                ("warnings", Json::Arr(warnings)),
+            ]);
+            save_packet(&mut packet, packet_path.as_ref());
+            ToolOutput {
+                content: vec![Content::Image { mime_type: "image/png".into(), data_base64: base64::encode(&png_bytes) }, Content::Text(packet.to_pretty())],
+                is_error: false,
+            }
+        });
     }
 
     /// sight_query: one entity, no image.
@@ -1372,11 +1478,10 @@ fn encode_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
     png::encode_rgba8(w, h, rgba, Level::Fastest)
 }
 
-impl Engine {
-    fn save_png(&self, bytes: &[u8]) -> Result<PathBuf, String> {
-        let _z = profile::zone("sight.save");
-        self.save_capture("png", bytes)
-    }
+/// Where a capture's answer goes, and its call (see `workers::Offload::agent`).
+pub(crate) struct Answer {
+    pub(crate) reply: crate::jobs::Reply,
+    pub(crate) call: u64,
 }
 
 /// Writes a packet next to its PNG; when that fails, the packet says so (and has no path).

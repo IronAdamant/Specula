@@ -188,6 +188,9 @@ pub(crate) trait Host {
     fn windowed(&self) -> bool;
     /// Records something other agents should be able to see (a cancel of another's playtest).
     fn log(&mut self, by: &str, text: String);
+    /// Writes playtest `id`'s replay file: `Some(result)` when written now (tests), `None` when a
+    /// worker writes it and the engine calls [`Playtests::replay_written`] after.
+    fn write_replay(&mut self, id: u64, path: PathBuf, text: String) -> Option<Result<(), Json>>;
     /// Whether `session` may call `tool` (the lead's cap; see `toolscope`): a playtest calls only
     /// what its starter may.
     fn in_scope(&self, _session: &SessionInfo, _tool: &str) -> bool {
@@ -287,6 +290,8 @@ pub(crate) struct Playtests {
     next_id: u64,
     active: Option<Active>,
     done: VecDeque<Finished>,
+    /// Finished playtests whose replay file a worker is writing (and its size).
+    writing: Vec<(Active, usize)>,
     /// Tests: a playtest counts as running without one.
     #[cfg(test)]
     pretend: bool,
@@ -374,6 +379,11 @@ impl Playtests {
                 }
             },
             PlaytestCall::Report { id, wait, cancel, force, format } => {
+                // Its replay file being written: answered with the report once it is.
+                if let Some((a, _)) = self.writing.iter_mut().find(|(a, _)| id.is_none_or(|i| i == a.id)).filter(|_| !cancel) {
+                    a.waiters.push(Waiter { reply, until: Instant::now() + wait.max(Duration::from_secs(5)), format });
+                    return;
+                }
                 if let Some(a) = self.active.as_mut().filter(|a| id.is_none_or(|i| i == a.id)) {
                     if cancel {
                         let (by, key) = host.identity(session);
@@ -634,18 +644,42 @@ impl Playtests {
         Ok(Pending { rx, deadline: Instant::now() + CALL_WAIT, tool: tool.to_owned(), format })
     }
 
-    fn finish(&mut self, host: &mut dyn Host, mut a: Active) {
+    fn finish(&mut self, host: &mut dyn Host, a: Active) {
         host.release_clock(a.was_paused);
-        let replay_file = a.record.as_ref().map(|(rel, path)| {
-            let game = host.game().map(|(n, _)| n);
-            let mut replay = a.run.replay_json(game.as_deref(), host.tick_hz());
-            replay.set("modules", modules_json(&a.modules));
-            let text = replay.to_pretty();
-            match crate::disk::book().write(crate::disk::Category::Recordings, "playtest", path, text.as_bytes(), crate::disk::Need::Agent) {
-                Ok(()) => Json::obj([("path", Json::from(rel.as_str())), ("written", Json::from(true)), ("bytes", Json::from(text.len()))]),
-                Err(e) => Json::obj([("path", Json::from(rel.as_str())), ("written", Json::from(false)), ("error", e.to_json())]),
-            }
-        });
+        let Some((_, path)) = a.record.clone() else {
+            self.complete(a, None);
+            return;
+        };
+        let game = host.game().map(|(n, _)| n);
+        let mut replay = a.run.replay_json(game.as_deref(), host.tick_hz());
+        replay.set("modules", modules_json(&a.modules));
+        let text = replay.to_pretty();
+        let bytes = text.len();
+        // The file goes to a worker (review of 998af3d): the report waits for it.
+        match host.write_replay(a.id, path, text) {
+            Some(r) => self.replay_done(a, bytes, r),
+            None => self.writing.push((a, bytes)),
+        }
+    }
+
+    /// A replay file written on a worker: the playtest's report is made and its waiters answered.
+    pub(crate) fn replay_written(&mut self, id: u64, result: Result<(), Json>) {
+        if let Some(i) = self.writing.iter().position(|(a, _)| a.id == id) {
+            let (a, bytes) = self.writing.remove(i);
+            self.replay_done(a, bytes, result);
+        }
+    }
+
+    fn replay_done(&mut self, a: Active, bytes: usize, result: Result<(), Json>) {
+        let rel = a.record.as_ref().map(|(r, _)| r.clone()).unwrap_or_default();
+        let file = match result {
+            Ok(()) => Json::obj([("path", Json::from(rel.as_str())), ("written", Json::from(true)), ("bytes", Json::from(bytes))]),
+            Err(e) => Json::obj([("path", Json::from(rel.as_str())), ("written", Json::from(false)), ("error", e)]),
+        };
+        self.complete(a, Some(file));
+    }
+
+    fn complete(&mut self, mut a: Active, replay_file: Option<Json>) {
         let concise = a.report(Format::Concise, replay_file.as_ref());
         let detailed = a.report(Format::Detailed, replay_file.as_ref());
         for w in a.waiters.drain(..) {
@@ -771,6 +805,10 @@ impl Host for EngineHost<'_> {
     }
 
     fn dispatch(&mut self, session: &SessionInfo, tool: &str, args: &Json, game_tool: bool) -> Result<Receiver<ToolOutput>, ToolOutput> {
+        // A step's arguments within the tool's schema limits, as an agent's call is (see `bounds`).
+        if let Some(Err(e)) = self.e.scopes.as_ref().and_then(|s| s.catalog.index(tool).map(|i| crate::bounds::check_args(s.catalog.def(i), args))) {
+            return Err(e.to_output());
+        }
         let command = if game_tool {
             Command::Game { name: tool.to_owned(), args: args.clone() }
         } else {
@@ -795,6 +833,21 @@ impl Host for EngineHost<'_> {
     fn log(&mut self, by: &str, text: String) {
         let tick = self.e.clock.tick();
         self.e.swarm.board.log(by, tick, "playtest", None, text);
+    }
+
+    fn write_replay(&mut self, id: u64, path: PathBuf, text: String) -> Option<Result<(), Json>> {
+        let write = move || crate::disk::book().write(crate::disk::Category::Recordings, "playtest", &path, text.as_bytes(), crate::disk::Need::Agent).map_err(|e| e.to_json());
+        // The playtests are taken out of the engine while they run: without worker threads the
+        // write is answered here, not by a continuation that couldn't find them.
+        if !self.e.workers_threaded() {
+            return Some(write());
+        }
+        let o = crate::workers::Offload::engine(crate::workers::JobKind::ReplayWrite);
+        let _ = self.e.offload(o, move |_| write(), move |e: &mut Engine, r| {
+            let r = r.unwrap_or_else(|f| Err(Json::from(format!("{f:?}"))));
+            e.playtests.replay_written(id, r);
+        });
+        None
     }
 }
 
@@ -920,6 +973,9 @@ mod tests {
         }
         fn log(&mut self, by: &str, text: String) {
             self.logs.push(format!("{by}: {text}"));
+        }
+        fn write_replay(&mut self, _: u64, path: PathBuf, text: String) -> Option<Result<(), Json>> {
+            Some(crate::disk::book().write(crate::disk::Category::Recordings, "playtest", &path, text.as_bytes(), crate::disk::Need::Agent).map_err(|e| e.to_json()))
         }
         fn in_scope(&self, _: &SessionInfo, tool: &str) -> bool {
             !self.deny.iter().any(|(d, from)| d == tool && self.tick >= *from)

@@ -320,6 +320,75 @@ name exists. That check is now a map lookup (`ToolHandler::has_tool`), and the d
 Scoping added nothing measurable, and the drill runs **about 2.2 times faster**. The drill's own sessions say
 `agent_hello {role: "builder"}`, so they also exercise the role path and its event-stream answers.
 
+## Bounds (2026-10-30)
+
+Recurring bug class D (root-cause investigation, 2026-10-29): input reached loops and answers unbounded.
+
+| Instance | Measured |
+|---|---|
+| `world_query {fields: [...] * 1M}` | 3.8 s, a 21 MB answer |
+| `check_keys`' "did you mean" on a 4 MB key | 4.4 s (an edit distance over every character) |
+| errors that echo their input | a 4 MB error for a 4 MB input (unknown keys, names, values; `Unknown tool: ...`) |
+
+The root causes: argument helpers had no default bounds, nothing capped answers, and errors echoed input
+verbatim. Each tool's parser had its own caps, or none. The fix is one choke point per direction, in
+`crates/specula/src/bounds.rs`, so a new tool is bounded without anyone remembering to.
+
+### In: arguments are checked against the tool's own schema
+
+- **Every string and array a schema describes declares its limit.** `bounds::add_to_schemas` runs once over every
+  definition (engine and game tools) and writes `maxLength` / `maxItems` where a schema has none: the defaults are
+  **4096 characters per string (`maxLength` counts characters, as JSON Schema does) and 256 items per array**, or
+  the tool's own override from `bounds::OVERRIDES` (each with its reason: `world_batch` ops up to 1000, a project
+  file's text and a plan document up to 1 MiB, an upload chunk, `tilemap_set` cells, `lex_simulate` commands and
+  `lex_edit` ops). A property without a type takes the free-form data limits below. Clients read the limits in
+  `tools/list`, which costs about 16 bytes per property.
+- **Arrays that mean sets carry `uniqueItems`**, and repeats are refused (`duplicate_items`, naming the repeated
+  item): `world_query` fields, `anim_check` clips (256 copies of one clip took 1.2 s), journal ids, overlay and tool
+  names.
+- **`bounds::check_args` checks a call's arguments against the schema before any parser runs**, in
+  `toolscope_tools::call`, which every call passes through (`tools_invoke`'s inner call and playtest steps too).
+  Lengths are compared before anything is read, so a 1 MB string or a million items is refused in microseconds:
+  `argument_too_large {field, limit, got}`.
+- **Keys:** an object the schema describes has keys of at most 64 characters (no argument name is longer), refused
+  as `argument_key_too_long` before any "did you mean". `check_keys`, which parsers also use on nested objects,
+  does the same before it calls `closest()`.
+- **Free-form data** (an object schema without `properties`: entity props, recipe params, a playtest step's
+  arguments, a Lex document's items, a property without a type) is the consumer's to validate; it is bounded more
+  loosely (1 MiB strings, 65,536 items, 256-character keys and 16,384 keys per object, nesting at most 64) and by the
+  request body (16 MiB).
+
+Why the schema, rather than limits in each parser's getters: the schema is what the agent reads, so declaring the
+limit there and enforcing that declaration in one place means they can't drift apart, and no parser has to be
+remembered. Parsers keep their own semantic checks (ranges, names, shapes) and their own smaller caps.
+
+### Out: errors and answers
+
+- **Echoes are cut**: `bounds::echo` keeps 128 characters and the value's size (`'kkkk...' (4194304 bytes)`). It is
+  used where errors echo keys, names and values (`check_keys`, unknown tools in the engine and the protocol's
+  `Unknown tool`), and the choke point also cuts any quoted run without spaces past 128 characters in an error's
+  message, whoever wrote it.
+- **Errors are at most 2 KiB of message**, other strings in an error 8 KiB (a rendered compiler diagnostic fits),
+  nesting 16 levels, and a whole error at most its tool's answer ceiling (below): past it the largest arrays are
+  halved, each ending in `{"omitted": n}`, until it fits, so nothing the message names disappears; only an error
+  that can't be cut keeps just `error` and `message` (with `details_omitted`). `bounds::cap_answer` applies this to
+  every answer in `Tools::call`, after `response::tidy`; `tools_invoke` is capped as the tool it invoked.
+- **Answers have a ceiling**: 256 KiB of text by default (images apart; a capture's PNG is bounded by its size
+  limit), more for the few tools whose answer is a document (`project_read` 1.2 MiB, `tools_activate` 1 MiB,
+  `tools_catalog`, `lex_get`, `lex_export` 512 KiB). Past it the answer is `answer_too_large {completed: true, bytes,
+  limit}`: the call itself completed and its changes stand (never retry a write because of it), only the answer was
+  withheld; ask for less or page.
+
+### Guard tests
+
+- `bounds::tests`: the limits the schema shows are the limits enforced (a value at the limit passes, one past it is
+  refused, for every string and array property of every tool), every override names a real property, and every
+  string and array property of every tool declares a limit.
+- `tools::tests::every_tool_survives_oversized_arguments` (the fuzz): for every tool in `definitions()`, each
+  property in turn gets a 1 MB string, a 100,000-item array and an object with a 1 MB key. Every answer must be under
+  64 KiB and each call must return within a bound (on a stub engine: the engine side is the strict-budget harness's,
+  see [WORKERS.md](WORKERS.md)).
+
 ## Not changed (recommendations)
 
 1. **The tool list itself is the biggest cost** (96.5 KB, about 24,000 tokens per agent). Options, roughly by payoff:

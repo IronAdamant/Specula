@@ -1440,6 +1440,46 @@ pub fn remove_tree_inside(root: &Path, dir: &Path) -> Result<(u64, u64), String>
     Ok(size)
 }
 
+/// What a folder deleted in one rename is called while it waits to be emptied: renamed in place
+/// (in the same folder, the cheapest rename there is) to `.<name>.trash.<pid>.<n>`, a name no lease
+/// folder has (the walker's lease names end in digits after a `-`). A shared trash folder made
+/// renames wait behind the worker emptying it (about 140 ms, review of the bounds lane).
+pub const TRASH_MARK: &str = ".trash.";
+
+static TRASHED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Moves `dir` (a folder inside `root`, never through a link) aside in one rename: it is gone
+/// from its path at once, its bytes still counted where they were (same root, same category)
+/// until [`remove_tree_inside`] empties it, on a worker. Returns where it went.
+pub fn move_to_trash(root: &Path, dir: &Path) -> Result<PathBuf, String> {
+    check_inside(root, dir)?;
+    let m = std::fs::symlink_metadata(dir).map_err(|e| e.to_string())?;
+    if !m.is_dir() || is_link(&m) {
+        return Err(format!("{} is not a folder", dir.display()));
+    }
+    let parent = dir.parent().ok_or("no parent folder")?;
+    let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let n = TRASHED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let to = parent.join(format!(".{name}{TRASH_MARK}{}.{n}", std::process::id()));
+    std::fs::rename(dir, &to).map_err(|e| format!("{}: {e}", dir.display()))?;
+    Ok(to)
+}
+
+/// The folders under `root` (directly) waiting to be emptied: this run's, and what a run that
+/// ended before its worker emptied them left.
+pub fn trash_left(root: &Path) -> Vec<PathBuf> {
+    let Ok(rd) = std::fs::read_dir(root) else { return Vec::new() };
+    let mut out: Vec<PathBuf> = rd
+        .filter_map(Result::ok)
+        .filter(|e| e.file_name().to_str().is_some_and(|n| n.starts_with('.') && n.contains(TRASH_MARK)))
+        .map(|e| e.path())
+        .filter(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir() && !is_link(&m)))
+        .take(1024)
+        .collect();
+    out.sort();
+    out
+}
+
 /// `(files, bytes)` under `dir`, never through links (bounded).
 fn tree_size(dir: &Path) -> (u64, u64) {
     let mut out = (0, 0);

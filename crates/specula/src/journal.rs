@@ -927,6 +927,21 @@ impl Journal {
         })
     }
 
+    /// Where a replay begun later must stop to give the state now: the newest entry and the id
+    /// counter (`world_hash {verify}` takes it at its call and begins when a replay slot is free).
+    pub fn replay_point(&self) -> (u64, u64) {
+        (self.last_seq(), self.next_id_seen)
+    }
+
+    /// [`Journal::replay_begin`] towards an earlier [`Journal::replay_point`].
+    pub fn replay_begin_at(&self, (target, next_id): (u64, u64)) -> Option<ReplayRun> {
+        self.replayable().then(|| {
+            let mut world = self.base.clone();
+            world.set_recording(Recording::Off);
+            ReplayRun { world, done: 0, change: 0, target, next_id, instance: self.instance, rebases: self.rebases }
+        })
+    }
+
     /// Entities in the journal's base world (what [`Journal::replay_begin`] copies in one go).
     pub fn base_entities(&self) -> usize {
         self.base.len()

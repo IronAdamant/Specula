@@ -399,7 +399,9 @@ impl State {
         let known = specula_core::trace::catch_unwind(AssertUnwindSafe(|| self.handler.has_tool(name)))
             .map_err(|p| (INTERNAL_ERROR, format!("Internal error: tool lookup panicked: {}", panic_message(&*p))))?;
         if !known || !is_valid_tool_name(name) {
-            return Err((INVALID_PARAMS, format!("Unknown tool: {name}")));
+            // Only the start of a name is echoed (tool names are at most 64 characters; a 4 MB
+            // one would come back whole otherwise).
+            return Err((INVALID_PARAMS, format!("Unknown tool: {}", clip_echo(name))));
         }
         let output = specula_core::trace::catch_unwind(AssertUnwindSafe(|| self.handler.call(session, name, arguments)))
             .unwrap_or_else(|p| ToolOutput::error(format!("tool {name:?} panicked: {}", panic_message(&*p))));
@@ -559,9 +561,26 @@ pub(crate) fn error_response(status: u16, code: i64, message: impl AsRef<str>) -
     json_response(status, &rpc_error(Json::Null, code, message.as_ref()))
 }
 
+/// A name echoed in an error: its first 64 characters, then its size.
+fn clip_echo(name: &str) -> String {
+    match name.char_indices().nth(64) {
+        None => name.to_owned(),
+        Some((cut, _)) => format!("{}... ({} bytes)", &name[..cut], name.len()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A 4 MB tool name came back whole in `Unknown tool: ...` (bounds lane, 2026-10-30).
+    #[test]
+    fn unknown_tool_names_are_echoed_cut() {
+        assert_eq!(clip_echo("world_spawm"), "world_spawm");
+        let long = "t".repeat(4 << 20);
+        let e = clip_echo(&long);
+        assert!(e.len() < 120 && e.ends_with("(4194304 bytes)"), "{e}");
+    }
 
     #[test]
     fn origins() {

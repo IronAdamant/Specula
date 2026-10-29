@@ -558,7 +558,7 @@ fn fix_mounted(to_engine: &Sender<Request>, session: &SessionInfo, req: &BuildRe
     let report = loop {
         let (tx, rx) = mpsc::channel::<Result<Vec<ModuleText>, Json>>();
         typed(ProjectCall::ModuleTexts { dir: req.dir.clone(), reply: tx });
-        let texts = match rx.try_recv() {
+        let texts = match rx.recv_timeout(crate::project_tools::DEFERRED_WAIT) {
             Ok(Ok(t)) => t,
             Ok(Err(e)) => {
                 // Held, pending or changed files: Cargo would compile other text than the plan's.
@@ -592,7 +592,7 @@ fn fix_mounted(to_engine: &Sender<Request>, session: &SessionInfo, req: &BuildRe
         }
         let (tx, rx) = mpsc::channel::<FixesCommitted>();
         typed(ProjectCall::CommitFixes { files, reply: tx });
-        let done = rx.try_recv().unwrap_or_default();
+        let done = rx.recv_timeout(crate::project_tools::DEFERRED_WAIT).unwrap_or_default();
         skipped.extend(done.skipped.iter().map(|(p, why)| Json::obj([("path", Json::from(p.as_str())), ("why", Json::from(why.as_str()))])));
         if let Some(e) = done.error {
             refused = Some(e);

@@ -366,7 +366,7 @@ impl Engine {
                         if world.state_hash_step(hash, REPLAY_CHUNK) {
                             let h = hash.finish();
                             if let ReplayPhase::Hashing(world, _) = std::mem::replace(&mut check.phase, ReplayPhase::Done) {
-                                drop_elsewhere(world);
+                                self.drop_elsewhere(world);
                             }
                             check.replay_hash = Some(h);
                             break Ok(true);
@@ -387,8 +387,8 @@ impl Engine {
                 Ok(true) => self.trace_replay_finish(check),
                 Err(why) => {
                     match check.phase {
-                        ReplayPhase::Replaying(run) => drop_elsewhere(Box::new((*run).into_world())),
-                        ReplayPhase::Hashing(world, _) => drop_elsewhere(world),
+                        ReplayPhase::Replaying(run) => self.drop_elsewhere(Box::new((*run).into_world())),
+                        ReplayPhase::Hashing(world, _) => self.drop_elsewhere(world),
                         _ => {}
                     }
                     // Not seen: the next idle spell tries again.
@@ -463,15 +463,6 @@ impl Engine {
                 agent: None,
             });
         }
-    }
-}
-
-/// Frees a replayed world on a thread of its own: dropping 12,000 entities took one step about
-/// 10 ms on the engine thread (review, e45f66c).
-fn drop_elsewhere(world: Box<crate::world::World>) {
-    // A thread that can't start drops its closure (and the world) right here.
-    if let Err(e) = std::thread::Builder::new().name("specula-replay-drop".into()).spawn(move || drop(world)) {
-        trace_event!(&WORLD, Debug, "world.replay_drop_inline", error = e.to_string());
     }
 }
 

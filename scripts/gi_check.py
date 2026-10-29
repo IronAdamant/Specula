@@ -33,6 +33,7 @@ PNG. Standard library only; output ASCII.
 import argparse
 import base64
 import json
+import shutil
 import os
 import sys
 import time
@@ -184,6 +185,9 @@ def part_yard(args, out):
     d = out / "yard"
     d.mkdir(parents=True, exist_ok=True)
     store = d / "cache_a"
+    # A fresh store each run: a bake served from a warm store commits the volume and its result as
+    # one entry, so the undo step below would remove the volume instead of unbaking it.
+    shutil.rmtree(store, ignore_errors=True)
     # The operator grants the lead its name (agent_hello role lead needs the grant).
     with Engine(args.exe, args.port, d / "engine.log", "--headless", "--adapter", args.adapter, "--cache", str(store),
                 "--captures", str(d / "captures"), "--lead", "gi-lead", cwd=d) as eng:

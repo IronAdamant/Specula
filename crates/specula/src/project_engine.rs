@@ -21,6 +21,35 @@ const RETRY_EVERY: Duration = Duration::from_secs(1);
 /// project_list stops adding files past this many bytes.
 const LIST_BYTES: usize = 64 * 1024;
 
+/// A project call that reads the disk, held while a sync writes on its worker: run in order when
+/// it ends, so the engine's view of the disk (stamps, pending writes, held files) only ever moves
+/// between whole syncs, as when syncs ran on this thread.
+pub(crate) struct Deferred {
+    call: ProjectCall,
+    name: String,
+    key: Option<String>,
+    by: String,
+}
+
+/// After the next sync: a call's file (`Some(path)`) disk state and what was reloaded.
+pub(crate) type SyncWaiter = (Option<String>, SyncThen);
+
+/// What runs when the sync it waits for ends: with its file's disk state and what was reloaded.
+pub(crate) type SyncThen = Box<dyn FnOnce(&mut Engine, Json, Vec<&'static str>)>;
+
+/// A commit's answer, now (refused, changed) or once the disk has its file.
+enum CommitStep {
+    Now(Committed),
+    /// Committed as journal entry `seq`: the answer is made when the sync ends (`backup`: where a
+    /// replaced unreadable file's bytes went).
+    Synced { seq: Option<u64>, backup: Option<String> },
+}
+
+/// Whether a project call reads or writes the disk (so waits for a sync in progress).
+fn waits_for_sync(call: &ProjectCall) -> bool {
+    matches!(call, ProjectCall::Snapshot { .. } | ProjectCall::Commit { .. } | ProjectCall::ModuleTexts { .. } | ProjectCall::CommitFixes { .. } | ProjectCall::Mount { .. })
+}
+
 /// The text `path` had at `version`, and the changes after it (newest first), from the journal
 /// (or the world it started from).
 fn at_version(journal: &crate::journal::Journal, path: &str, version: u64) -> (Option<Arc<str>>, Vec<Json>) {
@@ -69,6 +98,15 @@ pub(crate) fn file_commit(wd: &mut dyn crate::write_policy::WorldWrite, path: &s
 impl Engine {
     /// Answers a project call on the main thread.
     pub(crate) fn project_call(&mut self, call: ProjectCall, w: Writer, by: &str) -> ToolOutput {
+        if self.project_syncing && waits_for_sync(&call) {
+            if matches!(call, ProjectCall::Mount { .. }) {
+                // A mount answers in the call itself (rare, and it scans a folder anyway).
+                self.project_wait_sync();
+            } else {
+                self.project_deferred.push_back(Deferred { call, name: w.name.to_owned(), key: w.session.map(str::to_owned), by: by.to_owned() });
+                return ToolOutput::text("{}");
+            }
+        }
         match call {
             ProjectCall::List { prefix, kind, after, limit } => ToolOutput::text(self.project_list(prefix.as_deref(), kind, after.as_deref(), limit).to_string()),
             ProjectCall::Snapshot { path, version, context, reply } => {
@@ -77,8 +115,27 @@ impl Engine {
                 ToolOutput::text("{}")
             }
             ProjectCall::Commit { path, base, file, replace_unreadable, also, reply } => {
-                let done = self.project_commit(&path, base, file, replace_unreadable, also, w, by);
-                let _ = reply.send(done);
+                match self.project_commit(&path, base, file, replace_unreadable, also, w, by) {
+                    CommitStep::Now(done) => {
+                        let _ = reply.send(done);
+                    }
+                    // Answered once the file is on disk (written on a worker).
+                    CommitStep::Synced { seq, backup } => self.project_sync_then(Some(&path.clone()), move |e, disk, reloaded| {
+                        let version = e.world.files().get(&path).map(|f| f.version);
+                        let mut j = vec![("path", Json::from(path.as_str())), ("version", Json::from(version)), ("journal", Json::from(seq))];
+                        if let Some(f) = e.world.files().get(&path) {
+                            j.push(("bytes", Json::from(if f.kind.is_binary() { project::binary_bytes(f) } else { f.text.len() as u64 })));
+                        } else {
+                            j.push(("deleted", Json::Bool(true)));
+                        }
+                        j.push(("disk", disk));
+                        if let Some(b) = backup {
+                            j.push(("backup", Json::from(b)));
+                        }
+                        j.push(("reloaded", Json::arr(reloaded.into_iter().map(Json::from))));
+                        let _ = reply.send(Committed::Done(Json::obj(j)));
+                    }),
+                }
                 ToolOutput::text("{}")
             }
             ProjectCall::Mount { dir, name } => {
@@ -102,8 +159,19 @@ impl Engine {
                 ToolOutput::text("{}")
             }
             ProjectCall::CommitFixes { files, reply } => {
-                let done = self.project_commit_fixes(files, w, by);
-                let _ = reply.send(done);
+                let (mut done, written) = self.project_commit_fixes(files, w, by);
+                match written {
+                    None => {
+                        let _ = reply.send(done);
+                    }
+                    // A fix that didn't reach the disk stops the rounds: the next build would
+                    // compile the old text.
+                    Some(paths) => self.project_sync_then(None, move |e, _, _| {
+                        done.stop = paths.iter().any(|p| e.project.pending.contains_key(p) || e.project.held.contains_key(p));
+                        done.committed = paths;
+                        let _ = reply.send(done);
+                    }),
+                }
                 ToolOutput::text("{}")
             }
         }
@@ -144,59 +212,68 @@ impl Engine {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn project_commit(&mut self, path: &str, base: (u64, u64), file: Option<(FileKind, Arc<str>)>, replace_unreadable: bool, also: Option<crate::project_tools::Also>, w: Writer, by: &str) -> Committed {
+    fn project_commit(&mut self, path: &str, base: (u64, u64), file: Option<(FileKind, Arc<str>)>, replace_unreadable: bool, also: Option<crate::project_tools::Also>, w: Writer, by: &str) -> CommitStep {
+        match self.project_commit_now(path, base, file, replace_unreadable, also, w, by) {
+            Ok((seq, backup)) => CommitStep::Synced { seq, backup },
+            Err(c) => CommitStep::Now(c),
+        }
+    }
+
+    /// The commit itself: `Ok((journal entry, backup))`, or why not.
+    #[allow(clippy::too_many_arguments)]
+    fn project_commit_now(&mut self, path: &str, base: (u64, u64), file: Option<(FileKind, Arc<str>)>, replace_unreadable: bool, also: Option<crate::project_tools::Also>, w: Writer, by: &str) -> Result<(Option<u64>, Option<String>), Committed> {
         if let Some(e) = self.project_case_clash(path) {
-            return Committed::Refused(e);
+            return Err(Committed::Refused(e));
         }
         if let Some(ev) = self.project.refresh(path) {
             self.project_import(vec![ev]);
         }
         let cur = self.world.files().get(path);
         if (cur.map_or(0, |f| f.version), cur.map_or(0, |f| f.hash)) != base {
-            return Committed::Changed;
+            return Err(Committed::Changed);
         }
         let Some((mount, rel)) = self.project.locate(path) else {
-            return Committed::Refused(WorldError::new("not_mirrored", format!("{path} isn't in a mount (project_list shows them)")).with("path", path));
+            return Err(Committed::Refused(WorldError::new("not_mirrored", format!("{path} isn't in a mount (project_list shows them)")).with("path", path)));
         };
         let Some(kind) = project::kind_for(mount.kind, &rel) else {
-            return Committed::Refused(WorldError::new("not_mirrored", format!("{path} isn't a kind of file the project mirrors")).with("path", path));
+            return Err(Committed::Refused(WorldError::new("not_mirrored", format!("{path} isn't a kind of file the project mirrors")).with("path", path)));
         };
         // Never into a linked folder: the write could only fail, after the commit.
         if let Some(dir) = mount.disk_path(&rel).parent() {
             if let Err(e) = project::check_inside(&mount.root, dir) {
-                return Committed::Refused(WorldError::new("linked_folder", format!("{path}: {e}; nothing was changed (write somewhere that isn't behind a link)")).with("path", path));
+                return Err(Committed::Refused(WorldError::new("linked_folder", format!("{path}: {e}; nothing was changed (write somewhere that isn't behind a link)")).with("path", path)));
             }
         }
         // The disk holds something that can't be mirrored: never overwritten unless asked to.
         let mut backup = None;
         if let Some((_, _, why)) = self.project.held.get(path).cloned() {
             if !replace_unreadable {
-                return Committed::Refused(
+                return Err(Committed::Refused(
                     WorldError::new("disk_unreadable", format!("{path} was changed on disk into something that can't be mirrored ({why}); nothing was changed. Fix it on disk (it is imported then), or pass replace_unreadable: true to replace it (its bytes are backed up first)"))
                         .with("path", path)
                         .with("why", why.as_str()),
-                );
+                ));
             }
             match self.project.back_up_and_release(path) {
                 Ok(b) => backup = Some(b.display().to_string()),
-                Err(e) => return Committed::Refused(WorldError::new("backup_failed", format!("{path} couldn't be backed up before replacing it: {e}; nothing was changed")).with("path", path)),
+                Err(e) => return Err(Committed::Refused(WorldError::new("backup_failed", format!("{path} couldn't be backed up before replacing it: {e}; nothing was changed")).with("path", path))),
             }
         }
         let new = match file {
             Some((_, text)) => {
                 if let Err(e) = project::room_for(self.world.files(), path, text.len()) {
-                    return Committed::Refused(e);
+                    return Err(Committed::Refused(e));
                 }
                 // Binary files: their bytes must be in the content store, within the store's bound.
                 let disk_bytes = if kind.is_binary() {
                     let Some((id, bytes)) = crate::blobs::parse_pointer(&text) else {
-                        return Committed::Refused(WorldError::new("not_a_pointer", format!("{path} is a binary file: write it with project_upload")).with("path", path));
+                        return Err(Committed::Refused(WorldError::new("not_a_pointer", format!("{path} is a binary file: write it with project_upload")).with("path", path)));
                     };
                     if !self.content.as_ref().is_some_and(|c| c.has(id)) {
-                        return Committed::Refused(WorldError::new("not_kept", format!("{path}: its content {} isn't in the content store; upload it again", id.hex())).with("path", path));
+                        return Err(Committed::Refused(WorldError::new("not_kept", format!("{path}: its content {} isn't in the content store; upload it again", id.hex())).with("path", path)));
                     }
                     if let Err(e) = project::room_for_binary(self.world.files(), path, bytes) {
-                        return Committed::Refused(e);
+                        return Err(Committed::Refused(e));
                     }
                     bytes
                 } else {
@@ -204,41 +281,26 @@ impl Engine {
                 };
                 // Through the disk budget: refused below the free-space floor before anything changes.
                 if let Err(e) = crate::disk::book().admit(crate::disk::Category::Project, disk_bytes, crate::disk::Need::Agent) {
-                    return Committed::Refused(e.to_world());
+                    return Err(Committed::Refused(e.to_world()));
                 }
                 if cur.is_none() {
                     // One file on Windows (which folds case in Unicode): refuse a second spelling
                     // everywhere, so projects stay portable.
                     let folded = project::fold_case(path);
                     if let Some(other) = self.world.files().keys().find(|p| project::fold_case(p) == folded) {
-                        return Committed::Refused(WorldError::new("case_clash", format!("{other} exists; {path} differs only in case, which is the same file on Windows")).with("path", path).with("existing", other.as_str()));
+                        return Err(Committed::Refused(WorldError::new("case_clash", format!("{other} exists; {path} differs only in case, which is the same file on Windows")).with("path", path).with("existing", other.as_str())));
                     }
                 }
                 // Versions never repeat at a path, even across a delete (no ABA for expect_version).
                 Some(ProjectFile::new(kind, text, self.world.file_version_floor(path).max(base.0) + 1, Arc::from(by)))
             }
-            None if cur.is_none() => return Committed::Refused(WorldError::new("not_found", format!("there is no project file {path}")).with("path", path)),
+            None if cur.is_none() => return Err(Committed::Refused(WorldError::new("not_found", format!("there is no project file {path}")).with("path", path))),
             None => None,
         };
         let tick = self.clock.tick();
         match self.world.commit(&mut self.swarm, tick, w, crate::journal::Kind::File, crate::write_policy::Rule::Project, |wd| file_commit(wd, path, new, also, by)) {
-            Err(e) => Committed::Refused(e),
-            Ok((_, seq)) => {
-                let (disk, reloaded) = self.project_sync_for(Some(path));
-                let version = self.world.files().get(path).map(|f| f.version);
-                let mut j = vec![("path", Json::from(path)), ("version", Json::from(version)), ("journal", Json::from(seq))];
-                if let Some(f) = self.world.files().get(path) {
-                    j.push(("bytes", Json::from(if f.kind.is_binary() { project::binary_bytes(f) } else { f.text.len() as u64 })));
-                } else {
-                    j.push(("deleted", Json::Bool(true)));
-                }
-                j.push(("disk", disk));
-                if let Some(b) = backup {
-                    j.push(("backup", Json::from(b)));
-                }
-                j.push(("reloaded", Json::arr(reloaded.into_iter().map(Json::from))));
-                Committed::Done(Json::obj(j))
-            }
+            Err(e) => Err(Committed::Refused(e)),
+            Ok((_, seq)) => Ok((seq, backup)),
         }
     }
 
@@ -439,7 +501,9 @@ impl Engine {
     /// fixer, so nothing is imported as `disk`. A file changed since the build read it (another
     /// agent's edit, a human's) keeps its text: its fixes are skipped and reported, since their
     /// offsets belong to the old text.
-    fn project_commit_fixes(&mut self, files: Vec<(String, u64, u64, String)>, w: Writer, by: &str) -> FixesCommitted {
+    /// The fixes committed now; `Some(paths)` when they were (the caller answers once the disk has
+    /// them).
+    fn project_commit_fixes(&mut self, files: Vec<(String, u64, u64, String)>, w: Writer, by: &str) -> (FixesCommitted, Option<Vec<String>>) {
         let mut out = FixesCommitted::default();
         let mut puts = Vec::new();
         for (path, version, hash, text) in files {
@@ -463,7 +527,7 @@ impl Engine {
             }
         }
         if puts.is_empty() {
-            return out;
+            return (out, None);
         }
         let paths: Vec<String> = puts.iter().map(|(p, _)| p.clone()).collect();
         let tick = self.clock.tick();
@@ -475,15 +539,11 @@ impl Engine {
         }) {
             Ok((_, seq)) => {
                 out.journal = seq;
-                self.project_sync_for(None);
-                // A fix that didn't reach the disk stops the rounds: the next build would compile
-                // the old text.
-                out.stop = paths.iter().any(|p| self.project.pending.contains_key(p) || self.project.held.contains_key(p));
-                out.committed = paths;
+                return (out, Some(paths));
             }
             Err(e) => out.error = Some(e.to_json()),
         }
-        out
+        (out, None)
     }
 
     /// At start: the assets root becomes the `assets` mount, its files the store's first entry.
@@ -578,21 +638,95 @@ impl Engine {
         changed
     }
 
-    /// Syncs the disk with the store and hot-reloads what changed. Returns `path`'s disk state
-    /// (`"written"`, `{pending: error}`, `{conflict: ...}`) and what was reloaded.
-    fn project_sync_for(&mut self, path: Option<&str>) -> (Json, Vec<&'static str>) {
+    /// Runs `then` with `path`'s disk state (`"written"`, `{pending: error}`, `{conflict: ...}`) and
+    /// what was reloaded, once a sync that started after now has ended (it starts now unless one
+    /// is writing; then right after it).
+    fn project_sync_then(&mut self, path: Option<&str>, then: impl FnOnce(&mut Engine, Json, Vec<&'static str>) + 'static) {
+        self.project_waiters.push((path.map(str::to_owned), Box::new(then)));
+        self.project_sync_start();
+    }
+
+    /// Starts a sync of the disk with the store: planned here, written on the project lane
+    /// (temporary file, `fsync`, rename, read-back: one `fsync` per file held the engine thread
+    /// before, class C), applied when it returns. One at a time: a sync asked for meanwhile
+    /// starts when it ends.
+    fn project_sync_start(&mut self) {
+        if self.project_syncing {
+            return;
+        }
         self.project_retry = Instant::now();
-        let synced = self.project.sync(self.world.files(), self.world.files_revision());
+        let plan = self.project.sync_plan(self.world.files(), self.world.files_revision());
+        let waiters = std::mem::take(&mut self.project_waiters);
+        if plan.is_empty() {
+            // Nothing to write: nothing touches the disk.
+            let done = plan.execute();
+            self.project_synced(done, waiters);
+            return;
+        }
+        self.project_syncing = true;
+        let job = crate::workers::Offload::engine(crate::workers::JobKind::ProjectSync).lane(crate::workers::Lane::Project).class(crate::schedule::Class::Edit);
+        let then = move |e: &mut Engine, r: Result<project::SyncDone, crate::workers::Failed>| {
+            e.project_syncing = false;
+            match r {
+                Ok(done) => e.project_synced(done, waiters),
+                Err(f) => {
+                    specula_core::trace_event!(&crate::trace_sink::ENGINE, Error, "project.sync_failed", error = format!("{f:?}"));
+                    let state = Json::obj([("pending", Json::from(format!("the write failed on its worker ({f:?})"))), ("note", Json::from("the change is committed and journaled; the engine retries the write every second"))]);
+                    for (_, k) in waiters {
+                        k(e, state.clone(), Vec::new());
+                    }
+                }
+            }
+            // Calls that waited for the disk go now, in order (one may start the next sync); calls
+            // that asked for a sync while this one wrote get theirs at once.
+            e.project_run_deferred();
+            if !e.project_waiters.is_empty() {
+                e.project_sync_start();
+            }
+            e.project_after_request();
+        };
+        let _ = self.offload(job, move |_| plan.execute(), then);
+    }
+
+    /// Runs `then` once the disk holds what the store holds now (a sync that starts after now has
+    /// ended): an undo or a load answers after its files are written.
+    pub(crate) fn project_sync_after(&mut self, then: impl FnOnce(&mut Engine) + 'static) {
+        self.project_sync_then(None, move |e, _, _| then(e));
+    }
+
+    /// Waits for the sync in progress (a mount, which answers in its own call).
+    fn project_wait_sync(&mut self) {
+        let until = Instant::now() + Duration::from_secs(20);
+        while self.project_syncing && Instant::now() < until {
+            self.workers_wait_one(Duration::from_millis(20));
+        }
+    }
+
+    /// Runs the calls held while a sync wrote, in order, until one starts another sync.
+    fn project_run_deferred(&mut self) {
+        while !self.project_syncing {
+            let Some(d) = self.project_deferred.pop_front() else { return };
+            let w = Writer::new(&d.name, d.key.as_deref());
+            // Their answers go through their own reply channels.
+            let _ = self.project_call(d.call, w, &d.by);
+        }
+    }
+
+    /// A sync ended: what it found applied, races imported, what changed hot-reloaded, and the
+    /// calls waiting for it answered with their file's state.
+    fn project_synced(&mut self, done: project::SyncDone, waiters: Vec<SyncWaiter>) {
+        let synced = self.project.sync_apply(done);
         let mut changed = synced.changed;
-        let mut state = Json::from("written");
-        if let Some(p) = path {
+        let state_of = |p: &str| -> Json {
             if let Some((_, e)) = synced.failed.iter().find(|(q, _)| q == p) {
-                state = Json::obj([("pending", Json::from(e.as_str())), ("note", Json::from("the change is committed and journaled; the engine retries the write every second (project_list shows it)"))]);
+                return Json::obj([("pending", Json::from(e.as_str())), ("note", Json::from("the change is committed and journaled; the engine retries the write every second (project_list shows it)"))]);
             }
             if synced.raced.iter().any(|(q, _, _)| q == p) {
-                state = Json::obj([("conflict", Json::from("someone wrote the file on disk at the same moment: their text was kept and imported as a newer version; yours is in the journal"))]);
+                return Json::obj([("conflict", Json::from("someone wrote the file on disk at the same moment: their text was kept and imported as a newer version; yours is in the journal"))]);
             }
-        }
+            Json::from("written")
+        };
+        let states: Vec<(Json, SyncThen)> = waiters.into_iter().map(|(p, k)| (p.as_deref().map_or(Json::from("written"), state_of), k)).collect();
         for (p, e) in &synced.failed {
             eprintln!("specula: project file {p} not written: {e}");
         }
@@ -609,7 +743,9 @@ impl Engine {
             changed.extend(self.project_import(events));
         }
         let reloaded = self.project_reload(&changed);
-        (state, reloaded)
+        for (state, k) in states {
+            k(self, state, reloaded.clone());
+        }
     }
 
     /// Reloads what uses `changed` files: model recipes, styles and anim sets in the engine's
@@ -633,6 +769,10 @@ impl Engine {
     /// Once per loop: edits the watcher found on disk come in, failed writes are retried, and a
     /// store changed by anything (undo, a load) reaches the disk.
     pub(crate) fn project_pump(&mut self) {
+        // While a sync writes, edits found on disk wait (they are compared with what it wrote).
+        if self.project_syncing {
+            return;
+        }
         let events = self.project.drain();
         if !events.is_empty() {
             let changed = self.project_import(events);
@@ -644,13 +784,13 @@ impl Engine {
     /// After a command: if the store changed (undo, a world load), the disk follows. Failed
     /// writes wait [`RETRY_EVERY`] between tries.
     pub(crate) fn project_after_request(&mut self) {
-        if self.world.files_revision() == self.project.synced_revision {
+        if self.project_syncing || self.world.files_revision() == self.project.synced_revision {
             return;
         }
         if !self.project.pending.is_empty() && self.project_retry.elapsed() < RETRY_EVERY {
             return;
         }
-        self.project_sync_for(None);
+        self.project_sync_start();
     }
 }
 

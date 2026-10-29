@@ -1,0 +1,260 @@
+//! An explicit `world_save`, off the engine thread (docs/design/WORKERS.md, C5).
+//!
+//! The engine thread plans the save (takes the subtrees that changed since the last save off the
+//! world, as the autosave always did), and a worker on the world lane renders and writes the
+//! files and the task board; the answer comes back through `then`, which updates what the engine
+//! knows was saved. Serialising and writing 20,000 entities took 310 ms of the engine thread
+//! before (class C, 2026-10-29).
+//!
+//! Saves and autosaves never overlap: a save asked for while an autosave (or another save) is
+//! writing waits and starts when it ends, and an autosave doesn't start while a save is writing.
+//! Waiting saves of the same world (and overwrite) are one write that answers every caller (review
+//! of 998af3d: ten agents saving at once got five `job_busy`); at most [`MAX_WAITING`] different
+//! worlds wait. `world_load` writes the waiting saves first.
+
+use super::*;
+use crate::workers::{Cancel, JobKind, Lane, Offload};
+
+/// Different worlds whose saves wait for a write in progress, at most.
+const MAX_WAITING: usize = 4;
+
+/// A save asked for, not started yet (every caller that asked for the same world and overwrite).
+pub(crate) struct WaitingSave {
+    /// The world it saves (`None`: the current one, whatever it is when the save starts).
+    name: Option<String>,
+    overwrite: bool,
+    /// The first caller's identity key (who made the world folder, for later overwrites).
+    key: String,
+    replies: Vec<jobs::Reply>,
+    deadline: Instant,
+}
+
+/// What the worker brings back.
+struct Written {
+    /// Another world lives there (and no overwrite): the refusal; nothing was written.
+    exists: Option<Json>,
+    result: Result<(persist::Saved, persist::SaveReport), persist::PersistError>,
+    board: Option<(u64, crate::swarm_engine::WriteResult)>,
+}
+
+fn answer_all(replies: &[jobs::Reply], out: &ToolOutput) {
+    for r in replies {
+        let _ = r.send(ToolOutput { content: out.content.clone(), is_error: out.is_error });
+    }
+}
+
+impl Engine {
+    /// `world_save`: the authority checks, then the save (now, or after the write in progress).
+    pub(crate) fn handle_world_save(&mut self, request: Request) {
+        let Request { command: Command::Save { name, overwrite }, session, reply, deadline, .. } = request else { unreachable!("only world_save comes here") };
+        let key = self.swarm.key(&session);
+        // Saving under the current name is a checkpoint anyone may make. Another name renames the
+        // live world (its autosave target, evidence and board files), and overwrite of an existing
+        // world folder the caller didn't save in this run (another agent's, or an earlier run's:
+        // creators aren't recorded across runs) replaces that world: the lead's call.
+        let current = name.as_ref().is_none_or(|n| Some(n) == self.world_name.as_ref());
+        let renames = !current && self.world_name.is_some();
+        let replaces = !current && overwrite && name.as_ref().is_some_and(|n| self.worlds_dir.join(n).join("world.json").exists() && self.world_folders.get(n) != Some(&key));
+        let have = authority::authority(&self.swarm, &session.id);
+        let what = if renames { "world_save under another name (it renames the live world)" } else { "world_save with overwrite over a world folder another agent (or an earlier run) made" };
+        if let Some(Err(e)) = (renames || replaces).then(|| authority::require(have, authority::Authority::Lead, authority::Site::WorldSave, what)) {
+            let _ = reply.send(world_error(&e.with("current", self.world_name.as_deref().unwrap_or(""))));
+            return;
+        }
+        let target = name.clone().or_else(|| self.world_name.clone());
+        if self.world_write_busy() {
+            // The same world waiting already: one write answers both.
+            let same = self.waiting_saves.iter_mut().find(|w| w.overwrite == overwrite && w.name.clone().or_else(|| self.world_name.clone()) == target);
+            if let Some(w) = same {
+                w.replies.push(reply);
+                w.deadline = w.deadline.min(deadline);
+                return;
+            }
+            if self.waiting_saves.len() >= MAX_WAITING {
+                let e = authority::refusal(authority::Site::JobBusy, format!("saves of {MAX_WAITING} other worlds are waiting for the one being written: call again when it has answered"))
+                    .with("retry_after_s", 1)
+                    .with("retry", true);
+                reply.refuse(&e);
+                return;
+            }
+            self.waiting_saves.push_back(WaitingSave { name, overwrite, key, replies: vec![reply], deadline });
+            return;
+        }
+        self.start_world_save(WaitingSave { name, overwrite, key, replies: vec![reply], deadline });
+    }
+
+    /// Whether the world's folder is being written (an autosave or a save).
+    pub(crate) fn world_write_busy(&self) -> bool {
+        self.autosave_job.is_some() || self.world_save_running
+    }
+
+    /// Starts the waiting saves whose turn it is (once per loop pass; a load asks too).
+    pub(crate) fn pump_world_saves(&mut self) {
+        self.finish_autosave(false);
+        while !self.world_write_busy() {
+            let Some(save) = self.waiting_saves.pop_front() else { return };
+            if Instant::now() > save.deadline {
+                let out = ToolOutput::error(
+                    Json::obj([
+                        ("error", Json::from("engine_busy")),
+                        ("message", Json::from("skipped: the save waited too long for the write before it; nothing was written: call again")),
+                        ("retry", Json::Bool(true)),
+                    ])
+                    .to_string(),
+                );
+                answer_all(&save.replies, &out);
+                continue;
+            }
+            self.start_world_save(save);
+        }
+    }
+
+    /// Before a load replaces the world: the saves asked for so far are written (blocking: a load
+    /// is rare, lead-gated work, and those saves are of the world it replaces).
+    pub(crate) fn flush_world_saves(&mut self) {
+        let until = Instant::now() + Duration::from_secs(25);
+        while (self.world_write_busy() || !self.waiting_saves.is_empty()) && Instant::now() < until {
+            self.pump_world_saves();
+            if self.world_save_running {
+                self.workers_wait_one(Duration::from_millis(20));
+            } else if self.autosave_job.is_some() {
+                self.finish_autosave(true);
+            }
+        }
+    }
+
+    fn start_world_save(&mut self, save: WaitingSave) {
+        let WaitingSave { name, overwrite, key, replies, .. } = save;
+        let Some(name) = name.or_else(|| self.world_name.clone()) else {
+            let out = ToolOutput::error(
+                Json::obj([
+                    ("error", Json::from("no_world_name")),
+                    ("message", Json::from("give 'name': there is no current world (start with --world NAME or save once with a name)")),
+                ])
+                .to_string(),
+            );
+            answer_all(&replies, &out);
+            return;
+        };
+        let dir = self.worlds_dir.join(&name);
+        let current = self.world_name.as_deref() == Some(name.as_str());
+        // Whether another world lives there is looked at on the worker (a file read).
+        let check_exists = !current && !overwrite;
+        let lock = match self.lock_for(&dir) {
+            Ok(lock) => lock,
+            Err(e) => {
+                answer_all(&replies, &ToolOutput::error(e.to_json().to_string()));
+                return;
+            }
+        };
+        // Taken off the world here; rendered and written on the worker.
+        let mut plan = {
+            let _z = profile::zone("world_save.plan");
+            persist::plan(&self.world, &dir, self.saved.as_ref())
+        };
+        plan.need = disk::Need::Agent;
+        let board = self.board_write_for(&dir);
+        let (revision, seq) = (self.world.revision(), self.swarm.journal().last_seq());
+        let (entities, state_hash) = (self.world.persistent_len(), format!("{:016x}", self.world.state_hash()));
+        self.world_save_running = true;
+        let shown = name.clone();
+        let work_dir = dir.clone();
+        let work = move |_: &Cancel| {
+            if check_exists && work_dir.join("world.json").exists() {
+                // Another world lives there: never replace it by accident. (Its world.json records
+                // its entity count, so this costs one small read, not a load.)
+                let (entities, problem) = match persist::peek_entity_count(&work_dir) {
+                    Ok(n) => (Json::from(n), Json::Null),
+                    Err(e) => (Json::Null, e.to_json()),
+                };
+                let refusal = Json::obj([
+                    ("error", Json::from("world_exists")),
+                    ("message", Json::from(format!("a different world named '{shown}' already exists; pick another name, world_load it, or pass overwrite: true to replace it"))),
+                    ("name", Json::from(shown.as_str())),
+                    ("entities", entities),
+                    ("unreadable", problem),
+                ]);
+                return Written { exists: Some(refusal), result: Err(persist::PersistError::new("world_exists", "not written")), board: None };
+            }
+            let result = {
+                let _z = profile::zone("world_save.write");
+                persist::execute(plan)
+            };
+            // The board goes beside the world once the world is there.
+            let board = board.and_then(|(rev, write)| result.is_ok().then(|| (rev, write())));
+            Written { exists: None, result, board }
+        };
+        let refused = replies.clone();
+        let then = move |e: &mut Engine, r: Result<Written, crate::workers::Failed>| {
+            e.world_save_running = false;
+            let w = match r {
+                Ok(w) => w,
+                Err(f) => {
+                    answer_all(&replies, &f.to_output(JobKind::WorldSave));
+                    e.pump_world_saves();
+                    return;
+                }
+            };
+            if let Some(refusal) = w.exists {
+                answer_all(&replies, &ToolOutput::error(refusal.to_string()));
+                e.pump_world_saves();
+                return;
+            }
+            let board_error = w.board.map(|(rev, result)| e.board_written(rev, result)).unwrap_or_else(|| e.board_io.error.clone());
+            match w.result {
+                Ok((saved, report)) => {
+                    if lock.is_some() {
+                        e.world_lock = lock;
+                    }
+                    e.saved = Some(saved);
+                    let old_root = e.evidence_root();
+                    e.world_name = Some(name.clone());
+                    // What was taken off the world when the save began: later changes stay unsaved.
+                    e.saved_revision = revision;
+                    e.saved_seq = seq;
+                    e.last_autosave = Instant::now();
+                    e.autosave_error = None;
+                    e.note_leftovers(&report);
+                    // A world just named (or saved under another name) takes the queue's evidence along.
+                    e.carry_evidence(&old_root, &dir);
+                    // Who made each world folder this run (at most a few hundred names).
+                    if e.world_folders.len() < 512 || e.world_folders.contains_key(&name) {
+                        e.world_folders.entry(name.clone()).or_insert(key);
+                    }
+                    let out = ToolOutput::text(
+                        Json::obj([
+                            ("saved", Json::from(name)),
+                            ("board_save_error", board_error.unwrap_or(Json::Null)),
+                            ("dir", Json::from(report.dir.display().to_string())),
+                            ("generation", Json::from(report.generation)),
+                            ("files", Json::from(report.files)),
+                            ("files_written", Json::from(report.written)),
+                            ("files_removed", Json::from(report.removed)),
+                            ("leftover_files", Json::arr(report.leftovers.iter().map(|f| Json::from(f.as_str())))),
+                            // Transient entities are never saved.
+                            ("entities", Json::from(entities)),
+                            ("state_hash", Json::from(state_hash)),
+                        ])
+                        .to_string(),
+                    );
+                    answer_all(&replies, &out);
+                }
+                Err(err) => {
+                    if err.invalidates_cache() {
+                        e.saved = None;
+                    }
+                    answer_all(&replies, &ToolOutput::error(err.to_json().to_string()));
+                }
+            }
+            // The next waiting save (or autosave) may go.
+            e.pump_world_saves();
+        };
+        let job = Offload::engine(JobKind::WorldSave).lane(Lane::World).class(crate::schedule::Class::Disk);
+        if let Err(e) = self.offload(job, work, then) {
+            self.world_save_running = false;
+            for r in &refused {
+                r.refuse(&e);
+            }
+        }
+    }
+}

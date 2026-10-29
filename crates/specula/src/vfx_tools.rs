@@ -771,32 +771,41 @@ impl Engine {
             ("warnings", Json::Null),
         ]);
         let encode = PreviewEncode { sheet: stage.sheet, width: sw, height: sh, grid: [stage.cols, stage.rows], png_path, warnings, packet };
-        let encoders = std::sync::Arc::clone(&self.studio.encoders);
-        encoders.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let reply = job.reply.clone();
-        let slot: Arc<std::sync::Mutex<Option<PreviewEncode>>> = Arc::new(std::sync::Mutex::new(Some(encode)));
-        let theirs = Arc::clone(&slot);
-        let spawned = std::thread::Builder::new().name("specula-vfx-preview".into()).spawn(move || {
-            // Gives the preview's slot back however the encode ends (a panic included).
-            struct Slot(Arc<std::sync::atomic::AtomicUsize>);
-            impl Drop for Slot {
-                fn drop(&mut self) {
-                    self.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                }
+        // On the worker pool (docs/design/WORKERS.md); with no slot free for its agent, here.
+        let call = u64::from(!job.from_playtest);
+        let bytes = encode.sheet.len() as u64;
+        if self.workers_room(&job.owner, call, bytes).is_err() {
+            return PreviewStep::Done(encode.finish());
+        }
+        // Gives the preview's slot back however the job ends: run, panicked, or dropped unrun
+        // (a cancelled job's closure is dropped with the guard in it; review of 998af3d: a guard
+        // made inside the closure never ran for a cancelled job, and four leaks disabled previews).
+        struct Slot(Arc<std::sync::atomic::AtomicUsize>);
+        impl Drop for Slot {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             }
-            let _slot = Slot(encoders);
-            let e = theirs.lock().ok().and_then(|mut g| g.take());
-            if let Some(e) = e {
-                let _ = reply.send(e.finish());
+        }
+        self.studio.encoders.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let slot = Slot(std::sync::Arc::clone(&self.studio.encoders));
+        let (reply, theirs) = (job.reply.clone(), job.reply.clone());
+        let work = move |_: &crate::workers::Cancel| {
+            let _slot = slot;
+            let _ = theirs.send(encode.finish());
+        };
+        let kind = crate::workers::JobKind::PreviewEncode;
+        // A playtest's preview outlives its starter's session (call 0: never cancelled with it).
+        let o = crate::workers::Offload::agent(kind, job.owner.clone(), &job.session, call).class(crate::schedule::Class::Render).bytes(bytes);
+        let refused = job.reply.clone();
+        match self.offload(o, work, move |_, r| {
+            if let Err(f) = r {
+                let _ = reply.send(f.to_output(kind));
             }
-        });
-        match spawned {
-            Ok(_) => PreviewStep::Handed,
-            Err(_) => {
-                // No thread to spare: encoded here, as before.
-                self.studio.encoders.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                let e = slot.lock().ok().and_then(|mut g| g.take());
-                PreviewStep::Done(e.map_or_else(|| error("render_unavailable", "the preview's sheet was lost"), PreviewEncode::finish))
+        }) {
+            Ok(()) => PreviewStep::Handed,
+            Err(e) => {
+                refused.refuse(&e);
+                PreviewStep::Handed
             }
         }
     }

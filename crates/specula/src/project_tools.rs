@@ -20,6 +20,11 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
 
+/// How long a project call waits for its inner answer once the engine took the command: a commit
+/// answers when its file is on disk (written on a worker), and calls that read the disk wait for a
+/// sync in progress (docs/design/WORKERS.md). Comfortably inside the caller's own 30 s.
+pub(crate) const DEFERRED_WAIT: std::time::Duration = std::time::Duration::from_secs(25);
+
 /// Most bytes of text one `project_read` returns.
 const READ_BYTES: usize = 64 * 1024;
 /// Most ops per patch.
@@ -173,7 +178,7 @@ pub(crate) fn snapshot(tools: &Tools, session: &SessionInfo, path: &str, version
     if out.is_error {
         return Err(out);
     }
-    let snap = rx.try_recv().map_err(|_| err("no_answer", "the engine didn't answer the snapshot; nothing was changed"))?;
+    let snap = rx.recv_timeout(crate::project_tools::DEFERRED_WAIT).map_err(|_| err("no_answer", "the engine didn't answer the snapshot; nothing was changed"))?;
     match &snap.error {
         Some(e) => Err(world_err(e)),
         None => Ok(snap),
@@ -642,7 +647,7 @@ fn edit_tool(tools: &Tools, session: &SessionInfo, args: &Json, tool: &'static s
         if out.is_error {
             return Ok(out);
         }
-        match rx.try_recv() {
+        match rx.recv_timeout(crate::project_tools::DEFERRED_WAIT) {
             Ok(Committed::Changed) => continue,
             Ok(Committed::Refused(e)) => {
                 let mut j = e.to_json();

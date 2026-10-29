@@ -139,6 +139,11 @@ pub(crate) fn check_keys(args: &Json, what: &str, allowed: &[&[&str]]) -> Result
     let known = || allowed.iter().flat_map(|list| list.iter().copied());
     for (key, _) in pairs {
         if !known().any(|k| k == key) {
+            // No argument name is longer: a longer key is never searched (an edit distance on a
+            // 4 MB key took 4.4 s), and only its start is echoed.
+            if key.chars().count() > crate::bounds::MAX_KEY_CHARS {
+                return Err(format!("'{}' is not an argument of {what} (argument names are at most {} characters)", crate::bounds::echo(key), crate::bounds::MAX_KEY_CHARS));
+            }
             let hint = closest(key, known()).map(|c| format!("; did you mean '{c}'?")).unwrap_or_default();
             return Err(format!("'{key}' is not an argument of {what}{hint}"));
         }
@@ -387,6 +392,8 @@ impl Tools {
         crate::response::add_to_schemas(&mut all);
         crate::toolscope::add_to_schemas(&mut all);
         all.extend(game_tools.iter().cloned());
+        // Every string and array a schema describes carries the limit enforced on it.
+        crate::bounds::add_to_schemas(&mut all);
         let game_names: Vec<String> = game_tools.iter().map(|t| t.name.clone()).collect();
         let scopes = std::sync::Arc::new(crate::toolscope::Scopes::new(crate::toolscope::Catalog::new(all, &game_names), false));
         Tools {
@@ -537,7 +544,11 @@ impl ToolHandler for Tools {
         // machine-readable codes, whoever built the answer). A disk budget warning rides along once
         // per session (in the answer to the write that crossed the line). Scopes first (the cap, the
         // catalog tools, agent_hello {tools}).
-        let out = crate::disk::book().annotate(&session.id, crate::response::tidy(crate::toolscope_tools::call(self, session, name, arguments)));
+        // Bounded on the way out too: errors (and their echoes of input) cut, answers within
+        // their tool's ceiling (see `bounds`).
+        // tools_invoke answers with the invoked tool's answer: its ceiling applies (review of 998af3d).
+        let answered_by = if name == "tools_invoke" { arguments.get("tool").and_then(Json::as_str).unwrap_or(name) } else { name };
+        let out = crate::disk::book().annotate(&session.id, crate::bounds::cap_answer(answered_by, crate::response::tidy(crate::toolscope_tools::call(self, session, name, arguments))));
         CALL.with(|c| c.set(outer));
         crate::trace_sink::end_call(call, &out);
         out
@@ -918,7 +929,7 @@ pub(crate) fn parse(name: &str, args: &Json) -> Result<Command, String> {
                                                 Some(call) => call.map(Command::Stream),
                                                 None => match crate::terrain_tools::parse(other, args) {
                                                     Some(call) => call.map(Command::Terrain),
-                                                    None => crate::logic::tools::parse(other, args).unwrap_or_else(|| Err(format!("unknown tool '{other}'"))),
+                                                    None => crate::logic::tools::parse(other, args).unwrap_or_else(|| Err(format!("unknown tool '{}'", crate::bounds::echo(other)))),
                                                 },
                                             },
                                         },
@@ -1886,7 +1897,7 @@ fn color_arg(args: &Json, key: &str) -> Result<Option<[f32; 3]>, String> {
     }
 }
 
-fn definitions() -> Vec<ToolDef> {
+pub(crate) fn definitions() -> Vec<ToolDef> {
     let vec3 = |desc: &str| {
         Json::obj([
             ("type", Json::from("array")),
@@ -3323,6 +3334,59 @@ mod tests {
             }
         }
         assert!(caller >= 20, "the caller-thread families are in the definitions ({caller})");
+    }
+
+    /// The bounds fuzz (docs/design/TOOLS.md, "Bounds"): every tool, each property in turn given
+    /// a 1 MiB string, a 100,000-item array and an object with a 1 MiB key (and the arguments
+    /// themselves a 1 MiB key). Every answer stays under 64 KiB and every call returns within a
+    /// bound. The engine is a stub that answers at once: what reaches the engine thread at the
+    /// largest valid arguments is the strict-budget harness's (scripts/budget_check.py).
+    #[test]
+    fn every_tool_survives_oversized_arguments() {
+        let (tx, rx) = mpsc::channel::<Request>();
+        std::thread::spawn(move || {
+            for r in rx {
+                let _ = r.reply.send(ToolOutput::text("{}"));
+            }
+        });
+        let tools = Tools::new(tx, Vec::new());
+        let session = SessionInfo { id: "fuzz0001".into(), client_name: "fuzz".into(), client_version: "1".into(), protocol_version: "x".into() };
+        let defs = ToolHandler::tools(&tools);
+        assert!(defs.len() > 150, "{} tools", defs.len());
+        let mut string = Json::from("s".repeat(1 << 20));
+        let mut array = Json::Arr(vec![Json::from(0); 100_000]);
+        let key = "k".repeat(1 << 20);
+        let mut keyed = Json::obj([(key.clone(), Json::from(1))]);
+        let (mut calls, mut slowest) = (0, (Duration::ZERO, String::new()));
+        let mut check = |tool: &str, what: &str, args: &Json| {
+            let t = Instant::now();
+            let out = ToolHandler::call(&tools, &session, tool, args);
+            let took = t.elapsed();
+            let bytes: usize = out.content.iter().map(|c| match c {
+                specula_protocol::Content::Text(t) => t.len(),
+                specula_protocol::Content::Image { data_base64, .. } => data_base64.len(),
+            }).sum();
+            assert!(bytes < 64 * 1024, "{tool} {what}: a {bytes}-byte answer");
+            assert!(took < Duration::from_secs(5), "{tool} {what}: {took:?}");
+            if took > slowest.0 {
+                slowest = (took, format!("{tool} {what}"));
+            }
+            calls += 1;
+        };
+        for d in &defs {
+            check(&d.name, "with a 1 MiB argument name", &keyed);
+            let Some(Json::Obj(props)) = d.input_schema.get("properties") else { continue };
+            for (k, _) in props {
+                for (what, payload) in [("a 1 MiB string", &mut string), ("100,000 items", &mut array), ("a 1 MiB key", &mut keyed)] {
+                    let args = Json::Obj(vec![(k.clone(), std::mem::replace(payload, Json::Null))]);
+                    check(&d.name, &format!("{k}: {what}"), &args);
+                    let Json::Obj(mut pairs) = args else { unreachable!() };
+                    *payload = pairs.pop().expect("one").1;
+                }
+            }
+        }
+        assert!(calls > 1000, "{calls} calls");
+        assert!(slowest.0 < Duration::from_secs(5), "bounds fuzz: {calls} calls; slowest {:?} ({})", slowest.0, slowest.1);
     }
 
     #[test]

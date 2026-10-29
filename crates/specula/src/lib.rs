@@ -16,6 +16,7 @@
 pub mod authority;
 pub mod jobs;
 mod balance_tools;
+mod bounds;
 pub mod board;
 pub mod anim;
 mod anim_tools;
@@ -103,6 +104,10 @@ pub mod terrain;
 mod terrain_tools;
 pub mod water;
 mod sim_writes;
+mod hash_verify;
+mod steps;
+mod workers;
+mod world_save;
 pub mod world;
 pub mod write_policy;
 
@@ -591,6 +596,8 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         engine.clock.set_paused(true);
     }
 
+    // Scratch folders an earlier run released but didn't finish deleting.
+    engine.sweep_trash();
     let result = match &window {
         Some(ui) => engine.run_windowed(ui, &requests, &server),
         None => engine.run_headless(&requests, &server),
@@ -603,6 +610,9 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
             trace_sink::write_crash("engine_error", e, None, Json::Null);
         }
     }
+    // Writes the engine owes (world files, project files, deletes) and answers on the workers
+    // complete first.
+    engine.workers_drain(Duration::from_secs(10));
     engine.finish_autosave(true);
     // Save games still being written land before the process ends.
     engine.join_saves();
@@ -856,6 +866,19 @@ struct Engine {
     /// releases them while the review screen holds the input.
     game_pads: Vec<specula_platform::GamepadState>,
     pad_gate: game::PadGate,
+    /// The worker pool: encodes, writes and deletes off the engine thread (see [`workers`]).
+    workers: workers::Workers,
+    /// An explicit world_save is being written on a worker, and the saves waiting for it (see
+    /// [`world_save`]).
+    world_save_running: bool,
+    waiting_saves: VecDeque<world_save::WaitingSave>,
+    /// A project sync is writing on a worker; calls that read the disk wait for it (in order),
+    /// and so do the calls waiting for the next sync's result (see `project_engine`).
+    project_syncing: bool,
+    project_deferred: VecDeque<project_engine::Deferred>,
+    project_waiters: Vec<project_engine::SyncWaiter>,
+    /// Work that needs the engine, in budgeted slices (see [`steps`]).
+    steps: steps::Steps,
 }
 
 /// A model_build or model_reload call waiting for builds on the worker threads.
@@ -1000,6 +1023,13 @@ impl Engine {
             review_ui: review_screen::ReviewUi::with_captures(captures_root),
             game_pads: Vec::new(),
             pad_gate: game::PadGate::default(),
+            workers: workers::Workers::default(),
+            world_save_running: false,
+            waiting_saves: VecDeque::new(),
+            project_syncing: false,
+            project_deferred: VecDeque::new(),
+            project_waiters: Vec::new(),
+            steps: steps::Steps::default(),
         })
     }
 
@@ -1334,7 +1364,8 @@ impl Engine {
         self.last_autosave = Instant::now();
         self.finish_autosave(false);
         let Some(name) = self.world_name.clone() else { return };
-        if self.autosave_job.is_some() || !self.dirty() {
+        // Never beside an explicit save of the same folder (see `world_save`).
+        if self.autosave_job.is_some() || self.world_save_running || !self.dirty() {
             return;
         }
         let plan = {
@@ -1352,10 +1383,10 @@ impl Engine {
         let revision = self.world.revision();
         if wait {
             job();
-        } else if let Err(e) = std::thread::Builder::new().name("specula-autosave".into()).spawn(job) {
-            // The plan went with the closure; try again at the next autosave.
-            eprintln!("specula: could not start the autosave thread: {e}");
-            return;
+        } else {
+            // On the world lane: never beside an explicit save's write (see `world_save`).
+            let o = workers::Offload::engine(workers::JobKind::Autosave).lane(workers::Lane::World);
+            let _ = self.offload(o, move |_| job(), |_, _| {});
         }
         self.autosave_job = Some(AutosaveJob { revision, seq: self.swarm.journal().last_seq(), done });
         self.finish_autosave(wait);
@@ -1860,6 +1891,7 @@ impl Engine {
         loop {
             // Everything recorded during the previous iteration is that frame's profile.
             self.profiler.end_frame(&self.gpu);
+            self.pump_perf_writes();
             // Serve agents in the time the old loop spent waiting for vsync, until this frame is
             // due. Not frame work, so outside the frame zone; each call is its own "requests" zone.
             // perf_frame (answered in the window) reports the schedule as this window began.
@@ -1894,6 +1926,7 @@ impl Engine {
             let frame_zone = profile::zone("frame");
             let frame_started = Instant::now();
             self.autosave_if_due();
+            self.pump_world_saves();
             self.sweep_claims(server);
             self.lex_live_end_holds(server);
             self.poll_assets(false);
@@ -1902,6 +1935,8 @@ impl Engine {
             self.project_pump();
             self.disk_pump();
             self.serve_captures();
+            self.pump_workers(Some(server));
+            self.pump_steps(steps::WINDOW_SHARE, server);
             self.pump_playtests(server, playtest_engine::WINDOW_SLICE);
             self.pump_studio(studio::WINDOW_SHARE, server);
             self.gi_pump();
@@ -2033,9 +2068,13 @@ impl Engine {
                 // A load builds back to back (calls are still read between slices).
                 wait = Duration::ZERO;
             }
-            if self.studio_busy() {
-                // Studio renders run in slices, with calls read between them.
+            if self.studio_busy() || self.steps_busy() {
+                // Studio renders and step jobs run in slices, with calls read between them.
                 wait = Duration::ZERO;
+            }
+            if self.workers.busy() {
+                // Workers' answers go out promptly.
+                wait = wait.min(Duration::from_millis(2));
             }
             if self.playtests.running() {
                 // Flat out, unless it waits for a deferred answer.
@@ -2043,6 +2082,7 @@ impl Engine {
             }
             let received = requests.recv_timeout(wait);
             self.profiler.end_frame(&self.gpu);
+            self.pump_perf_writes();
             let _frame = profile::zone("frame");
             match received {
                 Ok(request) => {
@@ -2054,6 +2094,7 @@ impl Engine {
             }
             self.advance_clock();
             self.autosave_if_due();
+            self.pump_world_saves();
             self.sweep_claims(server);
             self.lex_live_end_holds(server);
             self.poll_assets(false);
@@ -2067,6 +2108,8 @@ impl Engine {
             self.project_pump();
             self.disk_pump();
             self.serve_captures();
+            self.pump_workers(Some(server));
+            self.pump_steps(steps::HEADLESS_SHARE, server);
             self.pump_playtests(server, playtest_engine::HEADLESS_SLICE);
             self.pump_studio(studio::HEADLESS_SHARE, server);
             self.gi_pump();
@@ -2135,7 +2178,29 @@ impl Engine {
             self.handle_save_request(request);
             return;
         }
+        if matches!(request.command, Command::Save { .. }) {
+            // Planned here, written on a worker, answered when written (see `world_save`).
+            self.handle_world_save(request);
+            return;
+        }
+        if matches!(request.command, Command::Anim(anim_tools::AnimCall::Check { .. } | anim_tools::AnimCall::Filmstrip { .. })) {
+            // A check or a tile per step; a filmstrip's sheet is encoded on a worker (see `anim_steps`).
+            self.start_anim_job(request);
+            return;
+        }
+        if matches!(request.command, Command::Swarm(swarm_tools::SwarmCall::DesyncTrace { .. })) {
+            // The file is rendered and written on a worker (see `swarm_engine`).
+            self.start_desync_trace(request);
+            return;
+        }
+        if matches!(request.command, Command::Hash { verify: true, .. }) {
+            // The replay check runs in steps (see `hash_verify`).
+            self.start_hash_verify(request);
+            return;
+        }
         let by = self.swarm.agent_name(&request.session);
+        // Project files this call changes (an undo, a load) are on disk before it answers.
+        let files_before = self.world.files_revision();
         // One tool call, one commit: counted around the dispatch (see `count_commits`).
         let (call_id, independent) = (request.call, commits_independently(&request.command));
         // Ownership (claims, undo) goes by identity key, which a resumed agent keeps.
@@ -2216,33 +2281,7 @@ impl Engine {
                     }
                 }
             }
-            Command::Save { name, overwrite } => {
-                // Saving under the current name is a checkpoint anyone may make. Another name
-                // renames the live world (its autosave target, evidence and board files), and
-                // overwrite of an existing world folder the caller didn't save in this run (another
-                // agent's, or an earlier run's: creators aren't recorded across runs) replaces
-                // that world: the lead's call.
-                let current = name.as_ref().is_none_or(|n| Some(n) == self.world_name.as_ref());
-                let renames = !current && self.world_name.is_some();
-                let replaces = !current
-                    && overwrite
-                    && name.as_ref().is_some_and(|n| self.worlds_dir.join(n).join("world.json").exists() && self.world_folders.get(n) != Some(&session));
-                let have = authority::authority(&self.swarm, &request.session.id);
-                let what = if renames { "world_save under another name (it renames the live world)" } else { "world_save with overwrite over a world folder another agent (or an earlier run) made" };
-                match (renames || replaces).then(|| authority::require(have, authority::Authority::Lead, authority::Site::WorldSave, what)) {
-                    Some(Err(e)) => world_error(&e.with("current", self.world_name.as_deref().unwrap_or(""))),
-                    _ => {
-                        let out = self.save(name.clone(), overwrite);
-                        if let (false, Some(n)) = (out.is_error, name.or_else(|| self.world_name.clone())) {
-                            // Who made each world folder this run (at most a few hundred names).
-                            if self.world_folders.len() < 512 || self.world_folders.contains_key(&n) {
-                                self.world_folders.entry(n).or_insert_with(|| session.clone());
-                            }
-                        }
-                        out
-                    }
-                }
-            }
+            Command::Save { .. } => unreachable!("answered by handle_world_save"),
             // A playtest owns the clock and the world until it ends (as for save_read): a load
             // would replace the world under it. Not even with force. Nor while others hold claims.
             Command::Load { name, force } => match write_policy::may_replace(&self.swarm, w, &self.playtests) {
@@ -2417,7 +2456,7 @@ impl Engine {
                 Err(e) => world_error(&self.conflict_help(e, Some(&conflict::Yours::named(vec!["(undo)".into()])))),
                 }
             }
-            Command::Hash { recent, tick, verify } => self.hash_report(recent, tick, verify),
+            Command::Hash { recent, tick, .. } => self.hash_report(recent, tick),
             Command::ClaimTake(spec) => {
                 let scope = spec.scope.clone();
                 match self.swarm.take_claim(&self.world, &request.session, spec) {
@@ -2478,8 +2517,13 @@ impl Engine {
             Command::EvidenceRefused(made) => self.evidence_refused(made),
         };
         self.check_world_replaced();
-        // Undo (or anything else) changed project files: the disk follows before the answer.
-        self.project_after_request();
+        // Undo (or anything else) changed project files: the disk follows before the answer (the
+        // write runs on a worker; the answer waits for it: see `project_engine`). A project
+        // call's own answer goes through its inner reply, which waits the same way.
+        let files_changed = self.world.files_revision() != files_before && !output.is_error;
+        if !files_changed {
+            self.project_after_request();
+        }
         if game_call {
             self.serve_game_requests();
         }
@@ -2490,6 +2534,13 @@ impl Engine {
             self.multi_commit_calls += 1;
             specula_core::trace_event!(&trace_sink::WRITES, Warn, "write.multi_commit", call = call_id, by = by.as_str(), commits = total, why = "one tool call committed more than once: it can fail halfway");
             debug_assert!(total <= 1, "one tool call committed {total} times (by {by})");
+        }
+        if files_changed {
+            let reply = request.reply;
+            self.project_sync_after(move |_| {
+                let _ = reply.send(output);
+            });
+            return;
         }
         // The caller may have timed out; nothing to do then.
         let _ = request.reply.send(output);
@@ -2506,7 +2557,7 @@ impl Engine {
     }
 
     /// world_hash's answer.
-    fn hash_report(&mut self, recent: usize, tick: Option<u64>, verify: bool) -> ToolOutput {
+    fn hash_report(&mut self, recent: usize, tick: Option<u64>) -> ToolOutput {
         let hash = self.state_hash();
         let pair = |(t, h): &(u64, u64)| Json::arr([Json::from(*t), Json::from(journal::hex(*h))]);
         let start = self.tick_hashes.len().saturating_sub(recent);
@@ -2534,26 +2585,6 @@ impl Engine {
             let found = self.tick_hashes.iter().find(|(at, _)| *at == t).map(|(_, h)| journal::hex(*h));
             let oldest = self.tick_hashes.front().map(|(t, _)| *t);
             out.set("at_tick", Json::obj([("tick", Json::from(t)), ("hash", Json::from(found)), ("oldest_kept", Json::from(oldest))]));
-        }
-        if verify {
-            let started = Instant::now();
-            let report = match self.swarm.journal().replay() {
-                Some(w) => {
-                    let replayed = w.state_hash();
-                    Json::obj([
-                        ("replayable", Json::from(true)),
-                        ("entries", Json::from(self.swarm.journal().len())),
-                        ("replay_hash", Json::from(journal::hex(replayed))),
-                        ("matches", Json::from(replayed == hash)),
-                        ("ms", Json::from(started.elapsed().as_secs_f64() * 1000.0)),
-                    ])
-                }
-                None => Json::obj([
-                    ("replayable", Json::from(false)),
-                    ("message", Json::from("older journal entries were dropped (memory limit), so it can't replay from its base")),
-                ]),
-            };
-            out.set("verify", report);
         }
         ToolOutput::text(out.to_string())
     }
@@ -2593,90 +2624,9 @@ impl Engine {
         persist::WorldLock::acquire(dir).map(Some)
     }
 
-    fn save(&mut self, name: Option<String>, overwrite: bool) -> ToolOutput {
-        self.finish_autosave(true);
-        let Some(name) = name.or_else(|| self.world_name.clone()) else {
-            return ToolOutput::error(
-                Json::obj([
-                    ("error", Json::from("no_world_name")),
-                    ("message", Json::from("give 'name': there is no current world (start with --world NAME or save once with a name)")),
-                ])
-                .to_pretty(),
-            );
-        };
-        let dir = self.worlds_dir.join(&name);
-        let current = self.world_name.as_deref() == Some(name.as_str());
-        if !current && !overwrite && dir.join("world.json").exists() {
-            // Another world lives there: never replace it by accident. (Its world.json records its
-            // entity count, so this costs one small read, not a load.)
-            let (entities, problem) = match persist::peek_entity_count(&dir) {
-                Ok(n) => (Json::from(n), Json::Null),
-                Err(e) => (Json::Null, e.to_json()),
-            };
-            return ToolOutput::error(
-                Json::obj([
-                    ("error", Json::from("world_exists")),
-                    (
-                        "message",
-                        Json::from(format!(
-                            "a different world named '{name}' already exists; pick another name, world_load it, or pass \
-                             overwrite: true to replace it"
-                        )),
-                    ),
-                    ("name", Json::from(name.as_str())),
-                    ("entities", entities),
-                    ("unreadable", problem),
-                ])
-                .to_pretty(),
-            );
-        }
-        let lock = match self.lock_for(&dir) {
-            Ok(lock) => lock,
-            Err(e) => return ToolOutput::error(e.to_json().to_pretty()),
-        };
-        match persist::save_for_agent(&self.world, &dir, self.saved.as_ref()) {
-            Ok((saved, report)) => {
-                if lock.is_some() {
-                    self.world_lock = lock;
-                }
-                self.saved = Some(saved);
-                let old_root = self.evidence_root();
-                self.world_name = Some(name.clone());
-                self.saved_revision = self.world.revision();
-                self.saved_seq = self.swarm.journal().last_seq();
-                self.last_autosave = Instant::now();
-                self.autosave_error = None;
-                self.note_leftovers(&report);
-                // A world just named (or saved under another name) takes the queue's evidence along.
-                self.carry_evidence(&old_root, &dir);
-                let board_error = self.save_board_now();
-                ToolOutput::text(
-                    Json::obj([
-                        ("saved", Json::from(name)),
-                        ("board_save_error", board_error.unwrap_or(Json::Null)),
-                        ("dir", Json::from(report.dir.display().to_string())),
-                        ("generation", Json::from(report.generation)),
-                        ("files", Json::from(report.files)),
-                        ("files_written", Json::from(report.written)),
-                        ("files_removed", Json::from(report.removed)),
-                        ("leftover_files", Json::arr(report.leftovers.iter().map(|f| Json::from(f.as_str())))),
-                        // Transient entities are never saved.
-                        ("entities", Json::from(self.world.persistent_len())),
-                        ("state_hash", Json::from(format!("{:016x}", self.world.state_hash()))),
-                    ])
-                    .to_pretty(),
-                )
-            }
-            Err(e) => {
-                if e.invalidates_cache() {
-                    self.saved = None;
-                }
-                ToolOutput::error(e.to_json().to_pretty())
-            }
-        }
-    }
-
     fn load(&mut self, may: write_policy::MayReplace, name: String, force: bool) -> ToolOutput {
+        // Saves asked for before this load are of the world it replaces: written first.
+        self.flush_world_saves();
         self.finish_autosave(true);
         // The outgoing world's task board is kept with it (a world without a folder can't keep one).
         self.save_board_now();
@@ -2778,13 +2728,6 @@ impl Engine {
                 t
             }
         })
-    }
-
-    fn save_capture(&self, extension: &str, bytes: &[u8]) -> Result<PathBuf, String> {
-        let path = self.capture_dir.join(format!("frame_{:05}.{extension}", self.frames_captured));
-        // Through the disk budget: refused (the image still comes back inline) below the floor.
-        disk::book().write(disk::Category::Captures, "sight", &path, bytes, disk::Need::Agent).map_err(|e| e.to_string())?;
-        Ok(path)
     }
 
     fn perf(&self, budget_ms: Option<f64>, graph: bool) -> ToolOutput {
@@ -2963,6 +2906,8 @@ impl Engine {
                 ("tools", authority::access_json()),
                 ("jobs", Json::arr(self.fly.get().map(jobs::Job::json).into_iter().chain(self.profiler.capture_job()))),
             ])),
+            // Work off the engine thread (docs/design/WORKERS.md): the pool and the step jobs.
+            ("workers", Json::obj([("pool", self.workers.to_json()), ("step_jobs", self.steps.to_json())])),
         ]);
         let mut info = info;
         if let Some(e) = &self.board_io.error {

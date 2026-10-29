@@ -868,7 +868,7 @@ struct CapturedFrame {
     dt_ms: f64,
 }
 
-struct PendingCapture {
+pub(crate) struct PendingCapture {
     spec: CaptureSpec,
     /// Reply by then whatever was recorded (the caller gives up soon after).
     deadline: Instant,
@@ -889,11 +889,13 @@ pub struct Profiler {
     /// The capture recording (one at a time, owned by the agent that started it; see `jobs`).
     capture: crate::jobs::Slot<PendingCapture>,
     captures: u32,
+    /// Captures that ended, waiting to be written on a worker.
+    finished: Vec<FinishedCapture>,
 }
 
 impl Profiler {
     pub fn new(history_frames: usize) -> Profiler {
-        Profiler { collector: Collector::new(history_frames), frame: 0, last_collect: Instant::now(), capture: crate::jobs::Slot::new(crate::jobs::Kind::PerfCapture), captures: 0 }
+        Profiler { collector: Collector::new(history_frames), frame: 0, last_collect: Instant::now(), capture: crate::jobs::Slot::new(crate::jobs::Kind::PerfCapture), captures: 0, finished: Vec::new() }
     }
 
     pub fn capturing(&self) -> bool {
@@ -964,17 +966,29 @@ impl Profiler {
         if done || now >= cap.deadline {
             let job = self.capture.take().expect("checked above");
             self.captures += 1;
-            finish_capture(job, self.captures, (!done).then_some("time_limit"));
+            end_capture_flags(&job.state);
+            // Written and answered on a worker (`Engine::pump_perf_writes`).
+            self.finished.push((job, self.captures, (!done).then_some("time_limit")));
         }
+    }
+
+    /// Captures that ended, to write and answer off the engine thread (review of 998af3d: a long
+    /// capture's files were written on it).
+    pub(crate) fn take_finished(&mut self) -> Vec<FinishedCapture> {
+        std::mem::take(&mut self.finished)
     }
 
     /// The engine is stopping: a capture in progress answers now with the frames it has (and
     /// drops its reply channel), so neither its caller nor the server's connection thread waits
     /// out the timeout.
     pub fn abort_capture(&mut self) {
+        for (job, n, s) in std::mem::take(&mut self.finished) {
+            write_capture(job, n, s);
+        }
         if let Some(job) = self.capture.take() {
             self.captures += 1;
-            finish_capture(job, self.captures, Some("shutting_down"));
+            end_capture_flags(&job.state);
+            write_capture(job, self.captures, Some("shutting_down"));
         }
     }
 
@@ -1134,15 +1148,22 @@ fn gpu_memory_json(s: &FrameStats) -> Json {
     ])
 }
 
-/// Writes a finished capture and answers its caller.
-fn finish_capture(job: crate::jobs::Job<PendingCapture>, n: u32, stopped_early: Option<&'static str>) {
-    let cap = &job.state;
+/// A capture that ended: the job, its number, and why it stopped early.
+pub(crate) type FinishedCapture = (crate::jobs::Job<PendingCapture>, u32, Option<&'static str>);
+
+/// Profiling back as it was before the capture (on the engine thread, the moment it ends).
+fn end_capture_flags(cap: &PendingCapture) {
     if cap.spec.trace {
         profile::set_tracing(false);
     }
     if cap.was_disabled {
         profile::set_enabled(false);
     }
+}
+
+/// Writes a finished capture and answers its caller (on a worker).
+pub(crate) fn write_capture(job: crate::jobs::Job<PendingCapture>, n: u32, stopped_early: Option<&'static str>) {
+    let cap = &job.state;
     let label = cap.spec.label.as_deref().map(|l| format!("-{l}")).unwrap_or_default();
     let base = cap.dir.join(format!("perf-capture-{n:03}{label}"));
     let data_path = base.with_extension("json");
@@ -1782,6 +1803,10 @@ gpu_ms_per_s = 2000
             }
             p.end_frame_with(slow_gpu);
         }
+        // The engine writes (and answers) finished captures on a worker.
+        for (job, n, stopped) in p.take_finished() {
+            write_capture(job, n, stopped);
+        }
         let reply = rx.try_recv().expect("answered after the last frame");
         let specula_protocol::Content::Text(text) = &reply.content[0] else { panic!("text reply") };
         let out = Json::parse(text).unwrap();
@@ -1806,6 +1831,9 @@ gpu_ms_per_s = 2000
         let (tx, rx) = crate::jobs::channel();
         p.start_capture(CaptureSpec { frames: 100, trace: false, label: None }, ann.clone(), tx, Instant::now(), ctx());
         p.end_frame_with(|| None);
+        for (job, n, stopped) in p.take_finished() {
+            write_capture(job, n, stopped);
+        }
         let reply = rx.try_recv().expect("answered at the deadline");
         let specula_protocol::Content::Text(text) = &reply.content[0] else { panic!("text reply") };
         let out = Json::parse(text).unwrap();

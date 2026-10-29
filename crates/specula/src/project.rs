@@ -599,6 +599,159 @@ pub struct DiskNote {
     pub message: String,
 }
 
+/// One path a sync looks at: where it is on disk, and what the store has (`None`: deleted).
+pub struct SyncItem {
+    path: String,
+    at: Option<(Mount, String)>,
+    file: Option<(FileKind, Arc<str>, u64)>,
+}
+
+/// A sync planned on the engine thread ([`Disk::sync_plan`]), run anywhere ([`SyncPlan::execute`]:
+/// the disk work, with the temporary file's `fsync`), applied on the engine thread
+/// ([`Disk::sync_apply`]). Stamps are written as each file is written (the watcher must never see
+/// the engine's own write as an outside edit), through the shared state.
+pub struct SyncPlan {
+    items: Vec<SyncItem>,
+    revision: u64,
+    shared: Arc<Shared>,
+}
+
+/// What a sync found and did at one path.
+#[derive(Debug)]
+pub enum Outcome {
+    /// The path isn't mounted any more (forgotten).
+    NotMounted,
+    /// Touched on disk with the same text (its new time is stamped).
+    Touched,
+    /// The disk was put back to the store's text: nothing to write, nothing held.
+    Restored,
+    /// Someone changed the file since it was last synced: their text, to import.
+    Raced(Arc<str>, Stamp),
+    /// The store deleted it and the disk no longer has it.
+    Gone,
+    /// It changed on disk into something that can't be mirrored: held.
+    Unreadable { len: u64, mtime: Option<SystemTime>, why: String },
+    /// Written (or deleted) as the store has it.
+    Written,
+    /// Written, but someone wrote it in the same moment: theirs, to import.
+    WriteRaced(Arc<str>, Stamp),
+    /// The write or delete failed (retried later).
+    Failed(String),
+}
+
+/// What [`SyncPlan::execute`] brings back.
+pub struct SyncDone {
+    revision: u64,
+    outcomes: Vec<(String, Outcome)>,
+    /// Paths found readable again (no longer held).
+    readable: Vec<String>,
+}
+
+impl SyncDone {
+    /// The paths it wrote or deleted.
+    pub fn paths(&self) -> impl Iterator<Item = &str> {
+        self.outcomes.iter().map(|(p, _)| p.as_str())
+    }
+}
+
+impl SyncPlan {
+    /// Paths it will look at.
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    /// The disk work: for each path, what changed on disk since it was last synced (theirs
+    /// comes in, nothing is lost), else the write or delete.
+    pub fn execute(self) -> SyncDone {
+        let shared = &self.shared;
+        let content = shared.content.get().map(|c| &**c);
+        let stamp = |path: &str, s: Stamp| {
+            shared.stamps.lock().unwrap_or_else(|p| p.into_inner()).insert(path.to_owned(), s);
+        };
+        let unstamp = |path: &str| {
+            shared.stamps.lock().unwrap_or_else(|p| p.into_inner()).remove(path);
+        };
+        let mut outcomes = Vec::with_capacity(self.items.len());
+        let mut readable = Vec::new();
+        for item in self.items {
+            let SyncItem { path, at, file } = item;
+            let Some((mount, rel)) = at else {
+                unstamp(&path);
+                outcomes.push((path, Outcome::NotMounted));
+                continue;
+            };
+            let disk = mount.disk_path(&rel);
+            // What changed on disk since it was last synced (Disk::refresh's rule).
+            let known = shared.stamps.lock().unwrap_or_else(|p| p.into_inner()).get(&path).copied();
+            let event = match (kind_for(mount.kind, &rel), stat(&disk), known) {
+                (None, _, _) | (_, None, None) => None,
+                (Some(_), None, Some(_)) => Some(Event::Removed { path: path.clone() }),
+                (Some(_), Some(meta), Some(s)) if s.same_file(meta) => None,
+                (Some(kind), Some(meta), _) => match read_entry(&disk, kind, content) {
+                    Ok((text, st)) if Some(st.hash) != known.map(|s| s.hash) => Some(Event::Changed { path: path.clone(), kind, text, stamp: st }),
+                    Ok((_, st)) => {
+                        // Touched, same text: remember the new time; readable again, so not held.
+                        readable.push(path.clone());
+                        stamp(&path, st);
+                        None
+                    }
+                    Err(why) => Some(Event::Unreadable { path: path.clone(), len: meta.0, mtime: meta.1, why }),
+                },
+            };
+            if let Some(event) = event {
+                let o = match event {
+                    Event::Changed { text, stamp: st, .. } => {
+                        if file.as_ref().is_some_and(|(_, _, hash)| *hash == st.hash) {
+                            stamp(&path, st);
+                            Outcome::Restored
+                        } else {
+                            Outcome::Raced(text, st)
+                        }
+                    }
+                    Event::Removed { .. } if file.is_none() => {
+                        unstamp(&path);
+                        Outcome::Gone
+                    }
+                    // Write it back (the store has it).
+                    Event::Removed { .. } => Outcome::Touched,
+                    Event::Unreadable { len, mtime, why, .. } => Outcome::Unreadable { len, mtime, why },
+                };
+                if !matches!(o, Outcome::Touched) {
+                    outcomes.push((path, o));
+                    continue;
+                }
+            }
+            let o = match &file {
+                Some((kind, text, _)) => match write_entry(&mount.root, &disk, *kind, text, content) {
+                    Ok((st, None)) => {
+                        stamp(&path, st);
+                        Outcome::Written
+                    }
+                    Ok((st, Some(theirs))) => Outcome::WriteRaced(theirs, st),
+                    Err(e) => Outcome::Failed(e),
+                },
+                None => match disk.parent().map_or(Ok(()), |d| check_inside(&mount.root, d)).map_err(std::io::Error::other).and_then(|()| std::fs::remove_file(&disk)) {
+                    Ok(()) => {
+                        unstamp(&path);
+                        Outcome::Written
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        unstamp(&path);
+                        Outcome::Written
+                    }
+                    Err(e) => Outcome::Failed(e.to_string()),
+                },
+            };
+            outcomes.push((path, o));
+        }
+        SyncDone { revision: self.revision, outcomes, readable }
+    }
+}
+
 /// What a sync did.
 #[derive(Debug, Default)]
 pub struct Synced {
@@ -765,92 +918,75 @@ impl Disk {
     /// isn't what was last synced (atomically), deletes files the store no longer has. A file
     /// changed on disk since it was last synced is never overwritten or deleted: it comes back
     /// in `raced`, to import (the human's edit wins; the store's version stays in the journal).
+    ///
+    /// All at once, on this thread: [`Disk::sync_plan`], [`SyncPlan::execute`] (the disk work,
+    /// which the engine runs on a worker) and [`Disk::sync_apply`].
     pub fn sync(&mut self, files: &BTreeMap<String, ProjectFile>, revision: u64) -> Synced {
-        let mut out = Synced::default();
+        let plan = self.sync_plan(files, revision);
+        let done = plan.execute();
+        self.sync_apply(done)
+    }
+
+    /// What a sync must look at (no disk access: stamps and mounts are in memory): files whose
+    /// text isn't what was last synced, and files the store no longer has.
+    pub fn sync_plan(&self, files: &BTreeMap<String, ProjectFile>, revision: u64) -> SyncPlan {
         let stamps = self.shared.stamps.lock().unwrap_or_else(|p| p.into_inner()).clone();
-        let mut work: Vec<(String, Option<&ProjectFile>)> = Vec::new();
+        let mut items: Vec<SyncItem> = Vec::new();
         for (path, f) in files {
             if stamps.get(path).map(|s| s.hash) != Some(f.hash) {
-                work.push((path.clone(), Some(f)));
+                items.push(SyncItem { path: path.clone(), at: self.locate(path), file: Some((f.kind, Arc::clone(&f.text), f.hash)) });
             }
         }
         for path in stamps.keys() {
             if !files.contains_key(path) {
-                work.push((path.clone(), None));
+                items.push(SyncItem { path: path.clone(), at: self.locate(path), file: None });
             }
         }
-        for (path, file) in work {
-            let Some((mount, rel)) = self.locate(&path) else {
-                self.unstamp(&path);
-                continue;
-            };
-            let disk = mount.disk_path(&rel);
-            // Someone changed the file since it was last synced: theirs comes in, nothing is lost.
-            if let Some(event) = self.refresh(&path) {
-                match event {
-                    Event::Changed { text, stamp, .. } => {
-                        if file.is_some_and(|f| f.hash == stamp.hash) {
-                            // The disk was put back to the store's text: nothing to write, nothing held.
-                            self.held.remove(&path);
-                            self.pending.remove(&path);
-                            self.stamp(&path, stamp);
-                        } else {
-                            out.raced.push((path.clone(), text, stamp));
-                        }
-                        continue;
-                    }
-                    Event::Removed { .. } if file.is_none() => {
-                        self.unstamp(&path);
-                        self.pending.remove(&path);
-                        out.changed.push(path);
-                        continue;
-                    }
-                    Event::Removed { .. } => {} // write it back (the store has it)
-                    Event::Unreadable { len, mtime, why, .. } => {
-                        let e = format!("disk_unreadable: the file on disk changed and can't be mirrored ({why}); it was not overwritten. Fix it on disk, or replace it with replace_unreadable: true (its bytes are backed up first)");
-                        self.held.insert(path.clone(), (len, mtime, why));
-                        self.pending.insert(path.clone(), e.clone());
-                        out.failed.push((path, e));
-                        continue;
-                    }
+        SyncPlan { items, revision, shared: Arc::clone(&self.shared) }
+    }
+
+    /// Applies what a sync found and did (see [`Outcome`]): pending writes, held files and what
+    /// changed, raced or failed.
+    pub fn sync_apply(&mut self, done: SyncDone) -> Synced {
+        let mut out = Synced::default();
+        for (path, o) in done.outcomes {
+            match o {
+                Outcome::NotMounted | Outcome::Touched => {}
+                Outcome::Restored => {
+                    self.held.remove(&path);
+                    self.pending.remove(&path);
+                }
+                Outcome::Raced(text, stamp) => out.raced.push((path, text, stamp)),
+                Outcome::Gone => {
+                    self.pending.remove(&path);
+                    out.changed.push(path);
+                }
+                Outcome::Unreadable { len, mtime, why } => {
+                    let e = format!("disk_unreadable: the file on disk changed and can't be mirrored ({why}); it was not overwritten. Fix it on disk, or replace it with replace_unreadable: true (its bytes are backed up first)");
+                    self.held.insert(path.clone(), (len, mtime, why));
+                    self.pending.insert(path.clone(), e.clone());
+                    out.failed.push((path, e));
+                }
+                Outcome::Written => {
+                    self.pending.remove(&path);
+                    out.changed.push(path);
+                }
+                Outcome::WriteRaced(theirs, stamp) => {
+                    self.pending.remove(&path);
+                    out.raced.push((path, theirs, stamp));
+                }
+                Outcome::Failed(e) => {
+                    self.pending.insert(path.clone(), e.clone());
+                    out.failed.push((path, e));
                 }
             }
-            match file {
-                Some(f) => match write_entry(&mount.root, &disk, f.kind, &f.text, self.content().map(|c| &**c)) {
-                    Ok((stamp, None)) => {
-                        self.stamp(&path, stamp);
-                        self.pending.remove(&path);
-                        out.changed.push(path);
-                    }
-                    Ok((stamp, Some(theirs))) => {
-                        self.pending.remove(&path);
-                        out.raced.push((path, theirs, stamp));
-                    }
-                    Err(e) => {
-                        self.pending.insert(path.clone(), e.clone());
-                        out.failed.push((path, e));
-                    }
-                },
-                None => match disk.parent().map_or(Ok(()), |d| check_inside(&mount.root, d)).map_err(std::io::Error::other).and_then(|()| std::fs::remove_file(&disk)) {
-                    Ok(()) => {
-                        self.unstamp(&path);
-                        self.pending.remove(&path);
-                        out.changed.push(path);
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        self.unstamp(&path);
-                        self.pending.remove(&path);
-                        out.changed.push(path);
-                    }
-                    Err(e) => {
-                        self.pending.insert(path.clone(), e.to_string());
-                        out.failed.push((path, e.to_string()));
-                    }
-                },
-            }
+        }
+        // Touched files are readable again (refresh's own rule).
+        for p in done.readable {
+            self.held.remove(&p);
         }
         if out.failed.is_empty() && out.raced.is_empty() {
-            self.synced_revision = revision;
+            self.synced_revision = done.revision;
         }
         out
     }

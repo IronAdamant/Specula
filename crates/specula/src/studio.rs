@@ -905,6 +905,17 @@ impl Engine {
         self.studio.queue.entry(job.session.clone()).or_default().push_back(job);
     }
 
+    /// Pins `build` on the GPU for a step job keyed `key` (a filmstrip rendering between frames:
+    /// the sync would drop an upload no entity wants). [`Engine::studio_done`] with the same key
+    /// lets it go after [`PIN_GRACE`].
+    pub(crate) fn pin_for_job(&mut self, key: u64, session: &str, build: u64) {
+        let pin = self.studio.pins.entry(key).or_insert_with(|| Pin { session: session.to_owned(), builds: BTreeSet::new(), last: Instant::now(), done: false });
+        pin.last = Instant::now();
+        if pin.builds.insert(build) {
+            self.studio_pins_changed();
+        }
+    }
+
     /// A call ended: its builds stay pinned for [`PIN_GRACE`], then go.
     pub(crate) fn studio_done(&mut self, call: u64) {
         if let Some(p) = self.studio.pins.get_mut(&call) {

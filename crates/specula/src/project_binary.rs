@@ -65,7 +65,7 @@ pub fn owner(tools: &Tools, session: &SessionInfo) -> Option<String> {
     if out.is_error {
         return None;
     }
-    rx.try_recv().ok().map(|key| format!("{key}\u{1f}{}", session.id))
+    rx.recv_timeout(crate::project_tools::DEFERRED_WAIT).ok().map(|key| format!("{key}\u{1f}{}", session.id))
 }
 
 fn problem(path: &str, code: &str, message: impl Into<String>) -> Problem {
@@ -384,7 +384,7 @@ fn commit_upload(tools: &Tools, session: &SessionInfo, store: &ContentStore, by:
         if out.is_error {
             return Ok(out);
         }
-        match rx.try_recv() {
+        match rx.recv_timeout(crate::project_tools::DEFERRED_WAIT) {
             Ok(Committed::Changed) => continue,
             Ok(Committed::Refused(e)) => {
                 let mut j = e.to_json();

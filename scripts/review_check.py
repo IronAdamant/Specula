@@ -275,8 +275,9 @@ def main():
         if hwnd:
             check(screenshot(hwnd, out / "review_screen_window.png"), "the real window shows the review screen (screenshot)")
             key(hwnd, 0x0D, 0x1C)  # Enter on the focused Approve
-            # Generous: a loaded machine (builds alongside) can take seconds to deliver a posted key.
-            got = wait_for(lambda: call(rev, "review_list", id=subs["b1_props"])["status"] != "pending", 30)
+            # Presses are no longer dropped by a re-layout between press and release (the review
+            # screen's layout hears the live pointer and held button), so a short wait does.
+            got = wait_for(lambda: call(rev, "review_list", id=subs["b1_props"])["status"] != "pending", 5)
             s1 = call(rev, "review_list", id=subs["b1_props"])
             check(s1["status"] == "approved" and s1["decision"]["by"] == "window:owner", f"Enter approved b1 as the window's owner ({s1['status']}, {s1.get('decision', {}).get('by')})")
             check(s1.get("decision", {}).get("promoted", {}).get("moved"), "the window's approval promoted b1 into /world/props")

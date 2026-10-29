@@ -164,6 +164,13 @@ fn selection(scopes: &Scopes, args: &Json) -> Result<Option<ToolSet>, ScopeError
 /// Every tool call comes through here (see the module docs).
 pub(crate) fn call(tools: &Tools, session: &SessionInfo, name: &str, args: &Json) -> ToolOutput {
     let scopes = tools.scopes();
+    // Every argument within its schema's limits before any parser sees it (tools_invoke's inner
+    // call comes back through here; see `bounds`).
+    if let Some(i) = scopes.catalog.index(name) {
+        if let Err(e) = crate::bounds::check_args(scopes.catalog.def(i), args) {
+            return e.to_output();
+        }
+    }
     match name {
         "tools_catalog" => return catalog(scopes, session, args),
         "tools_activate" => return activate(scopes, session, args),

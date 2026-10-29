@@ -736,7 +736,14 @@ impl ReviewUi {
                 let _ = if want { ui.show("review") } else { ui.hide("review") };
             }
             let view = viewport(ui, size);
-            ui.frame(self.idle.as_ref().expect("ensured"), &self.state, &view);
+            // The layout pass sees the pointer where it is and a held button still held: an input
+            // without a pointer read as "released, nowhere", and a press made in the frame before
+            // was dropped whenever a re-layout fell between the press and its release (the same
+            // race the gallery screen had).
+            let idle = self.idle.as_mut().expect("ensured");
+            let held = self.input.as_ref().map(|live| pointer_held(live, idle)).unwrap_or_default();
+            idle.update(self.started.elapsed().as_secs_f64(), &held, &[]);
+            ui.frame(idle, &self.state, &view);
             self.laid_out = if capture { None } else { Some(size) };
         }
         let ui = self.ui.as_mut().expect("ensured");
@@ -770,6 +777,37 @@ impl ReviewUi {
             }
         }
     }
+}
+
+/// What the layout-only input must hear so its pointer agrees with the live one: where the mouse
+/// is, and the left button going down or up to match.
+fn pointer_held(live: &Input, idle: &Input) -> Vec<Event> {
+    use specula_input::Source;
+    use specula_platform::{MouseButton, PointerKind};
+    let mut out = Vec::new();
+    // Touch contacts (F6: the port to phones keeps the screen usable): a finger still down stays
+    // down in the layout pass, one that lifted lifts there too (review of 998af3d, minor 5).
+    for t in live.touches() {
+        let (x, y) = (t.x as i32, t.y as i32);
+        match idle.touches().iter().find(|i| i.id == t.id) {
+            None => out.push(Event::PointerDown { id: t.id, kind: PointerKind::Touch, x, y }),
+            Some(i) if (i.x, i.y) != (t.x, t.y) => out.push(Event::PointerMove { id: t.id, kind: PointerKind::Touch, x, y }),
+            Some(_) => {}
+        }
+    }
+    for i in idle.touches().iter().filter(|i| !live.touches().iter().any(|t| t.id == i.id)) {
+        out.push(Event::PointerUp { id: i.id, kind: PointerKind::Touch, x: i.x as i32, y: i.y as i32 });
+    }
+    let Some(p) = live.pointer().filter(|p| p.kind == PointerKind::Mouse) else { return out };
+    let (x, y) = (p.x as i32, p.y as i32);
+    out.push(Event::MouseMove { x, y });
+    let left = Source::Mouse(MouseButton::Left);
+    match (live.source_held(left), idle.source_held(left)) {
+        (true, false) => out.push(Event::MouseDown { button: MouseButton::Left, x, y }),
+        (false, true) => out.push(Event::MouseUp { button: MouseButton::Left, x, y }),
+        _ => {}
+    }
+    out
 }
 
 fn s_id(shown: Option<u64>) -> u64 {
@@ -854,6 +892,73 @@ mod tests {
         assert!(!s.may_decide(&r), "it has only just appeared (and its capture isn't loaded)");
         s.close();
         assert!(!s.is_open());
+    }
+
+    /// The galleries lane's race, here too: a re-layout between a button's press and its release
+    /// (the overlay's, when anything changed) ran with an input that had no pointer, which the UI
+    /// read as "released, nowhere": the press was dropped. The layout pass now sees the pointer
+    /// and the held button.
+    #[test]
+    fn a_relayout_between_press_and_release_keeps_the_press() {
+        use specula_platform::MouseButton;
+        let r = review_with(2);
+        let mut s = test_ui();
+        s.open(None, &r);
+        s.frame(&[], &[], (1280, 800), &r);
+        s.frame(&[], &[], (1280, 800), &r);
+        let ui = s.ui.as_ref().unwrap();
+        let w = ui.widget("review", "rv_next").and_then(|w| ui.rect(w)).expect("the next button is laid out");
+        let (x, y) = ((w.x + w.w / 2.0) as i32, (w.y + w.h / 2.0) as i32);
+        assert_eq!(s.shown(), Some(1));
+        s.frame(&[Event::MouseMove { x, y }, Event::MouseDown { button: MouseButton::Left, x, y }], &[], (1280, 800), &r);
+        // Something changed: the overlay lays the screen out again before the release comes.
+        s.dirty = true;
+        let mut quads = Vec::new();
+        struct NoGpu;
+        impl OverlayTextures for NoGpu {
+            fn upload_texture(&mut self, _: u32, _: u32, _: TextureFormat, _: &[u8]) -> Result<TextureId, specula_gpu::GpuError> {
+                Ok(TextureId(1))
+            }
+            fn update_texture(&mut self, _: TextureId, _: u32, _: u32, _: u32, _: u32, _: &[u8]) -> Result<(), specula_gpu::GpuError> {
+                Ok(())
+            }
+            fn destroy_texture(&mut self, _: TextureId) {}
+        }
+        s.overlay(&mut NoGpu, (1280, 800), false, &r, 4096, &mut quads);
+        s.frame(&[Event::MouseUp { button: MouseButton::Left, x, y }], &[], (1280, 800), &r);
+        assert_eq!(s.shown(), Some(2), "the press survived the re-layout and Next paged on");
+    }
+
+    /// The same with a finger (F6, review of 998af3d minor 5): a touch held across a re-layout
+    /// still taps the button when it lifts.
+    #[test]
+    fn a_relayout_between_touch_down_and_up_keeps_the_tap() {
+        use specula_platform::PointerKind;
+        struct NoGpu;
+        impl OverlayTextures for NoGpu {
+            fn upload_texture(&mut self, _: u32, _: u32, _: TextureFormat, _: &[u8]) -> Result<TextureId, specula_gpu::GpuError> {
+                Ok(TextureId(1))
+            }
+            fn update_texture(&mut self, _: TextureId, _: u32, _: u32, _: u32, _: u32, _: &[u8]) -> Result<(), specula_gpu::GpuError> {
+                Ok(())
+            }
+            fn destroy_texture(&mut self, _: TextureId) {}
+        }
+        let r = review_with(2);
+        let mut s = test_ui();
+        s.open(None, &r);
+        s.frame(&[], &[], (1280, 800), &r);
+        s.frame(&[], &[], (1280, 800), &r);
+        let ui = s.ui.as_ref().unwrap();
+        let w = ui.widget("review", "rv_next").and_then(|w| ui.rect(w)).expect("the next button is laid out");
+        let (x, y) = ((w.x + w.w / 2.0) as i32, (w.y + w.h / 2.0) as i32);
+        assert_eq!(s.shown(), Some(1));
+        s.frame(&[Event::PointerDown { id: 7, kind: PointerKind::Touch, x, y }], &[], (1280, 800), &r);
+        s.dirty = true;
+        let mut quads = Vec::new();
+        s.overlay(&mut NoGpu, (1280, 800), false, &r, 4096, &mut quads);
+        s.frame(&[Event::PointerUp { id: 7, kind: PointerKind::Touch, x, y }], &[], (1280, 800), &r);
+        assert_eq!(s.shown(), Some(2), "the tap survived the re-layout and Next paged on");
     }
 
     #[test]
