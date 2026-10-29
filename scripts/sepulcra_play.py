@@ -21,6 +21,7 @@ the reference): the run must keep parity on every tick and the replay must reach
 Output (captures, packets, engine log, summary.json) goes to target/sepulcra-play/<adapter>/.
 Look at every PNG. Standard library only; keep output ASCII.
 """
+import os
 import argparse
 import json
 import sys
@@ -30,7 +31,7 @@ from pathlib import Path
 from specula_mcp import ROOT, Engine, detailed
 
 LAYOUT = ROOT / "games" / "sepulcra" / "data" / "layouts" / "centre.json"
-EXE = ROOT / "target" / "release" / ("sepulcra.exe" if sys.platform == "win32" else "sepulcra")
+EXE = Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target") / "release" / ("sepulcra.exe" if sys.platform == "win32" else "sepulcra")
 
 
 def to_args(entry):

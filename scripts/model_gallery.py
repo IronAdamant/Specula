@@ -16,6 +16,7 @@ Look at the PNGs before claiming anything about them.
 Usage: cargo build -p specula && python scripts/model_gallery.py [--port 7490] [--out DIR] [--adapter X]
 Needs a GPU (Vulkan); runs headless.
 """
+import os
 import argparse
 import json
 import math
@@ -117,7 +118,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--port", type=int, default=7490)
     ap.add_argument("--out", default=str(ROOT / "target" / "model-gallery"))
-    ap.add_argument("--exe", default=str(ROOT / "target" / "debug" / ("specula.exe" if sys.platform == "win32" else "specula")))
+    ap.add_argument("--exe", default=str(Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target") / "debug" / ("specula.exe" if sys.platform == "win32" else "specula")))
     ap.add_argument("--adapter", default=None)
     a = ap.parse_args()
     if a.port == 7471:

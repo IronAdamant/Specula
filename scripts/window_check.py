@@ -267,7 +267,8 @@ def check_adapter(exe, adapter, out, port, gpu_av=False, effects=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--exe", type=Path, default=ROOT / "target" / "debug" / "specula.exe")
+    # Honour CARGO_TARGET_DIR like the other checks, so a stale target/ build is never tested by mistake.
+    parser.add_argument("--exe", type=Path, default=Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target") / "debug" / "specula.exe")
     parser.add_argument("--adapters", default="all", help="'all' or comma-separated indices, e.g. 0,1")
     parser.add_argument("--out", type=Path, default=ROOT / "target" / "window-check")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"engine port (default {DEFAULT_PORT})")

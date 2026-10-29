@@ -13,6 +13,7 @@ Needs a GPU (Vulkan); runs headless.
 import argparse
 import base64
 import json
+import os
 import shutil
 import signal
 import subprocess
@@ -198,7 +199,8 @@ def build(m):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--exe", type=Path, default=ROOT / "target" / "debug" / "specula.exe")
+    # Honour CARGO_TARGET_DIR like the other checks, so a stale target/ build is never tested by mistake.
+    ap.add_argument("--exe", type=Path, default=Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target") / "debug" / "specula.exe")
     ap.add_argument("--port", type=int, default=7481)
     ap.add_argument("--out", type=Path, default=ROOT / "target" / "world-roundtrip")
     args = ap.parse_args()

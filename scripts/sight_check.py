@@ -15,6 +15,7 @@ Everything goes to target/sight-check/: one PNG and one JSON per call, plus summ
 at every PNG, and have the sight-skeptic check the claims, before calling a visual change good.
 Standard library only; output is ASCII.
 """
+import os
 import argparse
 import base64
 import json
@@ -86,7 +87,7 @@ def main():
     ap.add_argument("--port", type=int, default=7494)
     ap.add_argument("--windowed", action="store_true")
     ap.add_argument("--adapter", help="discrete, integrated or an index (the engine's --adapter)")
-    ap.add_argument("--exe", default=str(ROOT / "target" / "debug" / ("specula.exe" if sys.platform == "win32" else "specula")))
+    ap.add_argument("--exe", default=str(Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target") / "debug" / ("specula.exe" if sys.platform == "win32" else "specula")))
     args = ap.parse_args()
     if args.port == 7471:
         sys.exit("sight_check: never on 7471 (that's the engine you work in)")

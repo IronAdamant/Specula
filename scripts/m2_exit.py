@@ -41,6 +41,7 @@ Usage:
 
 Needs a GPU (Vulkan) and, for criterion 3, a desktop session (it opens a window for a few seconds).
 """
+import os
 import argparse
 import json
 import math
@@ -626,7 +627,7 @@ def main():
     ap.add_argument("--adapter", default="both", choices=["integrated", "discrete", "both"])
     ap.add_argument("--port", type=int, default=7484)
     ap.add_argument("--out", default=str(ROOT / "target" / "m2-exit"))
-    ap.add_argument("--exe", default=str(ROOT / "target" / "release" / EXE_NAME))
+    ap.add_argument("--exe", default=str(Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target") / "release" / EXE_NAME))
     ap.add_argument("--attach", type=int, default=None,
                     help="build criteria 1-2 in an already running engine on this port (for iterating on the scene)")
     ap.add_argument("--criteria", default="1,2,3", help="which criteria to run, e.g. 3 or 1,2 (default all)")

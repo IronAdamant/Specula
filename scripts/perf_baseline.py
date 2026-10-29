@@ -14,6 +14,7 @@ Usage:
   python scripts/perf_baseline.py --compare perf/baselines/<file>.json
 Results are JSON (schema specula.baseline/v1); the console summary is ASCII.
 """
+import os
 import argparse
 import ctypes
 import datetime
@@ -263,7 +264,7 @@ def main():
             measure_build(result["build"])
         else:
             subprocess.run(["cargo", "build", "-p", "specula", "--release", "-q"], cwd=ROOT, check=True)
-        exe = ROOT / "target" / "release" / ("specula.exe" if sys.platform == "win32" else "specula")
+        exe = Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target") / "release" / ("specula.exe" if sys.platform == "win32" else "specula")
     for name in args.adapters.split(","):
         print(f"engine: {name} ...")
         try:

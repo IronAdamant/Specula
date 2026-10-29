@@ -11,6 +11,7 @@ Usage: cargo build -p specula --release && python scripts/call_rate.py [--port 7
        [--adapter integrated] [--seconds 3] [--exe PATH] [--json OUT]
 Needs a GPU and (without --headless) a desktop session. Output is ASCII.
 """
+import os
 import argparse
 import http.client
 import json
@@ -106,7 +107,7 @@ def main():
     args = ap.parse_args()
     if args.port == 7471:
         sys.exit("never measure on 7471 (the interactive engine's port)")
-    exe = args.exe or ROOT / "target" / "release" / ("specula.exe" if sys.platform == "win32" else "specula")
+    exe = args.exe or Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target") / "release" / ("specula.exe" if sys.platform == "win32" else "specula")
     if not exe.exists():
         sys.exit(f"{exe} not found: cargo build -p specula --release")
     work = Path(tempfile.mkdtemp(prefix="specula-call-rate-"))

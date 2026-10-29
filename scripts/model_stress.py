@@ -8,6 +8,7 @@ Usage: cargo build -p specula --example model_stress && python scripts/model_str
        [--port 7492] [--count 500] [--headless] [--seconds 6] [--adapter integrated]
 Needs a GPU (Vulkan); opens a window unless --headless (game_frame and window numbers need one).
 """
+import os
 import argparse
 import json
 import sys
@@ -26,7 +27,7 @@ def main():
     ap.add_argument("--headless", action="store_true")
     ap.add_argument("--adapter", default=None)
     ap.add_argument("--out", default=str(ROOT / "target" / "model-stress"))
-    exe = ROOT / "target" / "debug" / "examples" / ("model_stress.exe" if sys.platform == "win32" else "model_stress")
+    exe = Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target") / "debug" / "examples" / ("model_stress.exe" if sys.platform == "win32" else "model_stress")
     ap.add_argument("--exe", default=str(exe))
     a = ap.parse_args()
     if a.port == 7471:

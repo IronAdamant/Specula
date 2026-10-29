@@ -447,7 +447,13 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     eprintln!("specula: captures in {}", engine.capture_dir.display());
     eprintln!("specula: model recipes under {}", assets.display());
     // The assets root's text files become project files (versioned, claimed, journaled).
+    // Mounting them moves the world's revision, but nothing a world file holds has changed, so a
+    // world that was clean before the mount stays clean (no false "unsaved changes" at start).
+    let clean = !engine.dirty();
     engine.project_mount_assets(assets.clone());
+    if clean {
+        engine.saved_revision = engine.world.revision();
+    }
 
     if let Some(g) = &game {
         engine.clock = Clock::new(g.tick_hz());

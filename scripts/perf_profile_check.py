@@ -13,6 +13,7 @@ Usage:
 Results go to target/perf-profile-check/<timestamp>/ (summary.json, engine log, capture files).
 Exit code 1 if a tool fails or a check does not hold. Output is ASCII.
 """
+import os
 import argparse
 import datetime
 import json
@@ -47,7 +48,7 @@ def main():
 
     if not args.skip_build:
         subprocess.run(["cargo", "build", "-p", "specula", "--release", "-q"], cwd=ROOT, check=True)
-    exe = ROOT / "target" / "release" / ("specula.exe" if sys.platform == "win32" else "specula")
+    exe = Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target") / "release" / ("specula.exe" if sys.platform == "win32" else "specula")
     out = ROOT / "target" / "perf-profile-check" / datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
     out.mkdir(parents=True, exist_ok=True)
     engine_args = ["--adapter", args.adapter, "--perf", str(args.perf), "--captures", str(out / "captures"),

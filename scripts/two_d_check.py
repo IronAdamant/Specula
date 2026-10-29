@@ -588,7 +588,7 @@ def run_adapter(exe, adapter, out, port, assets, windowed=False):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--exe", type=Path, default=ROOT / "target" / "debug" / "specula.exe")
+    p.add_argument("--exe", type=Path, default=Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target") / "debug" / "specula.exe")
     p.add_argument("--adapters", default="discrete,integrated", help="comma-separated: discrete, integrated or indices")
     p.add_argument("--out", type=Path, default=ROOT / "target" / "two-d-check")
     p.add_argument("--port", type=int, default=DEFAULT_PORT)
