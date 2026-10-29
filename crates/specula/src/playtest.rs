@@ -1266,7 +1266,7 @@ pub fn safe_path(root: &Path, rel: &str, write: bool) -> Result<PathBuf, String>
         return Ok(real);
     }
     let parent = full.parent().unwrap_or(&root).to_path_buf();
-    std::fs::create_dir_all(&parent).map_err(|e| format!("{rel}: {e}"))?;
+    crate::disk::book().make_dir(crate::disk::Category::Captures, &parent, crate::disk::Need::Agent).map_err(|e| format!("{rel}: {e}"))?;
     let real_parent = parent.canonicalize().map_err(|e| format!("{rel}: {e}"))?;
     inside(&real_parent)?;
     let target = real_parent.join(full.file_name().unwrap_or_default());

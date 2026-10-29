@@ -42,7 +42,7 @@ an entity) and look through them (or another agent's) with sight_frame {camera};
 contact sheet of one entity; sight_compare marks a 'before' and diffs the world against it later; sight_query \
 answers one entity's on-screen facts without an image. world_env sets the sun, ambient light, \
 background and tone mapping; window_view points the human's window. world_save / world_load keep the world in \
-text files. The game's text files (recipes, UI screens, sounds, style files, module sources) are project files: edit them with project_write / project_patch (validated, versioned, claimed as /project/<path>, journaled, undoable, hot-reloaded); edits made on disk are imported as the agent 'disk'. Say who you are with agent_hello. perf_frame reports GPU time per pass, draw counts, memory, \
+text files. The game's text files (recipes, UI screens, sounds, style files, module sources) are project files: edit them with project_write / project_patch (validated, versioned, claimed as /project/<path>, journaled, undoable, hot-reloaded); edits made on disk are imported as the agent 'disk'; binary assets (PNG textures, GLB models, WAV audio) go up with project_upload (chunked, resumable). The engine keeps a disk budget (disk_status): answers may carry a disk_warning, and writes are refused (disk_floor) when free space runs low. Say who you are with agent_hello. perf_frame reports GPU time per pass, draw counts, memory, \
 frame pacing and budget errors (budgets from perf.toml); perf_zones shows CPU time per engine phase, \
 perf_memory the heap, and perf_capture records frames to a file and a trace timeline; time_control pauses, steps or speeds up the simulation clock. \
 Model meshes stream onto the GPU within per-frame budgets (never changing the simulation): far cells draw as merged \
@@ -261,6 +261,11 @@ pub enum Command {
     Vfx(crate::vfx_tools::VfxCall),
     /// Project files (see [`crate::project_tools`]).
     Project(crate::project_tools::ProjectCall),
+    /// Whether the caller may force a prune (`disk_prune {free_mb}`: the lead only).
+    DiskGate,
+    /// Where a review's files may be (captures, the queue's evidence): for copying evidence on
+    /// the connection thread (see `evidence::prepare`).
+    ReviewRoots,
 }
 
 /// time_control's actions on the simulation clock.
@@ -345,6 +350,9 @@ pub struct Tools {
     studio: Option<std::sync::Arc<crate::studio::Shared>>,
     /// Every tool (built once) and each session's scope (see [`crate::toolscope`]).
     scopes: std::sync::Arc<crate::toolscope::Scopes>,
+    /// Binary project files' content store and the uploads in progress (see [`crate::blobs`]).
+    pub(crate) content: Option<std::sync::Arc<crate::blobs::ContentStore>>,
+    pub(crate) uploads: std::sync::Arc<crate::blobs::Uploads>,
 }
 
 impl Tools {
@@ -378,7 +386,15 @@ impl Tools {
             native_format,
             studio: None,
             scopes,
+            content: None,
+            uploads: Default::default(),
         }
+    }
+
+    /// The content store binary project files live in (project_upload, project_read bytes).
+    pub fn with_content(mut self, content: std::sync::Arc<crate::blobs::ContentStore>) -> Tools {
+        self.content = Some(content);
+        self
     }
 
     /// Sessions nobody configured list every tool (`--tools-default all`) instead of the core.
@@ -479,9 +495,10 @@ impl ToolHandler for Tools {
 
     fn call(&self, session: &SessionInfo, name: &str, arguments: &Json) -> ToolOutput {
         // Every answer leaves as compact JSON, every error as {error: code, message} (tokens and
-        // machine-readable codes, whoever built the answer). Scopes first (the cap, the
+        // machine-readable codes, whoever built the answer). A disk budget warning rides along once
+        // per session (in the answer to the write that crossed the line). Scopes first (the cap, the
         // catalog tools, agent_hello {tools}).
-        crate::response::tidy(crate::toolscope_tools::call(self, session, name, arguments))
+        crate::disk::book().annotate(&session.id, crate::response::tidy(crate::toolscope_tools::call(self, session, name, arguments)))
     }
 
     fn tools_for(&self, session: &SessionInfo) -> Vec<ToolDef> {
@@ -521,6 +538,7 @@ pub enum CallerThread {
     /// The `tools_*` tools (a session's tool list: see [`crate::toolscope_tools`]); answered
     /// before routing, in `ToolHandler::call`.
     Scope,
+    Disk,
 }
 
 impl CallerThread {
@@ -537,6 +555,7 @@ impl CallerThread {
             n if n.starts_with("procgen_") => CallerThread::Procgen,
             n if n.starts_with("balance_") => CallerThread::Balance,
             n if n.starts_with("tools_") => CallerThread::Scope,
+            n if n.starts_with("disk_") => CallerThread::Disk,
             _ => return None,
         })
     }
@@ -555,6 +574,7 @@ impl CallerThread {
             CallerThread::Scope => {
                 "tools_* tools change your session's tool list on your connection: activate before the playtest (its steps may call any tool within your cap, listed or not)"
             }
+            CallerThread::Disk => "disk_* tools read and prune the shared disk budget outside the engine thread: check disk use before or after the playtest",
         }
     }
 }
@@ -595,6 +615,17 @@ impl Tools {
         };
         let defaulted = if shaped.is_none() && self.native_format.iter().any(|t| t == name) { crate::response::with_default(arguments, default) } else { None };
         let arguments = shaped.as_ref().map(|(_, a)| a).or(defaulted.as_ref()).unwrap_or(arguments);
+        // Review evidence is copied here, on this connection's thread, never the engine's.
+        let prepared;
+        let arguments = if matches!(name, "review_submit" | "critique_add") {
+            prepared = match crate::evidence::prepare(self, session, name, arguments) {
+                Ok(a) => a,
+                Err(out) => return out,
+            };
+            &prepared
+        } else {
+            arguments
+        };
         let parsed = if self.game_tools.iter().any(|t| t.name == name) {
             Ok(Command::Game { name: name.to_owned(), args: arguments.clone() })
         } else {
@@ -610,6 +641,8 @@ impl Tools {
                 Some(CallerThread::Procgen) => return crate::procgen_tools::call(self, session, name, arguments),
                 // The balance lab runs simulations on this thread (and its workers), like lex_simulate.
                 Some(CallerThread::Balance) => return crate::balance_tools::call(self, session, name, arguments),
+                // The disk budget is shared: answered on this thread.
+                Some(CallerThread::Disk) => return crate::disk_tools::call(self, session, name, arguments),
                 // (Answered above.)
                 // tools_* reach here only from a caller that skipped `ToolHandler::call` (tests).
                 Some(CallerThread::LogicBuild | CallerThread::LogicReload | CallerThread::MergeSuggest | CallerThread::Scope) | None => parse(name, arguments),
@@ -2661,6 +2694,7 @@ fn definitions() -> Vec<ToolDef> {
     .chain(crate::playtest_engine::definitions())
     .chain(crate::lex_tools::definitions())
     .chain(crate::project_tools::definitions())
+    .chain(crate::disk_tools::definitions())
     .chain(crate::lex_live::definitions())
     .chain(crate::save_tools::definitions())
     .chain(crate::balance_tools::definitions())

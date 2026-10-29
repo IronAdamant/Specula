@@ -1,9 +1,9 @@
 # Design: project data through the protocol
 
-Status: designed and built 2026-10-18 (M3 lane "everything through the protocol", text project data). Foundations
+Status: designed and built 2026-10-18 (M3 lane "everything through the protocol", text project data); binary
+assets (images, models, audio) built 2026-10-29 (M4, see [Binary assets](#binary-assets)). Foundations
 **F1** (swarm-first), **F2** (determinism) and **F5** (humans optional, never locked out). Roadmap item: "Everything
-through the protocol" in the swarm track of [ROADMAP.md](../ROADMAP.md). Binary assets (images, models, audio) are
-M4, with the asset studio.
+through the protocol" in the swarm track of [ROADMAP.md](../ROADMAP.md).
 
 **Goal:** the text files a game is made of (model recipes, UI screens and themes, sound recipes, style files and
 module sources) get what world entities already have: **claims, versions, the journal, undo, the change feed and the
@@ -80,6 +80,9 @@ Only files of known kinds are mirrored; everything else on disk is left alone:
 | `rust` | `*.rs` under a module's `src/` | **`logic_build` only** (see below) | `build: true` on the write runs `logic_build` |
 | `cargo` | a module's `Cargo.toml` | `check_module_manifest` (a module's manifest only), then `logic_build` | as `rust` |
 | `json` | other `*.json` at a module's top level (`actions.json`) | JSON syntax | as `rust` |
+| `png` | `*.png` under a folder named `textures`, `images`, `references` or `icons` | decodes (at most 8192 a side, 32 M pixels) | models rebuild; the hosted game |
+| `glb`, `gltf` | `*.glb` / `*.gltf` under a folder named `models` | imports as `model_build` imports it (a `.gltf` must be self-contained) | models rebuild |
+| `wav` | `*.wav` under a folder named `audio` or `sounds` | parses | the hosted game |
 
 Scans skip hidden entries (names starting with `.`, which is also where the engine's temporary files go), symbolic
 links, and the folders `target`, `worlds`, `saves`, `captures`, `node_modules`; they go at most 8 folders deep and
@@ -226,6 +229,72 @@ history out. Diffs stay bounded too: JSON diffs match objects through a sorted i
 70,000-key object diffs in about 4 ms), and texts over 512 KiB are diffed by lines. Edits keep a file's own line
 endings (CRLF stays CRLF).
 
+## Binary assets
+
+Built 2026-10-29 (M4). Imported images (PNG), models (glTF/GLB) and audio (WAV) get what text files have: claims,
+versions, the journal, undo, conflict help, the change feed, disk sync and outside edits imported as `disk`. Code:
+`blobs.rs` (the content store and uploads), `project_binary.rs` (`project_upload`, binary reads, checks by kind).
+
+**The decision: pointers in the store, bytes in a content store.** A binary file's entry in the store is a small
+pointer text, `{"blob": "<32 hex>[-n]", "bytes": N}`, naming its bytes in the **content store** by content id (the
+bytes' 128-bit stable hash, and a slot in that hash's chain). Everything above works on the pointer unchanged: `Change::File` journals it (so the
+journal never holds megabytes), `world_undo` puts the earlier pointer back, replays reproduce the pointers byte for
+byte, conflict help diffs them. Only the disk sync looks through it: writing a binary file writes its bytes from the
+content store (atomically, read back and checked against the id); reading one from disk (a mount, an outside edit)
+puts its bytes in the content store and imports the pointer. 
+
+**Collisions.** The stable hash is fast, not cryptographic: a review built two different valid PNGs with the same
+hash in milliseconds (they are test data now, `crates/specula/tests/data/collide_*.png`). So content ids are two of
+`std`'s keyed hashes (`RandomState`: SipHash keyed from the OS's randomness, new each engine run), not the stable
+hash, which seeding alone didn't fix (the colliding pair still collided under other seeds): collisions can't be
+prepared offline. Content ids never leave their run (project files aren't in world files, save games or the world
+hash, and the journal isn't kept across runs). The id only finds a chain of slots (`<hash>`, `<hash>-1`, ...): a put searches the whole chain for exactly its bytes
+(reading only slots of the same length) before it takes a free slot, so a pruned slot never gives the same bytes a
+second id (at most 256 slots). Two contents never share a slot, a known collision never blocks
+another upload, and the disk sync compares bytes, never ids alone, when it decides a file on disk is the one it
+wrote. We chose this over the OS's SHA-256 (bcrypt through `dynlib`): byte comparison needs no cryptography and
+works the same on every platform, where SHA-256 would need another source off Windows. A read checks the bytes
+against the hash (`content_damaged`); a damaged slot is rewritten by the next put of content with that hash.
+
+**Which files.** Binary kinds are mirrored only under their folders (any folder on the way:
+`assets/textures/stone/wall.png`), so a working folder full of screenshots is never copied into the content store.
+
+**The content store** lives in the cache, one folder per engine run (`<cache>/content/run-<secs>-<pid>/`): the
+journal lives as long as its engine, so a finished run's folder is removed at the next start, and another running
+engine's is never touched. It holds what a current file, a kept journal entry or an upload in progress needs; the
+disk budget ([DISK.md](DISK.md)) counts it (`content`) and, over budget, asks it for bytes back: entries nothing
+needs, oldest use first, never one put in the last two minutes (an upload waiting for its commit).
+
+**Binary history has its own journal budget**: 1 GiB of content named by kept file changes (before and after),
+apart from the 64 MiB of file text. Past it the oldest binary changes are dropped like old texts (`too_old` on
+undo, `not_kept` on `project_read {version}`), and the content store may let their bytes go. So one agent uploading
+large textures never pushes text history or world history out, and the store never keeps more history than that.
+
+**Tools.**
+
+- `project_upload` writes one. Small files in one call (`{path, data}`, base64, up to 4 MiB). Larger ones in
+  chunks: `{path, bytes, crc32}` starts an upload (the whole file's size and CRC-32; admitted by the disk budget
+  up front), `{upload, offset, data}` sends chunks of up to 4 MiB (1 MiB suggested; `chunk_crc32` checks each),
+  `{upload, commit: true}` commits. A chunk must name its `offset`, the upload's `next_offset` (`bad_offset`
+  says where to resume; a chunk resent after a lost answer is refused, never appended twice); an interrupted
+  upload resumes with `{upload}`, which answers `next_offset`. An upload belongs to the agent that started it
+  (its identity: name and identity key), so it continues from any of that agent's sessions, a resumed one
+  included, and no other agent can see, continue, commit or abort it. Ownership goes by the identity key (an upload
+  started before `agent_hello`, under the session id, stays its connection's after the hello). Before anything changes, the whole file's CRC-32 must match and it is checked by kind (`invalid` with
+  problems otherwise); then it is committed like `project_write` (claims, `expect_version`, `stale_version` with
+  both content ids, the journal, disk, hot reload). A refused commit leaves the upload open to retry or `abort`.
+  Bounds: 32 MiB per file, 1 GiB of binary files in the store, 16 uploads open (4 per session), an idle one goes
+  after 15 minutes.
+- `project_read` of a binary file answers metadata: kind, version, bytes, content id, and `info` (an image's size;
+  audio's rate, channels, frames and seconds; a model's nodes, meshes, primitives, skins, animations, materials) or
+  `problems`. The check runs once per content (kept for the last 256), never on every read; a PNG's check peaks
+  at about 384 MiB at the largest size (8192 x 4096), one at a time. `bytes: true` or `offset` / `length` return up to 192 KiB of its bytes as base64 with their CRC-32
+  and `next_offset`; `version` reads an earlier version's bytes while kept.
+- `project_list` lists binary files with their byte size; `project_delete` removes one (undoable);
+  `project_write` and `project_patch` refuse them (`binary_file`).
+- Models built from an uploaded GLB load through the existing model paths (`model_build {recipe:
+  "models/x.glb"}`, `world_spawn {shape: "model", recipe}`); a committed PNG, GLB or glTF rebuilds models that use it.
+
 ## Proof
 
 `python scripts/project_check.py --window --adapter integrated` runs Sepulcra on a scratch copy of its assets and
@@ -254,5 +323,4 @@ it. Every handle of a changed recipe now rebuilds (`models.rs`, with a test).
 
 - Validating module sources before commit (a shadow copy of the crate checked with `cargo check`).
 - Suggested three-way merges (M4, conflict help).
-- Binary assets (M4): the same store and journal, with content-addressed blobs instead of text.
 - Anim sets' schema (the anim lane), game data files other than Lex.

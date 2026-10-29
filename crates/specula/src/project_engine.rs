@@ -77,6 +77,11 @@ impl Engine {
                 let _ = reply.send(texts);
                 ToolOutput::text("{}")
             }
+            ProjectCall::Owner { reply } => {
+                // The identity key alone: a name given (or changed) by agent_hello later keeps them.
+                let _ = reply.send(w.session.unwrap_or(w.name).to_owned());
+                ToolOutput::text("{}")
+            }
             ProjectCall::CommitFixes { files, reply } => {
                 let done = self.project_commit_fixes(files, w, by);
                 let _ = reply.send(done);
@@ -162,6 +167,25 @@ impl Engine {
                 if let Err(e) = project::room_for(self.world.files(), path, text.len()) {
                     return Committed::Refused(e);
                 }
+                // Binary files: their bytes must be in the content store, within the store's bound.
+                let disk_bytes = if kind.is_binary() {
+                    let Some((id, bytes)) = crate::blobs::parse_pointer(&text) else {
+                        return Committed::Refused(WorldError::new("not_a_pointer", format!("{path} is a binary file: write it with project_upload")).with("path", path));
+                    };
+                    if !self.content.as_ref().is_some_and(|c| c.has(id)) {
+                        return Committed::Refused(WorldError::new("not_kept", format!("{path}: its content {} isn't in the content store; upload it again", id.hex())).with("path", path));
+                    }
+                    if let Err(e) = project::room_for_binary(self.world.files(), path, bytes) {
+                        return Committed::Refused(e);
+                    }
+                    bytes
+                } else {
+                    text.len() as u64
+                };
+                // Through the disk budget: refused below the free-space floor before anything changes.
+                if let Err(e) = crate::disk::book().admit(crate::disk::Category::Project, disk_bytes, crate::disk::Need::Agent) {
+                    return Committed::Refused(e.to_world());
+                }
                 if cur.is_none() {
                     // One file on Windows (which folds case in Unicode): refuse a second spelling
                     // everywhere, so projects stay portable.
@@ -187,7 +211,7 @@ impl Engine {
                 let version = self.world.files().get(path).map(|f| f.version);
                 let mut j = vec![("path", Json::from(path)), ("version", Json::from(version)), ("journal", Json::from(seq))];
                 if let Some(f) = self.world.files().get(path) {
-                    j.push(("bytes", Json::from(f.text.len())));
+                    j.push(("bytes", Json::from(if f.kind.is_binary() { project::binary_bytes(f) } else { f.text.len() as u64 })));
                 } else {
                     j.push(("deleted", Json::Bool(true)));
                 }
@@ -243,7 +267,8 @@ impl Engine {
                 next = page.last().and_then(|j: &Json| j.get("path")).and_then(Json::as_str).map(str::to_owned);
                 break;
             }
-            let mut item = vec![("path", Json::from(p.as_str())), ("kind", Json::from(f.kind.name())), ("version", Json::from(f.version)), ("bytes", Json::from(f.text.len())), ("by", Json::from(&*f.modified_by))];
+            let size = if f.kind.is_binary() { project::binary_bytes(f) } else { f.text.len() as u64 };
+            let mut item = vec![("path", Json::from(p.as_str())), ("kind", Json::from(f.kind.name())), ("version", Json::from(f.version)), ("bytes", Json::from(size)), ("by", Json::from(&*f.modified_by))];
             if self.project.pending.contains_key(p) {
                 item.push(("disk", Json::from("pending")));
             }
@@ -478,7 +503,12 @@ impl Engine {
                         self.project.stamp(&path, stamp);
                         continue;
                     }
-                    if let Err(e) = project::room_for(self.world.files(), &path, text.len()) {
+                    let room = if kind.is_binary() {
+                        project::room_for_binary(self.world.files(), &path, crate::blobs::parse_pointer(&text).map_or(0, |(_, b)| b))
+                    } else {
+                        project::room_for(self.world.files(), &path, text.len())
+                    };
+                    if let Err(e) = room {
                         self.project.note_conflict(&path, format!("changed on disk but not mirrored: {}", e.message));
                         continue;
                     }
@@ -573,7 +603,7 @@ impl Engine {
             return done;
         }
         let assets: Vec<String> = changed.iter().filter_map(|p| p.strip_prefix("assets/")).map(str::to_owned).collect();
-        if assets.iter().any(|r| matches!(project::kind_for(MountKind::Assets, r), Some(FileKind::Recipe | FileKind::Style | FileKind::AnimSet))) {
+        if assets.iter().any(|r| matches!(project::kind_for(MountKind::Assets, r), Some(FileKind::Recipe | FileKind::Style | FileKind::AnimSet | FileKind::Glb | FileKind::Gltf | FileKind::Png))) {
             self.poll_assets(true);
             done.push("models");
         }
@@ -833,6 +863,44 @@ mod tests {
         assert_eq!(w.file_version_floor("assets/zzz_first.json"), 7);
         made(&mut w, "assets/b.json", 9);
         assert_eq!(w.file_version_floor("assets/a00001.json"), 7, "a00000 went next (v2): the floor stays 7");
+    }
+
+    /// Binary files: the journal holds pointers, never bytes; their history has its own budget
+    /// (past it the oldest binary changes can't be undone, and the content store may let their
+    /// bytes go: `blob_pointers` stops naming them); undo puts the earlier pointer back.
+    #[test]
+    fn binary_history_has_its_own_budget() {
+        use crate::blobs::{parse_pointer, pointer, BlobId};
+        let s1 = session("aaaaaa11");
+        let mut sw = Swarm::default();
+        let mut w = World::default();
+        w.set_recording(Recording::Full);
+        sw.hello(&s1, "ann".into(), "builder".into(), None, std::slice::from_ref(&s1)).unwrap();
+        let k1 = sw.key(&s1);
+        let ann = Writer::new("ann", Some(&k1));
+        sw.journal_for_test().set_blob_budget(3 << 20);
+        let p = "assets/textures/t.png";
+        let mut seqs = Vec::new();
+        for v in 1..=4u64 {
+            let text = pointer(BlobId(v, v, 0), 1 << 20);
+            let (_, seq) = sw
+                .commit_project(&mut w, v, ann, |wd| {
+                    wd.put_file_raw(p, Some(ProjectFile::new(FileKind::Png, Arc::from(text), v, Arc::from("ann"))), false);
+                    Ok(())
+                })
+                .unwrap();
+            seqs.push(seq.unwrap());
+        }
+        let (held, budget) = sw.journal().file_blobs();
+        assert!(held <= budget, "{held} > {budget}");
+        assert!(sw.journal().file_text().0 < 4096, "the journal holds pointers, not bytes");
+        let named: Vec<BlobId> = sw.journal().blob_pointers().iter().filter_map(|t| parse_pointer(t)).map(|(id, _)| id).collect();
+        assert!(!named.contains(&BlobId(1, 1, 0)), "the oldest content is no longer needed: {named:?}");
+        let e = sw.undo(&mut w, 9, ann, &UndoRequest { ids: Some(vec![seqs[0]]), count: 1, force: true }).unwrap_err();
+        assert_eq!(e.code, "too_old");
+        sw.undo(&mut w, 10, ann, &UndoRequest { ids: None, count: 1, force: false }).unwrap();
+        assert_eq!(parse_pointer(&w.files()[p].text).map(|(id, _)| id), Some(BlobId(3, 3, 0)), "undo restores the earlier content");
+        assert_eq!(sw.journal().replay().unwrap().files(), w.files(), "replays reproduce the pointers");
     }
 
     /// Review finding: `logic_build {fix: true}` wrote a mounted module's sources past other

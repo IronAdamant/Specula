@@ -2091,10 +2091,10 @@ impl Ctx<'_> {
 #[allow(clippy::too_many_arguments)]
 fn encode_and_save(dir: &Path, frame: u64, w: u32, h: u32, rgba: &[u8], mut packet: Json, mut answer: Json, with_image: bool) -> ToolOutput {
     let png_bytes = png::encode_rgba8(w, h, rgba, Level::Fastest);
-    let png_path = std::fs::create_dir_all(dir).map_err(|e| e.to_string()).and_then(|()| {
+    let png_path = {
         let p = dir.join(format!("studio_{frame:05}.png"));
-        std::fs::write(&p, &png_bytes).map(|()| p).map_err(|e| e.to_string())
-    });
+        crate::disk::book().write(crate::disk::Category::Captures, "studio", &p, &png_bytes, crate::disk::Need::Agent).map(|()| p).map_err(|e| e.to_string())
+    };
     let mut warnings = Vec::new();
     if let Err(e) = &png_path {
         warnings.push(Json::from(format!("capture not saved to disk: {e}")));
@@ -2111,7 +2111,7 @@ fn encode_and_save(dir: &Path, frame: u64, w: u32, h: u32, rgba: &[u8], mut pack
     packet.set("image", image.clone());
     packet.set("frame", Json::from(frame));
     if let Some(p) = &packet_path {
-        if let Err(e) = std::fs::write(p, packet.to_pretty()) {
+        if let Err(e) = crate::disk::book().write(crate::disk::Category::Captures, "studio", p, packet.to_pretty().as_bytes(), crate::disk::Need::Agent) {
             warnings.push(Json::from(format!("packet not saved to disk: {e}")));
         }
     }

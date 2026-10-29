@@ -203,6 +203,7 @@ def main():
 
         # -- builders: take their task, stage, capture, submit --
         subs = {}
+        sheets = {}
         for i, (m, name) in enumerate(((b1, "b1_props"), (b2, "b2_props"), (b3, "b3_props"))):
             mine = call(m, "task_list", ready_for_me=True, tag="role:builder")["tasks"]
             check(len(mine) == 1, f"{name}: one builder task is ready for its agent")
@@ -218,6 +219,7 @@ def main():
                              {"kind": "taste", "name": "silhouette_distinct", "passed": i != 1, "severity": "warning", "metric": "silhouette_iou",
                               "value": 0.81 if i == 1 else 0.42, "limit": 0.75}])
             subs[name] = s["id"]
+            sheets[name] = png
             check(s["status"] == "pending" and s.get("task") == mine[0]["id"], f"{name}: submitted as #{s['id']} for task {s.get('task')}")
             if name != "b3_props":
                 call(m, "claim_release", id=claim["id"])
@@ -237,7 +239,7 @@ def main():
         # -- critiques --
         crit = call(sk, "critique_add", items=[
             {"text": "The brazier's rim reads flat against the slab at gameplay distance", "severity": "warning", "source": "sight-skeptic",
-             "capture": str(out / "sheet_b1_props.png"), "metric": {"name": "rim_contrast", "value": 0.08, "limit": 0.15},
+             "capture": sheets["b1_props"], "metric": {"name": "rim_contrast", "value": 0.08, "limit": 0.15},
              "path": "/staging/b1_props", "submission": subs["b1_props"]},
             {"text": "The obelisk is 24 m tall: three times the prop range", "severity": "error", "source": "sight-skeptic",
              "submission": subs["b2_extra"], "path": "/staging/b2_extra"}])

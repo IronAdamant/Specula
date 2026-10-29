@@ -43,6 +43,8 @@ CLAUDE.local.md
 
 # Held by a running engine that owns a world folder
 worlds/*/world.lock
+# An unsaved world's review evidence (this run's; removed once the run is gone)
+worlds/.review-unsaved-*/
 
 # Full-size originals behind docs/gallery thumbnails (scripts/gallery.py), local only
 /gallery-full/

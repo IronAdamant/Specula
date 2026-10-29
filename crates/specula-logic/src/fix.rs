@@ -32,7 +32,7 @@ pub fn apply(diagnostics: &[Diagnostic], root: &Path) -> Result<Vec<Applied>, Fi
     let read = &mut |file: &Path| std::fs::read_to_string(file).map_err(|e| FixError { code: "read_failed", file: file.to_owned(), message: e.to_string() });
     let mut applied = Vec::new();
     for p in plan(diagnostics, root, read)? {
-        std::fs::write(&p.file, &p.text).map_err(|e| FixError { code: "write_failed", file: p.file.clone(), message: e.to_string() })?;
+        crate::disk::write(crate::disk::Kind::Project, &p.file, p.text.as_bytes(), false).map_err(|e| FixError { code: "write_failed", file: p.file.clone(), message: e.to_string() })?;
         applied.extend(p.applied);
     }
     Ok(applied)

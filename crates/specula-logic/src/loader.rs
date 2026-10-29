@@ -113,17 +113,17 @@ impl ModuleCode {
         if !cfg!(windows) {
             return Err(LoadError::new("unsupported", path, "loading module libraries is not implemented on this platform yet"));
         }
-        std::fs::create_dir_all(copies_dir)
+        crate::disk::make_dir(crate::disk::Kind::Modules, copies_dir)
             .map_err(|e| LoadError::new("copy_failed", copies_dir, format!("cannot create the copies folder: {e}")))?;
         sweep_stale_copies(copies_dir);
         let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("module");
         let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("dll");
         let n = COPIES.fetch_add(1, Ordering::Relaxed);
         let copy = copies_dir.join(format!("{stem}-{}-{n}.{ext}", std::process::id()));
-        std::fs::write(&copy, &bytes).map_err(|e| LoadError::new("copy_failed", &copy, format!("cannot write the copy: {e}")))?;
+        crate::disk::write(crate::disk::Kind::Modules, &copy, &bytes, false).map_err(|e| LoadError::new("copy_failed", &copy, format!("cannot write the copy: {e}")))?;
         let build_hash = build_hash_of(&bytes);
         let fail = |e: LoadError| {
-            let _ = std::fs::remove_file(&copy);
+            let _ = crate::disk::remove_file(crate::disk::Kind::Modules, &copy);
             e
         };
         let copy_str = copy.to_str().ok_or_else(|| fail(LoadError::new("copy_failed", &copy, "the copy's path is not UTF-8")))?;
@@ -257,7 +257,7 @@ impl Drop for ModuleCode {
         // Unload first: Windows won't delete a loaded library's file.
         self.lib = None;
         if let Some(copy) = self.copy.take() {
-            let _ = std::fs::remove_file(copy);
+            let _ = crate::disk::remove_file(crate::disk::Kind::Modules, &copy);
         }
     }
 }
@@ -351,7 +351,7 @@ fn sweep_stale_copies(dir: &Path) {
         let (_n, pid) = (parts.next(), parts.next().and_then(|p| p.parse::<u32>().ok()));
         if let Some(pid) = pid {
             if pid != me && !specula_sys::process_is_running(pid) {
-                let _ = std::fs::remove_file(e.path());
+                let _ = crate::disk::remove_file(crate::disk::Kind::Modules, &e.path());
             }
         }
     }

@@ -1343,8 +1343,10 @@ fn export_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<Tool
             }
             None => {
                 let path = dir.join(format!("lex_{set}_{:04}.lex.json", written.len() + 1));
-                if let Err(e) = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&path, &text)) {
-                    return Ok(err_with("io", format!("could not write {}: {e}", path.display()), vec![("file", Json::from(path.display().to_string()))]));
+                if let Err(e) = crate::disk::book().write(crate::disk::Category::Captures, "lex", &path, text.as_bytes(), crate::disk::Need::Agent) {
+                    let mut fields = e.detail.clone();
+                    fields.push(("file", Json::from(path.display().to_string())));
+                    return Ok(err_with(e.code, e.message, fields));
                 }
                 written.insert(hash, path.clone());
                 path

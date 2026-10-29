@@ -961,7 +961,7 @@ impl Engine {
             packet.set("flash", r.flash.clone());
         }
         if let Some(path) = &packet_path {
-            if let Err(e) = std::fs::write(path, packet.to_pretty()) {
+            if let Err(e) = crate::disk::book().write(crate::disk::Category::Captures, "sight", path, packet.to_pretty().as_bytes(), crate::disk::Need::Agent) {
                 warnings.push(Json::from(format!("packet not saved to disk: {e}")));
                 packet.set("warnings", Json::Arr(warnings));
             }
@@ -1284,7 +1284,7 @@ impl Engine {
 /// Writes a packet next to its PNG; when that fails, the packet says so (and has no path).
 fn save_packet(packet: &mut Json, path: Option<&PathBuf>) {
     let Some(path) = path else { return };
-    if let Err(e) = std::fs::write(path, packet.to_pretty()) {
+    if let Err(e) = crate::disk::book().write(crate::disk::Category::Captures, "sight", path, packet.to_pretty().as_bytes(), crate::disk::Need::Agent) {
         let mut warnings = packet.get("warnings").and_then(Json::as_array).map(<[Json]>::to_vec).unwrap_or_default();
         warnings.push(Json::from(format!("packet not saved to disk: {e}")));
         packet.set("warnings", Json::Arr(warnings));

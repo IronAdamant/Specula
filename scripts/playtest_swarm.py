@@ -226,7 +226,7 @@ class Swarm:
                     lead.json("task_done", id=took["id"], summary=summary[:200])
                     self.log(f"  {name}: {pt_name}: {'PASS' if res['passed'] else 'FAIL'} ({summary})")
             finally:
-                lead.json("lease_release", all=True, delete=not self.keep_scratch)
+                lead.json("lease_release", all=True, **({"keep": True} if self.keep_scratch else {"delete": True}))
 
     def run(self, specs):
         """specs: {name: spec}. Returns the report (also written to out/report.json)."""

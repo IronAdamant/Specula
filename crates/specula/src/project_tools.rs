@@ -56,6 +56,8 @@ pub enum ProjectCall {
     /// A fix build's fixed texts `(path, version, hash it was worked out from, new text)`,
     /// committed as the caller's change; files changed since are skipped.
     CommitFixes { files: Vec<(String, u64, u64, String)>, reply: Sender<FixesCommitted> },
+    /// Who the caller is (its identity key): uploads belong to it.
+    Owner { reply: Sender<String> },
 }
 
 /// One mounted module file (see [`ProjectCall::ModuleTexts`]).
@@ -85,7 +87,7 @@ impl ProjectCall {
     pub fn class(&self) -> Class {
         match self {
             ProjectCall::List { .. } | ProjectCall::Snapshot { .. } => Class::Read,
-            ProjectCall::FixGate { .. } | ProjectCall::ModuleTexts { .. } => Class::Read,
+            ProjectCall::FixGate { .. } | ProjectCall::ModuleTexts { .. } | ProjectCall::Owner { .. } => Class::Read,
             ProjectCall::Commit { .. } | ProjectCall::Mount { .. } | ProjectCall::CommitFixes { .. } => Class::Disk,
         }
     }
@@ -135,12 +137,13 @@ pub fn call(tools: &Tools, session: &SessionInfo, name: &str, args: &Json) -> To
         "project_patch" => edit_tool(tools, session, args, "project_patch"),
         "project_delete" => edit_tool(tools, session, args, "project_delete"),
         "project_mount" => mount_tool(tools, session, args),
+        "project_upload" => crate::project_binary::upload_tool(tools, session, args),
         other => Err(format!("unknown project tool '{other}'")),
     };
     out.unwrap_or_else(|m| ToolOutput::error(argument_error(&m).to_string()))
 }
 
-fn path_arg(args: &Json) -> Result<String, String> {
+pub(crate) fn path_arg(args: &Json) -> Result<String, String> {
     let p = string_arg(args, "path")?.ok_or("'path' is required: a project path like \"assets/ui/hud.json\" (project_list shows them)")?;
     Ok(p.trim_start_matches('/').strip_prefix("project/").unwrap_or(p.trim_start_matches('/')).to_owned())
 }
@@ -155,7 +158,7 @@ fn uint(args: &Json, key: &str, lo: u64, hi: u64) -> Result<Option<u64>, String>
     }
 }
 
-fn snapshot(tools: &Tools, session: &SessionInfo, path: &str, version: Option<u64>, context: bool) -> Result<Snap, ToolOutput> {
+pub(crate) fn snapshot(tools: &Tools, session: &SessionInfo, path: &str, version: Option<u64>, context: bool) -> Result<Snap, ToolOutput> {
     let (tx, rx) = mpsc::channel();
     let out = tools.send(session, Command::Project(ProjectCall::Snapshot { path: path.to_owned(), version, context, reply: tx }));
     if out.is_error {
@@ -187,7 +190,7 @@ fn problems_json(problems: &[Problem]) -> Json {
 }
 
 fn read_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<ToolOutput, String> {
-    check_keys(args, "project_read", &[&["path", "version", "from_line", "to_line", "json_path", "problems"]])?;
+    check_keys(args, "project_read", &[&["path", "version", "from_line", "to_line", "json_path", "problems", "bytes", "offset", "length"]])?;
     let path = path_arg(args)?;
     let version = uint(args, "version", 1, u64::MAX >> 11)?;
     let from = uint(args, "from_line", 1, u32::MAX as u64)?.unwrap_or(1) as usize;
@@ -205,6 +208,13 @@ fn read_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<ToolOu
         }
         return Ok(ToolOutput::error(j.to_string()));
     };
+    // Binary files: metadata (and bytes on request) from the content store.
+    if cur.kind.is_binary() {
+        return crate::project_binary::read(tools, &path, &snap, version, args);
+    }
+    if args.get("bytes").is_some() || args.get("offset").is_some() || args.get("length").is_some() {
+        return Err(format!("'bytes', 'offset' and 'length' read binary files; {path} is a {} file (text): use from_line / to_line", cur.kind.name()));
+    }
     let (body, shown_version): (Arc<str>, u64) = match version {
         Some(v) if v != cur.version => match &snap.at_version {
             Some(t) => (Arc::clone(t), v),
@@ -523,6 +533,9 @@ fn edit_tool(tools: &Tools, session: &SessionInfo, args: &Json, tool: &'static s
         let Some(kind) = snap.kind else {
             return Ok(err("not_mirrored", format!("{path} isn't a project file: project files are recipes, ui screens and themes, sounds, anim sets and style files under assets/, and module sources under modules/<name>/ (project_list shows the mounts)")));
         };
+        if kind.is_binary() && tool != "project_delete" {
+            return Ok(err("binary_file", format!("{path} is a binary {} file: write it with project_upload (project_read shows it; project_delete removes it)", kind.name())));
+        }
         let current_version = snap.current.as_ref().map_or(0, |f| f.version);
         let current_hash = snap.current.as_ref().map_or(0, |f| f.hash);
         if let Some(e) = expect {
@@ -684,7 +697,7 @@ pub fn definitions() -> Vec<ToolDef> {
             input_schema: obj(
                 vec![
                     ("prefix", t("string", "Only paths starting with this, e.g. \"assets/ui/\".")),
-                    ("kind", t("string", "Only this kind: recipe, style, style_rules, ui_screen, ui_theme, sound, anim_set, rust, cargo, json.")),
+                    ("kind", t("string", "Only this kind: recipe, style, style_rules, ui_screen, ui_theme, sound, anim_set, rust, cargo, json; binary: png, glb, gltf, wav.")),
                     ("cursor", t("string", "next_cursor from the previous page.")),
                     ("limit", t("integer", "Files per page, 1..500 (default 200).")),
                 ],
@@ -693,7 +706,7 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "project_read".into(),
-            description: "A project file's text and version (pass the version to a write as expect_version). At most 64 KiB per call: from_line/to_line pick lines, next_line continues. json_path returns one value of a JSON file (\"parts[1].shape\"). version reads an earlier version from the journal. 'problems' says what validation finds now (the same checks a write runs).".into(),
+            description: "A project file's text and version (pass the version to a write as expect_version). At most 64 KiB per call: from_line/to_line pick lines, next_line continues. json_path returns one value of a JSON file (\"parts[1].shape\"). version reads an earlier version from the journal. 'problems' says what validation finds now (the same checks a write runs). Binary files (png, glb, gltf, wav) answer metadata (bytes, content id, and 'info': image size, audio rate and length, model counts); bytes: true or offset/length return up to 192 KiB of their bytes as base64 (next_offset continues).".into(),
             input_schema: obj(
                 vec![
                     ("path", path()),
@@ -702,6 +715,9 @@ pub fn definitions() -> Vec<ToolDef> {
                     ("to_line", t("integer", "Last line (inclusive).")),
                     ("json_path", t("string", "Just this value, e.g. \"root.children[2].text\".")),
                     ("problems", t("boolean", "Validate and list problems (default true).")),
+                    ("bytes", t("boolean", "Binary files: return bytes (base64) from offset (default 0), length (default 64 KiB).")),
+                    ("offset", t("integer", "Binary files: first byte to return.")),
+                    ("length", t("integer", "Binary files: bytes to return, 1..196608.")),
                 ],
                 &["path"],
             ),
@@ -737,4 +753,7 @@ pub fn definitions() -> Vec<ToolDef> {
             input_schema: obj(vec![("module", t("string", "The crate's folder under the engine's working directory, e.g. \"games/ambulo\" (as for logic_build)."))], &["module"]),
         },
     ]
+    .into_iter()
+    .chain(crate::project_binary::definitions())
+    .collect()
 }

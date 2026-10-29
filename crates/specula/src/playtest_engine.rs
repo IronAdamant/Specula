@@ -634,9 +634,9 @@ impl Playtests {
             let mut replay = a.run.replay_json(game.as_deref(), host.tick_hz());
             replay.set("modules", modules_json(&a.modules));
             let text = replay.to_pretty();
-            match std::fs::write(path, &text) {
+            match crate::disk::book().write(crate::disk::Category::Captures, "playtest", path, text.as_bytes(), crate::disk::Need::Agent) {
                 Ok(()) => Json::obj([("path", Json::from(rel.as_str())), ("written", Json::from(true)), ("bytes", Json::from(text.len()))]),
-                Err(e) => Json::obj([("path", Json::from(rel.as_str())), ("written", Json::from(false)), ("error", Json::from(e.to_string()))]),
+                Err(e) => Json::obj([("path", Json::from(rel.as_str())), ("written", Json::from(false)), ("error", e.to_json())]),
             }
         });
         let concise = a.report(Format::Concise, replay_file.as_ref());

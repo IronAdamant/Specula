@@ -223,10 +223,10 @@ fn image(w: u32, h: u32, rgba: &[u8], max_w: u32) -> Content {
 }
 
 fn save_png(ctx: &Context, name: &str, w: u32, h: u32, rgba: &[u8]) -> Result<PathBuf, String> {
-    std::fs::create_dir_all(&ctx.captures).map_err(|e| e.to_string())?;
     let safe: String = name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect();
     let path = ctx.captures.join(format!("{safe}.png"));
-    std::fs::write(&path, specula_core::png::encode_rgba8(w, h, rgba, specula_core::deflate::Level::Fast)).map_err(|e| e.to_string())?;
+    let png = specula_core::png::encode_rgba8(w, h, rgba, specula_core::deflate::Level::Fast);
+    crate::disk::book().write(crate::disk::Category::Captures, "procgen", &path, &png, crate::disk::Need::Agent).map_err(|e| e.to_string())?;
     Ok(path)
 }
 

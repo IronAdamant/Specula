@@ -14,6 +14,7 @@
 
 pub mod build;
 pub mod diag;
+pub mod disk;
 pub mod fix;
 pub mod lint;
 pub mod paths;

@@ -35,7 +35,7 @@ pub enum SwarmCall {
     Rollup(RollupQuery),
     LeaseTake { want: crate::leases::Want, note: String, lease: Duration },
     LeaseRenew { id: Option<u64>, lease: Duration },
-    LeaseRelease { id: Option<u64>, delete: bool },
+    LeaseRelease { id: Option<u64>, delete: bool, keep: bool },
     LeaseList { kind: Option<String>, owner: Option<String>, mine: bool, after: Option<u64>, limit: usize },
     /// `frame_floor_fps: None` only reports.
     Settings { frame_floor_fps: Option<u32> },
@@ -411,8 +411,12 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<SwarmCall, String>> {
             Ok(SwarmCall::LeaseRenew { id: one_or_all(args, name, "lease")?, lease: lease_arg(args, crate::leases::DEFAULT_LEASE)? })
         })(),
         "lease_release" => (|| {
-            check_keys(args, name, &[&["id", "all", "delete"]])?;
-            Ok(SwarmCall::LeaseRelease { id: one_or_all(args, name, "lease")?, delete: bool_arg(args, "delete")?.unwrap_or(false) })
+            check_keys(args, name, &[&["id", "all", "delete", "keep"]])?;
+            let (delete, keep) = (bool_arg(args, "delete")?.unwrap_or(false), bool_arg(args, "keep")?.unwrap_or(false));
+            if delete && keep {
+                return Err("'delete' and 'keep' contradict each other: pass one".into());
+            }
+            Ok(SwarmCall::LeaseRelease { id: one_or_all(args, name, "lease")?, delete, keep })
         })(),
         "lease_list" => (|| {
             check_keys(args, name, &[&["kind", "owner", "mine", "cursor", "limit"]])?;
@@ -696,8 +700,8 @@ pub fn definitions() -> Vec<ToolDef> {
         ),
         def(
             "lease_release",
-            "Give back one lease (id) or all of yours (all: true); delete: true also removes scratch folders with their contents.",
-            schema(vec![("id", t("integer", "Lease id")), ("all", t("boolean", "All yours")), ("delete", t("boolean", "Remove scratch folders"))], &[]),
+            "Give back one lease (id) or all of yours (all: true); delete: true also removes scratch folders with their contents. A released (or expired) scratch folder is removed by the disk budget an hour after its lease ended ([disk] scratch_grace_s) unless you pass keep: true.",
+            schema(vec![("id", t("integer", "Lease id")), ("all", t("boolean", "All yours")), ("delete", t("boolean", "Remove scratch folders now")), ("keep", t("boolean", "Keep released scratch folders (never cleaned up automatically)"))], &[]),
         ),
         def(
             "lease_list",

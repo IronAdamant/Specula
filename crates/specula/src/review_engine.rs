@@ -53,20 +53,18 @@ fn cut(s: &str, n: usize) -> String {
 /// Writes `text` to `dir/review.json` (temporary file, then rename).
 pub(crate) fn write_review(dir: &Path, text: &str) -> std::io::Result<()> {
     use std::io::Write as _;
+    // Essential (the review queue beside the world): accounted, written even below the floor.
+    let old = crate::disk::file_len(&dir.join(REVIEW_FILE));
+    crate::disk::book().admit(crate::disk::Category::Worlds, text.len() as u64, crate::disk::Need::Essential).map_err(std::io::Error::other)?;
     let tmp = dir.join(REVIEW_TMP);
     {
         let mut f = std::fs::File::create(&tmp)?;
         f.write_all(text.as_bytes())?;
         f.sync_all()?;
     }
-    std::fs::rename(&tmp, dir.join(REVIEW_FILE))
-}
-
-/// Whether `path` starts with the PNG signature.
-fn is_png(path: &Path) -> bool {
-    use std::io::Read as _;
-    let mut sig = [0u8; 8];
-    std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut sig)).is_ok() && sig == [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']
+    std::fs::rename(&tmp, dir.join(REVIEW_FILE))?;
+    crate::disk::book().replaced(crate::disk::Category::Worlds, "review", old, text.len() as u64);
+    Ok(())
 }
 
 /// The ops that move a submission's roots under `p.to` (and take the staging tag off them), and
@@ -207,13 +205,6 @@ impl Engine {
         self.capture_dir.parent().unwrap_or(&self.capture_dir)
     }
 
-    /// A capture or packet named by an agent: a file in the engine's captures folder (the path a
-    /// sight tool returned, or relative to this run's captures or the folder), or a structured
-    /// refusal (`path_not_allowed`, `capture_missing`) naming `field`.
-    fn review_file(&self, p: &str, field: &str) -> Result<PathBuf, WorldError> {
-        crate::safe_path::capture_file(self.captures_root(), &self.capture_dir, p, field).map_err(|r| WorldError::new(r.code, r.message).with("field", field).with("path", p))
-    }
-
     /// Critiques carried by board tasks follow them (see `Review::sync_tasks`).
     pub(crate) fn sync_critiques(&mut self) {
         let tick = self.clock.tick();
@@ -246,12 +237,17 @@ impl Engine {
             },
             ReviewCall::List { id: Some(id), .. } => {
                 match self.swarm.review.get(id) {
-                    Some(s) => out(s.to_json(&self.swarm.review.critiques_on(id), self.swarm.journal().epoch())),
+                    Some(s) => {
+                        let mut j = s.to_json(&self.swarm.review.critiques_on(id), self.swarm.journal().epoch());
+                        self.mark_missing(&mut j);
+                        out(j)
+                    }
                     None => fail(&WorldError::new("submission_not_found", format!("there is no submission {id} (see review_list)")).with("submission", id)),
                 }
             }
             ReviewCall::List { query, detailed, .. } => {
                 let mut j = self.swarm.review.list(&query, self.swarm.journal().epoch());
+                self.mark_missing(&mut j);
                 if detailed {
                     // Each listed submission in full, within a byte budget (the cursor resumes).
                     let ids: Vec<u64> = j.get("submissions").and_then(Json::as_array).unwrap_or_default().iter().filter_map(|s| s.get("id").and_then(Json::as_u64)).collect();
@@ -324,6 +320,7 @@ impl Engine {
             ReviewCall::CritiqueAdd(items) => {
                 let tick = self.clock.tick();
                 let mut specs = Vec::with_capacity(items.len());
+                let mut call = crate::evidence::CallCopies::default();
                 for (i, (mut spec, assign)) in items.into_iter().enumerate() {
                     if let Some(Target::Entity { id, path }) = &mut spec.target {
                         match self.world.get(*id) {
@@ -333,6 +330,16 @@ impl Engine {
                     }
                     if spec.source.is_empty() {
                         spec.source = by.clone();
+                    }
+                    // Its evidence (any file the engine wrote) is kept beside the queue, like a submission's.
+                    for field in ["capture", "packet"] {
+                        let slot = if field == "capture" { &mut spec.capture } else { &mut spec.packet };
+                        if let Some(given) = slot.clone() {
+                            match self.keep_evidence(&given, false, &mut call) {
+                                Ok(kept) => *slot = Some(kept),
+                                Err(e) => return fail(&WorldError { message: format!("items[{i}].{field}: {}", e.message), ..e }.with("item", i)),
+                            }
+                        }
                     }
                     spec.assignee = assign;
                     specs.push(spec);
@@ -351,7 +358,11 @@ impl Engine {
                     Err(e) => fail(&e),
                 }
             }
-            ReviewCall::CritiqueList(q) => out(self.swarm.review.list_critiques(&q)),
+            ReviewCall::CritiqueList(q) => {
+                let mut j = self.swarm.review.list_critiques(&q);
+                self.mark_missing(&mut j);
+                out(j)
+            }
             ReviewCall::CritiqueUpdate { ids, action, expect } => {
                 let mut results = Vec::with_capacity(ids.len());
                 for id in ids {
@@ -457,19 +468,23 @@ impl Engine {
         }
         let journal_ids = (ids.len() <= review::MAX_JOURNAL_IDS).then(|| ids.into_iter().collect::<Vec<u64>>());
         let journal_epoch = self.swarm.journal().epoch().to_owned();
-        // Its evidence: captures the engine wrote.
+        // Its evidence: captures the engine wrote, copied beside the queue (see `evidence`; the
+        // connection thread copied them already): they stay as long as the queue names them.
+        let mut call = crate::evidence::CallCopies::default();
         let mut captures: Vec<Capture> = Vec::with_capacity(a.captures.len());
         for (i, c) in a.captures.into_iter().enumerate() {
-            let path = self.review_file(&c.path, &format!("captures[{i}]"))?;
-            if !is_png(&path) {
-                return Err(WorldError::new("capture_missing", format!("captures[{i}]: '{}' is not a PNG (pass the image.path a sight tool returned)", c.path))
-                    .with("capture", c.path.as_str()));
-            }
+            let path = self.keep_evidence(&c.path, true, &mut call).map_err(|e| {
+                let msg = format!("captures[{i}]: {}", e.message);
+                WorldError { message: msg, ..e }.with("capture", c.path.as_str())
+            })?;
             let packet = match c.packet {
-                Some(p) => Some(self.review_file(&p, &format!("captures[{i}].packet"))?.display().to_string()),
+                Some(p) => Some(self.keep_evidence(&p, false, &mut call).map_err(|e| {
+                    let msg = format!("captures[{i}].packet: {}", e.message);
+                    WorldError { message: msg, ..e }.with("packet", p.as_str())
+                })?),
                 None => None,
             };
-            captures.push(Capture { path: path.display().to_string(), packet, ..c });
+            captures.push(Capture { path, packet, ..c });
         }
         let task = match a.task {
             Some(t) if self.swarm.board.get(t).is_none() => return Err(WorldError::new("task_not_found", format!("there is no task {t}")).with("task", t)),
@@ -1269,11 +1284,8 @@ mod tests {
     fn png_signatures_are_checked() {
         let dir = std::env::temp_dir().join(format!("specula-review-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let png = dir.join("a.png");
-        std::fs::write(&png, specula_core::png::encode_rgba8(1, 1, &[1, 2, 3, 255], specula_core::deflate::Level::Fastest)).unwrap();
-        let txt = dir.join("b.png");
-        std::fs::write(&txt, b"not a png at all").unwrap();
-        assert!(is_png(&png) && !is_png(&txt) && !is_png(&dir.join("missing.png")));
+        let png = specula_core::png::encode_rgba8(1, 1, &[1, 2, 3, 255], specula_core::deflate::Level::Fastest);
+        assert!(crate::evidence::is_png(&png) && !crate::evidence::is_png(b"not a png at all"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -23,6 +23,11 @@ pub mod claims;
 pub mod compare;
 pub mod conflict;
 pub mod desync;
+pub mod disk;
+mod disk_tools;
+mod evidence;
+pub mod blobs;
+mod project_binary;
 mod director;
 pub mod effects;
 pub mod fpguard;
@@ -364,6 +369,34 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     engine.perf_cfg = perf_cfg;
     engine.worlds_dir = args.worlds.unwrap_or_else(|| cwd.join("worlds"));
     engine.saves_dir = args.saves.unwrap_or_else(|| cwd.join("saves"));
+    // The disk footprint budget: every folder the engine writes to, by category, measured and
+    // pruned in the background (docs/design/DISK.md). Scratch leases default to the captures
+    // root's `scratch` folder (as `lease_take` makes them).
+    let scratch_root = engine.perf_cfg.swarm.scratch_root.clone().unwrap_or_else(|| captures_root.join("scratch"));
+    disk::book().configure(
+        engine.perf_cfg.disk.clone(),
+        vec![
+            (disk::Category::Captures, captures_root.clone()),
+            (disk::Category::Cache, cache_dir.clone()),
+            (disk::Category::Content, cache_dir.join(blobs::CONTENT_DIR)),
+            (disk::Category::Modules, cache_dir.join(logic::tools::MODULE_TARGETS)),
+            (disk::Category::Scratch, scratch_root),
+            (disk::Category::Saves, engine.saves_dir.clone()),
+            (disk::Category::Worlds, engine.worlds_dir.clone()),
+            // Never walked (the project's own folder): only its free space is read.
+            (disk::Category::Project, assets.clone()),
+        ],
+        Some(engine.capture_dir.clone()),
+    );
+    // Finished runs' unsaved review queues died with their engines: their evidence goes.
+    evidence::clean_unsaved(&engine.worlds_dir, &engine.capture_dir);
+    logic::tools::set_module_targets(cache_dir.join(logic::tools::MODULE_TARGETS));
+    // The module host's own writes (library copies, fixes, a restored Cargo.lock) go through the book too.
+    specula_logic::disk::set_hook(disk::logic_admit, disk::logic_wrote);
+    let content = Arc::new(blobs::ContentStore::open(&cache_dir.join(blobs::CONTENT_DIR)).map_err(|e| format!("content store: {e}"))?);
+    disk::book().add_pruner(disk::Category::Content, content.pruner());
+    engine.project.set_content(Arc::clone(&content));
+    engine.content = Some(Arc::clone(&content));
     if let Some(name) = args.world {
         // A world that exists but can't be read stops the engine: autosave would overwrite it.
         let dir = engine.worlds_dir.join(&name);
@@ -382,8 +415,14 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
             for problem in engine.replace_world(may, world, &name).into_iter().chain(saved.warnings.iter().cloned()) {
                 eprintln!("specula: {problem}");
             }
-            if let Some(problem) = engine.load_board(&dir) {
+            let board_problem = engine.load_board(&dir);
+            if let Some(problem) = &board_problem {
                 eprintln!("specula: {problem}");
+            }
+            // The queue's evidence lives in the world's folder (older queues point into captures).
+            let (_, missing) = engine.adopt_evidence(&dir, board_problem.is_some());
+            if missing > 0 {
+                eprintln!("specula: {missing} file(s) the review queue names are missing from its evidence (review_list marks them)");
             }
             engine.saved = Some(saved);
             eprintln!("specula: loaded world '{name}' ({} entities) from {}", engine.world.len(), dir.display());
@@ -395,6 +434,8 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         engine.saved_revision = engine.world.revision();
         engine.world_name = Some(name);
     }
+    // The review screen shows the captures and the current queue's evidence.
+    engine.review_ui.set_roots(engine.review_roots());
     eprintln!(
         "specula: GPU {} (validation {})",
         engine.gpu.adapter().name,
@@ -430,6 +471,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
                 .with_lex_natives(engine.lex_natives.clone())
                 .with_capture_dir(engine.capture_dir.clone(), safe_path::Roots::for_files(&engine.capture_dir, &captures_root, &engine.worlds_dir, named_assets.as_deref()))
                 .with_studio(Arc::clone(&engine.studio.shared))
+                .with_content(Arc::clone(&content))
                 .with_procgen(procgen_tools::Context { assets: assets.clone(), style: args.style.clone(), captures: engine.capture_dir.clone() });
             engine.scopes = Some(tools.shared_scopes());
             Arc::new(tools)
@@ -484,7 +526,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     // validation messages raised during shutdown.
     match engine.gpu.pipeline_cache_data() {
         Ok(blob) => {
-            let saved = std::fs::create_dir_all(&cache_dir).and_then(|()| std::fs::write(&cache_path, blob));
+            let saved = disk::book().write(disk::Category::Cache, "pipeline", &cache_path, &blob, disk::Need::Agent);
             if let Err(e) = saved {
                 eprintln!("specula: pipeline cache not saved to {}: {e}", cache_path.display());
             }
@@ -672,6 +714,14 @@ struct Engine {
     project: project::Disk,
     /// When failed project writes were last tried.
     project_retry: Instant,
+    /// Binary project files' bytes (see [`blobs`]); set at start.
+    content: Option<Arc<blobs::ContentStore>>,
+    /// The disk budget's view of the project store and what the content store must keep, as last
+    /// worked out: (files revision, last journal entry), and when.
+    disk_seen: Option<(u64, u64)>,
+    disk_last: Instant,
+    /// Review evidence kept beside the queue (see [`evidence`]).
+    evidence: evidence::EvidenceState,
     /// The window's review screen (see `review_screen`).
     review_ui: review_screen::ReviewUi,
     /// The gamepads handed to the hosted game each window frame (reused), and the gate that
@@ -805,6 +855,10 @@ impl Engine {
             scopes: None,
             project: project::Disk::default(),
             project_retry: Instant::now(),
+            content: None,
+            disk_seen: None,
+            disk_last: Instant::now(),
+            evidence: Default::default(),
             review_ui: review_screen::ReviewUi::with_captures(captures_root),
             game_pads: Vec::new(),
             pad_gate: game::PadGate::default(),
@@ -1634,6 +1688,7 @@ impl Engine {
             self.pump_builds(None);
             self.poll_saves();
             self.project_pump();
+            self.disk_pump();
             self.serve_captures();
             self.pump_playtests(server, playtest_engine::WINDOW_SLICE);
             self.pump_studio(studio::WINDOW_SHARE, server);
@@ -1785,6 +1840,7 @@ impl Engine {
             }
             self.poll_saves();
             self.project_pump();
+            self.disk_pump();
             self.serve_captures();
             self.pump_playtests(server, playtest_engine::HEADLESS_SLICE);
             self.pump_studio(studio::HEADLESS_SHARE, server);
@@ -2121,6 +2177,8 @@ impl Engine {
             Command::StudioRender(_) | Command::StudioDone(_) => unreachable!("queued by studio_enqueue"),
             Command::Vfx(call) => self.vfx_call(call, w, tick),
             Command::Project(call) => self.project_call(call, w, &by),
+            Command::DiskGate => self.disk_gate(&request.session),
+            Command::ReviewRoots => self.review_roots_json(),
         };
         self.check_world_replaced();
         // Undo (or anything else) changed project files: the disk follows before the answer.
@@ -2272,17 +2330,20 @@ impl Engine {
             Ok(lock) => lock,
             Err(e) => return ToolOutput::error(e.to_json().to_pretty()),
         };
-        match persist::save(&self.world, &dir, self.saved.as_ref()) {
+        match persist::save_for_agent(&self.world, &dir, self.saved.as_ref()) {
             Ok((saved, report)) => {
                 if lock.is_some() {
                     self.world_lock = lock;
                 }
                 self.saved = Some(saved);
+                let old_root = self.evidence_root();
                 self.world_name = Some(name.clone());
                 self.saved_revision = self.world.revision();
                 self.last_autosave = Instant::now();
                 self.autosave_error = None;
                 self.note_leftovers(&report);
+                // A world just named (or saved under another name) takes the queue's evidence along.
+                self.carry_evidence(&old_root, &dir);
                 let board_error = self.save_board_now();
                 ToolOutput::text(
                     Json::obj([
@@ -2349,7 +2410,14 @@ impl Engine {
                 let stopped = self.lex_live.stop_all();
                 let mut problems = self.replace_world(may, world, &name);
                 problems.extend(saved.warnings.iter().cloned());
-                problems.extend(self.load_board(&dir));
+                let board_problem = self.load_board(&dir);
+                let had_problem = board_problem.is_some();
+                problems.extend(board_problem);
+                // The loaded queue's evidence lives in the world's folder (older queues point into captures).
+                let (_, missing) = self.adopt_evidence(&dir, had_problem);
+                if missing > 0 {
+                    problems.push(format!("{missing} file(s) the review queue names are missing from its evidence (review_list marks them missing)"));
+                }
                 self.saved = Some(saved);
                 self.world_name = Some(name.clone());
                 self.saved_revision = self.world.revision();
@@ -2407,9 +2475,9 @@ impl Engine {
     }
 
     fn save_capture(&self, extension: &str, bytes: &[u8]) -> Result<PathBuf, String> {
-        std::fs::create_dir_all(&self.capture_dir).map_err(|e| e.to_string())?;
         let path = self.capture_dir.join(format!("frame_{:05}.{extension}", self.frames_captured));
-        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+        // Through the disk budget: refused (the image still comes back inline) below the floor.
+        disk::book().write(disk::Category::Captures, "sight", &path, bytes, disk::Need::Agent).map_err(|e| e.to_string())?;
         Ok(path)
     }
 
@@ -2570,6 +2638,7 @@ impl Engine {
             }),
             ("models", self.models_json()),
             ("window", self.window_json()),
+            ("disk", self.disk_json()),
             // The floating-point environment guard: what it checks and what it had to restore,
             // at startup and between ticks (`engine`) and around module calls (`modules`).
             ("determinism", Json::obj([("fp_env", self.fp.to_json()), ("fp_env_modules", self.logic.fp_log().to_json())])),
@@ -2614,6 +2683,7 @@ fn call_class(command: &Command) -> Class {
         Command::SaveGame(call) => call.class(),
         Command::Playtest(_) => Class::Sim,
         Command::Project(call) => call.class(),
+        Command::DiskGate | Command::ReviewRoots => Class::Read,
         Command::Lex(call) if call.is_read() => Class::Read,
         Command::Lex(_) => Class::Edit,
         Command::LexLive(call) => call.class(),
@@ -2709,21 +2779,25 @@ fn parse_run_name(name: &str) -> Option<(u64, u32)> {
 /// `run-<digits>-<digits>` are considered; `current` and runs whose engine process is still running
 /// are never deleted; everything else in `root` is left alone.
 fn prune_capture_runs(root: &Path, keep: usize, current: &Path) {
+    // Deleted inside the captures root only, never through a link (see `disk`).
+    let root = &disk::canonical(root);
+    let current = &disk::canonical(current);
     let Ok(entries) = std::fs::read_dir(root) else { return };
     let mut runs: Vec<(u64, PathBuf)> = entries
         .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter(|e| std::fs::symlink_metadata(e.path()).is_ok_and(|m| m.is_dir() && !disk::is_link(&m)))
         .filter_map(|e| {
             let (secs, pid) = parse_run_name(e.file_name().to_str()?)?;
-            let path = e.path();
-            (path != current && !specula_sys::process_is_running(pid)).then_some((secs, path))
+            let path = root.join(e.file_name());
+            (&path != current && !specula_sys::process_is_running(pid)).then_some((secs, path))
         })
         .collect();
     runs.sort();
     let excess = runs.len().saturating_sub(keep);
     for (_, path) in runs.into_iter().take(excess) {
-        if let Err(e) = std::fs::remove_dir_all(&path) {
-            eprintln!("specula: could not prune old captures {}: {e}", path.display());
+        match disk::remove_tree_inside(root, &path) {
+            Ok((n, b)) => disk::book().wrote(disk::Category::Captures, "prune", -(b as i64), -(n as i64)),
+            Err(e) => eprintln!("specula: could not prune old captures {}: {e}", path.display()),
         }
     }
 }

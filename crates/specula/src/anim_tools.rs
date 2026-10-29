@@ -1198,7 +1198,7 @@ impl Engine {
         );
         packet.set("frame", Json::from(self.frames_captured));
         if let Some(p) = &packet_path {
-            if let Err(e) = std::fs::write(p, packet.to_pretty()) {
+            if let Err(e) = crate::disk::book().write(crate::disk::Category::Captures, "anim", p, packet.to_pretty().as_bytes(), crate::disk::Need::Agent) {
                 warnings.push(Json::from(format!("packet not saved to disk: {e}")));
             }
         }

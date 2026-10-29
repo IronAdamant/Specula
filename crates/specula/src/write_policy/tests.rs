@@ -346,6 +346,22 @@ const ROWS: &[(&str, Write, Expect)] = &[
     ("the Lex tools' rule on a claimed entity", |f| set_abox(f, Rule::Lex), Expect::Refused("claimed")),
     ("lex_live's rule on a claimed entity", |f| set_abox(f, Rule::LexLive), Expect::Refused("claimed")),
     ("the project tools' rule on a claimed entity", |f| set_abox(f, Rule::Project), Expect::Refused("claimed")),
+    // Binary project files (project_upload) are project files: their pointer goes through the
+    // project tools' rule like any file, and no other rule may put one.
+    ("project_upload's binary file under the project tools' rule", |f| {
+        let text = crate::blobs::pointer(crate::blobs::BlobId(1, 2, 0), 64);
+        agent(f, MALLORY, Kind::File, Rule::Project, |wd| {
+            wd.put_file("assets/textures/up.png", Some(crate::project::ProjectFile::new(crate::project::FileKind::Png, Arc::from(text), 1, Arc::from("mallory"))), false);
+            Ok(())
+        })
+    }, Expect::Allowed),
+    ("a binary file put under world_set's rule", |f| {
+        let text = crate::blobs::pointer(crate::blobs::BlobId(1, 2, 0), 64);
+        agent(f, MALLORY, Kind::Set, Rule::World, |wd| {
+            wd.put_file("assets/textures/sneak.png", Some(crate::project::ProjectFile::new(crate::project::FileKind::Png, Arc::from(text), 1, Arc::from("mallory"))), false);
+            Ok(())
+        })
+    }, Expect::Refused("reserved")),
     ("vfx_set's rule on a claimed entity", |f| set_abox(f, Rule::Vfx), Expect::Refused("claimed")),
     // The effect library (/vfx, the vfx_effect tag: only vfx_set) and the effect rules
     // (crate::vfx::write_rules: effects named must exist; nothing may flash more than 3 times a

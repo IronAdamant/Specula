@@ -531,6 +531,9 @@ impl SaveJob {
         let t2 = Instant::now();
         // Held until the file is renamed into place (then it's on disk and counted there).
         let _room = Reservation::take(&self.dir, &self.path, bytes.len() as u64, MAX_SAVES_DIR_BYTES)?;
+        // Through the disk budget: refused below the free-space floor (saves are never pruned).
+        let old = crate::disk::file_len(&self.path);
+        crate::disk::book().admit(crate::disk::Category::Saves, bytes.len() as u64, crate::disk::Need::Agent).map_err(|e| SaveError { code: e.code, message: e.message, section: None, offset: None, details: e.detail })?;
         std::fs::create_dir_all(&self.dir).map_err(|e| io(&self.dir, e))?;
         let tmp = self.path.with_extension(format!("{EXTENSION}.tmp"));
         {
@@ -545,6 +548,7 @@ impl SaveJob {
             let _ = std::fs::remove_file(&tmp);
             io(&self.path, e)
         })?;
+        crate::disk::book().replaced(crate::disk::Category::Saves, "save", old, bytes.len() as u64);
         let write_ms = t2.elapsed().as_secs_f64() * 1000.0;
         let ms = |v: f64| Json::from((v * 100.0).round() / 100.0);
         Ok(Json::obj([
@@ -1125,7 +1129,9 @@ impl Engine {
         if !force && !matches!(owner, Owner::Mine) {
             return Err(SaveError::new("not_yours", format!("the save '{name}' was written by {}; pass force: true to delete it anyway", whose(&owner))));
         }
+        let old = crate::disk::file_len(&path);
         std::fs::remove_file(&path).map_err(|e| io(&path, e))?;
+        crate::disk::book().wrote(crate::disk::Category::Saves, "save", -(old.unwrap_or(0) as i64), -1);
         Ok(Json::obj([("deleted", Json::from(name))]))
     }
 

@@ -322,6 +322,13 @@ pub fn validate(path: &str, kind: FileKind, text: &str, old: Option<&str>, conte
             }
         }
         FileKind::AnimSet | FileKind::Json => out.extend(json_syntax(path, text)),
+        // Binary files' bytes are checked by project_upload (project_binary::inspect); their
+        // store text must name content.
+        FileKind::Png | FileKind::Glb | FileKind::Gltf | FileKind::Wav => {
+            if crate::blobs::parse_pointer(text).is_none() {
+                out.push(Problem { file: path.to_owned(), severity: "error", code: "not_a_pointer".into(), at: String::new(), message: "a binary file's entry must name its content (write it with project_upload)".into(), offset: None });
+            }
+        }
         FileKind::Cargo => out.extend(check_module_manifest(path, text)),
         // Compile-time paths (`#[path]`, `include_str!`...) stay in the module's folder.
         FileKind::Rust => {

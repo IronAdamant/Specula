@@ -39,6 +39,8 @@ pub mod kernel32 {
         pub fn GetExitCodeProcess(process: *mut c_void, exit_code: *mut u32) -> i32;
         pub fn CloseHandle(handle: *mut c_void) -> i32;
         pub fn GetSystemPowerStatus(status: *mut SystemPowerStatus) -> i32;
+        pub fn GetDiskFreeSpaceExW(directory: *const u16, free_to_caller: *mut u64, total: *mut u64, total_free: *mut u64) -> i32;
+        pub fn GetVolumePathNameW(file_name: *const u16, volume_path: *mut u16, length: u32) -> i32;
     }
 
     /// `SYSTEM_POWER_STATUS`.
@@ -211,6 +213,131 @@ pub fn power() -> Option<Power> {
     #[cfg(not(windows))]
     {
         None
+    }
+}
+
+/// Free space on the volume that holds a folder (the disk footprint budget reads it for every
+/// folder the engine writes to).
+///
+/// On Windows this is `GetDiskFreeSpaceExW` (what this process may use, honouring quotas) and
+/// `GetVolumePathNameW` (which volume, so folders on one drive are counted once). Elsewhere it
+/// reports `unsupported`: `std` has no `statvfs`, and guessing would mislead.
+pub mod disk {
+    use std::fmt;
+    use std::path::{Path, PathBuf};
+
+    /// Space on one volume, in bytes.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Space {
+        /// The volume's root (`C:\`, or a mount folder).
+        pub volume: PathBuf,
+        /// Free to this process (quotas applied): what writes can use.
+        pub available: u64,
+        pub total: u64,
+        /// Free on the volume, for everyone.
+        pub free: u64,
+    }
+
+    /// Why free space couldn't be read.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct DiskError {
+        /// `unsupported`, `bad_path` or `query_failed`.
+        pub code: &'static str,
+        pub message: String,
+        /// The Win32 error code, when there is one.
+        pub os_code: Option<u32>,
+    }
+
+    impl fmt::Display for DiskError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "{}: {}", self.code, self.message)?;
+            if let Some(c) = self.os_code {
+                write!(f, " (OS error {c})")?;
+            }
+            Ok(())
+        }
+    }
+
+    impl std::error::Error for DiskError {}
+
+    /// The space on the volume holding `dir`. `dir` need not exist: its nearest existing
+    /// ancestor is asked (a folder the engine will create is on that ancestor's volume).
+    pub fn space(dir: &Path) -> Result<Space, DiskError> {
+        #[cfg(windows)]
+        {
+            windows::space(dir)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = dir;
+            Err(DiskError { code: "unsupported", message: "reading free disk space is not implemented on this platform yet".into(), os_code: None })
+        }
+    }
+
+    #[cfg(windows)]
+    mod windows {
+        use super::{DiskError, Space};
+        use crate::kernel32;
+        use std::os::windows::ffi::OsStrExt;
+        use std::path::{Path, PathBuf};
+
+        fn wide_path(p: &Path) -> Result<Vec<u16>, DiskError> {
+            let w: Vec<u16> = p.as_os_str().encode_wide().collect();
+            if w.contains(&0) {
+                return Err(DiskError { code: "bad_path", message: format!("{} holds a NUL", p.display()), os_code: None });
+            }
+            Ok(w.into_iter().chain(std::iter::once(0)).collect())
+        }
+
+        pub fn space(dir: &Path) -> Result<Space, DiskError> {
+            // The nearest folder that exists (the engine may not have made its own yet).
+            let mut at = Some(dir);
+            while let Some(p) = at {
+                if p.is_dir() {
+                    break;
+                }
+                at = p.parent();
+            }
+            let Some(at) = at.filter(|p| !p.as_os_str().is_empty()) else {
+                return Err(DiskError { code: "bad_path", message: format!("no folder of {} exists", dir.display()), os_code: None });
+            };
+            let w = wide_path(at)?;
+            let (mut avail, mut total, mut free) = (0u64, 0u64, 0u64);
+            // SAFETY: `w` is a NUL-terminated UTF-16 path; the three outputs are writable u64s.
+            let ok = unsafe { kernel32::GetDiskFreeSpaceExW(w.as_ptr(), &mut avail, &mut total, &mut free) };
+            if ok == 0 {
+                // SAFETY: reads the calling thread's last-error value; no preconditions.
+                let code = unsafe { kernel32::GetLastError() };
+                return Err(DiskError { code: "query_failed", message: format!("GetDiskFreeSpaceExW failed for {}", at.display()), os_code: Some(code) });
+            }
+            let mut buf = vec![0u16; 1024];
+            // SAFETY: `w` is NUL-terminated; `buf` holds `buf.len()` writable UTF-16 units.
+            let named = unsafe { kernel32::GetVolumePathNameW(w.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
+            let volume = if named != 0 {
+                let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+                PathBuf::from(String::from_utf16_lossy(&buf[..n]))
+            } else {
+                at.ancestors().last().map_or_else(|| at.to_path_buf(), Path::to_path_buf)
+            };
+            Ok(Space { volume, available: avail, total, free })
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn free_space_of_the_temp_folder() {
+            match super::space(&std::env::temp_dir().join("specula-not-made-yet").join("deeper")) {
+                Ok(s) => {
+                    assert!(s.total > 0 && s.available <= s.total && s.free <= s.total, "{s:?}");
+                    assert!(!s.volume.as_os_str().is_empty());
+                }
+                Err(e) => {
+                    assert_eq!(e.code, "unsupported", "{e}");
+                    eprintln!("free space unavailable here: {e}");
+                }
+            }
+        }
     }
 }
 

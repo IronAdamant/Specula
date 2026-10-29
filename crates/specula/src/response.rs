@@ -61,7 +61,7 @@ pub const SHAPED: [(&str, &str); 6] = [
         "concise (default): errors, problems, totals per path (GPU ms, CPU ms, draws, memory), pacing, sim and physics \
          totals; detailed: every pass, pipeline, heap, model and budget table",
     ),
-    ("engine_info", "concise (default): engine, GPU, world summary, agents, clock, game status, swarm counts; detailed: model library, paths, journal internals"),
+    ("engine_info", "concise (default): engine, GPU, world summary, agents, clock, game status, swarm counts, the disk budget's state; detailed: model library, paths, journal internals, disk use by category"),
     (
         "world_list",
         "concise (default): whole entities with defaults left out (name = the last path segment, rotation_deg [0,0,0], \
@@ -426,6 +426,10 @@ fn engine_info(v: &Json) -> Json {
     }
     if let Some(c) = out.get("clock").cloned() {
         out.set("clock", keep(&c, &["tick", "tick_hz", "paused", "scale"]));
+    }
+    // The disk budget: its state and use (disk_status has the rest).
+    if let Some(d) = v.get("disk") {
+        out.set("disk", keep(d, &["state", "budget", "warning", "refused"]));
     }
     out
 }

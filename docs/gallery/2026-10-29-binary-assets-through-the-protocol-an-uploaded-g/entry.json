@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-29",
+  "time": "18:00",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M4",
+  "commit": "",
+  "subject": "engine-tests",
+  "topic": "tooling",
+  "title": "Binary assets through the protocol: an uploaded GLB",
+  "note": "First binary project file through the protocol: a cube GLB uploaded with project_upload (checked by import, committed with claims, versions and the journal), built by model_build and drawn on a ground slab. Part of scripts/disk_check.py, which also proves the disk footprint budget (warnings, pruning, refusal at the free-space floor).",
+  "source": "scripts/disk_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-uploaded-cube.jpg",
+      "caption": "An uploaded GLB cube, built through the existing model path",
+      "original": "uploaded_cube.png",
+      "width": 640,
+      "height": 420,
+      "bytes": 5497
+    }
+  ]
+}

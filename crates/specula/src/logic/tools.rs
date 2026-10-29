@@ -23,6 +23,81 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+/// The folder under the engine's cache that holds module builds' Cargo targets (one per module).
+pub const MODULE_TARGETS: &str = "modules";
+/// Room a module build is admitted with (the disk budget refuses it below the floor).
+const BUILD_ROOM: u64 = 256 << 20;
+/// Artefacts kept per crate and kind in a target's `deps` (a check build and a full build each
+/// make their own): older ones are stale and dropped after every build.
+const KEEP_ARTEFACTS: usize = 2;
+
+static MODULE_TARGETS_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// Where module builds' targets go (set once at start; tests leave Cargo's default).
+pub fn set_module_targets(dir: PathBuf) {
+    let _ = MODULE_TARGETS_DIR.set(dir);
+}
+
+/// The one Cargo target a module shares across agents and builds: `<cache>/modules/<folder>-<hash>`.
+pub fn module_target(dir: &Path) -> Option<PathBuf> {
+    let root = MODULE_TARGETS_DIR.get()?;
+    let canon = specula_logic::fix::canonical(dir);
+    let name: String = canon.file_name().map(|n| n.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).take(40).collect()).unwrap_or_else(|| "module".into());
+    Some(root.join(format!("{name}-{:08x}", specula_core::hash::hash_str(&canon.to_string_lossy()) >> 32)))
+}
+
+/// `name-<16 hex>` (a Cargo artefact or fingerprint name with its metadata hash), split.
+fn split_hash(stem: &str) -> Option<(&str, &str)> {
+    let (name, hash) = stem.rsplit_once('-')?;
+    (hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_hexdigit())).then_some((name, hash))
+}
+
+/// Drops stale artefacts from a module's target: in each profile's `deps`, `.fingerprint` and
+/// `incremental`, only the newest [`KEEP_ARTEFACTS`] of each crate (and file kind) stay. Only
+/// inside the engine's own module targets, never through a link. Returns `(entries, bytes)` freed.
+pub fn drop_stale(target: &Path) -> (u64, u64) {
+    let Some(root) = MODULE_TARGETS_DIR.get().map(|r| crate::disk::canonical(r)) else { return (0, 0) };
+    let target = crate::disk::canonical(target);
+    if !target.starts_with(&root) || target == root {
+        return (0, 0);
+    }
+    let mut freed = (0u64, 0u64);
+    for profile in ["debug", "release"] {
+        for sub in ["deps", ".fingerprint", "incremental"] {
+            let dir = target.join(profile).join(sub);
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            // (crate name, file kind) -> (modified, path, is a folder)
+            type Group = Vec<(std::time::SystemTime, PathBuf, bool)>;
+            let mut groups: std::collections::BTreeMap<(String, String), Group> = Default::default();
+            for e in entries.flatten().take(20_000) {
+                let p = dir.join(e.file_name());
+                let Ok(m) = std::fs::symlink_metadata(&p) else { continue };
+                if crate::disk::is_link(&m) {
+                    continue;
+                }
+                let file = e.file_name().to_string_lossy().into_owned();
+                let (stem, ext) = if m.is_dir() { (file.as_str(), "") } else { file.split_once('.').unwrap_or((file.as_str(), "")) };
+                let Some((name, _)) = split_hash(stem) else { continue };
+                groups.entry((name.to_owned(), ext.to_owned())).or_default().push((m.modified().unwrap_or(std::time::UNIX_EPOCH), p, m.is_dir()));
+            }
+            for (_, mut v) in groups {
+                v.sort_by_key(|e| std::cmp::Reverse(e.0));
+                for (_, p, is_dir) in v.into_iter().skip(KEEP_ARTEFACTS) {
+                    let gone = if is_dir { crate::disk::remove_tree_inside(&root, &p) } else { crate::disk::remove_file_inside(&root, &p).map(|b| (1, b)) };
+                    if let Ok((n, b)) = gone {
+                        freed.0 += n;
+                        freed.1 += b;
+                    }
+                }
+            }
+        }
+    }
+    if freed.0 > 0 {
+        crate::disk::book().wrote(crate::disk::Category::Modules, "logic_build", -(freed.1 as i64), -(freed.0 as i64));
+    }
+    freed
+}
+
 /// Diagnostics one `logic_build` answer lists (errors first); the rest are counted.
 pub const MAX_DIAGNOSTICS: usize = 30;
 /// How long `logic_build` waits for the engine to apply the reload after the build.
@@ -262,6 +337,7 @@ fn output(r: Result<Json, WorldError>) -> ToolOutput {
 
 /// Opens a module library (off the engine thread: it can take a while).
 fn open(library: &Path) -> Result<ModuleCode, WorldError> {
+    // The loaded copy goes through the disk budget (specula_logic::disk's hook): refused below the floor.
     let copies = library.parent().unwrap_or(Path::new(".")).join("specula-modules");
     ModuleCode::open(library, &copies).map_err(|e| {
         let mut w = WorldError::new("load_failed", e.message.clone())
@@ -398,6 +474,8 @@ pub fn build(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json) ->
         // `cargo metadata` before Cargo builds anything.
         let mut req = BuildRequest::new(dir);
         req.roots = vec![engine_root()];
+        // One Cargo target per module, shared by every agent's builds of it (under the cache).
+        req.target_dir = module_target(&req.dir);
         req.check = bool_arg(args, "check")?.unwrap_or(false);
         req.fix = bool_arg(args, "fix")?.unwrap_or(false);
         req.release = bool_arg(args, "release")?.unwrap_or(false);
@@ -408,6 +486,10 @@ pub fn build(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json) ->
         Ok(p) => p,
         Err(e) => return ToolOutput::error(argument_error(&e).to_pretty()),
     };
+    // Through the disk budget: a build is refused below the free-space floor (Cargo writes a lot).
+    if let Err(e) = crate::disk::book().admit(crate::disk::Category::Modules, BUILD_ROOM, crate::disk::Need::Agent) {
+        return ToolOutput::error(e.to_json().to_string());
+    }
     // Fixes write the module's sources. When they are project files (a mounted module) the
     // fixer never writes the disk: each round's fixes are worked out against the texts the build
     // compiled and committed as the caller's change (claims, journal, undo); a file someone
@@ -422,6 +504,12 @@ pub fn build(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json) ->
     }
     let (report, fixes) = if mounted { fix_mounted(to_engine, session, &req) } else { ((*build_service().build(req.clone())).clone(), None) };
     let mut out = report_json(&report, &req, detailed);
+    if let (true, Some(t)) = (report.ok, &req.target_dir) {
+        let (n, b) = drop_stale(t);
+        if n > 0 {
+            out.set("stale_dropped", Json::obj([("entries", Json::from(n)), ("mb", Json::from((b as f64 / 1048576.0 * 10.0).round() / 10.0))]));
+        }
+    }
     let mut fix_refused = false;
     if let Some(f) = fixes {
         fix_refused = f.get("refused").is_some();

@@ -113,21 +113,7 @@ fn lexically_under(path: &Path, root: &Path) -> bool {
 /// accepted, and the review screen decoded it.)
 pub fn capture_file(root: &Path, run: &Path, name: &str, what: &str) -> Result<PathBuf, Refusal> {
     let p = Path::new(name);
-    let lexically_ok = !name.is_empty()
-        && name.len() <= 512
-        && !name.contains('\0')
-        && !name.starts_with("\\\\")
-        && !name.starts_with("//")
-        && (!p.has_root() || p.is_absolute())
-        && p.components().all(|c| match c {
-            Component::Prefix(px) => matches!(px.kind(), std::path::Prefix::Disk(_)),
-            Component::ParentDir => false,
-            _ => true,
-        })
-        && name.split(['/', '\\']).all(|part| part != "..")
-        // A ':' only as a drive letter's (no alternate data streams, no `C:x`).
-        && name.char_indices().filter(|(_, c)| *c == ':').all(|(i, _)| i == 1 && p.is_absolute());
-    if !lexically_ok {
+    if !name_ok(name) {
         return Err(capture_not_allowed(what));
     }
     let root_abs = std::path::absolute(root).map_err(|_| capture_not_allowed(what))?;
@@ -158,6 +144,85 @@ pub fn capture_file(root: &Path, run: &Path, name: &str, what: &str) -> Result<P
         };
     }
     Err(refuse("capture_missing", format!("{what} {name:?} is not a file in this engine's captures folder (pass the image.path a sight tool returned)")))
+}
+
+/// The folders a review's files may be in (see [`review_file`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ReviewRoots {
+    /// The captures folder and this run's captures in it.
+    pub captures: PathBuf,
+    pub run: PathBuf,
+    /// The worlds folder, and the current queue's folder in it (the world's, or this run's
+    /// unsaved one): `evidence/<file>` names a file in its `evidence` folder.
+    pub worlds: PathBuf,
+    pub queue: PathBuf,
+}
+
+/// A file a review submission or critique names: a capture ([`capture_file`]), or review
+/// evidence (`<worlds>/<world>/evidence/<file>`, or `evidence/<file>` in the current queue's
+/// folder), and nothing else: never a world's own files, never a path outside these. The same
+/// lexical checks as [`capture_file`] come first, so a UNC, verbatim or `..` name is refused
+/// before anything touches the disk (no credentials sent, no existence answered); then no link
+/// on the way, a regular file, inside both as written and canonicalised. Returns the absolute
+/// (not verbatim) path. Used by review_submit, critique_add, the review screen and every
+/// resolution of a review's paths.
+pub fn review_file(r: &ReviewRoots, name: &str, what: &str) -> Result<PathBuf, Refusal> {
+    if !name_ok(name) {
+        return Err(capture_not_allowed(what));
+    }
+    let worlds = std::path::absolute(&r.worlds).map_err(|_| capture_not_allowed(what))?;
+    // `evidence/<file>`: the current queue's evidence.
+    let rel = name.strip_prefix("evidence/").or_else(|| name.strip_prefix("evidence\\"));
+    let target = match rel {
+        Some(file) => {
+            let queue = std::path::absolute(&r.queue).map_err(|_| capture_not_allowed(what))?;
+            Some(queue.join("evidence").join(file))
+        }
+        None => {
+            let abs = std::path::absolute(name).map_err(|_| capture_not_allowed(what))?;
+            (Path::new(name).is_absolute() && lexically_under(&abs, &worlds)).then_some(abs)
+        }
+    };
+    let Some(abs) = target else { return capture_file(&r.captures, &r.run, name, what) };
+    // Exactly <worlds>/<a world or unsaved folder>/evidence/<file>: never a world's own files.
+    if !lexically_under(&abs, &worlds) {
+        return Err(capture_not_allowed(what));
+    }
+    let rel: PathBuf = abs.components().filter(|c| *c != Component::CurDir).skip(worlds.components().filter(|c| *c != Component::CurDir).count()).collect();
+    let parts: Vec<Component> = rel.components().collect();
+    let evidence_file = parts.len() == 3 && parts.iter().all(|c| matches!(c, Component::Normal(_))) && parts[1].as_os_str() == "evidence";
+    if !evidence_file || !no_links_below(&worlds, &rel) {
+        return Err(capture_not_allowed(what));
+    }
+    let missing = || refuse("capture_missing", format!("{what} {name:?} is not a file in the review's evidence (it may have been removed)"));
+    let meta = std::fs::symlink_metadata(&abs).map_err(|_| missing())?;
+    if !meta.is_file() {
+        return Err(missing());
+    }
+    let folder = abs.parent().map(Path::to_path_buf).unwrap_or_default();
+    match (abs.canonicalize(), folder.canonicalize()) {
+        (Ok(c), Ok(f)) if c.starts_with(&f) => Ok(abs),
+        _ => Err(capture_not_allowed(what)),
+    }
+}
+
+/// The lexical part of [`capture_file`]'s checks: nothing here touches the disk.
+fn name_ok(name: &str) -> bool {
+    let p = Path::new(name);
+    !name.is_empty()
+        && name.len() <= 512
+        && !name.contains('\0')
+        && !name.starts_with("\\\\")
+        && !name.starts_with("//")
+        && (!p.has_root() || p.is_absolute())
+        && p.components().all(|c| match c {
+            Component::Prefix(px) => matches!(px.kind(), std::path::Prefix::Disk(_)),
+            Component::ParentDir => false,
+            _ => true,
+        })
+        && name.split(['/', '\\']).all(|part| part != "..")
+        // A ':' only as a drive letter's (no alternate data streams, no `C:x`).
+        && name.char_indices().filter(|(_, c)| *c == ':').all(|(i, _)| i == 1 && p.is_absolute())
 }
 
 /// Whether every existing step from `root` along `rel` is a plain file or folder (no symlink,
@@ -302,6 +367,32 @@ mod tests {
         }
         assert_eq!(ok("nope.png").unwrap_err().code, "capture_missing");
         assert_eq!(ok("run-1").unwrap_err().code, "capture_missing", "a folder is not a capture");
+        // Review files (round-3 review): captures, and evidence files in a world's evidence folder,
+        // never a world's own files; UNC and verbatim names refused before any lookup.
+        let worlds = base.join("worlds");
+        for d in [worlds.join("mine").join("evidence"), worlds.join("other").join("evidence")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(worlds.join("mine").join("evidence").join("e.png"), b"png").unwrap();
+        std::fs::write(worlds.join("other").join("evidence").join("o.png"), b"png").unwrap();
+        std::fs::write(worlds.join("other").join("world.json"), b"{}").unwrap();
+        std::fs::write(worlds.join("other").join("notes.txt"), b"private").unwrap();
+        let roots = ReviewRoots { captures: root.clone(), run: run.clone(), worlds: worlds.clone(), queue: worlds.join("mine") };
+        let rv = |name: &str| review_file(&roots, name, "captures[0]");
+        assert!(rv("a.png").is_ok() && rv(&abs).is_ok(), "captures as before");
+        assert_eq!(rv("evidence/e.png").unwrap(), std::path::absolute(worlds.join("mine").join("evidence").join("e.png")).unwrap(), "relative to the queue");
+        assert!(rv(&worlds.join("other").join("evidence").join("o.png").display().to_string()).is_ok(), "another world's evidence (adopting a copied world)");
+        for bad in [
+            worlds.join("other").join("world.json").display().to_string(),
+            worlds.join("other").join("notes.txt").display().to_string(),
+            worlds.join("other").join("evidence").display().to_string(),
+            "evidence/../world.json".to_string(),
+            r"\\host\share\evidence\x.png".to_string(),
+            r"\\?\C:\x.png".to_string(),
+        ] {
+            assert_eq!(rv(&bad).unwrap_err().code, "path_not_allowed", "{bad}");
+        }
+        assert_eq!(rv("evidence/gone.png").unwrap_err().code, "capture_missing");
         // A link (or junction) inside the captures folder that leads out is refused.
         #[cfg(windows)]
         let made = std::os::windows::fs::symlink_dir(&outside, run.join("ln")).is_ok();

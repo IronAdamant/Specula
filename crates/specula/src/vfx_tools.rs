@@ -825,7 +825,8 @@ impl PreviewEncode {
     fn finish(self) -> ToolOutput {
         let PreviewEncode { sheet, width, height, grid, png_path, mut warnings, mut packet } = self;
         let png_bytes = png::encode_rgba8(width, height, &sheet, Level::Fastest);
-        let written = png_path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&png_path, &png_bytes));
+        // Through the disk budget (refused below the free-space floor, like every capture).
+        let written = crate::disk::book().write(crate::disk::Category::Captures, "vfx", &png_path, &png_bytes, crate::disk::Need::Agent);
         let packet_path = png_path.with_extension("json");
         let (path, packet_at) = match &written {
             Ok(()) => (Json::from(png_path.display().to_string()), Json::from(packet_path.display().to_string())),
@@ -840,7 +841,7 @@ impl PreviewEncode {
         );
         packet.set("warnings", Json::Arr(warnings));
         if written.is_ok() {
-            if let Err(e) = std::fs::write(&packet_path, packet.to_pretty()) {
+            if let Err(e) = crate::disk::book().write(crate::disk::Category::Captures, "vfx", &packet_path, packet.to_pretty().as_bytes(), crate::disk::Need::Agent) {
                 packet.set("packet_error", Json::from(e.to_string()));
             }
         }

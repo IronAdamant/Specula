@@ -1909,6 +1909,15 @@ impl Change {
         }
     }
 
+    /// Bytes of binary content a kept file change's pointers name (before and after; see
+    /// [`crate::blobs`]): what its undo needs the content store to keep.
+    pub fn file_blob_bytes(&self) -> u64 {
+        match self {
+            Change::File { before, after, kept: true, .. } => [before, after].into_iter().flatten().map(|f| crate::project::binary_bytes(f)).sum(),
+            _ => 0,
+        }
+    }
+
     /// Drops a file change's texts (the journal's file-text budget ran out): the change stays in
     /// the history, but can't be undone or replayed any more.
     pub fn drop_file_text(&mut self) {

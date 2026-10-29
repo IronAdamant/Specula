@@ -658,6 +658,46 @@ impl Review {
         self.revision
     }
 
+    /// Rewrites every file a submission or critique names (`f` answers the new path, or `None`
+    /// to keep it); returns how many changed. A change is saved like any other (the revision moves).
+    pub fn map_files(&mut self, f: &mut dyn FnMut(&str) -> Option<String>) -> usize {
+        let mut n = 0;
+        let mut one = |s: &mut String| {
+            if let Some(new) = f(s).filter(|new| new != s) {
+                *s = new;
+                n += 1;
+            }
+        };
+        for sub in self.subs.values_mut() {
+            for c in &mut sub.captures {
+                one(&mut c.path);
+                if let Some(p) = &mut c.packet {
+                    one(p);
+                }
+            }
+        }
+        for c in self.crits.values_mut() {
+            if let Some(p) = &mut c.capture {
+                one(p);
+            }
+            if let Some(p) = &mut c.packet {
+                one(p);
+            }
+        }
+        if n > 0 {
+            self.bump();
+            self.rendered = None;
+        }
+        n
+    }
+
+    /// Every file a submission or critique names (captures and packets): their evidence.
+    pub fn file_refs(&self) -> Vec<&str> {
+        let subs = self.subs.values().flat_map(|s| s.captures.iter().flat_map(|c| std::iter::once(c.path.as_str()).chain(c.packet.as_deref())));
+        let crits = self.crits.values().flat_map(|c| c.capture.as_deref().into_iter().chain(c.packet.as_deref()));
+        subs.chain(crits).collect()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.subs.is_empty() && self.crits.is_empty()
     }

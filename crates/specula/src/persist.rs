@@ -218,6 +218,9 @@ pub struct Plan {
     /// Every camera as saved, by owner then name.
     cameras: Vec<Json>,
     previous: Option<Saved>,
+    /// Who the save is for (the disk budget): the engine's autosave of the current world is
+    /// essential (written even below the free-space floor); an agent's `world_save` is not.
+    pub need: crate::disk::Need,
 }
 
 /// Takes what [`execute`] needs from `world`. `previous` is what was saved into `dir` before (by
@@ -277,6 +280,7 @@ pub fn plan(world: &World, dir: &Path, previous: Option<&Saved>) -> Plan {
         parts,
         cameras: camera_records(world),
         previous,
+        need: crate::disk::Need::Essential,
     }
 }
 
@@ -541,6 +545,9 @@ const LOCK: &str = "world.lock";
 /// never a reason to refuse adoption).
 const BOARD: &str = "board.json";
 const BOARD_TMP: &str = "board.json.tmp";
+/// The review queue beside the world, and its evidence folder (see `evidence`): ours too, written
+/// as soon as a review is submitted, maybe before the world's first save.
+const QUEUE_FILES: [&str; 3] = ["review.json", "review.json.tmp", "evidence"];
 
 /// Whether a file starts like one we write: `{` then `"format": "specula.world/v1"`, ignoring
 /// whitespace (so a CRLF checkout still counts).
@@ -572,7 +579,7 @@ fn scan(dir: &Path) -> Result<Folder, PersistError> {
                 has_index = true;
             } else if (name == INDEX_TMP || is_subtree_file(&name)) && starts_like_ours(&entry.path()) {
                 folder.ours.push(name);
-            } else if name != LOCK && name != BOARD && name != BOARD_TMP {
+            } else if name != LOCK && name != BOARD && name != BOARD_TMP && !QUEUE_FILES.contains(&name.as_str()) {
                 foreign.get_or_insert(name);
             }
         }
@@ -747,6 +754,12 @@ pub(crate) fn execute_with(plan: Plan, hook: &mut dyn FnMut(Step) -> Hook) -> Re
     let mut retries = 0;
     let (files, saved) = loop {
         let (files, saved) = plan.render(generation);
+        if retries == 0 {
+            // Through the disk budget: the autosave is essential (written even below the floor);
+            // an agent's world_save is refused there like any agent's write. Never pruned.
+            let bytes: u64 = files.iter().map(|(_, c)| c.len() as u64).sum();
+            crate::disk::book().admit(crate::disk::Category::Worlds, bytes, plan.need).map_err(|e| PersistError { details: Some(Box::new(e.detail.clone())), ..PersistError::new(e.code, e.message) })?;
+        }
         let kept_files = saved.subtrees.values().map(|s| &s.file).chain(saved.cameras.iter().map(|(f, _)| f));
         for kept in kept_files.filter(|f| !files.iter().any(|(w, _)| w == *f)) {
             if !dir.join(kept).is_file() {
@@ -805,6 +818,8 @@ pub(crate) fn execute_with(plan: Plan, hook: &mut dyn FnMut(Step) -> Hook) -> Re
         return Err(undo(&created, PersistError::io(INDEX, e)));
     }
 
+    let written: u64 = files.iter().map(|(_, c)| c.len() as u64).sum();
+    crate::disk::book().wrote(crate::disk::Category::Worlds, "world", written as i64, files.len() as i64);
     // Committed. Sweep every file of ours the new world.json doesn't list: the previous
     // generation's, and anything a crashed save left. Failures are only leftovers now.
     let keep: BTreeSet<&str> =
@@ -845,6 +860,13 @@ fn undo(created: &[PathBuf], error: PersistError) -> PersistError {
 /// Writes the world into `dir` (created if needed). `previous` as for [`plan`].
 pub fn save(world: &World, dir: &Path, previous: Option<&Saved>) -> Result<(Saved, SaveReport), PersistError> {
     execute(plan(world, dir, previous))
+}
+
+/// [`save`] for an agent's `world_save`: refused below the disk's free-space floor.
+pub fn save_for_agent(world: &World, dir: &Path, previous: Option<&Saved>) -> Result<(Saved, SaveReport), PersistError> {
+    let mut p = plan(world, dir, previous);
+    p.need = crate::disk::Need::Agent;
+    execute(p)
 }
 
 /// Reads the world saved in `dir`, and what [`plan`] needs to save it again incrementally
@@ -1804,6 +1826,12 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("notes.2026.json"), "{\"todo\": [\"walls\"]}").unwrap();
         assert_eq!(check_adoptable(&dir).err().unwrap().code, "not_a_world", "a lone user file isn't a crashed save");
+        // A review queue and its evidence (written before the first save) are ours.
+        let queued = temp_dir("queued");
+        std::fs::create_dir_all(queued.join("evidence")).unwrap();
+        std::fs::write(queued.join("review.json"), "{}").unwrap();
+        assert!(check_adoptable(&queued).is_ok());
+        let _ = std::fs::remove_dir_all(&queued);
         std::fs::remove_file(dir.join("notes.2026.json")).unwrap();
 
         let w = sample();

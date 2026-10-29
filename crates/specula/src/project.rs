@@ -13,6 +13,9 @@
 //! - **The disk** ([`Disk`]): the engine writes mounted files atomically after each commit and
 //!   notices edits made outside it (a watcher thread stats them once a second); those are
 //!   imported as journaled changes by [`DISK_AGENT`].
+//! - **Binary files** (PNG images, glTF/GLB models, WAV audio; [`FileKind::is_binary`]) are held
+//!   as small pointer texts naming their bytes in the content store ([`crate::blobs`]): the
+//!   journal, conflict help and undo work on the pointer, and the disk sync writes the bytes.
 
 use crate::world::{validate_name, WorldError};
 use specula_core::hash::StableHasher;
@@ -65,10 +68,15 @@ pub enum FileKind {
     Rust,
     Cargo,
     Json,
+    /// Binary files (see [`FileKind::is_binary`]).
+    Png,
+    Glb,
+    Gltf,
+    Wav,
 }
 
 impl FileKind {
-    pub const ALL: [FileKind; 10] = [
+    pub const ALL: [FileKind; 14] = [
         FileKind::Recipe,
         FileKind::Style,
         FileKind::StyleRules,
@@ -79,6 +87,10 @@ impl FileKind {
         FileKind::Rust,
         FileKind::Cargo,
         FileKind::Json,
+        FileKind::Png,
+        FileKind::Glb,
+        FileKind::Gltf,
+        FileKind::Wav,
     ];
 
     pub fn name(self) -> &'static str {
@@ -93,6 +105,10 @@ impl FileKind {
             FileKind::Rust => "rust",
             FileKind::Cargo => "cargo",
             FileKind::Json => "json",
+            FileKind::Png => "png",
+            FileKind::Glb => "glb",
+            FileKind::Gltf => "gltf",
+            FileKind::Wav => "wav",
         }
     }
 
@@ -102,7 +118,13 @@ impl FileKind {
 
     /// JSON text: patched by JSON path, diffed by path.
     pub fn is_json(self) -> bool {
-        !matches!(self, FileKind::StyleRules | FileKind::Rust | FileKind::Cargo)
+        !matches!(self, FileKind::StyleRules | FileKind::Rust | FileKind::Cargo) && !self.is_binary()
+    }
+
+    /// Bytes, not text: the store holds a pointer into the content store ([`crate::blobs`]);
+    /// written with project_upload, read with project_read's `bytes`.
+    pub fn is_binary(self) -> bool {
+        matches!(self, FileKind::Png | FileKind::Glb | FileKind::Gltf | FileKind::Wav)
     }
 
     /// A module crate's file: validated by building it (`logic_build`).
@@ -154,6 +176,50 @@ pub fn file_id(path: &str) -> u64 {
 /// `/project` or anything below it.
 pub fn under_root(path: &str) -> bool {
     path == "/project" || path.starts_with("/project/")
+}
+
+/// Binary bytes the store's current files may name in all (each at most
+/// [`crate::blobs::MAX_BLOB_BYTES`]).
+pub const MAX_BINARY_STORE_BYTES: u64 = 1 << 30;
+
+/// The bytes a binary file's pointer names (0 for text files).
+pub fn binary_bytes(f: &ProjectFile) -> u64 {
+    if f.kind.is_binary() {
+        crate::blobs::parse_pointer(&f.text).map_or(0, |(_, b)| b)
+    } else {
+        0
+    }
+}
+
+/// Refuses putting a binary file of `bytes` at `path` when the store's binary files would pass
+/// [`MAX_BINARY_STORE_BYTES`].
+pub fn room_for_binary(files: &BTreeMap<String, ProjectFile>, path: &str, bytes: u64) -> Result<(), WorldError> {
+    if bytes > crate::blobs::MAX_BLOB_BYTES {
+        return Err(bad("too_large", format!("{path} would be {bytes} bytes; binary project files are at most {}", crate::blobs::MAX_BLOB_BYTES), path).with("bytes", bytes).with("limit", crate::blobs::MAX_BLOB_BYTES));
+    }
+    let total: u64 = files.iter().filter(|(p, _)| p.as_str() != path).map(|(_, f)| binary_bytes(f)).sum::<u64>() + bytes;
+    if total > MAX_BINARY_STORE_BYTES {
+        return Err(bad("store_full", format!("the project's binary files would hold {total} bytes; at most {MAX_BINARY_STORE_BYTES}: delete some first"), path).with("limit", MAX_BINARY_STORE_BYTES));
+    }
+    Ok(())
+}
+
+/// Folders binary files of each kind are mirrored in (any folder on the way counts:
+/// `assets/textures/stone/wall.png`). Binary files elsewhere are left alone, so a working folder
+/// full of screenshots is never copied into the content store.
+pub const PNG_FOLDERS: [&str; 4] = ["textures", "images", "references", "icons"];
+pub const MODEL_FOLDERS: [&str; 1] = ["models"];
+pub const WAV_FOLDERS: [&str; 2] = ["audio", "sounds"];
+
+fn binary_kind(folders: &[&str], ext: Option<&str>) -> Option<FileKind> {
+    let within = |names: &[&str]| folders.iter().any(|f| names.contains(f));
+    match ext? {
+        "png" if within(&PNG_FOLDERS) => Some(FileKind::Png),
+        "glb" if within(&MODEL_FOLDERS) => Some(FileKind::Glb),
+        "gltf" if within(&MODEL_FOLDERS) => Some(FileKind::Gltf),
+        "wav" if within(&WAV_FOLDERS) => Some(FileKind::Wav),
+        _ => None,
+    }
 }
 
 /// Refuses putting `bytes` of text at `path` when the file or the store would pass its limits
@@ -254,6 +320,9 @@ pub fn kind_for(mount: MountKind, rel: &str) -> Option<FileKind> {
             }
             if name == "style.toml" {
                 return Some(FileKind::StyleRules);
+            }
+            if let Some(k) = binary_kind(&segments[..segments.len() - 1], ext.as_deref()) {
+                return Some(k);
             }
             if ext.as_deref() != Some("json") {
                 return None;
@@ -385,6 +454,38 @@ pub fn read_text(path: &Path) -> Result<(Arc<str>, Stamp), String> {
     Ok((Arc::from(text), stamp))
 }
 
+/// Reads a binary file: at most [`crate::blobs::MAX_BLOB_BYTES`]; its bytes go into the content
+/// store (`store`; `None` only computes the pointer) and the pointer text comes back.
+pub fn read_blob(path: &Path, store: Option<&crate::blobs::ContentStore>) -> Result<(Arc<str>, Stamp), String> {
+    let (len, mtime) = stat(path).ok_or("not a regular file")?;
+    let max = crate::blobs::MAX_BLOB_BYTES;
+    if len > max {
+        return Err(format!("{len} bytes; binary files are mirrored up to {max}"));
+    }
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > max {
+        return Err(format!("{} bytes; binary files are mirrored up to {max}", bytes.len()));
+    }
+    let id = match store {
+        Some(s) => s.put(&bytes).map_err(|e| format!("not stored in the content store: {e}"))?,
+        None => crate::blobs::BlobId::of(&bytes),
+    };
+    let text = crate::blobs::pointer(id, bytes.len() as u64);
+    let hash = text_hash(&text);
+    let (len2, mtime2) = stat(path).unwrap_or((len, mtime));
+    let stamp = if (len2, mtime2) == (bytes.len() as u64, mtime) { Stamp { len: len2, mtime, hash } } else { Stamp { len: bytes.len() as u64, mtime: None, hash } };
+    Ok((Arc::from(text), stamp))
+}
+
+/// Reads a mirrored file of `kind`: text ([`read_text`]) or binary ([`read_blob`]).
+pub fn read_entry(path: &Path, kind: FileKind, store: Option<&crate::blobs::ContentStore>) -> Result<(Arc<str>, Stamp), String> {
+    if kind.is_binary() {
+        read_blob(path, store)
+    } else {
+        read_text(path)
+    }
+}
+
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Writes `text` to `path` atomically: a hidden temporary file in the same folder, flushed, then
@@ -392,9 +493,25 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Returns the stamp of what is there afterwards and what it holds (someone may have written in
 /// the same moment: the caller compares hashes).
 pub fn write_atomic(root: &Path, path: &Path, text: &str) -> Result<(Stamp, Option<Arc<str>>), String> {
+    write_entry(root, path, FileKind::Json, text, None)
+}
+
+/// [`write_atomic`] for a file of `kind`: a binary file's bytes come from the content store
+/// (its text is the pointer), and are checked against it when read back.
+pub fn write_entry(root: &Path, path: &Path, kind: FileKind, text: &str, store: Option<&crate::blobs::ContentStore>) -> Result<(Stamp, Option<Arc<str>>), String> {
     use std::io::Write;
+    let bytes: std::borrow::Cow<[u8]> = if kind.is_binary() {
+        let (id, _) = crate::blobs::parse_pointer(text).ok_or("not a binary file's pointer")?;
+        let store = store.ok_or("no content store")?;
+        std::borrow::Cow::Owned(store.get(id).map_err(|e| format!("its content isn't in the content store ({e})"))?)
+    } else {
+        std::borrow::Cow::Borrowed(text.as_bytes())
+    };
     let parent = path.parent().ok_or("no parent folder")?;
     check_inside(root, parent)?;
+    // Through the disk budget: below the floor the write waits (pending, retried) instead.
+    let old = crate::disk::file_len(path).unwrap_or(0);
+    crate::disk::book().admit(crate::disk::Category::Project, (bytes.len() as u64).saturating_sub(old), crate::disk::Need::Agent).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(parent).map_err(|e| format!("can't create {}: {e}", parent.display()))?;
     check_inside(root, parent)?;
     let name = path.file_name().and_then(|n| n.to_str()).ok_or("bad file name")?;
@@ -402,7 +519,7 @@ pub fn write_atomic(root: &Path, path: &Path, text: &str) -> Result<(Stamp, Opti
     let tmp = parent.join(format!(".{name}.specula-tmp-{}-{n}", std::process::id()));
     let written = (|| -> std::io::Result<()> {
         let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(text.as_bytes())?;
+        f.write_all(&bytes)?;
         f.sync_all()?;
         drop(f);
         std::fs::rename(&tmp, path)
@@ -411,9 +528,16 @@ pub fn write_atomic(root: &Path, path: &Path, text: &str) -> Result<(Stamp, Opti
         let _ = std::fs::remove_file(&tmp);
         return Err(e.to_string());
     }
-    match read_text(path) {
-        Ok((_, stamp)) if stamp.hash == text_hash(text) => Ok((stamp, None)),
-        Ok((now, stamp)) => Ok((stamp, Some(now))),
+    // Read back and compared byte for byte (never only by hash: hashes can be made to collide).
+    // Only someone else's bytes (a race) go into the content store.
+    let Some((len, mtime)) = stat(path) else { return Err("written, but can't be read back: not a regular file".into()) };
+    let now = std::fs::read(path).map_err(|e| format!("written, but can't be read back: {e}"))?;
+    if now == *bytes {
+        let stamp = if stat(path) == Some((len, mtime)) { Stamp { len, mtime, hash: text_hash(text) } } else { Stamp { len, mtime: None, hash: text_hash(text) } };
+        return Ok((stamp, None));
+    }
+    match read_entry(path, kind, store) {
+        Ok((theirs, stamp)) => Ok((stamp, Some(theirs))),
         Err(e) => Err(format!("written, but can't be read back: {e}")),
     }
 }
@@ -463,6 +587,8 @@ struct Shared {
     /// Project path → what the engine last synced (wrote, read or imported).
     stamps: Mutex<BTreeMap<String, Stamp>>,
     stop: AtomicBool,
+    /// Where binary files' bytes live (see [`crate::blobs`]).
+    content: std::sync::OnceLock<Arc<crate::blobs::ContentStore>>,
 }
 
 /// A disk change the engine found while writing (someone wrote the same file at the same time),
@@ -515,6 +641,15 @@ impl Drop for Disk {
 }
 
 impl Disk {
+    /// The content store binary files read into and write from (set once, before mounting).
+    pub fn set_content(&self, store: Arc<crate::blobs::ContentStore>) {
+        let _ = self.shared.content.set(store);
+    }
+
+    pub fn content(&self) -> Option<&Arc<crate::blobs::ContentStore>> {
+        self.shared.content.get()
+    }
+
     pub fn mounts(&self) -> Vec<Mount> {
         self.shared.mounts.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
@@ -532,7 +667,7 @@ impl Disk {
         let mut skipped = found.skipped;
         let mut files = Vec::new();
         for (rel, kind) in found.files {
-            match read_text(&mount.disk_path(&rel)) {
+            match read_entry(&mount.disk_path(&rel), kind, self.content().map(|c| &**c)) {
                 Ok((text, stamp)) => files.push((mount.path_of(&rel), kind, text, stamp)),
                 Err(e) => skipped.push((rel, e)),
             }
@@ -600,7 +735,7 @@ impl Disk {
             (None, Some(_)) => Some(Event::Removed { path: path.to_owned() }),
             (None, None) => None,
             (Some(meta), Some(s)) if s.same_file(meta) => None,
-            (Some(meta), _) => match read_text(&disk) {
+            (Some(meta), _) => match read_entry(&disk, kind, self.content().map(|c| &**c)) {
                 Ok((text, stamp)) if Some(stamp.hash) != known.map(|s| s.hash) => Some(Event::Changed { path: path.to_owned(), kind, text, stamp }),
                 Ok((_, stamp)) => {
                     // Touched, same text: remember the new time; readable again, so not held.
@@ -681,7 +816,7 @@ impl Disk {
                 }
             }
             match file {
-                Some(f) => match write_atomic(&mount.root, &disk, &f.text) {
+                Some(f) => match write_entry(&mount.root, &disk, f.kind, &f.text, self.content().map(|c| &**c)) {
                     Ok((stamp, None)) => {
                         self.stamp(&path, stamp);
                         self.pending.remove(&path);
@@ -730,7 +865,7 @@ impl Disk {
         let name = disk.file_name().and_then(|n| n.to_str()).ok_or("bad name")?;
         let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let backup = parent.join(format!(".{name}.specula-backup-{}-{n}", std::process::id()));
-        std::fs::copy(&disk, &backup).map_err(|e| format!("can't back up {}: {e}", disk.display()))?;
+        crate::disk::book().copy(crate::disk::Category::Project, "backup", &disk, &backup, crate::disk::Need::Agent).map_err(|e| format!("can't back up {}: {e}", disk.display()))?;
         let meta = stat(&disk).ok_or("gone")?;
         // What is there now counts as synced (hash 0 never matches a text), so the write proceeds.
         self.stamp(path, Stamp { len: meta.0, mtime: meta.1, hash: 0 });
@@ -772,7 +907,7 @@ fn watch(shared: &Shared, tx: &Sender<Event>) {
                 }
                 (Some(m), s) if s.is_none_or(|s| !s.same_file(m)) && sent.get(&path) != Some(&m) => {
                     sent.insert(path.clone(), m);
-                    match read_text(&disk) {
+                    match read_entry(&disk, kind, shared.content.get().map(|c| &**c)) {
                         // Same text as synced still goes in: the engine stamps the new time, and a
                         // file held as unreadable is released once the disk is readable again.
                         Ok((text, st)) => return tx.send(Event::Changed { path, kind, text, stamp: st }).is_ok(),
@@ -827,6 +962,12 @@ mod tests {
         assert_eq!(kind_for(a, "style.json"), Some(FileKind::Style));
         assert_eq!(kind_for(a, "x/style.toml"), Some(FileKind::StyleRules));
         assert_eq!(kind_for(a, "recipes/readme.md"), None);
+        assert_eq!(kind_for(a, "textures/stone/wall.png"), Some(FileKind::Png));
+        assert_eq!(kind_for(a, "models/wraith.glb"), Some(FileKind::Glb));
+        assert_eq!(kind_for(a, "models/wraith.gltf"), Some(FileKind::Gltf));
+        assert_eq!(kind_for(a, "sounds/bell.wav"), Some(FileKind::Wav));
+        assert_eq!(kind_for(a, "docs/gallery/shot.png"), None, "binary files only in their folders");
+        assert_eq!(kind_for(a, "luts/grade.png"), None);
         assert_eq!(kind_for(a, "data/waves.json"), None);
         let m = MountKind::Module;
         assert_eq!(kind_for(m, "Cargo.toml"), Some(FileKind::Cargo));

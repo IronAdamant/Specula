@@ -83,13 +83,18 @@ fn hello_required(what: &str) -> ToolOutput {
 /// Writes `text` to `dir/board.json` (temporary file, then rename).
 fn write_board(dir: &Path, text: &str) -> std::io::Result<()> {
     use std::io::Write as _;
+    // Essential (the board beside the world): accounted, written even below the floor.
+    let old = crate::disk::file_len(&dir.join(BOARD_FILE));
+    crate::disk::book().admit(crate::disk::Category::Worlds, text.len() as u64, crate::disk::Need::Essential).map_err(std::io::Error::other)?;
     let tmp = dir.join(BOARD_TMP);
     {
         let mut f = std::fs::File::create(&tmp)?;
         f.write_all(text.as_bytes())?;
         f.sync_all()?;
     }
-    std::fs::rename(&tmp, dir.join(BOARD_FILE))
+    std::fs::rename(&tmp, dir.join(BOARD_FILE))?;
+    crate::disk::book().replaced(crate::disk::Category::Worlds, "board", old, text.len() as u64);
+    Ok(())
 }
 
 impl Engine {
@@ -235,9 +240,9 @@ impl Engine {
                 Ok(renewed) => out(Json::obj([("renewed", Json::Arr(renewed))])),
                 Err(e) => fail(&e),
             },
-            SwarmCall::LeaseRelease { id, delete } => {
+            SwarmCall::LeaseRelease { id, delete, keep } => {
                 let root = self.lease_pools(server).scratch_root;
-                match self.swarm.leases.release(w, id, delete, &root, now) {
+                match self.swarm.leases.release(w, id, (delete, keep), &root, now) {
                     Ok((ids, deleted)) => {
                         if !ids.is_empty() {
                             self.swarm.board.log(&by, tick, "lease_release", None, format!("{ids:?}"));
@@ -294,7 +299,7 @@ impl Engine {
                 let (lo, hi) = (trace.ticks.keys().next().copied().unwrap_or(0), trace.ticks.keys().next_back().copied().unwrap_or(0));
                 let path = self.capture_dir.join(format!("trace_{:04}_{lo}-{hi}.json", self.traces_written));
                 let text = trace.render();
-                let written = std::fs::create_dir_all(&self.capture_dir).and_then(|()| std::fs::write(&path, &text));
+                let written = crate::disk::book().write(crate::disk::Category::Captures, "trace", &path, text.as_bytes(), crate::disk::Need::Agent);
                 match written {
                     Ok(()) => {
                         let mut j = trace.summary();

@@ -14,8 +14,12 @@
 //!   one whole GPU). Advisory: engines don't enforce it, but agents that lease before rendering
 //!   heavily stay within what the machine can give (the window keeps its frames).
 //! - **Scratch folders**: a fresh folder of its own under the scratch root, never reused by a
-//!   later lease. `lease_release {delete: true}` removes it with everything in it; a lease that
-//!   just expires leaves its folder alone (its owner may still be writing there).
+//!   later lease. `lease_release {delete: true}` removes it with everything in it (links inside
+//!   are removed as links, never followed). Each folder carries a marker (`.specula-lease`: its
+//!   lease and when it ends, rewritten on renew and release); the disk budget's walker removes a
+//!   folder whose lease ended more than `[disk] scratch_grace_s` ago (default an hour: its owner
+//!   may still be reading it), unless it was released with `keep: true`. Folders without a marker
+//!   are never touched.
 //!
 //! Leases run for a time limit (like claims), belong to an identity key (a resumed agent keeps
 //! them) and are live coordination only: not saved with the world. Wall-clock time is fine here:
@@ -26,7 +30,12 @@ use crate::world::WorldError;
 use specula_core::Json;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+/// `now + left` in unix seconds (what a scratch folder's marker records).
+fn ends_unix(left: Duration) -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0).saturating_add(left.as_secs())
+}
 
 pub const DEFAULT_LEASE: Duration = Duration::from_secs(600);
 pub const MAX_PER_AGENT: usize = 32;
@@ -125,6 +134,11 @@ impl Default for Leases {
 
 fn not_found(id: u64) -> WorldError {
     WorldError::new("lease_not_found", format!("there is no live lease {id} (expired or released?)")).with("lease", id)
+}
+
+/// A folder-name-safe form of an agent name (also how the disk budget checks a lease folder's name).
+pub(crate) fn folder_safe(name: &str) -> String {
+    safe(name)
 }
 
 /// A folder-name-safe form of an agent name.
@@ -230,7 +244,9 @@ impl Leases {
             }
             Want::Scratch => {
                 let dir = pools.scratch_root.join(format!("{}-{}-{}", safe(w.name), self.next + 1, self.run));
-                std::fs::create_dir_all(&dir).map_err(|e| {
+                // Through the disk budget: refused below the free-space floor, like any agent's write.
+                crate::disk::book().make_dir(crate::disk::Category::Scratch, &dir, crate::disk::Need::Agent).map_err(|e| e.to_world())?;
+                crate::disk::write_lease_marker(&dir, self.next + 1, w.name, ends_unix(lease), false).map_err(|e| {
                     WorldError::new("io", format!("could not create the scratch folder {}: {e}", dir.display())).with("dir", dir.display().to_string())
                 })?;
                 Resource::Scratch(dir)
@@ -261,6 +277,9 @@ impl Leases {
         for id in ids {
             if let Some(l) = self.leases.get_mut(&id) {
                 l.expires = now + lease;
+                if let Resource::Scratch(dir) = &l.resource {
+                    let _ = crate::disk::write_lease_marker(dir, l.id, &l.owner, ends_unix(lease), false);
+                }
                 out.push(l.to_json(now));
             }
         }
@@ -268,8 +287,9 @@ impl Leases {
     }
 
     /// `lease_release`: one lease, or all of `w`'s; `delete` removes scratch folders too (only
-    /// folders under `scratch_root`). Returns the ids released and the folders deleted.
-    pub fn release(&mut self, w: Writer, id: Option<u64>, delete: bool, scratch_root: &Path, now: Instant) -> Result<(Vec<u64>, Vec<String>), WorldError> {
+    /// folders inside `scratch_root`, never through a link); `keep` keeps a released folder from
+    /// the disk budget's cleanup. Returns the ids released and the folders deleted.
+    pub fn release(&mut self, w: Writer, id: Option<u64>, (delete, keep): (bool, bool), scratch_root: &Path, now: Instant) -> Result<(Vec<u64>, Vec<String>), WorldError> {
         let ids: Vec<u64> = match id {
             Some(id) => vec![self.owned(w, id, now)?.id],
             None => self.leases.values().filter(|l| l.held_by(w)).map(|l| l.id).collect(),
@@ -277,10 +297,16 @@ impl Leases {
         let mut deleted = Vec::new();
         for id in &ids {
             if let Some(l) = self.leases.remove(id) {
-                if let (true, Resource::Scratch(dir)) = (delete, &l.resource) {
-                    if dir.starts_with(scratch_root) && std::fs::remove_dir_all(dir).is_ok() {
+                let Resource::Scratch(dir) = &l.resource else { continue };
+                if delete {
+                    let root = crate::disk::canonical(scratch_root);
+                    if let Ok((files, bytes)) = crate::disk::remove_tree_inside(&root, &crate::disk::canonical(dir)) {
+                        crate::disk::book().wrote(crate::disk::Category::Scratch, "lease", -(bytes as i64), -(files as i64));
                         deleted.push(dir.display().to_string());
                     }
+                } else {
+                    // Ended now: the walker removes it after the grace period, unless kept.
+                    let _ = crate::disk::write_lease_marker(dir, l.id, &l.owner, ends_unix(Duration::ZERO), keep);
                 }
             }
         }
@@ -293,6 +319,11 @@ impl Leases {
         let total = matching.clone().count();
         let (items, next) = crate::board::page(matching.filter(|l| after.is_none_or(|a| l.id > a)).map(|l| (l.id, l.to_json(now))), limit);
         Json::obj([("total", Json::from(total)), ("leases", Json::Arr(items)), ("next_cursor", Json::from(next))])
+    }
+
+    /// The folders of live scratch leases (the disk budget never cleans them up).
+    pub fn scratch_dirs(&self, now: Instant) -> Vec<PathBuf> {
+        self.live(now).filter_map(|l| if let Resource::Scratch(d) = &l.resource { Some(d.clone()) } else { None }).collect()
     }
 
     /// Live leases held by `name`, for roll-ups.
@@ -325,9 +356,9 @@ mod tests {
         let e = l.take(BOB, (Want::Ports(1), String::new(), DEFAULT_LEASE), &pools(&root), &busy, now).unwrap_err();
         assert_eq!(e.code, "no_free_ports");
         // Released or expired ports come back.
-        l.release(ANN, Some(1), false, &root, now).unwrap();
+        l.release(ANN, Some(1), (false, false), &root, now).unwrap();
         assert!(l.take(BOB, (Want::Ports(1), String::new(), DEFAULT_LEASE), &pools(&root), &busy, now).is_ok());
-        assert_eq!(l.release(ANN, Some(2), false, &root, now).unwrap_err().code, "not_owner");
+        assert_eq!(l.release(ANN, Some(2), (false, false), &root, now).unwrap_err().code, "not_owner");
         let later = now + DEFAULT_LEASE;
         assert!(l.take(ANN, (Want::Ports(2), String::new(), DEFAULT_LEASE), &pools(&root), &busy, later).is_ok());
     }
@@ -378,9 +409,12 @@ mod tests {
         assert!(da.is_dir() && db.is_dir());
         assert!(db.file_name().unwrap().to_string_lossy().starts_with("bob_x-"), "names are folder-safe");
         std::fs::write(da.join("f.txt"), "x").unwrap();
-        l.release(ANN, Some(a.id), false, &root, now).unwrap();
+        assert!(da.join(crate::disk::LEASE_MARKER).is_file(), "marked with its lease");
+        l.release(ANN, Some(a.id), (false, true), &root, now).unwrap();
         assert!(da.is_dir(), "kept without delete");
-        let (_, deleted) = l.release(BOB, None, true, &root, now).unwrap();
+        let marker = std::fs::read_to_string(da.join(crate::disk::LEASE_MARKER)).unwrap();
+        assert!(marker.contains("\"keep\":true"), "{marker}");
+        let (_, deleted) = l.release(BOB, None, (true, false), &root, now).unwrap();
         assert_eq!(deleted.len(), 1);
         assert!(!db.exists());
         let _ = std::fs::remove_dir_all(&root);

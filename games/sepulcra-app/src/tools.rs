@@ -316,7 +316,7 @@ pub(crate) fn safe_path(rel: &str, write: bool) -> Result<PathBuf, ToolOutput> {
         existing = existing.parent().unwrap_or(&cwd);
     }
     inside(&existing.canonicalize().map_err(io)?)?;
-    std::fs::create_dir_all(&parent).map_err(io)?;
+    specula::disk::book().make_dir(specula::disk::Category::Captures, &parent, specula::disk::Need::Agent).map_err(|e| error(e.code, e.message, e.detail))?;
     let real_parent = parent.canonicalize().map_err(io)?;
     inside(&real_parent)?;
     let target = real_parent.join(full.file_name().unwrap_or_default());
@@ -661,7 +661,8 @@ fn record(game: &SepulcraGame, args: &Json) -> Result<ToolOutput, ToolOutput> {
     }
     let (rec, advanced) = recording(game);
     let text = rec.to_json(game.state.content()).to_pretty();
-    std::fs::write(&path, text).map_err(|e| error("io", format!("{}: {e}", show(&path)), vec![]))?;
+    // Through the engine's disk budget (refused below the free-space floor, with the numbers).
+    specula::disk::book().write(specula::disk::Category::Captures, "play_record", &path, text.as_bytes(), specula::disk::Need::Agent).map_err(|e| error(e.code, e.message, e.detail))?;
     let end = rec.end.expect("set above");
     let mut out = obj([
         ("path", Json::from(show(&path))),

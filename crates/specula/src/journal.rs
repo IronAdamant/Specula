@@ -58,6 +58,10 @@ pub const MAX_GAME_BYTES: usize = 16 << 20;
 /// the rings' budgets: past it the oldest entries' texts are dropped (they can't be undone any
 /// more), so file edits can never push world history or the replay base out.
 pub const MAX_FILE_TEXT_BYTES: usize = 64 << 20;
+/// Binary content the kept file changes may name (before and after; their bytes live in the
+/// content store, see `blobs`): past it the oldest binary changes are dropped like old texts
+/// (`too_old` on undo), so the content store never has to keep more history than this.
+pub const MAX_FILE_BLOB_BYTES: u64 = 1 << 30;
 /// Entries one world_undo call may undo.
 pub const MAX_UNDO: usize = 100;
 /// Entries a history call examines before handing back a cursor (bounds its cost).
@@ -519,6 +523,10 @@ pub struct Journal {
     file_texts: VecDeque<(u64, usize)>,
     file_bytes: usize,
     file_budget: usize,
+    /// Entries naming binary content, oldest first, with its bytes (see [`MAX_FILE_BLOB_BYTES`]).
+    file_blobs: VecDeque<(u64, u64)>,
+    blob_bytes: u64,
+    blob_budget: u64,
     /// What the base is: `"empty"` or `"world:<name>"`.
     base_label: String,
     /// Which numbering `seq`s belong to (see [`Journal::epoch`]).
@@ -558,6 +566,9 @@ impl Journal {
             file_texts: VecDeque::new(),
             file_bytes: 0,
             file_budget: MAX_FILE_TEXT_BYTES,
+            file_blobs: VecDeque::new(),
+            blob_bytes: 0,
+            blob_budget: MAX_FILE_BLOB_BYTES,
             base_label: String::new(),
             epoch: String::new(),
             instance: JOURNALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
@@ -580,6 +591,8 @@ impl Journal {
         self.names.clear();
         self.file_texts.clear();
         self.file_bytes = 0;
+        self.file_blobs.clear();
+        self.blob_bytes = 0;
         let mut copy = base.clone();
         copy.set_recording(Recording::Off);
         copy.take_changes();
@@ -651,6 +664,7 @@ impl Journal {
         ids.dedup();
         let bytes = std::mem::size_of::<Entry>() + ids.len() * 8 + changes.iter().map(Change::approx_bytes).sum::<usize>();
         let file_bytes: usize = changes.iter().map(Change::file_text_bytes).sum();
+        let blob_bytes: u64 = changes.iter().map(Change::file_blob_bytes).sum();
         let by = self.intern(w.name);
         let session = w.session.map(|s| self.intern(s));
         for c in &changes {
@@ -696,6 +710,24 @@ impl Journal {
             self.file_texts.pop_front();
             self.file_bytes -= b;
         }
+        while let Some(&(old, b)) = self.file_blobs.front() {
+            if self.get(old).is_some_and(|e| e.changes.iter().any(|c| c.file_blob_bytes() > 0)) {
+                break;
+            }
+            self.file_blobs.pop_front();
+            self.blob_bytes -= b;
+        }
+        if blob_bytes > 0 {
+            self.file_blobs.push_back((seq, blob_bytes));
+            self.blob_bytes += blob_bytes;
+            while self.blob_bytes > self.blob_budget {
+                let Some((old, b)) = self.file_blobs.pop_front() else { break };
+                self.blob_bytes -= b;
+                if let Some(e) = self.get_mut(old) {
+                    e.changes.iter_mut().for_each(Change::drop_file_text);
+                }
+            }
+        }
         if file_bytes > 0 {
             self.file_texts.push_back((seq, file_bytes));
             self.file_bytes += file_bytes;
@@ -718,6 +750,31 @@ impl Journal {
     /// Entries holding file text (bounded by the rings).
     pub fn file_text_entries(&self) -> usize {
         self.file_texts.len()
+    }
+
+    /// Binary content kept file changes name, and its budget (see [`MAX_FILE_BLOB_BYTES`]).
+    pub fn file_blobs(&self) -> (u64, u64) {
+        (self.blob_bytes, self.blob_budget)
+    }
+
+    /// Every binary file pointer a kept file change holds (what undo and `project_read
+    /// {version}` may still need from the content store), bounded by the entries holding them.
+    pub fn blob_pointers(&self) -> Vec<Arc<str>> {
+        let mut out = Vec::new();
+        for (seq, _) in &self.file_blobs {
+            let Some(e) = self.get(*seq) else { continue };
+            for c in &e.changes {
+                if let Change::File { before, after, kept: true, .. } = c {
+                    out.extend([before, after].into_iter().flatten().filter(|f| f.kind.is_binary()).map(|f| Arc::clone(&f.text)));
+                }
+            }
+        }
+        out
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_blob_budget(&mut self, bytes: u64) {
+        self.blob_budget = bytes;
     }
 
     #[cfg(test)]

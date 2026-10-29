@@ -495,6 +495,8 @@ pub struct PerfConfig {
     pub streaming: crate::streaming::StreamTable,
     /// `[vfx]`: particle, emitter, decal, fill and light budgets of effects (see [`crate::vfx`]).
     pub vfx: crate::vfx::VfxTable,
+    /// `[disk]`: the disk footprint budget (see [`crate::disk::DiskConfig`]).
+    pub disk: crate::disk::DiskConfig,
     base: Json,
     adapters: Vec<(String, Json)>,
 }
@@ -511,6 +513,7 @@ impl Default for PerfConfig {
             lex_live: crate::lex_live::LIMITS,
             streaming: crate::streaming::StreamTable::default(),
             vfx: crate::vfx::VfxTable::default(),
+            disk: crate::disk::DiskConfig::default(),
             base: Json::obj::<&str>([]),
             adapters: Vec::new(),
         }
@@ -570,7 +573,8 @@ impl PerfConfig {
                 "lex_live" => cfg.lex_live = crate::lex_live::Limits::parse(v)?,
                 "streaming" => cfg.streaming = crate::streaming::StreamTable::parse(v)?,
                 "vfx" => cfg.vfx = crate::vfx::VfxTable::parse(v)?,
-                other => return Err(format!("unknown section '{other}' (known: profiler, budgets, adapter, swarm, window, lex_live, streaming, vfx)")),
+                "disk" => cfg.disk = crate::disk::DiskConfig::parse(v)?,
+                other => return Err(format!("unknown section '{other}' (known: profiler, budgets, adapter, swarm, window, lex_live, streaming, vfx, disk)")),
             }
         }
         Budgets::from_json(&cfg.base, "budgets")?;
@@ -1128,8 +1132,7 @@ fn finish_capture(cap: PendingCapture, n: u32, stopped_early: Option<&'static st
     let frames = &cap.frames;
     let mut warnings = Vec::new();
     let write = |path: &Path, text: String| -> Result<(), String> {
-        std::fs::create_dir_all(&cap.dir).map_err(|e| e.to_string())?;
-        std::fs::write(path, text).map_err(|e| e.to_string())
+        crate::disk::book().write(crate::disk::Category::Captures, "perf", path, text.as_bytes(), crate::disk::Need::Agent).map_err(|e| e.to_string())
     };
     if let Err(e) = write(&data_path, capture_json(&cap).to_string()) {
         warnings.push(Json::from(format!("capture not saved to {}: {e}", data_path.display())));

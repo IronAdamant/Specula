@@ -304,11 +304,11 @@ pub fn vet(req: &BuildRequest) -> Result<(), (&'static str, String)> {
     let restore = || match &lock_before {
         Some(bytes) => {
             if std::fs::read(&lock).ok().as_deref() != Some(bytes.as_slice()) {
-                let _ = std::fs::write(&lock, bytes);
+                let _ = crate::disk::write(crate::disk::Kind::Project, &lock, bytes, true);
             }
         }
         None => {
-            let _ = std::fs::remove_file(&lock);
+            let _ = crate::disk::remove_file(crate::disk::Kind::Project, &lock);
         }
     };
     let out = cargo_command()
@@ -463,11 +463,11 @@ impl LockGuard {
         match &self.before {
             Some(bytes) => {
                 if std::fs::read(&self.path).ok().as_deref() != Some(bytes.as_slice()) {
-                    let _ = std::fs::write(&self.path, bytes);
+                    let _ = crate::disk::write(crate::disk::Kind::Project, &self.path, bytes, true);
                 }
             }
             None => {
-                let _ = std::fs::remove_file(&self.path);
+                let _ = crate::disk::remove_file(crate::disk::Kind::Project, &self.path);
             }
         }
     }
