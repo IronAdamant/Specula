@@ -18,7 +18,7 @@
 // forbid, lets that allow through).
 #![deny(unsafe_code)]
 
-use specula_sdk::{dmath, Cx, HookDef, Id, Module, ModuleInfo, Patch, SdkError, Spawn, StopReason, Value, Vec3};
+use specula_sdk::{dmath, Cx, HookDef, Id, Module, ModuleInfo, Patch, SdkError, Spawn, StopReason, TraceLevel, Value, Vec3};
 
 /// Walking speed, metres per second.
 const WALK_SPEED: f32 = 4.0;
@@ -116,6 +116,8 @@ impl Module for Ambulo {
             let jumps = cx.state("jumps")?.as_u64().unwrap_or(0) + 1;
             cx.set_state("jumps", jumps)?;
             cx.emit("jumped", Value::map().with("jumps", jumps))?;
+            // A structured trace event (trace_query {subsystem: "module:ambulo"}).
+            cx.trace(TraceLevel::Info, "ambulo.jumped", Value::map().with("jumps", jumps).with("tick", cx.tick()))?;
         }
         vy = (vy - GRAVITY * dt).max(-TERMINAL_SPEED);
 

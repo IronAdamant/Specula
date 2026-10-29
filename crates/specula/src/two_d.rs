@@ -1290,7 +1290,7 @@ impl Shape2dSpec {
     /// own (a panic, an engine bug, is kept as an error too rather than retried every frame).
     pub fn ensure(&self) -> Result<&Arc<ShapeMesh>, String> {
         self.mesh
-            .get_or_init(|| match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.tessellate())) {
+            .get_or_init(|| match specula_core::trace::catch_unwind(std::panic::AssertUnwindSafe(|| self.tessellate())) {
                 Ok(r) => r.map(Arc::new),
                 Err(panic) => Err(format!("tessellation failed unexpectedly (an engine bug, please report it): {}", panic_text(&*panic))),
             })
@@ -1580,7 +1580,7 @@ fn shape_slot(spec: &Arc<Shape2dSpec>) -> usize {
 
 /// Runs a loader job, turning a panic (an engine bug) into an error for `what`.
 fn guarded<T>(what: &str, job: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(job))
+    specula_core::trace::catch_unwind(std::panic::AssertUnwindSafe(job))
         .unwrap_or_else(|p| Err(format!("{what}: the loader failed unexpectedly (an engine bug, please report it): {}", panic_text(&*p))))
 }
 

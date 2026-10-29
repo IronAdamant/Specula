@@ -284,7 +284,7 @@ impl Worker {
             .spawn(move || {
                 while let Ok(job) = rx.recv() {
                     let started = Instant::now();
-                    let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| generate(job.key, job.origin, &job.members)))
+                    let made = specula_core::trace::catch_unwind(std::panic::AssertUnwindSafe(|| generate(job.key, job.origin, &job.members)))
                         .map_err(|_| "the proxy build panicked".to_owned());
                     if tx.send((job.cell, made, started.elapsed().as_secs_f64() * 1e3)).is_err() {
                         return;

@@ -2639,7 +2639,7 @@ impl Core<'_> {
         let natives_before: u64 = self.st.native_calls.iter().sum();
         // A native that panics (other code) leaves the state as the command found it, then the
         // panic goes on to the caller.
-        let acted = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.actions(&def.actions, &f))) {
+        let acted = match specula_core::trace::catch_unwind(std::panic::AssertUnwindSafe(|| self.actions(&def.actions, &f))) {
             Ok(r) => r,
             Err(p) => {
                 *self.st = snapshot;
@@ -2659,7 +2659,7 @@ impl Core<'_> {
             }
             return Err(Rejection::new("runtime_error", format!("command '{}' failed and was rolled back: {}", def.id, e.message)).with("cause", Json::from(e.code)));
         }
-        if let Err(p) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Err(p) = specula_core::trace::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.dispatch();
             self.check_outcomes(true);
         })) {

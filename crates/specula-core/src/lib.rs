@@ -20,5 +20,6 @@ pub mod png;
 pub mod profile;
 pub mod rng;
 pub mod toml;
+pub mod trace;
 
 pub use json::{Json, JsonError};

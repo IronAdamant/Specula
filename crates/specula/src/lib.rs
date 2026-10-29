@@ -84,6 +84,10 @@ pub mod swarm;
 mod swarm_engine;
 mod swarm_tools;
 mod tools;
+pub mod incidents;
+mod trace_engine;
+pub mod trace_sink;
+mod trace_tools;
 mod toolscope;
 mod toolscope_tools;
 pub mod two_d;
@@ -137,7 +141,7 @@ const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 
 const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|integrated|<index>] [--size WxH] \
 [--captures DIR] [--worlds DIR] [--world NAME] [--saves DIR] [--cache DIR] [--assets DIR] [--style FILE] [--perf FILE] \
-[--paused] [--max-fps N] [--response-format concise|detailed] [--tools-default core|all] [--physics-threads N] [--vfx on|off] [--terrain on|off] [-- GAME ARGS...]";
+[--paused] [--max-fps N] [--response-format concise|detailed] [--tools-default core|all] [--physics-threads N] [--vfx on|off] [--terrain on|off] \n[--trace DIR] [--trace-file on|off] [--strict-budget] [-- GAME ARGS...]";
 
 /// How long a capture waits (parked, the engine serving others) for models still building.
 const CAPTURE_BUILD_WAIT: Duration = Duration::from_secs(10);
@@ -202,6 +206,13 @@ struct Args {
     physics_threads: usize,
     /// The window's frame cap (`--max-fps`, 20..1000; over `perf.toml` `[window] max_fps`).
     max_fps: Option<u32>,
+    /// The trace folder: crash reports and the JSONL sink (`--trace`, default `./.specula-trace`).
+    trace: Option<PathBuf>,
+    /// The JSONL trace sink (`--trace-file on|off`, on by default).
+    trace_file: bool,
+    /// A call or frame step past its stall budget fails the run (`--strict-budget`): its
+    /// `engine.stall` is an error and the engine exits with an error (docs/design/TRACE.md).
+    strict_budget: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -231,6 +242,9 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
         terrain: true,
         physics_threads: 1,
         max_fps: None,
+        trace: None,
+        trace_file: true,
+        strict_budget: false,
     };
     let mut it = argv;
     while let Some(flag) = it.next() {
@@ -250,6 +264,15 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
                     "on" => true,
                     "off" => false,
                     other => return Err(format!("--terrain must be on or off, not '{other}'\n{USAGE}")),
+                }
+            }
+            "--strict-budget" => args.strict_budget = true,
+            "--trace" => args.trace = Some(PathBuf::from(value()?)),
+            "--trace-file" => {
+                args.trace_file = match value()?.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    other => return Err(format!("--trace-file must be on or off, not '{other}'\n{USAGE}")),
                 }
             }
             "--vfx" => {
@@ -343,6 +366,9 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         eprintln!("specula: Ctrl+C will not shut down cleanly: {e}");
     }
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    // Tracing first: a crash from here on leaves a report (docs/design/TRACE.md).
+    let trace_dir = args.trace.clone().unwrap_or_else(|| cwd.join(".specula-trace"));
+    trace_sink::start(&trace_dir, args.trace_file, args.port);
     let perf_cfg = perf::PerfConfig::load(args.perf.as_deref(), &cwd).map_err(|e| format!("perf budgets: {e}"))?;
     profile::set_enabled(perf_cfg.profiler);
     // A cached pipeline blob skips shader compilation at start-up. The GPU crate rejects one made
@@ -362,6 +388,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     let library = Library::new(&assets, args.style.as_deref());
     let mut engine = Engine::new(gpu, &captures_root, library)?;
     engine.windowed = !args.headless;
+    engine.watch.strict = args.strict_budget;
     engine.formats = response::Defaults::new(args.response_format);
     engine.physics.threads = args.physics_threads;
     engine.profiler = perf::Profiler::new(perf_cfg.history_frames);
@@ -392,6 +419,9 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         vec![
             (disk::Category::Captures, captures_root.clone()),
             (disk::Category::Cache, cache_dir.clone()),
+            // The trace folder: self-bounded (its JSONL files and crash reports are capped by
+            // count), never pruned by the book (a crash report must survive until it is read).
+            (disk::Category::Cache, trace_dir.clone()),
             (disk::Category::Content, cache_dir.join(blobs::CONTENT_DIR)),
             (disk::Category::Modules, cache_dir.join(logic::tools::MODULE_TARGETS)),
             (disk::Category::Scratch, scratch_root),
@@ -532,6 +562,14 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         Some(ui) => engine.run_windowed(ui, &requests, &server),
         None => engine.run_headless(&requests, &server),
     };
+    if let Err(e) = &result {
+        // A fatal engine error (device loss among them) leaves a crash report for after a restart.
+        if e.contains("DEVICE_LOST") {
+            trace_engine::device_lost("present", e);
+        } else {
+            trace_sink::write_crash("engine_error", e, None, Json::Null);
+        }
+    }
     engine.finish_autosave(true);
     // Save games still being written land before the process ends.
     engine.join_saves();
@@ -560,12 +598,24 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     if let Some(ui) = window {
         ui.close();
     }
-    let errors = leftover.iter().filter(|m| m.severity == Severity::Error).count();
+    // Every validation error of the run: those left at shutdown and those captures took on the
+    // way (review, 2026-10-29: errors a capture reported were missing from this count).
+    let taken = trace_engine::gpu_errors_seen();
+    let errors = leftover.iter().filter(|m| m.severity == Severity::Error).count() as u64 + taken;
     for m in leftover.iter().filter(|m| m.severity >= Severity::Warning) {
         eprintln!("specula: vulkan {:?} {}: {}", m.severity, m.id_name, m.message);
+        trace_engine::gpu_message(m.severity == Severity::Error, &m.id_name, &m.message);
+    }
+    if taken > 0 {
+        specula_core::trace_event!(&trace_sink::GPU, Warn, "gpu.validation_total", reported_by_captures = taken, see = "trace_incidents {code: \"gpu.validation\"}");
     }
     eprintln!("specula: shut down ({errors} validation errors)");
+    trace_sink::finish();
     interrupt::finished();
+    let strict = trace_engine::strict_failures();
+    if result.is_ok() && engine.watch.strict && strict > 0 {
+        return Err(format!("--strict-budget: {strict} engine-thread stall(s) past their budget (trace_incidents {{code: \"engine.stall\"}} lists them)"));
+    }
     result
 }
 
@@ -599,6 +649,8 @@ struct Engine {
     build_waiters: Vec<BuildWaiter>,
     /// Captures waiting for models they show.
     capture_waiters: Vec<capture::CaptureWaiter>,
+    /// The trace watchdogs' state (docs/design/TRACE.md).
+    watch: trace_engine::Watch,
     /// Agents' named cameras (camera_set).
     cameras: cameras::Cameras,
     /// sight_compare's "before" captures.
@@ -804,6 +856,7 @@ impl Engine {
             windowed: false,
             build_waiters: Vec::new(),
             capture_waiters: Vec::new(),
+            watch: trace_engine::Watch::default(),
             cameras: cameras::Cameras::default(),
             marks: compare::Marks::default(),
             studio,
@@ -983,6 +1036,8 @@ impl Engine {
         }
         self.tick_hashes.push_back((self.clock.tick(), h));
         self.record_trace(self.clock.tick(), h);
+        // Full verbosity only (off by default): every tick's hash, checked never to change it.
+        specula_core::trace_event!(&trace_sink::WORLD, Trace, "world.tick", hash = journal::hex(h));
     }
 
     /// Drops claims whose session is gone (at most once per [`CLAIM_SWEEP_EVERY`]).
@@ -1051,6 +1106,7 @@ impl Engine {
             // The simulation runs in the default floating-point environment, whatever rendering,
             // a driver or an overlay did to this thread since the last tick (rule 6).
             self.fp.check(self.clock.tick(), "between_ticks");
+            specula_core::trace::set_tick(self.clock.tick());
             // Animations set during the tick start at its time.
             self.world.set_clock_s(self.clock.seconds());
             if self.game.is_some() {
@@ -1718,7 +1774,7 @@ impl Engine {
                 |r| call_class(&r.command),
                 |r| {
                     let _z = profile::zone("requests");
-                    self.handle(r, server);
+                    self.handle_traced(r, server);
                 },
                 || interrupt::requested() || ui.close_requested(),
             );
@@ -1728,6 +1784,7 @@ impl Engine {
                 break;
             }
             let served = serve_start.elapsed();
+            self.trace_idle_checks();
             let frame_zone = profile::zone("frame");
             let frame_started = Instant::now();
             self.autosave_if_due();
@@ -1831,6 +1888,7 @@ impl Engine {
             let (frame_no, cpu) = self.gpu.last_window_timing();
             let blocked = Duration::from_secs_f64((cpu.wait_ms + cpu.submit_ms).max(0.0) / 1000.0);
             schedule.presented(frame_no, served, blocked, Instant::now());
+            self.trace_frame(frame_no, frame_cpu);
             self.models.put_bones(bones);
             self.vfx.put_frame(fx);
             self.terrain.frame = terrains;
@@ -1874,7 +1932,7 @@ impl Engine {
             match received {
                 Ok(request) => {
                     let _z = profile::zone("requests");
-                    self.handle(request, server);
+                    self.handle_traced(request, server);
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return Ok(()),
@@ -1896,6 +1954,7 @@ impl Engine {
             self.serve_captures();
             self.pump_playtests(server, playtest_engine::HEADLESS_SLICE);
             self.pump_studio(studio::HEADLESS_SHARE, server);
+            self.trace_idle_checks();
         }
         Ok(())
     }
@@ -2612,6 +2671,8 @@ impl Engine {
             // WCAG 2.3.1 on the final image (the window's grid and each view's captures).
             ("flash", self.flash.to_json(window.as_ref().and_then(|w| w.flash.unsupported))),
             ("render_graph", perf::graph_json(self.gpu.last_graph().as_ref(), graph)),
+            // Engine-thread stalls past their class budget, and incidents wanting attention.
+            ("trace", self.watch.json()),
             // Effects that can't apply (a grading LUT that failed to load), structured.
             // and pipeline variants a background build failed to make.
             // and floating-point environment changes the guard restored (rule 6).

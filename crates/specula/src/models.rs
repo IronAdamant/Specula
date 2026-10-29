@@ -319,6 +319,8 @@ struct Job {
     anims: Option<Arc<str>>,
     /// Set when nobody wants the build any more: a running build stops at its next budget check.
     cancel: Arc<AtomicBool>,
+    /// The call that queued it: the worker builds inside it (docs/design/TRACE.md).
+    trace: specula_core::trace::Ctx,
 }
 
 /// A worker's answer.
@@ -505,6 +507,11 @@ impl Workers {
                     }
                 };
                 let skip = cancelled.lock().unwrap_or_else(PoisonError::into_inner).remove(&job.id);
+                // The build is part of the call that asked for it.
+                let ctx = job.trace.enter();
+                let mut span = crate::trace_engine::job_span("model.build");
+                span.field("recipe", job.recipe.as_str());
+                span.field("cancelled", skip);
                 let started = Instant::now();
                 let outcome = if skip {
                     Outcome::Cancelled
@@ -521,6 +528,8 @@ impl Workers {
                     outcome,
                     build_ms: started.elapsed().as_secs_f64() * 1000.0,
                 };
+                drop(span);
+                drop(ctx);
                 if tx.send(done).is_err() {
                     return;
                 }
@@ -576,7 +585,7 @@ type BuildFn = fn(&str, &BuildParams) -> Result<Model, RecipeError>;
 fn run(job: &Job, build: BuildFn) -> Outcome {
     let values: Vec<(&str, f64)> = job.params.iter().map(|(k, v)| (k.as_str(), *v)).collect();
     let params = BuildParams { values: &values, seed: job.seed, library: Some(&job.library), ..BuildParams::new(&job.style) };
-    let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &job.gltf {
+    let built = specula_core::trace::catch_unwind(std::panic::AssertUnwindSafe(|| match &job.gltf {
         Some(path) => import_gltf(path),
         None => build(&job.text, &params).map(|model| {
             let extras = recipe_extras(&model, job.anims.as_deref());
@@ -1335,6 +1344,7 @@ impl Library {
                 gltf: Some(g.path.clone()),
                 anims: None,
                 cancel: Arc::clone(&cancel),
+                trace: specula_core::trace::Ctx::current(),
             },
             None => {
                 let info = &self.recipes[recipe];
@@ -1352,6 +1362,7 @@ impl Library {
                     gltf: None,
                     anims: info.anims.clone(),
                     cancel: Arc::clone(&cancel),
+                    trace: specula_core::trace::Ctx::current(),
                 }
             }
         };
@@ -3912,6 +3923,7 @@ mod tests {
             gltf: None,
             anims: None,
             cancel: Arc::new(AtomicBool::new(false)),
+            trace: specula_core::trace::Ctx::default(),
         }
     }
 
@@ -4111,6 +4123,7 @@ mod tests {
             gltf: None,
             anims: None,
             cancel: Arc::new(AtomicBool::new(false)),
+            trace: specula_core::trace::Ctx::default(),
         };
         match run(&job, boom) {
             Outcome::Panicked(why) => assert!(why.contains("kaboom"), "{why}"),

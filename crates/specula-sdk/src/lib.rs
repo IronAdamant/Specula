@@ -55,7 +55,7 @@ pub mod abi;
 mod module;
 pub mod value;
 
-pub use module::{Action, Cx, Entity, Event, HookDef, Id, Module, ModuleInfo, Moved, Patch, SdkError, Spawn, StopReason};
+pub use module::{Action, Cx, Entity, Event, HookDef, Id, Module, ModuleInfo, Moved, Patch, SdkError, Spawn, StopReason, TraceLevel};
 pub use specula_core::dmath;
 pub use specula_core::math::{Quat, Vec3};
 pub use value::Value;

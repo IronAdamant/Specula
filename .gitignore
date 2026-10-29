@@ -51,3 +51,4 @@ worlds/.review-unsaved-*/
 
 # Save games written by engines run from the checkout (--saves defaults to ./saves)
 /saves/
+.specula-trace/

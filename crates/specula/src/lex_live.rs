@@ -555,7 +555,7 @@ fn apply_command(run: &mut Run, name: &str, args: &Json, by: &str, w: Option<Wri
     let result = {
         let mut host = Host { logic, world, swarm, tick, hz, agent: &agent, calls: &mut run.hook_calls, failures: &mut run.hook_failures, recent: &mut run.recent, args: &mut run.args, staged: true };
         let sim = &mut run.sim;
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sim.apply_undoable(&call, &mut host)))
+        specula_core::trace::catch_unwind(std::panic::AssertUnwindSafe(|| sim.apply_undoable(&call, &mut host)))
     };
     let undo = |world: &mut dyn WorldWrite, swarm: &mut Swarm, logic: &mut LogicHost| {
         write_policy::rolled_back(world, swarm, mark);
@@ -1096,7 +1096,7 @@ impl Live {
                 let sim = &mut run.sim;
                 sim.set_deadline(Some(Instant::now() + limits.backstop));
                 sim.set_work_stop(stop);
-                let stepped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sim.step_hosted(&[], &mut host)));
+                let stepped = specula_core::trace::catch_unwind(std::panic::AssertUnwindSafe(|| sim.step_hosted(&[], &mut host)));
                 sim.set_deadline(None);
                 sim.set_work_stop(None);
                 if let Err(p) = stepped {

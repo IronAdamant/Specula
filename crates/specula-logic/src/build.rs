@@ -211,7 +211,7 @@ impl BuildService {
                 let (req, queued) = (job.req.clone(), job.since.elapsed());
                 drop(st);
                 let runner = Arc::clone(&self.runner);
-                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner(&req)));
+                let outcome = specula_core::trace::catch_unwind(std::panic::AssertUnwindSafe(|| runner(&req)));
                 let mut report = outcome.unwrap_or_else(|_| BuildReport {
                     error: Some(("cargo_failed", "the build runner panicked (an engine bug)".into())),
                     ..BuildReport::default()

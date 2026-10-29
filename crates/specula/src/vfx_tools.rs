@@ -745,6 +745,7 @@ impl Engine {
         for m in self.gpu.take_validation_messages() {
             if m.severity >= Severity::Warning {
                 warnings.push(Json::from(format!("vulkan {:?} {}: {}", m.severity, m.id_name, m.message)));
+                crate::trace_engine::gpu_message(m.severity == Severity::Error, &m.id_name, &m.message);
             }
         }
         self.frames_captured += 1;

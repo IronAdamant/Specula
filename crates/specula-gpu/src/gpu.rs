@@ -96,6 +96,9 @@ pub struct GpuInner {
     /// pipelines and memory are filled in when asked.
     last_offscreen: FrameStats,
     last_window: FrameStats,
+    /// What the last ID render's colour passes recorded (`last_colour_draws`); the skip list a
+    /// test injected (`debug_skip_colour_draws`).
+    colour_record: std::cell::RefCell<crate::render::ColourRecord>,
     /// Queued uploads and deferred frees (`stream.rs`): submitted before each frame.
     uploads: crate::stream::Uploads,
     // Dropped after `Drop::drop` released everything above, device before instance.
@@ -213,6 +216,7 @@ impl GpuInner {
             frame_no: 0,
             last_offscreen: FrameStats::default(),
             last_window: FrameStats::default(),
+            colour_record: Default::default(),
             uploads: crate::stream::Uploads::default(),
             device,
             instance,
@@ -1002,6 +1006,20 @@ impl GpuInner {
         self.ids.counts(target.0, max_id)
     }
 
+    /// The draws the last ID render's colour passes recorded ([`crate::render::ColourRecord`]):
+    /// `(mesh draw indices, 2D draw indices)`, after every readiness check. Empty before any.
+    pub fn last_colour_draws(&self) -> (Vec<u32>, Vec<u32>) {
+        let r = self.colour_record.borrow();
+        (r.draws.clone(), r.draws_2d.clone())
+    }
+
+    /// Makes later ID renders' colour passes leave out the batches holding these mesh draws (empty:
+    /// none): a fault injected by tests of sight's packet checks, the way a draw whose pipeline
+    /// isn't ready is left out. Never used by the engine.
+    pub fn debug_skip_colour_draws(&mut self, draws: &[usize]) {
+        self.colour_record.borrow_mut().skip = draws.to_vec();
+    }
+
     /// Whether ID renders count blended draws (`fragmentStoresAndAtomics`, not switched off).
     pub fn ids_count_blended(&self) -> bool {
         self.device.fragment_atomics && !self.ids.blended_disabled
@@ -1098,7 +1116,13 @@ impl GpuInner {
             ids: id_frame,
             id_occluders: if id_frame.is_some() { self.ids.occluders() } else { &[] },
             textures: &self.textures,
+            recorded: id_frame.is_some().then_some(&self.colour_record),
         };
+        if id_frame.is_some() {
+            let mut r = self.colour_record.borrow_mut();
+            r.draws.clear();
+            r.draws_2d.clear();
+        }
         let graph = &mut t.graph;
         let ran = run_sync(&self.device, self.sync_cmd, self.sync_fence, |dev, cmd| {
             if let Some(t) = timer.as_mut() {

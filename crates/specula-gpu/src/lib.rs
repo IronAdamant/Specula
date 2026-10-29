@@ -1462,6 +1462,20 @@ impl Gpu {
         self.inner.id_coverage(target, max_id)
     }
 
+    /// The draws the last ID render's colour passes actually recorded, after every pipeline and
+    /// variant readiness check: `(mesh draw indices, 2D draw indices)` into its `FrameDesc`
+    /// (a glass draw appears once per pass). Sight checks the ID buffer's counts against it.
+    pub fn last_colour_draws(&self) -> (Vec<u32>, Vec<u32>) {
+        self.inner.last_colour_draws()
+    }
+
+    /// Later ID renders' colour passes leave out the batches holding these mesh draws (empty:
+    /// none), the way a draw whose pipeline isn't ready is left out: a fault tests inject to
+    /// prove sight's packet checks catch it. The engine never calls it.
+    pub fn debug_skip_colour_draws(&mut self, draws: &[usize]) {
+        self.inner.debug_skip_colour_draws(draws);
+    }
+
     /// Whether ID renders count blended draws (they need `fragmentStoresAndAtomics`).
     pub fn ids_count_blended(&self) -> bool {
         self.inner.ids_count_blended()

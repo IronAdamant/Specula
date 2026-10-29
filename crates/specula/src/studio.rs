@@ -238,6 +238,8 @@ pub struct RenderJob {
     req: RenderReq,
     reply: mpsc::Sender<Result<Rendered, ToolOutput>>,
     deadline: Instant,
+    /// The agent call it renders for (docs/design/TRACE.md).
+    trace: specula_core::trace::Ctx,
 }
 
 /// A render's pixels, and what it cost the engine thread: wall time, and the GPU's own time
@@ -1028,9 +1030,12 @@ impl Engine {
                 self.studio.put_back(job);
                 return;
             }
-            let _z = profile::zone("studio_render");
+            let _c = job.trace.enter();
+            let mut span = crate::trace_engine::job_span("studio_render");
+            span.field("subjects", job.req.subjects.len());
             let started = Instant::now();
             let r = self.render_req(&job.req);
+            drop(span);
             let ms = started.elapsed().as_secs_f64() * 1000.0;
             let stats = self.gpu.last_frame_stats_of(FramePath::Offscreen);
             let gpu_ms = stats.as_ref().and_then(|s| s.gpu.as_ref().filter(|g| g.frame == s.frame)).map_or(0.0, |g| g.total_ms);
@@ -1272,7 +1277,7 @@ impl Ctx<'_> {
             },
         };
         let (tx, rx) = mpsc::channel();
-        let job = RenderJob { call: self.call, session: self.session.id.clone(), req, reply: tx, deadline: self.deadline };
+        let job = RenderJob { call: self.call, session: self.session.id.clone(), req, reply: tx, deadline: self.deadline, trace: specula_core::trace::Ctx::current() };
         if !self.tools.post(self.session, Command::StudioRender(Box::new(job))) {
             return Err(ToolOutput::error("the engine is shutting down; the call was not completed"));
         }

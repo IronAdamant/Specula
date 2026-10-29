@@ -656,16 +656,21 @@ enum Memory {
 struct Grown {
     buffer: Buffer,
     address: u64,
+    /// The size the buffer was created with: what commands may touch. `buffer.bytes` is the
+    /// memory allocation's size, rounded up to the device's alignment, so comparing against it
+    /// reused a buffer up to an alignment short (review, 2026-10-29: a 5,964-byte stats buffer
+    /// kept for a 5,992-byte frame, one entity's stride past its end).
+    size: u64,
 }
 
 impl Grown {
     /// `slot`'s buffer, at least `bytes` big. Offscreen renders are synchronous: the old buffer is
     /// never in use when replaced.
     fn ensure<'a>(slot: &'a mut Option<Grown>, dev: &Device, bytes: u64, usage: VkFlags, memory: Memory, what: &str) -> Result<&'a Grown, GpuError> {
-        if slot.as_ref().is_none_or(|g| g.buffer.bytes < bytes) {
+        if slot.as_ref().is_none_or(|g| g.size < bytes) {
             let want = match memory {
                 Memory::Shared => bytes,
-                _ => bytes.max(slot.as_ref().map_or(1024, |g| g.buffer.bytes * 2)),
+                _ => bytes.max(slot.as_ref().map_or(1024, |g| g.size * 2)),
             };
             let host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
             let buffer = match memory {
@@ -678,7 +683,7 @@ impl Grown {
                 Memory::Shared => dev.create_buffer(want, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, MemoryKind::RenderTargets, what)?,
             };
             let address = if usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT != 0 { dev.buffer_address(&buffer) } else { 0 };
-            if let Some(old) = slot.replace(Grown { buffer, address }) {
+            if let Some(old) = slot.replace(Grown { buffer, address, size: want }) {
                 dev.destroy_buffer(&old.buffer);
             }
         }

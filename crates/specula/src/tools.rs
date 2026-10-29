@@ -329,6 +329,9 @@ pub struct Request {
     pub reply: Sender<ToolOutput>,
     /// Past this instant the caller has given up; the engine drops the command unapplied.
     pub deadline: Instant,
+    /// The call (and span) it is part of: the engine thread works inside it
+    /// (docs/design/TRACE.md). `Ctx::current()` where the request is made.
+    pub trace: specula_core::trace::Ctx,
 }
 
 pub struct Tools {
@@ -461,7 +464,7 @@ impl Tools {
     /// the engine is gone.
     pub(crate) fn post(&self, session: &SessionInfo, command: Command) -> bool {
         let (reply, _) = mpsc::channel();
-        self.to_engine.send(Request { session: session.clone(), command, reply, deadline: Instant::now() + APPLY_DEADLINE }).is_ok()
+        self.to_engine.send(Request { session: session.clone(), command, reply, deadline: Instant::now() + APPLY_DEADLINE, trace: specula_core::trace::Ctx::current() }).is_ok()
     }
 
     pub(crate) fn lex_native_names(&self) -> Vec<String> {
@@ -485,7 +488,7 @@ impl Tools {
     pub(crate) fn send(&self, session: &SessionInfo, command: Command) -> ToolOutput {
         let (reply, answer) = mpsc::channel();
         let deadline = Instant::now() + APPLY_DEADLINE;
-        let request = Request { session: session.clone(), command, reply, deadline };
+        let request = Request { session: session.clone(), command, reply, deadline, trace: specula_core::trace::Ctx::current() };
         if self.to_engine.send(request).is_err() {
             return ToolOutput::error("the engine is shutting down");
         }
@@ -506,11 +509,16 @@ impl ToolHandler for Tools {
     }
 
     fn call(&self, session: &SessionInfo, name: &str, arguments: &Json) -> ToolOutput {
+        // Every call gets an id its work carries everywhere (docs/design/TRACE.md).
+        let call = crate::trace_sink::begin_call(session, name, arguments);
+        let _ctx = specula_core::trace::Ctx { call, span: 0 }.enter();
         // Every answer leaves as compact JSON, every error as {error: code, message} (tokens and
         // machine-readable codes, whoever built the answer). A disk budget warning rides along once
         // per session (in the answer to the write that crossed the line). Scopes first (the cap, the
         // catalog tools, agent_hello {tools}).
-        crate::disk::book().annotate(&session.id, crate::response::tidy(crate::toolscope_tools::call(self, session, name, arguments)))
+        let out = crate::disk::book().annotate(&session.id, crate::response::tidy(crate::toolscope_tools::call(self, session, name, arguments)));
+        crate::trace_sink::end_call(call, &out);
+        out
     }
 
     fn tools_for(&self, session: &SessionInfo) -> Vec<ToolDef> {
@@ -548,6 +556,7 @@ pub enum CallerThread {
     Procgen,
     Terrain,
     Balance,
+    Trace,
     /// The `tools_*` tools (a session's tool list: see [`crate::toolscope_tools`]); answered
     /// before routing, in `ToolHandler::call`.
     Scope,
@@ -568,6 +577,7 @@ impl CallerThread {
             n if n.starts_with("project_") => CallerThread::Project,
             n if n.starts_with("procgen_") => CallerThread::Procgen,
             n if n.starts_with("balance_") => CallerThread::Balance,
+            n if n.starts_with("trace_") => CallerThread::Trace,
             n if n.starts_with("tools_") => CallerThread::Scope,
             n if n.starts_with("disk_") => CallerThread::Disk,
             _ => return None,
@@ -586,6 +596,7 @@ impl CallerThread {
             CallerThread::Procgen => "procgen_* tools bake textures, terrains and scatters outside the engine thread: generate before the playtest (a playtest can world_batch what they make)",
             CallerThread::Terrain => "terrain_edit patches the recipe and waits for its rebuild outside the engine thread: sculpt and paint before the playtest (terrain_info works inside one)",
             CallerThread::Balance => "balance_* tools simulate outside the engine thread: sweep and tune before or after the playtest",
+            CallerThread::Trace => "trace_* tools read the trace on your own connection: query it before or after the playtest (the playtest's work is traced under its call)",
             CallerThread::Scope => {
                 "tools_* tools change your session's tool list on your connection: activate before the playtest (its steps may call any tool within your cap, listed or not)"
             }
@@ -669,6 +680,8 @@ impl Tools {
                 Some(CallerThread::Terrain) => return crate::terrain_tools::call(self, session, name, arguments),
                 // The balance lab runs simulations on this thread (and its workers), like lex_simulate.
                 Some(CallerThread::Balance) => return crate::balance_tools::call(self, session, name, arguments),
+                // The trace is read on this thread: it answers while the engine is stalled.
+                Some(CallerThread::Trace) => return crate::trace_tools::call(session, name, arguments),
                 // The disk budget is shared: answered on this thread.
                 Some(CallerThread::Disk) => return crate::disk_tools::call(self, session, name, arguments),
                 // (Answered above.)
@@ -688,6 +701,15 @@ impl Tools {
             self.evidence_refused(session, made);
         }
         if name == "agent_hello" && !out.is_error {
+            // The trace attributes this session's calls to its agent from now on.
+            let reply = out.content.iter().find_map(|c| match c {
+                specula_protocol::Content::Text(t) => Json::parse(t).ok(),
+                specula_protocol::Content::Image { .. } => None,
+            });
+            if let Some(agent) = reply.as_ref().and_then(|r| r.get("agent")).and_then(Json::as_str) {
+                let role = reply.as_ref().and_then(|r| r.get("role")).and_then(Json::as_str).unwrap_or("builder");
+                crate::trace_sink::set_name(&session.id, agent, role);
+            }
             // The default belongs to the identity (its resume token), so a resume keeps it.
             let token = out.content.iter().find_map(|c| match c {
                 specula_protocol::Content::Text(t) => Json::parse(t).ok()?.get("resume_token")?.as_str().map(str::to_owned),
@@ -2743,6 +2765,7 @@ fn definitions() -> Vec<ToolDef> {
     .chain(crate::studio_tools::definitions())
     .chain(crate::vfx_tools::definitions())
     .chain(crate::terrain_tools::definitions())
+    .chain(crate::trace_tools::definitions())
     .collect()
 }
 

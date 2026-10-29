@@ -4510,6 +4510,15 @@ impl World {
     /// (which the game hashes itself), so two runs of the same game agree whatever frame rate
     /// drew them.
     pub fn state_hash(&self) -> u64 {
+        let mut run = self.state_hash_begin();
+        while !self.state_hash_step(&mut run, usize::MAX) {}
+        run.finish()
+    }
+
+    /// [`World::state_hash`] a slice at a time (the trace's idle replay check, which must never
+    /// hold the engine thread long): the environment now, then [`World::state_hash_step`] until
+    /// it says done, then [`HashRun::finish`]. The world must not change in between.
+    pub fn state_hash_begin(&self) -> HashRun {
         let mut h = StableHasher::with_seed(0x5370_6563_756c_6131);
         h.write_u64(self.next_id);
         let l = &self.env.light;
@@ -4530,10 +4539,33 @@ impl World {
         crate::effects::SsaoPatch::hash_if_set(&l.ssao, &mut h);
         crate::physics::PhysicsPatch::hash_if_set(&self.env.physics, &mut h);
         h.write_u64(self.persistent_len() as u64);
-        for e in self.entities.range(..TRANSIENT_ID_BASE).map(|(_, e)| e) {
-            h.write_u64(e.content_hash());
+        HashRun { h, next: 0 }
+    }
+
+    /// Hashes up to `max` more entities of `run`; true once every persistent entity is in.
+    pub fn state_hash_step(&self, run: &mut HashRun, max: usize) -> bool {
+        for (n, (id, e)) in self.entities.range(run.next..TRANSIENT_ID_BASE).enumerate() {
+            if n == max {
+                return false;
+            }
+            run.h.write_u64(e.content_hash());
+            run.next = id + 1;
         }
-        h.finish()
+        true
+    }
+}
+
+/// A [`World::state_hash`] in progress.
+#[derive(Clone, Copy, Debug)]
+pub struct HashRun {
+    h: StableHasher,
+    /// The next entity id to hash.
+    next: u64,
+}
+
+impl HashRun {
+    pub fn finish(self) -> u64 {
+        self.h.finish()
     }
 }
 

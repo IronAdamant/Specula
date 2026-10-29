@@ -713,7 +713,16 @@ impl Engine {
                 .with("retry_after_ms", 200));
         }
         let job = self.begin_save(name, label, overwrite, force, by, key)?;
-        let handle = std::thread::Builder::new().name("specula-save".into()).spawn(move || job.finish()).map_err(|e| SaveError::new("io", format!("could not start a save writer: {e}")))?;
+        // The writer is part of the call that asked for the save (docs/design/TRACE.md).
+        let ctx = specula_core::trace::Ctx::current();
+        let handle = std::thread::Builder::new()
+            .name("specula-save".into())
+            .spawn(move || {
+                let _c = ctx.enter();
+                let _s = crate::trace_engine::job_span("save.write");
+                job.finish()
+            })
+            .map_err(|e| SaveError::new("io", format!("could not start a save writer: {e}")))?;
         self.save_writes.push(Writing { name: name.to_owned(), handle, dest });
         Ok(())
     }

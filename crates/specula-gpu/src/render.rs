@@ -2496,6 +2496,23 @@ pub struct FrameContext<'a> {
     pub ids: Option<crate::idbuffer::IdFrame>,
     /// Rectangles that hide what is under them in the ID buffer (empty without `ids`).
     pub id_occluders: &'a [VkClearRect],
+    /// What the colour passes recorded (ID renders only; `None` for the window's frames).
+    pub recorded: Option<&'a std::cell::RefCell<ColourRecord>>,
+}
+
+/// The draws the colour passes actually recorded in an ID render, after every pipeline and
+/// variant readiness check: indices into [`crate::FrameDesc::draws`] and `draws_2d`. Sight
+/// compares them with the ID buffer's counts, which come from other passes: an entity counted
+/// there that no colour draw recorded shows nothing (`Gpu::last_colour_draws`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ColourRecord {
+    /// Mesh draws (each once per pass that drew it: glass draws twice), in record order.
+    pub draws: Vec<u32>,
+    /// 2D draws, in record order.
+    pub draws_2d: Vec<u32>,
+    /// Mesh draws the colour pass must leave out (a fault injected by tests of sight's checks:
+    /// [`crate::Gpu::debug_skip_colour_draws`]); a batch holding one is left out whole.
+    pub(crate) skip: Vec<usize>,
 }
 
 /// The scene features a frame prepared in `scratch` uses, given whether it renders a shadow map.
@@ -2936,6 +2953,7 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, g: &mut FrameGraph
         meshes: ctx.meshes,
         push: two_d.push(ctx.upload.frame_address(), items),
         reverse_z: ctx.frame.reverse_z,
+        recorded: ctx.recorded,
     };
     let mut stats_2d = DrawStats::default();
     let mut stats_fx = DrawStats::default();
@@ -3264,6 +3282,14 @@ pub fn record_scene(
             };
             if pipeline == VK_NULL_HANDLE {
                 continue; // a variant not built: no mesh with those streams was ever uploaded
+            }
+            if let Some(rc) = ctx.recorded {
+                let records = &plan.entries[batch.first as usize..(batch.first + batch.count) as usize];
+                let mut rc = rc.borrow_mut();
+                if !rc.skip.is_empty() && records.iter().any(|(d, _)| rc.skip.contains(d)) {
+                    continue;
+                }
+                rc.draws.extend(records.iter().map(|(d, _)| *d as u32));
             }
             if pipeline != bound {
                 (dev.fns.cmd_bind_pipeline)(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);

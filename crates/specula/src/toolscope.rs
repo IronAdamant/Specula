@@ -87,6 +87,7 @@ pub const FAMILIES: &[Family] = &[
     fam("review", "the owner's review queue, critiques, merges", &["review_", "critique_", "merge_"], &[]),
     fam("vfx", "particles, effects and decals", &["vfx_"], &[]),
     fam("logic", "game logic modules (Rust): build, reload, inspect, drive", &["logic_"], &[]),
+    fam("trace", "the structured log: events, one call's causal tree, crash reports, incidents", &["trace_"], &[]),
 ];
 
 /// The catalog line of the hosted game's family.
@@ -120,6 +121,13 @@ pub const ROLES: &[Role] = &[
     role("designer", "gameplay rules and balance", &["lex", "balance", "playtest", "game", "board", "save"], &["world_query"]),
     role("animator", "motion and ragdolls", &["anim", "physics", "sight", "world", "claim", "board"], &[]),
     role("coder", "game logic modules", &["logic", "project", "world", "sight", "engine", "claim", "board"], &[]),
+    // docs/design/DEBUGGER.md: watches incidents, reproduces, reports; no world writes.
+    role(
+        "debugger",
+        "triages incidents and files evidence (never fixes others' work)",
+        &["trace", "review", "board", "journal", "sight", "playtest", "perf", "engine"],
+        &["world_query", "world_list", "claim_list", "intent_list", "note_add", "note_list"],
+    ),
 ];
 
 /// One line per engine tool for the catalog: what it is for, in a few words. A new tool needs a
@@ -240,6 +248,13 @@ pub(crate) const BRIEFS: &[(&str, &str)] = &[
     ("project_upload", "upload an image, model or sound (chunked)"),
     ("disk_status", "disk use by category, the budget, free space"),
     ("disk_prune", "prune old captures and cache now"),
+    ("trace_query", "search the engine's structured log"),
+    ("trace_follow", "new log events since your cursor"),
+    ("trace_call", "everything one call caused"),
+    ("trace_settings", "log levels, sinks and stall budgets"),
+    ("trace_crash", "the last crash report"),
+    ("trace_incidents", "open problems the watchdogs found"),
+    ("trace_incident", "one incident; acknowledge, resolve or link it"),
     ("save_write", "save the game at this tick"),
     ("save_read", "load a save game"),
     ("save_list", "save games"),

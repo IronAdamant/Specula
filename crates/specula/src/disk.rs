@@ -538,6 +538,44 @@ impl DiskBook {
         Ok(())
     }
 
+    /// Appends `data` to `path` for `cat` (a log that grows by lines: the trace's JSONL sink):
+    /// admitted first, then accounted.
+    pub fn append(&self, cat: Category, source: &'static str, path: &Path, data: &[u8], need: Need) -> Result<(), DiskError> {
+        use std::io::Write as _;
+        let new = std::fs::symlink_metadata(path).map_or(true, |m| !m.is_file());
+        self.admit(cat, data.len() as u64, need)?;
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path).map_err(|e| DiskError::io(path, &e))?;
+        f.write_all(data).map_err(|e| DiskError::io(path, &e))?;
+        self.wrote(cat, source, data.len() as i64, i64::from(new));
+        Ok(())
+    }
+
+    /// Writes `data` to `path` without ever waiting on the book: a panic hook's crash report
+    /// (the panicking thread may hold the book's lock). Not admitted: its writer bounds these files
+    /// itself (count × size, a reserved budget: docs/design/TRACE.md). Accounted when the book is
+    /// free at that instant, else the walker counts it on its next pass.
+    pub fn write_reserved(&self, cat: Category, source: &'static str, path: &Path, data: &[u8]) -> std::io::Result<()> {
+        std::fs::write(path, data)?;
+        self.account_reserved(cat, source, data.len() as i64, 1);
+        Ok(())
+    }
+
+    /// Accounts bytes written (or, negative, removed) without waiting on the book: when it is
+    /// busy this instant, the walker's next pass counts them instead (a panic hook's crash
+    /// reports and their pruning).
+    pub fn account_reserved(&self, cat: Category, source: &'static str, bytes: i64, files: i64) {
+        if let Ok(mut st) = self.state.try_lock() {
+            let u = st.usage.entry(cat).or_default();
+            u.delta = u.delta.saturating_add(bytes);
+            u.delta_files = u.delta_files.saturating_add(files);
+            if bytes > 0 {
+                let s = st.by_source.entry(source).or_default();
+                s.0 = s.0.saturating_add(bytes as u64);
+                s.1 = s.1.saturating_add(files.max(0) as u64);
+            }
+        }
+    }
+
     /// Copies `from` to `to` (a new file) for `cat`: admitted first, then accounted.
     pub fn copy(&self, cat: Category, source: &'static str, from: &Path, to: &Path, need: Need) -> Result<u64, DiskError> {
         let len = std::fs::metadata(from).map_err(|e| DiskError::io(from, &e))?.len();

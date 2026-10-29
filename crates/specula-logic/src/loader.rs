@@ -12,7 +12,7 @@ use specula_sys::dynlib::Library;
 use specula_sys::fpenv;
 use std::ffi::c_void;
 use std::fmt;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -398,7 +398,7 @@ unsafe extern "C" fn host_request(ctx: *mut c_void, req: *const u8, req_len: usi
             Err(e) => (status::BAD_INPUT, error("bad_request", &e.to_string())),
             Ok(req) => {
                 // A bug in the engine's handler must not unwind into the module.
-                match catch_unwind(AssertUnwindSafe(|| cx.handler.request(&req))) {
+                match specula_core::trace::catch_unwind(AssertUnwindSafe(|| cx.handler.request(&req))) {
                     Ok(Ok(v)) => (status::OK, v),
                     Ok(Err(e)) => (status::ERROR, e),
                     Err(_) => (status::ERROR, error("engine_panic", "the engine failed answering this request (an engine bug)")),

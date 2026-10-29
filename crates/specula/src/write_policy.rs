@@ -231,6 +231,21 @@ pub enum Rule {
     Vfx,
 }
 
+impl Rule {
+    /// Its name in trace events and incidents (docs/design/TRACE.md).
+    pub fn name(self) -> &'static str {
+        match self {
+            Rule::World => "world",
+            Rule::Joint => "joint",
+            Rule::Nav => "nav",
+            Rule::Lex => "lex",
+            Rule::LexLive => "lex_live",
+            Rule::Project => "project",
+            Rule::Vfx => "vfx",
+        }
+    }
+}
+
 /// Writers exempt from claims: the simulation's own rules, journaled under their own names. Claims
 /// hold agents back, not the game being made (PHYSICS.md "every write path"), and a tick can't be
 /// refused halfway without the game's state and the world's parting. Each still journals every
@@ -559,10 +574,14 @@ pub fn commit<T>(
     let result = journaling(world, |world| journal::commit(world, journal, tick, w, kind, check, command));
     prune_retired(world, swarm);
     match &result {
-        Err(e) => swarm.count_rejection(w, e),
+        Err(e) => {
+            swarm.count_rejection(w, e);
+            crate::trace_engine::write_refused(w, crate::trace_engine::rule_name(rule), e);
+        }
         Ok((_, Some(seq))) => {
             let changes = swarm.journal().get(*seq).map_or(0, |e| e.changes.len());
             swarm.board.note_entry(w, *seq, changes);
+            crate::trace_engine::write_committed(w, crate::trace_engine::rule_name(rule), Some(*seq), changes);
         }
         Ok(_) => {}
     }
@@ -590,8 +609,14 @@ pub fn undo(world: &mut dyn WorldWrite, swarm: &mut Swarm, tick: u64, w: Writer,
     let result = journaling(world, |world| journal.undo(world, tick, w, req, check));
     prune_retired(world, swarm);
     match &result {
-        Err(e) => swarm.count_rejection(w, e),
-        Ok(u) => swarm.board.note_entry(w, u.seq, u.changes),
+        Err(e) => {
+            swarm.count_rejection(w, e);
+            crate::trace_engine::write_refused(w, "undo", e);
+        }
+        Ok(u) => {
+            swarm.board.note_entry(w, u.seq, u.changes);
+            crate::trace_engine::write_committed(w, "undo", Some(u.seq), u.changes);
+        }
     }
     result
 }
@@ -607,6 +632,7 @@ pub fn game_commit(world: &mut dyn WorldWrite, swarm: &mut Swarm, mark: Mark, ti
     if let Err(e) = journaling(world, |world| check_game(world, &swarm.claims, mark, w)) {
         swarm.journal_mut(&KEY).note_next_id(world.next_id());
         swarm.count_rejection(w, &e);
+        crate::trace_engine::write_refused(w, "game", &e);
         return Err(e.with("game", game));
     }
     let changes = journaling(world, World::take_changes);

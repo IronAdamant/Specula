@@ -475,8 +475,43 @@ impl<'a> Cx<'a> {
         self.ask(Value::map().with("op", "emit").with("name", name).with("data", data.into())).map(drop)
     }
 
-    /// A line in the module's log (`logic_status`); bounded, so keep it occasional.
+    /// A line in the module's log (`logic_status`); bounded, so keep it occasional. It is also a
+    /// `module.log` trace event.
     pub fn log(&mut self, message: &str) -> Result<(), SdkError> {
         self.ask(Value::map().with("op", "log").with("message", message)).map(drop)
+    }
+
+    /// A structured trace event (docs/design/TRACE.md) under the subsystem `module:<name>`:
+    /// `cx.trace(TraceLevel::Info, "door.opened", Value::map().with("door", id.0))`. `code` is a
+    /// machine code (`^[a-z0-9_.]{1,64}$`); `fields` a map of numbers, strings and booleans (at
+    /// most 16). Agents read it with `trace_query {subsystem: "module:<name>"}`, tied to the
+    /// tick (and to the agent call, for hooks an agent called).
+    ///
+    /// The engine records it only at the levels its settings ask for, and always answers the
+    /// same (nothing in a trace feeds back into the simulation). At most 64 events per call.
+    pub fn trace(&mut self, level: TraceLevel, code: &str, fields: impl Into<Value>) -> Result<(), SdkError> {
+        self.ask(Value::map().with("op", "trace").with("level", level.as_str()).with("code", code).with("fields", fields.into())).map(drop)
+    }
+}
+
+/// How much a module's trace event matters ([`Cx::trace`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TraceLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl TraceLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TraceLevel::Error => "error",
+            TraceLevel::Warn => "warn",
+            TraceLevel::Info => "info",
+            TraceLevel::Debug => "debug",
+            TraceLevel::Trace => "trace",
+        }
     }
 }

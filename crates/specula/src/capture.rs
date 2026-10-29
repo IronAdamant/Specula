@@ -27,6 +27,8 @@ pub(crate) struct CaptureWaiter {
     /// Rendered then whatever is still building.
     pub(crate) until: Instant,
     pub(crate) wait: CaptureWait,
+    /// The call it belongs to (its render is traced under it when served).
+    pub(crate) trace: specula_core::trace::Ctx,
 }
 
 /// How a capture waited for models, for its packet.
@@ -92,6 +94,8 @@ pub(crate) struct Rendered {
     pub(crate) streaming: Json,
     /// The effects and decals drawn (see `vfx`): boxes, counts, the frame's budget use.
     pub(crate) effects: Json,
+    /// The entities the colour pass was given (the packet monitor's independent record).
+    pub(crate) drawn: Option<crate::trace_engine::DrawnRecord>,
 }
 
 /// Set once the first lost device has been logged.
@@ -117,6 +121,7 @@ pub(crate) fn gpu_failure(step: &str, e: &specula_gpu::GpuError, windowed: bool)
             "none in this run: every later render fails; restart the engine"
         };
         out.set("recovery", Json::from(recovery));
+        crate::trace_engine::device_lost(step, &e.message);
         if !LOSS_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
             eprintln!("specula: GPU device lost during a capture ({step}): {}; {recovery}", e.message);
         }
@@ -151,7 +156,7 @@ pub(crate) fn subtree_bounds(world: &World, id: u64) -> Option<(Vec3, Vec3)> {
 impl Engine {
     /// sight_frame, the sight tools and the camera tools.
     pub(crate) fn handle_sight(&mut self, request: Request) {
-        let Request { command, session, reply, deadline } = request;
+        let Request { command, session, reply, deadline, .. } = request;
         let job = match command {
             Command::Frame(spec) => Job::Frame(spec),
             Command::Sight(call) => match call {
@@ -195,7 +200,7 @@ impl Engine {
         let latest = deadline.checked_sub(Duration::from_secs(2)).unwrap_or(deadline);
         wait.parked_at = Some(Instant::now());
         wait.cut_by_deadline = latest < usual;
-        self.capture_waiters.push(CaptureWaiter { job, session, reply, until: usual.min(latest), wait });
+        self.capture_waiters.push(CaptureWaiter { job, session, reply, until: usual.min(latest), wait, trace: specula_core::trace::Ctx::current() });
     }
 
     /// Renders parked captures whose models are built (or whose wait ran out).
@@ -224,7 +229,10 @@ impl Engine {
             };
             if now >= w.until || building == 0 {
                 let wait = CaptureWait { cut_by_deadline: w.wait.cut_by_deadline && now >= w.until, ..w.wait };
+                let _c = w.trace.enter();
+                let started = Instant::now();
                 let _ = w.reply.send(self.run_job(&w.job, &w.session, wait));
+                self.engine_work_done(w.trace.call, Some(crate::schedule::Class::Render), "parked_capture", started.elapsed());
             } else {
                 self.capture_waiters.push(w);
             }
@@ -517,6 +525,7 @@ impl Engine {
         for m in self.gpu.take_validation_messages() {
             if m.severity >= Severity::Warning {
                 warnings.push(Json::from(format!("vulkan {:?} {}: {}", m.severity, m.id_name, m.message)));
+                crate::trace_engine::gpu_message(m.severity == Severity::Error, &m.id_name, &m.message);
             }
         }
         warnings
@@ -554,6 +563,7 @@ impl Engine {
         self.build_draws_2d(&view_proj, opts.include_ui, opts.time_s as f32, &mut draws_2d, Some(&mut owners_2d));
         let two_d_problems: Vec<String> = self.two_d.problems().to_vec();
         owners.extend_from_slice(&owners_2d);
+
         let (ids, entities) = sight::dense_ids(&owners);
         let target = self.offscreen_target(w, h)?;
         // Animated models' bone matrices, posed at time_s by build_draws (returned below; an
@@ -595,6 +605,12 @@ impl Engine {
             let rendered = if opts.ids { self.gpu.render_with_ids_occluded(target, &frame, &ids, &occluders) } else { self.gpu.render(target, &frame) };
             rendered.map_err(|e| gpu_failure("render", &e, self.windowed))?;
         }
+        // What the colour passes actually recorded (the GPU's own list, after every readiness
+        // check): the packet monitor's record, independent of the ID buffer's counts.
+        let drawn = opts.ids.then(|| {
+            let (mesh, two_d) = self.gpu.last_colour_draws();
+            crate::trace_engine::DrawnRecord::from_recorded(&owners, draws.len(), &mesh, &two_d)
+        });
         let ids_json = if opts.ids {
             let gpu_ms = self.gpu.last_frame_stats_of(FramePath::Offscreen).and_then(|s| s.gpu).and_then(|g| {
                 let ms: f64 = g.passes.iter().filter(|p| p.name == specula_gpu::PASS_ID_BUFFER).map(|p| p.gpu_ms).sum();
@@ -657,7 +673,7 @@ impl Engine {
         // Subjects drawn merged in a proxy, or not resident, say so.
         self.stream.annotate(&mut subjects, &self.world, &self.models);
         let streaming = self.stream.capture_json(&stats);
-        Ok(Rendered { flash, rgba, subjects, stats, lights: lights.len(), dropped_lights, overlays, ids: ids_json, two_d_problems, streaming, effects })
+        Ok(Rendered { flash, rgba, subjects, stats, lights: lights.len(), dropped_lights, overlays, ids: ids_json, two_d_problems, streaming, effects, drawn })
     }
 
     /// The overlay records for one view and what they drew, at most `budget` of them.
@@ -960,6 +976,10 @@ impl Engine {
             ("packet_path", show(packet_path.as_ref())),
         ]);
         let on_screen = r.subjects.iter().filter(|s| s.on_screen).count();
+        // The packet must agree with its own ID buffer (a monitor, docs/design/TRACE.md).
+        if spec.ids {
+            crate::trace_engine::report_packet(r.subjects.iter().map(|s| &s.json), w, h, r.drawn.as_ref(), packet_path.as_deref());
+        }
         let mut camera = view.camera.to_json();
         if let Json::Obj(src) = &view.source {
             for (k, v) in src {

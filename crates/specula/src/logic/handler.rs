@@ -23,7 +23,9 @@ pub const MAX_STATE_BYTES: usize = 1 << 20;
 /// Longest log line kept (longer ones are cut).
 const MAX_LOG_CHARS: usize = 400;
 
-const OPS: &str = "find, get, query, spawn, set, delete, state_get, state_set, rng, move_character, emit, log";
+const OPS: &str = "find, get, query, spawn, set, delete, state_get, state_set, rng, move_character, emit, log, trace";
+/// Trace events one module call may record (more are dropped, and counted on the last).
+pub const MAX_TRACE_PER_CALL: usize = 64;
 
 pub(super) struct ModuleHandler<'a> {
     pub world: &'a mut dyn WorldWrite,
@@ -43,6 +45,8 @@ pub(super) struct ModuleHandler<'a> {
     pub state_undo: Vec<(String, Option<Value>)>,
     /// `(stream, state before)` for every stream touched, to undo a failed call.
     pub rng_undo: Vec<(String, Option<Rng>)>,
+    /// Trace events this call recorded (at most [`MAX_TRACE_PER_CALL`]).
+    pub traced: usize,
 }
 
 /// The SDK's error map from a world error: `{code, message, ...details}`.
@@ -229,10 +233,125 @@ impl ModuleHandler<'_> {
                 if self.log.len() == LOG_LINES {
                     self.log.pop_front();
                 }
+                let sub = specula_core::trace::subsystem(&format!("module:{}", self.module));
+                specula_core::trace_event!(sub, Info, "module.log", message = msg.as_str());
                 self.log.push_back(LogLine { tick: self.tick, module: self.module.to_owned(), message: msg });
+                Ok(Value::Null)
+            }
+            "trace" => {
+                trace_request(self.module, req, &mut self.traced)?;
                 Ok(Value::Null)
             }
             other => Err(refuse("unknown_op", format!("no request '{other}' (this engine answers: {OPS}); is the module's SDK newer than the engine?"))),
         }
+    }
+}
+
+/// A module's `trace` request ([`specula_sdk::Cx::trace`]): an event under `module:<name>`. The
+/// answer never depends on the trace settings (nothing in a trace feeds back into the
+/// simulation): only a malformed level or code is refused.
+fn trace_request(module: &str, req: &Value, traced: &mut usize) -> Result<(), Value> {
+    use specula_core::trace::{self, Level};
+    let level = str_arg(req, "level")?;
+    let Some(level) = Level::parse(level) else {
+        return Err(refuse("invalid_field", format!("trace level '{level}' must be error, warn, info, debug or trace")));
+    };
+    let code = str_arg(req, "code")?;
+    if !valid_trace_name(code) {
+        return Err(refuse("invalid_field", format!("trace code '{}' must match ^[a-z0-9_.]{{1,64}}$", code.chars().take(80).collect::<String>())));
+    }
+    if let Some(p) = ENGINE_CODE_PREFIXES.iter().find(|p| code.starts_with(*p)) {
+        return Err(refuse("reserved", format!("trace code '{code}': codes starting '{p}' are the engine's (a module's event must never pass for a watchdog's); name it after your module, e.g. '{module}.{}'", code.trim_start_matches(*p))));
+    }
+    let fields = req.get("fields").and_then(Value::as_map);
+    if let Some(bad) = fields.and_then(|m| m.keys().find(|k| !valid_trace_name(k))) {
+        return Err(refuse("invalid_field", format!("trace field '{}' must match ^[a-z0-9_.]{{1,64}}$", bad.chars().take(80).collect::<String>())));
+    }
+    *traced += 1;
+    if *traced > MAX_TRACE_PER_CALL {
+        return Ok(());
+    }
+    let sub = trace::subsystem(&format!("module:{module}"));
+    if !sub.enabled(level) {
+        return Ok(());
+    }
+    let code = module_name(module, code).unwrap_or("module.names_full");
+    let mut out: Vec<(&'static str, trace::Value)> = Vec::new();
+    if let Some(map) = fields {
+        for (k, v) in map.iter().take(trace::MAX_FIELDS - 1) {
+            let key = module_name(module, k).unwrap_or("field");
+            out.push((key, trace::Value::from_json(&v.to_json())));
+        }
+    }
+    let mut fields = out;
+    if *traced == MAX_TRACE_PER_CALL {
+        fields.push(("more_dropped", trace::Value::Bool(true)));
+    }
+    sub.emit(level, code, fields);
+    Ok(())
+}
+
+/// The code prefixes the engine's own events use (watchdogs, write decisions, the module host's):
+/// a module may not emit them, so `trace_incidents` and agents filtering on them never see a
+/// module's event pass for the engine's (review, e45f66c).
+pub const ENGINE_CODE_PREFIXES: [&str; 15] =
+    ["engine.", "frame.", "write.", "swarm.", "sight.", "world.", "gpu.", "jobs.", "memory.", "module.", "mcp.", "trace.", "model.", "save.", "studio"];
+
+/// Trace codes and field names a module uses: `^[a-z0-9_.]{1,64}$`.
+fn valid_trace_name(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'.')
+}
+
+/// Distinct trace names (codes and field names) one module may use, and modules that may name
+/// any: the process-wide intern table is shared, so one module can't fill it for everyone. Past
+/// its cap a module's new codes become `module.names_full` (its own subsystem says whose).
+pub const MODULE_NAMES: usize = 64;
+const NAMING_MODULES: usize = 64;
+
+static MODULE_NAMES_USED: std::sync::Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, &'static str>>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// `name` interned for `module`, within its cap (`None` past it).
+fn module_name(module: &str, name: &str) -> Option<&'static str> {
+    let mut all = MODULE_NAMES_USED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !all.contains_key(module) && all.len() >= NAMING_MODULES {
+        return None;
+    }
+    let mine = all.entry(module.to_owned()).or_default();
+    if let Some(n) = mine.get(name) {
+        return Some(n);
+    }
+    if mine.len() >= MODULE_NAMES {
+        return None;
+    }
+    let n = specula_core::trace::intern(name)?;
+    mine.insert(name.to_owned(), n);
+    Some(n)
+}
+
+#[cfg(test)]
+mod trace_names_tests {
+    use super::*;
+
+    /// Review probe (b893d0a, minor 10): one module's names could fill the shared intern table.
+    #[test]
+    fn a_module_is_capped_on_its_own() {
+        for i in 0..(MODULE_NAMES + 10) {
+            let got = module_name("greedy_test_module", &format!("code_{i}"));
+            assert_eq!(got.is_some(), i < MODULE_NAMES, "{i}");
+        }
+        assert!(module_name("modest_test_module", "door.opened").is_some(), "another module still names its own");
+        assert!(valid_trace_name("door.opened") && !valid_trace_name("Door") && !valid_trace_name(&"a".repeat(65)));
+    }
+
+    /// Review probe (e45f66c, minor 6): a module could emit `engine.stall` or `write.refused`.
+    #[test]
+    fn modules_may_not_emit_the_engines_codes() {
+        let req = |code: &str| Value::map().with("level", "warn").with("code", code).with("fields", Value::map());
+        let mut n = 0;
+        for code in ["engine.stall", "write.refused", "module.disabled", "gpu.validation", "trace.settings_changed"] {
+            let e = trace_request("probe_module", &req(code), &mut n).unwrap_err();
+            assert_eq!(e.get("code").and_then(Value::as_str), Some("reserved"), "{code}");
+        }
+        assert!(trace_request("probe_module", &req("probe_module.door_opened"), &mut n).is_ok());
     }
 }

@@ -655,6 +655,8 @@ pub struct Draw2dContext<'a> {
     pub meshes: &'a HashMap<u32, Mesh>,
     pub push: SpritePush,
     pub reverse_z: bool,
+    /// What the colour pass recorded (ID renders only).
+    pub recorded: Option<&'a std::cell::RefCell<crate::render::ColourRecord>>,
 }
 
 fn push(dev: &Device, cmd: VkCommandBuffer, layout: VkPipelineLayout, push: &SpritePush) {
@@ -716,6 +718,10 @@ pub fn record_2d(dev: &Device, cmd: VkCommandBuffer, ctx: &Draw2dContext, plan: 
                 }
             }
             stats.draw_calls_2d += 1;
+            if let Some(rc) = ctx.recorded {
+                let order = plan.order.get(b.first as usize..(b.first + b.count) as usize).unwrap_or_default();
+                rc.borrow_mut().draws_2d.extend_from_slice(order);
+            }
         }
     }
 }

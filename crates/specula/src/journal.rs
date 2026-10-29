@@ -238,6 +238,9 @@ pub struct Entry {
     pub undone_by: Option<u64>,
     /// For [`Kind::Module`] entries: what happened to which module's code.
     pub module: Option<Box<ModuleEvent>>,
+    /// The agent call that made it (`trace_call`; 0: none, e.g. the simulation's own writers).
+    /// Observability only: never hashed, replayed or saved.
+    pub call: u64,
     /// Entity ids touched (0 = the environment), sorted.
     ids: Vec<u64>,
     bytes: usize,
@@ -284,6 +287,9 @@ impl Entry {
         }
         if let Some(m) = &self.module {
             f.push(("module", m.to_json()));
+        }
+        if detail && self.call != 0 {
+            f.push(("call", Json::from(self.call)));
         }
         let relevant = |c: &&Change| path_prefix.is_none_or(|p| change_under(c, p));
         if detail {
@@ -693,9 +699,11 @@ impl Journal {
             undoes: Vec::new(),
             undone_by: None,
             module: None,
+            call: specula_core::trace::Ctx::current().call,
             ids,
             bytes,
         };
+        crate::trace_sink::note_journal(entry.call, seq);
         if kind.is_game() {
             self.game.push(entry);
         } else {
@@ -906,6 +914,59 @@ impl Journal {
             w.replay_next_id(self.next_id_seen);
             w
         })
+    }
+
+    /// A replay done a few entries at a time ([`Journal::replay_step`]): the base world now, and
+    /// the entries up to the newest now (`None` once entries were evicted). The trace's idle
+    /// spot-check runs it so no single step holds the engine thread (docs/design/TRACE.md).
+    pub fn replay_begin(&self) -> Option<ReplayRun> {
+        self.replayable().then(|| {
+            let mut world = self.base.clone();
+            world.set_recording(Recording::Off);
+            ReplayRun { world, done: 0, change: 0, target: self.last_seq(), next_id: self.next_id_seen, instance: self.instance, rebases: self.rebases }
+        })
+    }
+
+    /// Entities in the journal's base world (what [`Journal::replay_begin`] copies in one go).
+    pub fn base_entities(&self) -> usize {
+        self.base.len()
+    }
+
+    /// Applies up to `max` more changes of `run` (an entry with many changes, a 1,000-spawn
+    /// batch, is split across steps; an entry with none counts as one): `Ok(true)` once it
+    /// reached its target (the world is then the journal's state when the run began), `Err` when
+    /// the journal it started from is gone (rebased, or entries it needs were evicted).
+    pub fn replay_step(&self, run: &mut ReplayRun, max: usize) -> Result<bool, &'static str> {
+        if run.instance != self.instance || run.rebases != self.rebases {
+            return Err("the journal was rebased");
+        }
+        if !self.replayable() {
+            return Err("entries were evicted");
+        }
+        let mut budget = max.max(1);
+        while budget > 0 {
+            let Some(e) = self.entries_after(run.done, true).next().filter(|e| e.seq <= run.target) else {
+                run.world.replay_next_id(run.next_id);
+                return Ok(true);
+            };
+            let rest = e.changes.get(run.change..).unwrap_or_default();
+            let take = rest.len().min(budget);
+            for c in &rest[..take] {
+                run.world.apply_after(c, &e.by);
+            }
+            budget = budget.saturating_sub(take.max(1));
+            run.change += take;
+            if run.change >= e.changes.len() {
+                run.world.replay_next_id(e.next_id);
+                run.done = e.seq;
+                run.change = 0;
+            }
+        }
+        let more = self.entries_after(run.done, true).next().is_some_and(|e| e.seq <= run.target);
+        if !more {
+            run.world.replay_next_id(run.next_id);
+        }
+        Ok(!more)
     }
 
     /// Notes the world's id counter after something that used ids without an entry (a rejected
@@ -1414,6 +1475,36 @@ pub fn replay<'a>(mut base: World, entries: impl IntoIterator<Item = &'a Entry>)
         base.replay_next_id(e.next_id);
     }
     base
+}
+
+/// A replay in progress ([`Journal::replay_begin`]).
+pub struct ReplayRun {
+    world: World,
+    /// The last entry applied whole, the next change of the one after it, and the newest entry
+    /// it replays to.
+    done: u64,
+    change: usize,
+    target: u64,
+    next_id: u64,
+    instance: u64,
+    rebases: u64,
+}
+
+impl ReplayRun {
+    /// The replayed world (complete once [`Journal::replay_step`] said so).
+    pub fn world(&self) -> &World {
+        &self.world
+    }
+
+    /// Entries applied so far, and the entry it replays to.
+    pub fn progress(&self) -> (u64, u64) {
+        (self.done, self.target)
+    }
+
+    /// The replayed world, once [`Journal::replay_step`] said done.
+    pub fn into_world(self) -> World {
+        self.world
+    }
 }
 
 pub fn hex(h: u64) -> String {

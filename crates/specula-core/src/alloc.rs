@@ -128,10 +128,14 @@ pub struct AllocStats {
 }
 
 pub fn stats() -> AllocStats {
+    // Another thread can raise the current size between the two loads before it raises the peak
+    // (review, 2026-10-29: a flaky test): the peak reported is never below the current size read.
+    let current = CURRENT.load(Relaxed);
+    let peak = PEAK.load(Relaxed).max(current);
     AllocStats {
         installed: INSTALLED.load(Relaxed),
-        current_bytes: CURRENT.load(Relaxed) as u64,
-        peak_bytes: PEAK.load(Relaxed) as u64,
+        current_bytes: current as u64,
+        peak_bytes: peak as u64,
         allocations: ALLOCATIONS.load(Relaxed),
         frees: FREES.load(Relaxed),
         allocated_bytes: ALLOCATED.load(Relaxed),

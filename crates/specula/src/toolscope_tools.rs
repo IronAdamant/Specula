@@ -432,6 +432,8 @@ fn invoke(tools: &Tools, session: &SessionInfo, args: &Json) -> ToolOutput {
         Some(a @ Json::Obj(_)) => a,
         Some(_) => return bad("'arguments' must be an object: the tool's arguments".into()),
     };
+    // The trace records the tool called, not tools_invoke (docs/design/TRACE.md).
+    crate::trace_sink::invoked(specula_core::trace::Ctx::current().call, name, arguments);
     call(tools, session, name, arguments)
 }
 

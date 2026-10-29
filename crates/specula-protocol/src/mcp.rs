@@ -11,7 +11,7 @@ use std::collections::hash_map::RandomState;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::hash::{BuildHasher, Hasher};
-use std::panic::{self, AssertUnwindSafe};
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -162,7 +162,7 @@ impl State {
     /// Tells the handler a session ended (a panic in it is the handler's bug; the session is gone
     /// either way).
     fn closed(&self, id: &str) {
-        let _ = panic::catch_unwind(AssertUnwindSafe(|| self.handler.session_closed(id)));
+        let _ = specula_core::trace::catch_unwind(AssertUnwindSafe(|| self.handler.session_closed(id)));
     }
 
     fn post(&self, req: &Request) -> Response {
@@ -281,7 +281,7 @@ impl State {
             client_version: field("version"),
             protocol_version: negotiated.to_owned(),
         };
-        let opened = panic::catch_unwind(AssertUnwindSafe(|| self.handler.session_opened(&info, query)))
+        let opened = specula_core::trace::catch_unwind(AssertUnwindSafe(|| self.handler.session_opened(&info, query)))
             .unwrap_or_else(|p| Err(format!("Internal error: session_opened panicked: {}", panic_message(&*p))));
         if let Err(message) = opened {
             return json_response(200, &rpc_error(id.clone(), INVALID_PARAMS, &format!("initialize: {message}")));
@@ -327,7 +327,7 @@ impl State {
 
     /// The handler's list version for `session` (0 if asking it panics).
     fn list_version(&self, session: &SessionInfo) -> u64 {
-        panic::catch_unwind(AssertUnwindSafe(|| self.handler.list_version(session))).unwrap_or(0)
+        specula_core::trace::catch_unwind(AssertUnwindSafe(|| self.handler.list_version(session))).unwrap_or(0)
     }
 
     /// Whether to tell session `id` about list `version` now. With `just_seen` (it was just
@@ -352,7 +352,7 @@ impl State {
 
     /// `session`'s valid tool definitions; invalid names are dropped with a one-time stderr warning.
     fn valid_tools(&self, session: &SessionInfo) -> Result<Vec<crate::ToolDef>, (i64, String)> {
-        let tools = panic::catch_unwind(AssertUnwindSafe(|| self.handler.tools_for(session)))
+        let tools = specula_core::trace::catch_unwind(AssertUnwindSafe(|| self.handler.tools_for(session)))
             .map_err(|p| (INTERNAL_ERROR, format!("Internal error: tool list panicked: {}", panic_message(&*p))))?;
         let mut warned = lock(&self.warned_names);
         Ok(tools
@@ -396,12 +396,12 @@ impl State {
         };
         // Any tool the handler has, listed for this session or not (the handler decides what a
         // session may call).
-        let known = panic::catch_unwind(AssertUnwindSafe(|| self.handler.has_tool(name)))
+        let known = specula_core::trace::catch_unwind(AssertUnwindSafe(|| self.handler.has_tool(name)))
             .map_err(|p| (INTERNAL_ERROR, format!("Internal error: tool lookup panicked: {}", panic_message(&*p))))?;
         if !known || !is_valid_tool_name(name) {
             return Err((INVALID_PARAMS, format!("Unknown tool: {name}")));
         }
-        let output = panic::catch_unwind(AssertUnwindSafe(|| self.handler.call(session, name, arguments)))
+        let output = specula_core::trace::catch_unwind(AssertUnwindSafe(|| self.handler.call(session, name, arguments)))
             .unwrap_or_else(|p| ToolOutput::error(format!("tool {name:?} panicked: {}", panic_message(&*p))));
         Ok(tool_output_json(output))
     }

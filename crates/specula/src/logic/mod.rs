@@ -327,6 +327,7 @@ fn invoke(code: &ModuleCode, name: &str, parts: CallParts<'_>, call: u32, input:
         log: parts.log,
         state_undo: Vec::new(),
         rng_undo: Vec::new(),
+        traced: 0,
     };
     let out = code.call(call, input, &mut h, MAX_REQUESTS_PER_CALL);
     if let Some(d) = out.fp_before {
@@ -902,6 +903,7 @@ impl LogicHost {
             LOADS_KEPT,
         );
         eprintln!("specula: module '{name}' was disabled at tick {tick}: {why}");
+        crate::trace_engine::module_disabled(name, &why, tick);
     }
 
     /// One simulation tick of every running module (call after the tick's other systems; the
