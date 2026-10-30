@@ -282,7 +282,9 @@ staging buffer; host-visible memory made every probe read slower on the iGPU) re
 
 **The irradiance view** (`sight_frame gi: "irradiance"`) shows the ambient term alone, stretched over its own range:
 the resident probes' 5th to 95th irradiance-luminance percentiles map to 0.03..0.45 before the tone curve (hue kept,
-the frame's exposure undone), so a pale, evenly lit stage shows gradation instead of near-white. The packet's
+the frame's exposure undone), so a pale, evenly lit stage shows gradation instead of near-white. A range narrower
+than 8% of its top (an open stage whose probes all see the same sky) is widened downwards to 8%, so probe noise is
+never magnified into a white frame (the Fidelity T3 sheet's skeleton stage was stretched 264 times before). The packet's
 `gi.irradiance_scale` and `gi.irradiance_start` give the stretch (shown = 0.03 + (luminance - start) x scale). Particles don't draw in it (their glow isn't GI); terrain shows its ambient term too.
 
 **Engine thread:** `gi_bake` gathers the scene in one pass over the world (the instances, lights and the scene keys

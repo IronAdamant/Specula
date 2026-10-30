@@ -1,0 +1,78 @@
+{
+  "stage_t3": 1,
+  "description": "The Fidelity T3 stage dressing, as data: what each benchmark subject gets in the stage world at T3 beyond its recipe (decals, particle effects, a point light, set pieces for bounce light) and the baked GI volume around it. scripts/studio_check.py --fidelity reads it. Every subject stands at the origin facing +Z; positions are metres from there. Decals project along their box's -Y (rotation_deg [90, 0, 0] turns that to -Z: onto a face looking at +Z; [0, 0, -90] onto a face looking at +X). Colours are the fidelity palette's (style.json). Set pieces stand in the stage at every tier, so tiers are compared in the same place; decals, effects, the light and GI are T3's.",
+  "effects": { "lantern_flame": "vfx/lantern_flame.json", "lantern_embers": "vfx/lantern_embers.json", "tree_leaves": "vfx/tree_leaves.json" },
+  "subjects": {
+    "runestone": {
+      "gi": { "min": [-1.5, 0, -1.2], "max": [1.5, 2.5, 1.5], "spacing": 0.25 },
+      "decals": [
+        { "name": "moss_front", "position": [-0.17, 0.33, 0.2], "rotation_deg": [90, 0, 0],
+          "decal": { "texture": "fx/moss_patch.png", "size": [0.44, 0.3, 0.36], "color": "#5d7a3e", "angle_fade": 0.5, "roughness": 0.95 } },
+        { "name": "moss_front_b", "position": [0.24, 0.3, 0.2], "rotation_deg": [90, 0, 0],
+          "decal": { "texture": "fx/moss_patch.png", "size": [0.3, 0.3, 0.3], "color": "#3f5629", "angle_fade": 0.5, "roughness": 0.95, "uv": [0.5, 0.0, 1.0, 0.5] } },
+        { "name": "moss_side", "position": [0.45, 0.45, 0.0], "rotation_deg": [0, 0, -90],
+          "decal": { "texture": "fx/moss_patch.png", "size": [0.6, 0.3, 0.3], "color": "#5d7a3e", "angle_fade": 0.5, "roughness": 0.95, "uv": [0.0, 0.5, 1.0, 1.0] } },
+        { "name": "lichen_front", "position": [-0.27, 1.3, 0.2], "rotation_deg": [90, 0, 0],
+          "decal": { "texture": "fx/lichen.png", "size": [0.22, 0.3, 0.26], "color": "#d9cfb6", "opacity": 0.9, "angle_fade": 0.5 } },
+        { "name": "lichen_side", "position": [0.45, 1.2, -0.04], "rotation_deg": [0, 0, -90],
+          "decal": { "texture": "fx/lichen.png", "size": [0.4, 0.3, 0.3], "color": "#d9cfb6", "opacity": 0.9, "angle_fade": 0.5 } },
+        { "name": "moss_ground", "position": [0.0, 0.0, 0.05], "rotation_deg": [0, 0, 0],
+          "decal": { "texture": "fx/moss_patch.png", "size": [1.7, 0.35, 1.2], "color": "#3f5629", "opacity": 0.9, "angle_fade": 0.6 } }
+      ],
+      "effects": [
+        { "name": "rune_motes", "position": [0.0, 1.05, 0.25], "vfx": { "effect": "motes", "params": { "tint": "#56c8e0", "rate": 0.6, "size": 0.9 } } }
+      ]
+    },
+    "barrel": {
+      "gi": { "min": [-1.2, 0, -1.2], "max": [1.2, 1.5, 1.2], "spacing": 0.25 },
+      "decals": [
+        { "name": "grime_front", "position": [0.0, 0.2, 0.32], "rotation_deg": [90, 0, 0],
+          "decal": { "texture": "fx/grime.png", "mode": "multiply", "size": [0.95, 0.5, 0.42], "angle_fade": 0.05 } },
+        { "name": "grime_side", "position": [0.32, 0.2, 0.0], "rotation_deg": [0, 0, -90],
+          "decal": { "texture": "fx/grime.png", "mode": "multiply", "size": [0.42, 0.5, 0.95], "angle_fade": 0.05, "uv": [0.0, 0.0, 1.0, 1.0] } },
+        { "name": "grime_ground", "position": [0.0, 0.0, 0.0], "rotation_deg": [0, 0, 0],
+          "decal": { "texture": "fx/stain.png", "mode": "multiply", "size": [1.3, 0.25, 1.3], "angle_fade": 0.6 } },
+        { "name": "wear_front", "position": [0.08, 0.58, 0.32], "rotation_deg": [90, 0, 0],
+          "decal": { "texture": "fx/scuffs.png", "size": [0.45, 0.5, 0.35], "color": "#a8744a", "opacity": 0.9, "angle_fade": 0.2, "roughness": 0.7 } },
+        { "name": "wear_side", "position": [0.32, 0.75, 0.05], "rotation_deg": [0, 0, -90],
+          "decal": { "texture": "fx/scuffs.png", "size": [0.3, 0.5, 0.4], "color": "#a8744a", "opacity": 0.85, "angle_fade": 0.2, "roughness": 0.7 } }
+      ],
+      "effects": []
+    },
+    "lantern": {
+      "set": [
+        { "name": "wall_back", "shape": "cube", "position": [0.15, 0.45, -0.45], "scale": [1.4, 0.9, 0.12], "color": "#b3b6ba", "roughness": 0.9 },
+        { "name": "wall_side", "shape": "cube", "position": [-0.5, 0.45, 0.15], "scale": [0.12, 0.9, 1.08], "color": "#b3b6ba", "roughness": 0.9 }
+      ],
+      "light": { "color": "#ffb347", "intensity": 0.35, "range": 1.5, "offset": [0, 0.2, 0] },
+      "gi": { "min": [-0.6, 0, -0.55], "max": [1.0, 1.0, 1.0], "spacing": 0.25 },
+      "decals": [
+        { "name": "soot_wall", "position": [0.0, 0.6, -0.3], "rotation_deg": [-90, 0, 0],
+          "decal": { "texture": "fx/stain.png", "mode": "multiply", "size": [0.5, 0.3, 0.5], "angle_fade": 0.4, "opacity": 0.6 } }
+      ],
+      "effects": [
+        { "name": "flame", "position": [0.0, 0.128, 0.0], "vfx": { "effect": "lantern_flame" } },
+        { "name": "embers", "position": [0.0, 0.43, 0.0], "vfx": { "effect": "lantern_embers" } }
+      ]
+    },
+    "tree": {
+      "gi": { "min": [-2.2, 0, -2.0], "max": [2.4, 4.8, 2.0], "spacing": 0.5 },
+      "decals": [
+        { "name": "moss_roots", "position": [0.05, 0.0, 0.0], "rotation_deg": [0, 0, 0],
+          "decal": { "texture": "fx/moss_patch.png", "size": [2.0, 0.6, 2.0], "color": "#3f5629", "opacity": 0.95, "angle_fade": 0.3 } }
+      ],
+      "effects": [
+        { "name": "leaves", "position": [0.3, 2.05, 0.0], "vfx": { "effect": "tree_leaves" } }
+      ]
+    },
+    "skeleton_warrior": {
+      "gi": { "min": [-1.2, 0, -1.0], "max": [1.2, 2.2, 1.0], "spacing": 0.25 },
+      "anim": { "clip": "idle", "speed": 1.0 },
+      "decals": [
+        { "name": "dirt", "position": [0.0, 0.0, 0.05], "rotation_deg": [0, 0, 0],
+          "decal": { "texture": "fx/stain.png", "mode": "multiply", "size": [1.2, 0.3, 1.0], "angle_fade": 0.6, "opacity": 0.7 } }
+      ],
+      "effects": []
+    }
+  }
+}

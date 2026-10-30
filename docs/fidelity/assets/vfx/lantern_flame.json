@@ -1,0 +1,15 @@
+{
+  "description": "Fidelity T3 lantern: a candle's small flame (flipbook tongues with a hot core) on the wick. Fire's own colours. The light is the lantern entity's own point light, so the baked GI sees it.",
+  "emitters": [
+    {"name": "flame", "rate": 30, "lifetime": [0.35, 0.5], "shape": {"kind": "disc", "radius": 0.006},
+     "direction": [0, 1, 0], "spread_deg": 6, "speed": [0.04, 0.08], "gravity": [0, 0.25, 0], "drag": 1.5,
+     "noise": {"strength": 0.02, "frequency": 6, "speed": 2},
+     "size": [[0, 0.06], [0.3, 0.095], [1, 0.03]], "size_random": [0.85, 1.1],
+     "color": [[0, "#fff1c2"], [0.3, "#ffb347"], [1, "#ffb347"]], "alpha": [[0, 0], [0.12, 1], [0.75, 0.8], [1, 0]],
+     "emissive": 1.6, "rotation_deg": [-8, 8], "texture": "flame", "flipbook": {"cols": 4, "rows": 4, "fps": 16, "random_start": true},
+     "blend": 0.35, "soft": 0.01, "priority": 3},
+    {"name": "core", "rate": 10, "lifetime": [0.25, 0.4], "shape": {"kind": "point"}, "speed": [0.01, 0.03],
+     "gravity": [0, 0.1, 0], "size": [[0, 0.022], [1, 0.014]], "color": "#fff1c2", "alpha": [[0, 0], [0.2, 0.9], [1, 0]],
+     "emissive": 2.0, "texture": "soft", "blend": "additive", "soft": 0.01, "priority": 3}
+  ]
+}

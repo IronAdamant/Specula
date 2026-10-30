@@ -132,9 +132,12 @@ fn probes_replace_the_flat_ambient_inside_their_volume() {
         let vg = [volume(&green)];
         let iv = rig.render(&mut gpu, GiFrame { key: 1, volumes: &vg, quality: GiQuality::High, view: GiView::Irradiance }, "irradiance");
         // ...stretched over its own range (every probe alike here: 0.5 green, luminance 0.36,
-        // shown at the top of the view's range, 0.45), so a pale stage shows gradation.
+        // shown at the top of the view's range, 0.45), so a pale stage shows gradation. A range
+        // this flat is widened to IRRADIANCE_VIEW_MIN_SPREAD of its top, never stretched further.
         let (scale, start) = gpu.gi_view_stretch().expect("an irradiance view");
-        assert!((0.5 * 0.7152 * scale - 0.42).abs() < 0.01 && start == 0.0, "the view's stretch {scale} {start}");
+        let y = 0.5 * 0.7152;
+        let floor = y * (1.0 - specula_gpu::IRRADIANCE_VIEW_MIN_SPREAD);
+        assert!(((y - start) * scale - 0.42).abs() < 0.01 && (start - floor).abs() < 1e-3, "the view's stretch {scale} {start}");
         let c = rig.at(&iv, [0.0; 3]);
         assert!((c[1] as i32 - byte(0.45 / 0.7152)).abs() <= 3 && c[0] <= 2, "irradiance view {c:?}");
         // Particles draw in the lit view, never in the irradiance view (their glow isn't GI).

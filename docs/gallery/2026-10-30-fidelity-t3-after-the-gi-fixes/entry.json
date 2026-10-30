@@ -1,0 +1,48 @@
+{
+  "date": "2026-10-30",
+  "time": "18:00",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M4",
+  "commit": "",
+  "subject": "assets",
+  "topic": "3D asset",
+  "title": "Fidelity T3 after the GI fixes",
+  "note": "Run 7 of the T3 sheet, after the GI fixes this sheet found (no hidden-probe black cells, a stretched irradiance view, at least 8% wide) and the content fixes from two sight-skeptic rounds: brass rivets on the barrel, a trunk of three twisted strands with branches clear of the crown, green falling leaves, decals moved off the runestone's runes, a larger lantern flame. The tree bakes at 0.5 m again.",
+  "source": "scripts/fidelity_t3.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-benchmark-t3-m4.jpg",
+      "caption": "The T3 sheet, run 7: T0/T1/T3 per subject, three studio shots, the indirect light, budget lines",
+      "original": "benchmark_t3_m4.png",
+      "width": 640,
+      "height": 411,
+      "bytes": 50663
+    },
+    {
+      "file": "02-tree-t3-close-up.jpg",
+      "caption": "T3 tree: twisted three-strand trunk, branches out of the crown, drifting leaves, moss decal",
+      "original": "tree_t3_close_up.png",
+      "width": 368,
+      "height": 368,
+      "bytes": 7161
+    },
+    {
+      "file": "03-barrel-t3-close-up.jpg",
+      "caption": "T3 barrel: stave wood and rusted hoops (normal-mapped), brass rivets, grime and wear decals",
+      "original": "barrel_t3_close_up.png",
+      "width": 368,
+      "height": 368,
+      "bytes": 9433
+    },
+    {
+      "file": "04-skeleton-warrior-t3-gameplay-irradiance.jpg",
+      "caption": "T3 skeleton's indirect light, readable after the stretch fix",
+      "original": "skeleton_warrior_t3_gameplay_irradiance.png",
+      "width": 384,
+      "height": 384,
+      "bytes": 3119
+    }
+  ]
+}

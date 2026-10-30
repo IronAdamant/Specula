@@ -138,7 +138,7 @@ mod water;
 
 pub use graph::{Access, GraphBarrier, GraphError, GraphInfo, GraphPass, GraphResource, GraphUse, Load};
 pub use effects::{f16_bits, Decal, DecalMode, Effects, Particle, ParticleMaterial, MAX_DECALS, MAX_PARTICLES, MAX_PARTICLE_MATERIALS};
-pub use gi::{check as gi_check, GiFrame, GiQuality, GiView, GiVolume, GI_PROBE_BYTES, MAX_GI_PROBES, MAX_GI_VOLUMES};
+pub use gi::{check as gi_check, GiFrame, GiQuality, GiView, GiVolume, GI_PROBE_BYTES, IRRADIANCE_VIEW_MIN_SPREAD, MAX_GI_PROBES, MAX_GI_VOLUMES};
 pub use idbuffer::{IdCounts, IdCoverage, IdImage};
 pub use atlas::{pack_atlas, Atlas, AtlasError, AtlasImage, AtlasOptions, AtlasRect, Flipbook, Playback};
 pub use sprite::{sprite_sphere, tiles_sphere, view_2d, Billboard, Draw2d, ShapeDraw, Sprite, SpriteBlend, TileChunk, View2d};

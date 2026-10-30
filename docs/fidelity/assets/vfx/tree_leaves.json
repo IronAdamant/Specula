@@ -1,0 +1,12 @@
+{
+  "description": "Fidelity T3 tree: leaves let go of the crown and drift down on the breeze, turning as they fall (lit, alpha-blended; the stand-in for wind until foliage sways).",
+  "emitters": [
+    {"name": "leaves", "rate": 3, "lifetime": [3.5, 5.0], "shape": {"kind": "box", "size": [2.4, 0.3, 2.0]},
+     "direction": [1, -0.3, 0.2], "spread_deg": 40, "speed": [0.15, 0.35], "gravity": [0, -0.35, 0], "drag": 1.4,
+     "noise": {"strength": 0.35, "frequency": 0.8, "speed": 0.6},
+     "size": [[0, 0.09], [1, 0.09]], "size_random": [0.8, 1.2], "color": [[0, "#5f8f3a"], [1, "#3d6127"]],
+     "alpha": [[0, 0], [0.1, 1], [0.85, 1], [1, 0]], "emissive": 1, "rotation_deg": [0, 360], "spin_deg": [-160, 160],
+     "texture": "fx/leaf.png", "blend": "alpha", "lit": true, "soft": 0.05,
+     "collide": {"ground": true, "mode": "kill"}, "priority": 1}
+  ]
+}

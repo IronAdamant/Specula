@@ -1,0 +1,25 @@
+{
+  "anims": 1,
+  "rig": "skeleton_warrior_t3",
+  "description": "Fidelity T3 skeleton warrior: a guarded idle (breathing, a slow sway, the skull looking about, the jaw chattering) and a sword swing.",
+  "clips": [
+    { "name": "idle", "kind": "idle", "duration": 2.4,
+      "note": "The rest pose stands upright with the ankles 7 cm above the soles.",
+      "pelvis": "hips", "spine": ["spine", "chest"], "head": "head",
+      "legs": [ { "thigh": "thigh_l", "shin": "shin_l", "foot": "foot_l", "z": 0.03, "ankle_y": 0.07 },
+                { "thigh": "thigh_r", "shin": "shin_r", "foot": "foot_r", "z": -0.03, "phase": 0.5, "ankle_y": 0.07 } ],
+      "arms": [ { "upper": "upperarm_l", "fore": "forearm_l", "swing": 4, "bend": 18 },
+                { "upper": "upperarm_r", "fore": "forearm_r", "swing": 4, "bend": 40, "phase": 0.5 } ],
+      "bounce": 0.012, "sway": 0.015, "breathe": 3, "look": 18,
+      "wobble": [ { "bone": "jaw", "axis": "x", "deg": 7, "cycles": 3 } ] },
+    { "name": "swing", "kind": "swing", "duration": 1.0, "windup": 0.38, "strike": 0.14, "hold": 0.1,
+      "note": "An overhead cut with the sword arm; the shield arm stays up.",
+      "pelvis": "hips",
+      "legs": [ { "thigh": "thigh_l", "shin": "shin_l", "foot": "foot_l", "ankle_y": 0.07 },
+                { "thigh": "thigh_r", "shin": "shin_r", "foot": "foot_r", "ankle_y": 0.07 } ],
+      "windup_pose": { "upperarm_l": { "rot": [-120, 0, 15] }, "forearm_l": { "rot": [-40, 0, 0] }, "upperarm_r": { "rot": [-50, 0, -10] },
+                       "chest": { "rot": [-10, 12, 0] }, "head": { "rot": [-6, 0, 0] }, "hips": { "move": [0, -0.02, -0.04] } },
+      "strike_pose": { "upperarm_l": { "rot": [-20, 0, -5] }, "forearm_l": { "rot": [-10, 0, 0] }, "upperarm_r": { "rot": [-50, 0, -10] },
+                       "chest": { "rot": [14, -12, 0] }, "head": { "rot": [8, 0, 0] }, "hips": { "move": [0, -0.05, 0.06] } } }
+  ]
+}

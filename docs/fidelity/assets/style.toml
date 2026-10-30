@@ -20,6 +20,19 @@ name = "*_t1"
 max_triangles = 3000
 max_materials = 6
 
+# T3, detailed stylised (SDF sculpts, normal-mapped texture graphs). Claude's proposal (M4,
+# 2026-10-30): a sculpted subject meshes its distance fields on a regular grid, so its LOD 0 is
+# dense (a carved runestone about 15k triangles); 16k at LOD 0 and 6k at LOD 1 keep one hero
+# subject well inside the iGPU's frame (Sepulcra draws 22k triangles of scattered headstones in
+# 8.8 ms of GPU). Textures: three 128 px sets (bone, rusted iron, wood: 256 KB each with mips)
+# for the skeleton, so 1 MB; materials grow with the textured parts.
+[[budget]]
+name = "*_t3"
+max_triangles = 16000
+max_lod_triangles = [6000, 3000]
+max_texture_kb = 1024
+max_materials = 9
+
 [[scale]]
 name = "runestone_*"
 height_m = [1.3, 2.2]

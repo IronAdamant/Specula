@@ -1,0 +1,23 @@
+{
+  "texgraph": 1,
+  "name": "tex_stone_t3",
+  "description": "Fidelity T3 weathered standing stone: mottled grain, pitting and dark hairline cracks, moss settled in the deepest pits; tiling, 128 px for the iGPU.",
+  "size": 128,
+  "seed": 31,
+  "nodes": {
+    "grain": { "op": "noise", "kind": "fbm", "scale": 5, "octaves": 4, "gain": 0.55 },
+    "mottle": { "op": "noise", "kind": "fbm", "scale": 2, "octaves": 2 },
+    "pits": { "op": "noise", "kind": "worley", "scale": 12 },
+    "cracks": { "op": "noise", "kind": "worley_edge", "scale": 4 },
+    "crack_lines": { "op": "levels", "in": "cracks", "in_range": [0.0, 0.06] },
+    "pit_mask": { "op": "levels", "in": "pits", "in_range": [0.0, 0.25] },
+    "face": { "op": "blend", "a": "grain", "b": "pit_mask", "mode": "multiply", "amount": 0.5 },
+    "height": { "op": "blend", "a": "face", "b": "crack_lines", "mode": "multiply", "amount": 0.8 },
+    "tone": { "op": "blend", "a": "height", "b": "mottle", "mode": "overlay", "amount": 0.45 },
+    "low": { "op": "levels", "in": "height", "in_range": [0.04, 0.12], "out_range": [1.0, 0.0] },
+    "stone": { "op": "gradient_map", "in": "tone", "stops": [[0, "stone_dark"], [0.38, "stone"], [0.75, "stone"], [1, "stone_light"]] },
+    "albedo": { "op": "blend", "a": "stone", "b": { "color": "moss_dark" }, "mode": "mix", "mask": "low", "amount": 0.5 },
+    "rough": { "op": "levels", "in": "height", "out_range": [1.0, 0.8] }
+  },
+  "outputs": { "base_color": "albedo", "height": "height", "normal_strength": 5, "roughness": "rough", "metallic": 0, "ao": { "radius": 3, "strength": 0.7 } }
+}

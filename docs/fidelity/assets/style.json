@@ -39,6 +39,7 @@
     "iron": { "color": "#4a4d52", "roughness": 0.5, "metallic": 0.8, "specular": 0.5 },
     "brass": { "color": "#b08d3c", "roughness": 0.35, "metallic": 0.9, "specular": 0.6 },
     "glass": { "kind": "glass", "color": "#cfe3ea", "opacity": 0.3, "roughness": 0.1, "specular": 0.8 },
+    "glass_thin": { "kind": "glass", "color": "#cfe3ea", "opacity": 0.1, "roughness": 0.05, "specular": 0.6, "notes": "T3 lantern panes: thin clear glass, so the flame inside reads" },
     "flame": { "color": "#ffb347", "roughness": 1.0, "emissive": 3.0, "specular": 0.0 },
     "glyph": { "color": "#56c8e0", "roughness": 0.4, "emissive": 2.0, "specular": 0.2 },
     "bone": { "color": "#d9cfb6", "roughness": 0.7, "specular": 0.25 },

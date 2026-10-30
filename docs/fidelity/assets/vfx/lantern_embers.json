@@ -1,0 +1,9 @@
+{
+  "description": "Fidelity T3 lantern: a few hot embers carried up out of the chimney, wandering on the heat and dying orange.",
+  "emitters": [
+    {"name": "embers", "rate": 2.5, "lifetime": [1.2, 2.0], "shape": {"kind": "disc", "radius": 0.012}, "spread_deg": 18,
+     "speed": [0.2, 0.4], "gravity": [0, 0.12, 0], "drag": 0.8, "noise": {"strength": 0.12, "frequency": 2.2, "speed": 0.8},
+     "size": [[0, 0.025], [1, 0.012]], "color": [[0, "#fff1c2"], [0.4, "#ffb347"], [1, "#ffb347"]],
+     "alpha": [[0, 0], [0.08, 1], [0.8, 0.7], [1, 0]], "emissive": 3.5, "texture": "spark", "stretch": 0.03, "blend": "additive", "priority": 2}
+  ]
+}

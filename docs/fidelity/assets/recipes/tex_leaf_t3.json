@@ -1,0 +1,18 @@
+{
+  "texgraph": 1,
+  "name": "tex_leaf_t3",
+  "description": "Fidelity T3 foliage clumps: overlapping leaf cells with dark gaps between, lighter leaf tips; tiling, 128 px for the iGPU.",
+  "size": 128,
+  "seed": 36,
+  "nodes": {
+    "cells": { "op": "noise", "kind": "worley", "scale": 9 },
+    "leaves": { "op": "invert", "in": "cells" },
+    "edges": { "op": "noise", "kind": "worley_edge", "scale": 9 },
+    "gaps": { "op": "levels", "in": "edges", "in_range": [0.0, 0.1] },
+    "clump": { "op": "noise", "kind": "fbm", "scale": 3, "octaves": 3 },
+    "shape": { "op": "blend", "a": "leaves", "b": "gaps", "mode": "multiply", "amount": 0.7 },
+    "height": { "op": "blend", "a": "shape", "b": "clump", "mode": "multiply", "amount": 0.35 },
+    "albedo": { "op": "gradient_map", "in": "height", "stops": [[0, "leaf_dark"], [0.6, "leaf_dark"], [0.9, "leaf"], [1, "leaf_light"]] }
+  },
+  "outputs": { "base_color": "albedo", "height": "height", "normal_strength": 3, "roughness": 0.85, "metallic": 0, "ao": { "radius": 3, "strength": 0.6 } }
+}

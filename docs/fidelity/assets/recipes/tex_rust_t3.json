@@ -1,0 +1,20 @@
+{
+  "texgraph": 1,
+  "name": "tex_rust_t3",
+  "description": "Fidelity T3 rusted iron: dark forged iron with pitting, rust blooming in patches (rough, not metallic where it has rusted); tiling, 128 px for the iGPU.",
+  "size": 128,
+  "seed": 33,
+  "nodes": {
+    "patches": { "op": "noise", "kind": "fbm", "scale": 6, "octaves": 4, "gain": 0.6 },
+    "rust_mask": { "op": "levels", "in": "patches", "in_range": [0.6, 0.74] },
+    "pits": { "op": "noise", "kind": "worley", "scale": 14 },
+    "hammer": { "op": "noise", "kind": "worley_edge", "scale": 6 },
+    "iron_h": { "op": "blend", "a": "hammer", "b": "pits", "mode": "multiply", "amount": 0.35 },
+    "height": { "op": "blend", "a": "iron_h", "b": "rust_mask", "mode": "add", "amount": 0.25 },
+    "iron": { "op": "gradient_map", "in": "iron_h", "stops": [[0, "iron_dark"], [1, "iron"]] },
+    "albedo": { "op": "blend", "a": "iron", "b": { "color": "rust" }, "mode": "mix", "mask": "rust_mask", "amount": 0.6 },
+    "rough": { "op": "levels", "in": "rust_mask", "out_range": [0.55, 1.0] },
+    "metal": { "op": "levels", "in": "rust_mask", "out_range": [0.85, 0.1] }
+  },
+  "outputs": { "base_color": "albedo", "height": "height", "normal_strength": 2.5, "roughness": "rough", "metallic": "metal", "ao": { "radius": 2, "strength": 0.5 } }
+}

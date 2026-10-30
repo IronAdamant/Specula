@@ -1,0 +1,19 @@
+{
+  "texgraph": 1,
+  "name": "tex_bone_t3",
+  "description": "Fidelity T3 old bone: porous, pitted, with fine cracks and darker grime in the pores; tiling, 128 px for the iGPU.",
+  "size": 128,
+  "seed": 34,
+  "nodes": {
+    "pores": { "op": "noise", "kind": "worley", "scale": 18 },
+    "pore_mask": { "op": "levels", "in": "pores", "in_range": [0.0, 0.18], "out_range": [0.0, 1.0] },
+    "grain": { "op": "noise", "kind": "fbm", "scale": 5, "octaves": 4 },
+    "cracks": { "op": "noise", "kind": "worley_edge", "scale": 3 },
+    "crack_lines": { "op": "levels", "in": "cracks", "in_range": [0.0, 0.08] },
+    "surface": { "op": "blend", "a": "grain", "b": "pore_mask", "mode": "multiply", "amount": 0.5 },
+    "height": { "op": "blend", "a": "surface", "b": "crack_lines", "mode": "multiply", "amount": 0.5 },
+    "albedo": { "op": "gradient_map", "in": "height", "stops": [[0, "bone_shadow"], [0.5, "bone"], [1, "bone"]] },
+    "rough": { "op": "levels", "in": "height", "out_range": [0.85, 0.6] }
+  },
+  "outputs": { "base_color": "albedo", "height": "height", "normal_strength": 2.5, "roughness": "rough", "metallic": 0, "ao": { "radius": 2, "strength": 0.6 } }
+}

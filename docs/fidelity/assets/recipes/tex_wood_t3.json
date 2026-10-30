@@ -1,0 +1,20 @@
+{
+  "texgraph": 1,
+  "name": "tex_wood_t3",
+  "description": "Fidelity T3 barrel staves: six vertical staves with dark seams, wavy grain lines along each, a tone per stave; tiling, 128 px for the iGPU.",
+  "size": 128,
+  "seed": 32,
+  "nodes": {
+    "staves": { "op": "bricks", "rows": 1, "cols": 6, "mortar": 0.035, "bevel": 0.12, "offset": 0, "jitter": 0.35 },
+    "lines": { "op": "bricks", "rows": 1, "cols": 40, "mortar": 0.4, "bevel": 0.3, "offset": 0, "jitter": 0.8 },
+    "wobble": { "op": "noise", "kind": "fbm", "scale": 4, "octaves": 3 },
+    "grain": { "op": "warp", "in": "lines", "by": "wobble", "amount": 0.06 },
+    "knots": { "op": "noise", "kind": "worley", "scale": 5 },
+    "knot_mask": { "op": "levels", "in": "knots", "in_range": [0.0, 0.12], "out_range": [1.0, 0.0] },
+    "wood": { "op": "blend", "a": "grain", "b": "knot_mask", "mode": "subtract", "amount": 0.4 },
+    "height": { "op": "blend", "a": "staves", "b": "wood", "mode": "multiply", "amount": 0.6 },
+    "albedo": { "op": "gradient_map", "in": "height", "stops": [[0, "wood_dark"], [0.5, "wood_dark"], [0.75, "wood"], [1, "wood_light"]] },
+    "rough": { "op": "levels", "in": "wood", "out_range": [0.95, 0.75] }
+  },
+  "outputs": { "base_color": "albedo", "height": "height", "normal_strength": 3, "roughness": "rough", "metallic": 0, "ao": { "radius": 2, "strength": 0.5 } }
+}

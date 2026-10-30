@@ -1,0 +1,48 @@
+{
+  "date": "2026-10-30",
+  "time": "13:30",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M4",
+  "commit": "",
+  "subject": "assets",
+  "topic": "3D asset",
+  "title": "Fidelity T3: the benchmark set, detailed stylised",
+  "note": "The five Fidelity benchmark subjects at T0, T1 and T3 side by side in the stage world through the studio's shots (close-up, gameplay, worst light) plus T3's indirect light. New since the T0/T1 sheet: SDF-sculpted runestone carving, gnarled trunk and skeleton bones, normal-mapped texture graphs (stone, wood, rusted iron, bone, bark, leaves), moss/lichen/grime decals, particle flame, embers, motes and falling leaves, the lantern's point light and baked GI (tier low on the iGPU). Each T3 subject adds 0.1-0.7 ms of iGPU time in play at 720p.",
+  "source": "scripts/fidelity_t3.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-benchmark-t3-m4.jpg",
+      "caption": "The T3 sheet: T0/T1/T3 per subject, three studio shots, indirect light, budget lines",
+      "original": "benchmark_t3_m4.png",
+      "width": 640,
+      "height": 411,
+      "bytes": 50063
+    },
+    {
+      "file": "02-lantern-t3-close-up.jpg",
+      "caption": "T3 lantern: rusted iron, particle flame, its light warming the walls (GI baked)",
+      "original": "lantern_t3_close_up.png",
+      "width": 368,
+      "height": 368,
+      "bytes": 12207
+    },
+    {
+      "file": "03-runestone-t3-close-up.jpg",
+      "caption": "T3 runestone: SDF-carved glowing runes, normal-mapped stone, moss and lichen decals",
+      "original": "runestone_t3_close_up.png",
+      "width": 368,
+      "height": 368,
+      "bytes": 9127
+    },
+    {
+      "file": "04-tree-t3-gameplay.jpg",
+      "caption": "T3 tree from the game camera: sculpted trunk and crown, drifting leaves, moss decal",
+      "original": "tree_t3_gameplay.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 18450
+    }
+  ]
+}

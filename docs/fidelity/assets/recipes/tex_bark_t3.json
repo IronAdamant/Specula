@@ -1,0 +1,16 @@
+{
+  "texgraph": 1,
+  "name": "tex_bark_t3",
+  "description": "Fidelity T3 gnarled bark: deep vertical furrows broken into plates, twisted by noise, dark in the furrows; tiling, 128 px for the iGPU.",
+  "size": 128,
+  "seed": 35,
+  "nodes": {
+    "ridges": { "op": "bricks", "rows": 2, "cols": 9, "mortar": 0.22, "bevel": 0.45, "offset": 0.5, "jitter": 0.5 },
+    "twist": { "op": "noise", "kind": "fbm", "scale": 3, "octaves": 3 },
+    "furrows": { "op": "warp", "in": "ridges", "by": "twist", "amount": 0.12 },
+    "fine": { "op": "noise", "kind": "ridged", "scale": 10, "octaves": 3 },
+    "height": { "op": "blend", "a": "furrows", "b": "fine", "mode": "multiply", "amount": 0.3 },
+    "albedo": { "op": "gradient_map", "in": "height", "stops": [[0, "bark_dark"], [0.6, "bark"], [1, "wood_dark"]] }
+  },
+  "outputs": { "base_color": "albedo", "height": "height", "normal_strength": 4, "roughness": 0.95, "metallic": 0, "ao": { "radius": 3, "strength": 0.7 } }
+}

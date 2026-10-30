@@ -506,16 +506,25 @@ pub fn irradiance_range(volumes: &[GiVolume]) -> Option<(f32, f32)> {
 pub const IRRADIANCE_VIEW_RANGE: [f32; 2] = [0.03, 0.45];
 
 /// The view's (scale, offset) for `range`: shown luminance = offset + (luminance - lo) x scale,
-/// taken as `scale` and `lo` (see `FrameData::gi_params`). A flat range (every probe alike)
-/// shows at the top of the view's range.
+/// taken as `scale` and `lo` (see `FrameData::gi_params`). A range narrower than
+/// [`IRRADIANCE_VIEW_MIN_SPREAD`] of its top (an open stage whose probes all see the same sky) is
+/// widened downwards to it, so the view never magnifies probe noise into a white frame; a flat
+/// range (every probe alike) shows at the top of the view's range.
 pub fn irradiance_view(range: Option<(f32, f32)>) -> (f32, f32) {
     let [a, b] = IRRADIANCE_VIEW_RANGE;
     match range {
-        Some((lo, hi)) if hi - lo > hi * 1e-3 => ((b - a) / (hi - lo), lo),
-        Some((_, hi)) => ((b - a) / hi, 0.0),
+        Some((lo, hi)) => {
+            let lo = lo.min(hi * (1.0 - IRRADIANCE_VIEW_MIN_SPREAD));
+            ((b - a) / (hi - lo), lo)
+        }
         None => (1.0, 0.0),
     }
 }
+
+/// The narrowest probe range the irradiance view stretches over, as a share of its top. (Found by
+/// the Fidelity T3 sheet: an open stage with a skeleton, probes 0.339 to 0.341, was stretched
+/// 264 times, and every pixel past the 95th percentile read white.)
+pub const IRRADIANCE_VIEW_MIN_SPREAD: f32 = 0.08;
 
 /// The buffer's contents for `gi` (checked first): the header, the volumes, the probes, their
 /// lean copy.
@@ -689,7 +698,12 @@ mod tests {
         let flat = vec![rec(0.5, 1.0, u64::MAX); 8];
         let r = irradiance_range(&[GiVolume { origin: [0.0; 3], spacing: 1.0, dims: [2, 2, 2], intensity: 1.0, probes: &flat }]);
         let (s, l) = irradiance_view(r);
-        assert!((0.5 * s - (b - a)).abs() < 1e-4 && l == 0.0, "every probe alike: the top of the range");
+        assert!(((0.5 - l) * s - (b - a)).abs() < 1e-4, "every probe alike: the top of the range");
+        // Nearly alike (an open stage, the Fidelity T3 skeleton's: 0.3389 to 0.3405): widened to
+        // 8% of the top, not stretched 264 times; the top still shows at the range's top.
+        let (s, l) = irradiance_view(Some((0.3389, 0.3405)));
+        assert!(s <= (b - a) / (0.3405 * IRRADIANCE_VIEW_MIN_SPREAD) + 1e-3 && s < 20.0, "scale {s}");
+        assert!(((0.3405 - l) * s - (b - a)).abs() < 1e-4 && (0.3389 - l) * s + a > a, "lo {l}");
     }
 
     #[test]

@@ -22,9 +22,11 @@ With --window the main check runs with the window open (each call's renders then
 frames). With --pacing it measures the window's frames over the whole of heavy studio calls
 (back-to-back perf_captures) and fails on any frame over 50 ms whose time went to the studio.
 With --fidelity it checks the Fidelity track's benchmark set instead (docs/fidelity/assets, T0 and
-T1) and renders its contact sheet from the stage's fixed cameras into docs/fidelity/.
+T1) and renders its contact sheet from the stage's fixed cameras into docs/fidelity/; then the T3
+sheet (scripts/fidelity_t3.py: T0, T1 and T3 side by side in the stage world, with decals,
+particles and baked GI, and an iGPU budget line per subject). --sheets t3 renders only that one.
 
-Usage: cargo build -p specula && python scripts/studio_check.py [--exe PATH] [--port 7616] [--out DIR] [--adapter integrated] [--window | --pacing | --fidelity]
+Usage: cargo build -p specula && python scripts/studio_check.py [--exe PATH] [--port 7616] [--out DIR] [--adapter integrated] [--window | --pacing | --fidelity [--sheets t01,t3]]
 Needs a GPU (Vulkan).
 """
 import argparse
@@ -357,10 +359,19 @@ def main():
     ap.add_argument("--fidelity", action="store_true", help="check and render the Fidelity benchmark set instead")
     ap.add_argument("--pacing", action="store_true", help="measure the window's frames over whole heavy studio calls instead")
     ap.add_argument("--window", action="store_true", help="run the main check with the window open (renders spread over frames)")
+    ap.add_argument("--sheets", default="t01,t3", help="with --fidelity: which sheets to render (t01: the T0/T1 studio sheet; t3: the T3 sheet, scripts/fidelity_t3.py)")
     a = ap.parse_args()
     out = Path(a.out).resolve()
     if a.fidelity:
-        return fidelity(a, out)
+        sheets = set(a.sheets.split(","))
+        code = fidelity(a, out) if "t01" in sheets else 0
+        if "t3" in sheets:
+            import fidelity_t3
+            failures = []
+            fidelity_t3.run(a.exe, a.port, a.adapter, out, lambda ok, what: check(ok, what, failures), failures)
+            print("FAILED: " + "; ".join(failures) if failures else "fidelity T3 sheet checked")
+            code = code or (1 if failures else 0)
+        return code
     if a.pacing:
         return pacing(a, out)
     assets = out / "assets"
