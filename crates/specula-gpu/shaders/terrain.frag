@@ -162,6 +162,12 @@ void main() {
     float sun;
     // Baked GI: per vertex at tier low (terrain.vert), per pixel at high, the flat ambient without.
     vec3 amb = (GI && !GI_PIXEL) ? v_gi : lit_ambient(v_world, n, v);
+    if (gi_irradiance_view()) {
+        // sight_frame gi: "irradiance": the indirect light alone, as meshes show it.
+        vec3 shown = gi_irradiance_shown(amb);
+        out_color = vec4(display(shown), SSAO && HDR ? clamp(dot(shown, LUMA) * pc.frame.ambient.w, 0.0, 60000.0) : 1.0);
+        return;
+    }
     gather_light(v_world, n, v, rough, amb, diffuse, specular, sun);
     vec3 c = albedo * diffuse;
     vec3 ambient = SSAO ? albedo * amb : vec3(0.0);

@@ -102,6 +102,7 @@ pub(crate) struct Rendered {
     /// Whether this render drew baked GI, and why not when its set failed to bind.
     pub(crate) gi_drawn: bool,
     pub(crate) gi_error: Option<String>,
+    pub(crate) gi_stretch: Option<(f32, f32)>,
 }
 
 /// Set once the first lost device has been logged.
@@ -701,7 +702,7 @@ impl Engine {
             let rendered = if opts.ids { self.gpu.render_with_ids_occluded(target, &frame, &ids, &occluders) } else { self.gpu.render(target, &frame) };
             rendered.map_err(|e| gpu_failure("render", &e, self.windowed))?;
         }
-        let (gi_drawn, gi_error) = (self.gpu.gi_drawn(), self.gpu.gi_failure().map(str::to_string));
+        let (gi_drawn, gi_error, gi_stretch) = (self.gpu.gi_drawn(), self.gpu.gi_failure().map(str::to_string), self.gpu.gi_view_stretch());
         // What the colour passes actually recorded (the GPU's own list, after every readiness
         // check): the packet monitor's record, independent of the ID buffer's counts.
         let drawn = opts.ids.then(|| {
@@ -784,7 +785,7 @@ impl Engine {
             }
         }
         let streaming = self.stream.capture_json(&stats);
-        Ok(Rendered { flash, rgba, subjects, stats, lights: lights.len(), dropped_lights, overlays, ids: ids_json, two_d_problems, streaming, effects, record, drawn, gi_drawn, gi_error })
+        Ok(Rendered { flash, rgba, subjects, stats, lights: lights.len(), dropped_lights, overlays, ids: ids_json, two_d_problems, streaming, effects, record, drawn, gi_drawn, gi_error, gi_stretch })
     }
 
     /// The overlay records for one view and what they drew, at most `budget` of them.
@@ -1124,6 +1125,14 @@ impl Engine {
         };
         if let Some(mut g) = gi_json {
             crate::gi::drawn_json(&mut g, spec.gi, r.gi_drawn, r.gi_error.as_deref());
+            if let Some((scale, start)) = r.gi_stretch {
+                // The irradiance view's own stretch: shown luminance = 0.03 + (irradiance
+                // luminance - start) x scale before the tone curve (the probes' 5th to 95th
+                // percentiles over 0.03..0.45).
+                let r4 = |x: f32| Json::from((f64::from(x) * 1e4).round() / 1e4);
+                g.set("irradiance_scale", r4(scale));
+                g.set("irradiance_start", r4(start));
+            }
             packet.set("gi", g);
         }
         // Only when the frame had any: worlds without effects keep their packets as they were.

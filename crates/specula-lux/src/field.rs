@@ -18,6 +18,11 @@ pub const WEIGHT_FLOOR: f32 = 1e-4;
 /// closed room as bright as outside. A point beside a wall on the open side keeps at least this
 /// share: the wall sits at least the normal bias (a quarter spacing) behind it.
 pub const VISIBLE_SHARE: f32 = 0.25;
+/// A point whose valid probes are all hidden (a crevice of a noise-displaced mesh, ground under a
+/// barrel's bulge, the corner of a closed room) gets this share of their mean irradiance (c0):
+/// dim, never black (the T3 fidelity lane's black cells). Below the closed-hut test's 8%: walls
+/// still hold.
+pub const HIDDEN_FLOOR: f32 = 1.0 / 24.0;
 /// A mask that hides nothing (cells on a lattice's far faces, which no point samples).
 pub const ALL_VISIBLE: u64 = u64::MAX;
 
@@ -309,6 +314,8 @@ impl Field {
         let mut acc = Sh::default();
         let mut wsum = 0.0f32;
         let mut any_valid = false;
+        // The valid probes' mean irradiance (c0, trilinear x weight): [`HIDDEN_FLOOR`].
+        let (mut valid_c0, mut valid_w) = ([0.0f32; 3], 0.0f32);
         let (mut valid_tw, mut visible_tw) = (0.0f32, 0.0f32);
         for corner in 0..8u32 {
             let off = [corner & 1, (corner >> 1) & 1, corner >> 2];
@@ -321,6 +328,10 @@ impl Field {
             }
             any_valid = true;
             valid_tw += tw;
+            for (k, v) in valid_c0.iter_mut().enumerate() {
+                *v += tw * pr.weight * pr.sh.c0[k];
+            }
+            valid_w += tw * pr.weight;
             let pos = l.at(c) + Vec3::new(pr.offset[0], pr.offset[1], pr.offset[2]);
             let visible = mask & mask_bit(octant, corner) != 0 && (!visibility || pr.reaches(pos, q, s));
             if !visible {
@@ -353,8 +364,12 @@ impl Field {
         }
         if wsum <= 0.0 {
             // Every probe around inside geometry: nothing is known (the caller's flat ambient).
-            // Every valid one hidden: an enclosed pocket no probe sees into: dark.
-            return Sample { irradiance: [0.0; 3], fade: if any_valid { fade } else { 0.0 } };
+            // Every valid one hidden: a pocket no probe sees into: dim ([`HIDDEN_FLOOR`] of their
+            // mean), never black.
+            if !any_valid || valid_w <= 0.0 {
+                return Sample { irradiance: [0.0; 3], fade: 0.0 };
+            }
+            return Sample { irradiance: valid_c0.map(|c| (c / valid_w * HIDDEN_FLOOR).max(0.0)), fade };
         }
         let dim = if valid_tw > 0.0 { (visible_tw / (valid_tw * VISIBLE_SHARE)).min(1.0) } else { 1.0 };
         let inv = dim / wsum;
@@ -508,10 +523,11 @@ mod tests {
         // A point on the far side samples the bright probes only.
         let s = f.sample(Vec3::new(1.1, 0.9, 0.9), Vec3::X, Vec3::ZERO, true);
         assert!((s.irradiance[0] - 1.0).abs() < 1e-5, "{s:?}");
-        // All valid probes hidden: dark, not the flat ambient.
+        // All valid probes hidden: dim (HIDDEN_FLOOR of their mean), not the flat ambient and
+        // never black (the T3 fidelity lane's black cells).
         f.probes[0].mask = 0;
         let s = f.sample(Vec3::new(0.6, 0.9, 0.9), Vec3::Y, Vec3::ZERO, true);
-        assert_eq!((s.irradiance[0], s.fade), (0.0, 1.0));
+        assert!(s.irradiance[0] > 0.0 && s.irradiance[0] <= HIDDEN_FLOOR + 1e-6 && s.fade == 1.0, "{s:?}");
     }
 
     #[test]

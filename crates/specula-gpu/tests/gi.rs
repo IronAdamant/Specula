@@ -97,12 +97,13 @@ fn probes_replace_the_flat_ambient_inside_their_volume() {
         assert_eq!(bytes, 16 + 48 + 18 * 64, "the header, a volume, each probe's record and its lean copy");
         rig.render(&mut gpu, gi, "lit_again");
         assert_eq!(gpu.gi_stats().1, rebuilds, "an unchanged key never rebuilds");
-        // Masks hiding every probe make the cell dark (not the flat ambient).
+        // Masks hiding every probe make the cell dim, never black (a twenty-fourth of the valid
+        // probes' mean, GI_HIDDEN_FLOOR), and not the flat ambient.
         let hidden = vec![probe([0.0, 0.5, 0.0], 0); 18];
         let v = [volume(&hidden)];
         let dark = rig.render(&mut gpu, GiFrame { key: 2, volumes: &v, quality: GiQuality::High, view: GiView::Lit }, "masked");
         let c = rig.at(&dark, [0.0; 3]);
-        assert!(c[0] <= 2 && c[1] <= 2, "hidden from every probe: {c:?}");
+        assert!(c[0] <= 2 && (c[1] as i32 - byte(0.5 / 24.0)).abs() <= 3, "hidden from every probe: {c:?}");
         // Tier low: a small tile gets an ambient cube the CPU samples half a spacing out from its
         // faces (hidden from every probe there means inside a solid prop, so it takes the valid
         // probes unmasked: green; its top face's point sits 2 cm past the volume's top, so a
@@ -120,7 +121,7 @@ fn probes_replace_the_flat_ambient_inside_their_volume() {
                 assert!((c[1] as i32 - byte(0.5)).abs() <= 3 && c[0] <= 24, "{label}: the tile, per draw: {c:?}");
             }
             let c = rig.at(&img, [1.5, 0.0, 1.5]);
-            assert!(c[0] <= 2 && c[1] <= 2, "{label}: the ground, per pixel: {c:?}");
+            assert!(c[0] <= 2 && (c[1] as i32 - byte(0.5 / 24.0)).abs() <= 3, "{label}: the ground, per pixel (dim): {c:?}");
             // Far out, outside the volume: the flat ambient (red).
             let c = rig.at(&img, [16.0, 0.0, 0.0]);
             assert!((c[0] as i32 - byte(0.5)).abs() <= 3 && c[1] <= 3, "{label}: far out: {c:?}");
@@ -130,7 +131,25 @@ fn probes_replace_the_flat_ambient_inside_their_volume() {
         // The irradiance view: the ambient term alone, whatever the albedo.
         let vg = [volume(&green)];
         let iv = rig.render(&mut gpu, GiFrame { key: 1, volumes: &vg, quality: GiQuality::High, view: GiView::Irradiance }, "irradiance");
-        assert!((rig.at(&iv, [0.0; 3])[1] as i32 - byte(0.5)).abs() <= 2);
+        // ...stretched over its own range (every probe alike here: 0.5 green, luminance 0.36,
+        // shown at the top of the view's range, 0.45), so a pale stage shows gradation.
+        let (scale, start) = gpu.gi_view_stretch().expect("an irradiance view");
+        assert!((0.5 * 0.7152 * scale - 0.42).abs() < 0.01 && start == 0.0, "the view's stretch {scale} {start}");
+        let c = rig.at(&iv, [0.0; 3]);
+        assert!((c[1] as i32 - byte(0.45 / 0.7152)).abs() <= 3 && c[0] <= 2, "irradiance view {c:?}");
+        // Particles draw in the lit view, never in the irradiance view (their glow isn't GI).
+        let glow = [specula_gpu::Particle { position: [0.0, 1.0, 0.0], size: 3.0, color: [4.0, 0.0, 0.0, 1.0], additive: 1.0, ..Default::default() }];
+        let materials = [specula_gpu::ParticleMaterial::default()];
+        let fx = specula_gpu::Effects { particles: &glow, materials: &materials, decals: &[] };
+        let mut shots = Vec::new();
+        for view in [GiView::Lit, GiView::Irradiance] {
+            let gi = GiFrame { key: 1, volumes: &vg, quality: GiQuality::High, view };
+            let frame = FrameDesc { view_proj: rig.view_proj, draws: &rig.draws, reverse_z: true, environment: rig.environment, gi, effects: fx, ..Default::default() };
+            gpu.render(rig.target, &frame).unwrap();
+            shots.push(rig.at(&gpu.read_rgba8(rig.target).unwrap(), [0.0, 1.0, 0.0]));
+        }
+        assert!(shots[0][0] > 200, "the particle glows in the lit view: {:?}", shots[0]);
+        assert!(shots[1][0] <= 2, "no particle in the irradiance view: {:?}", shots[1]);
         // A frame without volumes keeps the buffer while it names the key, and an offscreen frame
         // naming none (a studio render, a preview, a filmstrip) leaves the window's buffer alone:
         // no rebuild when GI comes back (only a window frame without GI frees it).

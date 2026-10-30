@@ -212,9 +212,11 @@ def part_yard(args, out):
         res["hash"] = v["baked"]["hash"]
         res["pipelines_wait_s_after_bake"] = wait_pipelines(m)
         print(f"  baked in {wall_s:.1f} s: {v['status']} {v['baked']}")
-        # The same scene again: from the store, at once.
+        # The same scene again: from the store (read on the bake's worker, within a frame or two).
         again = m.json("gi_bake", volume="yard")
-        res["again"] = {"status": again["status"], "cached": again.get("cached"), "hash": (again.get("result") or {}).get("baked", {}).get("hash")}
+        lj = wait_bake(m)[0].get("last_job") or {}
+        r = lj.get("result") or {}
+        res["again"] = {"status": again["status"], "cached": r.get("cached"), "hash": (r.get("baked") or {}).get("hash")}
         # No leaks: inside the shed dark, inside the hut by the door lit by bounce.
         pts = [
             {"p": [-4.5, 0.0, 0.5], "n": [0, 1, 0]},
@@ -271,7 +273,8 @@ def part_yard(args, out):
             m.json("world_undo", ids=[last["id"]])
             res["after_undo"] = volume(m.json("gi_info", volume="yard"), "yard")["status"]
             redo = m.json("gi_bake", volume="yard")
-            res["rebake_after_undo"] = {"status": redo["status"], "cached": redo.get("cached")}
+            r = (wait_bake(m)[0].get("last_job") or {}).get("result") or {}
+            res["rebake_after_undo"] = {"status": redo["status"], "cached": r.get("cached")}
             res["after_rebake"] = settle(m, "yard")
         # The corner: bounce from the brazier alone (baked with its light, then with it dimmed).
         m.json("world_batch", ops=corner_ops())

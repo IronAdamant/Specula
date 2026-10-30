@@ -157,7 +157,29 @@ void gi_corner(GiCell c, uint corner, vec3 n, inout vec3 c0, inout vec3 cx, inou
 // volume's edge fade. Visible corners carrying under a quarter of the valid trilinear weight dim
 // it in proportion (a far probe alone past a wall beside the point mustn't light it in full:
 // `specula_lux::field::VISIBLE_SHARE`).
-vec3 gi_resolve(vec3 c0, vec3 cx, vec3 cy, vec3 cz, float w, float tw_valid, float tw_seen, vec3 n, float intensity, float out_by) {
+// A point whose valid probes are all hidden gets this share of their mean: dim, never black
+// (specula_lux::field::HIDDEN_FLOOR).
+const float GI_HIDDEN_FLOOR = 1.0 / 24.0;
+
+// The valid probes' mean irradiance (c0, trilinear x validity) around cell `c`: a second pass,
+// taken only by a point that sees none of them (its accumulators live only here: no registers
+// for every pixel).
+vec3 gi_hidden_mean(GiCell c) {
+    GiData g = pc.frame.gi_data;
+    vec4 acc = vec4(0.0);
+    [[dont_unroll]] for (uint corner = 0u; corner < 8u; corner++) {
+        uvec3 o = uvec3(corner & 1u, (corner >> 1) & 1u, corner >> 2);
+        uint at = c.probes + (c.cell + o.y * c.layer + o.z * c.row + o.x) * 3u;
+        float weight = unpackHalf2x16(g.words[at + 1u].w).y;
+        vec3 t3 = mix(1.0 - c.f, c.f, vec3(o));
+        float tw = t3.x * t3.y * t3.z * max(weight, 0.0);
+        uvec4 wa = g.words[at];
+        acc += vec4(vec3(unpackHalf2x16(wa.x), unpackHalf2x16(wa.y).x), 1.0) * tw;
+    }
+    return acc.w > 0.0 ? max(acc.rgb / acc.w, vec3(0.0)) * GI_HIDDEN_FLOOR : vec3(0.0);
+}
+
+vec3 gi_resolve(GiCell c, vec3 c0, vec3 cx, vec3 cy, vec3 cz, float w, float tw_valid, float tw_seen, vec3 n, float intensity, float out_by) {
     float fade = clamp(1.0 - out_by, 0.0, 1.0);
     vec3 e = vec3(0.0);
     if (w > 0.0) {
@@ -165,7 +187,10 @@ vec3 gi_resolve(vec3 c0, vec3 cx, vec3 cy, vec3 cz, float w, float tw_valid, flo
         e = max((c0 + cx * n.x + cy * n.y + cz * n.z) / w, vec3(0.0)) * (intensity * dim);
     } else if (tw_valid <= 0.0) {
         fade = 0.0; // every probe around is inside geometry: nothing known
-    } // else: an enclosed pocket no probe sees into: dark
+    } else {
+        // A pocket no probe sees into (a crevice, ground under a bulge, a closed room's corner).
+        e = gi_hidden_mean(c) * intensity;
+    }
     return mix(pc.frame.ambient.rgb, e, fade);
 }
 
@@ -188,7 +213,7 @@ vec3 gi_ambient(vec3 p, vec3 n, vec3 v) {
     [[dont_unroll]] for (uint corner = 0u; corner < 8u; corner++) {
         gi_corner(c, corner, n, c0, cx, cy, cz, w, tw_valid, tw_seen);
     }
-    return gi_resolve(c0, cx, cy, cz, w, tw_valid, tw_seen, n, c.intensity, out_by);
+    return gi_resolve(c, c0, cx, cy, cz, w, tw_valid, tw_seen, n, c.intensity, out_by);
 }
 
 
@@ -238,6 +263,9 @@ vec3 gi_ambient_lean(vec3 p, vec3 n, vec3 v) {
         e = max(mean * (1.0 + dot(dir / acc.w, n) / max(dot(mean, LUMA), 1e-4)), vec3(0.0)) * (c.intensity * dim);
     } else if (tw_valid <= 0.0) {
         fade = 0.0; // every probe around is inside geometry: nothing known
+    } else {
+        // A pocket no probe sees into: dim, never black (GI_HIDDEN_FLOOR).
+        e = gi_hidden_mean(c) * c.intensity;
     }
     return mix(pc.frame.ambient.rgb, e, fade);
 }
@@ -307,5 +335,16 @@ float gi_occlusion(vec3 ambient) {
 
 // The irradiance debug view (sight_frame gi: "irradiance"): show the ambient term alone.
 bool gi_irradiance_view() {
-    return GI && pc.frame.gi_params.z > 0.5;
+    return GI && pc.frame.gi_params.z > 0.0;
+}
+
+// What the irradiance view shows for ambient `amb`: its luminance stretched from the probes' 5th
+// percentile (gi_params.y - 1) by gi_params.z onto the view's range (src/gi.rs
+// `irradiance_view`), its hue kept, the frame's exposure undone (display() applies it again), so
+// a pale stage shows gradation, not white.
+vec3 gi_irradiance_shown(vec3 amb) {
+    const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+    float lum = dot(amb, LUMA);
+    float shown = 0.03 + max(lum - (pc.frame.gi_params.y - 1.0), 0.0) * pc.frame.gi_params.z;
+    return amb * (shown / max(lum, 1e-6) / max(pc.frame.ambient.w, 1e-6));
 }

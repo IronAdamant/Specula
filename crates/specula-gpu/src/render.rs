@@ -2567,7 +2567,9 @@ pub fn prepare_frame(
     build_overlay(frame.overlay, textures, &mut scratch.linear, &mut scratch.overlay);
     let shadows = frame.environment.shadow.enabled;
     plan_2d(frame, bounds, textures, &mut scratch.linear, shadows, &mut scratch.two_d);
-    crate::effects::plan_effects(&frame.effects, textures, &mut scratch.linear, &mut scratch.effects);
+    // The irradiance view shows the ambient term alone: no particles (their glow isn't GI).
+    let effects = if scratch.gi.active() && scratch.gi.view == crate::GiView::Irradiance { crate::Effects { particles: &[], ..frame.effects } } else { frame.effects };
+    crate::effects::plan_effects(&effects, textures, &mut scratch.linear, &mut scratch.effects);
     let items = &scratch.two_d.records;
     let before_effects =
         scratch.records.len() + overlay_units(scratch.overlay.len(), RECORD_SIZE as usize) + bone_units(frame.bones.len()) + items.len();

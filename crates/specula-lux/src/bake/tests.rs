@@ -263,3 +263,108 @@ fn the_firefly_clamp_caps_what_one_ray_brings() {
     r.clamp = -1.0;
     assert_eq!(bake(&scene, &r, 1, &Control::default()).unwrap_err().field, Some("clamp"));
 }
+
+/// A closed, noise-displaced blob (an SDF mesh's look: crevices a few centimetres deep, the
+/// T3 runestone's footing and the tree's root flares) sunk 0.3 m into the ground.
+fn noisy_blob(t: &mut Vec<Triangle>, centre: [f32; 3], r: f32) {
+    use specula_core::dmath::{cos, sin};
+    const SEG: usize = 48;
+    const RINGS: usize = 24;
+    let pt = |i: usize, j: usize| -> Vec3 {
+        let th = std::f32::consts::PI * j as f32 / RINGS as f32;
+        let ph = 2.0 * std::f32::consts::PI * (i % SEG) as f32 / SEG as f32;
+        let dir = Vec3::new(sin(th) * cos(ph), cos(th), sin(th) * sin(ph));
+        // Three octaves of ridged noise: sharp creases between bumps.
+        let n = 0.10 * sin(7.0 * ph + 3.0 * th).abs() + 0.06 * sin(13.0 * th + 5.0 * ph).abs() + 0.035 * sin(23.0 * ph - 17.0 * th).abs();
+        let rr = r * (1.0 + n - 0.1);
+        Vec3::new(centre[0], centre[1], centre[2]) + dir * rr
+    };
+    for j in 0..RINGS {
+        for i in 0..SEG {
+            let (a, b, c, d) = (pt(i, j), pt(i + 1, j), pt(i + 1, j + 1), pt(i, j + 1));
+            for tri in [[a, c, b], [a, d, c]] {
+                let nrm = (tri[1] - tri[0]).cross(tri[2] - tri[0]);
+                if nrm.length() < 1e-9 {
+                    continue;
+                }
+                // Outwards (away from the centre).
+                let mid = (tri[0] + tri[1] + tri[2]) * (1.0 / 3.0) - Vec3::new(centre[0], centre[1], centre[2]);
+                let nrm = if nrm.dot(mid) < 0.0 { -nrm.normalize() } else { nrm.normalize() };
+                t.push(Triangle { p: tri.map(|v| [v.x, v.y, v.z]), normal: [nrm.x, nrm.y, nrm.z], albedo: [0.5; 3], emissive: [0.0; 3] });
+            }
+        }
+    }
+}
+
+#[test]
+fn points_beside_a_noisy_closed_mesh_are_never_black() {
+    // The T3 fidelity lane's find: closed, noise-displaced SDF meshes baked at 0.25 to 0.5 m left
+    // cells where every probe around a point read as hidden (black in the irradiance view, at
+    // footings and root flares). A point in the open air beside the surface must always get
+    // light: an octant whose centre sits inside the mesh takes the corners its open side sees
+    // (`cell_mask`), and the closed-hut sweep above checks that walls still hold.
+    let mut t = Vec::new();
+    solid(&mut t, [-6.0, -1.0, -6.0], [6.0, 0.0, 6.0], [0.5; 3], [0.0; 3]);
+    noisy_blob(&mut t, [0.0, 0.5, 0.0], 0.8);
+    let scene = Scene { triangles: t.clone(), lights: Vec::new(), sun: None, sky: Some(Sky { radiance: [0.3, 0.3, 0.3], below: 1.0 }) };
+    let v3 = |a: [f32; 3]| Vec3::new(a[0], a[1], a[2]);
+    let bvh = crate::bvh::Bvh::build(t.iter().map(|tr| crate::bvh::Tri::new(v3(tr.p[0]), v3(tr.p[1]), v3(tr.p[2]))).collect());
+    for spacing in [0.25f32, 0.5] {
+        let baked = bake(&scene, &req([-1.6, 0.0, -1.6], [1.6, 1.8, 1.6], spacing, 64, 1), 4, &Control::default()).unwrap();
+        let f = &baked.field;
+        let (mut zero, mut tested, mut worst) = (0usize, 0usize, (f32::MAX, Vec3::ZERO));
+        // Every blob triangle's centre, 3 cm out along its normal, above the ground and not
+        // inside another part of the blob (open air the camera can see).
+        for tr in t.iter().skip(12) {
+            let c = (v3(tr.p[0]) + v3(tr.p[1]) + v3(tr.p[2])) * (1.0 / 3.0);
+            let n = v3(tr.normal);
+            let p = c + n * 0.03;
+            let area = (v3(tr.p[1]) - v3(tr.p[0])).cross(v3(tr.p[2]) - v3(tr.p[0])).length() * 0.5;
+            if p.y < 0.05 || area < 1e-3 || bvh.occluded(p, n, 1e-4, 0.5) {
+                continue; // under the ground, a sliver at the sphere's pole (its normal says little), or facing into a crease closed within half a metre
+            }
+            tested += 1;
+            let e = f.sample(p, n, n, true);
+            let lum = e.irradiance[0] * e.fade;
+            if lum <= 1e-4 {
+                zero += 1;
+            }
+            if lum < worst.0 {
+                worst = (lum, p);
+            }
+        }
+        // The ground around the blob's foot (the root-flare contacts).
+        for k in 0..64 {
+            let a = 2.0 * std::f32::consts::PI * k as f32 / 64.0;
+            for r in [0.75f32, 0.85, 0.95] {
+                let p = Vec3::new(r * specula_core::dmath::cos(a), 0.0, r * specula_core::dmath::sin(a));
+                if bvh.occluded(p + Vec3::Y * 0.01, Vec3::Y, 1e-4, 0.3) {
+                    continue; // under the blob's overhang
+                }
+                tested += 1;
+                let e = f.sample(p, Vec3::Y, Vec3::Y, true);
+                if e.irradiance[0] * e.fade <= 1e-4 {
+                    zero += 1;
+                }
+            }
+        }
+        assert!(tested > 500, "spacing {spacing}: {tested} points");
+        assert_eq!(zero, 0, "spacing {spacing}: {zero} of {tested} open-air points read black (darkest {worst:?})");
+    }
+}
+
+#[test]
+fn a_light_inside_a_solid_is_reported() {
+    // The T3 lantern: its flame's light sat inside the lantern's own cone and lit nothing. The
+    // bake says which lights are inside a solid, so gi_bake and gi_check can warn.
+    let mut t = Vec::new();
+    solid(&mut t, [-4.0, -1.0, -4.0], [4.0, 0.0, 4.0], [0.5; 3], [0.0; 3]);
+    solid(&mut t, [-0.3, 0.0, -0.3], [0.3, 0.8, 0.3], [0.5; 3], [0.0; 3]);
+    let lights = vec![
+        PointLight { position: [0.0, 0.4, 0.0], color: [4.0, 2.0, 1.0], range: 4.0 },
+        PointLight { position: [1.5, 0.6, 0.0], color: [4.0, 2.0, 1.0], range: 4.0 },
+    ];
+    let scene = Scene { triangles: t, lights, sun: None, sky: Some(Sky { radiance: [0.1; 3], below: 1.0 }) };
+    let baked = bake(&scene, &req([-2.0, 0.0, -2.0], [2.0, 2.0, 2.0], 1.0, 16, 1), 2, &Control::default()).unwrap();
+    assert_eq!(baked.lights_inside, vec![0], "the light in the box, not the one beside it");
+}

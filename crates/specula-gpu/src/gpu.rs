@@ -495,6 +495,13 @@ impl GpuInner {
         self.scratch.gi.active()
     }
 
+    /// The last render's irradiance-view stretch (`crate::gi::irradiance_view`: its scale and the
+    /// luminance it starts at; `None` when it drew no irradiance view).
+    pub fn gi_view_stretch(&self) -> Option<(f32, f32)> {
+        let b = &self.scratch.gi;
+        (b.active() && b.view == crate::GiView::Irradiance).then_some((b.view_scale, b.view_lo))
+    }
+
     /// Tier low's per-draw records kept across frames: entries, their bytes, and how many draws
     /// the last frame sampled (zero for a frame whose draws didn't change).
     pub fn gi_cache_stats(&self) -> (usize, usize, usize) {

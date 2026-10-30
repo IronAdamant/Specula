@@ -407,6 +407,9 @@ pub struct GiBinding {
     pub visibility: bool,
     pub view: GiView,
     pub quality: GiQuality,
+    /// The irradiance view's stretch ([`irradiance_view`]): its scale and the luminance it starts at.
+    pub view_scale: f32,
+    pub view_lo: f32,
 }
 
 impl GiBinding {
@@ -414,13 +417,18 @@ impl GiBinding {
         self.volumes > 0 && self.address != 0
     }
 
-    /// `FrameData::gi_params`: volume count, visibility, view, unused.
+    /// `FrameData::gi_params`: volume count, visibility (1, plus the irradiance view's starting
+    /// luminance: shaders test it above 0.5), the irradiance view's scale (0: lit), per-draw
+    /// records.
     pub fn params(&self) -> [f32; 4] {
         if !self.active() {
             return [0.0; 4];
         }
         let per_draw = if self.quality.per_draw_span().is_some() { 1.0 } else { 0.0 };
-        [self.volumes as f32, if self.visibility { 1.0 } else { 0.0 }, if self.view == GiView::Irradiance { 1.0 } else { 0.0 }, per_draw]
+        let irr = self.view == GiView::Irradiance;
+        let view = if irr { self.view_scale.max(1e-6) } else { 0.0 };
+        let visibility = if self.visibility { 1.0 + if irr { self.view_lo.max(0.0) } else { 0.0 } } else { 0.0 };
+        [self.volumes as f32, visibility, view, per_draw]
     }
 }
 
@@ -460,6 +468,53 @@ pub struct GiBuffer {
     pub rebuilds: u64,
     /// The set (key) that couldn't be bound, and why: not retried until the key changes.
     pub failure: Option<(u64, String)>,
+    /// The irradiance view's stretch for this set ([`irradiance_view`]).
+    pub view_scale: f32,
+    pub view_lo: f32,
+}
+
+/// The irradiance view's range for `volumes`: the 5th and 95th percentiles of their valid probes'
+/// irradiance luminance (times each volume's intensity; at most 65,536 probes looked at, evenly
+/// spaced). The view stretches that range over [`IRRADIANCE_VIEW_RANGE`], so gradation shows
+/// whatever the stage's brightness (a pale, evenly lit stage read near-white). `None`: nothing lit.
+pub fn irradiance_range(volumes: &[GiVolume]) -> Option<(f32, f32)> {
+    let total: usize = volumes.iter().map(|v| v.probes.len()).sum();
+    let stride = total.div_ceil(65_536).max(1);
+    let mut lum: Vec<f32> = Vec::new();
+    for v in volumes {
+        for r in v.probes.iter().step_by(stride) {
+            if halves(r[7]).1 <= 0.0 {
+                continue;
+            }
+            let ((cr, cg), (cb, _)) = (halves(r[0]), halves(r[1]));
+            let y = (0.2126 * cr + 0.7152 * cg + 0.0722 * cb) * v.intensity.max(0.0);
+            if y.is_finite() {
+                lum.push(y.max(0.0));
+            }
+        }
+    }
+    if lum.is_empty() {
+        return None;
+    }
+    lum.sort_by(f32::total_cmp);
+    let at = |q: usize| lum[(lum.len() - 1) * q / 100];
+    let (lo, hi) = (at(5), at(95));
+    (hi > 1e-6).then_some((lo, hi))
+}
+
+/// The luminances the irradiance view shows the range's ends at (before the tone curve).
+pub const IRRADIANCE_VIEW_RANGE: [f32; 2] = [0.03, 0.45];
+
+/// The view's (scale, offset) for `range`: shown luminance = offset + (luminance - lo) x scale,
+/// taken as `scale` and `lo` (see `FrameData::gi_params`). A flat range (every probe alike)
+/// shows at the top of the view's range.
+pub fn irradiance_view(range: Option<(f32, f32)>) -> (f32, f32) {
+    let [a, b] = IRRADIANCE_VIEW_RANGE;
+    match range {
+        Some((lo, hi)) if hi - lo > hi * 1e-3 => ((b - a) / (hi - lo), lo),
+        Some((_, hi)) => ((b - a) / hi, 0.0),
+        None => (1.0, 0.0),
+    }
 }
 
 /// The buffer's contents for `gi` (checked first): the header, the volumes, the probes, their
@@ -550,6 +605,7 @@ impl GiBuffer {
         self.address = address;
         self.volumes = gi.volumes.len() as u32;
         self.key = gi.key;
+        (self.view_scale, self.view_lo) = irradiance_view(irradiance_range(gi.volumes));
         self.rebuilds += 1;
         self.failure = None;
     }
@@ -569,7 +625,7 @@ impl GiBuffer {
         if !ready || self.buffer.is_none() || self.key != gi.key {
             return GiBinding::default();
         }
-        GiBinding { address: self.address, volumes: self.volumes, visibility: true, view: gi.view, quality: gi.quality }
+        GiBinding { address: self.address, volumes: self.volumes, visibility: true, view: gi.view, quality: gi.quality, view_scale: self.view_scale, view_lo: self.view_lo }
     }
 
     /// Bytes the buffer holds.
@@ -617,10 +673,31 @@ mod tests {
     }
 
     #[test]
+    fn the_irradiance_view_is_stretched_over_the_probes_range() {
+        // A pale stage: probes 3.6 to 4.0 bright read near-white; the view stretches their 5th to
+        // 95th percentiles over IRRADIANCE_VIEW_RANGE so the difference shows.
+        let mut probes: Vec<[u32; 12]> = (0..100).map(|i| rec(3.6 + 0.4 * i as f32 / 99.0, 1.0, u64::MAX)).collect();
+        probes[0] = rec(40.0, 0.0, u64::MAX); // invalid: left out
+        let v = [GiVolume { origin: [0.0; 3], spacing: 1.0, dims: [10, 2, 5], intensity: 1.0, probes: &probes }];
+        let (lo, hi) = irradiance_range(&v).expect("lit");
+        assert!((3.6..3.65).contains(&lo) && (3.95..=4.0).contains(&hi), "{lo} {hi}");
+        let (scale, start) = irradiance_view(Some((lo, hi)));
+        let [a, b] = IRRADIANCE_VIEW_RANGE;
+        assert!(((hi - start) * scale + a - b).abs() < 1e-4 && start == lo);
+        assert_eq!(irradiance_range(&[]), None);
+        assert_eq!(irradiance_view(None), (1.0, 0.0), "nothing lit: unchanged");
+        let flat = vec![rec(0.5, 1.0, u64::MAX); 8];
+        let r = irradiance_range(&[GiVolume { origin: [0.0; 3], spacing: 1.0, dims: [2, 2, 2], intensity: 1.0, probes: &flat }]);
+        let (s, l) = irradiance_view(r);
+        assert!((0.5 * s - (b - a)).abs() < 1e-4 && l == 0.0, "every probe alike: the top of the range");
+    }
+
+    #[test]
     fn bindings_report_what_the_shader_reads() {
         assert_eq!(GiBinding::default().params(), [0.0; 4]);
-        let b = GiBinding { address: 64, volumes: 3, visibility: true, view: GiView::Irradiance, quality: GiQuality::Low };
-        assert_eq!(b.params(), [3.0, 1.0, 1.0, 1.0]);
+        let b = GiBinding { address: 64, volumes: 3, visibility: true, view: GiView::Irradiance, quality: GiQuality::Low, view_scale: 2.5, view_lo: 0.25 };
+        assert_eq!(b.params(), [3.0, 1.25, 2.5, 1.0], "the irradiance view carries its stretch");
+        assert_eq!(GiBinding { view: GiView::Lit, ..b }.params()[2], 0.0);
         assert_eq!(GiBinding { quality: GiQuality::High, ..b }.params()[3], 0.0);
     }
 

@@ -321,7 +321,8 @@ vec4 shade_lit() {
     if (gi_irradiance_view()) {
         // sight_frame gi: "irradiance": the indirect light alone (albedo 1, no direct light).
         const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
-        return vec4(display(amb), SSAO && HDR ? clamp(dot(amb, LUMA) * pc.frame.ambient.w, 0.0, 60000.0) : 1.0);
+        vec3 shown = gi_irradiance_shown(amb);
+        return vec4(display(shown), SSAO && HDR ? clamp(dot(shown, LUMA) * pc.frame.ambient.w, 0.0, 60000.0) : 1.0);
     }
     vec3 diffuse, specular;
     gather_light(v_world, n, v, rough, amb, diffuse, specular);

@@ -1593,6 +1593,13 @@ impl Gpu {
         self.inner.gi_drawn()
     }
 
+    /// The last render's irradiance-view stretch: (scale, start), the shown luminance being
+    /// 0.03 + (luminance - start) x scale (the probes' 5th to 95th percentiles over 0.03..0.45);
+    /// `None` when it drew no irradiance view.
+    pub fn gi_view_stretch(&self) -> Option<(f32, f32)> {
+        self.inner.gi_view_stretch()
+    }
+
     /// Tier low's per-draw records kept across frames: entries, their bytes, and how many draws
     /// the last frame sampled (zero when its draws were last frame's or cached).
     pub fn gi_cache_stats(&self) -> (usize, usize, usize) {

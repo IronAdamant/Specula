@@ -235,6 +235,9 @@ pub struct Stats {
 pub struct Baked {
     pub field: Field,
     pub stats: Stats,
+    /// The scene's point lights (indices) whose centres are inside a solid: fully shadowed, they
+    /// light nothing (a lantern's flame inside its own glass or cone). Callers warn.
+    pub lights_inside: Vec<usize>,
 }
 
 #[allow(clippy::disallowed_methods, reason = "profiling only: the times go in the report, never in the baked bytes")]
@@ -377,6 +380,7 @@ pub fn bake(scene: &Scene, req: &Request, threads: usize, control: &Control) -> 
     };
     stats.triangles = prepared.bvh.len();
     stats.lights = prepared.lights.len();
+    let lights_inside: Vec<usize> = scene.lights.iter().enumerate().filter(|(_, l)| inside(&prepared, Vec3::new(l.position[0], l.position[1], l.position[2]))).map(|(i, _)| i).collect();
     stats.ms[0] = ms_since(t);
     let lattice = plan.lattice;
     let n = lattice.count();
@@ -456,7 +460,7 @@ pub fn bake(scene: &Scene, req: &Request, threads: usize, control: &Control) -> 
     }
     control.enter(Phase::Done, req.bounces, 0);
     stats.ms[4] = ms_since(started);
-    Ok(Baked { field: Field { lattice, probes }, stats })
+    Ok(Baked { field: Field { lattice, probes }, stats, lights_inside })
 }
 
 /// Validity and relocation of the probe at `nominal`: `(offset, weight, relocated)`.
@@ -529,7 +533,16 @@ fn inside(p: &Prepared, q: Vec3) -> bool {
 /// octant's centre to the probe (where it was moved to) isn't [`clear`]. Exact at the centre only:
 /// a wall through the octant puts points of both sides in it, and the centre speaks for its own
 /// side; the probes' reaches ([`crate::field::Probe::reaches`]) catch most of the other side's
-/// points. Cells on the far faces have no mask (no point samples them).
+/// points. An octant whose centre hides every valid corner (it sits in a solid: a noise-displaced
+/// mesh's crease, a wall) looks again from a 3 x 3 x 3 grid of points inside it: its points
+/// outside every solid are grouped into pockets (joined through grid neighbours they see clearly,
+/// or through a corner probe they both see: the same open side of a bumpy surface). When they make
+/// one pocket, the octant takes the corners any of them sees; two pockets (the two sides of a wall
+/// or a roof, which share no probe) keep nothing. A lone point that sees no probe (a sliver of a
+/// crease) doesn't count as a pocket. Open-air points beside a noisy closed mesh read black
+/// in whole cells otherwise (the T3 fidelity lane's runestone footing, barrel rims and root
+/// flares); an octant a wall or a roof cuts in two keeps nothing, so walls still hold. Cells on
+/// the far faces have no mask (no point samples them).
 fn cell_mask(p: &Prepared, l: &Lattice, placed: &[(Vec3, f32, bool)], i: usize) -> u64 {
     let c = l.coords(i);
     if (0..3).any(|a| c[a] + 1 >= l.dims[a]) {
@@ -538,15 +551,74 @@ fn cell_mask(p: &Prepared, l: &Lattice, placed: &[(Vec3, f32, bool)], i: usize) 
     let s = l.spacing;
     let lo = l.at(c);
     let mut mask = ALL_VISIBLE;
-    for octant in 0..8u32 {
-        let centre = lo + Vec3::new(0.25 + 0.5 * (octant & 1) as f32, 0.25 + 0.5 * ((octant >> 1) & 1) as f32, 0.25 + 0.5 * (octant >> 2) as f32) * s;
-        for corner in 0..8u32 {
+    // The valid corners' positions (as moved).
+    let corners: Vec<Option<Vec3>> = (0..8u32)
+        .map(|corner| {
             let cc = [c[0] + (corner & 1), c[1] + ((corner >> 1) & 1), c[2] + (corner >> 2)];
             let (offset, weight, _) = placed[l.index(cc[0], cc[1], cc[2])];
-            if weight <= 0.0 {
-                continue; // never used: its bit doesn't matter
+            (weight > 0.0).then(|| l.at(cc) + offset)
+        })
+        .collect();
+    if corners.iter().all(Option::is_none) {
+        return mask; // never used
+    }
+    // The corners (bits) seen from `from`.
+    let seen = |from: Vec3| corners.iter().enumerate().fold(0u8, |bits, (k, pos)| if pos.is_some_and(|pos| clear(p, from, pos)) { bits | 1 << k } else { bits });
+    let valid = corners.iter().enumerate().fold(0u8, |bits, (k, pos)| if pos.is_some() { bits | 1 << k } else { bits });
+    for octant in 0..8u32 {
+        let o = Vec3::new((octant & 1) as f32, ((octant >> 1) & 1) as f32, (octant >> 2) as f32);
+        let centre = lo + (Vec3::new(0.25, 0.25, 0.25) + o * 0.5) * s;
+        let mut bits = seen(centre);
+        if bits & valid == 0 {
+            // Every valid corner hidden from the centre: its open points, if they are one pocket.
+            const N: usize = 27;
+            let grid = |k: usize| [k % 3, (k / 3) % 3, k / 9];
+            let point = |k: usize| {
+                let g = grid(k);
+                centre + (Vec3::new(g[0] as f32, g[1] as f32, g[2] as f32) - Vec3::new(1.0, 1.0, 1.0)) * (s / 6.0)
+            };
+            let open: Vec<bool> = (0..N).map(|k| !inside(p, point(k))).collect();
+            // Components over clear segments between grid neighbours (union-find).
+            let mut root: Vec<usize> = (0..N).collect();
+            fn find(root: &mut [usize], mut k: usize) -> usize {
+                while root[k] != k {
+                    root[k] = root[root[k]];
+                    k = root[k];
+                }
+                k
             }
-            if !clear(p, centre, l.at(cc) + offset) {
+            for a in 0..N {
+                for b in a + 1..N {
+                    let (ga, gb) = (grid(a), grid(b));
+                    let near = (0..3).all(|i| ga[i].abs_diff(gb[i]) <= 1);
+                    if open[a] && open[b] && near && clear(p, point(a), point(b)) {
+                        let (ra, rb) = (find(&mut root, a), find(&mut root, b));
+                        root[ra] = rb;
+                    }
+                }
+            }
+            let opens: Vec<usize> = (0..N).filter(|&k| open[k]).collect();
+            let sees: Vec<u8> = (0..N).map(|k| if open[k] { seen(point(k)) } else { 0 }).collect();
+            // Pockets that see a common corner probe are one side of the surface.
+            for (i, &a) in opens.iter().enumerate() {
+                for &b in &opens[i + 1..] {
+                    if sees[a] & sees[b] != 0 {
+                        let (ra, rb) = (find(&mut root, a), find(&mut root, b));
+                        root[ra] = rb;
+                    }
+                }
+            }
+            // A lone grid point that sees no probe (a sliver of a crease) is no pocket of its own.
+            let roots: Vec<usize> = opens.iter().map(|&k| find(&mut root, k)).collect();
+            let lone_blind = |i: usize| sees[opens[i]] == 0 && roots.iter().filter(|&&r| r == roots[i]).count() == 1;
+            let kept: Vec<usize> = (0..opens.len()).filter(|&i| !lone_blind(i)).collect();
+            let one_pocket = kept.first().is_some_and(|&first| kept.iter().all(|&i| roots[i] == roots[first]));
+            if one_pocket {
+                bits = opens.iter().fold(0, |any, &k| any | sees[k]);
+            }
+        }
+        for corner in 0..8u32 {
+            if valid >> corner & 1 == 1 && bits >> corner & 1 == 0 {
                 mask &= !mask_bit(octant, corner);
             }
         }

@@ -49,6 +49,14 @@ Each probe stores, in 48 bytes (12 × u32, IEEE halves; the GPU reads the same b
   for each of that cell's eight octants (half-cells), which of the cell's eight corner probes the octant's centre can
   see (the segment from the centre to the probe, where it was moved to, is clear: nothing crosses it and it doesn't
   run inside a solid). A wall through the cell hides the probes on its far side from the octants on its near side.
+  An octant whose centre hides every valid corner (it sits inside a solid: a noise-displaced mesh's crease, a wall)
+  looks again from a 3 x 3 x 3 grid of points in it. Its open points are grouped into pockets (joined through grid
+  neighbours they see clearly, or through a corner probe they both see); a single lone point that sees nothing is
+  ignored. One pocket: the octant takes the corners any of its points sees. Two pockets (the two sides of a wall or a
+  roof, which share no probe) keep nothing, so walls still hold. Before this, closed noise-displaced SDF meshes baked
+  at 0.25 to 0.5 m left whole cells black beside them (the T3 fidelity lane: the runestone's footing, the barrel's
+  base and lid rim, the tree's root flares; `specula-lux` `points_beside_a_noisy_closed_mesh_are_never_black`).
+  `BAKE_VERSION` 5 rebakes stored files.
 - **Its reaches** (14 nibbles, 7 bytes): how far the probe sees before a surface along the six axes and the eight cube
   diagonals, in eighths of the spacing (15: nothing within 15/8). A point further than that along the direction
   nearest to it (and along the second nearest when it is nearly as near) is behind a wall from the probe.
@@ -94,7 +102,9 @@ frame has no GI (`FEAT_GI`, so frames without it run exactly the old code):
      surface;
    - its validity (0 for probes left inside geometry).
    Weights are normalized; a floor of 1e-4 of the trilinear weight keeps visible probes in play (none at a trilinear
-   weight of 0). Every valid probe hidden (a pocket no probe sees into) is dark; every probe invalid (inside rock)
+   weight of 0). Every valid probe hidden (a pocket no probe sees into: a crevice, ground under a barrel's bulge, a
+   closed room's corner) gets a twenty-fourth of their mean irradiance (`HIDDEN_FLOOR`): dim, never black (the T3
+   lane saw whole black cells), and under the closed-hut test's 8%, so walls hold; every probe invalid (inside rock)
    falls back to the flat ambient. Visible probes carrying under a quarter of the valid trilinear weight dim the
    result in proportion.
 4. **Result:** `Σ w (c0 + c1 · n) / Σ w`, times the volume's `intensity`, clamped non-negative. Glossy reflections of
@@ -204,7 +214,8 @@ never change the bytes.
   worker threads off the frame thread. Returns at once with the estimate (probes, rays, work); progress is
   `gi_info`'s. When it finishes, the result (hash, scene key, counts, timings) is committed into `props.gi_volume.baked`
   **as the agent who asked**, so claims, the journal and undo apply. An unchanged scene with unchanged settings
-  completes at once from the store.
+  comes from the store (read on the bake's worker) within a frame or two. Each call commits at most once (the
+  settings); the result is its own commit when it lands.
 - `gi_info`: every volume's settings, status (`fresh`, `stale` with reasons `geometry` / `lights` / `environment` /
   `settings`, `missing` (no file in the store), `loading`, `baking` with progress, `failed` with why), what is resident
   on the GPU (chunks, bytes), the runtime tier, `gpu_error` when the GPU couldn't take the set, and the last bake's
@@ -268,6 +279,16 @@ staging buffer; host-visible memory made every probe read slower on the iGPU) re
   Sampling): `high` samples per pixel, `low` an ambient cube per draw and the lean probes per pixel on wide draws
   and terrain, `off` restores the flat ambient. The
   iGPU defaults to `low`, which holds the iGPU's budget (Measurements).
+
+**The irradiance view** (`sight_frame gi: "irradiance"`) shows the ambient term alone, stretched over its own range:
+the resident probes' 5th to 95th irradiance-luminance percentiles map to 0.03..0.45 before the tone curve (hue kept,
+the frame's exposure undone), so a pale, evenly lit stage shows gradation instead of near-white. The packet's
+`gi.irradiance_scale` and `gi.irradiance_start` give the stretch (shown = 0.03 + (luminance - start) x scale). Particles don't draw in it (their glow isn't GI); terrain shows its ambient term too.
+
+**Engine thread:** `gi_bake` gathers the scene in one pass over the world (the instances, lights and the scene keys
+together). A scene baked before is read from the store on the bake's worker, not the engine thread (decoding the file
+there stalled frames 7 to 11 ms, the T3 lane's `engine.stall`); its result lands like a fresh bake's, as its own commit,
+within a frame or two (`gi_info`'s `last_job.result.cached`).
 
 ## Measurements
 
@@ -376,6 +397,11 @@ m spacing reads under 8% of the open ground everywhere from 5 cm off its inner c
 126%). Within 3 cm of an inner edge, bounces can still carry up to 14% in (a scratch sweep: 82 points of 20,172).
 
 ## Limits and later
+
+- **A point light inside a solid lights nothing:** fully shadowed, it adds nothing to the bake (the T3 lantern's
+  flame inside its own cone). The bake reports such lights; the bake's result (`gi_info`'s `last_job.warnings`) and
+  `gi_check` warn `light_inside_geometry`, naming the light's entity. Move the light out of the mesh, or `exclude`
+  the mesh around it.
 
 - Indirect light only; probes are static (a rebake after big changes: `gi_info` says when). Real-time relighting
   (DDGI-style ray-traced updates) needs a GPU ray path first.

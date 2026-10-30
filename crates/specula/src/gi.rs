@@ -482,6 +482,8 @@ pub struct Instance {
 pub struct Input {
     pub instances: Vec<Instance>,
     pub lights: Vec<lux::PointLight>,
+    /// Each light's entity path (for warnings).
+    pub light_names: Vec<String>,
     pub sun: Option<lux::Sun>,
     pub sky: lux::Sky,
     pub keys: SceneKeys,
@@ -555,30 +557,53 @@ fn bakes(e: &Entity) -> bool {
 pub fn scene_keys(world: &World, lib: &crate::models::Library, s: &Settings) -> SceneKeys {
     let (bmin, bmax) = grown(s);
     let ex = excluded_ids(world, s);
-    let mut g = StableHasher::with_seed(0x4749_4745_4f4d_0001);
-    let mut l = StableHasher::with_seed(0x4749_4c49_4748_0001);
+    let mut k = KeyHashers::new();
     for e in world.entities() {
         if bakes(e) {
             let (lo, hi) = e.world_aabb();
             if overlaps(lo, hi, bmin, bmax) && !excluded(world, e, &ex) {
-                g.write_u64(e.id);
-                g.write_u64(e.content_hash());
-                hash_mat(&mut g, &e.model());
-                match e.resolved_model().and_then(|r| lib.built(r.handle)) {
-                    Some(b) => g.write_u64(b.content),
-                    None => g.write_u64(0),
-                }
+                k.geometry(e, lib);
             }
         }
         if let Some(pl) = lit(e, bmin, bmax) {
-            l.write_u64(e.id);
-            for v in pl.position.iter().chain(&pl.color) {
-                l.write_f32(*v);
-            }
-            l.write_f32(pl.range);
+            k.light(e, &pl);
         }
     }
-    SceneKeys { geometry: g.finish(), lights: l.finish(), environment: env_key(world, s) }
+    k.finish(world, s)
+}
+
+/// The scene keys' hashers ([`scene_keys`]; [`gather`] fills them in its own pass).
+struct KeyHashers {
+    g: StableHasher,
+    l: StableHasher,
+}
+
+impl KeyHashers {
+    fn new() -> KeyHashers {
+        KeyHashers { g: StableHasher::with_seed(0x4749_4745_4f4d_0001), l: StableHasher::with_seed(0x4749_4c49_4748_0001) }
+    }
+
+    fn geometry(&mut self, e: &Entity, lib: &crate::models::Library) {
+        self.g.write_u64(e.id);
+        self.g.write_u64(e.content_hash());
+        hash_mat(&mut self.g, &e.model());
+        match e.resolved_model().and_then(|r| lib.built(r.handle)) {
+            Some(b) => self.g.write_u64(b.content),
+            None => self.g.write_u64(0),
+        }
+    }
+
+    fn light(&mut self, e: &Entity, pl: &lux::PointLight) {
+        self.l.write_u64(e.id);
+        for v in pl.position.iter().chain(&pl.color) {
+            self.l.write_f32(*v);
+        }
+        self.l.write_f32(pl.range);
+    }
+
+    fn finish(self, world: &World, s: &Settings) -> SceneKeys {
+        SceneKeys { geometry: self.g.finish(), lights: self.l.finish(), environment: env_key(world, s) }
+    }
 }
 
 fn grown(s: &Settings) -> ([f32; 3], [f32; 3]) {
@@ -635,13 +660,20 @@ pub fn gather(world: &World, lib: &crate::models::Library, s: &Settings) -> Resu
     let ex = excluded_ids(world, s);
     let mut instances = Vec::new();
     let mut lights = Vec::new();
+    let mut light_names = Vec::new();
     let mut building = Vec::new();
     // Triangles counted as gathered: an over-limit box is refused before anything is built (the
     // list itself is made on the bake's worker).
     let mut tris = 0usize;
+    // One pass over the world: the scene keys are hashed as the instances are gathered (two
+    // passes cost the engine thread twice; the T3 lane measured gi_bake stalling it 7 to 11 ms,
+    // most of it reading a baked file from the store, now read on the bake's worker).
+    let mut keys = KeyHashers::new();
     for e in world.entities() {
         if let Some(pl) = lit(e, bmin, bmax) {
+            keys.light(e, &pl);
             lights.push(pl);
+            light_names.push(world.path_of(e.id));
         }
         if !bakes(e) {
             continue;
@@ -650,6 +682,7 @@ pub fn gather(world: &World, lib: &crate::models::Library, s: &Settings) -> Resu
         if !overlaps(lo, hi, bmin, bmax) || excluded(world, e, &ex) {
             continue;
         }
+        keys.geometry(e, lib);
         let geo = match e.shape {
             Shape::Cube => Geo::Cube,
             Shape::Quad => Geo::Quad,
@@ -689,7 +722,7 @@ pub fn gather(world: &World, lib: &crate::models::Library, s: &Settings) -> Resu
     }
     let (sun, sky) = env_parts(world, s);
     let clamp = firefly_clamp(&sky);
-    Ok(Input { instances, lights, sun, sky, keys: scene_keys(world, lib, s), building, clamp })
+    Ok(Input { instances, lights, light_names, sun, sky, keys: keys.finish(world, s), building, clamp })
 }
 
 /// The cofactor (normal) matrix of `m`'s 3x3 part, and whether it mirrors.
@@ -934,9 +967,10 @@ impl Store {
     }
 }
 
-/// What the bake does (gathering, emission, the clamp): bump it when a change would bake the same
-/// input differently, so the store never hands back an old result.
-pub const BAKE_VERSION: u32 = 4;
+/// What the bake does (gathering, emission, the clamp, the masks): bump it when a change would bake
+/// the same input differently, so the store never hands back an old result. 5: octants whose
+/// centre sits in a solid take their open side's probes (the T3 lane's black cells).
+pub const BAKE_VERSION: u32 = 5;
 
 /// The counts a bake's file keeps (and the world records: [`BakedInfo::of`]).
 pub fn counts_of(s: &lux::Stats) -> lux::file::Counts {
@@ -960,6 +994,9 @@ pub struct Done {
     pub hash: u64,
     pub stats: lux::Stats,
     pub cached: bool,
+    /// The scene's point lights (indices into the input's) whose centres are inside a solid: they
+    /// light nothing in the bake (a lantern's flame inside its own glass mesh).
+    pub lights_inside: Vec<usize>,
 }
 
 /// A bake running on its worker.
@@ -973,6 +1010,8 @@ pub struct Job {
     pub control: Arc<lux::Control>,
     pub started: Instant,
     pub threads: usize,
+    /// The input's lights' entity paths (the result's `lights_inside` index them).
+    pub light_names: Vec<String>,
     result: Receiver<Result<Done, lux::BakeError>>,
 }
 
@@ -992,24 +1031,42 @@ impl Job {
         req.clamp = input.clamp;
         let keys = input.keys;
         let ikey = input_key(&settings, &keys);
+        let light_names = input.light_names.clone();
         let c = Arc::clone(&control);
         std::thread::Builder::new()
             .name("specula-gi".into())
             .spawn(move || {
                 let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    // Baked before: the store's file (read and checked here, not on the engine
+                    // thread, where decoding it stalled frames).
+                    if let Some(hash) = store.by_input(ikey) {
+                        if let Ok(decoded) = store.read(hash) {
+                            let c = decoded.counts;
+                            let stats = lux::Stats {
+                                probes: decoded.field.probes.len(),
+                                valid: c.valid as usize,
+                                relocated: c.relocated as usize,
+                                invalid: c.invalid as usize,
+                                triangles: c.triangles as usize,
+                                lights: c.lights as usize,
+                                ..lux::Stats::default()
+                            };
+                            return Ok(Done { hash, stats, cached: true, lights_inside: Vec::new() });
+                        }
+                    }
                     let scene = lux::Scene { triangles: triangles(&input), lights: input.lights.clone(), sun: input.sun, sky: Some(input.sky) };
                     drop(input);
                     let baked = lux::bake(&scene, &req, threads, &c)?;
                     let counts = counts_of(&baked.stats);
                     let (bytes, hash) = lux::file::encode(&baked.field, lux::file::Keys { scene: keys.total(), settings: settings_key(&req) }, counts);
                     store.put(ikey, hash, &bytes).map_err(|e| lux::BakeError { code: "store_failed", message: format!("could not write {}: {e}", store.file(hash).display()), field: None, value: None, limit: None })?;
-                    Ok(Done { hash, stats: baked.stats, cached: false })
+                    Ok(Done { hash, stats: baked.stats, cached: false, lights_inside: baked.lights_inside })
                 }));
                 let r = run.unwrap_or_else(|_| Err(lux::BakeError { code: "panicked", message: "the bake panicked".into(), field: None, value: None, limit: None }));
                 let _ = tx.send(r);
             })
             .map_err(|e| format!("could not start the bake's thread: {e}"))?;
-        Ok(Job { volume, by, key, settings, keys, plan, control, started: Instant::now(), threads, result: rx })
+        Ok(Job { volume, by, key, settings, keys, plan, control, started: Instant::now(), threads, light_names, result: rx })
     }
 
     /// The result, once there is one.
@@ -1163,6 +1220,10 @@ pub struct Gi {
     pub dirty: bool,
     /// Who cancelled the running job (it isn't committed even if it finished meanwhile).
     pub cancelled_by: Option<String>,
+    /// Lights a bake found inside a solid, by bake hash (a bake from the store reports its
+    /// original's), and the warnings of each volume's last bake (gi_check repeats them).
+    pub lights_inside: BTreeMap<u64, Vec<String>>,
+    pub warnings: BTreeMap<String, Vec<Json>>,
     /// The window's last eye (a capture's residency keeps the window's chunks too).
     window_eye: Option<Vec3>,
     /// Staleness by volume id, cached for a world revision.
@@ -1196,6 +1257,8 @@ impl Gi {
             last_eye: None,
             dirty: true,
             cancelled_by: None,
+            lights_inside: BTreeMap::new(),
+            warnings: BTreeMap::new(),
             window_eye: None,
             stale: BTreeMap::new(),
             rebuilds: 0,
@@ -1649,6 +1712,20 @@ pub fn default_threads() -> usize {
     std::thread::available_parallelism().map_or(2, |n| n.get().saturating_sub(1)).clamp(1, 4)
 }
 
+/// The warnings for lights a bake found inside a solid (`light_inside_geometry`, naming each).
+pub fn light_warnings(names: &[String]) -> Vec<Json> {
+    names
+        .iter()
+        .map(|n| {
+            Json::obj([
+                ("code", Json::from("light_inside_geometry")),
+                ("light", Json::from(n.as_str())),
+                ("message", Json::from(format!("{n}'s point light sits inside a solid mesh: fully shadowed, it adds nothing to the bake (move it out, or exclude the mesh around it)"))),
+            ])
+        })
+        .collect()
+}
+
 /// A sight packet's `gi.drawn`: whether that render drew the probes (the setting in `quality`
 /// is what was asked for, this what the frame got), and `gi.gpu_error` when its set failed to
 /// bind. The `off` view draws none by design.
@@ -1670,6 +1747,15 @@ pub fn drawn_json(g: &mut Json, view: CaptureView, drawn: bool, error: Option<&s
 mod tests {
     use super::*;
 
+
+    #[test]
+    fn lights_inside_solids_are_warned_by_name() {
+        let w = light_warnings(&["/lantern/flame".to_owned()]);
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].get("code").and_then(Json::as_str), Some("light_inside_geometry"));
+        assert_eq!(w[0].get("light").and_then(Json::as_str), Some("/lantern/flame"));
+        assert!(light_warnings(&[]).is_empty());
+    }
 
     #[test]
     fn packets_say_whether_the_render_drew_gi() {
@@ -1763,8 +1849,11 @@ mod tests {
         assert!(e.message.contains("triangles"), "{}", e.message);
         assert!(started.elapsed().as_secs_f64() < 5.0);
         // Half as many fit: gathered, and the worker's list is exactly what was counted.
-        let input = gather(&vases(20), &lib, &settings).ok().expect("fits");
+        let world = vases(20);
+        let input = gather(&world, &lib, &settings).ok().expect("fits");
         assert_eq!(triangles(&input).len(), 20 * 255 * 64 * 2);
+        // gather hashes the scene keys in its own pass: the same keys staleness compares with.
+        assert!(input.keys == scene_keys(&world, &lib, &settings), "gather's keys are scene_keys'");
     }
 
     #[test]

@@ -122,7 +122,8 @@ pub fn definitions() -> Vec<ToolDef> {
                           (a group at the box's centre holding props.gi_volume: reserved data, only gi_bake writes it; claims on \
                           /gi or the region hold), answers at once with the estimate; watch gi_info for progress. When done, \
                           the result (hash, scene keys, counts) is committed into props.gi_volume.baked as you (journaled, \
-                          undoable). An unchanged scene with unchanged settings finishes at once from the store. Geometry: \
+                          undoable). An unchanged scene with unchanged settings comes from the store within a frame or two \
+                          (gi_info's last_job says cached). Geometry: \
                           shown, persistent, opaque lit cubes, quads, spheres, lathes and models in the box plus 'margin' \
                           (moving bodies, animated models, transient game presentation, glass and 'exclude' subtrees are left \
                           out). Bounded: at most 65,536 probes, 2^30 ray casts and a 256 MB hit cache per bake (structured \
@@ -346,34 +347,10 @@ impl Engine {
         if let Err(e) = lux::check_work(&plan, settings.rays, input.lights.len()) {
             return ToolOutput::error(gi::bake_error_json(&e).to_string());
         }
-        // The same input baked before: its file is in the store, and the result lands in this
-        // call's one commit (with the settings when they change: one call, one commit).
-        let ikey = gi::input_key(&settings, &input.keys);
-        let cached = match self.gi.store.by_input(ikey) {
-            Some(hash) => match self.gi.store.read(hash) {
-                Ok(decoded) => {
-                    let c = decoded.counts;
-                    let stats = lux::Stats {
-                        probes: decoded.field.probes.len(),
-                        valid: c.valid as usize,
-                        relocated: c.relocated as usize,
-                        invalid: c.invalid as usize,
-                        triangles: c.triangles as usize,
-                        lights: c.lights as usize,
-                        ..lux::Stats::default()
-                    };
-                    debug_assert_eq!(gi::counts_of(&stats), c);
-                    Some((hash, stats))
-                }
-                Err(e) => return error("store_failed", e),
-            },
-            None => None,
-        };
         // The settings, as the agent (claims on /gi and the region hold): only when they changed.
         let old_baked = existing.and_then(|id| self.world.get(id)).and_then(|e| e.props.get(gi::PROP)).and_then(|p| p.get("baked")).cloned();
         let mut prop = settings.to_json();
-        let cached_baked = cached.as_ref().map(|(hash, stats)| gi::BakedInfo::of(*hash, input.keys, settings.key(), gi::counts_of(stats), stats.probes));
-        prop.set("baked", cached_baked.as_ref().map_or_else(|| old_baked.clone().unwrap_or(Json::Null), gi::BakedInfo::to_json));
+        prop.set("baked", old_baked.clone().unwrap_or(Json::Null));
         // Props come back with their keys sorted: compare what they mean.
         let unchanged = base.as_ref() == Some(&settings);
         // Unchanged settings write nothing, but the bake still occupies the baker and lands a result
@@ -383,9 +360,11 @@ impl Engine {
                 return world_error(&e);
             }
         }
+        // At most one commit in this call (the settings); the result lands later in its own, when
+        // the worker hands it back, from the store (a scene baked before: the file is read on the
+        // worker, not the engine thread) or freshly baked.
         let mut seq = None;
-        let wrote_settings = !unchanged || expect_version.is_some();
-        if wrote_settings {
+        if !unchanged || expect_version.is_some() {
             let mut ops = Vec::new();
             if self.world.find_path(&format!("/{}", gi::GROUP)).is_err() {
                 let mut g = SpawnSpec::new(Shape::Group);
@@ -432,21 +411,6 @@ impl Engine {
         // bake's first frames and captures don't wait for them.
         if self.gi.quality != gi::Quality::Off {
             self.gpu.request_gi_variants(self.gi.quality.gpu());
-        }
-        if let Some((hash, stats)) = cached {
-            let done = match (wrote_settings, cached_baked) {
-                // Landed with the settings, in their commit.
-                (true, Some(b)) => Json::obj([("ok", Json::from(true)), ("baked", b.to_json()), ("journal", seq.map_or(Json::Null, Json::from)), ("cached", Json::from(true))]),
-                _ => {
-                    let session = w.session.map(str::to_owned).unwrap_or_default();
-                    let by = w.name.to_owned();
-                    self.gi_commit_result(volume, &by, &session, &settings, input.keys, hash, &stats, true, tick)
-                }
-            };
-            out.set("status", Json::from("done"));
-            out.set("cached", Json::from(true));
-            out.set("result", done);
-            return ToolOutput::text(out.to_string());
         }
         let session = w.session.map(str::to_owned).unwrap_or_default();
         match gi::Job::start(volume.to_owned(), w.name.to_owned(), session, settings, input, plan, self.gi.store.clone(), threads) {
@@ -545,6 +509,23 @@ impl Engine {
                         ("threads", Json::from(job.threads)),
                     ]),
                 );
+                // Lights inside a solid light nothing: say so (a bake from the store repeats
+                // what its original found this run).
+                let inside: Vec<String> = if done.cached {
+                    self.gi.lights_inside.get(&done.hash).cloned().unwrap_or_default()
+                } else {
+                    let names: Vec<String> = done.lights_inside.iter().filter_map(|&i| job.light_names.get(i).cloned()).collect();
+                    self.gi.lights_inside.insert(done.hash, names.clone());
+                    names
+                };
+                let warnings = gi::light_warnings(&inside);
+                for n in &inside {
+                    specula_core::trace_event!(&crate::trace_sink::JOBS, Warn, "gi.light_inside_geometry", volume = job.volume.as_str(), light = n.as_str());
+                }
+                if !warnings.is_empty() {
+                    json.set("warnings", Json::Arr(warnings.clone()));
+                }
+                self.gi.warnings.insert(job.volume.clone(), warnings);
                 let r = self.gi_commit_result(&job.volume, &job.by, &job.key, &job.settings, job.keys, done.hash, &done.stats, done.cached, tick);
                 let ok = r.get("ok").and_then(Json::as_bool).unwrap_or(false);
                 json.set("result", r);
@@ -615,7 +596,12 @@ impl Engine {
                 checks.push(Json::obj([("volume", Json::from(name.as_str())), ("status", status.get("status").cloned().unwrap_or(Json::Null)), ("note", Json::from("not baked or not loaded: nothing to check"))]));
                 continue;
             };
-            checks.push(check_field(name, field, &status));
+            let mut c = check_field(name, field, &status);
+            // What its last bake this run found (a light inside a solid lights nothing).
+            if let Some(w) = self.gi.warnings.get(name).filter(|w| !w.is_empty()) {
+                c.set("warnings", Json::Arr(w.clone()));
+            }
+            checks.push(c);
         }
         let mut samples = Vec::new();
         for (p, n) in points {
