@@ -11,7 +11,26 @@ Specula is now a zero-dependency, agent-native game engine (Rust `std` + OS/driv
 See [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md). Item-by-item detail, with the reasoning for each, is in
 [docs/ROADMAP.md](docs/ROADMAP.md); the timeline of decisions is under [Project history](#project-history) below.
 
-### M4, in progress (from 2026-10-28)
+### M4, done (2026-10-28 to 2026-10-30)
+
+- **Exit proof:** a swarm (a director, four builders, an art director, a sight-skeptic and a debugger) built 33
+  graveyard props that pass `style.toml`; one contact sheet went to the review queue; the owner approved it at the
+  window, and the props went straight into Sepulcra, which still won on the iGPU within budget
+- **Galleries and the owner's pick flow** (`specula-gustus`, `gallery_*`, F8): choose, don't describe; pick-driven
+  tuning, the preference store (private), reference boards, style onboarding
+- **Baked GI** (`specula-lux`, `gi_*`): deterministic CPU-baked probe volumes, tiers low and high, terrain and water
+  included
+- **Terrain and stylised water** (`terrain_*`, the `water` component)
+- **Disk footprint budget and binary assets** (`disk_*`, `project_upload`)
+- **Scoped tool lists** (`tools_*`): agents start with 6 tools (4.7 KB) instead of every tool (209 KB); the lead
+  picks each agent's tools
+- **Built-in tracing and an autonomous debugger role** (`trace_*`, incidents, watchdogs, `--strict-budget`)
+- **Authority, jobs and provenance:** operator grants, an access table for every tool, one commit per call, drawn
+  facts from a frame record
+- **Bounds and workers:** schema limits, answer ceilings, a worker pool and step jobs; asynchronous capture readback;
+  the remaining engine-thread stalls removed (worst window frame under heavy agent calls far lower; captures faster
+  than before)
+- **Fidelity T3** sheet for the five benchmark subjects
 
 - **Asset studio:** `specula-studio` measures assets against `style.toml` (budgets, scale, palette families by exact
   Oklab search) and runs taste checks (silhouettes, thumbnail solidity, pixel heights, edge contrast, flat light)

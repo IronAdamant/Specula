@@ -188,7 +188,7 @@ brackets.
 anything, "much to the frustration of the parent agent"). Today, claims, versions and the journal protect *world*
 entities only; everything else is the gap.
 
-- [ ] **Everything through the protocol** (M3: text project data; M4: binary assets). Recipes, UI screens, sounds,
+- [x] **Everything through the protocol** (M3: text project data; M4: binary assets). Recipes, UI screens, sounds,
   style files, Lex rules and module sources get the same claims, versions, journal and undo as world entities. Then
   imported images, models and audio follow with the asset studio.
   *M3 progress 2026-10-18:* Lex rules (stored as world entities). Recipes, UI screens, sounds and style files remain.
@@ -200,6 +200,7 @@ entities only; everything else is the gap.
   checked (rustc's dep-info after every build). `logic_build {fix: true}` commits fixes as the caller.
   `scripts/project_check.py`; design: [design/PROJECT_DATA.md](design/PROJECT_DATA.md). M4 (binary assets) remains.
   *Why:* two agents editing one recipe file today can silently clobber each other.
+  *M4 part done 2026-10-30:* `project_upload` (chunked, resumable PNG, GLB/glTF and WAV) with the same claims, versions, journal and undo (design/PROJECT_DATA.md).
 - [x] **Task board** (M3; planned for M1–M2, not built): `task_post`, `task_take`, `task_update`, `task_done`.
   - Tasks are linked to claims and journal entries.
   - The parent assigns work; children report status, blockers and questions.
@@ -224,7 +225,7 @@ entities only; everything else is the gap.
   *Why:* this session's lanes clobbered a shared scratch folder, one killed other lanes' engines, and engines
   collided on ports.
   *Done 2026-10-18:* `lease_*` tools: ports (checked against the OS listener table, never a wildcard bind), advisory GPU ms per second, scratch folders.
-- [ ] ➕ **Disk footprint budget** (owner, 2026-10-22: sort it out "before it impacts someone else's system ...
+- [x] ➕ **Disk footprint budget** (owner, 2026-10-22: sort it out "before it impacts someone else's system ...
   especially when they have even less space"). A swarm must not fill the operator's disk. Measured on 2026-10-22:
   about 30 build folders (one per lane and reviewer, each 5-15 GB) took a 1 TB drive from 340 GB free to full, and a
   lane's link failed with "No space left on device".
@@ -237,6 +238,7 @@ entities only; everything else is the gap.
   - A swarm guide in the docs: shared targets for lanes, `-j` limits, and cleaning merged lanes.
   *Why:* operators with small disks shouldn't find out the hard way, and cleanup done under pressure is how real
   work gets deleted.
+  *Done 2026-10-30:* one disk book for every writer, a `perf.toml [disk]` budget, a free-space floor, safe pruning, review evidence kept with each world (design/DISK.md).
 - [ ] **Role templates** (M1, growing): builder, reviewer, playtester, art director, sight-skeptic, performance
   auditor. They live in `.claude/agents/`, with Grok equivalents when used.
 - [x] **Headless playtest swarms** (M3): many headless engines on separate ports, each run by an agent testing one path,
@@ -691,7 +693,7 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
 
 ---
 
-## M4: asset studio, style and review
+## M4: asset studio, style and review. Done (2026-10-30)
 
 **Goal:** agents produce consistent, on-style assets at volume, checked automatically and approved in batches.
 **Why here:** swarm needs #4 and #5. Content is where small studios lose to big ones.
@@ -708,7 +710,7 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
 - [x] **Taste loop**: silhouette, value and colour passes at thumbnail size; critique against the bible; revise. See
   the procedural modelling design and [research/AGENT_GAMEMAKING.md](research/AGENT_GAMEMAKING.md).
   *Done 2026-10-29:* `studio_check` runs the silhouette, value and colour passes at thumbnail size and returns a critique per pass with the bible's text and revise hints.
-- [ ] ➕ **Galleries: "choose, don't describe"** *(research)*. The engine generates variants spread across a parameter
+- [x] ➕ **Galleries: "choose, don't describe"** *(research)*. The engine generates variants spread across a parameter
   space (lighting, palette, proportions, materials, layout), shows them side by side in the window or editor, and a
   human picks, or clicks the part they dislike. Agents get the same gallery as data (`style_gallery`).
   *Why:* models can't judge beauty alone (frontier models 26.5% vs experts 68.9% at picking best and worst), and even
@@ -724,14 +726,18 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
   - "none of these" for a new spread;
   - a breadcrumb of earlier rounds to step back.
   Every pick and note goes to the preference store.
-- [ ] ➕ **Pick-driven tuning** *(research)*: several rounds of picks drive preferential Bayesian optimisation over
+  *Done 2026-10-30:* `gallery_*` tools and the window's gallery screen (F8): "This one", "This one, with edits" with notes and edit chips, "None of these", "Not this one", the breadcrumb; galleries keep to `style.toml` and say how many options fit (design/GALLERIES.md, crate specula-gustus).
+- [x] ➕ **Pick-driven tuning** *(research)*: several rounds of picks drive preferential Bayesian optimisation over
   style parameters (Sequential Gallery), so a few clicks tune many parameters.
-- [ ] ➕ **Preference store** *(research)*: every pick and rejection, with its note, is kept per project (optionally
+  *Done 2026-10-30:* a choice Gaussian process with batch expected improvement, measured against random and simple spreads (the 1-D line search did no better than random, so it's kept as a mode).
+- [x] ➕ **Preference store** *(research)*: every pick and rejection, with its note, is kept per project (optionally
   per user). Agents consult it before proposing, and repeated picks become `style.toml` rules or priors. A small
   learned preference model may follow (about 2,000 comparisons transfer).
-- [ ] ➕ **Reference boards** *(research)*: the human drops in images; the engine measures them (value histogram,
+  *Done 2026-10-30:* picks, rejections and notes kept per project as reserved taste data; suggestions from consistent picks go to the review queue, never written silently; picks stay private (taste/ is git-ignored).
+- [x] ➕ **Reference boards** *(research)*: the human drops in images; the engine measures them (value histogram,
   saturation, palette, contrast, edge density, shadow softness), and the numbers become targets the scene is checked
   against.
+  *Done 2026-10-30:* `board_measure` / `board_check` measure images in the captures folder (value histogram, chroma, palette, contrast, edge density, shadow softness) and check scenes against them. Window drag-and-drop remains.
 - [x] ➕ **Taste checks as data** *(research)*, reported like budget errors:
   - silhouette distinctness between siblings, and readability at thumbnail size;
   - subject/background value contrast;
@@ -742,8 +748,9 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
 - [x] ➕ **Shot sets** *(research)*: standard camera rigs for every review (gameplay view, close-up, worst-case
   lighting, phone-sized, iGPU), so nothing is judged from one flattering angle.
   *Done 2026-10-29:* close_up, gameplay, worst_light, phone and igpu shots, with LODs picked by screen size as the game does.
-- [ ] ➕ **Style configurator and first-run onboarding** (owner, 2026-10-16): start from a base style; agents ask new
+- [x] ➕ **Style configurator and first-run onboarding** (owner, 2026-10-16): start from a base style; agents ask new
   users how the game should look through galleries of options, including UI colours such as "can't afford".
+  *Done 2026-10-30:* `style_onboard`: five base presets and four gallery steps, proposed through the review queue and written only on the owner's approval.
 - [x] ➕ **Structured critique queue** *(research)*: sight-skeptic and reviewer findings become items that humans and
   agents work through, each linking its capture and metric.
   *Done 2026-10-29:* `critique_add`, `critique_list`, `critique_update`, linked to the task board (design/REVIEW.md).
@@ -753,17 +760,35 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
 - [x] **Review queue**: submissions with captures; the owner approves or rejects batches, and a rejection returns to
   the agent with its note.
   *Done 2026-10-29:* `review_submit`, `review_list`, `review_decide`, `review_screen` (the window's review screen, modal for keys, mouse and pads); approvals promote through the write policy as the decider.
-- [ ] ➕ **Baked global illumination**: lightmaps or probe volumes, baked by agents.
+- [x] ➕ **Baked global illumination**: lightmaps or probe volumes, baked by agents.
   *Why:* this is the low-end-friendly answer to Lumen.
+  *Done 2026-10-30:* CPU-baked irradiance probe volumes (specula-lux, deterministic bytes), agent-baked with `gi_bake`, streamed, leak-tested; tiers low (the iGPU default, +1.0-1.3 ms in Sepulcra) and high (design/GI.md).
 - [x] ➕ **Particle/VFX system**: CPU first, GPU later. Cosmetic only, so it's outside determinism. Effects are data.
   *Done 2026-10-29:* specula-scintilla effects as data, evaluated in closed form on the CPU; budgets per adapter; photosensitivity checks per effect plus a runtime flash watch (design/VFX.md).
-- [ ] ➕ **Terrain renderer** (LOD + splat materials), **decals**, **stylised water**.
+- [x] ➕ **Terrain renderer** (LOD + splat materials), **decals**, **stylised water**.
   *Decals done 2026-10-29* (deferred-style, lit and multiply; design/VFX.md). The terrain renderer and water remain.
+  *Done 2026-10-30:* CDLOD terrain with a crack-free multi-level morph, splat materials, `terrain_edit` strokes and matching colliders; a water component with five presets (design/TERRAIN.md). Known polish limits are listed there.
 
 **Exit proof:**
-- [ ] A swarm builds a themed asset set (30+ props) that passes `style.toml`.
-- [ ] It is presented as one contact sheet in the review queue.
-- [ ] The approved assets go straight into the game world.
+- [x] A swarm builds a themed asset set (30+ props) that passes `style.toml`.
+  *Done 2026-10-30:* 33 graveyard props by a director, four builders, an art director, a sight-skeptic and a debugger (`scripts/m4_exit.py`).
+- [x] It is presented as one contact sheet in the review queue.
+  *Done 2026-10-30:* one submission with one contact sheet; agents could not decide it.
+- [x] The approved assets go straight into the game world.
+  *Done 2026-10-30:* the owner approved at the window; all 33 were promoted to their map positions and drawn in play; Sepulcra won on the iGPU with them placed (GPU p95 7.1 ms busy, 8.4 ms boss).
+**Also built in M4 (owner requests and structural fixes, 2026-10-28..30):** the one write policy (AGENTS rule 13);
+scoped tool lists (the lead picks each agent's tools); built-in tracing and the autonomous debugger role; authority,
+jobs and provenance (operator grants, an access table, one commit per call, drawn facts from a frame record);
+bounds and workers (schema limits, an answer ceiling, a worker pool, step jobs, guard tests); asynchronous capture
+readback and the remaining engine-thread stalls.
+
+**M4 follow-ups (recorded for M5):**
+- [ ] The first capture at a new size builds its render graph images inside its submit (36-58 ms once per size): prepare the graph with the view's own frame shape ahead of time.
+- [ ] Alpha foliage cards and wind (texture graphs have no opacity output; meshes have no wind term).
+- [ ] Terrain and water polish: shallow-shelf hairlines, ice crack tiling, the swamp's horizon hue (design/TERRAIN.md).
+- [ ] Windowed recipe writes and studio sheets still raise frame-budget incidents on the iGPU (seen in the exit proof).
+- [ ] Review submissions carry agent-reported checks; let `review_submit` reference results the engine recorded (design/AUTHORITY.md).
+- [ ] Pilot the owner's agent tools (Chisel, Stele, Wikifier, CoordinationHub) on an M5 lane, then their Rust rewrite (owner, 2026-10-30).
 
 ---
 
@@ -879,7 +904,7 @@ Each tier is rendered in the M4 stage world from fixed cameras, and every milest
 | T0 | Greybox: coloured primitives | M0 (now) |
 | T1 | Stylised flat: low-poly, vertex colour, bevels | M2 materials + procedural tier 1 |
 | T2 | Indie polish: shadows, sky, fog, tonemapping, AA | rest of M2 |
-| T3 | Detailed stylised: SDF sculpting, normal maps, baked GI, decals, particles | M4 |
+| T3 | Detailed stylised: SDF sculpting, normal maps, baked GI, decals, particles | M4 (done 2026-10-30: docs/fidelity/benchmark_t3_m4.png) |
 | T4 | Realistic, Unreal-class | the items below |
 
 - [x] **First benchmark: the lava lamp** (owner's choice, 2026-10-13), built at three levels by
@@ -891,7 +916,8 @@ Each tier is rendered in the M4 stage world from fixed cameras, and every milest
 
   The captures are reproducible with `time_s` and match on NVIDIA and Intel within 3/255 (integer hashes, not
   `sin` hashes, in shaders).
-- [ ] **Benchmark recipes** for the other subjects at T0, with the contact sheet scripted.
+- [x] **Benchmark recipes** for the other subjects at T0, with the contact sheet scripted.
+  *Done 2026-10-30:* T0 recipes exist for all five subjects and the T0/T1/T3 sheets are scripted (`studio_check --fidelity`).
 - [ ] **Every rung has an integrated-GPU budget** (F3). T4 is reached through quality presets that scale down to the
   iGPU and the Deck, not through Nanite/Lumen-style brute force. *Why:* "realistic within budget" is itself a way to
   stand out from Unreal.

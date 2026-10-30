@@ -58,13 +58,27 @@ Read [HANDOFF.md](HANDOFF.md) first.
     - Never add a `World` field, a `&mut World` accessor or a hatch call outside its owner.
     - Add a row to the regression table (`every_write_path_holds_the_policy`). `crates/specula/tests/write_policy_guard.rs`
       enforces the rest.
+14. **Authority and jobs** (2026-10-29). Who may do what comes from `authority::authority` (or
+    `authority::of_session` on caller threads), never from a role string: owner, lead and reviewer come only from
+    operator grants (`--owner`, `--lead`, `--reviewer`). Every tool declares its access in `authority::access` (a
+    test fails without it), and the authority drill must hold. A deferred answer is a `jobs::Reply` (owners, busy
+    refusals that name the owner, owner-only cancel). One tool call makes at most one commit
+    ([docs/design/AUTHORITY.md](docs/design/AUTHORITY.md)).
+15. **Bounds, workers and traces** (2026-10-30). Every tool argument has a limit in its schema and every answer a
+    ceiling ([docs/design/TOOLS.md](docs/design/TOOLS.md)). Blocking work (disk, encodes, GPU waits, walks of the
+    world) never runs on the engine thread: use `Engine::offload` or `Engine::step_job`
+    ([docs/design/WORKERS.md](docs/design/WORKERS.md)); `engine_thread_guard`, `disk_guard` and `budget_check.py`
+    enforce it. New output is a `trace_event!`, never a print (`print_guard`); agents debug from traces
+    ([docs/design/TRACE.md](docs/design/TRACE.md)). Every new tool needs a family and a one-line catalog entry
+    (`toolscope.rs`). Facts about what was drawn come from the frame record, and agent-reported values never show as
+    engine results.
 
 ## Layout
 
 | Crate | Role |
 |---|---|
 | `specula-sys` | the only `kernel32` imports; runtime library loader (`dynlib`); Ctrl+C / console-close handling (`interrupt`) |
-| `specula-core` | JSON, math, base64, checksums, DEFLATE/zlib, PNG |
+| `specula-core` | JSON, math, base64, checksums, DEFLATE/zlib, PNG; structured tracing (`trace`) |
 | `specula-platform` | native windows + input (Win32 first) |
 | `specula-gpu` | Vulkan (runtime-loaded) + render-hardware interface |
 | `specula-protocol` | HTTP/1.1 + MCP server for agents |
@@ -83,6 +97,8 @@ Read [HANDOFF.md](HANDOFF.md) first.
 | `specula-model` | procedural modelling: recipes → meshes, LODs, colliders; CSG, SDF, terrain, scatter, texture graphs |
 | `specula-studio` | the asset studio's measures: `style.toml` rules, asset facts, taste checks, critiques |
 | `specula-scintilla` | particles/VFX and decals as data: effects, a closed-form evaluator, budgets, photosensitivity checks |
+| `specula-gustus` | taste direction: gallery spaces and spreads, pick-driven tuning, the preference store, board measures, style presets |
+| `specula-lux` | baked GI: a BVH ray caster and deterministic irradiance probe volumes (LUX1 files) |
 | `specula-gltf` | glTF 2.0 / GLB import and export |
 | `specula-sdk` | the one crate game-logic modules depend on: deterministic `Cx` API, versioned C ABI |
 | `specula-logic` | module host internals: library loading, the build service, diagnostics as data |

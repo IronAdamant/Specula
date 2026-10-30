@@ -2,13 +2,16 @@
 
 These are notes from Claude (Opus 5.5) to whoever picks up Specula next, most likely a new Claude conversation with no
 memory of the earlier ones. This page is **current state and what's next** only; history is in
-[CHANGELOG.md](CHANGELOG.md). Last updated **2026-10-22**.
+[CHANGELOG.md](CHANGELOG.md). Last updated **2026-10-30**.
 
 - **Where things stand:** M0, M1, M2 and **M3 are done** (M3 on 2026-10-22, after an integration audit; `python
   scripts/m3_exit.py --adapter integrated` re-checks the iGPU budget with a release `sepulcra-app`; M2's check is
   `scripts/m2_exit.py`). The first game, *Sepulcra* (tower defence), is playable and is the engine's dogfood.
-  **M4 is paused** until the owner's usage limit resets: four M4 lanes are built and parked on their own branches
-  (see the plan for the week of 2026-10-26 below).
+  **M4 is done (2026-10-30):** the owner approved the exit proof's 33 props at the window (`scripts/m4_exit.py`), and
+  a final integration audit gates the push. **M5 is next**, after the owner's weekly usage reset. Start M5 by
+  reminding the owner of: the parked decoration question (should props block building? "It depends"; a per-prop
+  `blocks_build` flag was suggested), the open style proposals below, and piloting the owner's agent tools (Chisel,
+  Stele, Wikifier, CoordinationHub; their Rust rewrite was decided 2026-10-30).
 - **Started early:** the owner had planned to restart on 2026-10-21, but upgraded their plan and gave the go-ahead
   the night of 2026-10-17. The pre-M3 work is pushed (`d634afe`, CI green).
 - **Owner answers, 2026-10-17** (diary):
@@ -187,8 +190,11 @@ In practice that means six **foundations** that apply to every change from M1 on
   --seed 7` (see its TESTPLAN.md).
 - **Flags:** `--port N`, `--headless`, `--adapter discrete|integrated|<index>`, `--size WxH`, `--captures DIR`,
   `--worlds DIR`, `--world NAME` (autosaves to `worlds/NAME/`), `--cache DIR`, `--assets DIR`, `--style FILE`,
-  `--perf FILE`, `--paused` (start with the clock stopped, for replays), `--response-format concise|detailed`, and
-  `-- GAME ARGS` for a hosted game.
+  `--perf FILE`, `--paused` (start with the clock stopped, for replays), `--response-format concise|detailed`,
+  `--tools-default core|all` (agents list 6 core tools unless they ask; `.mcp.json` and the scripts ask for all),
+  `--owner NAME` / `--lead NAME` / `--reviewer NAME` (operator grants: roles are never self-declared),
+  `--trace DIR`, `--trace-file on|off`, `--strict-budget` (an engine-thread stall fails the run), `--terrain on|off`,
+  and `-- GAME ARGS` for a hosted game. Agent names are plain ASCII.
 - **Answers are concise by default** on the heavy tools; pass `response_format: "detailed"` (per call, or once in
   `agent_hello`) for everything. Repo scripts use `scripts/specula_mcp.py` or `specula_mcp.detailed()`.
 - **Tools** (each one's schema is in `tools/list`):
@@ -232,6 +238,19 @@ In practice that means six **foundations** that apply to every change from M1 on
     ([docs/design/REVIEW.md](docs/design/REVIEW.md)); the window's review screen opens with F9.
   - Effects: `vfx_get`, `vfx_set`, `vfx_preview`, `vfx_check`, `vfx_info`; the `vfx` and `decal` components; `--vfx`
     ([docs/design/VFX.md](docs/design/VFX.md)).
+  - Galleries and taste: `gallery_create`, `gallery_get`, `gallery_list`, `gallery_open`, `gallery_close`,
+    `gallery_wait`, `gallery_decide` (owner), `gallery_round`, `gallery_apply`, `gallery_delete`, `taste_query`,
+    `taste_suggest`, `board_measure`, `board_check`, `style_onboard`; the window's gallery screen opens with F8
+    ([docs/design/GALLERIES.md](docs/design/GALLERIES.md)).
+  - GI, terrain and water: `gi_bake`, `gi_info`, `gi_check`, `gi_settings`; `terrain_info`, `terrain_edit`; the
+    `water` component ([docs/design/GI.md](docs/design/GI.md), [docs/design/TERRAIN.md](docs/design/TERRAIN.md)).
+  - Disk and binary files: `disk_status`, `disk_prune`, `project_upload`
+    ([docs/design/DISK.md](docs/design/DISK.md)).
+  - Your tool list: `tools_catalog`, `tools_activate`, `tools_deactivate`, `tools_invoke`, `tools_request`,
+    `tools_scope` (lead) ([docs/design/TOOLS.md](docs/design/TOOLS.md)).
+  - Tracing and the debugger: `trace_query`, `trace_follow`, `trace_call`, `trace_settings`, `trace_crash`,
+    `trace_incidents`, `trace_incident` ([docs/design/TRACE.md](docs/design/TRACE.md),
+    [docs/design/DEBUGGER.md](docs/design/DEBUGGER.md)).
   - Game logic: `logic_build` (diagnostics as data), `logic_reload`, `logic_unload`, `logic_status`, `logic_input`,
     `logic_hook` (hot-reloaded Rust modules; see [docs/design/MODULES.md](docs/design/MODULES.md)).
   - Performance and time: `perf_frame` (GPU ms per pass, render graph, draws, memory, pacing, budget errors from
@@ -303,6 +322,11 @@ answer where it applies. The owner decided everything else on 2026-10-22 (see "D
 - **Sepulcra balance (from the balance lab, 2026-10-18):** a rusher who calls every wave early still loses 2 runs in
   16 on unseen seeds. Claude recommends keeping it risky. The owner will playtest it in M6, on each OS, and decide
   then ([docs/design/BALANCE.md](docs/design/BALANCE.md)).
+- **Decorations and building (parked for M5, 2026-10-30):** should Sepulcra's props block building? The owner's
+  answer for now: "It depends." Remind them at the start of M5 (suggested: a per-prop `blocks_build` flag as data).
+- **Style proposals from M4 (Claude's, owner to confirm):** the building, ruin, terrain and set categories with
+  their budgets; the `prop` category (1500 triangles, 0.3-4.0 m); fire colour reserved for candles and lanterns as
+  well; a `wood` material preset; the `*_t3` fidelity budget.
 
 ## Claude's opinions and thoughts
 
