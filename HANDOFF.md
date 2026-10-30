@@ -90,9 +90,7 @@ memory of the earlier ones. This page is **current state and what's next** only;
   history gallery, save games with the balance lab, streaming with HLOD, Sepulcra fully in Lex with live Lex, Locus with navigation and AI, and (2026-10-22) determinism hardening
   (module builds journaled, the FP-environment guard, determinism lints), the streaming upload and pump fixes, and
   agent evals ([docs/design/EVALS.md](docs/design/EVALS.md), `scripts/evals.py`), project data through the
-  protocol (`project_*`), and P4 joints with A4 ragdolls. Wave 2 is
-  running: Locus and navigation/AI, playtest swarms and tool ergonomics, streaming and
-  HLOD, Sepulcra fully in Lex with live Lex, save games and the balance lab, and P4 joints with A4 ragdolls.
+  protocol (`project_*`), and P4 joints with A4 ragdolls. All three waves are merged; M3 and M4 are done.
 - **M3 plan:** Its plan (owner direction 2026-10-17: games
   built through data and tools, not hand-written code; taste engineered in; agent-native) is in ROADMAP's M3/M4,
   from [docs/research/AGENT_GAMEMAKING.md](docs/research/AGENT_GAMEMAKING.md): Lex (gameplay as data) first, then
@@ -265,8 +263,8 @@ In practice that means six **foundations** that apply to every change from M1 on
 - **Game-side crates:** `specula-anim` (A1-A3: clips, graphs, IK, motion generators and checks), `specula-audio` (WASAPI, procedural 3D audio),
   `specula-input` (keyboard, mouse, XInput gamepads), `specula-text`, `specula-ui`, `specula-model` (procedural
   modelling, tier 1), `specula-gltf`.
-- **Size:** about 234k lines of Rust (2026-10-22): 218k in 21 engine crates and 16k in 3 game crates (Sepulcra's
-  rules and app, and the Ambulo example module); about 1,800 tests. **Zero
+- **Size:** about 317k lines of Rust (2026-10-30): 301k in 25 engine crates and 17k in 3 game crates (Sepulcra's
+  rules and app, and the Ambulo example module); about 2,350 tests. **Zero
   third-party crates.** The Rust toolchain's own linker; Vulkan, XInput and AVRT are loaded at runtime.
 
 **What it can't do yet** (most of it is M3+):
@@ -355,48 +353,25 @@ answer where it applies. The owner decided everything else on 2026-10-22 (see "D
   those six advantages (engine survey §1).
 - **Tokens are a cost.** Every tool response should stay bounded. `max_subjects` was the first example of this rule.
 
-**The plan for the week of 2026-10-26 (M4 resumes when the owner's usage limit resets; agreed 2026-10-22):**
-1. **M4 merges first.** These lanes are parked on their own branches. Squash-merge each into main, since their
-   branches carry history from before the scrub:
-   - review queues (done);
-   - procedural modelling (done; the integrator verifies it after merging main);
-   - asset studio (done; the integrator verifies it);
-   - VFX and decals: re-run the stopped narrow round-3 review of the flash-safety detector first. Player safety:
-     the detector counts flashes over 40×22 cells, so check whether a fine checkerboard inverting at 10 Hz averages
-     out to no change, and test against WCAG 2.3.1's "any 10° field" area rule.
-2. **Then the unstarted M4 items, in this order:**
-   1. galleries with the owner's pick flow ("This one" / "This one, with edits"), the preference store, pick-driven
-      tuning, reference boards, and the style configurator with onboarding;
-   2. the disk footprint budget;
-   3. binary assets through the protocol;
-   4. baked GI;
-   5. the terrain renderer and stylised water;
-   6. the Fidelity T3 sheet;
-   7. the M4 exit proof (30+ props pass `style.toml`, shown as one contact sheet in the review queue, approved
-      into the game);
-   8. then the M4 integration audit and push.
-3. **Process changes, learned from M3** (most of M3's bugs sat between lanes, and fixes often caused new ones):
-   - **One write policy: done (2026-10-29).** Every write goes through `write_policy`, and writers never hold
-     `&mut World`; compile_fail doctests, a guard test and a 50-row regression table pin it (AGENTS.md rule 13,
-     [docs/design/WRITE_POLICY.md](docs/design/WRITE_POLICY.md)). It took five review rounds: each detection
-     scheme was fooled until writers lost raw access entirely.
-   - **Integration checks early,** not only at the end of a milestone: run a short cross-lane audit after every
-     3-4 merges.
-   - **Every reviewer probe becomes a permanent test** (unit test, or a live-script step) in the same round.
-   - **Every lane gets at least one independent review round,** not only its own reviewer. Independent rounds
-     found majors in lanes their own reviewers had passed.
-   - **Dogfood in the real game early.** Textured models, live waves and entity churn found bugs that synthetic
-     worlds missed.
-   - **Disk:** delete a lane's target folder when it merges, and build with `CARGO_INCREMENTAL=0` when space is
-     short.
+**How M4 ran (2026-10-28 to 2026-10-30), and what to keep for M5:**
+- **The process changes held:** the one write policy, an integration check after every 3-4 merges, every reviewer
+  probe becoming a permanent test, at least one independent review per lane, and dogfooding in the real game.
+- **Recurring bug classes were fixed structurally,** not one at a time. Investigators reproduced each class, then a
+  structural lane removed it: authority and jobs (AGENTS rule 14), bounds, workers and traces (rule 15). The
+  checklists in the lane brief come from them.
+- **The lead picks each agent's tools** (`tools_scope`). Agents start with the 6 core tools.
+- **Traces and incidents first:** a debugger agent watches `trace_incidents` beside builders, and files critiques.
+- **The final audit still found bugs between lanes** (a reply read without waiting, a call that made two commits, a
+  field read after it moved). Keep the final audit.
+- **Disk:** delete a lane's target folder when it merges, and build with `CARGO_INCREMENTAL=0` when space is short.
 
 **Recommendations for the next session:**
-1. **M3 is done and pushed once the steps above it are complete; M4 follows the plan above.** Run lanes with
-   reviews, as in M2 and M3.
-2. **Bring the open owner decisions** (the list above) to the owner in one short batch, with Claude's recommendation
-   for each; several of them (night darkness, title screen, settings) shape Sepulcra's M3 work.
-3. **Keep Sepulcra the dogfood.** Each M3 feature should land in the game (rules moved into Lex data, physics on
-   creatures, motion checks on its animations), measured on the Intel iGPU with the game running.
+1. **M5 next** (after the owner's weekly reset). Run lanes with reviews, as in M3 and M4. First remind the owner
+   of the open decisions (the list above), and pilot their agent tools on one lane.
+2. **The approved exit-proof props live in the approved world,** not yet in a fresh Sepulcra's map 1. Putting them
+   in the shipped map is an M5 step, tied to the decoration question (should props block building?).
+3. **Keep Sepulcra the dogfood.** Each M5 feature (audio, text, the editor) should land in the game, measured on
+   the Intel iGPU with the game running.
 4. **Before any non-localhost bind**, build per-agent auth tokens (ROADMAP swarm track). Before CI can check
    rendering, Vulkan loading must work on Linux (Platform track).
 5. **Walk the owner through the five design docs** in `docs/design/` and the engine survey when there's a natural

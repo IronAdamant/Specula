@@ -737,7 +737,7 @@ Research and reasoning for the ➕ items marked *(research)*: [research/AGENT_GA
 - [x] ➕ **Reference boards** *(research)*: the human drops in images; the engine measures them (value histogram,
   saturation, palette, contrast, edge density, shadow softness), and the numbers become targets the scene is checked
   against.
-  *Done 2026-10-30:* `board_measure` / `board_check` measure images in the captures folder (value histogram, chroma, palette, contrast, edge density, shadow softness) and check scenes against them. Window drag-and-drop remains.
+  *Done 2026-10-30:* `board_measure` / `board_check` measure the images in `assets/taste/boards/<board>/` (value histogram, chroma, palette, contrast, edge density, shadow softness) and check scenes against them. Window drag-and-drop remains.
 - [x] ➕ **Taste checks as data** *(research)*, reported like budget errors:
   - silhouette distinctness between siblings, and readability at thumbnail size;
   - subject/background value contrast;
@@ -788,6 +788,7 @@ readback and the remaining engine-thread stalls.
 - [ ] Terrain and water polish: shallow-shelf hairlines, ice crack tiling, the swamp's horizon hue (design/TERRAIN.md).
 - [ ] Windowed recipe writes and studio sheets still raise frame-budget incidents on the iGPU (seen in the exit proof).
 - [ ] Review submissions carry agent-reported checks; let `review_submit` reference results the engine recorded (design/AUTHORITY.md).
+- [ ] Put the approved exit-proof props into a fresh Sepulcra's map 1 (after the owner decides whether props block building).
 - [ ] Pilot the owner's agent tools (Chisel, Stele, Wikifier, CoordinationHub) on an M5 lane, then their Rust rewrite (owner, 2026-10-30).
 
 ---

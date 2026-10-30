@@ -15,14 +15,15 @@ See [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md). Item-by-item detail, with the re
 
 - **Exit proof:** a swarm (a director, four builders, an art director, a sight-skeptic and a debugger) built 33
   graveyard props that pass `style.toml`; one contact sheet went to the review queue; the owner approved it at the
-  window, and the props went straight into Sepulcra, which still won on the iGPU within budget
+  window, and they were promoted into the game world, which still won on the iGPU within budget (putting them in
+  a fresh Sepulcra's map 1 is an M5 step)
 - **Galleries and the owner's pick flow** (`specula-gustus`, `gallery_*`, F8): choose, don't describe; pick-driven
   tuning, the preference store (private), reference boards, style onboarding
 - **Baked GI** (`specula-lux`, `gi_*`): deterministic CPU-baked probe volumes, tiers low and high, terrain and water
   included
 - **Terrain and stylised water** (`terrain_*`, the `water` component)
 - **Disk footprint budget and binary assets** (`disk_*`, `project_upload`)
-- **Scoped tool lists** (`tools_*`): agents start with 6 tools (4.7 KB) instead of every tool (209 KB); the lead
+- **Scoped tool lists** (`tools_*`): agents start with 6 tools (about 5 KB) instead of every tool (about 255 KB); the lead
   picks each agent's tools
 - **Built-in tracing and an autonomous debugger role** (`trace_*`, incidents, watchdogs, `--strict-budget`)
 - **Authority, jobs and provenance:** operator grants, an access table for every tool, one commit per call, drawn

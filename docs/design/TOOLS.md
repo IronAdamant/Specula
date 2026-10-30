@@ -140,7 +140,7 @@ vendors' clients may not, so the engine does it itself.
 ### What a session lists
 
 A session lists the **core** plus its **scope**. The core is `agent_hello`, `tools_catalog`, `tools_activate`,
-`tools_deactivate`, `tools_invoke` and `tools_request`: about 4.7 KB, always listed, never capped. The scope is an
+`tools_deactivate`, `tools_invoke` and `tools_request`: about 5 KB (5,260 bytes measured), always listed, never capped. The scope is an
 **active** set, and optionally a **cap** set by the lead. A session lists core + (active ∩ cap).
 
 **Calls are not limited to the list.** A session may call any tool within its cap, whether it is listed or not.
@@ -195,7 +195,7 @@ nothing.
 - `coder`: logic, project, world, sight, engine, claim, board.
 
 **The default is core-only**, so a client that says nothing gets the core. That is the point of this work: an
-unconfigured agent in a swarm pays 4.7 KB instead of 215 KB. The engine's `instructions` (sent at `initialize`)
+unconfigured agent in a swarm pays about 5 KB instead of about 255 KB. The engine's `instructions` (sent at `initialize`)
 and the core tools' descriptions say how to find and activate the rest. Backward compatibility holds in three
 ways:
 
