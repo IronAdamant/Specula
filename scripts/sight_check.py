@@ -344,6 +344,21 @@ def main():
         print(f"  {info['gpu']['name']}: gpu {gpu[len(gpu) // 2]:.3f} ms, readback + count {cpu[len(cpu) // 2]:.3f} ms"
               f" (median of {len(costs)})")
 
+        print("a mesh deleted while a capture renders (the stalls review's use-after-free)")
+        import threading
+        vk = []
+        for r in range(8):
+            prof = [[0, 0], [0.5 + r * 0.001, 0.1], [0.4, 1.5], [0, 1.8]]
+            builder.json("world_spawn", shape="lathe", name=f"doomed{r}", position=[0, 0, 0], profile=prof, segments=256)
+            builder.frame(width=160, height=90, max_subjects=1)  # uploaded
+            got = {}
+            t = threading.Thread(target=lambda: got.setdefault("p", other.frame(width=1024, height=1024, eye=[0, 6, 12], target=[0, 0, 0], max_subjects=1)))
+            t.start()
+            builder.json("world_delete", path=f"/doomed{r}")
+            t.join()
+            vk += [w for w in got.get("p", {}).get("warnings", []) if "vulkan" in str(w).lower()]
+        check(not vk, f"no validation message when a capture's mesh is deleted in flight ({vk[:2]})", failures)
+
         for m_ in (builder, other, reviewer):
             m_.close()
     log = (OUT / "engine.log").read_text(errors="replace")

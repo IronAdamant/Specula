@@ -16,7 +16,7 @@ use specula_core::Json;
 use specula_protocol::ToolOutput;
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -62,8 +62,17 @@ pub enum JobKind {
     TraceWrite,
     ReplayWrite,
     PerfWrite,
+    ScratchMake,
+    LeaseMarker,
+    Warm,
+    AnimCheck,
+    QueryList,
     /// A gallery round's sheet packet read back after a restart (the taste tools).
     SheetRead,
+    /// A capture's flash-watch feed whose pixels go to no other worker job.
+    FlashFeed,
+    /// A released scratch lease's folder moved into the trash (`lease_release {delete}`).
+    ScratchTrash,
 }
 
 impl JobKind {
@@ -79,7 +88,14 @@ impl JobKind {
             JobKind::TraceWrite => "desync_trace_write",
             JobKind::ReplayWrite => "playtest_replay_write",
             JobKind::PerfWrite => "perf_capture_write",
+            JobKind::ScratchMake => "scratch_make",
+            JobKind::LeaseMarker => "lease_marker",
+            JobKind::Warm => "warm",
+            JobKind::AnimCheck => "anim_check",
+            JobKind::QueryList => "world_query_list",
             JobKind::SheetRead => "gallery_sheet_read",
+            JobKind::FlashFeed => "flash_feed",
+            JobKind::ScratchTrash => "scratch_trash",
         }
     }
 }
@@ -213,12 +229,29 @@ pub struct Workers {
     /// The trash is being emptied, and folders were trashed since it began.
     trash_running: bool,
     trash_again: bool,
+    /// Pixels the engine thread holds for agents' captures on their way to a worker (an orbit's
+    /// sheet while its views render), charged against [`MAX_PENDING_BYTES`] with the queued
+    /// jobs' ([`Workers::hold`]).
+    held: Arc<AtomicU64>,
+}
+
+/// Bytes charged to the workers' cap while it lives ([`Workers::hold`]).
+#[derive(Debug)]
+pub struct Held {
+    bytes: u64,
+    on: Arc<AtomicU64>,
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        self.on.fetch_sub(self.bytes, Ordering::Relaxed);
+    }
 }
 
 impl Default for Workers {
     fn default() -> Workers {
         let (done_tx, done_rx) = mpsc::channel();
-        Workers { shared: Arc::default(), done_tx, done_rx, threads: 0, no_threads: false, pending: BTreeMap::new(), next: 0, last_session_check: Instant::now(), counts: (0, 0, 0, 0), trash_running: false, trash_again: false }
+        Workers { shared: Arc::default(), done_tx, done_rx, threads: 0, no_threads: false, pending: BTreeMap::new(), next: 0, last_session_check: Instant::now(), counts: (0, 0, 0, 0), trash_running: false, trash_again: false, held: Arc::default() }
     }
 }
 
@@ -314,7 +347,7 @@ impl Workers {
             return Ok(());
         }
         let mine = self.counted().filter(|p| p.owner.as_ref().is_some_and(|(o, _)| o.is(owner))).count();
-        let held: u64 = self.counted().map(|p| p.bytes).sum();
+        let held: u64 = self.counted().map(|p| p.bytes).sum::<u64>() + self.held.load(Ordering::Relaxed);
         if self.agent_jobs() < MAX_AGENT_JOBS && mine < MAX_PER_OWNER && held + bytes <= MAX_PENDING_BYTES {
             return Ok(());
         }
@@ -333,6 +366,18 @@ impl Workers {
         .with("retry", true))
     }
 
+    /// Charges `bytes` the engine holds for an agent's capture (see the field) until the guard
+    /// drops. Callers ask [`Workers::room`] first.
+    pub fn hold(&self, bytes: u64) -> Held {
+        self.held.fetch_add(bytes, Ordering::Relaxed);
+        Held { bytes, on: Arc::clone(&self.held) }
+    }
+
+    /// What [`Workers::hold`] guards hold now.
+    pub fn held_bytes(&self) -> u64 {
+        self.held.load(Ordering::Relaxed)
+    }
+
     /// Jobs not answered yet.
     pub fn busy(&self) -> bool {
         !self.pending.is_empty()
@@ -349,6 +394,7 @@ impl Workers {
             ("failed", Json::from(failed)),
             ("cancelled", Json::from(cancelled)),
             ("inline", Json::from(inline)),
+            ("held_bytes", Json::from(self.held_bytes())),
         ])
     }
 }

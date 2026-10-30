@@ -298,6 +298,7 @@ impl Engine {
             let counts = [
                 ("model_builds", self.library.lock().in_flight()),
                 ("parked_captures", self.capture_waiters.len()),
+                ("capture_flight", { let (flying, waiting) = self.captures.counts(); flying + waiting }),
                 ("save_writers", usize::from(self.saves_in_flight())),
             ];
             for (kind, n) in counts {

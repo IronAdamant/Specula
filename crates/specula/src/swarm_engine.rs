@@ -237,7 +237,14 @@ impl Engine {
             }
             SwarmCall::LeaseTake { .. } => hello_required("leases"),
             SwarmCall::LeaseRenew { id, lease } => match self.swarm.leases.renew(w, id, lease, now) {
-                Ok(renewed) => out(Json::obj([("renewed", Json::Arr(renewed))])),
+                Ok((renewed, markers)) => {
+                    // The folders' markers (what a crash sweep reads) are written on a worker.
+                    if !markers.is_empty() {
+                        let o = crate::workers::Offload::engine(crate::workers::JobKind::LeaseMarker);
+                        let _ = self.offload(o, move |_| markers.iter().for_each(|m| drop(m.write())), |_, _| {});
+                    }
+                    out(Json::obj([("renewed", Json::Arr(renewed))]))
+                }
                 Err(e) => fail(&e),
             },
             SwarmCall::LeaseRelease { id, delete, keep } => {
@@ -510,16 +517,135 @@ impl Engine {
 
     /// `desync_trace`: the ticks are taken here; the file (11.7 MB took 1.3 s of the engine thread
     /// to render and write, review of 998af3d) is rendered and written on a worker, which answers.
+    /// `lease_take` of a scratch folder: the lease is taken here, the folder and its marker are
+    /// made on a worker (on a busy disk that took up to 40 ms of the engine thread), and the call
+    /// is answered once they exist; if they can't be made, the lease is given back.
+    pub(crate) fn start_scratch_lease(&mut self, request: crate::tools::Request, server: &Server) {
+        let crate::tools::Request { command: crate::tools::Command::Swarm(SwarmCall::LeaseTake { want, note, lease }), session, reply, call, .. } = request else {
+            unreachable!("only lease_take comes here")
+        };
+        if !self.swarm.introduced(&session.id) {
+            let _ = reply.send(hello_required("leases"));
+            return;
+        }
+        let by = self.swarm.agent_name(&session);
+        let key = self.swarm.key(&session);
+        let pools = self.lease_pools(server);
+        let now = Instant::now();
+        let taken = self.swarm.leases.take(Writer::new(&by, Some(&key)), (want, note, lease), &pools, &|_| true, now);
+        let (id, j, text, marker) = match taken {
+            Ok(l) => (l.id, l.to_json(now), format!("{} lease {}", l.resource.kind(), l.id), crate::leases::Marker::of(l)),
+            Err(e) => {
+                let _ = reply.send(fail(&e));
+                return;
+            }
+        };
+        let Some(marker) = marker else {
+            let _ = reply.send(out(j));
+            return;
+        };
+        let owner = crate::jobs::JobOwner { name: by.clone(), key: key.clone() };
+        let kind = crate::workers::JobKind::ScratchMake;
+        let o = crate::workers::Offload::agent(kind, owner, &session.id, call).class(crate::schedule::Class::Disk);
+        let refused = reply.clone();
+        let made = self.offload(o, move |_| crate::leases::make_scratch(&marker), move |e, r| {
+            let made = match r {
+                Ok(made) => made.map_err(|err| fail(&err)),
+                Err(f) => Err(f.to_output(kind)),
+            };
+            match made {
+                Ok(()) => {
+                    let tick = e.clock.tick();
+                    e.swarm.board.log(&by, tick, "lease", None, text);
+                    let _ = reply.send(out(j));
+                }
+                Err(answer) => {
+                    e.swarm.leases.forget(id);
+                    let _ = reply.send(answer);
+                }
+            }
+        });
+        if let Err(e) = made {
+            self.swarm.leases.forget(id);
+            refused.refuse(&e);
+        }
+    }
+
+    /// `lease_release {delete: true}`: the leases end now; their folders are moved into the trash
+    /// on a worker (renaming a folder of 20,000 files held the engine thread 40-95 ms, on main
+    /// too), and the call is answered once they are gone from their paths.
+    pub(crate) fn start_lease_delete(&mut self, request: crate::tools::Request, server: &Server) {
+        let crate::tools::Request { command: crate::tools::Command::Swarm(SwarmCall::LeaseRelease { id, .. }), session, reply, .. } = request else {
+            unreachable!("only lease_release {{delete}} comes here")
+        };
+        let by = self.swarm.agent_name(&session);
+        let key = self.swarm.key(&session);
+        let root = self.lease_pools(server).scratch_root;
+        let (ids, dirs) = match self.swarm.leases.release_for_delete(Writer::new(&by, Some(&key)), id, Instant::now()) {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = reply.send(fail(&e));
+                return;
+            }
+        };
+        if !ids.is_empty() {
+            let tick = self.clock.tick();
+            self.swarm.board.log(&by, tick, "lease_release", None, format!("{ids:?}"));
+        }
+        let answer = move |deleted: Vec<String>| {
+            let mut j = Json::obj([("released", Json::arr(ids.iter().map(|&i| Json::from(i)))), ("deleted_dirs", Json::arr(deleted.iter().map(|d| Json::from(d.as_str()))))]);
+            if !deleted.is_empty() {
+                j.set("deletion", Json::from("the folders are gone from their paths; their files are removed in the background (disk_status counts them until then)"));
+            }
+            out(j)
+        };
+        if dirs.is_empty() {
+            let _ = reply.send(answer(Vec::new()));
+            return;
+        }
+        let trash = move || {
+            let root = crate::disk::canonical(&root);
+            let deleted: Vec<String> = dirs.iter().filter(|d| crate::disk::move_to_trash(&root, &crate::disk::canonical(d)).is_ok()).map(|d| d.display().to_string()).collect();
+            (root, deleted)
+        };
+        let kind = crate::workers::JobKind::ScratchTrash;
+        let o = crate::workers::Offload::engine(kind).class(crate::schedule::Class::Disk);
+        // (The engine's own job: never refused, so the leases already ended always get their
+        // folders moved.)
+        let done = self.offload(o, move |_| trash(), move |e, r| match r {
+            Ok((root, deleted)) => {
+                if !deleted.is_empty() {
+                    e.empty_trash_later(root);
+                }
+                let _ = reply.send(answer(deleted));
+            }
+            Err(f) => {
+                let _ = reply.send(f.to_output(kind));
+            }
+        });
+        drop(done);
+    }
+
+    /// The journal's changes are gathered in steps (a few hundred per step: 600 ticks at 20,000
+    /// entities took about 250 ms in one go), then written as below.
     pub(crate) fn start_desync_trace(&mut self, request: crate::tools::Request) {
-        let crate::tools::Request { command: crate::tools::Command::Swarm(SwarmCall::DesyncTrace { from, to }), session, reply, call, .. } = request else {
+        let crate::tools::Request { command: crate::tools::Command::Swarm(SwarmCall::DesyncTrace { from, to }), session, reply, call, deadline, .. } = request else {
             unreachable!("only desync_trace comes here")
         };
-        let trace = self.live_trace(from, to);
-        if trace.ticks.is_empty() {
+        let game = self.game.as_ref().map(|_| self.game_name.as_str());
+        let gather = desync::Gather::start(&self.trace, self.swarm.journal(), game, self.clock.hz(), from, to);
+        if gather.ticks_found() == 0 {
             let range = self.trace.range().map_or(Json::Null, |(a, b)| Json::arr([Json::from(a), Json::from(b)]));
             let _ = reply.send(fail(&WorldError::new("no_ticks", "no recorded ticks in that range (the clock may be paused: time_control step runs ticks)").with("recorded", range)));
             return;
         }
+        let owner = crate::jobs::JobOwner { name: self.swarm.agent_name(&session), key: self.swarm.key(&session) };
+        let start = crate::steps::StepStart { owner, session: session.id.clone(), call, reply, deadline, class: crate::schedule::Class::Big };
+        self.step_job(start, Box::new(TraceJob { gather: Some(gather), session, call }));
+    }
+
+    /// A gathered trace, rendered and written on a worker, which answers.
+    fn write_desync_trace(&mut self, trace: Trace, session: &specula_protocol::SessionInfo, call: u64, reply: crate::jobs::Reply) {
         self.traces_written += 1;
         let (lo, hi) = (trace.ticks.keys().next().copied().unwrap_or(0), trace.ticks.keys().next_back().copied().unwrap_or(0));
         let path = self.capture_dir.join(format!("trace_{:04}_{lo}-{hi}.json", self.traces_written));
@@ -541,7 +667,7 @@ impl Engine {
             };
             let _ = theirs.send(answer);
         };
-        let owner = crate::jobs::JobOwner { name: self.swarm.agent_name(&session), key: self.swarm.key(&session) };
+        let owner = crate::jobs::JobOwner { name: self.swarm.agent_name(session), key: self.swarm.key(session) };
         let kind = crate::workers::JobKind::TraceWrite;
         let o = crate::workers::Offload::agent(kind, owner, &session.id, call).class(crate::schedule::Class::Disk);
         let refused = reply.clone();
@@ -687,5 +813,32 @@ impl Engine {
             self.board_io.warning = Some(Json::obj([("error", Json::from("review_unreadable")), ("message", Json::from(r.as_str()))]));
         }
         review
+    }
+}
+
+/// `desync_trace` as a step job: the journal's changes a few hundred at a time, then the file.
+struct TraceJob {
+    gather: Option<desync::Gather>,
+    session: specula_protocol::SessionInfo,
+    call: u64,
+}
+
+/// Journal changes read per step (each is an entity listing and its field digests: a couple of
+/// hundred stay within about a millisecond).
+const TRACE_CHANGES_PER_STEP: usize = 200;
+
+impl crate::steps::StepJob for TraceJob {
+    fn kind(&self) -> &'static str {
+        "desync_trace"
+    }
+
+    fn step(&mut self, e: &mut Engine, reply: &crate::jobs::Reply) -> crate::steps::Step {
+        let Some(g) = self.gather.as_mut() else { return crate::steps::Step::Done(fail(&WorldError::new("internal", "the trace was already written"))) };
+        if !g.step(e.swarm.journal(), TRACE_CHANGES_PER_STEP) {
+            return crate::steps::Step::More;
+        }
+        let trace = self.gather.take().expect("checked").finish(e.swarm.journal());
+        e.write_desync_trace(trace, &self.session, self.call, reply.clone());
+        crate::steps::Step::Handed
     }
 }

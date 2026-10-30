@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::ptr;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Offscreen colour format (readback bytes are sRGB RGBA8).
 pub const TARGET_FORMAT: VkFormat = crate::render::LDR_FORMAT;
@@ -52,6 +52,21 @@ struct Target {
     graph: FrameGraph,
     /// False until the first `render`; the colour image then sits in TRANSFER_SRC_OPTIMAL.
     rendered: bool,
+    /// The readback buffer holds the last render's pixels (an asynchronous render copies them in
+    /// its own submission): `read_rgba8` copies them out without another GPU round trip.
+    copied: bool,
+}
+
+/// An offscreen render submitted without waiting ([`GpuInner::render_async`]): what is settled
+/// once its fence signals ([`GpuInner::settle_offscreen`]).
+struct Pending {
+    target: u32,
+    /// Its graph submission ([`TransientPool::note_used`]): `completed` reaches it when it ends.
+    submission: u64,
+    /// Its timestamps are to be read (the timer recorded into it).
+    timed: bool,
+    prepare_ms: f64,
+    times: SyncTimes,
 }
 
 /// Whose graph rendered the latest frame.
@@ -68,6 +83,13 @@ pub struct GpuInner {
     /// Command buffer + fence for synchronous work (uploads, offscreen renders, readback).
     sync_cmd: VkCommandBuffer,
     sync_fence: VkFence,
+    /// Command buffer + fence of the asynchronous offscreen render (`render_async`); at most one is
+    /// in flight ([`Pending`]). Every other offscreen use settles it first.
+    async_cmd: VkCommandBuffer,
+    async_fence: VkFence,
+    pending: Option<Pending>,
+    /// The next settled asynchronous render reports a lost device (tests, `inject_offscreen_fault`).
+    offscreen_fault: bool,
     /// Frame data and draw records for offscreen renders (synchronous, so one buffer suffices).
     upload: Option<FrameUpload>,
     /// Sight's ID buffer resources, shared by every target (`render_with_ids`).
@@ -174,6 +196,53 @@ fn run_sync(dev: &Device, cmd: VkCommandBuffer, fence: VkFence, record: impl FnO
     waited.and(reset).map(|()| SyncTimes { record_ms: ms(t0, t1), submit_ms: ms(t1, t2), wait_ms: ms(t2, t3) })
 }
 
+/// Record into `cmd` with `record` and submit with `fence`, without waiting (see
+/// [`GpuInner::render_async`]): `wait_ms` is 0.
+fn submit_async(dev: &Device, cmd: VkCommandBuffer, fence: VkFence, record: impl FnOnce(&Device, VkCommandBuffer)) -> Result<SyncTimes, GpuError> {
+    let t0 = Instant::now();
+    dev.begin(cmd)?;
+    record(dev, cmd);
+    dev.end(cmd)?;
+    let t1 = Instant::now();
+    // A failed submit queues nothing and leaves the fence untouched.
+    dev.submit(cmd, None, None, fence)?;
+    let t2 = Instant::now();
+    let ms = |a: Instant, b: Instant| (b - a).as_secs_f64() * 1e3;
+    Ok(SyncTimes { record_ms: ms(t0, t1), submit_ms: ms(t1, t2), wait_ms: 0.0 })
+}
+
+/// Records the copy of a rendered target's colour image (in TRANSFER_SRC_OPTIMAL, the end of a
+/// render) into its readback buffer, made visible to the host.
+fn record_readback(dev: &Device, cmd: VkCommandBuffer, image: VkImage, buffer: VkBuffer, extent: VkExtent2D) {
+    let region = VkBufferImageCopy {
+        buffer_offset: 0,
+        buffer_row_length: 0, // tightly packed
+        buffer_image_height: 0,
+        image_subresource: VkImageSubresourceLayers { aspect_mask: VK_IMAGE_ASPECT_COLOR_BIT, mip_level: 0, base_array_layer: 0, layer_count: 1 },
+        image_offset: VkOffset3D { x: 0, y: 0, z: 0 },
+        image_extent: VkExtent3D { width: extent.width, height: extent.height, depth: 1 },
+    };
+    // SAFETY: recording; the image is in TRANSFER_SRC_OPTIMAL (end of a render) and the buffer
+    // holds width*height*4 bytes.
+    unsafe { (dev.fns.cmd_copy_image_to_buffer)(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &region) };
+    dev.barrier(cmd, &[buffer_barrier(buffer, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT)], &[]);
+}
+
+/// `render_with_ids`' argument checks.
+fn check_ids(frame: &FrameDesc, ids: &[u32], occluders: &[[u32; 4]]) -> Result<(), GpuError> {
+    if occluders.len() > crate::MAX_ID_OCCLUDERS {
+        return Err(GpuError::limit(crate::Limit::IdOccluders, occluders.len() as u64, crate::MAX_ID_OCCLUDERS as u64));
+    }
+    let expected = frame.draws.len() + frame.draws_2d.len();
+    if ids.len() != expected {
+        return Err(GpuError::rejected(
+            ErrorReason::DataLength { given: ids.len() as u64, expected: expected as u64 },
+            format!("render_with_ids: {} ids for {} draws and {} 2D draws (one per draw, the 2D ones after)", ids.len(), frame.draws.len(), frame.draws_2d.len()),
+        ));
+    }
+    Ok(())
+}
+
 impl GpuInner {
     pub fn new(options: &GpuOptions) -> Result<GpuInner, GpuError> {
         let instance = Instance::new(options.validation, true)?;
@@ -201,6 +270,10 @@ impl GpuInner {
             cmd_pool: VK_NULL_HANDLE,
             sync_cmd: ptr::null_mut(),
             sync_fence: VK_NULL_HANDLE,
+            async_cmd: ptr::null_mut(),
+            async_fence: VK_NULL_HANDLE,
+            pending: None,
+            offscreen_fault: false,
             upload: None,
             ids: IdResources::default(),
             timer: None,
@@ -229,6 +302,8 @@ impl GpuInner {
         gpu.uploads.warm(&gpu.device)?;
         gpu.sync_cmd = gpu.device.allocate_command_buffer(gpu.cmd_pool)?;
         gpu.sync_fence = gpu.device.create_fence(false)?;
+        gpu.async_cmd = gpu.device.allocate_command_buffer(gpu.cmd_pool)?;
+        gpu.async_fence = gpu.device.create_fence(false)?;
         gpu.upload = Some(FrameUpload::new(&gpu.device)?);
         gpu.timer = PassTimer::new(&gpu.device)?;
         // The quad every sprite and tile chunk is drawn with (indices only; the shader makes the
@@ -611,21 +686,26 @@ impl GpuInner {
             return; // the shared sprite quad lives as long as the GPU
         }
         self.settle_upload_of(mesh.0);
+        if self.pending.is_some() {
+            // An asynchronous offscreen render in flight may read it: freed in queue order
+            // instead, once a batch submitted after that render finishes (no wait here).
+            self.retire_mesh(mesh);
+            return;
+        }
         let Some(m) = self.meshes.remove(&mesh.0) else { return };
         // A presented frame may still read the mesh.
-        if let Some(w) = &self.window {
-            if w.wait_frames(&self.device).is_err() {
-                self.device.wait_idle();
-            }
-        }
+        self.wait_window_frames();
         match m.pooled {
             Some((block, at, size)) => self.uploads.blocks.free(&self.device, block, at, size),
             None => self.device.destroy_buffer(&m.buffer),
         }
     }
 
-    /// Wait until no window frame in flight can still read a resource about to be freed.
+    /// Wait until no window frame in flight can still read a resource about to be freed. Only
+    /// with no asynchronous offscreen render pending: that is not a window frame, so callers
+    /// retire in queue order instead while one is (`destroy_mesh`, `destroy_texture`).
     fn wait_window_frames(&self) {
+        debug_assert!(self.pending.is_none(), "a synchronous free with an asynchronous render in flight");
         if let Some(w) = &self.window {
             if w.wait_frames(&self.device).is_err() {
                 self.device.wait_idle();
@@ -993,6 +1073,12 @@ impl GpuInner {
 
     pub fn destroy_texture(&mut self, texture: TextureId) {
         self.settle_upload_of(texture.0);
+        if self.pending.is_some() {
+            // An asynchronous offscreen render may sample it: freed in queue order (see
+            // `destroy_mesh`).
+            self.retire_texture(texture);
+            return;
+        }
         let Some(t) = self.textures.map.remove(&texture.0) else { return };
         self.wait_window_frames();
         self.device.destroy_image(&t.image);
@@ -1032,15 +1118,18 @@ impl GpuInner {
         let graph = FrameGraph::new(id);
         self.targets.insert(
             id,
-            Target { color, readback, extent: VkExtent2D { width, height }, graph, rendered: false },
+            Target { color, readback, extent: VkExtent2D { width, height }, graph, rendered: false, copied: false },
         );
         Ok(TargetId(id))
     }
 
     pub fn destroy_target(&mut self, target: TargetId) {
+        if self.pending.as_ref().is_some_and(|p| p.target == target.0) {
+            let _ = self.settle_offscreen(true);
+        }
         let Some(t) = self.targets.remove(&target.0) else { return };
-        // Offscreen work is synchronous, so nothing on the GPU still uses the target or its
-        // graph's images.
+        // Offscreen work is synchronous (an asynchronous render of it was settled above), so
+        // nothing on the GPU still uses the target or its graph's images.
         self.pool.release_owner(&self.device, &mut self.descriptors, target.0);
         self.ids.forget(target.0);
         self.device.destroy_buffer(&t.readback);
@@ -1051,33 +1140,103 @@ impl GpuInner {
     }
 
     pub fn render(&mut self, target: TargetId, frame: &FrameDesc) -> Result<(), GpuError> {
-        self.render_frame(target, frame, None)
+        self.render_frame(target, frame, None, true)
+    }
+
+    /// [`GpuInner::render`] (or `render_with_ids` with `ids`), submitted without waiting: the
+    /// colour image is copied into the target's readback buffer in the same submission. The
+    /// render is settled by [`GpuInner::settle_offscreen`] (a poll, or a wait); every other
+    /// offscreen use (another render, a readback, destroying the target) settles it first.
+    pub fn render_async(&mut self, target: TargetId, frame: &FrameDesc, ids: Option<(&[u32], &[[u32; 4]])>) -> Result<(), GpuError> {
+        if let Some((ids, occluders)) = ids {
+            check_ids(frame, ids, occluders)?;
+        }
+        self.render_frame(target, frame, ids, false)
+    }
+
+    /// Whether an asynchronous render is in flight (not yet settled).
+    pub fn offscreen_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// The next asynchronous render to settle reports a lost device once it has really ended.
+    pub fn inject_offscreen_fault(&mut self) {
+        self.offscreen_fault = true;
+    }
+
+    /// Settles the asynchronous render in flight, if any: with `wait`, waits for it; otherwise
+    /// only looks (`Ok(false)`: still running). Once settled (`Ok(true)`, also when none was in
+    /// flight) its ID results, readback and stats are readable. A failed render (device lost,
+    /// timeout) settles with its error.
+    pub fn settle_offscreen(&mut self, wait: bool) -> Result<bool, GpuError> {
+        self.settle_offscreen_within(if wait { None } else { Some(Duration::ZERO) })
+    }
+
+    /// [`GpuInner::settle_offscreen`] waiting at most `limit` (`None`: until it ends; zero: a
+    /// poll): `Ok(false)` when it is still running then.
+    pub fn settle_offscreen_within(&mut self, limit: Option<Duration>) -> Result<bool, GpuError> {
+        let Some(p) = &self.pending else { return Ok(true) };
+        let dev = &self.device;
+        let started = Instant::now();
+        let mut waited = match limit {
+            None => {
+                let _z = specula_core::profile::zone("vk.wait_fence");
+                dev.wait_fence(self.async_fence)
+            }
+            Some(limit) => {
+                let _z = (!limit.is_zero()).then(|| specula_core::profile::zone("vk.wait_fence"));
+                let ns = u64::try_from(limit.as_nanos()).unwrap_or(u64::MAX);
+                // SAFETY: a live fence of this device; the timeout bounds the wait (zero: a poll).
+                let r = unsafe { (dev.fns.wait_for_fences)(dev.handle, 1, &self.async_fence, VK_TRUE, ns) };
+                match r {
+                    VK_TIMEOUT => return Ok(false),
+                    VK_SUCCESS => Ok(()),
+                    r => Err(GpuError::vk("vkWaitForFences (offscreen poll)", r)),
+                }
+            }
+        };
+        if waited.is_ok() && std::mem::take(&mut self.offscreen_fault) {
+            // (Tests: a render that ended in a lost device, after it really ended.)
+            waited = Err(GpuError::vk("vkWaitForFences (offscreen, injected)", VK_ERROR_DEVICE_LOST));
+        }
+        if waited.is_err() {
+            // Timed out or lost: drain the queue before anyone frees what the render touched.
+            dev.wait_idle();
+        }
+        let reset = dev.reset_fence(self.async_fence);
+        let wait_ms = started.elapsed().as_secs_f64() * 1e3;
+        let target = p.target;
+        let p = self.pending.take().expect("checked");
+        self.completed = self.completed.max(p.submission);
+        let stats = &mut self.last_offscreen;
+        if let (true, Ok(()), Some(t)) = (p.timed, &waited, self.timer.as_mut()) {
+            match t.read_into(&self.device, &mut stats.gpu) {
+                Ok(true) => stats.timestamp_error = None,
+                Ok(false) => {}
+                Err(r) => stats.timestamp_error = Some(r),
+            }
+        }
+        // How long the engine thread waited for it here (none when a poll found it done).
+        stats.cpu = CpuTiming { wait_ms, record_ms: p.prepare_ms + p.times.record_ms, submit_ms: p.times.submit_ms };
+        waited.and(reset)?;
+        self.ids.finished();
+        if let Some(t) = self.targets.get_mut(&target) {
+            t.copied = true;
+        }
+        Ok(true)
     }
 
     /// `render`, plus sight's ID buffer: `ids` holds one id per draw of `frame` (0 = not
     /// counted), `occluders` pixel rectangles that hide what is under them in the ID buffer
     /// (`Gpu::render_with_ids_occluded`); read it back with [`GpuInner::read_ids`].
     pub fn render_with_ids(&mut self, target: TargetId, frame: &FrameDesc, ids: &[u32], occluders: &[[u32; 4]]) -> Result<(), GpuError> {
-        if occluders.len() > crate::MAX_ID_OCCLUDERS {
-            return Err(GpuError::limit(crate::Limit::IdOccluders, occluders.len() as u64, crate::MAX_ID_OCCLUDERS as u64));
-        }
-        let expected = frame.draws.len() + frame.draws_2d.len();
-        if ids.len() != expected {
-            return Err(GpuError::rejected(
-                ErrorReason::DataLength { given: ids.len() as u64, expected: expected as u64 },
-                format!(
-                    "render_with_ids: {} ids for {} draws and {} 2D draws (one per draw, the 2D ones after)",
-                    ids.len(),
-                    frame.draws.len(),
-                    frame.draws_2d.len()
-                ),
-            ));
-        }
-        self.render_frame(target, frame, Some((ids, occluders)))
+        check_ids(frame, ids, occluders)?;
+        self.render_frame(target, frame, Some((ids, occluders)), true)
     }
 
     /// The opaque id image of the target's last render (`render_with_ids`).
     pub fn read_ids(&mut self, target: TargetId) -> Result<IdImage, GpuError> {
+        self.settle_offscreen(true)?;
         self.targets.get(&target.0).ok_or_else(|| GpuError::unknown(crate::IdKind::Target, target.0, ""))?;
         self.ids.image(target.0)
     }
@@ -1085,6 +1244,9 @@ impl GpuInner {
     /// Per-id coverage of the target's last ID render, opaque ids counted in place (no copy).
     pub fn id_coverage(&self, target: TargetId, max_id: u32) -> Result<IdCounts, GpuError> {
         self.targets.get(&target.0).ok_or_else(|| GpuError::unknown(crate::IdKind::Target, target.0, ""))?;
+        if self.pending.is_some() {
+            return Err(GpuError::new("id_coverage: an asynchronous render is still in flight (settle_offscreen first)"));
+        }
         self.ids.counts(target.0, max_id)
     }
 
@@ -1113,7 +1275,10 @@ impl GpuInner {
         self.ids.blended_disabled = !on;
     }
 
-    fn render_frame(&mut self, target: TargetId, frame: &FrameDesc, ids: Option<(&[u32], &[[u32; 4]])>) -> Result<(), GpuError> {
+    fn render_frame(&mut self, target: TargetId, frame: &FrameDesc, ids: Option<(&[u32], &[[u32; 4]])>, wait: bool) -> Result<(), GpuError> {
+        // One offscreen render at a time: they share the ID buffers, the frame upload buffer and
+        // the timer.
+        self.settle_offscreen(true)?;
         let zp = specula_core::profile::zone("gpu.prepare");
         check_frame(&self.meshes, &self.textures, frame)?;
         // Queued uploads go first on the queue: the frame draws with them.
@@ -1210,29 +1375,50 @@ impl GpuInner {
             r.draws_2d.clear();
         }
         let graph = &mut t.graph;
-        let ran = run_sync(&self.device, self.sync_cmd, self.sync_fence, |dev, cmd| {
+        let (color, readback) = (t.color.handle, t.readback.handle);
+        let mut record = |dev: &Device, cmd: VkCommandBuffer, draws: &mut crate::DrawStats, timer: Option<&mut PassTimer>| {
+            let mut timer = timer;
             if let Some(t) = timer.as_mut() {
                 t.begin_frame(dev, cmd, frame_no);
             }
-            draws = record_frame(&ctx, cmd, graph, &res, timer.as_mut());
-        });
-        // The render completed (or failed with nothing pending): its timestamps are readable.
-        // Stats are updated in place, reusing their storage.
+            *draws = record_frame(&ctx, cmd, graph, &res, timer);
+            if !wait {
+                // The readback rides in the same submission (see `render_async`).
+                record_readback(dev, cmd, color, readback, extent);
+            }
+        };
+        let ran = if wait {
+            run_sync(&self.device, self.sync_cmd, self.sync_fence, |dev, cmd| record(dev, cmd, &mut draws, timer.as_mut()))
+        } else {
+            submit_async(&self.device, self.async_cmd, self.async_fence, |dev, cmd| record(dev, cmd, &mut draws, timer.as_mut()))
+        };
+        // A synchronous render completed (or failed with nothing pending): its timestamps are
+        // readable; an asynchronous one's are read when it is settled. Stats are updated in place,
+        // reusing their storage.
         let stats = &mut self.last_offscreen;
         if let (Ok(_), Some(t)) = (&ran, timer.as_mut()) {
             t.submitted();
-            match t.read_into(&self.device, &mut stats.gpu) {
-                Ok(true) => stats.timestamp_error = None,
-                Ok(false) => {}
-                Err(r) => stats.timestamp_error = Some(r),
+            if wait {
+                match t.read_into(&self.device, &mut stats.gpu) {
+                    Ok(true) => stats.timestamp_error = None,
+                    Ok(false) => {}
+                    Err(r) => stats.timestamp_error = Some(r),
+                }
             }
         }
+        let timed = timer.is_some();
         self.timer = timer;
         let times = ran?;
-        // Synchronous: this frame and every one before it finished.
-        self.completed = self.pool.note_used(&t.graph);
+        let submission = self.pool.note_used(&t.graph);
+        if wait {
+            // Synchronous: this frame and every one before it finished.
+            self.completed = submission;
+            self.ids.finished();
+        } else {
+            self.pending = Some(Pending { target: target.0, submission, timed, prepare_ms, times });
+        }
         t.rendered = true;
-        self.ids.finished();
+        t.copied = false;
         self.frame_no = frame_no;
         self.last_graph = Some(GraphSource::Target(target.0));
         let stats = &mut self.last_offscreen;
@@ -1249,47 +1435,24 @@ impl GpuInner {
     }
 
     pub fn read_rgba8(&mut self, target: TargetId) -> Result<Vec<u8>, GpuError> {
+        if self.pending.as_ref().is_some_and(|p| p.target == target.0) {
+            self.settle_offscreen(true)?;
+        }
         let t = self.targets.get(&target.0).ok_or_else(|| GpuError::unknown(crate::IdKind::Target, target.0, ""))?;
         if !t.rendered {
             return Err(GpuError::new(format!("read_rgba8: target {} has not been rendered yet", target.0)));
         }
-        let (image, buffer, extent) = (t.color.handle, t.readback.handle, t.extent);
-        self.run_sync(|dev, cmd| {
-            let region = VkBufferImageCopy {
-                buffer_offset: 0,
-                buffer_row_length: 0, // tightly packed
-                buffer_image_height: 0,
-                image_subresource: VkImageSubresourceLayers {
-                    aspect_mask: VK_IMAGE_ASPECT_COLOR_BIT,
-                    mip_level: 0,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-                image_offset: VkOffset3D { x: 0, y: 0, z: 0 },
-                image_extent: VkExtent3D { width: extent.width, height: extent.height, depth: 1 },
-            };
-            // SAFETY: recording; the image is in TRANSFER_SRC_OPTIMAL (end of `render`) and the
-            // buffer holds width*height*4 bytes.
-            unsafe {
-                (dev.fns.cmd_copy_image_to_buffer)(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &region)
-            };
-            dev.barrier(
-                cmd,
-                &[buffer_barrier(
-                    buffer,
-                    VK_PIPELINE_STAGE_2_COPY_BIT,
-                    VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                    VK_PIPELINE_STAGE_2_HOST_BIT,
-                    VK_ACCESS_2_HOST_READ_BIT,
-                )],
-                &[],
-            );
-        })?;
+        let (image, buffer, extent, copied) = (t.color.handle, t.readback.handle, t.extent, t.copied);
+        if !copied {
+            self.run_sync(|dev, cmd| record_readback(dev, cmd, image, buffer, extent))?;
+        }
+        let t = self.targets.get(&target.0).expect("checked above");
         let len = extent.width as usize * extent.height as usize * 4;
-        let mut out = vec![0u8; len];
+        let _z = specula_core::profile::zone("gpu.readback_copy");
         // SAFETY: the readback buffer is persistently mapped coherent memory of `len` bytes and
-        // the copy into it completed (fence waited, host-read barrier recorded).
-        unsafe { ptr::copy_nonoverlapping(t.readback.mapped as *const u8, out.as_mut_ptr(), len) };
+        // the copy into it completed (fence waited or settled, host-read barrier recorded);
+        // nothing writes it while `self` is borrowed. Copied out once (no zeroed buffer first).
+        let out = unsafe { std::slice::from_raw_parts(t.readback.mapped as *const u8, len) }.to_vec();
         Ok(out)
     }
 
@@ -1397,6 +1560,7 @@ impl Drop for GpuInner {
     fn drop(&mut self) {
         let dev = &self.device;
         dev.wait_idle();
+        self.pending = None;
         self.uploads.destroy(dev);
         if let Some(mut w) = self.window.take() {
             w.destroy(&self.instance, dev, self.cmd_pool);
@@ -1428,6 +1592,7 @@ impl Drop for GpuInner {
         // SAFETY: device idle; objects belong to `dev` and are destroyed once (null is ignored).
         unsafe {
             (dev.fns.destroy_fence)(dev.handle, self.sync_fence, ptr::null());
+            (dev.fns.destroy_fence)(dev.handle, self.async_fence, ptr::null());
             (dev.fns.destroy_command_pool)(dev.handle, self.cmd_pool, ptr::null()); // frees sync_cmd
         }
         // `device`, then `instance` drop next (field order).

@@ -116,6 +116,8 @@ pub struct Incident {
     last_event_us: u64,
     /// Events not emitted (rate limit).
     pub suppressed: u64,
+    /// The largest `ms` any occurrence's evidence held (a stall's worst, not only its latest).
+    pub peak_ms: Option<f64>,
 }
 
 fn push_newest<T: PartialEq>(v: &mut VecDeque<T>, x: T) {
@@ -156,6 +158,10 @@ impl Incident {
         j.set("events", Json::arr(self.events.iter().map(|e| Json::from(*e))));
         j.set("events_suppressed", Json::from(self.suppressed));
         j.set("evidence", self.evidence.clone());
+        if let Some(ms) = self.peak_ms {
+            // (Evidence is the latest occurrence's; this is the worst of them all.)
+            j.set("peak_ms", Json::from(ms));
+        }
         j.set(
             "notes",
             Json::arr(self.notes.iter().map(|n| {
@@ -245,6 +251,7 @@ pub fn raise(r: Raise) -> u64 {
                         acked_by: None,
                         last_event_us: 0,
                         suppressed: 0,
+                        peak_ms: None,
                     },
                 );
                 s.by_key.insert((r.code, r.key.chars().take(128).collect()), id);
@@ -257,6 +264,9 @@ pub fn raise(r: Raise) -> u64 {
         inc.last = now;
         inc.level = inc.level.min(r.level);
         inc.summary = r.summary.chars().take(256).collect();
+        if let Some(ms) = r.evidence.get("ms").and_then(Json::as_f64) {
+            inc.peak_ms = Some(inc.peak_ms.map_or(ms, |p| p.max(ms)));
+        }
         inc.evidence = bounded_evidence(r.evidence);
         if inc.status == Status::Resolved {
             inc.status = Status::Recurring;

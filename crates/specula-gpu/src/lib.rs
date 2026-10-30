@@ -1377,6 +1377,44 @@ impl Gpu {
         self.inner.render(target, frame)
     }
 
+    /// [`Gpu::render`], or with `ids` [`Gpu::render_with_ids_occluded`], **submitted without
+    /// waiting**: the caller goes on (serving agents, presenting the window) while the GPU works,
+    /// and polls [`Gpu::settle_offscreen`] on later loop passes. The colour image is copied to the
+    /// target's readback buffer in the same submission, so [`Gpu::read_rgba8`] after it is settled
+    /// is a plain memory copy. The image, ID counts and stats are exactly a synchronous render's.
+    /// One render is in flight at a time: any other offscreen use (another render, a readback,
+    /// destroying its target) first waits for it. The window's frames don't.
+    pub fn render_async(&mut self, target: TargetId, frame: &FrameDesc, ids: Option<(&[u32], &[[u32; 4]])>) -> Result<(), GpuError> {
+        self.inner.render_async(target, frame, ids)
+    }
+
+    /// Whether a [`Gpu::render_async`] is in flight (not yet settled).
+    pub fn offscreen_pending(&self) -> bool {
+        self.inner.offscreen_pending()
+    }
+
+    /// Settles the [`Gpu::render_async`] in flight: `wait` blocks until it ends, otherwise this
+    /// only looks (`Ok(false)`: still running; never blocks). `Ok(true)` once settled (or when
+    /// none was in flight): its ID coverage, readback and frame stats are then readable (the
+    /// stats' `cpu.wait_ms` is the time this call waited). A render that failed on the GPU
+    /// (device lost) settles with its error.
+    pub fn settle_offscreen(&mut self, wait: bool) -> Result<bool, GpuError> {
+        self.inner.settle_offscreen(wait)
+    }
+
+    /// [`Gpu::settle_offscreen`] waiting at most `limit` (`None`: until the render ends; zero: a
+    /// poll that never blocks): `Ok(false)` when it is still running then.
+    pub fn settle_offscreen_within(&mut self, limit: Option<std::time::Duration>) -> Result<bool, GpuError> {
+        self.inner.settle_offscreen_within(limit)
+    }
+
+    /// Tests: the next [`Gpu::render_async`] to settle reports a lost device
+    /// (`VK_ERROR_DEVICE_LOST`) once it has really ended, as a hung or faulting submission would;
+    /// nothing else changes (later renders work).
+    pub fn inject_offscreen_fault(&mut self) {
+        self.inner.inject_offscreen_fault();
+    }
+
     /// Upload a texture for overlay quads (and, later, materials). `pixels` holds
     /// `width × height × format.bytes_per_pixel()` bytes, top row first. Errors (structured) when
     /// a size is 0 or too large, the data has the wrong length, or every texture slot is taken.

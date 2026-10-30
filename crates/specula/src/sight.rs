@@ -126,7 +126,12 @@ impl Camera {
 
 /// Three-quarter view from above that fits everything in the world.
 pub fn auto_camera(world: &World, fov_y_deg: f32) -> Camera {
-    let (center, radius) = match world.bounds() {
+    auto_camera_of(world.bounds(), fov_y_deg)
+}
+
+/// [`auto_camera`] for world bounds already known ([`SubjectCache::bounds`]).
+pub fn auto_camera_of(bounds: Option<(Vec3, Vec3)>, fov_y_deg: f32) -> Camera {
+    let (center, radius) = match bounds {
         Some((lo, hi)) => ((lo + hi) * 0.5, ((hi - lo).length() * 0.5).max(0.5)),
         None => (Vec3::ZERO, 1.5),
     };
@@ -476,18 +481,449 @@ pub fn in_view(e: &Entity, view_proj: &Mat4) -> bool {
     !(all(&|p| p.w <= 0.0) || all(&|p| p.x < -p.w) || all(&|p| p.x > p.w) || all(&|p| p.y < -p.w) || all(&|p| p.y > p.w))
 }
 
-/// Where one entity landed in a frame.
+/// What a subject's packet entry says about its entity, whatever the camera: read once per
+/// change of the entity ([`SubjectCache`]), never per capture. The JSON is made from it on a
+/// worker ([`Subject::full`]).
+#[derive(Clone, Debug)]
+pub struct SubjectBase {
+    pub id: u64,
+    pub name: String,
+    pub path: String,
+    shape: &'static str,
+    what: What,
+    color: [f32; 3],
+    pub position: Vec3,
+    created_by: std::sync::Arc<str>,
+    transient: bool,
+    /// On the `ui` layer (here or above).
+    ui: bool,
+    /// Shown (visible here and above).
+    shown: bool,
+    /// Its world bounding box's corners.
+    corners: [Vec3; 8],
+    /// A 2D entity: a billboard's card turns to the camera, so its box is made per view from
+    /// the entity.
+    flat: bool,
+}
+
+#[derive(Clone, Debug)]
+enum What {
+    Recipe(String),
+    TwoD(Json),
+    Material(&'static str),
+}
+
+impl SubjectBase {
+    /// The subject base of `e`, or `None` when it has no geometry (groups, models not built).
+    pub fn of(world: &World, e: &Entity) -> Option<SubjectBase> {
+        e.local_bounds()?;
+        let corners = e.world_corners()?;
+        let what = match (&e.model, &e.two_d) {
+            (Some(m), _) => What::Recipe(m.recipe.clone()),
+            (None, Some(t)) => What::TwoD(t.subject_json()),
+            (None, None) => What::Material(material_name(e.look.material)),
+        };
+        Some(SubjectBase {
+            id: e.id,
+            name: e.name.clone(),
+            path: world.path_of(e.id),
+            shape: e.shape.name(),
+            what,
+            color: e.color,
+            position: e.world_position(),
+            created_by: std::sync::Arc::clone(&e.created_by),
+            transient: e.transient,
+            ui: e.in_ui(),
+            shown: e.shown(),
+            corners,
+            flat: e.two_d.is_some(),
+        })
+    }
+
+    /// A model entity (its subject names its recipe).
+    pub fn is_model(&self) -> bool {
+        self.shape == Shape::Model.name()
+    }
+
+    /// In a frame that does (or doesn't) include the `ui` layer ([`in_frame`]).
+    fn in_frame(&self, include_ui: bool) -> bool {
+        self.shown && (include_ui || !self.ui)
+    }
+}
+
+/// Every persistent entity's [`SubjectBase`], kept from the world's change record
+/// ([`World::draw_changes_since`]) so a capture never reads every entity again: built once,
+/// then patched with what changed (the window's draw cache works the same way). Paths of a
+/// renamed entity's subtree are read again; a replaced world, a change to every entity or more
+/// changes than the record holds rebuild it. Transient entities (game presentation) are read
+/// live at each capture.
+#[derive(Default)]
+pub struct SubjectCache {
+    /// The world generation and draw epoch the entries reflect.
+    key: Option<(u64, u64)>,
+    layout: u64,
+    entries: Vec<std::sync::Arc<SubjectBase>>,
+    dirty: Vec<u64>,
+    rebuilds: u64,
+    patches: u64,
+    scans: u64,
+    /// A rebuild in slices ([`SubjectCache::warm`]).
+    building: Option<Rebuild>,
+}
+
+/// A rebuild in progress: the entries so far, from the world as it was at `epoch` onwards.
+struct Rebuild {
+    generation: u64,
+    epoch: u64,
+    layout: u64,
+    after: Option<u64>,
+    entries: Vec<std::sync::Arc<SubjectBase>>,
+}
+
+impl SubjectCache {
+    /// Whether [`SubjectCache::refresh`] would be cheap now: up to date, a patch with the changes
+    /// the world's record still holds, or (past the record) with what the entities' draw stamps
+    /// say changed; not a rebuild from every entity.
+    pub fn ready(&self, world: &World, generation: u64) -> bool {
+        let limit = self.patch_limit();
+        match self.key {
+            Some((g, e)) if g == generation => {
+                e == world.draw_epoch()
+                    || world.draw_changes_since(e).map_or_else(|| world.draw_stamps_reach(e) && Self::count_changed(&self.entries, world, e, limit) <= limit, |c| c.count() <= limit)
+            }
+            _ => false,
+        }
+    }
+
+    /// Past this many changed entities a patch costs about a rebuild: [`SubjectCache::warm`]
+    /// rebuilds in slices instead (a world of 20,000 just built would otherwise be read again in
+    /// one go by the next capture).
+    fn patch_limit(&self) -> usize {
+        self.entries.len() / 2 + 16
+    }
+
+    /// How many entities changed after `epoch` by their draw stamps (as
+    /// [`SubjectCache::changed_by_stamps`] lists them), counting no further than past `stop_at`.
+    fn count_changed(entries: &[std::sync::Arc<SubjectBase>], world: &World, epoch: u64, stop_at: usize) -> usize {
+        let mut cached = entries.iter().map(|b| b.id).peekable();
+        let mut n = 0;
+        for e in world.persistent_entities() {
+            while cached.next_if(|&id| id < e.id).is_some() {
+                n += 1;
+            }
+            let _ = cached.next_if(|&id| id == e.id);
+            n += usize::from(e.draw_stamp() > epoch);
+            if n > stop_at {
+                return n;
+            }
+        }
+        n + cached.count()
+    }
+
+    /// Works towards [`SubjectCache::ready`] for up to `budget`: a rebuild reads the entities a
+    /// slice at a time (by id) while the world goes on changing, then patches what changed
+    /// meanwhile (from the change record or the draw stamps, so any amount of churn lets it
+    /// finish). True once ready. A rebuild overtaken by a change to every entity at once is not
+    /// started again (it could be overtaken forever): the cache is read synchronously instead.
+    pub fn warm(&mut self, world: &World, generation: u64, budget: std::time::Duration) -> bool {
+        if self.ready(world, generation) {
+            self.building = None;
+            return true;
+        }
+        let started = std::time::Instant::now();
+        let mut b = match self.building.take() {
+            Some(b) if b.generation == generation && world.draw_stamps_reach(b.epoch) => b,
+            Some(_) => {
+                self.refresh(world, generation);
+                return true;
+            }
+            // (A new world, or a change to every entity.)
+            None => Rebuild { generation, epoch: world.draw_epoch(), layout: world.layout_epoch(), after: None, entries: Vec::new() },
+        };
+        let mut n = 0usize;
+        for e in world.persistent_entities_between(b.after, u64::MAX) {
+            b.after = Some(e.id);
+            if let Some(base) = SubjectBase::of(world, e) {
+                b.entries.push(std::sync::Arc::new(base));
+            }
+            n += 1;
+            if n % 64 == 0 && started.elapsed() >= budget {
+                self.building = Some(b);
+                return false;
+            }
+        }
+        // Every entity read: what changed since it began is patched in.
+        self.entries = b.entries;
+        self.key = Some((generation, b.epoch));
+        self.layout = b.layout;
+        self.rebuilds += 1;
+        let patched = self.key == Some((generation, world.draw_epoch())) || self.patch(world, b.epoch, false);
+        if patched {
+            self.key = Some((generation, world.draw_epoch()));
+            self.layout = world.layout_epoch();
+        } else {
+            // (Not reached while the stamps reach back, checked above: read synchronously.)
+            self.key = None;
+            self.refresh(world, generation);
+        }
+        true
+    }
+    /// How many times the entries were read from every entity, and patched.
+    pub fn counts(&self) -> (u64, u64) {
+        (self.rebuilds, self.patches)
+    }
+
+    /// Brings the entries up to `world` (`generation` changes whenever the engine replaces it).
+    pub fn refresh(&mut self, world: &World, generation: u64) {
+        if self.key == Some((generation, world.draw_epoch())) {
+            return;
+        }
+        let patched = match self.key {
+            Some((g, epoch)) if g == generation => self.patch(world, epoch, true),
+            _ => false,
+        };
+        if !patched {
+            let _z = specula_core::profile::zone("sight.subject_cache");
+            self.entries.clear();
+            self.entries.extend(world.persistent_entities().filter_map(|e| SubjectBase::of(world, e)).map(std::sync::Arc::new));
+            self.rebuilds += 1;
+        }
+        self.key = Some((generation, world.draw_epoch()));
+        self.layout = world.layout_epoch();
+    }
+
+    /// `bounded`: false when more than [`SubjectCache::patch_limit`] changed (a rebuild is cheaper).
+    fn patch(&mut self, world: &World, epoch: u64, bounded: bool) -> bool {
+        self.dirty.clear();
+        // From the change record while it reaches back that far; past it (more changes since
+        // than it holds: bodies moving every tick) from the entities' draw stamps, which never
+        // fall behind. Only a change to every entity at once makes a rebuild.
+        match world.draw_changes_since(epoch) {
+            Some(changes) => self.dirty.extend(changes),
+            None if world.draw_stamps_reach(epoch) => {
+                Self::changed_by_stamps(&self.entries, world, epoch, &mut self.dirty);
+                self.scans += 1;
+            }
+            None => return false,
+        }
+        self.dirty.sort_unstable();
+        self.dirty.dedup();
+        if bounded && self.dirty.len() > self.patch_limit() {
+            return false;
+        }
+        // A rename moves the paths of everything below (without changing those entities):
+        // the subtrees of changed entities with children are read again when names or parents
+        // may have changed (the layout moved).
+        if world.layout_epoch() != self.layout {
+            let mut below = Vec::new();
+            for &id in &self.dirty {
+                if world.get(id).is_some() && world.has_children(id) {
+                    world.walk(Some(id), |e, _| {
+                        if e.id != id && !e.transient {
+                            below.push(e.id);
+                        }
+                    });
+                }
+            }
+            if !below.is_empty() {
+                self.dirty.extend(below);
+                self.dirty.sort_unstable();
+                self.dirty.dedup();
+                if bounded && self.dirty.len() > self.patch_limit() {
+                    return false;
+                }
+            }
+        }
+        // One merge of the entries with the changed ids (each read again, kept if it has
+        // geometry).
+        let old = std::mem::take(&mut self.entries);
+        let mut out = Vec::with_capacity(old.len() + 16);
+        let mut it = old.into_iter().peekable();
+        for &d in &self.dirty {
+            while let Some(c) = it.next_if(|c| c.id < d) {
+                out.push(c);
+            }
+            let _ = it.next_if(|c| c.id == d);
+            if let Some(b) = world.get(d).filter(|e| !e.transient).and_then(|e| SubjectBase::of(world, e)) {
+                out.push(std::sync::Arc::new(b));
+            }
+        }
+        out.extend(it);
+        self.entries = out;
+        self.patches += 1;
+        true
+    }
+
+    /// The ids that changed after `epoch` by the entities' draw stamps ([`World::draw_stamps_reach`]
+    /// holds): one merge of `entries` (by id) with the persistent entities. Entries whose entity
+    /// is gone are listed too; an entity without an entry that hasn't changed had no geometry then
+    /// and still has none.
+    fn changed_by_stamps(entries: &[std::sync::Arc<SubjectBase>], world: &World, epoch: u64, dirty: &mut Vec<u64>) {
+        let mut cached = entries.iter().map(|b| b.id).peekable();
+        for e in world.persistent_entities() {
+            while let Some(gone) = cached.next_if(|&id| id < e.id) {
+                dirty.push(gone);
+            }
+            let _ = cached.next_if(|&id| id == e.id);
+            if e.draw_stamp() > epoch {
+                dirty.push(e.id);
+            }
+        }
+        dirty.extend(cached);
+    }
+
+    /// How many times the entries were patched from the entities' draw stamps (the change record
+    /// had overflowed).
+    pub fn scans(&self) -> u64 {
+        self.scans
+    }
+
+    /// [`World::bounds`] from the entries (up to date: [`SubjectCache::refresh`]) and the live
+    /// transient entities: the corners of everything shown and not on the `ui` layer.
+    pub fn bounds(&self, world: &World) -> Option<(Vec3, Vec3)> {
+        let cached = self.entries.iter().filter(|b| b.shown && !b.ui).flat_map(|b| b.corners);
+        let live = world.transient_entities().filter(|e| e.shown() && !e.in_ui()).filter_map(Entity::world_corners).flatten();
+        let mut corners = cached.chain(live);
+        let first = corners.next()?;
+        Some(corners.fold((first, first), |(lo, hi), p| (lo.min(p), hi.max(p))))
+    }
+
+    /// The entries (persistent entities with geometry, by id).
+    pub fn entries(&self) -> &[std::sync::Arc<SubjectBase>] {
+        &self.entries
+    }
+}
+
+/// Where one entity landed in a frame: its [`SubjectBase`] and what this view adds. Its packet
+/// entry ([`Subject::full`]) is made only where it is sent (on a worker for a capture's
+/// packet); `json` holds the fields measurements added after projection (visibility,
+/// streaming, terrain), in the order they were set.
 #[derive(Clone, Debug)]
 pub struct Subject {
     pub id: u64,
-    pub json: Json,
+    pub base: std::sync::Arc<SubjectBase>,
     pub on_screen: bool,
+    /// The clipped projected rectangle `[x, y, w, h]` (`None`: none of it in view).
+    pub screen: Option<[u32; 4]>,
+    /// Distance along the view axis to the nearest visible part of the box (on screen only).
+    pub distance: f32,
+    /// What the ID buffer measured (`None`: it didn't run).
+    pub vis: Option<Visibility>,
+    /// Fields added after that (`drawn_as`, `kind`...), in order; a key here replaces the
+    /// measured one in place (an HLOD member's `visible_px` is null).
+    pub json: Json,
     /// Pixel area of the clipped rectangle (0 when off screen).
     /// Becomes the exact box's area once the ID buffer ran ([`apply_visibility`]): ranks the response.
     pub area: u64,
     /// Pixel area of the projected rectangle, always (overlays rank by it, so their picks never
     /// depend on whether the ID buffer ran first).
     pub projected_area: u64,
+}
+
+impl Subject {
+    /// The subject's packet entry: `id`, `name`, `path`, `shape`, `recipe` (models) or `two_d`
+    /// or `material`, `color`, `position`, `created_by`, `on_screen`, `screen`, `distance_m`,
+    /// `transient` and `layer` when they apply, then the measured fields.
+    pub fn full(&self) -> Json {
+        let b = &*self.base;
+        let mut fields = Vec::with_capacity(14 + self.json.as_object().map_or(0, <[(String, Json)]>::len));
+        fields.push(("id".to_owned(), Json::from(b.id)));
+        fields.push(("name".to_owned(), Json::from(b.name.as_str())));
+        fields.push(("path".to_owned(), Json::from(b.path.as_str())));
+        fields.push(("shape".to_owned(), Json::from(b.shape)));
+        match &b.what {
+            What::Recipe(r) => fields.push(("recipe".to_owned(), Json::from(r.as_str()))),
+            What::TwoD(j) => fields.push(("two_d".to_owned(), j.clone())),
+            What::Material(m) => fields.push(("material".to_owned(), Json::from(*m))),
+        }
+        fields.push(("color".to_owned(), Json::from(color_hex(b.color))));
+        fields.push(("position".to_owned(), vec3_json(b.position)));
+        fields.push(("created_by".to_owned(), Json::from(&*b.created_by)));
+        fields.push(("on_screen".to_owned(), Json::from(self.on_screen)));
+        fields.push(("screen".to_owned(), self.screen.map_or(Json::Null, |r| Json::arr(r.map(Json::from)))));
+        fields.push(("distance_m".to_owned(), if self.screen.is_some() { Json::from(self.distance) } else { Json::Null }));
+        if b.transient {
+            fields.push(("transient".to_owned(), Json::from(true)));
+        }
+        if b.ui {
+            fields.push(("layer".to_owned(), Json::from("ui")));
+        }
+        if let Some(v) = &self.vis {
+            v.write(&mut fields);
+        }
+        let mut out = Json::Obj(fields);
+        if let Json::Obj(extra) = &self.json {
+            for (k, v) in extra {
+                out.set(k.as_str(), v.clone());
+            }
+        }
+        out
+    }
+
+    /// A subject with `json` as its measured fields, of a stand-in cube (tests of what reads
+    /// them).
+    #[cfg(test)]
+    pub fn for_test(id: u64, json: Json, on_screen: bool, projected_area: u64) -> Subject {
+        let base = SubjectBase {
+            id,
+            name: format!("e{id}"),
+            path: format!("/e{id}"),
+            shape: "cube",
+            what: What::Material("standard"),
+            color: [1.0; 3],
+            position: Vec3::ZERO,
+            created_by: std::sync::Arc::from("t"),
+            transient: false,
+            ui: false,
+            shown: true,
+            corners: [Vec3::ZERO; 8],
+            flat: false,
+        };
+        Subject { id, base: std::sync::Arc::new(base), on_screen, screen: None, distance: 0.0, vis: None, json, area: 0, projected_area }
+    }
+
+    /// [`shows`] of its packet entry, without making it.
+    pub fn shows(&self) -> Option<bool> {
+        if self.json.get("visible_px").is_some() {
+            return shows(&self.json);
+        }
+        let v = self.vis?;
+        Some(v.px? > 0 || v.approx)
+    }
+
+    /// Its `visible_px` (`None`: null or absent).
+    pub fn visible_px(&self) -> Option<u64> {
+        match self.json.get("visible_px") {
+            Some(v) => v.as_u64(),
+            None => self.vis.and_then(|v| v.px),
+        }
+    }
+
+    /// One field of [`Subject::full`] (without making the rest).
+    pub fn get(&self, key: &str) -> Option<Json> {
+        if let Some(v) = self.json.get(key) {
+            return Some(v.clone());
+        }
+        let b = &*self.base;
+        Some(match key {
+            "id" => Json::from(b.id),
+            "name" => Json::from(b.name.as_str()),
+            "path" => Json::from(b.path.as_str()),
+            "position" => vec3_json(b.position),
+            "on_screen" => Json::from(self.on_screen),
+            "screen" => self.screen.map_or(Json::Null, |r| Json::arr(r.map(Json::from))),
+            "distance_m" => {
+                if self.screen.is_some() {
+                    Json::from(self.distance)
+                } else {
+                    Json::Null
+                }
+            }
+            "layer" if b.ui => Json::from("ui"),
+            "transient" if b.transient => Json::from(true),
+            _ => return self.full().get(key).cloned(),
+        })
+    }
 }
 
 /// One entry per entity with geometry in the frame, in id order: groups draw nothing, hidden
@@ -497,53 +933,58 @@ pub struct Subject {
 /// after clipping to the near plane and the image, or null when none of it is in view.
 /// `distance_m` is the distance along the view axis to the nearest visible part of the box.
 /// `position` is the world position. Models carry their `recipe`; transient entities say so.
+///
+/// Reads every entity: tests and one-off callers. Captures use [`subjects_cached`].
 pub fn subjects(world: &World, view_proj: &Mat4, width: u32, height: u32, include_ui: bool) -> Vec<Subject> {
+    let mut cache = SubjectCache::default();
+    cache.refresh(world, 0);
+    subjects_cached(&cache, world, view_proj, width, height, include_ui)
+}
+
+/// [`subjects`] from the cache (brought up to date by the caller): only the projection is made
+/// per capture, plus transient entities and 2D cards read live.
+pub fn subjects_cached(cache: &SubjectCache, world: &World, view_proj: &Mat4, width: u32, height: u32, include_ui: bool) -> Vec<Subject> {
     // Billboards turn to the camera: their subject is the card as drawn.
     let view = specula_gpu::view_2d(&view_proj.to_cols_array(), true);
     let ortho = view.ortho;
-    world
-        .entities()
-        .filter(|e| e.local_bounds().is_some() && in_frame(e, include_ui))
-        .map(|e| {
-            let card = e.two_d.as_ref().and_then(|t| crate::two_d::billboard_corners(t, &e.model(), &view));
-            let clip = clip_box(e, card, view_proj);
-            let screen = screen_rect(&clip, width, height);
-            // Perspective: clip w is the view depth. Orthographic (w = 1): undo the reversed-Z
-            // depth range of `Projection::Ortho` instead.
-            let depth = |p: &Vec4| if ortho { NEAR + (1.0 - p.z / p.w) * (ORTHO_FAR - NEAR) } else { p.w };
-            let distance = clip.iter().map(depth).fold(f32::INFINITY, f32::min);
-            let mut fields = vec![
-                ("id", Json::from(e.id)),
-                ("name", Json::from(e.name.as_str())),
-                ("path", Json::from(world.path_of(e.id))),
-                ("shape", Json::from(e.shape.name())),
-            ];
-            match (&e.model, &e.two_d) {
-                (Some(m), _) => fields.push(("recipe", Json::from(m.recipe.as_str()))),
-                (None, Some(t)) => fields.push(("two_d", t.subject_json())),
-                (None, None) => fields.push(("material", Json::from(material_name(e.look.material)))),
-            }
-            fields.extend([
-                ("color", Json::from(color_hex(e.color))),
-                ("position", vec3_json(e.world_position())),
-                ("created_by", Json::from(&*e.created_by)),
-                ("on_screen", Json::from(screen.is_some())),
-                ("screen", screen.map_or(Json::Null, |r| Json::arr(r.map(Json::from)))),
-                ("distance_m", if screen.is_some() { Json::from(distance) } else { Json::Null }),
-            ]);
-            if e.transient {
-                fields.push(("transient", Json::from(true)));
-            }
-            if e.in_ui() {
-                fields.push(("layer", Json::from("ui")));
-            }
-            let json = Json::obj(fields);
-            let area = screen.map_or(0, |r| u64::from(r[2]) * u64::from(r[3]));
-            Subject { id: e.id, json, on_screen: screen.is_some(), area, projected_area: area }
-        })
-        .collect()
+    let project = |base: std::sync::Arc<SubjectBase>, e: Option<&Entity>| -> Subject {
+        let card = if base.flat {
+            e.or_else(|| world.get(base.id)).and_then(|e| e.two_d.as_ref().and_then(|t| crate::two_d::billboard_corners(t, &e.model(), &view)))
+        } else {
+            None
+        };
+        let (screen, distance) = project_box(&base.corners, card, view_proj, width, height, ortho);
+        let area = screen.map_or(0, |r| u64::from(r[2]) * u64::from(r[3]));
+        Subject { id: base.id, base, on_screen: screen.is_some(), screen, distance, vis: None, json: Json::Obj(Vec::new()), area, projected_area: area }
+    };
+    let mut out: Vec<Subject> = cache.entries().iter().filter(|b| b.in_frame(include_ui)).map(|b| project(std::sync::Arc::clone(b), None)).collect();
+    for e in world.transient_entities() {
+        if let Some(b) = SubjectBase::of(world, e).filter(|b| b.in_frame(include_ui)) {
+            out.push(project(std::sync::Arc::new(b), Some(e)));
+        }
+    }
+    out
 }
 
+/// The clipped box's screen rectangle and nearest view depth ([`clip_points`], without
+/// collecting them).
+fn project_box(corners: &[Vec3; 8], card: Option<[Vec3; 4]>, view_proj: &Mat4, width: u32, height: u32, ortho: bool) -> (Option<[u32; 4]>, f32) {
+    let corners = match card {
+        // A flat card: its four corners twice make the "box" (zero depth).
+        Some(c) => [c[0], c[1], c[3], c[2], c[0], c[1], c[3], c[2]],
+        None => *corners,
+    };
+    let mut rect = Rect::default();
+    let mut distance = f32::INFINITY;
+    // Perspective: clip w is the view depth. Orthographic (w = 1): undo the reversed-Z depth
+    // range of `Projection::Ortho` instead.
+    let depth = |p: &Vec4| if ortho { NEAR + (1.0 - p.z / p.w) * (ORTHO_FAR - NEAR) } else { p.w };
+    clip_points(&corners, view_proj, |p| {
+        rect.add(&p, width, height);
+        distance = distance.min(depth(&p));
+    });
+    (rect.finish(width, height), distance)
+}
 /// Dense ID-buffer ids for a draw list's owners (`draw_list`): the `k`-th distinct entity gets
 /// `k + 1`. Returns `(id per draw, entity of each dense id - 1)`.
 pub fn dense_ids(owners: &[u64]) -> (Vec<u32>, Vec<u64>) {
@@ -771,34 +1212,61 @@ impl FrameRecord {
 ///
 /// Its `area` (for ranking) becomes the exact box's.
 pub fn apply_visibility(subjects: &mut [Subject], entities: &[u64], coverage: &[specula_gpu::IdCoverage]) {
-    let by_entity: std::collections::HashMap<u64, specula_gpu::IdCoverage> =
-        entities.iter().zip(coverage).map(|(e, c)| (*e, *c)).collect();
+    // Entity → its coverage, sorted for lookups (dense ids name each entity once).
+    let mut by_entity: Vec<(u64, specula_gpu::IdCoverage)> = entities.iter().zip(coverage).map(|(e, c)| (*e, *c)).collect();
+    by_entity.sort_unstable_by_key(|x| x.0);
     for s in subjects {
-        let drawn = by_entity.get(&s.id);
+        let drawn = by_entity.binary_search_by_key(&s.id, |x| x.0).ok().map(|i| &by_entity[i].1);
         if drawn.is_some_and(|c| !c.counted) {
             // Blended draws went uncounted (no fragment atomics): its pixels are unknown, not 0.
-            s.json.set("visible_px", Json::Null);
+            s.vis = Some(Visibility::default());
             continue;
         }
         let cov = drawn.filter(|c| c.pixels > 0);
         let exact = cov.map(|c| [c.min[0], c.min[1], c.max[0] - c.min[0] + 1, c.max[1] - c.min[1] + 1]);
-        s.json.set("visible_px", Json::from(cov.map_or(0, |c| c.pixels)));
-        s.json.set("screen_box_exact", exact.map_or(Json::Null, |r| Json::arr(r.map(Json::from))));
+        // More blended ids overlapped at some of its pixels than the ID buffer's sets hold:
+        // visible_px and screen_box_exact are lower bounds (it shows at least that much).
         let approx = drawn.is_some_and(|c| c.approx);
-        if approx {
-            // More blended ids overlapped at some of its pixels than the ID buffer's sets hold:
-            // visible_px and screen_box_exact are lower bounds (it shows at least that much).
-            s.json.set("visible_px_approx", Json::from(true));
-        }
+        let mut v = Visibility { px: Some(cov.map_or(0, |c| c.pixels)), exact: Some(exact), approx, no_pixels: false, occluded: false };
         if let (true, Some(c), None, false) = (s.on_screen, drawn, cov, approx) {
-            s.json.set("no_pixels", Json::from(true));
-            if c.rasterized == Some(true) {
-                s.json.set("occluded", Json::from(true));
-            }
+            v.no_pixels = true;
+            v.occluded = c.rasterized == Some(true);
         }
+        s.vis = Some(v);
         let exact_area = exact.map_or(0, |r| u64::from(r[2]) * u64::from(r[3]));
         // An approximate box is a lower bound (possibly empty): rank by what it may cover.
         s.area = if approx { exact_area.max(s.projected_area) } else { exact_area };
+    }
+}
+
+/// What the ID buffer measured of a subject ([`apply_visibility`]): `visible_px`,
+/// `screen_box_exact`, `visible_px_approx`, `no_pixels` and `occluded` in its packet entry.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Visibility {
+    /// `visible_px` (`None`: null, its blended draws went uncounted).
+    pub px: Option<u64>,
+    /// `screen_box_exact` (`None`: absent, uncounted; `Some(None)`: null, no pixels).
+    pub exact: Option<Option<[u32; 4]>>,
+    pub approx: bool,
+    pub no_pixels: bool,
+    pub occluded: bool,
+}
+
+impl Visibility {
+    fn write(&self, fields: &mut Vec<(String, Json)>) {
+        fields.push(("visible_px".to_owned(), self.px.map_or(Json::Null, Json::from)));
+        if let Some(exact) = self.exact {
+            fields.push(("screen_box_exact".to_owned(), exact.map_or(Json::Null, |r| Json::arr(r.map(Json::from)))));
+        }
+        if self.approx {
+            fields.push(("visible_px_approx".to_owned(), Json::from(true)));
+        }
+        if self.no_pixels {
+            fields.push(("no_pixels".to_owned(), Json::from(true)));
+            if self.occluded {
+                fields.push(("occluded".to_owned(), Json::from(true)));
+            }
+        }
     }
 }
 
@@ -908,32 +1376,33 @@ pub fn shows(j: &Json) -> Option<bool> {
 /// on-screen subjects with the largest rectangles first. Returns `(chosen, omitted_count)`.
 pub fn most_relevant(subjects: &[Subject], max: usize) -> (Vec<Json>, usize) {
     if subjects.len() <= max {
-        return (subjects.iter().map(|s| s.json.clone()).collect(), 0);
+        return (subjects.iter().map(Subject::full).collect(), 0);
     }
     let mut order: Vec<&Subject> = subjects.iter().filter(|s| s.on_screen).collect();
     order.sort_by_key(|s| std::cmp::Reverse(s.area));
     order.truncate(max);
-    let chosen: Vec<Json> = order.iter().map(|s| s.json.clone()).collect();
+    let chosen: Vec<Json> = order.iter().map(|s| s.full()).collect();
     let omitted = subjects.len() - chosen.len();
     (chosen, omitted)
 }
 
-/// The entity's bounding box in clip space, clipped to the view depth range 0 ≤ z ≤ w: the box
-/// corners in range plus every point where a box edge crosses one of those planes. Those are
-/// exactly the vertices of the clipped box, so their projection bounds its image. With the
-/// reversed-Z infinite projection, z ≤ w is the near plane and z ≥ 0 holds for everything in front.
-fn clip_box(e: &Entity, card: Option<[Vec3; 4]>, view_proj: &Mat4) -> Vec<Vec4> {
-    let corners = match card {
-        // A flat card: its four corners twice make the "box" (zero depth).
-        Some(c) => [c[0], c[1], c[3], c[2], c[0], c[1], c[3], c[2]],
-        None => match e.world_corners() {
-            Some(c) => c,
-            None => return Vec::new(),
-        },
-    };
+/// The bounding box `corners` in clip space, clipped to the view depth range 0 ≤ z ≤ w: the box
+/// corners in range plus every point where a box edge crosses one of those planes, each passed
+/// to `point`. Those are exactly the vertices of the clipped box, so their projection bounds its
+/// image. With the reversed-Z infinite projection, z ≤ w is the near plane and z ≥ 0 holds for
+/// everything in front.
+fn clip_points(corners: &[Vec3; 8], view_proj: &Mat4, mut point: impl FnMut(Vec4)) {
     let corners = corners.map(|p| view_proj.mul_vec4(p.extend(1.0)));
     let inside = |p: &Vec4| p.z >= 0.0 && p.z <= p.w;
-    let mut points: Vec<Vec4> = corners.iter().copied().filter(inside).collect();
+    for p in corners.iter().copied().filter(inside) {
+        point(p);
+    }
+    // An edge crosses a plane only between corners on either side of it: none when every
+    // corner is on one side of both (the common case, a box wholly in front).
+    let sides = |f: fn(&Vec4) -> bool| corners.iter().any(f) && !corners.iter().all(f);
+    if !sides(|p| p.z < 0.0) && !sides(|p| p.w - p.z < 0.0) {
+        return;
+    }
     // Signed distance to the two depth-range planes (inside when ≥ 0).
     let planes: [fn(Vec4) -> f32; 2] = [|p| p.z, |p| p.w - p.z];
     for i in 0..8 {
@@ -949,39 +1418,55 @@ fn clip_box(e: &Entity, card: Option<[Vec3; 4]>, view_proj: &Mat4) -> Vec<Vec4> 
                     // other; clamp only removes rounding error.
                     let mut p = lerp(a, b, da / (da - db));
                     p.z = p.z.clamp(0.0, p.w);
-                    points.push(p);
+                    point(p);
                 }
             }
         }
     }
-    points
 }
 
 fn lerp(a: Vec4, b: Vec4, t: f32) -> Vec4 {
     Vec4::new(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t, a.w + (b.w - a.w) * t)
 }
 
-/// Pixel rectangle of clip-space points (all in front of the near plane), clipped to the image.
-fn screen_rect(points: &[Vec4], width: u32, height: u32) -> Option<[u32; 4]> {
-    if points.is_empty() {
-        return None;
-    }
-    let (w, h) = (width as f32, height as f32);
-    let (mut x0, mut y0, mut x1, mut y1) = (f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
-    for p in points {
+/// Pixel rectangle of clip-space points (all in front of the near plane), clipped to the image,
+/// gathered a point at a time.
+#[derive(Default)]
+struct Rect {
+    any: bool,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+}
+
+impl Rect {
+    fn add(&mut self, p: &Vec4, width: u32, height: u32) {
+        let (w, h) = (width as f32, height as f32);
+        if !self.any {
+            self.any = true;
+            (self.x0, self.y0, self.x1, self.y1) = (f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
+        }
         // Vulkan viewport transform: NDC −1..1 → 0..size (clip y already points down).
         let (x, y) = ((p.x / p.w + 1.0) * 0.5 * w, (p.y / p.w + 1.0) * 0.5 * h);
-        x0 = x0.min(x);
-        y0 = y0.min(y);
-        x1 = x1.max(x);
-        y1 = y1.max(y);
+        self.x0 = self.x0.min(x);
+        self.y0 = self.y0.min(y);
+        self.x1 = self.x1.max(x);
+        self.y1 = self.y1.max(y);
     }
-    let (cx0, cy0, cx1, cy1) = (x0.max(0.0), y0.max(0.0), x1.min(w), y1.min(h));
-    if !(cx0 < cx1 && cy0 < cy1) {
-        return None;
+
+    fn finish(&self, width: u32, height: u32) -> Option<[u32; 4]> {
+        if !self.any {
+            return None;
+        }
+        let (w, h) = (width as f32, height as f32);
+        let (cx0, cy0, cx1, cy1) = (self.x0.max(0.0), self.y0.max(0.0), self.x1.min(w), self.y1.min(h));
+        if !(cx0 < cx1 && cy0 < cy1) {
+            return None;
+        }
+        let (px, py) = (cx0.floor() as u32, cy0.floor() as u32);
+        Some([px, py, (cx1.ceil() as u32).saturating_sub(px).max(1), (cy1.ceil() as u32).saturating_sub(py).max(1)])
     }
-    let (px, py) = (cx0.floor() as u32, cy0.floor() as u32);
-    Some([px, py, (cx1.ceil() as u32).saturating_sub(px).max(1), (cy1.ceil() as u32).saturating_sub(py).max(1)])
 }
 
 #[cfg(test)]
@@ -1136,8 +1621,7 @@ mod tests {
     }
 
     fn rect(subject: &Subject) -> [u64; 4] {
-        let a = subject.json.get("screen").and_then(Json::as_array).expect("on screen");
-        [0, 1, 2, 3].map(|i| a[i].as_u64().unwrap())
+        subject.screen.expect("on screen").map(u64::from)
     }
 
     fn cam(eye: Vec3, target: Vec3, fov_y_deg: f32) -> Camera {
@@ -1156,8 +1640,8 @@ mod tests {
         spawn(&mut world, Shape::Quad, "floor", Vec3::new(0.0, -0.5, 0.0));
         for s in frame(&world, auto_camera(&world, 50.0), 960, 540) {
             let [x, y, w, h] = rect(&s);
-            assert!(x + w <= 960 && y + h <= 540, "{}", s.json);
-            assert!(w > 4 && h > 0, "{}", s.json);
+            assert!(x + w <= 960 && y + h <= 540, "{}", s.full());
+            assert!(w > 4 && h > 0, "{}", s.full());
         }
     }
 
@@ -1181,9 +1665,9 @@ mod tests {
         spawn(&mut world, Shape::Cube, "behind", Vec3::new(0.0, 0.0, 20.0));
         let cam = cam(Vec3::new(0.0, 0.0, 10.0), Vec3::ZERO, 50.0);
         let s = frame(&world, cam, 640, 480);
-        assert_eq!(s[0].json.get("on_screen").and_then(Json::as_bool), Some(false));
-        assert!(s[0].json.get("screen").unwrap().is_null());
-        assert!(s[0].json.get("distance_m").unwrap().is_null());
+        assert_eq!(s[0].full().get("on_screen").and_then(Json::as_bool), Some(false));
+        assert!(s[0].full().get("screen").unwrap().is_null());
+        assert!(s[0].full().get("distance_m").unwrap().is_null());
     }
 
     /// Reviewer finding: a floor under a first-person camera has corners behind the camera.
@@ -1195,8 +1679,8 @@ mod tests {
         let s = frame(&world, cam, 640, 360);
         let [x, y, w, h] = rect(&s[0]);
         // The floor fills the full width of the lower part of the image.
-        assert_eq!((x, x + w), (0, 640), "{}", s[0].json);
-        assert!(y >= 180 && y + h == 360, "{}", s[0].json);
+        assert_eq!((x, x + w), (0, 640), "{}", s[0].full());
+        assert!(y >= 180 && y + h == 360, "{}", s[0].full());
     }
 
     /// Reviewer findings: worlds over ~1 km fell beyond a fixed 2 km far plane; then a far-away
@@ -1221,7 +1705,7 @@ mod tests {
         let s = frame(&world, cam(Vec3::new(0.0, 1.7, 5.0), Vec3::new(0.0, 1.0, 0.0), 50.0), 640, 360);
         let hero = rect(&s[0]);
         assert!(hero[2] > 50 && hero[3] > 50, "hero cube must be clearly visible: {hero:?}");
-        assert_eq!(s[1].json.get("on_screen").and_then(Json::as_bool), Some(true), "the sun is in view too");
+        assert_eq!(s[1].full().get("on_screen").and_then(Json::as_bool), Some(true), "the sun is in view too");
     }
 
     #[test]
@@ -1245,7 +1729,7 @@ mod tests {
         let cam = cam(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, -1.0), 60.0);
         let s = frame(&world, cam, 640, 480);
         assert_eq!(rect(&s[0]), [0, 0, 640, 480], "room surrounds the camera");
-        let d = s[1].json.get("distance_m").and_then(Json::as_f64).unwrap();
+        let d = s[1].full().get("distance_m").and_then(Json::as_f64).unwrap();
         assert!((d - 4.0).abs() < 1e-3, "crate's near face is 4 m ahead, got {d}");
     }
 
@@ -1264,8 +1748,8 @@ mod tests {
         spawn(&mut world, Shape::Cube, "loose", Vec3::new(3.0, 2.0, 0.0));
         let s = frame(&world, cam(Vec3::new(0.0, 2.0, 10.0), Vec3::new(0.0, 2.0, 0.0), 50.0), 640, 480);
         assert_eq!(s.len(), 2, "the group has no subject");
-        assert_eq!(s[0].json.get("path").and_then(Json::as_str), Some("/tower/top"));
-        assert_eq!(s[0].json.get("position"), Some(&vec3_json(Vec3::new(3.0, 2.0, 0.0))));
+        assert_eq!(s[0].full().get("path").and_then(Json::as_str), Some("/tower/top"));
+        assert_eq!(s[0].full().get("position"), Some(&vec3_json(Vec3::new(3.0, 2.0, 0.0))));
         assert_eq!(rect(&s[0]), rect(&s[1]), "a child lands where the same box at its world position would");
     }
 
@@ -1285,13 +1769,13 @@ mod tests {
         let names = |include_ui: bool| -> Vec<String> {
             subjects(&world, &cam.view_proj(640, 480), 640, 480, include_ui)
                 .iter()
-                .map(|s| s.json.get("name").and_then(Json::as_str).unwrap().to_owned())
+                .map(|s| s.full().get("name").and_then(Json::as_str).unwrap().to_owned())
                 .collect()
         };
         assert_eq!(names(false), ["stone"]);
         assert_eq!(names(true), ["stone", "cursor"], "hidden stays hidden even with include_ui");
         let ui = subjects(&world, &cam.view_proj(640, 480), 640, 480, true);
-        assert_eq!(ui[1].json.get("layer"), Some(&Json::from("ui")));
+        assert_eq!(ui[1].full().get("layer"), Some(&Json::from("ui")));
         assert_eq!((lights(&world, false, &mut Vec::new()), world.lit_entities().count()), (0, 0));
         assert!(!in_frame(world.get(2).unwrap(), false) && in_frame(world.get(2).unwrap(), true));
     }
@@ -1325,7 +1809,7 @@ mod tests {
         let projected = s[0].area;
         apply_visibility(&mut s, &[1, 2, 4], &[seen, hidden, IdCoverage::default()]);
         assert_eq!(s[0].projected_area, projected, "overlays keep ranking by the projected box");
-        let get = |i: usize, k: &str| s[i].json.get(k).cloned();
+        let get = |i: usize, k: &str| s[i].full().get(k).cloned();
         assert_eq!(get(0, "visible_px"), Some(Json::from(1200)));
         assert_eq!(get(0, "visible_px_approx"), Some(Json::from(true)));
         assert_eq!(get(1, "visible_px_approx"), None);
@@ -1340,16 +1824,16 @@ mod tests {
         let mut s = frame(&world, cam, 640, 480);
         let uncounted = IdCoverage { counted: false, rasterized: None, ..IdCoverage::default() };
         apply_visibility(&mut s, &[1], &[uncounted]);
-        assert_eq!(s[0].json.get("visible_px"), Some(&Json::Null));
-        assert!(s[0].json.get("no_pixels").is_none() && s[0].json.get("screen_box_exact").is_none() && s[0].json.get("occluded").is_none());
+        assert_eq!(s[0].full().get("visible_px"), Some(&Json::Null));
+        assert!(s[0].full().get("no_pixels").is_none() && s[0].full().get("screen_box_exact").is_none() && s[0].full().get("occluded").is_none());
         assert_eq!(s[0].area, s[0].projected_area);
         // Approximate with nothing counted (pushed out of every set it was drawn in): at least 0,
         // but it did show, so neither no_pixels nor occluded.
         let mut s = frame(&world, cam, 640, 480);
         let pushed_out = IdCoverage { approx: true, rasterized: Some(true), ..IdCoverage::default() };
         apply_visibility(&mut s, &[1], &[pushed_out]);
-        assert_eq!((s[0].json.get("visible_px"), s[0].json.get("visible_px_approx")), (Some(&Json::from(0)), Some(&Json::from(true))));
-        assert!(s[0].json.get("no_pixels").is_none() && s[0].json.get("occluded").is_none());
+        assert_eq!((s[0].full().get("visible_px"), s[0].full().get("visible_px_approx")), (Some(&Json::from(0)), Some(&Json::from(true))));
+        assert!(s[0].full().get("no_pixels").is_none() && s[0].full().get("occluded").is_none());
     }
 
     /// `shaders/overlay.frag`'s alpha for an untextured quad at a pixel centre (a replica, to check
@@ -1502,7 +1986,7 @@ mod tests {
             apply_visibility(&mut s, &[1, 2, 3], &cov);
             s
         };
-        let get = |s: &[Subject], i: usize, k: &str| s[i].json.get(k).cloned();
+        let get = |s: &[Subject], i: usize, k: &str| s[i].full().get(k).cloned();
         // An opaque panel over x 10..30, y 8..20, and a translucent wash over everything.
         let hud = [OverlayQuad::solid([10.0, 8.0, 20.0, 12.0], [0.2, 0.2, 0.2, 1.0]), OverlayQuad::solid([0.0, 0.0, 64.0, 48.0], [0.0, 0.0, 0.0, 0.5])];
         let with_ui = run(&hud);
@@ -1515,7 +1999,7 @@ mod tests {
         assert_eq!(get(&with_ui, 1, "screen_box_exact"), Some(Json::arr([30, 10, 10, 10].map(Json::from))));
         assert_eq!(get(&with_ui, 1, "occluded"), None);
         // Clear of it (the translucent wash hides nothing): as without the interface.
-        assert_eq!(with_ui[2].json, without[2].json);
+        assert_eq!(with_ui[2].full(), without[2].full());
         // No interface (include_ui false): the counts are the ID buffer's own.
         assert_eq!(get(&without, 0, "visible_px"), Some(Json::from(64)));
         assert_eq!(get(&without, 1, "visible_px"), Some(Json::from(150)));
@@ -1540,8 +2024,106 @@ mod tests {
         assert!((w as i64 - 40).abs() <= 2 && (h as i64 - 80).abs() <= 2, "the card faces the camera: {:?}", [x, y, w, h]);
         assert!((x as i64 - 180).abs() <= 1 && (y as i64 + h as i64 - 200).abs() <= 1, "feet at the centre: {:?}", [x, y, w, h]);
         // The card faces the eye 14.14 m away (centre at depth 14.14; its near edge too).
-        let d = s[0].json.get("distance_m").and_then(Json::as_f64).unwrap();
+        let d = s[0].full().get("distance_m").and_then(Json::as_f64).unwrap();
         assert!((d - 200f64.sqrt()).abs() < 0.05, "orthographic distance along the view axis: {d}");
+    }
+
+    /// The subject cache against a cold read of every entity, through churn past the world's
+    /// change record (more than DRAW_LOG changes between captures: bodies moving every tick, the
+    /// stalls review's churn probe), deletes, spawns, a renamed parent, a rolled-back batch, and
+    /// a rebuild in slices with the world changing past the record between every slice (it used
+    /// to start again forever). A change to every entity mid-rebuild ends in one synchronous read.
+    #[test]
+    fn subject_cache_keeps_up_with_churn_past_the_change_record() {
+        use crate::world::{Op, UpdateSpec, DRAW_LOG};
+        let snapshot = |c: &SubjectCache| format!("{:?}", c.entries());
+        let cold = |w: &World| {
+            let mut c = SubjectCache::default();
+            c.refresh(w, 1);
+            snapshot(&c)
+        };
+        let mut world = World::default();
+        let mut parent = SpawnSpec::new(Shape::Group);
+        parent.name = Some("rig".into());
+        world.spawn(parent, "t").unwrap();
+        for i in 0..6 {
+            let mut s = SpawnSpec::new(Shape::Cube);
+            s.name = Some(format!("arm{i}"));
+            s.parent = Some(EntityKey::Path("/rig".into()));
+            world.spawn(s, "t").unwrap();
+        }
+        let n = 3000;
+        for i in 0..n {
+            spawn(&mut world, Shape::Cube, &format!("c{i}"), Vec3::new((i % 50) as f32, 0.0, (i / 50) as f32));
+        }
+        let ids: Vec<u64> = world.persistent_entities().filter(|e| e.shape == Shape::Cube && e.parent.is_none()).map(|e| e.id).collect();
+        let shake = |world: &mut World, count: usize, step: f32| {
+            for &id in ids.iter().take(count) {
+                if world.get(id).is_none() {
+                    continue;
+                }
+                let p = world.get(id).unwrap().position;
+                world.update(&EntityKey::Id(id), UpdateSpec { position: Some(p + Vec3::new(step, 0.0, 0.0)), ..UpdateSpec::default() }, "mover").unwrap();
+            }
+        };
+        let mut cache = SubjectCache::default();
+        cache.refresh(&world, 1);
+        assert_eq!(snapshot(&cache), cold(&world));
+        let rebuilt = cache.counts().0;
+        // Past the change record: patched from the draw stamps, never rebuilt.
+        shake(&mut world, DRAW_LOG + 200, 0.25);
+        let epoch = cache.key.unwrap().1;
+        assert!(world.draw_changes_since(epoch).is_none(), "the record overflowed");
+        assert!(cache.ready(&world, 1), "the stamps still say what changed");
+        cache.refresh(&world, 1);
+        assert_eq!(snapshot(&cache), cold(&world));
+        assert_eq!((cache.counts().0, cache.scans()), (rebuilt, 1));
+        // Deletes, spawns, a renamed parent (its children's paths move) and churn, together.
+        for &id in ids.iter().skip(2000).take(10) {
+            world.delete(&EntityKey::Id(id), None).unwrap();
+        }
+        for i in 0..5 {
+            spawn(&mut world, Shape::Sphere, &format!("new{i}"), Vec3::new(i as f32, 3.0, 0.0));
+        }
+        world.update(&EntityKey::Path("/rig".into()), UpdateSpec { name: Some("rig2".into()), ..UpdateSpec::default() }, "t").unwrap();
+        shake(&mut world, DRAW_LOG + 100, -0.5);
+        cache.refresh(&world, 1);
+        assert_eq!(snapshot(&cache), cold(&world));
+        assert!(cache.entries().iter().any(|b| b.path == "/rig2/arm3"), "children's paths follow the rename");
+        // A failed batch rolls its entities back to copies (their stamps unknown until relinked).
+        let to = |p: [f32; 3]| UpdateSpec { position: Some(Vec3::new(p[0], p[1], p[2])), ..UpdateSpec::default() };
+        let ops = vec![Op::Set(EntityKey::Path("/c1".into()), to([9.0, 9.0, 9.0])), Op::Set(EntityKey::Path("/nope".into()), to([0.0; 3]))];
+        assert!(world.apply_batch(ops, "t").is_err(), "the batch fails and rolls back");
+        shake(&mut world, DRAW_LOG + 1, 0.125);
+        cache.refresh(&world, 1);
+        assert_eq!(snapshot(&cache), cold(&world));
+        // Most of the world changed (a world just built): not ready, so captures wait while it is
+        // read again in slices, never in one go inside a call.
+        shake(&mut world, ids.len(), 0.5);
+        assert!(!cache.ready(&world, 1), "a patch of most entities is a rebuild: sliced");
+        let mut passes = 0;
+        while !cache.warm(&world, 1, std::time::Duration::ZERO) {
+            passes += 1;
+        }
+        assert!(passes >= 10, "sliced ({passes} passes)");
+        assert_eq!(snapshot(&cache), cold(&world));
+        // A rebuild in slices with more than the record holds changing between slices: it ends
+        // within one pass over the entities (plus the last patch), equal to a cold read.
+        let mut slow = SubjectCache::default();
+        let mut passes = 0;
+        while !slow.warm(&world, 1, std::time::Duration::ZERO) {
+            passes += 1;
+            assert!(passes <= world.len() / 64 + 2, "the sliced rebuild never finishes");
+            shake(&mut world, DRAW_LOG + 50, 0.0625);
+        }
+        assert!(passes >= 10, "it was sliced ({passes} passes)");
+        assert_eq!(snapshot(&slow), cold(&world));
+        // A change to every entity at once mid-rebuild: one synchronous read finishes it.
+        let mut reset = SubjectCache::default();
+        assert!(!reset.warm(&world, 1, std::time::Duration::ZERO));
+        world.refresh_models();
+        assert!(reset.warm(&world, 1, std::time::Duration::ZERO), "read synchronously, not started again");
+        assert_eq!(snapshot(&reset), cold(&world));
     }
 
     #[test]

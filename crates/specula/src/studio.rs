@@ -889,6 +889,8 @@ impl Engine {
     /// [`TARGET_IDLE`] without use. A target per light kind keeps its render graph as built (lit
     /// and silhouette frames alternate; a target rebuilds its graph when its settings change).
     fn studio_target(&mut self, w: u32, h: u32, kind: u8) -> Result<TargetId, String> {
+        // A capture view in flight lands first (its frame stats would be overwritten).
+        self.land_capture_flight();
         let now = Instant::now();
         if let Some(t) = self.studio.targets.iter_mut().find(|t| t.key == (w, h, kind)) {
             t.last = now;

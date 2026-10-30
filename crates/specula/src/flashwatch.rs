@@ -37,6 +37,7 @@
 
 use specula_core::Json;
 use std::collections::VecDeque;
+use std::sync::mpsc::{Receiver, Sender};
 
 /// Seconds a count looks back.
 const WINDOW_S: f64 = 1.0;
@@ -491,12 +492,111 @@ impl Watch {
     }
 }
 
-/// One view's captures: their watch and per-texel history.
+/// One view's captures: their watch and per-texel history. It travels to the worker that feeds
+/// a capture's pixels into it ([`Feed`]) and on to the next capture of the view.
+struct ViewState {
+    watch: Watch,
+    history: History,
+}
+
+impl ViewState {
+    fn fresh() -> Box<ViewState> {
+        Box::new(ViewState { watch: Watch::new("capture"), history: History::default() })
+    }
+}
+
+/// Where a view's state is: here, or with the feed of its latest capture (it comes back, or is
+/// handed on, through the receiver).
+enum Baton {
+    Here(Box<ViewState>),
+    Out(Receiver<Pass>),
+}
+
+/// What a feed hands on: the state, or (a feed dropped before it ran) where the state will be.
+enum Pass {
+    State(Box<ViewState>),
+    Follow(Receiver<Pass>),
+}
+
+/// One view's slot.
 struct View {
     key: u64,
     used: u64,
-    watch: Watch,
-    history: History,
+    baton: Baton,
+}
+
+/// A finished capture feed, for the engine's report and events ([`FlashWatch::absorb`]).
+struct Fed {
+    report: Report,
+    ms: f64,
+    failed: bool,
+}
+
+/// One capture's feed, taken in order on the engine thread when the capture lands
+/// ([`FlashWatch::feed_for`]) and run with its pixels on the worker that holds them
+/// ([`Feed::run`]): the per-pixel work stays off the engine thread, and captures of one view are
+/// fed in the order they landed (a feed waits for the previous one's state). Dropped unrun (a
+/// refused or cancelled job), it hands the state on unchanged, so a later feed never waits for it.
+pub struct Feed {
+    from: Option<Source>,
+    to: Sender<Pass>,
+    t: f64,
+    done: Sender<Fed>,
+}
+
+enum Source {
+    Ready(Box<ViewState>),
+    Wait(Receiver<Pass>),
+}
+
+/// How long a feed waits for the previous feed of its view: far past any feed's time (every
+/// earlier feed was handed to a worker first; a dropped one hands on at once).
+const HANDOVER_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+impl Feed {
+    /// Feeds `rgba` (sRGB RGBA8, `width × height`) into its view's watch; the report.
+    pub fn run(mut self, rgba: &[u8], width: u32, height: u32) -> Report {
+        let started = std::time::Instant::now();
+        let mut state = match self.from.take() {
+            Some(Source::Ready(s)) => s,
+            Some(Source::Wait(rx)) => wait_for(rx),
+            None => ViewState::fresh(),
+        };
+        let fresh_moment = state.watch.report.time_s == self.t && state.watch.report.samples > 0;
+        let failed = if fresh_moment {
+            false
+        } else {
+            let mut cells = Cells::default();
+            state.history.update(rgba, width, height, &mut cells);
+            state.watch.feed(&cells, self.t)
+        };
+        let report = state.watch.report;
+        let _ = self.to.send(Pass::State(state));
+        let _ = self.done.send(Fed { report, ms: started.elapsed().as_secs_f64() * 1e3, failed });
+        report
+    }
+}
+
+impl Drop for Feed {
+    fn drop(&mut self) {
+        let _ = match self.from.take() {
+            Some(Source::Ready(s)) => self.to.send(Pass::State(s)),
+            Some(Source::Wait(rx)) => self.to.send(Pass::Follow(rx)),
+            None => Ok(()),
+        };
+    }
+}
+
+/// The state handed on through `rx` (following dropped feeds); a fresh one if it was lost (a
+/// feed that panicked).
+fn wait_for(mut rx: Receiver<Pass>) -> Box<ViewState> {
+    loop {
+        match rx.recv_timeout(HANDOVER_WAIT) {
+            Ok(Pass::State(s)) => return s,
+            Ok(Pass::Follow(next)) => rx = next,
+            Err(_) => return ViewState::fresh(),
+        }
+    }
 }
 
 /// The engine's watches: the window's and each view's captures, and the failures they saw.
@@ -504,7 +604,7 @@ pub struct FlashWatch {
     pub mode: Mode,
     pub window: Watch,
     views: Vec<View>,
-    /// The last capture's report (any view).
+    /// The last capture's report (any view), once its feed has run.
     pub capture: Report,
     pub events: VecDeque<Event>,
     seq: u64,
@@ -516,6 +616,8 @@ pub struct FlashWatch {
     /// CPU ms the last window and capture feeds took.
     pub window_ms: f64,
     pub capture_ms: f64,
+    /// Capture feeds that ran on workers.
+    fed: (Sender<Fed>, Receiver<Fed>),
 }
 
 impl Default for FlashWatch {
@@ -533,11 +635,60 @@ impl Default for FlashWatch {
             window_at: 0.0,
             window_ms: 0.0,
             capture_ms: 0.0,
+            fed: std::sync::mpsc::channel(),
         }
     }
 }
 
 impl FlashWatch {
+    /// The feed of a capture of view `view` (a hash of its camera and size) at simulation time
+    /// `t`, to run where its pixels are ([`Feed::run`]); `None` when the watch is off. Each view
+    /// keeps its own history (the least recently used of [`MAX_VIEWS`] goes).
+    pub fn feed_for(&mut self, view: u64, t: f64) -> Option<Feed> {
+        if self.mode == Mode::Off {
+            return None;
+        }
+        self.uses += 1;
+        let at = match self.views.iter().position(|v| v.key == view) {
+            Some(i) => i,
+            None => {
+                if self.views.len() == MAX_VIEWS {
+                    let oldest = self.views.iter().enumerate().min_by_key(|(_, v)| v.used).map(|(i, _)| i).unwrap_or(0);
+                    self.views.swap_remove(oldest);
+                }
+                self.views.push(View { key: view, used: 0, baton: Baton::Here(ViewState::fresh()) });
+                self.views.len() - 1
+            }
+        };
+        let v = &mut self.views[at];
+        v.used = self.uses;
+        let (to, back) = std::sync::mpsc::channel();
+        let from = match std::mem::replace(&mut v.baton, Baton::Out(back)) {
+            Baton::Here(s) => Source::Ready(s),
+            Baton::Out(mut rx) => loop {
+                // Back already (the usual case: the last feed ran): no waiting on the worker.
+                match rx.try_recv() {
+                    Ok(Pass::State(s)) => break Source::Ready(s),
+                    Ok(Pass::Follow(next)) => rx = next,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break Source::Wait(rx),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => break Source::Ready(ViewState::fresh()),
+                }
+            },
+        };
+        Some(Feed { from: Some(from), to, t, done: self.fed.0.clone() })
+    }
+
+    /// Takes in the capture feeds that ran since: the latest report, and an event per failure.
+    pub fn absorb(&mut self) {
+        while let Ok(f) = self.fed.1.try_recv() {
+            self.capture = f.report;
+            self.capture_ms = f.ms;
+            if f.failed {
+                self.record("capture", f.report);
+            }
+        }
+    }
+
     fn record(&mut self, source: &'static str, report: Report) {
         self.seq += 1;
         if self.events.len() == MAX_EVENTS {
@@ -573,42 +724,13 @@ impl FlashWatch {
         self.window_ms = started.elapsed().as_secs_f64() * 1e3;
     }
 
-    /// Feeds a capture's pixels at simulation time `t` from view `view` (a hash of its camera
-    /// and size): each view keeps its own history (the least recently used of [`MAX_VIEWS`] goes).
+    /// [`FlashWatch::feed_for`] and [`Feed::run`] here, at once (tests: on the engine it could wait
+    /// for a worker's feed of the same view).
+    #[cfg(test)]
     pub fn feed_capture(&mut self, rgba: &[u8], width: u32, height: u32, t: f64, view: u64) -> Report {
-        if self.mode == Mode::Off {
-            return Report::default();
-        }
-        let started = std::time::Instant::now();
-        self.uses += 1;
-        let at = match self.views.iter().position(|v| v.key == view) {
-            Some(i) => i,
-            None => {
-                if self.views.len() == MAX_VIEWS {
-                    let oldest = self.views.iter().enumerate().min_by_key(|(_, v)| v.used).map(|(i, _)| i).unwrap_or(0);
-                    self.views.swap_remove(oldest);
-                }
-                self.views.push(View { key: view, used: 0, watch: Watch::new("capture"), history: History::default() });
-                self.views.len() - 1
-            }
-        };
-        let mut cells = std::mem::take(&mut self.cells);
-        let v = &mut self.views[at];
-        v.used = self.uses;
-        let started_fresh = v.watch.report.time_s == t && v.watch.report.samples > 0;
-        let failed = if started_fresh {
-            false
-        } else {
-            v.history.update(rgba, width, height, &mut cells);
-            v.watch.feed(&cells, t)
-        };
-        let report = v.watch.report;
-        self.cells = cells;
-        if failed {
-            self.record("capture", report);
-        }
-        self.capture = report;
-        self.capture_ms = started.elapsed().as_secs_f64() * 1e3;
+        let Some(feed) = self.feed_for(view, t) else { return Report::default() };
+        let report = feed.run(rgba, width, height);
+        self.absorb();
         report
     }
 
@@ -713,6 +835,37 @@ mod tests {
         // A still checkerboard: no flashes.
         let (over, rep, _) = run(w, h, |x, y, _| if (x / 8 + y / 8) % 2 == 0 { [200; 3] } else { [40; 3] });
         assert!(!over && rep.flashes == 0, "{rep:?}");
+    }
+
+    /// Captures' feeds taken in landing order and run on other threads in any order (as encode
+    /// workers run them) give exactly the reports of feeding in order; a feed dropped unrun (a
+    /// refused or cancelled job) hands its view's state on unchanged; the engine's own report and
+    /// events follow once absorbed.
+    #[test]
+    fn feeds_run_on_workers_keep_each_views_order() {
+        let (w, h) = (64u32, 36u32);
+        let px = move |i: u32| frame(w, h, |_, _| if on(i) { [255; 3] } else { [0; 3] });
+        let t = |i: u32| f64::from(i) / 60.0;
+        let mut seq = FlashWatch::default();
+        let expected: Vec<Report> = (0..40).map(|i| seq.feed_capture(&px(i), w, h, t(i), 7)).collect();
+        assert!(expected.last().unwrap().over, "the strobe fails: {:?}", expected.last());
+        let mut fw = FlashWatch::default();
+        let mut feeds: Vec<(u32, Feed)> = Vec::new();
+        for i in 0..40 {
+            feeds.push((i, fw.feed_for(7, t(i)).unwrap()));
+            // A capture of another view between them, and one dropped unrun.
+            drop(fw.feed_for(8, t(i)));
+        }
+        // The latest capture's feed starts first: each waits for the one before it.
+        let threads: Vec<_> = feeds.into_iter().rev().map(|(i, f)| { let pixels = px(i); std::thread::spawn(move || (i, f.run(&pixels, w, h))) }).collect();
+        let mut got: Vec<(u32, Report)> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        got.sort_by_key(|(i, _)| *i);
+        assert_eq!(got.into_iter().map(|(_, r)| r).collect::<Vec<_>>(), expected, "the same reports as feeding in order");
+        fw.absorb();
+        assert_eq!(fw.events.len(), seq.events.len(), "failures become events once absorbed");
+        // The view's state came back: the next feed doesn't wait.
+        let next = fw.feed_for(7, t(40)).unwrap();
+        assert!(matches!(next.from, Some(Source::Ready(_))), "its state is back");
     }
 
     #[test]

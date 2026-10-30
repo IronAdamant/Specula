@@ -198,8 +198,18 @@ enum Part {
 }
 
 enum Loose {
+    /// Every loose entity as the previous save rendered it.
     Keep(Arc<Vec<Json>>),
-    Write(Vec<(Entity, String)>),
+    /// Rendered again: each from the previous save's record when it hasn't changed since
+    /// ([`LooseItem::Kept`]), else from a copy.
+    Write(Vec<LooseItem>),
+}
+
+/// One loose top-level entity of a plan.
+enum LooseItem {
+    /// Unchanged since the previous save: its record there (by index).
+    Kept(usize),
+    Write(Box<(Entity, String)>),
 }
 
 /// A world save detached from the live world: owned copies of what changed, ready for
@@ -224,64 +234,321 @@ pub struct Plan {
 }
 
 /// Takes what [`execute`] needs from `world`. `previous` is what was saved into `dir` before (by
-/// this engine); subtrees whose stamp hasn't moved since are kept, not copied.
+/// this engine); subtrees whose stamp hasn't moved since are kept, not copied, and so are loose
+/// entities whose stamp hasn't moved (their records are reused).
 ///
 /// Transient entities (game presentation) are never saved; they are always leaves of the saved
 /// tree (nothing persistent sits below a transient entity), so leaving them out drops nothing.
 pub fn plan(world: &World, dir: &Path, previous: Option<&Saved>) -> Plan {
-    let previous = previous.filter(|p| p.dir == dir).cloned();
-    let persistent = |id: &u64| world.get(*id).is_some_and(|e| !e.transient);
-    let tops: Vec<u64> = world.children_of(None).filter(persistent).collect();
-    let (subtrees, loose): (Vec<u64>, Vec<u64>) =
-        tops.into_iter().partition(|&id| world.children_of(Some(id)).any(|c| persistent(&c)));
-    let loose_key: Vec<(u64, u64)> = loose.iter().map(|&id| (id, world.subtree_stamp(id))).collect();
-    let loose = match previous.as_ref().and_then(|p| p.loose.as_ref()).filter(|(key, _)| *key == loose_key) {
-        Some((_, records)) => Loose::Keep(Arc::clone(records)),
-        None => Loose::Write(loose.into_iter().map(|id| (world.get(id).expect("listed").clone(), world.path_of(id))).collect()),
-    };
-    // Stems stay with their subtree (by path) so files don't churn; newcomers take what's free.
-    let old_stems: BTreeMap<&str, &str> = previous
-        .iter()
-        .flat_map(|p| p.subtrees.values())
-        .map(|s| (s.root.as_str(), stem_of(&s.file)))
-        .filter(|(_, stem)| !stem.eq_ignore_ascii_case(CAMERAS_STEM))
-        .collect();
-    let roots: Vec<String> = subtrees.iter().map(|&id| world.path_of(id)).collect();
-    let mut taken: BTreeSet<String> =
-        roots.iter().filter_map(|r| old_stems.get(r.as_str())).map(|s| s.to_ascii_lowercase()).collect();
-    let mut parts = Vec::with_capacity(subtrees.len());
-    for (&id, root) in subtrees.iter().zip(roots) {
-        let stamp = world.subtree_stamp(id);
-        let kept = previous.as_ref().and_then(|p| p.subtrees.get(&id)).filter(|s| s.stamp == stamp && s.root == root);
-        if let Some(saved) = kept {
-            parts.push(Part::Keep { id, saved: saved.clone() });
-            continue;
+    let mut p = Planner::new(world, dir, previous);
+    while !p.step(world, None) {}
+    p.finish(world)
+}
+
+/// [`plan`] in slices, so a save of a large world never copies it in one go on the engine
+/// thread (20,000 loose entities took 36-49 ms): [`Planner::step`] copies the top-level subtrees
+/// that changed since the previous save, a slice at a time, while the world goes on changing;
+/// then it reads the top level once more in slices (the *scan*: each top-level entity's kind,
+/// loose or a subtree, its stamp and, loose, its item), copying again what changed since its copy.
+/// After the scan each step catches up with the top-level entities whose subtrees changed since
+/// it began ([`World::top_changes_since`]: O(changes)), reading only those again, oldest change
+/// first, a slice at a time. [`Planner::finish`] catches up with what is left (a world moving every
+/// tick: one tick's changes) and makes the plan from the scan. Only when the world's change record
+/// no longer reaches back (thousands of top-level removals since) does `finish` read the top level
+/// itself. Either way the plan is the world at `finish`, as [`plan`] would have taken it.
+pub struct Planner {
+    dir: PathBuf,
+    previous: Option<Saved>,
+    /// The previous save's loose records by entity: `id -> (stamp, index)`.
+    prev_loose: BTreeMap<u64, (u64, usize)>,
+    /// Top-level persistent entities at the start, copied in this order.
+    tops: Vec<u64>,
+    at: usize,
+    /// Top-level id → the subtree stamp when copied, and its persistent entities with paths.
+    copied: BTreeMap<u64, (u64, Vec<(Entity, String)>)>,
+    /// The world's change stamp the scan has caught up with (`None`: not begun), the top level
+    /// when it began and how far it got.
+    scan_from: Option<u64>,
+    scan_tops: Vec<u64>,
+    scan_at: usize,
+    /// Each top-level entity as last read, by name (the plan's order), and the name of each id.
+    entries: BTreeMap<String, ScanEntry>,
+    names: BTreeMap<u64, String>,
+    /// The change record no longer reaches back to `scan_from`: `finish` reads the top level.
+    lost: bool,
+    /// Top-level entities read again after the scan (catching up with changes).
+    rereads: usize,
+}
+
+/// One top-level entity as the scan last read it.
+struct ScanEntry {
+    id: u64,
+    stamp: u64,
+    /// Loose: its item of the loose section (`None`: it has persistent children, a subtree file).
+    item: Option<LooseItem>,
+}
+
+/// A loose entity's item from its copy (`None`, or not a lone entity when copied: copied again
+/// as it is now).
+fn loose_item(world: &World, id: u64, copy: Option<Vec<(Entity, String)>>) -> LooseItem {
+    let mut one = copy.unwrap_or_else(|| copy_subtree(world, id));
+    match one.pop() {
+        Some(e) if one.is_empty() => LooseItem::Write(Box::new(e)),
+        _ => LooseItem::Write(Box::new((world.get(id).expect("listed").clone(), world.path_of(id)))),
+    }
+}
+
+impl Planner {
+    pub fn new(world: &World, dir: &Path, previous: Option<&Saved>) -> Planner {
+        let previous = previous.filter(|p| p.dir == dir).cloned();
+        let prev_loose = previous.as_ref().and_then(|p| p.loose.as_ref()).map(|(key, _)| key.iter().enumerate().map(|(i, &(id, stamp))| (id, (stamp, i))).collect()).unwrap_or_default();
+        let tops = world.children_of(None).filter(|id| world.get(*id).is_some_and(|e| !e.transient)).collect();
+        Planner {
+            dir: dir.to_owned(),
+            previous,
+            prev_loose,
+            tops,
+            at: 0,
+            copied: BTreeMap::new(),
+            scan_from: None,
+            scan_tops: Vec::new(),
+            scan_at: 0,
+            entries: BTreeMap::new(),
+            names: BTreeMap::new(),
+            lost: false,
+            rereads: 0,
         }
-        let stem = match old_stems.get(root.as_str()) {
-            Some(stem) => (*stem).to_owned(),
-            None => new_stem(&world.get(id).expect("listed").name, &mut taken),
-        };
-        let mut entities = Vec::new();
-        world.walk(Some(id), |e, path| {
-            if !e.transient {
-                entities.push((e.clone(), path.to_owned()));
+    }
+
+    /// Whether [`Planner::finish`] makes the plan from the scan (reading again only what changed
+    /// since it caught up): the scan is complete and the world's change record still reaches back.
+    pub fn scan_holds(&self, world: &World) -> bool {
+        self.scan_from.is_some_and(|s| world.top_changes_since(s).is_some()) && !self.lost && self.scan_at == self.scan_tops.len()
+    }
+
+    /// Top-level entities read again after the scan, so far.
+    pub fn rereads(&self) -> usize {
+        self.rereads
+    }
+
+    /// Reads top-level `id` as it is now into the entries (or drops it: gone, or no longer at the
+    /// top level), copying it again when its copy went stale.
+    fn read_entry(&mut self, world: &World, id: u64) {
+        if let Some(old) = self.names.remove(&id) {
+            // (Its old name may be another entity's by now: names swapped in one batch.)
+            if self.entries.get(&old).is_some_and(|e| e.id == id) {
+                self.entries.remove(&old);
             }
+        }
+        let Some(e) = world.get(id).filter(|e| !e.transient && e.parent.is_none()) else { return };
+        let persistent = |id: &u64| world.get(*id).is_some_and(|e| !e.transient);
+        let subtree = world.children_of(Some(id)).any(|c| persistent(&c));
+        let stamp = world.subtree_stamp(id);
+        // A copy that went stale since it was taken (or a top-level entity new since the copies
+        // began) is copied again now, in this slice, not at `finish`.
+        let fresh = self.copied.get(&id).is_some_and(|(s, _)| *s == stamp);
+        if !fresh && !self.kept(world, id, stamp) {
+            self.copied.insert(id, (stamp, copy_subtree(world, id)));
+        }
+        // A loose entity's item of the loose section is made here (100,000 of them took `finish`
+        // about 50 ms in one go).
+        let item = (!subtree).then(|| match self.prev_loose.get(&id) {
+            Some(&(s, i)) if s == stamp => LooseItem::Kept(i),
+            _ => loose_item(world, id, self.copied.remove(&id).map(|(_, c)| c)),
         });
-        parts.push(Part::Write { id, stamp, root, stem, entities });
+        self.names.insert(id, e.name.clone());
+        if let Some(stale) = self.entries.insert(e.name.clone(), ScanEntry { id, stamp, item }) {
+            // The entity that had this name before (it changed too, so it is read again).
+            if stale.id != id && self.names.get(&stale.id) == Some(&e.name) {
+                self.names.remove(&stale.id);
+            }
+        }
     }
-    Plan {
-        dir: dir.to_owned(),
-        next_id: world.next_id(),
-        entity_count: world.persistent_len(),
-        time_s: world.world_time(),
-        env: world.env().to_json_exact(),
-        loose,
-        loose_key,
-        parts,
-        cameras: camera_records(world),
-        previous,
-        need: crate::disk::Need::Essential,
+
+    /// Reads again the top-level entities whose subtrees changed since the scan last caught up,
+    /// oldest change first, until `spent` says stop; true once caught up with the world.
+    fn catch_up(&mut self, world: &World, mut spent: impl FnMut() -> bool) -> bool {
+        let Some(from) = self.scan_from else { return true };
+        if self.lost {
+            return true;
+        }
+        let Some(changes) = world.top_changes_since(from) else {
+            self.lost = true;
+            return true;
+        };
+        // Each entity once, at its latest change (a body moving every tick is logged every tick).
+        let mut seen = BTreeSet::new();
+        let mut changes: Vec<(u64, u64)> = changes.collect::<Vec<_>>().into_iter().rev().filter(|&(_, id)| seen.insert(id)).collect();
+        changes.reverse();
+        for (stamp, id) in changes {
+            if spent() {
+                return false;
+            }
+            self.read_entry(world, id);
+            self.rereads += 1;
+            self.scan_from = Some(stamp);
+        }
+        self.scan_from = Some(world.change_stamp());
+        true
     }
+
+    /// Whether the previous save holds top-level `id` at `stamp` already (nothing to copy).
+    fn kept(&self, world: &World, id: u64, stamp: u64) -> bool {
+        if self.prev_loose.get(&id).is_some_and(|(s, _)| *s == stamp) {
+            return true;
+        }
+        self.previous.as_ref().and_then(|p| p.subtrees.get(&id)).is_some_and(|s| s.stamp == stamp && s.root == world.path_of(id))
+    }
+
+    /// Copies changed top-level subtrees, then scans the top level (see the type), until
+    /// `budget` is spent (`None`: all of it; at least one entity a step); true when done.
+    pub fn step(&mut self, world: &World, budget: Option<std::time::Duration>) -> bool {
+        let started = std::time::Instant::now();
+        let mut n = 0usize;
+        let spent = |n: &mut usize| {
+            *n += 1;
+            *n > 1 && budget.is_some_and(|b| started.elapsed() >= b)
+        };
+        while self.at < self.tops.len() {
+            if spent(&mut n) {
+                return false;
+            }
+            let id = self.tops[self.at];
+            self.at += 1;
+            if world.get(id).is_none() {
+                continue;
+            }
+            let stamp = world.subtree_stamp(id);
+            if self.kept(world, id, stamp) {
+                continue;
+            }
+            self.copied.insert(id, (stamp, copy_subtree(world, id)));
+        }
+        if self.scan_from.is_none() {
+            // The scan reads the top level as it is from here on; changes during it are caught
+            // up with afterwards (from this stamp).
+            self.scan_from = Some(world.change_stamp());
+            self.scan_tops = world.children_of(None).filter(|id| world.get(*id).is_some_and(|e| !e.transient)).collect();
+        }
+        while self.scan_at < self.scan_tops.len() {
+            if spent(&mut n) {
+                return false;
+            }
+            let id = self.scan_tops[self.scan_at];
+            self.scan_at += 1;
+            self.read_entry(world, id);
+        }
+        self.catch_up(world, || spent(&mut n))
+    }
+
+    /// The plan of the world as it is now (see the type).
+    pub fn finish(mut self, world: &World) -> Plan {
+        let dir = self.dir.clone();
+        if self.scan_at == self.scan_tops.len() {
+            // What changed since the last step (a world moving every tick: that tick's changes).
+            self.catch_up(world, || false);
+        }
+        let from_scan = self.scan_holds(world);
+        let mut loose_items = Vec::new();
+        let (subtrees, loose_key): (Vec<u64>, Vec<(u64, u64)>) = if from_scan {
+            // The world as the scan (and its catching up) read it: nothing else is read again.
+            let mut subtrees = Vec::new();
+            let mut loose_key = Vec::with_capacity(self.entries.len());
+            for e in std::mem::take(&mut self.entries).into_values() {
+                match e.item {
+                    Some(item) => {
+                        loose_key.push((e.id, e.stamp));
+                        loose_items.push(item);
+                    }
+                    None => subtrees.push(e.id),
+                }
+            }
+            (subtrees, loose_key)
+        } else {
+            let persistent = |id: &u64| world.get(*id).is_some_and(|e| !e.transient);
+            let tops: Vec<u64> = world.children_of(None).filter(persistent).collect();
+            let (subtrees, loose): (Vec<u64>, Vec<u64>) = tops.into_iter().partition(|&id| world.children_of(Some(id)).any(|c| persistent(&c)));
+            let loose_key = loose.iter().map(|&id| (id, world.subtree_stamp(id))).collect();
+            (subtrees, loose_key)
+        };
+        let previous = self.previous.take();
+        let mut take = |id: u64, stamp: u64| -> Vec<(Entity, String)> {
+            match self.copied.remove(&id) {
+                Some((s, entities)) if s == stamp => entities,
+                _ => copy_subtree(world, id),
+            }
+        };
+        let loose = match previous.as_ref().and_then(|p| p.loose.as_ref()).filter(|(key, _)| *key == loose_key) {
+            Some((_, records)) => Loose::Keep(Arc::clone(records)),
+            None if from_scan => Loose::Write(loose_items),
+            None => Loose::Write(
+                loose_key
+                    .iter()
+                    .map(|&(id, stamp)| match self.prev_loose.get(&id) {
+                        Some(&(s, i)) if s == stamp => LooseItem::Kept(i),
+                        _ => {
+                            let mut one = take(id, stamp);
+                            match one.pop() {
+                                Some(e) if one.is_empty() => LooseItem::Write(Box::new(e)),
+                                // (Not loose when copied: copied again as it is now.)
+                                _ => LooseItem::Write(Box::new((world.get(id).expect("listed").clone(), world.path_of(id)))),
+                            }
+                        }
+                    })
+                    .collect(),
+            ),
+        };
+        // Stems stay with their subtree (by path) so files don't churn; newcomers take what's free.
+        let old_stems: BTreeMap<&str, &str> = previous
+            .iter()
+            .flat_map(|p| p.subtrees.values())
+            .map(|s| (s.root.as_str(), stem_of(&s.file)))
+            .filter(|(_, stem)| !stem.eq_ignore_ascii_case(CAMERAS_STEM))
+            .collect();
+        let roots: Vec<String> = subtrees.iter().map(|&id| world.path_of(id)).collect();
+        let mut taken: BTreeSet<String> =
+            roots.iter().filter_map(|r| old_stems.get(r.as_str())).map(|s| s.to_ascii_lowercase()).collect();
+        let mut parts = Vec::with_capacity(subtrees.len());
+        for (&id, root) in subtrees.iter().zip(roots) {
+            let stamp = world.subtree_stamp(id);
+            let kept = previous.as_ref().and_then(|p| p.subtrees.get(&id)).filter(|s| s.stamp == stamp && s.root == root);
+            if let Some(saved) = kept {
+                parts.push(Part::Keep { id, saved: saved.clone() });
+                continue;
+            }
+            let stem = match old_stems.get(root.as_str()) {
+                Some(stem) => (*stem).to_owned(),
+                None => new_stem(&world.get(id).expect("listed").name, &mut taken),
+            };
+            let entities = take(id, stamp);
+            parts.push(Part::Write { id, stamp, root, stem, entities });
+        }
+        drop(old_stems);
+        Plan {
+            dir,
+            next_id: world.next_id(),
+            entity_count: world.persistent_len(),
+            time_s: world.world_time(),
+            env: world.env().to_json_exact(),
+            loose,
+            loose_key,
+            parts,
+            cameras: camera_records(world),
+            previous,
+            need: crate::disk::Need::Essential,
+        }
+    }
+}
+
+/// The persistent entities of top-level `id`'s subtree with their paths, in path order.
+fn copy_subtree(world: &World, id: u64) -> Vec<(Entity, String)> {
+    let mut entities = Vec::new();
+    world.walk(Some(id), |e, path| {
+        if !e.transient {
+            entities.push((e.clone(), path.to_owned()));
+        }
+    });
+    entities
 }
 
 /// The world's cameras as saved: `owner` first, then `camera_set`'s form with `version`.
@@ -346,7 +613,18 @@ impl Plan {
         }));
         let loose = match &self.loose {
             Loose::Keep(records) => Arc::clone(records),
-            Loose::Write(entities) => Arc::new(entities.iter().map(|(e, path)| record(e, path)).collect()),
+            Loose::Write(items) => {
+                let prev = self.previous.as_ref().and_then(|p| p.loose.as_ref()).map(|(_, r)| r);
+                Arc::new(
+                    items
+                        .iter()
+                        .map(|it| match it {
+                            LooseItem::Kept(i) => prev.and_then(|r| r.get(*i)).cloned().unwrap_or(Json::Null),
+                            LooseItem::Write(b) => record(&b.0, &b.1),
+                        })
+                        .collect(),
+                )
+            }
         };
         // Cameras: kept when unchanged, else a new generation's file (none when there are none).
         if !self.cameras.is_empty() {
@@ -1947,6 +2225,96 @@ mod tests {
         w.update(&EntityKey::Path("/sun".into()), UpdateSpec { scale: Some(Vec3::ONE * 2.0), ..Default::default() }, "t").unwrap();
         assert!(matches!(plan(&w, &dir, Some(&second)).loose, Loose::Write(_)), "a loose change re-renders it");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A plan made in slices (zero budget: one entity a step) while the world changes between
+    /// the steps writes exactly what one plan of the world at `finish` writes: moves, spawns,
+    /// deletes, a loose entity gaining a child (a subtree now) and a subtree losing its last child,
+    /// renames, with a previous save to keep from. A world moving every tick (a body touched between
+    /// every step) is caught up with change by change: `finish` reads only what changed since the
+    /// last step, never the whole top level (review of 07f3276: 56-122 ms stalls).
+    #[test]
+    fn a_plan_in_slices_while_the_world_changes_is_the_world_at_finish() {
+        let files = |dir: &Path| -> Vec<(String, String)> {
+            let mut out: Vec<(String, String)> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap()).filter(|e| e.file_type().unwrap().is_file()).map(|e| (e.file_name().to_string_lossy().into_owned(), std::fs::read_to_string(e.path()).unwrap_or_default())).collect();
+            out.sort();
+            out
+        };
+        let mut w = sample();
+        for i in 0..200 {
+            let mut s = SpawnSpec::new(Shape::Sphere);
+            s.name = Some(format!("loose_{i:03}"));
+            s.position = Vec3::new(i as f32, 0.0, 0.0);
+            w.spawn(s, "carol").unwrap();
+        }
+        let (a, b) = (temp_dir("slices-a"), temp_dir("slices-b"));
+        let (prev_a, _) = save(&w, &a, None).unwrap();
+        let (prev_b, _) = save(&w, &b, None).unwrap();
+        let mv = |w: &mut World, path: &str, x: f32| {
+            w.update(&EntityKey::Path(path.into()), UpdateSpec { position: Some(Vec3::new(x, 1.0, 0.0)), ..Default::default() }, "t").unwrap();
+        };
+        // Changes while it plans (each step reads one entity).
+        let mut p = Planner::new(&w, &a, Some(&prev_a));
+        let mut steps = 0;
+        while !p.step(&w, Some(std::time::Duration::ZERO)) {
+            steps += 1;
+            match steps {
+                3 => mv(&mut w, "/loose_005", 9.5),
+                7 => {
+                    let mut child = SpawnSpec::new(Shape::Cube);
+                    child.name = Some("bud".into());
+                    child.parent = Some(EntityKey::Path("/loose_010".into()));
+                    w.spawn(child, "t").unwrap();
+                }
+                11 => {
+                    w.delete(&EntityKey::Path("/loose_020".into()), None).unwrap();
+                }
+                15 => {
+                    w.update(&EntityKey::Path("/loose_030".into()), UpdateSpec { name: Some("renamed_030".into()), ..Default::default() }, "t").unwrap();
+                }
+                19 => {
+                    let mut s = SpawnSpec::new(Shape::Cube);
+                    s.name = Some("late".into());
+                    w.spawn(s, "t").unwrap();
+                }
+                _ => {}
+            }
+            assert!(steps < 5000, "the plan never finishes");
+        }
+        // Nothing changed after the last restart: the plan comes from the scan.
+        assert!(p.scan_holds(&w), "the scan holds: what changed during the copies was caught up with");
+        execute(p.finish(&w)).unwrap();
+        execute(plan(&w, &b, Some(&prev_b))).unwrap();
+        assert_eq!(files(&a), files(&b), "a sliced plan of a changing world writes the world at finish");
+        // A world changing between every step (a body moving every tick): caught up with change
+        // by change, never the whole top level again.
+        let (prev_a, _) = save(&w, &a, None).unwrap();
+        let (prev_b, _) = save(&w, &b, None).unwrap();
+        let tops = w.children_of(None).count();
+        let mut p = Planner::new(&w, &a, Some(&prev_a));
+        let mut x = 0.0;
+        let mut steps = 0;
+        while !p.step(&w, Some(std::time::Duration::ZERO)) {
+            x += 0.25;
+            mv(&mut w, "/loose_100", x);
+            steps += 1;
+            assert!(steps < 5000, "the plan never finishes");
+        }
+        assert!(p.scan_holds(&w), "a world that never stops changing still plans from the scan");
+        // Moved after the last step, and the subtree that just gained its only child loses it
+        // again: finish reads those two, not the top level.
+        mv(&mut w, "/loose_100", -1.0);
+        w.delete(&EntityKey::Path("/loose_010/bud".into()), None).unwrap();
+        let before = p.rereads();
+        assert!(before < tops / 2, "caught up change by change ({before} rereads of {tops} top-level entities)");
+        // (finish consumes the planner: its rereads are what changed since the last step.)
+        let changed: usize = w.top_changes_since(p.scan_from.unwrap()).map_or(usize::MAX, |c| c.count());
+        assert_eq!(changed, 2, "finish reads O(changed)");
+        execute(p.finish(&w)).unwrap();
+        execute(plan(&w, &b, Some(&prev_b))).unwrap();
+        assert_eq!(files(&a), files(&b));
+        std::fs::remove_dir_all(&a).unwrap();
+        std::fs::remove_dir_all(&b).unwrap();
     }
 
     /// Scale check, run by hand: `cargo test -p specula -- --ignored --nocapture`.

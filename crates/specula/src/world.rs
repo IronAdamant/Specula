@@ -1224,6 +1224,31 @@ pub struct Entity {
     resolved: Option<ResolvedModel>,
     /// Cached [`Entity::content_hash`]; cleared by every change to what it covers.
     hash: HashCache,
+    /// [`World::draw_epoch`] after this entity's latest change (see [`Entity::draw_stamp`]).
+    draw_stamp: DrawStamp,
+}
+
+/// [`Entity::draw_stamp`]'s value. Clones (journal snapshots, restored or replayed entities)
+/// start unknown (`u64::MAX`: changed after any epoch) until the world stamps them as they go in.
+struct DrawStamp(u64);
+
+impl std::fmt::Debug for DrawStamp {
+    /// (Derived state that only moves forward: an entity restored as it was prints as it was.)
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DrawStamp")
+    }
+}
+
+impl Default for DrawStamp {
+    fn default() -> Self {
+        DrawStamp(u64::MAX)
+    }
+}
+
+impl Clone for DrawStamp {
+    fn clone(&self) -> Self {
+        DrawStamp::default()
+    }
 }
 
 /// [`Entity::content_hash`]'s cache. Clones start empty, so a copy (a journal snapshot, a
@@ -1410,6 +1435,13 @@ impl Entity {
         fields.push(("created_by", Json::from(&*self.created_by)));
         fields.push(("modified_by", Json::from(&*self.modified_by)));
         Json::obj(fields)
+    }
+
+    /// The [`World::draw_epoch`] after this persistent entity's latest change, derived state
+    /// included (`u64::MAX` when unknown: a copy not in a world): it changed after `epoch` exactly
+    /// when this is greater, while [`World::draw_stamps_reach`] holds. Never hashed or saved.
+    pub fn draw_stamp(&self) -> u64 {
+        self.draw_stamp.0
     }
 
     /// Feeds everything that defines what the entity is and does, by exact bits. Versions and
@@ -2108,6 +2140,13 @@ pub const FIELDS: [&str; 42] = [
 /// Entity changes [`World::draw_changes_since`] remembers.
 pub const DRAW_LOG: usize = 1024;
 
+/// Changes of top-level subtrees [`World::top_changes_since`] remembers (a ring made once: 1 MiB).
+pub const TOP_LOG: usize = 1 << 16;
+
+/// A query whose tag or creator filter lists at most this many entities is answered from them
+/// (ordered by path), without a walk of the tree ([`World::query`]).
+const INDEXED_PAGE: usize = 2048;
+
 #[derive(Clone, Debug, Default)]
 pub struct World {
     entities: BTreeMap<u64, Entity>,
@@ -2128,6 +2167,12 @@ pub struct World {
     /// Top-level id → stamp of the latest change anywhere in its subtree. Lets world files rewrite
     /// only the subtrees that changed.
     touched: BTreeMap<u64, u64>,
+    /// Every change of a top-level subtree (removals too) as `(stamp, top-level id)`, oldest
+    /// first, at most [`TOP_LOG`]: what changed after a stamp is found without visiting the rest
+    /// ([`World::top_changes_since`]).
+    top_log: VecDeque<(u64, u64)>,
+    /// Changes at or before this stamp may be missing from `top_log`.
+    top_floor: u64,
     /// What changes are recorded for the journal (off by default: world files, tests and replays
     /// pay nothing).
     recording: Recording,
@@ -2154,6 +2199,14 @@ pub struct World {
     /// Changes up to this epoch are no longer in `draw_log` (it overflowed, or a change touched
     /// every entity).
     draw_floor: u64,
+    /// The latest change that touched every entity at once: entities' draw stamps tell what
+    /// changed after any epoch from here on ([`World::draw_stamps_reach`]).
+    stamp_floor: u64,
+    /// Tag → the entities carrying it, and agent → the entities it created (transient ones
+    /// included): a query filtered by them reads only those, never every entity. Kept by `link`,
+    /// `unlink` and `update`.
+    tagged: BTreeMap<String, BTreeSet<u64>>,
+    made_by: BTreeMap<Arc<str>, BTreeSet<u64>>,
     /// Ids of the entities carrying a point light, so frames gather lights without visiting every
     /// entity (a 10k-entity world has a handful). Kept by `link`, `unlink` and `update`.
     lit: BTreeSet<u64>,
@@ -2320,9 +2373,29 @@ impl World {
             return;
         }
         if let Some(top) = self.top_of(id) {
-            self.stamp += 1;
-            self.touched.insert(top, self.stamp);
+            self.stamp_top(top);
         }
+    }
+
+    /// A new stamp for top-level `top`'s subtree.
+    fn stamp_top(&mut self, top: u64) {
+        self.stamp += 1;
+        self.touched.insert(top, self.stamp);
+        self.log_top(top);
+    }
+
+    /// Records a change of top-level `top`'s subtree at the current stamp (see `top_log`): a ring
+    /// made once, so changes allocate nothing (the draw-list allocation test).
+    fn log_top(&mut self, top: u64) {
+        if self.top_log.capacity() < TOP_LOG {
+            self.top_log.reserve_exact(TOP_LOG - self.top_log.len());
+        }
+        if self.top_log.len() >= TOP_LOG {
+            if let Some((s, _)) = self.top_log.pop_front() {
+                self.top_floor = self.top_floor.max(s);
+            }
+        }
+        self.top_log.push_back((self.stamp, top));
     }
 
     /// Records that `id` is about to be removed: its top-level subtree changed, or, when `id` is
@@ -2331,10 +2404,30 @@ impl World {
         match self.entities.get(&id) {
             Some(e) if e.parent.is_none() => {
                 self.touched.remove(&id);
+                // (Logged as a change of its own: a reader learns it went.)
+                self.stamp += 1;
+                self.log_top(id);
             }
             Some(_) => self.touch(id),
             None => {}
         }
+    }
+
+    /// The top-level entities whose subtrees changed (or that were spawned, renamed, moved or
+    /// removed) after the world's change stamp was `stamp` ([`World::change_stamp`]), as `(stamp,
+    /// id)` oldest first, an entity once per change; `None` when that is no longer known (more than
+    /// [`TOP_LOG`] changes since, or the world took another's place). O(changes), not O(entities).
+    pub fn top_changes_since(&self, stamp: u64) -> Option<impl Iterator<Item = (u64, u64)> + '_> {
+        if stamp < self.top_floor || stamp > self.stamp {
+            return None;
+        }
+        let start = self.top_log.partition_point(|&(s, _)| s <= stamp);
+        Some(self.top_log.range(start..).copied())
+    }
+
+    /// The latest change stamp (see [`World::subtree_stamp`]): never goes back.
+    pub fn change_stamp(&self) -> u64 {
+        self.stamp
     }
 
     /// Changes so far in the subtree under top-level entity `top`, as an opaque stamp: equal stamps
@@ -2538,8 +2631,18 @@ impl World {
         Some(self.draw_log.range(start..).map(|&(_, id)| id))
     }
 
+    /// Whether every persistent entity's [`Entity::draw_stamp`] tells whether it changed after
+    /// [`World::draw_epoch`] was `epoch`: no change since then touched every entity at once (a
+    /// replaced model source, a world restored past its old epochs). Unlike
+    /// [`World::draw_changes_since`], any number of changes since keeps it true, so a cache that
+    /// fell behind the change record finds what changed with one walk of the entities' stamps
+    /// (cheap: no entity's data is read) instead of reading every entity again.
+    pub fn draw_stamps_reach(&self, epoch: u64) -> bool {
+        epoch >= self.stamp_floor && epoch <= self.draw_epoch
+    }
+
     /// Records a change to entity `id` for [`World::draw_changes_since`] (transient ones aren't
-    /// recorded: see the field).
+    /// recorded: see the field), and stamps it ([`Entity::draw_stamp`]).
     fn draw_touch(&mut self, id: u64) {
         if id >= TRANSIENT_ID_BASE {
             return;
@@ -2551,6 +2654,9 @@ impl World {
             }
         }
         self.draw_log.push_back((self.draw_epoch, id));
+        if let Some(e) = self.entities.get_mut(&id) {
+            e.draw_stamp.0 = self.draw_epoch;
+        }
     }
 
     /// A change to (possibly) every entity: the change record starts again from here.
@@ -2558,6 +2664,7 @@ impl World {
         self.draw_epoch += 1;
         self.draw_log.clear();
         self.draw_floor = self.draw_epoch;
+        self.stamp_floor = self.draw_epoch;
     }
 
     /// The entities carrying a point light, by id (from an index: no other entity is visited).
@@ -3119,6 +3226,7 @@ impl World {
             in_ui: false,
             resolved,
             hash: HashCache::default(),
+            draw_stamp: DrawStamp::default(),
         });
         if transient {
             self.transient_seq = id - TRANSIENT_ID_BASE;
@@ -3386,7 +3494,13 @@ impl World {
             e.profile = Some(p);
         }
         if let Some(t) = tags {
-            e.tags = t;
+            let old = std::mem::replace(&mut e.tags, t);
+            for gone in old.difference(&e.tags) {
+                unindex_tag(&mut self.tagged, gone, id);
+            }
+            for new in e.tags.difference(&old) {
+                self.tagged.entry(new.clone()).or_default().insert(id);
+            }
         }
         let rejoint = props.map(|p| {
             e.props = p;
@@ -3648,7 +3762,7 @@ impl World {
     }
 
     /// Indexes `e` (its id must not be in the world).
-    fn link(&mut self, e: Entity) {
+    fn link(&mut self, mut e: Entity) {
         self.layout_epoch += 1;
         self.index_joint(e.id, joint_sides_of(&e));
         self.retired.remove(&e.id);
@@ -3670,16 +3784,36 @@ impl World {
             self.wet.insert(e.id);
         }
         self.draw_touch(e.id);
+        // (Not in the map yet: stamped here.)
+        e.draw_stamp.0 = if e.transient { 0 } else { self.draw_epoch };
         if let Some(TwoD::Shape2d(s)) = &e.two_d {
             if e.transient { &mut self.transient_shapes } else { &mut self.shapes }.charge(s);
         }
+        for t in &e.tags {
+            self.tagged.entry(t.clone()).or_default().insert(e.id);
+        }
+        self.made_by.entry(Arc::clone(&e.created_by)).or_default().insert(e.id);
         self.entities.insert(e.id, e);
+    }
+
+    /// Takes a removed entity out of the tag and creator indices.
+    fn unindex_filters(&mut self, e: &Entity) {
+        for t in &e.tags {
+            unindex_tag(&mut self.tagged, t, e.id);
+        }
+        if let Some(set) = self.made_by.get_mut(&*e.created_by) {
+            set.remove(&e.id);
+            if set.is_empty() {
+                self.made_by.remove(&*e.created_by);
+            }
+        }
     }
 
     /// Removes one entity from every index (its children are left in place).
     fn unlink(&mut self, id: u64) -> Option<Entity> {
         self.draw_touch(id);
         let e = self.entities.remove(&id)?;
+        self.unindex_filters(&e);
         self.unindex_joint(id);
         if !e.transient {
             self.retired.insert(id, e.version);
@@ -3905,9 +4039,10 @@ impl World {
         self.model_drops = self.model_drops.max(old.model_drops) + 1;
         // Every top-level subtree changed: world files rewrite all of them.
         for top in self.entities.values().filter(|e| e.parent.is_none() && !e.transient).map(|e| e.id).collect::<Vec<_>>() {
-            self.stamp += 1;
-            self.touched.insert(top, self.stamp);
+            self.stamp_top(top);
         }
+        // (Nothing before this world's own stamps describes it.)
+        self.top_floor = self.stamp;
     }
 
     /// Attempts to change recording or take the recorded changes while sealed, ever.
@@ -4346,6 +4481,7 @@ impl World {
     fn unlink_exact(&mut self, id: u64) -> Option<Entity> {
         self.draw_touch(id);
         let e = self.entities.remove(&id)?;
+        self.unindex_filters(&e);
         self.unindex_joint(id);
         if !e.transient {
             let v = self.retired.get(&id).copied().unwrap_or(0).max(e.version);
@@ -4429,45 +4565,144 @@ impl World {
         self.child_range(id).any(|(_, c)| self.entities.get(c).is_some_and(|e| !e.transient))
     }
 
+    /// How many of `root` and the entities below it pass `matches`: a walk of the subtree alone,
+    /// without paths.
+    fn count_subtree(&self, root: u64, matches: &dyn Fn(&Entity) -> bool) -> usize {
+        let mut stack = vec![root];
+        let mut n = 0;
+        while let Some(id) = stack.pop() {
+            if let Some(e) = self.entities.get(&id) {
+                n += usize::from(matches(e));
+            }
+            stack.extend(self.child_range(id).map(|(_, &c)| c));
+        }
+        n
+    }
+
     /// Matching entities in path order, paged.
     pub fn query(&self, q: &Query) -> Result<QueryPage<'_>, WorldError> {
         let root = match &q.path_prefix {
             Some(p) => Some(self.find_path(p).map_err(|e| e.with("field", "path_prefix"))?),
             None => None,
         };
-        let mut page = QueryPage { total: 0, items: Vec::new(), more: false };
-        self.walk(root, |e, path| {
-            let matches = q.tags.iter().all(|t| e.tags.contains(t))
+        let matches = |e: &Entity| {
+            q.tags.iter().all(|t| e.tags.contains(t))
                 && q.shape.is_none_or(|s| s == e.shape)
                 && q.material.is_none_or(|m| m == e.look.material && e.shape != Shape::Group)
                 && q.created_by.as_ref().is_none_or(|c| c.as_str() == &*e.created_by)
                 && q.region.is_none_or(|(min, max)| {
                     let (lo, hi) = e.world_aabb();
                     lo.x <= max.x && hi.x >= min.x && lo.y <= max.y && hi.y >= min.y && lo.z <= max.z && hi.z >= min.z
-                });
-            if !matches {
-                return;
+                })
+        };
+        let in_scope = |e: &Entity| matches(e) && root.is_none_or(|r| self.is_ancestor_or_self(r, e.id));
+        // A tag or creator filter reads only the entities its index lists (the smallest), never
+        // every entity: a filter no entity passes costs nothing.
+        let empty = BTreeSet::new();
+        let indexed = q
+            .tags
+            .iter()
+            .map(|t| self.tagged.get(t.as_str()).unwrap_or(&empty))
+            .chain(q.created_by.as_deref().map(|c| self.made_by.get(c).unwrap_or(&empty)))
+            .min_by_key(|s| s.len());
+        if let Some(candidates) = indexed.filter(|s| s.len() <= INDEXED_PAGE) {
+            // Few enough to order by path here: the page without a walk.
+            let mut found: Vec<(&Entity, String)> = candidates.iter().filter_map(|id| self.entities.get(id)).filter(|e| in_scope(e)).map(|e| (e, self.path_of(e.id))).collect();
+            let total = found.len();
+            if let Some(after) = &q.after {
+                found.retain(|(_, p)| path_cmp(p, after) == Ordering::Greater);
             }
-            page.total += 1;
-            if q.after.as_ref().is_some_and(|after| path_cmp(path, after) != Ordering::Greater) {
-                return;
+            found.sort_by(|a, b| path_cmp(&a.1, &b.1));
+            let more = found.len() > q.limit;
+            found.truncate(q.limit);
+            return Ok(QueryPage { total, items: found, more });
+        }
+        // Matches anywhere in scope, counted without walking the tree or making paths (without
+        // filters or a prefix: every entity, not visited at all; with an indexed filter, its
+        // entities only).
+        let unfiltered = q.tags.is_empty() && q.shape.is_none() && q.material.is_none() && q.created_by.is_none() && q.region.is_none();
+        let total = match (root, indexed) {
+            (None, _) if unfiltered => self.entities.len(),
+            (_, Some(candidates)) => candidates.iter().filter_map(|id| self.entities.get(id)).filter(|e| in_scope(e)).count(),
+            // Scoped: the subtree's entities only (a small scope in a big world reads only it).
+            (Some(r), None) => self.count_subtree(r, &matches),
+            (None, None) => self.entities.values().filter(|e| matches(e)).count(),
+        };
+        let mut page = QueryPage { total, items: Vec::new(), more: false };
+        // The page: a walk in path order from just after the cursor (subtrees wholly before it
+        // are skipped unvisited), until the page is full and one more match is seen. Only the
+        // page's paths are made.
+        let cursor: Option<Vec<&str>> = q.after.as_deref().map(|a| a.split('/').collect());
+        // (id or ROOT, depth, on the cursor's spine: its path a prefix of the cursor's).
+        let mut stack: Vec<(u64, usize, bool)> = Vec::new();
+        match root {
+            // (A cursor that isn't an absolute path sorts after every path: nothing follows it.)
+            None if cursor.as_ref().is_none_or(|c| c[0].is_empty()) => stack.push((ROOT, 0, cursor.is_some())),
+            None => {}
+            Some(r) => {
+                let path = self.path_of(r);
+                let comps: Vec<&str> = path.split('/').collect();
+                let depth = comps.len() - 1;
+                match &cursor {
+                    None => stack.push((r, depth, false)),
+                    Some(c) if c.len() >= comps.len() && c[..comps.len()] == comps[..] => stack.push((r, depth, true)),
+                    Some(c) => {
+                        if comps.iter().cmp(c.iter()) == Ordering::Greater {
+                            stack.push((r, depth, false));
+                        }
+                    }
+                }
             }
-            if page.items.len() < q.limit {
-                page.items.push((e, path.to_owned()));
+        }
+        let first_name = |depth: usize| cursor.as_ref().and_then(|c| c.get(depth)).copied();
+        while let Some((id, depth, spine)) = stack.pop() {
+            if id != ROOT && !spine {
+                let e = &self.entities[&id];
+                if matches(e) {
+                    if page.items.len() == q.limit {
+                        page.more = true;
+                        break;
+                    }
+                    page.items.push((e, self.path_of(id)));
+                }
+            }
+            let at = stack.len();
+            if spine {
+                // Children before the cursor's next name are skipped; that one stays on the spine
+                // (it is before the cursor or the cursor itself); later ones are after it.
+                match first_name(depth + 1) {
+                    None => stack.extend(self.child_range(id).map(|(_, &c)| (c, depth + 1, false))),
+                    Some(next) => {
+                        let from = (id, next.to_owned());
+                        for ((_, name), &c) in self.children.range(from..(id + 1, String::new())) {
+                            stack.push((c, depth + 1, name.as_str() == next));
+                        }
+                    }
+                }
             } else {
-                page.more = true;
+                stack.extend(self.child_range(id).map(|(_, &c)| (c, depth + 1, false)));
             }
-        });
+            stack[at..].reverse();
+        }
         Ok(page)
     }
 
     /// The requested [`FIELDS`] of an entity, in the order asked (absent values are `null`).
     pub fn fields_json(&self, e: &Entity, path: &str, fields: &[String]) -> Json {
+        let parent = e.parent.map(|p| self.path_of(p));
+        fields_json_of(e, path, parent.as_deref(), self.child_range(e.id).count(), fields)
+    }
+}
+
+/// [`World::fields_json`] from what it reads of the world (the parent's path and how many
+/// children), so a page of entities can be listed off the engine thread.
+pub fn fields_json_of(e: &Entity, path: &str, parent: Option<&str>, children: usize, fields: &[String]) -> Json {
+    {
         let full = e.to_json(path);
         let (look, s) = (&e.look, &e.look.surface);
         Json::obj(fields.iter().map(|f| {
             let v = match f.as_str() {
-                "parent" => e.parent.map_or(Json::Null, |p| Json::from(self.path_of(p))),
+                "parent" => parent.map_or(Json::Null, Json::from),
                 "world_position" => vec3_json(e.world_position()),
                 "opacity" => Json::from(look.opacity),
                 "emissive" => Json::from(s.emissive),
@@ -4485,7 +4720,7 @@ impl World {
                 "color2" => Json::from(color_hex(s.color2)),
                 "tags" => tags_json(&e.tags),
                 "props" => e.props.clone(),
-                "children" => Json::from(self.child_range(e.id).count()),
+                "children" => Json::from(children),
                 "bounds" => {
                     let (lo, hi) = e.world_aabb();
                     Json::obj([("min", vec3_json(lo)), ("max", vec3_json(hi))])
@@ -4495,7 +4730,9 @@ impl World {
             (f.clone(), v)
         }))
     }
+}
 
+impl World {
     /// World-space bounds of everything shown with geometry (hidden and `ui` entities left out),
     /// or `None` when there is none.
     pub fn bounds(&self) -> Option<(Vec3, Vec3)> {
@@ -4648,6 +4885,16 @@ pub fn canonical_props(props: Json) -> Result<Json, WorldError> {
     Ok(props)
 }
 
+/// Takes `id` out of tag `tag`'s set in the tag index (and the set, once empty).
+fn unindex_tag(tagged: &mut BTreeMap<String, BTreeSet<u64>>, tag: &str, id: u64) {
+    if let Some(set) = tagged.get_mut(tag) {
+        set.remove(&id);
+        if set.is_empty() {
+            tagged.remove(tag);
+        }
+    }
+}
+
 /// The sides a persistent entity's `props.joint` names (ids; `null` or anything else is none),
 /// or `None` when it holds no joint data. Indexed as written, valid or not (a claim check
 /// errs on the side of the bodies named).
@@ -4725,7 +4972,7 @@ mod tests {
     /// Everything a rollback must restore: entities (versions, attribution, cached world
     /// transforms), both indexes, the id and revision counters, the environment.
     fn snapshot(w: &World) -> String {
-        format!("{:?}|{:?}|{:?}|{:?}|{:?}|{}|{}|{:?}", w.entities, w.children, w.names, w.lit, w.flat, w.next_id, w.revision, w.env)
+        format!("{:?}|{:?}|{:?}|{:?}|{:?}|{}|{}|{:?}|{:?}|{:?}", w.entities, w.children, w.names, w.lit, w.flat, w.next_id, w.revision, w.env, w.tagged, w.made_by)
     }
 
     /// The change record renderers patch caches from: every change to an entity (moves of a
@@ -5223,6 +5470,127 @@ mod tests {
         ];
         assert_eq!(w.apply_batch(ops, "t").err().unwrap().1.code, "stale_version");
         assert!(close(w.get(kid).unwrap().world_position(), Vec3::new(4.0, 0.0, 0.0)));
+    }
+
+    /// The query walks from just after its cursor (stalls lane): every page, total and `more`
+    /// is what a walk of the whole scope with `path_cmp` gives, for cursors that exist, that
+    /// don't (deleted, between names, above or below the scope) and odd ones.
+    #[test]
+    fn a_scoped_query_reads_its_subtree_only() {
+        let mut w = World::default();
+        for i in 0..3000 {
+            put(&mut w, Shape::Cube, &format!("c{i}"), None, Vec3::ZERO);
+        }
+        let g = put(&mut w, Shape::Group, "g", None, Vec3::ZERO);
+        for i in 0..5 {
+            put(&mut w, Shape::Cube, &format!("k{i}"), Some("/g"), Vec3::ZERO);
+        }
+        put(&mut w, Shape::Sphere, "deep", Some("/g/k2"), Vec3::ZERO);
+        // The count visits the scope's 7 entities, not the world's 3,007 (review of 07f3276: a
+        // count over every entity climbed each one's parents, 19-22 ms at 100k).
+        let visits = std::cell::Cell::new(0);
+        let n = w.count_subtree(g, &|e: &Entity| {
+            visits.set(visits.get() + 1);
+            e.shape == Shape::Cube
+        });
+        assert_eq!((n, visits.get()), (5, 7));
+        let q = |shape: Option<Shape>| Query { path_prefix: Some("/g".into()), shape, limit: 3, ..Default::default() };
+        let p = w.query(&q(None)).unwrap();
+        assert_eq!((p.total, p.items.len(), p.more), (7, 3, true));
+        let p = w.query(&q(Some(Shape::Cube))).unwrap();
+        assert_eq!((p.total, p.items.iter().map(|(_, path)| path.as_str()).collect::<Vec<_>>()), (5, vec!["/g/k0", "/g/k1", "/g/k2"]));
+    }
+
+    #[test]
+    fn tag_and_creator_queries_read_their_index_and_stay_exact() {
+        let mut w = World::default();
+        for i in 0..40 {
+            let mut s = SpawnSpec::new(Shape::Cube);
+            s.name = Some(format!("c{i:02}"));
+            s.tags = if i % 3 == 0 { ["three".to_string()].into() } else { BTreeSet::new() };
+            w.spawn(s, if i % 2 == 0 { "even" } else { "odd" }).unwrap();
+        }
+        // Edits that move entities in and out of the indices: tags changed, entities deleted, a
+        // failed batch rolled back (its entities relinked from copies), a rename (path order).
+        let tag = |w: &mut World, path: &str, add: &[&str], remove: &[&str]| {
+            let c = UpdateSpec { add_tags: add.iter().map(|s| s.to_string()).collect(), remove_tags: remove.iter().map(|s| s.to_string()).collect(), ..Default::default() };
+            w.update(&EntityKey::Path(path.into()), c, "t").unwrap();
+        };
+        tag(&mut w, "/c01", &["three"], &[]);
+        tag(&mut w, "/c03", &["rare"], &["three"]);
+        w.delete(&EntityKey::Path("/c06".into()), None).unwrap();
+        let bad = vec![Op::Set(EntityKey::Path("/c09".into()), UpdateSpec { add_tags: vec!["ghost".into()], ..Default::default() }), Op::Delete(EntityKey::Path("/nope".into()), None)];
+        assert!(w.apply_batch(bad, "t").is_err());
+        w.update(&EntityKey::Path("/c12".into()), UpdateSpec { name: Some("a12".into()), ..Default::default() }, "t").unwrap();
+        let brute = |w: &World, q: &Query| -> (usize, Vec<String>) {
+            let mut all = Vec::new();
+            w.walk(None, |e, path| {
+                if q.tags.iter().all(|t| e.tags.contains(t)) && q.created_by.as_ref().is_none_or(|c| c.as_str() == &*e.created_by) {
+                    all.push(path.to_owned());
+                }
+            });
+            let total = all.len();
+            (total, all.into_iter().filter(|p| q.after.as_ref().is_none_or(|a| path_cmp(p, a) == Ordering::Greater)).take(q.limit).collect())
+        };
+        for tags in [vec![], vec!["three".to_string()], vec!["rare".into()], vec!["ghost".into()], vec!["three".into(), "rare".into()], vec!["missing".into()]] {
+            for by in [None, Some("even"), Some("odd"), Some("nobody")] {
+                for after in [None, Some("/c05"), Some("/a12")] {
+                    let q = Query { tags: tags.clone(), created_by: by.map(str::to_owned), after: after.map(str::to_owned), limit: 4, ..Default::default() };
+                    let p = w.query(&q).unwrap();
+                    let got = (p.total, p.items.iter().map(|(_, path)| path.clone()).collect::<Vec<_>>());
+                    assert_eq!(got, brute(&w, &q), "tags {tags:?} by {by:?} after {after:?}");
+                }
+            }
+        }
+        assert!(!w.tagged.contains_key("ghost"), "the rolled-back tag left no index entry");
+        assert_eq!(w.tagged["three"].len(), 13, "c00..c39 by threes, plus c01, less c03 and c06");
+    }
+
+    #[test]
+    fn query_pages_match_a_full_walk_for_any_cursor() {
+        let mut w = World::default();
+        for top in ["a", "b", "b-c", "bb", "c"] {
+            put(&mut w, Shape::Group, top, None, Vec3::ZERO);
+            for kid in ["x", "y", "y0", "z"] {
+                let mut s = SpawnSpec::new(if kid == "y" { Shape::Group } else { Shape::Cube });
+                s.name = Some(kid.into());
+                s.parent = Some(EntityKey::Path(format!("/{top}")));
+                if kid != "x" {
+                    s.tags = ["t".to_string()].into();
+                }
+                w.spawn(s, "t").unwrap();
+                if kid == "y" {
+                    put(&mut w, Shape::Sphere, "deep", Some(&format!("/{top}/y")), Vec3::ZERO);
+                }
+            }
+        }
+        put(&mut w, Shape::Cube, "loose", None, Vec3::ZERO);
+        let reference = |q: &Query| -> (usize, Vec<String>, bool) {
+            let root = q.path_prefix.as_ref().map(|p| w.find_path(p).unwrap());
+            let mut all = Vec::new();
+            w.walk(root, |e, path| {
+                if q.tags.iter().all(|t| e.tags.contains(t)) && q.shape.is_none_or(|s| s == e.shape) {
+                    all.push(path.to_owned());
+                }
+            });
+            let total = all.len();
+            let after: Vec<String> = all.into_iter().filter(|p| q.after.as_ref().is_none_or(|a| path_cmp(p, a) == Ordering::Greater)).collect();
+            let more = after.len() > q.limit;
+            (total, after.into_iter().take(q.limit).collect(), more)
+        };
+        let cursors = [None, Some("/"), Some("/a"), Some("/a/y"), Some("/a/y/deep"), Some("/b"), Some("/b-"), Some("/b/zz"), Some("/bb/y0"), Some("/c/z"), Some("/zzz"), Some("/0"), Some("a"), Some(""), Some("/b//x")];
+        for prefix in [None, Some("/b"), Some("/b/y"), Some("/loose")] {
+            for tags in [vec![], vec!["t".to_string()]] {
+                for after in cursors {
+                    for limit in [1, 3, 100] {
+                        let q = Query { path_prefix: prefix.map(str::to_owned), tags: tags.clone(), after: after.map(str::to_owned), limit, ..Default::default() };
+                        let p = w.query(&q).unwrap();
+                        let got = (p.total, p.items.into_iter().map(|(_, path)| path).collect::<Vec<_>>(), p.more);
+                        assert_eq!(got, reference(&q), "prefix {prefix:?} tags {tags:?} after {after:?} limit {limit}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

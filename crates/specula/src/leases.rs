@@ -37,6 +37,35 @@ fn ends_unix(left: Duration) -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0).saturating_add(left.as_secs())
 }
 
+/// A scratch folder's lease marker to write (on a worker: folder work never runs on the engine
+/// thread, docs/design/WORKERS.md).
+#[derive(Clone, Debug)]
+pub struct Marker {
+    pub dir: PathBuf,
+    pub lease: u64,
+    pub owner: String,
+    pub ends_unix: u64,
+}
+
+impl Marker {
+    /// A scratch lease's marker as it is taken (the folder made with it, [`make_scratch`]).
+    pub fn of(l: &Lease) -> Option<Marker> {
+        let Resource::Scratch(dir) = &l.resource else { return None };
+        Some(Marker { dir: dir.clone(), lease: l.id, owner: l.owner.clone(), ends_unix: ends_unix(l.expires.saturating_duration_since(Instant::now())) })
+    }
+
+    pub fn write(&self) -> std::io::Result<()> {
+        crate::disk::write_lease_marker(&self.dir, self.lease, &self.owner, self.ends_unix, false)
+    }
+}
+
+/// Makes a scratch lease's folder and marker (worker side): through the disk budget, refused
+/// below the free-space floor like any agent's write.
+pub fn make_scratch(m: &Marker) -> Result<(), WorldError> {
+    crate::disk::book().make_dir(crate::disk::Category::Scratch, &m.dir, crate::disk::Need::Agent).map_err(|e| e.to_world())?;
+    m.write().map_err(|e| WorldError::new("io", format!("could not create the scratch folder {}: {e}", m.dir.display())).with("dir", m.dir.display().to_string()))
+}
+
 pub const DEFAULT_LEASE: Duration = Duration::from_secs(600);
 pub const MAX_PER_AGENT: usize = 32;
 pub const MAX_LEASES: usize = 1024;
@@ -246,21 +275,37 @@ impl Leases {
                 }
                 Resource::Gpu { ms_per_s: ms }
             }
-            Want::Scratch => {
-                let dir = pools.scratch_root.join(format!("{}-{}-{}", safe(w.name), self.next + 1, self.run));
-                // Through the disk budget: refused below the free-space floor, like any agent's write.
-                crate::disk::book().make_dir(crate::disk::Category::Scratch, &dir, crate::disk::Need::Agent).map_err(|e| e.to_world())?;
-                crate::disk::write_lease_marker(&dir, self.next + 1, w.name, ends_unix(lease), false).map_err(|e| {
-                    WorldError::new("io", format!("could not create the scratch folder {}: {e}", dir.display())).with("dir", dir.display().to_string())
-                })?;
-                Resource::Scratch(dir)
-            }
+            // The folder is made by the caller, off the engine thread ([`make_scratch`]); a
+            // failure gives the lease back ([`Leases::forget`]).
+            Want::Scratch => Resource::Scratch(pools.scratch_root.join(format!("{}-{}-{}", safe(w.name), self.next + 1, self.run))),
         };
         self.next += 1;
         let id = self.next;
         let l = Lease { id, owner: w.name.to_owned(), key: w.session.unwrap_or_default().to_owned(), resource, note, expires: now + lease };
         self.leases.insert(id, l);
         Ok(&self.leases[&id])
+    }
+
+    /// Drops a lease whose scratch folder could not be made (nothing else knows of it yet).
+    /// `lease_release {delete: true}` without touching the disk: the leases released and their
+    /// scratch folders, which a worker then moves into the trash ([`crate::disk::move_to_trash`]:
+    /// renaming a folder of 20,000 files held the engine thread 40-95 ms, review of 07f3276).
+    pub fn release_for_delete(&mut self, w: Writer, id: Option<u64>, now: Instant) -> Result<(Vec<u64>, Vec<PathBuf>), WorldError> {
+        let ids: Vec<u64> = match id {
+            Some(id) => vec![self.owned(w, id, now)?.id],
+            None => self.leases.values().filter(|l| l.held_by(w)).map(|l| l.id).collect(),
+        };
+        let mut dirs = Vec::new();
+        for id in &ids {
+            if let Some(Lease { resource: Resource::Scratch(dir), .. }) = self.leases.remove(id) {
+                dirs.push(dir);
+            }
+        }
+        Ok((ids, dirs))
+    }
+
+    pub fn forget(&mut self, id: u64) {
+        self.leases.remove(&id);
     }
 
     fn owned(&self, w: Writer, id: u64, now: Instant) -> Result<&Lease, WorldError> {
@@ -271,23 +316,25 @@ impl Leases {
         Ok(l)
     }
 
-    /// `lease_renew`: one lease, or all of `w`'s.
-    pub fn renew(&mut self, w: Writer, id: Option<u64>, lease: Duration, now: Instant) -> Result<Vec<Json>, WorldError> {
+    /// `lease_renew`: one lease, or all of `w`'s. Returns the leases, and the scratch folders'
+    /// markers to write again ([`Marker::write`], off the engine thread).
+    pub fn renew(&mut self, w: Writer, id: Option<u64>, lease: Duration, now: Instant) -> Result<(Vec<Json>, Vec<Marker>), WorldError> {
         let ids: Vec<u64> = match id {
             Some(id) => vec![self.owned(w, id, now)?.id],
             None => self.live(now).filter(|l| l.held_by(w)).map(|l| l.id).collect(),
         };
         let mut out = Vec::new();
+        let mut markers = Vec::new();
         for id in ids {
             if let Some(l) = self.leases.get_mut(&id) {
                 l.expires = now + lease;
                 if let Resource::Scratch(dir) = &l.resource {
-                    let _ = crate::disk::write_lease_marker(dir, l.id, &l.owner, ends_unix(lease), false);
+                    markers.push(Marker { dir: dir.clone(), lease: l.id, owner: l.owner.clone(), ends_unix: ends_unix(lease) });
                 }
                 out.push(l.to_json(now));
             }
         }
-        Ok(out)
+        Ok((out, markers))
     }
 
     /// `lease_release`: one lease, or all of `w`'s; `delete` removes scratch folders too (only
@@ -414,6 +461,10 @@ mod tests {
         let b = l.take(BOB, (Want::Scratch, String::new(), DEFAULT_LEASE), &pools(&root), &free, now).unwrap().clone();
         let (Resource::Scratch(da), Resource::Scratch(db)) = (&a.resource, &b.resource) else { panic!() };
         assert_ne!(da, db);
+        assert!(!da.exists(), "taking a lease makes no folder (the engine makes it on a worker)");
+        for l in [&a, &b] {
+            make_scratch(&Marker::of(l).expect("a scratch lease")).unwrap();
+        }
         assert!(da.is_dir() && db.is_dir());
         assert!(db.file_name().unwrap().to_string_lossy().starts_with("bob_x-"), "names are folder-safe");
         std::fs::write(da.join("f.txt"), "x").unwrap();

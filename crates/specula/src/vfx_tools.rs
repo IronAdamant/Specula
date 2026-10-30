@@ -322,6 +322,13 @@ fn stage() -> specula_gpu::Environment {
 }
 
 impl Engine {
+    /// Parses the built-in effects on a worker (once per run; the engine thread waits for the
+    /// result only if it needs them before the worker is done).
+    pub(crate) fn warm_effects(&mut self) {
+        let o = crate::workers::Offload::engine(crate::workers::JobKind::Warm);
+        let _ = self.offload(o, |_| library::builtins().len(), |_, _| {});
+    }
+
     /// Builds the frame's effects (and effect lights) for `view` at `t`.
     pub(crate) fn build_effects(&mut self, view: &View, t: f64, include_ui: bool, lights: &mut Vec<specula_gpu::PointLight>, window: bool) {
         let _z = profile::zone("vfx");

@@ -1,0 +1,32 @@
+{
+  "date": "2026-10-30",
+  "time": "15:00",
+  "date_source": "sight_check run, stalls fix round",
+  "approximate": false,
+  "milestone": "M4",
+  "commit": "",
+  "subject": "engine-tests",
+  "topic": "sight",
+  "title": "Captures through the capture flight, fix round",
+  "note": "sight_check on the stalls fix round (async capture readback with bounded waits, orbit views back to back, flash feed on the encode worker): the 8-view orbit with every overlay and the compare sheet, byte-identical to main for the same scene (same.py). New since the last entry: a mesh deleted while a capture renders is retired in queue order (no validation message). The window check is unchanged since 2026-10-13-window-check-on-the-new-renderer.",
+  "source": "scripts/sight_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-orbit-runner.jpg",
+      "caption": "8-view orbit of the rigged runner with skeleton and bounds overlays",
+      "original": "orbit_runner.png",
+      "width": 640,
+      "height": 481,
+      "bytes": 37048
+    },
+    {
+      "file": "02-compare-diff.jpg",
+      "caption": "sight_compare: before, after and the heat panel",
+      "original": "compare_diff.png",
+      "width": 640,
+      "height": 119,
+      "bytes": 4866
+    }
+  ]
+}

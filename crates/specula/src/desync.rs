@@ -294,30 +294,92 @@ fn mark_of(c: &Change) -> Option<(u64, Mark)> {
 impl Trace {
     /// This engine's trace for ticks `from..=to` (`None`: everything kept).
     pub fn live(log: &TickLog, journal: &Journal, game: Option<&str>, tick_hz: u32, from: Option<u64>, to: Option<u64>) -> Trace {
+        let mut g = Gather::start(log, journal, game, tick_hz, from, to);
+        while !g.step(journal, usize::MAX) {}
+        g.finish(journal)
+    }
+}
+
+/// [`Trace::live`] a slice at a time, so the engine thread never gathers a long trace in one go
+/// (600 ticks at 20,000 entities took about 250 ms): the ticks and module history are taken at
+/// the start, the journal's changes up to its last entry then are read a few hundred at a time
+/// ([`Gather::step`]). Entries evicted from the journal meanwhile are left out, and the trace
+/// says its entity lists are complete only from past them ([`Trace::entities_from`]).
+pub struct Gather {
+    trace: Trace,
+    /// The first and last tick recorded (`None`: no ticks, nothing to read).
+    span: Option<(u64, u64)>,
+    /// Journal entries read up to this seq.
+    after: u64,
+    /// The journal's last entry at the start.
+    upto: u64,
+    /// `(entry seq, change index)` a step stopped inside of.
+    within: (u64, usize),
+}
+
+impl Gather {
+    pub fn start(log: &TickLog, journal: &Journal, game: Option<&str>, tick_hz: u32, from: Option<u64>, to: Option<u64>) -> Gather {
         let (lo, hi) = (from.unwrap_or(0), to.unwrap_or(u64::MAX));
         let ticks = log
             .records()
             .filter(|r| (lo..=hi).contains(&r.tick))
             .map(|r| (r.tick, (r.world, r.subsystems.iter().map(|(n, h)| ((*n).to_owned(), *h)).collect())))
             .collect::<BTreeMap<_, _>>();
-        let mut changes: BTreeMap<u64, BTreeMap<u64, Mark>> = BTreeMap::new();
-        if let (Some(&first), Some(&last)) = (ticks.keys().next(), ticks.keys().next_back()) {
-            for e in journal.entries() {
-                let into = e.tick + 1;
-                if into < first || into > last {
-                    continue;
-                }
-                for c in &e.changes {
-                    if let Some((id, m)) = mark_of(c) {
-                        changes.entry(into).or_default().insert(id, m);
-                    }
-                }
-            }
-        }
+        let span = ticks.keys().next().copied().zip(ticks.keys().next_back().copied());
         // Complete from past the newest tick either journal ring evicted entries of.
         let entities_from = journal.complete_from_tick();
-        Trace { game: game.map(str::to_owned), tick_hz, ticks, changes, entities_from, modules: Some(log.modules.clone()) }
+        let trace = Trace { game: game.map(str::to_owned), tick_hz, ticks, changes: BTreeMap::new(), entities_from, modules: Some(log.modules.clone()) };
+        Gather { trace, span, after: 0, upto: journal.last_seq(), within: (0, 0) }
     }
+
+    /// The ticks found (an empty trace has nothing to gather).
+    pub fn ticks_found(&self) -> usize {
+        self.trace.ticks.len()
+    }
+
+    /// Reads up to `max` more changes (an entry larger than that over several steps); true when
+    /// every entry up to the start's last one is in.
+    pub fn step(&mut self, journal: &Journal, max: usize) -> bool {
+        let Some((first, last)) = self.span else { return true };
+        let mut read = 0usize;
+        for e in journal.entries_after(self.after, true) {
+            if e.seq > self.upto {
+                break;
+            }
+            let into = e.tick + 1;
+            if into >= first && into <= last {
+                // Where a step left this entry (an evicted entry's place means nothing).
+                let skip = if self.within.0 == e.seq { self.within.1.min(e.changes.len()) } else { 0 };
+                for (i, c) in e.changes.iter().enumerate().skip(skip) {
+                    if read >= max {
+                        self.within = (e.seq, i);
+                        return false;
+                    }
+                    if let Some((id, m)) = mark_of(c) {
+                        self.trace.changes.entry(into).or_default().insert(id, m);
+                    }
+                    read += 1;
+                }
+            }
+            self.after = e.seq;
+            self.within = (0, 0);
+            read += 1;
+            if read >= max {
+                return self.after >= self.upto;
+            }
+        }
+        self.after = self.upto;
+        true
+    }
+
+    /// The trace (entity lists complete from past whatever the journal evicted meanwhile).
+    pub fn finish(mut self, journal: &Journal) -> Trace {
+        self.trace.entities_from = self.trace.entities_from.max(journal.complete_from_tick());
+        self.trace
+    }
+}
+
+impl Trace {
 
     /// The trace as `specula.trace/v1` text (one tick per line).
     pub fn render(&self) -> String {
@@ -711,6 +773,22 @@ mod tests {
             log.record(t + 1, w.state_hash(), w.next_id());
         }
         (log, j, w)
+    }
+
+    #[test]
+    fn a_trace_gathered_in_steps_is_the_trace_gathered_at_once() {
+        let (log, journal, _) = run(30, Some((12, 0.5)), None);
+        let whole = Trace::live(&log, &journal, Some("g"), 30, Some(3), None);
+        for max in [1, 2, 7] {
+            let mut g = Gather::start(&log, &journal, Some("g"), 30, Some(3), None);
+            let mut steps = 0;
+            while !g.step(&journal, max) {
+                steps += 1;
+                assert!(steps < 10_000, "a gather ends");
+            }
+            assert!(steps > 2, "in slices of {max}: {steps} steps");
+            assert_eq!(g.finish(&journal).render(), whole.render(), "slices of {max}");
+        }
     }
 
     #[test]

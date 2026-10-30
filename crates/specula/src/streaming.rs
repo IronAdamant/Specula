@@ -2052,27 +2052,35 @@ impl Streamer {
     /// pixels aren't counted on their own, `visible_px` is null) or `"not_resident"` (built, not
     /// on the GPU: not drawn), and `resident_lods_from` when finer levels are still streaming.
     pub fn annotate(&self, subjects: &mut [Subject], world: &World, models: &GpuModels) {
+        let notes = self.notes(subjects, world, models);
+        apply_notes(subjects, &notes);
+    }
+
+    /// What [`Streaming::annotate`] says of the subjects, read when the frame is drawn (a capture
+    /// writes them once its ID counts are in, [`apply_notes`]): `(subject index, note)`. Visits
+    /// model subjects only.
+    pub fn notes(&self, subjects: &[Subject], world: &World, models: &GpuModels) -> Vec<(usize, Note)> {
+        let mut out = Vec::new();
         if !self.cfg.enabled {
-            return;
+            return out;
         }
-        for s in subjects {
+        for (i, s) in subjects.iter().enumerate() {
+            if !s.base.is_model() {
+                continue;
+            }
             let Some(e) = world.get(s.id).filter(|e| e.shape == Shape::Model) else { continue };
             if hlod::covers(&self.hlod.capture_cover, s.id) {
-                s.json.set("drawn_as", Json::from("hlod"));
-                s.json.set("visible_px", Json::Null);
+                out.push((i, Note::Hlod));
                 continue;
             }
             let b = e.resolved_model().and_then(|r| models.by_handle.get(r.handle as usize).copied().flatten());
             match b.map(|b| (b, models.uploaded.get(&b))) {
-                Some((b, None)) if !models.failed.contains_key(&b) => {
-                    s.json.set("drawn_as", Json::from("not_resident"));
-                }
-                Some((_, Some(m))) if m.resident_from > 0 => {
-                    s.json.set("resident_lods_from", Json::from(m.resident_from));
-                }
+                Some((b, None)) if !models.failed.contains_key(&b) => out.push((i, Note::NotResident)),
+                Some((_, Some(m))) if m.resident_from > 0 => out.push((i, Note::ResidentFrom(m.resident_from))),
                 _ => {}
             }
         }
+        out
     }
 
     // -----------------------------------------------------------------------------------------
@@ -2450,6 +2458,36 @@ pub(crate) fn upload_next_level(gpu: &mut Gpu, models: &mut GpuModels, library: 
 /// Every key `stream_settings` takes.
 pub fn setting_keys() -> Vec<&'static str> {
     FLAGS.iter().copied().chain(RANGES.iter().map(|r| r.0)).collect()
+}
+
+/// A subject's streaming note ([`Streaming::notes`]).
+#[derive(Clone, Copy, Debug)]
+pub enum Note {
+    /// Drawn merged in an HLOD proxy: its own pixels aren't counted.
+    Hlod,
+    /// Built but not on the GPU (streamed out): not drawn.
+    NotResident,
+    /// Only LODs from this one are resident (finer ones are still streaming).
+    ResidentFrom(usize),
+}
+
+/// Writes [`Streaming::notes`] into the subjects.
+pub fn apply_notes(subjects: &mut [Subject], notes: &[(usize, Note)]) {
+    for &(i, n) in notes {
+        let Some(s) = subjects.get_mut(i) else { continue };
+        match n {
+            Note::Hlod => {
+                s.json.set("drawn_as", Json::from("hlod"));
+                s.json.set("visible_px", Json::Null);
+            }
+            Note::NotResident => {
+                s.json.set("drawn_as", Json::from("not_resident"));
+            }
+            Note::ResidentFrom(l) => {
+                s.json.set("resident_lods_from", Json::from(l));
+            }
+        }
+    }
 }
 
 #[cfg(test)]

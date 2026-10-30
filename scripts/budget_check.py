@@ -16,9 +16,8 @@ allows, and the heavy tools at their largest *valid* arguments, against a headle
    agents looping world_hash {verify} while a playtest runs twelve verify steps (the playtest
    passes, the agents are served).
 5. Stalls are read from trace_incidents; each is printed with its tool, class, ms and budget, marked
-   KNOWN when it is one of the follow-up lane's (2026-10-30: the capture subject list, readback and
-   orbit, world_query and world_list scans, the vfx library rescan, the save plan, single anim
-   steps) or NEW. --known-ok passes a run whose only stalls are known ones.
+   KNOWN when a later lane owns it and its peak is within the ms KNOWN lists for it (see KNOWN below)
+   or NEW. --known-ok passes a run whose only stalls are known ones.
 
     cargo build -p specula && python scripts/budget_check.py [--port 7810] [--adapter integrated] [--skip-fuzz]
 
@@ -99,10 +98,15 @@ def fuzz(mcp, tools, slow):
     return calls
 
 
-# Stalls the follow-up lane owns (docs/design/WORKERS.md, "What it found").
-# desync_trace: its file is rendered and written on a worker; gathering the ticks from the journal
-# (O(entities changed)) still runs on the engine thread.
-KNOWN = {"sight_frame", "sight_compare", "sight_orbit", "sight_query", "world_query", "world_list", "vfx_get", "world_save", "anim_check", "anim_filmstrip", "engine_info", "desync_trace"}
+# Known stalls a later lane owns: tool -> the most engine-thread ms it may take (the incident's
+# peak, every occurrence counted). A known tool past its ms, or any other tool, is NEW: a known
+# entry never hides a regression. Since the stalls fix round (2026-10-30, Intel iGPU, 20,000 cubes):
+# one capture view's preparation (draw list, subjects, submit) is 20-30 ms on a quiet machine and
+# peaked at 36-70 ms, dev and release alike, with other sessions building (runs vary: one release
+# run passed with no stall, three of the review's failed on these three). The maxima are the peaks
+# seen with about 40% headroom (docs/design/WORKERS.md, "What the fix round left"; the follow-up is
+# a capture draw cache and subjects projected on a worker). The milestone audit runs --known-ok.
+KNOWN = {"sight_frame": 80.0, "sight_compare": 100.0, "sight_orbit": 80.0}
 
 
 def stalls(mcp):
@@ -147,6 +151,8 @@ def main():
             if err:
                 check(False, f"world_batch {b} spawned ({j})")
                 break
+        # A small scope in the big world (a scoped query reads its subtree only, review of 07f3276).
+        lead.json("world_batch", ops=[{"op": "spawn", "shape": "group", "name": "scope"}] + [{"op": "spawn", "shape": "cube", "name": f"k{i}", "parent": "/scope"} for i in range(5)])
         info = lead.json("engine_info", response_format="detailed")
         check(info["entities"] >= a.entities, f"{info['entities']} entities in the world")
         lease = lead.json("lease_take", kind="scratch", lease_s=600)
@@ -173,6 +179,7 @@ def main():
             ("sight_compare", {"action": "mark", "name": "before", "width": 2048, "height": 2048}),
             ("sight_compare", {"action": "diff", "name": "before"}),
             ("world_query", {"limit": 500, "fields": ["all"]}),
+            ("world_query", {"path_prefix": "/scope", "shape": "cube", "limit": 10}),
             ("world_batch", {"ops": [{"op": "spawn", "shape": "sphere", "name": f"s{i}", "position": [i % 50, 30, i // 50]} for i in range(1000)]}),
             ("anim_check", {"recipe": "recipes/shambler.json"}),
             ("anim_filmstrip", {"recipe": "recipes/shambler.json", "frames": 16, "tile": 256}),
@@ -243,12 +250,17 @@ def main():
         summary["stalls"] = found
         known, new = [], []
         for s in found:
-            (known if s.get("key") in KNOWN else new).append(s)
+            detail = lead.json("trace_incident", id=s["id"])
+            s["peak_ms"] = detail.get("peak_ms")
+            s["evidence"] = detail.get("evidence", {})
+            most = KNOWN.get(s.get("key"))
+            within = most is not None and s["peak_ms"] is not None and s["peak_ms"] <= most
+            (known if within else new).append(s)
         for s in new:
-            ev = lead.json("trace_incident", id=s["id"]).get("evidence", {})
-            print(f"  STALL NEW   x{s.get('count')}: {s.get('summary')} (zone {ev.get('zone')}, args {str(ev.get('args'))[:120]})")
+            ev = s["evidence"]
+            print(f"  STALL NEW   x{s.get('count')}: {s.get('summary')} (peak {s['peak_ms']} ms, known at most {KNOWN.get(s.get('key'))}; zone {ev.get('zone')}, args {str(ev.get('args'))[:120]})")
         for s in known:
-            print(f"  STALL KNOWN x{s.get('count')}: {s.get('summary')} (follow-up lane)")
+            print(f"  STALL KNOWN x{s.get('count')}: {s.get('summary')} (peak {s['peak_ms']} ms, at most {KNOWN[s.get('key')]}; follow-up lane)")
         summary["stalls_known"] = [s.get("key") for s in known]
         summary["stalls_new"] = [s.get("key") for s in new]
         check(not new and (a.known_ok or not known), f"no engine-thread stall past its budget ({len(new)} new, {len(known)} known)")

@@ -18,6 +18,8 @@ use specula_core::math::{Mat4, Vec3};
 use specula_gpu::OverlayQuad;
 use std::collections::BTreeMap;
 
+pub(crate) mod flight;
+
 /// A capture-like call parked until the models it would show are built.
 pub(crate) struct CaptureWaiter {
     pub(crate) job: Job,
@@ -30,6 +32,8 @@ pub(crate) struct CaptureWaiter {
     pub(crate) trace: specula_core::trace::Ctx,
     /// The request's call id (0: a playtest's step; see `workers::Offload::agent`).
     pub(crate) call: u64,
+    /// The request's deadline (a capture still waiting for the GPU past it is dropped).
+    pub(crate) deadline: Instant,
 }
 
 /// How a capture waited for models, for its packet.
@@ -78,8 +82,10 @@ pub(crate) struct ViewOpts<'a> {
 
 /// One rendered view.
 pub(crate) struct Rendered {
-    /// The flash watch over this view's captures (`null` until it has a history).
-    pub flash: Json,
+    /// This capture's place in the flash watch over its view ([`crate::flashwatch::Feed`]): run
+    /// with the pixels where they go (a worker), [`Engine::flash_job`] when nothing else takes
+    /// them; `None` with the watch off. Dropped unrun, the view's later captures don't wait.
+    pub(crate) feed: Option<crate::flashwatch::Feed>,
     pub(crate) rgba: Vec<u8>,
     pub(crate) subjects: Vec<Subject>,
     pub(crate) stats: LodStats,
@@ -103,6 +109,74 @@ pub(crate) struct Rendered {
     pub(crate) gi_drawn: bool,
     pub(crate) gi_error: Option<String>,
     pub(crate) gi_stretch: Option<(f32, f32)>,
+}
+
+/// A view submitted to the GPU and not yet landed ([`Engine::render_view_submit`]): what its
+/// packet says about the world, taken when it was drawn.
+pub(crate) struct ViewInFlight {
+    pub(crate) target: TargetId,
+    time_s: f64,
+    /// The flash watch's key for the view.
+    view_key: u64,
+    /// The ID pass ran and its counts are still to be read.
+    ids: bool,
+    include_ui: bool,
+    /// The ID pass's dense ids: `entities[i]` drew as id `i + 1`.
+    entities: Vec<u64>,
+    /// Interface rectangles that hid the scene in the ID counts, and how many were left out.
+    occluders: (usize, usize),
+    subjects: Vec<Subject>,
+    record: sight::FrameRecord,
+    notes: Vec<(usize, crate::streaming::Note)>,
+    /// Streaming's notes are in the subjects.
+    noted: bool,
+    proxies: Vec<(u32, Vec<u64>)>,
+    kinds: Vec<(usize, SubjectKind)>,
+    id_json: Option<Json>,
+    stats: LodStats,
+    lights: usize,
+    dropped_lights: usize,
+    overlays: Option<Json>,
+    two_d_problems: Vec<String>,
+    streaming: Json,
+    effects: Json,
+    drawn: Option<crate::trace_engine::DrawnRecord>,
+    gi_drawn: bool,
+    gi_error: Option<String>,
+    /// The irradiance view's stretch `(scale, start)`, when it drew one.
+    gi_stretch: Option<(f32, f32)>,
+    /// Its pixels, once read ([`Engine::render_view_read`]).
+    rgba: Option<Vec<u8>>,
+}
+
+impl ViewInFlight {
+    /// Its counts and pixels are read (the GPU is done with it).
+    pub(crate) fn read(&self) -> bool {
+        self.rgba.is_some()
+    }
+}
+
+/// What a terrain or water subject says it is (read when its frame was drawn).
+enum SubjectKind {
+    Terrain(Option<u32>),
+    Water(String),
+}
+
+/// A view submitted: waiting for the GPU, or already rendered (the bounds overlay's two renders
+/// wait).
+pub(crate) enum Submitted {
+    Done(Box<Rendered>),
+    Flying(Box<ViewInFlight>),
+}
+
+impl Submitted {
+    /// What its warnings need: model stats, 2D problems, lights left out.
+    fn facts(&self) -> (&LodStats, &[String], usize) {
+        match self {
+            Submitted::Done(r) => (&r.stats, &r.two_d_problems, r.dropped_lights),
+            Submitted::Flying(v) => (&v.stats, &v.two_d_problems, v.dropped_lights),
+        }
+    }
 }
 
 /// Set once the first lost device has been logged.
@@ -161,6 +235,16 @@ pub(crate) fn subtree_bounds(world: &World, id: u64) -> Option<(Vec3, Vec3)> {
 }
 
 impl Engine {
+    /// The world's bounds for auto-framing: from the subject cache when it is cheap to bring up
+    /// to date (no walk of every entity's corners), else from the world.
+    fn world_bounds(&mut self) -> Option<(Vec3, Vec3)> {
+        if !self.subject_cache.ready(&self.world, self.world_generation) {
+            return self.world.bounds();
+        }
+        self.subject_cache.refresh(&self.world, self.world_generation);
+        self.subject_cache.bounds(&self.world)
+    }
+
     /// sight_frame, the sight tools and the camera tools.
     pub(crate) fn handle_sight(&mut self, request: Request) {
         let Request { command, session, reply, deadline, call, .. } = request;
@@ -183,10 +267,13 @@ impl Engine {
         let presented_at = self.before_capture();
         let mut wait = CaptureWait { presented_at, parked_at: None, cut_by_deadline: false };
         // Upload what is built, so models that start a pipeline variant build are waited for.
+        let zp = profile::zone("sight.sync");
         for e in self.sync_meshes() {
             eprintln!("specula: {e}");
         }
         self.models.refresh_ready(&mut self.gpu);
+        drop(zp);
+        let zv = profile::zone("sight.views");
         let views = match self.job_views(&job, &session) {
             Ok(v) => v,
             Err(out) => {
@@ -194,12 +281,20 @@ impl Engine {
                 return;
             }
         };
+        drop(zv);
         // Its views become stream sources: what they need starts uploading now.
+        let zw = profile::zone("sight.waiting");
         let streaming = self.stream_capture(&stream_views(&views));
         // `fresh`: sprite and tileset files in view are checked for changes now, so the capture
         // shows them as they are at the request.
-        if self.building_in(&views) == 0 && self.two_d_waiting(&views, true) == 0 && streaming == 0 && self.vfx_textures_waiting(true) == 0 && self.terrain_waiting(&views) == 0 {
-            self.run_job(&job, &session, wait, reply, call);
+        let ready = self.building_in(&views) == 0 && self.two_d_waiting(&views, true) == 0 && streaming == 0 && self.vfx_textures_waiting(true) == 0 && self.terrain_waiting(&views) == 0;
+        drop(zw);
+        if ready {
+            // Started now, its views needn't be worked out again (auto-framing reads the bounds of
+            // every entity) unless the world changes first.
+            self.captures.views_hint = Some((self.world_generation, self.world.draw_epoch(), self.world.revision(), views));
+            self.run_job(job, &session, wait, reply, call, deadline);
+            self.captures.views_hint = None;
             return;
         }
         // Answer before the caller's own deadline, building or not.
@@ -207,7 +302,7 @@ impl Engine {
         let latest = deadline.checked_sub(Duration::from_secs(2)).unwrap_or(deadline);
         wait.parked_at = Some(Instant::now());
         wait.cut_by_deadline = latest < usual;
-        self.capture_waiters.push(CaptureWaiter { job, session, reply, until: usual.min(latest), wait, trace: specula_core::trace::Ctx::current(), call });
+        self.capture_waiters.push(CaptureWaiter { job, session, reply, until: usual.min(latest), wait, trace: specula_core::trace::Ctx::current(), call, deadline });
     }
 
     /// Renders parked captures whose models are built (or whose wait ran out).
@@ -238,7 +333,7 @@ impl Engine {
                 let wait = CaptureWait { cut_by_deadline: w.wait.cut_by_deadline && now >= w.until, ..w.wait };
                 let _c = w.trace.enter();
                 let started = Instant::now();
-                self.run_job(&w.job, &w.session, wait, w.reply, w.call);
+                self.run_job(w.job, &w.session, wait, w.reply, w.call, w.deadline);
                 self.engine_work_done(w.trace.call, Some(crate::schedule::Class::Render), "parked_capture", started.elapsed());
             } else {
                 self.capture_waiters.push(w);
@@ -321,7 +416,7 @@ impl Engine {
                 let aspect = spec.width as f32 / spec.height.max(1) as f32;
                 (sight::auto_camera_2d(&self.world, spec.ortho, aspect), source("auto"), None)
             }
-            _ => (sight::auto_camera(&self.world, spec.fov_y_deg), source("auto"), None),
+            _ => (sight::auto_camera_of(self.world_bounds(), spec.fov_y_deg), source("auto"), None),
         };
         let mut camera = camera;
         if let (None, Some(height_m)) = (&spec.camera, spec.ortho) {
@@ -458,45 +553,18 @@ impl Engine {
         }
     }
 
-    /// Renders a job and answers it: at once (sight_query), or from a worker once its image is
-    /// encoded and written (the rest; see [`Engine::offload_capture`]).
-    fn run_job(&mut self, job: &Job, session: &SessionInfo, wait: CaptureWait, reply: crate::jobs::Reply, call: u64) {
+    /// Renders a job and answers it: from a worker once its image is encoded and written
+    /// (sight_query at once when its view lands). The render doesn't wait for the GPU: see
+    /// [`flight`].
+    fn run_job(&mut self, job: Job, session: &SessionInfo, wait: CaptureWait, reply: crate::jobs::Reply, call: u64, deadline: Instant) {
         // An image goes to a worker: with no slot free the call is refused before it renders.
-        if !matches!(job, Job::Query(_)) {
-            // What its pixels hold until encoded: the frame, or a sheet within the sheet cap.
-            let bytes = match job {
-                Job::Frame(s) | Job::Mark { frame: s, .. } => u64::from(s.width) * u64::from(s.height) * 4,
-                _ => u64::from(orbit::MAX_SHEET) * u64::from(orbit::MAX_SHEET) * 4,
-            };
+        if let Some(bytes) = capture_bytes(&job) {
             if let Err(e) = self.workers_room(&self.capture_owner(session), call, bytes) {
                 reply.refuse(&e);
                 return;
             }
         }
-        // Presentation again only if the simulation moved on while the capture was parked.
-        if self.game.is_some() && wait.presented_at != Some(self.clock.tick()) {
-            self.before_capture();
-        }
-        self.pump_builds(None);
-        let views = match self.job_views(job, session) {
-            Ok(v) => v,
-            Err(out) => {
-                let _ = reply.send(out);
-                return;
-            }
-        };
-        let building = self.building_in(&views);
-        let to = Answer { reply, call };
-        match job {
-            Job::Frame(spec) => self.capture_frame(spec, session, wait, &views[0], building, to),
-            Job::Mark { name, frame } => self.compare_mark(name, frame, session, &views[0], to),
-            Job::Diff { name, threshold, max_subjects } => self.compare_diff(name, *threshold, *max_subjects, session, to),
-            Job::Orbit(o) => self.orbit(o, session, &views, building, to),
-            Job::Query(q) => {
-                let out = self.sight_query(q, &views[0]);
-                let _ = to.reply.send(out);
-            }
-        }
+        self.capture_job(job, session, wait, reply, call, deadline);
     }
 
     /// Whose a capture's worker job is.
@@ -516,11 +584,28 @@ impl Engine {
     /// worker sends. Encoding a 2048 x 2048 frame took about 290 ms of the engine thread (class C,
     /// 2026-10-29).
     pub(crate) fn offload_capture(&mut self, session: &SessionInfo, to: Answer, image: (u32, u32, Vec<u8>), png: PathBuf, source: &'static str, finish: impl FnOnce(Vec<u8>, Option<PathBuf>, Vec<Json>) -> ToolOutput + Send + 'static) {
+        let bytes = image.2.len() as u64;
+        self.offload_capture_made(session, to, bytes, move || (image, ()), png, source, move |(), png_bytes, saved, warnings| finish(png_bytes, saved, warnings));
+    }
+
+    /// [`Engine::offload_capture`] whose image is made on the worker too (`make`: a compare's
+    /// diff and side-by-side sheet), with what else `make` worked out for `finish`. `bytes`: what
+    /// the inputs hold meanwhile.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn offload_capture_made<R: Send + 'static>(
+        &mut self,
+        session: &SessionInfo,
+        to: Answer,
+        bytes: u64,
+        make: impl FnOnce() -> ((u32, u32, Vec<u8>), R) + Send + 'static,
+        png: PathBuf,
+        source: &'static str,
+        finish: impl FnOnce(R, Vec<u8>, Option<PathBuf>, Vec<Json>) -> ToolOutput + Send + 'static,
+    ) {
         let Answer { reply, call } = to;
         let theirs = reply.clone();
-        let (w, h, rgba) = image;
-        let bytes = rgba.len() as u64;
         let work = move |_: &crate::workers::Cancel| {
+            let ((w, h, rgba), made) = make();
             let bytes = encode_png(w, h, &rgba);
             drop(rgba);
             let mut warnings = Vec::new();
@@ -535,7 +620,7 @@ impl Engine {
                     None
                 }
             };
-            let _ = theirs.send(finish(bytes, saved, warnings));
+            let _ = theirs.send(finish(made, bytes, saved, warnings));
         };
         let kind = crate::workers::JobKind::CaptureEncode;
         let job = crate::workers::Offload::agent(kind, self.capture_owner(session), &session.id, call).class(crate::schedule::Class::Render).bytes(bytes);
@@ -549,19 +634,20 @@ impl Engine {
         }
     }
 
-    /// Warnings every capture shares: failed uploads, models not drawn, dropped lights, the
-    /// camera's, and validation messages.
-    fn capture_warnings(&mut self, r: &Rendered, wait: CaptureWait, building: usize, view: &ViewReq) -> Vec<Json> {
+    /// Warnings every capture shares, about the world as its view was drawn: failed uploads,
+    /// models not drawn, dropped lights, the camera's (validation messages come when it lands,
+    /// [`Engine::validation_warnings`]).
+    fn capture_warnings(&mut self, stats: &LodStats, two_d_problems: &[String], dropped_lights: usize, wait: CaptureWait, building: usize, view: &ViewReq) -> Vec<Json> {
         let mut warnings: Vec<Json> = self.lathes.failures().chain(self.models.failures()).take(10).map(|m| Json::from(m.as_str())).collect();
-        if r.stats.not_resident > 0 {
+        if stats.not_resident > 0 {
             warnings.push(Json::from(format!(
                 "{} built model entit{} not drawn: not resident (streaming: too far and too small for every camera, or evicted under \
                  memory_mb; see streaming.not_resident and subjects' drawn_as, stream_state for why)",
-                r.stats.not_resident,
-                if r.stats.not_resident == 1 { "y" } else { "ies" },
+                stats.not_resident,
+                if stats.not_resident == 1 { "y" } else { "ies" },
             )));
         }
-        if r.stats.missing > 0 {
+        if stats.missing > 0 {
             let waited = match (wait.parked_at, wait.cut_by_deadline) {
                 (None, _) => "none was in frame when the call came".to_owned(),
                 (Some(t), false) => format!("waited {:.1} s", t.elapsed().as_secs_f64()),
@@ -570,8 +656,8 @@ impl Engine {
             warnings.push(Json::from(format!(
                 "{} model entit{} not drawn: {building} in frame still building ({waited}), others failed or \
                  started building since (world_query fields model_state, engine_info models.library.broken)",
-                r.stats.missing,
-                if r.stats.missing == 1 { "y" } else { "ies" },
+                stats.missing,
+                if stats.missing == 1 { "y" } else { "ies" },
             )));
         }
         // Terrains drawn by their stand-in meshes: their sets weren't up when the wait ran out
@@ -589,17 +675,23 @@ impl Engine {
         // Models held back because their pipeline variant failed to build.
         warnings.extend(self.world.entities().filter_map(|e| self.models.pipeline_problem(e)).take(5).map(Json::from));
         // Only problems of what this frame draws.
-        warnings.extend(r.two_d_problems.iter().map(|m| Json::from(m.as_str())));
-        if r.dropped_lights > 0 {
+        warnings.extend(two_d_problems.iter().map(|m| Json::from(m.as_str())));
+        if dropped_lights > 0 {
             warnings.push(Json::from(format!(
                 "{} point light(s) not rendered: at most {} per frame",
-                r.dropped_lights,
+                dropped_lights,
                 specula_gpu::MAX_POINT_LIGHTS
             )));
         }
         if let Some(w) = &view.warning {
             warnings.push(Json::from(w.as_str()));
         }
+        warnings
+    }
+
+    /// The GPU's validation messages since the last capture, as warnings (and traced).
+    fn validation_warnings(&mut self) -> Vec<Json> {
+        let mut warnings = Vec::new();
         for m in self.gpu.take_validation_messages() {
             if m.severity >= Severity::Warning {
                 warnings.push(Json::from(format!("vulkan {:?} {}: {}", m.severity, m.id_name, m.message)));
@@ -609,14 +701,50 @@ impl Engine {
         warnings
     }
 
-    /// Renders one view (see the module docs).
+    /// Renders one view and waits for it (see the module docs): [`Engine::render_view_submit`],
+    /// then the GPU's fence, then [`Engine::render_view_land`]. Captures don't wait (the capture
+    /// flight, `capture/flight.rs`); filmstrips and tests do.
+    pub(crate) fn render_view(&mut self, camera: Camera, w: u32, h: u32, opts: &ViewOpts) -> Result<Rendered, String> {
+        let mut r = match self.render_view_submit(camera, w, h, opts)? {
+            Submitted::Done(r) => *r,
+            Submitted::Flying(v) => {
+                self.gpu.settle_offscreen(true).map_err(|e| gpu_failure("render", &e, self.windowed))?;
+                self.render_view_land(*v)?
+            }
+        };
+        // Its callers (filmstrip tiles) keep the pixels: the flash watch gets a copy on a worker.
+        if let Some(feed) = r.feed.take() {
+            self.flash_job(feed, r.rgba.clone(), w, h);
+        }
+        Ok(r)
+    }
+
+    /// Runs a capture's flash feed on a worker with `pixels` (a view whose pixels go nowhere else:
+    /// orbit tiles, sight_query, filmstrip tiles).
+    pub(crate) fn flash_job(&mut self, feed: crate::flashwatch::Feed, pixels: Vec<u8>, w: u32, h: u32) {
+        let job = crate::workers::Offload::engine(crate::workers::JobKind::FlashFeed).class(crate::schedule::Class::Render);
+        let refused = self.offload(job, move |_| {
+            let _z = profile::zone("sight.flash");
+            feed.run(&pixels, w, h);
+        }, |_, _| {});
+        // (The engine's own jobs are never refused: a refusal would only drop the feed, which
+        // hands the view's state on unfed.)
+        drop(refused);
+    }
+
+    /// Prepares one view and submits it to the GPU without waiting (`Gpu::render_async`):
+    /// draw list, lights, subjects (from the subject cache: projections only), debug overlays.
+    /// Everything the packet says about the world is taken here, when the frame is drawn;
+    /// [`Engine::render_view_land`] adds what only the GPU knows (pixels, ID counts) once the
+    /// render has finished.
     ///
     /// The frame renders once, with the ID buffer (unless `opts.ids` is off), whose counts go
     /// into the subjects. Overlays are drawn in that same render (the ID passes come after them
     /// and ignore them), placed by the projected boxes; only the `bounds` overlay needs the
     /// counts (fully hidden boxes are red), so with it the frame renders a second time, overlays
-    /// on top and without the ID passes (the scene is the same, bit for bit).
-    pub(crate) fn render_view(&mut self, camera: Camera, w: u32, h: u32, opts: &ViewOpts) -> Result<Rendered, String> {
+    /// on top and without the ID passes (the scene is the same, bit for bit): that case waits for
+    /// the GPU here and comes back [`Submitted::Done`].
+    pub(crate) fn render_view_submit(&mut self, camera: Camera, w: u32, h: u32, opts: &ViewOpts) -> Result<Submitted, String> {
         let view_proj = camera.view_proj(w, h);
         let mut draws = Vec::new();
         let mut owners = Vec::new();
@@ -627,6 +755,7 @@ impl Engine {
         // Baked GI: the chunks around this camera; `sight_frame gi: "probes"` adds the probes
         // (not counted in the ID buffer).
         // A bake that just landed loads on a worker: a capture waits for it (at most 30 s).
+        let zg = profile::zone("sight.gi_lights_fx");
         self.gi.wait_loads(&self.world, std::time::Duration::from_secs(30));
         self.gi.update(&self.world, camera.eye, true);
         let gi_view = self.gi.capture_view;
@@ -646,13 +775,16 @@ impl Engine {
         let fx_view = crate::vfx::View::of(&camera, w, h);
         self.build_effects(&fx_view, opts.time_s, opts.include_ui, &mut lights, false);
         let fx = self.vfx.take_frame();
-        let effects = self.vfx.packet_json(&self.world, &fx_view);
+        let mut effects = self.vfx.packet_json(&self.world, &fx_view);
+        drop(zg);
         let mut subjects = {
             let _z = profile::zone("sight.subjects");
-            sight::subjects(&self.world, &view_proj, w, h, opts.include_ui)
+            self.subject_cache.refresh(&self.world, self.world_generation);
+            sight::subjects_cached(&self.subject_cache, &self.world, &view_proj, w, h, opts.include_ui)
         };
         // Sprites, tile chunks and shapes: their ids follow the meshes' (render_with_ids takes
         // one id per mesh draw, then one per 2D draw).
+        let z2 = profile::zone("sight.two_d_ids");
         let mut draws_2d = Vec::new();
         let mut owners_2d = Vec::new();
         self.build_draws_2d(&view_proj, opts.include_ui, opts.time_s as f32, &mut draws_2d, Some(&mut owners_2d));
@@ -660,6 +792,7 @@ impl Engine {
         owners.extend_from_slice(&owners_2d);
         let mut record = sight::FrameRecord::new(&owners);
         let (ids, entities) = sight::dense_ids(&owners);
+        drop(z2);
         let target = self.offscreen_target(w, h)?;
         // Animated models' bone matrices, posed at time_s by build_draws (returned below; an
         // error path just drops them).
@@ -697,95 +830,220 @@ impl Engine {
             overlays = (!opts.overlays.is_empty()).then_some(report);
         }
         frame.overlay = &quads;
-        {
-            let _z = profile::zone("sight.render");
-            let rendered = if opts.ids { self.gpu.render_with_ids_occluded(target, &frame, &ids, &occluders) } else { self.gpu.render(target, &frame) };
-            rendered.map_err(|e| gpu_failure("render", &e, self.windowed))?;
-        }
-        let (gi_drawn, gi_error, gi_stretch) = (self.gpu.gi_drawn(), self.gpu.gi_failure().map(str::to_string), self.gpu.gi_view_stretch());
-        // What the colour passes actually recorded (the GPU's own list, after every readiness
-        // check): the packet monitor's record, independent of the ID buffer's counts.
-        let drawn = opts.ids.then(|| {
-            let (mesh, two_d) = self.gpu.last_colour_draws();
-            crate::trace_engine::DrawnRecord::from_recorded(&owners, draws.len(), &mesh, &two_d)
-        });
-        let ids_json = if opts.ids {
-            let gpu_ms = self.gpu.last_frame_stats_of(FramePath::Offscreen).and_then(|s| s.gpu).and_then(|g| {
-                let ms: f64 = g.passes.iter().filter(|p| p.name == specula_gpu::PASS_ID_BUFFER).map(|p| p.gpu_ms).sum();
-                (ms > 0.0).then_some(ms)
-            });
-            let counted = Instant::now();
-            let counts = {
-                let _z = profile::zone("sight.ids");
-                self.gpu.id_coverage(target, entities.len() as u32).map_err(|e| gpu_failure("id readback", &e, self.windowed))?
-            };
-            sight::apply_visibility(&mut subjects, &entities, &counts.per_id);
-            record.set_ids(&entities, &counts.per_id);
-            let cpu_ms = counted.elapsed().as_secs_f64() * 1e3;
-            let mut j = Json::obj([
-                // Entities only (HLOD proxies have ID-pass owners of their own, past every entity).
-                ("entities", Json::from(entities.iter().filter(|e| !sight::is_proxy_owner(**e)).count())),
-                ("visible", Json::from(entities.iter().zip(&counts.per_id).filter(|(e, c)| !sight::is_proxy_owner(**e) && (c.pixels > 0 || c.approx)).count())),
-                ("blended_counted", Json::from(counts.blended_counted)),
-                ("gpu_ms", Json::from(gpu_ms)),
-                ("readback_count_ms", Json::from((cpu_ms * 1000.0).round() / 1000.0)),
-            ]);
-            if opts.include_ui {
-                // How many opaque interface rectangles hid what was under them.
-                j.set("ui_occluders", Json::from(occluders.len()));
-                if occluders_dropped > 0 {
-                    j.set("ui_occluders_dropped", Json::from(occluders_dropped));
-                }
-            }
-            j
-        } else {
-            Json::obj([("off", Json::from(true))])
+        // What streaming says of the subjects and what the terrain and water passes drew, read
+        // now (the frame as drawn), written once the ID counts are in (in the packet's order).
+        let notes = {
+            let _z = profile::zone("sight.annotate");
+            self.stream.notes(&subjects, &self.world, &self.models)
         };
-        // Subjects drawn merged in a proxy, or not resident, say so (before the bounds overlay is
-        // painted: its colours come from the record, review round 2).
-        let annotate = profile::zone("sight.annotate");
-        self.stream.annotate(&mut subjects, &self.world, &self.models);
-        record.set_streaming(&subjects);
-        drop(annotate);
-        record.set_proxies(&self.stream.hlod.capture_groups);
-        if second_render {
-            let (q, report) = self.paint_overlays(camera, view_proj, w, h, &subjects, opts, budget, Some(&record));
-            overlays = (!opts.overlays.is_empty()).then_some(report);
-            let mut both = quads[..hud].to_vec();
-            both.extend(q);
-            frame.overlay = &both;
-            let _z = profile::zone("sight.render");
-            self.gpu.render(target, &frame).map_err(|e| gpu_failure("render", &e, self.windowed))?;
-        }
-        let rgba = {
-            let _z = profile::zone("sight.readback");
-            self.gpu.read_rgba8(target).map_err(|e| gpu_failure("readback", &e, self.windowed))?
-        };
-        // The flash watch over this view's captures, from their own pixels at simulation time.
-        let view_key = view_proj.to_cols_array().iter().fold(u64::from(w) << 32 | u64::from(h), |h, v| h.rotate_left(5) ^ u64::from(v.to_bits()));
-        let flash_report = self.flash.feed_capture(&rgba, w, h, opts.time_s, view_key);
-        let flash = if flash_report.samples >= 2 || flash_report.over { flash_report.to_json() } else { Json::Null };
-        self.models.put_bones(bones);
-        self.vfx.put_frame(fx);
-        self.terrain.frame = terrains;
-        // Terrain and water subjects say what they are (and how a terrain was drawn); the frame
-        // record knows them too (their passes draw outside the mesh lists).
-        for s in subjects.iter_mut() {
+        let proxies = self.stream.hlod.capture_groups.clone();
+        let mut kinds = Vec::new();
+        let wet: BTreeMap<u64, String> = self.world.water_entities().filter_map(|e| e.water.as_ref().map(|w| (e.id, w.preset.as_str().to_owned()))).collect();
+        for (i, s) in subjects.iter().enumerate() {
             if self.terrain.covers(s.id) {
-                s.json.set("kind", Json::from("terrain"));
-                let patches = self.terrain.drawn(s.id).map(|d| d.patches);
-                if let Some(p) = patches {
-                    s.json.set("terrain_patches", Json::from(p));
-                }
-                record.set_terrain(s.id, patches.unwrap_or(0));
-            } else if let Some(w) = self.world.get(s.id).and_then(|e| e.water.as_ref()) {
-                s.json.set("kind", Json::from("water"));
-                s.json.set("water", Json::from(w.preset.as_str()));
-                record.set_water(s.id);
+                kinds.push((i, SubjectKind::Terrain(self.terrain.drawn(s.id).map(|d| d.patches))));
+            } else if let Some(preset) = wet.get(&s.id) {
+                kinds.push((i, SubjectKind::Water(preset.clone())));
             }
         }
         let streaming = self.stream.capture_json(&stats);
-        Ok(Rendered { flash, rgba, subjects, stats, lights: lights.len(), dropped_lights, overlays, ids: ids_json, two_d_problems, streaming, effects, record, drawn, gi_drawn, gi_error, gi_stretch })
+        let view_key = view_proj.to_cols_array().iter().fold(u64::from(w) << 32 | u64::from(h), |h, v| h.rotate_left(5) ^ u64::from(v.to_bits()));
+        let submitted = {
+            let _z = profile::zone("sight.render");
+            if second_render {
+                let rendered = if opts.ids { self.gpu.render_with_ids_occluded(target, &frame, &ids, &occluders) } else { self.gpu.render(target, &frame) };
+                rendered.map_err(|e| gpu_failure("render", &e, self.windowed))
+            } else {
+                self.gpu.render_async(target, &frame, opts.ids.then_some((&ids[..], &occluders[..]))).map_err(|e| gpu_failure("render", &e, self.windowed))
+            }
+        };
+        // (Read now: window frames overwrite the GPU's GI state before the view lands.)
+        let (gi_drawn, gi_error, gi_stretch) = (self.gpu.gi_drawn(), self.gpu.gi_failure().map(str::to_string), self.gpu.gi_view_stretch());
+        if gi_drawn && matches!(gi_view, crate::gi::CaptureView::Irradiance | crate::gi::CaptureView::Probes) {
+            // The irradiance view shows the indirect light alone and draws no particles: the packet
+            // says so, never "drawn" for what no pixel shows (GI fix lane).
+            unlit_particles(&mut effects);
+        }
+        // What the colour passes actually recorded (the GPU's own list, after every readiness
+        // check): the packet monitor's record, independent of the ID buffer's counts.
+        let drawn = (opts.ids && submitted.is_ok()).then(|| {
+            let _z = profile::zone("sight.drawn_record");
+            let (mesh, two_d) = self.gpu.last_colour_draws();
+            crate::trace_engine::DrawnRecord::from_recorded(&owners, draws.len(), &mesh, &two_d)
+        });
+        let mut v = ViewInFlight {
+            target,
+            time_s: opts.time_s,
+            view_key,
+            ids: opts.ids,
+            include_ui: opts.include_ui,
+            entities,
+            occluders: (occluders.len(), occluders_dropped),
+            subjects: std::mem::take(&mut subjects),
+            record: std::mem::take(&mut record),
+            notes,
+            noted: false,
+            id_json: None,
+            proxies,
+            kinds,
+            stats,
+            lights: lights.len(),
+            dropped_lights,
+            overlays: overlays.take(),
+            two_d_problems,
+            streaming,
+            effects,
+            drawn,
+            gi_drawn,
+            gi_error,
+            gi_stretch,
+            rgba: None,
+        };
+        if !second_render {
+            self.models.put_bones(bones);
+            self.vfx.put_frame(fx);
+            self.terrain.frame = terrains;
+            submitted?;
+            return Ok(Submitted::Flying(Box::new(v)));
+        }
+        if let Err(e) = submitted {
+            self.models.put_bones(bones);
+            self.vfx.put_frame(fx);
+            self.terrain.frame = terrains;
+            return Err(e);
+        }
+        // The bounds overlay colours fully hidden boxes from the counts: the counts first, then the
+        // frame again with the overlays on top (waited for here).
+        self.view_counts(&mut v)?;
+        let (q, report) = self.paint_overlays(camera, view_proj, w, h, &v.subjects, opts, budget, Some(&v.record));
+        v.overlays = (!opts.overlays.is_empty()).then_some(report);
+        let mut both = quads[..hud].to_vec();
+        both.extend(q);
+        frame.overlay = &both;
+        let again = {
+            let _z = profile::zone("sight.render");
+            self.gpu.render(target, &frame).map_err(|e| gpu_failure("render", &e, self.windowed))
+        };
+        self.models.put_bones(bones);
+        self.vfx.put_frame(fx);
+        self.terrain.frame = terrains;
+        again?;
+        v.ids = false; // counted above
+        self.render_view_land(v).map(|r| Submitted::Done(Box::new(r)))
+    }
+
+    /// The ID counts of a settled view into its subjects and record, then its streaming notes.
+    fn view_counts(&mut self, v: &mut ViewInFlight) -> Result<(), String> {
+        let gpu_ms = self.gpu.last_frame_stats_of(FramePath::Offscreen).and_then(|s| s.gpu).and_then(|g| {
+            let ms: f64 = g.passes.iter().filter(|p| p.name == specula_gpu::PASS_ID_BUFFER).map(|p| p.gpu_ms).sum();
+            (ms > 0.0).then_some(ms)
+        });
+        let counted = Instant::now();
+        let counts = {
+            let _z = profile::zone("sight.ids");
+            self.gpu.id_coverage(v.target, v.entities.len() as u32).map_err(|e| gpu_failure("id readback", &e, self.windowed))?
+        };
+        {
+            let _z = profile::zone("sight.visibility");
+            sight::apply_visibility(&mut v.subjects, &v.entities, &counts.per_id);
+        }
+        v.record.set_ids(&v.entities, &counts.per_id);
+        let cpu_ms = counted.elapsed().as_secs_f64() * 1e3;
+        let entities = &v.entities;
+        let mut j = Json::obj([
+            // Entities only (HLOD proxies have ID-pass owners of their own, past every entity).
+            ("entities", Json::from(entities.iter().filter(|e| !sight::is_proxy_owner(**e)).count())),
+            ("visible", Json::from(entities.iter().zip(&counts.per_id).filter(|(e, c)| !sight::is_proxy_owner(**e) && (c.pixels > 0 || c.approx)).count())),
+            ("blended_counted", Json::from(counts.blended_counted)),
+            ("gpu_ms", Json::from(gpu_ms)),
+            ("readback_count_ms", Json::from((cpu_ms * 1000.0).round() / 1000.0)),
+        ]);
+        if v.include_ui {
+            // How many opaque interface rectangles hid what was under them.
+            j.set("ui_occluders", Json::from(v.occluders.0));
+            if v.occluders.1 > 0 {
+                j.set("ui_occluders_dropped", Json::from(v.occluders.1));
+            }
+        }
+        v.id_json = Some(j);
+        self.view_notes(v);
+        Ok(())
+    }
+
+    /// Streaming's notes into a view's subjects (before the bounds overlay is painted: its colours
+    /// come from the record, review round 2).
+    fn view_notes(&mut self, v: &mut ViewInFlight) {
+        crate::streaming::apply_notes(&mut v.subjects, &v.notes);
+        v.record.set_streaming(&v.subjects);
+        v.record.set_proxies(&v.proxies);
+        v.noted = true;
+    }
+
+    /// What a settled view needs from the GPU (a capture's first step once it is done): its ID
+    /// counts into the subjects, streaming's notes, and its pixels. The GPU is free after it.
+    pub(crate) fn render_view_read(&mut self, v: &mut ViewInFlight) -> Result<(), String> {
+        if v.rgba.is_some() {
+            return Ok(());
+        }
+        if v.ids {
+            self.view_counts(v)?;
+            v.ids = false;
+        } else if !v.noted {
+            self.view_notes(v);
+        }
+        let _z = profile::zone("sight.readback");
+        v.rgba = Some(self.gpu.read_rgba8(v.target).map_err(|e| gpu_failure("readback", &e, self.windowed))?);
+        Ok(())
+    }
+
+    /// A submitted view, once the GPU has finished it (`Gpu::settle_offscreen`): its ID counts,
+    /// its pixels (already copied to the readback buffer by the render), the flash watch, and the
+    /// terrain and water notes.
+    pub(crate) fn render_view_land(&mut self, mut v: ViewInFlight) -> Result<Rendered, String> {
+        self.render_view_read(&mut v)?;
+        let ids_json = v.id_json.take().unwrap_or_else(|| Json::obj([("off", Json::from(true))]));
+        let rgba = v.rgba.take().unwrap_or_default();
+        // The flash watch over this view's captures, from their own pixels at simulation time:
+        // its place in the view's order is taken now, the pixels are fed where they go next (the
+        // encode worker; see `Rendered::feed`).
+        let feed = self.flash.feed_for(v.view_key, v.time_s);
+        // Terrain and water subjects say what they are (and how a terrain was drawn); the frame
+        // record knows them too (their passes draw outside the mesh lists).
+        for (i, k) in std::mem::take(&mut v.kinds) {
+            let Some(s) = v.subjects.get_mut(i) else { continue };
+            match k {
+                SubjectKind::Terrain(patches) => {
+                    s.json.set("kind", Json::from("terrain"));
+                    if let Some(p) = patches {
+                        s.json.set("terrain_patches", Json::from(p));
+                    }
+                    v.record.set_terrain(s.id, patches.unwrap_or(0));
+                }
+                SubjectKind::Water(preset) => {
+                    s.json.set("kind", Json::from("water"));
+                    s.json.set("water", Json::from(preset));
+                    v.record.set_water(s.id);
+                }
+            }
+        }
+        Ok(Rendered {
+            feed,
+            rgba,
+            subjects: v.subjects,
+            stats: v.stats,
+            lights: v.lights,
+            dropped_lights: v.dropped_lights,
+            overlays: v.overlays,
+            ids: ids_json,
+            two_d_problems: v.two_d_problems,
+            streaming: v.streaming,
+            effects: v.effects,
+            record: v.record,
+            drawn: v.drawn,
+            gi_drawn: v.gi_drawn,
+            gi_error: v.gi_error,
+            gi_stretch: v.gi_stretch,
+        })
     }
 
     /// The overlay records for one view and what they drew, at most `budget` of them.
@@ -801,7 +1059,7 @@ impl Engine {
             .iter()
             .filter(|s| s.on_screen)
             .filter_map(|s| {
-                let path = s.json.get("path").and_then(Json::as_str).unwrap_or_default().to_owned();
+                let path = s.base.path.clone();
                 (spec.selects(&path)).then(|| world.get(s.id).map(|e| (s, e, path))).flatten()
             })
             .collect();
@@ -809,9 +1067,9 @@ impl Engine {
         let centre = |p: &Painter, e: &world::Entity, s: &Subject| -> [f32; 2] {
             let (lo, hi) = e.world_aabb();
             let c = p.project((lo + hi) * 0.5);
-            let r = s.json.get("screen").and_then(Json::as_array);
+            let r = s.screen;
             let rect_centre = r.map(|r| {
-                let v = |i: usize| r[i].as_f64().unwrap_or(0.0) as f32;
+                let v = |i: usize| f64::from(r[i]) as f32;
                 [v(0) + v(2) * 0.5, v(1) + v(3) * 0.5]
             });
             match (c, rect_centre) {
@@ -819,7 +1077,7 @@ impl Engine {
                     // The box centre projects outside its own clipped rectangle when the box
                     // reaches past the image edge: use the rectangle's centre then.
                     let r = r.expect("some");
-                    let v = |i: usize| r[i].as_f64().unwrap_or(0.0) as f32;
+                    let v = |i: usize| f64::from(r[i]) as f32;
                     if c[0] >= v(0) && c[0] <= v(0) + v(2) && c[1] >= v(1) && c[1] <= v(1) + v(3) {
                         c
                     } else {
@@ -1060,408 +1318,6 @@ impl Engine {
         (quads, report.to_json())
     }
 
-    /// sight_frame: rendered here, encoded, written and answered on a worker.
-    fn capture_frame(&mut self, spec: &FrameSpec, session: &SessionInfo, wait: CaptureWait, view: &ViewReq, building: usize, to: Answer) {
-        let (w, h) = (spec.width, spec.height);
-        let time_s = spec.time_s.map_or_else(|| self.time_s(), f64::from);
-        let opts = ViewOpts { include_ui: spec.include_ui, lod: spec.lod, time_s, overlays: &spec.overlays, caption: None, ids: spec.ids, fill: None };
-        // How this capture shows baked GI (lit, off, irradiance, probes): for this render only.
-        self.gi.capture_view = spec.gi;
-        self.gi.marks_drawn = (0, 0);
-        let rendered = self.render_view(view.camera, w, h, &opts);
-        self.gi.capture_view = crate::gi::CaptureView::Lit;
-        let r = match rendered {
-            Ok(r) => r,
-            Err(e) => {
-                let _ = to.reply.send(ToolOutput::error(e));
-                return;
-            }
-        };
-        let packet_zone = profile::zone("sight.packet");
-        let warnings = self.capture_warnings(&r, wait, building, view);
-        let png = self.next_capture_path();
-        let planned_packet = png.with_extension("json");
-        let on_screen = r.subjects.iter().filter(|s| s.on_screen).count();
-        // The packet must agree with its own ID buffer (a monitor, docs/design/TRACE.md).
-        if spec.ids {
-            crate::trace_engine::report_packet(r.subjects.iter().map(|s| &s.json), w, h, r.drawn.as_ref(), Some(&planned_packet));
-        }
-        let mut camera = view.camera.to_json();
-        if let Json::Obj(src) = &view.source {
-            for (k, v) in src {
-                camera.set(k.as_str(), v.clone());
-            }
-        }
-        let mut packet = Json::obj([
-            ("schema", Json::from(sight::SCHEMA)),
-            ("frame", Json::from(self.frames_captured)),
-            ("requested_by", Json::from(self.swarm.agent_name(session))),
-            // (Set once the PNG is written.)
-            ("image", Json::Null),
-            ("camera", camera),
-            ("time_s", Json::from(time_s)),
-            ("include_ui", Json::from(spec.include_ui)),
-            ("models", r.stats.to_json()),
-            ("lights", Json::from(r.lights)),
-            ("id_buffer", r.ids.clone()),
-            ("subjects_total", Json::from(r.subjects.len())),
-            ("subjects_on_screen", Json::from(on_screen)),
-            // (Every subject, set on the worker: 20,000 of them took about 100 ms to copy here.)
-            ("subjects", Json::Null),
-            ("warnings", Json::Null),
-            // Structured problems (objects), next to the plain-text warnings.
-            ("problems", Json::Arr(self.luts.warning(self.world.env()).into_iter().chain(self.models.pipeline_failure_json()).collect())),
-        ]);
-        if let Some(o) = &r.overlays {
-            packet.set("overlays", o.clone());
-        }
-        if !r.streaming.is_null() {
-            packet.set("streaming", r.streaming.clone());
-        }
-        // Only when the world has GI volumes: other worlds keep their packets as they were.
-        let gi_json = {
-            let lib = self.library.lock();
-            self.gi.packet_json(&self.world, &lib, spec.gi)
-        };
-        if let Some(mut g) = gi_json {
-            crate::gi::drawn_json(&mut g, spec.gi, r.gi_drawn, r.gi_error.as_deref());
-            if let Some((scale, start)) = r.gi_stretch {
-                // The irradiance view's own stretch: shown luminance = 0.03 + (irradiance
-                // luminance - start) x scale before the tone curve (the probes' 5th to 95th
-                // percentiles over 0.03..0.45).
-                let r4 = |x: f32| Json::from((f64::from(x) * 1e4).round() / 1e4);
-                g.set("irradiance_scale", r4(scale));
-                g.set("irradiance_start", r4(start));
-            }
-            packet.set("gi", g);
-        }
-        // Only when the frame had any: worlds without effects keep their packets as they were.
-        if r.effects.get("effects").and_then(Json::as_array).is_some_and(|a| !a.is_empty())
-            || r.effects.get("decals").and_then(Json::as_array).is_some_and(|a| !a.is_empty())
-            || r.effects.get("frame").and_then(|f| f.get("instances")).and_then(Json::as_u64).is_some_and(|n| n > 0)
-        {
-            packet.set("effects", r.effects.clone());
-        }
-        if !r.flash.is_null() {
-            packet.set("flash", r.flash.clone());
-        }
-        let (subject_filter, max_subjects) = (spec.subjects, spec.max_subjects);
-        let filter = (subject_filter != SubjectFilter::All).then(|| subject_filter.name());
-        let subjects = r.subjects;
-        drop(packet_zone);
-        self.offload_capture(session, to, (w, h, r.rgba), png, "sight", move |png_bytes, saved, more| {
-            packet.set("subjects", Json::arr(subjects.iter().map(|s| s.json.clone())));
-            // The response carries the most relevant subjects only; agents' context is precious.
-            let filtered: Vec<Subject> = subjects.iter().filter(|s| passes(s, subject_filter)).cloned().collect();
-            let (chosen, omitted) = sight::most_relevant(&filtered, max_subjects);
-            let omitted = omitted + (subjects.len() - filtered.len());
-            let mut warnings = warnings;
-            warnings.extend(more);
-            let packet_path = saved.as_ref().map(|p| p.with_extension("json"));
-            let show = |p: Option<&PathBuf>| -> Json { p.map(|p| p.display().to_string()).into() };
-            let image = Json::obj([
-                ("width", Json::from(w)),
-                ("height", Json::from(h)),
-                ("png_bytes", Json::from(png_bytes.len())),
-                ("path", show(saved.as_ref())),
-                ("packet_path", show(packet_path.as_ref())),
-            ]);
-            packet.set("image", image);
-            packet.set("warnings", Json::Arr(warnings.clone()));
-            // The full packet is saved next to its PNG so a verifier can re-check both later.
-            if let Some(path) = &packet_path {
-                if let Err(e) = crate::disk::book().write(crate::disk::Category::Captures, "sight", path, packet.to_pretty().as_bytes(), crate::disk::Need::Agent) {
-                    warnings.push(Json::from(format!("packet not saved to disk: {e}")));
-                    packet.set("warnings", Json::Arr(warnings));
-                }
-            }
-            packet.set("subjects", Json::Arr(chosen));
-            packet.set("subjects_omitted", Json::from(omitted));
-            if let Some(f) = filter {
-                packet.set("subjects_filter", Json::from(f));
-            }
-            ToolOutput {
-                content: vec![Content::Image { mime_type: "image/png".into(), data_base64: base64::encode(&png_bytes) }, Content::Text(packet.to_pretty())],
-                is_error: false,
-            }
-        });
-    }
-
-    /// sight_orbit.
-    fn orbit(&mut self, o: &OrbitSpec, session: &SessionInfo, views: &[ViewReq], building: usize, to: Answer) {
-        let (center, radius, path) = match self.orbit_target(&o.target) {
-            Ok(t) => t,
-            Err(out) => {
-                let _ = to.reply.send(out);
-                return;
-            }
-        };
-        let distance = o.distance.unwrap_or_else(|| orbit::fit_distance(radius, o.fov_y_deg));
-        let (tw, th, sw, sh) = orbit::layout(o.views, o.tile);
-        let time_s = o.time_s.map_or_else(|| self.time_s(), f64::from);
-        let mut sheet = vec![0u8; (sw * sh * 4) as usize];
-        for px in sheet.chunks_exact_mut(4) {
-            px.copy_from_slice(&[24, 26, 30, 255]);
-        }
-        let mut out_views = Vec::new();
-        let mut warnings = Vec::new();
-        let mut overlays = None;
-        for (i, v) in views.iter().enumerate() {
-            let (_, az) = orbit::view(center, distance, o.elevation_deg, o.start_deg, i as u32, o.views, o.fov_y_deg);
-            let caption = format!("{} az {}", i + 1, az.round());
-            let opts = ViewOpts { include_ui: o.include_ui, lod: o.lod, time_s, overlays: &o.overlays, caption: Some(caption), ids: true, fill: None };
-            let r = match self.render_view(v.camera, tw, th, &opts) {
-                Ok(r) => r,
-                Err(e) => {
-                    let _ = to.reply.send(ToolOutput::error(e));
-                    return;
-                }
-            };
-            if i == 0 {
-                warnings = self.capture_warnings(&r, CaptureWait { presented_at: None, parked_at: None, cut_by_deadline: false }, building, v);
-            }
-            if overlays.is_none() {
-                overlays = r.overlays.as_ref().and_then(|j| j.get("drawn")).map(|d| Json::obj([("drawn", d.clone()), ("per_view", Json::from("each view's own counts are in views[].overlays"))]));
-            }
-            let (x, y) = orbit::tile_origin(i as u32, o.views, tw, th);
-            compare::blit(&mut sheet, sw, &r.rgba, tw, th, x, y);
-            let on: Vec<Subject> = r.subjects.iter().filter(|s| s.on_screen).cloned().collect();
-            let (chosen, omitted) = sight::most_relevant(&on, o.max_subjects.max(1));
-            let chosen: Vec<Json> = if o.max_subjects == 0 { Vec::new() } else { chosen.into_iter().map(compact_subject).collect() };
-            let mut view = Json::obj([
-                ("view", Json::from(i + 1)),
-                ("azimuth_deg", Json::from(az)),
-                ("tile", Json::arr([x, y, tw, th].map(Json::from))),
-                ("eye", world::vec3_json(v.camera.eye)),
-                ("subjects_on_screen", Json::from(on.len())),
-                ("subjects", Json::Arr(chosen)),
-                ("subjects_omitted", Json::from(if o.max_subjects == 0 { on.len() } else { omitted })),
-            ]);
-            if let Some(ov) = &r.overlays {
-                // What was drawn is listed once (top-level `overlays`); each view has its counts.
-                view.set("overlays", overlay_counts(ov));
-            }
-            out_views.push(view);
-        }
-        let png = self.next_capture_path();
-        let frame = self.frames_captured;
-        let requested_by = self.swarm.agent_name(session);
-        let (elevation_deg, fov_y_deg, grid) = (o.elevation_deg, o.fov_y_deg, orbit::grid(o.views));
-        self.offload_capture(session, to, (sw, sh, sheet), png, "sight", move |png_bytes, saved, more| {
-            warnings.extend(more);
-            let packet_path = saved.as_ref().map(|p| p.with_extension("json"));
-            let mut packet = Json::obj([
-                ("schema", Json::from(sight::SCHEMA)),
-                ("kind", Json::from("orbit")),
-                ("frame", Json::from(frame)),
-                ("requested_by", Json::from(requested_by)),
-                (
-                    "image",
-                    Json::obj([
-                        ("width", Json::from(sw)),
-                        ("height", Json::from(sh)),
-                        ("png_bytes", Json::from(png_bytes.len())),
-                        ("path", saved.as_ref().map(|p| p.display().to_string()).into()),
-                        ("packet_path", packet_path.as_ref().map(|p| p.display().to_string()).into()),
-                        ("grid", Json::arr([grid.0, grid.1].map(Json::from))),
-                    ]),
-                ),
-                ("target", Json::obj([("path", Json::from(path)), ("center", world::vec3_json(center)), ("radius_m", Json::from(radius))])),
-                ("distance_m", Json::from(distance)),
-                ("elevation_deg", Json::from(elevation_deg)),
-                ("fov_y_deg", Json::from(fov_y_deg)),
-                ("time_s", Json::from(time_s)),
-                ("views", Json::Arr(out_views)),
-                ("warnings", Json::Arr(warnings)),
-            ]);
-            if let Some(ov) = overlays {
-                packet.set("overlays", ov);
-            }
-            save_packet(&mut packet, packet_path.as_ref());
-            ToolOutput {
-                content: vec![Content::Image { mime_type: "image/png".into(), data_base64: base64::encode(&png_bytes) }, Content::Text(packet.to_string())],
-                is_error: false,
-            }
-        });
-    }
-
-    /// sight_compare mark: the "before" is kept here; its PNG is encoded and written on a worker.
-    fn compare_mark(&mut self, name: &str, spec: &FrameSpec, session: &SessionInfo, view: &ViewReq, to: Answer) {
-        let time_s = spec.time_s.map_or_else(|| self.time_s(), f64::from);
-        let opts = ViewOpts { include_ui: spec.include_ui, lod: spec.lod, time_s, overlays: &spec.overlays, caption: None, ids: spec.ids, fill: None };
-        let r = match self.render_view(view.camera, spec.width, spec.height, &opts) {
-            Ok(r) => r,
-            Err(e) => {
-                let _ = to.reply.send(ToolOutput::error(e));
-                return;
-            }
-        };
-        let warnings = self.capture_warnings(&r, CaptureWait { presented_at: None, parked_at: None, cut_by_deadline: false }, 0, view);
-        let png = self.next_capture_path();
-        // Only what was on screen, plus every entity's id (to tell new entities from old ones).
-        let subjects = r.subjects.iter().filter(|s| s.on_screen).filter_map(|s| SubjectState::from_json(&s.json)).collect();
-        let mut ids: Vec<u64> = self.world.entities().map(|e| e.id).collect();
-        ids.sort_unstable();
-        let mark_view = MarkView {
-            camera: view.camera,
-            width: spec.width,
-            height: spec.height,
-            include_ui: spec.include_ui,
-            lod: spec.lod,
-            time_s: spec.time_s,
-            overlays: spec.overlays.clone(),
-            ids: spec.ids,
-        };
-        let key = self.swarm.key(session);
-        let on_screen = r.subjects.iter().filter(|s| s.on_screen).count();
-        let pixels = r.rgba.clone();
-        // The mark keeps the PNG's planned path (informational: a diff compares its pixels).
-        let data = MarkData { rgba: r.rgba, subjects, ids, frame: self.frames_captured, tick: self.clock.tick(), png_path: Some(png.display().to_string()) };
-        let evicted = self.marks.put(&key, name, mark_view, data);
-        let mut out = Json::obj([
-            ("marked", Json::from(name)),
-            ("frame", Json::from(self.frames_captured)),
-            ("tick", Json::from(self.clock.tick())),
-            ("camera", view.camera.to_json()),
-            ("size", Json::arr([spec.width, spec.height].map(Json::from))),
-            ("time_s", spec.time_s.map_or(Json::from("live"), Json::from)),
-            ("subjects_on_screen", Json::from(on_screen)),
-            ("path", Json::Null),
-            ("evicted", Json::arr(evicted.into_iter().map(Json::from))),
-            ("warnings", Json::Null),
-        ]);
-        self.offload_capture(session, to, (spec.width, spec.height, pixels), png, "sight", move |_, saved, more| {
-            let mut warnings = warnings;
-            warnings.extend(more);
-            out.set("path", saved.map(|p| p.display().to_string()).into());
-            out.set("warnings", Json::Arr(warnings));
-            ToolOutput::text(out.to_pretty())
-        });
-    }
-
-    /// sight_compare diff.
-    fn compare_diff(&mut self, name: &str, threshold: u8, max_subjects: usize, session: &SessionInfo, to: Answer) {
-        let key = self.swarm.key(session);
-        let Some(mark) = self.marks.get(&key, name) else {
-            let _ = to.reply.send(mark_missing(name));
-            return;
-        };
-        let view = mark.view.clone();
-        let (marked_frame, marked_tick) = (mark.data.frame, mark.data.tick);
-        let time_s = view.time_s.map_or_else(|| self.time_s(), f64::from);
-        let opts = ViewOpts { include_ui: view.include_ui, lod: view.lod, time_s, overlays: &view.overlays, caption: None, ids: view.ids, fill: None };
-        let r = match self.render_view(view.camera, view.width, view.height, &opts) {
-            Ok(r) => r,
-            Err(e) => {
-                let _ = to.reply.send(ToolOutput::error(e));
-                return;
-            }
-        };
-        let req = ViewReq { camera: view.camera, width: view.width, height: view.height, include_ui: view.include_ui, source: source("mark"), warning: None };
-        let mut warnings = self.capture_warnings(&r, CaptureWait { presented_at: None, parked_at: None, cut_by_deadline: false }, 0, &req);
-        let mark = &self.marks.get(&key, name).expect("still there: nothing ran in between").data;
-        let (w, h) = (view.width, view.height);
-        let d = compare::diff(&mark.rgba, &r.rgba, w, h, threshold);
-        let heat = compare::heat(&r.rgba, &d, threshold);
-        let after: BTreeMap<u64, SubjectState> =
-            r.subjects.iter().filter(|s| s.on_screen).filter_map(|s| SubjectState::from_json(&s.json)).collect();
-        let world = &self.world;
-        let subjects = compare::subject_diff(&mark.subjects, &mark.ids, &after, &|id| world.get(id).is_some(), 2, max_subjects);
-        let (sheet, sw, sh, factor) = compare::side_by_side(&[&mark.rgba, &r.rgba, &heat], w, h, 4, orbit::MAX_SHEET);
-        let png = self.next_capture_path();
-        let frame = self.frames_captured;
-        let ticks_since = self.clock.tick().saturating_sub(marked_tick);
-        let (name, camera, pixels) = (name.to_owned(), view.camera.to_json(), d.to_json());
-        self.offload_capture(session, to, (sw, sh, sheet), png, "sight", move |png_bytes, saved, more| {
-            warnings.extend(more);
-            let packet_path = saved.as_ref().map(|p| p.with_extension("json"));
-            let mut packet = Json::obj([
-                ("schema", Json::from(sight::SCHEMA)),
-                ("kind", Json::from("compare")),
-                ("name", Json::from(name)),
-                ("frame", Json::from(frame)),
-                ("marked_frame", Json::from(marked_frame)),
-                ("ticks_since_mark", Json::from(ticks_since)),
-                ("camera", camera),
-                (
-                    "image",
-                    Json::obj([
-                        ("width", Json::from(sw)),
-                        ("height", Json::from(sh)),
-                        ("panels", Json::arr(["before", "after", "heat"].map(Json::from))),
-                        ("scale", Json::from(1.0 / factor as f64)),
-                        ("path", saved.as_ref().map(|p| p.display().to_string()).into()),
-                        ("packet_path", packet_path.as_ref().map(|p| p.display().to_string()).into()),
-                    ]),
-                ),
-                ("threshold", Json::from(u32::from(threshold))),
-                ("pixels", pixels),
-                ("subjects", subjects),
-                ("warnings", Json::Arr(warnings)),
-            ]);
-            save_packet(&mut packet, packet_path.as_ref());
-            ToolOutput {
-                content: vec![Content::Image { mime_type: "image/png".into(), data_base64: base64::encode(&png_bytes) }, Content::Text(packet.to_pretty())],
-                is_error: false,
-            }
-        });
-    }
-
-    /// sight_query: one entity, no image.
-    fn sight_query(&mut self, q: &QuerySpec, view: &ViewReq) -> ToolOutput {
-        let id = match self.world.resolve(&q.key) {
-            Ok(id) => id,
-            Err(e) => return world_error(&e),
-        };
-        let e = self.world.get(id).expect("resolved");
-        let path = self.world.path_of(id);
-        let mut out = Json::obj([("id", Json::from(id)), ("path", Json::from(path.as_str()))]);
-        let reason = if e.local_bounds().is_none() {
-            Some(if e.shape == world::Shape::Group { "a group draws nothing (query its children)" } else { "no geometry yet (model not built)" })
-        } else if !sight::in_frame(e, view.include_ui) {
-            Some(if e.shown() { "on the ui layer (pass include_ui)" } else { "hidden (visible: false here or above)" })
-        } else {
-            None
-        };
-        if let Some(r) = reason {
-            out.set("drawn", Json::from(false));
-            out.set("reason", Json::from(r));
-            out.set("on_screen", Json::from(false));
-            out.set("camera", view.camera.to_json());
-            return ToolOutput::text(out.to_string());
-        }
-        // The ID buffer needs the frame rendered (no PNG is made or sent).
-        let time_s = q.frame.time_s.map_or_else(|| self.time_s(), f64::from);
-        let none = ov::Spec::default();
-        let opts = ViewOpts { include_ui: view.include_ui, lod: q.frame.lod, time_s, overlays: &none, caption: None, ids: true, fill: None };
-        let r = match self.render_view(view.camera, view.width, view.height, &opts) {
-            Ok(r) => r,
-            Err(e) => return ToolOutput::error(e),
-        };
-        let Some(s) = r.subjects.into_iter().find(|s| s.id == id) else {
-            return ToolOutput::error(format!("{path} was not in the frame it was queried in"));
-        };
-        // Drawn or not, from what the frame drew (its draw lists, the ID pass, streaming), never
-        // from the world: an entity behind the camera is submitted but reaches no pixel.
-        r.record.drawn(id).write(&mut out);
-        for key in ["on_screen", "screen", "distance_m", "visible_px", "visible_px_approx", "screen_box_exact", "no_pixels", "occluded", "resident_lods_from"] {
-            if let Some(v) = s.json.get(key) {
-                out.set(key, v.clone());
-            }
-        }
-        out.set("image", Json::arr([view.width, view.height].map(Json::from)));
-        let mut camera = view.camera.to_json();
-        if let Json::Obj(src) = &view.source {
-            for (k, v) in src {
-                camera.set(k.as_str(), v.clone());
-            }
-        }
-        out.set("camera", camera);
-        if let Some(w) = &view.warning {
-            out.set("warning", Json::from(w.as_str()));
-        }
-        ToolOutput::text(out.to_string())
-    }
 }
 
 /// Whether the bounds overlay paints `s` as fully hidden: once the frame is measured, exactly the
@@ -1473,8 +1329,8 @@ fn fully_hidden(s: &Subject, record: Option<&sight::FrameRecord>) -> bool {
         // HLOD member has no pixels of its own (its proxy's are counted, `drawn` says whether it
         // reached the image), and an entity the frame never drew isn't hidden behind anything:
         // neither is painted red.
-        Some(_) => s.json.get("no_pixels").and_then(Json::as_bool) == Some(true),
-        None => sight::shows(&s.json) == Some(false),
+        Some(_) => s.vis.map_or_else(|| s.json.get("no_pixels").and_then(Json::as_bool) == Some(true), |v| v.no_pixels),
+        None => s.shows() == Some(false),
     }
 }
 
@@ -1486,6 +1342,30 @@ fn stream_views(views: &[ViewReq]) -> Vec<(Camera, u32, u32)> {
 fn encode_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
     let _z = profile::zone("sight.encode");
     png::encode_rgba8(w, h, rgba, Level::Fastest)
+}
+
+/// An effects packet (`vfx::packet_json`) for a frame drawn without particles (the irradiance
+/// view): no effect is drawn or fills a pixel, and it says why.
+fn unlit_particles(effects: &mut Json) {
+    if let Some(Json::Arr(list)) = effects.get("effects") {
+        let mut list = list.clone();
+        for e in list.iter_mut() {
+            e.set("drawn", Json::from(false));
+            e.set("fill_px", Json::from(0));
+        }
+        effects.set("effects", Json::Arr(list));
+    }
+    effects.set("particles", Json::from("not drawn: the irradiance view shows the indirect light alone"));
+}
+
+/// What a capture's image holds until it is encoded on a worker (the frame, or a sheet within the
+/// sheet cap); `None`: no image (sight_query).
+fn capture_bytes(job: &Job) -> Option<u64> {
+    match job {
+        Job::Query(_) => None,
+        Job::Frame(s) | Job::Mark { frame: s, .. } => Some(u64::from(s.width) * u64::from(s.height) * 4),
+        _ => Some(u64::from(orbit::MAX_SHEET) * u64::from(orbit::MAX_SHEET) * 4),
+    }
 }
 
 /// Where a capture's answer goes, and its call (see `workers::Offload::agent`).
@@ -1539,7 +1419,7 @@ fn passes(s: &Subject, f: SubjectFilter) -> bool {
     match f {
         SubjectFilter::All => true,
         SubjectFilter::OnScreen => s.on_screen,
-        SubjectFilter::Visible => sight::shows(&s.json).unwrap_or(s.on_screen),
+        SubjectFilter::Visible => s.shows().unwrap_or(s.on_screen),
     }
 }
 
@@ -1572,7 +1452,7 @@ mod tests {
     /// in plain view); the "visible" filter, overlays and totals must treat them as showing.
     #[test]
     fn approximate_subjects_count_as_visible() {
-        let subject = |json: &str| Subject { id: 1, json: Json::parse(json).unwrap(), on_screen: true, area: 0, projected_area: 400 };
+        let subject = |json: &str| Subject::for_test(1, Json::parse(json).unwrap(), true, 400);
         let approx = subject(r#"{"visible_px":0,"visible_px_approx":true}"#);
         let hidden = subject(r#"{"visible_px":0,"no_pixels":true,"occluded":true}"#);
         let uncounted = subject(r#"{"visible_px":null}"#);

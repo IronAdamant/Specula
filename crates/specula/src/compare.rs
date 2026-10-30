@@ -47,11 +47,11 @@ pub struct MarkView {
 
 /// What a mark remembers besides its view.
 pub struct MarkData {
-    pub rgba: Vec<u8>,
+    pub rgba: std::sync::Arc<Vec<u8>>,
     /// The subjects on screen at the mark.
-    pub subjects: BTreeMap<u64, SubjectState>,
+    pub subjects: std::sync::Arc<BTreeMap<u64, SubjectState>>,
     /// Every entity id at the mark, sorted.
-    pub ids: Vec<u64>,
+    pub ids: std::sync::Arc<Vec<u64>>,
     pub frame: u64,
     pub tick: u64,
     pub png_path: Option<String>,
@@ -89,6 +89,25 @@ pub struct SubjectState {
 }
 
 impl SubjectState {
+    /// From a frame's subject: what [`SubjectState::from_json`] reads of its packet entry.
+    pub fn of(s: &crate::sight::Subject) -> (u64, SubjectState) {
+        let p = s.base.position;
+        let vis = s.vis.unwrap_or_default();
+        (
+            s.id,
+            SubjectState {
+                path: s.base.path.clone(),
+                projected: s.screen,
+                exact: vis.exact.flatten(),
+                visible_px: s.visible_px(),
+                approx: vis.approx,
+                // (The packet's numbers read back as these exact values.)
+                position: [p.x, p.y, p.z],
+                merged: s.json.get("drawn_as").and_then(Json::as_str) == Some("hlod"),
+            },
+        )
+    }
+
     /// From a subject's JSON (as in the packet).
     pub fn from_json(j: &Json) -> Option<(u64, SubjectState)> {
         let id = j.get("id")?.as_u64()?;
@@ -632,7 +651,7 @@ mod tests {
     }
 
     fn data(pixels: usize, subjects: BTreeMap<u64, SubjectState>, ids: Vec<u64>) -> MarkData {
-        MarkData { rgba: vec![0; pixels * 4], subjects, ids, frame: 1, tick: 0, png_path: None }
+        MarkData { rgba: std::sync::Arc::new(vec![0; pixels * 4]), subjects: std::sync::Arc::new(subjects), ids: std::sync::Arc::new(ids), frame: 1, tick: 0, png_path: None }
     }
 
     #[test]

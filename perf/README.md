@@ -109,6 +109,10 @@ class.
 - Results: `perf/drills/*-windowed-{before,after}.json` (2026-10-17: one agent 500-1,270 calls/s, was about
   110-230; 64 agents pacing p95 about 19 ms, was 0.4-2.5 s stalls, at about 20% less total throughput).
 - The real-time versions of the schedule tests: `cargo test -p specula --lib schedule -- --ignored --nocapture`.
+- `python scripts/capture_drill.py thru [--window]`: capture throughput (K agents looping small `sight_frame`s
+  and one looping a 12-view `sight_orbit`: calls/s, median and p95 latency, orbit time), and
+  `python scripts/capture_drill.py orbits`: 60 concurrent orbits (how many succeed, the heap peak). Run against
+  two builds, alternating (docs/design/WORKERS.md, "The capture flight").
 
 # Profiling tools
 

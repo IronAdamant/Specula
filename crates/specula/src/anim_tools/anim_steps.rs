@@ -13,8 +13,6 @@ use crate::steps::{Step, StepJob, StepStart};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// One step's CPU time for checks (one subject at least).
-const CHECK_STEP: Duration = Duration::from_millis(1);
 /// Keys of filmstrips' GPU pins (apart from the studio's call ids).
 static PIN_KEYS: AtomicU64 = AtomicU64::new(1 << 62);
 
@@ -160,6 +158,20 @@ impl CheckJob {
         ToolOutput::text(out.to_string())
     }
 
+    /// Every check, on a worker: stops early (answering `cancelled`) once `cancel` is set.
+    fn run_until(mut self, cancel: &crate::workers::Cancel) -> ToolOutput {
+        loop {
+            if cancel.is_set() {
+                return error("cancelled", "the session closed; the checks stopped");
+            }
+            match self.next() {
+                Ok(true) => return self.answer(),
+                Ok(false) => {}
+                Err(out) => return out,
+            }
+        }
+    }
+
     /// Every check at once (an entity filmstrip checks the one state its entity plays).
     pub(super) fn run(mut self) -> ToolOutput {
         loop {
@@ -172,23 +184,6 @@ impl CheckJob {
     }
 }
 
-impl StepJob for CheckJob {
-    fn kind(&self) -> &'static str {
-        "anim_check"
-    }
-
-    fn step(&mut self, _: &mut Engine, _: &jobs::Reply) -> Step {
-        let t = Instant::now();
-        loop {
-            match self.next() {
-                Ok(true) => return Step::Done(self.answer()),
-                Err(out) => return Step::Done(out),
-                Ok(false) if t.elapsed() < CHECK_STEP => {}
-                Ok(false) => return Step::More,
-            }
-        }
-    }
-}
 
 /// Where a filmstrip's sheet goes when its tiles are done.
 struct Sheet {
@@ -777,7 +772,30 @@ impl Engine {
         let start = |class| StepStart { owner: owner.clone(), session: session.id.clone(), call: call_id, reply: reply.clone(), deadline, class };
         let job: Result<(Box<dyn StepJob>, schedule::Class), ToolOutput> = match call {
             AnimCall::Check { source, key, graph, clips, states, transitions, scale, max_checks } => {
-                CheckJob::new(self, source, key, &graph, clips, states, transitions, scale, max_checks).map(|j| (Box::new(j) as Box<dyn StepJob>, schedule::Class::Big))
+                // The checks need nothing of the engine once their subjects are known: they run
+                // on a worker, which answers (one state's three cycles took 30-80 ms of the
+                // engine thread as a step).
+                let job = match CheckJob::new(self, source, key, &graph, clips, states, transitions, scale, max_checks) {
+                    Ok(job) => job,
+                    Err(out) => {
+                        let _ = reply.send(out);
+                        return;
+                    }
+                };
+                let kind = crate::workers::JobKind::AnimCheck;
+                let o = crate::workers::Offload::agent(kind, owner, &session.id, call_id).class(schedule::Class::Big);
+                let (theirs, refused) = (reply.clone(), reply.clone());
+                let offloaded = self.offload(o, move |cancel| {
+                    let _ = theirs.send(job.run_until(cancel));
+                }, move |_, r| {
+                    if let Err(f) = r {
+                        let _ = reply.send(f.to_output(kind));
+                    }
+                });
+                if let Err(e) = offloaded {
+                    refused.refuse(&e);
+                }
+                return;
             }
             AnimCall::Filmstrip { source, key, graph, rows, frames, tile, window_s, scale, checks } => {
                 // Its sheet goes to a worker: with no slot free it is refused before it renders.

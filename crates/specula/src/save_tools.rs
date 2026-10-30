@@ -935,6 +935,10 @@ impl Engine {
     /// Swaps a prepared save in (engine thread): checks again, then the clock, world, physics,
     /// modules and game, and reports the hashes now against the saved ones.
     fn finish_load(&mut self, l: &Loading, p: Prepared) -> Result<Json, SaveError> {
+        // Saves asked for before this load (one may be mid-plan) are of the world it replaces:
+        // written first, as world_load does (review of 07f3276: the plan went on with the loaded
+        // world and saved it under the old name).
+        self.flush_world_saves();
         let t1 = Instant::now();
         let may = self.check_load_allowed(l.force, &l.by, l.key.as_deref(), Some(l.revision))?;
         // Parsed on the worker when the game has a parser; otherwise (a game without one) here.

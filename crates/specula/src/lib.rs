@@ -148,6 +148,43 @@ const AUTOSAVE_EVERY: Duration = Duration::from_secs(10);
 /// Listings stop adding items past this many bytes (compact JSON) and hand back a cursor, so a
 /// page of huge entities still fits in an agent's context.
 const MAX_LISTING_BYTES: usize = 128 * 1024;
+/// Pages of world_query / world_list at least this long are listed on a worker.
+const QUERY_OFFLOAD_ITEMS: usize = 64;
+
+/// A world_query page detached from the world: the entities with their paths, and per entity
+/// its parent's path and child count when the fields list them.
+struct OwnedPage {
+    total: usize,
+    more: bool,
+    items: Vec<(world::Entity, String, Option<String>, usize)>,
+    fields: Option<Vec<String>>,
+    key: &'static str,
+}
+
+impl OwnedPage {
+    /// The answer: items within the listing's byte cap, then the cursor. Pure.
+    fn render(&self) -> ToolOutput {
+        let (mut items, mut bytes, mut cut, mut last) = (Vec::new(), 0, false, None);
+        for (e, path, parent, children) in &self.items {
+            let item = match &self.fields {
+                None => e.to_json(path),
+                Some(fields) => world::fields_json_of(e, path, parent.as_deref(), *children, fields),
+            };
+            let size = item.to_string().len();
+            if !items.is_empty() && bytes + size > MAX_LISTING_BYTES {
+                cut = true;
+                break;
+            }
+            bytes += size;
+            items.push(item);
+            last = Some(path.as_str());
+        }
+        let next = if cut || self.more { last.map(tools::cursor_for) } else { None };
+        // Compact: listings are the biggest responses, and indentation costs agents tokens.
+        let out = Json::obj([("total", Json::from(self.total)), (self.key, Json::Arr(items)), ("next_cursor", Json::from(next))]);
+        ToolOutput::text(out.to_string())
+    }
+}
 /// world_batch lists per-op results up to this many bytes, then summarises the rest.
 const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 
@@ -605,6 +642,9 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
 
     // Scratch folders an earlier run released but didn't finish deleting.
     engine.sweep_trash();
+    // The built-in effects are parsed once per run, on a worker now rather than by the first
+    // vfx_get or capture (it took 25-85 ms of the engine thread in a dev build).
+    engine.warm_effects();
     let result = match &window {
         Some(ui) => engine.run_windowed(ui, &requests, &server),
         None => engine.run_headless(&requests, &server),
@@ -699,6 +739,10 @@ struct Engine {
     build_waiters: Vec<BuildWaiter>,
     /// Captures waiting for models they show.
     capture_waiters: Vec<capture::CaptureWaiter>,
+    /// The capture view on the GPU and the captures waiting for it (`capture/flight.rs`).
+    captures: capture::flight::CaptureQueue,
+    /// Every entity's sight subject data, kept from the world's change record (`sight::SubjectCache`).
+    subject_cache: sight::SubjectCache,
     /// The trace watchdogs' state (docs/design/TRACE.md).
     watch: trace_engine::Watch,
     /// Agents' named cameras (camera_set).
@@ -882,6 +926,8 @@ struct Engine {
     /// An explicit world_save is being written on a worker, and the saves waiting for it (see
     /// [`world_save`]).
     world_save_running: bool,
+    /// The explicit save whose plan is being taken off the world (`world_save.rs`).
+    save_planning: Option<world_save::SavePlanning>,
     waiting_saves: VecDeque<world_save::WaitingSave>,
     /// A project sync is writing on a worker; calls that read the disk wait for it (in order),
     /// and so do the calls waiting for the next sync's result (see `project_engine`).
@@ -942,6 +988,8 @@ impl Engine {
             windowed: false,
             build_waiters: Vec::new(),
             capture_waiters: Vec::new(),
+            captures: Default::default(),
+            subject_cache: Default::default(),
             watch: trace_engine::Watch::default(),
             cameras: cameras::Cameras::default(),
             marks: compare::Marks::default(),
@@ -1038,6 +1086,7 @@ impl Engine {
             pad_gate: game::PadGate::default(),
             workers: workers::Workers::default(),
             world_save_running: false,
+            save_planning: None,
             waiting_saves: VecDeque::new(),
             project_syncing: false,
             project_deferred: VecDeque::new(),
@@ -1434,7 +1483,7 @@ impl Engine {
         self.autosave_job = None;
         match result {
             Ok((saved, report)) => {
-                self.saved = Some(saved);
+                self.replace_saved(saved);
                 self.saved_revision = revision;
                 self.saved_seq = seq;
                 self.autosave_error = None;
@@ -1766,6 +1815,7 @@ impl Engine {
 
     /// Answers every parked call: the engine is stopping.
     fn answer_waiters_shutting_down(&mut self) {
+        self.captures_shutting_down();
         let out = || ToolOutput::error("the engine is shutting down; the call was not completed");
         for w in self.capture_waiters.drain(..) {
             let _ = w.reply.send(out());
@@ -1958,6 +2008,7 @@ impl Engine {
             self.taste_pump();
             self.disk_pump();
             self.serve_captures();
+            self.pump_captures();
             self.pump_workers(Some(server));
             self.pump_steps(steps::WINDOW_SHARE, server);
             self.pump_playtests(server, playtest_engine::WINDOW_SLICE);
@@ -2079,11 +2130,27 @@ impl Engine {
     }
 
     fn run_headless(&mut self, requests: &Receiver<Request>, server: &Server) -> Result<(), String> {
+        // While captures are busy (and a second after), the system timer at 1 ms: the short waits
+        // below end on time instead of the 15.6 ms default tick (a capture's view lands a pass
+        // after it renders). Idle, the engine leaves the system's timer alone.
+        let mut fine: Option<(specula_platform::timer::FineTimer, Instant)> = None;
         while !interrupt::requested() {
+            if self.captures.busy() || !self.capture_waiters.is_empty() {
+                match &mut fine {
+                    Some((_, at)) => *at = Instant::now(),
+                    None => fine = Some((specula_platform::timer::FineTimer::request(), Instant::now())),
+                }
+            } else if fine.as_ref().is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(1)) {
+                fine = None;
+            }
             // Wake for the next tick at the latest, so a hosted game keeps real time headless too
             // (and about 60 times a second while perf_capture records frames).
             let most = if self.profiler.capturing() { Duration::from_millis(16) } else { Duration::from_millis(100) };
             let mut wait = self.clock.until_next().min(most);
+            if self.captures.busy() {
+                // A capture view on the GPU lands (and the next starts) as soon as it can.
+                wait = wait.min(Duration::from_millis(1));
+            }
             if self.library.lock().in_flight() > 0 || !self.capture_waiters.is_empty() || self.stream.busy() || self.saves_in_flight() {
                 // Builds land promptly (and calls waiting on them are answered).
                 wait = wait.min(Duration::from_millis(5));
@@ -2133,6 +2200,7 @@ impl Engine {
             self.taste_pump();
             self.disk_pump();
             self.serve_captures();
+            self.pump_captures();
             self.pump_workers(Some(server));
             self.pump_steps(steps::HEADLESS_SHARE, server);
             self.pump_playtests(server, playtest_engine::HEADLESS_SLICE);
@@ -2153,6 +2221,8 @@ impl Engine {
         // floating-point environment, whatever the frame just drawn (the GPU driver) left behind
         // (rule 6).
         self.fp.check(self.clock.tick(), "before_command");
+        // Capture flash feeds that ran on workers (perf_frame and vfx_info report the latest).
+        self.flash.absorb();
         // perf_capture answers once its frames are recorded (see perf::Profiler::end_frame).
         let request = match request.command {
             Command::PerfCapture(spec) => {
@@ -2211,6 +2281,21 @@ impl Engine {
         if matches!(request.command, Command::Anim(anim_tools::AnimCall::Check { .. } | anim_tools::AnimCall::Filmstrip { .. })) {
             // A check or a tile per step; a filmstrip's sheet is encoded on a worker (see `anim_steps`).
             self.start_anim_job(request);
+            return;
+        }
+        if matches!(request.command, Command::Query(_)) {
+            // A big page is listed on a worker (see `start_query`).
+            self.start_query(request);
+            return;
+        }
+        if matches!(request.command, Command::Swarm(swarm_tools::SwarmCall::LeaseTake { want: leases::Want::Scratch, .. })) {
+            // The folder is made on a worker (see `swarm_engine`).
+            self.start_scratch_lease(request, server);
+            return;
+        }
+        if matches!(request.command, Command::Swarm(swarm_tools::SwarmCall::LeaseRelease { delete: true, .. })) {
+            // The folders are moved into the trash on a worker (see `swarm_engine`).
+            self.start_lease_delete(request, server);
             return;
         }
         if matches!(request.command, Command::Swarm(swarm_tools::SwarmCall::DesyncTrace { .. })) {
@@ -2617,29 +2702,57 @@ impl Engine {
 
     /// One page of world_list / world_query, cut short at [`MAX_LISTING_BYTES`].
     fn query(&self, spec: &QuerySpec) -> ToolOutput {
-        let page = match self.world.query(&spec.query) {
-            Ok(page) => page,
-            Err(e) => return world_error(&e),
-        };
-        let (mut items, mut bytes, mut cut, mut last) = (Vec::new(), 0, false, None);
-        for (e, path) in &page.items {
-            let item = match &spec.fields {
-                None => e.to_json(path),
-                Some(fields) => self.world.fields_json(e, path, fields),
-            };
-            let size = item.to_string().len();
-            if !items.is_empty() && bytes + size > MAX_LISTING_BYTES {
-                cut = true;
-                break;
-            }
-            bytes += size;
-            items.push(item);
-            last = Some(path.as_str());
+        match self.query_page(spec) {
+            Ok(page) => page.render(),
+            Err(out) => out,
         }
-        let next = if cut || page.more { last.map(tools::cursor_for) } else { None };
-        // Compact: listings are the biggest responses, and indentation costs agents tokens.
-        let out = Json::obj([("total", Json::from(page.total)), (spec.key, Json::Arr(items)), ("next_cursor", Json::from(next))]);
-        ToolOutput::text(out.to_string())
+    }
+
+    /// A query's page as owned copies (what each listed field reads of the world included), to
+    /// list here or on a worker.
+    fn query_page(&self, spec: &QuerySpec) -> Result<OwnedPage, ToolOutput> {
+        let page = self.world.query(&spec.query).map_err(|e| world_error(&e))?;
+        let world_fields = spec.fields.as_ref().is_some_and(|f| f.iter().any(|x| x == "parent" || x == "children"));
+        let items = page
+            .items
+            .into_iter()
+            .map(|(e, path)| {
+                let (parent, children) = if world_fields { (e.parent.map(|p| self.world.path_of(p)), self.world.children_of(Some(e.id)).count()) } else { (None, 0) };
+                (e.clone(), path, parent, children)
+            })
+            .collect();
+        Ok(OwnedPage { total: page.total, more: page.more, items, fields: spec.fields.clone(), key: spec.key })
+    }
+
+    /// world_query and world_list: a big page is listed (each item made and measured) on a
+    /// worker, which answers (500 items with every field took 10-20 ms of the engine thread);
+    /// a small one here.
+    fn start_query(&mut self, request: Request) {
+        let Request { command: Command::Query(spec), session, reply, call, .. } = request else { unreachable!("only queries come here") };
+        let page = match self.query_page(&spec) {
+            Ok(p) => p,
+            Err(out) => {
+                let _ = reply.send(out);
+                return;
+            }
+        };
+        if page.items.len() < QUERY_OFFLOAD_ITEMS {
+            let _ = reply.send(page.render());
+            return;
+        }
+        let owner = jobs::JobOwner { name: self.swarm.agent_name(&session), key: self.swarm.key(&session) };
+        let kind = workers::JobKind::QueryList;
+        let o = workers::Offload::agent(kind, owner, &session.id, call).class(schedule::Class::Read);
+        let (theirs, refused) = (reply.clone(), reply.clone());
+        if let Err(e) = self.offload(o, move |_| {
+            let _ = theirs.send(page.render());
+        }, move |_, r| {
+            if let Err(f) = r {
+                let _ = reply.send(f.to_output(kind));
+            }
+        }) {
+            refused.refuse(&e);
+        }
     }
 
     /// The lock for `dir` if this engine doesn't hold it yet (`None` when it already does).
@@ -2699,7 +2812,7 @@ impl Engine {
                 if missing > 0 {
                     problems.push(format!("{missing} file(s) the review queue names are missing from its evidence (review_list marks them missing)"));
                 }
-                self.saved = Some(saved);
+                self.replace_saved(saved);
                 self.world_name = Some(name.clone());
                 self.saved_revision = self.world.revision();
                 self.saved_seq = self.swarm.journal().last_seq();
@@ -2738,6 +2851,8 @@ impl Engine {
 
     /// A cached offscreen target of `w` × `h` (most recently used last).
     fn offscreen_target(&mut self, w: u32, h: u32) -> Result<TargetId, String> {
+        // A capture view in flight may use one of these targets and the ID buffers: landed first.
+        self.land_capture_flight();
         Ok(match self.targets.iter().position(|(size, _)| *size == (w, h)) {
             Some(i) => {
                 let entry = self.targets.remove(i);

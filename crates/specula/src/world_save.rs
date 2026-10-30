@@ -29,6 +29,23 @@ pub(crate) struct WaitingSave {
     deadline: Instant,
 }
 
+/// The world taken off in slices of about this much engine time, a loop pass each.
+const PLAN_SLICE: Duration = Duration::from_millis(2);
+
+/// A save whose plan is being taken off the world ([`Engine::pump_save_planning`]).
+pub(crate) struct SavePlanning {
+    planner: persist::Planner,
+    name: String,
+    key: String,
+    replies: Vec<jobs::Reply>,
+    dir: PathBuf,
+    lock: Option<persist::WorldLock>,
+    check_exists: bool,
+    trace: specula_core::trace::Ctx,
+    /// The world it plans (a world that took its place mid-plan is never saved under its name).
+    generation: u64,
+}
+
 /// What the worker brings back.
 struct Written {
     /// Another world lives there (and no overwrite): the refusal; nothing was written.
@@ -90,6 +107,7 @@ impl Engine {
 
     /// Starts the waiting saves whose turn it is (once per loop pass; a load asks too).
     pub(crate) fn pump_world_saves(&mut self) {
+        self.pump_save_planning();
         self.finish_autosave(false);
         while !self.world_write_busy() {
             let Some(save) = self.waiting_saves.pop_front() else { return };
@@ -147,12 +165,62 @@ impl Engine {
                 return;
             }
         };
-        // Taken off the world here; rendered and written on the worker.
+        // Taken off the world in slices (a loop pass each, `pump_save_planning`); rendered and
+        // written on the worker.
+        let planner = persist::Planner::new(&self.world, &dir, self.saved.as_ref());
+        self.world_save_running = true;
+        self.save_planning = Some(SavePlanning { planner, name, key, replies, dir, lock, check_exists, trace: specula_core::trace::Ctx::current(), generation: self.world_generation });
+        self.pump_save_planning();
+    }
+
+    /// The save being planned takes its next slice of the world; once every changed subtree is
+    /// copied, the plan is finished (the world as it is then) and written on the worker.
+    /// The cache of what was saved, replaced; the previous one (100,000 loose entities' records)
+    /// is freed on a worker: dropping it here held the engine thread 85-95 ms (stalls fix round).
+    pub(crate) fn replace_saved(&mut self, saved: persist::Saved) {
+        if let Some(old) = self.saved.replace(saved) {
+            let job = crate::workers::Offload::engine(JobKind::Drop);
+            let _ = self.offload(job, move |_| drop(old), |_, _| {});
+        }
+    }
+
+    pub(crate) fn pump_save_planning(&mut self) {
+        let Some(p) = self.save_planning.as_mut() else { return };
+        if p.generation != self.world_generation {
+            // (Every replacement flushes saves first; this is the guard if one didn't.)
+            let p = self.save_planning.take().expect("checked");
+            self.world_save_running = false;
+            let out = ToolOutput::error(
+                Json::obj([("error", Json::from("world_replaced")), ("message", Json::from("the world was replaced while this save was being planned; nothing was written: save again"))]).to_string(),
+            );
+            answer_all(&p.replies, &out);
+            return;
+        }
+        let started = Instant::now();
+        let trace = p.trace;
+        let _c = trace.enter();
+        let done = {
+            let _z = profile::zone("world_save.plan");
+            p.planner.step(&self.world, Some(PLAN_SLICE))
+        };
+        if !done {
+            self.engine_work_done(trace.call, Some(crate::schedule::Class::Disk), "world_save_plan", started.elapsed());
+            return;
+        }
+        let SavePlanning { planner, name, key, replies, dir, lock, check_exists, .. } = self.save_planning.take().expect("checked");
         let mut plan = {
             let _z = profile::zone("world_save.plan");
-            persist::plan(&self.world, &dir, self.saved.as_ref())
+            planner.finish(&self.world)
         };
         plan.need = disk::Need::Agent;
+        self.write_world_save(plan, (name, key, replies, dir, lock, check_exists));
+        self.engine_work_done(trace.call, Some(crate::schedule::Class::Disk), "world_save_plan", started.elapsed());
+    }
+
+    /// A planned save, rendered and written on the worker; `then` answers.
+    #[allow(clippy::type_complexity)]
+    fn write_world_save(&mut self, plan: persist::Plan, ctx: (String, String, Vec<jobs::Reply>, PathBuf, Option<persist::WorldLock>, bool)) {
+        let (name, key, replies, dir, lock, check_exists) = ctx;
         let board = self.board_write_for(&dir);
         let (revision, seq) = (self.world.revision(), self.swarm.journal().last_seq());
         let (entities, state_hash) = (self.world.persistent_len(), format!("{:016x}", self.world.state_hash()));
@@ -206,7 +274,7 @@ impl Engine {
                     if lock.is_some() {
                         e.world_lock = lock;
                     }
-                    e.saved = Some(saved);
+                    e.replace_saved(saved);
                     let old_root = e.evidence_root();
                     e.world_name = Some(name.clone());
                     // What was taken off the world when the save began: later changes stay unsaved.
@@ -256,5 +324,51 @@ impl Engine {
                 r.refuse(&e);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::journal::Writer;
+
+    /// Review of 07f3276: a world that took the live world's place while a `world_save` of it
+    /// was being planned in slices was saved under the old world's name. A plan whose world was
+    /// replaced is answered `world_replaced` and writes nothing (`save_read` and `world_load`
+    /// flush planned saves before they replace the world). Skipped cleanly without Vulkan.
+    #[test]
+    fn a_save_planned_across_a_world_replacement_writes_nothing() {
+        if !specula_gpu::is_available() {
+            crate::skip_test("world_save::tests::replaced", "Vulkan is not available");
+            return;
+        }
+        let Ok(gpu) = specula_gpu::Gpu::new(&specula_gpu::GpuOptions::default()) else {
+            crate::skip_test("world_save::tests::replaced", "no GPU");
+            return;
+        };
+        let root = std::env::temp_dir().join(format!("specula-save-replaced-{}", std::process::id()));
+        let assets = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../games/sepulcra/assets");
+        let mut e = Engine::new(gpu, &root.join("captures"), crate::models::Library::new(&assets, None)).expect("engine");
+        e.worlds_dir = root.join("worlds");
+        let w = Writer::new("t", Some("t"));
+        for b in 0..20 {
+            let ops: Vec<crate::world::Op> = (0..1000)
+                .map(|i| crate::world::Op::Spawn(crate::tools::parse_spawn(&Json::parse(&format!(r#"{{"name": "c{b}_{i}", "shape": "cube"}}"#)).unwrap()).unwrap()))
+                .collect();
+            e.world.commit(&mut e.swarm, 0, w, journal::Kind::Batch, crate::write_policy::Rule::World, |wd| wd.apply_batch(ops, "t").map(|_| ()).map_err(|(_, err)| err)).unwrap();
+        }
+        let session = specula_protocol::SessionInfo { id: "save-test".into(), client_name: "t".into(), client_version: "0".into(), protocol_version: "x".into() };
+        let (reply, rx) = jobs::channel();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        e.handle_world_save(Request { session, call: 1, command: Command::Save { name: Some("big".into()), overwrite: false }, reply, deadline, trace: specula_core::trace::Ctx::current() });
+        assert!(e.save_planning.is_some(), "20,000 entities are planned over several passes");
+        // Another world takes its place mid-plan (what a load does, minus the flush).
+        e.world_generation += 1;
+        e.pump_world_saves();
+        let out = rx.recv_timeout(Duration::from_secs(10)).expect("answered");
+        assert!(out.is_error && format!("{:?}", out.content).contains("world_replaced"), "{:?}", out.content);
+        assert!(!e.world_write_busy() && e.save_planning.is_none());
+        assert!(!e.worlds_dir.join("big").join("world.json").exists(), "nothing written");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

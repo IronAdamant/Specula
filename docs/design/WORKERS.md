@@ -163,14 +163,132 @@ short queue (4), and `world_load` writes the waiting saves first.
 
 ### What stays on the engine thread, and why
 
-- **A capture's render and readback.** `Gpu::read_rgba8` waits on the GPU fence: the engine
-  thread owns the Vulkan queue and the offscreen targets. Making it asynchronous (a readback
-  ring, answered a frame later) is a GPU-side change for a later lane; the strict-budget harness
-  records its cost at 2048² (render class, 30 ms budget).
-- **The plan of a world save** (taking the changed subtrees off the world) and **a project sync's
-  plan**: they read the world, which only the engine thread may.
+- **A capture's preparation and submit** (draw list, subjects' projections, the GPU's own
+  per-draw records): they read the world and own the Vulkan queue. Since the stalls lane the
+  render itself is not waited for (below, "The capture flight").
+- **A world save's final step and a project sync's plan**: they read the world, which only the
+  engine thread may. The save's copies are taken in slices (below).
 - **Loading** (`world_load`, `save_read`'s apply): a load replaces the world; its read and parse
   already run on a worker (`save_tools`), and `world_load` is a lead-gated, rare call.
+- **The bounds overlay's two renders**: a capture with `overlays: ["bounds"]` and the ID buffer
+  renders, counts, paints the boxes from the counts and renders again, waiting for the GPU
+  (a debug view, not a hot path).
+
+## The capture flight (stalls lane, 2026-10-30)
+
+Code: `crates/specula/src/capture/flight.rs`, `Gpu::render_async` / `Gpu::settle_offscreen`
+(`crates/specula-gpu/src/gpu.rs`).
+
+- **Submit, don't wait.** A capture's view is prepared on the engine thread
+  (`Engine::render_view_submit`) and submitted with `Gpu::render_async`: its own command buffer
+  and fence, the readback copy recorded in the same submission. The call returns; the engine
+  serves other agents and presents the window while the GPU renders. Everything the packet says
+  about the world (warnings, streaming notes, terrain and water kinds, GI, the camera) is taken
+  here, when the frame is drawn.
+- **One view in flight.** Later captures wait in the capture queue in the order they came
+  (at most 64, then `job_busy`). An orbit's views go back to back (its next view goes to the
+  front of the queue), so one orbit at a time holds a sheet; the sheet is made when its first
+  view lands and is charged to the workers' byte cap (`Workers::hold`) until its encode job holds
+  it. A call still waiting past its deadline is answered and dropped; one whose owner has no room
+  left on the workers waits (rendering it would end in a refusal) while later ones go. The packet
+  warns when the world changed between an orbit's views.
+- **A pass's share.** Each loop pass gives captures a share of the engine thread (6 ms with a
+  window, 16 ms headless): it waits for the view in flight a bounded time
+  (`Gpu::settle_offscreen_within`: at most 3 ms windowed, 12 ms headless; longer renders land on a
+  later pass, polled), reads its ID counts and pixels, lands it (the packet, the encode on a
+  worker) and submits the next view at once, and again while the share lasts. Each step is timed
+  against the render budget on its own. Headless, the system timer is held at 1 ms while captures
+  are busy (and a second after), so the loop's 1 ms waits end on time. A compare's diff, heat
+  panel and sheet are made on the worker. In a world of more than 4,096 entities a capture
+  starts on the next pass, not inside the call that worked out its views (the views are kept
+  while the world is unchanged): the two together took 35-55 ms at 20,000 entities. Headless,
+  the subject cache's rebuild uses the rest of the pass's share (not 3 ms), and the capture
+  starts in the same pass once it is done. A new size's target is made in a pass of its own and
+  that pass's captures end there. Its render graph's images are still made by the view's own
+  render: an empty warm-up frame submitted with the target made them early, but its different
+  frame shape built other pipeline variants and rebound the shadow map (a 300 ms window frame in
+  `stall_load.py`), so it was taken out. Making them early needs a prepare-only GPU call with the
+  view's own frame shape (left for the follow-up).
+- **Why not synchronous headless.** Main rendered and read back synchronously inside the call,
+  which is the fastest for small captures but holds the engine thread for the whole GPU frame:
+  250-500 ms for a 2048 x 2048 capture of 20,000 entities, past every budget. The bounded waits
+  give small captures their synchronous throughput (the GPU is done within the wait) and keep big
+  ones within budget, with one code path for both modes. Measured, release builds on the Intel
+  iGPU (`scripts/capture_drill.py thru`, 4 agents, 10 s, 100 cubes, 320x180): headless 142
+  `sight_frame`/s (main 120), median 29 ms (main 36), 12-view orbit 0.03 s (main 0.05);
+  windowed 113/s (main 88), median 37 ms (main 51), orbit 0.04 s (main 0.06). 60 concurrent
+  700 px orbits: 60 of 60 succeed, heap peak 50 MB (main 60 of 60, 49 MB).
+- **The flash watch's feed** (every second pixel of the capture into its view's history) runs on
+  the worker that holds the pixels (the encode job; for orbit tiles, sight_query and filmstrip
+  tiles a small job of its own). Its place in the view's order is taken when the capture lands
+  (`FlashWatch::feed_for`): the view's state travels with the feed and is handed to the next
+  capture of the view (which waits for it on its worker, never on the engine thread); a feed
+  dropped unrun hands the state on unchanged. Packets carry the same `flash` report as before.
+- **Exclusive use.** Any other offscreen render (filmstrip tiles, effect previews, the studio,
+  `render_view` for entity filmstrips) lands the flight first (`land_capture_flight`, which may
+  wait): they share the ID buffers and the cached targets. At the GPU level every other offscreen
+  use settles a pending render first; the window's frames never do (they share nothing a pending
+  render uses, and retired resources are freed by queue order). A mesh or texture destroyed while
+  a render is in flight (a `world_delete` during a capture) is retired in queue order instead of
+  freed at once (the review of 4c3e6c2 found the use-after-free, then a lost device;
+  `crates/specula-gpu/tests/async_render.rs` keeps it).
+- **The subject cache.** Every persistent entity's subject data (`sight::SubjectBase`: name,
+  path, shape, colour, position, corners) is kept from the world's change record
+  (`World::draw_changes_since`), patched with what changed (a renamed entity's subtree has its
+  paths read again); a capture only projects. Past the change record (more than 1,024 changes:
+  bodies moving every tick) it is patched from the entities' draw stamps (`Entity::draw_stamp`,
+  the draw epoch of each entity's latest change, `World::draw_stamps_reach`): one walk of the
+  stamps finds what changed, so the cache never falls behind (the review's churn probe: every
+  capture answered `engine_busy` after 30 s). After a new world, a change to every entity or
+  changes to more than half the entities, it is rebuilt a slice (3 ms) per pass while captures
+  wait; the rebuild then patches what changed meanwhile from the stamps, so it always finishes
+  (one overtaken by a change to every entity ends in one synchronous read). Subjects are data until the
+  packet is made (`Subject::full`, on the worker); the ID buffer's results are a `Visibility`
+  per subject. Captures are byte-identical to before (PNGs and packets, the bounds overlay
+  included; `same.py`-style comparison in the lane report).
+
+## The stalls lane's other fixes
+
+| | Before | Now |
+|---|---|---|
+| `world_query` / `world_list` | a walk of every entity with a path string each, then every item made and measured | the total counted over the entities without paths; the page walked from just after its cursor (subtrees before it skipped unvisited), paths made for its items only; pages of 64 items or more listed on a worker. Since the fix round, a tag or creator filter reads only its index's entities (`World::tagged`, `made_by`, kept by link, unlink and update): a filter nobody passes costs nothing, and up to 2,048 candidates are ordered by path without a walk; a scoped query (`path_prefix`) counts by walking its subtree alone (a count over every entity was 19-22 ms at 100k for a 6-entity scope) |
+| `vfx_get` | the built-in effects parsed by the first caller (25-85 ms in a dev build) | parsed on a worker at start |
+| `world_save` plan | every changed top-level subtree copied in the call | copied in 2 ms slices a loop pass (`persist::Planner`), finished with the world as it is then (copies whose subtree changed since are taken again); loose entities unchanged since the previous save reuse their records (autosaves too). Since the fix round the top level is scanned in slices too (kind and stamp of each top-level entity, stale copies copied again in the slices): after the scan each step catches up with the top-level entities whose subtrees changed since it began (`World::top_changes_since`, a stamp-ordered log kept with the subtree stamps: O(changes)), oldest first, a slice at a time, and `finish` reads only what changed since the last step (a body moving every tick: one entity; review of 07f3276 measured 56-122 ms when it read the whole top level); a save being planned is flushed before `save_read` or `world_load` replaces the world, and a plan whose world was replaced anyway answers `world_replaced` and writes nothing; the loose section's items are made in those slices too, and the previous save's cache is freed on a worker (dropping 100,000 records held the engine thread 85-95 ms, on main too). `big_save.py` at 100,000 entities: no stall under `--strict-budget` (main: 85-127 ms); the first save takes 4.3 s of wall time in 2 ms slices (main 1.0 s in one stall) |
+| `desync_trace` gather | every journal change marked in the call | a step job, 200 changes a step (`desync::Gather`), entities evicted meanwhile marked by `entities_from` |
+| `anim_check` | a step job (one state's three cycles 30-80 ms a step) | on a worker (the checks read only the job's own data) |
+| `lease_take` (scratch), `lease_renew` | folder and marker made on the engine thread (up to 40 ms on a busy disk) | made on a worker; the call answers once they exist (a failure gives the lease back) |
+
+### What the stalls lane left (`budget_check.py`, 20,000 cubes, Intel iGPU, dev build)
+
+Before: `sight_frame` 427 ms, `sight_orbit` 2.6 s, `sight_compare` 480 ms, `desync_trace` 380 ms,
+`anim_filmstrip` 57 ms a step, `world_save` 37 ms, `world_query` 15 ms, `lease_take` 39 ms. After,
+each over its budget at most once or twice a run, and within about twice it:
+
+| Stall | Engine-thread time | Why it is left |
+|---|---|---|
+| a capture's first render at a new size | 36-67 ms (2048x2048) | the render graph's images (depth, post chain) are made by the first frame of a size; the target itself is made in a pass of its own |
+| `anim_filmstrip` tile | 34 ms | a tile renders and reads back synchronously (it shares the offscreen targets with captures); an async tile needs the GPU's one pending slot shared with the capture flight |
+| `sight_compare` diff at 2048x2048 | 35 ms | its submit (the draw list and subjects of 20,000 entities, the GPU's per-draw records) |
+| `world_query` / `world_list` with a filter | 4.3-4.5 ms (read budget 4) | the total is a count over every entity; an index per common filter (tags, creator, shape) would make it O(matches) |
+
+### What the fix round left (2026-10-30, same harness)
+
+The filmstrip tile, `world_query` / `world_list` and the compare diff no longer stall. What is
+left is one view's preparation at 20,000 entities, now a step of its own (never part of the
+call that asked): the draw list (5-7 ms), the subjects' projection (6-8 ms), the GPU's frame
+preparation and submit (4-6 ms) and the packet's facts (2-3 ms), 20-30 ms on a quiet iGPU laptop
+and 32-56 ms, now and then, with other sessions building. It is O(entities) per view; the next
+step is a draw cache for captures (the window has one) and the subjects projected on a worker.
+`budget_check.py`'s `KNOWN` lists those tools with their measured peaks (dev build: 36-55 ms).
+
+Runs vary with machine load. One release run passed `budget_check.py` with no stall at all
+(without `--known-ok`); three of the review's release runs (of 07f3276) stalled on these three
+tools, peaking at 55 ms (`sight_orbit`) and 70 ms (`sight_compare`). So the per-view preparation
+is a known stall on release builds too, and `KNOWN` holds the peaks seen with about 40% headroom
+(`sight_frame` 80, `sight_compare` 100, `sight_orbit` 80 ms). **The milestone audit runs
+`budget_check.py --known-ok`**; a known tool past its maximum, or any other stall, still fails.
+`lease_release {delete}` (40-95 ms on main and here: renaming a folder of 20,000 files and
+canonicalising its path) now moves the folders into the trash on a worker and answers from there.
 
 ## The guard
 

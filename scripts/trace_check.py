@@ -172,7 +172,10 @@ def part_swarm(a, out, summary):
                 bad = path
                 break
         check(bad is not None, f"a write into reserved data is refused (reserved at {bad})")
-        # The induced stall: a 2048x2048 capture (about 300 ms of PNG encoding on this machine).
+        # The induced stall: renders get a 1 ms budget, then a 2048x2048 capture. (Captures no longer stall
+        # at the normal budget since the stalls lane moved their encode and readback off the engine thread,
+        # so the check lowers the budget to provoke one; the lead restores it as the "fix" below.)
+        lead.json("trace_settings", budgets_ms={"render": 1})
         big = ann.frame(width=2048, height=2048, max_subjects=1)
         summary["stall_capture"] = big.get("image", {}).get("path")
         stalls = wait_for("stall incident", lambda: [i for i in debugger.active("engine.stall") if i["key"] == "sight_frame"])
