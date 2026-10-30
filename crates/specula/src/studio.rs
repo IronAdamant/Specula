@@ -1595,24 +1595,29 @@ impl Ctx<'_> {
     /// Renders a sheet (`title` in its header).
     fn studio_sheet(&mut self, sheet: &SheetSpec, staged: &[Staged], title: &str) -> Result<SheetOut, ToolOutput> {
         // Columns are views; each subject is a block of one row per pass, labelled underneath.
+        // Blocks stack in one column while they fit; a big batch wraps into more columns of
+        // blocks (the fewest that give the largest tile), so a 33-prop sheet stays legible.
         let cols = sheet.views.len() as u32;
         let np = sheet.passes.len() as u32;
         let blocks = staged.len() as u32;
         let label_h = 2 * film::CHAR_H + 6;
         let head_h = film::CHAR_H + 6;
-        let tile = sheet.tile.min(MAX_SHEET_PX / cols.max(1)).min((((MAX_SHEET_PX - head_h) / blocks.max(1)).saturating_sub(label_h)) / np.max(1)).max(32);
+        let (gcols, tile) = sheet_grid(blocks, cols, np, sheet.tile, label_h, head_h);
         let block_h = np * tile + label_h;
-        let (w, h) = (cols * tile, head_h + blocks * block_h);
+        let (w, h) = (gcols * cols * tile, head_h + blocks.max(1).div_ceil(gcols) * block_h);
         let mut rgba = vec![0u8; (w * h * 4) as usize];
         film::fill(&mut rgba, w, 0, 0, w, h, [14, 17, 26, 255]);
-        for (ci, v) in sheet.views.iter().enumerate() {
-            film::draw_text(&mut rgba, w, ci as u32 * tile + 4, 3, &v.label(), [160, 168, 180]);
+        for g in 0..gcols {
+            for (ci, v) in sheet.views.iter().enumerate() {
+                film::draw_text(&mut rgba, w, (g * cols + ci as u32) * tile + 4, 3, &v.label(), [160, 168, 180]);
+            }
         }
         film::draw_text(&mut rgba, w, w.saturating_sub((title.len() as u32 + 1) * film::CHAR_W), 3, title, [200, 200, 190]);
         let mut tiles = Vec::new();
         let mut subjects = Vec::new();
         for (ri, s) in staged.iter().enumerate() {
-            let top = head_h + ri as u32 * block_h;
+            let top = head_h + (ri as u32 / gcols) * block_h;
+            let left = (ri as u32 % gcols) * cols * tile;
             let rig = match sheet.rig {
                 RigName::Neutral => neutral_rig(),
                 RigName::Game => s.rules().stage.game.clone(),
@@ -1636,7 +1641,7 @@ impl Ctx<'_> {
                     }
                 };
                 for (pi, p) in sheet.passes.iter().enumerate() {
-                    let (x0, y0) = (ci * tile, top + pi as u32 * tile);
+                    let (x0, y0) = (left + ci * tile, top + pi as u32 * tile);
                     let src = match p {
                         Pass::Colour => colour.clone(),
                         Pass::Value => colour.clone().map(|mut c| {
@@ -1662,10 +1667,10 @@ impl Ctx<'_> {
             let y0 = top + (np - 1) * tile;
             let report = self.style_report(s)?;
             let failed = report.errors().count();
-            film::draw_text(&mut rgba, w, 4, y0 + tile + 2, &format!("{}  {:.2}M  {} TRIS", s.name, s.facts.size_m[1], s.facts.lod_triangles.first().copied().unwrap_or(0)), [230, 226, 214]);
+            film::draw_text(&mut rgba, w, left + 4, y0 + tile + 2, &format!("{}  {:.2}M  {} TRIS", s.name, s.facts.size_m[1], s.facts.lod_triangles.first().copied().unwrap_or(0)), [230, 226, 214]);
             let more = if failed > 3 { format!(" +{} MORE", failed - 3) } else { String::new() };
             let verdict = if failed == 0 { "STYLE.TOML OK".to_string() } else { format!("STYLE.TOML: {failed} ERRORS: {}{more}", report.errors().take(3).map(|e| e.check).collect::<Vec<_>>().join(", ")) };
-            film::draw_text(&mut rgba, w, 4, y0 + tile + 4 + film::CHAR_H, &verdict, if failed == 0 { [140, 220, 160] } else { [255, 120, 100] });
+            film::draw_text(&mut rgba, w, left + 4, y0 + tile + 4 + film::CHAR_H, &verdict, if failed == 0 { [140, 220, 160] } else { [255, 120, 100] });
             subjects.push((s.name.clone(), s.facts.to_json(6), report));
         }
         Ok(SheetOut { w, h, rgba, tiles, subjects })
@@ -2245,6 +2250,26 @@ impl Bibles {
 // ---------------------------------------------------------------------------------------------
 // Sheet answers
 
+/// A contact sheet's layout: how many columns of subject blocks (`blocks` blocks of `np` rows of
+/// `cols` tiles, each labelled underneath) and the tile side, within [`MAX_SHEET_PX`] both ways:
+/// the fewest block columns that reach the largest tile (at most `want`, at least 32).
+fn sheet_grid(blocks: u32, cols: u32, np: u32, want: u32, label_h: u32, head_h: u32) -> (u32, u32) {
+    let (blocks, cols, np) = (blocks.max(1), cols.max(1), np.max(1));
+    let fit = |g: u32| -> u32 {
+        let by_w = MAX_SHEET_PX / (g * cols);
+        let by_h = ((MAX_SHEET_PX - head_h) / blocks.div_ceil(g)).saturating_sub(label_h) / np;
+        want.min(by_w).min(by_h)
+    };
+    let mut best = (1, fit(1));
+    for g in 2..=blocks {
+        let t = fit(g);
+        if t > best.1 {
+            best = (g, t);
+        }
+    }
+    (best.0, best.1.max(32))
+}
+
 fn sheet_packet(kind: &str, sheet: &SheetSpec, out: &SheetOut, staged: &[Staged]) -> Json {
     Json::obj([
         ("schema", Json::from(sight::SCHEMA)),
@@ -2303,6 +2328,22 @@ fn is_texture_graph(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M4 exit: a batch of 33 props on one contact sheet. Small sheets keep their one column of
+    /// blocks (and their tile); big ones wrap, and every layout stays within the pixel cap.
+    #[test]
+    fn sheets_wrap_big_batches_into_columns() {
+        let (label_h, head_h) = (2 * film::CHAR_H + 6, film::CHAR_H + 6);
+        assert_eq!(sheet_grid(4, 4, 1, 192, label_h, head_h), (1, 192), "a few subjects stack as before");
+        let (g, tile) = sheet_grid(33, 2, 1, 192, label_h, head_h);
+        assert!(g > 1 && tile >= 128, "33 subjects wrap: {g} columns of blocks, tile {tile}");
+        for (blocks, cols, np, want) in [(1, 1, 1, 512), (12, 16, 1, 192), (48, 2, 1, 512), (33, 3, 3, 64), (48, 1, 2, 192)] {
+            let (g, tile) = sheet_grid(blocks, cols, np, want, label_h, head_h);
+            assert!(g * cols * tile <= MAX_SHEET_PX, "{blocks}x{cols}x{np}: width");
+            let h = head_h + blocks.div_ceil(g) * (np * tile + label_h);
+            assert!(h <= MAX_SHEET_PX || tile == 32, "{blocks}x{cols}x{np}: height {h}");
+        }
+    }
 
     #[test]
     fn fitting_keeps_the_box_in_view() {

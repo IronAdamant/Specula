@@ -1,0 +1,32 @@
+{
+  "recipe": 1,
+  "name": "urn_funeral",
+  "category": "graveyard",
+  "description": "M4 exit set: a Victorian funeral urn, turned (lathe) with a lid and two ring handles, on a square pedestal with a cornice. 1.35 m: the round urn on its square foot is the silhouette.",
+  "seed": 3111,
+  "lods": [0.5, 0.25],
+  "collider": "convex_hull",
+  "smooth_angle": 35,
+  "parts": [
+    { "name": "foot", "material": "graveyard_stone", "color": "lichen",
+      "shape": { "op": "box", "size": [0.52, 0.1, 0.52], "bevel": 0.02 } },
+    { "name": "pedestal", "material": "graveyard_stone",
+      "shape": { "op": "box", "size": [0.4, 0.5, 0.4], "bevel": 0.02 },
+      "ops": [ { "op": "move", "by": [0, 0.1, 0] }, { "op": "gradient", "from": "lichen", "to": "grave_stone", "range": [0, 0.6], "strength": 0.6 },
+               { "op": "bevel_tint", "color": "carved_highlight", "amount": 0.5 } ] },
+    { "name": "cornice", "material": "graveyard_stone",
+      "shape": { "op": "box", "size": [0.48, 0.06, 0.48], "bevel": 0.015 },
+      "ops": [ { "op": "move", "by": [0, 0.6, 0] }, { "op": "bevel_tint", "color": "carved_highlight", "amount": 0.6 } ] },
+    { "name": "urn", "material": "graveyard_stone",
+      "shape": { "op": "lathe", "segments": 10,
+                 "profile": [[0, 0], [0.11, 0], [0.11, 0.03], [0.07, 0.08], [0.09, 0.12], [0.19, 0.24], [0.22, 0.35], [0.18, 0.46], [0.12, 0.5], [0.15, 0.53], [0.14, 0.56], [0.06, 0.59], [0.05, 0.63], [0.03, 0.67], [0, 0.69]] },
+      "ops": [ { "op": "move", "by": [0, 0.66, 0] }, { "op": "bevel_tint", "color": "carved_highlight", "amount": 0.4 },
+               { "op": "gradient", "from": "carved_shadow", "to": "grave_stone", "range": [0, 0.5], "strength": 0.5 },
+               { "op": "noise_tint", "amount": 0.06, "scale": 0.2 } ] },
+    { "name": "handles", "material": "graveyard_stone",
+      "shape": { "op": "torus", "radius": 0.07, "tube": 0.02, "segments": 8, "sides": 3 },
+      "ops": [ { "op": "move", "by": [0, -0.02, 0] }, { "op": "rotate", "deg": [90, 0, 0] }, { "op": "move", "by": [0.22, 1.04, 0] },
+               { "op": "mirror", "axis": "x", "keep": true } ] }
+  ],
+  "finish": [ { "op": "ground_shade", "amount": 0.3, "height": 0.3 } ]
+}

@@ -1,0 +1,30 @@
+{
+  "recipe": 1,
+  "name": "grave_mound",
+  "category": "graveyard",
+  "description": "M4 exit set: a fresh grave, a long mound of dark turned earth edged with field stones, a round-topped wooden board at its head. The only bare earth among the stones: someone was buried here this week.",
+  "seed": 3106,
+  "lods": [0.5, 0.25],
+  "collider": "aabb",
+  "smooth_angle": 50,
+  "parts": [
+    { "name": "mound", "material": "slab_stone", "color": "roots",
+      "shape": { "op": "lathe", "segments": 16, "profile": [[0, 0], [0.5, 0], [0.47, 0.1], [0.38, 0.2], [0.22, 0.28], [0, 0.31]] },
+      "ops": [ { "op": "scale", "by": [1.05, 1.15, 2.05] }, { "op": "move", "by": [0, 0.0, 0.1] },
+               { "op": "displace", "amount": 0.035, "scale": 0.18, "octaves": 3, "axes": [1, 0.6, 1] },
+               { "op": "gradient", "from": "fissure", "to": "roots", "range": [0, 0.9] },
+               { "op": "noise_tint", "amount": 0.08, "scale": 0.15 } ] },
+    { "name": "board", "material": "wood",
+      "shape": { "op": "extrude", "outline": { "arch": [0.38, 0.64], "segments": 6 }, "height": 0.05, "bevel": 0.006 },
+      "ops": [ { "op": "rotate", "deg": [-90, 0, 0] }, { "op": "move", "by": [0, -0.005, 0.025] },
+               { "op": "rotate", "deg": [-5, 0, -4] }, { "op": "move", "by": [0, 0, -0.98] },
+               { "op": "gradient", "from": "roots", "to": "bone_shadow", "range": [0, 0.25] } ] },
+    { "name": "edge_stones", "material": "slab_stone",
+      "shape": { "op": "sphere", "radius": 0.08, "subdivisions": 0 },
+      "ops": [ { "op": "scale", "by": [1.2, 0.7, 1.4] }, { "op": "move", "by": [0.5, 0.012, -0.6] },
+               { "op": "array", "count": 4, "offset": [0, 0, 0.42], "jitter": { "rotate": [10, 60, 10], "scale": 0.3 } },
+               { "op": "mirror", "axis": "x", "keep": true },
+               { "op": "gradient", "from": "carved_shadow", "to": "grave_stone", "range": [0, 1] } ] }
+  ],
+  "finish": [ { "op": "ground_shade", "amount": 0.25, "height": 0.25 } ]
+}

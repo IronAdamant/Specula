@@ -61,6 +61,7 @@ fn every_recipe_in_the_folder_is_covered() {
             || OTHERS.contains(&name.as_str())
             || ["rune_glyph", "rune_column"].contains(&name.as_str())
             || PROCGEN.iter().any(|(p, _, _)| p == name)
+            || M4_PROPS.iter().any(|(p, _)| p == name)
             || lib[name].contains("\"texgraph\"");
         assert!(known, "recipe {name} has no budget test");
     }
@@ -209,7 +210,7 @@ fn bevel_everything() {
     for (name, text) in &lib {
         let json = Json::parse(text).unwrap();
         let category = json.get("category").and_then(|c| c.as_str()).unwrap_or("");
-        if !["stone", "wall", "graveyard", "component"].contains(&category) {
+        if !["stone", "wall", "graveyard", "component", "prop"].contains(&category) {
             continue;
         }
         for part in json.get("parts").and_then(|p| p.as_array()).unwrap() {
@@ -352,3 +353,53 @@ fn procgen_assets_build_in_budget_and_pinned() {
 }
 
 const PROCGEN_PINNED: &str = "dc0693c52fd8b422";
+
+/// The M4 exit set: map 1's 33 graveyard props (scripts/m4_exit.py), with their style.toml
+/// budgets (graveyard 600, prop 1500, building 1500).
+const M4_PROPS: [(&str, usize); 33] = [
+    ("grave_cross_iron", 600), ("grave_marker_wood", 600), ("headstone_broken", 600), ("grave_mound", 600), ("headstone_skull", 600),
+    ("fence_iron_corner", 600), ("fence_iron_broken", 600), ("urn_funeral", 600), ("urn_toppled", 600), ("candle_cluster", 600),
+    ("bone_pile", 600), ("ribcage_buried", 600), ("coffin_closed", 600), ("gravedigger_tools", 600), ("wreath_stand", 600),
+    ("chest_tomb", 1500), ("grave_obelisk", 1500), ("gate_iron", 1500), ("candle_shrine", 1500), ("lantern_post", 1500),
+    ("lantern_dead", 1500), ("brazier_tripod", 1500), ("coffin_open", 1500), ("crypt_door", 1500), ("column_broken", 1500),
+    ("pediment_fallen", 1500), ("statue_mourner", 1500), ("statue_angel", 1500), ("wheelbarrow", 1500), ("grave_bell", 1500),
+    ("rune_obelisk", 1500), ("stone_bench", 1500), ("mausoleum_domed", 1500),
+];
+
+/// Every M4 exit prop at every value of its small integer parameters builds valid LODs within
+/// its budget, stands on the ground, and builds bit-identically (pinned).
+#[test]
+fn m4_exit_props_build_in_budget_and_pinned() {
+    let (style, lib) = load();
+    let mut h = StableHasher::new();
+    for (name, max) in M4_PROPS {
+        let text = &lib[name];
+        let json = specula_core::Json::parse(text).unwrap();
+        let ints: Vec<(String, f64, f64)> = json
+            .get("params")
+            .and_then(|p| p.as_object())
+            .map(|o| o.iter().filter(|(_, d)| d.get("integer").and_then(|b| b.as_bool()) == Some(true)).map(|(k, d)| (k.clone(), d.get("min").and_then(|v| v.as_f64()).unwrap(), d.get("max").and_then(|v| v.as_f64()).unwrap())).collect())
+            .unwrap_or_default();
+        let mut variants: Vec<Vec<(&str, f64)>> = vec![vec![]];
+        if let Some((k, lo, hi)) = ints.first() {
+            variants = (*lo as i64..=*hi as i64).map(|v| vec![(k.as_str(), v as f64)]).collect();
+        }
+        for vals in variants {
+            let m = build(text, &BuildParams { values: &vals, library: Some(&lib), ..BuildParams::new(&style) }).unwrap_or_else(|e| panic!("{name} {vals:?}: {e}"));
+            let n0 = m.lods[0].triangle_count();
+            assert!(n0 <= max, "{name} {vals:?}: {n0} triangles, budget {max}");
+            assert!(m.lods.len() >= 2, "{name}: no LOD ({:?})", m.notes);
+            for (i, l) in m.lods.iter().enumerate() {
+                l.validate().unwrap_or_else(|e| panic!("{name} {vals:?} LOD{i}: {e}"));
+            }
+            let b = m.lods[0].bounds();
+            assert!(b.min[1] > -0.31 && b.min[1] < 0.06, "{name} {vals:?}: lowest point {} m (stands on the ground)", b.min[1]);
+            assert!(!m.report().to_string().contains("bevel_failed"), "{name}: a boolean's bevel failed");
+            h.write_str(name);
+            h.write_u64(m.hash);
+        }
+    }
+    assert_eq!(format!("{:016x}", h.finish()), M4_PINNED, "M4 exit prop hash changed");
+}
+
+const M4_PINNED: &str = "950279ddd1cef222";

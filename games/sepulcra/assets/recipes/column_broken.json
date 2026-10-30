@@ -1,0 +1,31 @@
+{
+  "recipe": 1,
+  "name": "column_broken",
+  "category": "prop",
+  "description": "M4 exit set: a fluted memorial column snapped at a slant (a fluted star extrusion cut by booleans, chamfered), on a square base with a torus moulding, one fallen drum lying in the grass beside it. The broken column is the Victorian sign of a life cut short. 2.3 m.",
+  "seed": 3124,
+  "lods": [0.5, 0.25],
+  "collider": "convex_hull",
+  "smooth_angle": 35,
+  "parts": [
+    { "name": "base", "material": "graveyard_stone",
+      "shape": { "op": "box", "size": [0.84, 0.22, 0.84], "bevel": 0.03 },
+      "ops": [ { "op": "gradient", "from": "lichen", "to": "grave_stone", "range": [0, 1], "strength": 0.6 }, { "op": "bevel_tint", "color": "carved_highlight", "amount": 0.5 } ] },
+    { "name": "moulding", "material": "graveyard_stone",
+      "shape": { "op": "torus", "radius": 0.31, "tube": 0.05, "segments": 16, "sides": 4 },
+      "ops": [ { "op": "move", "by": [0, 0.2, 0] } ] },
+    { "name": "shaft", "material": "graveyard_stone",
+      "shape": { "op": "difference", "bevel": 0.012, "of": [
+        { "op": "extrude", "outline": { "star": 12, "radius": 0.31, "inner": 0.28 }, "height": 2.3 },
+        { "op": "box", "size": [1.2, 0.9, 1.2], "ops": [ { "op": "color", "color": "carved_shadow" }, { "op": "rotate", "deg": [18, 0, -12] }, { "op": "move", "by": [0, 2.25, 0] } ] },
+        { "op": "box", "size": [0.3, 0.3, 0.5], "ops": [ { "op": "color", "color": "carved_shadow" }, { "op": "rotate", "deg": [0, 30, 40] }, { "op": "move", "by": [0.22, 1.7, 0.12] } ] } ] },
+      "ops": [ { "op": "move", "by": [0, 0.22, 0] },
+               { "op": "gradient", "from": "lichen", "to": "grave_stone", "range": [0, 0.3], "strength": 0.5 },
+               { "op": "bevel_tint", "color": "carved_highlight", "amount": 0.4 }, { "op": "noise_tint", "amount": 0.07, "scale": 0.3 } ] },
+    { "name": "drum", "material": "graveyard_stone",
+      "shape": { "op": "extrude", "outline": { "star": 12, "radius": 0.31, "inner": 0.28 }, "height": 0.62, "bevel": 0.02 },
+      "ops": [ { "op": "rotate", "deg": [0, 0, 90] }, { "op": "move", "by": [1.15, 0.29, 0] }, { "op": "rotate", "deg": [0, 35, 0] },
+               { "op": "gradient", "from": "lichen", "to": "grave_stone", "range": [0, 1], "strength": 0.4 }, { "op": "noise_tint", "amount": 0.07, "scale": 0.3 } ] }
+  ],
+  "finish": [ { "op": "ground_shade", "amount": 0.3, "height": 0.35 } ]
+}

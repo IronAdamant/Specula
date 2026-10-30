@@ -70,9 +70,11 @@ All sheets come back like sight captures: a PNG and a **packet** (saved next to 
 record per tile: subject, view or shot, pass, tile box, the subject's screen box, its height in pixels, mean
 lightness, contrast against its surround and the LOD drawn.
 
-- **Contact sheet** (`studio_sheet`): one row per subject (up to 12), columns are angles (a turntable of N
+- **Contact sheet** (`studio_sheet`): one block per subject (up to 48), columns are angles (a turntable of N
   azimuths, top, or named shots) and the passes asked for: `colour`, `value` (greyscale lightness of the colour
-  render) and `silhouette`.
+  render) and `silhouette`. Blocks stack one above the other while they fit; a review batch wraps into columns
+  of blocks (the fewest that give the largest tile within 2048 px), so one sheet shows a whole batch: the M4
+  exit set's 33 props are 4 columns of 176 px tiles. Tiles (96) and renders (128) still bound a sheet.
 - **Line-up** (`studio_lineup`): siblings side by side at true relative scale with the human and the cube, front and
   three-quarter, on one image, plus the silhouette distinctness matrix between them.
 - **Before/after** (`studio_compare`): either two subjects rendered now (two parameter sets, two recipe files), or a

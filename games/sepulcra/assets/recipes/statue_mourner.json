@@ -1,0 +1,37 @@
+{
+  "recipe": 1,
+  "name": "statue_mourner",
+  "category": "prop",
+  "description": "M4 exit set: a weeping mourner, a hooded figure in a long robe with its head bowed into its hands, sculpted as one distance field (tier 3: smooth unions, noise-weathered) standing on a long ledger stone and turned towards the arched headstone at its other end: a mourner at a grave, wide and low where the obelisks are tall and narrow. 2.1 m: the bowed hood over the headstone is its silhouette.",
+  "seed": 3126,
+  "lods": [0.5, 0.25],
+  "collider": "convex_hull",
+  "smooth_angle": 50,
+  "parts": [
+    { "name": "ledger_foot", "material": "graveyard_stone",
+      "shape": { "op": "box", "size": [1.86, 0.14, 1.0], "bevel": 0.03 },
+      "ops": [ { "op": "gradient", "from": "lichen", "to": "grave_stone", "range": [0, 1], "strength": 0.6 } ] },
+    { "name": "ledger", "material": "graveyard_stone",
+      "shape": { "op": "box", "size": [1.7, 0.32, 0.86], "bevel": 0.03 },
+      "ops": [ { "op": "move", "by": [0, 0.14, 0] }, { "op": "bevel_tint", "color": "carved_highlight", "amount": 0.5 }, { "op": "noise_tint", "amount": 0.05, "scale": 0.3 } ] },
+    { "name": "tablet", "material": "graveyard_stone",
+      "shape": { "op": "extrude", "outline": { "arch": [0.56, 0.86], "segments": 8 }, "height": 0.16, "bevel": 0.015, "corner_bevel": 0.015 },
+      "ops": [ { "op": "rotate", "deg": [-90, 0, 0] }, { "op": "move", "by": [0, 0, 0.08] }, { "op": "rotate", "deg": [0, -20, 0] }, { "op": "move", "by": [0.5, 0.46, -0.05] },
+               { "op": "bevel_tint", "color": "carved_highlight", "amount": 0.6 }, { "op": "gradient", "from": "lichen", "to": "grave_stone", "range": [0, 0.5], "strength": 0.4 } ] },
+    { "name": "figure", "material": "graveyard_stone",
+      "shape": { "op": "sdf", "resolution": 21, "tree": { "op": "union", "smooth": 0.07,
+        "displace": { "amount": 0.012, "scale": 0.09, "octaves": 2 }, "of": [
+          { "op": "cylinder", "radius": 0.33, "radius_top": 0.17, "height": 1.2, "at": [0, 0.6, 0] },
+          { "op": "ellipsoid", "radii": [0.24, 0.26, 0.17], "at": [0, 1.2, 0.02] },
+          { "op": "sphere", "radius": 0.165, "at": [0, 1.44, 0.03] },
+          { "op": "ellipsoid", "radii": [0.13, 0.15, 0.14], "at": [0, 1.4, 0.13] },
+          { "op": "capsule", "radius": 0.06, "height": 0.42, "at": [-0.1, 1.28, 0.15], "rotate": [-70, 0, -12] },
+          { "op": "capsule", "radius": 0.06, "height": 0.42, "at": [0.1, 1.28, 0.15], "rotate": [-70, 0, 12] },
+          { "op": "ellipsoid", "radii": [0.13, 0.08, 0.07], "at": [0, 1.42, 0.24] },
+          { "op": "box", "size": [0.62, 0.06, 0.5], "corner": 0.02, "at": [0, 0.03, 0.03] } ] } },
+      "ops": [ { "op": "rotate", "deg": [0, 35, 0] }, { "op": "move", "by": [-0.4, 0.46, 0.02] },
+               { "op": "gradient", "from": "lichen", "to": "grave_stone", "range": [0, 0.35], "strength": 0.55 },
+               { "op": "noise_tint", "amount": 0.06, "scale": 0.2 } ] }
+  ],
+  "finish": [ { "op": "ground_shade", "amount": 0.3, "height": 0.45 } ]
+}

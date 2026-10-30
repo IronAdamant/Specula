@@ -1271,7 +1271,8 @@ impl Library {
         self.refresh_folder(&folder);
         // A glTF source is looked at afresh (its size and time).
         self.gltfs.remove(&spec.recipe);
-        let key = self.key_for(spec, false)?;
+        // retry: a recipe new on disk is found even when its folder's time didn't move.
+        let key = self.key_for(spec, true)?;
         if let Some(b) = self.builds.get(&key) {
             self.cache_hits += 1;
             let b = Arc::clone(b);
@@ -1390,6 +1391,15 @@ impl Library {
             self.folders.insert(folder.clone(), f);
         } else if retry && !self.folders[&folder].files.contains_key(&stem) {
             self.refresh_folder(&folder);
+            // A folder's time doesn't always move when a file is renamed into it (project_write
+            // writes a temporary file and renames it into place; seen on Windows in the M4 exit
+            // run, where four builders' new recipes stayed recipe_not_found): a recipe that is on
+            // disk but missing from the cached folder is read afresh.
+            if !self.folders[&folder].files.contains_key(&stem) && is_regular(&self.root.join(rel)) {
+                if let Some(f) = self.read_folder_from(&folder, self.folders.get(&folder)) {
+                    self.folders.insert(folder.clone(), f);
+                }
+            }
         }
         if !self.recipes.contains_key(&spec.recipe) {
             // A recipe that failed to parse fails the same way until its files change.
@@ -3730,6 +3740,25 @@ mod tests {
             BuildRequest::Ready(_, cached) => assert!(cached),
             BuildRequest::Pending(_) => panic!("should be cached"),
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// M4 exit run: four builders' project_writes left new recipes `recipe_not_found` for the
+    /// studio, because the cached folder's time hadn't moved when the files were renamed into
+    /// it. A recipe on disk that the cached folder lacks is read afresh, whatever the times say.
+    #[test]
+    fn a_new_recipe_is_found_when_its_folder_time_did_not_move() {
+        let root = scratch("new_recipe", &[("block", &block(1.0))]);
+        let mut lib = Library::new(&root, None);
+        assert!(lib.request(&ModelSpec::new("recipes/block.json")).is_ok());
+        std::fs::write(root.join("recipes").join("late.json"), block(2.0)).unwrap();
+        // What a missed directory-time update looks like: the cache thinks it is current.
+        let folder = PathBuf::from("recipes");
+        let now = mtime(&root.join("recipes"));
+        lib.folders.get_mut(&folder).unwrap().mtime = now;
+        assert!(lib.request(&ModelSpec::new("recipes/late.json")).is_ok(), "the new recipe is found");
+        assert!(lib.resolve(&ModelSpec::new("recipes/late.json")).is_ok());
+        assert_eq!(lib.request(&ModelSpec::new("recipes/gone.json")).err().map(|e| e.code), Some("recipe_not_found"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

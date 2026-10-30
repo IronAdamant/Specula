@@ -1,0 +1,33 @@
+{
+  "recipe": 1,
+  "name": "urn_toppled",
+  "category": "graveyard",
+  "description": "M4 exit set: a funeral urn knocked off its pedestal, lying on its side in the grass with its lid rolled away and grey ash spilling from its mouth; the empty pedestal stands behind. Low and wide where urn_funeral is upright.",
+  "seed": 3112,
+  "lods": [0.5, 0.25],
+  "collider": "aabb",
+  "smooth_angle": 35,
+  "parts": [
+    { "name": "foot", "material": "graveyard_stone", "color": "lichen",
+      "shape": { "op": "box", "size": [0.52, 0.1, 0.52], "bevel": 0.02 },
+      "ops": [ { "op": "move", "by": [-0.35, 0, -0.1] } ] },
+    { "name": "pedestal", "material": "graveyard_stone",
+      "shape": { "op": "box", "size": [0.4, 0.42, 0.4], "bevel": 0.02 },
+      "ops": [ { "op": "move", "by": [-0.35, 0.1, -0.1] }, { "op": "gradient", "from": "lichen", "to": "grave_stone", "range": [0, 0.7], "strength": 0.6 },
+               { "op": "bevel_tint", "color": "carved_highlight", "amount": 0.5 } ] },
+    { "name": "urn", "material": "graveyard_stone",
+      "shape": { "op": "lathe", "segments": 10,
+                 "profile": [[0, 0], [0.11, 0], [0.11, 0.03], [0.07, 0.08], [0.09, 0.12], [0.19, 0.24], [0.22, 0.35], [0.18, 0.46], [0.12, 0.5], [0.15, 0.53], [0.14, 0.56], [0, 0.56]] },
+      "ops": [ { "op": "rotate", "deg": [0, 0, -84] }, { "op": "move", "by": [0.02, 0.2, 0.18] }, { "op": "rotate", "deg": [0, 25, 0] },
+               { "op": "bevel_tint", "color": "carved_highlight", "amount": 0.4 }, { "op": "noise_tint", "amount": 0.06, "scale": 0.2 } ] },
+    { "name": "lid", "material": "graveyard_stone",
+      "shape": { "op": "lathe", "segments": 8, "profile": [[0, 0], [0.14, 0], [0.12, 0.04], [0.05, 0.07], [0.04, 0.11], [0, 0.13]] },
+      "ops": [ { "op": "rotate", "deg": [64, 0, 12] }, { "op": "move", "by": [0.62, 0.1, 0.5] } ] },
+    { "name": "ash", "material": "slab_stone", "color": "bone_shadow",
+      "shape": { "op": "lathe", "segments": 10, "profile": [[0, 0], [0.5, 0], [0.47, 0.1], [0.38, 0.2], [0.22, 0.28], [0, 0.31]] },
+      "ops": [ { "op": "scale", "by": [0.6, 0.35, 0.42] }, { "op": "move", "by": [0.6, -0.01, 0.38] },
+               { "op": "displace", "amount": 0.02, "scale": 0.08 },
+               { "op": "gradient", "from": "strata_light", "to": "bone_shadow", "range": [0, 1], "strength": 0.7 } ] }
+  ],
+  "finish": [ { "op": "ground_shade", "amount": 0.3, "height": 0.25 } ]
+}

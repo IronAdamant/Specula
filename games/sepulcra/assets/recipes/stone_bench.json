@@ -1,0 +1,32 @@
+{
+  "recipe": 1,
+  "name": "stone_bench",
+  "category": "prop",
+  "description": "M4 exit set: a memorial bench for the living, a thick slab seat on two supports with arched cut-outs (booleans), a carved backrest panel with a sunk epitaph. Low and wide, with the backrest it reads apart from the chest tomb.",
+  "seed": 3133,
+  "lods": [0.5, 0.25],
+  "collider": "aabb",
+  "smooth_angle": 30,
+  "parts": [
+    { "name": "supports", "material": "graveyard_stone",
+      "shape": { "op": "difference", "bevel": 0.012, "of": [
+        { "op": "box", "size": [0.2, 0.46, 0.56], "bevel": 0.02 },
+        { "op": "extrude", "outline": { "arch": [0.3, 0.28], "segments": 6 }, "height": 0.3,
+          "ops": [ { "op": "color", "color": "carved_shadow" }, { "op": "rotate", "deg": [-90, 0, 0] }, { "op": "rotate", "deg": [0, 90, 0] }, { "op": "move", "by": [0.15, 0, 0] } ] } ] },
+      "ops": [ { "op": "move", "by": [-0.7, 0, 0] }, { "op": "mirror", "axis": "x", "keep": true },
+               { "op": "gradient", "from": "lichen", "to": "grave_stone", "range": [0, 1], "strength": 0.6 } ] },
+    { "name": "seat", "material": "graveyard_stone",
+      "shape": { "op": "box", "size": [1.8, 0.11, 0.58], "bevel": 0.03 },
+      "ops": [ { "op": "move", "by": [0, 0.46, 0.01] }, { "op": "bevel_tint", "color": "carved_highlight", "amount": 0.6 }, { "op": "noise_tint", "amount": 0.06, "scale": 0.3 } ] },
+    { "name": "back_posts", "material": "graveyard_stone",
+      "shape": { "op": "box", "size": [0.14, 0.5, 0.12], "bevel": 0.015 },
+      "ops": [ { "op": "move", "by": [-0.7, 0.57, -0.22] }, { "op": "mirror", "axis": "x", "keep": true } ] },
+    { "name": "backrest", "material": "graveyard_stone",
+      "shape": { "op": "difference", "bevel": 0.008, "of": [
+        { "op": "box", "size": [1.7, 0.4, 0.1], "bevel": 0.02 },
+        { "op": "box", "size": [1.2, 0.2, 0.06], "ops": [ { "op": "color", "color": "carved_shadow" }, { "op": "move", "by": [0, 0.1, 0.05] } ] } ] },
+      "ops": [ { "op": "move", "by": [0, 0.68, -0.24] }, { "op": "bevel_tint", "color": "carved_highlight", "amount": 0.6 },
+               { "op": "gradient", "from": "grave_stone", "to": "lichen", "range": [0.7, 1], "strength": 0.4 } ] }
+  ],
+  "finish": [ { "op": "ground_shade", "amount": 0.3, "height": 0.3 } ]
+}

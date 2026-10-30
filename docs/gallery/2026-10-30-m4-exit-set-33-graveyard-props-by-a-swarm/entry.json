@@ -1,0 +1,48 @@
+{
+  "date": "2026-10-30",
+  "time": "17:00",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M4",
+  "commit": "",
+  "subject": "assets",
+  "topic": "3D asset",
+  "title": "M4 exit set: 33 graveyard props by a swarm",
+  "note": "The M4 exit proof's batch: 33 map-1 graveyard props written as procedural recipes by four builder agents (CSG, SDF sculpts, lathes, sweeps), checked against style.toml and the studio's taste checks, reviewed by an art-director agent (four critiques fixed: the mourner and the skull marker read too close to the obelisk and the urn, the candles and bone pile too small on a phone), watched by a debugger agent. One contact sheet (three-quarter under the game's moonlight, the gameplay shot at true pixel size) waits on the owner's review screen; gallery rounds hold three look decisions.",
+  "source": "scripts/m4_exit.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-contact-sheet.jpg",
+      "caption": "The one contact sheet of all 33 props submitted for the owner's approval",
+      "original": "contact_sheet.png",
+      "width": 640,
+      "height": 808,
+      "bytes": 60151
+    },
+    {
+      "file": "02-artdir-monuments-lineup.jpg",
+      "caption": "The art director's line-up of the monuments before its critiques (the first mourner stood like the obelisk)",
+      "original": "artdir_monuments_lineup.png",
+      "width": 640,
+      "height": 235,
+      "bytes": 13098
+    },
+    {
+      "file": "03-gallery-m4-rune-obelisk-r1.jpg",
+      "caption": "Gallery round: the rune obelisk's runes dormant, rune cyan or grave green (the art director picked dormant; the owner decides)",
+      "original": "gallery-m4_rune_obelisk-r1.png",
+      "width": 640,
+      "height": 238,
+      "bytes": 12252
+    },
+    {
+      "file": "04-gallery-m4-brazier-tripod-r1.jpg",
+      "caption": "Gallery round: the tripod brazier lit, embers or cold (the art director picked embers)",
+      "original": "gallery-m4_brazier_tripod-r1.png",
+      "width": 640,
+      "height": 238,
+      "bytes": 12649
+    }
+  ]
+}

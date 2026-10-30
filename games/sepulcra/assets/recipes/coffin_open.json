@@ -1,0 +1,30 @@
+{
+  "recipe": 1,
+  "name": "coffin_open",
+  "category": "prop",
+  "description": "M4 exit set: an empty coffin on two sawhorse trestles, hollowed with a boolean (its inside in deep shadow), the lid slid off and leaning against a trestle. Whoever was in it walked away.",
+  "seed": 3121,
+  "lods": [0.5, 0.25],
+  "collider": "aabb",
+  "smooth_angle": 30,
+  "parts": [
+    { "name": "trestle_beams", "material": "wood",
+      "shape": { "op": "box", "size": [0.8, 0.08, 0.1], "bevel": 0.008 },
+      "ops": [ { "op": "move", "by": [0, 0.5, -0.6] }, { "op": "array", "count": 2, "offset": [0, 0, 1.2] } ] },
+    { "name": "trestle_legs", "material": "wood",
+      "shape": { "op": "box", "size": [0.06, 0.56, 0.06], "bevel": 0.006 },
+      "ops": [ { "op": "rotate", "deg": [12, 0, 14] }, { "op": "move", "by": [-0.28, 0, -0.66] },
+               { "op": "mirror", "axis": "x", "keep": true }, { "op": "array", "count": 2, "offset": [0, 0, 1.2] } ] },
+    { "name": "shell", "material": "wood", "color": "bone_shadow",
+      "shape": { "op": "difference", "bevel": 0.01, "of": [
+        { "op": "extrude", "outline": { "points": [[-0.2, -1.0], [0.2, -1.0], [0.33, 0.48], [0.26, 1.0], [-0.26, 1.0], [-0.33, 0.48]] }, "height": 0.4, "bevel": 0.012 },
+        { "op": "extrude", "outline": { "points": [[-0.16, -0.94], [0.16, -0.94], [0.28, 0.46], [0.22, 0.94], [-0.22, 0.94], [-0.28, 0.46]] }, "height": 0.4,
+          "ops": [ { "op": "color", "color": "fissure" }, { "op": "move", "by": [0, 0.06, 0] } ] } ] },
+      "ops": [ { "op": "move", "by": [0, 0.58, 0] }, { "op": "bevel_tint", "color": "bone", "amount": 0.5 } ] },
+    { "name": "lid", "material": "wood", "color": "bone_shadow",
+      "shape": { "op": "extrude", "outline": { "points": [[-0.21, -1.03], [0.21, -1.03], [0.35, 0.49], [0.27, 1.03], [-0.27, 1.03], [-0.35, 0.49]] }, "height": 0.06, "bevel": 0.012, "corner_bevel": 0.012 },
+      "ops": [ { "op": "rotate", "deg": [0, 0, 72] }, { "op": "move", "by": [0.66, 0.34, 0.1] },
+               { "op": "gradient", "from": "bone_shadow", "to": "bone", "range": [0, 1], "strength": 0.4 } ] }
+  ],
+  "finish": [ { "op": "ground_shade", "amount": 0.3, "height": 0.3 } ]
+}

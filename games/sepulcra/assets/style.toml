@@ -46,7 +46,7 @@ sample_hz = 60
 case = "snake"
 max_len = 32
 file_matches_name = true
-categories = ["stone", "enemy", "boss", "wall", "graveyard", "slab", "vfx_placeholder", "component", "building", "ruin", "terrain", "set"]
+categories = ["stone", "enemy", "boss", "wall", "graveyard", "slab", "vfx_placeholder", "component", "building", "ruin", "terrain", "set", "prop"]
 parts_named = true
 
 # Triangle budgets at LOD 0 (STYLE.md "Performance budget"; the rest from style.json's proposals).
@@ -123,6 +123,13 @@ max_triangles = 8000
 # Set pieces: a whole scattered plot (graves, rocks) built as one model.
 category = "set"
 max_triangles = 15000
+
+[[budget]]
+# Claude's proposal, 2026-10-30 (M4 exit set, owner to confirm): map 1's graveyard dressing that is
+# more than a small grave piece (statues, gates, lanterns, columns, tools): a few of each per map,
+# so a stone's budget, not a tombstone's.
+category = "prop"
+max_triangles = 1500
 
 [[budget]]
 # Scattered rocks, half-buried among the graves.
@@ -217,6 +224,14 @@ height_m = [0.3, 1.4]
 name = "tombstone"
 height_m = [0.65, 1.0]
 
+# Claude's proposal, 2026-10-30 (M4 exit set, owner to confirm): dressing from knee high (a
+# wheelbarrow, a fallen pediment) to a statue on its plinth, never taller than a sky obelisk, so
+# the player's stones stay the tallest things on the slab.
+[[scale]]
+category = "prop"
+height_m = [0.3, 4.0]
+sink_m = [0.0, 0.3]
+
 # Claude's proposal, 2026-10-29 (owner to confirm), as for the budgets above.
 [[scale]]
 category = "building"
@@ -254,8 +269,10 @@ neutral_max_chroma = 0.05
 # The interface ("ui", gallery colours) never uses the dead's green either (owner, 2026-10-22: green
 # is for the dead; fire is reserved below).
 forbid = { stone = ["enemy"], wall = ["enemy"], enemy = ["player"], boss = ["player"], ui = ["enemy"] }
-# Fire is "brazier cairn flames and splash only; the single warm accent in the scene".
-reserve = { fire = ["brazier_*"] }
+# Fire is "brazier cairn flames and splash only; the single warm accent in the scene". The owner's
+# decision of 2026-10-22, "fire colour is for fire only", lets real flames carry it: map 1's candles
+# and lanterns (Claude's proposal, 2026-10-30, M4 exit set; owner to confirm). Nothing else is warm.
+reserve = { fire = ["brazier_*", "candle_*", "lantern_*"] }
 # "Emissive only for gameplay meaning": runes, eyes, bolts, fire.
 emissive = ["rune_glow", "grave_glow", "fire", "wraith"]
 
@@ -313,6 +330,8 @@ flat_min_range = 0.06
 # slab (value_contrast 0.16 in the gameplay shot), not as lit form. STYLE.md's neutrals table gives
 # the fence the pale graveyard stone instead: owner to decide (lane report, 2026-10-22).
 "graveyard_fence*" = ["flat_lighting"]
+# The M4 exit set's broken fence stretch is the same wrought iron, for the same reason (2026-10-30).
+"fence_iron_broken" = ["flat_lighting"]
 # The slab is the ground: on the stage its cliff stands on its own colour, so the contrast with the
 # ground around it measures nothing (in play it is seen against the mist).
 "slab_cliff*" = ["value_contrast"]
@@ -340,6 +359,11 @@ size = "2 m long, 0.6 m deep, 0.9 m high."
 [bible.graveyard]
 shape = "Small, dense, pale tombstones inside a low fence: the pale centre of the slab is the eye of the composition."
 size = "Tombstone 0.5 x 0.15 x 0.8 m."
+
+[bible.prop]
+shape = "Graveyard dressing for map 1: one clear idea per prop, readable as a silhouette from the default camera (a statue's bowed head, a gate's arch, a lantern's cage). Chunky and slightly oversized; never taller than a player's stone."
+colour = "Graveyard stone #a7a39a, carved stone, iron #5c6168, bone, moss and roots. Warm light only from real flames (candles, lanterns); green only where the dead are. Never rune cyan glowing like a player's stone."
+general = "Bevel everything (about 4-8% of the smallest dimension); wrought iron may stay thin."
 
 [bible.slab]
 shape = "Thick, layered stone with sharp fractures: flat top, vertical cliffs with horizontal strata, a jagged underside fading into the mist."

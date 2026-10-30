@@ -13,8 +13,11 @@ use crate::world::{ModelSpec, MAX_MODEL_SEED};
 use specula_core::Json;
 use specula_protocol::{SessionInfo, ToolDef, ToolOutput};
 
-/// Subjects one sheet, line-up or check renders.
+/// Subjects one line-up or check renders.
 pub const MAX_SUBJECTS: usize = 12;
+/// Subjects one contact sheet shows (a batch for the review queue: the M4 exit set is 33 props).
+/// Their blocks wrap into columns; tiles (`MAX_TILES`) and renders still bound the work.
+pub const MAX_SHEET_SUBJECTS: usize = 48;
 /// Subjects one `style_check` covers (variants included).
 pub const MAX_STYLE_SUBJECTS: usize = 96;
 /// Subjects one `studio_stage` frame shows.
@@ -317,7 +320,7 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<StudioCall, String>> {
         })(),
         "studio_sheet" => (|| {
             check_keys(args, name, &[&["subjects", "recipe", "params", "seed", "label", "views", "passes", "rig", "tile", "references", "mark", "response_format"]])?;
-            let subjects = subjects_arg(args, MAX_SUBJECTS, true)?;
+            let subjects = subjects_arg(args, MAX_SHEET_SUBJECTS, true)?;
             Ok(StudioCall::Sheet { sheet: sheet_arg(args, subjects)?, mark: mark_arg(args, "mark")?, format: format(args)? })
         })(),
         "studio_lineup" => (|| {
@@ -444,7 +447,7 @@ pub fn definitions() -> Vec<ToolDef> {
         ToolDef {
             name: "studio_sheet".into(),
             description: format!(
-                "Contact sheet: one row per subject (1..12), one column per view and pass (colour; value = greyscale lightness; silhouette = black on white), at most 96 tiles. \
+                "Contact sheet: one block per subject (1..48; blocks wrap into columns when they don't fit one above the other), one column per view and pass (colour; value = greyscale lightness; silhouette = black on white), at most 96 tiles. \
                  {stage_note} The packet has a record per tile: subject, view, pass, tile box, the subject's box in the tile, its height in pixels, lightness, LOD, and per \
                  shot its measures (px_height in the shot's viewport, contrast against the ring around it). Concise: tiles and style.toml errors per subject; detailed: \
                  every measure and check. mark: keep this sheet (pixels and numbers) under a name for studio_compare after you edit the recipe."
@@ -566,6 +569,12 @@ mod tests {
         let StudioCall::Sheet { sheet, .. } = ok("studio_sheet", r#"{"recipe": "recipes/a.json", "views": "shots"}"#) else { panic!() };
         assert_eq!(sheet.views.len(), 5);
         assert!(bad("studio_sheet", r#"{"subjects": ["a.json","b.json","c.json","d.json","e.json","f.json","g.json"], "views": 16, "passes": ["colour"]}"#).contains("at most 96"));
+        // A review batch on one sheet (the M4 exit set: 33 props), but not without bound.
+        let batch = |n: usize| format!(r#"{{"subjects": [{}], "views": ["three_quarter", "gameplay"]}}"#, (0..n).map(|i| format!("\"p{i}.json\"")).collect::<Vec<_>>().join(","));
+        let StudioCall::Sheet { sheet, .. } = ok("studio_sheet", &batch(33)) else { panic!() };
+        assert_eq!(sheet.subjects.len(), 33);
+        assert!(bad("studio_sheet", &batch(MAX_SHEET_SUBJECTS + 1)).contains("at most 48"));
+        assert!(bad("studio_lineup", &batch(13).replace(r#", "views": ["three_quarter", "gameplay"]"#, "")).contains("at most 12"));
         assert!(bad("studio_sheet", r#"{"recipe": "../x.json"}"#).contains("recipe"));
         assert!(bad("studio_sheet", r#"{"recipe": "a.json", "views": ["sideways"]}"#).contains("a view is"));
         assert!(bad("studio_sheet", r#"{"recipe": "a.json", "subjects": ["b.json"]}"#).contains("not both"));
