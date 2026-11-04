@@ -514,7 +514,15 @@ impl Tools {
                 ToolOutput::error("the engine was too busy to answer within 30 s; the command was not applied")
             }
             mpsc::RecvTimeoutError::Disconnected => {
-                ToolOutput::error("the engine is shutting down or skipped the command; it was not applied")
+                // The engine dropped the reply unanswered: it may or may not have applied the call.
+                specula_core::trace_event!(&crate::trace_sink::JOBS, Warn, "jobs.reply_dropped", call = current_call());
+                ToolOutput::error(
+                    Json::obj([
+                        ("error", Json::from("reply_dropped")),
+                        ("message", Json::from("the engine dropped this call without answering (shutting down, or a bug): its outcome is unknown; check world_history for what was written, and trace_call for what the call did")),
+                    ])
+                    .to_string(),
+                )
             }
         })
     }

@@ -43,7 +43,10 @@ taste state; and taste state has **its own budget** (1024 files, 64 MiB of text)
 filling it never stops a `project_write`. `gallery_delete` removes a gallery: its maker's, or any as the owner (their
 private history) or an opener; journaled, undoable by the deleter. Rounds are written by the reserved writer `taste`, decisions by `window:owner` or the deciding agent
 (granted owner). Approved results live outside it: `style.toml`, `ui/theme.json` and `assets/style/` (kinds
-`style_data` for `priors.json`, `style_notes` for `notes.md`). A human editing taste files on disk is imported as
+`style_data` for `priors.json`, `style_notes` for `notes.md`). They are written with the taste state that records
+them in **one** commit under `Rule::TasteResult` (`Engine::project_put_all`: claims apply to the result files, never
+to the taste state), so a call that applies a decision commits once (AGENTS rule 14; the M4 final audit found
+`gallery_apply` and `taste_suggest {apply}` committing twice). A human editing taste files on disk is imported as
 `disk`, like any outside edit.
 
 **Subjects** (what each variant shows):
@@ -241,7 +244,7 @@ human's screen, replaces and deletes any gallery's round, dismisses suggestions 
 other agent** (`art_director` and the like are job labels) makes galleries and does those things to its own. The
 tools' access entries: reads for `gallery_get`, `gallery_list`, `gallery_wait`, `taste_query`, `board_check`; the
 taste rule for `gallery_create` and `board_measure`; owned galleries for `gallery_open`, `gallery_close`,
-`gallery_round`, `gallery_delete`; the owner for `gallery_decide`; the project rule for `gallery_apply`; and open,
+`gallery_round`, `gallery_delete`; the owner for `gallery_decide`; the taste result rule for `gallery_apply` (the values and the gallery that records them, in one commit: one tool call, one commit); and open,
 with reasons, for `taste_suggest` and `style_onboard`.
 
 ## Reference boards

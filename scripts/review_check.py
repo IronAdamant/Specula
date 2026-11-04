@@ -191,7 +191,8 @@ def main():
 
         # -- the director: plan a real roadmap section (dry run), then the crypt section --
         dry = call(lead, "task_plan", file="docs/ROADMAP.md", section="M4: asset studio, style and review", dry_run=True)
-        check(dry.get("dry_run") and len(dry["tasks"]) >= 10, f"task_plan dry-runs the ROADMAP's M4 section ({len(dry.get('tasks', []))} open items)")
+        # (M4 is done: its section keeps only the follow-ups still open, 6 at the end of M4.)
+        check(dry.get("dry_run") and len(dry["tasks"]) >= 1, f"task_plan dry-runs the ROADMAP's M4 section ({len(dry.get('tasks', []))} open items)")
         plan = call(lead, "task_plan", text=PLAN_DOC, section="crypt props", assign="by_role")
         pid = plan["plan"]
         who = {t["title"]: t.get("assignee") for t in plan["tasks"]}

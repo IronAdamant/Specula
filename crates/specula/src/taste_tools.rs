@@ -415,7 +415,9 @@ fn read_gallery(tools: &Tools, session: &SessionInfo, id: &str) -> Result<Galler
     if out.is_error {
         return Err(out);
     }
-    let snap = rx.try_recv().map_err(|_| err("no_answer", "the engine didn't answer"))?;
+    // The engine may queue the snapshot behind a project sync and answer it later: wait for it
+    // (a `try_recv` here failed one gallery call in three under back-to-back calls).
+    let snap = rx.recv_timeout(crate::project_tools::DEFERRED_WAIT).map_err(|_| err("no_answer", "the engine didn't answer the gallery read; nothing was changed"))?;
     let f = snap.current.ok_or_else(|| err("gallery_not_found", format!("there is no gallery '{id}'")))?;
     Gallery::parse(&f.text).map_err(|e| ToolOutput::error(e.to_json().to_string()))
 }

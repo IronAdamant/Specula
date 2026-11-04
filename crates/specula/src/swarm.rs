@@ -105,9 +105,11 @@ pub struct Swarm {
     claim_notices_total: u64,
     /// Changes a call made past [`NOTICES_PER_CALL`] notices, never examined for claims.
     claim_notices_unexamined: u64,
-    /// The request being dispatched: its caller's identity key, and the journal entries made on
-    /// that caller's behalf by the dispatch's own code (its commits and undos, and what a game,
-    /// module or live Lex run committed because it asked, sessions included). Ticks a request
+    /// The request being dispatched: its caller's identity key, and the journal entries the
+    /// dispatch's own code made, **whoever wrote them** (its commits and undos, what a game,
+    /// module or live Lex run committed because it asked, sessions included, and what an engine
+    /// writer such as `taste` committed on its behalf: the M4 final review found a configurator
+    /// step written as `taste` beside the owner's decision, uncounted). Ticks a request
     /// runs (`time_control step`) are the simulation's: counting pauses for them, so held input
     /// firing as its holder is never the holder's call (round 2 of the review). One call, one
     /// commit (`docs/design/AUTHORITY.md`).
@@ -157,14 +159,11 @@ impl Swarm {
         self.agents.get(session_id).map_or("builder", |a| a.role.as_str())
     }
 
-    /// Notes one journal entry made on `w`'s behalf: counted when `w` is the caller of the
-    /// request being dispatched (see the field).
-    pub(crate) fn note_agent_commit(&mut self, w: Writer) {
-        let key = w.session.unwrap_or(w.name);
-        if let Some((k, n)) = &mut self.dispatch {
-            if k == key {
-                *n += 1;
-            }
+    /// Notes one journal entry made by an agent-facing entry point: counted against the request
+    /// being dispatched, whoever wrote it (see the field).
+    pub(crate) fn note_commit(&mut self) {
+        if let Some((_, n)) = &mut self.dispatch {
+            *n += 1;
         }
     }
 
@@ -173,7 +172,7 @@ impl Swarm {
         self.dispatch = Some((key.to_owned(), 0));
     }
 
-    /// Ends the count: the caller's commits made by the dispatch.
+    /// Ends the count: the journal entries made by the dispatch.
     pub(crate) fn end_dispatch(&mut self) -> u64 {
         self.dispatch.take().map_or(0, |(_, n)| n)
     }

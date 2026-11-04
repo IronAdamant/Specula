@@ -365,6 +365,7 @@ def main():
     errors = eng.validation_errors()
     check(errors == 0, f"clean shutdown, {errors} validation errors", failures)
     persistent_cameras(args, failures, summary)
+    auto_framing(args, failures, summary)
     summary["failures"] = failures
     (OUT / "summary.json").write_text(json.dumps(summary, indent=2))
     print(f"\n{len(failures)} failure(s); outputs in {OUT}")
@@ -372,6 +373,39 @@ def main():
         print("engine log mentions a panic")
         return 1
     return 1 if failures else 0
+
+
+def auto_framing(args, failures, summary):
+    """The M3 carry-over (the M4 final audit's repro): one cube 2000 m away shrank a 3 x 3 grid
+    to a pixel each. Auto-framing fits the grid, names the far cube in camera.framing, and an
+    explicit camera is unchanged."""
+    print("auto-framing with an outlier")
+    engine_args = ["--headless", "--captures", str(OUT / "captures-framing")]
+    if args.adapter:
+        engine_args += ["--adapter", args.adapter]
+    with Engine(args.exe, args.port, OUT / "engine-framing.log", *engine_args, cwd=str(OUT)) as eng:
+        m = eng.mcp("sight-check-framing")
+        m.json("agent_hello", name="framer", role="builder")
+        for i in range(9):
+            m.json("world_spawn", name=f"c{i}", shape="cube", position=[(i % 3) * 1.2, 0.5, (i // 3) * 1.2])
+
+        def boxes(f):
+            return {s.get("path"): s.get("screen") for s in f.get("subjects", [])}
+        f0 = m.json("sight_frame", width=640, height=360, response_format="detailed")
+        m.json("world_spawn", name="far", shape="cube", position=[2000, 0.5, 0])
+        f1 = m.json("sight_frame", width=640, height=360, response_format="detailed")
+        b0, b1 = boxes(f0), boxes(f1)
+        c4a, c4b = b0.get("/c4"), b1.get("/c4")
+        framing = f1.get("camera", {}).get("framing") or {}
+        summary["auto_framing"] = {"c4_before": c4a, "c4_after": c4b, "far": b1.get("/far"), "framing": framing}
+        size = lambda b: (b[2] * b[3]) if b else 0
+        check(size(c4a) > 400 and size(c4b) >= 0.8 * size(c4a), f"/c4 keeps its size with a cube 2000 m away ({c4a} then {c4b})", failures)
+        check(framing.get("reason") == "outlier" and framing.get("excluded_count") == 1 and [e.get("path") for e in framing.get("excluded", [])] == ["/far"],
+              f"the packet names what auto-framing left out ({json.dumps(framing)[:200]})", failures)
+        check(not f0.get("camera", {}).get("framing"), "nothing is named when nothing was left out", failures)
+        f2 = m.json("sight_frame", width=640, height=360, eye=[1000, 400, 1200], target=[1000, 0, 0], response_format="detailed")
+        check(not f2.get("camera", {}).get("framing") and f2.get("camera", {}).get("source") == "explicit", "an explicit camera frames what it is told", failures)
+        m.close()
 
 
 def persistent_cameras(args, failures, summary):

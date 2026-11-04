@@ -123,6 +123,10 @@ pub struct Snap {
     pub error: Option<WorldError>,
     /// The file is held (the disk holds bytes that can't be mirrored).
     pub held: bool,
+    /// Why the caller couldn't write the file now (another agent's claim on it): checked even
+    /// when a write turns out to change nothing, so a no-op answers as a write would (M4 final
+    /// audit: unchanged text skipped claims).
+    pub claimed: Option<WorldError>,
 }
 
 /// How a commit went.
@@ -591,6 +595,12 @@ fn edit_tool(tools: &Tools, session: &SessionInfo, args: &Json, tool: &'static s
         };
         if let (Some(n), Some(o), false) = (&next, &old, snap.held && replace_unreadable) {
             if n.as_str() == &**o {
+                // Claims first: a write that changes nothing is still refused where a write would be.
+                if let Some(e) = &snap.claimed {
+                    let mut j = e.to_json();
+                    j.set("hint", Json::from(format!("{path} is claimed (claims on files are /project/<path>): work elsewhere, ask the owner to claim_share, or wait for the claim to end")));
+                    return Ok(ToolOutput::error(j.to_string()));
+                }
                 return Ok(ToolOutput::text(Json::obj([("path", Json::from(path.as_str())), ("version", Json::from(current_version)), ("unchanged", Json::Bool(true))]).to_string()));
             }
         }

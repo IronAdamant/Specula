@@ -205,6 +205,22 @@ fn taste_file(f: &mut Fix, rule: Rule, path: &'static str) -> Result<(), WorldEr
     })
 }
 
+/// Mallory writes `paths` in one commit under the taste result rule (gallery_apply, an applied
+/// suggestion or an approved configurator proposal: the results with the taste state that
+/// records them), after alice claims `claim` when given.
+fn taste_result(f: &mut Fix, claim: Option<&'static str>, paths: &'static [&'static str]) -> Result<(), WorldError> {
+    if let Some(c) = claim {
+        let s1 = session("aaaaaa11");
+        f.sw.take_claim(&f.live, &s1, ClaimSpec { scope: Scope::path(c).unwrap(), lease: DEFAULT_LEASE, note: String::new() })?;
+    }
+    agent(f, MALLORY, Kind::File, Rule::TasteResult, |wd| {
+        for p in paths {
+            wd.put_file(p, Some(crate::project::ProjectFile::new(crate::project::FileKind::Taste, Arc::from("{}"), 1, Arc::from("mallory"))), false);
+        }
+        Ok(())
+    })
+}
+
 /// Alice claims the assets folder; mallory writes taste state under the taste rule, as the
 /// window and the gallery worker do.
 fn taste_under_claim(f: &mut Fix) -> Result<(), WorldError> {
@@ -456,6 +472,13 @@ const ROWS: &[(&str, Write, Expect)] = &[
     ("a claim on taste state (in another case)", claim_taste, Expect::Refused("reserved")),
     ("world_undo of another's taste entry, forced (an erased pick)", |f| undo(f, f.taste), Expect::Refused("not_yours")),
     ("the project tools' rule writing taste state in another case (assets/Taste)", |f| taste_file(f, Rule::Project, "assets/Taste/galleries/g1.json"), Expect::Refused("reserved")),
+    // M4 final audit: gallery_apply and taste_suggest {apply} committed their results and then
+    // the gallery (or the log) separately: two commits for one tool call (AGENTS rule 14). The
+    // taste result rule writes both in one commit: results claim-checked, taste state not.
+    ("the taste result rule writing a result with the gallery that records it (one commit)", |f| taste_result(f, None, &["assets/style.toml", "assets/taste/galleries/g1.json"]), Expect::Allowed),
+    ("the taste result rule on a claimed entity", |f| set_abox(f, Rule::TasteResult), Expect::Refused("reserved")),
+    ("the taste result rule writing a result another agent claims", |f| taste_result(f, Some("/project/assets"), &["assets/style.toml", "assets/taste/galleries/g1.json"]), Expect::Refused("claimed")),
+    ("the taste result rule's taste state under another agent's claim on the assets folder", |f| taste_result(f, Some("/project/assets"), &["assets/taste/suggestions.json"]), Expect::Allowed),
     ("the GI tools' rule on a claimed entity", |f| set_abox(f, Rule::Gi), Expect::Refused("claimed")),
     // Baked GI volumes (/gi, props.gi_volume: only gi_bake).
     ("world_spawn in /gi", |f| spawn_at(f, MALLORY, "/gi"), Expect::Refused("reserved")),
@@ -739,7 +762,7 @@ fn every_write_path_holds_the_policy() {
 fn the_table_names_every_writer() {
     let names: Vec<&str> = ROWS.iter().map(|(n, _, _)| *n).collect();
     let has = |s: &str| names.iter().any(|n| n.contains(s));
-    for rule in [Rule::World, Rule::Joint, Rule::Nav, Rule::Lex, Rule::LexLive, Rule::Project, Rule::Vfx, Rule::Taste, Rule::Gi] {
+    for rule in [Rule::World, Rule::Joint, Rule::Nav, Rule::Lex, Rule::LexLive, Rule::Project, Rule::Vfx, Rule::Taste, Rule::TasteResult, Rule::Gi] {
         let row = match rule {
             Rule::World => "world_set",
             Rule::Joint => "physics_joint's rule",
@@ -749,6 +772,7 @@ fn the_table_names_every_writer() {
             Rule::Project => "the project tools' rule",
             Rule::Vfx => "vfx_set's rule",
             Rule::Taste => "the taste tools' rule",
+            Rule::TasteResult => "the taste result rule",
             Rule::Gi => "the GI tools' rule",
         };
         assert!(has(row), "{rule:?} has a row");

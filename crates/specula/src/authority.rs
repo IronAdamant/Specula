@@ -617,12 +617,13 @@ pub fn access(tool: &str) -> Option<Access> {
         "tools_request" => Owned(Store::Board),
         "trace_incident" => Owned(Store::Incidents),
         // Galleries (docs/design/GALLERIES.md): taste state through the taste rule; picks are the
-        // owner's; results reach the game's files through the project rule.
+        // owner's; results reach the game's files with the gallery that records them, in one commit
+        // under the taste result rule.
         "gallery_get" | "gallery_list" | "gallery_wait" | "taste_query" | "board_check" => ReadOnly,
         "gallery_create" | "board_measure" => World("taste"),
         "gallery_open" | "gallery_close" | "gallery_round" | "gallery_delete" => Owned(Store::Galleries),
         "gallery_decide" => Owner,
-        "gallery_apply" => World("project"),
+        "gallery_apply" => World("taste_result"),
         "taste_suggest" => Open("lists suggestions and files them for the owner (submit puts one on the review queue, which only the owner decides); apply needs the owner and dismiss a lead or reviewer"),
         "style_onboard" => Open("starts the style configurator, whose galleries the owner picks from; its result reaches style.toml only when the owner approves it on the review queue; cancelling is its starter's, the owner's, a lead's or a reviewer's"),
         // Authority.

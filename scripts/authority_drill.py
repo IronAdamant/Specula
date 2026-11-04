@@ -103,6 +103,161 @@ class Drill:
         print(f"  {'ok  ' if cond else 'FAIL'} {label}{(': ' + detail) if detail and not cond else ''}")
 
 
+def wait_until(pred, timeout=30.0, step=0.2):
+    end = time.time() + timeout
+    while time.time() < end:
+        v = pred()
+        if v:
+            return v
+        time.sleep(step)
+    return pred()
+
+
+def one_call_one_commit(exe, port, out):
+    """AGENTS rule 14 on the taste tools, against this (debug) engine, whose debug_assert panics
+    on a second commit (the M4 final audit: gallery_apply and taste_suggest {apply} committed
+    their results, then the gallery or the log). Also the dropped reply: gallery calls back to
+    back with a project sync in flight once failed with no_answer, one in three."""
+    print("one tool call, one commit (taste results), and gallery replies back to back:")
+    assets = out / "assets3"
+    shutil.copytree(ROOT / "games" / "sepulcra" / "assets", assets)
+    args3 = ["--headless", "--assets", str(assets), "--captures", str(out / "captures3"), "--worlds", str(out / "worlds3"), "--saves", str(out / "saves3"),
+             "--lead", "conductor", "--owner", "owner-proxy"]
+    with Engine(exe, port, out / "engine3.log", *args3, cwd=str(ROOT)) as eng3:
+        d = Drill(eng3)
+        d.agent("conductor", "lead")
+        d.agent("owner-proxy", "owner")
+
+        def get(gid, **a):
+            return d.raw(d.agent("conductor"), "gallery_get", dict(id=gid, **a))[1]
+
+        def opened(gid, rounds):
+            return wait_until(lambda: (lambda j: j if j.get("status") == "open" and j.get("rounds") == rounds else None)(get(gid)))
+
+        try:
+            # Back to back: 30 rounds, each answered (never no_answer).
+            space = [{"name": "width", "target": "scale.x", "min": 0.75, "max": 1.4, "default": 1.0}]
+            d.ok("conductor", "gallery_create", id="drop", title="Drop", subject={"recipe": "recipes/tombstone.json"}, space=space, variants=2)
+            codes = {}
+            for k in range(30):
+                code, _ = d.raw(d.agent("conductor"), "gallery_round", {"id": "drop", "variants": [{"width": 0.8 + 0.01 * k}]})
+                codes[code or "ok"] = codes.get(code or "ok", 0) + 1
+            # stale_round is an answer (a render landed in between: read it again); no_answer or
+            # reply_dropped is the dropped reply.
+            answered = codes.get("ok", 0) + codes.get("stale_round", 0)
+            d.check("30 gallery rounds back to back are all answered (no no_answer)", answered == 30 and codes.get("ok", 0) >= 20, json.dumps(codes))
+            # gallery_apply: the accepted value and the gallery's record of it, one commit.
+            moon = [{"name": "strength", "target": "light.key_intensity", "min": 0.3, "max": 1.0, "default": 0.55, "apply": {"file": "style.toml", "toml": "stage.game.key_intensity"}}]
+            d.ok("conductor", "gallery_create", id="moon", title="Moon", subject={"recipe": "recipes/tombstone.json", "rig": "game"}, space=moon, variants=3)
+            g = opened("moon", 1) or {}
+            d.ok("owner-proxy", "gallery_decide", id="moon", round=1, decision="accept", variant=1)
+            a = d.ok("conductor", "gallery_apply", id="moon")
+            tc = d.ok("conductor", "trace_call", response_format="detailed")
+            d.check("gallery_apply writes style.toml and the gallery in one commit", bool(a.get("files")) and len(tc.get("journal") or []) == 1, json.dumps({"apply": a, "journal": tc.get("journal")})[:300])
+            # gallery_decide with apply_on_accept: the decision and its values, one commit.
+            d.ok("conductor", "gallery_create", id="moon2", title="Moon 2", subject={"recipe": "recipes/tombstone.json", "rig": "game"}, space=moon, variants=3, apply_on_accept=True)
+            opened("moon2", 1)
+            dec = d.ok("owner-proxy", "gallery_decide", id="moon2", round=1, decision="accept", variant=2)
+            tc = d.ok("owner-proxy", "trace_call", response_format="detailed")
+            d.check("gallery_decide with apply_on_accept is one commit", bool(dec.get("applied")) and len(tc.get("journal") or []) == 1, json.dumps({"decide": dec, "journal": tc.get("journal")})[:300])
+            # taste_suggest {apply}: three agreeing picks, applied by the owner (probe_suggest).
+            space = [{"name": "width", "target": "scale.x", "min": 0.75, "max": 1.4, "default": 1.0}, {"name": "height", "target": "scale.y", "min": 0.75, "max": 1.4, "default": 1.0}]
+            d.ok("conductor", "gallery_create", id="hs", title="HS", subject={"recipe": "recipes/tombstone.json", "rig": "game"}, space=space, variants=6)
+            g = opened("hs", 1) or {}
+            d.ok("owner-proxy", "gallery_decide", id="hs", round=1, decision="edit", variant=3, chips=["bigger"], note="taller")
+            g = d.ok("conductor", "gallery_wait", id="hs", after=g.get("seq", 0), timeout_s=25)
+            picked = get("hs", round=1)["round"]["variants"][3]["values"]
+            w, h = picked["width"], picked["height"]
+            for k, (dw, dh, final) in enumerate([(0.02, 0.0, False), (-0.02, 0.02, True)]):
+                near = [{"width": w, "height": h}, {"width": round(w + dw, 4), "height": round(h + dh, 4)}, {"width": round(w + 0.2, 4), "height": h}, {"width": w, "height": round(max(h - 0.25, 0.75), 4)}]
+                r = d.ok("conductor", "gallery_round", id="hs", variants=near)
+                gg = wait_until(lambda: (lambda j: j if j.get("status") == "open" and j["round"].get("made") == "agent" and j.get("rounds") == r.get("round") else None)(get("hs"))) or {}
+                d.ok("owner-proxy", "gallery_decide", id="hs", round=gg.get("rounds", 0), decision="accept" if final else "edit", variant=1)
+                if not final:
+                    d.ok("conductor", "gallery_wait", id="hs", after=gg.get("seq", 0), timeout_s=25)
+            sug = d.ok("conductor", "taste_suggest", action="list").get("suggestions", [])
+            d.check("three agreeing picks make a suggestion", bool(sug), json.dumps(sug)[:200])
+            if sug:
+                ap = d.ok("owner-proxy", "taste_suggest", action="apply", id=sug[0]["id"])
+                tc = d.ok("owner-proxy", "trace_call", response_format="detailed")
+                d.check("taste_suggest {apply} writes the prior and the log in one commit", ap.get("state") == "applied" and len(tc.get("journal") or []) == 1, json.dumps({"apply": ap, "journal": tc.get("journal")})[:300])
+            # style_onboard {start}: the first step's gallery and the configurator state, one commit.
+            st = d.ok("conductor", "style_onboard", action="start", open=False)
+            tc = d.ok("conductor", "trace_call", response_format="detailed")
+            d.check("style_onboard {start} is one commit", st.get("state") == "running" and len(tc.get("journal") or []) == 1, json.dumps({"start": st, "journal": tc.get("journal")})[:300])
+            # The M4 final review: accepting a configurator step wrote the owner's decision, then
+            # the next step's gallery and onboarding.json as `taste` (two entries, uncounted). Each
+            # acceptance, the first and the last (which proposes the result) included, is one entry.
+            entries = []
+            for k in range(len(st.get("steps", []))):
+                gid = d.ok("conductor", "style_onboard", action="status")["steps"][k].get("gallery")
+                if not opened(gid, 1):
+                    d.check(f"configurator step {k + 1}'s gallery opens", False, str(gid))
+                    break
+                dec = d.ok("owner-proxy", "gallery_decide", id=gid, round=1, decision="accept", variant=0)
+                tc = d.ok("owner-proxy", "trace_call", response_format="detailed")
+                entries.append(len(tc.get("journal") or []))
+                if k == 0:
+                    d.check("accepting configurator step 1 is one commit (the decision, step 2's gallery, onboarding.json)", entries[-1] == 1 and "next_step" in json.dumps(dec.get("onboarding")), json.dumps({"decide": dec, "journal": tc.get("journal")})[:300])
+            last = d.ok("conductor", "style_onboard", action="status")
+            d.check("accepting the last configurator step is one commit and proposes the result", len(entries) == len(st.get("steps", [])) and entries[-1:] == [1] and last.get("state") == "proposed",
+                    json.dumps({"entries": entries, "state": last.get("state")}))
+            d.ok("conductor", "style_onboard", action="cancel")
+            swarm = d.ok("conductor", "engine_info", response_format="detailed").get("swarm", {})
+            d.check("no tool call committed twice (multi_commit_calls 0)", swarm.get("multi_commit_calls") == 0, json.dumps({"multi_commit_calls": swarm.get("multi_commit_calls")}))
+        except (RuntimeError, OSError, KeyError, TypeError) as e:
+            d.check("the taste probes ran to the end (a debug engine panics on a second commit)", False, f"{type(e).__name__}: {str(e)[:300]}")
+    d.check("the debug engine shut down cleanly after the taste probes", eng3.exit_code == 0, f"exit {eng3.exit_code}")
+    return d.results
+
+
+def mount_race(exe, port, out):
+    """The M4 final review (round 3): four agents' project writes held while a sync wrote ran
+    inside a fifth agent's project_mount (it waits for the sync), and were charged to the mount:
+    `write.multi_commit` and, in a debug engine, a panic. Deferred work is charged to its own
+    call: 40 rounds of four writes racing a mount make no multi-commit, and the engine lives."""
+    print("held project writes pumped by a mount (charged to their own calls):")
+    work = out / "mount-race"
+    (work / "games").mkdir(parents=True)
+    shutil.copytree(ROOT / "games" / "ambulo", work / "games" / "ambulo", ignore=shutil.ignore_patterns("target"))
+    shutil.copytree(ROOT / "games" / "sepulcra" / "assets", work / "assets")
+    args = ["--headless", "--assets", str(work / "assets"), "--captures", str(work / "captures"), "--worlds", str(work / "worlds")]
+    with Engine(exe, port, work / "engine.log", *args, cwd=str(work)) as eng:
+        d = Drill(eng)
+        names = ["a", "b1", "b2", "b3", "c"]
+        for n in names:
+            d.agent(n)
+        d.raw(d.agent("c"), "project_mount", {"module": "games/ambulo"})
+        multi, rounds, errors = 0, 0, []
+        for it in range(40):
+            res = {}
+
+            def go(n, tool, a):
+                try:
+                    res[n] = d.raw(d.agent(n), tool, a)
+                except (RuntimeError, OSError) as ex:
+                    res[n] = ("exception", str(ex)[:200])
+            th = [threading.Thread(target=go, args=(n, "project_write", {"path": f"assets/style/race_{n}.md", "text": f"note {n} {it}"})) for n in names[:4]]
+            th.append(threading.Thread(target=go, args=("c", "project_mount", {"module": "games/ambulo"})))
+            for t in th:
+                t.start()
+            for t in th:
+                t.join()
+            # The scratch copy's mount is refused (not_a_module: its specula-sdk path dependency
+            # isn't beside it), but only after it waited for the sync, which is the race under
+            # test. Any other refusal (no_answer, reply_dropped, a dead engine) fails.
+            errors += [f"{n}: {v[0]}" for n, v in res.items() if v[0] and not (n == "c" and v[0] == "not_a_module")]
+            if eng.proc.poll() is not None:
+                break
+            rounds += 1
+            multi = d.ok("a", "engine_info", response_format="detailed").get("swarm", {}).get("multi_commit_calls") or 0
+            if multi:
+                break
+        d.check("40 rounds of four held writes racing a mount: no multi-commit, every call answered", rounds == 40 and multi == 0 and not errors, json.dumps({"rounds": rounds, "multi_commit_calls": multi, "errors": errors[:4]}))
+    d.check("the engine shut down cleanly after the mount race", eng.exit_code == 0, f"exit {eng.exit_code}")
+    return d.results
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--exe")
@@ -275,6 +430,9 @@ def main():
             else:
                 d.check(f"a probe for owned tool {n}", False, "add one to scripts/authority_drill.py")
         multi = d.ok("lee", "engine_info", response_format="detailed").get("swarm", {})
+        # One tool call, one commit (AGENTS rule 14): a second commit is counted (and panics a
+        # debug engine).
+        d.check("no tool call committed twice (multi_commit_calls 0)", multi.get("multi_commit_calls") == 0, json.dumps({"multi_commit_calls": multi.get("multi_commit_calls")}))
     # An unnamed engine over the same worlds folder: overwriting a world an earlier run saved
     # ("ownerworld") is the lead's call (review round 2); a new folder is anyone's.
     print("an unnamed engine over earlier runs' worlds:")
@@ -293,6 +451,8 @@ def main():
         lead_save = d2.raw(d2.agent("lee"), "world_save", {"name": "ownerworld", "overwrite": True})
         d2.check("the lead may overwrite an earlier run's world", lead_save[0] is None, json.dumps(lead_save[1])[:200])
         d.results.extend(d2.results)
+    d.results.extend(one_call_one_commit(exe, a.port + 2, out))
+    d.results.extend(mount_race(exe, a.port + 3, out))
     held = sum(1 for r in d.results if r["held"])
     report = {"probes": len(d.results), "held": held, "results": d.results, "owned_tools": owned, "engine_exit": eng.exit_code}
     (out / "report.json").write_text(json.dumps(report, indent=1))

@@ -235,14 +235,16 @@ pub(crate) fn subtree_bounds(world: &World, id: u64) -> Option<(Vec3, Vec3)> {
 }
 
 impl Engine {
-    /// The world's bounds for auto-framing: from the subject cache when it is cheap to bring up
+    /// What auto-framing fits ([`sight::framing`]): the boxes from the subject cache when it is cheap to bring up
     /// to date (no walk of every entity's corners), else from the world.
-    fn world_bounds(&mut self) -> Option<(Vec3, Vec3)> {
-        if !self.subject_cache.ready(&self.world, self.world_generation) {
-            return self.world.bounds();
-        }
-        self.subject_cache.refresh(&self.world, self.world_generation);
-        self.subject_cache.bounds(&self.world)
+    fn world_framing(&mut self, height_px: u32, fov_y_deg: f32) -> sight::Framing {
+        let boxes = if self.subject_cache.ready(&self.world, self.world_generation) {
+            self.subject_cache.refresh(&self.world, self.world_generation);
+            self.subject_cache.boxes(&self.world)
+        } else {
+            sight::world_boxes(&self.world)
+        };
+        sight::framing(&boxes, height_px, fov_y_deg)
     }
 
     /// sight_frame, the sight tools and the camera tools.
@@ -416,7 +418,16 @@ impl Engine {
                 let aspect = spec.width as f32 / spec.height.max(1) as f32;
                 (sight::auto_camera_2d(&self.world, spec.ortho, aspect), source("auto"), None)
             }
-            _ => (sight::auto_camera_of(self.world_bounds(), spec.fov_y_deg), source("auto"), None),
+            // Auto-framing fits the main cluster: what it leaves out is named in the packet
+            // (`camera.framing`), so an agent knows to frame it explicitly.
+            _ => {
+                let f = self.world_framing(spec.height, spec.fov_y_deg);
+                let mut src = source("auto");
+                if let Some(j) = f.to_json(&self.world) {
+                    src.set("framing", j);
+                }
+                (sight::auto_camera_of(f.bounds, spec.fov_y_deg), src, None)
+            }
         };
         let mut camera = camera;
         if let (None, Some(height_m)) = (&spec.camera, spec.ortho) {
@@ -1013,15 +1024,15 @@ impl Engine {
             let Some(s) = v.subjects.get_mut(i) else { continue };
             match k {
                 SubjectKind::Terrain(patches) => {
-                    s.json.set("kind", Json::from("terrain"));
+                    s.set("kind", Json::from("terrain"));
                     if let Some(p) = patches {
-                        s.json.set("terrain_patches", Json::from(p));
+                        s.set("terrain_patches", Json::from(p));
                     }
                     v.record.set_terrain(s.id, patches.unwrap_or(0));
                 }
                 SubjectKind::Water(preset) => {
-                    s.json.set("kind", Json::from("water"));
-                    s.json.set("water", Json::from(preset));
+                    s.set("kind", Json::from("water"));
+                    s.set("water", Json::from(preset));
                     v.record.set_water(s.id);
                 }
             }
@@ -1329,7 +1340,7 @@ fn fully_hidden(s: &Subject, record: Option<&sight::FrameRecord>) -> bool {
         // HLOD member has no pixels of its own (its proxy's are counted, `drawn` says whether it
         // reached the image), and an entity the frame never drew isn't hidden behind anything:
         // neither is painted red.
-        Some(_) => s.vis.map_or_else(|| s.json.get("no_pixels").and_then(Json::as_bool) == Some(true), |v| v.no_pixels),
+        Some(_) => s.vis.map_or_else(|| s.added("no_pixels").and_then(Json::as_bool) == Some(true), |v| v.no_pixels),
         None => s.shows() == Some(false),
     }
 }
@@ -1459,7 +1470,7 @@ mod tests {
         assert!(passes(&approx, SubjectFilter::Visible));
         assert!(!passes(&hidden, SubjectFilter::Visible));
         assert!(passes(&uncounted, SubjectFilter::Visible), "unknown: falls back to on_screen");
-        assert_eq!([&approx, &hidden, &uncounted].map(|s| sight::shows(&s.json)), [Some(true), Some(false), None]);
+        assert_eq!([&approx, &hidden, &uncounted].map(|s| s.shows()), [Some(true), Some(false), None]);
     }
 
     #[test]

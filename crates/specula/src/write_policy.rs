@@ -233,11 +233,23 @@ pub enum Rule {
     /// galleries, picks, suggestions, boards, onboarding), and nothing else. The project tools
     /// may not write it, so no agent can forge the human's picks (docs/design/GALLERIES.md).
     Taste,
+    /// The taste tools writing a decision's results (gallery_apply, an applied suggestion, an
+    /// approved configurator proposal): the approved files (style.toml, a theme, priors, notes)
+    /// and the taste state that records the decision, in **one** commit (one tool call, one
+    /// commit: AGENTS rule 14). Project files only, never an entity; claims apply to the result
+    /// files and, as under [`Rule::Taste`], never to the taste state.
+    TasteResult,
     /// gi_bake: baked GI volumes (`/gi` and its children, `props.gi_volume` anywhere).
     Gi,
 }
 
 impl Rule {
+    /// Whether this rule writes taste state only as a decision's own record, at paths its caller
+    /// names (`Engine::project_put_all`'s `records`): [`Rule::TasteResult`].
+    pub fn taste_records_only(self) -> bool {
+        self == Rule::TasteResult
+    }
+
     /// Its name in trace events and incidents (docs/design/TRACE.md).
     pub fn name(self) -> &'static str {
         match self {
@@ -249,6 +261,7 @@ impl Rule {
             Rule::Project => "project",
             Rule::Vfx => "vfx",
             Rule::Taste => "taste",
+            Rule::TasteResult => "taste_result",
             Rule::Gi => "gi",
         }
     }
@@ -391,7 +404,7 @@ fn reserved(changes: &[Change], r: Reserved) -> Result<(), WorldError> {
     }
     // /project holds project files, written only through the project tools; no entity may live
     // there (a claim on a file must never cover something else).
-    if let Some(c) = changes.iter().find(|c| (!owns(Rule::Project) && !owns(Rule::Taste) && matches!(c, Change::File { .. })) || (!matches!(c, Change::File { .. }) && crate::project::under_root(c.path()))) {
+    if let Some(c) = changes.iter().find(|c| (!owns(Rule::Project) && !owns(Rule::Taste) && !owns(Rule::TasteResult) && matches!(c, Change::File { .. })) || (!matches!(c, Change::File { .. }) && crate::project::under_root(c.path()))) {
         return Err(WorldError::new(
             "reserved",
             format!("'{}' is in /project, which holds project files: change them with project_write / project_patch / project_delete (project_list and project_read read them)", c.path()),
@@ -400,7 +413,7 @@ fn reserved(changes: &[Change], r: Reserved) -> Result<(), WorldError> {
     }
     // Taste state: the human's picks and notes, the taste tools' and the window's only (a
     // forged decision written with project_write would apply as if the human had chosen it).
-    if !owns(Rule::Taste) {
+    if !owns(Rule::Taste) && !owns(Rule::TasteResult) {
         if let Some(c) = changes.iter().find(|c| matches!(c, Change::File { .. }) && crate::project::is_taste_state(c.path())) {
             return Err(WorldError::new(
                 "reserved",
@@ -412,6 +425,11 @@ fn reserved(changes: &[Change], r: Reserved) -> Result<(), WorldError> {
     if owns(Rule::Taste) {
         if let Some(c) = changes.iter().find(|c| !(matches!(c, Change::File { .. }) && crate::project::is_taste_state(c.path()))) {
             return Err(WorldError::new("reserved", format!("'{}' isn't taste state: the taste rule writes /project/assets/taste/ only", c.path())).with("path", c.path().to_owned()));
+        }
+    }
+    if owns(Rule::TasteResult) {
+        if let Some(c) = changes.iter().find(|c| !matches!(c, Change::File { .. })) {
+            return Err(WorldError::new("reserved", format!("'{}' isn't a project file: a taste result writes project files only", c.path())).with("path", c.path().to_owned()));
         }
     }
     // The effect library: /vfx's children tagged vfx_effect (a claim on /vfx covers every world
@@ -604,7 +622,14 @@ pub fn commit<T>(
         }
         Ok(v)
     };
-    let mut check = |world: &World, change: &Change| claims.check(world, std::slice::from_ref(change), w, now);
+    // A taste result's own taste state (the decision it records) is outside claims, as under
+    // the taste rule; its result files are checked like any project write.
+    let mut check = |world: &World, change: &Change| {
+        if rule == Rule::TasteResult && matches!(change, Change::File { .. }) && crate::project::is_taste_state(change.path()) {
+            return Ok(());
+        }
+        claims.check(world, std::slice::from_ref(change), w, now)
+    };
     let check: Option<&mut journal::Check> = if blocks { Some(&mut check) } else { None };
     // `journal::commit` refuses transient writes, runs `check` step by step, rolls a failed
     // command back and journals the rest.
@@ -618,7 +643,7 @@ pub fn commit<T>(
         Ok((_, Some(seq))) => {
             let changes = swarm.journal().get(*seq).map_or(0, |e| e.changes.len());
             swarm.board.note_entry(w, *seq, changes);
-            swarm.note_agent_commit(w);
+            swarm.note_commit();
             crate::trace_engine::write_committed(w, crate::trace_engine::rule_name(rule), Some(*seq), changes);
         }
         Ok(_) => {}
@@ -653,7 +678,7 @@ pub fn undo(world: &mut dyn WorldWrite, swarm: &mut Swarm, tick: u64, w: Writer,
         }
         Ok(u) => {
             swarm.board.note_entry(w, u.seq, u.changes);
-            swarm.note_agent_commit(w);
+            swarm.note_commit();
             crate::trace_engine::write_committed(w, "undo", Some(u.seq), u.changes);
         }
     }
@@ -683,7 +708,7 @@ pub fn game_commit(world: &mut dyn WorldWrite, swarm: &mut Swarm, mark: Mark, ti
         let count = changes.len();
         if let Some(seq) = swarm.journal_mut(&KEY).append_game(tick, game, Some(w.name), Kind::GameTool, changes, world.next_id()) {
             swarm.board.note_entry(w, seq, count);
-            swarm.note_agent_commit(w);
+            swarm.note_commit();
         }
     }
     prune_retired(world, swarm);
@@ -1016,8 +1041,8 @@ impl Live {
     /// tools keep the files), or (`None`) as a disk import.
     #[cfg(test)]
     pub(crate) fn raw_commit_for_test(&mut self, swarm: &mut Swarm, tick: u64, w: Writer, rule: Rule, f: impl FnOnce(&mut World)) -> bool {
-        let files = if matches!(rule, Rule::Project | Rule::Taste) { Files::Kept } else { Files::Lent };
-        let kind = if matches!(rule, Rule::Project | Rule::Taste) { Kind::File } else { Kind::Set };
+        let files = if matches!(rule, Rule::Project | Rule::Taste | Rule::TasteResult) { Files::Kept } else { Files::Lent };
+        let kind = if matches!(rule, Rule::Project | Rule::Taste | Rule::TasteResult) { Kind::File } else { Kind::Set };
         let (out, clean) = self.run(swarm, tick, "raw writer (test)", files, Records::Full, |world, swarm| {
             commit(world, swarm, tick, w, kind, rule, |h| {
                 f(h.policy_world(&KEY));
@@ -1117,7 +1142,7 @@ impl Live {
         rule: Rule,
         command: impl FnOnce(&mut dyn WorldWrite) -> Result<T, WorldError>,
     ) -> Result<(T, Option<u64>), WorldError> {
-        let files = if matches!(rule, Rule::Project | Rule::Taste) { Files::Kept } else { Files::Lent };
+        let files = if matches!(rule, Rule::Project | Rule::Taste | Rule::TasteResult) { Files::Kept } else { Files::Lent };
         let (out, clean) = self.run(swarm, tick, "commit", files, Records::Full, |world, swarm| commit(world, swarm, tick, w, kind, rule, command));
         if !clean {
             return Err(Live::refusal("commit"));

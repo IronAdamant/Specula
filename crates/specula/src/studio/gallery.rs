@@ -413,7 +413,23 @@ pub(crate) fn render_round(tools: &crate::tools::Tools, shared: &Shared, session
     if !replaced.is_empty() {
         let mut rng = specula_core::rng::Rng::new(job.gallery.seed ^ 0x616c_696b_6500, job.n as u64);
         let region = specula_gustus::spread::Region { centre: None, radius: 1.0 };
-        let fresh = specula_gustus::spread::dispersed(replaced.len(), job.gallery.space.dims(), &[], &points, &region, &mut rng);
+        // Points far from everything shown; one whose values a tile already shows (a choice's
+        // option, "left, upright, left" with "right" unused) gives way to a later candidate that
+        // shows something new. Without a repeat the picks are the dispersed ones, unchanged.
+        let space = &job.gallery.space;
+        let mut fresh = specula_gustus::spread::dispersed(replaced.len(), space.dims(), &[], &points, &region, &mut rng);
+        let mut seen = values.clone();
+        let repeats = fresh.iter().any(|p| {
+            let v = space.values(p);
+            let r = seen.iter().any(|s| space.same_shown(s, &v));
+            seen.push(v);
+            r
+        });
+        if repeats {
+            let mut more_rng = specula_core::rng::Rng::new(job.gallery.seed ^ 0x756e_7368_6f77, job.n as u64);
+            let more = specula_gustus::spread::dispersed(replaced.len() * 8, space.dims(), &[], &points, &region, &mut more_rng);
+            fresh = space.prefer_unshown(fresh.into_iter().chain(more).collect(), &values, replaced.len());
+        }
         let (fresh, notes) = palette_guard(&root, &job.gallery, &fresh);
         let fresh_values: Vec<Vec<Value>> = fresh.iter().map(|p| job.gallery.space.values(p)).collect();
         // Admitted like the round's own renders (taste review 2: they weren't counted).

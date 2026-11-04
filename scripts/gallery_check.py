@@ -669,6 +669,26 @@ def measure_round(eng, job, renders, what, pacer="pacer"):
     return out
 
 
+def back_to_back(lead, report):
+    """The M4 final audit's dropped reply: a gallery call right after another, with the project
+    sync of the first still writing, failed with no_answer one time in three. 30 rounds back to
+    back must all be answered."""
+    print("\n-- gallery rounds back to back --")
+    space = [{"name": "width", "target": "scale.x", "min": 0.75, "max": 1.4, "default": 1.0}]
+    call(lead, "gallery_create", id="drop", title="Back to back", subject={"recipe": "recipes/tombstone.json"}, space=space, variants=2)
+    codes = {}
+    for k in range(30):
+        r = lead.request("tools/call", {"name": "gallery_round", "arguments": {"id": "drop", "variants": [{"width": round(0.8 + 0.01 * k, 3)}]}})
+        code = json.loads(r["content"][0]["text"]).get("error") if r.get("isError") else "ok"
+        codes[code] = codes.get(code, 0) + 1
+    report["back_to_back"] = codes
+    # stale_round is an answer (the previous round's render landed in between: read it again);
+    # no_answer or reply_dropped is the dropped reply.
+    answered = codes.get("ok", 0) + codes.get("stale_round", 0)
+    check(answered == 30 and codes.get("ok", 0) >= 20, f"30 gallery rounds back to back are all answered, none no_answer ({codes})")
+    call(lead, "gallery_delete", id="drop")
+
+
 def restart(exe, a, out, assets, report):
     """A review probe: after a restart on a fresh captures folder the open round's sheet was gone
     and the window could never decide it. The engine renders it again."""
@@ -782,6 +802,12 @@ def main():
             report["store"] = {"records": q.get("total"), "galleries": q.get("galleries"), "priors": q.get("priors")}
             check(q.get("total", 0) >= 13, f"the preference store holds every decision ({q.get('total')} records in {q.get('galleries')} galleries)")
             report["window_shots"] = win.shots
+            back_to_back(lead, report)
+        # One tool call, one commit (AGENTS rule 14; the M4 final audit: gallery_apply and an
+        # applied suggestion committed twice).
+        multi = call(lead, "engine_info", response_format="detailed").get("swarm", {}).get("multi_commit_calls")
+        report["multi_commit_calls"] = multi
+        check(multi == 0, f"no tool call committed twice (multi_commit_calls {multi})")
     check(eng.validation_errors() == 0, f"no validation errors ({eng.validation_errors()})")
     if not a.pacing:
         restart(exe, a, out, assets, report)

@@ -144,7 +144,8 @@ agents build in, so their `World` methods stay public.
 | Writer (entry point) | Reserved data | Transient entities | Claims | Joint rules | Journaled |
 |---|---|---|---|---|---|
 | An agent's tool (`Live::commit`, `Rule::World`) | all refused | refused | step by step, as the agent | on the result | under the agent, undoable |
-| ... owning one kind (`Rule::Joint`, `Nav`, `Lex`, `LexLive`, `Project`, `Vfx`) | its kind allowed | refused | as the agent | as above; `Joint`: the tool checks its bodies itself | under the agent |
+| ... owning one kind (`Rule::Joint`, `Nav`, `Lex`, `LexLive`, `Project`, `Vfx`, `Taste`, `Gi`) | its kind allowed | refused | as the agent (`Taste`: never; nobody claims taste state) | as above; `Joint`: the tool checks its bodies itself | under the agent |
+| A taste decision's results (`Rule::TasteResult`: gallery_apply, gallery_decide with `apply_on_accept`, taste_suggest `apply`, an approved configurator proposal) | project files only, taste state included | refused | as the agent on the result files, never on the taste state | | under the agent, **one** entry for the results and the taste state that records them (`Engine::project_put_all`; one tool call, one commit) |
 | `world_undo` (`Live::undo`) | (restores what was) | (as recorded) | step by step, as the agent; `force` never overrides them | step by step | under the agent, kind `undo` |
 | What an agent asked the hosted game, a module or a live Lex run to do (`Live::game_tool`, `game_commit`, `module_agent_commit`) | all refused (joints allowed) | the game's own | step by step, as the agent | step by step | under the game or module, `via` the agent; on refusal the world rolls back and the caller rolls its own state back |
 | A module's own request (`module_request`) | all refused | | no (the call's commit decides) | no | the call is journaled by its commit |

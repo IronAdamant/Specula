@@ -112,7 +112,7 @@ memory of the earlier ones. This page is **current state and what's next** only;
     to stall for 2-3 s) at about 20% less total throughput. `perf_frame.serve` shows the schedule. Numbers in
     `perf/drills/`.
   - Deferred: CI rendering checks (need Vulkan loading on Linux first; Platform track), per-agent auth tokens
-    (needed before any non-localhost bind), outlier-aware auto-framing.
+    (needed before any non-localhost bind). Outlier-aware auto-framing was done at the end of M4.
 - **How work runs:** as **lanes**: one subagent per crate/area in a git worktree, each attacked by a
   `lane-reviewer` before merge (`.claude/agents/`), and visual claims checked by `sight-skeptic`. Check `git log`
   and the roadmap ticks for where things stand.
@@ -275,7 +275,7 @@ In practice that means six **foundations** that apply to every change from M1 on
 - **Windows only** at runtime: other platforms compile but report "unsupported" (Vulkan loading isn't implemented
   off Windows yet). CI has no GPU, so rendering is checked by hand with `scripts/window_check.py`.
 - **Localhost only:** no per-agent auth tokens yet, so the server must never bind beyond loopback.
-- **Auto-framing** can shrink to a dot when one object is far away from the rest.
+- **The window's own auto camera** (no camera set) still fits every object, so one far-away object shrinks it; `sight_frame` leaves outliers out and names them.
 
 ## How the owner likes to work
 

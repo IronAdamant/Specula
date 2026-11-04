@@ -140,6 +140,100 @@ pub fn auto_camera_of(bounds: Option<(Vec3, Vec3)>, fov_y_deg: f32) -> Camera {
     Camera::new(center + dir * distance, center, fov_y_deg)
 }
 
+/// What auto-framing fits: the main cluster's bounds, and the entities it left out.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Framing {
+    pub bounds: Option<(Vec3, Vec3)>,
+    /// Entities left out as outliers, by id.
+    pub excluded: Vec<u64>,
+}
+
+/// An entity this many core radii (or more) from the cluster's centre may be an outlier.
+pub const OUTLIER_FACTOR: f32 = 10.0;
+/// Fewer boxes than this are always framed whole (a small scene has no "main cluster" to keep:
+/// the M4 final review saw a car 12 m from two cubes left out).
+pub const MIN_BOXES_FOR_OUTLIERS: usize = 8;
+/// Outliers are left out only when keeping them would shrink the rest below this many pixels
+/// across.
+pub const MIN_CORE_PX: f32 = 32.0;
+/// Entities a packet names in `camera.framing.excluded` (the count is always given).
+pub const MAX_EXCLUDED_NAMED: usize = 16;
+
+/// The bounds auto-framing fits, for an image `height_px` tall seen with `fov_y_deg`, from every
+/// shown entity's box `(id, lo, hi)`: all of them, less the outliers (the M3 carry-over: one cube
+/// at x = 2000 shrank the rest to a pixel). The centre is the per-axis median of the boxes'
+/// centres; each box's distance is from that centre to its nearest point (0 when it holds the
+/// centre, as a ground plane under everything does); the core radius is the 75th percentile of
+/// those distances (at least the median box's half-diagonal, and 0.5 m). Boxes more than
+/// [`OUTLIER_FACTOR`] core radii away are candidates, the farthest first and at most a quarter
+/// of all (`floor(n / 4)`); they are left out only when keeping them would draw the rest smaller
+/// than [`MIN_CORE_PX`] across. Fewer than [`MIN_BOXES_FOR_OUTLIERS`] boxes: all kept.
+/// Deterministic (order-free: medians by total order, ties by id, `excluded` by id).
+pub fn framing(boxes: &[(u64, Vec3, Vec3)], height_px: u32, fov_y_deg: f32) -> Framing {
+    let union = |it: &mut dyn Iterator<Item = &(u64, Vec3, Vec3)>| it.map(|b| (b.1, b.2)).reduce(|(lo, hi), (l, h)| (lo.min(l), hi.max(h)));
+    if boxes.len() < MIN_BOXES_FOR_OUTLIERS {
+        return Framing { bounds: union(&mut boxes.iter()), excluded: Vec::new() };
+    }
+    let n = boxes.len();
+    let mid = (n - 1) / 2;
+    let median = |mut v: Vec<f32>, at: usize| *v.select_nth_unstable_by(at, f32::total_cmp).1;
+    let centre = |b: &(u64, Vec3, Vec3)| (b.1 + b.2) * 0.5;
+    let m = Vec3::new(median(boxes.iter().map(|b| centre(b).x).collect(), mid), median(boxes.iter().map(|b| centre(b).y).collect(), mid), median(boxes.iter().map(|b| centre(b).z).collect(), mid));
+    let dist = |b: &(u64, Vec3, Vec3)| {
+        let d = (b.1 - m).max(m - b.2).max(Vec3::ZERO);
+        d.length()
+    };
+    let core = median(boxes.iter().map(dist).collect(), (3 * (n - 1)) / 4);
+    let size = median(boxes.iter().map(|b| (b.2 - b.1).length() * 0.5).collect(), mid);
+    let limit = OUTLIER_FACTOR * core.max(size).max(0.5);
+    let all = union(&mut boxes.iter());
+    let core_box = union(&mut boxes.iter().filter(|b| dist(b) <= limit));
+    // How big the core (everything within the limit) is drawn with everything framed
+    // (auto_camera_of fits the bounds' sphere with a 15% margin): outliers are left out only if
+    // that is below a readable size.
+    let radius = |b: Option<(Vec3, Vec3)>| b.map_or(0.5, |(lo, hi)| ((hi - lo).length() * 0.5).max(0.5));
+    let core_px = height_px as f32 * radius(core_box) / radius(all) * (fov_y_deg.to_radians() * 0.5).cos() / 1.15;
+    if core_px >= MIN_CORE_PX {
+        return Framing { bounds: all, excluded: Vec::new() };
+    }
+    // The farthest first, at most a quarter of all.
+    let mut far: Vec<(f32, u64)> = boxes.iter().map(|b| (dist(b), b.0)).filter(|(d, _)| *d > limit).collect();
+    far.sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+    far.truncate(n / 4);
+    let mut excluded: Vec<u64> = far.into_iter().map(|(_, id)| id).collect();
+    excluded.sort_unstable();
+    let bounds = union(&mut boxes.iter().filter(|b| excluded.binary_search(&b.0).is_err()));
+    Framing { bounds, excluded }
+}
+
+impl Framing {
+    /// Its packet form (`camera.framing`), when something was left out: who (by id and path, the
+    /// first [`MAX_EXCLUDED_NAMED`]), how many and why.
+    pub fn to_json(&self, world: &World) -> Option<Json> {
+        if self.excluded.is_empty() {
+            return None;
+        }
+        let named = self.excluded.iter().take(MAX_EXCLUDED_NAMED).map(|&id| Json::obj([("id", Json::from(id)), ("path", Json::from(world.path_of(id)))]));
+        Some(Json::obj([
+            ("excluded", Json::arr(named)),
+            ("excluded_count", Json::from(self.excluded.len())),
+            ("reason", Json::from("outlier")),
+            ("note", Json::from("auto-framing fits the main cluster; these are far from it. Pass eye and target, or a named camera, to frame them")),
+        ]))
+    }
+}
+
+/// Every shown entity's world box `(id, lo, hi)` (hidden and `ui` entities left out), from the
+/// world itself: [`SubjectCache::boxes`] is the cheap way once the cache is warm.
+pub fn world_boxes(world: &World) -> Vec<(u64, Vec3, Vec3)> {
+    world.entities().filter(|e| e.shown() && !e.in_ui()).filter_map(|e| Some((e.id, corners_box(&e.world_corners()?)))).map(|(id, (lo, hi))| (id, lo, hi)).collect()
+}
+
+/// The axis-aligned box of 8 corners.
+fn corners_box(c: &[Vec3; 8]) -> (Vec3, Vec3) {
+    c[1..].iter().fold((c[0], c[0]), |(lo, hi), &p| (lo.min(p), hi.max(p)))
+}
+
 /// An orthographic view of the whole world down −Z (the 2D convention), `height_m` tall or
 /// fitting the world's bounds (with a margin) for an image of `aspect`.
 pub fn auto_camera_2d(world: &World, height_m: Option<f32>, aspect: f32) -> Camera {
@@ -778,14 +872,15 @@ impl SubjectCache {
         self.scans
     }
 
-    /// [`World::bounds`] from the entries (up to date: [`SubjectCache::refresh`]) and the live
-    /// transient entities: the corners of everything shown and not on the `ui` layer.
-    pub fn bounds(&self, world: &World) -> Option<(Vec3, Vec3)> {
-        let cached = self.entries.iter().filter(|b| b.shown && !b.ui).flat_map(|b| b.corners);
-        let live = world.transient_entities().filter(|e| e.shown() && !e.in_ui()).filter_map(Entity::world_corners).flatten();
-        let mut corners = cached.chain(live);
-        let first = corners.next()?;
-        Some(corners.fold((first, first), |(lo, hi), p| (lo.min(p), hi.max(p))))
+    /// [`world_boxes`] from the entries (up to date: [`SubjectCache::refresh`]) and the live
+    /// transient entities: the box of everything shown and not on the `ui` layer.
+    pub fn boxes(&self, world: &World) -> Vec<(u64, Vec3, Vec3)> {
+        let cached = self.entries.iter().filter(|b| b.shown && !b.ui).map(|b| (b.id, b.corners));
+        let live = world.transient_entities().filter(|e| e.shown() && !e.in_ui()).filter_map(|e| Some((e.id, e.world_corners()?)));
+        cached.chain(live).map(|(id, c)| {
+            let (lo, hi) = corners_box(&c);
+            (id, lo, hi)
+        }).collect()
     }
 
     /// The entries (persistent entities with geometry, by id).
@@ -810,8 +905,11 @@ pub struct Subject {
     /// What the ID buffer measured (`None`: it didn't run).
     pub vis: Option<Visibility>,
     /// Fields added after that (`drawn_as`, `kind`...), in order; a key here replaces the
-    /// measured one in place (an HLOD member's `visible_px` is null).
-    pub json: Json,
+    /// measured one in place (an HLOD member's `visible_px` is null). Private: the computed
+    /// fields (`screen`, `distance_m`, `on_screen`...) aren't in it since they are made on demand,
+    /// so readers go through [`Subject::get`], [`Subject::added`] or the typed fields (the M4
+    /// final audit: anim_filmstrip read `screen` from here and measured the tile's middle).
+    json: Json,
     /// Pixel area of the clipped rectangle (0 when off screen).
     /// Becomes the exact box's area once the ID buffer ran ([`apply_visibility`]): ranks the response.
     pub area: u64,
@@ -882,6 +980,20 @@ impl Subject {
         Subject { id, base: std::sync::Arc::new(base), on_screen, screen: None, distance: 0.0, vis: None, json, area: 0, projected_area }
     }
 
+    /// Sets a field added to its packet entry after the measure (`kind`, `drawn_as`...).
+    pub fn set(&mut self, key: &str, value: Json) {
+        debug_assert!(!COMPUTED.contains(&key), "'{key}' is computed on demand: set the typed field");
+        self.json.set(key, value);
+    }
+
+    /// A field added to its packet entry after the measure (`drawn_as`, `kind`, a parsed
+    /// packet's `no_pixels`), never a computed one: `screen`, `distance_m` and the like are
+    /// [`Subject::get`]'s or the typed fields' (`screen`, `on_screen`, `distance`).
+    pub fn added(&self, key: &str) -> Option<&Json> {
+        debug_assert!(!COMPUTED.contains(&key), "'{key}' is computed on demand: read it with Subject::get or the typed field");
+        self.json.get(key)
+    }
+
     /// [`shows`] of its packet entry, without making it.
     pub fn shows(&self) -> Option<bool> {
         if self.json.get("visible_px").is_some() {
@@ -925,6 +1037,10 @@ impl Subject {
         })
     }
 }
+
+/// The packet fields a [`Subject`] makes on demand from its typed fields and base (never kept in
+/// its added fields).
+const COMPUTED: [&str; 15] = ["id", "name", "path", "shape", "recipe", "two_d", "material", "color", "position", "created_by", "on_screen", "screen", "distance_m", "layer", "transient"];
 
 /// One entry per entity with geometry in the frame, in id order: groups draw nothing, hidden
 /// entities aren't drawn, and `ui` entities only count when the frame includes them.
@@ -1492,6 +1608,65 @@ mod tests {
         let down = Camera::new(Vec3::new(0.0, 10.0, 0.0), Vec3::ZERO, 60.0);
         let (_, d) = down.ray(639.5, 359.5, w, h);
         assert!(d.y < -0.999, "straight down still works: {d:?}");
+    }
+
+    /// The M3 carry-over (M4 final audit repro): a 3 x 3 grid of unit cubes and one cube at
+    /// x = 2000. Auto-framing fits the grid and names the far cube; the order of the boxes
+    /// changes nothing; a second cluster of the same size, a ground plane under everything and
+    /// a pair of boxes are all kept.
+    #[test]
+    fn auto_framing_leaves_out_outliers_and_says_so() {
+        let cube = |id: u64, x: f32, z: f32| (id, Vec3::new(x - 0.5, 0.0, z - 0.5), Vec3::new(x + 0.5, 1.0, z + 0.5));
+        let mut boxes: Vec<_> = (0..9).map(|i| cube(i + 1, (i % 3) as f32 * 1.2, (i / 3) as f32 * 1.2)).collect();
+        let fr = |b: &[(u64, Vec3, Vec3)]| framing(b, 360, 50.0);
+        let grid = fr(&boxes);
+        assert!(grid.excluded.is_empty());
+        boxes.push(cube(10, 2000.0, 0.0));
+        let f = fr(&boxes);
+        assert_eq!(f.excluded, vec![10]);
+        assert_eq!(f.bounds, grid.bounds, "the grid alone is framed");
+        boxes.reverse();
+        assert_eq!(fr(&boxes), f, "order-free");
+        // Two clusters of a similar size: neither is an outlier.
+        let two: Vec<_> = (0..12).map(|i| cube(i + 1, if i < 6 { i as f32 } else { 500.0 + i as f32 }, 0.0)).collect();
+        assert!(fr(&two).excluded.is_empty());
+        // A ground plane under everything holds the centre (distance 0) and is kept.
+        let mut ground = boxes.clone();
+        ground.push((11, Vec3::new(-50.0, -0.1, -50.0), Vec3::new(50.0, 0.0, 50.0)));
+        assert_eq!(fr(&ground).excluded, vec![10]);
+        // The M4 final review: small scenes are framed whole. Two cubes and a car 12 m away (the
+        // p75 of three is the median, so the core was 0 and the car "far")...
+        assert!(fr(&[cube(1, 0.0, 0.0), cube(2, 1.2, 0.0), cube(3, 12.0, 0.0)]).excluded.is_empty());
+        // ... and 4 tight cubes with 2 more 15 m away (2 of 6 left out, a third).
+        let six: Vec<_> = (0..4).map(|i| cube(i + 1, (i % 2) as f32 * 1.1, (i / 2) as f32 * 1.1)).chain([cube(5, 15.0, 0.0), cube(6, 0.0, 15.0)]).collect();
+        assert!(fr(&six).excluded.is_empty());
+        // At most a quarter: 8 tight cubes and 3 far ones leave out 2 of 11 (the farthest).
+        let mut many: Vec<_> = (0..8).map(|i| cube(i + 1, (i % 4) as f32 * 1.1, (i / 4) as f32 * 1.1)).collect();
+        many.extend([cube(20, 3000.0, 0.0), cube(21, 2500.0, 0.0), cube(22, 0.0, 2000.0)]);
+        assert_eq!(fr(&many).excluded, vec![20, 21]);
+        // A third far (4 of 12): the 75th percentile is itself far, so nothing is an outlier.
+        many.push(cube(23, 0.0, 1500.0));
+        assert!(fr(&many).excluded.is_empty());
+        // A far box that would still leave the rest readable is kept: 8 cubes and one 20 m away.
+        let mut near: Vec<_> = (0..8).map(|i| cube(i + 1, (i % 4) as f32 * 1.1, (i / 4) as f32 * 1.1)).collect();
+        near.push(cube(9, 20.0, 0.0));
+        assert!(fr(&near).excluded.is_empty());
+        // Fewer than eight boxes: nothing to call an outlier.
+        assert!(fr(&[cube(1, 0.0, 0.0), cube(2, 2000.0, 0.0)]).excluded.is_empty());
+        assert_eq!(fr(&[]), Framing::default());
+        // In a world: the packet names it, and an explicit camera is untouched (capture.rs only
+        // frames when no camera is given).
+        let mut world = World::default();
+        for (i, x) in [0.0, 1.2, 2.4, 0.0, 1.2, 2.4, 0.0, 1.2, 2.4, 2000.0].into_iter().enumerate() {
+            spawn_scaled(&mut world, Shape::Cube, &format!("c{i}"), Vec3::new(x, 0.5, (i / 3) as f32 * 1.2), Vec3::ONE);
+        }
+        let f = framing(&world_boxes(&world), 360, 50.0);
+        let j = f.to_json(&world).expect("named");
+        assert_eq!(j.get("excluded_count").and_then(Json::as_u64), Some(1));
+        assert_eq!(j.get("reason").and_then(Json::as_str), Some("outlier"));
+        assert_eq!(j.get("excluded").and_then(Json::as_array).and_then(|a| a[0].get("path")).and_then(Json::as_str), Some("/c9"));
+        let (lo, hi) = f.bounds.unwrap();
+        assert!(hi.x < 4.0 && lo.x > -1.0, "the grid's bounds: {lo:?} {hi:?}");
     }
 
     fn spawn_scaled(world: &mut World, shape: Shape, name: &str, position: Vec3, scale: Vec3) {

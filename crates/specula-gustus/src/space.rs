@@ -15,9 +15,11 @@ pub const MAX_DIMS: usize = 12;
 pub const MAX_OPTIONS: usize = 12;
 /// Whether a file relative to the assets folder is taste state (`taste/...`, in any case, with
 /// any `.` or empty segments ahead of it): never a gallery's apply target (taste review 2: an
-/// agent's gallery applied into another gallery's file and changed the owner's pick).
+/// agent's gallery applied into another gallery's file and changed the owner's pick). Compared
+/// case-folded in Unicode as the engine's project store folds names (`taſte`, with a long s, is
+/// `TASTE`: the M4 final review).
 pub fn is_taste_file(file: &str) -> bool {
-    file.split('/').find(|s| !s.is_empty() && *s != ".").is_some_and(|s| s.eq_ignore_ascii_case("taste"))
+    file.split('/').find(|s| !s.is_empty() && *s != ".").is_some_and(|s| s.chars().flat_map(char::to_uppercase).eq("TASTE".chars()))
 }
 
 /// Two displayed colours closer than this (Oklab) count as one on a sheet.
@@ -421,6 +423,12 @@ impl Param {
                 Kind::Colour { base, spread }
             }
             "choice" => {
+                // Only the preset target takes a named option: anywhere else (recipe.<param>, a
+                // scale, a light) it rendered as 0 (the M4 final audit: a choice on recipe.tilt
+                // drew every variant upright).
+                if target != Target::Preset {
+                    return Err(bad("bad_kind", format!("{} takes a {} parameter: a choice works on the preset target only", target.name(), if target.is_colour() { "colour" } else { "number" }), "kind"));
+                }
                 let options: Vec<String> = j
                     .get("options")
                     .and_then(Json::as_array)
@@ -577,6 +585,26 @@ impl Space {
         })
     }
 
+    /// `n` of `candidates` (unit points), preferring those whose values nothing in `shown` (nor an
+    /// earlier pick) shows yet, then the rest in order: a spread never repeats a value while it
+    /// has unused ones (the M4 final audit: "left, upright, left" with "right" unused).
+    pub fn prefer_unshown(&self, candidates: Vec<Vec<f64>>, shown: &[Vec<Value>], n: usize) -> Vec<Vec<f64>> {
+        let mut seen: Vec<Vec<Value>> = shown.to_vec();
+        let (mut out, mut rest) = (Vec::with_capacity(n), Vec::new());
+        for p in candidates {
+            let v = self.values(&p);
+            if out.len() < n && !seen.iter().any(|s| self.same_shown(s, &v)) {
+                seen.push(v);
+                out.push(p);
+            } else {
+                rest.push(p);
+            }
+        }
+        let missing = n.saturating_sub(out.len());
+        out.extend(rest.into_iter().take(missing));
+        out
+    }
+
     /// The chips some parameter answers to, in [`CHIPS`] order.
     pub fn chips(&self) -> Vec<&'static str> {
         CHIPS.iter().copied().filter(|c| self.params.iter().any(|p| p.chip(c).is_some())).collect()
@@ -638,7 +666,8 @@ mod tests {
     /// owner's pick. Taste state is never an apply target, in any spelling.
     #[test]
     fn galleries_never_apply_into_taste_state() {
-        for f in ["taste/galleries/vic.json", "Taste/galleries/vic.json", "./taste/onboarding.json", "TASTE/suggestions.json"] {
+        // (U+017F is a long s: it folds to S, so this is taste/ too: the M4 final review.)
+        for f in ["taste/galleries/vic.json", "Taste/galleries/vic.json", "./taste/onboarding.json", "TASTE/suggestions.json", "ta\u{17f}te/galleries/x.json"] {
             let j = Json::parse(&format!(r#"[{{"name": "n", "target": "light.key_intensity", "min": 0, "max": 8, "apply": {{"file": "{f}", "json": "rounds"}}}}]"#)).unwrap();
             assert_eq!(Space::parse(&j).unwrap_err().code, "reserved", "{f}");
         }
@@ -701,5 +730,22 @@ mod tests {
         assert_eq!(e.code, "bad_apply");
         let many: Vec<String> = (0..5).map(|i| format!(r##"{{"name":"c{i}","target":"ui.c{i}","base":"#808080"}}"##)).collect();
         assert_eq!(Space::parse(&Json::parse(&format!("[{}]", many.join(","))).unwrap()).unwrap_err().code, "bad_space");
+        // The M4 final audit: a choice on a recipe parameter rendered 0 for every option.
+        for target in ["recipe.tilt", "scale.y", "light.key_color"] {
+            let e = Space::parse(&Json::parse(&format!(r#"[{{"name":"lean","target":"{target}","kind":"choice","options":["left","upright","right"]}}]"#)).unwrap()).unwrap_err();
+            assert_eq!((e.code, e.field.as_deref()), ("bad_kind", Some("space[0].kind")), "{target}");
+        }
+    }
+
+    /// The M4 final audit: a look-alike's replacement repeated a shown option ("left, upright,
+    /// left") while "right" was unused. Unshown values come first; repeats only fill up.
+    #[test]
+    fn replacements_prefer_values_not_shown() {
+        let s = Space::parse(&Json::parse(r#"[{"name":"look","target":"preset","options":["left","upright","right"]}]"#).unwrap()).unwrap();
+        let shown = vec![s.values(&[0.1]), s.values(&[0.5]), s.values(&[0.1])];
+        let picked = s.prefer_unshown(vec![vec![0.05], vec![0.4], vec![0.9], vec![0.2]], &shown, 1);
+        assert_eq!(s.values(&picked[0]), s.values(&[0.9]), "right, the unused option");
+        let two = s.prefer_unshown(vec![vec![0.05], vec![0.9], vec![0.95]], &shown, 2);
+        assert_eq!(two, vec![vec![0.9], vec![0.05]], "then repeats fill up, in order");
     }
 }

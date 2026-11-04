@@ -211,6 +211,9 @@ struct Pending {
     class: Class,
     trace: specula_core::trace::Ctx,
     started: Instant,
+    /// The tool call that started it (0: the engine's own): its continuation's commits are
+    /// charged there ([`Engine::run_charged`]).
+    call: u64,
 }
 
 /// The pool and the jobs waiting for their continuation.
@@ -420,7 +423,7 @@ impl Engine {
         let cancel = Cancel::default();
         let trace = specula_core::trace::Ctx::current();
         let then: Then = Box::new(move |e, r| then(e, r.map(|b| *b.downcast::<R>().unwrap_or_else(|_| unreachable!("a job's payload is its own type")))));
-        self.workers.pending.insert(id, Pending { kind: o.kind, owner: o.owner, cancel: cancel.clone(), cancel_on_close: o.cancel_on_close, bytes: o.bytes, then, class: o.class, trace, started: Instant::now() });
+        self.workers.pending.insert(id, Pending { kind: o.kind, owner: o.owner, cancel: cancel.clone(), cancel_on_close: o.cancel_on_close, bytes: o.bytes, then, class: o.class, trace, started: Instant::now(), call: self.dispatch_call });
         let task = Task { id, lane: o.lane, cancel, work: Box::new(move |c| Box::new(work(c)) as Payload), trace };
         self.workers.shared.queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner).tasks.push_back(task);
         self.workers.shared.wake.notify_one();
@@ -461,7 +464,11 @@ impl Engine {
             }
             let _c = p.trace.enter();
             let started = Instant::now();
-            (p.then)(self, result);
+            // Charged to the call that started the job, whichever request is pumping now (a
+            // mount waiting for a sync, a load flushing saves).
+            let by = p.owner.as_ref().map_or_else(|| p.kind.name().to_owned(), |(o, _)| o.name.clone());
+            let then = p.then;
+            self.run_charged(p.call, &by, move |e| then(e, result));
             let took = started.elapsed();
             specula_core::trace_event!(&crate::trace_sink::ENGINE, Debug, "worker.done", kind = p.kind.name(), ms = p.started.elapsed().as_secs_f64() * 1000.0);
             self.engine_work_done(p.trace.call, Some(p.class), "worker_then", took);
@@ -569,6 +576,75 @@ impl Engine {
 }
 
 #[cfg(test)]
+mod charge_tests {
+    use super::*;
+    use crate::journal::{Kind, Writer};
+
+    fn engine() -> Option<Engine> {
+        if !specula_gpu::is_available() {
+            crate::skip_test("charge_tests", "Vulkan is not available");
+            return None;
+        }
+        let gpu = match specula_gpu::Gpu::new(&specula_gpu::GpuOptions { validation: specula_gpu::Validation::Auto, ..Default::default() }) {
+            Ok(g) => g,
+            Err(e) => {
+                crate::skip_test("charge_tests", &e.to_string());
+                return None;
+            }
+        };
+        let assets = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../games/sepulcra/assets");
+        let captures = std::env::temp_dir().join(format!("specula-charge-tests-{}", std::process::id()));
+        Some(Engine::new(gpu, &captures, crate::models::Library::new(&assets, None)).expect("engine"))
+    }
+
+    /// Offloads a job as tool call `call` whose continuation spawns `n` boxes as `who`.
+    fn job(e: &mut Engine, call: u64, who: &'static str, n: usize) {
+        e.dispatch_call = call;
+        let _ = e.offload(Offload::engine(JobKind::ProjectSync), |_| (), move |e, _| {
+            for i in 0..n {
+                let spec = crate::tools::parse_spawn(&specula_core::Json::parse(&format!(r#"{{"name": "{who}{i}", "shape": "cube"}}"#)).unwrap()).unwrap();
+                let w = Writer::new(who, Some(who));
+                e.world.commit(&mut e.swarm, 0, w, Kind::Spawn, crate::write_policy::Rule::World, |wd| wd.spawn(spec, who).map(|x| x.id)).unwrap();
+            }
+        });
+        e.dispatch_call = 0;
+    }
+
+    /// The M4 final review: a request that pumps workers from inside its dispatch (a mount
+    /// waiting for a sync, a load flushing saves) was charged the continuations' commits, other
+    /// agents' (a debug engine panicked). They are charged to the calls that started them.
+    #[test]
+    fn a_pumped_continuation_is_charged_to_its_own_call() {
+        let Some(mut e) = engine() else { return };
+        // Another agent's job (call 9) commits once; a call 11 job commits twice (a real breach).
+        job(&mut e, 9, "taste", 1);
+        // c's request (call 17) waits for the jobs from inside its own dispatch, as
+        // world_load's flush_world_saves and project_mount's project_wait_sync do.
+        e.swarm.begin_dispatch("c");
+        e.dispatch_call = 17;
+        let until = Instant::now() + Duration::from_secs(20);
+        while e.workers.busy() && Instant::now() < until {
+            e.workers_wait_one(Duration::from_millis(20));
+        }
+        e.dispatch_call = 0;
+        assert_eq!(e.swarm.end_dispatch(), 0, "c made no commit: the continuation's is call 9's");
+        assert_eq!(e.multi_commit_calls, 0);
+        assert_eq!(e.commits.count(9, 1, false), Some(2), "call 9 was charged its one commit (one more makes two)");
+        e.multi_commit_calls = 0;
+        // A job that itself commits twice is still a breach, of its own call (counted, not a
+        // debug panic here: checked through the count directly).
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            job(&mut e, 11, "b", 2);
+            let until = Instant::now() + Duration::from_secs(20);
+            while e.workers.busy() && Instant::now() < until {
+                e.workers_wait_one(Duration::from_millis(20));
+            }
+        }));
+        assert!(r.is_err() == cfg!(debug_assertions), "a continuation's own two commits are a breach of call 11");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -658,6 +734,7 @@ mod tests {
             class: Class::Render,
             trace: Default::default(),
             started: Instant::now(),
+            call: 0,
         };
         for i in 0..MAX_PER_OWNER {
             assert!(w.room(&owner("ann"), 1, 0).is_ok());

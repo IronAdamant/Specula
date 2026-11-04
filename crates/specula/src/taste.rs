@@ -7,8 +7,10 @@
 //! Every write is a project-file commit (`Engine::project_put`): taste state (galleries, picks,
 //! suggestions, boards, onboarding) under the taste rule, which only these savers pass and which
 //! writes nothing else; no agent's claim applies to it and nobody undoes another's entry in it.
-//! Approved results (style.toml, ui colours, priors, notes) go under the project rule, which
-//! taste state refuses. All of it is journaled with its author. Who may do what is one function,
+//! Approved results (style.toml, ui colours, priors, notes) are written with the taste state that
+//! records the decision in one commit (`Engine::project_put_all`) under the taste result rule,
+//! which writes project files only and checks claims on the results (one tool call, one commit:
+//! AGENTS rule 14). All of it is journaled with its author. Who may do what is one function,
 //! [`taste_authority`]. Rounds are planned and rendered on the worker's thread (renders go
 //! through the studio's queue, within its budget), never the engine's.
 
@@ -37,9 +39,9 @@ pub const TASTE_AGENT: &str = crate::authority::TASTE_AGENT;
 /// Taste state's rule: only the savers of galleries, suggestions, boards and onboarding pass it
 /// (never derived from a path: taste review 2).
 const TASTE_RULE: crate::write_policy::Rule = crate::write_policy::Rule::Taste;
-/// What taste results write (style.toml, ui/theme.json, priors, notes): the project tools' rule,
-/// which taste state refuses.
-const RESULT_RULE: crate::write_policy::Rule = crate::write_policy::Rule::Project;
+/// A decision's results and the taste state that records it, in one commit (one tool call, one
+/// commit: gallery_apply, an applied suggestion, an approved configurator proposal).
+const DECIDED_RULE: crate::write_policy::Rule = crate::write_policy::Rule::TasteResult;
 pub const GALLERIES: &str = "assets/taste/galleries/";
 pub const SUGGESTIONS: &str = "assets/taste/suggestions.json";
 /// Approved results are tracked (outside the private taste folder).
@@ -507,11 +509,38 @@ impl Engine {
     fn taste_save(&mut self, g: &Gallery, w: Writer) -> Result<Json, WorldError> {
         let text = g.to_text();
         let out = self.project_put(&gallery_path(&g.id), |_| Ok(text), w, w.name, TASTE_RULE)?;
+        self.taste_saved(g);
+        Ok(out)
+    }
+
+    /// The cache takes gallery `g` as just written (see [`Engine::taste_save`]).
+    fn taste_saved(&mut self, g: &Gallery) {
         if let Some(v) = self.world.files().get(&gallery_path(&g.id)).map(|f| f.version) {
             self.taste.saved(g, v);
         }
         self.taste_refresh();
-        Ok(out)
+    }
+
+    /// Gallery `g`, marked applied by `w`, written with its results `by_file` in **one** commit
+    /// (one tool call, one commit: the files and the record that they were applied stand or fall
+    /// together). The written files' `{file, version}`.
+    fn taste_save_applied(&mut self, g: &mut Gallery, by_file: FileEdits, w: Writer) -> Result<Vec<Json>, WorldError> {
+        let before = g.applied.replace(w.name.to_owned());
+        let text = g.to_text();
+        let mut puts: Vec<(String, crate::project_engine::PutEdit<'_>)> = by_file.into_iter().map(|(file, edits)| (file, Box::new(move |old: Option<&str>| apply_edits(old, &edits)) as crate::project_engine::PutEdit<'_>)).collect();
+        let record = gallery_path(&g.id);
+        puts.push((record.clone(), Box::new(move |_| Ok(text))));
+        match self.project_put_all(puts, w, w.name, DECIDED_RULE, &[record.as_str()]) {
+            Ok(mut out) => {
+                out.pop();
+                self.taste_saved(g);
+                Ok(out.into_iter().map(|a| Json::obj([("file", a.get("path").cloned().unwrap_or(Json::Null)), ("version", a.get("version").cloned().unwrap_or(Json::Null))])).collect())
+            }
+            Err(e) => {
+                g.applied = before;
+                Err(e)
+            }
+        }
     }
 
     /// A round's sheet by gallery id: known this run, or read back from its packet on a worker
@@ -721,68 +750,57 @@ impl Engine {
             Decision::Dislike { variant, at, note } => g.dislike(round, variant, at, &note, w.name, user).map_err(taste_err)?,
             Decision::Retry => return self.taste_retry(id),
         };
-        self.taste_save(&g, w)?;
         let status = g.status();
         let mut j = Json::obj([("id", Json::from(id)), ("seq", Json::from(seq)), ("status", Json::from(status.name()))]);
-        match status {
-            Status::Rendering => self.taste_enqueue(&g, None),
-            Status::Accepted => {
-                if g.apply_on_accept {
-                    match self.taste_apply(id, w) {
-                        Ok(a) => j.set("applied", a),
-                        Err(e) => j.set("apply_problem", e.to_json()),
-                    };
+        // "This one" with apply_on_accept: the decision and the values it writes are one commit
+        // (one tool call, one commit). When the values can't be written the decision still is.
+        let mut saved = false;
+        if status == Status::Accepted && g.apply_on_accept {
+            match apply_plan(&g, id).and_then(|(round, variant, by_file)| Ok((round, variant, self.taste_save_applied(&mut g, by_file, w)?))) {
+                Ok((round, variant, files)) => {
+                    saved = true;
+                    j.set("applied", Json::obj([("round", Json::from(round)), ("variant", Json::from(variant)), ("files", Json::Arr(files))]));
                 }
-                if let Some(next) = self.onboard_after_accept(id) {
-                    j.set("onboarding", next);
+                Err(e) => {
+                    j.set("apply_problem", e.to_json());
                 }
             }
-            Status::Open => {}
+        }
+        // A configurator step accepted: the decision and what follows it (the next step's
+        // gallery and onboarding.json, or after the last step the proposal's state) are one
+        // commit, as the decider (the M4 final review: the follow-up was written as `taste`, a
+        // second commit the counter didn't see). When the follow-up can't be made the decision
+        // is still written, alone.
+        if status == Status::Accepted && !saved {
+            if let Some(follow) = self.onboard_after_accept(&g, w) {
+                match follow {
+                    Ok(next) => {
+                        saved = true;
+                        j.set("onboarding", next);
+                    }
+                    Err(e) => {
+                        j.set("onboarding", e.to_json());
+                    }
+                }
+            }
+        }
+        if !saved {
+            self.taste_save(&g, w)?;
+        }
+        if status == Status::Rendering {
+            self.taste_enqueue(&g, None);
         }
         self.taste.screen.changed();
         Ok(j)
     }
 
-    /// Writes an accepted gallery's values to their `apply` targets as `w` (one commit per file).
+    /// Writes an accepted gallery's values to their `apply` targets as `w`, with the gallery's
+    /// record that they were applied: one commit, all or nothing.
     pub(crate) fn taste_apply(&mut self, id: &str, w: Writer) -> Result<Json, WorldError> {
         self.taste_refresh();
         let mut g = self.taste.get(id).cloned().ok_or_else(|| WorldError::new("gallery_not_found", format!("there is no gallery '{id}'")).with("id", id))?;
-        let Some((round, variant, values)) = g.accepted().map(|(r, v, vals)| (r, v, vals.to_vec())) else {
-            return Err(WorldError::new("not_accepted", format!("gallery '{id}' has no accepted variant yet: the human picks \"This one\" first")).with("id", id));
-        };
-        // A configurator step's values reach style.toml only through the reviewed proposal.
-        if g.subject.get("onboarding_step").is_some() {
-            return Err(WorldError::new("onboarding_step", format!("gallery '{id}' is a style configurator step: its values are written when the configurator's proposal is approved on the review queue")).with("id", id));
-        }
-        let mut by_file: BTreeMap<String, Vec<(ApplyAt, Value)>> = BTreeMap::new();
-        for (p, v) in g.space.params.iter().zip(&values) {
-            if let Some(a) = &p.apply {
-                // (Space::parse refuses these; a gallery file written before it did is refused here.)
-                if specula_gustus::space::is_taste_file(&a.file) {
-                    return Err(WorldError::new("reserved", format!("gallery '{id}' applies to taste state ({}): galleries apply to the game's files only", a.file)).with("id", id));
-                }
-                by_file.entry(format!("assets/{}", a.file)).or_default().push((a.at.clone(), v.clone()));
-            }
-        }
-        if by_file.is_empty() {
-            return Err(WorldError::new("nothing_to_apply", format!("no parameter of gallery '{id}' says where its value lives (apply: {{file, toml|json}}); read the values with gallery_get")).with("id", id));
-        }
-        // All or nothing: a file that can't be written takes back the ones written before it.
-        let mut written = Vec::new();
-        let mut seqs = Vec::new();
-        for (file, edits) in &by_file {
-            match self.project_put(file, |old| apply_edits(old, edits), w, w.name, RESULT_RULE) {
-                Ok(out) => {
-                    seqs.extend(out.get("journal").and_then(Json::as_u64));
-                    written.push(Json::obj([("file", Json::from(file.as_str())), ("version", out.get("version").cloned().unwrap_or(Json::Null))]));
-                }
-                Err(e) => return Err(self.taste_rollback(&seqs, w, e)),
-            }
-        }
-        g.applied = Some(w.name.to_owned());
-        if let Err(e) = self.taste_save(&g, w) {
-            return Err(self.taste_rollback(&seqs, w, e));
-        }
+        let (round, variant, by_file) = apply_plan(&g, id)?;
+        let written = self.taste_save_applied(&mut g, by_file, w)?;
         Ok(Json::obj([("round", Json::from(round)), ("variant", Json::from(variant)), ("files", Json::Arr(written))]))
     }
 
@@ -1320,27 +1338,28 @@ impl Engine {
     /// Writes a suggestion (a project-file edit, or a prior) as `w`.
     fn suggestion_apply(&mut self, id: &str, w: Writer) -> Result<Json, WorldError> {
         let s = self.taste_suggestions().into_iter().find(|s| s.id == id).ok_or_else(|| WorldError::new("suggestion_not_found", format!("no open suggestion '{id}'")).with("id", id))?;
-        let out = match &s.apply {
+        // The result and the log entry that records it: one commit.
+        let result: (String, crate::project_engine::PutEdit<'_>) = match &s.apply {
             Some(a) => {
                 if specula_gustus::space::is_taste_file(&a.file) {
                     return Err(WorldError::new("reserved", format!("suggestion '{id}' applies to taste state ({}): suggestions apply to the game's files only", a.file)).with("id", id));
                 }
-                let file = format!("assets/{}", a.file);
                 let edits = vec![(a.at.clone(), s.value.clone())];
-                self.project_put(&file, |old| apply_edits(old, &edits), w, w.name, RESULT_RULE)?
+                (format!("assets/{}", a.file), Box::new(move |old: Option<&str>| apply_edits(old, &edits)))
             }
             None => {
                 let mut priors = self.world.files().get(PRIORS).and_then(|f| Priors::parse(&f.text).ok()).unwrap_or_default();
                 priors.by_target.insert(s.target.clone(), s.value.to_json());
                 let text = priors.to_text();
-                self.project_put(PRIORS, |_| Ok(text), w, w.name, RESULT_RULE)?
+                (PRIORS.to_owned(), Box::new(move |_| Ok(text)))
             }
         };
-        if let Err(e) = self.suggestion_log_set(id, "applied", w, s.to_json().get("what").and_then(Json::as_str).unwrap_or("")) {
-            let seqs: Vec<u64> = out.get("journal").and_then(Json::as_u64).into_iter().collect();
-            return Err(self.taste_rollback(&seqs, w, e));
-        }
-        Ok(Json::obj([("id", Json::from(id)), ("state", Json::from("applied")), ("written", out)]))
+        let mut log = self.suggestion_log();
+        log.entries.insert(id.to_owned(), ("applied".to_owned(), w.name.to_owned(), s.to_json().get("what").and_then(Json::as_str).unwrap_or("").to_owned()));
+        let log_text = log.to_text();
+        let mut out = self.project_put_all(vec![result, (SUGGESTIONS.to_owned(), Box::new(move |_| Ok(log_text)))], w, w.name, DECIDED_RULE, &[SUGGESTIONS])?;
+        let written = if out.is_empty() { Json::Null } else { out.swap_remove(0) };
+        Ok(Json::obj([("id", Json::from(id)), ("state", Json::from("applied")), ("written", written)]))
     }
 
     // ---- onboarding ----
@@ -1354,8 +1373,22 @@ impl Engine {
         self.project_put(ONBOARDING, |_| Ok(text), w, w.name, TASTE_RULE)
     }
 
-    /// Starts onboarding step `k`'s gallery (as `w`).
+    /// Starts onboarding step `k`'s gallery (as `w`): the gallery and the configurator state
+    /// that names it, one commit.
     fn onboard_step(&mut self, o: &mut presets::Onboarding, k: usize, w: Writer) -> Result<String, WorldError> {
+        let g = self.onboard_step_gallery(o, k, w.name)?;
+        let (gtext, otext) = (g.to_text(), o.to_text());
+        if let Err(e) = self.project_put_all(vec![(gallery_path(&g.id), Box::new(move |_| Ok(gtext))), (ONBOARDING.to_owned(), Box::new(move |_| Ok(otext)))], w, w.name, TASTE_RULE, &[]) {
+            o.galleries.pop();
+            return Err(e);
+        }
+        self.taste_saved(&g);
+        self.taste_enqueue(&g, None);
+        Ok(g.id)
+    }
+
+    /// Onboarding step `k`'s gallery, made by `maker` and named in `o` (nothing written).
+    fn onboard_step_gallery(&mut self, o: &mut presets::Onboarding, k: usize, maker: &str) -> Result<Gallery, WorldError> {
         let preset = presets::find(&o.preset).unwrap_or(&presets::PRESETS[0]);
         let (title, subject, space) = presets::step_gallery(k, preset, &o.subject).ok_or_else(|| WorldError::new("no_step", format!("onboarding has {} steps", presets::STEPS.len())))?;
         let space = specula_gustus::space::Space::parse(&space).map_err(taste_err)?;
@@ -1369,14 +1402,12 @@ impl Engine {
         };
         // The owner sees where they are in the configurator (a sight-skeptic finding).
         let title = format!("Step {} of {}: {title}", k + 1, presets::STEPS.len());
-        let mut g = Gallery::new(&id, &title, subject, space, specula_gustus::gallery::Mode::Tune, specula_core::hash::hash_str(&id), specula_gustus::gallery::DEFAULT_VARIANTS, w.name).map_err(taste_err)?;
+        let mut g = Gallery::new(&id, &title, subject, space, specula_gustus::gallery::Mode::Tune, specula_core::hash::hash_str(&id), specula_gustus::gallery::DEFAULT_VARIANTS, maker).map_err(taste_err)?;
         g.subject.set("onboarding_step", Json::from(presets::STEPS[k]));
         let subject = render::parse_subject(&g.subject).map_err(|m| WorldError::new("bad_subject", m))?;
         render::check_targets(&subject, &g.space).map_err(|m| WorldError::new("bad_target", m))?;
-        self.taste_save(&g, w)?;
-        self.taste_enqueue(&g, None);
-        o.galleries.push(id.clone());
-        Ok(id)
+        o.galleries.push(id);
+        Ok(g)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1394,7 +1425,6 @@ impl Engine {
                 let mut o = presets::Onboarding::new(subject, &preset, w.name).map_err(taste_err)?;
                 o.quote_notes = quote_notes.unwrap_or(false);
                 let id = self.onboard_step(&mut o, 0, w)?;
-                self.onboard_save(&o, w)?;
                 let mut j = self.onboard_status();
                 if open {
                     j.set("screen", self.taste_open(&id, user, auth, w.name).unwrap_or_else(|e| e.to_json()));
@@ -1406,7 +1436,7 @@ impl Engine {
                 if let Some(q) = quote_notes {
                     o.quote_notes = q;
                 }
-                self.onboard_propose(&mut o, w)
+                self.onboard_propose(&mut o, w, w, None)
             }
             "cancel" => {
                 let mut o = self.onboarding().filter(|o| o.state == "running" || o.state == "proposed").ok_or_else(|| WorldError::new("not_running", "the style configurator isn't running"))?;
@@ -1438,47 +1468,58 @@ impl Engine {
         j
     }
 
-    /// After a gallery is accepted: if it is the onboarding's current step, the next step starts
-    /// (the base style's pick decides the preset); after the last, the result is proposed.
-    fn onboard_after_accept(&mut self, id: &str) -> Option<Json> {
+    /// After gallery `g` is accepted (not written yet): if it is the onboarding's current step,
+    /// the next step starts (the base style's pick decides the preset); after the last, the
+    /// result is proposed. Either way `g` is written in the same commit, as `w` (`None`: not a
+    /// current configurator step; nothing written).
+    fn onboard_after_accept(&mut self, g: &Gallery, w: Writer) -> Option<Result<Json, WorldError>> {
         let mut o = self.onboarding().filter(|o| o.state == "running")?;
-        let k = o.galleries.iter().position(|g| g == id)?;
+        let k = o.galleries.iter().position(|x| *x == g.id)?;
         if k + 1 != o.galleries.len() {
             return None;
         }
-        let w = Writer::new(TASTE_AGENT, None);
         if k == 0 {
-            if let Some((_, _, vals)) = self.taste.get(id).and_then(|g| g.accepted()) {
+            if let Some((_, _, vals)) = g.accepted() {
                 if let Some(Value::Choice(_, name)) = vals.first() {
                     o.preset = name.clone();
                 }
             }
         }
-        let out = if k + 1 < presets::STEPS.len() {
-            match self.onboard_step(&mut o, k + 1, w) {
-                Ok(next) => {
-                    // The human continues on the window with the next step.
-                    if self.taste.screen.gallery() == Some(id) {
-                        let user = self.taste.screen.user().to_owned();
-                        self.taste.screen.open(&next, &user);
-                    }
-                    self.onboard_save(&o, w).err().map(|e| e.to_json()).unwrap_or_else(|| Json::obj([("next_step", Json::from(presets::STEPS[k + 1])), ("gallery", Json::from(next))]))
-                }
-                Err(e) => e.to_json(),
-            }
+        Some(if k + 1 < presets::STEPS.len() {
+            self.onboard_next(g, &mut o, k + 1, w)
         } else {
-            self.onboard_propose(&mut o, w).unwrap_or_else(|e| e.to_json())
-        };
-        Some(out)
+            // The proposal is the configurator's (submitted as `taste`, so the owner can approve
+            // it); its state is written with the decision.
+            self.onboard_propose(&mut o, Writer::new(TASTE_AGENT, None), w, Some(g))
+        })
     }
 
-    /// The accepted steps' values, notes and rounds.
-    fn onboard_results(&self, o: &presets::Onboarding) -> Vec<presets::StepResult> {
+    /// Step `k`'s gallery after `g`'s acceptance: `g`, the new gallery and onboarding.json in one
+    /// commit as `w`; the human continues on the window with it.
+    fn onboard_next(&mut self, g: &Gallery, o: &mut presets::Onboarding, k: usize, w: Writer) -> Result<Json, WorldError> {
+        let next = self.onboard_step_gallery(o, k, TASTE_AGENT)?;
+        let (gt, nt, ot) = (g.to_text(), next.to_text(), o.to_text());
+        let puts: Vec<(String, crate::project_engine::PutEdit<'_>)> =
+            vec![(gallery_path(&g.id), Box::new(move |_| Ok(gt))), (gallery_path(&next.id), Box::new(move |_| Ok(nt))), (ONBOARDING.to_owned(), Box::new(move |_| Ok(ot)))];
+        self.project_put_all(puts, w, w.name, TASTE_RULE, &[])?;
+        self.taste_saved(g);
+        self.taste_saved(&next);
+        self.taste_enqueue(&next, None);
+        if self.taste.screen.gallery() == Some(g.id.as_str()) {
+            let user = self.taste.screen.user().to_owned();
+            self.taste.screen.open(&next.id, &user);
+        }
+        Ok(Json::obj([("next_step", Json::from(presets::STEPS[k])), ("gallery", Json::from(next.id.as_str()))]))
+    }
+
+    /// The accepted steps' values, notes and rounds (`decided`: a gallery as just decided, not
+    /// written yet, read in place of its file).
+    fn onboard_results(&self, o: &presets::Onboarding, decided: Option<&Gallery>) -> Vec<presets::StepResult> {
         o.galleries
             .iter()
             .enumerate()
             .filter_map(|(k, id)| {
-                let g = self.taste.get(id)?;
+                let g = decided.filter(|d| d.id == *id).or_else(|| self.taste.get(id))?;
                 let (round, _, vals) = g.accepted()?;
                 let values = g.space.params.iter().zip(vals).filter_map(|(p, v)| match &p.apply.as_ref()?.at {
                     ApplyAt::Toml(key) if p.apply.as_ref()?.file == "style.toml" => Some((key.clone(), v.toml_literal(), p.name.clone())),
@@ -1493,9 +1534,11 @@ impl Engine {
             .collect()
     }
 
-    /// Composes the result and puts it on the review queue (nothing is written until approved).
-    fn onboard_propose(&mut self, o: &mut presets::Onboarding, w: Writer) -> Result<Json, WorldError> {
-        let steps = self.onboard_results(o);
+    /// Composes the result and puts it on the review queue as `submitter` (nothing is written
+    /// until approved); the configurator's state, with `decided` (the last step's gallery as just
+    /// accepted), is one commit as `w`.
+    fn onboard_propose(&mut self, o: &mut presets::Onboarding, submitter: Writer, w: Writer, decided: Option<&Gallery>) -> Result<Json, WorldError> {
+        let steps = self.onboard_results(o, decided);
         if steps.is_empty() {
             return Err(WorldError::new("nothing_chosen", "no onboarding step is accepted yet: the human picks \"This one\" in at least the first gallery"));
         }
@@ -1506,7 +1549,7 @@ impl Engine {
         let captures: Vec<Capture> = steps
             .iter()
             .filter_map(|s| {
-                let g = self.taste.get(&s.gallery)?;
+                let g = decided.filter(|d| d.id == s.gallery).or_else(|| self.taste.get(&s.gallery))?;
                 let (path, _, _) = self.taste.sheet(g, s.round)?;
                 Some(Capture { path: path.display().to_string(), kind: "gallery_round".into(), packet: Some(path.with_extension("json").display().to_string()), caption: format!("{}: accepted in round {}", s.step, s.round) })
             })
@@ -1526,12 +1569,21 @@ impl Engine {
             checks,
             ..SubmitSpec::default()
         };
-        let sub = self.swarm.review.submit(w, tick, spec)?.id;
+        let sub = self.swarm.review.submit(submitter, tick, spec)?.id;
         self.review_ui.changed(&self.swarm.review);
         o.state = "proposed".into();
         o.submission = Some(sub);
         o.proposal = Some((toml, notes));
-        self.onboard_save(o, w)?;
+        let otext = o.to_text();
+        let mut puts: Vec<(String, crate::project_engine::PutEdit<'_>)> = vec![(ONBOARDING.to_owned(), Box::new(move |_| Ok(otext)))];
+        if let Some(g) = decided {
+            let gt = g.to_text();
+            puts.insert(0, (gallery_path(&g.id), Box::new(move |_| Ok(gt))));
+        }
+        self.project_put_all(puts, w, w.name, TASTE_RULE, &[])?;
+        if let Some(g) = decided {
+            self.taste_saved(g);
+        }
         Ok(Json::obj([("state", Json::from("proposed")), ("submission", Json::from(sub)), ("note", Json::from("the result is on the review queue: approving it (the window's review screen, F9) writes style.toml and the notes"))]))
     }
 
@@ -1539,48 +1591,60 @@ impl Engine {
     /// against style.toml as it is now, so edits made meanwhile are kept).
     fn onboard_write(&mut self, w: Writer) -> Result<Json, WorldError> {
         let mut o = self.onboarding().filter(|o| o.state == "proposed").ok_or_else(|| WorldError::new("not_proposed", "no style configurator result is waiting"))?;
-        let steps = self.onboard_results(&o);
+        let steps = self.onboard_results(&o, None);
         let preset = presets::find(&o.preset).unwrap_or(&presets::PRESETS[0]);
         let project = if self.game_name.is_empty() { "The game".to_owned() } else { self.game_name.clone() };
         let quote = o.quote_notes;
-        let mut notes_out = String::new();
-        let a = self.project_put(
-            STYLE_TOML,
-            |old| {
-                let (toml, notes) = presets::compose(preset, old, &steps, &project, quote).map_err(taste_err)?;
-                notes_out = notes;
-                Ok(toml)
-            },
-            w,
-            w.name,
-            RESULT_RULE,
-        )?;
-        let mut seqs: Vec<u64> = a.get("journal").and_then(Json::as_u64).into_iter().collect();
-        let b = match self.project_put(NOTES, |_| Ok(notes_out), w, w.name, RESULT_RULE) {
-            Ok(b) => b,
-            Err(e) => return Err(self.taste_rollback(&seqs, w, e)),
-        };
-        seqs.extend(b.get("journal").and_then(Json::as_u64));
+        // style.toml, the notes and the configurator's state: one commit, all or nothing (the
+        // notes are composed with style.toml, so the first edit hands them to the second).
+        let notes_out = std::cell::RefCell::new(String::new());
         o.state = "approved".into();
-        if let Err(e) = self.onboard_save(&o, w) {
-            return Err(self.taste_rollback(&seqs, w, e));
-        }
+        let otext = o.to_text();
+        let puts: Vec<(String, crate::project_engine::PutEdit<'_>)> = vec![
+            (
+                STYLE_TOML.to_owned(),
+                Box::new(|old: Option<&str>| {
+                    let (toml, notes) = presets::compose(preset, old, &steps, &project, quote).map_err(taste_err)?;
+                    *notes_out.borrow_mut() = notes;
+                    Ok(toml)
+                }),
+            ),
+            (NOTES.to_owned(), Box::new(|_| Ok(std::mem::take(&mut *notes_out.borrow_mut())))),
+            (ONBOARDING.to_owned(), Box::new(move |_| Ok(otext))),
+        ];
+        let mut out = self.project_put_all(puts, w, w.name, DECIDED_RULE, &[ONBOARDING])?.into_iter();
+        let (a, b) = (out.next().unwrap_or(Json::Null), out.next().unwrap_or(Json::Null));
         Ok(Json::obj([("style_toml", a), ("notes", b)]))
     }
+}
 
-    /// Takes back this writer's commits `seqs` (newest first) after a later write failed, so a
-    /// result is written whole or not at all; `e` comes back saying so.
-    fn taste_rollback(&mut self, seqs: &[u64], w: Writer, e: WorldError) -> WorldError {
-        if seqs.is_empty() {
-            return e;
-        }
-        let tick = self.clock.tick();
-        let req = crate::journal::UndoRequest { ids: Some(seqs.iter().rev().copied().collect()), count: seqs.len(), force: false };
-        match self.world.undo(&mut self.swarm, tick, w, &req) {
-            Ok(_) => e.with("rolled_back", Json::arr(seqs.iter().map(|s| Json::from(*s)))),
-            Err(u) => e.with("rollback_failed", u.to_json()),
+/// Each file's edits (`assets/<file>`: where and what), as a gallery applies them.
+type FileEdits = BTreeMap<String, Vec<(ApplyAt, Value)>>;
+
+/// What accepted gallery `g` writes: its round and variant, and each file's edits (refused for a
+/// configurator step, taste state, or a gallery with no `apply` targets).
+fn apply_plan(g: &Gallery, id: &str) -> Result<(usize, usize, FileEdits), WorldError> {
+    let Some((round, variant, values)) = g.accepted().map(|(r, v, vals)| (r, v, vals.to_vec())) else {
+        return Err(WorldError::new("not_accepted", format!("gallery '{id}' has no accepted variant yet: the human picks \"This one\" first")).with("id", id));
+    };
+    // A configurator step's values reach style.toml only through the reviewed proposal.
+    if g.subject.get("onboarding_step").is_some() {
+        return Err(WorldError::new("onboarding_step", format!("gallery '{id}' is a style configurator step: its values are written when the configurator's proposal is approved on the review queue")).with("id", id));
+    }
+    let mut by_file: FileEdits = BTreeMap::new();
+    for (p, v) in g.space.params.iter().zip(&values) {
+        if let Some(a) = &p.apply {
+            // (Space::parse refuses these; a gallery file written before it did is refused here.)
+            if specula_gustus::space::is_taste_file(&a.file) {
+                return Err(WorldError::new("reserved", format!("gallery '{id}' applies to taste state ({}): galleries apply to the game's files only", a.file)).with("id", id));
+            }
+            by_file.entry(format!("assets/{}", a.file)).or_default().push((a.at.clone(), v.clone()));
         }
     }
+    if by_file.is_empty() {
+        return Err(WorldError::new("nothing_to_apply", format!("no parameter of gallery '{id}' says where its value lives (apply: {{file, toml|json}}); read the values with gallery_get")).with("id", id));
+    }
+    Ok((round, variant, by_file))
 }
 
 /// `old` (a TOML or JSON file's text) with each value set at its place.

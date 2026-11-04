@@ -2477,14 +2477,14 @@ pub fn apply_notes(subjects: &mut [Subject], notes: &[(usize, Note)]) {
         let Some(s) = subjects.get_mut(i) else { continue };
         match n {
             Note::Hlod => {
-                s.json.set("drawn_as", Json::from("hlod"));
-                s.json.set("visible_px", Json::Null);
+                s.set("drawn_as", Json::from("hlod"));
+                s.set("visible_px", Json::Null);
             }
             Note::NotResident => {
-                s.json.set("drawn_as", Json::from("not_resident"));
+                s.set("drawn_as", Json::from("not_resident"));
             }
             Note::ResidentFrom(l) => {
-                s.json.set("resident_lods_from", Json::from(l));
+                s.set("resident_lods_from", Json::from(l));
             }
         }
     }

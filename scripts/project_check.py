@@ -330,6 +330,10 @@ def main():
         blocked = err_of(ann, "project_patch", path=HUD, ops=[{"find": "Wave {wave}/{waves}", "replace": "Night {wave}/{waves}"}])
         check("a claim on a UI file blocks another agent", blocked is not None and blocked.get("error") == "claimed" and blocked.get("owner") == "bob",
               (blocked or {}).get("message", "")[:140])
+        # The M4 final audit: a write of the same text answered "unchanged" past bob's claim.
+        same = ann.json("project_read", path=HUD)["text"]
+        noop = err_of(ann, "project_write", path=HUD, text=same)
+        check("a write that changes nothing is refused under another's claim too", noop is not None and noop.get("error") == "claimed", json.dumps(noop)[:160])
         mine = bob.json("project_patch", path=HUD, ops=[{"find": "Wave {wave}/{waves}", "replace": "Night {wave}/{waves}"}])
         bob.json("claim_release", id=claim["id"])
         hud_disk = (assets / "ui" / "hud.json").read_text()

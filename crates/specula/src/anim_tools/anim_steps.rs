@@ -635,11 +635,13 @@ impl EntityFilmJob {
         let x0 = k as u32 * tile;
         let px = &mut self.sheet.pixels;
         film::blit(px, sw, x0, y0, &rend.rgba, tile, tile);
-        // How bright the subject came out (its screen box, else the tile's middle).
-        let bx = rend.subjects.iter().find(|s| s.id == self.id).and_then(|s| s.json.get("screen")).and_then(Json::as_array).filter(|a| a.len() == 4).map(|a| a.iter().map(|v| v.as_f64().unwrap_or(0.0).max(0.0) as u32).collect::<Vec<_>>());
+        // How bright the subject came out: its screen box (computed per view: the M4 final audit
+        // found this reading a packet field that is no longer kept, so every tile measured its
+        // middle), clipped to its own tile; else the tile's middle.
+        let bx = rend.subjects.iter().find(|s| s.id == self.id).and_then(|s| s.screen).and_then(|b| clip_to_tile(b, tile));
         let l = match bx {
-            Some(b) if b[2] > 0 && b[3] > 0 => film::mean_luma(px, sw, x0 + b[0], y0 + b[1], b[2].min(tile), b[3].min(tile)),
-            _ => film::mean_luma(px, sw, x0 + tile / 4, y0 + tile / 4, tile / 2, tile / 2),
+            Some(b) => film::mean_luma(px, sw, x0 + b[0], y0 + b[1], b[2], b[3]),
+            None => film::mean_luma(px, sw, x0 + tile / 4, y0 + tile / 4, tile / 2, tile / 2),
         };
         if l < DARK_LUMA {
             self.dark.push(format!("{name} frame {k}"));
@@ -850,5 +852,30 @@ impl Engine {
             }
             ToolOutput { content: vec![Content::Image { mime_type: "image/png".into(), data_base64: base64::encode(&png_bytes) }, Content::Text(packet.to_string())], is_error: false }
         });
+    }
+}
+
+/// A subject's screen box `[x, y, w, h]` clipped to its `tile` (a square of that many pixels):
+/// `None` when nothing of it is inside.
+fn clip_to_tile(b: [u32; 4], tile: u32) -> Option<[u32; 4]> {
+    if b[0] >= tile || b[1] >= tile {
+        return None;
+    }
+    let (w, h) = (b[2].min(tile - b[0]), b[3].min(tile - b[1]));
+    (w > 0 && h > 0).then_some([b[0], b[1], w, h])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clip_to_tile;
+
+    /// The M4 final audit: the subject's box is measured inside its own tile, never spilling
+    /// into the next one (a box at x 200 of a 256 px tile is 56 px wide at most).
+    #[test]
+    fn a_screen_box_is_clipped_to_its_tile() {
+        assert_eq!(clip_to_tile([10, 20, 100, 50], 256), Some([10, 20, 100, 50]));
+        assert_eq!(clip_to_tile([200, 0, 120, 300], 256), Some([200, 0, 56, 256]));
+        assert_eq!(clip_to_tile([256, 0, 10, 10], 256), None);
+        assert_eq!(clip_to_tile([0, 0, 0, 10], 256), None);
     }
 }

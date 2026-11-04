@@ -884,6 +884,10 @@ struct Engine {
     /// Tool calls that committed more than once outside a session (each a bug: a call that
     /// can fail halfway). In engine_info.
     multi_commit_calls: u64,
+    /// The tool call being dispatched (0 outside one): deferred work started now (a worker's
+    /// continuation, a project call held during a sync) records it, so its commits are charged to
+    /// that call when it runs, never to whichever request happens to pump it ([`Engine::run_charged`]).
+    pub(crate) dispatch_call: u64,
     /// Headless playtests: the running one and recent reports (see [`playtest`]).
     playtests: playtest_engine::Playtests,
     /// Particles, effects and decals (see [`vfx`]): cosmetic, never simulation.
@@ -1066,6 +1070,7 @@ impl Engine {
             world_folders: std::collections::BTreeMap::new(),
             commits: authority::CallCommits::default(),
             multi_commit_calls: 0,
+            dispatch_call: 0,
             playtests: Default::default(),
             vfx,
             gi: gi::Gi::new(std::env::temp_dir().join("specula-gi")),
@@ -2316,6 +2321,7 @@ impl Engine {
         // Ownership (claims, undo) goes by identity key, which a resumed agent keeps.
         let session = self.swarm.key(&request.session);
         self.swarm.begin_dispatch(&session);
+        let outer_call = std::mem::replace(&mut self.dispatch_call, call_id);
         let w = Writer::new(&by, Some(&session));
         let tick = self.clock.tick();
         // A game tool (play_ui pressing a menu's Save) may queue requests for the engine.
@@ -2639,13 +2645,11 @@ impl Engine {
             self.serve_game_requests();
         }
         debug_assert!(self.world.pending_changes().is_empty(), "every world change is journaled");
-        // The caller's commits made by this dispatch (ticks it ran were paused: the simulation's).
+        // The commits made by this dispatch (ticks it ran were paused: the simulation's; deferred
+        // work it pumped was charged to its own calls).
+        self.dispatch_call = outer_call;
         let made = self.swarm.end_dispatch();
-        if let Some(total) = self.commits.count(call_id, made, independent) {
-            self.multi_commit_calls += 1;
-            specula_core::trace_event!(&trace_sink::WRITES, Warn, "write.multi_commit", call = call_id, by = by.as_str(), commits = total, why = "one tool call committed more than once: it can fail halfway");
-            debug_assert!(total <= 1, "one tool call committed {total} times (by {by})");
-        }
+        self.charge_commits(call_id, made, independent, &by);
         if files_changed {
             let reply = request.reply;
             self.project_sync_after(move |_| {
@@ -2655,6 +2659,35 @@ impl Engine {
         }
         // The caller may have timed out; nothing to do then.
         let _ = request.reply.send(output);
+    }
+
+    /// Charges `made` commits to tool call `call` (one call, one commit): a breach is counted,
+    /// traced (`write.multi_commit`) and, in debug builds, a panic.
+    fn charge_commits(&mut self, call: u64, made: u64, independent: bool, by: &str) {
+        if let Some(total) = self.commits.count(call, made, independent) {
+            self.multi_commit_calls += 1;
+            specula_core::trace_event!(&trace_sink::WRITES, Warn, "write.multi_commit", call = call, by = by, commits = total, why = "one tool call committed more than once: it can fail halfway");
+            debug_assert!(total <= 1, "one tool call committed {total} times (by {by})");
+        }
+    }
+
+    /// Runs deferred work `f` (a worker's continuation, a project call held while a sync wrote)
+    /// under its own commit count, charged to `call`, the tool call that started it, never to the
+    /// request being dispatched when it runs (the M4 final review: other agents' held writes
+    /// pumped by a `project_mount` were charged to the mount). Work no tool call started
+    /// (`call` 0: the engine's own) is charged to nothing, as before.
+    pub(crate) fn run_charged<R>(&mut self, call: u64, by: &str, f: impl FnOnce(&mut Engine) -> R) -> R {
+        let outer = self.swarm.pause_dispatch();
+        self.swarm.begin_dispatch(by);
+        let outer_call = std::mem::replace(&mut self.dispatch_call, call);
+        let r = f(self);
+        self.dispatch_call = outer_call;
+        let made = self.swarm.end_dispatch();
+        self.swarm.resume_dispatch(outer);
+        if call != 0 {
+            self.charge_commits(call, made, false, by);
+        }
+        r
     }
 
     fn entity_output(&self, id: u64, journal: Option<u64>) -> ToolOutput {

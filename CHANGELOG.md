@@ -32,6 +32,7 @@ See [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md). Item-by-item detail, with the re
   the remaining engine-thread stalls removed (worst window frame under heavy agent calls far lower; captures faster
   than before)
 - **Fidelity T3** sheet for the five benchmark subjects
+- **The final M4 audit and its fixes** (three review rounds): gallery calls wait for their answer (a dropped reply now says the outcome is unknown); every taste write (gallery apply and decide, suggestions, the configurator) is one commit, and a deferred job's commits count toward the call that started it; filmstrips measure brightness in the subject's own box; `sight_frame` leaves far outliers out of its auto framing; unchanged writes check claims; gallery `choice` parameters only on presets. The authority drill holds 119 probes
 
 - **Asset studio:** `specula-studio` measures assets against `style.toml` (budgets, scale, palette families by exact
   Oklab search) and runs taste checks (silhouettes, thumbnail solidity, pixel heights, edge contrast, flat light)

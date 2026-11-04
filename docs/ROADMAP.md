@@ -308,7 +308,8 @@ top of it.
 - [x] **No occlusion.** A hidden object still reports a screen box. → M2 ID buffer (done: `visible_px`, `occluded`).
 - [x] **Sphere boxes are about 30% loose**, because the boxes are projected bounding boxes. → M2 (done:
   `screen_box_exact`).
-- [ ] **One far-away object shrinks an auto-framed view to a dot.** → M2: frame by clusters or ignore outliers.
+- [x] **One far-away object shrinks an auto-framed view to a dot.** → M2: frame by clusters or ignore outliers.
+  *Done 2026-11-05:* `sight_frame`'s auto camera leaves out far outliers (only with 8 or more subjects, at most a quarter, and only when keeping them would draw the main cluster under 32 px) and names them in the packet (`camera.framing`). The window's own auto camera still fits everything.
 - [x] **Throughput is vsync-paced** (about 60 calls/s per agent with a window open). → M1: batch tool, and commands
   applied separately from present (done 2026-10-17: calls served between presents, `crates/specula/src/schedule.rs`;
   numbers in `perf/drills/`).

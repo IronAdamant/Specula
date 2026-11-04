@@ -29,6 +29,9 @@ pub(crate) struct Deferred {
     name: String,
     key: Option<String>,
     by: String,
+    /// The tool call it belongs to: its commit is charged there when it runs, never to the
+    /// request that happens to run it (a mount waiting for the sync).
+    tool_call: u64,
 }
 
 /// After the next sync: a call's file (`Some(path)`) disk state and what was reloaded.
@@ -84,6 +87,27 @@ fn at_version(journal: &crate::journal::Journal, path: &str, version: u64) -> (O
     (base, later)
 }
 
+/// One file's new text from its current one (`None`: it doesn't exist yet), for
+/// [`Engine::project_put_all`].
+pub(crate) type PutEdit<'a> = Box<dyn FnOnce(Option<&str>) -> Result<String, WorldError> + 'a>;
+
+/// [`Engine::project_put_all`]'s checks of a batch's paths before anything is read: no two fold
+/// to one name (`duplicate_path`, `case_clash`), and under `Rule::TasteResult` taste state only
+/// at `records` (`reserved`).
+fn check_batch(paths: &[&str], rule: crate::write_policy::Rule, records: &[&str]) -> Result<(), WorldError> {
+    for (i, path) in paths.iter().enumerate() {
+        let folded = project::fold_case(path);
+        if let Some(other) = paths[..i].iter().find(|p| project::fold_case(p) == folded) {
+            let code = if other == path { "duplicate_path" } else { "case_clash" };
+            return Err(WorldError::new(code, format!("{path} and {other} are the same file (on Windows and macOS) in one commit; nothing was changed")).with("path", *path).with("existing", *other));
+        }
+        if rule.taste_records_only() && project::is_taste_state(&project::journal_path(path)) && !records.contains(path) {
+            return Err(WorldError::new("reserved", format!("{path} is taste state: a taste result writes it only as the decision's own record; nothing was changed")).with("path", *path));
+        }
+    }
+    Ok(())
+}
+
 /// A project commit's writes: the file, then (`also`) the entity change that goes with it, in
 /// one journal entry: both are checked against claims, and one undo takes both back.
 pub(crate) fn file_commit(wd: &mut dyn crate::write_policy::WorldWrite, path: &str, file: Option<ProjectFile>, also: Option<crate::project_tools::Also>, by: &str) -> Result<(), WorldError> {
@@ -103,14 +127,15 @@ impl Engine {
                 // A mount answers in the call itself (rare, and it scans a folder anyway).
                 self.project_wait_sync();
             } else {
-                self.project_deferred.push_back(Deferred { call, name: w.name.to_owned(), key: w.session.map(str::to_owned), by: by.to_owned() });
+                self.project_deferred.push_back(Deferred { call, name: w.name.to_owned(), key: w.session.map(str::to_owned), by: by.to_owned(), tool_call: self.dispatch_call });
                 return ToolOutput::text("{}");
             }
         }
         match call {
             ProjectCall::List { prefix, kind, after, limit } => ToolOutput::text(self.project_list(prefix.as_deref(), kind, after.as_deref(), limit).to_string()),
             ProjectCall::Snapshot { path, version, context, reply } => {
-                let snap = self.project_snapshot(&path, version, context);
+                let mut snap = self.project_snapshot(&path, version, context);
+                snap.claimed = self.swarm.claims.check_path(&project::journal_path(&path), w, Instant::now(), "writing it").err();
                 let _ = reply.send(snap);
                 ToolOutput::text("{}")
             }
@@ -208,7 +233,7 @@ impl Engine {
             _ => Vec::new(),
         };
         let held = self.project.held.contains_key(path);
-        Snap { kind, module_dir, current, at_version: at, later, context: ctx, error: None, held }
+        Snap { kind, module_dir, current, at_version: at, later, context: ctx, error: None, held, claimed: None }
     }
 
     /// One file's commit under `rule`: the project tools' (`Rule::Project`), or the taste tools'
@@ -224,6 +249,17 @@ impl Engine {
     /// The commit itself: `Ok((journal entry, backup))`, or why not.
     #[allow(clippy::too_many_arguments)]
     fn project_commit_now(&mut self, path: &str, base: (u64, u64), file: Option<(FileKind, Arc<str>)>, replace_unreadable: bool, also: Option<crate::project_tools::Also>, w: Writer, by: &str, rule: crate::write_policy::Rule) -> Result<(Option<u64>, Option<String>), Committed> {
+        let (new, backup) = self.project_prepare(path, base, file, replace_unreadable, by)?;
+        let tick = self.clock.tick();
+        match self.world.commit(&mut self.swarm, tick, w, crate::journal::Kind::File, rule, |wd| file_commit(wd, path, new, also, by)) {
+            Err(e) => Err(Committed::Refused(e)),
+            Ok((_, seq)) => Ok((seq, backup)),
+        }
+    }
+
+    /// Everything a project commit checks before it commits: the file `path` becomes (`None`:
+    /// deleted) and where a replaced unreadable file's bytes went, or why not.
+    fn project_prepare(&mut self, path: &str, base: (u64, u64), file: Option<(FileKind, Arc<str>)>, replace_unreadable: bool, by: &str) -> Result<(Option<ProjectFile>, Option<String>), Committed> {
         if let Some(e) = self.project_case_clash(path) {
             return Err(Committed::Refused(e));
         }
@@ -299,11 +335,73 @@ impl Engine {
             None if cur.is_none() => return Err(Committed::Refused(WorldError::new("not_found", format!("there is no project file {path}")).with("path", path))),
             None => None,
         };
-        let tick = self.clock.tick();
-        match self.world.commit(&mut self.swarm, tick, w, crate::journal::Kind::File, rule, |wd| file_commit(wd, path, new, also, by)) {
-            Err(e) => Err(Committed::Refused(e)),
-            Ok((_, seq)) => Ok((seq, backup)),
+        Ok((new, backup))
+    }
+
+    /// Several project files written as `w` in **one** commit under `rule` (one tool call, one
+    /// commit, AGENTS rule 14: a taste decision and the results it writes, or a gallery with the
+    /// configurator state that names it). Each `(path, edit)` is validated as
+    /// [`Engine::project_put`] validates one; a file whose text doesn't change is left out (its
+    /// answer says `unchanged`). All or nothing: any refusal writes none of them. The answers come
+    /// in the order asked.
+    ///
+    /// Two paths of one batch that fold to the same name (`a.json`, `A.json`: one file on Windows)
+    /// are refused with `case_clash`. Under `Rule::TasteResult` taste state may be written only at
+    /// `records`, the paths the caller names as the decision's record (that gallery,
+    /// suggestions.json, onboarding.json); any other taste-state path is refused `reserved` (the
+    /// M4 final review: an apply target spelled `taſte/...` reached taste state).
+    pub(crate) fn project_put_all(&mut self, puts: Vec<(String, PutEdit<'_>)>, w: Writer, by: &str, rule: crate::write_policy::Rule, records: &[&str]) -> Result<Vec<Json>, WorldError> {
+        check_batch(&puts.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), rule, records)?;
+        let mut files: Vec<(String, Option<ProjectFile>)> = Vec::with_capacity(puts.len());
+        let mut answers: Vec<Option<Json>> = Vec::with_capacity(puts.len());
+        for (path, edit) in puts {
+            let snap = self.project_snapshot(&path, None, true);
+            if let Some(e) = snap.error {
+                return Err(e);
+            }
+            let Some(kind) = snap.kind else {
+                return Err(WorldError::new("not_mirrored", format!("{path} isn't a kind of file the project mirrors")).with("path", path.as_str()));
+            };
+            let old = snap.current.as_ref().map(|f| Arc::clone(&f.text));
+            let text = edit(old.as_deref())?;
+            if old.as_deref() == Some(text.as_str()) {
+                answers.push(Some(Json::obj([("path", Json::from(path.as_str())), ("version", Json::from(snap.current.as_ref().map(|f| f.version))), ("unchanged", Json::Bool(true))])));
+                continue;
+            }
+            let problems = crate::project_kinds::validate(&path, kind, &text, old.as_deref(), &snap.context);
+            if let Some(p) = problems.iter().find(|p| p.is_error()) {
+                return Err(WorldError::new("invalid_file", format!("{path}: {} ({}); nothing was changed", p.message, p.code)).with("path", path.as_str()).with("problem", p.to_json()));
+            }
+            let base = snap.current.as_ref().map_or((0, 0), |f| (f.version, f.hash));
+            let new = match self.project_prepare(&path, base, Some((kind, Arc::from(text))), false, by) {
+                Ok((new, _)) => new,
+                Err(Committed::Refused(e)) => return Err(e),
+                Err(Committed::Changed | Committed::Done(_)) => return Err(WorldError::new("busy", format!("{path} changed while it was being written; nothing was changed (try again)")).with("path", path.as_str())),
+            };
+            answers.push(None);
+            files.push((path, new));
         }
+        if !files.is_empty() {
+            let tick = self.clock.tick();
+            let paths: Vec<String> = files.iter().map(|(p, _)| p.clone()).collect();
+            let seq = self
+                .world
+                .commit(&mut self.swarm, tick, w, crate::journal::Kind::File, rule, |wd| {
+                    for (path, file) in files {
+                        wd.put_file(&path, file, false);
+                    }
+                    Ok(())
+                })?
+                .1;
+            self.project_sync_then(None, |_, _, _| {});
+            let mut written = paths.into_iter();
+            for a in answers.iter_mut().filter(|a| a.is_none()) {
+                let path = written.next().unwrap_or_default();
+                let version = self.world.files().get(&path).map(|f| f.version);
+                *a = Some(Json::obj([("path", Json::from(path.as_str())), ("version", Json::from(version)), ("journal", Json::from(seq)), ("disk", Json::from("syncing"))]));
+            }
+        }
+        Ok(answers.into_iter().flatten().collect())
     }
 
     /// Writes project file `path` as `w` from its current text (`None`: it doesn't exist yet),
@@ -768,9 +866,13 @@ impl Engine {
     fn project_run_deferred(&mut self) {
         while !self.project_syncing {
             let Some(d) = self.project_deferred.pop_front() else { return };
-            let w = Writer::new(&d.name, d.key.as_deref());
-            // Their answers go through their own reply channels.
-            let _ = self.project_call(d.call, w, &d.by);
+            // Their answers go through their own reply channels; their commits count toward
+            // their own calls.
+            let Deferred { call, name, key, by, tool_call } = d;
+            self.run_charged(tool_call, &name, |e| {
+                let w = Writer::new(&name, key.as_deref());
+                let _ = e.project_call(call, w, &by);
+            });
         }
     }
 
@@ -853,6 +955,26 @@ impl Engine {
             return;
         }
         self.project_sync_start();
+    }
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::check_batch;
+    use crate::write_policy::Rule;
+
+    /// The M4 final review: one batch could create two paths differing only in case (one file
+    /// on Windows), and a taste result could write taste state beyond its own record (an apply
+    /// target spelled with a long s).
+    #[test]
+    fn a_batch_is_refused_its_case_clashes_and_foreign_taste_state() {
+        let code = |paths: &[&str], rule, records: &[&str]| check_batch(paths, rule, records).err().map(|e| e.code);
+        assert_eq!(code(&["assets/ui/a.json", "assets/ui/A.json"], Rule::Taste, &[]), Some("case_clash"));
+        assert_eq!(code(&["assets/ui/a.json", "assets/ui/a.json"], Rule::Taste, &[]), Some("duplicate_path"));
+        assert_eq!(code(&["assets/style.toml", "assets/taste/galleries/g.json"], Rule::TasteResult, &["assets/taste/galleries/g.json"]), None);
+        assert_eq!(code(&["assets/style.toml", "assets/taste/galleries/other.json"], Rule::TasteResult, &["assets/taste/galleries/g.json"]), Some("reserved"));
+        assert_eq!(code(&["assets/ta\u{17f}te/galleries/x.json", "assets/taste/galleries/g.json"], Rule::TasteResult, &["assets/taste/galleries/g.json"]), Some("reserved"));
+        assert_eq!(code(&["assets/taste/galleries/g.json", "assets/taste/onboarding.json"], Rule::Taste, &[]), None, "the taste rule's own batches");
     }
 }
 

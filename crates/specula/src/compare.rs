@@ -103,7 +103,7 @@ impl SubjectState {
                 approx: vis.approx,
                 // (The packet's numbers read back as these exact values.)
                 position: [p.x, p.y, p.z],
-                merged: s.json.get("drawn_as").and_then(Json::as_str) == Some("hlod"),
+                merged: s.added("drawn_as").and_then(Json::as_str) == Some("hlod"),
             },
         )
     }
