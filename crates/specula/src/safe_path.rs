@@ -214,6 +214,9 @@ fn name_ok(name: &str) -> bool {
         && !name.contains('\0')
         && !name.starts_with("\\\\")
         && !name.starts_with("//")
+        // A rooted name without a drive (`\x.png`) on every platform, not only Windows, where it
+        // means the current drive's root (on Linux it was a file name: the same rule everywhere).
+        && !name.starts_with('\\')
         && (!p.has_root() || p.is_absolute())
         && p.components().all(|c| match c {
             Component::Prefix(px) => matches!(px.kind(), std::path::Prefix::Disk(_)),
