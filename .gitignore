@@ -34,6 +34,21 @@ CLAUDE.local.md
 # Tooling caches / local indexes (not product source)
 .wikifier_staging/
 .stele-context/
+.chisel/
+.trammel/
+.coordinationhub/
+.swarmnotes/
+.probatio/
+# Wikifier's local state at the root (journal, health, maps, dashboard) and agent-written wikis
+/journal/
+/file_health.md
+/file_health.json
+/pending_updates.md
+/library.md
+/map_paths.txt
+/monitored_paths.txt
+/index.html
+*.wiki.md
 
 # Subagent worktrees (Claude Code)
 .claude/worktrees/

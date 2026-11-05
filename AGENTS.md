@@ -113,6 +113,31 @@ Read [HANDOFF.md](HANDOFF.md) first.
 - Shaders: GLSL sources in `crates/specula-gpu/shaders/`, compiled to `.spv` with `glslc` **by hand** and committed;
   the crate embeds the `.spv` with `include_bytes!` (no build scripts).
 
+## Agent tools (the owner's MCP servers)
+
+Seven of the owner's std-only Rust tools are registered as user-scope MCP servers on this machine:
+- Chisel: test impact, risk, and automatic issue logging.
+- Stele: code index and symbol search.
+- wikifier: dependency map and change journal.
+- Trammel: plans and verification.
+- Relatum: notes between agents.
+- CoordinationHub: source-file leases, the task board and messages.
+- Probatio: mutation testing.
+
+Each server lists only the tool groups named for it below. Edit the block when the work changes; each server rereads it on the next request and tells Claude Code its tool list changed, so no restart is needed. Their state lives in gitignored folders (`.chisel/`, `.stele-context/`, `.wikifier_staging/`, `.trammel/`, `.swarmnotes/`, `.coordinationhub/`, `.probatio/`).
+
+These tools coordinate **source files**. The engine's own `claim_*`, `task_*` and `note_*` tools coordinate the **live world**; keep using those for world work.
+
+```agent-tools
+# Source-file coordination: CoordinationHub owns leases, tasks and messages; Relatum owns notes.
+coordinationhub: tools core, locks, tasks, messages, agents
+trammel: disable locks, notes, maintenance
+chisel: disable locks
+# Stele is used for search and symbols; agents here don't supply embeddings or KV state.
+stele: disable locks, notes, messages, kv, embeddings
+wikifier: disable map, status
+```
+
 ## Live checks (GPU + desktop; CI can't run these)
 
 After changing `specula-gpu`, `specula-platform` or the engine's window loop, run
