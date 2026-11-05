@@ -99,7 +99,7 @@ max_triangles = 700
 category = "slab"
 max_triangles = 3000
 
-# Claude's proposal, 2026-10-29 (owner to confirm): the procedural modelling tiers brought kinds of
+# Claude's proposal, 2026-10-29 (confirmed by the owner 2026-11-06): the procedural modelling tiers brought kinds of
 # asset the prop rules weren't written for. Each gets its own category instead of loosening the props.
 [[budget]]
 # A crypt or mausoleum: a building, seen whole from the game camera.
@@ -125,7 +125,7 @@ category = "set"
 max_triangles = 15000
 
 [[budget]]
-# Claude's proposal, 2026-10-30 (M4 exit set, owner to confirm): map 1's graveyard dressing that is
+# Claude's proposal, 2026-10-30 (M4 exit set; confirmed by the owner 2026-11-06): map 1's graveyard dressing that is
 # more than a small grave piece (statues, gates, lanterns, columns, tools): a few of each per map,
 # so a stone's budget, not a tombstone's.
 category = "prop"
@@ -224,7 +224,7 @@ height_m = [0.3, 1.4]
 name = "tombstone"
 height_m = [0.65, 1.0]
 
-# Claude's proposal, 2026-10-30 (M4 exit set, owner to confirm): dressing from knee high (a
+# Claude's proposal, 2026-10-30 (M4 exit set; confirmed by the owner 2026-11-06): dressing from knee high (a
 # wheelbarrow, a fallen pediment) to a statue on its plinth, never taller than a sky obelisk, so
 # the player's stones stay the tallest things on the slab.
 [[scale]]
@@ -232,7 +232,7 @@ category = "prop"
 height_m = [0.3, 4.0]
 sink_m = [0.0, 0.3]
 
-# Claude's proposal, 2026-10-29 (owner to confirm), as for the budgets above.
+# Claude's proposal, 2026-10-29 (confirmed by the owner 2026-11-06), as for the budgets above.
 [[scale]]
 category = "building"
 height_m = [3.0, 6.0]
@@ -271,7 +271,7 @@ neutral_max_chroma = 0.05
 forbid = { stone = ["enemy"], wall = ["enemy"], enemy = ["player"], boss = ["player"], ui = ["enemy"] }
 # Fire is "brazier cairn flames and splash only; the single warm accent in the scene". The owner's
 # decision of 2026-10-22, "fire colour is for fire only", lets real flames carry it: map 1's candles
-# and lanterns (Claude's proposal, 2026-10-30, M4 exit set; owner to confirm). Nothing else is warm.
+# and lanterns (Claude's proposal, 2026-10-30, M4 exit set; confirmed by the owner 2026-11-06). Nothing else is warm.
 reserve = { fire = ["brazier_*", "candle_*", "lantern_*"] }
 # "Emissive only for gameplay meaning": runes, eyes, bolts, fire.
 emissive = ["rune_glow", "grave_glow", "fire", "wraith"]

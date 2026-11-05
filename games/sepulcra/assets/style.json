@@ -8,7 +8,7 @@
     "materials.graveyard_stone: tombstone preset (#a7a39a, roughness 0.85) built from STYLE.md's Graveyard neutral, which has no preset.",
     "specular per preset: STYLE.md gives colour, roughness, metallic and emissive only; the values here (0.0-0.6) are proposals.",
     "Triangle budgets STYLE.md doesn't set, used in the recipes: wall_segment 1000, tombstone 400, graveyard_fence 700, brazier_fire 700, bone_colossus 2500 (one on screen), slab_cliff 3000.",
-    "materials.wood (M4 exit set, 2026-10-30): weathered timber for coffins, grave boards, tool handles and the wheelbarrow, from STYLE.md's roots #5a4632 (chroma 0.042, a neutral), roughness 0.9."
+    "materials.wood (M4 exit set, 2026-10-30; confirmed by the owner 2026-11-06): weathered timber for coffins, grave boards, tool handles and the wheelbarrow, from STYLE.md's roots #5a4632 (chroma 0.042, a neutral), roughness 0.9."
   ],
   "palette": {
     "rune_glow": "#3fe0d0",
