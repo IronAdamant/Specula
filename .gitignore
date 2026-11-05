@@ -49,6 +49,9 @@ CLAUDE.local.md
 /monitored_paths.txt
 /index.html
 *.wiki.md
+/.wikifier/
+/exclude_patterns.txt
+/Logged_issues/
 
 # Subagent worktrees (Claude Code)
 .claude/worktrees/

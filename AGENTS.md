@@ -128,6 +128,10 @@ Each server lists only the tool groups named for it below. Edit the block when t
 
 These tools coordinate **source files**. The engine's own `claim_*`, `task_*` and `note_*` tools coordinate the **live world**; keep using those for world work.
 
+The live test of all seven on this repository, with known bugs, workarounds and a how-to, is in
+[docs/agent-tools/LIVE_TEST_2026-11-05.md](docs/agent-tools/LIVE_TEST_2026-11-05.md). Until Chisel's 32 MiB snapshot bug
+is fixed, don't run a whole-repo Chisel `analyze`, and give Probatio the repository root as `package`.
+
 ```agent-tools
 # Source-file coordination: CoordinationHub owns leases, tasks and messages; Relatum owns notes.
 coordinationhub: tools core, locks, tasks, messages, agents
