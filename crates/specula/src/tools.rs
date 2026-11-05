@@ -376,6 +376,8 @@ pub struct Tools {
     /// Binary project files' content store and the uploads in progress (see [`crate::blobs`]).
     pub(crate) content: Option<std::sync::Arc<crate::blobs::ContentStore>>,
     pub(crate) uploads: std::sync::Arc<crate::blobs::Uploads>,
+    /// The engine's audio service (the `audio_*` tools read it on this side).
+    pub(crate) audio: Option<std::sync::Arc<crate::audio_service::AudioService>>,
 }
 
 impl Tools {
@@ -413,7 +415,14 @@ impl Tools {
             scopes,
             content: None,
             uploads: Default::default(),
+            audio: None,
         }
+    }
+
+    /// The engine's audio service, for the `audio_*` tools.
+    pub fn with_audio(mut self, audio: std::sync::Arc<crate::audio_service::AudioService>) -> Tools {
+        self.audio = Some(audio);
+        self
     }
 
     /// The content store binary project files live in (project_upload, project_read bytes).
@@ -605,6 +614,7 @@ pub enum CallerThread {
     /// before routing, in `ToolHandler::call`.
     Scope,
     Disk,
+    Audio,
 }
 
 impl CallerThread {
@@ -625,6 +635,7 @@ impl CallerThread {
             n if n.starts_with("trace_") => CallerThread::Trace,
             n if n.starts_with("tools_") => CallerThread::Scope,
             n if n.starts_with("disk_") => CallerThread::Disk,
+            n if n.starts_with("audio_") => CallerThread::Audio,
             _ => return None,
         })
     }
@@ -647,6 +658,7 @@ impl CallerThread {
                 "tools_* tools change your session's tool list on your connection: activate before the playtest (its steps may call any tool within your cap, listed or not)"
             }
             CallerThread::Disk => "disk_* tools read and prune the shared disk budget outside the engine thread: check disk use before or after the playtest",
+            CallerThread::Audio => "audio_* tools read the engine's audio and render previews outside the engine thread: hear (audio_played, audio_levels) before or after the playtest",
         }
     }
 }
@@ -732,6 +744,8 @@ impl Tools {
                 Some(CallerThread::Trace) => return crate::trace_tools::call(session, name, arguments),
                 // The disk budget is shared: answered on this thread.
                 Some(CallerThread::Disk) => return crate::disk_tools::call(self, session, name, arguments),
+                // The audio service and its meter are shared: heard on this thread.
+                Some(CallerThread::Audio) => return crate::audio_tools::call(self, session, name, arguments),
                 // (Answered above.)
                 // tools_* reach here only from a caller that skipped `ToolHandler::call` (tests).
                 Some(CallerThread::LogicBuild | CallerThread::LogicReload | CallerThread::MergeSuggest | CallerThread::Scope) | None => parse(name, arguments),
@@ -2812,6 +2826,7 @@ pub(crate) fn definitions() -> Vec<ToolDef> {
     .chain(crate::lex_tools::definitions())
     .chain(crate::project_tools::definitions())
     .chain(crate::disk_tools::definitions())
+    .chain(crate::audio_tools::definitions())
     .chain(crate::lex_live::definitions())
     .chain(crate::save_tools::definitions())
     .chain(crate::balance_tools::definitions())

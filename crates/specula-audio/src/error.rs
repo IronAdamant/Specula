@@ -48,6 +48,20 @@ pub enum ErrorCode {
     ThreadGone,
     /// A sound buffer is invalid (empty, wrong channel count, rate out of range).
     BadSound,
+    /// The bytes are not an Ogg stream (no `OggS` page at the start).
+    OggNotOgg,
+    /// An Ogg page is malformed: bad version, bad CRC, bad lacing (`offset` is the page's byte).
+    OggBadPage,
+    /// The Ogg stream ends inside a page or packet.
+    OggTruncated,
+    /// The Ogg stream holds no Vorbis stream, or a Vorbis header is malformed.
+    VorbisBadHeader,
+    /// A valid Vorbis feature this decoder doesn't support (`measured` = the value seen).
+    VorbisUnsupported,
+    /// An audio packet can't be decoded (corrupt data; the decoder resyncs at the next packet).
+    VorbisBadPacket,
+    /// A seek target is past the end of the stream (`measured` = target, `limit` = frames).
+    SeekOutOfRange,
 }
 
 impl ErrorCode {
@@ -74,6 +88,13 @@ impl ErrorCode {
             ErrorCode::WrongMode => "wrong_mode",
             ErrorCode::ThreadGone => "thread_gone",
             ErrorCode::BadSound => "bad_sound",
+            ErrorCode::OggNotOgg => "ogg_not_ogg",
+            ErrorCode::OggBadPage => "ogg_bad_page",
+            ErrorCode::OggTruncated => "ogg_truncated",
+            ErrorCode::VorbisBadHeader => "vorbis_bad_header",
+            ErrorCode::VorbisUnsupported => "vorbis_unsupported",
+            ErrorCode::VorbisBadPacket => "vorbis_bad_packet",
+            ErrorCode::SeekOutOfRange => "seek_out_of_range",
         }
     }
 }

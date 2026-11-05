@@ -14,6 +14,8 @@
 #![forbid(unsafe_code)]
 
 pub mod authority;
+pub mod audio_service;
+mod audio_tools;
 pub mod jobs;
 mod balance_tools;
 mod bounds;
@@ -191,7 +193,7 @@ const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 
 const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|integrated|<index>] [--size WxH] \
 [--captures DIR] [--worlds DIR] [--world NAME] [--saves DIR] [--cache DIR] [--assets DIR] [--style FILE] [--perf FILE] \
-[--paused] [--max-fps N] [--response-format concise|detailed] [--tools-default core|all] [--physics-threads N] [--vfx on|off] [--terrain on|off] \n[--trace DIR] [--trace-file on|off] [--strict-budget] \
+[--paused] [--max-fps N] [--audio device|null|off] [--response-format concise|detailed] [--tools-default core|all] [--physics-threads N] [--vfx on|off] [--terrain on|off] \n[--trace DIR] [--trace-file on|off] [--strict-budget] \
 [--owner NAME] [--lead NAME] [--reviewer NAME] [-- GAME ARGS...]";
 
 /// How long a capture waits (parked, the engine serving others) for models still building.
@@ -267,6 +269,9 @@ struct Args {
     /// A call or frame step past its stall budget fails the run (`--strict-budget`): its
     /// `engine.stall` is an error and the engine exits with an error (docs/design/TRACE.md).
     strict_budget: bool,
+    /// The engine's audio (`--audio device|null|off`; default device with a window, off
+    /// headless, so headless runs stay silent): see [`audio_service`].
+    audio: Option<audio_service::Mode>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -300,6 +305,7 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
         trace: None,
         trace_file: true,
         strict_budget: false,
+        audio: None,
     };
     let mut it = argv;
     while let Some(flag) = it.next() {
@@ -322,6 +328,10 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
                 }
             }
             "--strict-budget" => args.strict_budget = true,
+            "--audio" => {
+                let v = value()?;
+                args.audio = Some(audio_service::Mode::parse(&v).ok_or_else(|| format!("--audio must be device, null or off, not '{v}'\n{USAGE}"))?);
+            }
             "--trace" => args.trace = Some(PathBuf::from(value()?)),
             "--trace-file" => {
                 args.trace_file = match value()?.as_str() {
@@ -449,6 +459,11 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     let assets = named_assets.clone().unwrap_or_else(|| cwd.clone());
     if let Some(g) = game.as_mut() {
         g.use_assets(&assets);
+    }
+    // One audio device for the engine and its game (headless: none unless asked for).
+    let audio = audio_service::AudioService::start(args.audio.unwrap_or(if args.headless { audio_service::Mode::Off } else { audio_service::Mode::Device }));
+    if let Some(g) = game.as_mut() {
+        g.use_audio(Arc::clone(&audio));
     }
     let library = Library::new(&assets, args.style.as_deref());
     let mut engine = Engine::new(gpu, &captures_root, library)?;
@@ -608,6 +623,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
                 .with_capture_dir(engine.capture_dir.clone(), safe_path::Roots::for_files(&engine.capture_dir, &captures_root, &engine.worlds_dir, named_assets.as_deref()))
                 .with_studio(Arc::clone(&engine.studio.shared))
                 .with_content(Arc::clone(&content))
+                .with_audio(Arc::clone(&audio))
                 .with_procgen(procgen_tools::Context { assets: assets.clone(), style: args.style.clone(), captures: engine.capture_dir.clone() });
             engine.scopes = Some(tools.shared_scopes());
             Arc::new(tools)

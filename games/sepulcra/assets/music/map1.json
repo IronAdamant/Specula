@@ -1,0 +1,128 @@
+{
+  "music": 1,
+  "name": "map1",
+  "notes": "Map 1, the dark graveyard: a slow A minor nocturne (Am F Dm E Am F G E, two bars each). A low drone pad from the start; a heartbeat pulse, a breathy choir and glass bells (the melody) enter at bar 5, on D minor. Loops from the top; about 58 s a lap. Quiet under the game: -29 LUFS, a bed about 5 LU under the effects as heard.",
+  "tempo": 66,
+  "beats_per_bar": 4,
+  "steps_per_beat": 4,
+  "bars": 16,
+  "loop_from_bar": 0,
+  "loudness": -29,
+  "instruments": {
+    "drone": {
+      "root": "A2",
+      "release": 1.6,
+      "sound": {
+        "sound": 1, "name": "drone", "seed": 301, "duration": 9.0, "channels": 2,
+        "layers": [
+          { "name": "body", "length": 8.6, "pan": -0.25,
+            "source": { "wave": "saw", "freq": 110, "unison": { "voices": 3, "cents": 9 } },
+            "env": { "attack": 1.6, "decay": 0.5, "sustain": 0.85, "release": 0.4 },
+            "filters": [ { "type": "lowpass", "cutoff": { "points": [[0, 260], [3, 520], [8.6, 380]], "curve": "exp" }, "q": 0.8 } ] },
+          { "name": "fifth", "length": 8.6, "gain_db": -7, "pan": 0.25,
+            "source": { "wave": "triangle", "freq": 164.81, "unison": { "voices": 2, "cents": 6 } },
+            "env": { "attack": 2.2, "decay": 0.5, "sustain": 0.8, "release": 0.4 },
+            "filters": [ { "type": "lowpass", "cutoff": 900, "q": 0.7 } ] },
+          { "name": "sub", "length": 8.6, "gain_db": -6,
+            "source": { "wave": "sine", "freq": 55 },
+            "env": { "attack": 2.0, "decay": 0.5, "sustain": 0.9, "release": 0.4 } }
+        ],
+        "fx": [ { "type": "reverb", "room": 0.85, "damp": 0.6, "mix": 0.35, "width": 1 } ]
+      }
+    },
+    "choir": {
+      "root": "A3",
+      "release": 1.2,
+      "gain_db": -4,
+      "sound": {
+        "sound": 1, "name": "choir", "seed": 302, "duration": 8.0, "channels": 2,
+        "layers": [
+          { "name": "voices", "length": 7.4,
+            "source": { "wave": "triangle", "freq": 220, "unison": { "voices": 4, "cents": 14 } },
+            "vibrato": { "rate": 4.6, "depth": 0.12, "delay": 0.8 },
+            "env": { "attack": 1.4, "decay": 0.8, "sustain": 0.75, "release": 0.6 },
+            "filters": [ { "type": "bandpass", "cutoff": 800, "q": 0.9 }, { "type": "lowpass", "cutoff": 2200, "q": 0.6 } ] },
+          { "name": "breath", "length": 7.4, "gain_db": -20,
+            "source": { "wave": "noise", "color": "pink" },
+            "env": { "attack": 1.0, "decay": 1.0, "sustain": 0.6, "release": 0.6 },
+            "filters": [ { "type": "bandpass", "cutoff": 1400, "q": 1.4 } ] }
+        ],
+        "fx": [ { "type": "reverb", "room": 0.9, "damp": 0.5, "mix": 0.45, "width": 1 } ]
+      }
+    },
+    "bell": {
+      "root": "A4",
+      "release": 0.8,
+      "gain_db": -2,
+      "variations": 3,
+      "sound": {
+        "sound": 1, "name": "glass_bell", "seed": 303, "duration": 4.0, "channels": 2,
+        "vary": { "pitch": [-0.08, 0.08], "gain_db": [-1.5, 0] },
+        "layers": [
+          { "name": "strike",
+            "source": { "wave": "sine", "freq": 440, "partials": [[1, 1, 2.6], [2.01, 0.35, 1.1], [2.76, 0.22, 0.7], [5.4, 0.08, 0.25]] },
+            "env": { "attack": 0.004, "decay": 3.4, "sustain": 0 } },
+          { "name": "shimmer", "gain_db": -16,
+            "source": { "wave": "sine", "freq": 1760 },
+            "vibrato": { "rate": 6, "depth": 0.05 },
+            "env": { "attack": 0.01, "decay": 1.6, "sustain": 0 } }
+        ],
+        "fx": [ { "type": "delay", "time": 0.682, "feedback": 0.32, "mix": 0.22, "damp": 0.5 },
+                { "type": "reverb", "room": 0.8, "damp": 0.45, "mix": 0.35, "width": 1 } ]
+      }
+    },
+    "pulse": {
+      "root": "A1",
+      "release": 0.1,
+      "gain_db": -3,
+      "sound": {
+        "sound": 1, "name": "heartbeat", "seed": 304, "duration": 0.7,
+        "layers": [
+          { "name": "thump",
+            "source": { "wave": "sine", "freq": { "points": [[0, 82], [0.12, 55]], "curve": "exp" } },
+            "env": { "attack": 0.006, "decay": 0.45, "sustain": 0 },
+            "filters": [ { "type": "lowpass", "cutoff": 400, "q": 0.7 } ] },
+          { "name": "skin", "gain_db": -22,
+            "source": { "wave": "noise", "color": "brown" },
+            "env": { "attack": 0.002, "decay": 0.06, "sustain": 0 },
+            "filters": [ { "type": "lowpass", "cutoff": 900, "q": 0.7 } ] }
+        ]
+      }
+    }
+  },
+  "patterns": {
+    "drone_am": { "bars": 2, "notes": [[0, "A2", 32, 0.9]] },
+    "drone_f": { "bars": 2, "notes": [[0, "F2", 32, 0.9]] },
+    "drone_dm": { "bars": 2, "notes": [[0, "D2", 32, 0.9]] },
+    "drone_e": { "bars": 2, "notes": [[0, "E2", 32, 0.9]] },
+    "drone_g": { "bars": 2, "notes": [[0, "G2", 32, 0.9]] },
+
+    "choir_am": { "bars": 2, "notes": [[0, "A3", 30, 0.5], [0, "C4", 30, 0.45], [0, "E4", 30, 0.4]] },
+    "choir_f": { "bars": 2, "notes": [[0, "A3", 30, 0.5], [0, "C4", 30, 0.45], [0, "F4", 30, 0.4]] },
+    "choir_dm": { "bars": 2, "notes": [[0, "A3", 30, 0.5], [0, "D4", 30, 0.45], [0, "F4", 30, 0.4]] },
+    "choir_e": { "bars": 2, "notes": [[0, "G#3", 30, 0.5], [0, "B3", 30, 0.45], [0, "E4", 30, 0.4]] },
+    "choir_g": { "bars": 2, "notes": [[0, "G3", 30, 0.5], [0, "B3", 30, 0.45], [0, "D4", 30, 0.4]] },
+
+    "bell_am": { "bars": 2, "notes": [[0, "E5", 6, 0.8], [8, "C5", 4, 0.6], [12, "B4", 4, 0.55], [16, "A4", 14, 0.7]] },
+    "bell_f": { "bars": 2, "notes": [[0, "F5", 6, 0.75], [8, "E5", 4, 0.6], [12, "C5", 4, 0.55], [16, "A4", 14, 0.65]] },
+    "bell_dm": { "bars": 2, "notes": [[0, "D5", 6, 0.75], [8, "F5", 4, 0.6], [12, "E5", 4, 0.55], [16, "D5", 14, 0.7]] },
+    "bell_e": { "bars": 2, "notes": [[0, "B4", 8, 0.7], [8, "G#4", 4, 0.55], [12, "B4", 4, 0.55], [16, "E5", 16, 0.75]] },
+    "bell_g": { "bars": 2, "notes": [[0, "D5", 6, 0.75], [8, "B4", 4, 0.6], [12, "G4", 4, 0.55], [16, "D5", 14, 0.7]] },
+
+    "pulse_a": { "bars": 2, "notes": [[0, "A1", 2, 0.9], [3, "A1", 2, 0.55], [16, "A1", 2, 0.85], [19, "A1", 2, 0.5]] },
+    "pulse_f": { "bars": 2, "notes": [[0, "F1", 2, 0.9], [3, "F1", 2, 0.55], [16, "F1", 2, 0.85], [19, "F1", 2, 0.5]] },
+    "pulse_d": { "bars": 2, "notes": [[0, "D2", 2, 0.9], [3, "D2", 2, 0.55], [16, "D2", 2, 0.85], [19, "D2", 2, 0.5]] },
+    "pulse_e": { "bars": 2, "notes": [[0, "E1", 2, 0.9], [3, "E1", 2, 0.55], [16, "E1", 2, 0.85], [19, "E1", 2, 0.5]] },
+    "pulse_g": { "bars": 2, "notes": [[0, "G1", 2, 0.9], [3, "G1", 2, 0.55], [16, "G1", 2, 0.85], [19, "G1", 2, 0.5]] }
+  },
+  "tracks": [
+    { "instrument": "drone", "gain_db": 0,
+      "sequence": ["drone_am", "drone_f", "drone_dm", "drone_e", "drone_am", "drone_f", "drone_g", "drone_e"] },
+    { "instrument": "choir", "gain_db": -3, "pan": 0.15,
+      "sequence": [".", ".", ".", ".", "choir_dm", "choir_e", "choir_am", "choir_f", "choir_g", "choir_e"] },
+    { "instrument": "bell", "gain_db": -1, "pan": -0.2,
+      "sequence": [".", ".", ".", ".", "bell_dm", "bell_e", "bell_am", "bell_f", "bell_g", "bell_e"] },
+    { "instrument": "pulse", "gain_db": -2,
+      "sequence": [".", ".", ".", ".", "pulse_d", "pulse_e", "pulse_a", "pulse_f", "pulse_g", "pulse_e"] }
+  ]
+}

@@ -62,6 +62,13 @@ pub fn dot8(cd: &[f32; 2 * TAPS], t: f32, x: &[f32; TAPS]) -> f32 {
     (q[0] + q[2]) + (q[1] + q[3])
 }
 
+/// The process-wide table streams resample with (built on first use; `Audio::start` builds it,
+/// so starting a stream never does).
+pub fn shared_table() -> std::sync::Arc<SincTable> {
+    static TABLE: std::sync::OnceLock<std::sync::Arc<SincTable>> = std::sync::OnceLock::new();
+    std::sync::Arc::clone(TABLE.get_or_init(|| std::sync::Arc::new(SincTable::new())))
+}
+
 impl Default for SincTable {
     fn default() -> Self {
         SincTable::new()
@@ -148,7 +155,8 @@ pub fn resample(samples: &[f32], channels: usize, from: u32, to: u32) -> Vec<f32
     if from == to || frames == 0 {
         return samples[..frames * channels].to_vec();
     }
-    let table = SincTable::new();
+    // One table for every call (it took 1.6 ms to build; a piece resamples once per pitch).
+    let table = shared_table();
     let step = ((from as u128) << FRAC_BITS) / to as u128;
     let step = step as u64;
     let kernel = SincTable::kernel_for_step(step);

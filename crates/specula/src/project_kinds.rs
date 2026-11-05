@@ -321,6 +321,13 @@ pub fn validate(path: &str, kind: FileKind, text: &str, old: Option<&str>, conte
                 out.push(from_json_error(path, &e.to_json()));
             }
         }
+        // A piece is parsed and validated whole (instrument recipes included); rendering waits
+        // for whoever plays it.
+        FileKind::Music => {
+            if let Err(e) = specula_audio::music::Music::parse(text) {
+                out.push(from_json_error(path, &e.to_json()));
+            }
+        }
         FileKind::AnimSet | FileKind::Json => out.extend(json_syntax(path, text)),
         FileKind::Taste => {
             if let Err(e) = crate::taste::validate_file(path, text) {
@@ -336,7 +343,7 @@ pub fn validate(path: &str, kind: FileKind, text: &str, old: Option<&str>, conte
         FileKind::StyleNotes => {}
         // Binary files' bytes are checked by project_upload (project_binary::inspect); their
         // store text must name content.
-        FileKind::Png | FileKind::Glb | FileKind::Gltf | FileKind::Wav => {
+        FileKind::Png | FileKind::Glb | FileKind::Gltf | FileKind::Wav | FileKind::Ogg => {
             if crate::blobs::parse_pointer(text).is_none() {
                 out.push(Problem { file: path.to_owned(), severity: "error", code: "not_a_pointer".into(), at: String::new(), message: "a binary file's entry must name its content (write it with project_upload)".into(), offset: None });
             }

@@ -103,8 +103,10 @@ pub struct SepulcraGame {
     pub(crate) log: VecDeque<(u32, String)>,
     /// The seed `configure` was given (`--seed`), for the first run.
     seed_arg: Option<u64>,
-    /// `--mute`: no audio device.
+    /// `--mute`: no sound or music, whatever the engine's audio is.
     mute: bool,
+    /// The engine's audio service (`Game::use_audio`); off headless unless `--audio null`.
+    engine_audio: Option<Arc<specula::audio_service::AudioService>>,
     /// Where the game's assets are (recipes, anim sets, sounds, screens).
     assets: Option<PathBuf>,
     /// Settings (the settings screen).
@@ -191,6 +193,7 @@ impl SepulcraGame {
             log: VecDeque::new(),
             seed_arg: None,
             mute: false,
+            engine_audio: None,
             assets: None,
             ui_scale: 2,
             volume: 0.8,
@@ -1174,8 +1177,9 @@ impl Game for SepulcraGame {
                 eprintln!("sepulcra: hot reload: {e}");
             }
         }
-        if !sounds.is_empty() {
-            self.sfx.reload(assets.join("sounds"), &sounds);
+        let pieces: Vec<String> = paths.iter().filter_map(|p| stem(p, "music/")).collect();
+        if !sounds.is_empty() || !pieces.is_empty() {
+            self.sfx.reload(assets, &sounds, &pieces);
         }
     }
 
@@ -1191,6 +1195,10 @@ impl Game for SepulcraGame {
         self.assets = Some(root.to_path_buf());
     }
 
+    fn use_audio(&mut self, audio: Arc<specula::audio_service::AudioService>) {
+        self.engine_audio = Some(audio);
+    }
+
     fn start(&mut self, ctx: &mut Ctx) {
         night(&mut ctx.world);
         // Screens and sounds from the assets folder (agents edit them there), else the built-in
@@ -1200,22 +1208,21 @@ impl Game for SepulcraGame {
         self.hud = Hud::new(Some(&ui_dir), crate::controls::bindings().expect("the built-in bindings are valid (tested)"));
         // Autosaves are for people playing: on with a window, off headless (agents' runs).
         self.autosave_on = ctx.windowed;
-        if ctx.windowed {
-            // Gamepads come with each window frame from the engine (`Frame::pads`).
-            if !self.mute {
-                self.sfx = Sfx::start(Some(assets.join("sounds")));
-                self.sfx.set_volume(self.volume);
-            } else {
-                self.sfx = Sfx::off("muted (--mute)");
-            }
-        } else {
-            self.sfx = Sfx::off("headless");
-        }
+        // Sound and music through the engine's audio: off headless unless the engine was started
+        // with `--audio null` (then agents hear a headless run too), never with `--mute`.
+        self.sfx = match (&self.engine_audio, self.mute) {
+            (_, true) => Sfx::off("muted (--mute)"),
+            (None, false) => Sfx::off("no engine audio"),
+            (Some(a), false) => Sfx::start(Arc::clone(a), Some(assets.clone())),
+        };
+        self.sfx.set_volume(self.volume);
         self.rebuild(&mut ctx.world, ctx.agent);
         self.say(format!("Seed {}: carve stones before wave 1", self.state.seed()));
     }
 
     fn tick(&mut self, ctx: &mut Ctx) {
+        // Rendered sounds and music land here too: headless engines (`--audio null`) have no frames.
+        self.sfx.poll();
         self.events.clear();
         self.events.append(&mut self.pending);
         // Events before this come from commands (their autosave was already asked for).

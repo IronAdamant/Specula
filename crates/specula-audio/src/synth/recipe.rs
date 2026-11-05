@@ -688,7 +688,7 @@ impl Recipe {
         }
         let bus = match cx.str("bus")? {
             None => Bus::Sfx,
-            Some(b) => Bus::from_name(b).ok_or_else(|| AudioError::at(ErrorCode::UnknownName, "bus", format!("unknown bus `{b}` (master, sfx, ui, ambience, music)")))?,
+            Some(b) => Bus::from_name(b).ok_or_else(|| AudioError::at(ErrorCode::UnknownName, "bus", format!("unknown bus `{b}` (master, sfx, ui, ambience, music, voice)")))?,
         };
         let seed = match cx.get("seed") {
             Some(s) => s.as_u64().ok_or_else(|| wrong("seed", "a non-negative integer"))?,

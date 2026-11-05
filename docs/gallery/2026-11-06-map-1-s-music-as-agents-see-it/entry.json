@@ -1,0 +1,40 @@
+{
+  "date": "2026-11-06",
+  "time": "",
+  "date_source": "",
+  "approximate": false,
+  "milestone": "M5",
+  "commit": "",
+  "subject": "sepulcra",
+  "topic": "audio",
+  "title": "Map 1's music, as agents see it",
+  "note": "Sepulcra's first music, composed as data (music/map1.json, a pattern sequencer over sound recipes) and measured by the engine's audio_preview: waveform over a log-frequency spectrogram. Map 1's A minor nocturne (one 58 s lap at -29 LUFS: four bars of drone, then bells, choir and a heartbeat pulse), and the victory and defeat cues the game crossfades into.",
+  "source": "scripts/audio_check.py (audio_preview png)",
+  "adapter": "n/a",
+  "images": [
+    {
+      "file": "01-map1-0000.jpg",
+      "caption": "Map 1's theme, one lap: drone alone for four bars, then bells, choir and pulse",
+      "original": "map1-0000.png",
+      "width": 640,
+      "height": 159,
+      "bytes": 20553
+    },
+    {
+      "file": "02-victory-0001.jpg",
+      "caption": "Victory cue: F, G, then an A major chord with bells climbing",
+      "original": "victory-0001.png",
+      "width": 640,
+      "height": 159,
+      "bytes": 17885
+    },
+    {
+      "file": "03-defeat-0002.jpg",
+      "caption": "Defeat cue: the bells fall to a bare low A",
+      "original": "defeat-0002.png",
+      "width": 640,
+      "height": 159,
+      "bytes": 17530
+    }
+  ]
+}

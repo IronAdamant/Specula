@@ -129,6 +129,8 @@ pub enum Site {
     GiSettings,
     /// gi_bake `threads` past the default (they slow the frame thread and other agents).
     GiThreads,
+    /// audio_settings with changes (bus volumes and ducking are what everyone hears).
+    AudioSettings,
 }
 
 impl Site {
@@ -139,7 +141,7 @@ impl Site {
             Site::HelloGrantBound => "grant_bound",
             Site::HelloLeadTaken => "lead_taken",
             Site::HelloReservedName => "name_reserved",
-            Site::FrameFloor | Site::StreamSettings | Site::ToolsScope | Site::DiskPrune | Site::WorldSave | Site::GiSettings | Site::GiThreads => "lead_only",
+            Site::FrameFloor | Site::StreamSettings | Site::ToolsScope | Site::DiskPrune | Site::WorldSave | Site::GiSettings | Site::GiThreads | Site::AudioSettings => "lead_only",
             Site::HelloBadName => "name_invalid",
             Site::ForceOverride => "force_needs_lead",
             Site::ReviewDecide | Site::ReviewScreen => "not_reviewer",
@@ -174,6 +176,7 @@ impl Site {
             Site::DiskPrune => "disk_prune.free_mb",
             Site::GiSettings => "gi_settings",
             Site::GiThreads => "gi_bake.threads",
+            Site::AudioSettings => "audio_settings",
         }
     }
 }
@@ -576,6 +579,9 @@ pub fn access(tool: &str) -> Option<Access> {
         | "merge_suggest" | "vfx_get" | "vfx_check" | "vfx_info" | "logic_status" | "perf_frame" | "perf_memory" | "engine_info" | "balance_targets"
         | "disk_status" | "tools_catalog" | "trace_query" | "trace_follow" | "trace_call" | "trace_crash" | "trace_incidents" | "terrain_info" | "gi_info"
         | "gi_check" => ReadOnly,
+        // Hearing (docs/design/AUDIO.md): what played and how loud, from the engine's audio.
+        "audio_played" | "audio_levels" => ReadOnly,
+        "audio_preview" => Open("renders or decodes a sound offline and measures it; its optional WAV and picture are new files in the captures folder; nothing shared changes"),
         // The world, through the write policy.
         "world_spawn" | "world_set" | "world_delete" | "world_batch" | "world_env" | "world_undo" | "world_place" | "tilemap_set" | "nav_agent" | "ai_set"
         | "model_collider" | "anim_set" | "ragdoll_set" | "physics_impulse" | "procgen_terrain" | "procgen_scatter" => World("world"),
@@ -629,6 +635,9 @@ pub fn access(tool: &str) -> Option<Access> {
         // Authority.
         // trace_settings: engine-wide changes are the lead's; scope "session" is the caller's own view.
         "swarm_settings" | "stream_settings" | "tools_scope" | "trace_settings" | "gi_settings" => Lead,
+        // Bus volumes and duck rules change what every agent and the human hear: the lead's to
+        // change (Site::AudioSettings); anyone reads them.
+        "audio_settings" => Lead,
         "review_decide" | "review_screen" => Reviewer,
         // Open, with the reason.
         "agent_hello" => Open("names the caller's own session; engine writer names, granted names and authority roles are refused"),

@@ -68,6 +68,8 @@ pub enum FileKind {
     UiScreen,
     UiTheme,
     Sound,
+    /// `*.json` under `music/`: a music piece (pattern sequencer, `specula_audio::music`).
+    Music,
     AnimSet,
     Rust,
     Cargo,
@@ -85,16 +87,19 @@ pub enum FileKind {
     Glb,
     Gltf,
     Wav,
+    /// Ogg Vorbis audio (music, long sounds), streamed by the engine's audio service.
+    Ogg,
 }
 
 impl FileKind {
-    pub const ALL: [FileKind; 17] = [
+    pub const ALL: [FileKind; 19] = [
         FileKind::Recipe,
         FileKind::Style,
         FileKind::StyleRules,
         FileKind::UiScreen,
         FileKind::UiTheme,
         FileKind::Sound,
+        FileKind::Music,
         FileKind::AnimSet,
         FileKind::Rust,
         FileKind::Cargo,
@@ -106,6 +111,7 @@ impl FileKind {
         FileKind::Glb,
         FileKind::Gltf,
         FileKind::Wav,
+        FileKind::Ogg,
     ];
 
     pub fn name(self) -> &'static str {
@@ -116,6 +122,7 @@ impl FileKind {
             FileKind::UiScreen => "ui_screen",
             FileKind::UiTheme => "ui_theme",
             FileKind::Sound => "sound",
+            FileKind::Music => "music",
             FileKind::AnimSet => "anim_set",
             FileKind::Rust => "rust",
             FileKind::Cargo => "cargo",
@@ -127,6 +134,7 @@ impl FileKind {
             FileKind::Glb => "glb",
             FileKind::Gltf => "gltf",
             FileKind::Wav => "wav",
+            FileKind::Ogg => "ogg",
         }
     }
 
@@ -142,7 +150,7 @@ impl FileKind {
     /// Bytes, not text: the store holds a pointer into the content store ([`crate::blobs`]);
     /// written with project_upload, read with project_read's `bytes`.
     pub fn is_binary(self) -> bool {
-        matches!(self, FileKind::Png | FileKind::Glb | FileKind::Gltf | FileKind::Wav)
+        matches!(self, FileKind::Png | FileKind::Glb | FileKind::Gltf | FileKind::Wav | FileKind::Ogg)
     }
 
     /// A module crate's file: validated by building it (`logic_build`).
@@ -237,7 +245,7 @@ pub fn room_for_binary(files: &BTreeMap<String, ProjectFile>, path: &str, bytes:
 /// full of screenshots is never copied into the content store.
 pub const PNG_FOLDERS: [&str; 4] = ["textures", "images", "references", "icons"];
 pub const MODEL_FOLDERS: [&str; 1] = ["models"];
-pub const WAV_FOLDERS: [&str; 2] = ["audio", "sounds"];
+pub const WAV_FOLDERS: [&str; 3] = ["audio", "sounds", "music"];
 
 fn binary_kind(folders: &[&str], ext: Option<&str>) -> Option<FileKind> {
     let within = |names: &[&str]| folders.iter().any(|f| names.contains(f));
@@ -246,6 +254,7 @@ fn binary_kind(folders: &[&str], ext: Option<&str>) -> Option<FileKind> {
         "glb" if within(&MODEL_FOLDERS) => Some(FileKind::Glb),
         "gltf" if within(&MODEL_FOLDERS) => Some(FileKind::Gltf),
         "wav" if within(&WAV_FOLDERS) => Some(FileKind::Wav),
+        "ogg" if within(&WAV_FOLDERS) => Some(FileKind::Ogg),
         _ => None,
     }
 }
@@ -377,6 +386,7 @@ pub fn kind_for(mount: MountKind, rel: &str) -> Option<FileKind> {
                 "ui" if name == "theme.json" => Some(FileKind::UiTheme),
                 "ui" => Some(FileKind::UiScreen),
                 "sounds" => Some(FileKind::Sound),
+                "music" => Some(FileKind::Music),
                 "anims" => Some(FileKind::AnimSet),
                 _ => None,
             }
@@ -1147,6 +1157,10 @@ mod tests {
         assert_eq!(kind_for(a, "models/wraith.glb"), Some(FileKind::Glb));
         assert_eq!(kind_for(a, "models/wraith.gltf"), Some(FileKind::Gltf));
         assert_eq!(kind_for(a, "sounds/bell.wav"), Some(FileKind::Wav));
+        assert_eq!(kind_for(a, "music/map1.json"), Some(FileKind::Music));
+        assert_eq!(kind_for(a, "music/theme.ogg"), Some(FileKind::Ogg));
+        assert_eq!(kind_for(a, "audio/rain.ogg"), Some(FileKind::Ogg));
+        assert_eq!(kind_for(a, "docs/clip.ogg"), None, "audio files only in their folders");
         assert_eq!(kind_for(a, "docs/gallery/shot.png"), None, "binary files only in their folders");
         assert_eq!(kind_for(a, "luts/grade.png"), None);
         assert_eq!(kind_for(a, "data/waves.json"), None);

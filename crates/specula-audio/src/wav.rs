@@ -80,6 +80,12 @@ fn u32_at(b: &[u8], i: usize) -> u32 {
 
 /// Decodes a WAV file.
 pub fn decode(bytes: &[u8]) -> Result<Wav> {
+    decode_frames(bytes, usize::MAX)
+}
+
+/// Decodes at most the first `max_frames` frames of a WAV file (previews: the work and memory
+/// stay bounded whatever the file holds).
+pub fn decode_frames(bytes: &[u8], max_frames: usize) -> Result<Wav> {
     if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
         return Err(err(ErrorCode::WavNotWave, 0, "not a RIFF/WAVE file"));
     }
@@ -101,7 +107,7 @@ pub fn decode(bytes: &[u8]) -> Result<Wav> {
             };
             let truncated = size > available;
             let len = size.min(available);
-            let frames = len / align;
+            let frames = (len / align).min(max_frames);
             let total = frames.checked_mul(channels as usize).filter(|&t| t <= MAX_SAMPLES);
             let Some(total) = total else {
                 return Err(err(ErrorCode::Limit, pos, "WAV is too large").with_numbers((frames as f64) * channels as f64, MAX_SAMPLES as f64));

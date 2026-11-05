@@ -1,0 +1,30 @@
+{
+  "sound": 1,
+  "name": "boss_call",
+  "notes": "The bone colossus wakes (the boss wave starts): a low, cracked horn calls twice, a fifth apart, over a sub swell and a distant rumble. Plays on the voice bus, so the music ducks under it.",
+  "bus": "voice",
+  "seed": 140,
+  "duration": 3.6,
+  "channels": 2,
+  "loudness": -17,
+  "layers": [
+    { "name": "horn_low", "length": 1.3, "pan": -0.15,
+      "source": { "wave": "saw", "freq": { "points": [[0, 73.42], [0.2, 82.41], [1.3, 80]], "curve": "exp" }, "unison": { "voices": 3, "cents": 18 } },
+      "env": { "attack": 0.12, "decay": 0.4, "sustain": 0.8, "release": 0.5 },
+      "filters": [ { "type": "lowpass", "cutoff": { "points": [[0, 300], [0.3, 1400], [1.3, 600]], "curve": "exp" }, "q": 1.2 } ],
+      "fx": [ { "type": "distort", "drive": 2.5, "mix": 0.35 } ] },
+    { "name": "horn_high", "at": 1.5, "length": 1.6, "pan": 0.15,
+      "source": { "wave": "saw", "freq": { "points": [[0, 110], [0.2, 123.47], [1.6, 118]], "curve": "exp" }, "unison": { "voices": 3, "cents": 18 } },
+      "env": { "attack": 0.12, "decay": 0.4, "sustain": 0.8, "release": 0.6 },
+      "filters": [ { "type": "lowpass", "cutoff": { "points": [[0, 300], [0.3, 1800], [1.6, 700]], "curve": "exp" }, "q": 1.2 } ],
+      "fx": [ { "type": "distort", "drive": 2.5, "mix": 0.35 } ] },
+    { "name": "sub", "length": 3.2, "gain_db": -4,
+      "source": { "wave": "sine", "freq": 41.2 },
+      "env": { "attack": 0.6, "decay": 0.5, "sustain": 0.7, "release": 0.6 } },
+    { "name": "rumble", "length": 3.4, "gain_db": -14,
+      "source": { "wave": "noise", "color": "brown" },
+      "env": { "attack": 0.8, "decay": 0.8, "sustain": 0.5, "release": 0.8 },
+      "filters": [ { "type": "lowpass", "cutoff": 240, "q": 0.7 } ] }
+  ],
+  "fx": [ { "type": "reverb", "room": 0.9, "damp": 0.5, "mix": 0.35, "width": 1 } ]
+}

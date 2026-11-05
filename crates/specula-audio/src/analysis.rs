@@ -72,7 +72,7 @@ fn db(power_or_amp: f64, power: bool) -> f64 {
 }
 
 /// The two K-weighting biquads for `rate`.
-fn k_weighting(rate: u32) -> (Biquad, Biquad) {
+pub(crate) fn k_weighting(rate: u32) -> (Biquad, Biquad) {
     let fs = rate as f64;
     let (f0, g, q) = (1_681.974_450_955_533, 3.999_843_853_973_347, 0.707_175_236_955_419_6);
     let k = dmath::tan_f64(PI * f0 / fs);

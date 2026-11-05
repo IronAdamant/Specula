@@ -54,6 +54,13 @@ pub trait Game {
     /// sounds) from here too, so one flag points the engine and the game at the same folder.
     fn use_assets(&mut self, _root: &std::path::Path) {}
 
+    /// The engine's audio service, once, before [`Game::start`]: play sounds and music through
+    /// it (naming the game as who played them) instead of opening a device of your own, so
+    /// agents hear what the game plays (`audio_played`, `audio_levels`). It may be off (headless
+    /// engines default to `--audio off`): check [`crate::audio_service::AudioService::enabled`].
+    /// Never let audio feed back into the simulation.
+    fn use_audio(&mut self, _audio: std::sync::Arc<crate::audio_service::AudioService>) {}
+
     /// Once, after the engine, window and world are ready (a loaded world may already hold
     /// the scene).
     fn start(&mut self, _ctx: &mut Ctx) {}

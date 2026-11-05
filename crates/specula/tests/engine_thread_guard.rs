@@ -64,6 +64,7 @@ struct Allowed {
 const ALLOWED: &[Allowed] = &[
     Allowed { file: "anim_tools.rs", counts: &[("fs::", 1), ("read_rgba8", 1)], why: "a style.toml read (a few KiB, once per anim call); one filmstrip tile readback per step job slice" },
     Allowed { file: "anim_tools/anim_steps.rs", counts: &[("book().write", 1)], why: "the filmstrip packet, written inside offload_capture's worker job" },
+    Allowed { file: "audio_tools.rs", counts: &[("book().write", 1)], why: "caller-thread tool (CallerThread::Audio): audio_preview writes its WAV and picture on the agent's connection" },
     Allowed { file: "balance_tools.rs", counts: &[(".is_file()", 1), ("fs::", 2)], why: "caller-thread tool (CallerThread::Balance): targets files read on the agent's connection" },
     Allowed { file: "blobs.rs", counts: &[(".is_file()", 1), ("book().make_dir", 2), ("fs::", 9), ("remove_file_inside", 2), ("remove_tree_inside", 1), ("sync_all", 1)], why: "the content store: written by project_upload on the caller's connection thread" },
     Allowed { file: "capture.rs", counts: &[("book().write", 2), ("png::encode", 1), ("read_rgba8", 1)], why: "PNG and packet writes and the encode run inside offload_capture's worker job; one readback per view, a copy out of the readback buffer once the capture flight found its render done (no fence wait)" },

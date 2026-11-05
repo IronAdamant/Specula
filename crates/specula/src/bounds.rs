@@ -327,6 +327,11 @@ pub const OVERRIDES: &[Override] = &[
     o("tools_activate", "tools", 256, true, "tool and family names"),
     o("tools_deactivate", "tools", 256, true, "tool and family names"),
     o("tools_scope", "tools", 256, true, "tool and family names"),
+    o("audio_levels", "buses", 7, true, "the six buses and master_out, each once"),
+    o("audio_settings", "ducks", 4, false, "the mixer has four duck slots (mixer::MAX_DUCKS)"),
+    o("audio_preview", "path", 512, false, "a project path"),
+    o("audio_played", "by", 64, false, "an agent or game name"),
+    o("audio_played", "name_prefix", 64, false, "the start of a sound name"),
 ];
 
 /// A refused argument: what an agent changes, as data.

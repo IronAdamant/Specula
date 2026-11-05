@@ -1,0 +1,409 @@
+{
+  "music": 1,
+  "name": "defeat",
+  "notes": "The run is lost: the theme sinks. D minor to a low A minor, the bells fall E D C B A slowly and the drone ends on a bare low A. Four bars, played once after the defeat sting.",
+  "tempo": 60,
+  "beats_per_bar": 4,
+  "steps_per_beat": 4,
+  "bars": 4,
+  "loudness": -24,
+  "instruments": {
+    "drone": {
+      "root": "A2",
+      "release": 1.6,
+      "sound": {
+        "sound": 1,
+        "name": "drone",
+        "seed": 301,
+        "duration": 9.0,
+        "channels": 2,
+        "layers": [
+          {
+            "name": "body",
+            "length": 8.6,
+            "pan": -0.25,
+            "source": {
+              "wave": "saw",
+              "freq": 110,
+              "unison": {
+                "voices": 3,
+                "cents": 9
+              }
+            },
+            "env": {
+              "attack": 1.6,
+              "decay": 0.5,
+              "sustain": 0.85,
+              "release": 0.4
+            },
+            "filters": [
+              {
+                "type": "lowpass",
+                "cutoff": {
+                  "points": [
+                    [
+                      0,
+                      260
+                    ],
+                    [
+                      3,
+                      520
+                    ],
+                    [
+                      8.6,
+                      380
+                    ]
+                  ],
+                  "curve": "exp"
+                },
+                "q": 0.8
+              }
+            ]
+          },
+          {
+            "name": "fifth",
+            "length": 8.6,
+            "gain_db": -7,
+            "pan": 0.25,
+            "source": {
+              "wave": "triangle",
+              "freq": 164.81,
+              "unison": {
+                "voices": 2,
+                "cents": 6
+              }
+            },
+            "env": {
+              "attack": 2.2,
+              "decay": 0.5,
+              "sustain": 0.8,
+              "release": 0.4
+            },
+            "filters": [
+              {
+                "type": "lowpass",
+                "cutoff": 900,
+                "q": 0.7
+              }
+            ]
+          },
+          {
+            "name": "sub",
+            "length": 8.6,
+            "gain_db": -6,
+            "source": {
+              "wave": "sine",
+              "freq": 55
+            },
+            "env": {
+              "attack": 2.0,
+              "decay": 0.5,
+              "sustain": 0.9,
+              "release": 0.4
+            }
+          }
+        ],
+        "fx": [
+          {
+            "type": "reverb",
+            "room": 0.85,
+            "damp": 0.6,
+            "mix": 0.35,
+            "width": 1
+          }
+        ]
+      }
+    },
+    "choir": {
+      "root": "A3",
+      "release": 1.2,
+      "gain_db": -4,
+      "sound": {
+        "sound": 1,
+        "name": "choir",
+        "seed": 302,
+        "duration": 8.0,
+        "channels": 2,
+        "layers": [
+          {
+            "name": "voices",
+            "length": 7.4,
+            "source": {
+              "wave": "triangle",
+              "freq": 220,
+              "unison": {
+                "voices": 4,
+                "cents": 14
+              }
+            },
+            "vibrato": {
+              "rate": 4.6,
+              "depth": 0.12,
+              "delay": 0.8
+            },
+            "env": {
+              "attack": 1.4,
+              "decay": 0.8,
+              "sustain": 0.75,
+              "release": 0.6
+            },
+            "filters": [
+              {
+                "type": "bandpass",
+                "cutoff": 800,
+                "q": 0.9
+              },
+              {
+                "type": "lowpass",
+                "cutoff": 2200,
+                "q": 0.6
+              }
+            ]
+          },
+          {
+            "name": "breath",
+            "length": 7.4,
+            "gain_db": -20,
+            "source": {
+              "wave": "noise",
+              "color": "pink"
+            },
+            "env": {
+              "attack": 1.0,
+              "decay": 1.0,
+              "sustain": 0.6,
+              "release": 0.6
+            },
+            "filters": [
+              {
+                "type": "bandpass",
+                "cutoff": 1400,
+                "q": 1.4
+              }
+            ]
+          }
+        ],
+        "fx": [
+          {
+            "type": "reverb",
+            "room": 0.9,
+            "damp": 0.5,
+            "mix": 0.45,
+            "width": 1
+          }
+        ]
+      }
+    },
+    "bell": {
+      "root": "A4",
+      "release": 0.8,
+      "gain_db": -2,
+      "variations": 3,
+      "sound": {
+        "sound": 1,
+        "name": "glass_bell",
+        "seed": 303,
+        "duration": 4.0,
+        "channels": 2,
+        "vary": {
+          "pitch": [
+            -0.08,
+            0.08
+          ],
+          "gain_db": [
+            -1.5,
+            0
+          ]
+        },
+        "layers": [
+          {
+            "name": "strike",
+            "source": {
+              "wave": "sine",
+              "freq": 440,
+              "partials": [
+                [
+                  1,
+                  1,
+                  2.6
+                ],
+                [
+                  2.01,
+                  0.35,
+                  1.1
+                ],
+                [
+                  2.76,
+                  0.22,
+                  0.7
+                ],
+                [
+                  5.4,
+                  0.08,
+                  0.25
+                ]
+              ]
+            },
+            "env": {
+              "attack": 0.004,
+              "decay": 3.4,
+              "sustain": 0
+            }
+          },
+          {
+            "name": "shimmer",
+            "gain_db": -16,
+            "source": {
+              "wave": "sine",
+              "freq": 1760
+            },
+            "vibrato": {
+              "rate": 6,
+              "depth": 0.05
+            },
+            "env": {
+              "attack": 0.01,
+              "decay": 1.6,
+              "sustain": 0
+            }
+          }
+        ],
+        "fx": [
+          {
+            "type": "delay",
+            "time": 0.682,
+            "feedback": 0.32,
+            "mix": 0.22,
+            "damp": 0.5
+          },
+          {
+            "type": "reverb",
+            "room": 0.8,
+            "damp": 0.45,
+            "mix": 0.35,
+            "width": 1
+          }
+        ]
+      }
+    }
+  },
+  "patterns": {
+    "drone": {
+      "bars": 4,
+      "notes": [
+        [
+          0,
+          "D2",
+          16,
+          0.8
+        ],
+        [
+          16,
+          "A1",
+          48,
+          0.9
+        ]
+      ]
+    },
+    "choir": {
+      "bars": 4,
+      "notes": [
+        [
+          0,
+          "A3",
+          16,
+          0.4
+        ],
+        [
+          0,
+          "D4",
+          16,
+          0.35
+        ],
+        [
+          0,
+          "F4",
+          16,
+          0.3
+        ],
+        [
+          16,
+          "A3",
+          28,
+          0.4
+        ],
+        [
+          16,
+          "C4",
+          28,
+          0.35
+        ],
+        [
+          16,
+          "E4",
+          28,
+          0.3
+        ]
+      ]
+    },
+    "bell": {
+      "bars": 4,
+      "notes": [
+        [
+          0,
+          "E5",
+          6,
+          0.6
+        ],
+        [
+          6,
+          "D5",
+          6,
+          0.55
+        ],
+        [
+          12,
+          "C5",
+          6,
+          0.5
+        ],
+        [
+          18,
+          "B4",
+          8,
+          0.45
+        ],
+        [
+          28,
+          "A4",
+          24,
+          0.5
+        ]
+      ]
+    }
+  },
+  "tracks": [
+    {
+      "instrument": "drone",
+      "sequence": [
+        "drone"
+      ]
+    },
+    {
+      "instrument": "choir",
+      "gain_db": -4,
+      "pan": 0.15,
+      "sequence": [
+        "choir"
+      ]
+    },
+    {
+      "instrument": "bell",
+      "gain_db": -2,
+      "pan": -0.2,
+      "sequence": [
+        "bell"
+      ]
+    }
+  ]
+}

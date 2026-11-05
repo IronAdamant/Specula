@@ -9,14 +9,20 @@
 //!
 //! ```text
 //! voice: sinc SRC (rate × pitch) → [low-pass by distance] → gain · fade · distance → pan ┐
-//! bus (sfx, ui, ambience, music, master-direct): Σ voices · bus gain · duck gain        ├→ master
+//! stream: ring blocks from the worker (already at the mix rate) → gain · fade · balance   ┤
+//! bus (sfx, ui, ambience, music, voice, master-direct): Σ voices · bus gain · duck gain  ├→ master
 //! master: Σ buses · master gain → block-lookahead peak limiter (ceiling -0.2 dBFS)       ┘
 //! ```
+//!
+//! Each block's bus outputs (as they enter the master) and the master output are copied into a
+//! recycled [`TapBlock`] for the meter on the worker thread ([`crate::meter`]); if the worker
+//! falls behind, blocks are dropped and counted, never waited for.
 
 use crate::dsp::{self, OnePole};
 use crate::resample::{dot8, SincTable, FRAC_BITS, ONE, TAPS};
 use crate::ring::{self, Consumer, Producer};
 use crate::sound::{Sound, SoundData};
+use crate::stream::StreamReader;
 use crate::error::{AudioError, ErrorCode, Result};
 use specula_core::dmath;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -35,6 +41,10 @@ const LIMIT_RELEASE_S: f32 = 0.15;
 pub const MAX_DUCKS: usize = 4;
 /// Longest fade accepted (seconds).
 pub const MAX_FADE_S: f32 = 600.0;
+/// Streams that can play at once (music, its crossfade partner, beds).
+pub const MAX_STREAMS: usize = 8;
+/// Tap blocks in flight between the mixer and the meter (about 0.34 s at 48 kHz).
+pub const TAP_BLOCKS: usize = 64;
 
 /// A mixer bus. Every voice plays on one; each has a volume, and buses can duck each other.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -45,12 +55,14 @@ pub enum Bus {
     Ui = 2,
     Ambience = 3,
     Music = 4,
+    /// Dialogue and announcer lines (music and ambience usually duck under it).
+    Voice = 5,
 }
 
-pub const BUS_COUNT: usize = 5;
+pub const BUS_COUNT: usize = 6;
 
 impl Bus {
-    pub const ALL: [Bus; BUS_COUNT] = [Bus::Master, Bus::Sfx, Bus::Ui, Bus::Ambience, Bus::Music];
+    pub const ALL: [Bus; BUS_COUNT] = [Bus::Master, Bus::Sfx, Bus::Ui, Bus::Ambience, Bus::Music, Bus::Voice];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -59,6 +71,7 @@ impl Bus {
             Bus::Ui => "ui",
             Bus::Ambience => "ambience",
             Bus::Music => "music",
+            Bus::Voice => "voice",
         }
     }
 
@@ -153,6 +166,24 @@ pub(crate) enum Command {
     SetBusGain { bus: Bus, gain: f32, fade_s: f32 },
     SetDuck { slot: usize, rule: Option<DuckRule> },
     SetListener(Listener),
+    PlayStream { id: u64, reader: Box<StreamReader>, params: crate::stream::StreamParams },
+}
+
+/// One block of the mix for the meter: each bus as it enters the master, then the master
+/// output (interleaved stereo, `frames` frames, at `rate`).
+pub struct TapBlock {
+    pub frames: usize,
+    pub rate: u32,
+    pub buses: [[f32; MAX_BLOCK * 2]; BUS_COUNT + 1],
+}
+
+impl TapBlock {
+    /// Index of the master output in `buses`.
+    pub const MASTER: usize = BUS_COUNT;
+
+    pub fn boxed() -> Box<TapBlock> {
+        Box::new(TapBlock { frames: 0, rate: 0, buses: [[0.0; MAX_BLOCK * 2]; BUS_COUNT + 1] })
+    }
 }
 
 /// Counters the audio thread publishes; read with [`Stats`].
@@ -183,6 +214,19 @@ pub(crate) struct SharedStats {
     pub thread_panicked: std::sync::atomic::AtomicBool,
     /// Non-finite samples replaced by silence at the master (should stay 0).
     pub non_finite: AtomicU64,
+    /// Master samples beyond full scale after the limiter, clamped (should stay 0).
+    pub clipped: AtomicU64,
+    /// Blocks in which the limiter reduced the gain.
+    pub limited_blocks: AtomicU64,
+    /// Tap blocks dropped because the meter fell behind.
+    pub tap_dropped: AtomicU64,
+    pub active_streams: AtomicU32,
+    /// Stream starvation (ring empty while playing), summed over all streams.
+    pub stream_starved_frames: AtomicU64,
+    pub stream_starve_events: AtomicU64,
+    pub streams_rejected: AtomicU64,
+    /// Time the worker thread spent decoding streams and metering (ns).
+    pub worker_ns: AtomicU64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -273,10 +317,25 @@ struct BusState {
     buf: Vec<f32>,
 }
 
+struct StreamVoice {
+    id: u64,
+    reader: Box<StreamReader>,
+    bus: Bus,
+    pan: f32,
+    gain: Ramp,
+    fade: Ramp,
+    stopping: bool,
+    finished: bool,
+    starving: bool,
+    /// Channel gains at the end of the last block (ramped from); `None` before the first.
+    cur: Option<[f32; 2]>,
+}
+
 /// The game-thread side: sends commands, receives finished voices.
 pub struct MixerHandle {
     commands: Producer<Command>,
     returns: Consumer<(u64, Arc<SoundData>)>,
+    stream_returns: Consumer<(u64, Box<StreamReader>)>,
     next_id: u64,
     finished: Vec<VoiceId>,
     pub(crate) stats: Arc<SharedStats>,
@@ -289,11 +348,37 @@ impl MixerHandle {
     fn collect(&mut self) {
         while let Some((id, sound)) = self.returns.pop() {
             drop(sound);
-            if self.finished.len() >= MAX_FINISHED {
-                self.finished.remove(0);
-            }
-            self.finished.push(VoiceId(id));
+            self.push_finished(id);
         }
+        while let Some((id, reader)) = self.stream_returns.pop() {
+            // Tell its worker (which then drops its end) and free the blocks here, on the game
+            // thread.
+            reader.shared.finished.store(true, Ordering::Release);
+            drop(reader);
+            self.push_finished(id);
+        }
+    }
+
+    fn push_finished(&mut self, id: u64) {
+        if self.finished.len() >= MAX_FINISHED {
+            self.finished.remove(0);
+        }
+        self.finished.push(VoiceId(id));
+    }
+
+    /// Starts a stream voice reading `reader` (made by `stream::channel`).
+    pub(crate) fn play_stream(&mut self, reader: Box<StreamReader>, params: crate::stream::StreamParams) -> Result<VoiceId> {
+        let id = self.next_id;
+        self.collect();
+        if let Err(cmd) = self.commands.push(Command::PlayStream { id, reader, params }) {
+            self.stats.queue_full.fetch_add(1, Ordering::Relaxed);
+            if let Command::PlayStream { reader, .. } = cmd {
+                reader.shared.finished.store(true, Ordering::Release);
+            }
+            return Err(AudioError::new(ErrorCode::QueueFull, "audio command queue is full; command dropped"));
+        }
+        self.next_id += 1;
+        Ok(VoiceId(id))
     }
 
     fn send(&mut self, cmd: Command) -> Result<()> {
@@ -344,21 +429,14 @@ impl MixerHandle {
 
     /// Installs (or clears, with `None`) duck rule `slot` (0..[`MAX_DUCKS`]).
     pub fn set_duck(&mut self, slot: usize, rule: Option<DuckRule>) -> Result<()> {
-        if slot >= MAX_DUCKS {
-            return Err(AudioError::new(ErrorCode::OutOfRange, "duck slot out of range").with_numbers(slot as f64, MAX_DUCKS as f64 - 1.0));
-        }
-        if let Some(r) = &rule {
-            if r.target == Bus::Master {
-                return Err(AudioError::new(ErrorCode::OutOfRange, "a duck rule can't target the master bus (duck a sub-bus instead)"));
-            }
-            if r.source == r.target {
-                return Err(AudioError::new(ErrorCode::OutOfRange, "a bus can't duck itself"));
-            }
-            if ![r.depth_db, r.threshold_db, r.attack_s, r.release_s].iter().all(|x| x.is_finite()) {
-                return Err(AudioError::new(ErrorCode::OutOfRange, "duck rule numbers must be finite"));
-            }
-        }
+        validate_duck(slot, rule.as_ref())?;
         self.send(Command::SetDuck { slot, rule })
+    }
+
+    /// Commands that can be queued now without one being refused.
+    pub fn room(&mut self) -> usize {
+        self.collect();
+        self.commands.capacity().saturating_sub(self.commands.len())
     }
 
     pub fn set_listener(&mut self, listener: Listener) -> Result<()> {
@@ -370,6 +448,25 @@ impl MixerHandle {
         self.collect();
         std::mem::take(&mut self.finished)
     }
+}
+
+/// Why duck rule `slot` can't be installed, if it can't.
+pub fn validate_duck(slot: usize, rule: Option<&DuckRule>) -> Result<()> {
+    if slot >= MAX_DUCKS {
+        return Err(AudioError::new(ErrorCode::OutOfRange, "duck slot out of range").with_numbers(slot as f64, MAX_DUCKS as f64 - 1.0));
+    }
+    if let Some(r) = rule {
+        if r.target == Bus::Master {
+            return Err(AudioError::new(ErrorCode::OutOfRange, "a duck rule can't target the master bus (duck a sub-bus instead)"));
+        }
+        if r.source == r.target {
+            return Err(AudioError::new(ErrorCode::OutOfRange, "a bus can't duck itself"));
+        }
+        if ![r.depth_db, r.threshold_db, r.attack_s, r.release_s].iter().all(|x| x.is_finite()) {
+            return Err(AudioError::new(ErrorCode::OutOfRange, "duck rule numbers must be finite"));
+        }
+    }
+    Ok(())
 }
 
 /// Fade times: NaN → 0, clamped to 0 ..= 600 s (an infinite fade would never finish).
@@ -409,6 +506,12 @@ fn sane(v: f32, lo: f32, hi: f32) -> f32 {
 /// The audio-thread side.
 pub struct Mixer {
     rate: u32,
+    streams: Vec<StreamVoice>,
+    stream_returns: Producer<(u64, Box<StreamReader>)>,
+    tap_full: Option<Producer<Box<TapBlock>>>,
+    tap_free: Option<Consumer<Box<TapBlock>>>,
+    tap: Option<Box<TapBlock>>,
+    stream_buf: Vec<f32>,
     table: SincTable,
     voices: Vec<Voice>,
     max_voices: usize,
@@ -445,16 +548,23 @@ impl Mixer {
         // Every Arc that can be on the audio side at once (one per queued command, one per
         // voice) fits, so returning one never fails while the game thread keeps calling in.
         let (ret_tx, ret_rx) = ring::channel(cmd_tx.capacity() + max_voices + TAIL_SLOTS + 16);
+        let (sret_tx, sret_rx) = ring::channel(cmd_tx.capacity() + MAX_STREAMS + 16);
         let stats = Arc::new(SharedStats::default());
         stats.output_rate.store(config.rate, Ordering::Relaxed);
         stats.limiter_gain_bits.store(1f32.to_bits(), Ordering::Relaxed);
         let bus = || BusState { gain: Ramp::new(1.0), duck: 1.0, level: 0.0, buf: vec![0.0; MAX_BLOCK * 2] };
         let mut mixer = Mixer {
             rate: config.rate.max(1),
+            streams: Vec::with_capacity(MAX_STREAMS),
+            stream_returns: sret_tx,
+            tap_full: None,
+            tap_free: None,
+            tap: None,
+            stream_buf: vec![0.0; MAX_BLOCK * 2],
             table: SincTable::new(),
             voices: Vec::with_capacity(max_voices + TAIL_SLOTS),
             max_voices,
-            buses: [bus(), bus(), bus(), bus(), bus()],
+            buses: [bus(), bus(), bus(), bus(), bus(), bus()],
             master_tmp: vec![0.0; MAX_BLOCK * 2],
             ducks: [None; MAX_DUCKS],
             listener: Listener::default(),
@@ -466,7 +576,14 @@ impl Mixer {
             age: 0,
         };
         mixer.apply_listener(Listener::default());
-        (MixerHandle { commands: cmd_tx, returns: ret_rx, next_id: 1, finished: Vec::new(), stats }, mixer)
+        (MixerHandle { commands: cmd_tx, returns: ret_rx, stream_returns: sret_rx, next_id: 1, finished: Vec::new(), stats }, mixer)
+    }
+
+    /// Connects the meter tap: filled blocks go out on `full`, recycled ones come back on
+    /// `free` (the caller seeds `free` with [`TAP_BLOCKS`] blocks).
+    pub(crate) fn set_tap(&mut self, full: Producer<Box<TapBlock>>, free: Consumer<Box<TapBlock>>) {
+        self.tap_full = Some(full);
+        self.tap_free = Some(free);
     }
 
     pub fn rate(&self) -> u32 {
@@ -516,6 +633,9 @@ impl Mixer {
                 if let Some(v) = self.find(id) {
                     v.stopping = true;
                     v.fade.set(0.0, fade_s.max(DECLICK_S), rate);
+                } else if let Some(s) = self.streams.iter_mut().find(|s| s.id == id) {
+                    s.stopping = true;
+                    s.fade.set(0.0, fade_s.max(DECLICK_S), rate);
                 }
             }
             Command::StopAll { bus, fade_s } => {
@@ -524,10 +644,16 @@ impl Mixer {
                     v.stopping = true;
                     v.fade.set(0.0, fade_s.max(DECLICK_S), rate);
                 }
+                for s in self.streams.iter_mut().filter(|s| bus.is_none_or(|b| s.bus == b)) {
+                    s.stopping = true;
+                    s.fade.set(0.0, fade_s.max(DECLICK_S), rate);
+                }
             }
             Command::SetGain { id, gain, fade_s } => {
                 if let Some(v) = self.find(id) {
                     v.gain.set(gain, sane_fade(fade_s), rate);
+                } else if let Some(s) = self.streams.iter_mut().find(|s| s.id == id) {
+                    s.gain.set(gain, sane_fade(fade_s), rate);
                 }
             }
             Command::SetPitch { id, pitch } => {
@@ -539,6 +665,8 @@ impl Mixer {
             Command::SetPan { id, pan } => {
                 if let Some(v) = self.find(id) {
                     v.params.pan = pan;
+                } else if let Some(s) = self.streams.iter_mut().find(|s| s.id == id) {
+                    s.pan = pan;
                 }
             }
             Command::SetPosition { id, position } => {
@@ -555,6 +683,85 @@ impl Mixer {
             Command::SetBusGain { bus, gain, fade_s } => self.buses[bus as usize].gain.set(gain, sane_fade(fade_s), rate),
             Command::SetDuck { slot, rule } => self.ducks[slot] = rule,
             Command::SetListener(l) => self.apply_listener(l),
+            Command::PlayStream { id, reader, params } => self.start_stream(id, reader, params),
+        }
+    }
+
+    fn start_stream(&mut self, id: u64, reader: Box<StreamReader>, params: crate::stream::StreamParams) {
+        if self.streams.len() >= MAX_STREAMS {
+            self.stats.streams_rejected.fetch_add(1, Ordering::Relaxed);
+            // Capacity covers every queued command, so this hand-back can't fail.
+            let _ = self.stream_returns.push((id, reader));
+            return;
+        }
+        let fade_in_s = sane_fade(params.fade_in_s);
+        let mut fade = Ramp::new(if fade_in_s > 0.0 { 0.0 } else { 1.0 });
+        fade.set(1.0, fade_in_s, self.rate as f32);
+        self.streams.push(StreamVoice {
+            id,
+            reader,
+            bus: params.bus,
+            pan: sane(params.pan, -1.0, 1.0),
+            gain: Ramp::new(sane(params.gain, 0.0, 16.0)),
+            fade,
+            stopping: false,
+            finished: false,
+            starving: false,
+            cur: None,
+        });
+    }
+
+    /// Mixes the stream voices into their buses and hands finished ones back.
+    fn render_streams(&mut self, n: usize) {
+        let mut i = 0;
+        while i < self.streams.len() {
+            let s = &mut self.streams[i];
+            let g_start = s.gain.value * s.fade.value;
+            s.gain.advance(n);
+            s.fade.advance(n);
+            if s.stopping && s.fade.done() && s.fade.value <= 0.0 {
+                s.finished = true;
+            }
+            if !s.finished {
+                let buf = &mut self.stream_buf[..n * 2];
+                let (got, starved) = s.reader.read(buf);
+                if starved && !s.starving {
+                    self.stats.stream_starve_events.fetch_add(1, Ordering::Relaxed);
+                    s.reader.shared.starve_events.fetch_add(1, Ordering::Relaxed);
+                }
+                if starved {
+                    self.stats.stream_starved_frames.fetch_add((n - got) as u64, Ordering::Relaxed);
+                }
+                s.starving = starved;
+                let base = s.gain.value * s.fade.value;
+                let p = s.pan;
+                let bal = [(1.0 - p).min(1.0), (1.0 + p).min(1.0)];
+                let target = [base * bal[0], base * bal[1]];
+                let target = if target.iter().all(|g| g.is_finite()) { target } else { [0.0; 2] };
+                // The first block ramps from the gain at its start (0 when fading in).
+                let g0 = s.cur.unwrap_or([g_start * bal[0], g_start * bal[1]]);
+                let d = [(target[0] - g0[0]) / n as f32, (target[1] - g0[1]) / n as f32];
+                let (mut gl, mut gr) = (g0[0], g0[1]);
+                let out = &mut self.buses[s.bus as usize].buf[..n * 2];
+                for (o, x) in out.chunks_exact_mut(2).zip(buf.chunks_exact(2)) {
+                    gl += d[0];
+                    gr += d[1];
+                    o[0] += x[0] * gl;
+                    o[1] += x[1] * gr;
+                }
+                s.cur = Some(target);
+                if s.reader.ended {
+                    s.finished = true;
+                }
+            }
+            if self.streams[i].finished {
+                let s = self.streams.swap_remove(i);
+                // Capacity covers every stream, so this never fails; the reader (and its blocks)
+                // is freed on the game thread.
+                let _ = self.stream_returns.push((s.id, s.reader));
+            } else {
+                i += 1;
+            }
         }
     }
 
@@ -678,6 +885,7 @@ impl Mixer {
         s.frames.fetch_add((out.len() / 2) as u64, Ordering::Relaxed);
         s.blocks.fetch_add(1, Ordering::Relaxed);
         s.active_voices.store(self.voices.iter().filter(|v| !v.tail).count() as u32, Ordering::Relaxed);
+        s.active_streams.store(self.streams.len() as u32, Ordering::Relaxed);
     }
 
     fn render_block(&mut self, out: &mut [f32]) {
@@ -696,6 +904,16 @@ impl Mixer {
             render_voice(v, &self.table, bus, n, rate, &listener, right);
         }
         self.reap();
+        self.render_streams(n);
+        // A tap block for the meter, if the worker has returned one.
+        if self.tap.is_none() {
+            if let Some(free) = &mut self.tap_free {
+                self.tap = free.pop();
+                if self.tap.is_none() {
+                    self.stats.tap_dropped.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
 
         // Bus levels (peak followers) and ducking.
         let block_s = n as f32 / rate;
@@ -731,13 +949,31 @@ impl Mixer {
             }
             let g1 = if i == 0 { 1.0 } else { b.gain.value * b.duck };
             if g0 == 0.0 && g1 == 0.0 {
+                if let Some(tap) = self.tap.as_mut() {
+                    tap.buses[i][..n * 2].fill(0.0);
+                }
                 continue;
             }
             let dg = (g1 - g0) / n as f32;
-            for f in 0..n {
-                let g = g0 + dg * (f + 1) as f32;
-                master[2 * f] += b.buf[2 * f] * g;
-                master[2 * f + 1] += b.buf[2 * f + 1] * g;
+            match self.tap.as_mut() {
+                Some(tap) => {
+                    let t = &mut tap.buses[i];
+                    for f in 0..n {
+                        let g = g0 + dg * (f + 1) as f32;
+                        let (l, r) = (b.buf[2 * f] * g, b.buf[2 * f + 1] * g);
+                        t[2 * f] = l;
+                        t[2 * f + 1] = r;
+                        master[2 * f] += l;
+                        master[2 * f + 1] += r;
+                    }
+                }
+                None => {
+                    for f in 0..n {
+                        let g = g0 + dg * (f + 1) as f32;
+                        master[2 * f] += b.buf[2 * f] * g;
+                        master[2 * f + 1] += b.buf[2 * f + 1] * g;
+                    }
+                }
             }
         }
         // The master bus's own gain applies to everything.
@@ -756,6 +992,7 @@ impl Mixer {
         let dc = (c1 - c0) / n as f32;
         let mut peak = 0.0f32;
         let mut bad = 0u64;
+        let mut clipped = 0u64;
         let mut finite = |x: f32| {
             if x.is_finite() {
                 x
@@ -766,14 +1003,33 @@ impl Mixer {
         };
         for f in 0..n {
             let g = c0 + dc * (f + 1) as f32;
-            let l = finite(master[2 * f] * g).clamp(-1.0, 1.0);
-            let r = finite(master[2 * f + 1] * g).clamp(-1.0, 1.0);
+            let (l, r) = (finite(master[2 * f] * g), finite(master[2 * f + 1] * g));
+            clipped += (l.abs() > 1.0) as u64 + (r.abs() > 1.0) as u64;
+            let (l, r) = (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0));
             peak = peak.max(l.abs()).max(r.abs());
             out[2 * f] = l;
             out[2 * f + 1] = r;
         }
         if bad > 0 {
             self.stats.non_finite.fetch_add(bad, Ordering::Relaxed);
+        }
+        if clipped > 0 {
+            self.stats.clipped.fetch_add(clipped, Ordering::Relaxed);
+        }
+        if l1 < 0.999 {
+            self.stats.limited_blocks.fetch_add(1, Ordering::Relaxed);
+        }
+        if let Some(mut tap) = self.tap.take() {
+            tap.frames = n;
+            tap.rate = self.rate;
+            tap.buses[TapBlock::MASTER][..n * 2].copy_from_slice(&out[..n * 2]);
+            if let Some(full) = &mut self.tap_full {
+                if let Err(t) = full.push(tap) {
+                    // The meter is behind: reuse the block next round.
+                    self.stats.tap_dropped.fetch_add(1, Ordering::Relaxed);
+                    self.tap = Some(t);
+                }
+            }
         }
         self.stats.master_peak_bits.store(peak.to_bits(), Ordering::Relaxed);
         self.stats.limiter_gain_bits.store(l1.to_bits(), Ordering::Relaxed);
@@ -1113,6 +1369,15 @@ impl Stats {
             commands_dropped: s.queue_full.load(Ordering::Relaxed),
             audio_thread_panicked: s.thread_panicked.load(Ordering::Relaxed),
             non_finite_samples: s.non_finite.load(Ordering::Relaxed),
+            clipped_samples: s.clipped.load(Ordering::Relaxed),
+            limited_blocks: s.limited_blocks.load(Ordering::Relaxed),
+            tap_dropped: s.tap_dropped.load(Ordering::Relaxed),
+            active_streams: s.active_streams.load(Ordering::Relaxed),
+            stream_starved_frames: s.stream_starved_frames.load(Ordering::Relaxed),
+            stream_starve_events: s.stream_starve_events.load(Ordering::Relaxed),
+            streams_rejected: s.streams_rejected.load(Ordering::Relaxed),
+            mix_ms_total: s.mix_ns_total.load(Ordering::Relaxed) as f64 / 1e6,
+            worker_ms_total: s.worker_ns.load(Ordering::Relaxed) as f64 / 1e6,
         }
     }
 }
@@ -1194,6 +1459,19 @@ pub struct Stats {
     pub audio_thread_panicked: bool,
     /// Non-finite samples the master replaced with silence (a bug indicator; should stay 0).
     pub non_finite_samples: u64,
+    /// Master samples clamped at full scale after the limiter (should stay 0).
+    pub clipped_samples: u64,
+    /// Blocks in which the limiter reduced the gain.
+    pub limited_blocks: u64,
+    /// Meter blocks dropped because the worker fell behind.
+    pub tap_dropped: u64,
+    pub active_streams: u32,
+    pub stream_starved_frames: u64,
+    pub stream_starve_events: u64,
+    pub streams_rejected: u64,
+    /// CPU time the mixer and the worker spent in all (ms): what audio costs the machine.
+    pub mix_ms_total: f64,
+    pub worker_ms_total: f64,
 }
 
 impl Stats {
@@ -1222,6 +1500,15 @@ impl Stats {
             ("commands_dropped", Json::from(self.commands_dropped)),
             ("audio_thread_panicked", Json::from(self.audio_thread_panicked)),
             ("non_finite_samples", Json::from(self.non_finite_samples)),
+            ("clipped_samples", Json::from(self.clipped_samples)),
+            ("limited_blocks", Json::from(self.limited_blocks)),
+            ("tap_dropped", Json::from(self.tap_dropped)),
+            ("active_streams", Json::from(self.active_streams)),
+            ("stream_starved_frames", Json::from(self.stream_starved_frames)),
+            ("stream_starve_events", Json::from(self.stream_starve_events)),
+            ("streams_rejected", Json::from(self.streams_rejected)),
+            ("mix_ms_total", Json::from(self.mix_ms_total)),
+            ("worker_ms_total", Json::from(self.worker_ms_total)),
         ])
     }
 }
