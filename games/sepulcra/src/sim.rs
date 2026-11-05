@@ -67,6 +67,9 @@ pub enum Rejection {
     UnknownStone,
     /// Stones go on fragment and ledge cells only.
     NotBuildable,
+    /// A prop that blocks building (`blocks_build`, map data) covers the cell: its index in
+    /// [`crate::Map::props`].
+    PropBlocks { prop: u16 },
     Occupied,
     NoStone,
     MaxTier,
@@ -88,6 +91,7 @@ impl Rejection {
             Rejection::UnknownCell => "unknown_cell",
             Rejection::UnknownStone => "unknown_stone",
             Rejection::NotBuildable => "not_buildable",
+            Rejection::PropBlocks { .. } => "prop_blocks",
             Rejection::Occupied => "occupied",
             Rejection::NoStone => "no_stone",
             Rejection::MaxTier => "max_tier",
@@ -106,6 +110,7 @@ impl fmt::Display for Rejection {
         match self {
             Rejection::NotEnoughDust { need, have } => write!(f, "not_enough_dust (need {need}, have {have})"),
             Rejection::EnemyInTheWay { enemy } => write!(f, "enemy_in_the_way (enemy {enemy})"),
+            Rejection::PropBlocks { prop } => write!(f, "prop_blocks (prop {prop})"),
             r => f.write_str(r.code()),
         }
     }
@@ -521,6 +526,9 @@ impl World {
                 let def = content.stones.get(usize::from(stone.0)).ok_or(Rejection::UnknownStone)?;
                 if !c.kind.buildable() {
                     return Err(Rejection::NotBuildable);
+                }
+                if let Some(prop) = map.blocking_prop(cell) {
+                    return Err(Rejection::PropBlocks { prop });
                 }
                 if self.stones.contains_key(&cell) {
                     return Err(Rejection::Occupied);
@@ -1381,12 +1389,16 @@ impl World {
                 return Some('=');
             }
             match count[id.index()] {
+                0 if content.map.blocking_prop(id).is_some() => Some('%'),
                 0 => None,
                 1 => Some(glyph[id.index()]),
                 n @ 2..=9 => char::from_digit(n, 10),
                 _ => Some('+'),
             }
         }));
+        if content.map.props.iter().any(|p| p.blocks_build) {
+            out.push_str("props: % a prop that blocks building (map props, blocks_build)\n");
+        }
         out
     }
 }

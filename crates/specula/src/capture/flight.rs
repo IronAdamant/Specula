@@ -677,7 +677,7 @@ impl Engine {
             packet.set("warnings", Json::Arr(warnings.clone()));
             // The full packet is saved next to its PNG so a verifier can re-check both later.
             if let Some(path) = &packet_path {
-                if let Err(e) = crate::disk::book().write(crate::disk::Category::Captures, "sight", path, packet.to_pretty().as_bytes(), crate::disk::Need::Agent) {
+                if let Err(e) = write_packet(path, packet.to_pretty()) {
                     warnings.push(Json::from(format!("packet not saved to disk: {e}")));
                     packet.set("warnings", Json::Arr(warnings));
                 }

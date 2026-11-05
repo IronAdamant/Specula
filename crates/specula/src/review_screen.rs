@@ -458,7 +458,13 @@ impl ReviewUi {
         st.set_str("checks_reported", &reported);
         st.set_bool("reported_failed", rf > 0);
         for (k, c) in failed.iter().take(4).enumerate() {
-            let mut line = format!("{} {}:{}", c.severity, c.kind, c.name);
+            // Whose result it is, on every line: the engine's (its record named) or the submitter's word.
+            let source = match (c.passed.claimed_by(), &c.recorded) {
+                (Some(by), _) => format!("reported by {by}"),
+                (None, Some(r)) => format!("engine, recorded {} #{}", r.tool, r.id),
+                (None, None) => "engine".to_owned(),
+            };
+            let mut line = format!("{} {}:{} [{source}]", c.severity, c.kind, c.name);
             if let (Some(m), Some(v)) = (&c.metric, c.value) {
                 line.push_str(&format!(" ({m} {v}{})", c.limit.map(|l| format!(", limit {l}")).unwrap_or_default()));
             }
@@ -836,7 +842,7 @@ mod tests {
                 title: format!("prop {i}"),
                 batch: Some("crypt".into()),
                 journal: vec![1],
-                captures: vec![Capture { path: format!("missing_{i}.png"), kind: "frame".into(), packet: None, caption: String::new() }],
+                captures: vec![Capture { path: format!("missing_{i}.png"), kind: "frame".into(), packet: None, caption: String::new(), recorded: None }],
                 ..Default::default()
             };
             r.submit(Writer { name: "ann", session: Some("k") }, 0, spec).unwrap();

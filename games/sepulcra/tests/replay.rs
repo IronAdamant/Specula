@@ -268,9 +268,11 @@ fn layouts_round_trip_as_json() {
 fn pinned_runs() {
     let c = content();
     let cases: [(&str, &str, u64, Outcome, u32, i32, u64); 3] = [
-        ("centre", CENTRE, 1, Outcome::Won, 21838, 5, 0xbc6f_1a62_65b2_c02f),
-        ("no_air", NO_AIR, 7, Outcome::Lost, 11782, 0, 0xa727_45eb_2850_e931),
-        ("none", NONE, 3, Outcome::Lost, 3385, 0, 0x17db_88f1_5dde_765e),
+        // 2026-11-06: map 1's props (their blocking cells are in the content hash) changed every
+        // hash; outcomes, ticks and tombstones are as before (no layout builds on a prop's cell).
+        ("centre", CENTRE, 1, Outcome::Won, 21838, 5, 0xf169_f62d_0fe6_954b),
+        ("no_air", NO_AIR, 7, Outcome::Lost, 11782, 0, 0xae3d_b911_b937_870e),
+        ("none", NONE, 3, Outcome::Lost, 3385, 0, 0xcdd2_102f_d191_6489),
     ];
     let mut report = String::new();
     let mut ok = true;

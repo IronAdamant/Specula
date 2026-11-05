@@ -232,7 +232,7 @@ impl Engine {
             ReviewCall::Submit(_) | ReviewCall::Decide { .. } | ReviewCall::CritiqueAdd(_) | ReviewCall::CritiqueUpdate { .. } | ReviewCall::Plan(_) if !named => {
                 hello_required("submissions, decisions, critiques and plans")
             }
-            ReviewCall::Submit(a) => match self.submit(w, a) {
+            ReviewCall::Submit(a) => match self.submit(w, &session.id, a) {
                 Ok(j) => out(j),
                 Err(e) => fail(&e),
             },
@@ -398,7 +398,7 @@ impl Engine {
 
     // ---- submissions ----
 
-    fn submit(&mut self, w: Writer, a: SubmitArgs) -> Result<Json, WorldError> {
+    fn submit(&mut self, w: Writer, session: &str, a: SubmitArgs) -> Result<Json, WorldError> {
         // Taste results reach the queue only from the taste tools (approving one writes the
         // project's style; a review probe approved a fence model under that batch).
         if a.batch.as_deref().is_some_and(crate::taste::is_taste_batch) {
@@ -424,6 +424,18 @@ impl Engine {
                     .with("limit", review::MAX_SUBTREE));
             }
             roots.push(Root { path: p.clone(), id, version: e.version, stamp, entities: n });
+        }
+        // The models it covers (spec key → label), for the recorded checks to be matched against;
+        // the same bounded walk as the stamps above (at most MAX_SUBTREE entities in all).
+        let mut models: BTreeMap<String, String> = BTreeMap::new();
+        if !a.results.is_empty() {
+            for r in &roots {
+                self.world.walk(Some(r.id), |e, _| {
+                    if let Some(m) = e.model.as_ref().filter(|_| !e.transient) {
+                        models.entry(m.key()).or_insert_with(|| crate::records::spec_label(m));
+                    }
+                });
+            }
         }
         if let Some(p) = &a.promote {
             let target = self.world.find_path(&p.to).map_err(|_| {
@@ -499,6 +511,7 @@ impl Engine {
             Some(t) => Some(t),
             None => self.swarm.board.current(w).map(|t| t.id),
         };
+        let recorded = self.recorded_results(w, session, &a.results, &models, &mut captures)?;
         let mut checks = a.checks;
         // What the submitter typed in is theirs: reported, never an engine result.
         for c in &mut checks {
@@ -506,6 +519,10 @@ impl Engine {
                 cl.by = w.name.to_owned();
             }
         }
+        if checks.len() + recorded.len() + 2 > review::MAX_CHECKS {
+            return Err(WorldError::new("too_many_checks", format!("at most {} checks with the recorded results and the engine's own", review::MAX_CHECKS)).with("limit", review::MAX_CHECKS));
+        }
+        checks.extend(recorded);
         if !roots.is_empty() {
             checks.push(Check {
                 kind: "other".into(),
@@ -516,6 +533,7 @@ impl Engine {
                 value: Some(total as f64),
                 limit: None,
                 detail: format!("{total} entities under {} path(s)", roots.len()),
+                recorded: None,
             });
         }
         checks.push(Check {
@@ -527,6 +545,7 @@ impl Engine {
             value: Some(captures.len() as f64),
             limit: None,
             detail: if captures.is_empty() { "no captures: the reviewer has nothing to look at".into() } else { String::new() },
+            recorded: None,
         });
         let spec = SubmitSpec {
             kind: a.kind,
@@ -552,6 +571,110 @@ impl Engine {
         self.swarm.board.log(w.name, tick, "review", task, format!("submitted #{id}: {title}"));
         self.review_ui.changed(&self.swarm.review);
         Ok(j)
+    }
+
+    /// A submission's `results`: each a record of this engine run made by the submitter (the
+    /// same agent identity), verified on the submitter's connection just now (a token from
+    /// `records::verify`: the check's inputs digest as judged, the capture's evidence copies
+    /// digest as written). A check record must judge models the submission covers (`models`:
+    /// spec key → label, of every model under its paths) and names every subject; the models it
+    /// leaves unjudged are said in an engine check of their own. A capture record marks exactly
+    /// the evidence copies its token names.
+    fn recorded_results(&mut self, w: Writer, session: &str, refs: &[review::ResultRef], models: &BTreeMap<String, String>, captures: &mut [Capture]) -> Result<Vec<Check>, WorldError> {
+        use crate::records::{spec_label, Kind};
+        let shared = std::sync::Arc::clone(&self.studio.shared);
+        let mut out = Vec::new();
+        let mut judged: BTreeSet<String> = BTreeSet::new();
+        let mut checks = 0usize;
+        for (i, r) in refs.iter().enumerate() {
+            let (rec, epoch, token) = {
+                let mut records = shared.records();
+                let rec = records.resolve(i, r).cloned()?;
+                let token = records.take_token(session, rec.id);
+                (rec, records.epoch().to_owned(), token)
+            };
+            let maker = SessionInfo { id: rec.session.clone(), client_name: String::new(), client_version: String::new(), protocol_version: String::new() };
+            if Some(self.swarm.key(&maker).as_str()) != w.session {
+                let by = self.swarm.agent_name(&maker);
+                return Err(WorldError::new(
+                    "foreign_result",
+                    format!("results[{i}]: {} #{} was recorded for {by}: a submission references its submitter's own results (run the check yourself)", rec.tool, rec.id),
+                )
+                .with("result", rec.id)
+                .with("by", by.as_str()));
+            }
+            let Some(token) = token else {
+                return Err(WorldError::new(
+                    "result_not_verified",
+                    format!("results[{i}]: {} #{} wasn't verified on this agent's connection just now (references are checked there before anything is copied; a playtest step can't reference recorded results)", rec.tool, rec.id),
+                )
+                .with("result", rec.id));
+            };
+            let provenance = rec.provenance(&epoch);
+            match rec.kind {
+                Kind::Capture => {
+                    let png = token.png_ref.as_deref().unwrap_or("");
+                    let Some(x) = captures.iter_mut().find(|x| x.path == png && x.packet.as_deref() == token.packet_ref.as_deref()) else {
+                        return Err(WorldError::new("stale_result", format!("results[{i}]: capture #{}'s verified copies aren't among the submission's captures", rec.id)).with("result", rec.id));
+                    };
+                    x.recorded = Some(provenance);
+                }
+                Kind::StyleCheck | Kind::StudioCheck => {
+                    checks += 1;
+                    let keys: Vec<String> = rec.subjects.iter().map(|s| s.spec.key()).collect();
+                    if !keys.iter().any(|k| models.contains_key(k)) {
+                        let named: Vec<String> = rec.subjects.iter().take(8).map(|s| spec_label(&s.spec)).collect();
+                        return Err(WorldError::new(
+                            "unrelated_result",
+                            format!("results[{i}]: {} #{} judged {}, and none of them is a model under the submission's paths: a check backs only the work it looked at", rec.tool, rec.id, named.join(", ")),
+                        )
+                        .with("result", rec.id)
+                        .with("subjects", named.join(", ").as_str()));
+                    }
+                    judged.extend(keys);
+                    // Every subject named, with its verdict (the JSON's `recorded.subjects` too).
+                    let each: Vec<String> = rec
+                        .subjects
+                        .iter()
+                        .map(|s| if s.passed { format!("{} passed", spec_label(&s.spec)) } else { format!("{} failed ({})", spec_label(&s.spec), s.errors.join(", ")) })
+                        .collect();
+                    let detail = format!("recorded by the engine: {} #{}: {}", rec.tool, rec.id, each.join("; "));
+                    out.push(Check {
+                        kind: if rec.kind == Kind::StyleCheck { "style" } else { "taste" }.into(),
+                        name: format!("{} #{}", rec.tool, rec.id),
+                        passed: review::Fact::Engine(rec.passed()),
+                        severity: "error".into(),
+                        metric: Some("failed subjects".into()),
+                        value: Some(rec.failed() as f64),
+                        limit: Some(0.0),
+                        detail: cut(&detail, 500),
+                        recorded: Some(provenance),
+                    });
+                }
+            }
+        }
+        if checks > 0 {
+            // What the recorded checks didn't judge is said, never implied passed.
+            let missing: Vec<&String> = models.iter().filter(|(k, _)| !judged.contains(*k)).map(|(_, label)| label).collect();
+            let shown: Vec<&str> = missing.iter().take(12).map(|s| s.as_str()).collect();
+            let more = missing.len().saturating_sub(shown.len());
+            out.push(Check {
+                kind: "style".into(),
+                name: "models_engine_checked".into(),
+                passed: review::Fact::Engine(missing.is_empty()),
+                severity: "warning".into(),
+                metric: Some("models not engine-checked".into()),
+                value: Some(missing.len() as f64),
+                limit: Some(0.0),
+                detail: if missing.is_empty() {
+                    format!("every one of the {} model(s) under the paths was judged by a recorded check", models.len())
+                } else {
+                    cut(&format!("not engine-checked: {}{}", shown.join(", "), if more > 0 { format!(" (+{more} more)") } else { String::new() }), 500)
+                },
+                recorded: None,
+            });
+        }
+        Ok(out)
     }
 
     fn decisions_of(&self, which: Option<Which>, verdict: Option<Status>, note: String, revert: bool, decisions: Vec<DecideOne>) -> Result<Vec<DecideOne>, WorldError> {

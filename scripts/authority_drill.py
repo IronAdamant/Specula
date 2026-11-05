@@ -258,6 +258,204 @@ def mount_race(exe, port, out):
     return d.results
 
 
+def recorded_results(exe, port, out):
+    """M5: a review submission references results the engine recorded (style_check,
+    studio_check, captures) by id and epoch; they list as engine results with their record,
+    apart from what the submitter typed. Another agent's record is refused (foreign_result), as
+    is one from another run or of a recipe changed since (stale_result) or none (result_not_found),
+    and a forged `recorded` in typed checks or captures is refused as an unknown field."""
+    print("review evidence the engine recorded:")
+    work = out / "recorded"
+    shutil.copytree(ROOT / "games" / "sepulcra" / "assets", work / "assets", ignore=shutil.ignore_patterns("taste"))
+    args = ["--headless", "--assets", str(work / "assets"), "--captures", str(work / "captures"), "--worlds", str(work / "worlds")]
+    with Engine(exe, port, work / "engine.log", *args, cwd=str(work)) as eng:
+        d = Drill(eng)
+        d.agent("ann")
+        d.agent("bob")
+        d.ok("ann", "world_spawn", name="ann_props", shape="group")
+        d.ok("ann", "world_spawn", name="angel", shape="model", parent="/ann_props", recipe="recipes/statue_angel.json")
+        style = d.ok("ann", "style_check", subjects=["recipes/statue_angel.json", "recipes/bone_pile.json"])
+        rec = style.get("recorded") or {}
+        d.check("style_check answers what it recorded {id, epoch}", isinstance(rec.get("id"), int) and isinstance(rec.get("epoch"), str), json.dumps(style)[:300])
+        frame = d.ok("ann", "sight_frame", width=160, height=120, eye=[4, 3, 4], target=[0, 0, 0])
+        cap = (frame.get("image") or {}).get("recorded") or {}
+        d.check("a capture answers what it recorded (image.recorded)", isinstance(cap.get("id"), int) and cap.get("epoch") == rec.get("epoch"), json.dumps(frame.get("image"))[:300])
+        refs = [{"id": rec.get("id"), "epoch": rec.get("epoch")}, {"id": cap.get("id"), "epoch": cap.get("epoch")}]
+        sub = id_of(d.ok("ann", "review_submit", kind="asset", title="ann's angel", paths=["/ann_props"], results=refs,
+                         checks=[{"kind": "style", "name": "my own look", "passed": True}]))
+        full = d.ok("bob", "review_list", id=sub, response_format="detailed")
+        checks = full.get("checks") or []
+        recorded = [c for c in checks if c.get("recorded")]
+        d.check("the referenced style_check is an engine check that names its record",
+                len(recorded) == 1 and recorded[0].get("engine") is True and recorded[0]["recorded"].get("id") == rec.get("id") and recorded[0]["recorded"].get("tool") == "style_check",
+                json.dumps(checks)[:400])
+        typed = [c for c in checks if c.get("name") == "my own look"]
+        d.check("what ann typed stays reported by ann, never the engine's", len(typed) == 1 and typed[0].get("reported_by") == "ann" and "engine" not in typed[0] and "recorded" not in typed[0], json.dumps(typed))
+        caps = [c for c in (full.get("captures") or []) if c.get("recorded")]
+        d.check("the referenced capture is in the evidence, marked recorded", len(caps) == 1 and caps[0]["recorded"].get("id") == cap.get("id"), json.dumps(full.get("captures"))[:400])
+        listing = (d.ok("bob", "review_list").get("submissions") or [{}])[0].get("checks", {})
+        d.check("review_list counts recorded results among the engine's", (listing.get("engine") or {}).get("recorded") == 1 and (listing.get("reported") or {}).get("passed") == 1, json.dumps(listing))
+        # Refusals, each structured.
+        d.expect("bob submits ann's recorded style_check as his", "bob", "review_submit", {"title": "bob's", "paths": ["/ann_props"], "results": refs[:1]}, ["foreign_result"])
+        d.expect("bob submits ann's recorded capture as his", "bob", "review_submit", {"title": "bob's", "paths": ["/ann_props"], "results": refs[1:]}, ["foreign_result"])
+        d.expect("a result from another engine run", "ann", "review_submit", {"title": "x", "paths": ["/ann_props"], "results": [{"id": rec.get("id"), "epoch": "00000000deadbeef"}]}, ["stale_result"])
+        d.expect("a result that doesn't exist", "ann", "review_submit", {"title": "x", "paths": ["/ann_props"], "results": [{"id": 999999, "epoch": rec.get("epoch")}]}, ["result_not_found"])
+        d.expect("a forged 'recorded' on a typed check", "ann", "review_submit", {"title": "x", "paths": ["/ann_props"], "checks": [{"kind": "style", "name": "n", "passed": True, "recorded": {"tool": "style_check", "id": 1, "epoch": "x"}}]}, None)
+        d.expect("a forged 'engine' on a typed check", "ann", "review_submit", {"title": "x", "paths": ["/ann_props"], "checks": [{"kind": "style", "name": "n", "passed": True, "engine": True}]}, None)
+        d.expect("a forged 'recorded' on a capture", "ann", "review_submit", {"title": "x", "paths": ["/ann_props"], "captures": [{"path": frame["image"]["path"], "recorded": {"tool": "sight", "id": 1, "epoch": "x"}}]}, None)
+        d.expect("the same result twice", "ann", "review_submit", {"title": "x", "paths": ["/ann_props"], "results": refs[:1] + refs[:1]}, None)
+        # A recipe changed after its check: the record no longer describes it.
+        recipe = work / "assets" / "recipes" / "bone_pile.json"
+        before = recipe.read_text(encoding="utf-8")
+        time.sleep(1.1)  # the library notices a change by modification time
+        recipe.write_text(before.replace('"seed": 3118', '"seed": 3119'), encoding="utf-8")
+        d.expect("a style_check of a recipe changed since", "ann", "review_submit", {"title": "x", "paths": ["/ann_props"], "results": refs[:1]}, ["stale_result"])
+        again = d.ok("ann", "style_check", subjects=["recipes/statue_angel.json", "recipes/bone_pile.json"]).get("recorded") or {}
+        fresh = d.raw(d.agent("ann"), "review_submit", {"title": "ann's angel again", "paths": ["/ann_props"], "results": [again], "supersedes": sub})
+        d.check("checked again, the new record is accepted", fresh[0] is None, json.dumps(fresh[1])[:300])
+        sub2 = id_of(fresh[1]) if fresh[0] is None else None
+
+        # The lane review's probes (2026-11-06), kept as permanent probes.
+        # (1) The rules judged changed after the check: style.toml loosened, checked, restored.
+        toml = work / "assets" / "style.toml"
+        strict = toml.read_text(encoding="utf-8")
+        time.sleep(1.1)
+        toml.write_text(strict + '\n[[budget]]\nname = "statue_angel"\nmax_triangles = 10\n', encoding="utf-8")
+        tight = d.ok("ann", "style_check", subjects=["recipes/statue_angel.json"])
+        d.check("a tightened style.toml fails the angel", tight.get("passed") is False, json.dumps(tight)[:200])
+        time.sleep(1.1)
+        toml.write_text(strict, encoding="utf-8")
+        d.expect("a style_check made under other style.toml rules", "ann", "review_submit", {"title": "x", "paths": ["/ann_props"], "results": [tight.get("recorded")]}, ["stale_result"])
+        loose = d.ok("ann", "style_check", subjects=["recipes/statue_angel.json"])
+        time.sleep(1.1)
+        toml.write_text(strict + '\n[[budget]]\nname = "statue_angel"\nmax_triangles = 10\n', encoding="utf-8")
+        d.expect("a pass recorded before style.toml was tightened", "ann", "review_submit", {"title": "x", "paths": ["/ann_props"], "results": [loose.get("recorded")]}, ["stale_result"])
+        time.sleep(1.1)
+        toml.write_text(strict, encoding="utf-8")
+        # (2) An unrelated record: a pass of the bone pile backs a submission of the angel.
+        bones = d.ok("ann", "style_check", subjects=["recipes/bone_pile.json"])
+        d.expect("an engine pass of another recipe backs the submission", "ann", "review_submit", {"title": "x", "paths": ["/ann_props"], "results": [bones.get("recorded")]}, ["unrelated_result"])
+        # ... and a check of part of the work says which models it didn't judge, by name.
+        d.ok("ann", "world_spawn", name="mourner", shape="model", parent="/ann_props", recipe="recipes/statue_mourner.json")
+        part = d.ok("ann", "style_check", subjects=["recipes/statue_angel.json", "recipes/bone_pile.json"])
+        p = d.raw(d.agent("ann"), "review_submit", {"title": "angel and mourner", "paths": ["/ann_props"], "results": [part.get("recorded")], **({"supersedes": sub2} if sub2 else {})})
+        cs = (d.ok("bob", "review_list", id=id_of(p[1]), response_format="detailed").get("checks") or []) if p[0] is None else []
+        rc = [c for c in cs if (c.get("recorded") or {}).get("id") == (part.get("recorded") or {}).get("id")]
+        subjects = [s.get("spec") for s in ((rc[0].get("recorded") or {}).get("subjects") or [])] if rc else []
+        d.check("the recorded check names every subject it judged", subjects == ["recipes/statue_angel.json", "recipes/bone_pile.json"] and "statue_angel" in (rc[0].get("detail") or ""), json.dumps(rc)[:400])
+        gap = [c for c in cs if c.get("name") == "models_engine_checked"]
+        d.check("the model no recorded check judged is named, as an engine check that fails", len(gap) == 1 and gap[0].get("passed") is False and "statue_mourner" in (gap[0].get("detail") or ""), json.dumps(gap)[:300])
+        # (3) The packet changed after the capture.
+        f2 = d.ok("ann", "sight_frame", width=160, height=120, eye=[4, 3, 4], target=[0, 0, 0], response_format="detailed")
+        pk = Path(f2["image"].get("packet_path") or Path(f2["image"]["path"]).with_suffix(".json"))
+        j = json.loads(pk.read_text())
+        j["FORGED"] = "edited"
+        for s in j.get("subjects", []):
+            s["visible_px"] = 999999
+        pk.write_text(json.dumps(j))
+        d.expect("a capture whose packet was edited after it was written", "ann", "review_submit", {"title": "x", "paths": ["/ann_props"], "results": [f2["image"].get("recorded")]}, ["stale_result"])
+        # (4) A recorded capture named only by path is evidence, never marked recorded.
+        f3 = d.ok("ann", "sight_frame", width=160, height=120, eye=[4, 3, 4], target=[0, 0, 0])
+        plain = d.raw(d.agent("ann"), "review_submit", {"title": "plain", "paths": ["/ann_props"], "captures": [{"path": f3["image"]["path"]}]})
+        pc = d.ok("bob", "review_list", id=id_of(plain[1]), response_format="detailed").get("captures") if plain[0] is None else None
+        d.check("a capture named by path isn't marked recorded", pc is not None and not any(c.get("recorded") for c in pc), json.dumps(pc)[:300])
+        # (5) A forged PNG with the recorded capture's evidence name (that name is an unkeyed,
+        # invertible hash; the record vouches by SHA-256).
+        f4 = d.ok("ann", "sight_frame", width=160, height=120, eye=[4, 3, 4], target=[0, 0, 0])
+        real = Path(f4["image"]["path"])
+        rb = real.read_bytes()
+        fake = forge_same_name(rb, solid_png(64, 48, (255, 0, 255)))
+        d.check("the forged PNG has the real one's evidence name", evidence_name(fake) == evidence_name(rb) and fake != rb)
+        real.write_bytes(fake)
+        d.expect("a forged PNG with the recorded capture's name", "ann", "review_submit", {"title": "x", "paths": ["/ann_props"], "results": [f4["image"].get("recorded")]}, ["stale_result"])
+    d.check("the recorded-results engine exited cleanly", eng.exit_code == 0, f"exit {eng.exit_code}")
+    return d.results
+
+
+# The evidence folder's content name (crate::evidence::content_name, StableHasher), ported to forge
+# a PNG with another's name: the lane review's probe that the name proves nothing.
+_M = (1 << 64) - 1
+_K = 0x9e3779b97f4a7c15
+_C = 0x5851f42d4c957f2d
+_CINV = pow(_C, -1, 1 << 64)
+_SEED = 0x6576_6964_656e_6365
+
+
+def _rotl(x, r):
+    return ((x << r) | (x >> (64 - r))) & _M
+
+
+def _rotr(x, r):
+    return ((x >> r) | (x << (64 - r))) & _M
+
+
+def _words(b):
+    import struct
+    out = [len(b) ^ 0xb5_0000_0000_0000]
+    for i in range(0, len(b) - len(b) % 8, 8):
+        out.append(struct.unpack("<Q", b[i:i + 8])[0])
+    rest = b[len(b) - len(b) % 8:]
+    if rest:
+        out.append(struct.unpack("<Q", rest + b"\0" * (8 - len(rest)))[0])
+    return out
+
+
+def _start():
+    return (0x243f6a8885a308d3 ^ ((_SEED * _K) & _M)) & _M
+
+
+def _mix(s, w):
+    return (((_rotl(s, 23) ^ w) * _C) + _K) & _M
+
+
+def _unmix(s_after, w):
+    return _rotr((((s_after - _K) & _M) * _CINV & _M) ^ w, 23)
+
+
+def _state(b):
+    s = _start()
+    for w in _words(b):
+        s = _mix(s, w)
+    return s, len(_words(b))
+
+
+def evidence_name(b):
+    s, n = _state(b)
+    z = s ^ ((n * _K) & _M)
+    z = ((z ^ (z >> 30)) * 0xbf58476d1ce4e5b9) & _M
+    z = ((z ^ (z >> 27)) * 0x94d049bb133111eb) & _M
+    return f"{z ^ (z >> 31):016x}-{len(b)}.png"
+
+
+def solid_png(w, h, rgb):
+    import struct
+    import zlib
+    raw = b"".join(b"\0" + bytes(rgb) * w for _ in range(h))
+
+    def chunk(k, data):
+        return struct.pack(">I", len(data)) + k + data + struct.pack(">I", zlib.crc32(k + data) & 0xffffffff)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
+
+
+def forge_same_name(target, fake):
+    """`fake`, padded after IEND with one solved word and zeros, to `target`'s length and name."""
+    import struct
+    length = len(target)
+    target_state, _ = _state(target)
+    body = fake + b"\0" * ((len(fake) + 7) // 8 * 8 - len(fake))
+    tail = b"\0" * (length - len(body) - 8)
+    ws = _words(body + b"\0" * 8 + tail)
+    nb = len(body) // 8
+    s = _start()
+    for w in ws[:1 + nb]:
+        s = _mix(s, w)
+    t = target_state
+    for w in reversed(ws[1 + nb + 1:]):
+        t = _unmix(t, w)
+    free = (((t - _K) & _M) * _CINV & _M) ^ _rotl(s, 23)
+    return body + struct.pack("<Q", free) + tail
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--exe")
@@ -453,6 +651,7 @@ def main():
         d.results.extend(d2.results)
     d.results.extend(one_call_one_commit(exe, a.port + 2, out))
     d.results.extend(mount_race(exe, a.port + 3, out))
+    d.results.extend(recorded_results(exe, a.port + 4, out))
     held = sum(1 for r in d.results if r["held"])
     report = {"probes": len(d.results), "held": held, "results": d.results, "owned_tools": owned, "engine_exit": eng.exit_code}
     (out / "report.json").write_text(json.dumps(report, indent=1))

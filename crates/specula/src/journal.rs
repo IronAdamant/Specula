@@ -36,7 +36,7 @@ static JOURNALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::ne
 
 /// This run's identity (wall clock and process id at first use): not simulation state, only what
 /// keeps one run's journal ids from being taken for another's.
-fn run_nonce() -> u64 {
+pub(crate) fn run_nonce() -> u64 {
     static NONCE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *NONCE.get_or_init(|| {
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);

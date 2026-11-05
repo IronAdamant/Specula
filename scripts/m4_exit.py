@@ -899,16 +899,25 @@ def after_approval(a, out):
         ents = [e for e in q.get("items", []) if e["path"].startswith(PROPS_ROOT + "/")]
         report["promoted_entities"] = ents
         want = {n: (x, z, yaw) for n, x, z, yaw in PROPS}
+        # M5: the props are map data (games/sepulcra/data/slab_01.json). A prop the map data moved
+        # from its approved place (the corner fence, so it doesn't block the lab's build spots) is
+        # moved there by the game; every other one keeps the owner's approval as its last write.
+        data = {p["name"]: (p["at"][0], p["at"][1]) for p in json.loads((ROOT / "games" / "sepulcra" / "data" / "slab_01.json").read_text()).get("props", [])}
+        moved = {n for n, (x, z) in data.items() if n in want and (abs(want[n][0] - x) > 1e-3 or abs(want[n][1] - z) > 1e-3)}
+        report["moved_by_map_data"] = sorted(moved)
         bad = []
         for e in ents:
             n = e["path"].split("/")[-1]
             x, z, yaw = want.get(n, (None, None, None))
+            if n in moved:
+                x, z = data[n]
             p = e.get("position", [0, 0, 0])
             if x is None or abs(p[0] - x) > 1e-3 or abs(p[2] - z) > 1e-3 or not (0.0 <= p[1] <= 0.8):
                 bad.append((n, p))
-            if e.get("modified_by") != "window:owner" or "staging" in (e.get("tags") or []):
+            if (e.get("modified_by") != "window:owner" and n not in moved) or "staging" in (e.get("tags") or []):
                 bad.append((n, e.get("modified_by"), e.get("tags")))
-        check(len(ents) == len(NAMES) and not bad, f"{len(ents)} props stand in {PROPS_ROOT} at their map-1 places, last written by window:owner, untagged staging ({bad[:3] or 'all'})")
+        check(len(ents) == len(NAMES) and not bad, f"{len(ents)} props stand in {PROPS_ROOT} at their map-1 places, last written by window:owner "
+              f"(moved by the map data: {sorted(moved) or 'none'}), untagged staging ({bad[:3] or 'all'})")
         left = [e for e in mcp.json("world_query", path_prefix=STAGING, fields=["path"], limit=100).get("items", []) if e["path"].startswith(STAGING + "/")]
         check(not left, f"nothing is left in staging ({len(left)})")
         hist = mcp.json("world_history", path_prefix=PROPS_ROOT, limit=5, response_format="detailed")

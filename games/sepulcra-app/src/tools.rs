@@ -95,7 +95,7 @@ pub fn defs() -> Vec<ToolDef> {
             description: "Play a move, exactly as the mouse does: place a stone, upgrade, sell, wall, unwall (on a cell \
                           like \"top:12,9\") or call_wave. Applied at the current tick (also while paused) and recorded. \
                           A single command answers accepted or an error with the rejection code (not_enough_dust, \
-                          occupied, not_buildable, not_wallable, enemy_in_the_way, ...); `commands` sends a batch."
+                          occupied, not_buildable, prop_blocks with the prop, not_wallable, enemy_in_the_way, ...); `commands` sends a batch."
                 .into(),
             input_schema: schema(batch, &[]),
         },
@@ -200,7 +200,7 @@ fn lex_refusal(game: &SepulcraGame) -> Option<(&'static str, Json)> {
     Some(("lex", Json::obj([("code", Json::from(code.as_str())), ("message", Json::from(message.as_str()))])))
 }
 
-fn rejection_json(r: &Rejection) -> Vec<(&'static str, Json)> {
+fn rejection_json(r: &Rejection, content: &Content) -> Vec<(&'static str, Json)> {
     let mut d = vec![("code", Json::from(r.code()))];
     match *r {
         Rejection::NotEnoughDust { need, have } => {
@@ -208,6 +208,14 @@ fn rejection_json(r: &Rejection) -> Vec<(&'static str, Json)> {
             d.push(("have", Json::from(have)));
         }
         Rejection::EnemyInTheWay { enemy } => d.push(("enemy", Json::from(enemy))),
+        // Which prop, by the map data's name, and how it covers the board.
+        Rejection::PropBlocks { prop } => {
+            if let Some(p) = content.map.props.get(usize::from(prop)) {
+                d.push(("prop", Json::from(p.name.as_str())));
+                d.push(("what", Json::from(p.what.as_str())));
+                d.push(("prop_cells", Json::arr(p.cells.iter().map(|c| Json::from(content.map.cell_name(*c))))));
+            }
+        }
         _ => {}
     }
     d
@@ -528,7 +536,7 @@ fn command(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOu
                 Ok(j) => Ok(answer(game, obj([("accepted", Json::Bool(true)), ("command", j)]))),
                 Err(r) => {
                     let msg = game.explain(&cmd, r);
-                    let mut d = rejection_json(&r);
+                    let mut d = rejection_json(&r, &content);
                     d.extend(lex_refusal(game));
                     d.push(("command", command_to_json(&cmd, &content)));
                     d.push(("tick", Json::from(game.state.tick())));
@@ -564,7 +572,7 @@ fn command(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOu
                     }
                     Err(r) => {
                         let mut d = vec![("accepted", Json::Bool(false)), ("command", command_to_json(&cmd, &content))];
-                        d.extend(rejection_json(&r));
+                        d.extend(rejection_json(&r, &content));
                         d.extend(lex_refusal(game));
                         d.push(("message", Json::from(game.explain(&cmd, r))));
                         Json::obj(d)
@@ -715,7 +723,7 @@ fn replay(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOut
             ReplayError::Rejected { tick, command, reason } => {
                 d.push(("tick", Json::from(tick)));
                 d.push(("command", command_to_json(&command, &content)));
-                d.extend(rejection_json(&reason));
+                d.extend(rejection_json(&reason, &content));
             }
             ReplayError::NotApplied { tick, ended_at } => {
                 d.push(("tick", Json::from(tick)));

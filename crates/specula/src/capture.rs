@@ -615,6 +615,10 @@ impl Engine {
     ) {
         let Answer { reply, call } = to;
         let theirs = reply.clone();
+        // Every capture saved is recorded for its agent (`crate::records`): a review submission
+        // references it by the answer's image.recorded.
+        let studio = std::sync::Arc::clone(&self.studio.shared);
+        let session_id = session.id.clone();
         let work = move |_: &crate::workers::Cancel| {
             let ((w, h, rgba), made) = make();
             let bytes = encode_png(w, h, &rgba);
@@ -631,7 +635,17 @@ impl Engine {
                     None
                 }
             };
-            let _ = theirs.send(finish(made, bytes, saved, warnings));
+            // The digest of the PNG bytes written, and (after the answer is made, which writes the
+            // packet on this thread) of the packet bytes written.
+            let record = saved.as_ref().map(|p| (p.clone(), specula_sys::digest::sha256(&bytes)));
+            PACKET_WRITTEN.with(|w| w.borrow_mut().take());
+            let mut out = finish(made, bytes, saved, warnings);
+            let packet = PACKET_WRITTEN.with(|w| w.borrow_mut().take());
+            if let (Some((png, sha)), false) = (record, out.is_error) {
+                let packet = packet.filter(|(p, _)| *p == png.with_extension("json")).map(|(_, b)| b);
+                studio.record_capture(&session_id, source, &png, sha, packet.as_deref(), &mut out);
+            }
+            let _ = theirs.send(out);
         };
         let kind = crate::workers::JobKind::CaptureEncode;
         let job = crate::workers::Offload::agent(kind, self.capture_owner(session), &session.id, call).class(crate::schedule::Class::Render).bytes(bytes);
@@ -1385,10 +1399,25 @@ pub(crate) struct Answer {
     pub(crate) call: u64,
 }
 
+thread_local! {
+    /// The packet the last [`save_packet`] on this thread wrote (path and bytes): the capture's
+    /// record vouches for exactly these bytes (`crate::records`; read back by
+    /// `Engine::offload_capture_made` on the same worker, right after the answer is made).
+    static PACKET_WRITTEN: std::cell::RefCell<Option<(PathBuf, Vec<u8>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Writes a capture's packet text, remembering the bytes written for the capture's record (every
+/// sight packet is written through here).
+fn write_packet(path: &Path, text: String) -> Result<(), crate::disk::DiskError> {
+    let written = crate::disk::book().write(crate::disk::Category::Captures, "sight", path, text.as_bytes(), crate::disk::Need::Agent);
+    PACKET_WRITTEN.with(|w| *w.borrow_mut() = written.is_ok().then(|| (path.to_path_buf(), text.into_bytes())));
+    written
+}
+
 /// Writes a packet next to its PNG; when that fails, the packet says so (and has no path).
 fn save_packet(packet: &mut Json, path: Option<&PathBuf>) {
     let Some(path) = path else { return };
-    if let Err(e) = crate::disk::book().write(crate::disk::Category::Captures, "sight", path, packet.to_pretty().as_bytes(), crate::disk::Need::Agent) {
+    if let Err(e) = write_packet(path, packet.to_pretty()) {
         let mut warnings = packet.get("warnings").and_then(Json::as_array).map(<[Json]>::to_vec).unwrap_or_default();
         warnings.push(Json::from(format!("packet not saved to disk: {e}")));
         packet.set("warnings", Json::Arr(warnings));

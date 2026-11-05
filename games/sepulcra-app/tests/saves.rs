@@ -92,7 +92,20 @@ fn a_loaded_run_continues_tick_for_tick() {
 fn the_fuzzers_crash_file_is_refused_not_a_crash() {
     let bytes = include_bytes!("data/crash_1_57.specsave");
     let file = specula::savegame::decode(bytes).expect("the container itself is intact");
-    let content = Arc::new(Content::builtin());
+    // The file was made before map 1's props: against today's content it is refused as
+    // content_changed (saying so); against the content it was made with, it must still be
+    // refused as bad_state, never crash.
+    use sepulcra::content::{ENEMIES_JSON, SLAB_01_JSON, STONES_JSON, WAVES_JSON};
+    let slab = match Json::parse(SLAB_01_JSON).unwrap() {
+        Json::Obj(pairs) => Json::Obj(pairs.into_iter().filter(|(k, _)| k != "props").collect()).to_string(),
+        _ => unreachable!(),
+    };
+    let content = Arc::new(Content::from_texts(&slab, STONES_JSON, ENEMIES_JSON, WAVES_JSON).unwrap());
+    let today_host = Host::new(Arc::new(Content::builtin()), 7);
+    match today_host.game.parse_state(file.section("game").unwrap()) {
+        Err(e) => assert!(e.contains("content_changed") && e.contains("before this map's props"), "{e}"),
+        Ok(_) => panic!("a save from before the props loads against the props' content"),
+    }
     let mut b = Host::new(Arc::clone(&content), 7);
     let tick = file.meta.get("tick").and_then(Json::as_u64).unwrap();
     let parsed = b.game.parse_state(file.section("game").unwrap());

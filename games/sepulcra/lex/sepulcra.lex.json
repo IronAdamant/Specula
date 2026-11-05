@@ -44,6 +44,10 @@
       "kind": "native", "hook": "sepulcra.wall_clear", "data": ["slab"],
       "reason": "A wall can't go on a cell a ground enemy stands on or is stepping into: that is a question about the movement graph's edges, which only the movement hook knows."
     },
+    "prop_clear": {
+      "kind": "native", "hook": "sepulcra.prop_clear", "data": ["slab"],
+      "reason": "A stone can't go on a cell a big prop covers (the slab's props with blocks_build, data): the refusal names the prop, a value sites don't carry (a sites item can't say which prop covers a spot, and no expression asks whether a site is in another sites item)."
+    },
 
     "enemy": {
       "kind": "archetype",
@@ -217,11 +221,14 @@
 
     "place": {
       "kind": "command",
-      "notes": "Carve a tier I stone on a free build spot (a fragment or a ledge).",
+      "notes": "Carve a tier I stone on a free build spot (a fragment or a ledge) that no big prop covers (prop_clear refuses prop_blocks).",
       "args": { "site": { "type": "site", "of": "build_spots" }, "stone": { "type": "archetype", "tags": ["stone", "!upgrade"] } },
       "require": [{ "when": "!occupied(arg.site, stone)", "code": "occupied", "message": "a stone already stands there" }],
       "cost": { "dust": "arg.stone.cost" },
-      "do": [{ "spawn": "arg.stone", "at": "arg.site", "with": { "invested": "arg.stone.cost" } }]
+      "do": [
+        { "native": "prop_clear", "args": { "x": "arg.site.x", "y": "arg.site.y", "z": "arg.site.z" } },
+        { "spawn": "arg.stone", "at": "arg.site", "with": { "invested": "arg.stone.cost" } }
+      ]
     },
     "upgrade": {
       "kind": "command",

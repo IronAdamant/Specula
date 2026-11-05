@@ -30,6 +30,7 @@ dependencies = [
  "specula-gpu",
  "specula-input",
  "specula-lex",
+ "specula-model",
  "specula-platform",
  "specula-protocol",
  "specula-scintilla",

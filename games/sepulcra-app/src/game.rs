@@ -506,6 +506,8 @@ impl SepulcraGame {
             Rejection::NotEnoughDust { need, have } => format!("need {need} dust, have {have}"),
             Rejection::Occupied => "a stone is there (select it to upgrade)".into(),
             Rejection::NotBuildable => "stones go on raised fragments and cliff ledges".into(),
+            // "a grave angel stands here": the prop's own words, from the map data.
+            Rejection::PropBlocks { prop } => map.props.get(usize::from(prop)).map_or_else(|| "a prop stands here".into(), |p| format!("{} stands here", p.what)),
             Rejection::NotWallable => "walls go on top-face lanes".into(),
             Rejection::EnemyInTheWay { .. } => "an enemy is in the way".into(),
             Rejection::MaxTier => "already tier III".into(),
@@ -739,6 +741,8 @@ impl SepulcraGame {
             t.push_str(&format!(" · wall {}/{} HP", w.hp / 1000, w.max_hp / 1000));
         } else if self.state.is_rooted(cell) {
             t.push_str(" · rooted (slows the dead)");
+        } else if let Some(p) = map.blocking_prop(cell).and_then(|i| map.props.get(usize::from(i))) {
+            t.push_str(&format!(" · {} (no building here)", p.what));
         }
         t
     }

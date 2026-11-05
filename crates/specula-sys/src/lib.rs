@@ -14,6 +14,7 @@
 //! | `vulkan-1` | never linked — loaded at runtime via [`dynlib::Library`] |
 //! | `xinput1_4` / `xinput9_1_0` | never linked — loaded at runtime by `specula-platform` (gamepads) |
 //! | `iphlpapi` | never linked — loaded at runtime by [`net`] (which ports have listeners) |
+//! | `bcrypt` | never linked — loaded at runtime by [`digest`] (SHA-256 from the OS, never hand-rolled) |
 //!
 //! Tests and examples must not declare imports from a DLL their dependencies already declare;
 //! add the function here (or to the owning crate) instead.
@@ -176,6 +177,93 @@ pub mod net {
                 }
             }
             Err(NetError { code: "table_failed", message: "the TCP table kept growing while being read".into(), os_code: Some(ERROR_INSUFFICIENT_BUFFER) })
+        }
+    }
+}
+
+/// SHA-256 from the operating system (AGENTS rule 12: cryptography is never hand-rolled). On
+/// Windows it is CNG's `BCryptHash` with the SHA-256 pseudo-handle (Windows 10 and later), from
+/// `bcrypt.dll` loaded at runtime; elsewhere it answers `unsupported` until each platform's own
+/// API is wired (CommonCrypto on macOS; Linux has none in the OS, so a caller must say what it
+/// can't vouch for there).
+pub mod digest {
+    use std::fmt;
+
+    /// Why a digest couldn't be made.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct DigestError {
+        /// `unsupported`, `load_failed`, `no_symbol`, `too_big` or `hash_failed`.
+        pub code: &'static str,
+        pub message: String,
+        /// The NTSTATUS or Win32 error code, when there is one.
+        pub os_code: Option<u32>,
+    }
+
+    impl fmt::Display for DigestError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "{}: {}", self.code, self.message)?;
+            if let Some(c) = self.os_code {
+                write!(f, " (OS code {c:#x})")?;
+            }
+            Ok(())
+        }
+    }
+
+    impl std::error::Error for DigestError {}
+
+    /// The SHA-256 of `bytes`.
+    pub fn sha256(bytes: &[u8]) -> Result<[u8; 32], DigestError> {
+        #[cfg(windows)]
+        {
+            windows::sha256(bytes)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = bytes;
+            Err(DigestError { code: "unsupported", message: "the OS's SHA-256 is wired on Windows only so far".into(), os_code: None })
+        }
+    }
+
+    /// Lowercase hex of a digest.
+    pub fn hex(d: &[u8; 32]) -> String {
+        d.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[cfg(windows)]
+    mod windows {
+        use super::DigestError;
+        use crate::dynlib::Library;
+        use std::ffi::c_void;
+        use std::sync::OnceLock;
+
+        /// NTSTATUS BCryptHash(BCRYPT_ALG_HANDLE, PUCHAR secret, ULONG, PUCHAR input, ULONG, PUCHAR output, ULONG).
+        type BCryptHash = unsafe extern "system" fn(*mut c_void, *const u8, u32, *const u8, u32, *mut u8, u32) -> i32;
+        /// `BCRYPT_SHA256_ALG_HANDLE`: a pseudo-handle, no provider to open or close.
+        const SHA256_ALG_HANDLE: usize = 0x41;
+
+        fn hash_fn() -> Result<BCryptHash, DigestError> {
+            static LIB: OnceLock<Result<Library, DigestError>> = OnceLock::new();
+            let lib = LIB
+                .get_or_init(|| Library::open("bcrypt.dll").map_err(|e| DigestError { code: "load_failed", message: e.to_string(), os_code: e.os_code }))
+                .as_ref()
+                .map_err(Clone::clone)?;
+            let sym = lib.symbol("BCryptHash").ok_or(DigestError { code: "no_symbol", message: "bcrypt.dll has no BCryptHash (Windows 10 or later needed)".into(), os_code: None })?;
+            // SAFETY: the symbol is BCryptHash with the signature above; `lib` lives for the process
+            // (a static), so the function pointer stays valid.
+            Ok(unsafe { std::mem::transmute::<*mut c_void, BCryptHash>(sym) })
+        }
+
+        pub fn sha256(bytes: &[u8]) -> Result<[u8; 32], DigestError> {
+            let hash = hash_fn()?;
+            let len = u32::try_from(bytes.len()).map_err(|_| DigestError { code: "too_big", message: format!("{} bytes (at most 4 GiB a call)", bytes.len()), os_code: None })?;
+            let mut out = [0u8; 32];
+            // SAFETY: the pseudo-handle names SHA-256; no secret (null, 0); `bytes` is readable for
+            // `len` bytes; `out` is writable for its 32 bytes, SHA-256's size.
+            let status = unsafe { hash(SHA256_ALG_HANDLE as *mut c_void, std::ptr::null(), 0, bytes.as_ptr(), len, out.as_mut_ptr(), 32) };
+            if status != 0 {
+                return Err(DigestError { code: "hash_failed", message: "BCryptHash (SHA-256) failed".into(), os_code: Some(status as u32) });
+            }
+            Ok(out)
         }
     }
 }
@@ -573,6 +661,22 @@ pub mod dynlib {
 
 #[cfg(test)]
 mod tests {
+    /// FIPS 180-2's test vectors, through the OS.
+    #[test]
+    fn sha256_matches_the_standard_vectors() {
+        match super::digest::sha256(b"abc") {
+            Ok(d) => {
+                assert_eq!(super::digest::hex(&d), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+                assert_eq!(super::digest::hex(&super::digest::sha256(b"").unwrap()), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+                let long = b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+                assert_eq!(super::digest::hex(&super::digest::sha256(long).unwrap()), "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
+            }
+            // No OS digest wired on this platform yet: callers say so (`unsupported`).
+            Err(e) if e.code == "unsupported" && !cfg!(windows) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+
     #[test]
     fn the_listener_table_sees_a_loopback_listener() {
         let l = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();

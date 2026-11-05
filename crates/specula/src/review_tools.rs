@@ -30,6 +30,8 @@ pub struct SubmitArgs {
     pub paths: Vec<String>,
     pub captures: Vec<Capture>,
     pub checks: Vec<Check>,
+    /// Results the engine recorded, referenced by id and epoch (`crate::records`).
+    pub results: Vec<review::ResultRef>,
     pub journal: Vec<u64>,
     pub journal_since: Option<u64>,
     pub promote: Option<review::Promote>,
@@ -212,6 +214,8 @@ fn captures_arg(args: &Json) -> Result<Vec<Capture>, String> {
                 kind: one_of(&c, "kind", &CAPTURE_KINDS, Some("frame"))?.unwrap_or_default(),
                 packet: file_arg(&c, "packet")?,
                 caption: text_arg(&c, "caption", 200, false)?.unwrap_or_default(),
+                // Only the engine marks a capture as recorded (from `results`), never the caller.
+                recorded: None,
             })
         })
         .collect()
@@ -235,9 +239,34 @@ fn checks_arg(args: &Json) -> Result<Vec<Check>, String> {
                 value: num_arg(c, "value")?,
                 limit: num_arg(c, "limit")?,
                 detail: text_arg(c, "detail", 500, false)?.unwrap_or_default(),
+                recorded: None,
             })
         })
         .collect()
+}
+
+/// `results`: references to results the engine recorded (`[{id, epoch}]`, each from a
+/// `recorded` in a style_check, studio_check or capture answer), at most
+/// [`crate::records::MAX_REFS`], no duplicates.
+fn results_arg(args: &Json) -> Result<Vec<review::ResultRef>, String> {
+    let Some(v) = args.get("results").filter(|v| !v.is_null()) else { return Ok(Vec::new()) };
+    let max = crate::records::MAX_REFS;
+    let items = v.as_array().filter(|a| a.len() <= max).ok_or(format!("'results' must be an array of at most {max} references [{{id, epoch}}]"))?;
+    let mut out: Vec<review::ResultRef> = Vec::with_capacity(items.len());
+    for (i, r) in items.iter().enumerate() {
+        check_keys(r, &format!("results[{i}]"), &[&["id", "epoch"]])?;
+        let id = int_arg(r, "id", 1, MAX_ID)?.ok_or(format!("results[{i}] needs 'id': the 'recorded.id' of a style_check, studio_check or capture answer"))?;
+        let epoch = match string_arg(r, "epoch")? {
+            Some(e) if (1..=crate::records::MAX_EPOCH).contains(&e.len()) && e.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.') => e.to_owned(),
+            Some(_) => return Err(format!("results[{i}].epoch must be the 'recorded.epoch' of the answer (1..{} letters, digits and dots)", crate::records::MAX_EPOCH)),
+            None => return Err(format!("results[{i}] needs 'epoch': the 'recorded.epoch' of the answer (which engine run recorded it)")),
+        };
+        if out.iter().any(|o| o.id == id) {
+            return Err(format!("results[{i}]: result {id} is listed twice"));
+        }
+        out.push(review::ResultRef { id, epoch });
+    }
+    Ok(out)
 }
 
 fn promote_arg(args: &Json) -> Result<Option<review::Promote>, String> {
@@ -313,7 +342,7 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<ReviewCall, String>> {
             check_keys(
                 args,
                 name,
-                &[&["title", "kind", "summary", "batch", "task", "paths", "captures", "checks", "journal", "journal_since", "promote", "supersedes"]],
+                &[&["title", "kind", "summary", "batch", "task", "paths", "captures", "checks", "results", "journal", "journal_since", "promote", "supersedes"]],
             )?;
             let a = SubmitArgs {
                 kind: one_of(args, "kind", &KINDS, Some("changes"))?.unwrap_or_default(),
@@ -328,6 +357,7 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<ReviewCall, String>> {
                 paths: paths_arg(args, "paths", review::MAX_PATHS)?,
                 captures: captures_arg(args)?,
                 checks: checks_arg(args)?,
+                results: results_arg(args)?,
                 journal: ids_arg(args, "journal", review::MAX_JOURNAL)?,
                 journal_since: int_arg(args, "journal_since", 0, MAX_ID)?,
                 promote: promote_arg(args)?,
@@ -603,8 +633,11 @@ pub fn definitions() -> Vec<ToolDef> {
              versions, so later edits make it stale), journal entries (journal or journal_since: your own entries after an id) \
              and a task (default: your current one). captures: PNGs the engine wrote (sight_frame/sight_orbit/sight_compare/\
              anim_filmstrip; first one shows on the review screen). checks: results as data from anim_check, physics_check, style \
-             or taste checks. promote {to}: approval moves the paths under 'to' (journaled, claim-checked). supersedes: replaces \
-             your earlier submission. Needs agent_hello. Saved with the board.",
+             or taste checks; what you type there is shown as reported by you, never as the engine's. results: results the \
+             engine recorded itself, by the 'recorded' {id, epoch} a style_check, studio_check or capture answer gave you (yours, \
+             this engine run, the recipe unchanged since): they show as engine results. promote {to}: approval moves the paths \
+             under 'to' (journaled, claim-checked). supersedes: replaces your earlier submission. Needs agent_hello. Saved with \
+             the board.",
             schema(
                 vec![
                     ("title", t("string", "1..200 characters")),
@@ -614,7 +647,8 @@ pub fn definitions() -> Vec<ToolDef> {
                     ("task", t("integer", "The task it is for (default: your current task)")),
                     ("paths", arr("string", "Entity subtrees it covers (\"/staging/crypt_props\"), at most 64")),
                     ("captures", objs("[{path, kind: contact_sheet|before_after|frame|filmstrip|orbit|other, packet?, caption?}], at most 8")),
-                    ("checks", objs("[{kind: style|taste|motion|physics|perf|ui|other, name, passed, severity: error|warning|note, metric?, value?, limit?, detail?}], at most 64")),
+                    ("checks", objs("[{kind: style|taste|motion|physics|perf|ui|other, name, passed, severity: error|warning|note, metric?, value?, limit?, detail?}], at most 64 (reported by you)")),
+                    ("results", objs("[{id, epoch}] from the 'recorded' of your style_check / studio_check answers and your captures' image.recorded, at most 16: engine-recorded checks and captures; a check must judge models under paths (refused: result_not_found, stale_result, foreign_result, unrelated_result, result_unverifiable, result_not_verified)")),
                     ("journal", arr("integer", "Journal ids it covers, at most 256")),
                     ("journal_since", t("integer", "Instead: your own journal entries after this id (newest 256)")),
                     ("promote", Json::obj([("type", Json::from("object")), ("description", Json::from("{to: parent path, replace?: delete a same-named entity there, remove_tag?: default \"staging\", null for none}"))])),

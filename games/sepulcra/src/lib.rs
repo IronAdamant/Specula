@@ -30,6 +30,7 @@ pub mod fixed;
 pub mod lex;
 pub mod map;
 pub mod path;
+pub mod props;
 pub mod script;
 pub mod sim;
 

@@ -188,9 +188,20 @@ draw (or record `drawn_as: "terrain"`), never in the packet directly.
   the review screen shows two lines, "Engine checks: 2 passed" in green (amber when one failed) and "Reported by bob
   (not checked by the engine): 2 passed" in the neutral small text (STYLE.md: an agent's claim never looks like an
   engine pass), instead of "all 4 passed"; listings say "2 engine check(s) passed; 2 reported by bob passed"; and
-  `review_list`'s `checks` has `engine {passed, failed}` and `reported {passed, failed, by}`. (Not yet: a submission
-  referencing results the engine recorded, such as a `style_check` by subject hash, so a reported pass can become an
-  engine one. That needs the check tools to keep their results; a follow-up.)
+  `review_list`'s `checks` has `engine {passed, failed, recorded}` and `reported {passed, failed, by}`.
+- **Results the engine recorded** (M5, `crate::records`): `style_check`, `studio_check` and every saved capture
+  keep their result in memory under an id and the run's epoch, with the session that ran them. They vouch by
+  SHA-256 from the OS (`specula_sys::digest`, never hand-rolled): for a capture, of the PNG and packet bytes the engine
+  wrote; for a check, per subject, of everything judged (recipe, includes, params, seed, `style.json`, `style.toml`).
+  A name an agent can reproduce never vouches for anything (the lane review forged the unkeyed evidence name with one
+  solved word). `review_submit {results: [{id, epoch}]}` turns them into engine facts that name their record and its
+  subjects (`Check.recorded`, `Capture.recorded`); only `Fact::Engine` carries a record, in memory and in the file.
+  The references are verified on the connection thread (inputs re-read and digested, evidence copies digested) and
+  leave a short-lived token the engine thread requires. Refused: `foreign_result` (another identity's record, by
+  `authority`'s keys, like `captured_by_other`), `stale_result`, `unrelated_result` (a check of none of the submitted
+  models), `result_unverifiable`, `result_not_verified`, `result_not_found`. A typed check or capture can't carry
+  `recorded` or `engine` (unknown fields). Probes in `scripts/authority_drill.py` (`recorded_results`, the lane
+  review's forged PNG, edited packet, loosened `style.toml` and unrelated record among them).
 - A critique's `source` is the author's claim, always listed with `by` beside it (`by` and `resolved_by` are in the
   concise listing too).
 - `response.rs` has a never-drop list of provenance keys (`by`, `source`, `resolved_by`, `engine`, `submitted_by`,

@@ -288,8 +288,8 @@ fn glyph(o: &Obj, key: &str) -> Result<char, DataError> {
     let s = o.str(key)?;
     let mut it = s.chars();
     match (it.next(), it.next()) {
-        (Some(c), None) if c.is_ascii_graphic() && !"#.jGSx-|B=".contains(c) => Ok(c),
-        _ => Err(o.err(key, ErrorCode::Invalid, "expected one printable ASCII character not used by the map legend (# . j G S x - | B =)")),
+        (Some(c), None) if c.is_ascii_graphic() && !"#.jGSx-|B=%".contains(c) => Ok(c),
+        _ => Err(o.err(key, ErrorCode::Invalid, "expected one printable ASCII character not used by the map legend (# . j G S x - | B = %)")),
     }
 }
 
@@ -578,6 +578,16 @@ fn check_summons(map: &Map, enemies: &[EnemyDef]) -> Result<(), DataError> {
 /// mean, in a fixed order. Display names, glyphs, `notes`, whitespace and key order are left
 /// out, so editing them doesn't invalidate recordings or pinned hashes.
 pub fn content_hash(c: &Content) -> u64 {
+    hash_of(c, true)
+}
+
+/// The hash `c` had before its props blocked building: what saves and recordings made before
+/// map 1's props (2026-11-06) carry, so a refusal can say so.
+pub fn content_hash_without_props(c: &Content) -> u64 {
+    hash_of(c, false)
+}
+
+fn hash_of(c: &Content, props: bool) -> u64 {
     let mut h = StableHasher::with_seed(0x5e9_c1a);
     let i = |h: &mut StableHasher, v: i64| h.write_i64(v);
     let pos = |h: &mut StableHasher, p: crate::fixed::Pos| {
@@ -615,6 +625,16 @@ pub fn content_hash(c: &Content) -> u64 {
     h.write_u64(m.air.entries.len() as u64);
     for &e in &m.air.entries {
         h.write_u32(u32::from(e));
+    }
+    // Props change the rules only where they block building: those cells (a map without
+    // blocking props hashes as before props existed; moving dressing changes nothing).
+    let blocked: Vec<u16> = m.cells().iter().filter(|cell| props && m.blocking_prop(cell.id).is_some()).map(|cell| cell.id.0).collect();
+    if !blocked.is_empty() {
+        h.write_str("blocks_build");
+        h.write_u64(blocked.len() as u64);
+        for b in blocked {
+            h.write_u32(u32::from(b));
+        }
     }
     h.write_u64(c.stones.len() as u64);
     for s in &c.stones {

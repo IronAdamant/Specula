@@ -1,6 +1,6 @@
 //! The Lex proof (docs/design/LEX.md): a slice of Sepulcra written as Lex data
 //! (`lex/slice.lex.json`) runs next to the hand-written sim on the same content
-//! (`lex/slice_waves.json` with the built-in slab, stones and enemies), with the same seed and
+//! (`lex/slice_waves.json` with the built-in slab without its props, stones and enemies), with the same seed and
 //! commands, and every tick must match: grave-dust, tombstones, the wave, the outcome, which
 //! commands were refused, and every enemy's and projectile's position (to the millimetre) and
 //! every enemy's HP (to the milli-HP).
@@ -25,8 +25,17 @@ enum Cmd {
     CallWave,
 }
 
+/// The built-in slab without its props: the slice is the smallest example and states no prop
+/// rule (the whole game below does, with `sepulcra.prop_clear`).
+fn slab_without_props() -> String {
+    match Json::parse(SLAB_01_JSON).expect("the slab is JSON") {
+        Json::Obj(pairs) => Json::Obj(pairs.into_iter().filter(|(k, _)| k != "props").collect()).to_string(),
+        _ => unreachable!("the slab is an object"),
+    }
+}
+
 fn content() -> Arc<Content> {
-    Arc::new(Content::from_texts(SLAB_01_JSON, STONES_JSON, ENEMIES_JSON, SLICE_WAVES).expect("slice content is valid"))
+    Arc::new(Content::from_texts(&slab_without_props(), STONES_JSON, ENEMIES_JSON, SLICE_WAVES).expect("slice content is valid"))
 }
 
 fn lex(seed: u64) -> Sim {
@@ -444,6 +453,61 @@ fn a_player_trying_everything_matches_the_hand_written_sim_tick_by_tick() {
         outcomes.push(end.snap.outcome.clone());
     }
     assert!(outcomes.iter().all(Option::is_some), "every run finishes: {outcomes:?}");
+}
+
+/// Map 1's props in both rule sets: a stone on every cell a prop covers (the big pieces refuse it
+/// with `prop_blocks` naming the same prop, dressing takes it), poor and rich, and the same
+/// stones on dressing then fight a whole game identically. Lex states the rule with
+/// `sepulcra.prop_clear`; the hand-written sim with `Rejection::PropBlocks`.
+#[test]
+fn props_block_building_alike_in_both_rule_sets() {
+    use sepulcra::content::{ENEMIES_JSON, SLAB_01_JSON, STONES_JSON, WAVES_JSON};
+    use sepulcra::sim::Rejection;
+    let waves = WAVES_JSON.replace("\"start_dust\": 150", "\"start_dust\": 4000");
+    let rich = Arc::new(Content::from_texts(SLAB_01_JSON, STONES_JSON, ENEMIES_JSON, &waves).unwrap());
+    let rich_rules = sepulcra::lex::compiled(&[("start_dust", Json::from(4000))]).unwrap();
+    let (poor, poor_rules) = (full::content(), full::rules());
+    for (c, rules) in [(&rich, &rich_rules), (&poor, &poor_rules)] {
+        let map = &c.map;
+        let warding = c.stone_kind("warding").unwrap();
+        // Every prop cell once, in cell order (stones fire in cell order in both).
+        let mut cells: Vec<sepulcra::CellId> = map.props.iter().flat_map(|p| p.cells.iter().copied()).collect();
+        cells.sort();
+        cells.dedup();
+        assert!(cells.len() > 40, "{} prop cells", cells.len());
+        // The Lex refusal names the same prop as the hand-written one.
+        let l = sepulcra::lex::sim(rules.clone(), 1).unwrap();
+        let s = State::new(c.clone(), 1);
+        for &at in &cells {
+            let cmd = Command::PlaceStone { cell: at, stone: warding };
+            let mut probe = l.clone();
+            let lex = sepulcra::lex::command_call(&probe, c, &cmd).and_then(|call| probe.apply(&call));
+            match (s.check(&cmd), lex) {
+                (Err(Rejection::PropBlocks { prop }), Err(r)) if r.code == "prop_blocks" => {
+                    let named = r.details.iter().find(|(k, _)| k == "prop").and_then(|(_, v)| v.as_i64());
+                    assert_eq!(named, Some(i64::from(prop)), "{}: {}", map.cell_name(at), r.message);
+                    assert!(r.message.contains(&map.props[usize::from(prop)].what), "{}", r.message);
+                }
+                // Poor: Lex checks the cost first (LEX.md's honest list), both refuse.
+                (Err(Rejection::PropBlocks { .. }), Err(r)) if r.code == "not_enough_dust" => {}
+                (Ok(()), Ok(())) | (Err(Rejection::NotEnoughDust { .. }), Err(_)) => {}
+                (rust, lex) => panic!("{}: rust {rust:?}, lex {lex:?}", map.cell_name(at)),
+            }
+        }
+        // A whole game with a stone tried on every prop cell at the start, and again later.
+        let mut tried = 0;
+        let end = full::parity_with(rules, c, 1, 40_000, |st: &State| {
+            if st.tick() != 0 && st.tick() != 3000 {
+                return Vec::new();
+            }
+            tried += cells.len();
+            cells.iter().map(|&at| Command::PlaceStone { cell: at, stone: warding }).collect()
+        });
+        let blocked = cells.iter().filter(|&&at| map.blocking_prop(at).is_some()).count();
+        assert!(end.refused >= blocked * 2, "every blocking cell refused twice: {} of {tried}", end.refused);
+        assert!(end.snap.outcome.is_some(), "the game ends: {:?}", end.snap);
+        eprintln!("props: {} cells tried twice, {blocked} blocking, refused {}, end {:?} at tick {}", cells.len(), end.refused, end.snap.outcome, end.snap.tick);
+    }
 }
 
 /// The same player with dust to spare and no early calls, so whole games play out: every tier,

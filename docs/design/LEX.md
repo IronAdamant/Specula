@@ -485,6 +485,7 @@ fields only when the walls change.
 | `sepulcra.air` | move | Flyers circle the air ring a drawn number of hops in a drawn direction, then dive: a path generated from seeded choices. |
 | `sepulcra.spot` | (action) | A stone's cell (it fires in cell order), face and rim distances: facts of the slab's geometry, which sites don't carry. The range rule itself is Lex (`when`). |
 | `sepulcra.wall_clear` | (action) | "No wall under an enemy" is a question about the movement graph's edges, which only the movement hook knows. |
+| `sepulcra.prop_clear` | (action) | (M5) A stone can't go on a cell a big prop covers (the slab's `props` with `blocks_build`): the refusal (`prop_blocks`, with the prop's index) names the prop, a value sites don't carry, and no expression asks whether a site is in another sites item. Lex checks the cost first, so a poor player hears `not_enough_dust` there (both refuse). |
 
 What each says Lex should grow next: graph navigation (with walls as costs, breaching and jumps as edge kinds),
 generated paths (a ring with a drawn start, direction and length), and sites that carry values (a cell id, a

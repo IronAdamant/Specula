@@ -103,6 +103,9 @@ pub struct Capture {
     pub kind: String,
     pub packet: Option<String>,
     pub caption: String,
+    /// The engine's record of it (a submission's `results` named it): which tool wrote it,
+    /// byte for byte this file. `None`: a capture the submitter named by path.
+    pub recorded: Option<Recorded>,
 }
 
 impl Capture {
@@ -114,8 +117,73 @@ impl Capture {
         if !self.caption.is_empty() {
             f.push(("caption", Json::from(self.caption.as_str())));
         }
+        if let Some(r) = &self.recorded {
+            f.push(("recorded", r.to_json()));
+        }
         Json::obj(f)
     }
+}
+
+/// Where an engine fact came from: a result the engine itself recorded when a tool ran
+/// (`style_check`, `studio_check`, a capture), named by its id and the engine run (epoch) that
+/// recorded it (`crate::records`). Kept with the submission, so a listing after a restart still
+/// says which run's record it was.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Recorded {
+    pub tool: String,
+    pub id: u64,
+    pub epoch: String,
+    /// Every subject the record judged (`recipes/x.json{param=v}`) and whether it passed, at
+    /// most [`MAX_RECORDED_SUBJECTS`] (a check record); empty for a capture.
+    pub subjects: Vec<(String, bool)>,
+    /// Subjects past the cap.
+    pub more_subjects: usize,
+}
+
+/// Subjects a recorded check names in a submission.
+pub const MAX_RECORDED_SUBJECTS: usize = 32;
+
+impl Recorded {
+    pub fn to_json(&self) -> Json {
+        let mut f = vec![("tool", Json::from(self.tool.as_str())), ("id", Json::from(self.id)), ("epoch", Json::from(self.epoch.as_str()))];
+        if !self.subjects.is_empty() {
+            f.push(("subjects", Json::arr(self.subjects.iter().map(|(s, p)| Json::obj([("spec", Json::from(s.as_str())), ("passed", Json::Bool(*p))])))));
+        }
+        if self.more_subjects > 0 {
+            f.push(("more_subjects", Json::from(self.more_subjects)));
+        }
+        Json::obj(f)
+    }
+
+    fn parse(j: Option<&Json>) -> Option<Recorded> {
+        let j = j?;
+        let subjects = j
+            .get("subjects")
+            .and_then(Json::as_array)
+            .unwrap_or_default()
+            .iter()
+            .take(MAX_RECORDED_SUBJECTS)
+            .filter_map(|s| Some((s.get("spec")?.as_str()?.chars().take(256).collect(), s.get("passed")?.as_bool()?)))
+            .collect();
+        Some(Recorded {
+            tool: j.get("tool")?.as_str()?.chars().take(64).collect(),
+            id: j.get("id")?.as_u64()?,
+            epoch: j.get("epoch")?.as_str()?.chars().take(64).collect(),
+            subjects,
+            more_subjects: j.get("more_subjects").and_then(Json::as_u64).unwrap_or(0) as usize,
+        })
+    }
+
+    fn measure(&self) -> usize {
+        64 + self.tool.len() + self.epoch.len() + self.subjects.iter().map(|(s, _)| 16 + s.len()).sum::<usize>()
+    }
+}
+
+/// A submission's reference to a result the engine recorded (`review_submit {results}`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResultRef {
+    pub id: u64,
+    pub epoch: String,
 }
 
 /// What an agent said, and who said it: never shown as an engine result.
@@ -168,6 +236,9 @@ pub struct Check {
     pub value: Option<f64>,
     pub limit: Option<f64>,
     pub detail: String,
+    /// The engine's record this check was made from (`review_submit {results}`); its `passed`
+    /// is then [`Fact::Engine`]. `None`: the engine's own submit checks, or a reported one.
+    pub recorded: Option<Recorded>,
 }
 
 impl Check {
@@ -193,6 +264,10 @@ impl Check {
         match &self.passed {
             Fact::Engine(_) => f.push(("engine", Json::Bool(true))),
             Fact::Claimed(c) => f.push(("reported_by", Json::from(c.by.as_str()))),
+        }
+        // Only an engine fact carries a record (a loaded file can't make a claim look recorded).
+        if let (Fact::Engine(_), Some(r)) = (&self.passed, &self.recorded) {
+            f.push(("recorded", r.to_json()));
         }
         Json::obj(f)
     }
@@ -299,8 +374,9 @@ pub struct Submission {
 
 impl Submission {
     pub fn measure(&self) -> usize {
-        let caps: usize = self.captures.iter().map(|c| 64 + c.path.len() + c.kind.len() + c.packet.as_ref().map_or(0, String::len) + c.caption.len()).sum();
-        let checks: usize = self.checks.iter().map(|c| 128 + c.kind.len() + c.name.len() + c.detail.len() + c.metric.as_ref().map_or(0, String::len)).sum();
+        let rec = |r: &Option<Recorded>| r.as_ref().map_or(0, Recorded::measure);
+        let caps: usize = self.captures.iter().map(|c| 64 + c.path.len() + c.kind.len() + c.packet.as_ref().map_or(0, String::len) + c.caption.len() + rec(&c.recorded)).sum();
+        let checks: usize = self.checks.iter().map(|c| 128 + c.kind.len() + c.name.len() + c.detail.len() + c.metric.as_ref().map_or(0, String::len) + rec(&c.recorded)).sum();
         let roots: usize = self.roots.iter().map(|r| 96 + r.path.len()).sum();
         let decision = self.decision.as_ref().map_or(0, |d| 128 + d.by.len() + d.note.len() + d.promoted.as_ref().map_or(0, |p| p.to_string().len()));
         512 + self.title.len() + self.summary.len() + self.kind.len() + self.batch.as_ref().map_or(0, String::len) + self.by.name.len() + caps + checks + roots + 12 * self.journal.len() + 12 * self.journal_ids.as_ref().map_or(0, Vec::len) + self.journal_epoch.len() + decision
@@ -334,7 +410,7 @@ impl Submission {
             (0, f) => format!("{f} failed"),
             (p, f) => format!("{p} passed, {f} failed"),
         };
-        let engine = if ep + ef == 0 { String::new() } else { format!("Engine checks: {}", part(ep, ef)) };
+        let engine = if ep + ef == 0 { String::new() } else { format!("Engine checks: {}{}", part(ep, ef), self.recorded_note()) };
         let reported = if rp + rf == 0 { String::new() } else { format!("Reported by {} (not checked by the engine): {}", self.by.name, part(rp, rf)) };
         (engine, reported)
     }
@@ -349,11 +425,26 @@ impl Submission {
             (p, f) => Some(format!("{p} {what} passed, {f} failed")),
         };
         let reported = format!("reported by {}", self.by.name);
-        let parts: Vec<String> = [part(ep, ef, "engine check(s)"), part(rp, rf, &reported)].into_iter().flatten().collect();
+        let engine = part(ep, ef, "engine check(s)").map(|e| format!("{e}{}", self.recorded_note()));
+        let parts: Vec<String> = [engine, part(rp, rf, &reported)].into_iter().flatten().collect();
         if parts.is_empty() {
             "Checks: none".into()
         } else {
             format!("Checks: {}", parts.join("; "))
+        }
+    }
+
+    /// Engine checks made from results the engine recorded (`review_submit {results}`).
+    pub fn recorded_checks(&self) -> usize {
+        self.checks.iter().filter(|c| c.passed.by_engine() && c.recorded.is_some()).count()
+    }
+
+    /// " (2 recorded results)" when some engine checks came from the engine's records.
+    fn recorded_note(&self) -> String {
+        match self.recorded_checks() {
+            0 => String::new(),
+            1 => " (1 from the engine's records)".into(),
+            n => format!(" ({n} from the engine's records)"),
         }
     }
 
@@ -401,7 +492,7 @@ impl Submission {
                 ("failed", Json::from(failed.len())),
                 ("failed_names", Json::arr(failed.iter().take(4).map(|c| Json::from(format!("{}:{}", c.kind, c.name))))),
                 // Measured by the engine vs reported by the submitter (never added together as passes).
-                ("engine", Json::obj([("passed", Json::from(ep)), ("failed", Json::from(ef))])),
+                ("engine", Json::obj([("passed", Json::from(ep)), ("failed", Json::from(ef)), ("recorded", Json::from(self.recorded_checks()))])),
                 ("reported", Json::obj([("passed", Json::from(rp)), ("failed", Json::from(rf)), ("by", Json::from(self.by.name.as_str()))])),
             ]),
         ));
@@ -1319,27 +1410,31 @@ impl Review {
             let captures = arr("captures")
                 .iter()
                 .take(MAX_CAPTURES)
-                .map(|c| Capture { path: text(c, "path"), kind: text(c, "kind"), packet: opt(c, "packet"), caption: text(c, "caption") })
+                .map(|c| Capture { path: text(c, "path"), kind: text(c, "kind"), packet: opt(c, "packet"), caption: text(c, "caption"), recorded: Recorded::parse(c.get("recorded")) })
                 .collect();
             let checks = arr("checks")
                 .iter()
                 .take(MAX_CHECKS)
-                .map(|c| Check {
-                    kind: text(c, "kind"),
-                    name: text(c, "name"),
-                    passed: {
-                        let v = c.get("passed").and_then(Json::as_bool).unwrap_or(false);
-                        if c.get("engine").and_then(Json::as_bool) == Some(true) {
-                            Fact::Engine(v)
-                        } else {
-                            Fact::Claimed(Claimed { by: opt(c, "reported_by").unwrap_or_else(|| text(s, "submitted_by")), value: v })
-                        }
-                    },
-                    severity: text(c, "severity"),
-                    metric: opt(c, "metric"),
-                    value: f64_of(c, "value"),
-                    limit: f64_of(c, "limit"),
-                    detail: text(c, "detail"),
+                .map(|c| {
+                    let engine = c.get("engine").and_then(Json::as_bool) == Some(true);
+                    Check {
+                        kind: text(c, "kind"),
+                        name: text(c, "name"),
+                        passed: {
+                            let v = c.get("passed").and_then(Json::as_bool).unwrap_or(false);
+                            if engine {
+                                Fact::Engine(v)
+                            } else {
+                                Fact::Claimed(Claimed { by: opt(c, "reported_by").unwrap_or_else(|| text(s, "submitted_by")), value: v })
+                            }
+                        },
+                        severity: text(c, "severity"),
+                        metric: opt(c, "metric"),
+                        value: f64_of(c, "value"),
+                        limit: f64_of(c, "limit"),
+                        detail: text(c, "detail"),
+                        recorded: if engine { Recorded::parse(c.get("recorded")) } else { None },
+                    }
                 })
                 .collect();
             let roots = arr("roots")
@@ -1476,11 +1571,11 @@ mod tests {
             summary: "twelve props".into(),
             batch: Some("crypt".into()),
             task: Some(4),
-            captures: vec![Capture { path: "c/orbit.png".into(), kind: "contact_sheet".into(), packet: None, caption: String::new() }],
+            captures: vec![Capture { path: "c/orbit.png".into(), kind: "contact_sheet".into(), packet: None, caption: String::new(), recorded: None }],
             checks: vec![
-                Check { kind: "style".into(), name: "budget".into(), passed: Fact::Claimed(Claimed { by: "ann".into(), value: true }), severity: "error".into(), metric: None, value: None, limit: None, detail: String::new() },
-                Check { kind: "taste".into(), name: "silhouette".into(), passed: Fact::Claimed(Claimed { by: "ann".into(), value: false }), severity: "warning".into(), metric: Some("iou".into()), value: Some(0.8), limit: Some(0.75), detail: String::new() },
-                Check { kind: "style".into(), name: "palette".into(), passed: Fact::Claimed(Claimed { by: "ann".into(), value: false }), severity: "error".into(), metric: None, value: None, limit: None, detail: String::new() },
+                Check { kind: "style".into(), name: "budget".into(), passed: Fact::Claimed(Claimed { by: "ann".into(), value: true }), severity: "error".into(), metric: None, value: None, limit: None, detail: String::new(), recorded: None },
+                Check { kind: "taste".into(), name: "silhouette".into(), passed: Fact::Claimed(Claimed { by: "ann".into(), value: false }), severity: "warning".into(), metric: Some("iou".into()), value: Some(0.8), limit: Some(0.75), detail: String::new(), recorded: None },
+                Check { kind: "style".into(), name: "palette".into(), passed: Fact::Claimed(Claimed { by: "ann".into(), value: false }), severity: "error".into(), metric: None, value: None, limit: None, detail: String::new(), recorded: None },
             ],
             roots: vec![Root { path: "/staging/crypt".into(), id: 7, version: 2, stamp: 0xabc, entities: 12 }],
             journal: vec![3, 4],
@@ -1683,7 +1778,7 @@ mod tests {
     fn provenance_survives_concise_listings() {
         let mut r = Review::default();
         let mut s = spec("crypt");
-        s.checks = vec![Check { kind: "style".into(), name: "palette".into(), passed: Fact::Claimed(Claimed { by: "ann".into(), value: true }), severity: "error".into(), metric: None, value: None, limit: None, detail: String::new() }];
+        s.checks = vec![Check { kind: "style".into(), name: "palette".into(), passed: Fact::Claimed(Claimed { by: "ann".into(), value: true }), severity: "error".into(), metric: None, value: None, limit: None, detail: String::new(), recorded: None }];
         let id = r.submit(ANN, 1, s).unwrap().id;
         r.decide(id, Decision { verdict: Status::Approved, by: "bob".into(), note: "ok".into(), tick: 2, promoted: None, task: None, reverted: None }).unwrap();
         let c = CritiqueSpec { text: "x".into(), severity: "note".into(), source: "taste".into(), submission: Some(id), ..Default::default() };
@@ -1706,7 +1801,7 @@ mod tests {
     fn the_checks_line_never_counts_reported_checks_as_the_engines() {
         let mut r = Review::default();
         let mut s = spec("crypt");
-        let check = |name: &str, passed: Fact<bool>| Check { kind: "style".into(), name: name.into(), passed, severity: "error".into(), metric: None, value: None, limit: None, detail: String::new() };
+        let check = |name: &str, passed: Fact<bool>| Check { kind: "style".into(), name: name.into(), passed, severity: "error".into(), metric: None, value: None, limit: None, detail: String::new(), recorded: None };
         s.checks = vec![
             check("paths_exist", Fact::Engine(true)),
             check("captures_exist", Fact::Engine(true)),
@@ -1725,6 +1820,43 @@ mod tests {
         let text = r.render();
         let back = Review::parse(&text).unwrap();
         assert_eq!(back.get(id).unwrap().checks, r.get(id).unwrap().checks, "provenance round-trips through the file");
+    }
+
+    /// M5: results the engine recorded (`review_submit {results}`) are engine checks with their
+    /// record named, counted and listed apart from what the submitter typed; a record survives
+    /// the file only on an engine fact, never on a reported one.
+    #[test]
+    fn recorded_results_are_engine_facts_with_their_record() {
+        let mut r = Review::default();
+        let mut s = spec("crypt");
+        let rec = Recorded { tool: "style_check".into(), id: 12, epoch: "00ab".into(), subjects: vec![("recipes/crypt.json".into(), true)], more_subjects: 0 };
+        let check = |name: &str, passed: Fact<bool>, recorded: Option<Recorded>| Check { kind: "style".into(), name: name.into(), passed, severity: "error".into(), metric: None, value: None, limit: None, detail: String::new(), recorded };
+        s.checks = vec![
+            check("style_check #12", Fact::Engine(true), Some(rec.clone())),
+            check("captures_exist", Fact::Engine(true), None),
+            check("palette", Fact::Claimed(Claimed { by: "bob".into(), value: true }), None),
+        ];
+        s.captures = vec![Capture { path: "evidence/ab-1.png".into(), kind: "frame".into(), packet: None, caption: String::new(), recorded: Some(Recorded { tool: "sight".into(), id: 13, epoch: "00ab".into(), ..Recorded::default() }) }];
+        let id = r.submit(BOB, 1, s).unwrap().id;
+        let sub = r.get(id).unwrap();
+        assert_eq!(sub.recorded_checks(), 1);
+        assert_eq!(sub.checks_line(), "Checks: 2 engine check(s) passed (1 from the engine's records); 1 reported by bob passed");
+        assert_eq!(sub.checks_parts().0, "Engine checks: 2 passed (1 from the engine's records)");
+        let j = sub.to_json(&[], "e");
+        let checks = j.get("checks").and_then(Json::as_array).unwrap();
+        assert_eq!(checks[0].get("recorded").and_then(|x| x.get("id")).and_then(Json::as_u64), Some(12));
+        assert!(checks[2].get("recorded").is_none() && checks[2].get("reported_by").is_some());
+        let summary = sub.summary_json(0, "e");
+        assert_eq!(summary.get("checks").and_then(|c| c.get("engine")).and_then(|e| e.get("recorded")).and_then(Json::as_u64), Some(1));
+        let back = Review::parse(&r.render()).unwrap();
+        assert_eq!(back.get(id).unwrap().checks, r.get(id).unwrap().checks, "records round-trip");
+        assert_eq!(back.get(id).unwrap().captures[0].recorded.as_ref().map(|x| x.id), Some(13));
+        // A hand-edited file can't make a reported check look recorded.
+        let forged = r.render().replace(r#""reported_by":"bob""#, r#""reported_by":"bob","recorded":{"tool":"style_check","id":99,"epoch":"00ab"}"#);
+        assert_ne!(forged, r.render(), "the forgery applies");
+        let f = Review::parse(&forged).unwrap();
+        let palette = f.get(id).unwrap().checks.iter().find(|c| c.name == "palette").unwrap();
+        assert!(palette.recorded.is_none() && !palette.passed.by_engine());
     }
 
     /// Review of the authority lane: after a restart (keys are per run) anyone with the owner's

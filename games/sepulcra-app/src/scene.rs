@@ -164,6 +164,8 @@ pub struct Scene {
     live: Vec<ProjectileId>,
     /// Particles and decals (transient presentation; see `scene_vfx`).
     vfx: effects::Effects,
+    /// The map's props (`crate::props`): dressing hidden under stones.
+    props: crate::props::Props,
 }
 
 fn lerp(a: Vec3, b: Vec3, t: f32) -> Vec3 {
@@ -194,6 +196,7 @@ impl Scene {
         let map = &state.content().map;
         let geo = SlabGeo::new(map);
         slab::build(world, agent, map, &geo);
+        let props = crate::props::Props::build(world, agent, map, &geo);
         // `fx` and `ui` are where earlier versions kept their pools.
         for name in ["units", "live", "cursor", "fx", "ui"] {
             if let Some(old) = ents::top_level(world, name) {
@@ -242,6 +245,7 @@ impl Scene {
             seen: Vec::new(),
             live: Vec::new(),
             vfx,
+            props,
         };
         scene.build_tombstones(world, state);
         scene
@@ -283,9 +287,15 @@ impl Scene {
         // Flourishes first: they read the enemies and projectiles that are about to go.
         self.flourishes(world, state, events, now);
         self.sync_stones(world, state);
+        self.props.sync(world, &self.agent, state);
         self.sync_walls(world, state);
         self.sync_roots(world, state);
         self.sync_tombstones(world, state);
+    }
+
+    /// The map's props in the world (which are hidden under stones).
+    pub fn props(&self) -> &crate::props::Props {
+        &self.props
     }
 
     fn sync_stones(&mut self, world: &mut GameWorld<'_>, state: &State) {
@@ -838,9 +848,11 @@ impl Scene {
         self.enemies.get(&enemy).map(|m| m.written.map_or(m.cur, |(p, _)| p))
     }
 
-    /// Whether a cell holds something buildable for the cursor (fragment or ledge).
+    /// Whether a cell holds something buildable for the cursor (fragment or ledge that no big
+    /// prop covers).
     pub fn buildable(state: &State, cell: CellId) -> bool {
-        matches!(state.content().map.cell(cell).kind, CellKind::Fragment | CellKind::Ledge)
+        let map = &state.content().map;
+        matches!(map.cell(cell).kind, CellKind::Fragment | CellKind::Ledge) && map.blocking_prop(cell).is_none()
     }
 }
 

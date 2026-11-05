@@ -71,6 +71,7 @@ mod project_kinds;
 mod project_text;
 mod project_tools;
 mod response;
+pub mod records;
 pub mod review;
 mod review_engine;
 mod review_screen;

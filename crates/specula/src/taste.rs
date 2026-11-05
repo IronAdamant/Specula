@@ -1297,7 +1297,7 @@ impl Engine {
                 let mut captures = Vec::new();
                 for (gid, n) in s.evidence.iter().rev().take(2) {
                     if let Some((path, _, _)) = self.taste.get(gid).and_then(|g| self.taste.sheet(g, *n)) {
-                        captures.push(Capture { path: path.display().to_string(), kind: "gallery_round".into(), packet: Some(path.with_extension("json").display().to_string()), caption: format!("{gid} round {n}") });
+                        captures.push(Capture { path: path.display().to_string(), kind: "gallery_round".into(), packet: Some(path.with_extension("json").display().to_string()), caption: format!("{gid} round {n}"), recorded: None });
                     }
                 }
                 let checks = vec![Check {
@@ -1309,6 +1309,7 @@ impl Engine {
                     value: Some(s.evidence.len() as f64),
                     limit: Some(preferences::MIN_PICKS as f64),
                     detail: format!("{} picks of {} agree within {:.3} (galleries {})", s.evidence.len(), s.target, s.spread, s.evidence.iter().map(|(g, r)| format!("{g}#{r}")).collect::<Vec<_>>().join(", ")),
+                    recorded: None,
                 }];
                 let what = s.to_json().get("what").and_then(Json::as_str).unwrap_or("").to_owned();
                 let spec = SubmitSpec { kind: "changes".into(), title: specula_gustus::cut(&format!("Taste: {what}"), 200), summary: format!("From repeated picks in galleries ({} agreeing). Approving writes it as the decider; rejecting dismisses it.", s.evidence.len()), batch: Some(format!("{SUGGESTION_BATCH}{id}")), captures, checks, ..SubmitSpec::default() };
@@ -1551,13 +1552,13 @@ impl Engine {
             .filter_map(|s| {
                 let g = decided.filter(|d| d.id == s.gallery).or_else(|| self.taste.get(&s.gallery))?;
                 let (path, _, _) = self.taste.sheet(g, s.round)?;
-                Some(Capture { path: path.display().to_string(), kind: "gallery_round".into(), packet: Some(path.with_extension("json").display().to_string()), caption: format!("{}: accepted in round {}", s.step, s.round) })
+                Some(Capture { path: path.display().to_string(), kind: "gallery_round".into(), packet: Some(path.with_extension("json").display().to_string()), caption: format!("{}: accepted in round {}", s.step, s.round), recorded: None })
             })
             .take(8)
             .collect();
         let checks = steps
             .iter()
-            .map(|s| Check { kind: "taste".into(), name: format!("{}_accepted", s.step), passed: crate::review::Fact::Engine(true), severity: "note".into(), metric: Some("round".into()), value: Some(s.round as f64), limit: None, detail: s.values.iter().map(|v| format!("{} = {}", v.0, v.1)).collect::<Vec<_>>().join(", ") })
+            .map(|s| Check { kind: "taste".into(), name: format!("{}_accepted", s.step), passed: crate::review::Fact::Engine(true), severity: "note".into(), metric: Some("round".into()), value: Some(s.round as f64), limit: None, detail: s.values.iter().map(|v| format!("{} = {}", v.0, v.1)).collect::<Vec<_>>().join(", "), recorded: None })
             .collect();
         let tick = self.clock.tick();
         let spec = SubmitSpec {

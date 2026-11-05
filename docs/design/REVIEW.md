@@ -45,7 +45,29 @@ approval moves the work into the game, a rejection becomes a task for the agent 
   it). The review screen checks again before it decodes a capture. Checks are data
   from the tools that ran them (`anim_check`, `physics_check`, `style_check`, `taste_check`): kind, name, passed,
   severity, and a metric with value and limit. The engine adds its own checks at submit (`paths_exist`,
-  `captures_exist`) and at decision time (`unchanged_since_submit`).
+  `captures_exist`) and at decision time (`unchanged_since_submit`). What a submitter types into `checks` is shown
+  as **reported by** them, never as the engine's.
+- **Results the engine recorded** (M5): `style_check` and `studio_check` answer `recorded: {id, epoch}`, and every
+  capture the engine saves (`sight_*`, the studio's sheets) answers `image.recorded: {id, epoch}`. A submission
+  names them in `results: [{id, epoch}]` (at most 16): a check record becomes an **engine** check (`style_check #12`,
+  passed when every subject passed, `recorded: {tool, id, epoch, subjects: [{spec, passed}]}`, every subject named in
+  its detail too), a capture record joins the captures, its evidence copies marked recorded. Records vouch by
+  **SHA-256 from the OS** (`specula_sys::digest`, `bcrypt.dll` on Windows; never hand-rolled): a capture record keeps
+  the digests of the PNG and packet bytes the engine wrote, a check record the digest of everything each subject was
+  judged on (its recipe, includes, params, seed, `style.json` and the `style.toml` rules). On the submitter's
+  connection the references are verified before the engine sees them: each check's inputs read again and digested,
+  each capture's evidence copies digested; the engine accepts a reference only with that fresh verification. A check
+  record must judge some model under the submission's paths; the models no recorded check judged are named in an
+  engine check of their own, `models_engine_checked` (a warning that fails). Refused, as structured errors:
+  `result_not_found` (no such id this run, or older than the newest 4,096), `stale_result` (another engine run's
+  epoch, a recipe, include or style file changed since the check, or a capture's PNG or packet changed on disk),
+  `foreign_result` (another agent's record), `unrelated_result` (a check of none of the submitted models),
+  `result_unverifiable` (a subject whose inputs couldn't be digested: a glTF asset, or no OS digest here),
+  `result_not_verified` (not verified on the submitter's connection: a playtest step can't reference results). Where
+  the OS has no digest yet, a capture answers `image.not_recorded {code, message}` instead. The records live in memory
+  for the run (`crate::records`, 8 MiB at most); the submission keeps the provenance. Listings count them:
+  `checks.engine.recorded`; the screen says "Engine checks: 2 passed (1 from the engine's records)" and tags each
+  failed line `[engine, recorded style_check #12]` or `[reported by ann]`.
 - **Bounds**: 8 captures, 64 checks, 64 paths, 256 journal ids, 10,000 entities under the paths, a title of 200 and
   a summary of 2,000 characters; 4,096 submissions kept (the oldest decided ones make room), 16 MiB of text for the
   queue and critiques together.

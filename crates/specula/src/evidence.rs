@@ -74,7 +74,7 @@ fn refuse(code: &'static str, message: String, file: &str) -> WorldError {
 }
 
 /// `<hash>-<len>[-n].<ext>`: the name a content gets in an evidence folder.
-fn content_name(bytes: &[u8], ext: &str, n: u32) -> String {
+pub(crate) fn content_name(bytes: &[u8], ext: &str, n: u32) -> String {
     let mut h = StableHasher::with_seed(0x6576_6964_656e_6365);
     h.write_bytes(bytes);
     let ext: String = ext.chars().filter(char::is_ascii_alphanumeric).take(8).collect::<String>().to_ascii_lowercase();
@@ -274,13 +274,32 @@ pub fn copy_in(roots: &ReviewRoots, given: &str, png: bool, call: &mut CallCopie
 /// engine thread never copies. Errors are the tool's answer. Also answers what it copied (even
 /// when a later file is refused), so a refused call hands its copies back to collection.
 pub fn prepare(tools: &crate::tools::Tools, session: &SessionInfo, name: &str, args: &Json) -> (Result<Json, ToolOutput>, Option<Made>) {
+    // A submission's references to recorded results: checked here (each check's inputs read
+    // again and digested), and the recorded captures join its captures, before anything is
+    // copied; their copies are digested after (`records::verify`).
+    let (referenced, plan);
+    let args = if name == "review_submit" {
+        (referenced, plan) = match crate::records::prepare(tools.studio(), args) {
+            Ok(a) => a,
+            Err(e) => return (Err(e), None),
+        };
+        &referenced
+    } else {
+        plan = crate::records::Plan::default();
+        args
+    };
     let out = tools.send(session, crate::tools::Command::ReviewRoots);
     let text = out.content.iter().find_map(|c| if let specula_protocol::Content::Text(t) = c { Some(t.clone()) } else { None }).unwrap_or_default();
     let Ok(j) = Json::parse(&text) else { return (Err(out), None) };
     let path = |k: &str| PathBuf::from(j.get(k).and_then(Json::as_str).unwrap_or_default());
     let roots = ReviewRoots { captures: path("captures"), run: path("run"), worlds: path("worlds"), queue: path("queue") };
     let mut call = CallCopies::default();
-    let answer = prepare_in(&roots, name, args, &mut call);
+    let mut answer = prepare_in(&roots, name, args, &mut call);
+    if let Ok(prepared) = &answer {
+        if let Err(e) = crate::records::verify(tools.studio(), &session.id, &roots.queue, prepared, &plan) {
+            answer = Err(e);
+        }
+    }
     let made = (!call.made.is_empty()).then(|| Made { queue: roots.queue.clone(), refs: std::mem::take(&mut call.made) });
     (answer, made)
 }

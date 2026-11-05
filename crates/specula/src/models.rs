@@ -258,6 +258,16 @@ struct StyleFile {
 }
 
 /// What a recipe's builds need, worked out once per content.
+/// The texts a recipe's build is made from (see [`Library::current_texts`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecipeTexts {
+    pub recipe: String,
+    /// The recipes it includes, transitively, by name.
+    pub library: BTreeMap<String, String>,
+    /// Its `style.json`.
+    pub style_path: PathBuf,
+}
+
 struct RecipeInfo {
     folder: PathBuf,
     content: u64,
@@ -1280,6 +1290,28 @@ impl Library {
             return Ok(BuildRequest::Ready(b, true));
         }
         Ok(BuildRequest::Pending(self.submit(&spec.recipe, &key, spec, true)))
+    }
+
+    /// The texts `spec` would build from now: its recipe, the recipes it includes and its style
+    /// file's path, its folder re-read as [`Library::request`] does; what a recorded check of it
+    /// is compared with (`crate::records`). Reads the disk: caller threads only, never the
+    /// engine's. A glTF asset has no texts (`not_a_recipe`).
+    pub fn current_texts(&mut self, spec: &ModelSpec) -> Result<RecipeTexts, WorldError> {
+        spec.check()?;
+        if is_gltf_path(&spec.recipe) {
+            return Err(WorldError::new("not_a_recipe", format!("{} is a glTF asset, not a recipe", spec.recipe)).with("recipe", spec.recipe.as_str()));
+        }
+        let folder = Path::new(&spec.recipe).parent().unwrap_or(Path::new("")).to_owned();
+        self.refresh_folder(&folder);
+        let key = self.key_for(spec, true)?;
+        self.cached_texts(spec, key.0).ok_or_else(|| WorldError::new("recipe_unreadable", format!("{} wasn't kept after reading", spec.recipe)).with("recipe", spec.recipe.as_str()))
+    }
+
+    /// The texts the build with content hash `content` was made from, as the library last read
+    /// them (no disk); `None` when the library's copy is another version (or a glTF asset).
+    pub fn cached_texts(&self, spec: &ModelSpec, content: u64) -> Option<RecipeTexts> {
+        let info = self.recipes.get(&spec.recipe).filter(|i| i.content == content)?;
+        Some(RecipeTexts { recipe: info.text.to_string(), library: (*info.library).clone(), style_path: info.style_path.clone() })
     }
 
     /// Points handle `h` at the build for `key`: at once from the cache, or once it is built.

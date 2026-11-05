@@ -26,6 +26,7 @@ pub mod game;
 pub mod hud;
 pub mod lexmode;
 pub mod looks;
+pub mod props;
 pub mod scene;
 pub mod slab;
 pub mod tools;

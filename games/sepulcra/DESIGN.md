@@ -165,6 +165,14 @@ cliff: - rock  | climb lane  # ledge  B cliff-base spawn
 - **The flyer ring:** 32 waypoints on a square 3 m outside the rim, at 4 m altitude. Flyers enter at the middle of
   each side and dive to 1.5 m above the centre of the graveyard.
 - **Broken corners** (`x`) give the slab its shattered silhouette.
+- **Props** (M5; the owner's decision of 2026-11-06): the 33 graveyard props the owner approved in M4 are map data
+  (`props`: name, `what`, `at`, `yaw`, `blocks_build`, `cells`; `src/props.rs`). Big pieces block building on every
+  cell they cover (`prop_blocks`, "a grave angel stands here"): the mausoleum, statues, obelisks, the tall lanterns,
+  tombs, columns, the gate, the crypt door, the fallen pediment, the candle shrine, the bell, the stone bench and
+  the iron fences: 40 fragments in all, each prop's cells checked against its mesh and the widest stone (`games/sepulcra-app/tests/prop_cells.rs`). Small dressing (mounds, tools, the wheelbarrow, coffins, urns, candles, the
+  wreath, headstones and markers, bones, the tripod brazier) doesn't; it is hidden while a stone stands on it.
+  Props stand only on fragments, so walls (lanes) never meet them and no path changes. The corner fence moved
+  1.4 m from its approved place to `top:11,15`, so it no longer blocks the build spots beside the middle lane.
 
 ### Range across faces (precise)
 

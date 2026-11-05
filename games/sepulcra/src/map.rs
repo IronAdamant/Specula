@@ -21,6 +21,7 @@ use specula_core::Json;
 
 use crate::error::{DataError, ErrorCode, Obj};
 use crate::fixed::{mm, Pos};
+use crate::props::Prop;
 
 /// Index into [`Map::cells`]. Ids are assigned face by face (top, north, east, south, west),
 /// row-major, so they are stable for a given map file and order every tie-break.
@@ -219,9 +220,13 @@ pub struct Map {
     pub graveyard: Vec<CellId>,
     pub graveyard_centre: Pos,
     pub air: Air,
+    /// The level's props (statues, gates, dressing), in file order (see [`crate::props`]).
+    pub props: Vec<Prop>,
+    /// Per cell: the first prop (by index) that blocks building there.
+    blocker: Vec<Option<u16>>,
 }
 
-const MAP_KEYS: [&str; 8] = ["name", "notes", "cell_m", "cliff_row_m", "top", "cliffs", "spawns", "air"];
+const MAP_KEYS: [&str; 9] = ["name", "notes", "cell_m", "cliff_row_m", "top", "cliffs", "spawns", "air", "props"];
 
 impl Map {
     /// Parses and validates a map file. `file` names it in errors.
@@ -300,6 +305,8 @@ impl Map {
             graveyard: Vec::new(),
             graveyard_centre: Pos::default(),
             air: Air { altitude: 0, ring: Vec::new(), entries: Vec::new(), dive_target: Pos::default(), ring_half: 0 },
+            props: Vec::new(),
+            blocker: Vec::new(),
         };
         map.link(file)?;
         map.find_jumps(file)?;
@@ -316,6 +323,13 @@ impl Map {
         map.graveyard_centre = Pos::new((sum[0] / n) as i32, (sum[1] / n) as i32, (sum[2] / n) as i32);
         map.read_air(&root)?;
         map.check_reachable(&root)?;
+        map.props = crate::props::parse(&root, &map)?;
+        map.blocker = vec![None; map.cells.len()];
+        for (i, p) in map.props.iter().enumerate().filter(|(_, p)| p.blocks_build) {
+            for c in &p.cells {
+                map.blocker[c.index()].get_or_insert(i as u16);
+            }
+        }
         Ok(map)
     }
 
@@ -568,6 +582,21 @@ impl Map {
             }
         }
         v
+    }
+
+    /// The first prop (by index) that blocks building on `id`, if any.
+    pub fn blocking_prop(&self, id: CellId) -> Option<u16> {
+        self.blocker.get(id.index()).copied().flatten()
+    }
+
+    /// The props covering `id` (blocking or not), by index.
+    pub fn props_on(&self, id: CellId) -> impl Iterator<Item = u16> + '_ {
+        self.props.iter().enumerate().filter(move |(_, p)| p.cells.binary_search(&id).is_ok()).map(|(i, _)| i as u16)
+    }
+
+    /// A prop by name.
+    pub fn prop_named(&self, name: &str) -> Option<u16> {
+        self.props.iter().position(|p| p.name == name).map(|i| i as u16)
     }
 
     pub fn spawn(&self, name: &str) -> Option<&Spawn> {

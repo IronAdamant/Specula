@@ -300,10 +300,14 @@ impl State {
         }
         let hash = r.u64("content hash").map_err(decode)?;
         if hash != content.hash {
+            // A save from before the map's props (the same content otherwise) says so: its
+            // stones may stand where a statue now does, so it isn't migrated.
+            let before_props = hash == crate::content::content_hash_without_props(&content);
+            let why = if before_props { " (it was made before this map's props, which block building on some cells; start a new game)" } else { "" };
             return Err(StateError {
                 code: "content_changed",
                 message: format!(
-                    "the save was made with other content (hash {hash:016x}, now {:016x}): the same state under other rules is another game, so it isn't loaded",
+                    "the save was made with other content (hash {hash:016x}, now {:016x}){why}: the same state under other rules is another game, so it isn't loaded",
                     content.hash
                 ),
                 offset: Some(4),

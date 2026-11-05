@@ -9,7 +9,7 @@
 use super::*;
 use crate::response::Format;
 use crate::studio_tools::{CompareFrom, Pass, RigName, SheetSpec, Shot, StudioCall, SubjectSpec, View, MAX_SHEET_PX, MAX_SUBJECTS};
-use crate::world::{ModelSpec, Shape};
+use crate::world::{ModelSpec, Shape, WorldError};
 use specula_anim::film;
 use specula_anim::math::Affine;
 use specula_core::math::{Quat, Vec3, Vec4};
@@ -284,6 +284,8 @@ pub struct Shared {
     frames: AtomicU64,
     marks: Mutex<Marks>,
     calls: Mutex<Calls>,
+    /// Results the engine recorded (checks, captures) for review submissions (`crate::records`).
+    records: Mutex<crate::records::Records>,
 }
 
 /// The calls running, for admission.
@@ -337,7 +339,73 @@ fn locked<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 impl Shared {
     pub(crate) fn new(library: Arc<SharedLibrary>, capture_dir: PathBuf) -> Shared {
-        Shared { library, capture_dir, frames: AtomicU64::new(0), marks: Mutex::default(), calls: Mutex::new(Calls { render_ms: 20.0, share: HEADLESS_SHARE, ..Calls::default() }) }
+        Shared {
+            library,
+            capture_dir,
+            frames: AtomicU64::new(0),
+            marks: Mutex::default(),
+            calls: Mutex::new(Calls { render_ms: 20.0, share: HEADLESS_SHARE, ..Calls::default() }),
+            records: Mutex::default(),
+        }
+    }
+
+    /// The engine's records of results (checks, captures): see [`crate::records`].
+    pub(crate) fn records(&self) -> std::sync::MutexGuard<'_, crate::records::Records> {
+        locked(&self.records)
+    }
+
+    /// What a check of `spec` would judge now: the recipe's texts read afresh through the model
+    /// library and the style files its bible comes from ([`bible_files`]). Reads the disk: the
+    /// caller's thread only (`crate::records::prepare`).
+    pub(crate) fn current_inputs(&self, spec: &ModelSpec) -> Result<crate::records::CheckInputs, WorldError> {
+        let (texts, root) = {
+            let mut lib = self.library.lock();
+            (lib.current_texts(spec)?, lib.root().to_path_buf())
+        };
+        let (style_json, style_toml) = bible_files(&root, &texts.style_path, &spec.recipe);
+        let read = |p: Option<PathBuf>| -> Result<Option<String>, WorldError> {
+            match p {
+                None => Ok(None),
+                Some(p) => std::fs::read_to_string(&p).map(Some).map_err(|e| WorldError::new("style_unreadable", format!("{}: {e}", p.display()))),
+            }
+        };
+        Ok(crate::records::CheckInputs { recipe: texts.recipe, library: texts.library, style_json: read(style_json)?, style_toml: read(style_toml)? })
+    }
+
+    /// Records a capture the engine wrote for `session` (`tool`: which one) by the SHA-256 of
+    /// the bytes it wrote (`png_bytes`, and the packet's when one was written next to it), and
+    /// says so in the answer: `image.recorded {id, epoch}`, or `image.not_recorded {code,
+    /// message}` when the OS has no digest here. Only a capture saved to disk is recorded.
+    /// `png_sha`: the PNG's digest, taken by the caller from the bytes it wrote.
+    pub(crate) fn record_capture(&self, session: &str, tool: &str, png: &Path, png_sha: Result<crate::records::Digest, specula_sys::digest::DigestError>, packet_bytes: Option<&[u8]>, out: &mut ToolOutput) {
+        let digest = |b: &[u8]| specula_sys::digest::sha256(b);
+        let made = png_sha.and_then(|png_sha| {
+            let packet = match packet_bytes {
+                Some(b) => Some((png.with_extension("json"), digest(b)?)),
+                None => None,
+            };
+            Ok(crate::records::CaptureFile { png: png.to_path_buf(), png_sha, packet })
+        });
+        let (key, value) = match made {
+            Ok(file) => {
+                let mut records = self.records();
+                let id = records.add(crate::records::Kind::Capture, tool, session, Vec::new(), Some(file));
+                ("recorded", crate::records::answer_json(id, records.epoch()))
+            }
+            Err(e) => ("not_recorded", crate::records::not_recorded_json(e.code, &format!("the engine can't vouch for this capture's bytes here ({e}), so a review can't reference it as recorded"))),
+        };
+        for c in &mut out.content {
+            if let Content::Text(t) = c {
+                if let Ok(mut j) = Json::parse(t) {
+                    if let Some(mut image) = j.get("image").filter(|i| matches!(i, Json::Obj(_))).cloned() {
+                        image.set(key, value.clone());
+                        j.set("image", image);
+                        *t = j.to_string();
+                    }
+                }
+                break;
+            }
+        }
     }
 
     fn marks(&self) -> std::sync::MutexGuard<'_, Marks> {
@@ -1469,7 +1537,12 @@ impl Ctx<'_> {
             );
         }
         let frame = self.shared.next_frame();
-        encode_and_save(&self.shared.capture_dir, frame, w, h, rgba, packet, answer, with_image)
+        let (mut out, saved) = encode_and_save(&self.shared.capture_dir, frame, w, h, rgba, packet, answer, with_image);
+        // The engine wrote it for this agent: recorded, so a review can reference it by id.
+        if let Some(s) = saved {
+            self.shared.record_capture(&self.session.id, "studio", &s.png, specula_sys::digest::sha256(&s.png_bytes), s.packet_bytes.as_deref(), &mut out);
+        }
+        out
     }
 
     // -- the tools --------------------------------------------------------------------------
@@ -2054,6 +2127,13 @@ impl Ctx<'_> {
             answer.set("measures", packet.get("measures").cloned().unwrap_or(Json::Null));
             answer.set("facts", first.facts.to_json(16));
         }
+        // The engine keeps what it found (style and taste together): a review submission
+        // references it by id and epoch. The sheet is recorded as a capture too (image.recorded).
+        let subject = record_subject(self.shared, &first, &report, bibles);
+        let mut records = self.shared.records();
+        let id = records.add(crate::records::Kind::StudioCheck, "studio_check", &self.session.id, vec![subject], None);
+        answer.set("recorded", crate::records::answer_json(id, records.epoch()));
+        drop(records);
         self.studio_output(w, h, &rgba, packet, answer, image)
     }
 
@@ -2099,6 +2179,7 @@ impl Ctx<'_> {
         let mut failed = 0usize;
         let mut bytes = 0usize;
         let mut truncated = 0usize;
+        let mut subjects = Vec::with_capacity(staged.len());
         for s in &staged {
             let r = match self.style_report(s) {
                 Ok(r) => r,
@@ -2107,6 +2188,7 @@ impl Ctx<'_> {
             if !r.passed() {
                 failed += 1;
             }
+            subjects.push(record_subject(self.shared, s, &r, bibles));
             let j = match format {
                 Format::Concise if r.passed() => continue,
                 Format::Concise => Json::obj([("subject", Json::from(s.name.as_str())), ("recipe", spec_json(&s.spec)), ("errors", Json::arr(r.errors().take(CONCISE_ERRORS).map(Finding::to_json)))]),
@@ -2138,15 +2220,44 @@ impl Ctx<'_> {
             out.set("not_listed", Json::from(truncated));
             out.set("note", Json::from(format!("{truncated} results left out to stay under {} KiB; check fewer subjects", MAX_ANSWER_BYTES / 1024)));
         }
+        // The engine keeps what it found: a review submission references it by id and epoch.
+        let mut records = self.shared.records();
+        let id = records.add(crate::records::Kind::StyleCheck, "style_check", &self.session.id, subjects, None);
+        out.set("recorded", crate::records::answer_json(id, records.epoch()));
+        drop(records);
         ToolOutput::text(out.to_string())
+    }
+}
+
+/// What a check record keeps of one subject (`crate::records`): its verdict, and the SHA-256 of
+/// exactly the texts it was judged on (the recipe texts of this build, as the library holds
+/// them, and the style files the bible was read from). `inputs` is `None` when those texts
+/// aren't this build's any more, or there is no OS digest.
+fn record_subject(shared: &Shared, s: &Staged, r: &specula_studio::Report, bibles: &Bibles) -> crate::records::Subject {
+    let texts = shared.library.lock().cached_texts(&s.spec, s.built.content);
+    let inputs = match (texts, bibles.texts(&s.bible)) {
+        (Some(t), Some(b)) => {
+            let inp = crate::records::CheckInputs { recipe: t.recipe, library: t.library, style_json: b.style_json.clone(), style_toml: b.style_toml.clone() };
+            crate::records::inputs_digest(&s.spec, &inp).ok()
+        }
+        _ => None,
+    };
+    crate::records::Subject {
+        name: s.name.clone(),
+        spec: s.spec.clone(),
+        inputs,
+        passed: r.passed(),
+        errors: r.errors().take(crate::records::MAX_ERRORS).map(|e| e.check.to_string()).collect(),
+        failed: r.errors().count(),
     }
 }
 
 
 /// Encodes a studio image, saves it and its packet as capture `frame` in `dir`, and makes the
-/// answer (on a worker thread for queued calls).
+/// answer (on a worker thread for queued calls), with what was saved: the PNG's path and bytes,
+/// and the packet's bytes when it was saved too (`None`: the PNG wasn't saved).
 #[allow(clippy::too_many_arguments)]
-fn encode_and_save(dir: &Path, frame: u64, w: u32, h: u32, rgba: &[u8], mut packet: Json, mut answer: Json, with_image: bool) -> ToolOutput {
+fn encode_and_save(dir: &Path, frame: u64, w: u32, h: u32, rgba: &[u8], mut packet: Json, mut answer: Json, with_image: bool) -> (ToolOutput, Option<Saved>) {
     let png_bytes = png::encode_rgba8(w, h, rgba, Level::Fastest);
     let png_path = {
         let p = dir.join(format!("studio_{frame:05}.png"));
@@ -2167,9 +2278,12 @@ fn encode_and_save(dir: &Path, frame: u64, w: u32, h: u32, rgba: &[u8], mut pack
     ]);
     packet.set("image", image.clone());
     packet.set("frame", Json::from(frame));
+    let mut packet_written = None;
     if let Some(p) = &packet_path {
-        if let Err(e) = crate::disk::book().write(crate::disk::Category::Captures, "studio", p, packet.to_pretty().as_bytes(), crate::disk::Need::Agent) {
-            warnings.push(Json::from(format!("packet not saved to disk: {e}")));
+        let text = packet.to_pretty();
+        match crate::disk::book().write(crate::disk::Category::Captures, "studio", p, text.as_bytes(), crate::disk::Need::Agent) {
+            Ok(()) => packet_written = Some(text.into_bytes()),
+            Err(e) => warnings.push(Json::from(format!("packet not saved to disk: {e}"))),
         }
     }
     answer.set("image", image);
@@ -2181,47 +2295,74 @@ fn encode_and_save(dir: &Path, frame: u64, w: u32, h: u32, rgba: &[u8], mut pack
         content.push(Content::Image { mime_type: "image/png".into(), data_base64: base64::encode(&png_bytes) });
     }
     content.push(Content::Text(answer.to_string()));
-    ToolOutput { content, is_error: false }
+    let saved = png_path.ok().map(|png| Saved { png, png_bytes, packet_bytes: packet_written });
+    (ToolOutput { content, is_error: false }, saved)
+}
+
+/// What [`encode_and_save`] wrote: the bytes a capture record vouches for.
+struct Saved {
+    png: PathBuf,
+    png_bytes: Vec<u8>,
+    packet_bytes: Option<Vec<u8>>,
 }
 
 // ---------------------------------------------------------------------------------------------
 // Bibles: each game's rules, loaded once per call
 
-/// The rules and palettes one call uses, by (style.json, style.toml) path.
+/// The rules and palettes one call uses, by (style.json, style.toml) path, with the texts they
+/// were read from (a recorded check vouches for them: `crate::records`).
 #[derive(Default)]
 struct Bibles {
-    loaded: Vec<(BibleKey, Rc<Bible>)>,
+    loaded: Vec<(BibleKey, Rc<Bible>, BibleTexts)>,
+}
+
+/// The `style.json` and `style.toml` texts a bible was made from.
+#[derive(Clone, Default)]
+struct BibleTexts {
+    style_json: Option<String>,
+    style_toml: Option<String>,
+}
+
+/// The files a build's rules come from: its style (`style.json`; a glTF has none, so the one
+/// next to the `style.toml` found, else the assets root's) and the `style.toml` next to the
+/// recipe or above it in the assets root. `style`: the build's style file (may be empty).
+pub(crate) fn bible_files(root: &Path, style: &Path, recipe: &str) -> (Option<PathBuf>, Option<PathBuf>) {
+    let mut dir = root.join(recipe);
+    let mut toml = None;
+    while dir.pop() && dir.starts_with(root) {
+        let f = dir.join("style.toml");
+        if f.is_file() {
+            toml = Some(f);
+            break;
+        }
+        if dir == root {
+            break;
+        }
+    }
+    let style_path = if !style.as_os_str().is_empty() {
+        Some(if style.is_absolute() { style.to_path_buf() } else { root.join(style) })
+    } else {
+        toml.as_ref().and_then(|t| t.parent()).map(|d| d.join("style.json")).filter(|p| p.is_file()).or_else(|| Some(root.join("style.json")).filter(|p| p.is_file()))
+    };
+    (style_path, toml)
 }
 
 impl Bibles {
     /// The bible for a build: its style (`style.json`) and the `style.toml` next to the recipe
     /// or above it in the assets root.
     fn get(&mut self, root: &Path, built: &models::Built, recipe: &str) -> Result<Rc<Bible>, ToolOutput> {
-        let mut dir = root.join(recipe);
-        let mut toml = None;
-        while dir.pop() && dir.starts_with(root) {
-            let f = dir.join("style.toml");
-            if f.is_file() {
-                toml = Some(f);
-                break;
-            }
-            if dir == root {
-                break;
-            }
-        }
-        // The palette: the build's own style; a glTF has none, so the style.json next to the
-        // style.toml found (else the assets root's), whose palette the rules name.
-        let style_path = if !built.style.as_os_str().is_empty() {
-            Some(if built.style.is_absolute() { built.style.clone() } else { root.join(&built.style) })
-        } else {
-            toml.as_ref().and_then(|t| t.parent()).map(|d| d.join("style.json")).filter(|p| p.is_file()).or_else(|| Some(root.join("style.json")).filter(|p| p.is_file()))
-        };
+        let (style_path, toml) = bible_files(root, &built.style, recipe);
         let key = (style_path.clone().unwrap_or_default(), toml.clone());
-        if let Some((_, b)) = self.loaded.iter().find(|(k, _)| *k == key) {
+        if let Some((_, b, _)) = self.loaded.iter().find(|(k, _, _)| *k == key) {
             return Ok(Rc::clone(b));
         }
+        let mut texts = BibleTexts::default();
         let style = match &style_path {
-            Some(p) => match std::fs::read_to_string(p).map_err(|e| e.to_string()).and_then(|t| specula_model::Style::parse(&t).map_err(|e| e.to_string())) {
+            Some(p) => match std::fs::read_to_string(p).map_err(|e| e.to_string()).and_then(|t| {
+                let s = specula_model::Style::parse(&t).map_err(|e| e.to_string());
+                texts.style_json = Some(t);
+                s
+            }) {
                 Ok(s) => s,
                 Err(e) => return Err(error("style_unreadable", format!("{}: {e}", p.display()))),
             },
@@ -2235,13 +2376,19 @@ impl Bibles {
             None => (None, "defaults".to_string()),
         };
         let bible = Bible::load(&style, text.as_deref(), &source).map_err(|e| ToolOutput::error(e.to_json().to_string()))?;
+        texts.style_toml = text;
         let b = Rc::new(bible);
-        self.loaded.push((key, Rc::clone(&b)));
+        self.loaded.push((key, Rc::clone(&b), texts));
         Ok(b)
     }
 
+    /// The texts `bible` was made from.
+    fn texts(&self, bible: &Rc<Bible>) -> Option<&BibleTexts> {
+        self.loaded.iter().find(|(_, b, _)| Rc::ptr_eq(b, bible)).map(|(_, _, t)| t)
+    }
+
     fn sources(&self) -> Vec<String> {
-        let mut v: Vec<String> = self.loaded.iter().map(|(_, b)| b.rules.source.clone()).collect();
+        let mut v: Vec<String> = self.loaded.iter().map(|(_, b, _)| b.rules.source.clone()).collect();
         v.dedup();
         v
     }

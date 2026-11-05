@@ -14,6 +14,8 @@
 //!   rims, read from the slab, for the range-across-faces rule written in Lex.
 //! - `sepulcra.wall_clear` (action, the wall command): refuses `enemy_in_the_way` while a ground
 //!   enemy stands on or steps into the cell.
+//! - `sepulcra.prop_clear` (action, the place command): refuses `prop_blocks` (with the prop's
+//!   index) on a cell a prop with `blocks_build` covers (the slab's `props`, data).
 //!
 //! Each hook reads the slab from the rule set's `slab` data item (the same JSON as
 //! `data/slab_01.json`), so the level is data too. They are pure functions of the run's state
@@ -43,6 +45,7 @@ pub fn natives() -> Natives {
     n.insert("sepulcra.air".into(), Arc::new(Hook::Unbound(Kind::Air)) as Arc<dyn NativeHook>);
     n.insert("sepulcra.spot".into(), Arc::new(Hook::Unbound(Kind::Spot)) as Arc<dyn NativeHook>);
     n.insert("sepulcra.wall_clear".into(), Arc::new(Hook::Unbound(Kind::WallClear)) as Arc<dyn NativeHook>);
+    n.insert("sepulcra.prop_clear".into(), Arc::new(Hook::Unbound(Kind::PropClear)) as Arc<dyn NativeHook>);
     n
 }
 
@@ -52,6 +55,7 @@ enum Kind {
     Air,
     Spot,
     WallClear,
+    PropClear,
 }
 
 enum Hook {
@@ -161,6 +165,7 @@ impl NativeHook for Hook {
                 Kind::Air => b.air(cx),
                 Kind::Spot => b.spot(cx),
                 Kind::WallClear => b.wall_clear(cx),
+                Kind::PropClear => b.prop_clear(cx),
             },
         }
     }
@@ -609,6 +614,22 @@ impl Bound {
         });
         match blocker {
             Some(id) => Err(cx.refuse_with("enemy_in_the_way", format!("enemy {id} stands on or is stepping into {}", self.map.cell_name(cell)), &[("enemy", i64::from(id))])),
+            None => Ok(()),
+        }
+    }
+
+    /// The place command's prop rule: a stone can't go on a cell a blocking prop covers (the
+    /// slab's `props`, each with `blocks_build`). Refuses `prop_blocks` with the prop's index.
+    fn prop_clear(&self, cx: &mut NativeCtx<'_, '_>) -> Result<(), String> {
+        let (Some(x), Some(y), Some(z)) = (cx.arg("x"), cx.arg("y"), cx.arg("z")) else {
+            return Err("sepulcra.prop_clear needs args x, y and z (the site's position: arg.site.x ...)".into());
+        };
+        let cell = self.cell_at([x, y, z]).ok_or("the site is not a cell of the slab")?;
+        match self.map.blocking_prop(cell) {
+            Some(i) => {
+                let p = &self.map.props[usize::from(i)];
+                Err(cx.refuse_with("prop_blocks", format!("{} stands on {} (prop '{}' blocks building)", p.what, self.map.cell_name(cell), p.name), &[("prop", i64::from(i))]))
+            }
             None => Ok(()),
         }
     }

@@ -40,6 +40,12 @@ says which), `--mute` turns sound off. Agents use the same game over MCP on the 
 - [ ] A stone you can't afford shows its cost in the warm "fire" colour; trying to carve it says
       "need N dust" and buzzes.
 - [ ] Select the wall (5) and click a top-face lane: a low stone wall across the lane.
+- [ ] The graveyard props stand where you approved them in M4 (the north cemetery, the gravedigger's
+      corner, the east memorial garden, the south graves).
+- [ ] With a stone selected, hover the grave angel or the mausoleum: a red outline, and the hover line
+      says what stands there "(no building here)". Click: "Can't place ...: a grave angel stands here".
+- [ ] Carve a stone on the pile of bones (south-west): the bones disappear under it, never drawn
+      through it. Sell the stone: the bones come back.
 
 ## 4. A stone's panel (upgrade and sell)
 

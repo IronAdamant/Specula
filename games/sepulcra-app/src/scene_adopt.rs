@@ -67,6 +67,8 @@ impl Scene {
         let sub = |world: &mut GameWorld<'_>, parent: u64, name: &str| ents::group(world, agent, Some(parent), name, Vec3::ZERO, Vec3::ZERO, &[], Json::Null);
         let live = ents::transient_group(world, agent, "live", Layer::World, &["game", "transient"]);
         let (enemies_g, bolts_g, fx_g) = (sub(world, live, "enemies"), sub(world, live, "bolts"), sub(world, live, "fx"));
+        // The map's props: the save's own entities (spawned only if the save predates them).
+        let props = crate::props::Props::build(world, agent, map, &geo);
         let mut vfx = effects::Effects::new(world, agent, live);
         vfx.sync_stones(world, agent, state, &geo, &stones);
         let ui = ents::transient_group(world, agent, "cursor", Layer::Ui, &["ui"]);
@@ -105,6 +107,7 @@ impl Scene {
             seen: Vec::new(),
             live: Vec::new(),
             vfx,
+            props,
         })
     }
 }

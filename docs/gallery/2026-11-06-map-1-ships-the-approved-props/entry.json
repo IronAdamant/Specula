@@ -1,0 +1,40 @@
+{
+  "date": "2026-11-06",
+  "time": "",
+  "date_source": "",
+  "approximate": false,
+  "milestone": "M5",
+  "commit": "",
+  "subject": "sepulcra",
+  "topic": "game",
+  "title": "Map 1 ships the approved props",
+  "note": "The overview from the game camera is unchanged since 2026-10-30-m4-exit-the-approved-set-in-the-game: the same props in the same places (the corner fence moved 1.4 m off the build spots by the middle lane), now from the map data in every fresh game (Intel iGPU, scripts/map1_check.py). Big pieces block building; small dressing hides under a stone: the pile of bones before and under a warding stone (the ribcage beside it stays). Busy wave 6 with the props in play.",
+  "source": "scripts/map1_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "02-dressing-before.jpg",
+      "caption": "Dressing: the pile of bones",
+      "original": "dressing_before.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 9295
+    },
+    {
+      "file": "03-dressing-hidden.jpg",
+      "caption": "A stone on it: the bones are hidden, never drawn through",
+      "original": "dressing_hidden.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 10602
+    },
+    {
+      "file": "04-frame-00006.jpg",
+      "caption": "Busy wave 6 with the props",
+      "original": "frame_00006.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 12275
+    }
+  ]
+}

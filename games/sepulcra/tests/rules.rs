@@ -421,4 +421,109 @@ fn state_ascii_draws_stones_walls_and_enemies() {
     assert!(a.starts_with("tick 31 (1s)  wave 1/1  dust"), "{a}");
     assert!(a.lines().any(|l| l == " 9  ------ ######..GGGGW=###### ------"), "{a}");
     assert!(a.lines().any(|l| l == "19  ------ x###S####r#####S##xx ------"), "{a}");
+    // Map 1's big props show as % where they block building; dressing doesn't show.
+    assert!(a.lines().any(|l| l == " 0  ------ xx##.%%%#%%%%%%.###x ------"), "{a}");
+    assert!(a.lines().any(|l| l == "15  ------ ####.####.#%%%#.#### ------"), "{a}");
+    assert!(a.contains("props: % a prop that blocks building"), "{a}");
+}
+
+/// The owner's rule (2026-11-06), as map data: big props block building on every cell they
+/// cover, with the prop named in the refusal; small dressing doesn't. Refusals change nothing.
+#[test]
+fn big_props_block_building_and_dressing_does_not() {
+    let c = Arc::new(Content::builtin());
+    let map = &c.map;
+    assert_eq!(map.props.len(), 33, "map 1 has the 33 approved props");
+    let warding = c.stone_kind("warding").unwrap();
+    let mut blocked = 0;
+    for (i, p) in map.props.iter().enumerate() {
+        for &at in &p.cells {
+            let mut s = State::new(c.clone(), 3);
+            let before = s.hash();
+            let mut ev = Vec::new();
+            let r = s.apply(&Command::PlaceStone { cell: at, stone: warding }, &mut ev);
+            if p.blocks_build {
+                blocked += 1;
+                // The first blocking prop on the cell is named (pediment and column share one).
+                let first = map.blocking_prop(at).expect("a blocking cell");
+                assert!(map.props[usize::from(first)].blocks_build && map.props[usize::from(first)].cells.contains(&at));
+                assert!(first as usize <= i, "{}: the lowest-index blocker is named", p.name);
+                assert_eq!(r, Err(Rejection::PropBlocks { prop: first }), "{} at {}", p.name, map.cell_name(at));
+                assert_eq!(r.unwrap_err().code(), "prop_blocks");
+                assert_eq!(s.hash(), before, "a refusal changes nothing");
+                assert_eq!(s.check(&Command::PlaceStone { cell: at, stone: warding }), r, "check agrees with apply");
+            } else if map.blocking_prop(at).is_none() {
+                assert_eq!(r, Ok(()), "{} at {}: dressing doesn't block", p.name, map.cell_name(at));
+                assert!(s.stone(at).is_some());
+            }
+        }
+    }
+    assert!(blocked >= 30, "the big pieces cover {blocked} cells");
+    // Cells next to the props are free, and walls (lanes) are never affected.
+    let mut s = State::new(c.clone(), 3);
+    let mut ev = Vec::new();
+    assert_eq!(s.apply(&Command::PlaceStone { cell: cell(&c, "top:8,0"), stone: warding }, &mut ev), Ok(()));
+    assert_eq!(s.apply(&Command::PlaceWall { cell: cell(&c, "top:13,14") }, &mut ev), Ok(()), "the lane beside the broken fence takes a wall");
+    // Every prop stands on fragments: no lane, spawn or graveyard cell, so no path changes.
+    for p in &map.props {
+        for &at in &p.cells {
+            assert_eq!(map.cell(at).kind, sepulcra::CellKind::Fragment, "{}", p.name);
+        }
+    }
+}
+
+/// Props that cover a lane, a cell twice, or say nothing about building are refused as data
+/// errors that name the field.
+#[test]
+fn prop_data_errors_name_the_field() {
+    use sepulcra::ErrorCode;
+    use sepulcra::ErrorCode::*;
+    let ok = r#"{ "name": "statue_angel", "what": "a grave angel", "at": [-3.6, -15.0], "yaw": 15, "blocks_build": true, "cells": ["top:7,2", "top:8,2"] }"#;
+    assert!(SLAB_01_JSON.contains(ok));
+    let cases: [(&str, &str, ErrorCode); 10] = [
+        (r#""blocks_build": true, "cells": ["top:7,2", "top:8,2"]"#, "props[1].blocks_build", Missing),
+        (r#""cells": ["top:7,2", "top:8,2"]"#, "props[1].cells[1]", Duplicate),
+        (r#""cells": ["top:7,2", "top:8,2"]"#, "props[1].cells[0]", Invalid),
+        (r#""cells": ["top:7,2", "top:8,2"]"#, "props[1].cells", Invalid),
+        (r#""cells": ["top:7,2", "top:8,2"]"#, "props[1].cells[0]", UnknownRef),
+        (r#""at": [-3.6, -15.0]"#, "props[1].at", OutOfRange),
+        (r#""name": "statue_angel""#, "props[1].name", Invalid),
+        (r#""name": "statue_angel""#, "props[1].name", Duplicate),
+        (r#""what": "a grave angel""#, "props[1].what", Invalid),
+        (r#""yaw": 15"#, "props[1].yaw", OutOfRange),
+    ];
+    let to = [
+        r#""cells": ["top:7,2", "top:8,2"]"#,
+        r#""blocks_build": true, "cells": ["top:7,2", "top:7,2"]"#,
+        r#""blocks_build": true, "cells": ["top:4,2", "top:8,2"]"#,
+        r#""blocks_build": true, "cells": ["top:7,2"]"#,
+        r#""blocks_build": true, "cells": ["top:70,2", "top:8,2"]"#,
+        r#""at": [-30.6, -15.0]"#,
+        r#""name": "Statue Angel""#,
+        r#""name": "mausoleum_domed""#,
+        r#""what": """#,
+        r#""yaw": 400"#,
+    ];
+    for ((from, field, code), to) in cases.into_iter().zip(to) {
+        let text = SLAB_01_JSON.replacen(ok, &ok.replacen(from, to, 1), 1);
+        assert_ne!(text, SLAB_01_JSON, "{from} -> {to}");
+        let e = sepulcra::Map::parse(&text, "slab_01.json").expect_err("refused");
+        assert_eq!((e.field.as_str(), e.code), (field, code), "{from} -> {to}: {e}");
+    }
+    // Without props, a map hashes as it did before props existed.
+    let bare = SLAB_01_JSON.find("\"props\"").map(|i| &SLAB_01_JSON[..i]).unwrap().trim_end().trim_end_matches(',').to_owned() + "\n}";
+    let plain = Content::from_texts(&bare, STONES_JSON, ENEMIES_JSON, sepulcra::content::WAVES_JSON).unwrap();
+    assert!(plain.map.props.is_empty());
+    assert_ne!(plain.hash, Content::builtin().hash, "blocking cells are part of the content hash");
+    // Dressing alone doesn't change the hash: it never changes the rules.
+    let dressing_only = SLAB_01_JSON.replace("\"blocks_build\": true", "\"blocks_build\": false");
+    let d = Content::from_texts(&dressing_only, STONES_JSON, ENEMIES_JSON, sepulcra::content::WAVES_JSON).unwrap();
+    assert_eq!(d.hash, plain.hash);
+    assert_eq!(sepulcra::content::content_hash_without_props(&Content::builtin()), plain.hash);
+    // A save from before the props is refused (its stones may stand where a statue now does),
+    // and the refusal says why.
+    let old = State::new(Arc::new(plain), 1).to_bytes();
+    let e = State::from_bytes(Arc::new(Content::builtin()), &old).expect_err("refused");
+    assert_eq!(e.code, "content_changed");
+    assert!(e.message.contains("before this map's props"), "{e}");
 }

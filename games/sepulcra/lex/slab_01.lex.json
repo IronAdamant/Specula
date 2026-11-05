@@ -309,7 +309,7 @@
       "notes": "The slab (data/slab_01.json): the cell graph the movement hooks walk, the cliffs, the jump pairs and the air ring.",
       "value": {
         "name": "Shattered Slab I",
-        "notes": "Top face 40x40 m (20x20 cells of 2 m), graveyard in the centre inside a ring fissure with four off-centre gates. North, east and west are climbable cliffs (15 m, 6 rows of 2.5 m); the south rim has three gorges where walkers emerge. Jump pairs: top:4,13<->top:4,11 and top:15,14<->top:15,12. See src/map.rs for the legend.",
+        "notes": "Top face 40x40 m (20x20 cells of 2 m), graveyard in the centre inside a ring fissure with four off-centre gates. North, east and west are climbable cliffs (15 m, 6 rows of 2.5 m); the south rim has three gorges where walkers emerge. Jump pairs: top:4,13<->top:4,11 and top:15,14<->top:15,12. See src/map.rs for the legend. Props (src/props.rs): the 33 graveyard props the owner approved in M4, at their approved places (the old north cemetery, the gravedigger's west corner, the east memorial garden, the south graves; fence_iron_corner moved 1.4 m from its approved (2, 10) to the centre of top:11,15, so it no longer blocks top:10,14 and top:10,15, the build spots beside the middle lane that the balance lab's play styles build on); big pieces block building on the cells they cover (blocks_build), small dressing is hidden under a stone.",
         "cell_m": 2,
         "cliff_row_m": 2.5,
         "top": [
@@ -369,7 +369,273 @@
           "cliff_east": "east:10,5",
           "cliff_west": "west:11,5"
         },
-        "air": { "altitude_m": 4, "margin_m": 3, "points": 32, "entries": [4, 12, 20, 28], "dive_height_m": 1.5 }
+        "air": { "altitude_m": 4, "margin_m": 3, "points": 32, "entries": [4, 12, 20, 28], "dive_height_m": 1.5 },
+        "props": [
+          {
+            "name": "mausoleum_domed",
+            "what": "the domed mausoleum",
+            "at": [-0.5, -17],
+            "yaw": 0,
+            "blocks_build": true,
+            "cells": ["top:9,0", "top:10,0", "top:8,1", "top:9,1", "top:10,1", "top:9,2", "top:10,2"]
+          },
+          {
+            "name": "statue_angel",
+            "what": "a grave angel",
+            "at": [-3.6, -15],
+            "yaw": 15,
+            "blocks_build": true,
+            "cells": ["top:7,2", "top:8,2"]
+          },
+          {
+            "name": "statue_mourner",
+            "what": "a mourning statue",
+            "at": [3, -15],
+            "yaw": -20,
+            "blocks_build": true,
+            "cells": ["top:11,2"]
+          },
+          {
+            "name": "grave_obelisk",
+            "what": "a grave obelisk",
+            "at": [-4.4, -18.6],
+            "yaw": 0,
+            "blocks_build": true,
+            "cells": ["top:7,0"]
+          },
+          {
+            "name": "lantern_dead",
+            "what": "a lantern of the dead",
+            "at": [4, -18.6],
+            "yaw": 0,
+            "blocks_build": true,
+            "cells": ["top:11,0", "top:12,0"]
+          },
+          {
+            "name": "chest_tomb",
+            "what": "a chest tomb",
+            "at": [-7.4, -16.4],
+            "yaw": 90,
+            "blocks_build": true,
+            "cells": ["top:6,1", "top:6,2"]
+          },
+          {
+            "name": "column_broken",
+            "what": "a broken column",
+            "at": [7.2, -16.4],
+            "yaw": 30,
+            "blocks_build": true,
+            "cells": ["top:13,1"]
+          },
+          {
+            "name": "gate_iron",
+            "what": "the cemetery gate",
+            "at": [-7.4, -19.2],
+            "yaw": 0,
+            "blocks_build": true,
+            "cells": ["top:5,0", "top:6,0", "top:7,0"]
+          },
+          {
+            "name": "crypt_door",
+            "what": "a crypt door",
+            "at": [8.2, -19.3],
+            "yaw": 0,
+            "blocks_build": true,
+            "cells": ["top:13,0", "top:14,0"]
+          },
+          {
+            "name": "pediment_fallen",
+            "what": "a fallen pediment",
+            "at": [6.6, -14.8],
+            "yaw": -10,
+            "blocks_build": true,
+            "cells": ["top:12,2", "top:13,2", "top:13,3"]
+          },
+          {
+            "name": "candle_shrine",
+            "what": "a candle shrine",
+            "at": [-15, -9],
+            "yaw": 60,
+            "blocks_build": true,
+            "cells": ["top:2,5"]
+          },
+          {
+            "name": "grave_bell",
+            "what": "a grave bell",
+            "at": [-12, -5],
+            "yaw": 90,
+            "blocks_build": true,
+            "cells": ["top:3,7", "top:4,7"]
+          },
+          {
+            "name": "grave_mound",
+            "what": "a grave mound",
+            "at": [-12, -9],
+            "yaw": 0,
+            "blocks_build": false,
+            "cells": ["top:3,5", "top:4,5"]
+          },
+          {
+            "name": "gravedigger_tools",
+            "what": "the gravedigger's tools",
+            "at": [-9.4, -10.2],
+            "yaw": 20,
+            "blocks_build": false,
+            "cells": ["top:5,4", "top:4,5", "top:5,5"]
+          },
+          {
+            "name": "wheelbarrow",
+            "what": "a wheelbarrow",
+            "at": [-15, -5.6],
+            "yaw": 35,
+            "blocks_build": false,
+            "cells": ["top:2,6", "top:2,7"]
+          },
+          {
+            "name": "coffin_open",
+            "what": "an open coffin",
+            "at": [-17.4, -2.6],
+            "yaw": 0,
+            "blocks_build": false,
+            "cells": ["top:1,8", "top:1,9"]
+          },
+          {
+            "name": "coffin_closed",
+            "what": "a coffin",
+            "at": [-14.6, -1.4],
+            "yaw": 80,
+            "blocks_build": false,
+            "cells": ["top:2,9", "top:3,9"]
+          },
+          {
+            "name": "lantern_post",
+            "what": "a lantern post",
+            "at": [-10, -2.6],
+            "yaw": 0,
+            "blocks_build": true,
+            "cells": ["top:4,8", "top:5,8"]
+          },
+          {
+            "name": "rune_obelisk",
+            "what": "a rune obelisk",
+            "at": [-18, -10.2],
+            "yaw": 20,
+            "blocks_build": true,
+            "cells": ["top:0,4", "top:1,4", "top:0,5", "top:1,5"]
+          },
+          {
+            "name": "brazier_tripod",
+            "what": "an iron brazier",
+            "at": [10.6, -8],
+            "yaw": 0,
+            "blocks_build": false,
+            "cells": ["top:15,5", "top:15,6"]
+          },
+          {
+            "name": "stone_bench",
+            "what": "a stone bench",
+            "at": [16, -8],
+            "yaw": 180,
+            "blocks_build": true,
+            "cells": ["top:17,5", "top:18,5", "top:17,6", "top:18,6"]
+          },
+          {
+            "name": "urn_funeral",
+            "what": "a funeral urn",
+            "at": [12.6, -4],
+            "yaw": 0,
+            "blocks_build": false,
+            "cells": ["top:16,7", "top:16,8"]
+          },
+          {
+            "name": "urn_toppled",
+            "what": "a toppled urn",
+            "at": [17, -4.4],
+            "yaw": 40,
+            "blocks_build": false,
+            "cells": ["top:18,7"]
+          },
+          {
+            "name": "candle_cluster",
+            "what": "a cluster of candles",
+            "at": [14.6, -1],
+            "yaw": -15,
+            "blocks_build": false,
+            "cells": ["top:17,9"]
+          },
+          {
+            "name": "wreath_stand",
+            "what": "a wreath",
+            "at": [11, 0.6],
+            "yaw": -30,
+            "blocks_build": false,
+            "cells": ["top:15,10"]
+          },
+          {
+            "name": "headstone_skull",
+            "what": "a skull headstone",
+            "at": [18, 0.2],
+            "yaw": -10,
+            "blocks_build": false,
+            "cells": ["top:18,10", "top:19,10"]
+          },
+          {
+            "name": "grave_cross_iron",
+            "what": "an iron grave cross",
+            "at": [16, 2.6],
+            "yaw": 5,
+            "blocks_build": false,
+            "cells": ["top:17,11", "top:18,11"]
+          },
+          {
+            "name": "headstone_broken",
+            "what": "a broken headstone",
+            "at": [-6, 10],
+            "yaw": 10,
+            "blocks_build": false,
+            "cells": ["top:6,14", "top:7,14", "top:6,15", "top:7,15"]
+          },
+          {
+            "name": "grave_marker_wood",
+            "what": "a wooden grave marker",
+            "at": [-4, 12.4],
+            "yaw": -5,
+            "blocks_build": false,
+            "cells": ["top:7,16", "top:8,16"]
+          },
+          {
+            "name": "bone_pile",
+            "what": "a pile of bones",
+            "at": [-16, 10],
+            "yaw": 30,
+            "blocks_build": false,
+            "cells": ["top:1,14", "top:2,14", "top:1,15", "top:2,15"]
+          },
+          {
+            "name": "ribcage_buried",
+            "what": "a buried ribcage",
+            "at": [-14, 12.6],
+            "yaw": 90,
+            "blocks_build": false,
+            "cells": ["top:2,16", "top:3,16"]
+          },
+          {
+            "name": "fence_iron_corner",
+            "what": "an iron fence",
+            "at": [3, 11],
+            "yaw": 0,
+            "blocks_build": true,
+            "cells": ["top:11,15", "top:12,15", "top:11,16"]
+          },
+          {
+            "name": "fence_iron_broken",
+            "what": "a broken iron fence",
+            "at": [6.6, 10.2],
+            "yaw": 0,
+            "blocks_build": true,
+            "cells": ["top:12,15", "top:13,15"]
+          }
+        ]
       }
     },
     "spawn_points": {

@@ -15,7 +15,8 @@ Read [HANDOFF.md](HANDOFF.md) first.
    DLL are silently dropped (crash at call time). `kernel32` → `specula-sys`; `user32` and `winmm` → `specula-platform`;
    `ole32` → `specula-audio`. Runtime-loaded through `dynlib` (any crate may load them): `vulkan-1`,
    `xinput1_4`/`xinput9_1_0` (specula-platform), `avrt` (specula-audio),
-   `iphlpapi` (specula-sys: which ports have listeners).
+   `iphlpapi` (specula-sys: which ports have listeners), `bcrypt` (specula-sys `digest`: SHA-256 from the OS, for
+   what the engine vouches for, such as recorded review evidence; never hand-rolled, rule 12).
    Tests/examples must not re-declare imports of a DLL their dependencies already declare.
 3. **Linker = the Rust toolchain's own** (`.cargo/config.toml`: `-C link-self-contained=yes` on windows-gnu).
    Do not set other linkers or add build scripts that call external tools.

@@ -58,6 +58,11 @@ fn rejection_of(l: &specula_lex::Rejection, cmd: &Command, sim: &Sim, state: &St
         "unknown_cell" | "unknown_site" => Rejection::UnknownCell,
         "unknown_stone" | "unknown_archetype" => Rejection::UnknownStone,
         "not_buildable" => Rejection::NotBuildable,
+        // `sepulcra.prop_clear` names the prop by its index in the slab's props, as the game does.
+        "prop_blocks" => match detail("prop").and_then(|p| u16::try_from(p).ok()) {
+            Some(prop) => Rejection::PropBlocks { prop },
+            None => Rejection::NotBuildable,
+        },
         "not_wallable" => Rejection::NotWallable,
         "wrong_site" if walls => Rejection::NotWallable,
         "wrong_site" => Rejection::NotBuildable,
