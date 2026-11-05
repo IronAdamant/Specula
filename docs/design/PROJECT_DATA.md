@@ -77,6 +77,7 @@ Only files of known kinds are mirrored; everything else on disk is left alone:
 | `ui_theme` | `ui/theme.json` | `Theme::from_json_str`, then every screen of the folder parsed again; deleting it is refused while screens use it | as screens |
 | `sound` | `*.json` in a folder named `sounds` | `specula_audio`'s sound recipe parser | the hosted game: Sepulcra re-renders that sound |
 | `anim_set` | `*.json` in a folder named `anims` | JSON syntax (the anim lane owns its schema) | the model library, as recipes |
+| `timeline` | `*.json` in a folder named `timelines` | `specula_tempus::Timeline::parse_text`, then anim and vfx values as `world_set` takes them ([TIMELINE.md](TIMELINE.md)) | the next `timeline_play` reads the new version |
 | `rust` | `*.rs` under a module's `src/` | **`logic_build` only** (see below) | `build: true` on the write runs `logic_build` |
 | `cargo` | a module's `Cargo.toml` | `check_module_manifest` (a module's manifest only), then `logic_build` | as `rust` |
 | `json` | other `*.json` at a module's top level (`actions.json`) | JSON syntax | as `rust` |

@@ -10,7 +10,10 @@ allows, and the heavy tools at their largest *valid* arguments, against a headle
 3. The heavy tools at their largest valid arguments: 2048x2048 sight_frame, the largest orbit and
    compare, world_query at 500 entities with every field, a 1,000-op batch, anim_check on every clip,
    the largest filmstrip, world_save of 20k entities, world_hash {verify} over the whole journal,
-   lease_release {delete} of 20k files, project_write of a ~1 MiB file.
+   lease_release {delete} of 20k files, project_write of a ~1 MiB file; the timeline tools (M5):
+   timeline_validate of a definition just under the 256 KiB file rule (vfx tracks of object keys)
+   and of one over it, timeline_check of a 600 s, 64-point rail looking at an entity at rate 120
+   (4,096 samples), timeline_preview of 16 tiles of 480 px, timeline_get's listing.
 4. Live probes from the review of 998af3d: desync_trace of a long run; 300 scratch releases then a
    20,000-file delete (no worker job may run inline, a save right after answers promptly); twenty
    agents looping world_hash {verify} while a playtest runs twelve verify steps (the playtest
@@ -106,7 +109,10 @@ def fuzz(mcp, tools, slow):
 # run passed with no stall, three of the review's failed on these three). The maxima are the peaks
 # seen with about 40% headroom (docs/design/WORKERS.md, "What the fix round left"; the follow-up is
 # a capture draw cache and subjects projected on a worker). The milestone audit runs --known-ok.
-KNOWN = {"sight_frame": 80.0, "sight_compare": 100.0, "sight_orbit": 80.0}
+# timeline_preview (M5): each tile is one such capture view, submitted in one step and landed in a
+# later one (lead review of m5-timeline: a tile rendered and read in one step held 80-113 ms); its
+# submit is the same preparation, so the same maximum and the same follow-up.
+KNOWN = {"sight_frame": 80.0, "sight_compare": 100.0, "sight_orbit": 80.0, "timeline_preview": 80.0}
 
 
 def stalls(mcp):
@@ -132,6 +138,13 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     assets = out / "assets"
     shutil.copytree(ROOT / "games" / "sepulcra" / "assets", assets)
+    # A timeline file of about 250 KB read from disk at start (lead review of m5-timeline, probe4):
+    # it is parsed where the scan reads it, so validating, reading or playing it never parses on
+    # the engine thread.
+    fat = {"schema": "specula.timeline.v1", "tracks": [
+        {"kind": "vfx", "name": f"v{k}", "target": f"/c0_{k}", "keys": [{"t": round(i * 1.1, 3), "vfx": {"effect": "fire"}} for i in range(512)]} for k in range(13)]}
+    (assets / "timelines").mkdir(parents=True, exist_ok=True)
+    (assets / "timelines" / "fat.json").write_text(json.dumps(fat, separators=(",", ":")))
     args = ["--headless", "--strict-budget", "--captures", str(out / "captures"), "--worlds", str(out / "worlds"), "--assets", str(assets), "--saves", str(out / "saves")]
     if a.adapter:
         args += ["--adapter", a.adapter]
@@ -188,11 +201,36 @@ def main():
             ("lease_release", {"id": lease["id"], "delete": True}),
             ("project_write", {"path": "assets/ui/zz_budget_note.json", "text": json.dumps({"note": "n" * (1000 * 1000)}), "allow_errors": True}),
         ]
+        # Timelines (M5, lead review of m5-timeline): the largest definition the file rule takes,
+        # one past it, and the largest check and preview.
+        def vfx_definition(tracks, keys):
+            return {"schema": "specula.timeline.v1", "tracks": [
+                {"kind": "vfx", "name": f"v{k}", "target": f"/c0_{k}", "keys": [{"t": round(i * 0.5, 3), "vfx": {"effect": "fire", "params": {"rate": 1.0}}} for i in range(keys)]}
+                for k in range(tracks)]}
+        tracks = 64
+        while len(json.dumps(vfx_definition(tracks, 64), indent=2)) > 200_000:
+            tracks -= 1
+        under = vfx_definition(tracks, 64)
+        over = vfx_definition(64, 512)
+        rail = {"schema": "specula.timeline.v1", "duration": 600, "tracks": [{"kind": "camera", "name": "long",
+                "rail": {"points": [[x * 3.0 - 90, 30 + (x % 3), 120 - (x % 5)] for x in range(64)]},
+                "move": [{"t": 0, "at": 0}, {"t": 600, "at": 1, "ease": "smooth"}], "look": {"entity": "/c0_10"}}]}
+        lead.json("timeline_set", path="budget_rail", timeline=rail)
+        heavy += [
+            ("timeline_validate", {"definition": under}),
+            ("timeline_validate", {"definition": over}),
+            ("timeline_check", {"path": "budget_rail", "rate": 120, "subject": "/c0_10"}),
+            ("timeline_preview", {"path": "budget_rail", "frames": 16, "tile": 480}),
+            ("timeline_get", {"limit": 200}),
+            ("timeline_validate", {"path": "fat"}),
+            ("timeline_get", {"path": "fat", "at": 100}),
+        ]
         # The creature's build first (anim tools answer model_building until it is built).
         call_raw(lead, "model_build", {"recipe": "recipes/shambler.json"})
         for tool, args_ in heavy:
             j, err, took, size = call_raw(lead, tool, args_)
-            summary["heavy"][tool + ("" if tool != "sight_compare" else ":" + args_["action"])] = {"s": round(took, 3), "error": (j or {}).get("error") if err else None, "bytes": size}
+            label = tool + (":" + args_["action"] if tool == "sight_compare" else ":" + str(len(json.dumps(args_))) if tool.startswith("timeline_") else "")
+            summary["heavy"][label] = {"s": round(took, 3), "error": (j or {}).get("error") if err else None, "bytes": size}
             print(f"  {tool}: {took * 1000:.0f} ms{' ERROR ' + str((j or {}).get('error')) + ' ' + str((j or {}).get('message', ''))[:200] if err else ''}")
         # 4. Live probes (review of 998af3d).
         lead.json("time_control", action="step", ticks=600)

@@ -21,6 +21,7 @@
 
 pub mod audio;
 pub mod controls;
+pub mod cutscene;
 mod ents;
 pub mod game;
 pub mod hud;

@@ -1,0 +1,25 @@
+{
+  "schema": "specula.timeline.v1",
+  "description": "The intro flyover: low over the mist on the north-west, round the floating slab and up to the player's view (it ends on the default camera, so the hand-off is seamless). Presentation only; skippable by any input.",
+  "duration": 12.5,
+  "tracks": [
+    {
+      "kind": "camera",
+      "name": "flyover",
+      "rail": {"points": [[-55, 2, -60], [-80, 8, 0], [-55, 16, 55], [0, 26, 70], [23.87, 35.471, 35.089]]},
+      "move": [{"t": 0, "at": 0}, {"t": 12, "at": 1, "ease": "smooth"}],
+      "look": {"point": [0, -2, 1]},
+      "fov": [{"t": 0, "value": 50}, {"t": 12, "value": 45, "ease": "in_out"}]
+    },
+    {
+      "kind": "subtitles",
+      "name": "captions",
+      "lines": [
+        {"t": 1, "duration": 4, "text": "Sepulcra"},
+        {"t": 6, "duration": 5, "speaker": "Warden", "text": "The dead rise at nightfall. Carve stones and hold the graveyard."}
+      ]
+    },
+    {"kind": "audio", "name": "sound", "cues": [{"t": 0.3, "sound": "brazier_whoosh", "volume": 0.7}]},
+    {"kind": "events", "name": "game", "events": [{"t": 0, "name": "intro_start"}, {"t": 12.5, "name": "intro_end"}]}
+  ]
+}

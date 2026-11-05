@@ -241,6 +241,10 @@ pub enum Rule {
     TasteResult,
     /// gi_bake: baked GI volumes (`/gi` and its children, `props.gi_volume` anywhere).
     Gi,
+    /// Timeline playback writing its entity, anim and vfx tracks (timeline_play, scrub, its
+    /// ticks; docs/design/TIMELINE.md): no reserved data, claims as the agent who started it, so
+    /// a playback never moves what another agent holds (it pauses as `blocked` instead).
+    Timeline,
 }
 
 impl Rule {
@@ -263,6 +267,7 @@ impl Rule {
             Rule::Taste => "taste",
             Rule::TasteResult => "taste_result",
             Rule::Gi => "gi",
+            Rule::Timeline => "timeline",
         }
     }
 }

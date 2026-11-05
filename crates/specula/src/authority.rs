@@ -538,6 +538,9 @@ pub enum Store {
     /// Galleries: the maker opens, closes, replaces a round of and deletes its own; the owner, a
     /// lead or a reviewer any (`crate::taste::taste_authority`).
     Galleries,
+    /// Timeline playbacks: their starter pauses, scrubs and stops them; another agent (or the
+    /// game's own) with `force` and lead authority (docs/design/TIMELINE.md).
+    Timelines,
 }
 
 /// What a tool may do, declared once per tool ([`access`]): the authority table.
@@ -594,6 +597,15 @@ pub fn access(tool: &str) -> Option<Access> {
         // Its files land under /project/<name>: the caller's claims are checked there first.
         "project_mount" => World("project"),
         "vfx_set" => World("vfx"),
+        // Timelines (docs/design/TIMELINE.md): files through the project store; playback writes
+        // its tracks as the caller under the timeline rule (claims hold; a refused tick pauses it
+        // as blocked); a playback is its starter's to pause, scrub or stop.
+        "timeline_get" | "timeline_validate" | "timeline_preview" | "timeline_check" => ReadOnly,
+        "timeline_set" => World("project"),
+        // A scrub writes the state at t as the caller (and makes a paused playback when none
+        // plays); another agent's playback needs force and the lead (Store::Timelines' rule).
+        "timeline_play" | "timeline_scrub" => World("timeline"),
+        "timeline_pause" | "timeline_stop" => Owned(Store::Timelines),
         // A bake writes /gi/<volume> as the caller (claims checked when it starts and when its
         // result lands); cancelling another agent's bake needs force, and force the lead
         // (authority::may_force); threads past the default are the lead's (Site::GiThreads).

@@ -42,12 +42,35 @@ pub struct Camera {
     pub target: Vec3,
     pub fov_y_deg: f32,
     pub projection: Projection,
+    /// Roll about the view direction, degrees (positive tips the camera's up towards its right,
+    /// so the horizon turns anticlockwise on screen). 0 keeps the horizon level: every camera
+    /// but a timeline shot that asks for roll (docs/design/TIMELINE.md).
+    pub roll_deg: f32,
 }
 
 impl Camera {
     /// A perspective camera.
     pub fn new(eye: Vec3, target: Vec3, fov_y_deg: f32) -> Camera {
-        Camera { eye, target, fov_y_deg, projection: Projection::Perspective }
+        Camera { eye, target, fov_y_deg, projection: Projection::Perspective, roll_deg: 0.0 }
+    }
+
+    /// This camera rolled by `roll_deg`.
+    pub fn rolled(self, roll_deg: f32) -> Camera {
+        Camera { roll_deg, ..self }
+    }
+
+    /// The perspective up vector: +Y, turned about the view direction by the roll (exactly +Y
+    /// without roll, so unrolled views are unchanged bit for bit).
+    fn perspective_up(&self) -> Vec3 {
+        if self.roll_deg == 0.0 {
+            return Vec3::Y;
+        }
+        let f = (self.target - self.eye).normalize();
+        let side = f.cross(Vec3::Y);
+        let right = if side.length() > 1e-6 { side.normalize() } else { Vec3::X };
+        let up = right.cross(f);
+        let (s, c) = self.roll_deg.to_radians().sin_cos();
+        up * c + right * s
     }
 
     /// The 2D convention: an orthographic camera looking down −Z at the XY plane (+Y up on
@@ -58,6 +81,7 @@ impl Camera {
             target: Vec3::new(x, y, 0.0),
             fov_y_deg: 50.0,
             projection: Projection::Ortho { height_m },
+            roll_deg: 0.0,
         }
     }
 
@@ -79,7 +103,7 @@ impl Camera {
         match self.projection {
             Projection::Perspective => {
                 let proj = Mat4::perspective_vk_reverse_z(self.fov_y_deg.to_radians(), aspect, NEAR);
-                proj * Mat4::look_at_rh(self.eye, self.target, Vec3::Y)
+                proj * Mat4::look_at_rh(self.eye, self.target, self.perspective_up())
             }
             Projection::Ortho { height_m } => {
                 let (h, w) = (height_m, height_m * aspect);
@@ -105,6 +129,13 @@ impl Camera {
         let side = forward.cross(Vec3::Y);
         let right = if side.length() > 1e-6 { side.normalize() } else { Vec3::X };
         let up = right.cross(forward);
+        // A rolled camera's screen axes turn with it.
+        let (right, up) = if self.roll_deg == 0.0 {
+            (right, up)
+        } else {
+            let (s, c) = self.roll_deg.to_radians().sin_cos();
+            (right * c - up * s, up * c + right * s)
+        };
         let tan = (self.fov_y_deg.to_radians() * 0.5).tan();
         let nx = (2.0 * (x + 0.5) / w - 1.0) * tan * (w / h);
         let ny = (1.0 - 2.0 * (y + 0.5) / h) * tan;
@@ -120,6 +151,9 @@ impl Camera {
             }
         }
         f.push(("near_m", Json::from(NEAR)));
+        if self.roll_deg != 0.0 {
+            f.push(("roll_deg", Json::from(self.roll_deg)));
+        }
         Json::obj(f)
     }
 }

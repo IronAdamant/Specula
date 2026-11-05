@@ -105,7 +105,8 @@ const ALLOWED: &[Allowed] = &[
     Allowed { file: "two_d.rs", counts: &[("fs::", 4), ("thread::Builder", 1)], why: "sprite and tileset files load on the 2D loader thread" },
     Allowed { file: "ui.rs", counts: &[("thread::Builder", 1)], why: "the window's own thread (Win32 message loop)" },
     Allowed { file: "vfx.rs", counts: &[("fs::", 4), ("thread::Builder", 1)], why: "effect textures load on the vfx loader thread" },
-    Allowed { file: "vfx_tools.rs", counts: &[("book().write", 2), ("png::encode", 1), ("read_rgba8", 1)], why: "a preview's sheet is encoded and written on the worker pool (PreviewEncode::finish); one frame's readback per studio step" },
+    Allowed { file: "timeline_tools.rs", counts: &[("book().write", 1)], why: "the timeline preview's packet, written inside offload_capture's worker job" },
+    Allowed { file: "vfx_tools.rs",counts: &[("book().write", 2), ("png::encode", 1), ("read_rgba8", 1)], why: "a preview's sheet is encoded and written on the worker pool (PreviewEncode::finish); one frame's readback per studio step" },
     Allowed { file: "workers.rs", counts: &[("remove_tree_inside", 1), ("thread::Builder", 1)], why: "the worker pool itself, and the trash emptied inside its trash-lane job" },
     Allowed { file: "world_save.rs", counts: &[(".exists()", 2), ("peek_entity_count", 1), ("persist::execute", 1)], why: "the write, the world_exists check and its count run inside the world-lane job; one stat when a save under another name asks for the lead" },
 ];

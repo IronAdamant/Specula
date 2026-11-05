@@ -104,6 +104,8 @@ mod ui;
 pub mod flashwatch;
 pub mod vfx;
 mod vfx_tools;
+mod timeline;
+mod timeline_tools;
 mod gi;
 mod gi_tools;
 pub mod terrain;
@@ -909,6 +911,8 @@ struct Engine {
     playtests: playtest_engine::Playtests,
     /// Particles, effects and decals (see [`vfx`]): cosmetic, never simulation.
     vfx: vfx::Vfx,
+    /// Timelines playing (see `timeline`).
+    timeline: timeline::Player,
     /// Baked GI (see [`gi`]): volumes, bake jobs, the store, resident chunks.
     gi: gi::Gi,
     /// WCAG 2.3.1 on the final image: the window's frames and each view's captures.
@@ -1090,6 +1094,7 @@ impl Engine {
             dispatch_call: 0,
             playtests: Default::default(),
             vfx,
+            timeline: timeline::Player::default(),
             gi: gi::Gi::new(std::env::temp_dir().join("specula-gi")),
             flash: flashwatch::FlashWatch::default(),
             flash_epoch: Instant::now(),
@@ -1151,6 +1156,7 @@ impl Engine {
         // perf.toml's [lex_live] limits.
         self.nav.reset();
         self.vfx.reset();
+        self.timeline_world_replaced();
         self.gi.reset();
         // Navigation reads the loaded world now: its navmeshes are built (in slices, the clock
         // held) before the first tick, as they were in the run that saved it.
@@ -1315,6 +1321,8 @@ impl Engine {
                 let _l = profile::zone("lex_live");
                 self.lex_live_tick();
             }
+            // Timelines step on the same tick (their writes as their starters, claims checked).
+            self.timeline_tick();
             // Navigation decides and steers on the same tick, before physics walks its characters.
             self.nav_tick();
             // Physics steps on the same fixed tick, after the game moved what it moves.
@@ -1331,6 +1339,7 @@ impl Engine {
         if ticks > 0 {
             // A tick may have asked for something (the game's wave-start autosave).
             self.serve_game_requests();
+            self.serve_game_timelines();
         }
     }
 
@@ -1368,7 +1377,11 @@ impl Engine {
         if self.window_follow.is_some() && human_took_controls(&self.input) {
             self.release_window_camera("input");
         }
-        let agent_view = self.window_follow.is_some();
+        // A playing timeline may drive the window: a human's key, click, scroll, touch or gamepad
+        // button skips or releases it (and a pad's press goes nowhere else: gated below).
+        let pad_press = !modal && self.timeline_pad_pressed();
+        let (timeline_view, took) = self.timeline_window(!modal && (human_took_controls(&self.input) || pad_press));
+        let agent_view = self.window_follow.is_some() || timeline_view;
         let shown = self.window_camera;
         if self.game.is_none() {
             return;
@@ -1379,7 +1392,7 @@ impl Engine {
         let mut pads = std::mem::take(&mut self.game_pads);
         pads.clear();
         pads.extend_from_slice(self.logic.pad_states(poll));
-        self.pad_gate.apply(modal, &mut pads);
+        self.pad_gate.apply(modal || took, &mut pads);
         let Some(game) = self.game.as_mut() else { return };
         let _z = profile::zone("game_frame");
         let start = Instant::now();
@@ -1403,6 +1416,7 @@ impl Engine {
         self.check_world_replaced();
         // The game's menu may have asked for a save or a load.
         self.serve_game_requests();
+        self.serve_game_timelines();
     }
 
     /// The hosted game's interface for one image ([`Game::overlay`]) into `out` (cleared first).
@@ -1573,6 +1587,8 @@ impl Engine {
             ("following", Json::from(self.window_follow.is_some())),
             ("through", through),
             ("released_by", self.window_released_by.map_or(Json::Null, Json::from)),
+            // A timeline driving the window through its rail camera (see `timeline`).
+            ("timeline", self.timeline.window_path().map_or(Json::Null, Json::from)),
         ])
     }
 
@@ -2033,6 +2049,8 @@ impl Engine {
             self.pump_captures();
             self.pump_workers(Some(server));
             self.pump_steps(steps::WINDOW_SHARE, server);
+            // Timelines whose starters left, or idle too long, end (see `timeline`).
+            self.timeline_sweep(server);
             self.pump_playtests(server, playtest_engine::WINDOW_SLICE);
             self.pump_studio(studio::WINDOW_SHARE, server);
             self.gi_pump();
@@ -2225,6 +2243,7 @@ impl Engine {
             self.pump_captures();
             self.pump_workers(Some(server));
             self.pump_steps(steps::HEADLESS_SHARE, server);
+            self.timeline_sweep(server);
             self.pump_playtests(server, playtest_engine::HEADLESS_SLICE);
             self.pump_studio(studio::HEADLESS_SHARE, server);
             self.gi_pump();
@@ -2303,6 +2322,11 @@ impl Engine {
         if matches!(request.command, Command::Anim(anim_tools::AnimCall::Check { .. } | anim_tools::AnimCall::Filmstrip { .. })) {
             // A check or a tile per step; a filmstrip's sheet is encoded on a worker (see `anim_steps`).
             self.start_anim_job(request);
+            return;
+        }
+        if matches!(request.command, Command::Timeline(timeline_tools::TimelineCall::Preview { .. } | timeline_tools::TimelineCall::Check(_))) {
+            // A tile or a slice of samples per step (see `timeline_tools`).
+            self.start_timeline_job(request);
             return;
         }
         if matches!(request.command, Command::Query(_)) {
@@ -2454,18 +2478,21 @@ impl Engine {
             },
             Command::View(view) => match view {
                 tools::ViewSpec::Auto => {
+                    self.timeline_release_window();
                     self.window_released_by = None;
                     self.window_follow = None;
                     self.window_camera = None;
                     ToolOutput::text("window camera: auto-framing the world")
                 }
                 tools::ViewSpec::Fixed(c) => {
+                    self.timeline_release_window();
                     self.window_released_by = None;
                     self.window_follow = None;
                     self.window_camera = Some(c);
                     ToolOutput::text(Json::obj([("window_camera", c.to_json())]).to_pretty())
                 }
                 tools::ViewSpec::Named { name, of } => {
+                    self.timeline_release_window();
                     let owner = of.clone().unwrap_or_else(|| by.clone());
                     match self.cameras.resolve(&owner, &name, of.as_deref(), &self.world) {
                         Ok(r) => {
@@ -2643,6 +2670,7 @@ impl Engine {
             Command::Anim(call) => self.anim_call(call, w, tick),
             Command::StudioRender(_) | Command::StudioDone(_) => unreachable!("queued by studio_enqueue"),
             Command::Vfx(call) => self.vfx_call(call, w, tick),
+            Command::Timeline(call) => self.timeline_call(call, &request.session, w),
             Command::Gi(call) => self.gi_call(call, w, tick, &request.session),
             Command::Project(call) => self.project_call(call, w, &by),
             Command::Taste(call) => self.handle_taste(call, &request.session),
@@ -2660,6 +2688,7 @@ impl Engine {
         }
         if game_call {
             self.serve_game_requests();
+            self.serve_game_timelines();
         }
         debug_assert!(self.world.pending_changes().is_empty(), "every world change is journaled");
         // The commits made by this dispatch (ticks it ran were paused: the simulation's; deferred
@@ -3136,6 +3165,7 @@ fn call_class(command: &Command) -> Class {
         Command::Anim(call) => anim_tools::call_class(call),
         Command::StudioRender(_) | Command::StudioDone(_) => Class::Read,
         Command::Vfx(call) => vfx_tools::call_class(call),
+        Command::Timeline(call) => timeline_tools::call_class(call),
         Command::Gi(call) => gi_tools::call_class(call),
         Command::Save { .. } | Command::Load { .. } | Command::ModelBuild(_) | Command::ModelReload => Class::Disk,
         Command::Hash { verify: true, .. } => Class::Big,

@@ -30,13 +30,15 @@ pub(crate) enum GameCall<'c, 'f> {
     RolledBack,
     /// An engine screen took (`true`) or gave back the window's input.
     ModalChanged(bool),
+    /// A playing timeline's start, end, event, cue or subtitle line (docs/design/TIMELINE.md).
+    Timeline(&'c crate::game::TimelineEvent),
 }
 
 impl GameCall<'_, '_> {
     /// The journal kind of its entry.
     fn kind(&self) -> Kind {
         match self {
-            GameCall::Tick => Kind::GameTick,
+            GameCall::Tick | GameCall::Timeline(_) => Kind::GameTick,
             GameCall::ApplyState(_) => Kind::GameStart,
             GameCall::RolledBack => Kind::GameTool,
             GameCall::Frame(_) | GameCall::Overlay(_) | GameCall::BeforeCapture | GameCall::AssetsChanged(_) | GameCall::RequestDone(..) | GameCall::ModalChanged(_) => Kind::GameFrame,
@@ -60,6 +62,7 @@ pub(crate) fn game(world: &mut Live, swarm: &mut Swarm, game: &mut dyn Game, clo
             GameCall::RequestDone(request, result) => game.request_done(ctx, request, result),
             GameCall::RolledBack => game.world_rolled_back(ctx),
             GameCall::ModalChanged(open) => game.modal_changed(ctx, open),
+            GameCall::Timeline(event) => game.timeline_event(ctx, event),
         }
     });
 }

@@ -189,6 +189,59 @@ pub trait Game {
     /// gone and their ids are **never reused**, so the game must drop every id it cached from the
     /// tool call (look entities up again rather than trusting stale ids).
     fn world_rolled_back(&mut self, _ctx: &mut Ctx) {}
+
+    /// Timelines the game wants played or stopped (an intro, a victory shot), taken after every
+    /// tick and frame (docs/design/TIMELINE.md). A game's timeline is presentation: it may hold
+    /// camera, audio, subtitle and event tracks, not tracks that write entities (the game moves
+    /// its own). Default: none.
+    fn timeline_requests(&mut self, _out: &mut Vec<TimelineRequest>) {}
+
+    /// Something a playing timeline did that the game may act on: its start and end (finished,
+    /// skipped by the player, stopped by an agent, refused), its `events` track, its audio cues
+    /// (a seam for the engine's audio service) and its subtitle lines. Events, cues and lines
+    /// fire on the tick they fall in, so a run with the same timeline at the same ticks sees the
+    /// same calls. Default: nothing.
+    fn timeline_event(&mut self, _ctx: &mut Ctx, _event: &TimelineEvent) {}
+}
+
+/// A game's request to play or stop a timeline ([`Game::timeline_requests`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum TimelineRequest {
+    /// Plays `path` (a project path such as `assets/timelines/intro.json`) from its start.
+    /// `window`: the window looks through its rail camera while it plays; `skippable`: a human's
+    /// input ends it (`Ended { how: "skipped" }`); `restore`: the window camera goes back
+    /// to where it was when it ends.
+    Play { path: String, window: bool, skippable: bool, restore: bool },
+    /// Stops `path` if it plays (`Ended { how: "stopped" }`).
+    Stop { path: String },
+}
+
+/// What a timeline did ([`Game::timeline_event`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TimelineEvent {
+    /// The timeline's project path.
+    pub path: String,
+    /// Its time, seconds.
+    pub t: f64,
+    pub what: TimelineWhat,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TimelineWhat {
+    Started,
+    /// An `events` track's event.
+    Event { name: String, data: Json },
+    /// An audio cue.
+    Cue(specula_tempus::Cue),
+    /// A subtitle line starting (it stays `line.duration` seconds).
+    Subtitle(specula_tempus::Line),
+    /// It ended: `finished`, `skipped` (a human's input), `stopped` (an agent or the game),
+    /// `replaced` (played again, or an agent's playback the game's own request took over: the
+    /// path plays on), `expired` (paused or blocked past the idle lease), `session_closed` (its
+    /// starter's last session closed), `world_replaced` (a load) or `refused` (it couldn't start:
+    /// `error` says why). Events are by path: an agent's playback of a path the game uses is
+    /// heard too.
+    Ended { how: &'static str, error: Option<String> },
 }
 
 /// A player-facing request a game hands the engine ([`Game::take_requests`]).

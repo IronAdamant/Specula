@@ -197,6 +197,7 @@ const OWNERS: &[Rule] = &[
     Rule { pattern: "Rule::Taste", allowed: &["taste.rs", "write_policy.rs"], why: "taste state (/project/assets/taste: picks, galleries, onboarding) is the taste tools' and the window's: only their savers pass the taste rule to project_put, never a path" },
     Rule { pattern: "Rule::TasteResult", allowed: &["taste.rs", "write_policy.rs"], why: "a taste decision's results (style.toml, a theme, priors, notes) with the taste state that records it, in one commit: only the taste tools' appliers pass it" },
     Rule { pattern: "Rule::Gi", allowed:&["gi_tools.rs", "write_policy.rs"], why: "baked GI volumes (/gi, props.gi_volume) are gi_bake's" },
+    Rule { pattern: "Rule::Timeline", allowed: &["timeline.rs", "write_policy.rs"], why: "timeline playback writes its tracks as the agent who started it (docs/design/TIMELINE.md)" },
     Rule { pattern: "Opener::Modules", allowed: &["sim_writes.rs", "write_policy.rs"], why: "the engine opens the module host's sessions (ticks, logic tools)" },
     Rule { pattern: "Opener::LexLive", allowed: &["lex_live.rs", "write_policy.rs"], why: "live Lex's sessions" },
     Rule { pattern: "Opener::LexTools", allowed: &["sim_writes.rs", "write_policy.rs"], why: "the Lex tools' session" },
@@ -211,7 +212,7 @@ const OWNERS: &[Rule] = &[
     Rule { pattern: "sim_writes::anim_reload(", allowed: &["lib.rs"], why: "anim sets reloaded from disk" },
     Rule { pattern: "sim_writes::logic_tools(", allowed: &["lib.rs"], why: "the logic_* tools' dispatch" },
     Rule { pattern: "sim_writes::lex_tools(", allowed: &["lib.rs"], why: "the lex_* tools' dispatch" },
-    Rule { pattern: "game_call(", allowed: &["lib.rs", "project_engine.rs", "save_tools.rs"], why: "the hosted game's own calls (a GameCall: tick, frame, overlay, before_capture, assets_changed, apply_state, request_done)" },
+    Rule { pattern: "game_call(", allowed: &["lib.rs", "project_engine.rs", "save_tools.rs", "timeline.rs"], why: "the hosted game's own calls (a GameCall: tick, frame, overlay, before_capture, assets_changed, apply_state, request_done, a timeline's events)" },
     Rule { pattern: "Live::new(", allowed: &["lib.rs"], why: "the live world is made once, in Engine::new; later worlds come in through Live::replace (MayReplace)" },
     // Variants are named where they are used: importing them bare would hide the owner check.
     Rule { pattern: "Exempt::*", allowed: &["write_policy.rs"], why: "name Exempt variants in full where they are used" },

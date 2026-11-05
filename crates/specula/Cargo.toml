@@ -33,6 +33,7 @@ specula-studio = { workspace = true }
 specula-scintilla = { workspace = true }
 specula-gustus = { workspace = true }
 specula-lux = { workspace = true }
+specula-tempus = { workspace = true }
 
 [lints]
 workspace = true

@@ -138,6 +138,8 @@ pub struct SepulcraGame {
     saves_status: Option<String>,
     /// Autosave at the start of each wave (Settings; on by default with a window).
     autosave_on: bool,
+    /// The intro flyover and the victory shot (timelines the engine plays; see `cutscene`).
+    pub(crate) cutscene: crate::cutscene::Cutscenes,
 }
 
 /// Everything a game tool can change, for [`Game::checkpoint`]: the simulation, the recording,
@@ -211,6 +213,7 @@ impl SepulcraGame {
             slots: Vec::new(),
             saves_status: None,
             autosave_on: false,
+            cutscene: crate::cutscene::Cutscenes::default(),
         }
     }
 
@@ -917,6 +920,7 @@ impl SepulcraGame {
             ("enemies", Json::from(s.enemies().len())),
             ("paused", Json::from(self.paused)),
             ("speed", Json::from(self.speed)),
+            ("cutscene", self.cutscene.to_json()),
         ])
     }
 
@@ -1130,7 +1134,13 @@ impl Game for SepulcraGame {
         let mut rest = Vec::new();
         let mut it = args.iter();
         while let Some(a) = it.next() {
-            if a == "--rules" {
+            if a == "--intro" {
+                match it.next().map(String::as_str) {
+                    Some("on") => self.cutscene.intro_off = false,
+                    Some("off") => self.cutscene.intro_off = true,
+                    other => return Err(format!("--intro takes on or off, got {other:?}")),
+                }
+            } else if a == "--rules" {
                 match it.next().map(String::as_str) {
                     Some("lex") => self.rules_lex = true,
                     Some("rust") => self.rules_lex = false,
@@ -1218,6 +1228,8 @@ impl Game for SepulcraGame {
         self.sfx.set_volume(self.volume);
         self.rebuild(&mut ctx.world, ctx.agent);
         self.say(format!("Seed {}: carve stones before wave 1", self.state.seed()));
+        // The intro flyover (windowed, unless --intro off or reduced motion): wave 1 waits for it.
+        self.cutscene.intro(ctx.windowed, self.reduced_motion);
     }
 
     fn tick(&mut self, ctx: &mut Ctx) {
@@ -1229,7 +1241,8 @@ impl Game for SepulcraGame {
         let from_steps = self.events.len();
         let mut stepped = 0;
         let was = self.lex_flags();
-        if !self.paused {
+        // A cutscene holding the run (the intro) waits like a pause: no step, no build time lost.
+        if !self.paused && !self.cutscene.holds() {
             for _ in 0..self.speed {
                 if !self.running() {
                     break;
@@ -1253,6 +1266,9 @@ impl Game for SepulcraGame {
         self.lex_verdicts(was);
         let events = std::mem::take(&mut self.events);
         self.messages(&events);
+        if events.iter().any(|e| matches!(e, Event::Won)) {
+            self.cutscene.victory(ctx.windowed);
+        }
         // The rotating autosave as a wave starts (the save holds this tick, wave and all).
         if let Some(wave) = wave_started(&events[from_steps..]) {
             self.autosave(wave);
@@ -1294,7 +1310,12 @@ impl Game for SepulcraGame {
         }
         // Input reaches the HUD first; the game gets what the HUD didn't take. The HUD shows the
         // state as of now (threat arrows from last frame's camera).
-        self.controls.begin(frame.input, frame.pads);
+        // The input that skipped a cutscene goes nowhere else (a click doesn't also build).
+        if self.cutscene.take_swallow() {
+            self.controls.begin(&[], &[]);
+        } else {
+            self.controls.begin(frame.input, frame.pads);
+        }
         let cam = self.camera;
         self.fill_hud(cam.as_ref(), frame.size);
         let mut ui_events = std::mem::take(&mut self.ui_frame);
@@ -1351,7 +1372,26 @@ impl Game for SepulcraGame {
     }
 
     fn call_tool(&mut self, ctx: &mut Ctx, name: &str, args: &Json) -> ToolOutput {
+        // An agent acting on the run is never held by a cutscene.
+        if matches!(name, "play_new" | "play_command" | "play_control" | "play_ui" | "play_replay") {
+            self.cutscene.agent_acted();
+        }
         tools::call(self, ctx, name, args)
+    }
+
+    fn timeline_requests(&mut self, out: &mut Vec<specula::game::TimelineRequest>) {
+        self.cutscene.take_requests(out);
+    }
+
+    fn timeline_event(&mut self, _ctx: &mut Ctx, event: &specula::game::TimelineEvent) {
+        if let Some(line) = self.cutscene.event(event) {
+            self.say(line);
+        }
+        if let specula::game::TimelineWhat::Cue(cue) = &event.what {
+            if let Some(name) = crate::cutscene::cue_sound(&cue.sound) {
+                self.sfx.ui(name, self.now);
+            }
+        }
     }
 
     fn status(&self) -> Json {

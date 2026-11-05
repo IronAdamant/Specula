@@ -1,0 +1,32 @@
+{
+  "date": "2026-11-06",
+  "time": "",
+  "date_source": "",
+  "approximate": false,
+  "milestone": "M5",
+  "commit": "",
+  "subject": "sepulcra",
+  "topic": "game",
+  "title": "Intro flyover and victory shot (timelines)",
+  "note": "The first cutscenes: Sepulcra's intro flyover (low over the mist, round the slab, up to the player's own view; wave 1 waits, any input skips) and the victory shot, as filmstrips from their rail cameras (timeline_preview). Both pass timeline_check with the slab as the subject.",
+  "source": "scripts/timeline_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-sepulcra-intro-preview.jpg",
+      "caption": "intro flyover, 0 to 12.5 s",
+      "original": "sepulcra_intro_preview.png",
+      "width": 640,
+      "height": 392,
+      "bytes": 15668
+    },
+    {
+      "file": "02-sepulcra-victory-preview.jpg",
+      "caption": "victory shot, 0 to 7 s",
+      "original": "sepulcra_victory_preview.png",
+      "width": 640,
+      "height": 392,
+      "bytes": 19086
+    }
+  ]
+}

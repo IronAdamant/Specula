@@ -116,7 +116,17 @@ pub struct CaptureQueue {
     pub(super) views_hint: Option<ViewsHint>,
     /// A step made a new size's target and its graph: the pass's captures end there.
     end_pass: bool,
+    /// A step job's view in flight (`timeline_preview`'s tiles), with the job's own slot: submitted
+    /// in one step and landed in a later one, so the GPU's work never holds the engine thread.
+    /// Landed like the flight before any other offscreen render ([`Engine::land_capture_flight`]),
+    /// into its job's slot. The queue holds the slot weakly: a live job's tile is never dropped,
+    /// however many jobs submit after it, and a tile whose job ended goes with it (lead review R2:
+    /// a shared map kept the newest 8, so more than about 9 concurrent previews lost tiles).
+    pub(crate) step_flight: Option<(std::rc::Weak<StepTile>, Box<ViewInFlight>)>,
 }
+
+/// A step job's landed tile, in the slot the job owns ([`CaptureQueue::step_flight`]).
+pub(crate) type StepTile = std::cell::RefCell<Option<Result<Rendered, String>>>;
 
 /// A capture call not started yet (its views are worked out when its turn comes).
 struct Start {
@@ -492,6 +502,15 @@ impl Engine {
             let settled = self.gpu.settle_offscreen(true);
             let _c = f.pending.trace.enter();
             self.land_flight(f, settled.map(|_| ()));
+        }
+        // A step job's view too (it shares the targets and the ID buffers).
+        if let Some((slot, v)) = self.captures.step_flight.take() {
+            let landed = self.gpu.settle_offscreen(true).map_err(|e| gpu_failure("render", &e, self.windowed)).and_then(|_| self.render_view_land(*v));
+            // Into its job's slot; a job that ended (timed out, its session closed) dropped its
+            // slot, and its tile goes now.
+            if let Some(slot) = slot.upgrade() {
+                *slot.borrow_mut() = Some(landed);
+            }
         }
     }
 

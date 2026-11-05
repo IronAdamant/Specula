@@ -1,0 +1,32 @@
+{
+  "date": "2026-11-06",
+  "time": "",
+  "date_source": "",
+  "approximate": false,
+  "milestone": "M5",
+  "commit": "",
+  "subject": "engine-tests",
+  "topic": "sight",
+  "title": "Timeline rail checks",
+  "note": "timeline_preview filmstrips in a scripted world: an orbit round a pillar that passes every rail check, and a deliberately bad rail (a step through the pillar, then looking straight down) that fails clearance, jump, upright and horizon_spin.",
+  "source": "scripts/timeline_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-orbit-preview.jpg",
+      "caption": "a good rail: the pillar on screen throughout",
+      "original": "orbit_preview.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 12062
+    },
+    {
+      "file": "02-bad-preview.jpg",
+      "caption": "a bad rail: through the pillar, then straight down",
+      "original": "bad_preview.png",
+      "width": 640,
+      "height": 267,
+      "bytes": 7187
+    }
+  ]
+}

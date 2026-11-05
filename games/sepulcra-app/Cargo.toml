@@ -29,6 +29,7 @@ specula-input = { workspace = true }
 specula-platform = { workspace = true }
 specula-protocol = { workspace = true }
 specula-scintilla = { workspace = true }
+specula-tempus = { workspace = true }
 specula-text = { workspace = true }
 specula-ui = { workspace = true }
 

@@ -266,6 +266,8 @@ pub enum Command {
     StudioDone(u64),
     /// The effect tools (see [`crate::vfx_tools`]).
     Vfx(crate::vfx_tools::VfxCall),
+    /// The timeline tools (see [`crate::timeline_tools`]).
+    Timeline(crate::timeline_tools::TimelineCall),
     /// The baked GI tools (see [`crate::gi_tools`]).
     Gi(crate::gi_tools::GiCall),
     /// Project files (see [`crate::project_tools`]).
@@ -615,6 +617,8 @@ pub enum CallerThread {
     Scope,
     Disk,
     Audio,
+    /// `timeline_set`: the timeline is checked, then written through `project_write`.
+    Timeline,
 }
 
 impl CallerThread {
@@ -626,6 +630,7 @@ impl CallerThread {
             "merge_suggest" => CallerThread::MergeSuggest,
             "style_check" => CallerThread::Studio,
             "terrain_edit" => CallerThread::Terrain,
+            "timeline_set" => CallerThread::Timeline,
             n if n.starts_with("lex_") => CallerThread::Lex,
             n if n.starts_with("studio_") => CallerThread::Studio,
             n if n.starts_with("project_") => CallerThread::Project,
@@ -659,6 +664,7 @@ impl CallerThread {
             }
             CallerThread::Disk => "disk_* tools read and prune the shared disk budget outside the engine thread: check disk use before or after the playtest",
             CallerThread::Audio => "audio_* tools read the engine's audio and render previews outside the engine thread: hear (audio_played, audio_levels) before or after the playtest",
+            CallerThread::Timeline => "timeline_set writes a project file outside the engine thread: write timelines before the playtest (timeline_play and the others work inside one)",
         }
     }
 }
@@ -746,6 +752,8 @@ impl Tools {
                 Some(CallerThread::Disk) => return crate::disk_tools::call(self, session, name, arguments),
                 // The audio service and its meter are shared: heard on this thread.
                 Some(CallerThread::Audio) => return crate::audio_tools::call(self, session, name, arguments),
+                // A project write: checked and committed through project_write on this thread.
+                Some(CallerThread::Timeline) => return crate::timeline_tools::set_tool(self, session, arguments),
                 // (Answered above.)
                 // tools_* reach here only from a caller that skipped `ToolHandler::call` (tests).
                 Some(CallerThread::LogicBuild | CallerThread::LogicReload | CallerThread::MergeSuggest | CallerThread::Scope) | None => parse(name, arguments),
@@ -950,8 +958,8 @@ pub(crate) fn parse(name: &str, args: &Json) -> Result<Command, String> {
                                 Some(call) => call.map(Command::SaveGame),
                                 None => match crate::anim_tools::parse(other, args) {
                                     Some(call) => call.map(Command::Anim),
-                                    None => match crate::vfx_tools::parse(other, args) {
-                                        Some(call) => call.map(Command::Vfx),
+                                    None => match crate::vfx_tools::parse(other, args).map(|c| c.map(Command::Vfx)).or_else(|| crate::timeline_tools::parse(other, args).map(|c| c.map(Command::Timeline))) {
+                                        Some(call) => call,
                                         None => match crate::gi_tools::parse(other, args) {
                                             Some(call) => call.map(Command::Gi),
                                             None => match crate::stream_tools::parse(other, args) {
@@ -2834,6 +2842,7 @@ pub(crate) fn definitions() -> Vec<ToolDef> {
     .chain(crate::anim_tools::definitions())
     .chain(crate::studio_tools::definitions())
     .chain(crate::vfx_tools::definitions())
+    .chain(crate::timeline_tools::definitions())
     .chain(crate::taste_tools::definitions())
     .chain(crate::gi_tools::definitions())
     .chain(crate::terrain_tools::definitions())

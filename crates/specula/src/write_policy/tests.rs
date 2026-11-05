@@ -452,6 +452,11 @@ const ROWS: &[(&str, Write, Expect)] = &[
         })
     }, Expect::Refused("reserved")),
     ("vfx_set's rule on a claimed entity", |f| set_abox(f, Rule::Vfx), Expect::Refused("claimed")),
+    // Timeline playback (M5): entity tracks write as the agent who started the playback, so a
+    // claim refuses them (the playback pauses as blocked), and reserved data stays refused.
+    ("timeline playback's rule on a claimed entity", |f| set_abox(f, Rule::Timeline), Expect::Refused("claimed")),
+    ("timeline playback's rule on a free entity", |f| agent(f, MALLORY, Kind::Batch, Rule::Timeline, |wd| wd.spawn(cube("tl", Vec3::new(90.0, 0.5, 90.0)), "mallory").map(|_| ())), Expect::Allowed),
+    ("timeline playback's rule writing the effect library", |f| agent(f, MALLORY, Kind::Spawn, Rule::Timeline, |wd| wd.spawn(effect("sneak", 0.05), "mallory").map(|_| ())), Expect::Refused("reserved")),
     // Taste state (M4, taste lane review: a builder forged the human's pick with project_write,
     // and gallery_apply wrote it into style.toml): only the taste rule writes /project/assets/taste,
     // and it writes nothing else.
@@ -762,7 +767,7 @@ fn every_write_path_holds_the_policy() {
 fn the_table_names_every_writer() {
     let names: Vec<&str> = ROWS.iter().map(|(n, _, _)| *n).collect();
     let has = |s: &str| names.iter().any(|n| n.contains(s));
-    for rule in [Rule::World, Rule::Joint, Rule::Nav, Rule::Lex, Rule::LexLive, Rule::Project, Rule::Vfx, Rule::Taste, Rule::TasteResult, Rule::Gi] {
+    for rule in [Rule::World, Rule::Joint, Rule::Nav, Rule::Lex, Rule::LexLive, Rule::Project, Rule::Vfx, Rule::Taste, Rule::TasteResult, Rule::Gi, Rule::Timeline] {
         let row = match rule {
             Rule::World => "world_set",
             Rule::Joint => "physics_joint's rule",
@@ -774,6 +779,7 @@ fn the_table_names_every_writer() {
             Rule::Taste => "the taste tools' rule",
             Rule::TasteResult => "the taste result rule",
             Rule::Gi => "the GI tools' rule",
+            Rule::Timeline => "timeline playback's rule",
         };
         assert!(has(row), "{rule:?} has a row");
     }

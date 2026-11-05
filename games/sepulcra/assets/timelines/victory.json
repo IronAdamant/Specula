@@ -1,0 +1,17 @@
+{
+  "schema": "specula.timeline.v1",
+  "description": "The victory shot: a slow rise round the east of the slab, the graveyard held. Presentation only; skippable by any input.",
+  "duration": 7,
+  "tracks": [
+    {
+      "kind": "camera",
+      "name": "rise",
+      "rail": {"points": [[23.87, 35.471, 35.089], [40, 42, 5], [25, 50, -28]]},
+      "move": [{"t": 0, "at": 0}, {"t": 6.5, "at": 1, "ease": "smooth"}],
+      "look": {"point": [0, -2, 1]},
+      "fov": [{"t": 0, "value": 45}, {"t": 6.5, "value": 52, "ease": "in_out"}]
+    },
+    {"kind": "subtitles", "name": "captions", "lines": [{"t": 0.5, "duration": 5, "text": "Victory: the graveyard holds."}]},
+    {"kind": "events", "name": "game", "events": [{"t": 0, "name": "victory_shot"}]}
+  ]
+}

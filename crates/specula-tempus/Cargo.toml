@@ -1,0 +1,15 @@
+[package]
+name = "specula-tempus"
+description = "Specula Tempus: timelines, sequencer tracks and camera rails as data, evaluated deterministically"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+specula-core = { workspace = true }
+
+[lints]
+workspace = true

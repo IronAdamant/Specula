@@ -339,6 +339,9 @@ pub fn validate(path: &str, kind: FileKind, text: &str, old: Option<&str>, conte
                 out.push(Problem { file: path.to_owned(), severity: "error", code: e.code.into(), at: e.field.clone().unwrap_or_default(), message: e.message, offset: None });
             }
         }
+        // Timelines: the format, then what the engine plays (anim and vfx values as world_set
+        // takes them; docs/design/TIMELINE.md).
+        FileKind::Timeline => out.extend(crate::timeline::validate_file(path, text)),
         // Notes are prose (the style configurator's): any text.
         FileKind::StyleNotes => {}
         // Binary files' bytes are checked by project_upload (project_binary::inspect); their

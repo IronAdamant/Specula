@@ -82,6 +82,9 @@ pub enum FileKind {
     StyleData,
     /// `*.md` under `style/`: the style configurator's notes, once approved.
     StyleNotes,
+    /// `*.json` in a folder named `timelines`: timelines, sequencer tracks and camera rails
+    /// (docs/design/TIMELINE.md).
+    Timeline,
     /// Binary files (see [`FileKind::is_binary`]).
     Png,
     Glb,
@@ -92,7 +95,7 @@ pub enum FileKind {
 }
 
 impl FileKind {
-    pub const ALL: [FileKind; 19] = [
+    pub const ALL: [FileKind; 20] = [
         FileKind::Recipe,
         FileKind::Style,
         FileKind::StyleRules,
@@ -107,6 +110,7 @@ impl FileKind {
         FileKind::Taste,
         FileKind::StyleData,
         FileKind::StyleNotes,
+        FileKind::Timeline,
         FileKind::Png,
         FileKind::Glb,
         FileKind::Gltf,
@@ -130,6 +134,7 @@ impl FileKind {
             FileKind::Taste => "taste",
             FileKind::StyleData => "style_data",
             FileKind::StyleNotes => "style_notes",
+            FileKind::Timeline => "timeline",
             FileKind::Png => "png",
             FileKind::Glb => "glb",
             FileKind::Gltf => "gltf",
@@ -388,6 +393,7 @@ pub fn kind_for(mount: MountKind, rel: &str) -> Option<FileKind> {
                 "sounds" => Some(FileKind::Sound),
                 "music" => Some(FileKind::Music),
                 "anims" => Some(FileKind::AnimSet),
+                "timelines" => Some(FileKind::Timeline),
                 _ => None,
             }
         }
@@ -537,7 +543,13 @@ pub fn read_entry(path: &Path, kind: FileKind, store: Option<&crate::blobs::Cont
     if kind.is_binary() {
         read_blob(path, store)
     } else {
-        read_text(path)
+        let read = read_text(path)?;
+        // A timeline is parsed where it is read (the watcher's or the scan's thread), so the
+        // engine thread never parses one to play or list it (docs/design/TIMELINE.md).
+        if kind == FileKind::Timeline {
+            crate::timeline::warm(&read.0, read.1.hash);
+        }
+        Ok(read)
     }
 }
 
@@ -1150,6 +1162,8 @@ mod tests {
         assert_eq!(kind_for(a, "ui/theme.json"), Some(FileKind::UiTheme));
         assert_eq!(kind_for(a, "sounds/ui_click.json"), Some(FileKind::Sound));
         assert_eq!(kind_for(a, "anims/wraith.json"), Some(FileKind::AnimSet));
+        assert_eq!(kind_for(a, "timelines/intro.json"), Some(FileKind::Timeline));
+        assert_eq!(kind_for(a, "timelines/notes.txt"), None);
         assert_eq!(kind_for(a, "style.json"), Some(FileKind::Style));
         assert_eq!(kind_for(a, "x/style.toml"), Some(FileKind::StyleRules));
         assert_eq!(kind_for(a, "recipes/readme.md"), None);
