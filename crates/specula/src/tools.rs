@@ -272,6 +272,8 @@ pub enum Command {
     Timeline(crate::timeline_tools::TimelineCall),
     /// The baked GI tools (see [`crate::gi_tools`]).
     Gi(crate::gi_tools::GiCall),
+    /// The window's editor (see [`crate::editor_tools`]).
+    Editor(crate::editor_tools::EditorCall),
     /// Project files (see [`crate::project_tools`]).
     Project(crate::project_tools::ProjectCall),
     /// Galleries, preferences, boards and onboarding (see [`crate::taste`]).
@@ -351,6 +353,9 @@ pub struct Request {
     /// The call (and span) it is part of: the engine thread works inside it
     /// (docs/design/TRACE.md). `Ctx::current()` where the request is made.
     pub trace: specula_core::trace::Ctx,
+    /// The agent that drove this request on its session's behalf (an `editor_input` call driving
+    /// the window's human): journaled as `via`. `None` for an agent's own call.
+    pub via: Option<String>,
 }
 
 pub struct Tools {
@@ -494,7 +499,7 @@ impl Tools {
     /// the engine is gone.
     pub(crate) fn post(&self, session: &SessionInfo, command: Command) -> bool {
         let (reply, _) = crate::jobs::channel();
-        self.to_engine.send(Request { session: session.clone(), call: current_call(), command, reply, deadline: Instant::now() + APPLY_DEADLINE, trace: specula_core::trace::Ctx::current() }).is_ok()
+        self.to_engine.send(Request { session: session.clone(), call: current_call(), command, reply, deadline: Instant::now() + APPLY_DEADLINE, trace: specula_core::trace::Ctx::current(), via: None }).is_ok()
     }
 
     pub(crate) fn lex_native_names(&self) -> Vec<String> {
@@ -518,7 +523,7 @@ impl Tools {
     pub(crate) fn send(&self, session: &SessionInfo, command: Command) -> ToolOutput {
         let (reply, answer) = crate::jobs::channel();
         let deadline = Instant::now() + APPLY_DEADLINE;
-        let request = Request { session: session.clone(), call: current_call(), command, reply, deadline, trace: specula_core::trace::Ctx::current() };
+        let request = Request { session: session.clone(), call: current_call(), command, reply, deadline, trace: specula_core::trace::Ctx::current(), via: None };
         if self.to_engine.send(request).is_err() {
             return ToolOutput::error("the engine is shutting down");
         }
@@ -968,8 +973,8 @@ pub(crate) fn parse(name: &str, args: &Json) -> Result<Command, String> {
                                                 Some(call) => call.map(Command::Stream),
                                                 None => match crate::terrain_tools::parse(other, args) {
                                                     Some(call) => call.map(Command::Terrain),
-                                                    None => match crate::ui_tools::parse(other, args) {
-                                                        Some(call) => call.map(Command::Ui),
+                                                    None => match crate::editor_tools::parse(other, args).map(|c| c.map(Command::Editor)).or_else(|| crate::ui_tools::parse(other, args).map(|c| c.map(Command::Ui))) {
+                                                        Some(call) => call,
                                                         None => crate::logic::tools::parse(other, args).unwrap_or_else(|| Err(format!("unknown tool '{}'", crate::bounds::echo(other)))),
                                                     },
                                                 },
@@ -2855,6 +2860,7 @@ pub(crate) fn definitions() -> Vec<ToolDef> {
     .chain(crate::terrain_tools::definitions())
     .chain(crate::ui_tools::definitions())
     .chain(crate::trace_tools::definitions())
+    .chain(crate::editor_tools::definitions())
     .collect()
 }
 

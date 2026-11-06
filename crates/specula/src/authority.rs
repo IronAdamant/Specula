@@ -127,6 +127,8 @@ pub enum Site {
     DiskPrune,
     /// gi_settings with changes (the GI tier shapes the human's window too).
     GiSettings,
+    /// editor_input: simulated input acts as the window's human.
+    EditorInput,
     /// gi_bake `threads` past the default (they slow the frame thread and other agents).
     GiThreads,
     /// audio_settings with changes (bus volumes and ducking are what everyone hears).
@@ -145,6 +147,7 @@ impl Site {
             Site::HelloBadName => "name_invalid",
             Site::ForceOverride => "force_needs_lead",
             Site::ReviewDecide | Site::ReviewScreen => "not_reviewer",
+            Site::EditorInput => "owner_only",
             Site::CritiqueUpdate => "not_yours",
             Site::CritiqueSource => "source_reserved",
             Site::JobBusy => "job_busy",
@@ -176,6 +179,7 @@ impl Site {
             Site::DiskPrune => "disk_prune.free_mb",
             Site::GiSettings => "gi_settings",
             Site::GiThreads => "gi_bake.threads",
+            Site::EditorInput => "editor_input",
             Site::AudioSettings => "audio_settings",
         }
     }
@@ -581,7 +585,7 @@ pub fn access(tool: &str) -> Option<Access> {
         | "project_read" | "studio_stage" | "studio_sheet" | "studio_lineup" | "studio_compare" | "studio_check" | "style_check" | "review_list" | "critique_list"
         | "merge_suggest" | "vfx_get" | "vfx_check" | "vfx_info" | "logic_status" | "perf_frame" | "perf_memory" | "engine_info" | "balance_targets"
         | "disk_status" | "tools_catalog" | "trace_query" | "trace_follow" | "trace_call" | "trace_crash" | "trace_incidents" | "terrain_info" | "gi_info"
-        | "gi_check" => ReadOnly,
+        | "gi_check" | "editor_state" => ReadOnly,
         // The interface's sight tools: they lay it out (and put the player's interface back) and read it.
         "ui_tree" | "ui_check" | "ui_frame" => ReadOnly,
         // A player's input, synthesised: the frames' world changes commit as the caller's through
@@ -657,6 +661,9 @@ pub fn access(tool: &str) -> Option<Access> {
         // change (Site::AudioSettings); anyone reads them.
         "audio_settings" => Lead,
         "review_decide" | "review_screen" => Reviewer,
+        // Simulated window input: the editor's edits are the window's human's (window:owner), so
+        // only the owner may drive it (docs/design/EDITOR.md, "Agents driving the editor").
+        "editor_input" => Owner,
         // Open, with the reason.
         "agent_hello" => Open("names the caller's own session; engine writer names, granted names and authority roles are refused"),
         "time_control" => Open("the clock is shared on purpose: any agent pauses or steps it for its checks (a playtest owns it while one runs); the answer's set_by names who moved it last"),

@@ -915,6 +915,20 @@ impl Streamer {
         self.cfg.enabled && self.cfg.hlod
     }
 
+    /// The world was replaced (a load, a save read): merged proxies show the old world and cover
+    /// ids the new one reuses, so they go and are built again from the new world
+    /// (`Engine::world_changed_wholesale`).
+    pub fn world_replaced(&mut self, gpu: &mut Gpu, models: &mut GpuModels) {
+        self.hlod.clear(gpu);
+        self.index = Index::default();
+        self.dirty_cells.clear();
+        models.cover.fill(0);
+        self.resident_cache = None;
+        self.victims_cache = None;
+        self.victim_scan = None;
+        self.victims_for = None;
+    }
+
     /// stream_settings: lays `patch` over the settings (checked first; nothing changes on an
     /// error). Switching streaming or HLOD off, or a new cell size, drops proxies and partial
     /// uploads (`models.synced` is reset so the plain path uploads everything).

@@ -148,7 +148,7 @@ fn hello(e: &mut Engine, id: &str, name: &str, role: &str) -> SessionInfo {
 /// A `ui_*` call as `who`: its answer and whether it was an error.
 fn call(e: &mut Engine, s: &SessionInfo, who: &'static str, tool: &str, args: &str) -> (Json, bool) {
     let c = crate::ui_tools::parse(tool, &Json::parse(args).unwrap()).unwrap().unwrap();
-    let w = Writer { name: who, session: Some(&s.id) };
+    let w = Writer { name: who, session: Some(&s.id), via: None };
     let tick = e.clock.tick();
     let out = e.ui_call(c, w, tick, s);
     (crate::playtest::answer_json(&out), out.is_error)
@@ -376,5 +376,5 @@ fn a_sessions_display_never_reaches_other_agents_captures() {
 
 /// A capture's options with the interface drawn (`include_ui`), overlays `o`.
 fn with_ui(o: &ov::Spec) -> crate::capture::ViewOpts<'_> {
-    crate::capture::ViewOpts { include_ui: true, lod: None, time_s: 0.0, overlays: o, caption: None, ids: false, fill: None }
+    crate::capture::ViewOpts { include_ui: true, lod: None, time_s: 0.0, overlays: o, caption: None, ids: false, hud: true, fill: None }
 }

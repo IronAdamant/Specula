@@ -93,6 +93,7 @@ pub const FAMILIES: &[Family] = &[
     fam("logic", "game logic modules (Rust): build, reload, inspect, drive", &["logic_"], &[]),
     fam("ui", "the interface as data: widget trees, outlined captures, a player's input, measured checks", &["ui_"], &[]),
     fam("trace", "the structured log: events, one call's causal tree, crash reports, incidents", &["trace_"], &[]),
+    fam("editor", "the window's human editor: what it shows, and driving it as the human (owner)", &["editor_"], &[]),
 ];
 
 /// The catalog line of the hosted game's family.
@@ -301,6 +302,8 @@ pub(crate) const BRIEFS: &[(&str, &str)] = &[
     ("review_list", "the review queue"),
     ("review_decide", "approve or reject submissions"),
     ("review_screen", "the window's review screen"),
+    ("editor_state", "the window editor: selection, gizmo, panels, status"),
+    ("editor_input", "drive the window editor as the human (owner only)"),
     ("critique_add", "record review findings"),
     ("critique_list", "critiques"),
     ("critique_update", "work a critique through"),

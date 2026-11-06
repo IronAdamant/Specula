@@ -231,8 +231,8 @@ mod tests {
     use crate::world::{EntityKey, Recording, Shape, SpawnSpec};
     use specula_core::math::Vec3;
 
-    const ANN: Writer = Writer { name: "ann", session: Some("k1") };
-    const BOB: Writer = Writer { name: "bob", session: Some("k2") };
+    const ANN: Writer = Writer { name: "ann", session: Some("k1"), via: None };
+    const BOB: Writer = Writer { name: "bob", session: Some("k2"), via: None };
 
     fn spec(paths: &[&str]) -> IntentSpec {
         IntentSpec {

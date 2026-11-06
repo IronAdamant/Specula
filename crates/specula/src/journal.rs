@@ -79,17 +79,27 @@ const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 pub struct Writer<'a> {
     pub name: &'a str,
     pub session: Option<&'a str>,
+    /// The agent whose call made this writer act (an agent driving the window's human through
+    /// `editor_input`): journaled as the entry's `via`, never as its author. Claims and undo
+    /// ownership go by `name` and `session` alone.
+    pub via: Option<&'a str>,
 }
 
 impl<'a> Writer<'a> {
     pub fn new(name: &'a str, session: Option<&'a str>) -> Writer<'a> {
-        Writer { name, session }
+        Writer { name, session, via: None }
+    }
+
+    /// This writer, acting because `via` asked.
+    pub fn via(mut self, via: Option<&'a str>) -> Writer<'a> {
+        self.via = via;
+        self
     }
 }
 
 impl<'a> From<&'a str> for Writer<'a> {
     fn from(name: &'a str) -> Writer<'a> {
-        Writer { name, session: None }
+        Writer { name, session: None, via: None }
     }
 }
 
@@ -696,7 +706,7 @@ impl Journal {
             seq,
             tick,
             by,
-            via: via.map(|v| self.intern(v)),
+            via: via.or(w.via).map(|v| self.intern(v)),
             session,
             kind,
             changes,

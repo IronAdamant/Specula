@@ -761,7 +761,7 @@ impl PreviewJob {
         let camera = camera_of(&pose);
         let (tw, th) = self.tile;
         let overlays = crate::sight_overlay::Spec::default();
-        let opts = capture::ViewOpts { include_ui: false, lod: None, time_s: e.world.world_time(), overlays: &overlays, caption: None, ids: true, fill: None };
+        let opts = capture::ViewOpts { include_ui: false, lod: None, time_s: e.world.world_time(), overlays: &overlays, caption: None, ids: true, hud: true, fill: None };
         match e.render_view_submit(camera, tw, th, &opts).map_err(ToolOutput::error)? {
             capture::Submitted::Done(r) => {
                 *self.slot.borrow_mut() = Some(Ok(*r));

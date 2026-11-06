@@ -707,7 +707,7 @@ fn fire(run: &mut Run, list: Vec<Fired>, fired_n: &mut usize, live: Option<&[(St
         let path = format!("/{ROOT}/{}", run.agent.trim_start_matches("lex:"));
         let (by, result) = match &f.who {
             Some(h) => {
-                let w = Writer { name: &h.name, session: h.session.as_deref() };
+                let w = Writer { name: &h.name, session: h.session.as_deref(), via: None };
                 let r = match swarm.check_claimed_path(&path, w, "fire this live run's input") {
                     Err(e) => Err(e.to_json()),
                     Ok(()) => apply_command(run, &f.command, &f.args, &h.name, Some(w), true, world, logic, swarm, tick, hz),
@@ -1534,7 +1534,7 @@ pub fn definitions() -> Vec<ToolDef> {
 mod tests {
     use super::*;
 
-    const ANN: Writer = Writer { name: "ann", session: Some("aaaaaa11") };
+    const ANN: Writer = Writer { name: "ann", session: Some("aaaaaa11"), via: None };
 
     /// Walkers spawn every second and walk 10 m; a command builds a tower; a native per walker
     /// is left to the host (a module hook nobody runs here).
@@ -1813,7 +1813,7 @@ mod tests {
         use crate::claims::{ClaimSpec, Scope, DEFAULT_LEASE};
         let mut rig = Rig::new(30);
         let (_, bob) = two_agents(&mut rig);
-        let bob_w = Writer { name: "bob", session: Some("bbbbbb22") };
+        let bob_w = Writer { name: "bob", session: Some("bbbbbb22"), via: None };
         let mut statue = SpawnSpec::new(Shape::Cube);
         statue.name = Some("statue".into());
         statue.position = Vec3::new(20.0, 0.0, 20.0);
@@ -2050,7 +2050,7 @@ mod tests {
         use crate::claims::{ClaimSpec, Scope, DEFAULT_LEASE};
         let mut rig = Rig::new(30);
         let (_, bob) = two_agents(&mut rig);
-        let bob_w = Writer { name: "bob", session: Some("bbbbbb22") };
+        let bob_w = Writer { name: "bob", session: Some("bbbbbb22"), via: None };
         load_counter(&mut rig);
         let (rules, input) = bump_set(false);
         let s = Start { set: "t".into(), rules: Arc::clone(&rules), seed: 1, params: Json::Obj(Vec::new()), present: Vec::new(), input, doc: None };
@@ -2269,7 +2269,7 @@ mod tests {
         let by: Vec<Json> = j.get("commands").and_then(Json::as_array).unwrap().iter().filter_map(|c| c.get("by").cloned()).collect();
         assert_eq!(by, vec![Json::from("input"), Json::from("ann")], "{j}");
         // Another agent can't take over ann's hold.
-        let bob_w = Writer { name: "bob", session: Some("bbbbbb22") };
+        let bob_w = Writer { name: "bob", session: Some("bbbbbb22"), via: None };
         let out = rig.live.call(LiveCall::Input { set: "t".into(), actions: Json::obj([("tap", Json::Bool(true))]), ticks: 3 }, "bob", bob_w, Env { world: &mut rig.world, logic: &mut rig.logic, swarm: &mut rig.swarm, natives: &rig.natives, tick: rig.tick, hz: rig.hz });
         assert!(out.is_error && json(&out).get("error") == Some(&Json::from("held_by_another")), "{}", json(&out));
     }
@@ -2715,10 +2715,10 @@ mod presentation_tests {
         let mut s = SpawnSpec::new(Shape::Cube);
         s.name = Some("abox".into());
         s.body = Some(Body::new(BodyKind::Dynamic, 5.0));
-        let alice_w = Writer { name: "alice", session: Some("aaaaaa11") };
+        let alice_w = Writer { name: "alice", session: Some("aaaaaa11"), via: None };
         let abox = write_policy::commit(&mut world, &mut swarm, 0, alice_w, Kind::Spawn, Rule::World, |wd| wd.spawn(s, "alice").map(|e| e.id)).unwrap().0;
         swarm.take_claim(&world, &alice, ClaimSpec { scope: Scope::path("/abox").unwrap(), lease: DEFAULT_LEASE, note: String::new() }).unwrap();
-        let bob_w = Writer { name: "bob", session: Some("bbbbbb22") };
+        let bob_w = Writer { name: "bob", session: Some("bbbbbb22"), via: None };
         let doc = specula_lex::Document::parse(RULES).unwrap();
         let rules = Arc::new(specula_lex::compile(&doc, &Options::default()).unwrap().rules);
         let logic = &mut LogicHost::new();

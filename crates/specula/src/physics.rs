@@ -1899,7 +1899,7 @@ mod tests {
         let mut w = World::default();
         w.set_recording(Recording::Full);
         let mut sw = crate::swarm::Swarm::default();
-        let me = Writer { name: "probe", session: None };
+        let me = Writer { name: "probe", session: None, via: None };
         let id = floor(&mut w);
         let _ = w.take_changes();
         let mut p = Physics::default();

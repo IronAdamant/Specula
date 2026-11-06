@@ -7,6 +7,7 @@ use crate::authority::Authority;
 use crate::board::{Owner, Status as TaskStatus, TaskSpec};
 use crate::conflict::Yours;
 use crate::director::{self, PlanItem};
+use crate::entity_ref::EntityRef;
 use crate::journal::{path_under, Kind, UndoRequest, Writer};
 use crate::review::{self, Capture, Check, CritiqueAction, Decision, Review, Root, Status, SubmitSpec, Target, WINDOW_OWNER};
 use crate::review_tools::{DecideOne, PlanArgs, PlanSource, ReviewCall, ScreenOp, SubmitArgs, Which, MAX_DECISIONS};
@@ -237,9 +238,10 @@ impl Engine {
                 Err(e) => fail(&e),
             },
             ReviewCall::List { id: Some(id), .. } => {
+                self.swarm.review.refresh_critiques_on(id, &self.world);
                 match self.swarm.review.get(id) {
                     Some(s) => {
-                        let mut j = s.to_json(&self.swarm.review.critiques_on(id), self.swarm.journal().epoch());
+                        let mut j = s.to_json(&self.swarm.review.critiques_on(id), self.swarm.journal().epoch(), Some(&self.world));
                         self.mark_missing(&mut j);
                         out(j)
                     }
@@ -255,8 +257,9 @@ impl Engine {
                     let mut full: Vec<Json> = Vec::with_capacity(ids.len());
                     let mut bytes = 0usize;
                     for id in &ids {
+                        self.swarm.review.refresh_critiques_on(*id, &self.world);
                         let Some(s) = self.swarm.review.get(*id) else { continue };
-                        let item = s.to_json(&self.swarm.review.critiques_on(*id), self.swarm.journal().epoch());
+                        let item = s.to_json(&self.swarm.review.critiques_on(*id), self.swarm.journal().epoch(), Some(&self.world));
                         let n = item.to_string().len();
                         if !full.is_empty() && bytes + n > MAX_DETAILED_BYTES {
                             let last = full.last().and_then(|x| x.get("id")).cloned().unwrap_or(Json::Null);
@@ -323,10 +326,12 @@ impl Engine {
                 let mut specs = Vec::with_capacity(items.len());
                 let mut call = crate::evidence::CallCopies::engine_thread();
                 for (i, (mut spec, assign)) in items.into_iter().enumerate() {
-                    if let Some(Target::Entity { id, path }) = &mut spec.target {
-                        match self.world.get(*id) {
-                            Some(_) => *path = self.world.path_of(*id),
-                            None => return fail(&WorldError::new("not_found", format!("items[{i}]: no entity with id {id}")).with("item", i).with("id", *id)),
+                    // The entity by identity: never a reused id after a save read (`entity_ref`).
+                    if let Some(Target::Entity(r)) = &mut spec.target {
+                        let id = r.uid.id;
+                        match EntityRef::of(&self.world, id) {
+                            Some(now) => *r = now,
+                            None => return fail(&WorldError::new("not_found", format!("items[{i}]: no entity with id {id}")).with("item", i).with("id", id)),
                         }
                     }
                     if spec.source.is_empty() {
@@ -360,7 +365,7 @@ impl Engine {
                 }
             }
             ReviewCall::CritiqueList(q) => {
-                let mut j = self.swarm.review.list_critiques(&q);
+                let mut j = self.swarm.review.list_critiques(&q, &self.world);
                 self.mark_missing(&mut j);
                 out(j)
             }
@@ -805,7 +810,13 @@ impl Engine {
                     detail: cut(&detail, crate::board::MAX_DETAIL),
                     deps: Vec::new(),
                     paths: roots.iter().take(crate::board::MAX_LINKS).map(|r| r.path.clone()).collect(),
-                    entities: roots.iter().take(crate::board::MAX_LINKS).map(|r| r.id).collect(),
+                    // By identity: each root still at its path with the id it was submitted with.
+                    entities: roots
+                        .iter()
+                        .take(crate::board::MAX_LINKS)
+                        .filter(|r| self.world.find_path(&r.path).ok() == Some(r.id))
+                        .filter_map(|r| EntityRef::of(&self.world, r.id))
+                        .collect(),
                     claims: Vec::new(),
                     tags: vec!["review".into(), "rework".into(), format!("submission:{}", d.id)],
                     assignee: Some(submitter.clone()),
@@ -871,11 +882,13 @@ impl Engine {
     fn update_critique(&mut self, w: Writer, authority: Authority, id: u64, action: CritiqueAction, expect: Option<u64>) -> Result<Json, WorldError> {
         let tick = self.clock.tick();
         let check = self.swarm.review.check_critique(w, authority, id, &action, expect)?;
+        // A task made from it names its entity's path now (and the same entity, by identity).
+        self.swarm.review.refresh_critique(id, &self.world);
         let c = self.swarm.review.critique(id).expect("checked");
         let mut task = None;
         if let CritiqueAction::ToTask { assign } = &action {
             let (paths, entities) = match &c.target {
-                Some(Target::Entity { id, path }) => (vec![path.clone()], vec![*id]),
+                Some(Target::Entity(r)) => (vec![r.path.clone()], vec![r.clone()]),
                 Some(Target::Path(p)) => (vec![p.clone()], vec![]),
                 None => (vec![], vec![]),
             };
@@ -902,7 +915,7 @@ impl Engine {
             task = Some(self.swarm.board.post(w, tick, spec)?.id);
         }
         let c = self.swarm.review.apply_critique(check, w.name, tick, action, task)?;
-        Ok(c.summary_json())
+        Ok(c.summary_json(Some(&self.world)))
     }
 
     // ---- the director ----

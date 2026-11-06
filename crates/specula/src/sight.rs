@@ -448,6 +448,15 @@ impl DrawCache {
     /// [`draw_list`] for `world` (`generation` changes whenever the engine replaces its world).
     /// LODs are chosen by size with each model's remembered level, or `view.lod`'s if Fixed.
     pub fn draw_list(&mut self, world: &World, generation: u64, meshes: &Meshes, view: &mut View, out: &mut Vec<DrawItem>) -> LodStats {
+        self.draw_list_owned(world, generation, meshes, view, out, None)
+    }
+
+    /// [`DrawCache::draw_list`], also naming each draw's entity in `owners` (the editor's drag
+    /// preview moves the dragged entities' draws: docs/design/EDITOR.md).
+    pub fn draw_list_owned(&mut self, world: &World, generation: u64, meshes: &Meshes, view: &mut View, out: &mut Vec<DrawItem>, mut owners: Option<&mut Vec<u64>>) -> LodStats {
+        if let Some(o) = owners.as_deref_mut() {
+            o.clear();
+        }
         let key = (generation, meshes.lathes.version(), view.include_ui);
         let same_world = self.key.is_some_and(|k| k.0 == generation);
         let fresh = self.key == Some(key) && (self.epoch == world.draw_epoch() || self.patch(world, meshes, view.include_ui));
@@ -455,7 +464,11 @@ impl DrawCache {
         out.clear();
         if fresh {
             for c in &mut self.entries {
+                let before = out.len();
                 draw_cached(c, world, meshes, view, &mut stats, out);
+                if let Some(o) = owners.as_deref_mut() {
+                    o.extend(std::iter::repeat_n(c.id(), out.len() - before));
+                }
             }
         } else {
             // Rebuild, drawing as it goes. Levels of the previous entries carry over by id (both
@@ -469,7 +482,11 @@ impl DrawCache {
                 if let Some(c) = Cached::of(e, meshes, view.include_ui, level) {
                     self.entries.push(c);
                     if let Some(c) = self.entries.last_mut() {
+                        let before = out.len();
                         draw_cached(c, world, meshes, view, &mut stats, out);
+                        if let Some(o) = owners.as_deref_mut() {
+                            o.extend(std::iter::repeat_n(c.id(), out.len() - before));
+                        }
                     }
                 }
             }
@@ -491,10 +508,14 @@ impl DrawCache {
             _ => LodChoice::Remembered(&mut self.transient_levels),
         } };
         for e in world.transient_entities() {
+            let before = out.len();
             match plan(e, meshes, transient.include_ui) {
                 Plan::Skip => {}
                 Plan::Item(d) => out.push(d),
                 Plan::Model => draw_model(e, meshes, &mut transient, &mut stats, out),
+            }
+            if let Some(o) = owners.as_deref_mut() {
+                o.extend(std::iter::repeat_n(e.id, out.len() - before));
             }
         }
         stats

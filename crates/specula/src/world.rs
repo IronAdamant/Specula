@@ -1224,6 +1224,10 @@ pub struct Entity {
     pub created_by: Arc<str>,
     /// Agent name of the last change.
     pub modified_by: Arc<str>,
+    /// The spawn lineage it was born in ([`World::lineage`]): with its id, its identity
+    /// ([`EntityUid`]), kept for life (renames, moves, saves, loads, undo). Metadata: never
+    /// hashed, never in tool JSON, never read by the simulation (docs/design/EDITOR.md).
+    born: u64,
     /// Cached world transform: parent's world × local. Kept current by [`World`].
     world: Mat4,
     /// Cached: visible itself and every ancestor visible.
@@ -1272,7 +1276,71 @@ impl Clone for HashCache {
     }
 }
 
+/// An entity's identity across world replacements: the spawn lineage it was born in and its id
+/// (docs/design/EDITOR.md, "Stable entity identity"). No two entities ever share one: within a
+/// lineage ids only grow, and every way a world's id counter can go back (a load, a save read,
+/// a clone, a replaced live world) starts a new lineage. Lineage 0 is "unknown" (references
+/// from older files) and matches no entity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EntityUid {
+    pub lineage: u64,
+    pub id: u64,
+}
+
+/// A world's spawn lineage: what entities spawned in it are born in. A default world and a clone
+/// draw a fresh one (a clone that spawns must never hand out its original's identities), and the
+/// write policy forks the live world's whenever it is replaced. Printed without its value (it
+/// differs per run; worlds compared by `Debug` stay comparable).
+pub(crate) struct Lineage(u64);
+
+impl Lineage {
+    pub(crate) fn fresh() -> Lineage {
+        Lineage(fresh_lineage())
+    }
+}
+
+impl Default for Lineage {
+    fn default() -> Self {
+        Lineage::fresh()
+    }
+}
+
+impl Clone for Lineage {
+    fn clone(&self) -> Self {
+        Lineage::fresh()
+    }
+}
+
+impl std::fmt::Debug for Lineage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Lineage")
+    }
+}
+
+/// A spawn lineage never used before: `std`'s per-process random SipHash keys over a
+/// process-wide counter (distinctness is all that matters; this is no cryptography). Never 0.
+fn fresh_lineage() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    static KEYS: std::sync::OnceLock<std::collections::hash_map::RandomState> = std::sync::OnceLock::new();
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut h = KEYS.get_or_init(std::collections::hash_map::RandomState::new).build_hasher();
+    h.write_u64(n);
+    h.write_u32(std::process::id());
+    h.finish().max(1)
+}
+
 impl Entity {
+    /// Its identity ([`EntityUid`]): its id and the lineage it was born in.
+    pub fn uid(&self) -> EntityUid {
+        EntityUid { lineage: self.born, id: self.id }
+    }
+
+    /// The spawn lineage it was born in (see [`EntityUid`]).
+    pub fn born(&self) -> u64 {
+        self.born
+    }
+
     /// Local transform (relative to the parent).
     pub fn local_matrix(&self) -> Mat4 {
         let r = self.rotation_deg;
@@ -2157,9 +2225,23 @@ pub const TOP_LOG: usize = 1 << 16;
 /// (ordered by path), without a walk of the tree ([`World::query`]).
 const INDEXED_PAGE: usize = 2048;
 
+/// Children of one parent in name order ([`World::children_from`]): `(id, name)`.
+pub struct Children<'a>(std::collections::btree_map::Range<'a, (u64, String), u64>);
+
+impl<'a> Iterator for Children<'a> {
+    type Item = (u64, &'a str);
+
+    fn next(&mut self) -> Option<(u64, &'a str)> {
+        self.0.next().map(|((_, n), &id)| (id, n.as_str()))
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct World {
     entities: BTreeMap<u64, Entity>,
+    /// What entities spawned now are born in ([`EntityUid`]); fresh for a default world and a
+    /// clone, forked by [`World::fork_lineage`] when the live world is replaced.
+    lineage: Lineage,
     /// `(parent id or ROOT, name) → id`: enforces unique sibling names and lists children in name
     /// order.
     children: BTreeMap<(u64, String), u64>,
@@ -2922,6 +3004,28 @@ impl World {
         self.next_id
     }
 
+    /// The spawn lineage entities spawned now are born in ([`EntityUid`]).
+    pub fn lineage(&self) -> u64 {
+        self.lineage.0
+    }
+
+    /// Starts a new spawn lineage: entities spawned from now on can never take an identity
+    /// handed out before, even if the id counter went back. The write policy calls it whenever
+    /// the live world is replaced; entities already there keep theirs.
+    pub(crate) fn fork_lineage(&mut self) {
+        self.lineage = Lineage::fresh();
+    }
+
+    /// Entity `id`'s identity, if it exists.
+    pub fn uid_of(&self, id: u64) -> Option<EntityUid> {
+        self.entities.get(&id).map(Entity::uid)
+    }
+
+    /// The entity with identity `uid` (its id), if this world has it: one map lookup.
+    pub fn resolve_uid(&self, uid: EntityUid) -> Option<u64> {
+        self.entities.get(&uid.id).filter(|e| e.born == uid.lineage && uid.lineage != 0).map(|e| e.id)
+    }
+
     /// Restores the id counter from a world file. Never below an existing id, so a stale counter
     /// can't hand out an id twice.
     /// The persistent id counter (at least the largest persistent id). Kept below the transient
@@ -2985,6 +3089,28 @@ impl World {
         self.child_range(parent.unwrap_or(ROOT)).map(|(_, &id)| id)
     }
 
+    /// The first child of `parent` named after `name` in name order (at it too when `inclusive`):
+    /// one ordered range read, so the editor's outliner pages through a huge world without
+    /// walking it (docs/design/EDITOR.md, "Outliner").
+    pub fn child_after(&self, parent: Option<u64>, name: &str, inclusive: bool) -> Option<(u64, &str)> {
+        self.children_from(parent, Some(name), inclusive).next()
+    }
+
+    /// `parent`'s children in name order from after `after` (at it too when `inclusive`; `None`:
+    /// from the first), as one ordered range: stepping it allocates nothing, and making it
+    /// allocates only to copy `after` (the outliner's search walks a huge world with it,
+    /// [`crate::outline`]).
+    pub fn children_from(&self, parent: Option<u64>, after: Option<&str>, inclusive: bool) -> Children<'_> {
+        use std::ops::Bound::{Excluded, Included};
+        let p = parent.unwrap_or(ROOT);
+        let lo = match after {
+            None => Included((p, String::new())),
+            Some(name) if inclusive => Included((p, name.to_owned())),
+            Some(name) => Excluded((p, name.to_owned())),
+        };
+        Children(self.children.range((lo, Excluded((p + 1, String::new())))))
+    }
+
     /// `/a/b/c`; empty for an unknown id.
     pub fn path_of(&self, id: u64) -> String {
         let mut names = Vec::new();
@@ -2999,6 +3125,22 @@ impl World {
             path.push_str(n);
         }
         path
+    }
+
+    /// Whether entity `id` is at `path`, without building its path (no allocation): what a
+    /// reference's last known path is checked with ([`crate::entity_ref::EntityRef::refresh`]).
+    pub fn path_is(&self, id: u64, path: &str) -> bool {
+        let mut rest = path;
+        let mut at = self.entities.get(&id);
+        if at.is_none() {
+            return false;
+        }
+        while let Some(e) = at {
+            let Some(head) = rest.strip_suffix(e.name.as_str()).and_then(|h| h.strip_suffix('/')) else { return false };
+            rest = head;
+            at = e.parent.and_then(|p| self.entities.get(&p));
+        }
+        rest.is_empty()
     }
 
     /// 1 for top-level entities.
@@ -3024,7 +3166,7 @@ impl World {
     }
 
     /// Whether `ancestor` is `id` or above it.
-    fn is_ancestor_or_self(&self, ancestor: u64, id: u64) -> bool {
+    pub(crate) fn is_ancestor_or_self(&self, ancestor: u64, id: u64) -> bool {
         let mut at = Some(id);
         while let Some(i) = at {
             if i == ancestor {
@@ -3128,15 +3270,18 @@ impl World {
     /// moves the saved id counter.
     pub fn spawn(&mut self, spec: SpawnSpec, by: &str) -> Result<&Entity, WorldError> {
         // Ids are only used up by spawns that succeed.
-        let id = self.insert(spec, None, 1, by, by)?;
+        let id = self.insert(spec, None, None, 1, by, by)?;
         Ok(&self.entities[&id])
     }
 
-    /// Re-creates a saved entity with its id, version and attribution.
+    /// Re-creates a saved entity with its id, version, attribution and the lineage it was born
+    /// in (`None`, a file from before identities: born in this world's lineage, a fresh
+    /// identity).
     pub(crate) fn restore(
         &mut self,
         spec: SpawnSpec,
         id: u64,
+        born: Option<u64>,
         version: u64,
         created_by: &str,
         modified_by: &str,
@@ -3147,13 +3292,13 @@ impl World {
         if spec.transient {
             return Err(invalid("transient", "transient entities are never saved, so none can be restored".into()));
         }
-        self.insert(spec, Some(id), version.max(1), created_by, modified_by)?;
+        self.insert(spec, Some(id), born, version.max(1), created_by, modified_by)?;
         self.next_id = self.next_id.max(id);
         Ok(())
     }
 
     /// Inserts a checked entity under `id` (`None`: the next free id of its kind). Returns its id.
-    fn insert(&mut self, spec: SpawnSpec, id: Option<u64>, version: u64, created_by: &str, modified_by: &str) -> Result<u64, WorldError> {
+    fn insert(&mut self, spec: SpawnSpec, id: Option<u64>, born: Option<u64>, version: u64, created_by: &str, modified_by: &str) -> Result<u64, WorldError> {
         check_spawn(&spec)?;
         let now = self.world_time();
         let props = canonical_props(spec.props)?;
@@ -3249,6 +3394,7 @@ impl World {
             version,
             created_by,
             modified_by,
+            born: born.filter(|b| *b != 0).unwrap_or(self.lineage.0),
             world: Mat4::IDENTITY,
             shown: true,
             in_ui: false,
@@ -6030,7 +6176,7 @@ mod tests {
         let ops = vec![Op::Spawn(t), Op::Delete(EntityKey::Path("/nope".into()), None)];
         assert!(w.apply_batch(ops, "t").is_err());
         assert_eq!(w.transient_len(), 0);
-        assert!(w.restore(SpawnSpec { transient: true, ..SpawnSpec::new(Shape::Cube) }, 50, 1, "t", "t").is_err());
+        assert!(w.restore(SpawnSpec { transient: true, ..SpawnSpec::new(Shape::Cube) }, 50, None, 1, "t", "t").is_err());
     }
 
     #[test]

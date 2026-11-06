@@ -504,7 +504,7 @@ pub(crate) fn rule_name(r: crate::write_policy::Rule) -> &'static str {
 
 /// The write policy allowed `w`'s write under `rule` (journal entry `seq`).
 pub(crate) fn write_committed(w: Writer, rule: &'static str, seq: Option<u64>, changes: usize) {
-    trace_event!(&WRITES, Debug, "write.committed", agent = w.name, rule = rule, seq = seq, changes = changes);
+    trace_event!(&WRITES, Debug, "write.committed", agent = w.name, via = w.via.map(str::to_owned), rule = rule, seq = seq, changes = changes);
 }
 
 /// The write policy (or the writer's own command) refused `w`'s write under `rule`.
@@ -514,7 +514,7 @@ pub(crate) fn write_refused(w: Writer, rule: &'static str, e: &WorldError) {
         return;
     }
     let path = e.details.iter().find(|(k, _)| matches!(*k, "path" | "entity" | "claimed_path")).map(|(_, v)| v.as_str().map_or_else(|| v.to_string(), str::to_owned));
-    trace_event!(&WRITES, Info, "write.refused", agent = w.name, rule = rule, code = e.code, path = path.clone(), message = e.message.as_str());
+    trace_event!(&WRITES, Info, "write.refused", agent = w.name, via = w.via.map(str::to_owned), rule = rule, code = e.code, path = path.clone(), message = e.message.as_str());
     let call = trace::Ctx::current().call;
     let evidence = || {
         Json::obj([

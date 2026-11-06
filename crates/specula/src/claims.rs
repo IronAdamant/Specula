@@ -240,6 +240,21 @@ impl Claims {
         }
     }
 
+    /// Another agent's live claim that would refuse `w` editing the entity at `path` standing at
+    /// `points` (path claims on it or above, below it when `subtree`, region claims holding a
+    /// point): the editor's look-ahead before a drag and the outliner's badge
+    /// (docs/design/EDITOR.md). The write itself is checked by [`Claims::check`].
+    pub fn blocking<'a>(&'a self, path: &'a str, points: &[Vec3], subtree: bool, w: Writer, now: Instant) -> Option<&'a Claim> {
+        if self.claims.is_empty() {
+            return None;
+        }
+        let blocked = |c: &&Claim| !c.lets(w, now);
+        self.covering(path)
+            .find(blocked)
+            .or_else(|| if subtree { self.below(path).find(blocked) } else { None })
+            .or_else(|| self.regions().filter(blocked).find(|c| points.iter().any(|p| c.scope.contains_point(*p))))
+    }
+
     /// Path claims covering `path` (on it or an ancestor, or `/`).
     fn covering<'a>(&'a self, path: &'a str) -> impl Iterator<Item = &'a Claim> + 'a {
         let mut prefixes: Vec<&str> = vec!["/"];
@@ -887,8 +902,8 @@ mod tests {
     use super::*;
     use crate::world::{EntityKey, Recording, Shape, SpawnSpec, UpdateSpec};
 
-    const ANN: Writer = Writer { name: "ann", session: Some("s1") };
-    const BOB: Writer = Writer { name: "bob", session: Some("s2") };
+    const ANN: Writer = Writer { name: "ann", session: Some("s1"), via: None };
+    const BOB: Writer = Writer { name: "bob", session: Some("s2"), via: None };
 
     fn spawn(w: &mut World, path: &str, pos: Vec3, by: &str) -> Vec<Change> {
         let mut s = SpawnSpec::new(Shape::Cube);

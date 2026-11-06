@@ -35,6 +35,7 @@ pub mod blobs;
 mod project_binary;
 mod director;
 pub mod effects;
+pub mod entity_ref;
 pub mod fpguard;
 pub mod game;
 pub mod hlod;
@@ -51,6 +52,7 @@ pub mod merge;
 pub mod meshes;
 pub mod models;
 pub mod orbit;
+pub mod outline;
 mod perf;
 pub mod persist;
 pub mod rollup;
@@ -79,6 +81,10 @@ pub mod review;
 mod review_engine;
 mod review_screen;
 mod gallery_screen;
+mod editor;
+mod editor_engine;
+mod editor_gizmo;
+mod editor_tools;
 mod taste;
 mod taste_tools;
 mod review_tools;
@@ -604,6 +610,8 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     }
     // The window's human, in the review queue's attribution.
     engine.swarm.reserve(review::WINDOW_OWNER);
+    // The window's human, as an identity the editor's protocol commands run under.
+    engine.swarm.admit_window_operator(editor_engine::WINDOW_SESSION);
     // The gallery worker's rendered rounds, in the journal.
     engine.swarm.reserve(taste::TASTE_AGENT);
     // Who the operator made owner, lead or reviewer (never self-declared; see `authority`).
@@ -941,6 +949,10 @@ struct Engine {
     evidence: evidence::EvidenceState,
     /// The window's review screen (see `review_screen`).
     review_ui: review_screen::ReviewUi,
+    /// The window's editor (docs/design/EDITOR.md; see `editor_engine`).
+    editor: editor_engine::Editor,
+    /// The window's draw owners while an editor drag previews (kept to reuse its allocation).
+    editor_owners: Vec<u64>,
     /// The display the interface lays out for, and what the `ui_*` tools set (see `ui_engine`).
     ui_state: ui_engine::UiState,
     /// Galleries, the preference store, boards and the style configurator (see `taste`).
@@ -1116,6 +1128,8 @@ impl Engine {
             disk_last: Instant::now(),
             evidence: Default::default(),
             review_ui: review_screen::ReviewUi::with_captures(captures_root),
+            editor: editor_engine::Editor::default(),
+            editor_owners: Vec::new(),
             ui_state: ui_engine::UiState::default(),
             taste: taste::Taste::default(),
             modal_open: false,
@@ -1141,6 +1155,9 @@ impl Engine {
         // World time resumes where it was saved (the engine's clock joins it); project files are
         // the project's, not the world's: they stay (see `Live::replace`).
         let models = Some(Arc::clone(&self.library) as Arc<dyn world::ModelSource>);
+        // Notes, critiques and tasks hold entities by identity; the ones the loaded world lacks
+        // show where their entities last were: here, once (docs/design/EDITOR.md).
+        self.swarm.remember_entity_paths(&self.world);
         let failed = self.world.replace(may, &mut self.swarm, world, &format!("world:{name}"), self.clock.seconds(), models);
         // The journal starts over: what a forced load would discard is counted from here.
         let last = self.swarm.journal().last_seq();
@@ -1154,6 +1171,12 @@ impl Engine {
 
     /// What the engine keys on the live world starts over after it was replaced (a load, or a
     /// writer's bug the write policy recovered from: [`Engine::check_world_replaced`]).
+    ///
+    /// **The one hook for the old world's entity ids.** Ids restart in a replaced world, so
+    /// anything engine-side that holds one (a selection, a drag, a pick, a note, a merged proxy)
+    /// would name a different entity now. Each such holder is reset here, or is keyed on
+    /// `world_generation` (which this bumps), or holds no ids: `tests/wholesale_guard.rs` holds
+    /// every `Engine` field to one of the three.
     fn world_changed_wholesale(&mut self) {
         // Follow cameras resolve afresh in the new world (its cameras came with it).
         self.cameras = cameras::Cameras::default();
@@ -1169,6 +1192,20 @@ impl Engine {
         self.vfx.reset();
         self.timeline_world_replaced();
         self.gi.reset();
+        // The editor's selection, drag, pick, outliner and undo history name the old world.
+        self.editor_world_replaced();
+        // Merged distant proxies show the old world and cover ids the new one reuses.
+        self.stream.world_replaced(&mut self.gpu, &mut self.models);
+        // A decision press right after must not decide what the human hasn't seen.
+        self.review_ui.world_replaced(&self.swarm.review);
+        // Notes, critiques and tasks on entities need nothing: they hold identities, which
+        // attach only to the very entities (`entity_ref`; the swarm's row in wholesale_guard).
+        // Live Lex runs presented into the old world (world_load and save_read stop them first and
+        // say so in their answers; a recovered writer's bug is traced).
+        let stopped = self.lex_live.stop_all();
+        if !stopped.is_empty() {
+            specula_core::trace_event!(&trace_sink::ENGINE, Warn, "world.replaced", lex_runs_stopped = stopped.len() as u64);
+        }
         // Navigation reads the loaded world now: its navmeshes are built (in slices, the clock
         // held) before the first tick, as they were in the run that saved it.
         self.nav.sync(&self.world, self.world_generation);
@@ -1378,6 +1415,8 @@ impl Engine {
         // The gallery screen next: under an open review screen it gets no input (no keys, pointer
         // or pads).
         let modal = self.gallery_frame(size, modal) || modal;
+        // The editor next: under an open review or gallery screen it gets no input.
+        let modal = self.editor_frame(size, modal) || modal;
         // A hosted game pauses itself while an engine screen holds the window (it is told once
         // per change).
         if modal != self.modal_open {
@@ -1992,7 +2031,8 @@ impl Engine {
         let mut view = View { camera, viewport_h, include_ui, lod };
         let mut owners = owners;
         let stats = if window {
-            self.draw_cache.draw_list(&self.world, self.world_generation, &meshes, &mut view, out)
+            // (Owners only while the editor previews a drag.)
+            self.draw_cache.draw_list_owned(&self.world, self.world_generation, &meshes, &mut view, out, owners.as_deref_mut())
         } else {
             sight::draw_list(&self.world, &meshes, &mut view, out, owners.as_deref_mut())
         };
@@ -2009,7 +2049,7 @@ impl Engine {
         out.extend_from_slice(&proxies);
         // A capture's proxy draws belong to their cell: one owner per proxy (past every entity
         // id, see `sight::proxy_owner`), so the ID pass counts the proxy's pixels and its
-        // members' drawing facts come from them. The window's draw no owners.
+        // members' drawing facts come from them. The window's proxies have no owner.
         if let Some(o) = owners {
             if window {
                 o.resize(out.len(), 0);
@@ -2101,6 +2141,8 @@ impl Engine {
             let dt = now - last_frame;
             last_frame = now;
             self.game_frame(ui, size, dt);
+            // The editor's protocol commands, picks and panels (and its camera).
+            self.editor_pump(server);
             let next = match &self.game_title {
                 Some(t) => t.clone(),
                 None => format!("Specula — {} entities — {} agents", self.world.len(), server.sessions().len()),
@@ -2130,25 +2172,44 @@ impl Engine {
                 drop(frame_zone);
                 continue;
             }
+            // The open editor holds the window like a human's input does: an agent's view or
+            // flight lets go of it (F5).
+            let editing = self.editor.ui.is_open();
             self.follow_window_camera();
-            if let Some(cam) = self.fly_camera(human_took_controls(&self.input)) {
+            if let Some(cam) = self.fly_camera(editing || human_took_controls(&self.input)) {
                 self.window_follow = None;
                 self.window_camera = Some(cam);
             }
+            self.editor_window_camera();
             let camera = self.window_camera.unwrap_or_else(|| sight::auto_camera(&self.world, 50.0));
             // Streaming: this camera is a source; uploads within the frame's budget, before the
             // draw list so this frame draws them.
             self.stream_tick(Some((camera, size.0, size.1)));
             // The game's interface (its own zone, outside the draw list's).
             let mut game_quads = std::mem::take(&mut self.game_quads);
-            self.game_overlay(size, camera, false, &mut game_quads);
+            if self.editor.ui.is_open() {
+                // The editor's viewport shows the world, not the game's interface (F5: the
+                // human edits what agents edit).
+                game_quads.clear();
+            } else {
+                self.game_overlay(size, camera, false, &mut game_quads);
+            }
+            self.editor_overlay(size, &mut game_quads);
             self.gallery_overlay(size, false, &mut game_quads);
             self.review_overlay(size, false, &mut game_quads);
             let draw_list = profile::zone("draw_list");
             let mut draws = std::mem::take(&mut self.draws);
             let started = Instant::now();
             let time_s = self.window_time_s();
-            let (stats, errors) = self.build_draws(camera, size.1, true, None, true, time_s, &mut draws, None);
+            // While an editor drag previews, the draws' owners say which to move.
+            let mut owners = std::mem::take(&mut self.editor_owners);
+            owners.clear();
+            let previewing = self.editor.previewing();
+            let (stats, errors) = self.build_draws(camera, size.1, true, None, true, time_s, &mut draws, previewing.then_some(&mut owners));
+            if previewing {
+                self.editor_patch_draws(&mut draws, &owners);
+            }
+            self.editor_owners = owners;
             self.pacing.draw_list.push(started.elapsed());
             for e in errors {
                 eprintln!("specula: {e}");
@@ -2343,6 +2404,11 @@ impl Engine {
                 self.vfx_preview_start(call, &request.session, request.reply, request.deadline, false);
                 return;
             }
+            Command::Editor(call) => {
+                // editor_input answers once its frames have run (see `editor_engine`).
+                self.editor_call(call, &request.session, request.call, request.reply, request.deadline);
+                return;
+            }
             command => Request { command, ..request },
         };
         if matches!(request.command, Command::ModelBuild(_) | Command::ModelReload) {
@@ -2416,7 +2482,9 @@ impl Engine {
         let session = self.swarm.key(&request.session);
         self.swarm.begin_dispatch(&session);
         let outer_call = std::mem::replace(&mut self.dispatch_call, call_id);
-        let w = Writer::new(&by, Some(&session));
+        // An agent driving the window's human (editor_input) is journaled as `via`.
+        let via = request.via.clone();
+        let w = Writer::new(&by, Some(&session)).via(via.as_deref());
         let tick = self.clock.tick();
         // A game tool (play_ui pressing a menu's Save) may queue requests for the engine.
         let game_call = matches!(request.command, Command::Game { .. } | Command::Ui(ui_tools::UiCall::Act(_)));
@@ -2529,6 +2597,15 @@ impl Engine {
                 }
                 Err(e) => world_error(&self.conflict_help(e, Some(&conflict::Yours::named(vec!["(environment)".into()])))),
             },
+            // The open editor holds the window as the human's input does (F5): said plainly, not
+            // answered as if the window had moved.
+            Command::View(_) if self.editor.ui.is_open() => ToolOutput::error(
+                Json::obj([
+                    ("error", Json::from("editor_open")),
+                    ("message", Json::from("the human has the window's editor open (F7), which holds the window camera; window_view works again once they close it. Look with sight_frame and your own camera meanwhile")),
+                ])
+                .to_string(),
+            ),
             Command::View(view) => match view {
                 tools::ViewSpec::Auto => {
                     self.timeline_release_window();
@@ -2585,7 +2662,7 @@ impl Engine {
                 let stats = stats.or_else(|| self.gpu.last_frame_stats_of(FramePath::Offscreen));
                 ToolOutput::text(perf::memory_json(&self.profiler, stats.as_ref(), limit).to_string())
             }
-            Command::PerfCapture(_) | Command::Playtest(_) => unreachable!("answered above"),
+            Command::PerfCapture(_) | Command::Playtest(_) | Command::Editor(_) => unreachable!("answered above"),
             Command::Time(op) if playtest_engine::clock_refused(op, self.playtests.running()) => playtest_engine::clock_busy(),
             // Steps wait for a load to finish (bounded); they are never queued behind it.
             Command::Time(TimeOp::Step(_)) if self.nav.loading() && !self.build_nav_load(nav::LOAD_CALL_WAIT) => self.nav_loading_error(),
@@ -3216,6 +3293,8 @@ fn commits_independently(command: &Command) -> bool {
 fn call_class(command: &Command) -> Class {
     match command {
         Command::Frame(_) | Command::Sight(_) => Class::Render,
+        Command::Editor(editor_tools::EditorCall::State { .. }) => Class::Read,
+        Command::Editor(editor_tools::EditorCall::Input(_)) => Class::Edit,
         Command::Anim(call) => anim_tools::call_class(call),
         Command::StudioRender(_) | Command::StudioDone(_) => Class::Read,
         Command::Vfx(call) => vfx_tools::call_class(call),

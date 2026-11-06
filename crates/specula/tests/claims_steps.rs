@@ -8,8 +8,8 @@ use specula::world::{EntityKey, Op, Recording, Shape, SpawnSpec, UpdateSpec, Wor
 use specula_core::math::Vec3;
 use specula_protocol::SessionInfo;
 
-const ANN: Writer = Writer { name: "ann", session: Some("aaaaaa11") };
-const BOB: Writer = Writer { name: "bob", session: Some("bbbbbb22") };
+const ANN: Writer = Writer { name: "ann", session: Some("aaaaaa11"), via: None };
+const BOB: Writer = Writer { name: "bob", session: Some("bbbbbb22"), via: None };
 
 fn session(id: &str) -> SessionInfo {
     SessionInfo { id: id.into(), client_name: "c".into(), client_version: "1".into(), protocol_version: "x".into() }

@@ -1602,6 +1602,12 @@ impl Gpu {
         self.inner.read_ids(target)
     }
 
+    /// [`Gpu::read_ids`] inside `rect` (`[x0, y0, x1, y1)` in pixels, clipped to the image): only
+    /// those pixels are copied. The image's `width` and `height` are the clipped rectangle's.
+    pub fn read_ids_rect(&mut self, target: TargetId, rect: [u32; 4]) -> Result<IdImage, GpuError> {
+        self.inner.read_ids_rect(target, rect)
+    }
+
     /// Per id `1..=max_id` of the target's last ID render: opaque pixels (counted where the GPU
     /// wrote them, without copying), blended pixels, exact extent, rasterized.
     pub fn id_coverage(&self, target: TargetId, max_id: u32) -> Result<IdCounts, GpuError> {

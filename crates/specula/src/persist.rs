@@ -20,7 +20,7 @@
 //! files that are no longer listed. A crash at any moment leaves either the old world or the new
 //! one, never a mix. A save that fails before the commit removes the files it created. Unchanged
 //! subtrees keep their files (and names). Only files that are named like ours *and* start like a
-//! world file (`{"format": "specula.world/v1", ...`) are ever swept, so other files in the folder
+//! world file (`{"format": "specula.world/v2", ...`, or v1) are ever swept, so other files in the folder
 //! (a user's `notes.2026.json`) are never touched. While an engine owns a world it holds
 //! `world.lock` there ([`WorldLock`]), so two engines can't interleave saves.
 //!
@@ -44,15 +44,20 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub const FORMAT: &str = "specula.world/v1";
+/// The world file format written. Version 2 added each entity's `born` (the spawn lineage of its
+/// identity, docs/design/EDITOR.md); version 1 files still load ([`FORMAT_V1`]), their entities
+/// born in the loading world's lineage (fresh identities).
+pub const FORMAT: &str = "specula.world/v2";
+/// The first world file format, read (never written).
+pub const FORMAT_V1: &str = "specula.world/v1";
 const INDEX: &str = "world.json";
 const INDEX_TMP: &str = "world.json.tmp";
 /// Keys an entity record may have; anything else is a typo worth reporting.
-const RECORD_KEYS: [&str; 36] = [
+const RECORD_KEYS: [&str; 37] = [
     "path", "id", "shape", "position", "rotation_deg", "scale", "color", "material", "opacity", "emissive",
     "metallic", "roughness", "specular", "seed", "color2", "light", "profile", "segments", "tags", "props",
     "collider", "body", "version", "created_by", "modified_by", "recipe", "params", "visible", "layer", "anim",
-    "sprite", "tilemap", "shape2d", "vfx", "decal", "water",
+    "sprite", "tilemap", "shape2d", "vfx", "decal", "water", "born",
 ];
 const INDEX_KEYS: &[&str] = &["format", "generation", "next_id", "entity_count", "time_s", "env", "subtrees", "cameras", "entities"];
 const CAMERAS_KEYS: &[&str] = &["format", "cameras"];
@@ -773,6 +778,7 @@ fn record(e: &Entity, path: &str) -> Json {
         f.push(("water", w.to_json()));
     }
     f.push(("version", Json::from(e.version)));
+    f.push(("born", Json::from(format!("{:016x}", e.born()))));
     f.push(("created_by", Json::from(&*e.created_by)));
     f.push(("modified_by", Json::from(&*e.modified_by)));
     Json::obj(f)
@@ -830,8 +836,8 @@ const BOARD_TMP: &str = "board.json.tmp";
 /// as soon as a review is submitted, maybe before the world's first save.
 const QUEUE_FILES: [&str; 3] = ["review.json", "review.json.tmp", "evidence"];
 
-/// Whether a file starts like one we write: `{` then `"format": "specula.world/v1"`, ignoring
-/// whitespace (so a CRLF checkout still counts).
+/// Whether a file starts like one we write: `{` then `"format": "specula.world/v2"` (or v1),
+/// ignoring whitespace (so a CRLF checkout still counts).
 fn starts_like_ours(path: &Path) -> bool {
     use std::io::Read as _;
     let mut head = Vec::with_capacity(64);
@@ -840,7 +846,7 @@ fn starts_like_ours(path: &Path) -> bool {
         return false;
     }
     let compact: Vec<u8> = head.into_iter().filter(|b| !b.is_ascii_whitespace()).collect();
-    compact.starts_with(format!("{{\"format\":\"{FORMAT}\"").as_bytes())
+    [FORMAT, FORMAT_V1].iter().any(|f| compact.starts_with(format!("{{\"format\":\"{f}\"").as_bytes()))
 }
 
 /// Reads `dir`. A folder that has files but neither `world.json` nor only files of ours is
@@ -1278,7 +1284,12 @@ pub fn load_with_limits(
         }
         load_entities(&mut world, file, &doc, Some(root))?;
         let id = world.find_path(root).map_err(|e| from_world(e, file, Some(root)))?;
-        saved.subtrees.insert(id, SavedSubtree { stamp: 0, root: root.clone(), file: file.clone() });
+        // A version 1 file has no identities: its entities were born in this world's lineage
+        // now, so the next save writes it again (keeping it would hand out fresh identities on
+        // every load, and notes on its entities would detach each time).
+        if doc.get("format").and_then(Json::as_str) == Some(FORMAT) {
+            saved.subtrees.insert(id, SavedSubtree { stamp: 0, root: root.clone(), file: file.clone() });
+        }
     }
     for path in loose_paths {
         let id = world.find_path(path).map_err(|e| from_world(e, INDEX, Some(path)))?;
@@ -1338,7 +1349,7 @@ fn load_cameras(world: &mut World, file: &str, text: &str) -> Result<(Vec<Json>,
 fn parse_doc(file: &str, text: &str) -> Result<Json, PersistError> {
     let doc = Json::parse(text).map_err(|e| PersistError::new("invalid_json", e.to_string()).in_file(file).field(&format!("byte {}", e.offset)))?;
     match doc.get("format").and_then(Json::as_str) {
-        Some(FORMAT) => Ok(doc),
+        Some(FORMAT | FORMAT_V1) => Ok(doc),
         other => Err(PersistError::new(
             "unsupported_format",
             format!("format is {}, this engine reads {FORMAT}", other.map_or("missing".into(), |f| format!("'{f}'"))),
@@ -1402,9 +1413,18 @@ fn load_entities(world: &mut World, file: &str, doc: &Json, root: Option<&str>) 
             _ => Err(fail(Some(key.into()), format!("'{key}' must be a string"))),
         };
         let (created_by, modified_by) = (text("created_by")?, text("modified_by")?);
+        // The lineage its identity was born in (absent in version 1 files: a fresh identity).
+        let born = match rec.get("born") {
+            None => None,
+            Some(Json::Str(h)) if h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit()) => match u64::from_str_radix(h, 16) {
+                Ok(b) if b != 0 => Some(b),
+                _ => return Err(fail(Some("born".into()), "'born' must be 16 hex digits, not all zero".into())),
+            },
+            Some(_) => return Err(fail(Some("born".into()), "'born' must be 16 hex digits, not all zero".into())),
+        };
         // Shapes are tessellated later, off the engine thread (and identical ones only once).
         let spec = crate::two_d::deferred(|| parse_spawn_fields(rec)).map_err(|m| fail(quoted_field(&m), m))?;
-        world.restore(spec, id, version, &created_by, &modified_by).map_err(|e| from_world(e, file, Some(path)))?;
+        world.restore(spec, id, born, version, &created_by, &modified_by).map_err(|e| from_world(e, file, Some(path)))?;
     }
     Ok(())
 }
@@ -1672,7 +1692,7 @@ mod tests {
         let saved = files(&w);
         assert!(saved["world.json"].contains(r#""cameras": "cameras.1.json""#), "{}", saved["world.json"]);
         let text = &saved["cameras.1.json"];
-        assert!(text.starts_with("{\n  \"format\": \"specula.world/v1\",\n  \"cameras\": [\n    {\"owner\":\"ann\""), "{text}");
+        assert!(text.starts_with("{\n  \"format\": \"specula.world/v2\",\n  \"cameras\": [\n    {\"owner\":\"ann\""), "{text}");
         assert_eq!(text.lines().filter(|l| l.contains("\"owner\"")).count(), 2, "one line per camera");
         let back = reload(&saved).unwrap();
         assert_eq!(back.cameras(), w.cameras(), "cameras (follow and version included) come back exactly");

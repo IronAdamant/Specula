@@ -1315,7 +1315,7 @@ mod tests {
         let mut w = World::default();
         w.set_recording(crate::world::Recording::Full);
         let mut sw = crate::swarm::Swarm::default();
-        let ann = Writer { name: "ann", session: Some("s1") };
+        let ann = Writer { name: "ann", session: Some("s1"), via: None };
         let group = |name: &str, parent: Option<&str>| {
             let mut s = SpawnSpec::new(Shape::Group);
             s.name = Some(name.into());

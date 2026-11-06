@@ -65,6 +65,8 @@ enum State {
     Mark,
     Diff { marked_frame: u64, marked_tick: u64, view: MarkView },
     Query { id: u64, out: Json },
+    /// The editor's pick (answered from the ID image as it lands: `land_flight`).
+    Pick,
 }
 
 /// An orbit's sheet and views so far.
@@ -237,6 +239,8 @@ impl Engine {
                 let (marked_frame, marked_tick) = (mark.data.frame, mark.data.tick);
                 (time_of(self, view.time_s), State::Diff { marked_frame, marked_tick, view })
             }
+            // The window's own time, so the pick sees what the window shows.
+            Job::Pick(_) => (self.window_time_s(), State::Pick),
             Job::Query(q) => {
                 // Answered without a render when the entity can't be in the frame.
                 match self.query_start(q, &views[0]) {
@@ -353,14 +357,16 @@ impl Engine {
         }
         let none = ov::Spec::default();
         let (opts, gi) = match (&p.job, &p.state) {
-            (Job::Frame(spec), _) => (ViewOpts { include_ui: spec.include_ui, lod: spec.lod, time_s: p.time_s, overlays: &spec.overlays, caption: None, ids: spec.ids, fill: None }, Some(spec.gi)),
-            (Job::Mark { frame: spec, .. }, _) => (ViewOpts { include_ui: spec.include_ui, lod: spec.lod, time_s: p.time_s, overlays: &spec.overlays, caption: None, ids: spec.ids, fill: None }, None),
-            (Job::Diff { .. }, State::Diff { view: v, .. }) => (ViewOpts { include_ui: v.include_ui, lod: v.lod, time_s: p.time_s, overlays: &v.overlays, caption: None, ids: v.ids, fill: None }, None),
-            (Job::Query(q), _) => (ViewOpts { include_ui: view.include_ui, lod: q.frame.lod, time_s: p.time_s, overlays: &none, caption: None, ids: true, fill: None }, None),
+            (Job::Frame(spec), _) => (ViewOpts { include_ui: spec.include_ui, lod: spec.lod, time_s: p.time_s, overlays: &spec.overlays, caption: None, ids: spec.ids, hud: true, fill: None }, Some(spec.gi)),
+            (Job::Mark { frame: spec, .. }, _) => (ViewOpts { include_ui: spec.include_ui, lod: spec.lod, time_s: p.time_s, overlays: &spec.overlays, caption: None, ids: spec.ids, hud: true, fill: None }, None),
+            (Job::Diff { .. }, State::Diff { view: v, .. }) => (ViewOpts { include_ui: v.include_ui, lod: v.lod, time_s: p.time_s, overlays: &v.overlays, caption: None, ids: v.ids, hud: true, fill: None }, None),
+            (Job::Query(q), _) => (ViewOpts { include_ui: view.include_ui, lod: q.frame.lod, time_s: p.time_s, overlays: &none, caption: None, ids: true, hud: true, fill: None }, None),
+            // The window hides the game's interface while the editor is open: the pick sees what the human does.
+            (Job::Pick(_), _) => (ViewOpts { include_ui: true, lod: None, time_s: p.time_s, overlays: &none, caption: None, ids: true, hud: false, fill: None }, None),
             (Job::Orbit(o), State::Orbit(run)) => {
                 let (_, az) = orbit::view(run.center, run.distance, o.elevation_deg, o.start_deg, at as u32, o.views, o.fov_y_deg);
                 let caption = format!("{} az {}", at + 1, az.round());
-                (ViewOpts { include_ui: o.include_ui, lod: o.lod, time_s: p.time_s, overlays: &o.overlays, caption: Some(caption), ids: true, fill: None }, None)
+                (ViewOpts { include_ui: o.include_ui, lod: o.lod, time_s: p.time_s, overlays: &o.overlays, caption: Some(caption), ids: true, hud: true, fill: None }, None)
             }
             _ => {
                 let _ = p.to.reply.send(ToolOutput::error("internal: a capture job and its state disagree"));
@@ -395,7 +401,7 @@ impl Engine {
         let first = at == 0;
         let wait = if matches!(p.job, Job::Frame(_)) { p.wait } else { CaptureWait { presented_at: None, parked_at: None, cut_by_deadline: false } };
         let building = if matches!(p.job, Job::Frame(_) | Job::Orbit(_)) { p.building } else { 0 };
-        let warnings = if first && !matches!(p.job, Job::Query(_)) { self.capture_warnings(stats, two_d, dropped, wait, building, &p.views[at]) } else { Vec::new() };
+        let warnings = if first && !matches!(p.job, Job::Query(_) | Job::Pick(_)) { self.capture_warnings(stats, two_d, dropped, wait, building, &p.views[at]) } else { Vec::new() };
         let mut taken = Taken { warnings, problems: Vec::new(), gi: None, ids: Vec::new(), tick: self.clock.tick() };
         match &p.job {
             Job::Frame(spec) => {
@@ -457,16 +463,19 @@ impl Engine {
                 self.captures.flight = Some(f);
                 return false;
             }
+            // An editor pick needs neither the pixels nor the ID counts: it lands now and reads
+            // only the pixels it picks from (`land_flight`).
+            let pick = matches!(f.pending.state, State::Pick);
             let read = {
                 let _z = profile::zone("capture_read");
-                settled.map_err(|e| gpu_failure("render", &e, self.windowed)).and_then(|_| self.render_view_read(&mut f.view))
+                settled.map_err(|e| gpu_failure("render", &e, self.windowed)).and_then(|_| if pick { Ok(()) } else { self.render_view_read(&mut f.view) })
             };
             self.engine_work_done(trace.call, Some(crate::schedule::Class::Render), "capture_read", started.elapsed());
             if let Err(e) = read {
                 let _ = f.pending.to.reply.send(ToolOutput::error(e));
                 return true;
             }
-            if Instant::now() >= end {
+            if !pick && Instant::now() >= end {
                 // The rest on the next pass (a big view's packet and copy).
                 self.captures.flight = Some(f);
                 return true;
@@ -588,6 +597,26 @@ impl Engine {
 
     fn land_flight(&mut self, f: Flight, settled: Result<(), specula_gpu::GpuError>) {
         let Flight { view, pending, taken } = f;
+        if let (Job::Pick(spec), State::Pick) = (&pending.job, &pending.state) {
+            // The IDs are read before anything else renders offscreen (it would overwrite them):
+            // only the pixels picked from (a click's few, a box's), and for a box each entity's
+            // whole visible count (counted in place, no copy).
+            let r = crate::editor_engine::pick_read_rect(spec);
+            let read = settled.and_then(|()| self.gpu.read_ids_rect(view.target, r)).and_then(|img| {
+                let totals: Vec<u64> = if spec.click {
+                    Vec::new()
+                } else {
+                    self.gpu.id_coverage(view.target, view.entities.len() as u32)?.per_id.iter().map(|c| c.opaque_pixels).collect()
+                };
+                Ok((img, totals))
+            });
+            let out = match read {
+                Ok((img, totals)) => ToolOutput::text(crate::editor_engine::pick_ids(spec, &img, [r[0], r[1]], &view.entities, &totals).to_string()),
+                Err(e) => ToolOutput::error(gpu_failure("pick", &e, self.windowed)),
+            };
+            let _ = pending.to.reply.send(out);
+            return;
+        }
         let rendered = match settled {
             Ok(()) => self.render_view_land(*view),
             Err(e) => Err(gpu_failure("render", &e, self.windowed)),
@@ -625,6 +654,10 @@ impl Engine {
             State::Query { id, out } => {
                 let answer = query_answer(id, out, &p.views[0], r);
                 let _ = p.to.reply.send(answer);
+            }
+            // (Answered in `land_flight`, from the ID image.)
+            State::Pick => {
+                let _ = p.to.reply.send(ToolOutput::error("internal: a pick landed without its ID image"));
             }
             State::Orbit(ref mut run) => {
                 let Job::Orbit(o) = &p.job else { unreachable!("state follows the job") };
@@ -856,6 +889,7 @@ impl Engine {
             frame: self.frames_captured,
             tick: taken.tick,
             png_path: Some(png.display().to_string()),
+            generation: self.world_generation,
         };
         let evicted = self.marks.put(&key, name, mark_view, data);
         let mut out = Json::obj([
@@ -904,8 +938,15 @@ impl Engine {
         let mut warnings = taken.warnings;
         // The diff, its heat panel, the subjects' changes and the sheet are made on the worker
         // (at 2048 x 2048 they held the engine thread about 190 ms).
-        let (before, before_subjects, before_ids) = (std::sync::Arc::clone(&mark.rgba), std::sync::Arc::clone(&mark.subjects), std::sync::Arc::clone(&mark.ids));
-        let alive = taken.ids;
+        let (before, before_subjects, mut before_ids) = (std::sync::Arc::clone(&mark.rgba), std::sync::Arc::clone(&mark.subjects), std::sync::Arc::clone(&mark.ids));
+        let mut alive = taken.ids;
+        if mark.generation != self.world_generation {
+            // The world was replaced since the mark: its ids name other entities now. Every
+            // subject then is gone and every one now is new (never matched by a reused id).
+            before_ids = std::sync::Arc::new(Vec::new());
+            alive.clear();
+            warnings.push("the world was replaced since the mark (world_load or save_read): its subjects are listed as removed and today's as added, never matched by id".into());
+        }
         let after_rgba = r.rgba;
         let after_subjects = r.subjects;
         let bytes = (before.len() + after_rgba.len()) as u64;
@@ -1094,7 +1135,7 @@ mod tests {
             Command::Sight(crate::sight_tools::parse(tool, &args).unwrap().unwrap())
         };
         let (reply, rx) = crate::jobs::channel();
-        e.handle_sight(Request { session: session(), call, command, reply, deadline, trace: specula_core::trace::Ctx::current() });
+        e.handle_sight(Request { session: session(), call, command, reply, deadline, trace: specula_core::trace::Ctx::current(), via: None });
         rx
     }
 

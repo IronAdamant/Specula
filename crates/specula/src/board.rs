@@ -36,11 +36,17 @@
 //! **Notes** are handoffs left on an entity, a path or a task for whoever comes next ("the east
 //! gate's hinges are placeholders"). They outlive sessions (they are saved with the board).
 //!
+//! **Entities** (a note's, a task's) are [`EntityRef`]s: the entity's identity, never a bare id
+//! or a path, so they survive renames, moves and world replacements (a save read keeps the
+//! board) and never land on another entity; a deleted or absent one shows as detached with its
+//! last known path (docs/design/EDITOR.md, "Stable entity identity").
+//!
 //! Nothing here is simulation state: the board never changes the world, so it is not part of
 //! the state hash. Ticks and sequence numbers order it; no wall-clock time is stored.
 
+use crate::entity_ref::{EntityRef, Prefix};
 use crate::journal::{path_under, Writer};
-use crate::world::WorldError;
+use crate::world::{World, WorldError};
 use specula_core::Json;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -193,7 +199,7 @@ pub struct Task {
     pub parent: Option<u64>,
     pub deps: Vec<u64>,
     pub paths: Vec<String>,
-    pub entities: Vec<u64>,
+    pub entities: Vec<EntityRef>,
     pub claims: Vec<u64>,
     pub tags: Vec<String>,
     /// 0 (lowest) to 9; 5 by default.
@@ -230,11 +236,18 @@ impl Task {
             + self.events.iter().map(|e| 96 + e.by.len() + e.text.len()).sum::<usize>()
             + strs(&self.paths)
             + strs(&self.tags)
-            + 24 * (self.deps.len() + self.entities.len() + self.claims.len())
+            + self.entities.iter().map(|e| e.path.len() + 32).sum::<usize>()
+            + 24 * (self.deps.len() + self.claims.len())
     }
 
     pub fn open_questions(&self) -> usize {
         self.questions.iter().filter(|q| q.answer.is_none()).count()
+    }
+
+    /// Its entities as shown against `world` (attached ones with their id and current path:
+    /// refresh them first, [`Board::refresh_task_entities`]).
+    pub fn entities_json(&self, world: &World) -> Json {
+        Json::arr(self.entities.iter().map(|e| e.json(world)))
     }
 
     /// The compact listing item.
@@ -289,7 +302,8 @@ impl Task {
             j.set("parent", Json::from(p));
         }
         j.set("paths", strs(&self.paths));
-        j.set("entities", ids(&self.entities));
+        // As saved; task_get shows them against the world (`Task::entities_json`).
+        j.set("entities", Json::arr(self.entities.iter().map(EntityRef::saved_json)));
         j.set("claims", ids(&self.claims));
         j.set("tags", strs(&self.tags));
         j.set("progress", Json::from(self.progress.as_str()));
@@ -344,25 +358,27 @@ impl Task {
 /// What a note is attached to.
 #[derive(Clone, Debug, PartialEq)]
 pub enum NoteTarget {
-    /// An entity (its path when the note was left, for listings by path).
-    Entity { id: u64, path: String },
+    /// An entity, by identity (see [`EntityRef`]).
+    Entity(EntityRef),
     /// A path (whatever is, or will be, there).
     Path(String),
     Task(u64),
 }
 
 impl NoteTarget {
-    fn json(&self) -> (&'static str, Json) {
+    /// As saved (`None`), or as shown against that world.
+    fn json(&self, world: Option<&World>) -> (&'static str, Json) {
         match self {
-            NoteTarget::Entity { id, path } => ("entity", Json::obj([("id", Json::from(*id)), ("path", Json::from(path.as_str()))])),
+            NoteTarget::Entity(r) => ("entity", world.map_or_else(|| r.saved_json(), |w| r.json(w))),
             NoteTarget::Path(p) => ("path", Json::from(p.as_str())),
             NoteTarget::Task(t) => ("task", Json::from(*t)),
         }
     }
 
-    fn under(&self, prefix: &str) -> bool {
+    fn under(&self, world: &World, prefix: &Prefix<'_>) -> bool {
         match self {
-            NoteTarget::Entity { path, .. } | NoteTarget::Path(path) => path_under(path, prefix),
+            NoteTarget::Entity(r) => r.under(world, prefix),
+            NoteTarget::Path(path) => path_under(path, prefix.path),
             NoteTarget::Task(_) => false,
         }
     }
@@ -383,17 +399,28 @@ pub struct Note {
 impl Note {
     pub fn measure(&self) -> usize {
         let target = match &self.target {
-            NoteTarget::Entity { path, .. } | NoteTarget::Path(path) => path.len(),
+            NoteTarget::Entity(EntityRef { path, .. }) | NoteTarget::Path(path) => path.len(),
             NoteTarget::Task(_) => 0,
         };
         160 + self.by.len() + self.text.len() + target
     }
 
+    /// As saved in `board.json` (an entity as `{id, born, path}`).
     pub fn to_json(&self) -> Json {
+        self.json_with(None)
+    }
+
+    /// As agents see it: an entity attached (`{id, path}`, its path as last refreshed) or
+    /// detached (`{path, detached: true}`) in `world`.
+    pub fn shown(&self, world: &World) -> Json {
+        self.json_with(Some(world))
+    }
+
+    fn json_with(&self, world: Option<&World>) -> Json {
         Json::obj([
             ("id", Json::from(self.id)),
             ("by", Json::from(self.by.as_str())),
-            self.target.json(),
+            self.target.json(world),
             ("text", Json::from(self.text.as_str())),
             ("tick", Json::from(self.tick)),
             ("seq", Json::from(self.seq)),
@@ -408,7 +435,8 @@ pub struct TaskSpec {
     pub detail: String,
     pub deps: Vec<u64>,
     pub paths: Vec<String>,
-    pub entities: Vec<u64>,
+    /// By identity: the handler makes them from the call's ids ([`EntityRef::of_ids`]).
+    pub entities: Vec<EntityRef>,
     pub claims: Vec<u64>,
     pub tags: Vec<String>,
     pub assignee: Option<String>,
@@ -436,7 +464,7 @@ pub struct TaskPatch {
     pub remove_deps: Vec<u64>,
     /// Anyone.
     pub add_paths: Vec<String>,
-    pub add_entities: Vec<u64>,
+    pub add_entities: Vec<EntityRef>,
     pub add_claims: Vec<u64>,
     pub add_tags: Vec<String>,
     pub expect_version: Option<u64>,
@@ -527,7 +555,8 @@ pub struct Board {
     /// since the last save are rendered again (F3). The key is the version and the work
     /// counters (journal links change those without a new version).
     rendered: BTreeMap<u64, ((u64, TaskWork), String)>,
-    /// Rendered note lines, by id (notes never change once left).
+    /// Rendered note lines, by id (a note's text never changes once left; a refreshed last
+    /// known path of its entity drops the line).
     rendered_notes: BTreeMap<u64, String>,
 }
 
@@ -709,7 +738,11 @@ impl Board {
         if let Some(p) = spec.parent.filter(|p| !self.tasks.contains_key(p)) {
             return Err(err("task_not_found", format!("parent {p} is not a task on the board")).with("task", p));
         }
-        let size = 1024 + spec.title.len() + spec.detail.len() + spec.paths.iter().chain(&spec.tags).map(|x| x.len() + 8).sum::<usize>();
+        let size = 1024
+            + spec.title.len()
+            + spec.detail.len()
+            + spec.paths.iter().chain(&spec.tags).map(|x| x.len() + 8).sum::<usize>()
+            + spec.entities.iter().map(|e| e.path.len() + 32).sum::<usize>();
         self.make_room(size)?;
         self.next_task += 1;
         let id = self.next_task;
@@ -910,7 +943,8 @@ impl Board {
         let adding = 256
             + [&p.progress, &p.blocker, &p.question, &p.title, &p.detail].iter().map(|x| x.as_ref().map_or(0, String::len)).sum::<usize>()
             + p.answer.as_ref().map_or(0, |(_, a)| a.len() + 64)
-            + p.add_paths.iter().chain(&p.add_tags).map(|x| x.len() + 8).sum::<usize>();
+            + p.add_paths.iter().chain(&p.add_tags).map(|x| x.len() + 8).sum::<usize>()
+            + p.add_entities.iter().map(|e| e.path.len() + 32).sum::<usize>();
         self.check_budget(adding).map_err(|e| e.with("task", id))?;
         if p.question.is_some() && t.questions.len() >= MAX_QUESTIONS {
             return Err(err("too_many_questions", format!("a task holds at most {MAX_QUESTIONS} questions")).with("task", id));
@@ -1127,35 +1161,75 @@ impl Board {
         Ok(n)
     }
 
-    /// `note_list`: one page, in id order.
-    pub fn list_notes(&self, q: &NoteQuery) -> Json {
-        let matching = self.notes.values().filter(|n| {
+    /// `note_list`: one page, in id order. A note on an entity shows the entity's current path,
+    /// looked up for the page's notes only (which refreshes their last known path), or that it
+    /// is detached. `path_prefix` resolves the prefix once and asks each attached note's entity
+    /// whether it is below it (no allocation per note); `entity` matches attached notes only.
+    pub fn list_notes(&mut self, q: &NoteQuery, world: &World) -> Json {
+        let prefix = q.path_prefix.as_deref().map(|p| Prefix::new(world, p));
+        let matches = |n: &Note| {
             q.by.as_deref().is_none_or(|b| n.by == b)
-                && q.path_prefix.as_deref().is_none_or(|p| n.target.under(p))
-                && q.entity.is_none_or(|e| matches!(n.target, NoteTarget::Entity { id, .. } if id == e))
+                && prefix.as_ref().is_none_or(|p| n.target.under(world, p))
+                && q.entity.is_none_or(|e| matches!(&n.target, NoteTarget::Entity(r) if r.attached(world) == Some(e)))
                 && q.task.is_none_or(|t| n.target == NoteTarget::Task(t))
-        });
-        let total = matching.clone().count();
-        let (items, next) = page(matching.filter(|n| q.after.is_none_or(|a| n.id > a)).map(|n| (n.id, n.to_json())), q.limit);
+        };
+        let total = self.notes.values().filter(|n| matches(n)).count();
+        // The page's notes, and one more (it tells whether more follow).
+        let shown: Vec<u64> =
+            self.notes.values().filter(|n| q.after.is_none_or(|a| n.id > a) && matches(n)).take(q.limit.saturating_add(1)).map(|n| n.id).collect();
+        for &id in &shown {
+            self.refresh_note(id, world);
+        }
+        let (items, next) = page(shown.iter().map(|id| (*id, self.notes[id].shown(world))), q.limit);
         Json::obj([("total", Json::from(total)), ("notes", Json::Arr(items)), ("next_cursor", Json::from(next))])
+    }
+
+    /// Brings note `id`'s entity's last known path up to date (while attached); a change is
+    /// saved with the board. Whether it changed.
+    fn refresh_note(&mut self, id: u64, world: &World) -> bool {
+        let Some(Note { target: NoteTarget::Entity(r), .. }) = self.notes.get_mut(&id) else { return false };
+        let old = r.path.len();
+        if !r.refresh(world) {
+            return false;
+        }
+        self.bytes = (self.bytes + r.path.len()).saturating_sub(old);
+        self.rendered_notes.remove(&id);
+        self.revision += 1;
+        true
+    }
+
+    /// Brings task `id`'s entities' last known paths up to date (`task_get` shows them); a
+    /// change is saved with the board. Whether any changed.
+    pub fn refresh_task_entities(&mut self, id: u64, world: &World) -> bool {
+        let Some(t) = self.tasks.get_mut(&id) else { return false };
+        let mut changed = false;
+        for e in &mut t.entities {
+            changed |= e.refresh(world);
+        }
+        if changed {
+            let size = t.measure();
+            self.bytes = (self.bytes + size).saturating_sub(t.size);
+            t.size = size;
+            self.rendered.remove(&id);
+            self.revision += 1;
+        }
+        changed
+    }
+
+    /// Before the world is replaced (a save read keeps the board): every note's and task's
+    /// entity records its path as of now, so a reference the new world doesn't have shows where
+    /// its entity last was. O(references x (log n + depth)), once per replacement. Returns how
+    /// many changed.
+    pub fn remember_entity_paths(&mut self, world: &World) -> usize {
+        let notes: Vec<u64> = self.notes.values().filter(|n| matches!(n.target, NoteTarget::Entity(_))).map(|n| n.id).collect();
+        let tasks: Vec<u64> = self.tasks.values().filter(|t| !t.entities.is_empty()).map(|t| t.id).collect();
+        notes.into_iter().filter(|id| self.refresh_note(*id, world)).count() + tasks.into_iter().filter(|id| self.refresh_task_entities(*id, world)).count()
     }
 
     /// Notes on `task`, newest last (at most `limit`).
     pub fn notes_on_task(&self, task: u64, limit: usize) -> Vec<&Note> {
         let all: Vec<&Note> = self.notes.values().filter(|n| n.target == NoteTarget::Task(task)).collect();
         all[all.len().saturating_sub(limit)..].to_vec()
-    }
-
-    /// How many notes are on or below `path`, or on entity `id`.
-    pub fn notes_at(&self, path: &str, id: Option<u64>) -> usize {
-        self.notes
-            .values()
-            .filter(|n| match &n.target {
-                NoteTarget::Entity { id: e, path: p } => Some(*e) == id || path_under(p, path),
-                NoteTarget::Path(p) => path_under(p, path),
-                NoteTarget::Task(_) => false,
-            })
-            .count()
     }
 
     // ---- persistence ----
@@ -1278,7 +1352,8 @@ impl Board {
                     parent: t.get("parent").and_then(Json::as_u64),
                     deps: ids(t, "deps"),
                     paths: strs(t, "paths"),
-                    entities: ids(t, "entities"),
+                    // Older files kept bare ids: no identity, so they are detached.
+                    entities: t.get("entities").and_then(Json::as_array).unwrap_or_default().iter().filter_map(EntityRef::from_saved).take(MAX_LINKS).collect(),
                     claims: Vec::new(), // claims are live coordination: not carried across runs
                     tags: strs(t, "tags"),
                     priority: num(t, "priority").min(9) as u8,
@@ -1302,8 +1377,9 @@ impl Board {
             let id = n.get("id").and_then(Json::as_u64).ok_or("a note has no id")?;
             let target = if let Some(t) = n.get("task").and_then(Json::as_u64) {
                 NoteTarget::Task(t)
-            } else if let Some(e) = n.get("entity") {
-                NoteTarget::Entity { id: num(e, "id"), path: text(e, "path") }
+            } else if let Some(r) = n.get("entity").and_then(EntityRef::from_saved) {
+                // Older files kept `{id, path}`: no identity, so the note is detached.
+                NoteTarget::Entity(r)
             } else {
                 NoteTarget::Path(text(n, "path"))
             };
@@ -1374,9 +1450,9 @@ pub fn page(items: impl Iterator<Item = (u64, Json)>, limit: usize) -> (Vec<Json
 mod tests {
     use super::*;
 
-    const PARENT: Writer = Writer { name: "lead", session: Some("k0") };
-    const ANN: Writer = Writer { name: "ann", session: Some("k1") };
-    const BOB: Writer = Writer { name: "bob", session: Some("k2") };
+    const PARENT: Writer = Writer { name: "lead", session: Some("k0"), via: None };
+    const ANN: Writer = Writer { name: "ann", session: Some("k1"), via: None };
+    const BOB: Writer = Writer { name: "bob", session: Some("k2"), via: None };
 
     fn spec(title: &str) -> TaskSpec {
         TaskSpec { title: title.into(), ..TaskSpec::default() }
@@ -1463,16 +1539,32 @@ mod tests {
 
     #[test]
     fn notes_attach_to_entities_paths_and_tasks() {
+        use crate::world::{EntityKey, Shape, SpawnSpec};
+        let mut w = World::default();
+        let mut put = |name: &str, parent: Option<u64>| {
+            let mut s = SpawnSpec::new(Shape::Cube);
+            s.name = Some(name.into());
+            s.parent = parent.map(EntityKey::Id);
+            w.spawn(s, "t").unwrap().id
+        };
+        let east = put("east", None);
+        let gate = put("gate", Some(east));
         let mut b = Board::default();
         let id = b.post(PARENT, 0, spec("gate")).unwrap().id;
-        b.add_note(ANN, 1, NoteTarget::Entity { id: 5, path: "/east/gate".into() }, "hinges are placeholders".into()).unwrap();
+        let r = EntityRef::of(&w, gate).unwrap();
+        b.add_note(ANN, 1, NoteTarget::Entity(r), "hinges are placeholders".into()).unwrap();
         b.add_note(ANN, 1, NoteTarget::Path("/east".into()), "east side is mine until noon".into()).unwrap();
         b.add_note(BOB, 1, NoteTarget::Task(id), "start from the west".into()).unwrap();
         assert_eq!(b.add_note(BOB, 1, NoteTarget::Task(99), "x".into()).unwrap_err().code, "task_not_found");
-        let east = b.list_notes(&NoteQuery { path_prefix: Some("/east".into()), limit: 10, ..NoteQuery::default() });
-        assert_eq!(east.get("total"), Some(&Json::from(2)));
+        let listed = b.list_notes(&NoteQuery { path_prefix: Some("/east".into()), limit: 10, ..NoteQuery::default() }, &w);
+        assert_eq!(listed.get("total"), Some(&Json::from(2)));
+        let on_gate = b.list_notes(&NoteQuery { entity: Some(gate), limit: 10, ..NoteQuery::default() }, &w);
+        assert_eq!(on_gate.get("total"), Some(&Json::from(1)));
+        let shown = on_gate.get("notes").and_then(|n| n.as_array()).unwrap()[0].get("entity").unwrap().to_string();
+        assert_eq!(shown, format!(r#"{{"id":{gate},"path":"/east/gate"}}"#));
+        // Saved with its identity.
+        assert!(b.render().contains(&format!(r#""entity":{{"id":{gate},"born":"{:016x}","path":"/east/gate"}}"#, w.lineage())), "{}", b.render());
         assert_eq!(b.notes_on_task(id, 5).len(), 1);
-        assert_eq!(b.notes_at("/east/gate", Some(5)), 1);
         assert_eq!(b.delete_note(BOB, crate::authority::Authority::Agent, 2, 1, false).unwrap_err().code, "not_yours");
         b.delete_note(ANN, crate::authority::Authority::Agent, 2, 1, false).unwrap();
         assert_eq!(b.notes_len(), 2);

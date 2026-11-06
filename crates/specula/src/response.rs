@@ -245,15 +245,57 @@ const PLAIN_ERRORS: [(&str, &str); 5] = [
     ("unknown game tool", "unknown_tool"),
 ];
 
+/// Refusals whose **same call may succeed later, unchanged**: something else holds what it
+/// needs for now (another agent's claim, a busy worker or GPU, a load or build in progress).
+/// Every other refusal is lasting: the call fails again until the caller changes something.
+/// An error may also say so itself (`retry` set where it is made), which wins.
+pub const TRANSIENT: [&str; 17] = [
+    "claimed",
+    "claims_overlap",
+    "busy",
+    "engine_busy",
+    "job_busy",
+    "studio_busy",
+    "gpu_busy",
+    "capture_in_progress",
+    "playtest_running",
+    "onboarding_running",
+    "loading",
+    "nav_building",
+    "navmesh_building",
+    "model_building",
+    "too_soon",
+    "syncing",
+    "window_held",
+];
+
+/// Whether a refusal is worth retrying unchanged: its own `retry` flag, else its code's class
+/// ([`TRANSIENT`]). Every error answer carries the flag ([`tidy`] adds it), so callers (agents,
+/// the editor's undo stack, scripts) decide from it, never from their own lists of codes.
+pub fn retryable(err: &Json) -> bool {
+    match err.get("retry").and_then(Json::as_bool) {
+        Some(r) => r,
+        None => err.get("error").and_then(Json::as_str).is_some_and(|c| TRANSIENT.contains(&c)),
+    }
+}
+
 /// Every answer as compact JSON (pretty-printed answers cost an agent about a third more tokens
-/// for nothing), and every error as `{error, message}` (a plain-text error becomes one, coded by
-/// [`PLAIN_ERRORS`], else `error`). Text that isn't JSON (play_map's map) passes through.
+/// for nothing), and every error as `{error, message, retry}` (a plain-text error becomes one,
+/// coded by [`PLAIN_ERRORS`], else `error`; `retry` from [`retryable`]). Text that isn't JSON
+/// (play_map's map) passes through.
 pub fn tidy(mut out: ToolOutput) -> ToolOutput {
     let is_error = out.is_error;
     for c in &mut out.content {
         let Content::Text(t) = c else { continue };
         match Json::parse(t) {
             Ok(v) if is_error && !matches!(v, Json::Obj(_)) => *t = plain_error(t),
+            Ok(mut v) if is_error => {
+                if v.get("retry").is_none() {
+                    let retry = retryable(&v);
+                    v.set("retry", Json::Bool(retry));
+                }
+                *t = v.to_string();
+            }
             Ok(v) => {
                 if t.contains('\n') {
                     *t = v.to_string();
@@ -271,9 +313,8 @@ fn plain_error(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
     let code = PLAIN_ERRORS.iter().find(|(k, _)| lower.contains(k)).map_or("error", |(_, c)| c);
     let mut j = Json::obj([("error", Json::from(code)), ("message", Json::from(text))]);
-    if code == "engine_busy" {
-        j.set("retry", Json::Bool(true));
-    }
+    let retry = retryable(&j);
+    j.set("retry", Json::Bool(retry));
     j.to_string()
 }
 
@@ -604,9 +645,27 @@ mod tests {
         let busy = tidy(ToolOutput::error("the engine was too busy to answer within 30 s; the command was not applied"));
         assert!(busy.is_error);
         assert_eq!(Json::parse(text(&busy)).unwrap().get("error").and_then(Json::as_str), Some("engine_busy"));
-        assert_eq!(text(&tidy(ToolOutput::error("bad thing"))), r#"{"error":"error","message":"bad thing"}"#);
-        assert_eq!(text(&tidy(ToolOutput::error("{\n \"error\": \"x\"\n}"))), r#"{"error":"x"}"#, "already structured: only compacted");
-        assert_eq!(text(&tidy(ToolOutput::error("\"quoted\""))), r#"{"error":"error","message":"\"quoted\""}"#);
+        assert_eq!(text(&tidy(ToolOutput::error("bad thing"))), r#"{"error":"error","message":"bad thing","retry":false}"#);
+        assert_eq!(text(&tidy(ToolOutput::error("{\n \"error\": \"x\"\n}"))), r#"{"error":"x","retry":false}"#, "already structured: compacted, the flag added");
+        assert_eq!(text(&tidy(ToolOutput::error("\"quoted\""))), r#"{"error":"error","message":"\"quoted\"","retry":false}"#);
+        assert_eq!(Json::parse(text(&busy)).unwrap().get("retry").and_then(Json::as_bool), Some(true));
+    }
+
+    /// Every error says whether the same call may succeed later: transient refusals (a claim, a
+    /// busy worker) yes, lasting ones (already undone, too old, not yours) no; an error's own flag
+    /// wins.
+    #[test]
+    fn every_error_says_whether_to_retry() {
+        let flag = |s: &str| Json::parse(text(&tidy(ToolOutput::error(s)))).unwrap().get("retry").and_then(Json::as_bool);
+        for code in ["claimed", "job_busy", "engine_busy", "window_held"] {
+            assert_eq!(flag(&format!(r#"{{"error":"{code}","message":"m"}}"#)), Some(true), "{code}");
+        }
+        for code in ["already_undone", "too_old", "not_found", "not_undoable", "undo_conflict", "not_yours", "stale_version", "owner_only", "input_dropped"] {
+            assert_eq!(flag(&format!(r#"{{"error":"{code}","message":"m"}}"#)), Some(false), "{code}");
+        }
+        assert_eq!(flag(r#"{"error":"not_found","retry":true}"#), Some(true), "the error's own flag wins");
+        assert!(retryable(&Json::parse(r#"{"error":"claimed"}"#).unwrap()));
+        assert!(!retryable(&Json::parse(r#"{"error":"claimed","retry":false}"#).unwrap()));
     }
 
     #[test]

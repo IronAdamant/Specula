@@ -97,7 +97,7 @@ A loaded world isn't a world folder: autosave stops (`world_save {name}` keeps i
 
 ```text
 "SPECSAVE"       magic, 8 bytes
-version          u32 LE (savegame::VERSION, 1)
+version          u32 LE (savegame::VERSION, 2)
 header length    u32 LE (at most 1 MiB)
 header           JSON: the metadata and the section table [{name, codec, bytes, stored, crc32}]
 sections         each section's stored bytes (zlib, or raw under 256 bytes), in table order
@@ -109,6 +109,10 @@ crc32            u32 LE of everything before it
   contents. `savegame::MIGRATIONS[i]` is a pure function from a version `i + 1` save to version `i + 2`; reading runs
   the chain, so old saves load forward; a save newer than the build is refused (`unsupported_version`). Sections have
   versions of their own (physics, logic, the game's, Lex's), each refused cleanly when unknown.
+- **Version 2** (2026-11-06): the `world` section's files are `specula.world/v2`, which record each entity's
+  identity (`born`, the spawn lineage it was born in: docs/design/EDITOR.md, "Stable entity identity"). The v1 to v2
+  migration changes nothing; a version 1 save's world files load with fresh identities, so notes and critiques on its
+  entities from before are detached (`games/sepulcra-app/tests/saves.rs` reads a committed version 1 save).
 - **Bounded, structured errors.** File ≤ 1 GiB, header ≤ 1 MiB, ≤ 32 sections, each decoded section ≤ 512 MiB
   (decompression stops at the declared size), every count checked against the bytes left before anything is
   allocated. **Decompression bombs** are refused from the section table, before inflating anything: the sections may

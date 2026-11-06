@@ -19,6 +19,7 @@
 
 use crate::authority::Authority;
 use crate::board::Owner;
+use crate::entity_ref::{EntityRef, Prefix};
 use crate::journal::{path_under, Writer};
 use crate::world::{World, WorldError};
 use specula_core::Json;
@@ -533,7 +534,7 @@ impl Submission {
     }
 
     /// Everything; `epoch` is the live journal's.
-    pub fn to_json(&self, critiques: &[&Critique], epoch: &str) -> Json {
+    pub fn to_json(&self, critiques: &[&Critique], epoch: &str, world: Option<&World>) -> Json {
         let mut j = self.summary_json(critiques.iter().filter(|c| c.status.open()).count(), epoch);
         j.set("summary", Json::from(self.summary.as_str()));
         j.set("captures", Json::arr(self.captures.iter().map(Capture::to_json)));
@@ -566,7 +567,7 @@ impl Submission {
         if let Some(d) = &self.decision {
             j.set("decision", d.to_json());
         }
-        j.set("critiques", Json::arr(critiques.iter().take(16).map(|c| c.summary_json())));
+        j.set("critiques", Json::arr(critiques.iter().take(16).map(|c| c.summary_json(world))));
         j
     }
 }
@@ -624,9 +625,11 @@ impl CStatus {
     }
 }
 
+/// What a critique is about: an entity, by identity (an [`EntityRef`]: never a reused id or
+/// whatever later takes its path), or a path.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Target {
-    Entity { id: u64, path: String },
+    Entity(EntityRef),
     Path(String),
 }
 
@@ -678,14 +681,16 @@ impl Critique {
             + self.packet.as_ref().map_or(0, String::len)
             + self.metric.as_ref().map_or(0, |m| 48 + m.name.len())
             + match &self.target {
-                Some(Target::Entity { path, .. } | Target::Path(path)) => path.len() + 32,
+                Some(Target::Entity(EntityRef { path, .. }) | Target::Path(path)) => path.len() + 32,
                 None => 0,
             }
             + self.assignee.as_ref().map_or(0, String::len)
             + self.resolution.len()
     }
 
-    pub fn summary_json(&self) -> Json {
+    /// The listing item. `world`: its entity as agents see it there (attached, with its last
+    /// refreshed path, or detached); `None`: as saved (`{id, born, path}`).
+    pub fn summary_json(&self, world: Option<&World>) -> Json {
         let mut f = vec![
             ("id", Json::from(self.id)),
             ("status", Json::from(self.status.name())),
@@ -701,7 +706,7 @@ impl Critique {
             f.push(("resolved_by", Json::from(r.as_str())));
         }
         match &self.target {
-            Some(Target::Entity { id, path }) => f.push(("entity", Json::obj([("id", Json::from(*id)), ("path", Json::from(path.as_str()))]))),
+            Some(Target::Entity(r)) => f.push(("entity", world.map_or_else(|| r.saved_json(), |w| r.json(w)))),
             Some(Target::Path(p)) => f.push(("path", Json::from(p.as_str()))),
             None => {}
         }
@@ -731,8 +736,9 @@ impl Critique {
         Json::obj(f)
     }
 
-    pub fn to_json(&self) -> Json {
-        let mut j = self.summary_json();
+    /// Everything ([`Critique::summary_json`]'s `world` as there).
+    pub fn to_json(&self, world: Option<&World>) -> Json {
+        let mut j = self.summary_json(world);
         j.set("text", Json::from(self.text.as_str()));
         if let Some(p) = &self.packet {
             j.set("packet", Json::from(p.as_str()));
@@ -850,6 +856,26 @@ pub struct Review {
 }
 
 impl Review {
+    /// Brings critique `id`'s entity's last known path up to date (while attached); a change
+    /// is saved with the queue. Whether it changed.
+    pub(crate) fn refresh_critique(&mut self, id: u64, world: &World) -> bool {
+        let Some(Critique { target: Some(Target::Entity(r)), .. }) = self.crits.get_mut(&id) else { return false };
+        if !r.refresh(world) {
+            return false;
+        }
+        self.resize_crit(id);
+        self.revision += 1;
+        true
+    }
+
+    /// Before the world is replaced (a save read keeps the queue): every critique's entity
+    /// records its path as of now ([`crate::board::Board::remember_entity_paths`]). Returns how
+    /// many changed.
+    pub fn remember_entity_paths(&mut self, world: &World) -> usize {
+        let ids: Vec<u64> = self.crits.values().filter(|c| matches!(c.target, Some(Target::Entity(_)))).map(|c| c.id).collect();
+        ids.into_iter().filter(|id| self.refresh_critique(*id, world)).count()
+    }
+
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -940,6 +966,15 @@ impl Review {
 
     pub fn critiques_on(&self, submission: u64) -> Vec<&Critique> {
         self.crits.values().filter(|c| c.submission == Some(submission)).collect()
+    }
+
+    /// Brings the last known paths of the critiques a submission's listing shows (its first 16,
+    /// as [`Submission::to_json`] takes them) up to date.
+    pub fn refresh_critiques_on(&mut self, submission: u64, world: &World) {
+        let ids: Vec<u64> = self.crits.values().filter(|c| c.submission == Some(submission)).take(16).map(|c| c.id).collect();
+        for id in ids {
+            self.refresh_critique(id, world);
+        }
     }
 
     fn open_on(&self, submission: u64) -> usize {
@@ -1245,7 +1280,14 @@ impl Review {
             return Err(err("stale_critique", format!("critique {id} is at version {}, not {v}: re-read it (critique_list) and retry", c.version))
                 .with("critique", id)
                 .with("current_version", c.version)
-                .with("current", c.summary_json()));
+                .with("current", {
+                    // No world here: its entity by its last known path (critique_list shows it).
+                    let mut cur = c.summary_json(None);
+                    if let Some(Target::Entity(r)) = &c.target {
+                        cur.set("entity", Json::obj([("path", Json::from(r.path.as_str()))]));
+                    }
+                    cur
+                }));
         }
         match action {
             CritiqueAction::Reopen if c.status.open() => Err(err("not_closed", format!("critique {id} is {}; only a resolved or dismissed one reopens", c.status.name())).with("critique", id)),
@@ -1338,24 +1380,35 @@ impl Review {
         changed
     }
 
-    /// `critique_list`: one page in id order, with counts per status.
-    pub fn list_critiques(&self, q: &CritiqueQuery) -> Json {
-        let matching = self.crits.values().filter(|c| {
+    /// `critique_list`: one page in id order, with counts per status. A critique on an entity
+    /// shows it as in `world` (looked up for the page's critiques only, which refreshes their
+    /// last known path): attached with its path now, or detached.
+    pub fn list_critiques(&mut self, q: &CritiqueQuery, world: &World) -> Json {
+        let prefix = q.path_prefix.as_deref().map(|p| Prefix::new(world, p));
+        let matches = |c: &Critique| {
             (q.statuses.is_empty() || q.statuses.contains(&c.status))
                 && q.severity.as_deref().is_none_or(|s| c.severity == s)
                 && q.source.as_deref().is_none_or(|s| c.source == s)
                 && q.submission.is_none_or(|s| c.submission == Some(s))
                 && q.assignee.as_deref().is_none_or(|a| c.assignee.as_deref() == Some(a))
                 && q.changed_since.is_none_or(|s| c.updated_seq > s)
-                && q.path_prefix.as_deref().is_none_or(|p| match &c.target {
-                    Some(Target::Entity { path, .. } | Target::Path(path)) => path_under(path, p),
+                && prefix.as_ref().is_none_or(|p| match &c.target {
+                    Some(Target::Entity(r)) => r.under(world, p),
+                    Some(Target::Path(path)) => path_under(path, p.path),
                     None => false,
                 })
-        });
-        let total = matching.clone().count();
+        };
+        let total = self.crits.values().filter(|c| matches(c)).count();
         let detailed = q.detailed;
+        // The page's critiques, and one more (it tells whether more follow).
+        let shown: Vec<u64> =
+            self.crits.values().filter(|c| q.after.is_none_or(|a| c.id > a) && matches(c)).take(q.limit.max(1).saturating_add(1)).map(|c| c.id).collect();
+        for &id in &shown {
+            self.refresh_critique(id, world);
+        }
+        let crits = &self.crits;
         let (items, next) = page(
-            matching.filter(|c| q.after.is_none_or(|a| c.id > a)).map(|c| (c.id, if detailed { c.to_json() } else { c.summary_json() })),
+            shown.iter().map(|id| (*id, if detailed { crits[id].to_json(Some(world)) } else { crits[id].summary_json(Some(world)) })),
             q.limit,
         );
         let counts: Vec<(&str, Json)> = CStatus::ALL.iter().map(|st| (st.name(), Json::from(self.crits.values().filter(|c| c.status == *st).count()))).collect();
@@ -1375,7 +1428,7 @@ impl Review {
         let mut out = format!("{{\"format\": \"{FORMAT}\", \"next_submission\": {}, \"next_critique\": {}, \"seq\": {},\n\"submissions\": [", self.next_sub, self.next_crit, self.seq);
         for (i, s) in self.subs.values().enumerate() {
             out.push_str(if i == 0 { "\n" } else { ",\n" });
-            let mut j = s.to_json(&[], &s.journal_epoch);
+            let mut j = s.to_json(&[], &s.journal_epoch, None);
             // The file keeps every field; critiques are saved on their own.
             j.set("summary", Json::from(s.summary.as_str()));
             if let Some(ids) = s.journal_ids.as_ref().filter(|_| !s.journal.is_empty()) {
@@ -1386,7 +1439,7 @@ impl Review {
         out.push_str("\n],\n\"critiques\": [");
         for (i, c) in self.crits.values().enumerate() {
             out.push_str(if i == 0 { "\n" } else { ",\n" });
-            out.push_str(&c.to_json().to_string());
+            out.push_str(&c.to_json(None).to_string());
         }
         out.push_str("\n]}\n");
         out
@@ -1496,7 +1549,8 @@ impl Review {
             let id = c.get("id").and_then(Json::as_u64).ok_or("a critique has no id")?;
             let status = c.get("status").and_then(Json::as_str).and_then(CStatus::parse).ok_or(format!("critique {id}: bad status"))?;
             let target = match (c.get("entity"), opt(c, "path")) {
-                (Some(e @ Json::Obj(_)), _) => Some(Target::Entity { id: num(e, "id"), path: text(e, "path") }),
+                // Older files kept `{id, path}`: no identity, so the critique is detached.
+                (Some(e @ Json::Obj(_)), _) => EntityRef::from_saved(e).map(Target::Entity),
                 (_, Some(p)) => Some(Target::Path(p)),
                 _ => None,
             };
@@ -1561,8 +1615,8 @@ fn page(items: impl Iterator<Item = (u64, Json)>, limit: usize) -> (Vec<Json>, J
 mod tests {
     use super::*;
 
-    const ANN: Writer = Writer { name: "ann", session: Some("k-ann") };
-    const BOB: Writer = Writer { name: "bob", session: Some("k-bob") };
+    const ANN: Writer = Writer { name: "ann", session: Some("k-ann"), via: None };
+    const BOB: Writer = Writer { name: "bob", session: Some("k-bob"), via: None };
 
     fn spec(title: &str) -> SubmitSpec {
         SubmitSpec {
@@ -1656,9 +1710,9 @@ mod tests {
         assert!(r.check_critique(BOB, a, 2, &CritiqueAction::Assign("x".into()), None).is_err());
         let k = r.check_critique(BOB, a, 2, &CritiqueAction::Reopen, None).unwrap();
         r.apply_critique(k, "bob", 7, CritiqueAction::Reopen, None).unwrap();
-        let list = r.list_critiques(&CritiqueQuery { statuses: vec![CStatus::Open], limit: 5, ..Default::default() });
+        let list = r.list_critiques(&CritiqueQuery { statuses: vec![CStatus::Open], limit: 5, ..Default::default() }, &World::default());
         assert_eq!(list.get("total"), Some(&Json::from(1)));
-        let full = r.get(1).unwrap().to_json(&r.critiques_on(1), "");
+        let full = r.get(1).unwrap().to_json(&r.critiques_on(1), "", None);
         assert_eq!(full.get("critiques").unwrap().as_array().unwrap().len(), 2);
         assert_eq!(full.get("open_critiques"), Some(&Json::from(1)));
     }
@@ -1675,7 +1729,7 @@ mod tests {
             severity: "note".into(),
             source: "owner".into(),
             metric: Some(Metric { name: "spec".into(), value: Some(0.9), limit: Some(0.5) }),
-            target: Some(Target::Entity { id: 7, path: "/staging/crypt".into() }),
+            target: Some(Target::Entity(EntityRef { uid: crate::world::EntityUid { lineage: 0xfeed, id: 7 }, path: "/staging/crypt".into() })),
             ..Default::default()
         };
         r.add_critiques(BOB, Authority::Owner, 4, vec![c]).unwrap();
@@ -1688,7 +1742,7 @@ mod tests {
         assert_eq!(back.critique(1).unwrap().metric.as_ref().unwrap().limit, Some(0.5));
         assert!(Review::parse("{\"format\": \"x\"}").is_err());
         // A loaded submission's author is matched by name alone.
-        assert!(back.get(1).unwrap().submitted_by(Writer { name: "ann", session: Some("new-key") }));
+        assert!(back.get(1).unwrap().submitted_by(Writer { name: "ann", session: Some("new-key"), via: None }));
         // M4 audit (probe_revert.py): journal refs keep their epoch and the ids they touched, and
         // count only in that epoch (a restart numbers entries from 1 again).
         let s = back.get(1).unwrap();
@@ -1698,7 +1752,7 @@ mod tests {
         assert_eq!(s.summary_json(0, "00000000000000e2.0.1").get("journal_stale").and_then(Json::as_str), Some(STALE_JOURNAL));
         assert!(s.summary_json(0, "00000000000000e1.0.1").get("journal_stale").is_none());
         // Review of the M4 fixes: agents see a count, not up to 4,096 ids (the file keeps them).
-        let full = s.to_json(&[], "00000000000000e1.0.1");
+        let full = s.to_json(&[], "00000000000000e1.0.1", None);
         assert!(full.get("journal_ids").is_none());
         assert_eq!(full.get("journal_entities"), Some(&Json::from(2)));
         assert!(text.contains("\"journal_ids\":[7,8]"));
@@ -1734,7 +1788,7 @@ mod tests {
         }
     }
 
-    const CARL: Writer = Writer { name: "carl", session: Some("k-carl") };
+    const CARL: Writer = Writer { name: "carl", session: Some("k-carl"), via: None };
 
     #[test]
     fn critiques_belong_to_their_authors() {
@@ -1786,11 +1840,11 @@ mod tests {
         let k = r.check_critique(BOB, Authority::Agent, cid, &CritiqueAction::Resolve("done".into()), None).unwrap();
         r.apply_critique(k, "bob", 4, CritiqueAction::Resolve("done".into()), None).unwrap();
         let crit = r.critique(cid).unwrap();
-        provenance_kept(&crit.to_json(), &crit.summary_json(), "critique_list");
-        assert_eq!(crit.summary_json().get("by"), Some(&Json::from("bob")));
-        assert_eq!(crit.summary_json().get("resolved_by"), Some(&Json::from("bob")));
+        provenance_kept(&crit.to_json(None), &crit.summary_json(None), "critique_list");
+        assert_eq!(crit.summary_json(None).get("by"), Some(&Json::from("bob")));
+        assert_eq!(crit.summary_json(None).get("resolved_by"), Some(&Json::from("bob")));
         let sub = r.get(id).unwrap();
-        provenance_kept(&sub.to_json(&r.critiques_on(id), ""), &sub.summary_json(1, ""), "review_list");
+        provenance_kept(&sub.to_json(&r.critiques_on(id), "", None), &sub.summary_json(1, ""), "review_list");
         // The listing's counts keep engine results and reported ones apart.
         let checks = sub.summary_json(0, "").get("checks").cloned().unwrap();
         assert_eq!(checks.get("reported").and_then(|r| r.get("passed")), Some(&Json::from(1)));
@@ -1842,7 +1896,7 @@ mod tests {
         assert_eq!(sub.recorded_checks(), 1);
         assert_eq!(sub.checks_line(), "Checks: 2 engine check(s) passed (1 from the engine's records); 1 reported by bob passed");
         assert_eq!(sub.checks_parts().0, "Engine checks: 2 passed (1 from the engine's records)");
-        let j = sub.to_json(&[], "e");
+        let j = sub.to_json(&[], "e", None);
         let checks = j.get("checks").and_then(Json::as_array).unwrap();
         assert_eq!(checks[0].get("recorded").and_then(|x| x.get("id")).and_then(Json::as_u64), Some(12));
         assert!(checks[2].get("recorded").is_none() && checks[2].get("reported_by").is_some());

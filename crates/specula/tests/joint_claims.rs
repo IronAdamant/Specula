@@ -12,8 +12,8 @@ use specula_core::Json;
 use specula_protocol::SessionInfo;
 use std::time::Instant;
 
-const ALICE: Writer = Writer { name: "alice", session: Some("aaaaaa11") };
-const MALLORY: Writer = Writer { name: "mallory", session: Some("bbbbbb22") };
+const ALICE: Writer = Writer { name: "alice", session: Some("aaaaaa11"), via: None };
+const MALLORY: Writer = Writer { name: "mallory", session: Some("bbbbbb22"), via: None };
 
 fn session(id: &str) -> SessionInfo {
     SessionInfo { id: id.into(), client_name: "c".into(), client_version: "1".into(), protocol_version: "x".into() }

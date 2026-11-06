@@ -1180,9 +1180,9 @@ pub(crate) mod tests {
     use crate::claims::{ClaimSpec, Scope, DEFAULT_LEASE};
     use specula_protocol::SessionInfo;
 
-    const ALICE: Writer = Writer { name: "alice", session: Some("aaaaaa11") };
-    const BOB: Writer = Writer { name: "bob", session: Some("bbbbbb22") };
-    const CAROL: Writer = Writer { name: "carol", session: Some("cccccc33") };
+    const ALICE: Writer = Writer { name: "alice", session: Some("aaaaaa11"), via: None };
+    const BOB: Writer = Writer { name: "bob", session: Some("bbbbbb22"), via: None };
+    const CAROL: Writer = Writer { name: "carol", session: Some("cccccc33"), via: None };
 
     pub(crate) fn session(id: &str) -> SessionInfo {
         SessionInfo { id: id.into(), client_name: "c".into(), client_version: "1".into(), protocol_version: "x".into() }

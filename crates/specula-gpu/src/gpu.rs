@@ -1286,6 +1286,13 @@ impl GpuInner {
         self.render_frame(target, frame, Some((ids, occluders)), true)
     }
 
+    /// [`GpuInner::read_ids`] inside `rect` (`[x0, y0, x1, y1)`, clipped) only.
+    pub fn read_ids_rect(&mut self, target: TargetId, rect: [u32; 4]) -> Result<IdImage, GpuError> {
+        self.settle_offscreen(true)?;
+        self.targets.get(&target.0).ok_or_else(|| GpuError::unknown(crate::IdKind::Target, target.0, ""))?;
+        self.ids.image_rect(target.0, rect)
+    }
+
     /// The opaque id image of the target's last render (`render_with_ids`).
     pub fn read_ids(&mut self, target: TargetId) -> Result<IdImage, GpuError> {
         self.settle_offscreen(true)?;

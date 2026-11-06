@@ -542,6 +542,8 @@ impl StepJob for FilmJob {
 /// An entity filmstrip: its play over time in the world, from three views.
 pub(super) struct EntityFilmJob {
     id: u64,
+    /// The world generation it began in: a load makes `id` name another entity.
+    generation: u64,
     path: String,
     entity: crate::world::Entity,
     times: Vec<f64>,
@@ -595,6 +597,7 @@ impl EntityFilmJob {
         };
         Ok(EntityFilmJob {
             id,
+            generation: e.world_generation,
             path,
             entity: ent,
             times,
@@ -615,7 +618,17 @@ impl EntityFilmJob {
         })
     }
 
+    /// The entity is still the one it began filming (a load or save_read replaced the world:
+    /// its id names another entity now, or none).
+    fn same_entity(&self, e: &Engine) -> Result<(), ToolOutput> {
+        if e.world_generation != self.generation {
+            return Err(error("changed_during_job", format!("the world was replaced (world_load or save_read) while {} was filmed", self.path)));
+        }
+        Ok(())
+    }
+
     fn render_tile(&mut self, e: &mut Engine) -> Result<(), ToolOutput> {
+        self.same_entity(e)?;
         if e.world.get(self.id).is_none() {
             return Err(error("changed_during_job", format!("{} was deleted while it was filmed", self.path)));
         }
@@ -630,7 +643,7 @@ impl EntityFilmJob {
         let camera = Camera::new(eye, c, 35.0);
         let overlays = sight_overlay::Spec::default();
         let t = self.times[k];
-        let opts = capture::ViewOpts { include_ui: false, lod: Some(0), time_s: t, overlays: &overlays, caption: None, ids: false, fill: Some(fill) };
+        let opts = capture::ViewOpts { include_ui: false, lod: Some(0), time_s: t, overlays: &overlays, caption: None, ids: false, hud: true, fill: Some(fill) };
         let rend = e.render_view(camera, tile, tile, &opts).map_err(ToolOutput::error)?;
         let x0 = k as u32 * tile;
         let px = &mut self.sheet.pixels;
@@ -668,6 +681,9 @@ impl EntityFilmJob {
     }
 
     fn finish(&mut self, e: &mut Engine, reply: &jobs::Reply) -> Step {
+        if let Err(out) = self.same_entity(e) {
+            return Step::Done(out);
+        }
         let id = self.id;
         let state = e.anim_state(&EntityKey::Id(id), Some(self.t0), self.window_s as f64);
         let state_json = state.content.iter().find_map(|c| match c {

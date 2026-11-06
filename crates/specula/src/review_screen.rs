@@ -292,6 +292,18 @@ impl ReviewUi {
         self.settle(review);
     }
 
+    /// The world (and with a load, the queue) was replaced: the submission shown and the batch
+    /// counted are the old queue's, so they go, and decisions wait the settle time again (a
+    /// press right after a load must not decide a submission that took the old one's id).
+    pub fn world_replaced(&mut self, review: &Review) {
+        self.shown = None;
+        self.batch_ids.clear();
+        self.rejecting = false;
+        self.dirty = true;
+        self.settle(review);
+        self.shown_at = self.started.elapsed().as_secs_f64();
+    }
+
     /// Keeps `shown` on a pending submission: the same one, else the next after it, else the
     /// last pending one.
     fn settle(&mut self, review: &Review) {
@@ -852,7 +864,7 @@ mod tests {
                 captures: vec![Capture { path: format!("missing_{i}.png"), kind: "frame".into(), packet: None, caption: String::new(), recorded: None }],
                 ..Default::default()
             };
-            r.submit(Writer { name: "ann", session: Some("k") }, 0, spec).unwrap();
+            r.submit(Writer { name: "ann", session: Some("k"), via: None }, 0, spec).unwrap();
         }
         r
     }

@@ -55,6 +55,9 @@ pub struct MarkData {
     pub frame: u64,
     pub tick: u64,
     pub png_path: Option<String>,
+    /// The world generation at the mark: entity ids restart when the world is replaced (a load),
+    /// so a diff across one compares no subjects by id.
+    pub generation: u64,
 }
 
 /// A remembered "before".
@@ -651,7 +654,7 @@ mod tests {
     }
 
     fn data(pixels: usize, subjects: BTreeMap<u64, SubjectState>, ids: Vec<u64>) -> MarkData {
-        MarkData { rgba: std::sync::Arc::new(vec![0; pixels * 4]), subjects: std::sync::Arc::new(subjects), ids: std::sync::Arc::new(ids), frame: 1, tick: 0, png_path: None }
+        MarkData { rgba: std::sync::Arc::new(vec![0; pixels * 4]), subjects: std::sync::Arc::new(subjects), ids: std::sync::Arc::new(ids), frame: 1, tick: 0, png_path: None, generation: 0 }
     }
 
     #[test]

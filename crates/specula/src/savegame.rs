@@ -27,8 +27,9 @@ use specula_core::deflate::{self, Level};
 use specula_core::Json;
 
 pub const MAGIC: &[u8; 8] = b"SPECSAVE";
-/// The save format version this build writes.
-pub const VERSION: u32 = 1;
+/// The save format version this build writes. Version 2: the world section's files are
+/// `specula.world/v2` (each entity's identity lineage, `born`; docs/design/EDITOR.md).
+pub const VERSION: u32 = 2;
 pub const FORMAT: &str = "specula.save";
 pub const EXTENSION: &str = "specsave";
 /// Files read at most this big.
@@ -123,10 +124,16 @@ impl SaveFile {
 /// A pure step from one version's save to the next one's.
 pub type Migration = fn(SaveFile) -> Result<SaveFile, SaveError>;
 
-/// `MIGRATIONS[i]` turns a version `i + 1` save into version `i + 2`. Version 1 is the first, so
-/// there are none yet; the next format change adds `v1_to_v2` here (and a test that reads a
-/// committed version 1 save).
-pub const MIGRATIONS: &[Migration] = &[];
+/// `MIGRATIONS[i]` turns a version `i + 1` save into version `i + 2`. Reading a committed version
+/// 1 save: `games/sepulcra-app/tests/saves.rs` (`crash_1_57.specsave`).
+pub const MIGRATIONS: &[Migration] = &[v1_to_v2];
+
+/// Version 1 to 2: nothing in the file changes. Its world files are `specula.world/v1`, which
+/// still load: their entities get fresh identities in the loading world's lineage, so notes and
+/// critiques on them from before detach (a version 1 save never recorded identities).
+fn v1_to_v2(file: SaveFile) -> Result<SaveFile, SaveError> {
+    Ok(SaveFile { version: 2, ..file })
+}
 
 /// Runs `table` from `file.version` up to `target`.
 pub fn migrate_with(mut file: SaveFile, table: &[Migration], target: u32) -> Result<SaveFile, SaveError> {
@@ -684,7 +691,7 @@ mod tests {
         }
         let table: &[Migration] = &[v1_to_v2, v2_to_v3];
         let (meta, sections) = sample();
-        let bytes = encode(&meta, &sections);
+        let bytes = as_version(&encode(&meta, &sections), 1);
         let f = decode_with(&bytes, table, 3).unwrap();
         assert_eq!(f.version, 3);
         assert_eq!(f.meta.get("renamed"), Some(&Json::Bool(true)));
@@ -695,5 +702,28 @@ mod tests {
         let mut newer = bytes.clone();
         newer[8..12].copy_from_slice(&(VERSION + 1).to_le_bytes());
         assert_eq!(decode(&newer).unwrap_err().code, "unsupported_version");
+    }
+
+    /// `bytes` relabelled as format version `v` (checksum updated).
+    fn as_version(bytes: &[u8], v: u32) -> Vec<u8> {
+        let mut out = bytes.to_vec();
+        out[8..12].copy_from_slice(&v.to_le_bytes());
+        let end = out.len() - 4;
+        let crc = crc32(&out[..end]);
+        out[end..].copy_from_slice(&crc.to_le_bytes());
+        out
+    }
+
+    /// Version 2 (identities in the world files) reads version 1 saves unchanged: the migration
+    /// only relabels them (their world files are specula.world/v1, which load with fresh
+    /// identities).
+    #[test]
+    fn a_version_1_save_reads_as_version_2_with_its_sections_unchanged() {
+        assert_eq!(VERSION, 2);
+        let (meta, sections) = sample();
+        let f = decode(&as_version(&encode(&meta, &sections), 1)).unwrap();
+        assert_eq!(f.version, 2);
+        assert_eq!(f.sections, sections);
+        assert_eq!(f.meta.get("tick"), meta.get("tick"));
     }
 }

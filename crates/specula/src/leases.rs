@@ -391,8 +391,8 @@ impl Leases {
 mod tests {
     use super::*;
 
-    const ANN: Writer = Writer { name: "ann", session: Some("k1") };
-    const BOB: Writer = Writer { name: "bob/x", session: Some("k2") };
+    const ANN: Writer = Writer { name: "ann", session: Some("k1"), via: None };
+    const BOB: Writer = Writer { name: "bob/x", session: Some("k2"), via: None };
 
     fn pools(root: &Path) -> Pools {
         Pools { ports: (7500, 7505), reserved_port: Some(7501), gpu_ms_per_s: 1000, scratch_root: root.to_path_buf() }

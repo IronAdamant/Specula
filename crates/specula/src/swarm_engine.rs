@@ -5,6 +5,7 @@
 use crate::board::{Board, NoteTarget};
 use crate::claims::Scope;
 use crate::conflict::{self, Yours};
+use crate::entity_ref::EntityRef;
 use crate::desync::{self, Trace};
 use crate::intents::IntentSpec;
 use crate::journal::Writer;
@@ -107,10 +108,17 @@ impl Engine {
         let tick = self.clock.tick();
         let now = Instant::now();
         match call {
-            SwarmCall::TaskPost(spec) if named => match self.swarm.board.post(w, tick, spec) {
-                Ok(t) => out(brief(t)),
-                Err(e) => fail(&e),
-            },
+            SwarmCall::TaskPost(mut spec, ids) if named => {
+                // Entities by identity: never a reused id after a save read (`entity_ref`).
+                spec.entities = match EntityRef::of_ids(&self.world, &ids, "entities") {
+                    Ok(r) => r,
+                    Err(e) => return fail(&e),
+                };
+                match self.swarm.board.post(w, tick, spec) {
+                    Ok(t) => out(brief(t)),
+                    Err(e) => fail(&e),
+                }
+            }
             SwarmCall::TaskTake { id, expect } if named => match self.swarm.board.take(w, tick, id, expect) {
                 Ok(t) => {
                     let mut j = brief(t);
@@ -119,10 +127,16 @@ impl Engine {
                 }
                 Err(e) => fail(&e),
             },
-            SwarmCall::TaskUpdate { id, patch } if named => match self.swarm.board.update(w, tick, id, patch) {
-                Ok(t) => out(brief(t)),
-                Err(e) => fail(&e),
-            },
+            SwarmCall::TaskUpdate { id, mut patch, add_entities } if named => {
+                patch.add_entities = match EntityRef::of_ids(&self.world, &add_entities, "add_entities") {
+                    Ok(r) => r,
+                    Err(e) => return fail(&e),
+                };
+                match self.swarm.board.update(w, tick, id, patch) {
+                    Ok(t) => out(brief(t)),
+                    Err(e) => fail(&e),
+                }
+            }
             SwarmCall::TaskDone { id, summary, cancel, expect } if named => match self.swarm.board.done(w, tick, id, summary, cancel, expect) {
                 Ok(t) => {
                     let j = brief(t);
@@ -132,7 +146,7 @@ impl Engine {
                 }
                 Err(e) => fail(&e),
             },
-            SwarmCall::TaskPost(_) | SwarmCall::TaskTake { .. } | SwarmCall::TaskUpdate { .. } | SwarmCall::TaskDone { .. } => hello_required("tasks"),
+            SwarmCall::TaskPost(..) | SwarmCall::TaskTake { .. } | SwarmCall::TaskUpdate { .. } | SwarmCall::TaskDone { .. } => hello_required("tasks"),
             SwarmCall::TaskList { mut query, mine, ready_for_me, events_since, ack_board_warning } => {
                 if mine {
                     query.owner = Some(by.clone());
@@ -157,23 +171,29 @@ impl Engine {
                 }
                 out(j)
             }
-            SwarmCall::TaskGet { id, events } => match self.swarm.board.get(id) {
-                Some(t) => {
-                    // The newest questions (open ones first): a task holds up to 32 of 2000 characters.
-                    let mut j = t.to_json_with(Some(events), Some(8));
-                    j.set("notes", Json::arr(self.swarm.board.notes_on_task(id, 10).into_iter().map(|n| n.to_json())));
-                    if let Some(p) = t.parent {
-                        j.set("parent_title", self.swarm.board.get(p).map_or(Json::Null, |p| Json::from(p.title.as_str())));
+            SwarmCall::TaskGet { id, events } => {
+                // Its entities' last known paths, as they are now.
+                self.swarm.board.refresh_task_entities(id, &self.world);
+                match self.swarm.board.get(id) {
+                    Some(t) => {
+                        // The newest questions (open ones first): a task holds up to 32 of 2000 characters.
+                        let mut j = t.to_json_with(Some(events), Some(8));
+                        // Its entities as they are now: attached with their path, or detached.
+                        j.set("entities", t.entities_json(&self.world));
+                        j.set("notes", Json::arr(self.swarm.board.notes_on_task(id, 10).into_iter().map(|n| n.shown(&self.world))));
+                        if let Some(p) = t.parent {
+                            j.set("parent_title", self.swarm.board.get(p).map_or(Json::Null, |p| Json::from(p.title.as_str())));
+                        }
+                        let subtasks: Vec<Json> =
+                            self.swarm.board.tasks().filter(|s| s.parent == Some(id)).take(20).map(|s| Json::obj([("id", Json::from(s.id)), ("status", Json::from(s.status.name()))])).collect();
+                        if !subtasks.is_empty() {
+                            j.set("subtasks", Json::Arr(subtasks));
+                        }
+                        out(j)
                     }
-                    let subtasks: Vec<Json> =
-                        self.swarm.board.tasks().filter(|s| s.parent == Some(id)).take(20).map(|s| Json::obj([("id", Json::from(s.id)), ("status", Json::from(s.status.name()))])).collect();
-                    if !subtasks.is_empty() {
-                        j.set("subtasks", Json::Arr(subtasks));
-                    }
-                    out(j)
+                    None => fail(&WorldError::new("task_not_found", format!("there is no task {id} (see task_list)")).with("task", id)),
                 }
-                None => fail(&WorldError::new("task_not_found", format!("there is no task {id} (see task_list)")).with("task", id)),
-            },
+            }
             SwarmCall::IntentDeclare { scopes, text, task, lease, replace } if named => {
                 let summary = scopes.iter().map(Scope::describe).collect::<Vec<_>>().join(", ");
                 let spec = IntentSpec { scopes, text, task, lease, replace };
@@ -202,19 +222,21 @@ impl Engine {
             SwarmCall::NoteAdd { target, text } if named => {
                 let target = match target {
                     NoteOn::Entity(k) => match self.world.resolve(&k) {
-                        Ok(id) => NoteTarget::Entity { id, path: self.world.path_of(id) },
+                        Ok(id) => NoteTarget::Entity(EntityRef::of(&self.world, id).expect("resolved")),
                         Err(e) => return fail(&e),
                     },
                     NoteOn::Path(p) => NoteTarget::Path(p),
                     NoteOn::Task(t) => NoteTarget::Task(t),
                 };
                 match self.swarm.board.add_note(w, tick, target, text) {
-                    Ok(n) => out(n.to_json()),
+                    Ok(n) => out(n.shown(&self.world)),
                     Err(e) => fail(&e),
                 }
             }
             SwarmCall::NoteAdd { .. } => hello_required("notes"),
-            SwarmCall::NoteList(q) => out(self.swarm.board.list_notes(&q)),
+            SwarmCall::NoteList(q) => {
+                out(self.swarm.board.list_notes(&q, &self.world))
+            }
             SwarmCall::NoteDelete { id, force } => match self.swarm.board.delete_note(w, crate::authority::authority(&self.swarm, &session.id), tick, id, force) {
                 Ok(n) => out(Json::obj([("deleted", Json::from(n.id))])),
                 Err(e) => fail(&e),

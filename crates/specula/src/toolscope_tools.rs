@@ -729,7 +729,7 @@ mod tests {
                             .to_string(),
                         )
                     }
-                    Command::Swarm(crate::swarm_tools::SwarmCall::TaskPost(spec)) => {
+                    Command::Swarm(crate::swarm_tools::SwarmCall::TaskPost(spec, _)) => {
                         let poster = agents.get(&r.session.id).map(|(n, _)| n.clone()).unwrap_or_default();
                         let id = 7 + board.len() as u64;
                         board.push((id, spec.title.clone(), poster, spec.tags.to_vec()));

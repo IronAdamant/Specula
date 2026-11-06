@@ -17,9 +17,11 @@ use std::time::Duration;
 const MAX_ID: u64 = u64::MAX >> 11;
 
 pub enum SwarmCall {
-    TaskPost(TaskSpec),
+    /// The spec, and the ids of its `entities` (the engine makes them references by identity).
+    TaskPost(TaskSpec, Vec<u64>),
     TaskTake { id: u64, expect: Option<u64> },
-    TaskUpdate { id: u64, patch: TaskPatch },
+    /// `add_entities`: ids, made references by identity by the engine.
+    TaskUpdate { id: u64, patch: TaskPatch, add_entities: Vec<u64> },
     TaskDone { id: u64, summary: String, cancel: bool, expect: Option<u64> },
     /// `mine`: the caller's own (as owner); `ready_for_me`: open tasks the caller may take now.
     /// `events_since`: also the board events after this board_seq (the feed).
@@ -217,18 +219,19 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<SwarmCall, String>> {
     let parsed = match name {
         "task_post" => (|| {
             check_keys(args, name, &[&["title", "detail", "deps", "paths", "entities", "claims", "tags", "assign", "parent", "priority"]])?;
+            let entities = ids_arg(args, "entities")?;
             Ok(SwarmCall::TaskPost(TaskSpec {
                 title: text_arg(args, "title", MAX_TITLE, true)?.expect("required"),
                 detail: text_arg(args, "detail", MAX_DETAIL, false)?.unwrap_or_default(),
                 deps: ids_arg(args, "deps")?,
                 paths: paths_arg(args, "paths")?,
-                entities: ids_arg(args, "entities")?,
+                entities: Vec::new(),
                 claims: ids_arg(args, "claims")?,
                 tags: tags_arg(args, "tags")?,
                 assignee: agent_arg(args, "assign")?,
                 parent: int_arg(args, "parent", 1, MAX_ID)?,
                 priority: int_arg(args, "priority", 0, 9)?.map(|p| p as u8),
-            }))
+            }, entities))
         })(),
         "task_take" => (|| {
             check_keys(args, name, &[&["id", "expect_version"]])?;
@@ -263,6 +266,7 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<SwarmCall, String>> {
             };
             Ok(SwarmCall::TaskUpdate {
                 id: id_arg(args, "id", "the task")?,
+                add_entities: ids_arg(args, "add_entities")?,
                 patch: TaskPatch {
                     status,
                     blocker: text_arg(args, "blocker", MAX_TEXT, false)?,
@@ -276,7 +280,7 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<SwarmCall, String>> {
                     add_deps: ids_arg(args, "add_deps")?,
                     remove_deps: ids_arg(args, "remove_deps")?,
                     add_paths: paths_arg(args, "add_paths")?,
-                    add_entities: ids_arg(args, "add_entities")?,
+                    add_entities: Vec::new(),
                     add_claims: ids_arg(args, "add_claims")?,
                     add_tags: tags_arg(args, "add_tags")?,
                     expect_version: expect_arg(args)?,
@@ -623,7 +627,9 @@ pub fn definitions() -> Vec<ToolDef> {
         def(
             "note_add",
             "Leave a note for whoever comes next (a handoff): on an entity (id, path or name), on a path that may not exist \
-             yet (on_path) or on a task. Notes are saved with the world.",
+             yet (on_path) or on a task. Notes are saved with the world. A note on an entity stays on that very entity through \
+             renames, moves and save reads; once it is deleted (or absent from a loaded world) the note shows detached: true \
+             with its last known path.",
             schema(
                 vec![
                     ("id", t("integer", "Entity id")),
@@ -638,7 +644,8 @@ pub fn definitions() -> Vec<ToolDef> {
         ),
         def(
             "note_list",
-            "Notes, one page in id order: at or below path_prefix (entity and path notes), on an entity id, on a task, or by an agent.",
+            "Notes, one page in id order: at or below path_prefix (entity and path notes), on an entity id, on a task, or by an agent. \
+             An entity note shows {id, path} (its path now) or {path, detached: true} (deleted, or not in this world).",
             schema(
                 [
                     vec![
@@ -761,7 +768,7 @@ mod tests {
 
     #[test]
     fn task_arguments_are_checked() {
-        let SwarmCall::TaskPost(s) = call("task_post", r#"{"title": "walls", "deps": [1], "paths": ["/walls"], "priority": 7, "assign": "bob"}"#).unwrap() else { panic!() };
+        let SwarmCall::TaskPost(s, _) = call("task_post", r#"{"title": "walls", "deps": [1], "paths": ["/walls"], "priority": 7, "assign": "bob"}"#).unwrap() else { panic!() };
         assert_eq!((s.title.as_str(), s.deps, s.priority, s.assignee.as_deref()), ("walls", vec![1], Some(7), Some("bob")));
         assert!(call("task_post", "{}").err().unwrap().contains("'title'"));
         assert!(call("task_post", r#"{"title": " "}"#).err().unwrap().contains("empty"));

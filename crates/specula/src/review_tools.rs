@@ -316,7 +316,8 @@ fn critique_item(c: &Json, i: usize) -> Result<(CritiqueSpec, Option<String>), S
         return Err(format!("items[{i}]: give 'entity' (an id) or 'path', not both"));
     }
     let target = match (entity, path) {
-        (Some(id), _) => Some(Target::Entity { id, path: String::new() }),
+        // Made a reference by identity by the engine (`critique_add`'s handler), or refused.
+        (Some(id), _) => Some(Target::Entity(crate::entity_ref::EntityRef { uid: crate::world::EntityUid { lineage: 0, id }, path: String::new() })),
         (_, Some(p)) => Some(Target::Path(p)),
         _ => None,
     };

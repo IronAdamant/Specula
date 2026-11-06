@@ -360,7 +360,7 @@ mod tests {
         let session = specula_protocol::SessionInfo { id: "save-test".into(), client_name: "t".into(), client_version: "0".into(), protocol_version: "x".into() };
         let (reply, rx) = jobs::channel();
         let deadline = Instant::now() + Duration::from_secs(60);
-        e.handle_world_save(Request { session, call: 1, command: Command::Save { name: Some("big".into()), overwrite: false }, reply, deadline, trace: specula_core::trace::Ctx::current() });
+        e.handle_world_save(Request { session, call: 1, command: Command::Save { name: Some("big".into()), overwrite: false }, reply, deadline, trace: specula_core::trace::Ctx::current(), via: None });
         assert!(e.save_planning.is_some(), "20,000 entities are planned over several passes");
         // Another world takes its place mid-plan (what a load does, minus the flush).
         e.world_generation += 1;

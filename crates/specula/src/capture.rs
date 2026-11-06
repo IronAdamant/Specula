@@ -53,6 +53,20 @@ pub(crate) enum Job {
     Mark { name: String, frame: FrameSpec },
     Diff { name: String, threshold: u8, max_subjects: usize },
     Query(QuerySpec),
+    /// The editor's click or box select: the window's view rendered with IDs, read at a pixel or
+    /// a rectangle (docs/design/EDITOR.md, "Selection"; answered by `editor_engine::pick_ids`).
+    Pick(PickSpec),
+}
+
+/// What an editor pick renders and reads.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PickSpec {
+    pub(crate) camera: Camera,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    /// Pixels `[x0, y0, x1, y1)` read (a click: one pixel, searched around).
+    pub(crate) rect: [u32; 4],
+    pub(crate) click: bool,
 }
 
 /// One view a job renders.
@@ -78,6 +92,9 @@ pub(crate) struct ViewOpts<'a> {
     pub(crate) ids: bool,
     /// A light added to the world's (filmstrips light their subject from the camera).
     pub(crate) fill: Option<specula_gpu::PointLight>,
+    /// With `include_ui`: the hosted game's interface and the engine's screens are drawn too
+    /// (false for the editor's pick: the window shows none of them while the editor is open).
+    pub(crate) hud: bool,
 }
 
 /// One rendered view.
@@ -245,6 +262,13 @@ impl Engine {
             sight::world_boxes(&self.world)
         };
         sight::framing(&boxes, height_px, fov_y_deg)
+    }
+
+    /// The editor's pick: queued on the capture flight like a capture (it never waits for the GPU
+    /// on the engine thread), answered with the entities seen (`editor_engine::pick_ids`).
+    pub(crate) fn pick_job(&mut self, spec: PickSpec, session: &SessionInfo, reply: crate::jobs::Reply, deadline: Instant) {
+        let wait = CaptureWait { presented_at: Some(self.clock.tick()), parked_at: None, cut_by_deadline: false };
+        self.capture_job(Job::Pick(spec), session, wait, reply, 0, deadline);
     }
 
     /// sight_frame, the sight tools and the camera tools.
@@ -441,6 +465,7 @@ impl Engine {
         match job {
             Job::Frame(spec) | Job::Mark { frame: spec, .. } => Ok(vec![self.frame_view(spec, session)?]),
             Job::Query(q) => Ok(vec![self.frame_view(&q.frame, session)?]),
+            Job::Pick(p) => Ok(vec![ViewReq { camera: p.camera, width: p.width, height: p.height, include_ui: true, source: source("editor_pick"), warning: None }]),
             Job::Diff { name, .. } => {
                 let key = self.swarm.key(session);
                 let mark = self.marks.get(&key, name).ok_or_else(|| mark_missing(name))?;
@@ -837,7 +862,8 @@ impl Engine {
         let mut overlays = None;
         // A hosted game's interface (include_ui), under the debug overlays.
         let mut quads = Vec::new();
-        if opts.include_ui {
+        // (Not for the editor's pick, `hud: false`: the window shows none of them while editing.)
+        if opts.include_ui && opts.hud {
             if opts.overlays.has(Kind::Ui) {
                 // Only an interface this capture lays out may claim its layout (`ui` overlay).
                 self.ui_forget_capture_views();
@@ -1401,7 +1427,7 @@ fn unlit_particles(effects: &mut Json) {
 /// sheet cap); `None`: no image (sight_query).
 fn capture_bytes(job: &Job) -> Option<u64> {
     match job {
-        Job::Query(_) => None,
+        Job::Query(_) | Job::Pick(_) => None,
         Job::Frame(s) | Job::Mark { frame: s, .. } => Some(u64::from(s.width) * u64::from(s.height) * 4),
         _ => Some(u64::from(orbit::MAX_SHEET) * u64::from(orbit::MAX_SHEET) * 4),
     }
@@ -1574,7 +1600,7 @@ mod frame_record_engine_tests {
     /// the readback of the ID image saw.
     fn render(e: &mut Engine, cam: Camera, ids: bool) -> (sight::FrameRecord, BTreeSet<u64>) {
         let none = ov::Spec::default();
-        let opts = ViewOpts { include_ui: false, lod: None, time_s: 0.0, overlays: &none, caption: None, ids, fill: None };
+        let opts = ViewOpts { include_ui: false, lod: None, time_s: 0.0, overlays: &none, caption: None, ids, hud: true, fill: None };
         let r = e.render_view(cam, W, H, &opts).expect("render");
         let mut seen = BTreeSet::new();
         if ids {
@@ -1683,7 +1709,7 @@ mod frame_record_engine_tests {
         assert!(members.iter().any(|m| record.drawn(*m).drawn() == Some(true)), "the cell in view is drawn as its proxy");
         // Review round 2: the bounds overlay painted HLOD members red (no pixels of their own).
         let bounds = ov::Spec { kinds: vec![Kind::Bounds], entities: Vec::new(), max_labels: 0, ui_display: None };
-        let opts = ViewOpts { include_ui: false, lod: None, time_s: 0.0, overlays: &bounds, caption: None, ids: true, fill: None };
+        let opts = ViewOpts { include_ui: false, lod: None, time_s: 0.0, overlays: &bounds, caption: None, ids: true, hud: true, fill: None };
         let r = e.render_view(toward, W, H, &opts).expect("render");
         let hidden = r.overlays.as_ref().and_then(|o| o.get("bounds")).and_then(|b| b.get("fully_hidden")).and_then(Json::as_u64);
         let in_view_merged = members.iter().filter(|m| r.record.drawn(**m).drawn() == Some(true) && r.record.drawn(**m).drawn_as() == Some("hlod")).count();

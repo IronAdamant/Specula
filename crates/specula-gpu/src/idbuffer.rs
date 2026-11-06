@@ -955,6 +955,22 @@ impl IdResources {
         unsafe { std::slice::from_raw_parts(buffer.mapped as *const u32, n) }
     }
 
+    /// The opaque ids of `target`'s last ID render inside `rect` (`[x0, y0, x1, y1)`, clipped to
+    /// the image): only those pixels are copied (the editor's pick reads a few, not the image).
+    pub fn image_rect(&self, target: u32, rect: [u32; 4]) -> Result<IdImage, GpuError> {
+        let extent = self.check(target, "read_ids_rect")?.extent;
+        let (w, h) = (extent.width, extent.height);
+        let (x0, y0) = (rect[0].min(w), rect[1].min(h));
+        let (x1, y1) = (rect[2].clamp(x0, w), rect[3].clamp(y0, h));
+        let all = self.opaque_ids(extent);
+        let mut ids = Vec::with_capacity(((x1 - x0) * (y1 - y0)) as usize);
+        for y in y0..y1 {
+            let row = (y * w) as usize;
+            ids.extend_from_slice(&all[row + x0 as usize..row + x1 as usize]);
+        }
+        Ok(IdImage { width: x1 - x0, height: y1 - y0, ids })
+    }
+
     /// The opaque id image of `target`'s last ID render.
     pub fn image(&self, target: u32) -> Result<IdImage, GpuError> {
         let extent = self.check(target, "read_ids")?.extent;

@@ -821,7 +821,7 @@ impl Host for EngineHost<'_> {
             self.e.vfx_preview_start(call, session, reply, deadline, true);
             return Ok(answer);
         }
-        let request = Request { session: session.clone(), call: 0, command, reply, deadline, trace: specula_core::trace::Ctx::current() };
+        let request = Request { session: session.clone(), call: 0, command, reply, deadline, trace: specula_core::trace::Ctx::current(), via: None };
         self.e.handle(request, self.server);
         Ok(answer)
     }

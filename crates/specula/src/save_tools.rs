@@ -958,6 +958,14 @@ impl Engine {
         // Everything checks: make it live.
         self.clock.set_tick(p.tick);
         let mut notes: Vec<Json> = p.notes;
+        // Live Lex runs presented into the world being replaced: they stop (the save brings its own).
+        let lex_before = self.lex_live.stop_all();
+        if !lex_before.is_empty() {
+            notes.push(Json::obj([
+                ("note", Json::from("the live Lex runs running before the load stopped (the world they presented into was replaced)")),
+                ("stopped", Json::arr(lex_before.iter().map(|s| Json::from(s.as_str())))),
+            ]));
+        }
         notes.extend(self.replace_world(may, p.world, &format!("save:{}", l.name)).into_iter().map(Json::from));
         // The machine's thread count stays (it isn't in saves: results never depend on it).
         physics.threads = self.physics.threads;

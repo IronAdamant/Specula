@@ -1,0 +1,164 @@
+{
+  "format": "specula.ui.screen.v1",
+  "name": "editor",
+  "input": "menu",
+  "layer": 80,
+  "focus": "tb_move",
+  "back": "editor_escape",
+  "notes": "The engine's editor (docs/design/EDITOR.md): a toolbar, the outliner (left), the viewport (middle: picking and gizmos, drawn by the engine), the inspector (right) and the status bar, docked. Every edit is a protocol command as window:owner. Actions: mode_translate, mode_rotate, mode_scale, space_toggle, snap_toggle, editor_undo, editor_redo, editor_close, editor_frame, editor_delete; ol_prev, ol_next, ol_top, ol_search, ol_search_clear, ol_expand (rows' +/-), ol_select (rows); field:<key> (inspector fields), step_down, step_up, toggle_visible, field_commit, field_cancel. State: see EditorUi::fill.",
+  "root": {
+    "type": "box", "width": "100%", "height": "100%", "layout": "column", "align": "stretch",
+    "children": [
+      {
+        "type": "panel", "style": "bar", "id": "ed_toolbar", "layout": "row", "align": "center", "gap": 6,
+        "children": [
+          { "type": "label", "text": "Editor", "role": "heading" },
+          { "type": "panel", "style": "divider", "width": 1, "height": 28, "padding": 0 },
+          { "type": "button", "id": "tb_move", "text": "Move", "action": "mode_translate", "tooltip": "Translate gizmo (W).", "visible": "!mode_t" },
+          { "type": "button", "id": "tb_move_on", "style": "primary", "text": "Move", "action": "mode_translate", "tooltip": "Translate gizmo (W).", "visible": "mode_t" },
+          { "type": "button", "id": "tb_rotate", "text": "Rotate", "action": "mode_rotate", "tooltip": "Rotate gizmo (E).", "visible": "!mode_r" },
+          { "type": "button", "id": "tb_rotate_on", "style": "primary", "text": "Rotate", "action": "mode_rotate", "tooltip": "Rotate gizmo (E).", "visible": "mode_r" },
+          { "type": "button", "id": "tb_scale", "text": "Scale", "action": "mode_scale", "tooltip": "Scale gizmo (R).", "visible": "!mode_s" },
+          { "type": "button", "id": "tb_scale_on", "style": "primary", "text": "Scale", "action": "mode_scale", "tooltip": "Scale gizmo (R).", "visible": "mode_s" },
+          { "type": "panel", "style": "divider", "width": 1, "height": 28, "padding": 0 },
+          { "type": "button", "id": "tb_space", "text": "{space_label}", "action": "space_toggle", "tooltip": "World or local axes (L)." },
+          { "type": "button", "id": "tb_snap", "text": "Snap off", "action": "snap_toggle", "tooltip": "Snap to the grid, angle and scale steps (G; hold Ctrl to invert while dragging).", "visible": "!snap_on" },
+          { "type": "button", "id": "tb_snap_on", "style": "primary", "text": "{snap_label}", "action": "snap_toggle", "tooltip": "Snap to the grid, angle and scale steps (G; hold Ctrl to invert while dragging).", "visible": "snap_on" },
+          { "type": "panel", "style": "divider", "width": 1, "height": 28, "padding": 0 },
+          { "type": "button", "id": "tb_undo", "text": "Undo", "action": "editor_undo", "enabled": "can_undo", "tooltip": "Undo your last edit (Ctrl+Z): world_undo." },
+          { "type": "button", "id": "tb_redo", "text": "Redo", "action": "editor_redo", "enabled": "can_redo", "tooltip": "Redo (Ctrl+Y): undoes the undo." },
+          { "type": "button", "id": "tb_frame", "text": "Frame", "action": "editor_frame", "enabled": "has_sel", "tooltip": "Frame the selection (F)." },
+          { "type": "button", "id": "tb_delete", "text": "Delete", "action": "editor_delete", "enabled": "has_sel", "tooltip": "Delete the selection (Del): world_batch." },
+          { "type": "box", "width": "fill" },
+          { "type": "label", "text": "{who}", "role": "small" },
+          { "type": "button", "id": "tb_close", "text": "Close", "action": "editor_close", "tooltip": "Back to the game (F7)." }
+        ]
+      },
+      {
+        "type": "box", "layout": "row", "align": "stretch", "height": "fill",
+        "children": [
+          {
+            "type": "panel", "style": "dock", "id": "ed_outliner", "width": "21em", "layout": "column", "align": "stretch", "gap": 4, "clip": true,
+            "children": [
+              {
+                "type": "box", "layout": "row", "align": "center", "gap": 6,
+                "children": [
+                  { "type": "label", "text": "Outliner", "role": "heading", "width": "fill" },
+                  { "type": "label", "text": "{ol_count}", "role": "small" }
+                ]
+              },
+              {
+                "type": "box", "layout": "row", "align": "center", "gap": 4,
+                "children": [
+                  { "type": "button", "id": "ol_search", "style": "field", "text": "{ol_search_text}", "action": "ol_search", "width": "fill", "tooltip": "Type to search by name; #tag filters by tag. Enter keeps it, Esc clears." },
+                  { "type": "button", "id": "ol_search_clear", "style": "small", "text": "x", "action": "ol_search_clear", "visible": "ol_searching", "tooltip": "Clear the search." }
+                ]
+              },
+              {
+                "type": "list", "id": "ol_list", "height": "fill", "gap": 1,
+                "repeat": {
+                  "source": "rows", "max": 18,
+                  "template": {
+                    "type": "box", "layout": "row", "align": "center", "gap": 2,
+                    "children": [
+                      { "type": "button", "id": "ol_x", "style": "small", "text": "{item.arrow}", "action": "ol_expand", "visible": "item.has_children" },
+                      { "type": "box", "width": 28, "visible": "!item.has_children" },
+                      { "type": "button", "id": "ol_row", "style": "row", "action": "ol_select", "width": "fill", "justify": "start", "visible": "!item.selected", "tooltip": "{item.tip}", "children": [ { "type": "label", "text": "{item.label}", "role": "body", "width": "fill" }, { "type": "label", "text": "{item.badge}", "role": "warn", "visible": "item.badge" } ] },
+                      { "type": "button", "id": "ol_row_on", "style": "row_on", "action": "ol_select", "width": "fill", "justify": "start", "visible": "item.selected", "tooltip": "{item.tip}", "children": [ { "type": "label", "text": "{item.label}", "role": "body", "width": "fill" }, { "type": "label", "text": "{item.badge}", "role": "warn", "visible": "item.badge" } ] }
+                    ]
+                  }
+                }
+              },
+              { "type": "label", "text": "{ol_note}", "role": "small", "visible": "ol_note", "wrap": true },
+              {
+                "type": "box", "layout": "row", "align": "center", "gap": 4,
+                "children": [
+                  { "type": "button", "id": "ol_top", "style": "small", "text": "Top", "action": "ol_top", "enabled": "ol_has_prev" },
+                  { "type": "button", "id": "ol_prev", "style": "small", "text": "Prev", "action": "ol_prev", "enabled": "ol_has_prev" },
+                  { "type": "label", "text": "{ol_page}", "role": "small", "width": "fill", "text_align": "center" },
+                  { "type": "button", "id": "ol_next", "style": "small", "text": "Next", "action": "ol_next", "enabled": "ol_has_next" }
+                ]
+              }
+            ]
+          },
+          { "type": "box", "id": "ed_viewport", "width": "fill" },
+          {
+            "type": "panel", "style": "dock", "id": "ed_inspector", "width": "22em", "layout": "column", "align": "stretch", "gap": 5, "clip": true,
+            "children": [
+              { "type": "label", "text": "Inspector", "role": "heading" },
+              { "type": "label", "text": "Click an entity, or pick one in the outliner.", "role": "small", "visible": "!has_sel", "wrap": true },
+              {
+                "type": "box", "layout": "column", "align": "stretch", "gap": 5, "visible": "has_sel",
+                "children": [
+                  { "type": "button", "id": "in_name", "style": "field", "text": "{in_name}", "action": "field:name", "tooltip": "Rename (type, then Enter)." },
+                  { "type": "label", "text": "{in_path}", "role": "small", "wrap": true },
+                  { "type": "label", "text": "{in_meta}", "role": "small", "wrap": true },
+                  { "type": "label", "text": "{in_claim}", "role": "warn", "visible": "in_claimed", "wrap": true },
+                  { "type": "label", "text": "{in_claim}", "role": "good", "visible": "!in_claimed", "wrap": true },
+                  { "type": "label", "text": "{in_more}", "role": "small", "visible": "in_more", "wrap": true },
+                  { "type": "panel", "style": "divider", "height": 1, "padding": 0 },
+                  {
+                    "type": "box", "layout": "row", "align": "center", "gap": 3,
+                    "children": [
+                      { "type": "label", "text": "Position", "role": "small", "width": "5.4em" },
+                      { "type": "button", "id": "f_px", "style": "field", "text": "{f_px}", "action": "field:px", "width": "fill" },
+                      { "type": "button", "id": "f_py", "style": "field", "text": "{f_py}", "action": "field:py", "width": "fill" },
+                      { "type": "button", "id": "f_pz", "style": "field", "text": "{f_pz}", "action": "field:pz", "width": "fill" }
+                    ]
+                  },
+                  {
+                    "type": "box", "layout": "row", "align": "center", "gap": 3,
+                    "children": [
+                      { "type": "label", "text": "Rotation", "role": "small", "width": "5.4em" },
+                      { "type": "button", "id": "f_rx", "style": "field", "text": "{f_rx}", "action": "field:rx", "width": "fill" },
+                      { "type": "button", "id": "f_ry", "style": "field", "text": "{f_ry}", "action": "field:ry", "width": "fill" },
+                      { "type": "button", "id": "f_rz", "style": "field", "text": "{f_rz}", "action": "field:rz", "width": "fill" }
+                    ]
+                  },
+                  {
+                    "type": "box", "layout": "row", "align": "center", "gap": 3,
+                    "children": [
+                      { "type": "label", "text": "Scale", "role": "small", "width": "5.4em" },
+                      { "type": "button", "id": "f_sx", "style": "field", "text": "{f_sx}", "action": "field:sx", "width": "fill" },
+                      { "type": "button", "id": "f_sy", "style": "field", "text": "{f_sy}", "action": "field:sy", "width": "fill" },
+                      { "type": "button", "id": "f_sz", "style": "field", "text": "{f_sz}", "action": "field:sz", "width": "fill" }
+                    ]
+                  },
+                  {
+                    "type": "box", "layout": "row", "align": "center", "gap": 3,
+                    "children": [
+                      { "type": "label", "text": "Colour", "role": "small", "width": "5.4em" },
+                      { "type": "button", "id": "f_cr", "style": "field", "text": "{f_cr}", "action": "field:cr", "width": "fill" },
+                      { "type": "button", "id": "f_cg", "style": "field", "text": "{f_cg}", "action": "field:cg", "width": "fill" },
+                      { "type": "button", "id": "f_cb", "style": "field", "text": "{f_cb}", "action": "field:cb", "width": "fill" }
+                    ]
+                  },
+                  {
+                    "type": "box", "layout": "row", "align": "center", "gap": 4,
+                    "children": [
+                      { "type": "label", "text": "{field_label}", "role": "small", "width": "fill" },
+                      { "type": "button", "id": "f_down", "style": "small", "text": "-", "action": "step_down", "enabled": "has_field", "tooltip": "Step the active field down by the snap step." },
+                      { "type": "button", "id": "f_up", "style": "small", "text": "+", "action": "step_up", "enabled": "has_field", "tooltip": "Step the active field up by the snap step." },
+                      { "type": "button", "id": "f_ok", "style": "small", "text": "Set", "action": "field_commit", "visible": "typing", "tooltip": "Commit the typed value (Enter)." }
+                    ]
+                  },
+                  { "type": "button", "id": "f_visible", "text": "{visible_label}", "action": "toggle_visible", "tooltip": "Show or hide it (world_set visible)." },
+                  { "type": "label", "text": "{in_components}", "role": "small", "visible": "in_components", "wrap": true }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "panel", "style": "bar", "id": "ed_status", "layout": "row", "align": "center", "gap": 10,
+        "children": [
+          { "type": "label", "text": "{status_line}", "role": "good", "visible": "status_good", "width": "fill", "wrap": true },
+          { "type": "label", "text": "{status_line}", "role": "warn", "visible": "!status_good", "width": "fill", "wrap": true },
+          { "type": "label", "text": "{sel_line}", "role": "small" },
+          { "type": "prompt", "action": "editor_toggle", "text": "Close" }
+        ]
+      }
+    ]
+  }
+}

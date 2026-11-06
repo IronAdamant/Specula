@@ -201,6 +201,20 @@ impl Swarm {
         self.agents.contains_key(session_id)
     }
 
+    /// Admits the window's human as an identity (docs/design/EDITOR.md, "The window's operator"):
+    /// session `session_id` (never a protocol session id) is `window:owner`, keyed by that name,
+    /// with the owner's authority, so the editor's edits go through `Engine::handle` like any
+    /// agent's and are journaled, claimed and undone as the human's. Never pruned with dead
+    /// sessions; the name stays reserved (no agent may say hello as it).
+    pub(crate) fn admit_window_operator(&mut self, session_id: &str) {
+        let name = crate::authority::WINDOW_OWNER.to_owned();
+        self.reserve(&name);
+        let authority = crate::authority::Authority::Owner;
+        crate::authority::publish(session_id, authority);
+        let agent = Agent { name: name.clone(), role: crate::authority::ROLE_OWNER.to_owned(), authority, key: name, token: random_hex() };
+        self.agents.insert(session_id.to_owned(), agent);
+    }
+
     /// Keeps agents from calling themselves `name` (the hosted game's name, say).
     pub fn reserve(&mut self, name: &str) {
         self.reserved.insert(name.to_owned());
@@ -268,7 +282,7 @@ impl Swarm {
             // (they come back with their resume tokens).
             let grants = &self.grants;
             self.agents.retain(|id, a| {
-                let keep = ids.contains(id.as_str()) || grants.holds(&a.key);
+                let keep = ids.contains(id.as_str()) || grants.holds(&a.key) || a.key == crate::authority::WINDOW_OWNER;
                 if !keep {
                     crate::authority::unpublish(id);
                 }
@@ -389,6 +403,15 @@ impl Swarm {
     /// ```
     pub fn journal(&self) -> &Journal {
         &self.journal
+    }
+
+    /// Before the live world is replaced (a save read keeps the board and the review queue):
+    /// every note's, task's and critique's entity records its path as of now, so one the new
+    /// world doesn't have shows where its entity last was. References are identities
+    /// ([`crate::entity_ref::EntityRef`]), so nothing else needs doing, here or per loop.
+    /// O(references x (log n + depth)), once per replacement. Returns how many changed.
+    pub fn remember_entity_paths(&mut self, world: &World) -> usize {
+        self.board.remember_entity_paths(world) + self.review.remember_entity_paths(world)
     }
 
     /// The journal to write: the write policy's only (its key, [`crate::write_policy::PolicyKey`],
@@ -604,7 +627,7 @@ mod tests {
     fn removed_versions_stay_bounded_by_the_journal() {
         let mut w = world();
         let mut sw = Swarm { journal: Journal::with_limits(&w, "empty", 400, 64 << 20), ..Swarm::default() };
-        let me = Writer { name: "churn", session: None };
+        let me = Writer { name: "churn", session: None, via: None };
         let churn = |sw: &mut Swarm, w: &mut World, n: usize, tag: &str| {
             for i in 0..n {
                 let id = sw.commit(w, 0, me, Kind::Spawn, |w| w.spawn(spec(&format!("/{tag}{i}")), "churn").map(|e| e.id)).unwrap().0;

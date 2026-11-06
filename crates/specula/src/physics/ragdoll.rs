@@ -1619,7 +1619,7 @@ pub(crate) mod tests {
         let (mut w, id) = shambler_world();
         w.set_recording(crate::world::Recording::Full);
         let mut sw = crate::swarm::Swarm::default();
-        let me = Writer { name: "probe", session: None };
+        let me = Writer { name: "probe", session: None, via: None };
         let mut p = Physics::default();
         let set = |sw: &mut crate::swarm::Swarm, w: &mut World, json: &str| {
             let props = Json::obj([(PROP, Json::parse(json).unwrap())]);

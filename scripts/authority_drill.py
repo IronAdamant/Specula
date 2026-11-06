@@ -517,6 +517,11 @@ def main():
         crit = d.ok("ann", "critique_add", items=[{"text": "the box is plain", "severity": "note", "submission": sub}])["added"][0]
         d.ok("ann", "save_write", name="ann_save")
 
+        # The window's editor acts as the human (window:owner): only the owner drives it
+        # (docs/design/EDITOR.md); a lead or reviewer is refused like any agent.
+        for who in ("bob", "lee", "rev"):
+            d.expect(f"{who} drives the window's editor", who, "editor_input", {"steps": [{"key": "F7"}]}, ["owner_only"])
+
         print("bob acts on ann's things:")
         # World tools on ann's claimed box.
         d.expect("bob sets ann's claimed box", "bob", "world_set", {"path": "/ann_box", "color": "#ff0000"}, ["claimed"])
@@ -614,6 +619,19 @@ def main():
         d.check("review_list counts reported checks apart from the engine's", checks.get("reported", {}).get("passed") == 1 and checks.get("reported", {}).get("by") == "ann", json.dumps(checks))
         tc = d.ok("bob", "time_control", action="pause")
         d.check("time_control says who moved the clock", tc.get("set_by", {}).get("agent") == "bob", json.dumps(tc))
+
+        # Timelines: a playback is its starter's; another agent neither pauses nor stops it, not
+        # even with force (that needs the lead).
+        d.ok("ann", "world_spawn", name="tl_door", shape="cube", position=[40, 0.5, 0])
+        tl = d.ok("ann", "timeline_set", path="drill", timeline={"schema": "specula.timeline.v1", "duration": 30, "tracks": [
+            {"kind": "entity", "name": "door", "target": "/tl_door", "position": [{"t": 0, "value": [40, 0.5, 0]}, {"t": 30, "value": [40, 3, 0]}]}]})
+        d.ok("ann", "timeline_play", path="drill")
+        d.expect("bob pauses ann's playback", "bob", "timeline_pause", {"path": "drill"}, ["job_busy"])
+        d.expect("bob stops ann's playback", "bob", "timeline_stop", {"path": "drill"}, ["job_busy"])
+        d.expect("bob stops ann's playback with force", "bob", "timeline_stop", {"path": "drill", "force": True}, None)
+        d.ok("ann", "timeline_stop", path="drill")
+        # This engine's project is the repository (no --assets): the timeline goes again.
+        d.ok("ann", "project_delete", path=tl["path"])
 
         # Every owned tool has a probe, or a reason it is covered elsewhere.
         owned = sorted(n for n, v in table.items() if isinstance(v, str) and v.startswith("owned:"))

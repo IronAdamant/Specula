@@ -14,8 +14,8 @@ use specula_core::Json;
 use specula_protocol::{SessionInfo, ToolOutput};
 use std::sync::Arc;
 
-const ANN: Writer = Writer { name: "ann", session: Some("aaaaaa11") };
-const BOB: Writer = Writer { name: "bob", session: Some("bbbbbb22") };
+const ANN: Writer = Writer { name: "ann", session: Some("aaaaaa11"), via: None };
+const BOB: Writer = Writer { name: "bob", session: Some("bbbbbb22"), via: None };
 
 fn session(id: &str) -> SessionInfo {
     SessionInfo { id: id.into(), client_name: "c".into(), client_version: "1".into(), protocol_version: "x".into() }

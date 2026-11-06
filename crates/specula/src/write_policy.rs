@@ -1020,6 +1020,9 @@ impl Live {
             w.advance_past(epochs);
             // What it recorded belongs to a world that is gone: the journal starts here.
             let _ = w.take_changes();
+            // Its id counter may be any world's: entities spawned from now on are born in a new
+            // lineage, so none can take an identity a note holds (docs/design/EDITOR.md).
+            w.fork_lineage();
             swarm.journal_mut(&KEY).rebase(w, &format!("engine:replaced_by:{entry}"));
             swarm.journal_mut(&KEY).note_next_id(w.next_id());
         });
@@ -1242,6 +1245,10 @@ impl Live {
         let failed = world.set_model_source(models);
         let files_revision = self.world.files_revision();
         world.adopt_files(self.world.take_files(), files_revision);
+        // A loaded world's id counter is the file's: entities spawned from now on are born in a
+        // new lineage, so none can take an identity a note or critique holds, whatever was read
+        // in whatever order (docs/design/EDITOR.md, "Stable entity identity").
+        world.fork_lineage();
         swarm.journal_mut(&KEY).rebase(&world, label);
         world.mark_live();
         world.set_sealed(true);

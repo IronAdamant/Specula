@@ -1,0 +1,48 @@
+{
+  "date": "2026-11-06",
+  "time": "",
+  "date_source": "",
+  "approximate": false,
+  "milestone": "M5",
+  "commit": "",
+  "subject": "ui",
+  "topic": "UI",
+  "title": "The human editor's core",
+  "note": "First human editor in the window (F7) over Sepulcra on the Intel iGPU: docked outliner, inspector and status bar; click select from the ID buffer with the cyan mark; a translate drag previewing the moved crate before anything is written; an agent's claim refusing the human's edit, whose claim named. Every edit is a protocol command journaled as window:owner.",
+  "source": "scripts/editor_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-window-01-selected-crate-a.png",
+      "caption": "crate_a selected: cyan mark, translate gizmo, outliner and inspector",
+      "original": "window_01_selected_crate_a.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 162619
+    },
+    {
+      "file": "02-window-02-dragging-preview.png",
+      "caption": "mid-drag: the crate drawn at the gizmo, the world unchanged (inspector still -2, v1)",
+      "original": "window_02_dragging_preview.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 163211
+    },
+    {
+      "file": "03-window-07-claim-refused-inspector.png",
+      "caption": "the inspector edit refused: crate_b is inside claimer's claim",
+      "original": "window_07_claim_refused_inspector.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 169335
+    },
+    {
+      "file": "04-window-08-box-select.png",
+      "caption": "box select: what lies mostly inside the box",
+      "original": "window_08_box_select.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 167556
+    }
+  ]
+}
