@@ -25,6 +25,7 @@ Keep output ASCII.
 import argparse
 import json
 import shutil
+import os
 import sys
 import threading
 import time
@@ -315,7 +316,7 @@ def main():
     ap.add_argument("--adapter", default="integrated")
     ap.add_argument("--port", type=int, default=7560)
     ap.add_argument("--out", default=str(ROOT / "target" / "entity-refs-check"))
-    ap.add_argument("--exe", default=str(ROOT / "target" / "release" / ("specula.exe" if sys.platform == "win32" else "specula")))
+    ap.add_argument("--exe", default=str(Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target") / "release" / ("specula.exe" if sys.platform == "win32" else "specula")), help="the release engine (default: release under CARGO_TARGET_DIR or target/)")
     a = ap.parse_args()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
