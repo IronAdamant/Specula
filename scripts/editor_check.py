@@ -576,6 +576,47 @@ def main():
         now = call(builder, "world_query", path_prefix="/editor_test/crate_a", fields=["position"])["items"][0]["position"]
         check(abs(now[0] - theirs[0]) < 1e-6, f"... and the agent's value stays ({now[0]}, theirs {theirs[0]})")
 
+        # -- review R3 of m5-text: a click in the world never points the window's keyboard at a
+        # text; the human types a text's words in the inspector's Text field instead --
+        call(builder, "world_spawn", name="epitaph", parent="/editor_test", shape="text", position=[3, 0, -3], visible=False, text={"text": "Here lies", "size": 0.3})
+        def e_row():
+            rows = (ed.state().get("outliner") or {}).get("rows") or []
+            return next((r["row"] for r in rows if r.get("path") == "/editor_test/epitaph"), None)
+        row = wait_for(lambda: e_row(), 5)
+        box = ed.widget(f"ol_row[{row}]") if row is not None else None
+        if check(bool(box), f"the epitaph shows in the outliner (row {row})"):
+            ed.input({"click": [box[0] + box[2] / 2, box[1] + box[3] / 2]})
+            s = ed.press_widget("in_text")
+            typing = s.get("typing") or {}
+            check(typing.get("field") == "text", f"clicking the inspector's Text field starts typing the text's words ({typing})")
+            ed.input(*([{"key": "Backspace"}] * 4), {"text": "rests"}, {"key": "Enter"}, {"wait": 2})
+            words = (call(builder, "world_query", path_prefix="/editor_test/epitaph", fields=["text"])["items"][0].get("text") or {}).get("text")
+            check(words == "Here rests", f"Backspace, typing and Enter set the text's words ({words!r})")
+            hist = history_by(builder, "/editor_test/epitaph")
+            check(bool(hist) and hist[0].get("by") == "window:owner", "the text edit is journaled as window:owner")
+        # Review R4 of m5-text (probe_inspector): a text longer than 512 characters is never cut,
+        # and Enter with nothing changed writes nothing.
+        long = "epitaph " * 187 + "abcd"
+        call(builder, "world_spawn", name="long_epitaph", parent="/editor_test", shape="text", position=[3, 0, -4], visible=False, text={"text": long, "size": 0.3})
+        def l_row():
+            rows = (ed.state().get("outliner") or {}).get("rows") or []
+            return next((r["row"] for r in rows if r.get("path") == "/editor_test/long_epitaph"), None)
+        row = wait_for(lambda: l_row(), 5)
+        box = ed.widget(f"ol_row[{row}]") if row is not None else None
+        if check(bool(box), f"the 1,500-character epitaph shows in the outliner (row {row})"):
+            ed.input({"click": [box[0] + box[2] / 2, box[1] + box[3] / 2]})
+            n0 = len(history_by(builder, "/editor_test/long_epitaph"))
+            s = ed.press_widget("in_text")
+            check(len((s.get("typing") or {}).get("text") or "") == 1500, f"the Text field starts with all 1,500 characters ({len((s.get('typing') or {}).get('text') or '')})")
+            ed.input({"key": "Enter"}, {"wait": 2})
+            words = (call(builder, "world_query", path_prefix="/editor_test/long_epitaph", fields=["text"])["items"][0].get("text") or {}).get("text")
+            n1 = len(history_by(builder, "/editor_test/long_epitaph"))
+            check(words == long and n1 == n0, f"Enter with nothing changed writes nothing ({len(words or '')} characters, {n1 - n0} new entries)")
+            ed.press_widget("in_text")
+            ed.input({"text": "!"}, {"key": "Enter"}, {"wait": 2})
+            words = (call(builder, "world_query", path_prefix="/editor_test/long_epitaph", fields=["text"])["items"][0].get("text") or {}).get("text")
+            check(words == long + "!", f"a key typed at its end keeps the whole text ({len(words or '')} characters)")
+
         # -- probe 4: an agent undoes the human's top entry; Ctrl+Z sets it aside and goes on --
         # Edit A on crate_c (hidden, so no capture shows it), edit B on crate_a, B undone by the
         # owner's agent; then Ctrl+Z twice.

@@ -32,21 +32,32 @@
 #![forbid(unsafe_code)]
 
 pub mod atlas;
+pub mod bundled;
+pub mod edit;
 pub mod error;
 pub mod font;
 pub mod layout;
+pub mod linebreak;
 pub mod outline;
 pub mod raster;
+pub mod rich;
 mod reader;
+pub mod slug;
 pub mod system;
 
 #[cfg(test)]
 mod fuzz_tests;
 
+pub use bundled::Bundled;
+pub use slug::{SlugError, SlugGlyph, SlugStore, StoredGlyph};
 pub use atlas::{AtlasConfig, AtlasGlyph, AtlasStats, DirtyRect, GlyphAtlas, GlyphKey, NO_PAGE, SUBPIXEL_BINS};
 pub use error::{AtlasError, FontError, Reason, Tag};
 pub use font::{font_count, Font, FontId, GlyphId, LineMetrics};
-pub use layout::{layout, layout_into, measure, Align, GlyphQuad, Line, PositionedGlyph, TextLayout, TextMetrics, TextStyle};
+pub use edit::{Clipboard, EditOp, EditResult, MemoryClipboard, OnScreenKeyboard, TextEdit, Unit};
+pub use layout::{
+    layout, layout_into, layout_rich, layout_rich_into, measure, Align, CaretPos, FontSet, GlyphQuad, InlineBox, Line, PositionedGlyph, Span, TextLayout,
+    TextMetrics, TextStyle, INLINE_OBJECT,
+};
 pub use outline::{Outline, Point, Segment};
 pub use raster::{rasterize_sdf, Bitmap, Rasterizer, MAX_BITMAP_DIM, MAX_SDF_DIM};
-pub use system::{find_system_ui_font, load_font_file, system_ui_font_candidates, LoadError};
+pub use system::{find_system_ui_font, load_fallbacks, load_font_file, system_fallback_candidates, system_ui_font_candidates, LoadError};

@@ -138,6 +138,9 @@ const FIELDS: &[(&str, Class)] = &[
     ("ui_state", NoIds("displays, sessions' display overrides and a camera pose")),
     ("editor", Reset("self.editor_world_replaced()")),
     ("editor_owners", NoIds("the frame's draw owners (a reused buffer)")),
+    // The text lane: the window's keyboard focus (an entity id) and the texts the operator opened
+    // to the human's click; the hook drops both.
+    ("text_typing", Reset("self.text_typing.world_replaced()")),
     ("taste", NoIds("gallery ids are names")),
     ("modal_open", NoIds("a flag")),
     ("game_pads", NoIds("the frame's pad states")),

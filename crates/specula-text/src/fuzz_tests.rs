@@ -125,6 +125,29 @@ fn exercise(data: Vec<u8>, rng: &mut Rng, full_glyph_scan: bool) {
     if let Ok(o) = font.glyph_outline(glyphs[0]) {
         let _ = rasterize_sdf(&o, 0.01, 2.0);
     }
+    // Slug: whatever prepares must evaluate inside its own words, and the store keeps its cap.
+    let mut store = crate::slug::SlugStore::new(64 * 1024);
+    for &g in glyphs.iter().take(8) {
+        if let Ok(sg) = crate::slug::SlugGlyph::of(&font, g) {
+            let mut words = Vec::new();
+            let at = sg.encode(&mut words);
+            let c = crate::slug::coverage_from_words(&words, at, [0.3, 0.3], [20.0, 20.0]);
+            assert!((0.0..=1.0).contains(&c) || c.is_nan());
+            assert!(sg.hbands.iter().chain(&sg.vbands).all(|b| b.len() <= crate::slug::MAX_BAND_CURVES));
+        }
+        let _ = store.glyph(&font, g);
+        assert!(store.bytes() <= store.cap_bytes());
+    }
+    // Rich layout with a fallback face (itself) and an ellipsis.
+    let set = crate::layout::FontSet { regular: &font, bold: Some(&font), fallback: &[&font] };
+    let r = crate::rich::parse("[b]Wave[/b] [color=#f00]3[/color] [icon=pad_a] \u{5893}\u{5730} e\u{301}").unwrap();
+    let l = crate::layout::layout_rich(&set, &r.text, &r.spans, &TextStyle::new(14.0).with_max_width(40.0).with_max_lines(2));
+    for g in &l.glyphs {
+        assert!((g.byte as usize) <= r.text.len());
+    }
+    let _ = l.caret(3);
+    let _ = l.hit(10.0, 5.0);
+    let _ = l.selection_rects(0..r.text.len());
 }
 
 fn iterations(default: usize) -> usize {
@@ -150,6 +173,19 @@ fn mutated_tiny_fonts_never_panic() {
 }
 
 #[test]
+fn mutated_bundled_fonts_never_panic() {
+    for (k, face) in crate::bundled::Bundled::ALL.into_iter().enumerate() {
+        let src = face.bytes();
+        let tables = table_ranges(src);
+        let mut rng = Rng(0x5eed_1234_abcd_0100 + k as u64);
+        for _ in 0..iterations(200) {
+            let d = mutate(&mut rng, src, &tables);
+            exercise(d, &mut rng, false);
+        }
+    }
+}
+
+#[test]
 fn mutated_system_font_never_panics() {
     let Some((path, _)) = crate::system::find_system_ui_font() else {
         println!("skipped: no system UI font found");
@@ -161,5 +197,127 @@ fn mutated_system_font_never_panics() {
     for _ in 0..iterations(300) {
         let d = mutate(&mut rng, &src, &tables);
         exercise(d, &mut rng, false);
+    }
+}
+
+/// Characters from every line-break class the tables know, and the ones that trip parsers:
+/// combining marks, joiners, CJK and kana, emoji, controls, separators, quotes, brackets.
+const POOL: &[char] = &[
+    'a', 'Z', '7', ' ', '\t', '\n', '\r', '\u{0B}', '\u{0C}', '\u{85}', '\u{2028}', '\u{2029}', '-', '\u{2010}', '\u{AD}', '/', '%', '$', '(', ')', '[',
+    ']', '{', '}', '"', '\'', '\u{AB}', '\u{BB}', '!', '?', ',', '.', ':', ';', '\u{A0}', '\u{202F}', '\u{200B}', '\u{200C}', '\u{200D}', '\u{2060}',
+    '\u{FEFF}', '\u{301}', '\u{308}', '\u{20DD}', 'é', 'Ж', 'Ω', '\u{5893}', '\u{3002}', '\u{3001}', '\u{30A2}', '\u{30FC}', '\u{AC00}', '\u{FF01}',
+    '\u{1F600}', '\u{1F3FB}', '\u{FFFC}', '\u{FFFD}', '\u{10FFFF}', '\u{E000}', '\u{0}', '\u{7F}', '\u{9F}', '\u{2026}', '\u{3000}', '#', '=', '\\',
+];
+
+fn hostile_text(rng: &mut Rng, max: usize) -> String {
+    (0..rng.below(max + 1)).map(|_| POOL[rng.below(POOL.len())]).collect()
+}
+
+#[test]
+fn line_breaks_of_hostile_text_hold_their_invariants() {
+    let mut rng = Rng(0x5eed_1234_abcd_0200);
+    let mut out = Vec::new();
+    for _ in 0..iterations(3000) {
+        let t = hostile_text(&mut rng, 64);
+        crate::linebreak::breaks_into(&t, &mut out);
+        let last = out.last().copied().expect("the end is always a break");
+        assert!(last.byte == t.len() && last.mandatory, "{t:?}: {out:?}");
+        assert!(out.windows(2).all(|w| w[0].byte < w[1].byte), "in order, once each: {t:?}");
+        assert!(out.iter().all(|b| t.is_char_boundary(b.byte) && (b.byte > 0 || t.is_empty())), "{t:?}: {out:?}");
+        assert!(out.len() <= t.chars().count() + 1);
+    }
+    // Linear in the text: a long text of the pool (68,027 characters from this seed).
+    let big = hostile_text(&mut Rng(7), 1 << 18);
+    let started = std::time::Instant::now();
+    crate::linebreak::breaks_into(&big, &mut out);
+    assert!(started.elapsed().as_millis() < 2000, "{:?} for {} bytes", started.elapsed(), big.len());
+}
+
+#[test]
+fn hostile_markup_is_refused_with_a_place_or_parsed_within_its_caps() {
+    const TOKENS: &[&str] =
+        &["[b]", "[/b]", "[color=#3fe0d0]", "[color=#f00]", "[color=#zzzzzz]", "[color=]", "[/color]", "[icon=pad_a]", "[icon=]", "[icon=pad_a,2]", "[/icon]", "[", "]", "[[", "]]", "\\[", "[x]", "[/]", "[b", "=", "#", "é", "\u{5893}", "a b", "\n"];
+    let mut rng = Rng(0x5eed_1234_abcd_0300);
+    for _ in 0..iterations(4000) {
+        let mut m = String::new();
+        for _ in 0..rng.below(40) {
+            if rng.below(4) == 0 {
+                m.push(POOL[rng.below(POOL.len())]);
+            } else {
+                m.push_str(TOKENS[rng.below(TOKENS.len())]);
+            }
+        }
+        match crate::rich::parse(&m) {
+            Ok(r) => {
+                assert!(r.text.len() <= m.len() + 4 * r.spans.len(), "{m:?}");
+                assert!(r.spans.len() <= crate::rich::MAX_SPANS);
+                for s in &r.spans {
+                    assert!(s.bytes.start <= s.bytes.end && s.bytes.end <= r.text.len(), "{m:?}: {s:?}");
+                    assert!(r.text.is_char_boundary(s.bytes.start) && r.text.is_char_boundary(s.bytes.end));
+                }
+                // It lays out (fallback-free) without panicking, every glyph inside the text.
+                let f = Font::from_bytes(tiny_font()).unwrap();
+                let set = crate::layout::FontSet::single(&f);
+                let l = crate::layout::layout_rich(&set, &r.text, &r.spans, &TextStyle::new(12.0).with_max_width(30.0).with_max_lines(3));
+                assert!(l.glyphs.iter().all(|g| (g.byte as usize) <= r.text.len()));
+            }
+            Err(e) => {
+                assert!(e.at <= m.len(), "{m:?}: {e}");
+                assert!(!e.code.is_empty() && !e.message.is_empty());
+            }
+        }
+    }
+    // Over the markup cap: refused up front, not parsed.
+    let big = "[b]x[/b]".repeat(crate::rich::MAX_MARKUP_BYTES / 8 + 1);
+    assert!(crate::rich::parse(&big).is_err());
+}
+
+#[test]
+fn random_edit_ops_keep_the_text_and_caret_valid() {
+    use crate::edit::{EditOp, MemoryClipboard, TextEdit, Unit};
+    let f = Font::from_bytes(tiny_font()).unwrap();
+    let mut rng = Rng(0x5eed_1234_abcd_0400);
+    let units = [Unit::Char, Unit::Word, Unit::Line, Unit::All];
+    for round in 0..iterations(300) {
+        let mut t = TextEdit::with_limit(&hostile_text(&mut rng, 40), 96);
+        let mut cb = MemoryClipboard::default();
+        let mut layout = crate::layout::TextLayout::default();
+        for _ in 0..40 {
+            let unit = units[rng.below(4)];
+            let select = rng.below(2) == 0;
+            let op = match rng.below(17) {
+                0 => EditOp::Insert(hostile_text(&mut rng, 12)),
+                1 => EditOp::Backspace(unit),
+                2 => EditOp::Delete(unit),
+                3 => EditOp::Left { unit, select },
+                4 => EditOp::Right { unit, select },
+                5 => EditOp::Up { select },
+                6 => EditOp::Down { select },
+                7 => EditOp::SetCaret { byte: rng.below(200), select },
+                8 => EditOp::Select { anchor: rng.below(200), caret: rng.below(200) },
+                9 => EditOp::SelectAll,
+                10 => EditOp::Copy,
+                11 => EditOp::Cut,
+                12 => EditOp::Paste,
+                13 => EditOp::Compose { text: hostile_text(&mut rng, 8), caret: rng.below(40) },
+                14 => EditOp::Commit(hostile_text(&mut rng, 8)),
+                15 => EditOp::Undo,
+                _ => EditOp::Redo,
+            };
+            let with_layout = round % 2 == 0;
+            if with_layout {
+                let (shown, _) = t.display();
+                crate::layout::layout_into(&f, &shown, &TextStyle::new(12.0).with_max_width(40.0), &mut layout);
+            }
+            // A layout of the displayed text (with a composition) or none: both must be safe.
+            let _ = t.apply(&op, &mut cb, with_layout.then_some(&layout));
+            let s = t.text();
+            assert!(s.len() <= t.max_bytes(), "{op:?}: {} bytes", s.len());
+            assert!(s.is_char_boundary(t.caret()) && s.is_char_boundary(t.anchor()), "{op:?} in {s:?}: {} {}", t.caret(), t.anchor());
+            let (shown, range) = t.display();
+            if let Some(r) = range {
+                assert!(r.end <= shown.len() && shown.is_char_boundary(r.start) && shown.is_char_boundary(r.end));
+            }
+        }
     }
 }

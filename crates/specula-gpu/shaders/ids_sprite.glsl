@@ -28,16 +28,25 @@ layout(location = 5) flat in vec4 v_params;
 layout(location = 6) flat in vec4 v_tile;
 layout(location = 7) flat in vec3 v_normal;
 layout(location = 8) flat in uint v_id;
+layout(location = 9) flat in uvec4 v_glyph;
 
 layout(location = 0) out uint out_id;
 
 #include "sprite_texel.glsl"
+#include "glyph.glsl"
 
 void main() {
     if (v_world.x != v_world.x || v_normal.x != v_normal.x) {
         return; // never (NaN): keeps the interface matching the vertex stage's outputs
     }
-    vec4 texel = v_info.w == KIND_TILES ? tile_texel() : sprite_texel();
+    // Glyphs: the scene's Slug coverage (derivatives taken in uniform control flow).
+    vec2 ppe = glyph_pixels_per_em(v_uv);
+    vec4 texel;
+    if (v_info.w == KIND_GLYPH) {
+        texel = vec4(1.0, 1.0, 1.0, glyph_coverage(v_glyph.xy, v_glyph.z, v_info.x, v_glyph.w, v_rect, v_uv, ppe));
+    } else {
+        texel = v_info.w == KIND_TILES ? tile_texel() : sprite_texel();
+    }
     float a = clamp(texel.a * v_tint.a, 0.0, 1.0);
     bool cutout = (v_info.y & FLAG_CUTOUT) != 0u;
     if (cutout ? a < v_params.x : a <= 0.0) {

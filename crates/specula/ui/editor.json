@@ -5,7 +5,7 @@
   "layer": 80,
   "focus": "tb_move",
   "back": "editor_escape",
-  "notes": "The engine's editor (docs/design/EDITOR.md): a toolbar, the outliner (left), the viewport (middle: picking and gizmos, drawn by the engine), the inspector (right) and the status bar, docked. Every edit is a protocol command as window:owner. Actions: mode_translate, mode_rotate, mode_scale, space_toggle, snap_toggle, editor_undo, editor_redo, editor_close, editor_frame, editor_delete; ol_prev, ol_next, ol_top, ol_search, ol_search_clear, ol_expand (rows' +/-), ol_select (rows); field:<key> (inspector fields), step_down, step_up, toggle_visible, field_commit, field_cancel. State: see EditorUi::fill.",
+  "notes": "The engine's editor (docs/design/EDITOR.md): a toolbar, the outliner (left), the viewport (middle: picking and gizmos, drawn by the engine), the inspector (right) and the status bar, docked. Every edit is a protocol command as window:owner. Actions: mode_translate, mode_rotate, mode_scale, space_toggle, snap_toggle, editor_undo, editor_redo, editor_close, editor_frame, editor_delete; ol_prev, ol_next, ol_top, ol_search, ol_search_clear, ol_expand (rows' +/-), ol_select (rows); field:<key> (inspector fields; field:text types a text entity's words), step_down, step_up, toggle_visible, field_commit, field_cancel. State: see EditorUi::fill.",
   "root": {
     "type": "box", "width": "100%", "height": "100%", "layout": "column", "align": "stretch",
     "children": [
@@ -91,6 +91,7 @@
                 "type": "box", "layout": "column", "align": "stretch", "gap": 5, "visible": "has_sel",
                 "children": [
                   { "type": "button", "id": "in_name", "style": "field", "text": "{in_name}", "action": "field:name", "tooltip": "Rename (type, then Enter)." },
+                  { "type": "button", "id": "in_text", "style": "field", "text": "{in_text}", "action": "field:text", "visible": "in_has_text", "tooltip": "Type this text's words (Backspace edits from the end, then Enter)." },
                   { "type": "label", "text": "{in_path}", "role": "small", "wrap": true },
                   { "type": "label", "text": "{in_meta}", "role": "small", "wrap": true },
                   { "type": "label", "text": "{in_claim}", "role": "warn", "visible": "in_claimed", "wrap": true },

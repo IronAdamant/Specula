@@ -1012,6 +1012,7 @@ fn run_scene(gpu: &mut Gpu, args: &Args, scene: &Scene) -> Result<String, specul
             effects: Default::default(),
             gi,
             terrains: &[],
+            text: Default::default(),
         };
         let start = Instant::now();
         gpu.render(target, &frame)?;

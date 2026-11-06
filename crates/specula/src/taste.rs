@@ -916,6 +916,8 @@ impl Engine {
         let w = Writer::new(&by, Some(&key));
         let named = self.swarm.introduced(&session.id);
         let auth = taste_authority(crate::authority::authority(&self.swarm, &session.id));
+        // The owner or a granted lead (only they may take the window while the human types).
+        let operator = crate::authority::authority(&self.swarm, &session.id) >= crate::authority::Authority::Lead;
         let hello = |what: &str| fail(&WorldError::new("hello_required", format!("say agent_hello first: {what} are attributed to agents by name")));
         self.taste_refresh();
         match call {
@@ -930,7 +932,7 @@ impl Engine {
                 Ok(g) => {
                     let mut j = self.gallery_json(&g, None);
                     if open {
-                        j.set("screen", self.taste_open(&g.id, &user, auth, &by).unwrap_or_else(|e| e.to_json()));
+                        j.set("screen", self.taste_open(&g.id, &user, auth, &by, operator).unwrap_or_else(|e| e.to_json()));
                     }
                     ToolOutput::text(j.to_string())
                 }
@@ -941,7 +943,7 @@ impl Engine {
                 None => fail(&WorldError::new("gallery_not_found", format!("there is no gallery '{id}' (gallery_list)")).with("id", id.as_str())),
             },
             TasteCall::List { status, after, limit } => ToolOutput::text(self.gallery_list(status.as_deref(), after.as_deref(), limit).to_string()),
-            TasteCall::Open { id, user } => match self.taste_open(&id, &user, auth, &by) {
+            TasteCall::Open { id, user } => match self.taste_open(&id, &user, auth, &by, operator) {
                 Ok(j) => ToolOutput::text(j.to_string()),
                 Err(e) => fail(&e),
             },
@@ -1116,10 +1118,16 @@ impl Engine {
         Ok(Json::obj([("id", Json::from(id)), ("deleted", Json::Bool(true)), ("journal", out.get("journal").cloned().unwrap_or(Json::Null))]))
     }
 
-    fn taste_open(&mut self, id: &str, user: &str, auth: TasteAuthority, by: &str) -> Result<Json, WorldError> {
+    fn taste_open(&mut self, id: &str, user: &str, auth: TasteAuthority, by: &str, operator: bool) -> Result<Json, WorldError> {
         let g = self.taste.get(id).ok_or_else(|| WorldError::new("gallery_not_found", format!("there is no gallery '{id}'")).with("id", id))?;
         if !auth.directs() && g.by != by {
             return Err(WorldError::new("not_allowed", "the gallery's maker, the owner, or a granted lead or reviewer puts a gallery on the human's window").with("authority", auth.name()));
+        }
+        // The human is typing into a text the operator pointed their keyboard at: only the
+        // operator takes the window from them (review R4 of m5-text: keys meant for the text
+        // picked a gallery variant).
+        if !operator && self.text_typing.focus.is_some() && self.taste.screen.gallery() != Some(id) {
+            return Err(crate::text_window::typing_busy("gallery_open"));
         }
         if self.taste.screen.closed_by_human_recently() {
             return Err(WorldError::new("owner_closed", "the human closed the gallery screen moments ago; agents can't reopen it for 30 s (humans are never locked in)").with("retry_after_s", 30));
@@ -1428,7 +1436,7 @@ impl Engine {
                 let id = self.onboard_step(&mut o, 0, w)?;
                 let mut j = self.onboard_status();
                 if open {
-                    j.set("screen", self.taste_open(&id, user, auth, w.name).unwrap_or_else(|e| e.to_json()));
+                    j.set("screen", self.taste_open(&id, user, auth, w.name, crate::authority::authority(&self.swarm, &session.id) >= crate::authority::Authority::Lead).unwrap_or_else(|e| e.to_json()));
                 }
                 Ok(j)
             }

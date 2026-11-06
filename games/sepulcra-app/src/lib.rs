@@ -23,6 +23,7 @@ pub mod audio;
 pub mod controls;
 pub mod cutscene;
 mod ents;
+pub mod epitaphs;
 pub mod game;
 pub mod hud;
 pub mod lexmode;

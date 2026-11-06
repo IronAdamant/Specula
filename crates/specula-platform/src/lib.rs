@@ -13,6 +13,7 @@ use std::fmt;
 mod decode;
 pub mod gamepad;
 pub mod keys;
+pub mod textinput;
 pub mod timer;
 #[cfg(windows)]
 mod win32;
@@ -183,6 +184,17 @@ pub enum Event {
         id: u32,
         kind: PointerKind,
     },
+    /// An IME composition so far (shown at the caret, not yet text) and its caret, in bytes into
+    /// `text` (see [`textinput`]).
+    ImeComposition {
+        text: String,
+        caret: u32,
+    },
+    /// The IME's result. Its characters follow as `Char` events (insert those); this only says
+    /// the composition shown at the caret is done.
+    ImeCommit(String),
+    /// The composition closed (committed or cancelled).
+    ImeEnd,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -245,6 +257,12 @@ impl Window {
     pub fn set_visible(&mut self, visible: bool) {
         self.inner.set_visible(visible)
     }
+
+    /// Where the text caret is (client pixels, its top-left and height): the IME puts its
+    /// composition and candidate windows there. A no-op where there is no IME.
+    pub fn set_ime_position(&mut self, x: i32, y: i32, height: i32) {
+        self.inner.set_ime_position(x, y, height)
+    }
 }
 
 /// Backend for platforms without a native implementation yet: `Window` is uninhabited.
@@ -282,6 +300,10 @@ mod imp {
         }
 
         pub(crate) fn set_visible(&mut self, _visible: bool) {
+            match *self {}
+        }
+
+        pub(crate) fn set_ime_position(&mut self, _x: i32, _y: i32, _height: i32) {
             match *self {}
         }
     }

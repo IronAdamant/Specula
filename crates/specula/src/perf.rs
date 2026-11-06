@@ -129,6 +129,7 @@ fn kind_name(k: MemoryKind) -> &'static str {
         MemoryKind::PostTargets => "post_targets",
         MemoryKind::Textures => "textures",
         MemoryKind::Gi => "gi",
+        MemoryKind::Glyphs => "glyphs",
     }
 }
 

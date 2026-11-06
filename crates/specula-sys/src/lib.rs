@@ -42,7 +42,16 @@ pub mod kernel32 {
         pub fn GetSystemPowerStatus(status: *mut SystemPowerStatus) -> i32;
         pub fn GetDiskFreeSpaceExW(directory: *const u16, free_to_caller: *mut u64, total: *mut u64, total_free: *mut u64) -> i32;
         pub fn GetVolumePathNameW(file_name: *const u16, volume_path: *mut u16, length: u32) -> i32;
+        // Global memory: the clipboard's currency (specula-platform's clipboard).
+        pub fn GlobalAlloc(flags: u32, bytes: usize) -> *mut c_void;
+        pub fn GlobalLock(memory: *mut c_void) -> *mut c_void;
+        pub fn GlobalUnlock(memory: *mut c_void) -> i32;
+        pub fn GlobalFree(memory: *mut c_void) -> *mut c_void;
+        pub fn GlobalSize(memory: *mut c_void) -> usize;
     }
+
+    /// `GMEM_MOVEABLE`: what clipboard data must be allocated as.
+    pub const GMEM_MOVEABLE: u32 = 0x0002;
 
     /// `SYSTEM_POWER_STATUS`.
     #[repr(C)]

@@ -298,6 +298,11 @@ impl Engine {
                 &crate::authority::require(authority, Authority::Reviewer, crate::authority::Site::ReviewScreen, "putting work on the owner's review screen (anyone may ask for its status)")
                     .expect_err("checked"),
             ),
+            // The human is typing into a text the operator pointed their keyboard at: only the
+            // operator takes the window from them (review R4 of m5-text).
+            ReviewCall::Screen(ScreenOp::Open(_)) if !self.review_ui.is_open() && self.text_typing.focus.is_some() && crate::authority::authority(&self.swarm, &session.id) < Authority::Lead => {
+                fail(&crate::text_window::typing_busy("review_screen"))
+            }
             ReviewCall::Screen(ScreenOp::Open(_)) if self.review_ui.closed_by_human_recently() => fail(&WorldError::new(
                 "owner_closed",
                 "the owner closed the review screen moments ago: let them be (humans are never locked out); review_decide still works, or try again in a minute",

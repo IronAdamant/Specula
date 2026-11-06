@@ -133,6 +133,8 @@ pub enum Site {
     GiThreads,
     /// audio_settings with changes (bus volumes and ducking are what everyone hears).
     AudioSettings,
+    /// text_edit window_focus: pointing the human's keyboard (and clipboard) at a text entity.
+    WindowFocus,
 }
 
 impl Site {
@@ -143,7 +145,7 @@ impl Site {
             Site::HelloGrantBound => "grant_bound",
             Site::HelloLeadTaken => "lead_taken",
             Site::HelloReservedName => "name_reserved",
-            Site::FrameFloor | Site::StreamSettings | Site::ToolsScope | Site::DiskPrune | Site::WorldSave | Site::GiSettings | Site::GiThreads | Site::AudioSettings => "lead_only",
+            Site::FrameFloor | Site::StreamSettings | Site::ToolsScope | Site::DiskPrune | Site::WorldSave | Site::GiSettings | Site::GiThreads | Site::AudioSettings | Site::WindowFocus => "lead_only",
             Site::HelloBadName => "name_invalid",
             Site::ForceOverride => "force_needs_lead",
             Site::ReviewDecide | Site::ReviewScreen => "not_reviewer",
@@ -181,6 +183,7 @@ impl Site {
             Site::GiThreads => "gi_bake.threads",
             Site::EditorInput => "editor_input",
             Site::AudioSettings => "audio_settings",
+            Site::WindowFocus => "text_edit.window_focus",
         }
     }
 }
@@ -596,7 +599,7 @@ pub fn access(tool: &str) -> Option<Access> {
         "audio_played" | "audio_levels" => ReadOnly,
         "audio_preview" => Open("renders or decodes a sound offline and measures it; its optional WAV and picture are new files in the captures folder; nothing shared changes"),
         // The world, through the write policy.
-        "world_spawn" | "world_set" | "world_delete" | "world_batch" | "world_env" | "world_undo" | "world_place" | "tilemap_set" | "nav_agent" | "ai_set"
+        "world_spawn" | "world_set" | "world_delete" | "world_batch" | "world_env" | "world_undo" | "world_place" | "tilemap_set" | "text_edit" | "nav_agent" | "ai_set"
         | "model_collider" | "anim_set" | "ragdoll_set" | "physics_impulse" | "procgen_terrain" | "procgen_scatter" => World("world"),
         "camera_set" | "camera_delete" => Owned(Store::Cameras),
         "physics_joint" => World("joint"),

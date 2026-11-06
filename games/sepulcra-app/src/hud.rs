@@ -21,7 +21,7 @@ use specula::sight::Camera;
 use specula_core::math::{project_to_screen, Vec3};
 use specula_core::Json;
 use specula_input::{ActionMap, Input};
-use specula_text::{find_system_ui_font, load_font_file};
+use specula_text::Bundled;
 use specula_ui::gpu::GpuOverlay;
 use specula_ui::{Display, FontSet, StateMap, Theme, ToastKind, Ui, UiEvents, Viewport};
 use std::path::Path;
@@ -121,15 +121,10 @@ impl Hud {
     }
 
     fn load(dir: Option<&Path>) -> Result<Ui, String> {
-        let (path, font) = find_system_ui_font().ok_or("no system UI font found")?;
-        let mut fonts = FontSet::new().with("ui", font);
-        if let Some(fonts_dir) = path.parent() {
-            for (slot, files) in [("ui_bold", ["segoeuib.ttf", "arialbd.ttf"]), ("title", ["georgiab.ttf", "constanb.ttf"])] {
-                if let Some(f) = files.iter().find_map(|f| load_font_file(fonts_dir.join(f)).ok()) {
-                    fonts.add(slot, f);
-                }
-            }
-        }
+        // The bundled SIL OFL faces (STYLE.md: a clean sans for the interface, the serif only for
+        // titles): the same on every machine, and shippable.
+        let face = |b: Bundled| b.load().map_err(|e| format!("bundled font {}: {e}", b.name()));
+        let fonts = FontSet::new().with("ui", face(Bundled::UiRegular)?).with("ui_bold", face(Bundled::UiBold)?).with("title", face(Bundled::Display)?);
         let theme = Theme::from_json_str(&read(dir, "theme", THEME)).map_err(|e| format!("ui/theme.json: {e}"))?;
         let mut ui = Ui::new(theme, fonts);
         for (name, builtin) in SCREENS.iter().chain([("confirm", CONFIRM)].iter()) {

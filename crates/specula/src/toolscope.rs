@@ -62,7 +62,7 @@ const fn fam(name: &'static str, about: &'static str, prefixes: &'static [&'stat
 
 pub const FAMILIES: &[Family] = &[
     fam("tools", "your tool list: catalog, activate, invoke, ask the lead (and the lead's tools_scope)", &["tools_"], &["agent_hello"]),
-    fam("world", "entities: spawn, change, delete, find, place by relations, world files, lighting, tilemaps", &["world_", "tilemap_"], &[]),
+    fam("world", "entities: spawn, change, delete, find, place by relations, world files, lighting, tilemaps, text", &["world_", "tilemap_"], &["text_edit"]),
     fam("journal", "who changed what: history, undo, change feed, state hash, roll-ups, desync tracing", &["desync_"], &["world_history", "world_undo", "world_changes", "world_hash", "world_rollup"]),
     fam("sight", "look: frames with screen boxes, turntables, before/after, named cameras, the human's view", &["sight_", "camera_"], &["window_view"]),
     fam("claim", "leases on subtrees and regions so agents don't collide", &["claim_"], &[]),
@@ -158,6 +158,7 @@ pub(crate) const BRIEFS: &[(&str, &str)] = &[
     ("world_place", "place by relations (on, along, near...)"),
     ("tilemap_set", "write tilemap cells"),
     ("tilemap_get", "read tilemap cells"),
+    ("text_edit", "type into a text entity: caret, selection, IME"),
     ("world_history", "the journal: who changed what"),
     ("world_undo", "undo journal entries"),
     ("world_changes", "change feed since a cursor"),

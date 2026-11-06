@@ -196,12 +196,57 @@ pub struct ShapeDraw {
     pub layer: i32,
 }
 
+/// A run of in-world text: glyphs `first .. first + count` of [`TextFrame::glyphs`], laid out in
+/// the run's own plane (metres, x right, y up, facing +Z) and placed by `model`. Glyphs are drawn
+/// from their outlines per pixel (Slug, `shaders/glyph.glsl`): sharp at any distance, angle or
+/// size, blended over what is behind (depth tested, not written).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextRun {
+    pub model: [f32; 16],
+    /// The run's box in its plane: x0, y0, x1, y1 (metres; culling).
+    pub rect: [f32; 4],
+    pub first: u32,
+    pub count: u32,
+    /// sRGB tint, straight alpha; multiplies each glyph's colour.
+    pub color: [f32; 4],
+    pub layer: i32,
+    /// Lit like a lit sprite: sun (with shadows), ambient and point lights on the run's plane.
+    pub lit: bool,
+}
+
+/// One glyph of a [`TextRun`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlyphInstance {
+    /// The glyph's first word in [`TextFrame::words`] (`specula_text::StoredGlyph::word`).
+    pub word: u32,
+    /// The pen position (baseline origin) in the run's plane, metres.
+    pub origin: [f32; 2],
+    /// Metres per em.
+    pub size: f32,
+    /// The glyph's box in em units (`specula_text::StoredGlyph::bounds`).
+    pub bounds: [f32; 4],
+    /// sRGB colour, straight alpha (rich text); multiplied by the run's.
+    pub color: [f32; 4],
+}
+
+/// The frame's in-world text data: the Slug glyph store (`specula_text::SlugStore`: its id and
+/// words) and the glyphs the frame's [`Draw2d::Text`] runs name. The renderer keeps the store
+/// resident and copies only words past what it holds while `store` stays the same (see
+/// `glyphs.rs`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TextFrame<'a> {
+    pub store: u64,
+    pub words: &'a [u32],
+    pub glyphs: &'a [GlyphInstance],
+}
+
 /// One 2D item of a frame ([`crate::FrameDesc::draws_2d`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Draw2d {
     Sprite(Sprite),
     Tiles(TileChunk),
     Shape(ShapeDraw),
+    Text(TextRun),
 }
 
 impl Draw2d {
@@ -210,6 +255,7 @@ impl Draw2d {
             Draw2d::Sprite(s) => s.layer,
             Draw2d::Tiles(t) => t.layer,
             Draw2d::Shape(s) => s.layer,
+            Draw2d::Text(t) => t.layer,
         }
     }
 }
@@ -221,6 +267,7 @@ pub const QUAD_MESH: u32 = u32::MAX;
 pub const KIND_SPRITE: u32 = 0;
 pub const KIND_TILES: u32 = 1;
 pub const KIND_SHAPE: u32 = 2;
+pub const KIND_GLYPH: u32 = 3;
 
 pub const FLAG_BILLBOARD_SPHERICAL: u32 = 1;
 pub const FLAG_BILLBOARD_CYLINDRICAL: u32 = 2;
@@ -233,6 +280,9 @@ pub const FLAG_CUTOUT: u32 = 128;
 
 /// Specialization bit of the cutout sprite pipeline (`CUTOUT` in `shaders/sprite.frag`).
 pub const FEAT_CUTOUT: u32 = 128;
+/// Specialization bit of the glyph pipeline (`GLYPH` in `shaders/sprite.frag`): the Slug coverage
+/// code is compiled into it alone, so sprites keep their registers.
+pub const FEAT_GLYPH: u32 = 2048;
 
 /// One item as the 2D shaders read it; must match `Item` in `shaders/sprite.glsl`.
 #[repr(C)]
@@ -344,6 +394,8 @@ pub enum BatchKind {
     Blended,
     /// Instances of one shape mesh.
     Shape(MeshId),
+    /// Glyphs of text runs (blended, Slug coverage).
+    Glyph,
 }
 
 /// A frame's 2D work. Reuse one across frames: no allocation once warm.
@@ -365,6 +417,11 @@ pub struct Plan2d {
     pub sprites: u32,
     pub tile_chunks: u32,
     pub shapes: u32,
+    /// Text runs drawn, and their glyphs (one record each).
+    pub texts: u32,
+    pub glyphs: u32,
+    /// Glyphs not drawn: no glyph store resident, or past [`crate::MAX_GLYPHS`].
+    pub glyphs_skipped: u32,
     pub view: View2d,
     /// Sort scratch: layer key, depth key and item index packed high to low.
     keys: Vec<u128>,
@@ -403,6 +460,44 @@ pub fn tiles_sphere(t: &TileChunk) -> ([f32; 3], f32) {
     let center = std::array::from_fn(|k| o[k] + ax[k] * cx + ay[k] * cy);
     let (hw, hh) = (0.5 * w * t.tile_size[0], 0.5 * h * t.tile_size[1]);
     (center, (hw * hw + hh * hh).sqrt())
+}
+
+/// A text run's world bounding sphere (its box in its plane, placed by its model).
+pub fn text_sphere(t: &TextRun) -> ([f32; 3], f32) {
+    let m = &t.model;
+    let [x0, y0, x1, y1] = t.rect;
+    let (cx, cy) = ((x0 + x1) * 0.5, (y0 + y1) * 0.5);
+    let at = |x: f32, y: f32| -> [f32; 3] { std::array::from_fn(|k| m[k] * x + m[4 + k] * y + m[12 + k]) };
+    let c = at(cx, cy);
+    let r = [at(x0, y0), at(x1, y0), at(x0, y1), at(x1, y1)].iter().map(|p| dot(sub(*p, c), sub(*p, c)).sqrt()).fold(0.0f32, f32::max);
+    if c.iter().all(|v| v.is_finite()) && r.is_finite() {
+        (c, r)
+    } else {
+        ([m[12], m[13], m[14]], f32::INFINITY)
+    }
+}
+
+/// The shader record of glyph `g` of run `t`. `store`: the glyph store's device address and its
+/// resident words (the shader clamps every read below it).
+pub fn glyph_record(t: &TextRun, g: &GlyphInstance, store: (u64, u32), cache: &mut LinearCache) -> ItemRecord {
+    let m = &t.model;
+    let col = |c: usize| [m[c * 4], m[c * 4 + 1], m[c * 4 + 2]];
+    let s = if g.size.is_finite() { g.size } else { 0.0 };
+    let (ax, ay) = (col(0).map(|v| v * s), col(1).map(|v| v * s));
+    let o: [f32; 3] = std::array::from_fn(|k| m[k] * g.origin[0] + m[4 + k] * g.origin[1] + m[12 + k]);
+    let c = [t.color[0] * g.color[0], t.color[1] * g.color[1], t.color[2] * g.color[2], t.color[3] * g.color[3]];
+    let b = finite4(g.bounds);
+    let flags = if t.lit { FLAG_LIT } else { 0 };
+    ItemRecord {
+        tint: tint(c, cache),
+        v1: finite4([o[0], o[1], o[2], 0.0]),
+        v2: finite4([ax[0], ax[1], ax[2], b[0]]),
+        v3: finite4([ay[0], ay[1], ay[2], b[1]]),
+        v4: [b[2], b[3], 0.0, 0.0],
+        // The store's address as raw bits (read back with floatBitsToUint; never computed with).
+        v5: [0.0, 0.0, f32::from_bits(store.0 as u32), f32::from_bits((store.0 >> 32) as u32)],
+        info: [g.word, flags, store.1, KIND_GLYPH],
+    }
 }
 
 fn blend_flags(blend: SpriteBlend) -> (u32, f32) {
@@ -515,7 +610,8 @@ impl Slots<'_> {
     }
 }
 
-pub fn check_2d(draws: &[Draw2d], meshes: &HashMap<u32, Mesh>, textures: &Textures) -> Result<(), GpuError> {
+pub fn check_2d(draws: &[Draw2d], text: &TextFrame, meshes: &HashMap<u32, Mesh>, textures: &Textures) -> Result<(), GpuError> {
+    let mut glyphs = 0u64;
     let mut slots = Slots { textures, last: None };
     let mut texture =
         |t: TextureId| if slots.get(t).is_some() { Ok(()) } else { Err(GpuError::unknown(IdKind::Texture, t.0, " in draws_2d")) };
@@ -531,9 +627,23 @@ pub fn check_2d(draws: &[Draw2d], meshes: &HashMap<u32, Mesh>, textures: &Textur
                     return Err(GpuError::unknown(IdKind::Mesh, s.mesh.0, " in draws_2d"));
                 }
             }
+            Draw2d::Text(t) => {
+                if t.first as u64 + t.count as u64 > text.glyphs.len() as u64 {
+                    return Err(GpuError::new(format!(
+                        "draws_2d: a text run names glyphs {} .. {} but the frame's text has {}",
+                        t.first,
+                        t.first as u64 + t.count as u64,
+                        text.glyphs.len()
+                    )));
+                }
+                glyphs += t.count as u64;
+            }
         }
     }
-    Ok(())
+    if glyphs > crate::MAX_GLYPHS as u64 {
+        return Err(GpuError::limit(crate::Limit::Glyphs, glyphs, crate::MAX_GLYPHS as u64));
+    }
+    crate::glyphs::check(text)
 }
 
 /// Cull, sort and batch the frame's 2D items into `out` (records included). `bounds` gives a
@@ -545,6 +655,7 @@ pub fn plan_2d(
     textures: &Textures,
     cache: &mut LinearCache,
     shadows: bool,
+    glyph_store: (u64, u32),
     out: &mut Plan2d,
 ) {
     let Plan2d { batches, records, keys, order, .. } = out;
@@ -558,6 +669,9 @@ pub fn plan_2d(
     out.sprites = 0;
     out.tile_chunks = 0;
     out.shapes = 0;
+    out.texts = 0;
+    out.glyphs = 0;
+    out.glyphs_skipped = 0;
     if frame.draws_2d.is_empty() {
         return;
     }
@@ -573,6 +687,7 @@ pub fn plan_2d(
                 Some(b) => world_sphere(&s.model, b),
                 None => ([s.model[12], s.model[13], s.model[14]], f32::INFINITY),
             },
+            Draw2d::Text(t) => text_sphere(t),
         };
         if !frustum.sphere_visible(center, radius) {
             culled += 1;
@@ -588,6 +703,29 @@ pub fn plan_2d(
     for &key in keys.iter() {
         let i = key as u32;
         let d = &frame.draws_2d[i as usize];
+        if let Draw2d::Text(t) = d {
+            // One record per glyph, all owned by the run's draw (sight's ids, the frame record).
+            let glyphs = frame.text.glyphs.get(t.first as usize..(t.first as usize).saturating_add(t.count as usize)).unwrap_or_default();
+            if glyph_store.0 == 0 || out.glyphs as usize + glyphs.len() > crate::MAX_GLYPHS {
+                out.glyphs_skipped += glyphs.len() as u32;
+                continue;
+            }
+            if glyphs.is_empty() {
+                continue;
+            }
+            out.texts += 1;
+            for g in glyphs {
+                let n = records.len() as u32;
+                records.push(glyph_record(t, g, glyph_store, cache));
+                order.push(i);
+                out.glyphs += 1;
+                match batches.last_mut() {
+                    Some(b) if b.kind == BatchKind::Glyph => b.count += 1,
+                    _ => batches.push(Batch2d { kind: BatchKind::Glyph, first: n, count: 1 }),
+                }
+            }
+            continue;
+        }
         let (record, kind) = match d {
             Draw2d::Sprite(s) => {
                 out.sprites += 1;
@@ -603,6 +741,7 @@ pub fn plan_2d(
                 out.shapes += 1;
                 (shape_record(s, cache), BatchKind::Shape(s.mesh))
             }
+            Draw2d::Text(_) => continue,
         };
         let n = records.len() as u32;
         records.push(record);
@@ -652,6 +791,8 @@ pub struct Draw2dContext<'a> {
     pub cutout: VkPipeline,
     pub blended: VkPipeline,
     pub shape: VkPipeline,
+    /// Glyphs (`VK_NULL_HANDLE`: not drawn).
+    pub glyph: VkPipeline,
     pub meshes: &'a HashMap<u32, Mesh>,
     pub push: SpritePush,
     pub reverse_z: bool,
@@ -685,7 +826,11 @@ pub fn record_2d(dev: &Device, cmd: VkCommandBuffer, ctx: &Draw2dContext, plan: 
                 BatchKind::Cutout => ctx.cutout,
                 BatchKind::Blended => ctx.blended,
                 BatchKind::Shape(_) => ctx.shape,
+                BatchKind::Glyph => ctx.glyph,
             };
+            if pipeline == VK_NULL_HANDLE {
+                continue;
+            }
             if pipeline != bound {
                 (dev.fns.cmd_bind_pipeline)(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
                 if bound == VK_NULL_HANDLE {
@@ -823,7 +968,7 @@ mod tests {
         ];
         let frame = FrameDesc { view_proj: ortho_2d(1.0), reverse_z: true, draws_2d: &draws, ..Default::default() };
         let mut plan = Plan2d::default();
-        plan_2d(&frame, |_| None, &Textures::default(), &mut LinearCache::default(), false, &mut plan);
+        plan_2d(&frame, |_| None, &Textures::default(), &mut LinearCache::default(), false, (0, 0), &mut plan);
         let xs: Vec<f32> = plan.records.iter().map(|r| r.v1[0]).collect();
         assert_eq!(xs, [0.5, 1.0, 2.0, 0.0, -1.0]);
         assert_eq!((plan.culled, plan.sprites, plan.drawn), (1, 5, 5));
@@ -831,7 +976,7 @@ mod tests {
         assert_eq!(kinds, [(BatchKind::Cutout, 0, 1), (BatchKind::Blended, 1, 2), (BatchKind::Cutout, 3, 2)]);
         // Reused: no growth, same answer.
         let cap = plan.records.capacity();
-        plan_2d(&frame, |_| None, &Textures::default(), &mut LinearCache::default(), false, &mut plan);
+        plan_2d(&frame, |_| None, &Textures::default(), &mut LinearCache::default(), false, (0, 0), &mut plan);
         assert_eq!((plan.records.len(), plan.records.capacity()), (5, cap));
     }
 
@@ -843,7 +988,7 @@ mod tests {
         let draws = [Draw2d::Sprite(caster), Draw2d::Sprite(blended)];
         let frame = FrameDesc { view_proj: ortho_2d(1.0), reverse_z: true, draws_2d: &draws, ..Default::default() };
         let mut plan = Plan2d::default();
-        plan_2d(&frame, |_| None, &Textures::default(), &mut LinearCache::default(), true, &mut plan);
+        plan_2d(&frame, |_| None, &Textures::default(), &mut LinearCache::default(), true, (0, 0), &mut plan);
         assert_eq!((plan.drawn, plan.casters), (1, 1), "only the cutout casts, even though it is off screen");
         assert_eq!(plan.records[1].v1[0], 500.0);
         assert_eq!(plan.records[1].v5[3], 0.3, "cutoff");
@@ -879,10 +1024,10 @@ mod tests {
     #[test]
     fn unknown_ids_are_structured_errors() {
         let draws = [Draw2d::Sprite(Sprite { texture: Some(TextureId(42)), ..Default::default() })];
-        let err = check_2d(&draws, &HashMap::new(), &Textures::default()).unwrap_err();
+        let err = check_2d(&draws, &TextFrame::default(), &HashMap::new(), &Textures::default()).unwrap_err();
         assert_eq!(err.reason, Some(crate::ErrorReason::UnknownId { kind: IdKind::Texture, id: 42 }));
         let draws = [Draw2d::Shape(ShapeDraw { mesh: MeshId(5), model: IDENTITY, color: [1.0; 4], layer: 0 })];
-        let err = check_2d(&draws, &HashMap::new(), &Textures::default()).unwrap_err();
+        let err = check_2d(&draws, &TextFrame::default(), &HashMap::new(), &Textures::default()).unwrap_err();
         assert_eq!(err.reason, Some(crate::ErrorReason::UnknownId { kind: IdKind::Mesh, id: 5 }));
     }
 
@@ -909,11 +1054,11 @@ mod tests {
         let frame = FrameDesc { view_proj: ortho_2d(1.6), reverse_z: true, draws_2d: &draws, ..Default::default() };
         let (mut plan, mut cache) = (Plan2d::default(), LinearCache::default());
         for _ in 0..3 {
-            plan_2d(&frame, |_| None, &Textures::default(), &mut cache, false, &mut plan);
+            plan_2d(&frame, |_| None, &Textures::default(), &mut cache, false, (0, 0), &mut plan);
         }
         let t = std::time::Instant::now();
         for _ in 0..20 {
-            plan_2d(&frame, |_| None, &Textures::default(), &mut cache, false, &mut plan);
+            plan_2d(&frame, |_| None, &Textures::default(), &mut cache, false, (0, 0), &mut plan);
         }
         eprintln!("plan_2d, 50k sprites: {:.3} ms", t.elapsed().as_secs_f64() * 1e3 / 20.0);
     }

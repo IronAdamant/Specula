@@ -1,0 +1,64 @@
+# The fonts Specula ships, and where each came from (owner, 2026-10-22: SIL OFL only).
+#
+# Every bundled file has an entry: the licence and its text beside the font, the upstream source
+# (the Google Fonts copy and the foundry repository with its commit), the version from the
+# font's own name table, its size and SHA-256. `crates/specula-text/tests/bundled_fonts.rs`
+# checks sizes, licence files and coverage; `scripts/text_check.py` checks the SHA-256 sums.
+# This is the start of M6's "licence metadata on every asset".
+#
+# Files are byte-for-byte the upstream release (no subsetting: we only subset with our own code).
+
+[[font]]
+file = "alegreya-sans/AlegreyaSans-Regular.ttf"
+family = "Alegreya Sans"
+style = "Regular"
+role = "ui"
+licence = "OFL-1.1"
+licence_file = "alegreya-sans/OFL.txt"
+copyright = "Copyright 2013 The Alegreya Sans Project Authors"
+source = "https://github.com/google/fonts/blob/main/ofl/alegreyasans/AlegreyaSans-Regular.ttf"
+upstream = "https://github.com/huertatipografica/Alegreya-Sans"
+upstream_commit = "030b9ac01fd9bcaccac0ebc8010283175f9ced4e"
+version = "Version 2.004; ttfautohint (v1.6)"
+bytes = 263804
+sha256 = "8fab634196007afca839f1e5a6fb300976daff55d8528b590ef032f01b14ea10"
+scripts = ["latin", "latin-ext", "cyrillic", "cyrillic-ext", "greek", "greek-ext", "vietnamese"]
+outlines = "glyf"
+fetched = "2026-11-06"
+
+[[font]]
+file = "alegreya-sans/AlegreyaSans-Bold.ttf"
+family = "Alegreya Sans"
+style = "Bold"
+role = "ui-bold"
+licence = "OFL-1.1"
+licence_file = "alegreya-sans/OFL.txt"
+copyright = "Copyright 2013 The Alegreya Sans Project Authors"
+source = "https://github.com/google/fonts/blob/main/ofl/alegreyasans/AlegreyaSans-Bold.ttf"
+upstream = "https://github.com/huertatipografica/Alegreya-Sans"
+upstream_commit = "030b9ac01fd9bcaccac0ebc8010283175f9ced4e"
+version = "Version 2.004; ttfautohint (v1.6)"
+bytes = 266856
+sha256 = "a3055a1893759bdbd7504bb22abc583769e7974c49353176eac0b03792c9fb8e"
+scripts = ["latin", "latin-ext", "cyrillic", "cyrillic-ext", "greek", "greek-ext", "vietnamese"]
+outlines = "glyf"
+fetched = "2026-11-06"
+
+[[font]]
+file = "alegreya/Alegreya-VF.ttf"
+upstream_file = "Alegreya[wght].ttf"
+family = "Alegreya"
+style = "Regular (variable font, drawn at its default instance)"
+role = "display"
+licence = "OFL-1.1"
+licence_file = "alegreya/OFL.txt"
+copyright = "Copyright 2011 The Alegreya Project Authors"
+source = "https://github.com/google/fonts/blob/main/ofl/alegreya/Alegreya%5Bwght%5D.ttf"
+upstream = "https://github.com/huertatipografica/Alegreya"
+upstream_commit = "1dd6b28b57c50e3168db1cbbb8086e7978abcfbf"
+version = "Version 2.009"
+bytes = 425288
+sha256 = "ba5564634b93a8f8ba57b48cd4f1ae7417d2b4656fbac779028679b00de3cf12"
+scripts = ["latin", "latin-ext", "cyrillic", "cyrillic-ext", "greek", "greek-ext", "vietnamese"]
+outlines = "glyf"
+fetched = "2026-11-06"

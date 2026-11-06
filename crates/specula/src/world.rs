@@ -212,7 +212,7 @@ pub fn check_spawn(s: &SpawnSpec) -> Result<(), WorldError> {
             let name = s.shape.name();
             return Err(invalid(
                 if s.shape.is_2d() { name } else { s.two_d.as_ref().map_or(name, TwoD::key) },
-                format!("shape '{name}' needs its '{name}' component, and only sprite, tilemap and shape2d take one"),
+                format!("shape '{name}' needs its '{name}' component, and only sprite, tilemap, shape2d and text take one"),
             ));
         }
     }
@@ -328,10 +328,12 @@ pub enum Shape {
     Tilemap,
     /// Filled and stroked vector paths in the local XY plane (see [`crate::two_d`]).
     Shape2d,
+    /// Text in the local XY plane, drawn from glyph outlines (see [`crate::text_world`]).
+    Text,
 }
 
 impl Shape {
-    pub const ALL: [Shape; 9] = [
+    pub const ALL: [Shape; 10] = [
         Shape::Group,
         Shape::Cube,
         Shape::Quad,
@@ -341,6 +343,7 @@ impl Shape {
         Shape::Sprite,
         Shape::Tilemap,
         Shape::Shape2d,
+        Shape::Text,
     ];
 
     pub fn name(self) -> &'static str {
@@ -354,12 +357,13 @@ impl Shape {
             Shape::Sprite => "sprite",
             Shape::Tilemap => "tilemap",
             Shape::Shape2d => "shape2d",
+            Shape::Text => "text",
         }
     }
 
     /// Drawn by the 2D renderer from a [`TwoD`] component.
     pub fn is_2d(self) -> bool {
-        matches!(self, Shape::Sprite | Shape::Tilemap | Shape::Shape2d)
+        matches!(self, Shape::Sprite | Shape::Tilemap | Shape::Shape2d | Shape::Text)
     }
 
     pub fn parse(s: &str) -> Option<Shape> {
@@ -1399,7 +1403,7 @@ impl Entity {
             (Shape::Model, _) => self.resolved.and_then(|r| r.bounds),
             (Shape::Lathe, Some(p)) => Some(p.bounds()),
             (Shape::Quad, _) => Some((Vec3::new(-0.5, 0.0, -0.5), Vec3::new(0.5, 0.0, 0.5))),
-            (Shape::Sprite | Shape::Tilemap | Shape::Shape2d, _) => self.two_d.as_ref().map(TwoD::bounds),
+            (Shape::Sprite | Shape::Tilemap | Shape::Shape2d | Shape::Text, _) => self.two_d.as_ref().map(TwoD::bounds),
             _ => Some((Vec3::new(-0.5, -0.5, -0.5), Vec3::new(0.5, 0.5, 0.5))),
         }
     }
@@ -2207,12 +2211,12 @@ pub struct QueryPage<'a> {
 }
 
 /// Every field an entity listing can return (see [`World::fields_json`]).
-pub const FIELDS: [&str; 42] = [
+pub const FIELDS: [&str; 43] = [
     "id", "name", "path", "parent", "shape", "position", "rotation_deg", "scale", "world_position", "color",
     "material", "opacity", "emissive", "metallic", "roughness", "specular", "color2", "seed", "light", "profile",
     "tags", "props", "collider", "body", "version", "created_by", "modified_by", "children", "bounds", "recipe",
     "params", "visible", "layer", "transient", "model_state", "anim", "sprite", "tilemap", "shape2d", "vfx", "decal",
-    "water",
+    "water", "text",
 ];
 
 /// Entity changes [`World::draw_changes_since`] remembers.

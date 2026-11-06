@@ -117,6 +117,7 @@ mod gi;
 mod gpu;
 mod graph;
 mod idbuffer;
+mod glyphs;
 mod instance;
 mod loader;
 mod material;
@@ -141,11 +142,12 @@ pub use effects::{f16_bits, Decal, DecalMode, Effects, Particle, ParticleMateria
 pub use gi::{check as gi_check, GiFrame, GiQuality, GiView, GiVolume, GI_PROBE_BYTES, IRRADIANCE_VIEW_MIN_SPREAD, MAX_GI_PROBES, MAX_GI_VOLUMES};
 pub use idbuffer::{IdCounts, IdCoverage, IdImage};
 pub use atlas::{pack_atlas, Atlas, AtlasError, AtlasImage, AtlasOptions, AtlasRect, Flipbook, Playback};
-pub use sprite::{sprite_sphere, tiles_sphere, view_2d, Billboard, Draw2d, ShapeDraw, Sprite, SpriteBlend, TileChunk, View2d};
+pub use sprite::{sprite_sphere, text_sphere, tiles_sphere, view_2d, Billboard, Draw2d, GlyphInstance, ShapeDraw, Sprite, SpriteBlend, TextFrame, TextRun, TileChunk, View2d};
 pub use tilemap::{TileCell, TileGrid, CHUNK as TILE_CHUNK, MAX_TILE_FRAMES, ORIENT_FLIP_X, ORIENT_FLIP_Y, ORIENT_SWAP_XY};
 pub use material::{generate_mips, generate_mips_owned, generate_tangents, mip_count, preserve_alpha_coverage};
 pub use render::{BackgroundFault, ContentHint, PipelineVariants, VariantFailure};
 pub use stats::*;
+pub use glyphs::MAX_GLYPH_WORDS;
 pub use stream::{UploadStats, ARENA_BYTES as UPLOAD_ARENA_BYTES};
 pub use terrain::{TerrainLayer, TerrainMaterial, TerrainPatch};
 pub use water::{WaterPattern, WaterStyle, WATER_PRESETS};
@@ -305,6 +307,10 @@ pub enum Limit {
     GiProbes,
     /// Terrains per frame ([`terrain::MAX_TERRAINS`]).
     Terrains,
+    /// Words of the frame's glyph store ([`MAX_GLYPH_WORDS`]).
+    GlyphWords,
+    /// Glyphs drawn per frame ([`MAX_GLYPHS`]).
+    Glyphs,
 }
 
 /// What was asked for and what is allowed.
@@ -373,6 +379,8 @@ impl GpuError {
             Limit::GiVolumes => "GI volumes per frame",
             Limit::GiProbes => "GI probes resident at once",
             Limit::Terrains => "terrains per frame",
+            Limit::GlyphWords => "glyph store words",
+            Limit::Glyphs => "glyphs per frame",
         };
         GpuError {
             message: format!("{requested} {name} requested; at most {max}"),
@@ -783,6 +791,8 @@ pub const MAX_POINT_LIGHTS: usize = 16;
 
 /// At most this many overlay quads per frame.
 pub const MAX_OVERLAY_QUADS: usize = 65_536;
+/// Most glyphs [`Draw2d::Text`] runs draw in one frame (one 2D record each).
+pub const MAX_GLYPHS: usize = 65_536;
 
 /// At most this many occluder rectangles per ID render ([`Gpu::render_with_ids_occluded`]).
 pub const MAX_ID_OCCLUDERS: usize = 4096;
@@ -1228,6 +1238,9 @@ pub struct FrameDesc<'a> {
     /// The terrains the frame's [`Material::Terrain`] patches draw (at most
     /// [`terrain::MAX_TERRAINS`]; see [`terrain`]).
     pub terrains: &'a [TerrainMaterial],
+    /// In-world text: the glyph store and the glyphs [`Draw2d::Text`] runs draw (see [`TextFrame`];
+    /// empty: none).
+    pub text: TextFrame<'a>,
 }
 
 impl Default for FrameDesc<'_> {
@@ -1246,6 +1259,7 @@ impl Default for FrameDesc<'_> {
             effects: Effects::default(),
             gi: GiFrame::default(),
             terrains: &[],
+            text: TextFrame::default(),
         }
     }
 }
@@ -1726,6 +1740,19 @@ impl Gpu {
     /// Bytes the resident GI volumes take on the GPU, and how often their buffer was rebuilt.
     pub fn gi_stats(&self) -> (u64, u64) {
         self.inner.gi_stats()
+    }
+
+    /// In-world text's glyph store on the GPU: resident bytes, words copied and buffers made since
+    /// start-up (copies are incremental: a steady scene copies nothing), and why the last store
+    /// couldn't be made resident, if it couldn't (its glyphs then aren't drawn).
+    pub fn glyph_stats(&self) -> (u64, u64, u64, Option<&str>) {
+        self.inner.glyph_stats()
+    }
+
+    /// Uploads up to `max_new` more words of glyph store `store` ahead of the frame that draws it,
+    /// in a buffer of at least `reserve` words (see `GpuInner::preload_glyphs`).
+    pub fn preload_glyphs(&mut self, store: u64, words: &[u32], reserve: usize, max_new: usize) {
+        self.inner.preload_glyphs(store, words, reserve, max_new)
     }
 
     /// Whether the last render drew baked GI: its set bound and its pipelines ready (false: the

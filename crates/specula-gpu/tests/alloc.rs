@@ -155,6 +155,7 @@ fn warm_frames_do_not_allocate() {
         effects: Effects { particles: &particles, materials: &materials, decals: &decals },
         gi: Default::default(),
         terrains: &[],
+        text: Default::default(),
     };
     for _ in 0..5 {
         gpu.render(target, &frame).unwrap();

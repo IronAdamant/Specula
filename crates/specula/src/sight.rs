@@ -711,6 +711,9 @@ pub struct SubjectCache {
     /// The world generation and draw epoch the entries reflect.
     key: Option<(u64, u64)>,
     layout: u64,
+    /// The CJK re-layout batch frames had adopted when text subjects were last read
+    /// ([`crate::text_world::adopted_batch`]): a re-laid text changes no draw stamp.
+    text_batch: u64,
     entries: Vec<std::sync::Arc<SubjectBase>>,
     dirty: Vec<u64>,
     rebuilds: u64,
@@ -824,6 +827,10 @@ impl SubjectCache {
 
     /// Brings the entries up to `world` (`generation` changes whenever the engine replaces it).
     pub fn refresh(&mut self, world: &World, generation: u64) {
+        let batch = crate::text_world::adopted_batch();
+        if self.text_batch != batch {
+            self.reread_texts(world, batch);
+        }
         if self.key == Some((generation, world.draw_epoch())) {
             return;
         }
@@ -839,6 +846,20 @@ impl SubjectCache {
         }
         self.key = Some((generation, world.draw_epoch()));
         self.layout = world.layout_epoch();
+    }
+
+    /// Reads text subjects again after frames adopted a batch of CJK re-layouts (their box and
+    /// facts came from the layout made before the face arrived; review of e97e318: packets kept
+    /// reporting it while frames drew the new one). At most once per fallback face.
+    fn reread_texts(&mut self, world: &World, batch: u64) {
+        self.text_batch = batch;
+        for c in &mut self.entries {
+            if c.shape == "text" {
+                if let Some(b) = world.get(c.id).filter(|e| !e.transient).and_then(|e| SubjectBase::of(world, e)) {
+                    *c = std::sync::Arc::new(b);
+                }
+            }
+        }
     }
 
     /// `bounded`: false when more than [`SubjectCache::patch_limit`] changed (a rebuild is cheaper).
@@ -2263,6 +2284,30 @@ mod tests {
     /// stalls review's churn probe), deletes, spawns, a renamed parent, a rolled-back batch, and
     /// a rebuild in slices with the world changing past the record between every slice (it used
     /// to start again forever). A change to every entity mid-rebuild ends in one synchronous read.
+    #[test]
+    fn text_subjects_follow_a_re_layout_frames_adopted() {
+        // Review of e97e318: a CJK text laid out again by the loader thread changes no draw stamp,
+        // so the cached subject kept the old box and facts while frames drew the new layout.
+        let mut world = World::default();
+        let spec = crate::text_world::TextSpec::new("Here lies Ada");
+        let batch = crate::text_world::tests::reserve_batch();
+        let mut s = SpawnSpec::new(Shape::Text);
+        s.name = Some("epitaph".into());
+        s.two_d = Some(crate::two_d::TwoD::Text(Box::new(crate::text_world::tests::with_later(&spec, [-7.0, -7.0, 7.0, 7.0], batch))));
+        world.spawn(s, "t").unwrap();
+        let mut cache = SubjectCache::default();
+        cache.refresh(&world, 1);
+        let width = |c: &SubjectCache| {
+            let b = c.entries.iter().find(|b| b.shape == "text").expect("a text subject");
+            b.corners.iter().map(|p| p.x).fold(f32::MIN, f32::max) - b.corners.iter().map(|p| p.x).fold(f32::MAX, f32::min)
+        };
+        let before = width(&cache);
+        assert!(before < 10.0, "the first layout's box: {before}");
+        crate::text_world::tests::finish_batch(batch);
+        cache.refresh(&world, 1);
+        assert!((width(&cache) - 14.0).abs() < 1e-3, "the adopted layout's box: {}", width(&cache));
+    }
+
     #[test]
     fn subject_cache_keeps_up_with_churn_past_the_change_record() {
         use crate::world::{Op, UpdateSpec, DRAW_LOG};

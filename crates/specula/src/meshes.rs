@@ -117,7 +117,7 @@ impl ShapeMeshes {
             Shape::Cube => Some(self.cube),
             Shape::Quad => Some(self.quad),
             Shape::Sphere => Some(self.sphere),
-            Shape::Lathe | Shape::Model | Shape::Group | Shape::Sprite | Shape::Tilemap | Shape::Shape2d => None,
+            Shape::Lathe | Shape::Model | Shape::Group | Shape::Sprite | Shape::Tilemap | Shape::Shape2d | Shape::Text => None,
         }
     }
 }

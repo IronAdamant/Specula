@@ -53,11 +53,11 @@ pub const FORMAT_V1: &str = "specula.world/v1";
 const INDEX: &str = "world.json";
 const INDEX_TMP: &str = "world.json.tmp";
 /// Keys an entity record may have; anything else is a typo worth reporting.
-const RECORD_KEYS: [&str; 37] = [
+const RECORD_KEYS: [&str; 38] = [
     "path", "id", "shape", "position", "rotation_deg", "scale", "color", "material", "opacity", "emissive",
     "metallic", "roughness", "specular", "seed", "color2", "light", "profile", "segments", "tags", "props",
     "collider", "body", "version", "created_by", "modified_by", "recipe", "params", "visible", "layer", "anim",
-    "sprite", "tilemap", "shape2d", "vfx", "decal", "water", "born",
+    "sprite", "tilemap", "shape2d", "vfx", "decal", "water", "text", "born",
 ];
 const INDEX_KEYS: &[&str] = &["format", "generation", "next_id", "entity_count", "time_s", "env", "subtrees", "cameras", "entities"];
 const CAMERAS_KEYS: &[&str] = &["format", "cameras"];

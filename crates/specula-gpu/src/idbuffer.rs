@@ -508,7 +508,7 @@ unsafe fn draw_2d(ctx: &FrameContext, cmd: VkCommandBuffer, f: &IdFrame, step: S
     for b in &plan.batches {
         let pipeline = match (step, b.kind) {
             (Step::Opaque, BatchKind::Cutout) => f.sprite[0],
-            (Step::Insert, BatchKind::Blended) => f.sprite[1],
+            (Step::Insert, BatchKind::Blended | BatchKind::Glyph) => f.sprite[1],
             (Step::Insert, BatchKind::Shape(_)) => f.shape[0],
             (Step::Raster, BatchKind::Shape(_)) => f.shape[1],
             (Step::Raster, _) => f.sprite[2],
@@ -786,7 +786,7 @@ impl IdResources {
             let blended = match d {
                 crate::Draw2d::Sprite(s) => s.blend == crate::SpriteBlend::Blended,
                 crate::Draw2d::Tiles(t) => t.blend == crate::SpriteBlend::Blended,
-                crate::Draw2d::Shape(_) => true,
+                crate::Draw2d::Shape(_) | crate::Draw2d::Text(_) => true,
             };
             if id != 0 && blended {
                 has_blended[(id - 1) as usize] = true;

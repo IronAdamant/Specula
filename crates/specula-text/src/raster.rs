@@ -92,7 +92,7 @@ fn flatten(outline: &Outline, xf: Xform, mut line: impl FnMut([f32; 2], [f32; 2]
 
 /// Integer pixel box of the outline at this scale and horizontal sub-pixel offset:
 /// `(left, top, width, height)`.
-fn pixel_box(outline: &Outline, scale: f32, offset_x: f32, pad: f32) -> Option<(i32, i32, u32, u32)> {
+pub(crate) fn pixel_box(outline: &Outline, scale: f32, offset_x: f32, pad: f32) -> Option<(i32, i32, u32, u32)> {
     let b = outline.bounds()?;
     let x0 = (b[0] * scale + offset_x - pad).floor();
     let x1 = (b[2] * scale + offset_x + pad).ceil();

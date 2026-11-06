@@ -60,6 +60,8 @@ pub enum TwoD {
     Sprite(Box<SpriteSpec>),
     Tilemap(Arc<TilemapSpec>),
     Shape2d(Arc<Shape2dSpec>),
+    /// In-world text (see [`crate::text_world`]).
+    Text(Box<crate::text_world::TextSpec>),
 }
 
 /// A grid sheet: frames of `frame_px`, left to right then top to bottom.
@@ -199,7 +201,7 @@ pub struct TileEdits {
 // Argument helpers (errors are messages naming the field, as tool arguments report them)
 // ---------------------------------------------------------------------------------------------
 
-fn keys(v: &Json, what: &str, allowed: &[&str]) -> Result<(), String> {
+pub(crate) fn keys(v: &Json, what: &str, allowed: &[&str]) -> Result<(), String> {
     match v {
         Json::Obj(pairs) => match pairs.iter().find(|(k, _)| !allowed.contains(&k.as_str())) {
             Some((k, _)) => Err(format!("'{k}' is not a field of {what} (fields: {})", allowed.join(", "))),
@@ -209,11 +211,11 @@ fn keys(v: &Json, what: &str, allowed: &[&str]) -> Result<(), String> {
     }
 }
 
-fn opt<'a>(v: &'a Json, key: &str) -> Option<&'a Json> {
+pub(crate) fn opt<'a>(v: &'a Json, key: &str) -> Option<&'a Json> {
     v.get(key).filter(|j| !j.is_null())
 }
 
-fn num(v: &Json, key: &str, what: &str, lo: f64, hi: f64) -> Result<Option<f32>, String> {
+pub(crate) fn num(v: &Json, key: &str, what: &str, lo: f64, hi: f64) -> Result<Option<f32>, String> {
     match opt(v, key) {
         None => Ok(None),
         Some(j) => match j.as_f64() {
@@ -223,7 +225,7 @@ fn num(v: &Json, key: &str, what: &str, lo: f64, hi: f64) -> Result<Option<f32>,
     }
 }
 
-fn int(v: &Json, key: &str, what: &str, lo: i64, hi: i64) -> Result<Option<i64>, String> {
+pub(crate) fn int(v: &Json, key: &str, what: &str, lo: i64, hi: i64) -> Result<Option<i64>, String> {
     match opt(v, key) {
         None => Ok(None),
         Some(j) => match j.as_i64() {
@@ -233,14 +235,14 @@ fn int(v: &Json, key: &str, what: &str, lo: i64, hi: i64) -> Result<Option<i64>,
     }
 }
 
-fn boolean(v: &Json, key: &str, what: &str) -> Result<Option<bool>, String> {
+pub(crate) fn boolean(v: &Json, key: &str, what: &str) -> Result<Option<bool>, String> {
     match opt(v, key) {
         None => Ok(None),
         Some(j) => j.as_bool().map(Some).ok_or_else(|| format!("'{what}.{key}' must be true or false")),
     }
 }
 
-fn nums<const N: usize>(v: &Json, key: &str, what: &str, lo: f64, hi: f64) -> Result<Option<[f32; N]>, String> {
+pub(crate) fn nums<const N: usize>(v: &Json, key: &str, what: &str, lo: f64, hi: f64) -> Result<Option<[f32; N]>, String> {
     match opt(v, key) {
         None => Ok(None),
         Some(j) => {
@@ -282,7 +284,7 @@ fn ints<const N: usize>(v: &Json, key: &str, what: &str, lo: u64, hi: u64) -> Re
     }
 }
 
-fn choice<T: Copy>(v: &Json, key: &str, what: &str, options: &[(&str, T)]) -> Result<Option<T>, String> {
+pub(crate) fn choice<T: Copy>(v: &Json, key: &str, what: &str, options: &[(&str, T)]) -> Result<Option<T>, String> {
     match opt(v, key) {
         None => Ok(None),
         Some(j) => {
@@ -1050,6 +1052,12 @@ pub fn deferred<T>(f: impl FnOnce() -> T) -> T {
     out
 }
 
+/// Whether world files are loading on this thread ([`deferred`]): texts are laid out later, off
+/// it, too (`text_world`).
+pub fn is_deferred() -> bool {
+    DEFERRED.with(std::cell::Cell::get)
+}
+
 fn registry() -> std::sync::MutexGuard<'static, BTreeMap<u64, std::sync::Weak<Shape2dSpec>>> {
     SHAPES.lock().unwrap_or_else(|p| p.into_inner())
 }
@@ -1334,6 +1342,7 @@ impl TwoD {
             TwoD::Sprite(_) => "sprite",
             TwoD::Tilemap(_) => "tilemap",
             TwoD::Shape2d(_) => "shape2d",
+            TwoD::Text(_) => "text",
         }
     }
 
@@ -1343,6 +1352,7 @@ impl TwoD {
             TwoD::Sprite(s) => s.to_json(),
             TwoD::Tilemap(t) => t.to_json(),
             TwoD::Shape2d(s) => s.json.clone(),
+            TwoD::Text(t) => t.to_json(),
         }
     }
 
@@ -1359,6 +1369,7 @@ impl TwoD {
             TwoD::Sprite(s) => s.bounds(),
             TwoD::Tilemap(t) => t.bounds(),
             TwoD::Shape2d(s) => s.bounds(),
+            TwoD::Text(t) => t.bounds(),
         }
     }
 
@@ -1368,6 +1379,7 @@ impl TwoD {
             TwoD::Sprite(s) => h.write_str(&s.to_json().to_string()),
             TwoD::Tilemap(t) => t.hash_into(h),
             TwoD::Shape2d(s) => h.write_str(&s.json.to_string()),
+            TwoD::Text(t) => h.write_str(&t.to_json().to_string()),
         }
     }
 
@@ -1383,6 +1395,7 @@ impl TwoD {
                 let mesh = s.mesh().map_or(0, |m| m.vertices.len() * 28 + m.indices.len() * 4);
                 (s.json.to_string().len() + mesh) / Arc::strong_count(s).max(1)
             }
+            TwoD::Text(t) => t.heap_bytes(),
         }
     }
 
@@ -1407,6 +1420,7 @@ impl TwoD {
                 ("z_layer", Json::from(s.z_layer as i64)),
                 ("triangles", s.mesh().map_or(Json::Null, |m| Json::from(m.indices.len() / 3))),
             ]),
+            TwoD::Text(t) => t.subject_json(),
         }
     }
 }
@@ -1417,6 +1431,7 @@ pub fn parse(shape: &str, v: &Json) -> Result<TwoD, String> {
         "sprite" => SpriteSpec::parse(v).map(|s| TwoD::Sprite(Box::new(s))),
         "tilemap" => TilemapSpec::parse(v).map(|t| TwoD::Tilemap(Arc::new(t))),
         "shape2d" => Shape2dSpec::parse(v).map(TwoD::Shape2d),
+        "text" => crate::text_world::TextSpec::parse(v).map(|t| TwoD::Text(Box::new(t))),
         _ => Err(format!("'{shape}' has no 2D component")),
     }
 }
@@ -1655,6 +1670,8 @@ pub struct TwoDGpu {
     pub texture_loads: u64,
     /// A finished texture the last pump's budget held back (uploaded first by the next one).
     held: Option<Done>,
+    /// In-world text: the glyph store, this frame's glyphs, layouts.
+    pub text: crate::text_world::TextGpu,
 }
 
 impl TwoDGpu {
@@ -1674,6 +1691,7 @@ impl TwoDGpu {
             chunk_uploads: 0,
             texture_loads: 0,
             held: None,
+            text: Default::default(),
         }
     }
 
@@ -1681,6 +1699,7 @@ impl TwoDGpu {
     /// [`TwoDGpu::pump`], within the frame's upload budget).
     pub fn begin_frame(&mut self) {
         self.problem_count = 0;
+        self.text.begin_frame();
     }
 
     /// The problems of the items drawn since [`TwoDGpu::begin_frame`] (at most 16).
@@ -2099,6 +2118,11 @@ impl TwoDGpu {
                     out.push(Draw2d::Shape(ShapeDraw { mesh, model: cols, color: tint, layer: s.z_layer }));
                 }
             }
+            TwoD::Text(t) => {
+                if let Some(p) = self.text.draws(id, t, model, tint, out) {
+                    push_problem(&mut self.problem_buf, &mut self.problem_count, format_args!("{p}"));
+                }
+            }
         }
     }
 
@@ -2123,6 +2147,7 @@ impl TwoDGpu {
                 TwoD::Shape2d(s) => {
                     shapes.entry(s.key).or_default().push(s);
                 }
+                TwoD::Text(_) => {}
             }
         }
         let dead: Vec<String> = self.textures.keys().filter(|k| !paths.contains(k.as_str())).cloned().collect();

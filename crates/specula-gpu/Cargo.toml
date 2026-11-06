@@ -14,6 +14,8 @@ specula-core = { workspace = true }
 [dev-dependencies]
 # Tests bake real scenes (tests/gi_low.rs); a workspace crate, nothing third-party.
 specula-lux = { workspace = true }
+# In-world text tests build real glyph stores from the bundled fonts (tests/text.rs).
+specula-text = { workspace = true }
 
 [lints]
 workspace = true

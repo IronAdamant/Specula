@@ -17,7 +17,7 @@
         "max_width": "96%",
         "layout": "column",
         "align": "stretch",
-        "gap": 10,
+        "gap": 8,
         "children": [
           { "type": "box", "layout": "row", "justify": "center", "children": [ { "type": "icon", "shape": "rune", "size": "3em", "color": "rune" } ] },
           { "type": "label", "text": "The graves hold", "role": "title", "text_align": "center", "wrap": true },

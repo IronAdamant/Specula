@@ -27,6 +27,8 @@ layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer It
 const uint KIND_SPRITE = 0u;
 const uint KIND_TILES = 1u;
 const uint KIND_SHAPE = 2u;
+const uint KIND_GLYPH = 3u; // v1 = origin.xyz | v2 = axis x per em .xyz, box x0 | v3 = axis y per em .xyz, box y0
+                           // v4 = box x1, y1 | v5.zw = glyph store address bits; info: word, flags, resident words
 
 const uint FLAG_BILLBOARD_MASK = 3u; // 0 none, 1 spherical, 2 cylindrical
 const uint FLAG_FLIP_X = 4u;

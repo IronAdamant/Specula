@@ -102,6 +102,10 @@ pub struct AtlasStats {
     pub evictions: u64,
     /// Glyphs whose outline could not be read (skipped by `TextLayout::append_quads`).
     pub font_errors: u64,
+    /// Glyphs refused as larger than a page (measured before rasterising; then ink-less).
+    pub too_large: u64,
+    /// Glyph bitmaps rasterised (misses that got as far as the rasteriser).
+    pub rasterized: u64,
     pub glyphs: usize,
 }
 
@@ -358,10 +362,25 @@ impl GlyphAtlas {
         self.stats.misses += 1;
         let size = key.size_q as f32 / 64.0;
         let offset = key.subpixel as f32 / SUBPIXEL_BINS as f32;
-        let bmp = match font
-            .glyph_outline(glyph)
-            .and_then(|outline| self.raster.rasterize(&outline, font.scale_for_px(size), offset))
-        {
+        let pad = self.config.padding;
+        let ps = self.config.page_size;
+        // Cost before work: the glyph's pixel box comes from its outline's bounds, so a glyph
+        // that can't fit a page is refused before it is rasterised, and remembered as ink-less
+        // (a 1000 px label would otherwise rasterise every glyph again every frame, then fail).
+        let outline = font.glyph_outline(glyph);
+        if let Ok(o) = &outline {
+            if let Some((_, _, w, h)) = crate::raster::pixel_box(o, font.scale_for_px(size), offset, 0.0) {
+                if w.saturating_add(2 * pad) > ps || h.saturating_add(2 * pad) > ps {
+                    self.stats.too_large += 1;
+                    self.insert_empty(key);
+                    return Err(AtlasError::GlyphTooLarge { glyph_w: w, glyph_h: h, page_size: ps });
+                }
+            }
+        }
+        if outline.is_ok() {
+            self.stats.rasterized += 1;
+        }
+        let bmp = match outline.and_then(|outline| self.raster.rasterize(&outline, font.scale_for_px(size), offset)) {
             Ok(b) => b,
             Err(e) => {
                 // Reported once; afterwards the glyph is a cached ink-less entry.
@@ -374,10 +393,10 @@ impl GlyphAtlas {
             self.insert_empty(key);
             return Ok(EMPTY_GLYPH);
         }
-        let pad = self.config.padding;
         let (w, h) = (bmp.width + 2 * pad, bmp.height + 2 * pad);
-        let ps = self.config.page_size;
         if w > ps || h > ps {
+            self.stats.too_large += 1;
+            self.insert_empty(key);
             return Err(AtlasError::GlyphTooLarge { glyph_w: bmp.width, glyph_h: bmp.height, page_size: ps });
         }
         let (page, x, y) = self.allocate(w, h)?;
@@ -602,5 +621,35 @@ mod tests {
         // Too large for a page at all.
         let e = atlas.glyph(&font, 1, 200.0, 0).unwrap_err();
         assert_eq!(e.code(), "glyph_too_large");
+    }
+
+    #[test]
+    fn oversized_glyphs_are_refused_before_rasterising_and_remembered() {
+        // Cost before work: the biggest size the atlas takes (1024 px) on a small page. The
+        // refusal comes from the outline's bounds (no 1024 px bitmap is made), is counted once,
+        // and later asks are cache hits on an ink-less glyph (no work every frame).
+        let font = crate::font::tests::tiny_font();
+        let font = Font::from_bytes(font).unwrap();
+        let mut atlas = GlyphAtlas::new(AtlasConfig { page_size: 64, max_pages: 1, padding: 1, evict: true });
+        let started = std::time::Instant::now();
+        assert_eq!(atlas.glyph(&font, 1, 1024.0, 0).unwrap_err().code(), "glyph_too_large");
+        for _ in 0..1000 {
+            assert_eq!(atlas.glyph(&font, 1, 1024.0, 0).unwrap().page, NO_PAGE);
+        }
+        let st = atlas.stats();
+        assert_eq!((st.too_large, st.misses, st.hits, st.rasterized), (1, 1, 1000, 0), "refused without a bitmap");
+        assert_eq!(atlas.page_count(), 0, "nothing was packed");
+        assert!(started.elapsed().as_millis() < 500, "{:?}", started.elapsed());
+        // The measure is the rasteriser's own box: a glyph that just fits a page (with its
+        // padding) is packed; one too wide (or too tall) alone is refused unrasterised.
+        let o = font.glyph_outline(1).unwrap();
+        let (_, _, w, h) = crate::raster::pixel_box(&o, font.scale_for_px(160.0), 0.0, 0.0).unwrap();
+        let fits = GlyphAtlas::new(AtlasConfig { page_size: w.max(h) + 2, max_pages: 1, padding: 1, evict: true }).glyph(&font, 1, 160.0, 0);
+        assert!(fits.is_ok(), "{fits:?}");
+        if w != h {
+            let mut one_way = GlyphAtlas::new(AtlasConfig { page_size: w.min(h) + 2 + (w.max(h) - w.min(h)) / 2, max_pages: 1, padding: 1, evict: true });
+            assert_eq!(one_way.glyph(&font, 1, 160.0, 0).unwrap_err().code(), "glyph_too_large");
+            assert_eq!(one_way.stats().rasterized, 0);
+        }
     }
 }

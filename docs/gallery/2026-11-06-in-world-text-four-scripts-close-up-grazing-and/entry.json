@@ -1,0 +1,48 @@
+{
+  "date": "2026-11-06",
+  "time": "",
+  "date_source": "",
+  "approximate": false,
+  "milestone": "M5",
+  "commit": "25370e0",
+  "subject": "ui",
+  "topic": "UI",
+  "title": "In-world text: four scripts, close up, grazing and typed",
+  "note": "First in-world text: Slug glyphs drawn per pixel from the bundled Alegreya faces (Latin, Cyrillic, Greek) and a system CJK fallback, carved into lit walls; sharp close up and at a grazing angle; typed over MCP with a cyan selection and an ivory caret.",
+  "source": "scripts/text_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-integrated-front.jpg",
+      "caption": "Latin, Cyrillic, Greek and Japanese paragraphs, rich text with a cyan word",
+      "original": "integrated_front.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 10738
+    },
+    {
+      "file": "02-integrated-closeup.jpg",
+      "caption": "Close up: solid strokes, thin edges",
+      "original": "integrated_closeup.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 19788
+    },
+    {
+      "file": "03-integrated-grazing.jpg",
+      "caption": "A grazing angle",
+      "original": "integrated_grazing.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 15790
+    },
+    {
+      "file": "04-integrated-typing.jpg",
+      "caption": "Typed over MCP: selection and caret",
+      "original": "integrated_typing.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 7852
+    }
+  ]
+}

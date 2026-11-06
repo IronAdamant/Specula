@@ -125,6 +125,8 @@ pub struct GpuInner {
     uploads: crate::stream::Uploads,
     /// The resident baked GI volumes (`gi.rs`).
     gi: crate::gi::GiBuffer,
+    /// The resident glyph store of in-world text (`glyphs.rs`).
+    glyphs: crate::glyphs::GlyphBuffer,
     /// The latest sight capture's and window frame's content ([`ContentHint`]): a new target's
     /// graph is prepared ahead in their shape ([`GpuInner::prewarm_target`]).
     hint_offscreen: Option<ContentHint>,
@@ -298,6 +300,7 @@ impl GpuInner {
             colour_record: Default::default(),
             uploads: crate::stream::Uploads::default(),
             gi: crate::gi::GiBuffer::default(),
+            glyphs: crate::glyphs::GlyphBuffer::default(),
             hint_offscreen: None,
             hint_window: None,
             device,
@@ -631,6 +634,46 @@ impl GpuInner {
         }
         self.scratch.gi = self.gi.bind(&mut self.uploads, &frame.gi, ready, offscreen);
         Ok(())
+    }
+
+    /// Makes `frame`'s glyph store resident (copying only new words) and sets the address the
+    /// frame's glyph records carry. Text never fails a frame: an error (memory, limits) leaves its
+    /// glyphs undrawn, and [`Gpu::glyph_stats`] says why.
+    fn bind_glyphs(&mut self, frame: &FrameDesc) {
+        let text = &frame.text;
+        if text.words.is_empty() {
+            self.scratch.glyph_store = (0, 0);
+            return;
+        }
+        let (cmd, fence) = (self.sync_cmd, self.sync_fence);
+        let synced = self.glyphs.sync(&self.device, &mut self.uploads, text, |dev, record| run_sync(dev, cmd, fence, |d, c| record(d, c)).map(|_| ()));
+        self.scratch.glyph_store = match synced {
+            Ok(()) if self.glyphs.holds(text) => (self.glyphs.address(), self.glyphs.resident_words() as u32),
+            _ => (0, 0),
+        };
+    }
+
+    /// Makes up to `max_new` more words of glyph store `store` resident ahead of the frame that
+    /// draws it (a parked capture, a pass at a time), in a buffer of at least `reserve` words:
+    /// that frame then copies only what is left, never the whole store at once (review of
+    /// cd954bd, major 1). Errors are remembered like a frame's ([`Gpu::glyph_stats`]).
+    pub fn preload_glyphs(&mut self, store: u64, words: &[u32], reserve: usize, max_new: usize) {
+        self.glyphs.reserve = reserve.min(crate::glyphs::MAX_GLYPH_WORDS);
+        let have = if self.glyphs.store_id() == store { self.glyphs.resident_words() } else { 0 };
+        let end = words.len().min(have.saturating_add(max_new));
+        if end <= have {
+            return;
+        }
+        let text = crate::TextFrame { store, words: &words[..end], glyphs: &[] };
+        let (cmd, fence) = (self.sync_cmd, self.sync_fence);
+        let _ = self.glyphs.sync(&self.device, &mut self.uploads, &text, |dev, record| run_sync(dev, cmd, fence, |d, c| record(d, c)).map(|_| ()));
+    }
+
+    /// The glyph store's resident bytes, words copied and buffers made since start-up, and why
+    /// the last store couldn't be made resident (if it couldn't).
+    pub fn glyph_stats(&self) -> (u64, u64, u64, Option<&str>) {
+        let g = &self.glyphs;
+        (g.bytes(), g.words_copied, g.rebuilds, g.failure.as_ref().map(|(_, e)| e.as_str()))
     }
 
     /// Starts building the terrain and water pipelines on a worker (a no-op once built or while
@@ -1350,6 +1393,7 @@ impl GpuInner {
             return Err(GpuError::unknown(crate::IdKind::Target, target.0, ""));
         }
         self.bind_gi(frame, true);
+        self.bind_glyphs(frame);
         let Some(t) = self.targets.get_mut(&target.0) else {
             return Err(GpuError::unknown(crate::IdKind::Target, target.0, ""));
         };
@@ -1557,6 +1601,7 @@ impl GpuInner {
         self.flush_uploads()?;
         self.poll_pipelines();
         self.bind_gi(frame, false);
+        self.bind_glyphs(frame);
         let window = self.window.as_mut().expect("checked");
         let frame_no = self.frame_no + 1;
         let presented = window.present(
@@ -1649,6 +1694,7 @@ impl Drop for GpuInner {
         }
         self.ids.destroy(dev);
         self.gi.destroy(dev);
+        self.glyphs.destroy(dev);
         if let Some(mut t) = self.timer.take() {
             t.destroy(dev);
         }

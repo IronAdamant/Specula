@@ -107,6 +107,8 @@ mod trace_tools;
 mod toolscope;
 mod toolscope_tools;
 pub mod two_d;
+pub mod text_window;
+pub mod text_world;
 mod ui;
 mod ui_engine;
 mod ui_tools;
@@ -856,6 +858,8 @@ struct Engine {
     last_advance: Instant,
     /// Window input gathered for the game each frame (reused).
     input: Vec<Event>,
+    /// Where the window's keyboard types (a text entity; see text_world).
+    text_typing: text_window::WindowTyping,
     /// A window title set by the game.
     game_title: Option<String>,
     /// The game's interface quads for the window frame (reused).
@@ -1075,6 +1079,7 @@ impl Engine {
             perf_cfg: perf::PerfConfig::default(),
             last_advance: Instant::now(),
             input: Vec::new(),
+            text_typing: Default::default(),
             game_title: None,
             game_quads: Vec::new(),
             game_overlay_stats: (0, 0),
@@ -1194,6 +1199,9 @@ impl Engine {
         self.gi.reset();
         // The editor's selection, drag, pick, outliner and undo history name the old world.
         self.editor_world_replaced();
+        // The window's keyboard focus and the texts the operator opened to the human's click name
+        // the old world's entities.
+        self.text_typing.world_replaced();
         // Merged distant proxies show the old world and cover ids the new one reuses.
         self.stream.world_replaced(&mut self.gpu, &mut self.models);
         // A decision press right after must not decide what the human hasn't seen.
@@ -1336,6 +1344,9 @@ impl Engine {
     }
 
     fn advance_clock_ticks(&mut self) {
+        // CJK re-layouts the font loader finished are taken up here, between frames and calls,
+        // so a frame or capture and its sight packet see one layout per text.
+        text_world::adopt_relayouts();
         // The world's anim assets reach the library (graph writes settle against them) without
         // waiting for a draw: headless engines never draw.
         self.models.refresh_anim_env(&self.library, &self.world, self.world_generation);
@@ -1409,6 +1420,8 @@ impl Engine {
         self.ui_window(ui.raw, size);
         self.input.clear();
         ui.drain_events(&mut self.input);
+        // Keys the human meant for a text never reach a screen an agent put on the window.
+        self.text_window_screens();
         // The review screen reads input first; while it is open the game, modules and live Lex
         // runs get none (no keys, pointer or pads).
         let modal = self.review_frame(size);
@@ -1417,6 +1430,13 @@ impl Engine {
         let modal = self.gallery_frame(size, modal) || modal;
         // The editor next: under an open review or gallery screen it gets no input.
         let modal = self.editor_frame(size, modal) || modal;
+        // A text entity with the window's focus takes the keys and characters it types with (not
+        // under the editor or an engine screen: one taking the window ends the typing).
+        if modal {
+            self.text_window_modal();
+        } else {
+            self.text_window_input();
+        }
         // A hosted game pauses itself while an engine screen holds the window (it is told once
         // per change).
         if modal != self.modal_open {
@@ -1652,6 +1672,8 @@ impl Engine {
             ("following", Json::from(self.window_follow.is_some())),
             ("through", through),
             ("released_by", self.window_released_by.map_or(Json::Null, Json::from)),
+            // The text the human's keyboard types into, and its banner in the last frame.
+            ("typing", self.text_typing.json()),
             // A timeline driving the window through its rail camera (see `timeline`).
             ("timeline", self.timeline.window_path().map_or(Json::Null, Json::from)),
         ])
@@ -1866,6 +1888,8 @@ impl Engine {
             self.stream.charge(used);
         }
         let mut waiting = 0;
+        let mut text_budget = text_world::CAPTURE_PREP_WORDS_PER_PASS;
+        let mut text_waiting = 0;
         // Distinct in-view textures checked so far: the first MAX_CAPTURE_STATS are stat'ed here
         // (microseconds each), so an unchanged file doesn't hold the capture up for a loop.
         let mut checked: BTreeSet<&str> = BTreeSet::new();
@@ -1881,6 +1905,14 @@ impl Engine {
                     waiting += self.two_d.request_shape(s) as usize;
                     None
                 }
+                // Its glyphs are prepared ahead, a pass at a time, while the capture waits; a text
+                // a world file brought in waits for its layout (text_world).
+                two_d::TwoD::Text(t) => {
+                    let left = self.two_d.text.prepare_ahead(t, &mut text_budget) + usize::from(t.layout_pending());
+                    text_waiting += left;
+                    waiting += left;
+                    None
+                }
             };
             if let Some(p) = texture {
                 self.two_d.request(p);
@@ -1889,6 +1921,12 @@ impl Engine {
                 }
                 waiting += self.two_d.is_pending(p) as usize;
             }
+        }
+        // The glyphs prepared so far go to the GPU a piece at a time too, ahead of the frame, and
+        // once all are prepared the capture's snapshot of the store is made here, not in its frame.
+        self.two_d.text.preload(&mut self.gpu);
+        if text_waiting == 0 {
+            self.two_d.text.share_words();
         }
         waiting
     }
@@ -2143,10 +2181,13 @@ impl Engine {
             self.game_frame(ui, size, dt);
             // The editor's protocol commands, picks and panels (and its camera).
             self.editor_pump(server);
-            let next = match &self.game_title {
+            let mut next = match &self.game_title {
                 Some(t) => t.clone(),
                 None => format!("Specula — {} entities — {} agents", self.world.len(), server.sessions().len()),
             };
+            if let Some(path) = self.text_typing.focused_path() {
+                next = format!("{next} — {}", text_window::cue_text(path));
+            }
             if next != title {
                 ui.set_title(&next);
                 title = next;
@@ -2197,6 +2238,9 @@ impl Engine {
             self.editor_overlay(size, &mut game_quads);
             self.gallery_overlay(size, false, &mut game_quads);
             self.review_overlay(size, false, &mut game_quads);
+            // While the window's keyboard types into a text, a banner says which: the overlay's
+            // last quads, over everything (text_window).
+            self.text_focus_overlay(size, &mut game_quads);
             let draw_list = profile::zone("draw_list");
             let mut draws = std::mem::take(&mut self.draws);
             let started = Instant::now();
@@ -2218,8 +2262,15 @@ impl Engine {
             let mut lights = std::mem::take(&mut self.lights);
             sight::lights(&self.world, true, &mut lights);
             let view_proj = camera.view_proj(size.0, size.1);
+            self.text_typing.set_view(view_proj, size);
             let mut draws_2d = std::mem::take(&mut self.draws_2d);
+            // A window frame prepares a few new glyphs at most (the rest follow next frames).
+            self.two_d.text.prep_words = Some(text_world::WINDOW_PREP_WORDS);
+            // The window draws a caret only where its keyboard really types (text_world).
+            self.two_d.text.window_marks = Some(self.text_typing.focus);
             self.build_draws_2d(&view_proj, true, time_s as f32, &mut draws_2d, None);
+            self.two_d.text.prep_words = None;
+            self.two_d.text.window_marks = None;
             let fx_view = vfx::View::of(&camera, size.0, size.1);
             self.build_effects(&fx_view, time_s, true, &mut lights, true);
             let fx = self.vfx.take_frame();
@@ -2242,11 +2293,14 @@ impl Engine {
                 ..sight::frame(&self.world, &view_proj, &draws, &lights, time_s as f32)
             };
             self.luts.apply(&mut self.gpu, self.world.env(), &mut frame, false);
+            frame.text = self.two_d.text.frame();
             drop(draw_list);
             // FIFO present paces the loop to the display refresh. How long it blocked sizes the
             // next serve window.
             let present = profile::zone("present");
             let frame_cpu = frame_started.elapsed();
+            // Whether the typing banner is the overlay's last quads, on what this frame sends.
+            self.text_typing.overlay_sent(frame.overlay);
             let presented = self.gpu.present(&frame).map_err(|e| format!("present: {e}"));
             {
                 // The flash grid borrowed (no copy of the frame's stats).
@@ -2515,6 +2569,11 @@ impl Engine {
             },
             Command::Query(spec) => self.query(&spec),
             Command::TileGet { key, layer, region } => self.tile_get(&key, layer.as_deref(), region),
+            Command::TextEdit(commit) => {
+                let have = authority::authority(&self.swarm, &request.session.id);
+                self.text_commit(*commit, w, tick, &by, have)
+            }
+            Command::TextGet { key } => self.text_get(&key),
             Command::Lex(call) => {
                 let hooks: Vec<String> = self.logic.hooks().iter().map(logic::HookInfo::qualified).collect();
                 let in_process: Vec<String> = self.lex_natives.keys().cloned().collect();
@@ -3324,6 +3383,7 @@ fn call_class(command: &Command) -> Class {
         Command::LexLive(call) => call.class(),
         Command::Spawn(_)
         | Command::Set(..)
+        | Command::TextEdit(_)
         | Command::Delete(..)
         | Command::Batch(_)
         | Command::Env(_)
@@ -3338,6 +3398,7 @@ fn call_class(command: &Command) -> Class {
         | Command::PerfCapture(_) => Class::Edit,
         Command::Query(_)
         | Command::TileGet { .. }
+        | Command::TextGet { .. }
         | Command::Info
         | Command::Perf { .. }
         | Command::PerfZones(_)

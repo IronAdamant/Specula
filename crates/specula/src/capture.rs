@@ -838,7 +838,11 @@ impl Engine {
         let mut draws_2d = Vec::new();
         let mut owners_2d = Vec::new();
         self.build_draws_2d(&view_proj, opts.include_ui, opts.time_s as f32, &mut draws_2d, Some(&mut owners_2d));
-        let two_d_problems: Vec<String> = self.two_d.problems().to_vec();
+        let mut two_d_problems: Vec<String> = self.two_d.problems().to_vec();
+        // In-world glyphs left to a later capture or dropped, counted (text_world).
+        two_d_problems.extend(self.two_d.text.frame_problem());
+        // In-world text, owned: the frame outlives other engine calls below.
+        let text = self.two_d.text.snapshot();
         owners.extend_from_slice(&owners_2d);
         let mut record = sight::FrameRecord::new(&owners);
         let (ids, entities) = sight::dense_ids(&owners);
@@ -889,6 +893,7 @@ impl Engine {
             overlays = (!opts.overlays.is_empty()).then_some(report);
         }
         frame.overlay = &quads;
+        frame.text = text.frame();
         // What streaming says of the subjects and what the terrain and water passes drew, read
         // now (the frame as drawn), written once the ID counts are in (in the packet's order).
         let notes = {

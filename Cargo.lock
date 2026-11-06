@@ -115,6 +115,7 @@ dependencies = [
  "specula-core",
  "specula-lux",
  "specula-sys",
+ "specula-text",
 ]
 
 [[package]]

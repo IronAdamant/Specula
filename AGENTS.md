@@ -12,8 +12,9 @@ Read [HANDOFF.md](HANDOFF.md) first.
    `#[link(name = "user32", kind = "raw-dylib")] extern "system" { … }` — never rely on import libraries.
    Drivers that may be missing (e.g. `vulkan-1`) are loaded **at runtime** via `specula_sys::dynlib::Library`.
    **Each DLL is declared in exactly one crate** — on windows-gnu a second crate's raw-dylib imports from the same
-   DLL are silently dropped (crash at call time). `kernel32` → `specula-sys`; `user32` and `winmm` → `specula-platform`;
-   `ole32` → `specula-audio`. Runtime-loaded through `dynlib` (any crate may load them): `vulkan-1`,
+   DLL are silently dropped (crash at call time). `kernel32` → `specula-sys`; `user32`, `winmm` and `imm32` →
+   `specula-platform`; `ole32` → `specula-audio` (`crates/specula/tests/dll_owners.rs` checks this list against the
+   code). Runtime-loaded through `dynlib` (any crate may load them): `vulkan-1`,
    `xinput1_4`/`xinput9_1_0` (specula-platform), `avrt` (specula-audio),
    `iphlpapi` (specula-sys: which ports have listeners), `bcrypt` (specula-sys `digest`: SHA-256 from the OS, for
    what the engine vouches for, such as recorded review evidence; never hand-rolled, rule 12).

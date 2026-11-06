@@ -205,10 +205,12 @@ pub enum MemoryKind {
     Textures,
     /// Baked GI probes resident for the shaders (`gi.rs`).
     Gi,
+    /// The resident Slug glyph store of in-world text (`glyphs.rs`).
+    Glyphs,
 }
 
 impl MemoryKind {
-    pub const ALL: [MemoryKind; 9] = [
+    pub const ALL: [MemoryKind; 10] = [
         MemoryKind::Meshes,
         MemoryKind::RenderTargets,
         MemoryKind::Readback,
@@ -218,6 +220,7 @@ impl MemoryKind {
         MemoryKind::PostTargets,
         MemoryKind::Textures,
         MemoryKind::Gi,
+        MemoryKind::Glyphs,
     ];
 
     pub(crate) fn index(self) -> usize {

@@ -29,6 +29,11 @@ pub const PAGE_ROWS: usize = 18;
 pub const MAX_SELECTION: usize = 256;
 /// The longest text typed into a field or the search.
 pub const MAX_TYPED: usize = 64;
+/// The longest text typed into a text entity's Text field: the text component's own limit
+/// (bytes), so a text of any length starts whole and is never cut (review R4 of m5-text).
+pub const MAX_TYPED_TEXT_BYTES: usize = crate::text_world::MAX_TEXT_BYTES;
+/// The most characters of a text entity's words the inspector shows (the rest is cut).
+const SHOWN_TEXT: usize = 96;
 /// Edits the human can undo (and redo) from the toolbar, newest last.
 pub const MAX_UNDO: usize = 128;
 /// Simulated input frames waiting (`editor_input`).
@@ -57,6 +62,9 @@ const ACTIONS: &str = r#"{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FieldKey {
     Name,
+    /// A text entity's words (the human's way to type into world text: a click in the world
+    /// never points the window's keyboard at one; docs/design/TEXT.md).
+    Text,
     /// Position, rotation, scale, colour: component 0..3.
     Pos(usize),
     Rot(usize),
@@ -75,6 +83,7 @@ impl FieldKey {
         let b = s.as_bytes();
         match (s, b.len()) {
             ("name", _) => Some(FieldKey::Name),
+            ("text", _) => Some(FieldKey::Text),
             (_, 2) => match b[0] {
                 b'p' => c(b[1]).filter(|_| b[1] != b'r' && b[1] != b'g' && b[1] != b'b').map(FieldKey::Pos),
                 b'r' => c(b[1]).filter(|_| b[1] != b'r' && b[1] != b'g' && b[1] != b'b').map(FieldKey::Rot),
@@ -89,6 +98,7 @@ impl FieldKey {
     pub fn key(self) -> String {
         match self {
             FieldKey::Name => "name".into(),
+            FieldKey::Text => "text".into(),
             FieldKey::Pos(i) => format!("p{}", ["x", "y", "z"][i % 3]),
             FieldKey::Rot(i) => format!("r{}", ["x", "y", "z"][i % 3]),
             FieldKey::Scale(i) => format!("s{}", ["x", "y", "z"][i % 3]),
@@ -99,10 +109,26 @@ impl FieldKey {
     pub fn label(self) -> String {
         match self {
             FieldKey::Name => "Name".into(),
+            FieldKey::Text => "Text".into(),
             FieldKey::Pos(i) => format!("Position {}", ["X", "Y", "Z"][i % 3]),
             FieldKey::Rot(i) => format!("Rotation {} (degrees)", ["X", "Y", "Z"][i % 3]),
             FieldKey::Scale(i) => format!("Scale {}", ["X", "Y", "Z"][i % 3]),
             FieldKey::Color(i) => format!("Colour {} (0..1)", ["R", "G", "B"][i % 3]),
+        }
+    }
+
+    /// A number (stepped as well as typed).
+    pub fn numeric(self) -> bool {
+        !matches!(self, FieldKey::Name | FieldKey::Text)
+    }
+
+    /// Whether `c` still fits after `buf`: a text's words up to the component's bytes, other
+    /// fields up to [`MAX_TYPED`] characters.
+    pub fn fits(self, buf: &str, c: char) -> bool {
+        if self == FieldKey::Text {
+            buf.len() + c.len_utf8() <= MAX_TYPED_TEXT_BYTES
+        } else {
+            buf.chars().count() < MAX_TYPED
         }
     }
 
@@ -215,12 +241,14 @@ pub struct Inspect {
     /// Another agent's claim covering it, in words.
     pub claim: Option<String>,
     pub components: String,
+    /// A text entity's words (its `text`, markup included): `None` for other entities.
+    pub text: Option<String>,
 }
 
 impl Inspect {
     pub fn value(&self, f: FieldKey) -> f32 {
         match f {
-            FieldKey::Name => 0.0,
+            FieldKey::Name | FieldKey::Text => 0.0,
             FieldKey::Pos(i) => self.position[i % 3],
             FieldKey::Rot(i) => self.rotation[i % 3],
             FieldKey::Scale(i) => self.scale[i % 3],
@@ -724,8 +752,9 @@ impl EditorUi {
         for e in events {
             match *e {
                 Event::Char(c) if !c.is_control() => {
+                    let field = if self.searching { FieldKey::Name } else { self.field.unwrap_or(FieldKey::Name) };
                     let buf = if self.searching { &mut self.search } else { self.typing.get_or_insert_with(String::new) };
-                    if buf.chars().count() < MAX_TYPED {
+                    if field.fits(buf, c) {
                         buf.push(c);
                         if self.searching {
                             acts.push(UiAct::Search);
@@ -744,8 +773,8 @@ impl EditorUi {
                 Event::KeyDown { code: VK_RETURN, repeat: false } => {
                     if self.searching {
                         self.searching = false;
-                    } else if let (Some(f), Some(t)) = (self.field, self.typing.take()) {
-                        acts.push(UiAct::Commit(f, t, self.edit_base.take().map(Box::new)));
+                    } else {
+                        self.commit_typed(acts);
                     }
                     self.dirty = true;
                 }
@@ -762,6 +791,19 @@ impl EditorUi {
                 _ => {}
             }
         }
+    }
+
+    /// Enter (or the OK button) on the field being typed: its value is committed, except a
+    /// text's words left as they were (nothing is sent: an edit that changes nothing never
+    /// writes; review R4 of m5-text).
+    fn commit_typed(&mut self, acts: &mut Vec<UiAct>) {
+        let (Some(f), Some(t)) = (self.field, self.typing.take()) else { return };
+        let base = self.edit_base.take();
+        if f == FieldKey::Text && base.as_ref().and_then(|b| b.text.as_deref()) == Some(t.as_str()) {
+            self.set_status("The text is unchanged: nothing was sent.", true);
+            return;
+        }
+        acts.push(UiAct::Commit(f, t, base.map(Box::new)));
     }
 
     fn ui_action(&mut self, action: &str, row: Option<usize>, shift: bool, acts: &mut Vec<UiAct>) {
@@ -802,21 +844,26 @@ impl EditorUi {
                 self.dirty = true;
             }
             "step_down" | "step_up" => {
-                if let Some(f) = self.field.filter(|f| *f != FieldKey::Name) {
+                if let Some(f) = self.field.filter(|f| f.numeric()) {
                     acts.push(UiAct::Step(f, if action == "step_up" { 1.0 } else { -1.0 }));
                 }
             }
             "field_commit" => {
-                if let (Some(f), Some(t)) = (self.field, self.typing.take()) {
-                    acts.push(UiAct::Commit(f, t, self.edit_base.take().map(Box::new)));
-                }
+                self.commit_typed(acts);
                 self.dirty = true;
             }
             "toggle_visible" => acts.push(UiAct::ToggleVisible),
             other => {
                 if let Some(f) = other.strip_prefix("field:").and_then(FieldKey::parse) {
+                    // A text's words start as they are (Backspace edits from the end); other
+                    // fields are typed afresh.
+                    let start = match (f, self.inspect.as_ref().and_then(|i| i.text.as_ref())) {
+                        (FieldKey::Text, Some(t)) => t.clone(),
+                        (FieldKey::Text, None) => return,
+                        _ => String::new(),
+                    };
                     self.field = Some(f);
-                    self.typing = Some(String::new());
+                    self.typing = Some(start);
                     // The edit starts now: the entity's version and values as the human sees them.
                     self.edit_base = self.inspect.clone();
                     self.searching = false;
@@ -902,6 +949,13 @@ impl EditorUi {
                     i.name.clone()
                 };
                 s.set_str("in_name", &name);
+                s.set_bool("in_has_text", i.text.is_some());
+                let text = match (self.field, &self.typing, &i.text) {
+                    (Some(FieldKey::Text), Some(t), _) => format!("Text: {}_", tail(t, SHOWN_TEXT)),
+                    (_, _, Some(t)) => format!("Text: {}", head(t, SHOWN_TEXT)),
+                    _ => String::new(),
+                };
+                s.set_str("in_text", &text);
                 s.set_str("in_path", &i.path);
                 s.set_str("in_meta", &format!("id {} - version {} - made by {} - last changed by {}", i.id, i.version, i.created_by, i.modified_by));
                 s.set_bool("in_claimed", i.claim.is_some() || i.game);
@@ -928,7 +982,7 @@ impl EditorUi {
                 s.set_bool("has_sel", !self.selection.is_empty());
             }
         }
-        s.set_bool("has_field", self.field.is_some_and(|f| f != FieldKey::Name));
+        s.set_bool("has_field", self.field.is_some_and(FieldKey::numeric));
         s.set_bool("typing", self.typing.is_some());
         let field_label = match (self.field, &self.typing) {
             (Some(f), Some(_)) => format!("{}: type a value, Enter", f.label()),
@@ -1030,7 +1084,7 @@ impl EditorUi {
 /// Widgets agents may need the boxes of (rows are added per page).
 const WIDGETS: &[&str] = &[
     "tb_move", "tb_move_on", "tb_rotate", "tb_rotate_on", "tb_scale", "tb_scale_on", "tb_space", "tb_snap", "tb_snap_on", "tb_undo", "tb_redo", "tb_frame",
-    "tb_delete", "tb_close", "ol_search", "ol_search_clear", "ol_top", "ol_prev", "ol_next", "in_name", "f_px", "f_py", "f_pz", "f_rx", "f_ry", "f_rz", "f_sx",
+    "tb_delete", "tb_close", "ol_search", "ol_search_clear", "ol_top", "ol_prev", "ol_next", "in_name", "in_text", "f_px", "f_py", "f_pz", "f_rx", "f_ry", "f_rz", "f_sx",
     "f_sy", "f_sz", "f_cr", "f_cg", "f_cb", "f_down", "f_up", "f_ok", "f_visible", "ed_viewport", "ed_outliner", "ed_inspector", "ed_toolbar", "ed_status",
 ];
 
@@ -1039,6 +1093,26 @@ fn button_index(b: MouseButton) -> Option<usize> {
         MouseButton::Left => Some(0),
         MouseButton::Right => Some(1),
         MouseButton::Middle => Some(2),
+    }
+}
+
+/// The first `n` characters of `s` (an ellipsis when cut), on one line.
+fn head(s: &str, n: usize) -> String {
+    let one: String = s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    if one.chars().count() > n {
+        one.chars().take(n.saturating_sub(1)).chain(['\u{2026}']).collect()
+    } else {
+        one
+    }
+}
+
+/// The last `n` characters of `s` (an ellipsis when cut), on one line.
+fn tail(s: &str, n: usize) -> String {
+    let one: Vec<char> = s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    if one.len() > n {
+        std::iter::once('\u{2026}').chain(one[one.len() - (n - 1)..].iter().copied()).collect()
+    } else {
+        one.into_iter().collect()
     }
 }
 
@@ -1069,7 +1143,7 @@ mod tests {
 
     #[test]
     fn fields_parse_and_name_themselves() {
-        for f in FieldKey::NUMBERS.into_iter().chain([FieldKey::Name]) {
+        for f in FieldKey::NUMBERS.into_iter().chain([FieldKey::Name, FieldKey::Text]) {
             assert_eq!(FieldKey::parse(&f.key()), Some(f), "{f:?}");
         }
         assert_eq!(FieldKey::parse("pr"), None);
@@ -1167,5 +1241,72 @@ mod tests {
         assert_eq!(e.typing.as_ref().unwrap().len(), MAX_TYPED);
         e.type_keys(&[Event::KeyDown { code: VK_RETURN, repeat: false }], &mut acts);
         assert!(matches!(acts.last(), Some(UiAct::Commit(FieldKey::Pos(0), t, _)) if t.len() == MAX_TYPED));
+    }
+
+    /// The human's way to type into world text (review R3 of m5-text: a click in the world never
+    /// points the window's keyboard at a text): the inspector's Text field starts from the text's
+    /// words, Backspace edits from the end, Enter commits with the inspector it began from, and
+    /// it holds up to the text component's bytes. Entities that aren't texts have no Text field.
+    #[test]
+    fn a_text_entitys_words_are_typed_in_the_inspector() {
+        let inspect = Inspect { id: 4, path: "/epitaph".into(), version: 9, text: Some("Here lies".into()), ..Inspect::default() };
+        let mut e = EditorUi { inspect: Some(inspect.clone()), open: true, ..EditorUi::default() };
+        let mut acts = Vec::new();
+        e.ui_action("field:text", None, false, &mut acts);
+        assert_eq!(e.typing(), Some((FieldKey::Text, "Here lies")));
+        e.type_keys(&[Event::KeyDown { code: VK_BACK, repeat: false }, Event::KeyDown { code: VK_BACK, repeat: false }, Event::KeyDown { code: VK_BACK, repeat: false }, Event::KeyDown { code: VK_BACK, repeat: false }], &mut acts);
+        e.type_keys(&"rests".chars().map(Event::Char).collect::<Vec<_>>(), &mut acts);
+        e.type_keys(&[Event::KeyDown { code: VK_RETURN, repeat: false }], &mut acts);
+        match acts.last() {
+            Some(UiAct::Commit(FieldKey::Text, t, Some(base))) => assert_eq!((t.as_str(), base.version), ("Here rests", 9)),
+            other => panic!("{other:?}"),
+        }
+        // Capped; never stepped.
+        e.ui_action("field:text", None, false, &mut acts);
+        e.type_keys(&std::iter::repeat_n(Event::Char('x'), 3000).collect::<Vec<_>>(), &mut acts);
+        assert_eq!(e.typing().map(|(_, t)| t.len()), Some(MAX_TYPED_TEXT_BYTES));
+        let n = acts.len();
+        e.ui_action("step_up", None, false, &mut acts);
+        assert_eq!(acts.len(), n, "a text isn't stepped");
+        // Not a text: no field.
+        let mut e = EditorUi { inspect: Some(Inspect { text: None, ..inspect }), open: true, ..EditorUi::default() };
+        e.ui_action("field:text", None, false, &mut acts);
+        assert_eq!(e.typing(), None);
+        assert_eq!(FieldKey::parse("text"), Some(FieldKey::Text));
+        assert!(!FieldKey::Text.numeric() && FieldKey::Pos(0).numeric());
+    }
+
+    /// Review R4 of m5-text (the reviewer's probe_inspector): a 1,500-character text starts
+    /// whole in the Text field; Enter with nothing changed sends nothing; one character typed
+    /// commits the whole text with it, never a cut copy.
+    #[test]
+    fn a_long_text_is_never_cut_and_an_unchanged_one_never_sent() {
+        let long = "epitaph ".repeat(187) + "abcd";
+        assert_eq!(long.chars().count(), 1500);
+        let inspect = Inspect { id: 4, version: 2, text: Some(long.clone()), ..Inspect::default() };
+        let mut e = EditorUi { inspect: Some(inspect), open: true, ..EditorUi::default() };
+        let mut acts = Vec::new();
+        e.ui_action("field:text", None, false, &mut acts);
+        assert_eq!(e.typing().map(|(_, t)| t.len()), Some(1500), "starts whole");
+        e.type_keys(&[Event::KeyDown { code: VK_RETURN, repeat: false }], &mut acts);
+        assert!(acts.is_empty(), "unchanged: nothing sent ({acts:?})");
+        e.ui_action("field:text", None, false, &mut acts);
+        e.type_keys(&[Event::Char('!')], &mut acts);
+        e.ui_action("field_commit", None, false, &mut acts);
+        match acts.last() {
+            Some(UiAct::Commit(FieldKey::Text, t, _)) => assert_eq!(*t, format!("{long}!"), "the whole text and the key"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The inspector's text shown on one line: exactly `n` characters stay whole, one more is
+    /// cut to `n` with an ellipsis (Probatio's survivors at the boundary).
+    #[test]
+    fn shown_text_is_cut_only_past_its_length() {
+        assert_eq!(head("abcd", 4), "abcd");
+        assert_eq!(head("abcde", 4), "abc\u{2026}");
+        assert_eq!(tail("abcd", 4), "abcd");
+        assert_eq!(tail("abcde", 4), "\u{2026}cde");
+        assert_eq!(head("a\nb", 4), "a b", "one line");
     }
 }

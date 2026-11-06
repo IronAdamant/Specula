@@ -596,7 +596,7 @@ impl Engine {
                     FieldKey::Rot(_) => snap.rotate,
                     FieldKey::Scale(_) => snap.scale,
                     FieldKey::Color(_) => 0.05,
-                    FieldKey::Name => return,
+                    FieldKey::Name | FieldKey::Text => return,
                 };
                 let v = i.value(f) + dir * step;
                 let text = num(if matches!(f, FieldKey::Pos(_) | FieldKey::Rot(_)) && snap.on { gz::snap_to(v, step) } else { v });
@@ -625,7 +625,26 @@ impl Engine {
             return;
         }
         let mut args = Json::obj([("id", Json::from(i.id)), ("expect_version", Json::from(i.version))]);
-        let what = if f == FieldKey::Name {
+        let what = if f == FieldKey::Text {
+            // The text's component as it is now, with the words typed (and a caret, if it is
+            // being edited, at their end); the base version refuses it if anyone changed it since.
+            let Some(crate::two_d::TwoD::Text(spec)) = self.world.get(i.id).and_then(|e| e.two_d.as_ref()) else {
+                self.editor.ui.set_status("Not set: it is no longer a text.", false);
+                return;
+            };
+            if spec.text == text {
+                self.editor.ui.set_status("The text is unchanged: nothing was sent.", true);
+                return;
+            }
+            let mut j = spec.to_json();
+            j.set("text", Json::from(text));
+            if spec.edit.is_some() {
+                let end = Json::from(text.len() as u64);
+                j.set("editing", Json::obj([("caret", end.clone()), ("anchor", end)]));
+            }
+            args.set("text", j);
+            format!("Set the text of {}", i.path)
+        } else if f == FieldKey::Name {
             let name = text.trim();
             if name.is_empty() {
                 self.editor.ui.set_status("A name can't be empty.", false);
@@ -646,11 +665,11 @@ impl Engine {
                 FieldKey::Rot(_) => ("rotation_deg", i.rotation),
                 FieldKey::Scale(_) => ("scale", i.scale),
                 FieldKey::Color(_) => ("color", i.color),
-                FieldKey::Name => unreachable!("handled above"),
+                FieldKey::Name | FieldKey::Text => unreachable!("handled above"),
             };
             let c = match f {
                 FieldKey::Pos(c) | FieldKey::Rot(c) | FieldKey::Scale(c) | FieldKey::Color(c) => c % 3,
-                FieldKey::Name => 0,
+                FieldKey::Name | FieldKey::Text => 0,
             };
             if matches!(f, FieldKey::Scale(_)) && v <= 0.0 {
                 self.editor.ui.set_status("Not set: a scale must be above 0.", false);
@@ -1392,6 +1411,10 @@ impl Engine {
             game: e.transient,
             claim,
             components,
+            text: match &e.two_d {
+                Some(crate::two_d::TwoD::Text(t)) => Some(t.text.clone()),
+                _ => None,
+            },
         };
         self.editor.rt.inspected = Some(key);
         self.editor.rt.inspected_at = Some(now);

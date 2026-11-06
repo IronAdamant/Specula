@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 
 /// `(file, outputs allowed)`: the files that had console output on 2026-10-29.
-const ALLOWED: [(&str, usize); 62] = [
+const ALLOWED: [(&str, usize); 64] = [
     ("crates/specula/src/capture.rs", 3),
     ("crates/specula/src/disk.rs", 4),
     ("crates/specula/src/evidence.rs", 5),
@@ -60,6 +60,8 @@ const ALLOWED: [(&str, usize); 62] = [
     ("crates/specula-model/src/csg/tests.rs", 1),
     ("crates/specula-model/src/sdf.rs", 1),
     ("crates/specula-platform/src/gamepad.rs", 2),
+    // The clipboard test saying why it skips (opt-in: it borrows the person's clipboard).
+    ("crates/specula-platform/src/textinput.rs", 3),
     ("crates/specula-platform/src/win32.rs", 3),
     ("crates/specula-protocol/src/mcp.rs", 1),
     ("crates/specula-protocol/src/server.rs", 2),
@@ -68,6 +70,8 @@ const ALLOWED: [(&str, usize); 62] = [
     ("crates/specula-sys/src/fpenv.rs", 3),
     ("crates/specula-sys/src/lib.rs", 2),
     ("crates/specula-text/src/font.rs", 1),
+    // Text tests saying why they skip (no system CJK face).
+    ("crates/specula-text/src/layout.rs", 2),
     ("crates/specula-text/src/fuzz_tests.rs", 1),
     ("games/sepulcra-app/src/ents.rs", 1),
     ("games/sepulcra-app/src/game.rs", 3),

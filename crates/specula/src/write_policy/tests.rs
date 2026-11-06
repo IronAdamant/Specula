@@ -96,6 +96,9 @@ struct Fix {
     unhook: u64,
     /// Alice's entry writing taste state (the window's or the worker's, as far as undo goes).
     taste: u64,
+    /// Text entities: one in the claimed region (Alice's), one on free ground (Mallory's).
+    sign: u64,
+    note: u64,
 }
 
 fn fixture() -> Fix {
@@ -156,7 +159,16 @@ fn fixture() -> Fix {
         .1
         .unwrap();
     live.set_clock_s(12.5);
-    Fix { live, sw, abox, rbox, hook: hook1, edit, unjoint, unhook, taste }
+    let text = |name: &str, at: Vec3| {
+        let mut s = SpawnSpec::new(Shape::Text);
+        s.name = Some(name.into());
+        s.position = at;
+        s.two_d = Some(crate::two_d::TwoD::Text(Box::new(crate::text_world::TextSpec::new("Here"))));
+        s
+    };
+    let sign = live.commit(&mut sw, 0, ALICE, Kind::Spawn, Rule::World, |wd| wd.spawn(text("sign", Vec3::new(5.0, 1.0, 5.0)), "alice").map(|e| e.id)).unwrap().0;
+    let note = live.commit(&mut sw, 0, MALLORY, Kind::Spawn, Rule::World, |wd| wd.spawn(text("note", Vec3::new(90.0, 1.0, 90.0)), "mallory").map(|e| e.id)).unwrap().0;
+    Fix { live, sw, abox, rbox, hook: hook1, edit, unjoint, unhook, taste, sign, note }
 }
 
 /// What a row must come to.
@@ -191,6 +203,16 @@ fn contents(w: &World) -> Contents {
 
 fn agent(f: &mut Fix, w: Writer, kind: Kind, rule: Rule, command: impl FnOnce(&mut dyn WorldWrite) -> Result<(), WorldError>) -> Result<(), WorldError> {
     f.live.commit(&mut f.sw, 1, w, kind, rule, command).map(|_| ())
+}
+
+/// text_edit's change (text_world.rs): typing into text entity `id`, as the calling agent.
+fn text_edit(f: &mut Fix, id: u64) -> Result<(), WorldError> {
+    let Some(crate::two_d::TwoD::Text(spec)) = f.live.get(id).and_then(|e| e.two_d.clone()) else { panic!("a text entity") };
+    let ops = crate::text_world::parse_ops(&Json::parse(r#"[{"key":"end"},{"insert":" lies Ada"},{"key":"left","unit":"word","select":true}]"#).unwrap()).unwrap();
+    let (next, _) = crate::text_world::apply_edits(&spec, &ops).unwrap();
+    agent(f, MALLORY, Kind::Set, Rule::World, |wd| {
+        wd.update(&EntityKey::Id(id), UpdateSpec { two_d: Some(crate::two_d::TwoD::Text(Box::new(next))), ..UpdateSpec::default() }, "mallory").map(|_| ())
+    })
 }
 
 fn set_abox(f: &mut Fix, rule: Rule) -> Result<(), WorldError> {
@@ -429,6 +451,26 @@ const ROWS: &[(&str, Write, Expect)] = &[
     ("terrain_edit's recipe and collider on free ones", |f| terrain_edit(f, "/mg", false), Expect::Allowed),
     // Agents' tools (Live::commit).
     ("world_set on a path-claimed entity", |f| set_abox(f, Rule::World), Expect::Refused("claimed")),
+    // text_edit (text_world.rs, M5): a world_set of the text component under Rule::World.
+    ("text_edit typing into a text entity in a claimed region", |f| {
+        let id = f.sign;
+        text_edit(f, id)
+    }, Expect::Refused("claimed")),
+    ("text_edit typing into a free text entity", |f| {
+        let id = f.note;
+        text_edit(f, id)
+    }, Expect::Allowed),
+    // The window's typing (text_world::text_window_input): the same change, as the window's
+    // owner, through the same rule: an agent's claim holds against the person too.
+    ("window typing into a text entity in a claimed region", |f| {
+        let id = f.sign;
+        let Some(crate::two_d::TwoD::Text(spec)) = f.live.get(id).and_then(|e| e.two_d.clone()) else { panic!("a text entity") };
+        let (next, _) = crate::text_world::apply_edits(&spec, &[specula_text::EditOp::Insert("!".into())]).unwrap();
+        let owner = crate::authority::WINDOW_OWNER;
+        agent(f, Writer::new(owner, Some(owner)), Kind::Set, Rule::World, |wd| {
+            wd.update(&EntityKey::Id(id), UpdateSpec { two_d: Some(crate::two_d::TwoD::Text(Box::new(next))), ..UpdateSpec::default() }, owner).map(|_| ())
+        })
+    }, Expect::Refused("claimed")),
     ("world_set on a region-claimed entity", |f| {
         let id = f.rbox;
         agent(f, MALLORY, Kind::Set, Rule::World, |wd| wd.update(&EntityKey::Id(id), UpdateSpec { color: Some([1.0, 0.0, 0.0]), ..UpdateSpec::default() }, "mallory").map(|_| ()))

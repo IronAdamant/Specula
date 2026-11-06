@@ -1,0 +1,32 @@
+{
+  "date": "2026-11-06",
+  "time": "23:39",
+  "date_source": "file time",
+  "approximate": false,
+  "milestone": "M5",
+  "commit": "",
+  "subject": "ui",
+  "topic": "UI",
+  "title": "The typing banner over Sepulcra's HUD (review R3)",
+  "note": "After review R3 a click never points the window's keyboard at a world text: only the lead's text_edit window_focus does, and the banner naming the text is the last of the frame's overlay, drawn over the game's interface (here its bottom panel). No key lands before a frame shows it.",
+  "source": "scripts/text_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-sepulcra-integrated-keyboard-hud-on.jpg",
+      "caption": "The banner over the bottom panel",
+      "original": "sepulcra_integrated_keyboard_hud_on.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 14459
+    },
+    {
+      "file": "02-sepulcra-integrated-keyboard-on.jpg",
+      "caption": "The banner just above the field it names",
+      "original": "sepulcra_integrated_keyboard_on.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 15137
+    }
+  ]
+}

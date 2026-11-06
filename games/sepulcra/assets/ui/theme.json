@@ -1,7 +1,7 @@
 {
   "format": "specula.ui.theme.v1",
   "name": "sepulcra",
-  "notes": "From games/sepulcra/STYLE.md: carved-stone panels (#2b3038, bevelled), ivory text (#ece6d6), rune cyan for highlights and selection, grave green only for threats, fire only as the warm accent. Font slots: ui (Segoe UI or the shipped sans), ui_bold, title (a serif for titles only). Sizes are logical px at the Steam Deck (1280x800 = scale 1); 13 px is the smallest role (9.1 px cap height).",
+  "notes": "From games/sepulcra/STYLE.md: carved-stone panels (#2b3038, bevelled), ivory text (#ece6d6), rune cyan for highlights and selection, grave green only for threats, fire only as the warm accent. Font slots: ui and ui_bold (the bundled Alegreya Sans), title (the bundled Alegreya serif, titles only). Sizes are logical px at the Steam Deck (1280x800 = scale 1); 14.5 px is the smallest role (about 9.2 px cap height: Alegreya Sans's caps are 0.64 em, Segoe UI's 0.70, so Segoe's 13 px became 14.5).",
   "colors": {
     "stone": "#2b3038",
     "stone_hi": "#363c46",
@@ -26,12 +26,12 @@
   "spacing": { "xs": 4, "s": 8, "m": 12, "l": 20, "xl": 32 },
   "roles": {
     "body": { "font": "ui", "size": 15, "color": "text", "line_height": 1.15 },
-    "small": { "font": "ui", "size": 13, "color": "text_dim" },
+    "small": { "font": "ui", "size": 14.5, "color": "text_dim" },
     "value": { "font": "ui_bold", "size": 19, "color": "text" },
     "heading": { "font": "ui_bold", "size": 17, "color": "text" },
     "button": { "font": "ui_bold", "size": 16, "color": "text" },
-    "keycap": { "font": "ui_bold", "size": 13, "color": "text" },
-    "threat": { "font": "ui_bold", "size": 13, "color": "grave" },
+    "keycap": { "font": "ui_bold", "size": 14.5, "color": "text" },
+    "threat": { "font": "ui_bold", "size": 14.5, "color": "grave" },
     "title": { "font": "title", "size": 46, "color": "text", "shadow": "#000000b0" },
     "subtitle": { "font": "title", "size": 20, "color": "text_dim" }
   },

@@ -11,7 +11,7 @@ use crate::post::{
     MAX_BLOOM_LEVELS,
 };
 use crate::shadow::{plan_shadows, ShadowData, ShadowPlan, SHADOW_FORMAT};
-use crate::sprite::{check_2d, plan_2d, record_2d, Draw2dContext, ItemRecord, Plan2d, FEAT_CUTOUT};
+use crate::sprite::{check_2d, plan_2d, record_2d, Draw2dContext, ItemRecord, Plan2d, FEAT_CUTOUT, FEAT_GLYPH};
 use crate::timing::PassTimer;
 use crate::vk::*;
 use crate::{
@@ -771,6 +771,9 @@ pub struct FrameScratch {
     pub effects_at: usize,
     /// The frame's GI binding (set by the caller before [`prepare_frame`]; inactive: none).
     pub gi: crate::gi::GiBinding,
+    /// The resident glyph store's address and words for this frame's text (set by the caller
+    /// before [`prepare_frame`]; address 0: glyphs aren't drawn).
+    pub glyph_store: (u64, u32),
     /// Per camera draw record: its GI as the CPU sampled it (`gi.rs` `DrawGi`), as 16-byte
     /// words, and what is kept across frames.
     pub gi_words: Vec<[u32; 4]>,
@@ -1709,6 +1712,8 @@ pub struct FramePipelines {
     /// 2D: cutout and blended sprites / tile chunks, vector shapes, sprite shadow casters.
     pub sprite_cutout: VkPipeline,
     pub sprite_blended: VkPipeline,
+    /// In-world text glyphs (Slug coverage; the blended sprite pipeline with `FEAT_GLYPH`).
+    pub glyph: VkPipeline,
     pub shape: VkPipeline,
     pub sprite_shadow: VkPipeline,
     pub ssao: VkPipeline,
@@ -1879,6 +1884,9 @@ impl Pipelines {
                 for &ssao in ssao {
                     let features = features | if ssao { FEAT_SSAO } else { 0 };
                     self.get(dev, PipelineKey::Sprite { format: color_format, cutout, features })?;
+                    if !cutout {
+                        self.get(dev, PipelineKey::Sprite { format: color_format, cutout, features: features | FEAT_GLYPH })?;
+                    }
                 }
             }
         }
@@ -1972,6 +1980,7 @@ impl Pipelines {
             // Prebuilt with the scene's: a lookup, never a creation.
             sprite_cutout: get(true, PipelineKey::Sprite { format: scene_format, cutout: true, features: features & !(FEAT_GI | FEAT_GI_PIXEL) })?,
             sprite_blended: get(true, PipelineKey::Sprite { format: scene_format, cutout: false, features: features & !(FEAT_GI | FEAT_GI_PIXEL) })?,
+            glyph: get(true, PipelineKey::Sprite { format: scene_format, cutout: false, features: (features & !(FEAT_GI | FEAT_GI_PIXEL)) | FEAT_GLYPH })?,
             shape: get(true, PipelineKey::Shape { format: scene_format, fog: features & FEAT_FOG != 0, ssao: features & FEAT_SSAO != 0 })?,
             sprite_shadow: get(features & FEAT_SHADOWS != 0, PipelineKey::SpriteShadow)?,
             ssao: get(features & FEAT_SSAO != 0, PipelineKey::Ssao)?,
@@ -2540,7 +2549,7 @@ impl Pipelines {
 /// skinned draw's palette leaves the frame's bone matrices, or there are too many lights or bones.
 pub fn check_frame(meshes: &HashMap<u32, Mesh>, textures: &Textures, frame: &FrameDesc) -> Result<(), GpuError> {
     check_overlay(frame.overlay, textures)?;
-    check_2d(frame.draws_2d, meshes, textures)?;
+    check_2d(frame.draws_2d, &frame.text, meshes, textures)?;
     crate::effects::check_effects(&frame.effects, textures)?;
     crate::post::check_lut(&frame.environment, textures)?;
     if frame.lights.len() > MAX_POINT_LIGHTS {
@@ -2619,7 +2628,7 @@ pub fn prepare_frame(
     append_shadow_records(frame, &scratch.shadow, textures, &mut scratch.records);
     build_overlay(frame.overlay, textures, &mut scratch.linear, &mut scratch.overlay);
     let shadows = frame.environment.shadow.enabled;
-    plan_2d(frame, bounds, textures, &mut scratch.linear, shadows, &mut scratch.two_d);
+    plan_2d(frame, bounds, textures, &mut scratch.linear, shadows, scratch.glyph_store, &mut scratch.two_d);
     // The irradiance view shows the ambient term alone: no particles (their glow isn't GI).
     let effects = if scratch.gi.active() && scratch.gi.view == crate::GiView::Irradiance { crate::Effects { particles: &[], ..frame.effects } } else { frame.effects };
     crate::effects::plan_effects(&effects, textures, &mut scratch.linear, &mut scratch.effects);
@@ -3214,6 +3223,7 @@ pub fn record_frame(ctx: &FrameContext, cmd: VkCommandBuffer, g: &mut FrameGraph
         cutout: ctx.pipelines.sprite_cutout,
         blended: ctx.pipelines.sprite_blended,
         shape: ctx.pipelines.shape,
+        glyph: ctx.pipelines.glyph,
         meshes: ctx.meshes,
         push: two_d.push(ctx.upload.frame_address(), items),
         reverse_z: ctx.frame.reverse_z,

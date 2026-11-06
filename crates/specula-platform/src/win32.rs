@@ -151,6 +151,64 @@ extern "system" {
     fn GetWindowTextW(hwnd: Hwnd, text: *mut u16, max: i32) -> i32;
 }
 
+// IMM32: IME composition (the only crate that declares imm32, AGENTS.md rule 2).
+#[link(name = "imm32", kind = "raw-dylib")]
+extern "system" {
+    fn ImmGetContext(hwnd: Hwnd) -> Handle;
+    fn ImmReleaseContext(hwnd: Hwnd, himc: Handle) -> i32;
+    fn ImmGetCompositionStringW(himc: Handle, index: u32, buf: *mut c_void, len: u32) -> i32;
+    fn ImmSetCompositionWindow(himc: Handle, form: *const CompositionForm) -> i32;
+}
+
+/// `COMPOSITIONFORM`.
+#[repr(C)]
+struct CompositionForm {
+    style: u32,
+    pos: Point,
+    area: Rect,
+}
+
+const WM_IME_STARTCOMPOSITION: u32 = 0x010D;
+const WM_IME_ENDCOMPOSITION: u32 = 0x010E;
+const WM_IME_COMPOSITION: u32 = 0x010F;
+const GCS_COMPSTR: usize = 0x0008;
+const GCS_CURSORPOS: usize = 0x0080;
+const GCS_RESULTSTR: usize = 0x0800;
+const CFS_POINT: u32 = 0x0002;
+/// Longest composition or result read (UTF-16 units).
+const MAX_IME_UNITS: usize = 1024;
+
+/// A composition string of the window's IME context (`index`: GCS_COMPSTR or GCS_RESULTSTR).
+fn ime_string(hwnd: Hwnd, index: u32) -> Option<(String, Vec<u16>, i32)> {
+    // SAFETY: `hwnd` is the live window whose message is being handled; the context is released
+    // below; the buffer is sized from the first call (capped) and the second writes at most that.
+    unsafe {
+        let himc = ImmGetContext(hwnd);
+        if himc.is_null() {
+            return None;
+        }
+        let bytes = ImmGetCompositionStringW(himc, index, std::ptr::null_mut(), 0);
+        let mut units = vec![0u16; (bytes.max(0) as usize / 2).min(MAX_IME_UNITS)];
+        let got = if units.is_empty() { 0 } else { ImmGetCompositionStringW(himc, index, units.as_mut_ptr() as *mut c_void, (units.len() * 2) as u32) };
+        let cursor = ImmGetCompositionStringW(himc, GCS_CURSORPOS as u32, std::ptr::null_mut(), 0);
+        ImmReleaseContext(hwnd, himc);
+        units.truncate(got.max(0) as usize / 2);
+        Some((crate::textinput::from_wide(&units, MAX_IME_UNITS * 3), units, cursor))
+    }
+}
+
+/// The byte offset in `text` of UTF-16 unit `unit` (the IME's cursor).
+fn byte_of_unit(text: &str, unit: i32) -> u32 {
+    let mut units = 0i32;
+    for (i, c) in text.char_indices() {
+        if units >= unit {
+            return i as u32;
+        }
+        units += c.len_utf16() as i32;
+    }
+    text.len() as u32
+}
+
 const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
 
 const CS_VREDRAW: u32 = 0x0001;
@@ -432,6 +490,19 @@ impl Window {
         unsafe { SetWindowTextW(self.hwnd, title.as_ptr()) };
     }
 
+    pub(crate) fn set_ime_position(&mut self, x: i32, y: i32, height: i32) {
+        let form = CompositionForm { style: CFS_POINT, pos: Point { x, y }, area: Rect { left: x, top: y, right: x, bottom: y + height.max(0) } };
+        // SAFETY: `hwnd` is live and owned by this thread; the context is released after use;
+        // `form` outlives the call.
+        unsafe {
+            let himc = ImmGetContext(self.hwnd);
+            if !himc.is_null() {
+                ImmSetCompositionWindow(himc, &form);
+                ImmReleaseContext(self.hwnd, himc);
+            }
+        }
+    }
+
     pub(crate) fn set_visible(&mut self, visible: bool) {
         // SAFETY: `hwnd` is a live window owned by this thread.
         unsafe {
@@ -604,6 +675,40 @@ fn handle(state: &State, hwnd: Hwnd, msg: u32, wparam: usize, lparam: isize) -> 
             // the next key; a menu-less game window doesn't want that. Alt+Space still opens the
             // system menu.
             Some(0)
+        }
+        WM_IME_STARTCOMPOSITION => None,
+        WM_IME_COMPOSITION => {
+            let mut handled = false;
+            if lparam as usize & GCS_RESULTSTR != 0 {
+                if let Some((text, _, _)) = ime_string(hwnd, GCS_RESULTSTR as u32) {
+                    if !text.is_empty() {
+                        // The result is text like any typed text: every reader of `Char` (a
+                        // game's text mode, the gallery's note) gets it; `ImeCommit` tells those
+                        // that show compositions that this one is done.
+                        state.push(Event::ImeCommit(text.clone()));
+                        for c in text.chars().filter(|c| !c.is_control()) {
+                            state.push(Event::Char(c));
+                        }
+                    }
+                    handled = true;
+                }
+            }
+            if lparam as usize & GCS_COMPSTR != 0 {
+                if let Some((text, _, cursor)) = ime_string(hwnd, GCS_COMPSTR as u32) {
+                    let caret = byte_of_unit(&text, cursor);
+                    state.push(Event::ImeComposition { text, caret });
+                }
+            }
+            // A handled result must not also arrive as WM_CHAR (DefWindowProc would send it).
+            if handled {
+                Some(0)
+            } else {
+                None
+            }
+        }
+        WM_IME_ENDCOMPOSITION => {
+            state.push(Event::ImeEnd);
+            None
         }
         WM_CHAR => {
             let mut assembler = state.utf16.get();

@@ -98,8 +98,10 @@ pointer and touch.
 
 - The primary selection's name, path, id, version, creator and last editor, its claim, and its components.
 - **Typed editors:** position, rotation (degrees) and scale as three numbers each (step buttons by the snap step, or
-  click and type a value), colour (three numbers, 0..1), visibility (a toggle) and the name (type a new one). Each
-  commit is one `world_set` with `expect_version`.
+  click and type a value), colour (three numbers, 0..1), visibility (a toggle), the name (type a new one) and, for a
+  text entity, its **Text** (its words: typing starts from all of them, up to the component's 2,048 bytes, and Backspace edits from the end; Enter with nothing changed sends nothing).
+  The Text field is the human's way to type into world text: a click in the world never points the window's keyboard
+  at a text (TEXT.md, "The window's keyboard"). Each commit is one `world_set` with `expect_version`.
 - **An edit's version is the one it began at.** Typing into a field records the inspector as it is then (the entity's
   version and values); Enter sends that version as `expect_version` and the other components as they were. An agent's
   change made while the human typed refuses it (`stale_version`, naming who changed it): it is never overwritten
@@ -213,6 +215,7 @@ engine thread. So a reference holds an identity instead, and paths are only show
 |---|---|
 | gizmo drag released | `world_batch {ops: [{op: set, id, position / rotation_deg / scale, expect_version}, ...]}` |
 | inspector value | `world_set {id, position / rotation_deg / scale / color / visible / rename, expect_version}` |
+| inspector Text (a text entity's words) | `world_set {id, text: {...its component, the words typed}, expect_version}` |
 | Delete | `world_batch {ops: [{op: delete, id, expect_version}, ...]}` |
 | Ctrl+Z / Ctrl+Y | `world_undo {ids: [seq]}` |
 | click, box select | none (a read: the pick render) |

@@ -1,0 +1,48 @@
+{
+  "date": "2026-11-06",
+  "time": "",
+  "date_source": "",
+  "approximate": false,
+  "milestone": "M5",
+  "commit": "25370e0",
+  "subject": "sepulcra",
+  "topic": "game",
+  "title": "Epitaphs and the map title carved in stone",
+  "note": "Sepulcra's headstones carry carved epitaphs below the cross and a stone behind the graveyard carries the map title, all in-world text lit like the stone; the HUD now uses the bundled Alegreya Sans faces.",
+  "source": "scripts/text_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-integrated-sepulcra-epitaph-close.jpg",
+      "caption": "An epitaph close up",
+      "original": "integrated_sepulcra_epitaph_close.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 15601
+    },
+    {
+      "file": "02-integrated-sepulcra-epitaph-wide.jpg",
+      "caption": "Epitaphs across the graveyard",
+      "original": "integrated_sepulcra_epitaph_wide.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 22239
+    },
+    {
+      "file": "03-integrated-sepulcra-title.jpg",
+      "caption": "The map title stone",
+      "original": "integrated_sepulcra_title.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 19870
+    },
+    {
+      "file": "04-integrated-sepulcra-hud.jpg",
+      "caption": "The HUD in the bundled faces",
+      "original": "integrated_sepulcra_hud.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 13770
+    }
+  ]
+}

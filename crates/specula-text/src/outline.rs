@@ -294,6 +294,64 @@ mod tests {
     use super::*;
     use crate::font::tests::tiny_font;
 
+    /// The box of what an outline draws: its curves' true extremes (a quadratic's control point
+    /// may stick out past its curve).
+    fn ink_bounds(o: &Outline) -> Option<[f32; 4]> {
+        let mut b: Option<[f32; 4]> = None;
+        let mut add = |x: f32, y: f32| {
+            let v = b.get_or_insert([x, y, x, y]);
+            *v = [v[0].min(x), v[1].min(y), v[2].max(x), v[3].max(y)];
+        };
+        o.segments(|s| match s {
+            Segment::Line(a, c) => {
+                add(a[0], a[1]);
+                add(c[0], c[1]);
+            }
+            Segment::Quad(a, p, c) => {
+                add(a[0], a[1]);
+                add(c[0], c[1]);
+                for axis in 0..2 {
+                    let (a0, p0, c0) = if axis == 0 { (a[0], p[0], c[0]) } else { (a[1], p[1], c[1]) };
+                    let d = a0 - 2.0 * p0 + c0;
+                    if d.abs() > 1e-9 {
+                        let t = (a0 - p0) / d;
+                        if (0.0..=1.0).contains(&t) {
+                            let at = |u: f32, v: f32, w: f32| (1.0 - t) * (1.0 - t) * u + 2.0 * (1.0 - t) * t * v + t * t * w;
+                            add(at(a[0], p[0], c[0]), at(a[1], p[1], c[1]));
+                        }
+                    }
+                }
+            }
+        });
+        b
+    }
+
+    /// Ink boxes come from the `glyf` header (`Font::glyph_box`, review of cd954bd, major 3):
+    /// for every glyph of every bundled face, the header box grown by `GLYPH_BOX_SLACK` holds
+    /// everything the outline draws (composites of scaled components round their box).
+    #[test]
+    fn header_boxes_hold_the_ink_of_every_bundled_glyph() {
+        let slack = crate::font::GLYPH_BOX_SLACK;
+        for b in crate::Bundled::ALL {
+            let font = b.load().unwrap();
+            let mut checked = 0;
+            for g in 0..font.num_glyphs() {
+                let ink = ink_bounds(&font.glyph_outline(g).unwrap());
+                let header = font.glyph_box(g).map(|b| b.map(f32::from));
+                match (ink, header) {
+                    (None, None) => {}
+                    (Some(i), Some(h)) => {
+                        let inside = i[0] >= h[0] - slack && i[1] >= h[1] - slack && i[2] <= h[2] + slack && i[3] <= h[3] + slack;
+                        assert!(inside, "{} glyph {g}: ink {i:?} outside header {h:?}", b.name());
+                        checked += 1;
+                    }
+                    other => panic!("{} glyph {g}: ink vs header {other:?}", b.name()),
+                }
+            }
+            assert!(checked > 300, "{}: {checked}", b.name());
+        }
+    }
+
     fn pt(x: f32, y: f32, on: bool) -> Point {
         Point { x, y, on_curve: on }
     }

@@ -113,6 +113,168 @@ def wait_until(pred, timeout=30.0, step=0.2):
     return pred()
 
 
+def window_click(exe, port, out):
+    """The human's keyboard in the window (review R3 of m5-text, lead direction): only the
+    operator points it at a world text, and a click never does. Kept as rows: the reviewer's
+    probe_click2 (bob's editable text behind his cube takes neither the click nor the keys), the
+    three probe_cover layerings (glass, a 2D shape and a text on a higher z layer behind an
+    opened field: the human's click on the field and the keys after it are the game's), a
+    builder rewriting the focused field (the focus drops before the keys, which are withheld),
+    the banner drawn last in every frame while the focus holds, and the probe_focuscost case at
+    100,000 entities (window_focus holds the engine thread no longer than a plain text_edit).
+    Needs a desktop session (Windows): skipped, with the reason, without."""
+    print("the human's keyboard (windowed engine):")
+    results = []
+
+    def check(label, cond, detail=""):
+        results.append({"probe": label, "held": bool(cond), "detail": detail})
+        print(f"  {'ok  ' if cond else 'FAIL'} {label}{(': ' + detail) if detail and not cond else ''}")
+
+    if sys.platform != "win32":
+        check("the human's keyboard (skipped: needs a Windows desktop)", True)
+        return results
+    import ctypes
+    import ctypes.wintypes as wt
+    import window_check as wc
+    u32 = ctypes.WinDLL("user32", use_last_error=True)
+    u32.PostMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
+    (out / "assets-click").mkdir(parents=True, exist_ok=True)
+    args = ["--size", "640x360", "--captures", str(out / "captures-click"), "--worlds", str(out / "worlds-click"), "--lead", "lee", "--trace", str(out / "trace-click"),
+            "--assets", str(out / "assets-click")]
+    with Engine(exe, port, out / "engine-click.log", *args, cwd=str(ROOT)) as eng:
+        d = Drill(eng)
+        d.agent("bob")
+        d.agent("lee", "lead")
+        d.agent("eve")
+        hwnd = wait_until(lambda: wc.find_window(eng.proc.pid), timeout=20)
+        if not hwnd:
+            check("the human's keyboard (skipped: no window; no desktop session?)", True)
+            return results
+        d.ok("bob", "world_spawn", shape="cube", name="wall", position=[0, 0, 0], scale=[6, 4, 0.2], color="#808080")
+        d.ok("bob", "world_spawn", shape="text", name="sink", position=[0, 0, -1.0], color="#ffffff",
+             text={"text": "M" * 12, "size": 0.4, "max_width": 3, "editing": {"caret": 0}})
+        d.ok("bob", "camera_set", name="trap", eye=[0, 0, 8], target=[0, 0, 0])
+        d.ok("bob", "window_view", camera="trap")
+        time.sleep(1.5)
+        w, h = wc.client_size(hwnd)
+
+        def click(x=None, y=None):
+            lp = ((h // 2 if y is None else y) << 16) | (w // 2 if x is None else x)
+            u32.PostMessageW(hwnd, 0x0201, 1, lp)  # WM_LBUTTONDOWN (the window's middle by default)
+            u32.PostMessageW(hwnd, 0x0202, 0, lp)
+            time.sleep(0.6)
+
+        def typed(chars):
+            for c in chars:
+                u32.PostMessageW(hwnd, 0x0102, ord(c), 0)  # WM_CHAR
+            time.sleep(1.0)
+
+        def words(path):
+            q = d.ok("eve", "world_query", path_prefix=path, fields=["text", "modified_by"], limit=1)
+            item = (q.get("items") or [{}])[0]
+            return (item.get("text") or {}).get("text") or "", item.get("modified_by")
+
+        def typing():
+            info = d.ok("eve", "engine_info", response_format="detailed")
+            return (info.get("window") or {}).get("typing")
+
+        # probe_click2.
+        click()
+        info = d.ok("eve", "engine_info", response_format="detailed")
+        released = (info.get("window") or {}).get("released_by")
+        check("the human's click on bob's cube reaches the game (it takes the window back from bob's camera)", released == "input", f"released_by {released!r}")
+        typed("hunter2")
+        text, by = words("/sink")
+        check("bob's editable text behind his cube takes neither the click nor the keys (probe_click2)", "hunter2" not in text and by != "window:owner", f"{text!r} by {by}")
+        # The lead's field, in front of bob's wall: the operator points the keyboard there, and the
+        # banner is the last of every window frame's overlay while it holds.
+        d.ok("lee", "world_spawn", shape="text", name="field", position=[0, 0, 1.0], color="#ffffff", text={"text": "name", "size": 0.5, "anchor": [0.5, 0.5], "editing": {"caret": 4}})
+        time.sleep(0.5)
+        code, body = d.raw(d.agent("lee"), "text_edit", {"path": "/field", "ops": [], "window_focus": True})
+        check("the lead points the keyboard at the field", code is None and (body or {}).get("window_focus") is True, f"{code} {json.dumps(body)[:200]}")
+        t = wait_until(lambda: ((typing() or {}).get("banner") or {}).get("frames", 0) >= 3 and typing(), timeout=10)
+        banner = (t or {}).get("banner") or {}
+        check("while the focus holds, the banner is the last of the frame's overlay, frame after frame", (t or {}).get("path") == "/field" and banner.get("last") is True and banner.get("quads", 0) > 1, json.dumps(t)[:200])
+        typed("ok")
+        text, by = words("/field")
+        check("the human's keys go to the text the operator pointed them at", text == "nameok" and by == "window:owner", f"{text!r} by {by}")
+        # Any click ends it, on the field itself too, and never takes it back.
+        click()
+        check("a click on the focused field ends the typing", typing() is None, json.dumps(typing())[:200])
+        typed("xyz")
+        text, _ = words("/field")
+        check("... and the keys after it are the game's", "xyz" not in text, repr(text))
+        click()
+        typed("xyz")
+        text, _ = words("/field")
+        check("a click on the field never points the keyboard back at it", typing() is None and "xyz" not in text, repr(text))
+        # probe_cover: bob paints over the field from behind it; the human clicks it and types.
+        covers = [
+            ("glass behind the field", {"shape": "cube", "name": "gb", "position": [0, 0, 0.7], "scale": [5, 3, 0.1], "material": "glass", "opacity": 1.0, "color": "#707070"}),
+            ("a 2D shape on a higher z layer behind the field", {"shape": "shape2d", "name": "sb", "position": [0, 0, 0.7], "shape2d": {"items": [{"rect": [-2.5, -1.5, 5, 3], "fill": "#707070"}], "z_layer": 5}}),
+            ("a text on a higher z layer behind the field", {"shape": "text", "name": "tb", "position": [0, 0, 0.7], "color": "#707070", "text": {"text": "█" * 6, "size": 1.5, "anchor": [0.5, 0.5], "z_layer": 5}}),
+        ]
+        for label, spec in covers:
+            d.ok("bob", "world_spawn", **spec)
+            time.sleep(0.5)
+            click()
+            typed("AAA")
+            text, by = words("/field")
+            check(f"probe_cover, {label}: the click and the keys are the game's", typing() is None and "AAA" not in text, f"{text!r} by {by}")
+            d.ok("bob", "world_delete", path="/" + spec["name"])
+        # probe_cover D: bob rewrites the focused field; the focus drops before the keys.
+        d.ok("lee", "text_edit", path="/field", ops=[], window_focus=True)
+        wait_until(lambda: ((typing() or {}).get("banner") or {}).get("last"), timeout=10)
+        d.ok("bob", "world_set", path="/field", scale=[12, 12, 1], color="#202020")
+        time.sleep(0.3)
+        typed("secret")
+        text, _ = words("/field")
+        check("probe_cover, bob rewrites the focused field: the focus drops and no key lands", typing() is None and "secret" not in text, repr(text))
+        tr = d.ok("lee", "trace_query", code="text.window_focus_dropped", limit=20)
+        check("the drop is traced as foreign_write", "foreign_write" in json.dumps(tr), json.dumps(tr)[:300])
+        d.ok("lee", "world_set", path="/field", scale=[1, 1, 1], color="#ffffff")
+        # Review R4 (probe_screen2): bob's gallery can't take the window while the human types;
+        # when the lead puts it there, the keys the human goes on typing never reach it.
+        space = [{"name": "s", "target": "light.key_intensity", "min": 0.3, "max": 1.0}]
+        d.ok("bob", "gallery_create", id="bobs", subject={"stage": {}}, space=space, variants=3)
+        d.ok("lee", "text_edit", path="/field", ops=[], window_focus=True)
+        wait_until(lambda: ((typing() or {}).get("banner") or {}).get("last"), timeout=10)
+        code, body = d.raw(d.agent("bob"), "gallery_open", {"id": "bobs"})
+        check("bob's gallery_open while the human types is refused (window_typing)", code == "window_typing" and typing() is not None, f"{code} {json.dumps(body)[:200]}")
+        code, body = d.raw(d.agent("lee"), "gallery_open", {"id": "bobs"})
+        check("the lead may put the gallery on the window", code is None, f"{code} {json.dumps(body)[:200]}")
+        for vk in (0x32, 0x0D, 0x0D):
+            u32.PostMessageW(hwnd, 0x0100, vk, 1)  # WM_KEYDOWN: "2", Enter, Enter
+            u32.PostMessageW(hwnd, 0x0101, vk, 0xC0000001)
+            time.sleep(0.12)
+        time.sleep(1.0)
+        tr = json.dumps(d.ok("lee", "trace_query", code="text.window_keys_withheld", limit=5))
+        g = d.ok("bob", "gallery_get", id="bobs")
+        check("... and the keys the human goes on typing reach neither the gallery nor the game", typing() is None and "window_keys_withheld" in tr and g.get("status") != "accepted",
+              f"typing {typing()}, gallery {g.get('status')}, trace {tr[:200]}")
+        d.ok("lee", "gallery_close")
+        # probe_focuscost at 100,000 entities (behind the camera: drawn by nobody, walked by the
+        # old cover test): window_focus holds the engine thread no longer than a plain text_edit.
+        for b in range(100):
+            d.ok("lee", "world_batch", ops=[{"op": "spawn", "shape": "cube", "position": [((b * 1000 + i) % 400) * 1.5, ((b * 1000 + i) // 400) * 1.5, 60]} for i in range(1000)])
+        time.sleep(1.0)
+
+        def stalled():
+            tc = d.ok("lee", "trace_call")
+            return any(i.get("code") == "engine.stall" for i in tc.get("incidents") or []), (tc.get("call") or {}).get("ms")
+        plain, focused = [], []
+        for _ in range(5):
+            d.ok("lee", "text_edit", path="/field", ops=[{"key": "end"}])
+            plain.append(stalled())
+            d.ok("lee", "text_edit", path="/field", ops=[], window_focus=True)
+            focused.append(stalled())
+        print(f"    100k: plain text_edit (stalled, ms) {plain}; window_focus {focused}")
+        check("window_focus at 100,000 entities stalls the engine thread no more than a plain text_edit (probe_focuscost)",
+              sum(s for s, _ in focused) <= sum(s for s, _ in plain), f"stalls: plain {plain}, window_focus {focused}")
+    check("the windowed engine exited cleanly", eng.exit_code == 0, f"exit {eng.exit_code}")
+    return results
+
+
 def one_call_one_commit(exe, port, out):
     """AGENTS rule 14 on the taste tools, against this (debug) engine, whose debug_assert panics
     on a second commit (the M4 final audit: gallery_apply and taste_suggest {apply} committed
@@ -572,6 +734,16 @@ def main():
         d.expect("bob prunes past the disk budget", "bob", "disk_prune", {"free_mb": 1}, ["lead_only"])
         lead_ok = d.raw(d.agent("lee"), "swarm_settings", {"frame_floor_fps": 30})[0] is None
         d.check("the granted lead sets the frame floor", lead_ok)
+        # The human's keyboard and clipboard (review of m5-text, major 2): a builder can't point
+        # them at a text (here one hidden under the world, which another agent could read).
+        d.ok("bob", "world_spawn", name="bob_field", shape="text", position=[0, -500, 0], visible=False, text={"text": "x"})
+        d.expect("bob points the human's keyboard at his hidden text", "bob", "text_edit", {"path": "/bob_field", "ops": [], "window_focus": True}, ["lead_only"])
+        d.expect("bob stops the human's typing", "bob", "text_edit", {"path": "/bob_field", "ops": [], "window_focus": False}, ["lead_only"])
+        d.expect("the lead points it at a hidden text", "lee", "text_edit", {"path": "/bob_field", "ops": [], "window_focus": True}, ["not_visible"])
+        d.ok("bob", "world_set", path="/bob_field", visible=True)
+        lead_focus = d.raw(d.agent("lee"), "text_edit", {"path": "/bob_field", "ops": [], "window_focus": True})
+        d.check("the granted lead points the keyboard at a shown text", lead_focus[0] is None and (lead_focus[1] or {}).get("window_focus") is True, json.dumps(lead_focus[1])[:200])
+        d.raw(d.agent("lee"), "text_edit", {"path": "/bob_field", "ops": [], "window_focus": False})
         # Jobs: ann's perf capture records; bob can't replace it or switch the profiler under it.
         done = {}
         t = threading.Thread(target=lambda: done.setdefault("ann", d.raw(d.agent("ann"), "perf_capture", {"frames": 240})))
@@ -670,6 +842,7 @@ def main():
     d.results.extend(one_call_one_commit(exe, a.port + 2, out))
     d.results.extend(mount_race(exe, a.port + 3, out))
     d.results.extend(recorded_results(exe, a.port + 4, out))
+    d.results.extend(window_click(exe, a.port + 5, out))
     held = sum(1 for r in d.results if r["held"])
     report = {"probes": len(d.results), "held": held, "results": d.results, "owned_tools": owned, "engine_exit": eng.exit_code}
     (out / "report.json").write_text(json.dumps(report, indent=1))

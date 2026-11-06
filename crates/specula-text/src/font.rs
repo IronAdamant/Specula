@@ -307,6 +307,26 @@ impl Font {
     }
 }
 
+/// How far (font units) a `glyf` header box may sit inside the outline's own box: composites
+/// of scaled components round it to whole units. Ink boxes grow by it.
+pub const GLYPH_BOX_SLACK: f32 = 1.0;
+
+impl Font {
+    /// The glyph's box `[x_min, y_min, x_max, y_max]` (font units) from its `glyf` header: ten
+    /// bytes, no outline parsed (review of cd954bd, major 3: ink boxes parsed every distinct
+    /// glyph's outline, ~680 for a CJK paragraph, on the engine thread). `None` for a glyph with
+    /// no outline (a space) or a box that is inside out. Well-made fonts keep it equal to the
+    /// outline's control-point box (tested on the bundled faces).
+    pub fn glyph_box(&self, glyph: GlyphId) -> Option<[i16; 4]> {
+        let v = self.glyph_view(glyph).ok()?;
+        if v.len() < 10 {
+            return None;
+        }
+        let b = [v.i16(2).ok()?, v.i16(4).ok()?, v.i16(6).ok()?, v.i16(8).ok()?];
+        (b[0] <= b[2] && b[1] <= b[3]).then_some(b)
+    }
+}
+
 /// Result of parsing everything at load time.
 struct Parsed {
     units_per_em: u16,

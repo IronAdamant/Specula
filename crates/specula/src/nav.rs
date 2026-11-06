@@ -1929,7 +1929,9 @@ impl Nav {
             (true, None) => 0.0,
             // A model's built bounds arrive when its build finishes (wall-clock time, F2): models
             // use their collider's bottom, or their origin.
-            (false, lo) if e.shape == Shape::Model => lo.map_or(0.0, |lo| -lo * scale.y),
+            // Text's bounds depend on the machine's fallback fonts and when they load (F2): the
+            // same as a model's.
+            (false, lo) if matches!(e.shape, Shape::Model | Shape::Text) => lo.map_or(0.0, |lo| -lo * scale.y),
             (false, _) => e.local_bounds().map_or(0.0, |(lo, _)| -lo.y * scale.y),
         };
         let mut problem = None;

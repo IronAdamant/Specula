@@ -15,6 +15,9 @@ const bool HDR = (FEATURES & 4u) != 0u;
 // the mesh pipeline's Lit does; blended items keep the alpha below (their blend state).
 const bool SSAO = (FEATURES & 32u) != 0u;
 const bool CUTOUT = (FEATURES & 128u) != 0u;
+// The glyph pipeline (src/sprite.rs FEAT_GLYPH): Slug coverage instead of a texel. Specialized,
+// so sprite pipelines carry none of its code or registers.
+const bool GLYPH = (FEATURES & 2048u) != 0u;
 
 layout(set = 0, binding = 0) uniform sampler2DArrayShadow shadow_map;
 layout(set = 0, binding = 1) uniform sampler2D textures[];
@@ -27,8 +30,11 @@ layout(location = 4) flat in vec4 v_rect;   // sprite: texel bounds | tiles: cel
 layout(location = 5) flat in vec4 v_params; // cutoff | tiles: margin, spacing, columns
 layout(location = 6) flat in vec4 v_tile;   // tiles: tile size (px) | 1 / texture size
 layout(location = 7) flat in vec3 v_normal;
+layout(location = 9) flat in uvec4 v_glyph;
 
 layout(location = 0) out vec4 out_color;
+
+#include "glyph.glsl"
 
 // Integer hash (PCG), for dithering.
 uint pcg(uint v) {
@@ -116,7 +122,14 @@ vec3 card_light(vec3 p) {
 #include "sprite_texel.glsl"
 
 void main() {
-    vec4 texel = v_info.w == KIND_TILES ? tile_texel() : sprite_texel();
+    vec4 texel;
+    if (GLYPH) {
+        // Derivatives first, in uniform control flow.
+        vec2 ppe = glyph_pixels_per_em(v_uv);
+        texel = vec4(1.0, 1.0, 1.0, glyph_coverage(v_glyph.xy, v_glyph.z, v_info.x, v_glyph.w, v_rect, v_uv, ppe));
+    } else {
+        texel = v_info.w == KIND_TILES ? tile_texel() : sprite_texel();
+    }
     vec3 albedo = texel.rgb * v_tint.rgb;
     float a = clamp(texel.a * v_tint.a, 0.0, 1.0);
     if (CUTOUT) {

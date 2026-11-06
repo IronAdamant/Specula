@@ -109,15 +109,15 @@ const LOOK_KEYS: &[&str] = &["material", "opacity", "emissive", "metallic", "rou
 const COMPONENT_KEYS: &[&str] = &["tags", "props", "collider", "body", "anim", "vfx", "decal", "water"];
 pub(crate) const SPAWN_KEYS: &[&str] = &[
     "shape", "name", "parent", "path", "position", "rotation_deg", "scale", "color", "profile", "segments", "recipe",
-    "params", "visible", "layer", "transient", "sprite", "tilemap", "shape2d",
+    "params", "visible", "layer", "transient", "sprite", "tilemap", "shape2d", "text",
 ];
 const SET_KEYS: &[&str] = &[
     "id", "path", "name", "expect_version", "rename", "parent", "position", "rotation_deg", "scale", "color", "profile",
-    "segments", "add_tags", "remove_tags", "recipe", "params", "visible", "layer", "sprite", "tilemap", "shape2d",
+    "segments", "add_tags", "remove_tags", "recipe", "params", "visible", "layer", "sprite", "tilemap", "shape2d", "text",
 ];
-const SHAPE_LIST: &str = "group, cube, quad, sphere, lathe, model, sprite, tilemap or shape2d";
+const SHAPE_LIST: &str = "group, cube, quad, sphere, lathe, model, sprite, tilemap, shape2d or text";
 /// The 2D components (their keys are also their shapes' names).
-const TWO_D_KEYS: [&str; 3] = ["sprite", "tilemap", "shape2d"];
+const TWO_D_KEYS: [&str; 4] = ["sprite", "tilemap", "shape2d", "text"];
 const DELETE_KEYS: &[&str] = &["id", "path", "name", "expect_version"];
 const QUERY_KEYS: &[&str] = &["limit", "fields", "path_prefix", "tags", "shape", "material", "created_by", "region", "cursor"];
 const FRAME_KEYS: &[&str] =
@@ -229,6 +229,10 @@ pub enum Command {
     Sight(crate::sight_tools::SightCall),
     /// tilemap_get: cells of one layer (all layers' names when `layer` is `None`) in `region`.
     TileGet { key: EntityKey, layer: Option<String>, region: Option<[u32; 4]> },
+    /// text_edit: edit operations on a text entity's text, caret and selection (one change).
+    TextEdit(Box<crate::text_world::TextCommit>),
+    /// text_edit (caller's thread): a text entity's component, to apply ops to.
+    TextGet { key: EntityKey },
     /// The task board, intents, notes, roll-ups, leases, swarm settings and the desync detector
     /// (see [`crate::swarm_tools`]).
     Swarm(crate::swarm_tools::SwarmCall),
@@ -626,6 +630,8 @@ pub enum CallerThread {
     Audio,
     /// `timeline_set`: the timeline is checked, then written through `project_write`.
     Timeline,
+    /// `text_edit`: ops are applied and laid out here; the engine commits the result.
+    Text,
 }
 
 impl CallerThread {
@@ -638,6 +644,7 @@ impl CallerThread {
             "style_check" => CallerThread::Studio,
             "terrain_edit" => CallerThread::Terrain,
             "timeline_set" => CallerThread::Timeline,
+            "text_edit" => CallerThread::Text,
             n if n.starts_with("lex_") => CallerThread::Lex,
             n if n.starts_with("studio_") => CallerThread::Studio,
             n if n.starts_with("project_") => CallerThread::Project,
@@ -672,6 +679,7 @@ impl CallerThread {
             CallerThread::Disk => "disk_* tools read and prune the shared disk budget outside the engine thread: check disk use before or after the playtest",
             CallerThread::Audio => "audio_* tools read the engine's audio and render previews outside the engine thread: hear (audio_played, audio_levels) before or after the playtest",
             CallerThread::Timeline => "timeline_set writes a project file outside the engine thread: write timelines before the playtest (timeline_play and the others work inside one)",
+            CallerThread::Text => "text_edit lays text out on your connection, outside the engine thread: type before or after the playtest (a step may world_set a text component)",
         }
     }
 }
@@ -761,6 +769,8 @@ impl Tools {
                 Some(CallerThread::Audio) => return crate::audio_tools::call(self, session, name, arguments),
                 // A project write: checked and committed through project_write on this thread.
                 Some(CallerThread::Timeline) => return crate::timeline_tools::set_tool(self, session, arguments),
+                // Ops are applied and laid out on this thread; the engine commits the result.
+                Some(CallerThread::Text) => return crate::text_world::call(self, session, arguments),
                 // (Answered above.)
                 // tools_* reach here only from a caller that skipped `ToolHandler::call` (tests).
                 Some(CallerThread::LogicBuild | CallerThread::LogicReload | CallerThread::MergeSuggest | CallerThread::Scope) | None => parse(name, arguments),
@@ -1252,7 +1262,7 @@ fn parse_delete_fields(args: &Json) -> Result<(EntityKey, Option<u64>), String> 
     Ok((entity_key(args, "world_delete")?, version_arg(args)?))
 }
 
-fn version_arg(args: &Json) -> Result<Option<u64>, String> {
+pub(crate) fn version_arg(args: &Json) -> Result<Option<u64>, String> {
     match args.get("expect_version") {
         None | Some(Json::Null) => Ok(None),
         Some(v) => match v.as_u64() {
@@ -2046,6 +2056,21 @@ pub(crate) fn definitions() -> Vec<ToolDef> {
                      inside others are holes (even-odd)",
                 ),
             ),
+            (
+                "text",
+                described(
+                    "text only: {text (at most 2048 bytes), font ui|ui-bold|display (bundled SIL OFL faces: Latin, \
+                     Cyrillic, Greek; CJK falls back to the system's faces), size (m per em, default 0.25), align \
+                     left|center|right (default center), max_width (m; wraps by Unicode line-break rules), \
+                     line_height (x, default 1), max_lines (cut with an ellipsis), anchor [x,y] 0..1 (the box point \
+                     at the entity's origin, default [0.5,0.5]), lit (default false: lit text takes the sun and \
+                     lights, as carved letters do), rich (text is markup: [b]..[/b], [color=#rrggbb]..[/color], \
+                     [icon=name], [[ for '['), z_layer, locale (BCP 47, picks the CJK fallback), editing {caret, \
+                     anchor} (drawn caret and selection; text_edit keeps it)}. Drawn from glyph outlines per pixel \
+                     in the entity's local XY plane (sharp at any distance or angle), tinted by the entity's color \
+                     and opacity",
+                ),
+            ),
         ]);
     };
     let string_array = |desc: &str| {
@@ -2834,6 +2859,7 @@ pub(crate) fn definitions() -> Vec<ToolDef> {
         },
     ]
     .into_iter()
+    .chain([crate::text_world::tool_def()])
     .chain(crate::sight_tools::definitions())
     .chain(crate::swarm_tools::definitions())
     .chain(crate::review_tools::definitions())
@@ -2950,7 +2976,7 @@ mod tests {
         ] {
             assert!(parse_spawn(&args(bad)).is_err(), "{bad} should be rejected");
         }
-        assert_eq!(parse_spawn(&args(r#"{"shape":1}"#)).err().unwrap(), "'shape' must be a string: group, cube, quad, sphere, lathe, model, sprite, tilemap or shape2d");
+        assert_eq!(parse_spawn(&args(r#"{"shape":1}"#)).err().unwrap(), "'shape' must be a string: group, cube, quad, sphere, lathe, model, sprite, tilemap, shape2d or text");
     }
 
     #[test]

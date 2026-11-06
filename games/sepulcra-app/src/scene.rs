@@ -267,8 +267,12 @@ impl Scene {
             let props = Json::obj([("index", Json::from(i + 1))]);
             let spec = ents::model_spec(self.tombs_g, &format!("tomb_{:02}", i + 1), looks::tombstone_spec(i), pos, rot, 1.25, &["tombstone"], props);
             let id = ents::spawn(world, &self.agent, spec);
+            crate::epitaphs::carve(world, &self.agent, id, i);
             self.tombs.push((id, pos, rot, false));
         }
+        // The map's name, cut into a stone behind the graveyard.
+        let back = cz - (rows as f32 * 2.2) / 2.0 - 1.4;
+        crate::epitaphs::title_stone(world, &self.agent, self.tombs_g, Vec3::new(cx, slab::GRAVEYARD_HEIGHT, back), 0.0, "I · The Graveyard");
     }
 
     // ---- per tick ----

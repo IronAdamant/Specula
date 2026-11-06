@@ -100,6 +100,8 @@ const ALLOWED: &[Allowed] = &[
     Allowed { file: "studio/gallery.rs", counts: &[("book().write", 2), ("fs::", 3), ("png::encode", 1), ("read_rgba8", 1)], why: "a round's sheet is made, encoded and written on the gallery worker's thread (render_round); one render's readback per budgeted studio step, as studio.rs" },
     Allowed { file: "gallery_screen.rs", counts: &[("fs::", 1), ("thread::Builder", 1)], why: "the gallery screen decodes its sheet on its own image thread, as the review screen does" },
     Allowed { file: "terrain.rs", counts: &[("thread::Builder", 1)], why: "the terrain texel worker (started once)" },
+    Allowed { file: "text_window.rs", counts: &[("thread::Builder", 1)], why: "the system clipboard's own thread (a delayed-rendering owner can block a read indefinitely), started once; the window's paste and cut wait for its answer through a jobs::Reply" },
+    Allowed { file: "text_world.rs", counts: &[(".is_file()", 1), ("thread::Builder", 2)], why: "a CJK fallback font (10-20 MB) loads on its own thread (which also checks its candidate files exist), at most once per family; world files' texts are laid out on the text load thread; never on the engine thread" },
     Allowed { file: "trace_sink.rs", counts: &[(".exists()", 2), ("book().append", 1), ("book().make_dir", 1), ("book().write", 1), ("fs::", 3), ("remove_file_inside", 2), ("thread::Builder", 1)], why: "the trace's file sink thread and crash reports" },
     Allowed { file: "trace_tools.rs", counts: &[("fs::", 1)], why: "caller-thread tool (CallerThread::Trace)" },
     Allowed { file: "two_d.rs", counts: &[("fs::", 4), ("thread::Builder", 1)], why: "sprite and tileset files load on the 2D loader thread" },
