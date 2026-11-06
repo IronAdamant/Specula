@@ -479,6 +479,15 @@ pub(crate) fn client_size_of(hwnd: Hwnd) -> (u32, u32) {
     ((rect.right - rect.left).max(0) as u32, (rect.bottom - rect.top).max(0) as u32)
 }
 
+/// The DPI Windows uses for `hwnd`'s monitor (96 = 100%; the process is per-monitor DPI aware,
+/// so this follows the window between monitors). `None` for a stale handle. Any thread.
+pub(crate) fn dpi_of(hwnd: Hwnd) -> Option<u32> {
+    // SAFETY: GetDpiForWindow validates the handle (0 for an invalid one) and may be called from
+    // any thread.
+    let dpi = unsafe { GetDpiForWindow(hwnd) };
+    (dpi > 0).then_some(dpi)
+}
+
 /// The refresh rate of the display nearest `hwnd` (the primary one for a null or stale handle),
 /// in Hz; `None` when the driver reports "default hardware" (0 or 1). Callable from any thread.
 pub(crate) fn refresh_rate_of(hwnd: Hwnd) -> Option<f64> {

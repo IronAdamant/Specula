@@ -6,6 +6,7 @@
   "modal": true,
   "focus": "save_1",
   "back": "close_saves",
+  "opened_by": ["open_saves"],
   "notes": "Save and load: three player slots and the two rotating autosaves. Actions: save_slot:N, load_slot:N, delete_slot:N (N = 1..3; each asks first when it would replace or lose something), load_auto:N (N = 1..2), close_saves. State per slot: slotN_name, slotN_title (what it holds), slotN_detail (time played, when), slotN_used; the same for autoN_; saves_status (a line while a save or load runs).",
   "root": {
     "type": "box",
@@ -22,7 +23,7 @@
         "children": [
           { "type": "label", "text": "Saved games", "role": "title", "text_align": "center" },
           { "type": "label", "text": "{saves_status}", "role": "small", "text_align": "center", "visible": "saves_status" },
-          { "type": "panel", "style": "divider", "height": 1, "padding": 0, "margin": [2, 0, 2, 0] },
+          { "type": "panel", "style": "divider", "height": 1, "padding": 0, "margin": [2, 0, 2, 0], "visible": "!ui.short" },
           {
             "type": "box", "layout": "row", "align": "center", "gap": 8,
             "children": [
@@ -62,7 +63,7 @@
               { "type": "button", "id": "delete_3", "style": "compact", "min_width": 44, "min_height": 44, "icon": "cross", "action": "delete_slot:3", "enabled": "slot3_used", "tooltip": "Delete this save." }
             ]
           },
-          { "type": "panel", "style": "divider", "height": 1, "padding": 0, "margin": [2, 0, 2, 0] },
+          { "type": "panel", "style": "divider", "height": 1, "padding": 0, "margin": [2, 0, 2, 0], "visible": "!ui.short" },
           { "type": "label", "text": "Autosaves (at the start of each wave)", "role": "small" },
           {
             "type": "box", "layout": "row", "align": "center", "gap": 8,

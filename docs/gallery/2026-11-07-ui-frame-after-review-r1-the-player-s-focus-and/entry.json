@@ -1,0 +1,32 @@
+{
+  "date": "2026-11-07",
+  "time": "",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M5",
+  "commit": "2f0f5a2c",
+  "subject": "ui",
+  "topic": "UI",
+  "title": "ui_frame after review R1: the player's focus, and the review screen on top",
+  "note": "Review R1 of m5-uitools found ui_frame outlining the pause menu's default focus while the player was on Controls, and the game's buttons listed as reachable under the open review screen. Now the capture copies the player's focus (yellow on Controls), and every game outline under the review screen is faint, unlabelled and blocked, with the review screen's own focus (Close) the only one.",
+  "source": "scripts/ui_check.py (review probes)",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-frame-00001.jpg",
+      "caption": "The pause menu walked to Controls with a gamepad: the capture outlines the player's focus",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 25929
+    },
+    {
+      "file": "02-frame-00002.jpg",
+      "caption": "The review screen open over a busy wave: the game's outlines faint and blocked, the review's labelled",
+      "original": "frame_00002.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 26496
+    }
+  ]
+}

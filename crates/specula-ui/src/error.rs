@@ -37,6 +37,8 @@ pub enum ErrorCode {
     NotVisible,
     /// A modal screen above the widget's screen takes all input.
     ModalBlocks,
+    /// The gamepad or keyboard can't move the focus there from where it is.
+    NotReachable,
 }
 
 impl ErrorCode {
@@ -57,6 +59,7 @@ impl ErrorCode {
             ErrorCode::UnknownWidget => "unknown_widget",
             ErrorCode::NotVisible => "not_visible",
             ErrorCode::ModalBlocks => "modal_blocks",
+            ErrorCode::NotReachable => "not_reachable",
         }
     }
 }

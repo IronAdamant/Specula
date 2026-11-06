@@ -51,7 +51,7 @@ impl Host {
         self.gate.apply(captured, &mut pads);
         let Host { game, world, clock, .. } = self;
         let (mut cam, mut title) = (None, None);
-        let mut f = Frame { input: &[], size: (1280, 720), alpha: 1.0, dt_s: 0.016, camera: &mut cam, agent_view: false, title: &mut title, pads: &pads };
+        let mut f = Frame { input: &[], size: (1280, 720), alpha: 1.0, dt_s: 0.016, camera: &mut cam, agent_view: false, title: &mut title, pads: &pads, synthetic: false };
         game.frame(&mut Ctx { world: GameWorld::new(world), clock, agent: "sepulcra", windowed: false }, &mut f);
         game.tick(&mut Ctx { world: GameWorld::new(world), clock, agent: "sepulcra", windowed: false });
         self.clock.finish_tick();

@@ -42,10 +42,13 @@ pub enum Kind {
     Paths,
     /// Effects' particle boxes and decals' boxes (see [`crate::vfx`]).
     Effects,
+    /// Interface widgets' outlines and ids, from the layout the capture drew (`ui_frame`; see
+    /// [`crate::ui_engine`]).
+    Ui,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 13] = [
+    pub const ALL: [Kind; 14] = [
         Kind::Grid,
         Kind::Axes,
         Kind::Bounds,
@@ -59,6 +62,7 @@ impl Kind {
         Kind::Navmesh,
         Kind::Paths,
         Kind::Effects,
+        Kind::Ui,
     ];
 
     pub fn name(self) -> &'static str {
@@ -76,6 +80,7 @@ impl Kind {
             Kind::Navmesh => "navmesh",
             Kind::Paths => "paths",
             Kind::Effects => "effects",
+            Kind::Ui => "ui",
         }
     }
 
@@ -112,6 +117,9 @@ pub struct Spec {
     /// on screen). Paths like "/district_3".
     pub entities: Vec<String>,
     pub max_labels: usize,
+    /// The display a capture's interface lays out for (`ui_frame`: the caller's, or the one it
+    /// passed for this capture alone); `None`: the default one (the window's; headless the Deck's).
+    pub ui_display: Option<Box<specula_ui::Display>>,
 }
 
 impl Spec {
@@ -794,7 +802,7 @@ mod tests {
 
     #[test]
     fn spec_selects_subtrees() {
-        let s = Spec { kinds: vec![Kind::Bounds], entities: vec!["/district".into()], max_labels: 8 };
+        let s = Spec { kinds: vec![Kind::Bounds], entities: vec!["/district".into()], max_labels: 8, ui_display: None };
         assert!(s.selects("/district") && s.selects("/district/house") && !s.selects("/district_2") && !s.selects("/other"));
         assert!(Spec::default().selects("/anything"));
         assert_eq!(Kind::parse("skeletons"), Some(Kind::Skeletons));

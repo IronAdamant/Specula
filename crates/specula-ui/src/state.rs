@@ -225,8 +225,9 @@ impl Key {
 }
 
 /// The values bindings read: the game's map, inside a list `repeat` the current row, and the
-/// UI's own `ui.*` keys (`ui.width`, `ui.height`, `ui.portrait`, `ui.narrow`, `ui.gamepad`,
-/// `ui.touch`) for layouts that adapt to the screen and device.
+/// UI's own `ui.*` keys (`ui.width`, `ui.height`, `ui.portrait`, `ui.narrow` (under 760 logical
+/// px wide), `ui.short` (under 520 high), `ui.gamepad`, `ui.touch`, and `ui.open.<screen>` for
+/// each loaded screen) for layouts that adapt to the screen, the device and what else shows.
 #[derive(Clone, Copy)]
 pub struct Scope<'a> {
     pub state: &'a StateMap,
@@ -387,6 +388,48 @@ impl Template {
         }
     }
 
+    /// [`Template::render`] in a pseudo-locale (`ui_check {pseudo: true}`): the screen's own text
+    /// (literal segments) comes out accented and about 35% longer, in brackets, as a translation
+    /// might, so overflow shows before anyone translates. Returns the first bound key whose value
+    /// put words on screen (a string with letters): text the game supplies, which a screen's
+    /// string table can't translate.
+    pub fn render_pseudo(&self, scope: &Scope<'_>, out: &mut String) -> Option<String> {
+        out.clear();
+        let mut from_state = None;
+        let mut value = String::new();
+        for s in &self.segs {
+            match s {
+                Seg::Lit(l) => pseudo_text(l, out),
+                Seg::Bound { key, fmt } => {
+                    value.clear();
+                    match scope.get(key) {
+                        Some(Lookup::Value(v)) => {
+                            write_value(v, *fmt, &mut value);
+                            if from_state.is_none() && matches!(v, Value::Str(_)) && value.chars().filter(|c| c.is_alphabetic()).nth(1).is_some() {
+                                from_state = Some(key.name());
+                            }
+                        }
+                        Some(Lookup::Index(i)) => write_value(&Value::Int(i), *fmt, &mut value),
+                        None => value.push_str("{?}"),
+                    }
+                    out.push_str(&value);
+                }
+            }
+            if out.len() > MAX_TEXT {
+                break;
+            }
+        }
+        if out.len() > MAX_TEXT {
+            let mut cut = MAX_TEXT;
+            while !out.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            out.truncate(cut);
+            out.push('…');
+        }
+        from_state
+    }
+
     fn render_uncapped(&self, scope: &Scope<'_>, out: &mut String) {
         out.clear();
         for s in &self.segs {
@@ -427,6 +470,45 @@ fn parse_fmt(f: &str) -> Option<Fmt> {
             (n <= 6).then_some(Fmt::Fixed(n))
         }
     }
+}
+
+/// A pseudo-locale version of a screen's literal text into `out`: vowels and a few consonants
+/// accented (Latin-1, which every UI font has), about 35% longer (`·` padding, at least one per
+/// word-bearing segment), the whole in brackets. Text without letters (separators, numbers) is
+/// left as it is.
+pub fn pseudo_text(text: &str, out: &mut String) {
+    let letters = text.chars().filter(|c| c.is_alphabetic()).count();
+    if letters == 0 {
+        out.push_str(text);
+        return;
+    }
+    out.push('[');
+    for c in text.chars() {
+        out.push(match c {
+            'a' => 'á',
+            'e' => 'é',
+            'i' => 'í',
+            'o' => 'ó',
+            'u' => 'ú',
+            'y' => 'ý',
+            'n' => 'ñ',
+            'c' => 'ç',
+            'A' => 'Á',
+            'E' => 'É',
+            'I' => 'Í',
+            'O' => 'Ó',
+            'U' => 'Ú',
+            'Y' => 'Ý',
+            'N' => 'Ñ',
+            'C' => 'Ç',
+            c => c,
+        });
+    }
+    let pad = (text.chars().count() * 35).div_ceil(100).max(1);
+    for _ in 0..pad {
+        out.push('·');
+    }
+    out.push(']');
 }
 
 fn write_value(v: &Value, fmt: Fmt, out: &mut String) {

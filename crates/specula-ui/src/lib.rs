@@ -23,8 +23,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod agent;
 pub mod check;
 pub mod color;
+pub mod display;
 pub mod draw;
 pub mod error;
 pub mod geom;
@@ -38,7 +40,9 @@ pub mod testfont;
 pub mod theme;
 mod ui;
 
+pub use agent::{Only, Outline, TreeOpts};
 pub use check::{check, Finding, Severity, Target};
+pub use display::Display;
 pub use draw::{DrawCmd, DrawList, DrawStats, GlyphQuad, Rect, RectCmd, Vertex};
 pub use error::{ErrorCode, UiError};
 pub use screen::{Screen, SCREEN_FORMAT};

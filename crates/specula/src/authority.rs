@@ -582,6 +582,12 @@ pub fn access(tool: &str) -> Option<Access> {
         | "merge_suggest" | "vfx_get" | "vfx_check" | "vfx_info" | "logic_status" | "perf_frame" | "perf_memory" | "engine_info" | "balance_targets"
         | "disk_status" | "tools_catalog" | "trace_query" | "trace_follow" | "trace_call" | "trace_crash" | "trace_incidents" | "terrain_info" | "gi_info"
         | "gi_check" => ReadOnly,
+        // The interface's sight tools: they lay it out (and put the player's interface back) and read it.
+        "ui_tree" | "ui_check" | "ui_frame" => ReadOnly,
+        // A player's input, synthesised: the frames' world changes commit as the caller's through
+        // Live::game_tool, like a hosted game's tool (claims checked). The engine's own screens
+        // (surface review or gallery) are the owner's: refused (owner_only) for anyone else.
+        "ui_act" => World("world"),
         // Hearing (docs/design/AUDIO.md): what played and how loud, from the engine's audio.
         "audio_played" | "audio_levels" => ReadOnly,
         "audio_preview" => Open("renders or decodes a sound offline and measures it; its optional WAV and picture are new files in the captures folder; nothing shared changes"),

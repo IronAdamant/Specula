@@ -5,6 +5,7 @@
   "layer": 30,
   "modal": true,
   "back": "close_controls",
+  "opened_by": ["open_controls", "help"],
   "notes": "The controls list (read only for now: rebinding is an open owner question). State: bindings (rows: label = action description, keys = current glyphs for the active device, e.g. \"LMB / A\").",
   "root": {
     "type": "box",

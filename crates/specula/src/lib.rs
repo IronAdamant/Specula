@@ -102,6 +102,8 @@ mod toolscope;
 mod toolscope_tools;
 pub mod two_d;
 mod ui;
+mod ui_engine;
+mod ui_tools;
 pub mod flashwatch;
 pub mod vfx;
 mod vfx_tools;
@@ -939,6 +941,8 @@ struct Engine {
     evidence: evidence::EvidenceState,
     /// The window's review screen (see `review_screen`).
     review_ui: review_screen::ReviewUi,
+    /// The display the interface lays out for, and what the `ui_*` tools set (see `ui_engine`).
+    ui_state: ui_engine::UiState,
     /// Galleries, the preference store, boards and the style configurator (see `taste`).
     taste: taste::Taste,
     /// An engine screen (review, gallery) held the window's input at the last frame.
@@ -1112,6 +1116,7 @@ impl Engine {
             disk_last: Instant::now(),
             evidence: Default::default(),
             review_ui: review_screen::ReviewUi::with_captures(captures_root),
+            ui_state: ui_engine::UiState::default(),
             taste: taste::Taste::default(),
             modal_open: false,
             game_pads: Vec::new(),
@@ -1176,6 +1181,16 @@ impl Engine {
             self.world_changed_wholesale();
             // The world files on disk describe a world that is gone: the next save rewrites them.
             self.saved = None;
+        }
+    }
+
+    /// The world undid a refused game tool's (or `ui_act` frames') changes: the game goes back
+    /// with it, to its checkpoint, or (none taken) repairs itself as its own write.
+    pub(crate) fn game_rolled_back(&mut self, checkpoint: Option<Box<dyn std::any::Any>>) {
+        let Some(game) = self.game.as_mut() else { return };
+        match checkpoint {
+            Some(c) => game.restore(c),
+            None => sim_writes::game(&mut self.world, &mut self.swarm, game.as_mut(), &self.clock, &self.game_name, self.windowed, sim_writes::GameCall::RolledBack),
         }
     }
 
@@ -1244,6 +1259,8 @@ impl Engine {
         let Some(game) = self.game.as_mut() else { return };
         sim_writes::game_start(&mut self.world, &mut self.swarm, game.as_mut(), &self.clock, &self.game_name, self.windowed);
         self.last_advance = Instant::now();
+        // The display its interface lays out for (headless: the virtual one).
+        self.ui_tell_display();
     }
 
     /// Builds a loaded world's navmeshes for up to `limit` of wall time (slices back to back).
@@ -1351,6 +1368,8 @@ impl Engine {
 
     /// The game's per-frame update: input, camera, title.
     fn game_frame(&mut self, ui: &UiThread, size: (u32, u32), dt: Duration) {
+        // The window's display (size, the OS's scale for its monitor) before the game lays out.
+        self.ui_window(ui.raw, size);
         self.input.clear();
         ui.drain_events(&mut self.input);
         // The review screen reads input first; while it is open the game, modules and live Lex
@@ -1411,6 +1430,7 @@ impl Engine {
             agent_view,
             title: &mut self.game_title,
             pads: &pads,
+            synthetic: false,
         };
         sim_writes::game(&mut self.world, &mut self.swarm, game.as_mut(), &self.clock, &self.game_name, self.windowed, sim_writes::GameCall::Frame(&mut frame));
         // While the window looks through an agent's camera the game's camera writes don't count
@@ -2059,6 +2079,7 @@ impl Engine {
             self.autosave_if_due();
             self.pump_world_saves();
             self.sweep_claims(server);
+            self.ui_sweep(server);
             self.lex_live_end_holds(server);
             self.poll_assets_async(false);
             self.pump_builds(None);
@@ -2248,6 +2269,7 @@ impl Engine {
             self.autosave_if_due();
             self.pump_world_saves();
             self.sweep_claims(server);
+            self.ui_sweep(server);
             self.lex_live_end_holds(server);
             self.poll_assets_async(false);
             self.pump_builds(None);
@@ -2327,6 +2349,11 @@ impl Engine {
             self.handle_model_call(request);
             return;
         }
+        // ui_frame is a capture: sight_frame's, at the display's size through the player's camera.
+        let request = match request.command {
+            Command::Ui(ui_tools::UiCall::Frame(f)) => Request { command: Command::Frame(self.ui_frame_spec(*f, &request.session)), ..request },
+            command => Request { command, ..request },
+        };
         if matches!(request.command, Command::Frame(_) | Command::Sight(_)) {
             self.handle_sight(request);
             return;
@@ -2370,6 +2397,11 @@ impl Engine {
             self.start_desync_trace(request);
             return;
         }
+        if matches!(request.command, Command::Ui(ui_tools::UiCall::Check(_))) {
+            // One target's layout and rules per slice (see `ui_engine`).
+            self.start_ui_check(request);
+            return;
+        }
         if matches!(request.command, Command::Hash { verify: true, .. }) {
             // The replay check runs in steps (see `hash_verify`).
             self.start_hash_verify(request);
@@ -2387,7 +2419,7 @@ impl Engine {
         let w = Writer::new(&by, Some(&session));
         let tick = self.clock.tick();
         // A game tool (play_ui pressing a menu's Save) may queue requests for the engine.
-        let game_call = matches!(request.command, Command::Game { .. });
+        let game_call = matches!(request.command, Command::Game { .. } | Command::Ui(ui_tools::UiCall::Act(_)));
         let output = match request.command {
             Command::Spawn(spec) => match self.world.commit(&mut self.swarm, tick, w, Kind::Spawn, crate::write_policy::Rule::World, |wd| wd.spawn(spec, &by).map(|e| e.id)) {
                 Ok((id, seq)) => self.entity_output(id, seq),
@@ -2679,6 +2711,7 @@ impl Engine {
             Command::Place(call) => self.place_call(call, w, tick),
             Command::Stream(call) => self.stream_call(call, &request.session),
             Command::Terrain(call) => self.terrain_call(call),
+            Command::Ui(call) => self.ui_call(call, w, tick, &request.session),
             Command::SaveGame(call) => self.handle_save(call, w, &by, authority::authority(&self.swarm, &request.session.id)),
             Command::ModelBuild(_) | Command::ModelReload => unreachable!("answered by handle_model_call"),
             Command::Logic(call) => {
@@ -3201,6 +3234,7 @@ fn call_class(command: &Command) -> Class {
         Command::Place(call) => call.class(),
         Command::Stream(call) => call.class(),
         Command::Terrain(call) => call.class(),
+        Command::Ui(call) => call.class(),
         Command::SaveGame(call) => call.class(),
         Command::Playtest(_) => Class::Sim,
         Command::Project(call) => call.class(),

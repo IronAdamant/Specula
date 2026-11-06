@@ -802,6 +802,12 @@ impl Input {
         self.pad_style
     }
 
+    /// Say which device was used last without any input (a layout-only input mirroring a live
+    /// one, so its prompts show the same glyphs).
+    pub fn set_last_device(&mut self, device: Option<Device>) {
+        self.last_device = device;
+    }
+
     /// Which pad labels prompts use (Steam can tell you; XInput can't).
     pub fn set_pad_style(&mut self, style: PadStyle) {
         self.pad_style = style;

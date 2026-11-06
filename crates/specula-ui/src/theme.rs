@@ -174,23 +174,58 @@ pub struct KeycapStyle {
     pub min_width: f32,
 }
 
-/// How the UI scale follows the screen: `max(min(w / ref_w, h / ref_h), ppi / ref_ppi)` times
-/// the player's UI-scale setting, clamped. At the reference (the Deck, 1280×800, ~215 ppi) the
-/// scale is 1, so logical px = Deck px.
+/// How the UI scale follows the screen: `max(min(w / ref_w, h / ref_h), ppi / ref_ppi, os_scale)`
+/// times the player's UI-scale setting, clamped. At the reference (the Deck, 1280×800, ~215 ppi)
+/// the scale is 1, so logical px = Deck px. The operating system's own scale for the monitor
+/// (Windows: DPI / 96) is a floor: a player who asked the OS for bigger text gets at least that.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScaleRule {
     pub reference: [f32; 2],
     pub reference_ppi: f32,
     pub min: f32,
     pub max: f32,
+    /// Widest aspect (width / height) the safe area keeps: on wider screens (ultra-wide) screens
+    /// that respect the safe area lay out in a centred band this wide, so a HUD's corners stay
+    /// near the player's eyes. `None`: the whole width.
+    pub max_aspect: Option<f32>,
+    /// The most the OS scale's floor may enlarge the UI over what the screen's size (or density)
+    /// gives: the largest boost the screens were checked at. A small window on a 175% laptop
+    /// would otherwise leave fewer logical px than any layout was made for. The player's own
+    /// UI-scale setting multiplies after this cap (it is their explicit choice, and each of its
+    /// steps must change the size: review R1 of m5-uitools found every setting giving 1.35 on
+    /// such a laptop when the cap applied to the product). `None`: no limit.
+    pub max_boost: Option<f32>,
+    /// The smallest logical size, `[w, h]`, the screens are made (and checked) for: no scale
+    /// leaves fewer logical px than this, so the player's largest settings on a small window
+    /// stop where the window has no more room rather than push menus off it. At most the
+    /// reference size. `None`: no limit.
+    pub min_logical: Option<[f32; 2]>,
 }
 
 impl ScaleRule {
     pub fn scale(&self, size: [u32; 2], ppi: Option<f32>, user: f32) -> f32 {
+        self.scale_with(size, ppi, None, user)
+    }
+
+    /// [`ScaleRule::scale`] with the OS's scale for the monitor as a floor (`None`: unknown):
+    /// `min(max(base, os), base * max_boost) * user`, at most what keeps `min_logical`, clamped,
+    /// where `base` is the scale by size or density.
+    pub fn scale_with(&self, size: [u32; 2], ppi: Option<f32>, os_scale: Option<f32>, user: f32) -> f32 {
         let by_size = (size[0] as f32 / self.reference[0]).min(size[1] as f32 / self.reference[1]);
         let by_ppi = ppi.filter(|p| p.is_finite() && *p > 0.0).map_or(0.0, |p| p / self.reference_ppi);
+        let by_os = os_scale.filter(|s| s.is_finite() && *s > 0.0).map_or(0.0, |s| s.min(self.max));
         let user = if user.is_finite() && user > 0.0 { user } else { 1.0 };
-        (by_size.max(by_ppi) * user).clamp(self.min, self.max)
+        let base = by_size.max(by_ppi);
+        let mut floored = base.max(by_os);
+        if let Some(b) = self.max_boost {
+            floored = floored.min(base * b);
+        }
+        let mut s = floored * user;
+        if let Some([w, h]) = self.min_logical {
+            // Never below `base` (what the size or the density gives on its own).
+            s = s.min((size[0] as f32 / w).min(size[1] as f32 / h).max(base));
+        }
+        s.clamp(self.min, self.max)
     }
 }
 
@@ -297,7 +332,7 @@ impl Theme {
             tooltip: TooltipStyle { boxed: 0, role: 0, delay_s: 0.45, max_width: 280.0 },
             keycap: KeycapStyle { boxed: 0, role: 0, min_width: 22.0 },
             dim: [0.0, 0.0, 0.0, 0.6],
-            scale: ScaleRule { reference: [1280.0, 800.0], reference_ppi: 215.0, min: 0.5, max: 6.0 },
+            scale: ScaleRule { reference: [1280.0, 800.0], reference_ppi: 215.0, min: 0.5, max: 6.0, max_aspect: None, max_boost: None, min_logical: None },
             check: CheckRules { min_cap_px: 9.0, min_touch_px: 44.0, contrast_body: 4.5, contrast_large: 3.0, large_text_px: 24.0 },
             scene: Vec::new(),
         };
@@ -448,7 +483,27 @@ impl Theme {
             theme.scale.reference_ppi = f.num("reference_ppi")?.unwrap_or(theme.scale.reference_ppi);
             theme.scale.min = f.num("min")?.unwrap_or(theme.scale.min);
             theme.scale.max = f.num("max")?.unwrap_or(theme.scale.max);
-            f.finish(&["reference", "reference_ppi", "min", "max"])?;
+            if let Some(a) = f.num("max_aspect")? {
+                if !(a.is_finite() && (1.0..=8.0).contains(&a)) {
+                    return Err(bad("scale.max_aspect", format!("{a}: need a width / height between 1 and 8 (16:9 is 1.78, 21:9 is 2.33)")));
+                }
+                theme.scale.max_aspect = Some(a);
+            }
+            if let Some(b) = f.num("max_boost")? {
+                if !(b.is_finite() && (1.0..=8.0).contains(&b)) {
+                    return Err(bad("scale.max_boost", format!("{b}: need 1 to 8 (how much the OS scale and the player's setting may enlarge the UI)")));
+                }
+                theme.scale.max_boost = Some(b);
+            }
+            if let Some(m) = f.get("min_logical") {
+                let [w, h] = num2(m, "scale.min_logical")?;
+                let r = theme.scale.reference;
+                if !(w.is_finite() && h.is_finite() && (100.0..=r[0]).contains(&w) && (100.0..=r[1]).contains(&h)) {
+                    return Err(bad("scale.min_logical", format!("[{w}, {h}]: need [width, height] from 100 up to the reference size {r:?}")));
+                }
+                theme.scale.min_logical = Some([w, h]);
+            }
+            f.finish(&["reference", "reference_ppi", "min", "max", "max_aspect", "max_boost", "min_logical"])?;
             let s = theme.scale;
             if !(s.reference[0] > 0.0 && s.reference[1] > 0.0 && s.reference_ppi > 0.0) {
                 return Err(bad("scale", "reference size and ppi must be positive"));

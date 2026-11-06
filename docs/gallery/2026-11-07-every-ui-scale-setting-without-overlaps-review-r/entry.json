@@ -1,0 +1,32 @@
+{
+  "date": "2026-11-07",
+  "time": "",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M5",
+  "commit": "40c7cd26",
+  "subject": "ui",
+  "topic": "UI",
+  "title": "Every UI-scale setting without overlaps (review R2)",
+  "note": "Review R2 of m5-uitools found the build bar running into the selected panel at the game's own 1.15 setting on the Deck and a 16:10 laptop, and the radial's hints on the build bar on an ultrawide at 1.5. The HUD now switches to its compact layout under 1200 logical px wide (was 1100), and the radial's hints move to the side under 600 px high; ui_check passes every setting on five displays.",
+  "source": "scratchpad script over ui_act and ui_frame (review R2 probes)",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-frame-00001.jpg",
+      "caption": "The Deck at UI scale 1.15, a pillar chosen: the compact layout, one bottom panel and the corner buttons under the top bar",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 31326
+    },
+    {
+      "file": "02-frame-00003.jpg",
+      "caption": "An ultrawide 2560x1080 at 1.5 with the build menu open: Carve and Cancel at the left, clear of the build bar",
+      "original": "frame_00003.png",
+      "width": 640,
+      "height": 270,
+      "bytes": 25284
+    }
+  ]
+}

@@ -168,6 +168,8 @@ enum Expect {
     Exempt(&'static str),
     /// Allowed, journaled under the writer.
     Allowed,
+    /// Allowed, journaled under the game the writer drove (a game tool's, `ui_act`'s frames).
+    AllowedVia(&'static str),
     /// The writer replaced the live world wholesale (a bug): reported and counted, and the world
     /// it left is live consistently (marked, recording, unsealed, the clock, project files and id
     /// counter kept, the journal started over from it).
@@ -247,6 +249,43 @@ fn undo(f: &mut Fix, seq: u64) -> Result<(), WorldError> {
 /// `game_commit`) doing `call` for mallory.
 fn for_mallory(f: &mut Fix, game: &str, call: impl FnOnce(&mut crate::game::GameWorld)) -> Result<(), WorldError> {
     f.live.game_tool(&mut f.sw, 1, game, MALLORY, call)
+}
+
+/// A game whose frames present alice's claimed `/abox` (moving it every presented frame), and
+/// whose commands move `/abox` (G) or make `/uix` (H).
+struct Presenting(u32);
+
+impl crate::game::Game for Presenting {
+    fn name(&self) -> &str {
+        "sepulcra"
+    }
+
+    fn frame(&mut self, ctx: &mut crate::game::Ctx, f: &mut crate::game::Frame) {
+        let key = |name: &str| specula_platform::keys::from_name(name).unwrap();
+        for e in f.input {
+            if let specula_platform::Event::KeyDown { code, .. } = *e {
+                if code == key("G") {
+                    ctx.world.update(&EntityKey::Path("/abox".into()), moved(2.0), "sepulcra").unwrap();
+                } else if code == key("H") {
+                    ctx.world.spawn(group("/uix"), "sepulcra").unwrap();
+                }
+            }
+        }
+        if !f.synthetic {
+            self.0 += 1;
+            ctx.world.update(&EntityKey::Path("/abox".into()), moved(self.0 as f32 * 0.01), "sepulcra").unwrap();
+        }
+    }
+}
+
+/// Mallory's `ui_act {steps}` on [`Presenting`], as the engine runs it.
+fn ui_act_as_mallory(f: &mut Fix, steps: &str) -> Result<(), WorldError> {
+    let Ok(crate::ui_tools::UiCall::Act(a)) = crate::ui_tools::parse("ui_act", &Json::parse(&format!(r#"{{"steps": {steps}, "settle": 0}}"#)).unwrap()).unwrap() else { panic!("{steps}") };
+    let mut game = Presenting(0);
+    let clock = crate::game::Clock::new(30);
+    let failed = f.live.game_tool(&mut f.sw, 1, "sepulcra", MALLORY, |gw| crate::ui_engine::act_in_game(&mut game, gw, &clock, "sepulcra", &a))?;
+    assert_eq!(failed, None, "the steps ran");
+    Ok(())
 }
 
 fn module_hook(f: &mut Fix, call: impl FnOnce(&mut dyn WorldWrite)) -> Result<(), WorldError> {
@@ -537,6 +576,12 @@ const ROWS: &[(&str, Write, Expect)] = &[
     ("a game tool renaming a claimed entity (M1)", |f| for_mallory(f, "sepulcra", |wd| {
         wd.update(&EntityKey::Path("/abox".into()), UpdateSpec { name: Some("razed".into()), ..UpdateSpec::default() }, "sepulcra").unwrap();
     }), Expect::Refused("claimed")),
+    // ui_act's synthetic input frames run the game's frame inside game_tool as the caller
+    // (ui_engine::act_in_game, as ui_act does): what the input causes is the caller's; the
+    // game's presentation (here: moving alice's claimed box every presented frame) isn't made
+    // in synthetic frames (review R1 of m5-uitools, findings 4 and 8).
+    ("ui_act's frames: a command its input causes, onto a claimed entity (M5)", |f| ui_act_as_mallory(f, r#"[{"press": "Key.G", "device": "keyboard"}]"#), Expect::Refused("claimed")),
+    ("ui_act's frames: waits and a command on the caller's own, a claimed entity presented (M5)", |f| ui_act_as_mallory(f, r#"[{"wait": 3}, {"press": "Key.H", "device": "keyboard"}]"#), Expect::AllowedVia("sepulcra")),
     ("a game tool writing /project (M3)", |f| for_mallory(f, "sepulcra", |wd| {
         wd.spawn(group("/project"), "sepulcra").unwrap();
     }), Expect::Refused("reserved")),
@@ -744,6 +789,11 @@ fn every_write_path_holds_the_policy() {
                 out.unwrap_or_else(|e| panic!("{name}: {e}"));
                 let entry = f.sw.journal().entries().last().unwrap();
                 assert!(entry.seq > last && entry.is_by(MALLORY), "{name}: journaled as the agent's");
+            }
+            Expect::AllowedVia(game) => {
+                out.unwrap_or_else(|e| panic!("{name}: {e}"));
+                let entry = f.sw.journal().entries().last().unwrap();
+                assert!(entry.seq > last && (&*entry.by, entry.via.as_deref()) == (*game, Some(MALLORY.name)), "{name}: journaled under {game} via the agent");
             }
             Expect::Replaced => {
                 out.unwrap();

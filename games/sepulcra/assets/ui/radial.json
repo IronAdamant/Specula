@@ -4,6 +4,7 @@
   "input": "menu",
   "layer": 10,
   "back": "close_build_menu",
+  "opened_by": ["build_menu", "open_build_menu"],
   "notes": "The radial build menu. Gamepad: point with the left stick (or step with the d-pad), accept carves, back closes. Mouse / touch: point or tap a wedge. Actions: build:<stone>. State: dust (items you can't afford are disabled but still show their cost).",
   "root": {
     "type": "box",
@@ -12,7 +13,7 @@
         "type": "radial",
         "id": "build",
         "anchor": "center",
-        "radius": 150,
+        "radius": 146,
         "inner_radius": 62,
         "items": [
           { "id": "warding", "label": "Warding", "icon": "warding", "action": "build:warding", "enabled": "dust >= 50", "detail": "Warding stone\n50 dust" },
@@ -25,12 +26,27 @@
       {
         "type": "panel",
         "id": "radial_hints",
-        "visible": "!ui.touch",
+        "visible": "!ui.touch && ui.width >= 1200 && ui.height >= 600 || !ui.touch && ui.height >= 700",
         "anchor": "center",
         "offset": [0, 196],
         "layout": "row",
         "gap": 18,
         "padding": [6, 14],
+        "children": [
+          { "type": "prompt", "action": "ui_accept", "text": "Carve" },
+          { "type": "prompt", "action": "ui_back", "text": "Cancel" }
+        ]
+      },
+      {
+        "type": "panel",
+        "id": "radial_hints_side",
+        "notes": "Short screens: under the ring is the bottom panel, so the hints sit at the left. That is under 700 logical px high on compact screens (the Deck at UI scale 1.15 and up: the taller narrow bottom panel), and under 600 on wide ones (an ultrawide at UI scale 1.5: the build bar).",
+        "visible": "!ui.touch && ui.height < 600 || !ui.touch && ui.width < 1200 && ui.height < 700",
+        "anchor": "left",
+        "margin": [0, 0, 0, 12],
+        "layout": "column",
+        "gap": 10,
+        "padding": [8, 14],
         "children": [
           { "type": "prompt", "action": "ui_accept", "text": "Carve" },
           { "type": "prompt", "action": "ui_back", "text": "Cancel" }

@@ -78,7 +78,7 @@ fn a_warm_window_frame_allocates_nothing() {
     let mut quads = Vec::new();
     let mut textures = Textures(0);
     let mut frame = |game: &mut SepulcraGame, world: &mut World, alpha: f32| {
-        let mut f = Frame { input: &[], size: (1280, 720), alpha, dt_s: 0.016, camera: &mut camera, agent_view: false, title: &mut title, pads: &[] };
+        let mut f = Frame { input: &[], size: (1280, 720), alpha, dt_s: 0.016, camera: &mut camera, agent_view: false, title: &mut title, pads: &[], synthetic: false };
         // As the engine runs a frame: game changes are coalesced, transient ones not recorded.
         world.set_recording(Recording::Snapshot);
         game.frame(&mut Ctx { world: GameWorld::new(world), clock: &clock, agent: "sepulcra", windowed: false }, &mut f);

@@ -190,6 +190,20 @@ pub trait Game {
     /// tool call (look entities up again rather than trusting stale ids).
     fn world_rolled_back(&mut self, _ctx: &mut Ctx) {}
 
+    /// The display the game's interface lays out for: the window's (its size, the OS's scale
+    /// for its monitor, safe-area insets) or, headless, the agents' virtual display (`ui_*`
+    /// tools' `display`). Called when it changes, before the frame that uses it. Lay the live
+    /// interface out with `display.viewport(theme, user_scale)` and a capture's with the same
+    /// display at the capture's size, so agents measure what the player sees. Default: nothing.
+    fn display(&mut self, _display: &specula_ui::Display) {}
+
+    /// The game's interface for the engine's `ui_tree`, `ui_frame`, `ui_act` and `ui_check`
+    /// ([`UiPick`]). [`UiPick::Live`] first brings the state the screens bind to up to date (as a
+    /// frame would). `None`: the game has no `specula-ui` interface. Default: `None`.
+    fn ui(&mut self, _pick: UiPick) -> Option<GameUi<'_>> {
+        None
+    }
+
     /// Timelines the game wants played or stopped (an intro, a victory shot), taken after every
     /// tick and frame (docs/design/TIMELINE.md). A game's timeline is presentation: it may hold
     /// camera, audio, subtitle and event tracks, not tracks that write entities (the game moves
@@ -202,6 +216,31 @@ pub trait Game {
     /// fire on the tick they fall in, so a run with the same timeline at the same ticks sees the
     /// same calls. Default: nothing.
     fn timeline_event(&mut self, _ctx: &mut Ctx, _event: &TimelineEvent) {}
+}
+
+/// Which of a game's interfaces [`Game::ui`] hands out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UiPick {
+    /// The one the player sees and presses (laid out by window frames, and by `ui_act`'s).
+    Live,
+    /// [`UiPick::Live`] as the last frame left it, without bringing its state up to date first:
+    /// what `ui_act`'s step runner reads right after each of its frames (that frame just filled
+    /// it; refilling it again doubled the HUD's work per synthetic frame).
+    Peek,
+    /// The one the last capture drew ([`Overlay::capture`]), as laid out for it: `ui_frame`'s
+    /// outlines come from it. A game that draws captures with its live interface returns that.
+    Capture,
+}
+
+/// A game's interface lent to the engine's `ui_*` tools.
+pub struct GameUi<'a> {
+    pub ui: &'a mut specula_ui::Ui,
+    /// The state its screens bind to.
+    pub state: &'a specula_ui::StateMap,
+    /// The player's interface-size setting.
+    pub user_scale: f32,
+    /// The game's input map (`ui_check` verifies that HUD shortcuts have a gamepad binding).
+    pub input_map: Option<&'a specula_input::ActionMap>,
 }
 
 /// A game's request to play or stop a timeline ([`Game::timeline_requests`]).
@@ -394,6 +433,13 @@ pub struct Frame<'a> {
     /// modal) they are all released, and a button still held from then stays released until it
     /// is let go (see [`PadGate`]), so the owner's presses there never also act in the game.
     pub pads: &'a [GamepadState],
+    /// An agent's synthetic input frame (`ui_act`), not the window's: every world write it makes
+    /// commits as the calling agent's, checked against claims, so make only the writes its input
+    /// causes (the commands a press sends). Leave out what only presents (interpolating moving
+    /// things, hover markers): the window's next frame or a capture's `before_capture` draws
+    /// those, as the game's own writes. (Review R1 of m5-uitools, finding 4: interpolation of
+    /// another agent's claimed enemies refused a `ui_act {wait}`.)
+    pub synthetic: bool,
 }
 
 /// Gamepads for the hosted game around an engine screen that takes the input: while `captured`

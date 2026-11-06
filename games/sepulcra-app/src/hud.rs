@@ -23,11 +23,11 @@ use specula_core::Json;
 use specula_input::{ActionMap, Input};
 use specula_text::{find_system_ui_font, load_font_file};
 use specula_ui::gpu::GpuOverlay;
-use specula_ui::{FontSet, StateMap, Theme, ToastKind, Ui, UiEvents, Viewport};
+use specula_ui::{Display, FontSet, StateMap, Theme, ToastKind, Ui, UiEvents, Viewport};
 use std::path::Path;
 
 /// The screens the game uses, with built-in copies for when the assets folder lacks them.
-const SCREENS: [(&str, &str); 8] = [
+const SCREENS: [(&str, &str); 9] = [
     ("hud", include_str!("../../sepulcra/assets/ui/hud.json")),
     ("radial", include_str!("../../sepulcra/assets/ui/radial.json")),
     ("pause", include_str!("../../sepulcra/assets/ui/pause.json")),
@@ -36,6 +36,8 @@ const SCREENS: [(&str, &str); 8] = [
     ("settings", include_str!("../../sepulcra/assets/ui/settings.json")),
     ("controls", include_str!("../../sepulcra/assets/ui/controls.json")),
     ("saves", include_str!("../../sepulcra/assets/ui/saves.json")),
+    // Loaded (so agents check and press it), shown once the title flow lands (M5 shell).
+    ("title", include_str!("../../sepulcra/assets/ui/title.json")),
 ];
 const THEME: &str = include_str!("../../sepulcra/assets/ui/theme.json");
 const CONFIRM: &str = include_str!("../../sepulcra/assets/ui/confirm.json");
@@ -44,7 +46,7 @@ const CONFIRM: &str = include_str!("../../sepulcra/assets/ui/confirm.json");
 pub const MAX_TREE_WIDGETS: usize = 200;
 
 /// Interface sizes the settings cycle through.
-pub const UI_SCALES: [f32; 5] = [0.8, 0.9, 1.0, 1.15, 1.3];
+pub const UI_SCALES: [f32; 6] = [0.8, 0.9, 1.0, 1.15, 1.3, 1.5];
 
 /// The UI toolkit instance, its GPU overlay and the bound state.
 pub struct Hud {
@@ -67,20 +69,23 @@ pub struct Hud {
     capture: Option<(Ui, GpuOverlay)>,
     /// Where the screens were loaded from (the capture UI loads the same).
     dir: Option<std::path::PathBuf>,
+    /// The display the engine says the window (or, headless, the agents' virtual one) is: its
+    /// OS scale and safe area apply to captures too, at their own size.
+    display: Display,
 }
 
 /// Screens the game shows and hides (the capture UI mirrors their visibility).
-const SHOWN: [&str; 9] = ["hud", "radial", "pause", "victory", "defeat", "settings", "controls", "saves", "confirm"];
+const SHOWN: [&str; 10] = ["hud", "radial", "pause", "victory", "defeat", "settings", "controls", "saves", "confirm", "title"];
 
 /// Seconds a message stays on a capture.
 const CAPTURE_TOAST_S: f32 = 4.0;
 /// Most toasts a capture shows.
 const CAPTURE_TOASTS: usize = 3;
 
-/// The UI's viewport for an image of `size` at the player's interface size.
-fn viewport(ui: &Ui, size: (u32, u32), user_scale: f32) -> Viewport {
-    let size = [size.0.max(1), size.1.max(1)];
-    Viewport::new(size, ui.theme().scale.scale(size, None, user_scale))
+/// The UI's viewport for an image of `size` on `display` (its OS scale and safe area) at the
+/// player's interface size: the same as the engine's `ui_*` tools compute.
+fn viewport(ui: &Ui, display: &Display, size: (u32, u32), user_scale: f32) -> Viewport {
+    Display { size: [size.0.max(1), size.1.max(1)], ..*display }.viewport(ui.theme(), user_scale)
 }
 
 fn read(dir: Option<&Path>, name: &str, builtin: &'static str) -> String {
@@ -103,6 +108,7 @@ impl Hud {
             recent: std::collections::VecDeque::new(),
             capture: None,
             dir: ui_dir.map(Path::to_path_buf),
+            display: Display::new([1280, 720]),
         };
         match Hud::load(ui_dir) {
             Ok(ui) => hud.ui = Some(ui),
@@ -177,6 +183,7 @@ impl Hud {
             recent: std::collections::VecDeque::new(),
             capture: None,
             dir: None,
+            display: Display::new([1280, 720]),
         }
     }
 
@@ -187,13 +194,18 @@ impl Hud {
     /// One window frame: input in, layout, events out (what the player pressed, what the UI took).
     /// `out` is overwritten (its storage reused: no allocation once warm).
     pub fn frame(&mut self, input: &Input, size: (u32, u32), out: &mut UiEvents) {
+        // Its own zone (perf_zones: .../game_frame/hud_frame), for the HUD's CPU budget.
+        let _z = specula_core::profile::zone("hud_frame");
+        // Layouts without input (captures, presses by id) show the glyphs the player sees.
+        self.idle.set_last_device(input.last_device());
+        self.idle.set_pad_style(input.pad_style());
         out.events.clear();
         out.consumed = Default::default();
         let Some(ui) = self.ui.as_mut() else { return };
         if size.0 == 0 || size.1 == 0 {
             return;
         }
-        let view = viewport(ui, size, self.user_scale);
+        let view = viewport(ui, &self.display, size, self.user_scale);
         self.laid_out = Some(size);
         out.clone_from(ui.frame(input, &self.state, &view).events);
     }
@@ -202,13 +214,14 @@ impl Hud {
     /// capture (laid out here for its size, with no input).
     /// `now`: presentation seconds (which messages a capture still shows).
     pub fn overlay(&mut self, out: &mut Overlay, now: f32) {
+        let _z = specula_core::profile::zone("hud_overlay");
         if out.capture {
             self.capture_overlay(out, now);
             return;
         }
         let Some(ui) = self.ui.as_mut() else { return };
         if self.laid_out != Some(out.size) {
-            let view = viewport(ui, out.size, self.user_scale);
+            let view = viewport(ui, &self.display, out.size, self.user_scale);
             ui.frame(&self.idle, &self.state, &view);
             // The window lays out again for itself on its next frame.
             self.laid_out = None;
@@ -248,7 +261,10 @@ impl Hud {
         for (_, text, kind) in self.recent.iter().filter(|(t, _, _)| now - *t < CAPTURE_TOAST_S && *t <= now).skip(fresh.saturating_sub(CAPTURE_TOASTS)) {
             ui.toast(text, *kind);
         }
-        let view = viewport(ui, out.size, self.user_scale);
+        let view = viewport(ui, &self.display, out.size, self.user_scale);
+        // The player's focus and list scroll, not the screens' defaults (ui_frame outlines the
+        // capture's: review R1 of m5-uitools, finding 2).
+        ui.copy_interaction_from(win, view.scale);
         ui.frame(&self.idle, &self.state, &view);
         if let Err(e) = overlay.sync_atlas(out.textures, ui.atlas_mut()) {
             self.problem = Some(format!("capture glyph atlas: {e}"));
@@ -294,7 +310,8 @@ impl Hud {
     pub fn press(&mut self, id: &str) -> Result<Option<String>, String> {
         let ui = self.ui.as_mut().ok_or("the HUD is off")?;
         // Lay out the current state first, so what's visible and enabled is what a player sees now.
-        let view = viewport(ui, self.laid_out.unwrap_or((1280, 720)), self.user_scale);
+        let size = self.laid_out.unwrap_or((self.display.size[0], self.display.size[1]));
+        let view = viewport(ui, &self.display, size, self.user_scale);
         ui.frame(&self.idle, &self.state, &view);
         let screens: Vec<String> = ui.visible_screens().map(str::to_owned).collect();
         // Topmost screen first: a modal's buttons win over the HUD's.
@@ -314,6 +331,25 @@ impl Hud {
             Some(a) => Ok(Some(a)),
             None => Err(format!("pressing '{id}' sent no action")),
         }
+    }
+
+    /// The display the engine says the interface is on ([`specula::game::Game::display`]).
+    pub fn set_display(&mut self, display: &Display) {
+        if self.display != *display {
+            self.display = *display;
+            self.laid_out = None;
+        }
+    }
+
+    pub fn display(&self) -> Display {
+        self.display
+    }
+
+    /// The live UI (`capture`: the one the last capture drew) and its state, for the engine's
+    /// `ui_*` tools. `None` while the HUD is off.
+    pub fn ui_parts(&mut self, capture: bool) -> Option<(&mut Ui, &StateMap)> {
+        let ui = if capture { self.capture.as_mut().map(|(ui, _)| ui) } else { self.ui.as_mut() }?;
+        Some((ui, &self.state))
     }
 
     /// The visible widgets that matter to a player as data (those with an id or text: id, type,

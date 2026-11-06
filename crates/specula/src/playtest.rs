@@ -9,6 +9,14 @@
 //! the last step). `end` steps run once at the end (final assertions, captures). `sight_frame`
 //! (any call whose answer has `image.path`) is recorded as a capture.
 //!
+//! **UI steps:** `{"at": 30, "ui": {...}}` is a `ui_act` call with those arguments (a player's
+//! input: gamepad, keys, mouse or touch, through the game's own frames), and
+//! `{"at": 31, "ui_check": {...}}` a `ui_check` call that expects `errors: 0` unless the step
+//! gives its own `expect`, so a playtester walks every menu path headless at several displays.
+//! A `ui_act` that stops at its time budget (`rest`: the steps still to run) is called again
+//! with the rest at the same tick until it finishes, so a step's input is the same however fast
+//! the machine is (the expectations read the last answer).
+//!
 //! ```json
 //! {"name": "centre_seed7_wins", "game": "sepulcra",
 //!  "steps": [{"at": 0, "call": "play_new", "args": {"seed": "7", "layout": "centre"}},
@@ -61,6 +69,9 @@ pub const MAX_WALL_S: u64 = 3600;
 const MAX_FAILURES: usize = 64;
 pub const MAX_CAPTURES: usize = 64;
 const MAX_RESULTS: usize = 512;
+/// Most times one `ui` step's `ui_act` is continued with its `rest` (each call runs at least one
+/// frame, at most 160 frames a step: never reached unless something is wrong).
+const MAX_UI_CONTINUES: u32 = 200;
 /// Values quoted in failures are cut to this many characters of JSON.
 const MAX_VALUE_CHARS: usize = 240;
 const MAX_NAME: usize = 64;
@@ -189,7 +200,7 @@ pub struct Spec {
 }
 
 const SPEC_KEYS: [&str; 10] = ["name", "description", "game", "steps", "until", "ticks", "end", "checkpoint_every", "stop_on_failure", "max_wall_s"];
-const STEP_KEYS: [&str; 6] = ["at", "call", "args", "expect", "expect_error", "label"];
+const STEP_KEYS: [&str; 8] = ["at", "call", "args", "expect", "expect_error", "label", "ui", "ui_check"];
 const UNTIL_KEYS: [&str; 4] = ["call", "args", "expect", "every"];
 const MATCH_KEYS: [&str; 11] = ["eq", "ne", "lt", "lte", "gt", "gte", "in", "exists", "contains", "near", "tol"];
 
@@ -341,6 +352,27 @@ fn parse_step(v: &Json, field: &str, timed: bool) -> Result<Step, SpecError> {
         Some(Json::Str(c)) if !c.is_empty() && c.len() <= 64 => Some(ErrorWant::Code(c.clone())),
         Some(_) => return Err(SpecError::new(format!("{field}.expect_error"), "'expect_error' must be true or an error code")),
     };
+    // UI steps: `ui` is ui_act's arguments (a player's input), `ui_check` ui_check's, expecting
+    // no errors unless the step says what to expect.
+    let sugar = [("ui", "ui_act"), ("ui_check", "ui_check")];
+    let given: Vec<&str> = ["call", "ui", "ui_check"].into_iter().filter(|k| v.get(k).is_some_and(|x| !x.is_null())).collect();
+    if given.len() > 1 {
+        return Err(SpecError::new(field, format!("a step has one of 'call', 'ui' (ui_act's arguments) or 'ui_check' (its arguments), not {}", given.join(" and "))));
+    }
+    if let Some((key, tool)) = sugar.iter().find(|(k, _)| given.contains(k)) {
+        if v.get("args").is_some_and(|a| !a.is_null()) {
+            return Err(SpecError::new(format!("{field}.args"), format!("'{key}' is the {tool} call's arguments: leave out 'args'")));
+        }
+        let args = match v.get(key) {
+            Some(a @ Json::Obj(_)) => a.clone(),
+            _ => return Err(SpecError::new(format!("{field}.{key}"), format!("'{key}' must be an object of {tool}'s arguments"))),
+        };
+        let mut expect = parse_expects(v, field)?;
+        if *key == "ui_check" && v.get("expect").is_none() && expect_error.is_none() {
+            expect.push(Expect { path: "errors".into(), segs: vec![Seg::Key("errors".into())], ops: vec![Op::Eq(Json::from(0))], source: Json::from(0) });
+        }
+        return Ok(Step { at, call: (*tool).to_owned(), args, expect, expect_error, label: text(v, "label", field, MAX_NAME)? });
+    }
     Ok(Step {
         at,
         call: call_name(v, field)?,
@@ -732,6 +764,9 @@ pub struct Run {
     step_i: usize,
     end_i: usize,
     pending: Option<Why>,
+    /// A `ui` step's `ui_act` that stopped at its budget: the step, the call again with its
+    /// rest, and how many times it was continued.
+    ui_rest: Option<(usize, Json, u32)>,
     started: bool,
     last_tick_hash: Option<u64>,
     end_hashed: bool,
@@ -765,6 +800,7 @@ impl Run {
             step_i: 0,
             end_i: 0,
             pending: None,
+            ui_rest: None,
             started: false,
             last_tick_hash: None,
             end_hashed: false,
@@ -798,7 +834,10 @@ impl Run {
     /// The tool and arguments of a call [`Action::Call`] asked for.
     pub fn call_of(&self, why: Why) -> (&str, &Json) {
         match why {
-            Why::Step(i) => (&self.spec.steps[i].call, &self.spec.steps[i].args),
+            Why::Step(i) => match &self.ui_rest {
+                Some((j, args, _)) if *j == i => (&self.spec.steps[i].call, args),
+                _ => (&self.spec.steps[i].call, &self.spec.steps[i].args),
+            },
             Why::End(i) => (&self.spec.end[i].call, &self.spec.end[i].args),
             Why::Until => {
                 let u = self.spec.until.as_ref().expect("until calls only exist with until");
@@ -911,6 +950,31 @@ impl Run {
         self.calls += 1;
         let answer = answer_json(out);
         let tick = self.tick;
+        // A ui step still unfinished after MAX_UI_CONTINUES calls: its input was never all sent.
+        let mut gave_up = None;
+        if let Why::Step(i) = why {
+            let rest = answer.get("rest").and_then(Json::as_array).filter(|r| !r.is_empty());
+            match rest {
+                Some(rest) if !out.is_error && self.spec.steps[i].call == "ui_act" => {
+                    let n = self.ui_rest.as_ref().filter(|(j, _, _)| *j == i).map_or(0, |(_, _, n)| *n) + 1;
+                    if n > MAX_UI_CONTINUES {
+                        gave_up = Some(rest.len());
+                    } else {
+                        let mut args = self.spec.steps[i].args.clone();
+                        args.set("steps", Json::Arr(rest.to_vec()));
+                        // The display was set by the first call.
+                        if let Json::Obj(pairs) = &mut args {
+                            pairs.retain(|(k, _)| k != "display");
+                        }
+                        self.ui_rest = Some((i, args, n));
+                        // The same step again, at this tick (step_i stays).
+                        return;
+                    }
+                }
+                _ => {}
+            }
+            self.ui_rest = None;
+        }
         if why == Why::Until {
             self.until_checked = Some(tick);
             let u = self.spec.until.as_ref().expect("until calls only exist with until");
@@ -956,6 +1020,11 @@ impl Run {
             }
             (None, true) => problems.push(("call_error", None, Json::Null, quote(&answer))),
             _ => {}
+        }
+        // Review R2 of m5-uitools, finding 3: a step whose input was cut off never counts as done.
+        if let Some(left) = gave_up {
+            let actual = Json::obj([("continues", Json::from(MAX_UI_CONTINUES)), ("steps_left", Json::from(left)), ("stopped", answer.get("stopped").cloned().unwrap_or(Json::Null))]);
+            problems.push(("too_many_continues", None, Json::from(format!("ui_act finished within {MAX_UI_CONTINUES} continuations")), actual));
         }
         if problems.is_empty() {
             for e in &step.expect {
@@ -1298,6 +1367,102 @@ mod tests {
 
     fn ok(text: &str) -> ToolOutput {
         ToolOutput::text(text)
+    }
+
+    #[test]
+    fn ui_steps_call_ui_act_and_ui_check() {
+        let s = spec(
+            r#"{"name": "menus", "steps": [
+                {"at": 0, "ui": {"steps": [{"press": "back"}]}, "expect": {"screens.0": "pause"}},
+                {"at": 0, "ui_check": {"targets": ["deck"]}},
+                {"at": 0, "ui_check": {"pseudo": true}, "expect": {"warnings": {"gte": 0}}}]}"#,
+        );
+        assert_eq!(s.steps[0].call, "ui_act");
+        assert_eq!(s.steps[0].args.get("steps").and_then(Json::as_array).map(<[Json]>::len), Some(1));
+        assert_eq!(s.steps[1].call, "ui_check");
+        // A ui_check step expects no errors unless it says what to expect.
+        assert_eq!(s.steps[1].expect.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(), ["errors"]);
+        assert_eq!(s.steps[1].expect[0].ops, [Op::Eq(Json::from(0))]);
+        assert_eq!(s.steps[2].expect.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(), ["warnings"]);
+        for (bad, field) in [
+            (r#"{"name": "x", "steps": [{"at": 0, "ui": {}, "call": "play_state"}]}"#, "steps[0]"),
+            (r#"{"name": "x", "steps": [{"at": 0, "ui": {}, "args": {}}]}"#, "steps[0].args"),
+            (r#"{"name": "x", "steps": [{"at": 0, "ui_check": []}]}"#, "steps[0].ui_check"),
+        ] {
+            let e = Spec::parse(&Json::parse(bad).unwrap()).unwrap_err();
+            assert_eq!(e.field, field, "{bad}: {}", e.message);
+        }
+    }
+
+    /// Review R1 of m5-uitools, finding 5: a `ui` step whose ui_act stopped at its time budget
+    /// is called again with its `rest` at the same tick (display left out: the first call set
+    /// it), and its expectations read the last answer.
+    #[test]
+    fn a_ui_step_stopped_at_its_budget_is_continued_with_its_rest() {
+        let mut run = Run::new(
+            spec(r#"{"name": "t", "ticks": 5, "steps": [{"at": 0, "ui": {"display": {"size": [1280, 800]}, "steps": [{"wait": 120}, {"press": "pause"}]}, "expect": {"screens.0": "pause"}}]}"#),
+            None,
+        );
+        let mut calls = Vec::new();
+        for _ in 0..1000 {
+            match run.next_action() {
+                Action::Call(why) => {
+                    let (call, args) = run.call_of(why);
+                    calls.push((call.to_owned(), args.to_string(), run.tick));
+                    let out = match calls.len() {
+                        1 => ok(r#"{"screens": ["hud"], "stopped": "time_budget", "frames_left": 70, "rest": [{"wait": 70}, {"press": "pause", "device": "gamepad"}]}"#),
+                        2 => ok(r#"{"screens": ["hud"], "stopped": "time_budget", "frames_left": 0, "rest": [{"press": "pause", "device": "gamepad"}]}"#),
+                        _ => ok(r#"{"screens": ["pause", "hud"]}"#),
+                    };
+                    run.complete(&out);
+                }
+                Action::Hash(p) => run.record_hash(p, vec![("world".into(), run.tick)]),
+                Action::Advance(n) => run.advanced(n),
+                Action::Wait => panic!("no deferred answers here"),
+                Action::Finish => break,
+            }
+        }
+        assert_eq!(calls.len(), 3, "{calls:?}");
+        assert!(calls.iter().all(|(c, _, t)| c == "ui_act" && *t == 0), "{calls:?}");
+        assert!(calls[0].1.contains("display") && !calls[1].1.contains("display"), "{calls:?}");
+        assert!(calls[1].1.contains(r#"{"wait":70}"#) && calls[2].1.contains(r#""steps":[{"press":"pause","device":"gamepad"}]"#), "{calls:?}");
+        assert_eq!(run.status(), Some(Status::Passed), "the expectation read the last answer");
+    }
+
+    /// Review R2 of m5-uitools, finding 3: a `ui` step whose ui_act never finishes (every answer
+    /// has a `rest`) fails with `too_many_continues` once the continuations run out; it never
+    /// counts as done with its input dropped, and the run goes on to its next step.
+    #[test]
+    fn a_ui_step_that_never_finishes_fails_with_too_many_continues() {
+        let mut run = Run::new(
+            spec(r#"{"name": "t", "ticks": 5, "stop_on_failure": false, "steps": [{"at": 0, "ui": {"steps": [{"wait": 120}]}}, {"at": 1, "call": "world_list", "args": {}}]}"#),
+            None,
+        );
+        let mut calls = Vec::new();
+        for _ in 0..10_000 {
+            match run.next_action() {
+                Action::Call(why) => {
+                    let (call, _) = run.call_of(why);
+                    calls.push((call.to_owned(), run.tick));
+                    let out = if call == "ui_act" { ok(r#"{"screens": ["hud"], "stopped": "time_budget", "frames_left": 120, "rest": [{"wait": 120}]}"#) } else { ok(r#"{"entities": []}"#) };
+                    run.complete(&out);
+                }
+                Action::Hash(p) => run.record_hash(p, vec![("world".into(), run.tick)]),
+                Action::Advance(n) => run.advanced(n),
+                Action::Wait => panic!("no deferred answers here"),
+                Action::Finish => break,
+            }
+        }
+        let ui = calls.iter().filter(|(c, _)| c == "ui_act").count();
+        assert_eq!(ui, MAX_UI_CONTINUES as usize + 1, "the first call and its continuations, then no more");
+        assert!(calls.iter().filter(|(c, _)| c == "ui_act").all(|(_, t)| *t == 0), "every continuation at the step's tick");
+        assert!(calls.iter().any(|(c, t)| c == "world_list" && *t == 1), "the run went on: {:?}", calls.last());
+        assert_eq!(run.status(), Some(Status::Failed));
+        let report = run.report(true);
+        let failures = report.get("failures").and_then(Json::as_array).expect("failures");
+        assert_eq!(failures.len(), 1, "{report}");
+        assert_eq!(failures[0].get("kind").and_then(Json::as_str), Some("too_many_continues"), "{report}");
+        assert_eq!(failures[0].get("actual").and_then(|a| a.get("steps_left")).and_then(Json::as_u64), Some(1), "{report}");
     }
 
     /// Drives a run with canned answers: `answer(call, tick)`; hashes are the tick.

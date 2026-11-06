@@ -91,6 +91,7 @@ pub const FAMILIES: &[Family] = &[
     fam("gi", "baked global illumination: bake probe volumes, check them, the runtime tier", &["gi_"], &[]),
     fam("audio", "hearing: what played, loudness and peaks per bus, offline previews, bus settings", &["audio_"], &[]),
     fam("logic", "game logic modules (Rust): build, reload, inspect, drive", &["logic_"], &[]),
+    fam("ui", "the interface as data: widget trees, outlined captures, a player's input, measured checks", &["ui_"], &[]),
     fam("trace", "the structured log: events, one call's causal tree, crash reports, incidents", &["trace_"], &[]),
 ];
 
@@ -118,7 +119,7 @@ pub const ROLES: &[Role] = &[
     Role { name: crate::authority::ROLE_DIRECTOR, about: "everything (plans and reviews the swarm)", all: true, families: &[], tools: &[] },
     role("builder", "builds the world", &["world", "sight", "claim", "board", "journal", "model", "engine", "terrain"], &[]),
     role(crate::authority::ROLE_REVIEWER, "checks finished work", &["sight", "journal", "board", "review", "studio"], &["world_query", "world_list"]),
-    role("playtester", "plays and records runs", &["game", "playtest", "sight", "board", "save", "engine", "audio"], &["world_query", "world_hash"]),
+    role("playtester", "plays and records runs", &["game", "playtest", "sight", "ui", "board", "save", "engine", "audio"], &["world_query", "world_hash"]),
     role("art_director", "holds the look", &["sight", "studio", "review", "taste", "model", "procgen", "vfx", "gi", "terrain", "project", "board", "audio"], &["world_env", "world_query"]),
     role("sight_skeptic", "verifies visual claims", &["sight"], &["world_query", "world_list", "critique_add"]),
     role("performance", "measures frame cost and disk use", &["perf", "engine", "stream", "sight", "disk"], &["world_query", "world_list", "gi_info", "gi_settings"]),
@@ -171,6 +172,10 @@ pub(crate) const BRIEFS: &[(&str, &str)] = &[
     ("camera_list", "named cameras"),
     ("camera_delete", "delete named cameras"),
     ("window_view", "point the human's window camera"),
+    ("ui_tree", "the interface's widgets: rects, text, focus; paged"),
+    ("ui_frame", "capture with every widget outlined and labelled"),
+    ("ui_act", "drive the interface: gamepad, keys, mouse, touch"),
+    ("ui_check", "legibility, contrast, overflow, gamepad reach per display"),
     ("claim_take", "claim a subtree or region"),
     ("claim_renew", "extend claim leases"),
     ("claim_release", "release claims"),

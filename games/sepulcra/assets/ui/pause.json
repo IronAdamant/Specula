@@ -6,7 +6,8 @@
   "modal": true,
   "focus": "resume",
   "back": "resume",
-  "notes": "Actions: resume, open_saves (the Save / Load screen), open_settings, open_controls, restart (asks first). State: wave, waves.",
+  "opened_by": ["pause", "cancel", "open_menu"],
+  "notes": "On short screens (ui.short) the wave line and divider make room. Actions: resume, speed (cycles x1, x2, x4: the HUD button's gamepad path), open_saves (the Save / Load screen), open_settings, open_controls, restart (asks first). State: wave, waves, speed.",
   "root": {
     "type": "box",
     "children": [
@@ -21,9 +22,10 @@
         "gap": 10,
         "children": [
           { "type": "label", "text": "Paused", "role": "title", "text_align": "center" },
-          { "type": "label", "text": "Wave {wave} of {waves}", "role": "subtitle", "text_align": "center" },
-          { "type": "panel", "style": "divider", "height": 1, "padding": 0, "margin": [6, 0, 6, 0] },
+          { "type": "label", "text": "Wave {wave} of {waves}", "role": "subtitle", "text_align": "center", "visible": "!ui.short" },
+          { "type": "panel", "style": "divider", "height": 1, "padding": 0, "margin": [6, 0, 6, 0], "visible": "!ui.short" },
           { "type": "button", "id": "resume", "style": "primary", "text": "Resume", "action": "resume" },
+          { "type": "button", "id": "pause_speed", "text": "Game speed x{speed}", "action": "speed", "tooltip": "x1, x2, x4: the HUD's speed button, for a gamepad." },
           { "type": "button", "id": "saves", "text": "Save / Load", "action": "open_saves", "tooltip": "Save this run to a slot, or load a saved one." },
           { "type": "button", "id": "settings", "text": "Settings", "action": "open_settings" },
           { "type": "button", "id": "controls", "text": "Controls", "action": "open_controls" },

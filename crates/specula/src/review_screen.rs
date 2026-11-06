@@ -251,6 +251,13 @@ impl ReviewUi {
         self.open
     }
 
+    /// The screen's interface for the engine's `ui_*` tools: the UI, the state it binds, its
+    /// input map (`None` before the screen first loaded).
+    pub(crate) fn ui_parts(&mut self) -> Option<(&mut Ui, &StateMap, Option<&ActionMap>)> {
+        let map = self.input.as_ref().map(Input::map);
+        Some((self.ui.as_mut()?, &self.state, map))
+    }
+
     /// The submission shown, if any.
     #[cfg(test)]
     pub fn shown(&self) -> Option<u64> {

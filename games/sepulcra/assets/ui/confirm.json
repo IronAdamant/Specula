@@ -6,6 +6,7 @@
   "modal": true,
   "focus": "confirm_no",
   "back": "confirm_no",
+  "opened_by": ["restart"],
   "notes": "A yes / no dialog. State: confirm_title, confirm_body. Actions: confirm_yes, confirm_no (default focus is the safe choice).",
   "root": {
     "type": "box",

@@ -366,6 +366,9 @@ pub struct LogicHost {
     /// Gamepads for module actions (opened at the first window frame that needs them; `None`
     /// inside when XInput is unavailable).
     pads: Option<Option<specula_platform::gamepad::Gamepads>>,
+    /// Pads an agent's `ui_act` frames hold instead of the polled ones (see
+    /// [`LogicHost::set_pad_override`]).
+    pad_override: Option<Vec<specula_platform::gamepad::GamepadState>>,
     /// Hook calls staged by a caller that may still refuse them (a live Lex command): what to
     /// undo if it does. See [`LogicHost::stage`].
     staged: Option<Staged>,
@@ -390,6 +393,7 @@ impl Default for LogicHost {
             hook_counts: BTreeMap::new(),
             mover: Box::new(Kinematic),
             pads: None,
+            pad_override: None,
             staged: None,
             hash_scratch: Vec::new(),
             module_events: Vec::new(),
@@ -861,6 +865,9 @@ impl LogicHost {
     /// The gamepads' states as last polled (opened at first use; empty without XInput), for
     /// other input readers in the same frame (live Lex runs), polling them if no module did.
     pub fn pad_states(&mut self, poll: bool) -> &[specula_platform::gamepad::GamepadState] {
+        if let Some(p) = &self.pad_override {
+            return p;
+        }
         match self.pads.get_or_insert_with(|| specula_platform::gamepad::Gamepads::new().ok()) {
             Some(p) => {
                 if poll {
@@ -870,6 +877,13 @@ impl LogicHost {
             }
             None => &[],
         }
+    }
+
+    /// While set, [`LogicHost::pad_states`] answers these pads instead of the polled ones: the
+    /// frames an agent's `ui_act` synthesises for the engine's own screens (one frame each; the
+    /// caller clears it after).
+    pub fn set_pad_override(&mut self, pads: Option<Vec<specula_platform::gamepad::GamepadState>>) {
+        self.pad_override = pads;
     }
 
     /// Whether any module reads input (and so polled the gamepads this frame).

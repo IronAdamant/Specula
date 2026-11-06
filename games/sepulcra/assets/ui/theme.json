@@ -218,7 +218,7 @@
   "tooltip": { "box": "tooltip", "role": "small", "delay_s": 0.45, "max_width": 260 },
   "keycap": { "box": "keycap", "role": "keycap", "min_width": 24 },
   "dim": "#05080fc4",
-  "scale": { "reference": [1280, 800], "reference_ppi": 215, "min": 0.75, "max": 4 },
+  "scale": { "reference": [1280, 800], "reference_ppi": 215, "min": 0.75, "max": 4, "max_boost": 1.5, "min_logical": [800, 480] },
   "check": { "min_cap_px": 9, "min_touch_px": 44, "contrast_body": 4.5, "contrast_large": 3, "large_text_px": 24 },
   "scene": ["#0b1020", "#2a3448", "#5b6470", "#a7a39a", "#c9d6ff"]
 }

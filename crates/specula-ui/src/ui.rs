@@ -178,6 +178,8 @@ pub(crate) struct NodeRt {
     laid_font: usize,
     laid_ok: bool,
     pub font: Option<usize>,
+    /// Pseudo-locale only: the bound key that put game-supplied words in this label.
+    pub untranslated: Option<String>,
 }
 
 pub(crate) struct ScreenRt {
@@ -186,6 +188,8 @@ pub(crate) struct ScreenRt {
     pub comp: Vec<Computed>,
     pub rt: Vec<NodeRt>,
     pub focus: Option<u32>,
+    /// `ui.open.<name>`: the key conditions read to know this screen is showing.
+    pub open_key: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -307,20 +311,20 @@ pub struct Ui {
     pub(crate) fonts: FontSet,
     pub(crate) atlas: GlyphAtlas,
     pub(crate) screens: Vec<ScreenRt>,
-    order: Vec<usize>,
+    pub(crate) order: Vec<usize>,
     pub(crate) draw: DrawList,
     pub(crate) hits: Vec<Hit>,
-    events: UiEvents,
+    pub(crate) events: UiEvents,
     time: f64,
     fixed_time: Option<f64>,
     toasts: Vec<Toast>,
     nav_held: [f32; 4],
     pointer: PointerSt,
-    focus_visible: bool,
+    pub(crate) focus_visible: bool,
     prompt_key: Option<(Option<DeviceFamily>, PadStyle)>,
     prompts: Vec<(String, Option<String>)>,
     scratch: Scratch,
-    pending: Vec<(WidgetRef, bool)>,
+    pub(crate) pending: Vec<(WidgetRef, bool)>,
     tip: Option<WidgetRef>,
     tip_since: f64,
     tip_text: String,
@@ -332,6 +336,8 @@ pub struct Ui {
     pub(crate) textures: Option<Vec<u32>>,
     /// The `ui.*` keys conditions and templates can read.
     pub(crate) env: StateMap,
+    /// Lay text out in a pseudo-locale (see [`Ui::set_pseudo_locale`]).
+    pub(crate) pseudo: bool,
 }
 
 impl Ui {
@@ -362,6 +368,7 @@ impl Ui {
             threat_text: Vec::new(),
             last_view: None,
             env: StateMap::new(),
+            pseudo: false,
             textures: None,
         }
     }
@@ -404,6 +411,7 @@ impl Ui {
         let n = screen.nodes.len();
         let rt = ScreenRt {
             focus: screen.focus,
+            open_key: format!("ui.open.{}", screen.name),
             screen,
             visible: false,
             comp: vec![Computed::default(); n],
@@ -663,8 +671,13 @@ impl Ui {
             .set_num("ui.height", f64::from(lh.round()))
             .set_bool("ui.portrait", lh > lw)
             .set_bool("ui.narrow", lw < 760.0)
+            .set_bool("ui.short", lh < 520.0)
             .set_bool("ui.gamepad", device == Some(DeviceFamily::Gamepad))
             .set_bool("ui.touch", device == Some(DeviceFamily::Touch));
+        // Which screens show (`ui.open.radial`): a screen can make room for another.
+        for sr in &self.screens {
+            self.env.set_bool(&sr.open_key, sr.visible);
+        }
         for k in 0..self.order.len() {
             let s = self.order[k];
             self.prepare(s, state, view);
@@ -718,6 +731,7 @@ impl Ui {
         let fonts = &self.fonts;
         let prompts = &self.prompts;
         let env = &self.env;
+        let pseudo = self.pseudo;
         let sr = &mut self.screens[s];
         let screen = &sr.screen;
         let n = screen.nodes.len();
@@ -740,6 +754,7 @@ impl Ui {
                         let rt = &mut sr.rt[i];
                         rt.font = fonts.index(&theme.role(*role).font);
                         match text {
+                            TextSource::Template(t) if pseudo => rt.untranslated = t.render_pseudo(&scope, &mut rt.text),
                             TextSource::Template(t) => t.render(&scope, &mut rt.text),
                             TextSource::Prompt(a) => {
                                 rt.text.clear();
@@ -1707,7 +1722,7 @@ impl Ui {
 /// See [`Ui::snapshot`].
 pub(crate) struct Snapshot {
     pointer: PointerSt,
-    focus_visible: bool,
+    pub(crate) focus_visible: bool,
     nav_held: [f32; 4],
     tip: Option<WidgetRef>,
     tip_since: f64,
@@ -1781,7 +1796,7 @@ fn radial_children(sr: &ScreenRt, r: u32) -> ([u32; 12], usize) {
     (a, n)
 }
 
-fn radial_items(sr: &ScreenRt) -> Option<([u32; 12], usize)> {
+pub(crate) fn radial_items(sr: &ScreenRt) -> Option<([u32; 12], usize)> {
     let r = sr.screen.nodes.iter().position(|n| matches!(n.kind, Kind::Radial { .. }))? as u32;
     if !sr.comp[r as usize].visible {
         return None;

@@ -84,10 +84,10 @@ fn the_gpu_overlay_matches_the_software_preview() {
 
         let mut overlay = GpuOverlay::new();
         overlay.sync_atlas(&mut gpu, ui.atlas_mut()).expect("atlas upload");
-        let quads = overlay.build(&ui).expect("overlay");
+        let quads = overlay.build(&ui).expect("overlay").to_vec();
         let n = quads.len();
         let target = gpu.create_target(w, h).unwrap();
-        let frame = FrameDesc { clear_color: [0.0, 0.0, 0.0, 1.0], overlay: quads, reverse_z: true, ..Default::default() };
+        let frame = FrameDesc { clear_color: [0.0, 0.0, 0.0, 1.0], overlay: &quads, reverse_z: true, ..Default::default() };
         // The overlay pass's GPU time: the median of 15 frames.
         let mut times = Vec::new();
         for _ in 0..15 {
@@ -128,6 +128,19 @@ fn the_gpu_overlay_matches_the_software_preview() {
         eprintln!("{test}: mean |diff| {mean:.3} levels, {big} px ({:.3} %) > 16, worst {worst}; images in {}", frac * 100.0, dir.display());
         assert!(mean < 0.5, "{test}: mean difference {mean:.3}");
         assert!(frac < 0.005, "{test}: {:.3} % of pixels differ by more than 16", frac * 100.0);
+
+        // The bands (bevels, outlines and shadows under opaque panels drawn around their middles)
+        // draw the same pixels as whole quads on this GPU: at most one level apart (an opaque
+        // fill's alpha interpolates to 1 within an ulp), and no seams where bands meet (m5-uitools
+        // review R1, finding 7).
+        let whole = overlay.build_whole(&ui).expect("overlay").to_vec();
+        assert!(whole.len() < n, "{test}: the HUD has bands ({} whole records, {n} with bands)", whole.len());
+        gpu.render(target, &FrameDesc { overlay: &whole, ..frame }).expect("render");
+        let reference = gpu.read_rgba8(target).unwrap();
+        let banded_worst = hardware.iter().zip(&reference).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+        let banded_px = hardware.chunks_exact(4).zip(reference.chunks_exact(4)).filter(|(a, b)| a != b).count();
+        eprintln!("{test}: bands vs whole quads: {banded_px} px differ, worst {banded_worst} levels");
+        assert!(banded_worst <= 1, "{test}: the bands change a pixel by {banded_worst} levels ({banded_px} px)");
 
         // An image icon with a texture nobody registered: skipped and reported, and the GPU frame
         // still renders (it used to fail with "unknown texture id").

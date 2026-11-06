@@ -26,11 +26,18 @@ fn try_window(desc: &WindowDesc) -> Option<Window> {
 
 #[test]
 fn hidden_window_has_requested_client_size() {
-    let Some(window) = try_window(&hidden(640, 360)) else { return };
-    assert_eq!(window.client_size(), (640, 360));
-    let raw = window.raw();
-    assert!(!raw.hwnd.is_null());
-    assert!(!raw.hinstance.is_null());
+    let raw = {
+        let Some(window) = try_window(&hidden(640, 360)) else { return };
+        assert_eq!(window.client_size(), (640, 360));
+        let raw = window.raw();
+        assert!(!raw.hwnd.is_null());
+        assert!(!raw.hinstance.is_null());
+        // The monitor's OS scale (DPI / 96): Windows allows 100% to 500%.
+        let scale = specula_platform::os_scale_of(raw).expect("a live window has a DPI");
+        assert!((1.0..=5.0).contains(&scale), "{scale}");
+        raw
+    };
+    assert_eq!(specula_platform::os_scale_of(raw), None, "a closed window has none");
 }
 
 #[test]

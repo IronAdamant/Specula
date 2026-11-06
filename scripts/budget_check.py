@@ -18,7 +18,11 @@ allows, and the heavy tools at their largest *valid* arguments, against a headle
    20,000-file delete (no worker job may run inline, a save right after answers promptly); twenty
    agents looping world_hash {verify} while a playtest runs twelve verify steps (the playtest
    passes, the agents are served).
-5. Stalls are read from trace_incidents; each is printed with its tool, class, ms and budget, marked
+5. The hosted game (Sepulcra, `--game-exe`, default the sepulcra binary next to specula's): ui_act at
+   its cap (160 frames) four times during a busy wave (three waves called at speed 4) and ui_check's
+   largest call, on a second strict-budget engine (review R1 of m5-uitools: 37-75 ms there before
+   ui_act budgeted its frames by time). Skipped, and said so, without the binary.
+6. Stalls are read from trace_incidents; each is printed with its tool, class, ms and budget, marked
    KNOWN when a later lane owns it and its peak is within the ms KNOWN lists for it (see KNOWN below)
    or NEW. --known-ok passes a run whose only stalls are known ones.
 
@@ -111,13 +115,52 @@ def fuzz(mcp, tools, slow):
 # a capture draw cache and subjects projected on a worker). The milestone audit runs --known-ok.
 # timeline_preview (M5): each tile is one such capture view, submitted in one step and landed in a
 # later one (lead review of m5-timeline: a tile rendered and read in one step held 80-113 ms); its
-# submit is the same preparation, so the same maximum and the same follow-up.
-KNOWN = {"sight_frame": 80.0, "sight_compare": 100.0, "sight_orbit": 80.0, "timeline_preview": 80.0}
+# submit is the same preparation, so the same maximum and the same follow-up. ui_frame is
+# sight_frame's capture path.
+KNOWN = {"sight_frame": 80.0, "sight_compare": 100.0, "sight_orbit": 80.0, "timeline_preview": 80.0, "ui_frame": 80.0}
 
 
 def stalls(mcp):
     out = mcp.json("trace_incidents", code="engine.stall", limit=50)
     return out.get("incidents", [])
+
+
+def game_ui(exe, port, out, summary):
+    """Step 5: the hosted game's UI tools at their largest during a busy wave, strict budget."""
+    if not exe.exists():
+        print(f"  SKIP the hosted game's UI tools: {exe} not built (cargo build -p sepulcra-app)")
+        summary["game_ui"] = {"skipped": str(exe)}
+        return []
+    res = {"ui_act": []}
+    args = ["--headless", "--strict-budget", "--captures", str(out / "game-captures"), "--saves", str(out / "game-saves"), "--", "--seed", "7", "--mute"]
+    with Engine(exe, port, out / "engine-game.log", *args, cwd=str(out)) as eng:
+        m = eng.mcp("budget-game")
+        m.json("agent_hello", name="budget_game", role="playtester")
+        m.json("play_control", speed=4)
+        for _ in range(3):
+            call_raw(m, "play_command", {"action": "call_wave"})
+            time.sleep(4)
+        st, _, _, _ = call_raw(m, "play_state", {})
+        res["state"] = {k: (st or {}).get(k) for k in ("tick", "wave", "enemies")}
+        for _ in range(4):
+            j, err, took, _ = call_raw(m, "ui_act", {"steps": [{"wait": 120}, {"wait": 40}], "settle": 0})
+            res["ui_act"].append({"ms": (j or {}).get("ms"), "frames": (j or {}).get("frames"), "stopped": (j or {}).get("stopped"), "error": (j or {}).get("error") if err else None})
+            check(not err, f"ui_act at its cap mid-wave answers ({(j or {}).get('ms')} ms, {(j or {}).get('frames')} frames, stopped {(j or {}).get('stopped')})")
+        j, err, took, _ = call_raw(m, "ui_check", {"screens": ["hud", "pause", "saves"], "targets": ["deck", "1080p", "4k", "ultrawide"], "scales": [1, 1.25, 1.5, 2], "max_findings": 1})
+        res["ui_check_16_ms"] = (j or {}).get("ms")
+        check(not err, f"ui_check's largest call answers ({(j or {}).get('ms')} ms over 16 slices)")
+        time.sleep(2)
+        found = stalls(m)
+        for x in found:
+            detail = m.json("trace_incident", id=x["id"])
+            x["peak_ms"] = detail.get("peak_ms")
+            x["evidence"] = detail.get("evidence", {})
+        res["stalls"] = [{"key": x.get("key"), "summary": x.get("summary"), "peak_ms": x.get("peak_ms")} for x in found]
+        print(f"  the game's UI tools mid-wave: {res}")
+        m.close()
+    res["exit_code"] = eng.exit_code
+    summary["game_ui"] = res
+    return found
 
 
 def main():
@@ -129,6 +172,7 @@ def main():
     ap.add_argument("--entities", type=int, default=20_000)
     ap.add_argument("--files", type=int, default=20_000)
     ap.add_argument("--known-ok", action="store_true", help="pass when the only stalls are the known ones")
+    ap.add_argument("--game-exe", default=None, help="the hosted game for step 5 (default: sepulcra next to specula)")
     a = ap.parse_args()
     target = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target"))
     exe = Path(a.exe) if a.exe else target / "debug" / ("specula.exe" if sys.platform == "win32" else "specula")
@@ -308,6 +352,14 @@ def main():
     clean = eng.exit_code == 0 or (a.known_ok and not summary.get("stalls_new"))
     why = "" if eng.exit_code == 0 else ", from known stalls only" if clean else ", new stalls"
     check(clean, f"the strict run exits as expected (exit code {eng.exit_code}{why})")
+    # 5. The hosted game's UI tools mid-wave, on their own strict engine.
+    game_exe = Path(a.game_exe) if a.game_exe else exe.with_name("sepulcra.exe" if sys.platform == "win32" else "sepulcra")
+    game_stalls = game_ui(game_exe, a.port + 1, out, summary)
+    if "skipped" not in summary["game_ui"]:
+        for s in game_stalls:
+            print(f"  STALL NEW   x{s.get('count')}: {s.get('summary')} (peak {s.get('peak_ms')} ms; zone {s.get('evidence', {}).get('zone')})")
+        check(not game_stalls, f"no engine-thread stall in the game's UI tools mid-wave ({len(game_stalls)})")
+        check(summary["game_ui"].get("exit_code") == 0, f"the game's strict run exits cleanly (exit code {summary['game_ui'].get('exit_code')})")
     (out / "summary.json").write_text(json.dumps(summary, indent=2))
     print(f"summary: {out / 'summary.json'}")
     print("PASS" if not FAILS else f"FAIL ({len(FAILS)})")

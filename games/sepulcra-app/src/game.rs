@@ -23,7 +23,7 @@ use sepulcra::script::{Journal, Player};
 use sepulcra::sim::{DustSource, Stone, Wall};
 use sepulcra::{CellId, Command, Content, Event, Motion, Outcome, Rejection, State, TICK_HZ};
 use specula::effects::{BloomPatch, FogPatch, GradingFields, GradingPatch, ShadowPatch, SkyPatch, SsaoPatch, WindPatch};
-use specula::game::{Ctx, Frame, Game, Overlay, GameWorld};
+use specula::game::{Ctx, Frame, Game, GameUi, GameWorld, Overlay, UiPick};
 use specula::sight::Camera;
 use specula::world::EnvPatch;
 use specula_core::math::Vec3;
@@ -754,7 +754,9 @@ impl SepulcraGame {
     }
 
     /// Cursor and range ring for the hovered (or selected) cell.
-    fn hover(&mut self, world: &mut GameWorld<'_>) {
+    /// `present`: also show the markers (the world writes); without, only the hover text and
+    /// the selection's validity are kept up to date.
+    fn hover(&mut self, world: &mut GameWorld<'_>, present: bool) {
         let Some(scene) = self.scene.as_mut() else { return };
         let content = Arc::clone(self.state.content_arc());
         let tier_range = |s: &Stone| content.stone(s.kind).tiers.get(usize::from(s.tier)).map(|t| t.range as f32 / 1000.0);
@@ -763,14 +765,18 @@ impl SepulcraGame {
             if self.state.stone(cell).is_none() && self.state.wall(cell).is_none() {
                 self.inspect = None;
             } else {
-                scene.show_cursor(world, &self.state, CursorLook::Selected(cell));
-                scene.show_range(world, &self.state, self.state.stone(cell).and_then(|s| tier_range(s).map(|r| (cell, r))));
+                if present {
+                    scene.show_cursor(world, &self.state, CursorLook::Selected(cell));
+                    scene.show_range(world, &self.state, self.state.stone(cell).and_then(|s| tier_range(s).map(|r| (cell, r))));
+                }
                 return;
             }
         }
         let Some(cell) = self.controls.hover else {
-            scene.show_cursor(world, &self.state, CursorLook::Hidden);
-            scene.show_range(world, &self.state, None);
+            if present {
+                scene.show_cursor(world, &self.state, CursorLook::Hidden);
+                scene.show_range(world, &self.state, None);
+            }
             self.hover_text.clear();
             self.hover_key = None;
             return;
@@ -780,14 +786,16 @@ impl SepulcraGame {
             None => Command::PlaceWall { cell },
         };
         let occupied = self.state.stone(cell).is_some() || self.state.wall(cell).is_some();
-        let ok = occupied || self.state.check(&cmd).is_ok();
-        scene.show_cursor(world, &self.state, if ok { CursorLook::Valid(cell) } else { CursorLook::Invalid(cell) });
-        let ring = match (self.state.stone(cell), cmd) {
-            (Some(s), _) => tier_range(s).map(|r| (cell, r)),
-            (None, Command::PlaceStone { stone, .. }) if Scene::buildable(&self.state, cell) => Some((cell, content.stone(stone).tiers[0].range as f32 / 1000.0)),
-            _ => None,
-        };
-        scene.show_range(world, &self.state, ring);
+        if present {
+            let ok = occupied || self.state.check(&cmd).is_ok();
+            scene.show_cursor(world, &self.state, if ok { CursorLook::Valid(cell) } else { CursorLook::Invalid(cell) });
+            let ring = match (self.state.stone(cell), cmd) {
+                (Some(s), _) => tier_range(s).map(|r| (cell, r)),
+                (None, Command::PlaceStone { stone, .. }) if Scene::buildable(&self.state, cell) => Some((cell, content.stone(stone).tiers[0].range as f32 / 1000.0)),
+                _ => None,
+            };
+            scene.show_range(world, &self.state, ring);
+        }
         let key = (cell, self.state.stone(cell).copied(), self.state.wall(cell).copied());
         if self.hover_key != Some(key) {
             self.hover_key = Some(key);
@@ -1207,6 +1215,24 @@ impl Game for SepulcraGame {
         sepulcra::lex::natives()
     }
 
+    fn display(&mut self, display: &specula_ui::Display) {
+        self.hud.set_display(display);
+    }
+
+    fn ui(&mut self, pick: UiPick) -> Option<GameUi<'_>> {
+        if pick == UiPick::Live {
+            // The state as a frame would fill it now (threat arrows from the last camera).
+            let cam = self.camera;
+            let d = self.hud.display();
+            self.fill_hud(cam.as_ref(), (d.size[0], d.size[1]));
+        }
+        // (Peek: as the last frame left it, no refill.)
+        let user_scale = self.hud.user_scale;
+        let (ui, state) = self.hud.ui_parts(pick == UiPick::Capture)?;
+        // The controls' map is the one rebinding changes.
+        Some(GameUi { ui, state, user_scale, input_map: Some(self.controls.input().map()) })
+    }
+
     fn assets_root(&self) -> Option<PathBuf> {
         Some(self.assets.clone().unwrap_or_else(SepulcraGame::default_assets))
     }
@@ -1306,7 +1332,17 @@ impl Game for SepulcraGame {
     }
 
     fn frame(&mut self, ctx: &mut Ctx, frame: &mut Frame) {
-        self.last_frame = Some(Instant::now());
+        // An agent's synthetic input frame (ui_act) does only what its input causes. Presentation
+        // state belongs to the frames that present (review R2 of m5-uitools, finding 1: a
+        // synthetic frame counted as "framed" made ticks skip moving things, and headless no
+        // window frame ever moved them, so enemies stood still while an agent called ui_act):
+        // - `last_frame`: ticks leave motion to window frames only while real ones come;
+        // - `now`: presentation time (the HUD's flashes, a capture's) stays at the last one drawn;
+        // - the window title, sent by the first real frame (a synthetic frame's is dropped).
+        let present = !frame.synthetic;
+        if present {
+            self.last_frame = Some(Instant::now());
+        }
         self.sfx.poll();
         // Frames draw the span between the last two ticks: positions at prev..cur by alpha, and
         // presentation time to match. When either the game or the engine clock is paused there is
@@ -1314,7 +1350,9 @@ impl Game for SepulcraGame {
         let still = self.paused || ctx.clock.paused();
         let alpha = if still { 1.0 } else { frame.alpha };
         let sub = (alpha - 1.0) * self.speed as f32;
-        self.now = ((self.pres_ticks as f32) + sub).max(0.0) / TICK_HZ as f32;
+        if present {
+            self.now = ((self.pres_ticks as f32) + sub).max(0.0) / TICK_HZ as f32;
+        }
         if self.scene.is_none() {
             return;
         }
@@ -1340,9 +1378,14 @@ impl Game for SepulcraGame {
         }
         self.controls.sync_camera(frame.camera, frame.agent_view);
         self.camera = *frame.camera;
-        self.hover(&mut ctx.world);
-        if let Some(scene) = &mut self.scene {
-            scene.animate(&mut ctx.world, alpha, self.now);
+        // An agent's synthetic input frame (ui_act) writes only what its input causes: that is
+        // the caller's (claims checked). The hover markers and interpolated motion are the
+        // game's own presentation, drawn by the window's next frame or a capture.
+        self.hover(&mut ctx.world, present);
+        if present {
+            if let Some(scene) = &mut self.scene {
+                scene.animate(&mut ctx.world, alpha, self.now);
+            }
         }
         if let Some(cam) = &self.camera {
             self.sfx.listen(cam);
@@ -1351,7 +1394,7 @@ impl Game for SepulcraGame {
             self.fires();
             self.sfx.fires(&self.fire_buf);
         }
-        if !self.title_sent {
+        if present && !self.title_sent {
             *frame.title = Some("Sepulcra".into());
             self.title_sent = true;
         }

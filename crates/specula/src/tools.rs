@@ -250,6 +250,8 @@ pub enum Command {
     Stream(crate::stream_tools::StreamCall),
     /// `terrain_info` (see [`crate::terrain_tools`]).
     Terrain(crate::terrain_tools::TerrainCall),
+    /// The UI sight tools: `ui_tree`, `ui_frame`, `ui_act`, `ui_check` (see [`crate::ui_tools`]).
+    Ui(crate::ui_tools::UiCall),
     /// playtest_run and playtest_report (see [`crate::playtest_engine`]).
     Playtest(crate::playtest_engine::PlaytestCall),
     /// Lex rule sets: snapshots and edits (see [`crate::lex_tools`]).
@@ -966,7 +968,10 @@ pub(crate) fn parse(name: &str, args: &Json) -> Result<Command, String> {
                                                 Some(call) => call.map(Command::Stream),
                                                 None => match crate::terrain_tools::parse(other, args) {
                                                     Some(call) => call.map(Command::Terrain),
-                                                    None => crate::logic::tools::parse(other, args).unwrap_or_else(|| Err(format!("unknown tool '{}'", crate::bounds::echo(other)))),
+                                                    None => match crate::ui_tools::parse(other, args) {
+                                                        Some(call) => call.map(Command::Ui),
+                                                        None => crate::logic::tools::parse(other, args).unwrap_or_else(|| Err(format!("unknown tool '{}'", crate::bounds::echo(other)))),
+                                                    },
                                                 },
                                             },
                                         },
@@ -2848,6 +2853,7 @@ pub(crate) fn definitions() -> Vec<ToolDef> {
     .chain(crate::taste_tools::definitions())
     .chain(crate::gi_tools::definitions())
     .chain(crate::terrain_tools::definitions())
+    .chain(crate::ui_tools::definitions())
     .chain(crate::trace_tools::definitions())
     .collect()
 }

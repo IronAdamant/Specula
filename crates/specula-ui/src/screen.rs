@@ -277,6 +277,9 @@ pub enum InputMode {
     None,
 }
 
+/// Most actions a screen's `opened_by` lists.
+pub const MAX_OPENED_BY: usize = 16;
+
 #[derive(Clone, Debug)]
 pub struct Screen {
     pub name: String,
@@ -290,6 +293,11 @@ pub struct Screen {
     pub focus: Option<u32>,
     /// Action sent when "back" is pressed on this screen.
     pub back: Option<Rc<str>>,
+    /// The actions that open this screen (`opened_by`, at most [`MAX_OPENED_BY`]): input actions
+    /// of the game (a gamepad-bound one makes the screen a gamepad path), or the actions of
+    /// buttons on other screens. `ui_check`'s `gamepad_access` counts a menu as a gamepad path to
+    /// an action only when it is shown or such a chain from a gamepad binding opens it.
+    pub opened_by: Vec<Rc<str>>,
     pub nodes: Vec<Node>,
     /// The JSON it was loaded from (re-parsed when the theme changes).
     pub source: String,
@@ -328,8 +336,23 @@ impl Screen {
         let full_bleed = o.bool("full_bleed")?.unwrap_or(false);
         let focus_id = o.str("focus")?;
         let back = o.str("back")?.map(Rc::from);
+        let opened_by = match o.get("opened_by") {
+            None => Vec::new(),
+            Some(v) => {
+                let a = v.as_array().filter(|a| a.len() <= MAX_OPENED_BY).ok_or_else(|| bad("opened_by", format!("an array of at most {MAX_OPENED_BY} action names")))?;
+                let mut out: Vec<Rc<str>> = Vec::with_capacity(a.len());
+                for (i, x) in a.iter().enumerate() {
+                    let n = x.as_str().filter(|n| !n.is_empty() && n.len() <= 64).ok_or_else(|| bad(&format!("opened_by[{i}]"), "an action name, 1..64 characters"))?;
+                    if out.iter().any(|o| &**o == n) {
+                        return Err(bad(&format!("opened_by[{i}]"), format!("\"{n}\" is listed twice")));
+                    }
+                    out.push(Rc::from(n));
+                }
+                out
+            }
+        };
         let root = o.req("root")?;
-        o.finish(&["format", "name", "input", "layer", "modal", "full_bleed", "focus", "back", "root", "notes"])?;
+        o.finish(&["format", "name", "input", "layer", "modal", "full_bleed", "focus", "back", "opened_by", "root", "notes"])?;
 
         let mut p = Parser { theme, nodes: Vec::new(), navs: Vec::new() };
         p.node(root, "root", None, 0, None)?;
@@ -361,7 +384,7 @@ impl Screen {
             }
             None => None,
         };
-        Ok(Screen { name, input, layer, modal, full_bleed, focus, back, nodes, source: text.to_owned() })
+        Ok(Screen { name, input, layer, modal, full_bleed, focus, back, opened_by, nodes, source: text.to_owned() })
     }
 }
 

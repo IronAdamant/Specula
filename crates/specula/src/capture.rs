@@ -838,9 +838,17 @@ impl Engine {
         // A hosted game's interface (include_ui), under the debug overlays.
         let mut quads = Vec::new();
         if opts.include_ui {
+            if opts.overlays.has(Kind::Ui) {
+                // Only an interface this capture lays out may claim its layout (`ui` overlay).
+                self.ui_forget_capture_views();
+            }
+            // ui_frame's display (the caller's, or one for this capture alone), told the game
+            // for this capture and taken back after.
+            let told = self.ui_capture_display(opts.overlays.ui_display.as_deref().copied());
             self.game_overlay((w, h), camera, true, &mut quads);
             self.gallery_overlay((w, h), true, &mut quads);
             self.review_overlay((w, h), true, &mut quads);
+            self.ui_capture_display_done(told);
         }
         let hud = quads.len();
         // Its opaque panels hide the scene under them in the ID counts, as they hide it from a
@@ -1312,6 +1320,12 @@ impl Engine {
             }
             report.drawn.push("labels");
         }
+        if spec.has(Kind::Ui) {
+            // The interface as this capture laid it out (its overlay ran just before).
+            let d = self.paint_ui_outlines(&mut p, spec.max_labels, opts.include_ui);
+            report.drawn.push("ui");
+            report.details.push(("ui", d));
+        }
         if let Some(c) = &opts.caption {
             p.label(c, [0.0, 0.0], ov::WHITE, u64::MAX);
         }
@@ -1668,7 +1682,7 @@ mod frame_record_engine_tests {
         agrees(&record, &seen, &members, proxy(&record));
         assert!(members.iter().any(|m| record.drawn(*m).drawn() == Some(true)), "the cell in view is drawn as its proxy");
         // Review round 2: the bounds overlay painted HLOD members red (no pixels of their own).
-        let bounds = ov::Spec { kinds: vec![Kind::Bounds], entities: Vec::new(), max_labels: 0 };
+        let bounds = ov::Spec { kinds: vec![Kind::Bounds], entities: Vec::new(), max_labels: 0, ui_display: None };
         let opts = ViewOpts { include_ui: false, lod: None, time_s: 0.0, overlays: &bounds, caption: None, ids: true, fill: None };
         let r = e.render_view(toward, W, H, &opts).expect("render");
         let hidden = r.overlays.as_ref().and_then(|o| o.get("bounds")).and_then(|b| b.get("fully_hidden")).and_then(Json::as_u64);

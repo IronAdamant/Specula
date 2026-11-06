@@ -41,11 +41,62 @@ pub struct Target {
     pub safe_area: [f32; 4],
     /// The player's UI scale setting.
     pub user_scale: f32,
+    /// The operating system's scale for the monitor (Windows: DPI / 96), if known.
+    pub os_scale: Option<f32>,
 }
+
+/// The named targets [`Target::preset`] knows, for tools and their schemas.
+pub const PRESETS: [&str; 8] = ["deck", "1080p", "4k", "ultrawide", "16:10", "4:3", "1440p", "phone"];
 
 impl Target {
     pub fn new(name: &str, size: [u32; 2], ppi: Option<f32>) -> Target {
-        Target { name: name.into(), size, ppi, touch: false, safe_area: [0.0; 4], user_scale: 1.0 }
+        Target { name: name.into(), size, ppi, touch: false, safe_area: [0.0; 4], user_scale: 1.0, os_scale: None }
+    }
+
+    /// A 27" 4K monitor (~163 ppi).
+    pub fn desktop_4k() -> Target {
+        Target::new("desktop_3840x2160", [3840, 2160], Some(163.0))
+    }
+
+    /// A 16:10 laptop or monitor.
+    pub fn wide_16_10() -> Target {
+        Target::new("wide_1920x1200", [1920, 1200], Some(94.0))
+    }
+
+    /// A 4:3 screen (old monitors, some tablets).
+    pub fn square_4_3() -> Target {
+        Target::new("square_1024x768", [1024, 768], Some(96.0))
+    }
+
+    /// A named preset ([`PRESETS`]): `deck`, `1080p`, `4k`, `ultrawide` (3440×1440), `16:10`,
+    /// `4:3`, `1440p`, `phone`.
+    pub fn preset(name: &str) -> Option<Target> {
+        Some(match name {
+            "deck" => Target::deck(),
+            "1080p" => Target::desktop_1080p(),
+            "4k" => Target::desktop_4k(),
+            "ultrawide" => Target::new("ultrawide_3440x1440", [3440, 1440], Some(110.0)),
+            "16:10" => Target::wide_16_10(),
+            "4:3" => Target::square_4_3(),
+            "1440p" => Target::new("desktop_2560x1440", [2560, 1440], Some(109.0)),
+            "phone" => Target::phone_portrait(),
+            _ => return None,
+        })
+    }
+
+    /// The same target at another UI scale setting (its name says so when it isn't 1).
+    pub fn at_scale(&self, user_scale: f32) -> Target {
+        let mut t = self.clone();
+        t.user_scale = user_scale;
+        if (user_scale - 1.0).abs() > 1e-4 {
+            t.name = format!("{}@{}x", self.name, (user_scale * 100.0).round() / 100.0);
+        }
+        t
+    }
+
+    /// What the target is, as a display.
+    pub fn display(&self) -> crate::display::Display {
+        crate::display::Display { size: self.size, ppi: self.ppi, os_scale: self.os_scale, safe_area: self.safe_area, touch: self.touch }
     }
 
     /// Steam Deck: 1280×800, ~205 ppi, 7" screen.
@@ -72,8 +123,7 @@ impl Target {
     }
 
     pub fn viewport(&self, ui: &Ui) -> Viewport {
-        let scale = ui.theme().scale.scale(self.size, self.ppi, self.user_scale);
-        Viewport::new(self.size, scale).with_safe_area(self.safe_area)
+        self.display().viewport(ui.theme(), self.user_scale)
     }
 }
 
@@ -153,12 +203,34 @@ fn is_visual(k: &Kind, ui: &Ui) -> bool {
 /// game's actions, if given) lets `gamepad_access` verify shortcut bindings. The UI's own
 /// visibility and focus are restored afterwards.
 pub fn check(ui: &mut Ui, screens: &[&str], state: &StateMap, input_map: Option<&ActionMap>, targets: &[Target]) -> Result<Vec<Finding>, UiError> {
+    check_with(ui, screens, state, input_map, targets, &CheckOpts::default())
+}
+
+/// How [`check_with`] runs.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CheckOpts {
+    /// Lay text out in a pseudo-locale ([`Ui::set_pseudo_locale`]): every rule then measures
+    /// the longer, accented text, and `untranslated` notes labels whose words come from state.
+    pub pseudo: bool,
+}
+
+/// [`check`] with options (the engine's `ui_check`).
+pub fn check_with(ui: &mut Ui, screens: &[&str], state: &StateMap, input_map: Option<&ActionMap>, targets: &[Target], opts: &CheckOpts) -> Result<Vec<Finding>, UiError> {
+    let was_pseudo = ui.pseudo_locale();
+    ui.set_pseudo_locale(opts.pseudo);
+    let r = check_inner(ui, screens, state, input_map, targets);
+    ui.set_pseudo_locale(was_pseudo);
+    r
+}
+
+fn check_inner(ui: &mut Ui, screens: &[&str], state: &StateMap, input_map: Option<&ActionMap>, targets: &[Target]) -> Result<Vec<Finding>, UiError> {
     let mut ids = Vec::new();
     for s in screens {
         ids.push(ui.screen_id(s).ok_or_else(|| UiError::new(crate::error::ErrorCode::UnknownScreen, "", format!("no screen \"{s}\"")))?.0);
     }
     // check() lays the screens out at other sizes with a blank input: put the UI back after.
     let snap = ui.snapshot();
+    let pending = std::mem::take(&mut ui.pending);
     let saved: Vec<(bool, Option<u32>)> = ui.screens.iter().map(|s| (s.visible, s.focus)).collect();
     for (i, s) in ui.screens.iter_mut().enumerate() {
         s.visible = ids.contains(&i);
@@ -211,6 +283,7 @@ pub fn check(ui: &mut Ui, screens: &[&str], state: &StateMap, input_map: Option<
     }
     ui.reorder();
     ui.restore(snap);
+    ui.pending = pending;
     out.sort_by(|a, b| b.severity.cmp(&a.severity).then_with(|| a.rule.cmp(b.rule)));
     Ok(out)
 }
@@ -499,6 +572,51 @@ fn per_target(ui: &Ui, ids: &[usize], t: &Target, view: &Viewport, out: &mut Vec
     }
 }
 
+/// Whether `action` has a gamepad binding in `map`.
+fn pad_bound(map: Option<&ActionMap>, action: &str) -> bool {
+    map.is_some_and(|m| m.action(action).is_some() && !m.glyphs(action, DeviceFamily::Gamepad, specula_input::PadStyle::Xbox).is_empty())
+}
+
+/// The actions buttons (and radial items) of screen `s` send.
+fn sends<'a>(sr: &'a ScreenRt) -> impl Iterator<Item = &'a str> + 'a {
+    sr.screen.nodes.iter().filter_map(|n| match &n.kind {
+        Kind::Button { action: Some(a), .. } | Kind::RadialItem { action: Some(a), .. } => Some(&**a),
+        _ => None,
+    })
+}
+
+/// Which menu screens a player with a gamepad can reach (per screen index): the menus shown now,
+/// and those an `opened_by` action opens when that action has a gamepad binding or a button on
+/// a reachable menu sends it (a fixed point; at most one pass per screen). A menu nothing opens
+/// (Sepulcra's title screen, loaded but never shown) is no gamepad path (review R1 of
+/// m5-uitools, finding 9).
+fn gamepad_menus(ui: &Ui, map: Option<&ActionMap>) -> Vec<bool> {
+    let menu = |sr: &ScreenRt| sr.screen.input == InputMode::Menu;
+    let mut reach: Vec<bool> = ui.screens.iter().map(|sr| menu(sr) && (sr.visible || sr.screen.opened_by.iter().any(|a| pad_bound(map, a)))).collect();
+    for _ in 0..ui.screens.len() {
+        let mut grew = false;
+        for (i, sr) in ui.screens.iter().enumerate() {
+            if reach[i] || !menu(sr) {
+                continue;
+            }
+            let opened = sr.screen.opened_by.iter().any(|a| ui.screens.iter().enumerate().any(|(j, o)| reach[j] && sends(o).any(|x| x == &**a)));
+            if opened {
+                reach[i] = true;
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    reach
+}
+
+/// A menu screen a gamepad reaches ([`gamepad_menus`]) has a button sending `action`.
+fn menu_offers(ui: &Ui, reach: &[bool], action: &str) -> bool {
+    ui.screens.iter().zip(reach).any(|(s, &r)| r && sends(s).any(|a| a == action))
+}
+
 fn radial_item_size(sr: &ScreenRt, i: usize) -> f32 {
     let Some(p) = sr.screen.nodes[i].parent else { return 0.0 };
     let Kind::Radial { radius, inner } = sr.screen.nodes[p as usize].kind else { return 0.0 };
@@ -567,6 +685,8 @@ fn backgrounds(ui: &Ui, sr: &ScreenRt, i: usize, modal_below: bool) -> Vec<Rgba>
 
 fn global_rules(ui: &Ui, ids: &[usize], state: &StateMap, input_map: Option<&ActionMap>, out: &mut Vec<Finding>) {
     let rules = ui.theme.check;
+    // The menus a gamepad reaches, worked out when a HUD button first asks.
+    let mut pad_menus: Option<Vec<bool>> = None;
     let mut push = |rule: &'static str, sev: Severity, screen: &str, widget: String, message: String, measured: f32, required: f32| {
         out.push(Finding {
             rule,
@@ -611,6 +731,18 @@ fn global_rules(ui: &Ui, ids: &[usize], state: &StateMap, input_map: Option<&Act
                 if missing {
                     push("unbound", Severity::Warning, &sr.screen.name, widget_name(sr, i), format!("state has no \"{}\"", key.name()), 0.0, 1.0);
                 }
+            }
+            // ---- untranslated (pseudo-locale): words the game supplies through state ----
+            if let (true, Some(k)) = (sr.comp[i].visible, &sr.rt[i].untranslated) {
+                push(
+                    "untranslated",
+                    Severity::Warning,
+                    &sr.screen.name,
+                    widget_name(sr, i),
+                    format!("\"{}\" shows words from state key \"{k}\": the game supplies them, so a screen's string table can't translate them", short(&sr.rt[i].text)),
+                    0.0,
+                    0.0,
+                );
             }
             // ---- contrast ----
             let c = &sr.comp[i];
@@ -689,21 +821,26 @@ fn global_rules(ui: &Ui, ids: &[usize], state: &StateMap, input_map: Option<&Act
             }
             // ---- gamepad access for pointer-only HUD buttons ----
             if sr.screen.input == InputMode::Hud {
-                if let Kind::Button { shortcut, .. } = &node.kind {
+                if let Kind::Button { shortcut, action, .. } = &node.kind {
+                    // A menu screen of this UI offering the same action is a gamepad path too
+                    // (the pause menu's speed button for the HUD's).
+                    let reach = pad_menus.get_or_insert_with(|| gamepad_menus(ui, input_map));
+                    let on_menu = action.as_ref().is_some_and(|a| menu_offers(ui, reach, a));
                     match shortcut {
+                        None if on_menu => {}
                         None => push(
                             "gamepad_access",
                             Severity::Error,
                             &sr.screen.name,
                             widget_name(sr, i),
-                            "a HUD button only the pointer can press: give it a \"shortcut\" input action".into(),
+                            "a HUD button only the pointer can press: give it a \"shortcut\" input action, or offer its action on a menu screen".into(),
                             0.0,
                             1.0,
                         ),
                         Some(a) => {
                             if let Some(map) = input_map {
                                 let pads = map.glyphs(a, DeviceFamily::Gamepad, specula_input::PadStyle::Xbox);
-                                if map.action(a).is_none() || pads.is_empty() {
+                                if (map.action(a).is_none() || pads.is_empty()) && !on_menu {
                                     push(
                                         "gamepad_access",
                                         Severity::Error,
@@ -718,6 +855,40 @@ fn global_rules(ui: &Ui, ids: &[usize], state: &StateMap, input_map: Option<&Act
                         }
                     }
                 }
+            }
+        }
+    }
+    // ---- focus scope: a modal screen traps the gamepad; it must be able to act there ----
+    // (The checked screens are the shown ones, in layer order.)
+    let order = &ui.order;
+    if let Some(m) = order.iter().rposition(|&s| ui.screens[s].screen.modal) {
+        let has_menu = order[m..].iter().any(|&s| ui.screens[s].screen.input == InputMode::Menu);
+        for &s in &order[m..] {
+            let sr = &ui.screens[s];
+            let buttons = (0..sr.screen.nodes.len()).filter(|&i| sr.comp[i].visible && sr.screen.nodes[i].kind.interactive()).count();
+            if !has_menu && buttons > 0 {
+                out.push(Finding {
+                    rule: "focus_scope",
+                    severity: Severity::Error,
+                    target: "all".into(),
+                    screen: sr.screen.name.clone(),
+                    widget: String::new(),
+                    message: format!("modal \"{}\" takes all input but no menu screen at or above it has the focus: its {buttons} buttons are pointer-only", sr.screen.name),
+                    measured: buttons as f64,
+                    required: 0.0,
+                });
+            }
+            if sr.screen.input == InputMode::Menu && sr.screen.back.is_none() && buttons == 0 {
+                out.push(Finding {
+                    rule: "focus_scope",
+                    severity: Severity::Error,
+                    target: "all".into(),
+                    screen: sr.screen.name.clone(),
+                    widget: String::new(),
+                    message: "a menu screen with no buttons and no \"back\" action: a gamepad player can't leave it".into(),
+                    measured: 0.0,
+                    required: 1.0,
+                });
             }
         }
     }

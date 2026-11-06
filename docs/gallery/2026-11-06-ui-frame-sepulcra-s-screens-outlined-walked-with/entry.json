@@ -1,0 +1,48 @@
+{
+  "date": "2026-11-06",
+  "time": "",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M5",
+  "commit": "c0daa40",
+  "subject": "ui",
+  "topic": "UI",
+  "title": "ui_frame: Sepulcra's screens outlined, walked with a gamepad",
+  "note": "The new ui_frame captures: every widget with an id or that takes input outlined from the layout the capture drew (cyan takes input, yellow the gamepad focus, red disabled, grey has an id, faint under a modal). A playtester agent walked every menu with a simulated gamepad (ui_act) at the Deck, 1080p and 4K at UI scale 1.0 and 1.5, and on a 175% laptop window; below 1100 logical px the HUD uses its compact layout (corner buttons under the top bar, one bottom panel), and the radial's hints move to the side on short screens.",
+  "source": "scripts/ui_check.py (ui_frame)",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-frame-00003.jpg",
+      "caption": "Deck 1280x800, UI scale 1.0: the pause menu (focus on Resume, gamepad prompts)",
+      "original": "frame_00003.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 24675
+    },
+    {
+      "file": "02-frame-00011.jpg",
+      "caption": "Deck at UI scale 1.5: settings over the pause menu, the compact HUD under the modal",
+      "original": "frame_00011.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 31949
+    },
+    {
+      "file": "03-frame-00044.jpg",
+      "caption": "A 1280x720 window on a 175% laptop (OS scale capped at 1.5x): the radial build menu with side hints",
+      "original": "frame_00044.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 32608
+    },
+    {
+      "file": "04-frame-00041.jpg",
+      "caption": "4K at UI scale 1.5: the saves screen (disabled slots in red)",
+      "original": "frame_00041.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 25837
+    }
+  ]
+}

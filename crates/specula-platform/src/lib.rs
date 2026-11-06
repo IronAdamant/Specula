@@ -66,6 +66,22 @@ pub fn client_size_of(raw: RawWindow) -> (u32, u32) {
     }
 }
 
+/// The operating system's UI scale for the monitor showing `raw` (Windows: its DPI / 96, so 1.5
+/// at 150%), from **any** thread. It changes when the window moves to another monitor or the
+/// player changes the setting: ask again now and then. `None` when the window is gone or there
+/// is no backend.
+pub fn os_scale_of(raw: RawWindow) -> Option<f32> {
+    #[cfg(windows)]
+    {
+        win32::dpi_of(raw.hwnd).map(|d| d as f32 / 96.0)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = raw;
+        None
+    }
+}
+
 /// The refresh rate, in Hz, of the display showing `raw` (the nearest one), from **any** thread.
 /// `None` when the driver doesn't say or there is no backend. Variable-refresh displays report
 /// their highest rate. It can change (the window moves to another display): ask again now and then.

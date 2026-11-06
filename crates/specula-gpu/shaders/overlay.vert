@@ -1,7 +1,10 @@
 #version 460
 // Overlay, vertex stage: instance i is record i, six vertices each.
-// - Quads grow by their feather (and a pixel) on every side so the fragment stage can fade
-//   fractional, rounded and soft edges, then shrink to their clip rect (no wasted fragments).
+// - Quads grow by half their feather on every side (plus 1/16 px for the rasterizer's sub-pixel
+//   snapping): the fragment stage fades an edge over feather px centred on it, so a pixel whose
+//   centre lies further out has coverage 0 and isn't drawn. Then they shrink to their clip rect.
+//   (They grew by ceil(feather / 2) + 1 px before: up to 40% more fragments on small glyphs,
+//   every one of them blending nothing; m5-uitools, the HUD's GPU budget.)
 // - Triangles use vertices 0..2; vertices 3..5 collapse onto vertex 0 (a degenerate triangle).
 // Everything the fragment stage needs travels as flat varyings: reading the record per
 // fragment costs integrated GPUs dearly.
@@ -45,7 +48,7 @@ void main() {
     }
     const vec2 corners[6] = vec2[](vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0));
     vec2 size = max(q.rect.zw, vec2(0.0));
-    float grow = ceil(0.5 * max(q.params.z, 1.0)) + 1.0;
+    float grow = 0.5 * max(q.params.z, 1.0) + 0.0625;
     vec2 lo = max(q.rect.xy - grow, q.clip.xy);
     vec2 hi = max(min(q.rect.xy + size + grow, q.clip.zw), lo);
     vec2 px = mix(lo, hi, corners[gl_VertexIndex]);

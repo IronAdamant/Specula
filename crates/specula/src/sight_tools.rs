@@ -173,7 +173,7 @@ fn overlays_arg(args: &Json) -> Result<sight_overlay::Spec, String> {
     };
     let (default, max) = sight_overlay::LABELS;
     let max_labels = int_arg(args, "max_labels", 0, max as u64)?.map_or(default, |n| n as usize);
-    Ok(sight_overlay::Spec { kinds, entities, max_labels })
+    Ok(sight_overlay::Spec { kinds, entities, max_labels, ui_display: None })
 }
 
 /// The sight tools' arguments; `None` when `name` isn't one of them.
