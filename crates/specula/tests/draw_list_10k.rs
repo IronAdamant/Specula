@@ -90,7 +90,7 @@ fn a_10k_entity_draw_list_allocates_nothing() {
     let deadline = Instant::now() + Duration::from_secs(120);
     while shared.lock().in_flight() > 0 && Instant::now() < deadline {
         let (_, changed) = shared.lock().finish(Some(Duration::from_millis(50)));
-        world.refresh_model_handles(&changed);
+        world.refresh_model_handles(&changed, false);
     }
     let mut models = GpuModels::default();
     assert!(models.sync(&mut gpu, &shared, &world, 0).is_empty());

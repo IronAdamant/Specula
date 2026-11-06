@@ -1,0 +1,19 @@
+{
+  "recipe": 1,
+  "name": "grass_patch",
+  "category": "foliage",
+  "description": "Real grass for one 2 m slab cell (STYLE.md: real grass blades replace flat green; moss may exceed the saturation rule on map 1): grass tufts scattered by Poisson-disc rules into one mesh, swaying in the world's wind, alpha-cutout blades. `tufts` sets the density; change the seed for another layout. Tufts are not scaled: the blades are texture-mapped in the patch (uv_scale 0.454 = a 0.42 m tuft x 1.08), so every card shows its blades once, root to tip, and never reaches the texture's wrap at its top edge (bilinear filtering there drew the opaque roots as dashed lines along the cards' tops).",
+  "seed": 3,
+  "params": { "tufts": { "default": 14, "min": 1, "max": 40, "integer": true }, "size": { "default": 1.9, "min": 0.5, "max": 6 } },
+  "budget": { "max_triangles": 240 },
+  "collider": "none",
+  "smooth_angle": 0,
+  "textures": { "blades": "tex_grass_blades" },
+  "wind": { "amount": 0.07, "height": 0.45 },
+  "parts": [
+    { "name": "grass", "material": "grass", "texture": "blades", "uv_scale": 0.454,
+      "generate": { "op": "scatter", "area": { "rect": ["size", "size"] }, "min_distance": 0.3, "count": "tufts",
+        "yaw": [-180, 180], "tilt": 3,
+        "items": [ { "include": "grass_tuft", "variants": 2 } ] } }
+  ]
+}

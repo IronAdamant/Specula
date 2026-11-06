@@ -25,6 +25,9 @@ layout(push_constant) uniform Push {
 // Which fragments of a draw the scene shows, mirroring mesh.frag's discards (src/idbuffer.rs).
 const uint FACES_ALL = 0u;   // every fragment: opaque draws, glass (both passes), blob shadows
 const uint FACES_LAVA = 2u;  // the lava lamp's proxy: near faces, or far faces from inside it
+// A flag beside them: the batch is `Lit` meshes, whose records may carry a wind term (sway and
+// fade, frame.glsl); other materials use those record bits for themselves.
+const uint FACES_FOLIAGE = 4u;
 
 // This capture's counts (see ids_core.glsl).
 IdTarget id_target() {
@@ -61,12 +64,15 @@ void count_box(uint id, uvec2 p, bvec4 edges) {
 // same rasterization, so the same derivatives).
 layout(set = 0, binding = 1) uniform sampler2D textures[];
 
-bool cut_out(uint record, vec2 uv) {
+// Foliage cards (a FACES_FOLIAGE batch) also fade edge-on, as the scene cuts them (frame.glsl
+// foliage_edge): `normal` and `world` are the fragment's.
+bool cut_out(uint record, vec2 uv, vec3 normal, vec3 world) {
     uvec4 ext = pc.draws.items[record].ext;
     uint base_slot = ext.x & 0xffffu;
     if (base_slot == 0u || (ext.w & EXT_ALPHA_MASK) == 0u) {
         return false;
     }
-    return texture(textures[nonuniformEXT(base_slot - 1u)], uv).a < float((ext.w >> 8) & 255u) / 255.0;
+    float edge = (pc.faces & FACES_FOLIAGE) != 0u ? foliage_edge(ext.w, normal, world, pc.frame.camera_time.xyz) : 1.0;
+    return texture(textures[nonuniformEXT(base_slot - 1u)], uv).a * edge < float((ext.w >> 8) & 255u) / 255.0;
 }
 #endif

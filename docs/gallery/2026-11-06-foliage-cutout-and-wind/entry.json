@@ -1,0 +1,32 @@
+{
+  "date": "2026-11-06",
+  "time": "05:11",
+  "date_source": "run time",
+  "approximate": false,
+  "milestone": "M5",
+  "commit": "",
+  "subject": "engine-tests",
+  "topic": "engine test",
+  "title": "Foliage: cutout and wind",
+  "note": "M5: a grass tuft's alpha-cutout blades (texture graph opacity) with their cut shadow, and the same view at another simulation time (wind). foliage_check.py, Intel iGPU.",
+  "source": "scripts/foliage_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-cutout-t1.jpg",
+      "caption": "cutout blades and their shadow",
+      "original": "cutout_t1.png",
+      "width": 640,
+      "height": 480,
+      "bytes": 19218
+    },
+    {
+      "file": "02-wind-t2-3.jpg",
+      "caption": "the wind at t=2.3 s",
+      "original": "wind_t2_3.png",
+      "width": 640,
+      "height": 480,
+      "bytes": 20907
+    }
+  ]
+}

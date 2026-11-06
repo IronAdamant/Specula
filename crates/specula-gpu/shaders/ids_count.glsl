@@ -25,11 +25,14 @@ layout(location = 3) in vec2 v_uv;
 // Whether the scene shows this fragment: mesh.frag's discards, mirrored (every mode).
 bool shown() {
 #ifdef TEXTURED
-    if (cut_out(v_ids.y, v_uv)) {
+    if ((pc.faces & FACES_FOLIAGE) != 0u && foliage_faded(pc.frame, pc.draws.items[v_ids.y].ext.w, v_world, gl_FragCoord.xy)) {
+        return false; // faded foliage (mesh_frag.glsl discards it, textured draws only)
+    }
+    if (cut_out(v_ids.y, v_uv, v_normal, v_world)) {
         return false; // an alpha-masked texel (mesh_frag.glsl discards it)
     }
 #endif
-    if (pc.faces == FACES_LAVA) {
+    if ((pc.faces & 3u) == FACES_LAVA) {
         // shade_lava_lamp: shaded on the proxy's near faces, or on its far faces when the camera
         // is inside the box.
         vec3 cam = pc.frame.camera_time.xyz;

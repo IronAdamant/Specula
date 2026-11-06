@@ -8,7 +8,7 @@
 use crate::world::{color_from_hex, color_hex, color_json_exact};
 use specula_core::hash::StableHasher;
 use specula_core::Json;
-use specula_gpu::{BloomSettings, FogSettings, GradingSettings, ShadowSettings, SkySettings, SsaoSettings};
+use specula_gpu::{BloomSettings, FogSettings, GradingSettings, ShadowSettings, SkySettings, SsaoSettings, WindSettings};
 use std::fmt;
 
 /// How a field is read, checked and written.
@@ -388,6 +388,31 @@ effect_patch!(SsaoPatch for SsaoSettings, "ssao" {
     resolution: f32 = Kind::Num(0.25, 1.0),
 });
 
+effect_patch!(WindPatch for WindSettings, "wind" {
+    direction: [f32; 3] = Kind::Triple(-1.0, 1.0),
+    strength: f32 = Kind::Num(0.0, specula_gpu::MAX_WIND_STRENGTH),
+    frequency: f32 = Kind::Num(0.0, 4.0),
+    gust: f32 = Kind::Num(0.0, 1.0),
+    fade_start: f32 = Kind::Num(0.0, 100_000.0),
+    fade_end: f32 = Kind::Num(0.0, 100_000.0),
+    shadow_end: f32 = Kind::Num(0.0, 100_000.0),
+});
+
+impl WindPatch {
+    /// Hashes nothing while the wind is the default breeze, so older worlds keep their hash.
+    pub fn hash_if_set(s: &WindSettings, h: &mut StableHasher) {
+        if *s != WindSettings::default() {
+            h.write_str("wind");
+            WindPatch::hash(s, h);
+        }
+    }
+
+    /// World files carry the wind only when it isn't the default (older files stay as they were).
+    pub fn to_json_if_set(s: &WindSettings) -> Option<Json> {
+        (*s != WindSettings::default()).then(|| WindPatch::to_json(s, true))
+    }
+}
+
 impl SsaoPatch {
     /// Hashes nothing while SSAO is all defaults, so older worlds keep their hash.
     pub fn hash_if_set(s: &SsaoSettings, h: &mut StableHasher) {
@@ -401,6 +426,27 @@ impl SsaoPatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The wind: a partial patch, ranges checked, and the default breeze leaves world hashes and
+    /// world files as they were.
+    #[test]
+    fn wind_patches_check_their_ranges_and_hide_the_default() {
+        let p = WindPatch::parse(&Json::parse(r#"{"strength":2,"fade_end":80}"#).unwrap()).unwrap();
+        let mut w = WindSettings::default();
+        p.apply(&mut w);
+        assert_eq!((w.strength, w.fade_end, w.frequency), (2.0, 80.0, WindSettings::default().frequency));
+        assert!(p.check().is_ok());
+        for bad in [r#"{"strength":5}"#, r#"{"gust":2}"#, r#"{"direction":[2,0,0]}"#, r#"{"frequency":-1}"#, r#"{"fade_start":-1}"#] {
+            let p = WindPatch::parse(&Json::parse(bad).unwrap()).unwrap();
+            assert!(p.check().is_err(), "{bad}");
+        }
+        assert!(WindPatch::parse(&Json::parse(r#"{"speed":1}"#).unwrap()).is_err(), "unknown keys refused");
+        let mut a = StableHasher::with_seed(1);
+        WindPatch::hash_if_set(&WindSettings::default(), &mut a);
+        assert_eq!(a.finish(), StableHasher::with_seed(1).finish(), "the default hashes nothing");
+        assert!(WindPatch::to_json_if_set(&WindSettings::default()).is_none());
+        assert!(WindPatch::to_json_if_set(&w).is_some());
+    }
 
     #[test]
     fn partial_patches_apply_only_what_they_name() {

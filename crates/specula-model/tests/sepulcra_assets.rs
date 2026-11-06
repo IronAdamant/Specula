@@ -62,6 +62,7 @@ fn every_recipe_in_the_folder_is_covered() {
             || ["rune_glyph", "rune_column"].contains(&name.as_str())
             || PROCGEN.iter().any(|(p, _, _)| p == name)
             || M4_PROPS.iter().any(|(p, _)| p == name)
+            || FOLIAGE.iter().any(|(p, _)| p == name)
             || lib[name].contains("\"texgraph\"");
         assert!(known, "recipe {name} has no budget test");
     }
@@ -353,6 +354,50 @@ fn procgen_assets_build_in_budget_and_pinned() {
 }
 
 const PROCGEN_PINNED: &str = "dc0693c52fd8b422";
+
+/// Foliage (M5): alpha-cutout cards swaying in the wind, with their budgets. A tuft is three
+/// upright quads (review R1: 4 mm boxes were 12 triangles a card, both broad faces shaded).
+const FOLIAGE: [(&str, usize); 2] = [("grass_tuft", 6), ("grass_patch", 6 * 14)];
+
+/// Triangles a grass tuft may cost (three crossed quads).
+const TUFT_TRIANGLES: usize = 6;
+
+/// Review R1 (major 2): Sepulcra's grass patch costs at most a tuft's quads per tuft at every
+/// density its recipe allows (12 tufts in the game: sepulcra-app grass.rs TUFTS), so 72 patches
+/// stay a few thousand triangles on the iGPU.
+#[test]
+fn grass_patches_cost_six_triangles_a_tuft() {
+    let (style, lib) = load();
+    for tufts in [1.0, 12.0, 40.0] {
+        let vals = [("tufts", tufts)];
+        let m = build(&lib["grass_patch"], &BuildParams { values: &vals, library: Some(&lib), ..BuildParams::new(&style) }).unwrap();
+        let n0 = m.lods[0].triangle_count();
+        assert!(n0 > 0 && n0 <= TUFT_TRIANGLES * tufts as usize, "{tufts} tufts: {n0} triangles");
+        for l in &m.lods {
+            assert!(l.triangle_count() <= n0);
+        }
+    }
+}
+
+#[test]
+fn foliage_is_cut_out_swaying_and_in_budget() {
+    let (style, lib) = load();
+    for (name, max) in FOLIAGE {
+        let m = build(&lib[name], &BuildParams { library: Some(&lib), ..BuildParams::new(&style) }).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let n0 = m.lods[0].triangle_count();
+        assert!(n0 <= max && n0 > 0, "{name}: {n0} triangles, budget {max}");
+        m.lods[0].validate().unwrap_or_else(|e| panic!("{name}: {e}"));
+        let w = m.wind.unwrap_or_else(|| panic!("{name} sways"));
+        assert!(w.amount > 0.0 && w.height > 0.1, "{name}: {w:?}");
+        assert_eq!(m.extras.textures.len(), 1, "{name}: one blade texture set");
+        let set = &m.extras.textures[0].1;
+        assert_eq!(set.alpha_cutoff, 0.5, "{name}: alpha-tested blades");
+        // A card of blades: most texels cut, a good share solid.
+        let solid = set.base_color.chunks(4).filter(|p| p[3] >= 128).count() as f64 / (set.base_color.len() / 4) as f64;
+        assert!((0.15..0.6).contains(&solid), "{name}: {solid} of the card is blade");
+        assert!(m.bounds.min[1] >= -0.05 && m.bounds.min[1] <= 0.01, "{name} stands on the ground: {:?}", m.bounds);
+    }
+}
 
 /// The M4 exit set: map 1's 33 graveyard props (scripts/m4_exit.py), with their style.toml
 /// budgets (graveyard 600, prop 1500, building 1500).

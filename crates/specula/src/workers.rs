@@ -73,6 +73,8 @@ pub enum JobKind {
     FlashFeed,
     /// A released scratch lease's folder moved into the trash (`lease_release {delete}`).
     ScratchTrash,
+    /// The model library's scan of the assets folder (recipe, style, anim-set and glTF times).
+    AssetScan,
 }
 
 impl JobKind {
@@ -96,6 +98,7 @@ impl JobKind {
             JobKind::SheetRead => "gallery_sheet_read",
             JobKind::FlashFeed => "flash_feed",
             JobKind::ScratchTrash => "scratch_trash",
+            JobKind::AssetScan => "asset_scan",
         }
     }
 }
@@ -576,11 +579,12 @@ impl Engine {
 }
 
 #[cfg(test)]
-mod charge_tests {
+pub(crate) mod charge_tests {
     use super::*;
     use crate::journal::{Kind, Writer};
 
-    fn engine() -> Option<Engine> {
+    /// A headless engine over Sepulcra's assets (`None`, after a skip line, without Vulkan).
+    pub(crate) fn engine() -> Option<Engine> {
         if !specula_gpu::is_available() {
             crate::skip_test("charge_tests", "Vulkan is not available");
             return None;

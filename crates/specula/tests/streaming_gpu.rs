@@ -62,7 +62,7 @@ fn budgets_eviction_and_hlod_on_the_gpu() {
     let deadline = Instant::now() + Duration::from_secs(180);
     while shared.lock().in_flight() > 0 && Instant::now() < deadline {
         let (_, changed) = shared.lock().finish(Some(Duration::from_millis(50)));
-        world.refresh_model_handles(&changed);
+        world.refresh_model_handles(&changed, false);
     }
     let mut models = GpuModels::default();
     let mut stream = Streamer::new(StreamTable::default(), "integrated");

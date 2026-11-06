@@ -172,6 +172,10 @@ pub const FACES_ALL: u32 = 0;
 /// The lava lamp's proxy box, as `shade_lava_lamp` shades it (its only `discard`): near faces, or
 /// far faces when the camera is inside the box.
 pub const FACES_LAVA: u32 = 2;
+/// A flag beside the faces: the batch is `Lit` meshes, whose records may carry a wind term (they
+/// sway and fade as in the scene: `ids_vert.glsl`, `ids_opaque.glsl`, `ids_count.glsl`). Other
+/// materials' records use those bits for themselves (terrain levels, water strength).
+pub const FACES_FOLIAGE: u32 = 4;
 /// Blended ids kept per pixel: the smallest [`SEEN_SLOTS`], in `u32` slots (16 bytes a pixel).
 pub const SEEN_SLOTS: u64 = 4;
 /// Bits of a slot holding the id (`SEEN_ID_BITS` in `shaders/ids.glsl`); the rest tag the capture.
@@ -447,6 +451,9 @@ unsafe fn draw_batches(ctx: &FrameContext, cmd: VkCommandBuffer, f: &IdFrame, st
             continue;
         }
         push.faces = if step == Step::Opaque { FACES_ALL } else { faces_for(batch.material) };
+        if batch.material == crate::Material::Lit && !terrain {
+            push.faces |= FACES_FOLIAGE;
+        }
         // Terrain patches read their terrain's material record through the bones address.
         let bones = if terrain { ctx.upload.terrains_address(ctx.scratch.terrains_at) } else { push_for(ctx, f).bones };
         if push.bones != bones {

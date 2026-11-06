@@ -489,11 +489,36 @@ pub struct Studio {
     preview_turn: bool,
     /// Finished previews whose sheets are being encoded on their own threads.
     pub(crate) encoders: Arc<std::sync::atomic::AtomicUsize>,
+    /// The render on the GPU ([`Engine::pump_studio`] lands it when it is done, never waiting).
+    flight: Option<Flight>,
+    /// A target made for a new size whose render graph images are being made, a slice a pump.
+    cold: Option<TargetId>,
+    /// Pumps a render waited for a capture's view on the GPU: after
+    /// [`crate::capture::flight::TURN_PASSES`] the studio lands that view itself and goes.
+    capture_waits: u32,
+}
+
+/// A studio render submitted without waiting: its job, its target, and what submitting cost.
+struct Flight {
+    job: Box<RenderJob>,
+    target: TargetId,
+    submit_ms: f64,
+    submitted: Instant,
+}
+
+/// What submitting a studio render did.
+enum Submit {
+    /// On the GPU: landed by a later pump.
+    Flying(TargetId),
+    /// Rendered and read back at once (gallery variants of the live world).
+    Done(Vec<u8>),
+    /// A new size's render graph images were made a slice further: the job goes again.
+    Warming,
 }
 
 impl Studio {
     pub(crate) fn new(library: Arc<SharedLibrary>, capture_dir: PathBuf) -> Studio {
-        Studio { shared: Arc::new(Shared::new(library, capture_dir)), queue: BTreeMap::new(), last_session: None, targets: Vec::new(), pins: BTreeMap::new(), credit_ms: MAX_CREDIT_MS, last_pump: None, last_tidy: None, previews: VecDeque::new(), preview_turn: false, encoders: Arc::default() }
+        Studio { shared: Arc::new(Shared::new(library, capture_dir)), queue: BTreeMap::new(), last_session: None, targets: Vec::new(), pins: BTreeMap::new(), credit_ms: MAX_CREDIT_MS, last_pump: None, last_tidy: None, previews: VecDeque::new(), preview_turn: false, encoders: Arc::default(), flight: None, cold: None, capture_waits: 0 }
     }
 
     /// The next render, round-robin over the sessions with renders queued (in key order after
@@ -866,10 +891,15 @@ struct Render {
 
 impl Engine {
     /// Renders one recorded request on the GPU (the studio's own targets).
-    fn render_req(&mut self, req: &RenderReq) -> Result<Vec<u8>, ToolOutput> {
+    /// Submits `req`'s render without waiting for the GPU ([`Submit::Flying`]: the pump lands it
+    /// later). A studio render used to render and read back synchronously, holding the engine
+    /// thread for the GPU's queue as well as its own frame (window frame stalls of 30-150 ms on
+    /// the iGPU in the M4 exit proof's load). A new size's target first gets its render graph
+    /// images a slice per pump ([`Submit::Warming`]).
+    fn render_req_submit(&mut self, req: &RenderReq) -> Result<Submit, ToolOutput> {
         if let Some(scene) = req.extra.as_ref().and_then(|x| x.scene.as_ref()) {
             // A gallery variant of the live world (read only).
-            return self.render_scene_variant(req, scene);
+            return self.render_scene_variant(req, scene).map(Submit::Done);
         }
         let (w, h, cam) = (req.w, req.h, &req.cam);
         let vp = cam.view_proj(req.aspect);
@@ -943,12 +973,63 @@ impl Engine {
         };
         let fresh = !self.studio.targets.iter().any(|t| t.key == (w, h, kind));
         let target = self.studio_target(w, h, kind).map_err(ToolOutput::error)?;
-        // A new target's first frame also builds its render graph (shown apart in perf zones).
-        let _z = fresh.then(|| profile::zone("studio_first_frame"));
-        self.gpu.render(target, &frame).map_err(|e| ToolOutput::error(capture::gpu_failure("render", &e, self.windowed)))?;
-        drop(_z);
-        let _r = profile::zone("studio_readback");
-        self.gpu.read_rgba8(target).map_err(|e| ToolOutput::error(capture::gpu_failure("readback", &e, self.windowed)))
+        if fresh {
+            self.studio.cold = Some(target);
+        }
+        if self.studio.cold == Some(target) {
+            // The new size's graph images, a slice a pump, in this frame's own shape (a lit stage:
+            // shadow casters and nothing else; a silhouette: not even those).
+            let content = specula_gpu::ContentHint { shadow_casters: req.light.is_some(), ..Default::default() };
+            let until = Instant::now() + crate::capture::flight::PREWARM_SLICE;
+            let done = self.gpu.prewarm_target(target, &frame.environment, false, Some(content), until).unwrap_or(true);
+            if done {
+                self.studio.cold = None;
+            }
+            return Ok(Submit::Warming);
+        }
+        self.gpu.render_async(target, &frame, None).map_err(|e| ToolOutput::error(capture::gpu_failure("render", &e, self.windowed)))?;
+        Ok(Submit::Flying(target))
+    }
+
+    /// Lands the studio render on the GPU when it is done (a poll, never a wait): its pixels go
+    /// to its call. `false` while it still runs (the pump ends there).
+    fn studio_land(&mut self, share: f64) -> bool {
+        let Some(f) = self.studio.flight.take() else { return true };
+        // Its render may have been settled already by another offscreen render (a capture's
+        // turn): then its pixels are in its readback and the GPU's latest stats aren't its own.
+        let ours = self.gpu.offscreen_pending_target() == Some(f.target);
+        let settled = if ours { self.gpu.settle_offscreen(false) } else { Ok(true) };
+        if let Ok(false) = settled {
+            self.studio.flight = Some(f);
+            return false;
+        }
+        let _c = f.job.trace.enter();
+        if let Err(e) = settled {
+            // The render's own failure (a lost device), not a readback's.
+            let _ = f.job.reply.send(Err(ToolOutput::error(capture::gpu_failure("render", &e, self.windowed))));
+            return true;
+        }
+        let started = Instant::now();
+        let px = {
+            let _r = profile::zone("studio_readback");
+            self.gpu.read_rgba8(f.target).map_err(|e| ToolOutput::error(capture::gpu_failure("readback", &e, self.windowed)))
+        };
+        let ms = f.submit_ms + started.elapsed().as_secs_f64() * 1000.0;
+        let stats = if ours { self.gpu.last_frame_stats_of(FramePath::Offscreen) } else { None };
+        let gpu_ms = stats.as_ref().and_then(|s| s.gpu.as_ref().filter(|g| g.frame == s.frame)).map_or(0.0, |g| g.total_ms);
+        let cpu = stats.map(|s| s.cpu).unwrap_or_default();
+        // The wait is the time it was in flight (the engine thread did other work meanwhile).
+        let wait_ms = f.submitted.elapsed().as_secs_f64() * 1000.0;
+        let cost = RenderCost { ms, gpu_ms, record_ms: cpu.record_ms, submit_ms: cpu.submit_ms, wait_ms };
+        // With a window, the render's GPU time is charged too: the window shares the GPU, and a
+        // sheet's back-to-back renders pushed its frames past their GPU budget on the iGPU.
+        self.studio.credit_ms -= ms - f.submit_ms + if self.windowed { gpu_ms } else { 0.0 };
+        self.studio.shared.note(Some(ms), share);
+        if let Some(p) = self.studio.pins.get_mut(&f.job.call) {
+            p.last = Instant::now();
+        }
+        let _ = f.job.reply.send(px.map(|px| Rendered { px, cost }));
+        true
     }
 
     /// The studio's own offscreen target of `w` × `h` for a light kind, apart from the sight
@@ -1065,7 +1146,7 @@ impl Engine {
             self.studio.last_tidy = Some(now);
             self.studio_tidy(now, server);
         }
-        if self.studio.queue.is_empty() && self.studio.previews.is_empty() {
+        if self.studio.queue.is_empty() && self.studio.previews.is_empty() && self.studio.flight.is_none() {
             self.studio.credit_ms = MAX_CREDIT_MS;
             return;
         }
@@ -1087,6 +1168,9 @@ impl Engine {
             }
         }
         self.studio.credit_ms = (self.studio.credit_ms + earned).min(MAX_CREDIT_MS);
+        if !self.studio_land(share) {
+            return;
+        }
         while self.studio.credit_ms > 0.0 {
             // Previews and the studio's renders take turns (each alone has every turn).
             self.studio.preview_turn = !self.studio.preview_turn;
@@ -1136,31 +1220,60 @@ impl Engine {
                 self.studio.put_back(job);
                 return;
             }
+            if self.gpu.offscreen_pending() {
+                // A capture's view is on the GPU (its own pump lands it): give way a few pumps,
+                // then land it here (a short wait) and take the turn.
+                if self.studio.capture_waits < crate::capture::flight::TURN_PASSES {
+                    self.studio.capture_waits += 1;
+                    self.studio.put_back(job);
+                    return;
+                }
+                self.land_capture_flight();
+            }
+            self.studio.capture_waits = 0;
             let _c = job.trace.enter();
             let mut span = crate::trace_engine::job_span("studio_render");
             span.field("subjects", job.req.subjects.len());
             let started = Instant::now();
-            let r = self.render_req(&job.req);
+            let r = self.render_req_submit(&job.req);
             drop(span);
+            drop(_c);
             let ms = started.elapsed().as_secs_f64() * 1000.0;
-            let stats = self.gpu.last_frame_stats_of(FramePath::Offscreen);
-            let gpu_ms = stats.as_ref().and_then(|s| s.gpu.as_ref().filter(|g| g.frame == s.frame)).map_or(0.0, |g| g.total_ms);
-            let cpu = stats.map(|s| s.cpu).unwrap_or_default();
-            let cost = RenderCost { ms, gpu_ms, record_ms: cpu.record_ms, submit_ms: cpu.submit_ms, wait_ms: cpu.wait_ms };
-            let r = r.map(|px| Rendered { px, cost });
             self.studio.credit_ms -= ms;
-            self.studio.shared.note(Some(ms), share);
-            if let Some(p) = self.studio.pins.get_mut(&job.call) {
-                p.last = Instant::now();
+            match r {
+                Ok(Submit::Flying(target)) => {
+                    // One render on the GPU at a time: the next pump lands it.
+                    self.studio.flight = Some(Flight { job, target, submit_ms: ms, submitted: Instant::now() });
+                    return;
+                }
+                Ok(Submit::Warming) => {
+                    self.studio.put_back(job);
+                    return;
+                }
+                Ok(Submit::Done(px)) => {
+                    let stats = self.gpu.last_frame_stats_of(FramePath::Offscreen);
+                    let gpu_ms = stats.as_ref().and_then(|s| s.gpu.as_ref().filter(|g| g.frame == s.frame)).map_or(0.0, |g| g.total_ms);
+                    let cpu = stats.map(|s| s.cpu).unwrap_or_default();
+                    let cost = RenderCost { ms, gpu_ms, record_ms: cpu.record_ms, submit_ms: cpu.submit_ms, wait_ms: cpu.wait_ms };
+                    self.studio.shared.note(Some(ms), share);
+                    if let Some(p) = self.studio.pins.get_mut(&job.call) {
+                        p.last = Instant::now();
+                    }
+                    let _ = job.reply.send(Ok(Rendered { px, cost }));
+                }
+                Err(e) => {
+                    let _ = job.reply.send(Err(e));
+                }
             }
-            let _ = job.reply.send(r);
         }
     }
 
     /// Idle upkeep: targets unused for [`TARGET_IDLE`], and pins of closed sessions or idle
     /// for [`PIN_IDLE`].
     fn studio_tidy(&mut self, now: Instant, server: &Server) {
-        let idle: Vec<usize> = self.studio.targets.iter().enumerate().filter(|(_, t)| now - t.last > TARGET_IDLE).map(|(i, _)| i).collect();
+        // (Never the target a render in flight lands in.)
+        let flying = self.studio.flight.as_ref().map(|f| f.target);
+        let idle: Vec<usize> = self.studio.targets.iter().enumerate().filter(|(_, t)| now - t.last > TARGET_IDLE && Some(t.id) != flying).map(|(i, _)| i).collect();
         for i in idle.into_iter().rev() {
             let t = self.studio.targets.remove(i);
             self.gpu.destroy_target(t.id);

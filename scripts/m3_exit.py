@@ -155,6 +155,53 @@ def measure(mcp, eng, label, frames, st):
     return result
 
 
+def grass_entities(mcp):
+    """Every grass patch in the world (the slab's and the roots'), by path."""
+    paths, cursor = [], None
+    for _ in range(50):
+        args = {"fields": ["path", "recipe"], "limit": 200}
+        if cursor:
+            args["cursor"] = cursor
+        page = mcp.json("world_query", **args)
+        paths += [i["path"] for i in page.get("items", []) if "grass_patch" in str(i.get("recipe"))]
+        cursor = page.get("next_cursor")
+        if not cursor:
+            break
+    return paths
+
+
+def measure_grass(mcp, label, frames):
+    """The grass's own GPU cost in this game state: the clock paused (the same frame drawn), the
+    window's frames with every grass patch shown and hidden, ABAB, perf_capture each."""
+    mcp.call("time_control", action="pause")
+    paths = grass_entities(mcp)
+    runs = {"on": [], "off": []}
+    for rnd in range(2):
+        for shown in (True, False):
+            for p in paths:
+                mcp.call("world_set", path=p, visible=shown)
+            time.sleep(0.5)
+            cap = mcp.json("perf_capture", frames=frames, trace=False, label=f"m3grass_{'on' if shown else 'off'}{rnd}")
+            passes = cap.get("gpu_passes_ms") or {}
+            runs["on" if shown else "off"].append({
+                "gpu_mean": (cap.get("gpu_ms") or {}).get("mean"), "gpu_p95": (cap.get("gpu_ms") or {}).get("p95"),
+                "scene_mean": (passes.get("scene") or {}).get("mean"), "shadow_mean": (passes.get("shadow") or {}).get("mean"),
+                "triangles": (cap.get("triangles") or {}).get("mean")})
+    for p in paths:
+        mcp.call("world_set", path=p, visible=True)
+
+    def avg(key, side):
+        vals = [r[key] for r in runs[side] if isinstance(r.get(key), (int, float))]
+        return round(sum(vals) / len(vals), 3) if vals else None
+    out = {"label": label, "patches": len(paths), "runs": runs}
+    for k in ("gpu_mean", "gpu_p95", "scene_mean", "shadow_mean", "triangles"):
+        on, off = avg(k, "on"), avg(k, "off")
+        out[k] = {"on": on, "off": off, "delta": round(on - off, 3) if on is not None and off is not None else None}
+    print(f"  {label}: the grass ({len(paths)} patches), clock paused, ABAB: " + ", ".join(
+        f"{k} +{out[k]['delta']}" for k in ("gpu_mean", "gpu_p95", "scene_mean", "shadow_mean", "triangles")))
+    return out
+
+
 GI_CYCLE = ("off", "low", "high", "off", "low", "high")
 
 
@@ -213,6 +260,8 @@ def main():
     ap.add_argument("--exe", default=str(EXE))
     ap.add_argument("--out", default=None)
     ap.add_argument("--max-fps", type=int, default=None, help="the window's frame cap (the engine's --max-fps)")
+    ap.add_argument("--grass-ab", action="store_true", help="at each measured wave, also measure the grass's own GPU "
+                    "cost: the clock paused, every grass patch shown and hidden, ABAB (reported, not a criterion)")
     ap.add_argument("--gi", action="store_true", help="bake GI and alternate its tiers off/low/high per measured wave")
     ap.add_argument("--water", default=None, help="a water preset (murk, ...): an agent spawns a pool round the slab's "
                     "foot (the `water` component; cosmetic, never simulation) to measure the water pass in play")
@@ -264,6 +313,8 @@ def main():
                     measured.extend(measure_gi(mcp, eng, "busy_wave", args.frames, st))
                 else:
                     measured.append(measure(mcp, eng, "busy_wave", args.frames, st))
+                if args.grass_ab:
+                    summary.setdefault("grass_ab", []).append(measure_grass(mcp, "busy_wave", args.frames // 2))
                 run.capture("busy_wave", eye=[38, 27, 52], target=[0, -9, 1])
                 busy = True
                 continue
@@ -272,6 +323,8 @@ def main():
                     measured.extend(measure_gi(mcp, eng, "boss_wave", args.frames, st))
                 else:
                     measured.append(measure(mcp, eng, "boss_wave", args.frames, st))
+                if args.grass_ab:
+                    summary.setdefault("grass_ab", []).append(measure_grass(mcp, "boss_wave", args.frames // 2))
                 run.capture("boss_wave", eye=[38, 27, 52], target=[0, -9, 1])
                 boss = True
                 continue

@@ -353,6 +353,22 @@ pub struct DrawRecord {
 
 /// [`DrawRecord::ext`]`[3]`: alpha masking on (cutoff in bits 8..16).
 pub const EXT_ALPHA_MASK: u32 = 1;
+/// `ext.w`: the draw sways in the wind ([`wind_bits`]); its weight is painted (vertex alpha).
+pub const EXT_WIND: u32 = 4;
+pub const EXT_WIND_PAINTED: u32 = 8;
+
+/// A draw's wind term in its record's `ext.w` (`frame.glsl`'s `wind_offset`): the flags, the
+/// amount (m, unorm8) << 16 and the full-weight height (1/32 m) << 24. Only non-skinned `Lit`
+/// draws sway; 0 for the rest.
+pub fn wind_bits(d: &DrawItem) -> u32 {
+    let w = &d.surface.wind;
+    if w.is_none() || d.material != Material::Lit || d.skin.is_some() {
+        return 0;
+    }
+    let amount = ((w.amount.min(1.0) * 255.0).round() as u32).clamp(1, 255);
+    let height = if w.height.is_finite() { ((w.height.clamp(0.03, 8.0) * 32.0).round() as u32).clamp(1, 255) } else { 32 };
+    EXT_WIND | if w.painted { EXT_WIND_PAINTED } else { 0 } | amount << 16 | height << 24
+}
 /// [`DrawRecord::ext`]`[3]`: `color2` holds an emissive colour of the material's own.
 pub const EXT_EMISSIVE_COLOR: u32 = 2;
 
@@ -406,8 +422,13 @@ pub struct FrameData {
     pub sky_horizon: [f32; 4],
     /// Linear RGB × intensity; w glow strength.
     pub sky_ground: [f32; 4],
-    /// Horizon sharpness, unused ×3.
+    /// Horizon sharpness, the sky is drawn (1), unused ×2.
     pub sky_params: [f32; 4],
+    /// The wind ([`crate::WindSettings`]): horizontal direction × strength (world x, z),
+    /// frequency (Hz), gust.
+    pub wind: [f32; 4],
+    /// Swaying draws fade out between these distances (m; end 0: never), unused ×2.
+    pub foliage: [f32; 4],
     /// Baked GI (`gi.rs`): volume count, visibility on, irradiance view, unused.
     pub gi_params: [f32; 4],
     /// Device address of the GI buffer (0: none).
@@ -516,10 +537,37 @@ pub fn frame_data(frame: &FrameDesc, extent: VkExtent2D, shadow: &ShadowData) ->
         },
         // y: the sky is drawn (water mirrors its gradient).
         sky_params: [sky_s.horizon_sharpness.clamp(0.1, 64.0), if sky_s.enabled { 1.0 } else { 0.0 }, 0.0, 0.0],
+        wind: wind_data(&env.wind),
+        foliage: foliage_data(&env.wind),
         gi_params: [0.0; 4],
         gi_address: 0,
         gi_draws: 0,
     }
+}
+
+/// The foliage fade as the shaders read it: `[start, end, 0, 0]`, none (end 0) unless
+/// `0 <= start < end`.
+fn foliage_data(w: &crate::WindSettings) -> [f32; 4] {
+    let (a, b) = (w.fade_start, w.fade_end);
+    if a.is_finite() && b.is_finite() && a >= 0.0 && b > a {
+        [a, b, 0.0, 0.0]
+    } else {
+        [0.0; 4]
+    }
+}
+
+/// The wind as the shaders read it: the horizontal direction (normalised) × strength, frequency,
+/// gust; still air for a missing or degenerate direction or a non-finite value.
+fn wind_data(w: &crate::WindSettings) -> [f32; 4] {
+    let [x, _, z] = w.direction;
+    let len = (x * x + z * z).sqrt();
+    let strength = if w.strength.is_finite() { w.strength.clamp(0.0, crate::MAX_WIND_STRENGTH) } else { 0.0 };
+    if len.is_nan() || len <= 1e-6 || !len.is_finite() || strength == 0.0 {
+        return [0.0; 4];
+    }
+    let freq = if w.frequency.is_finite() { w.frequency.clamp(0.0, 8.0) } else { 0.0 };
+    let gust = if w.gust.is_finite() { w.gust.clamp(0.0, 1.0) } else { 0.0 };
+    [x / len * strength, z / len * strength, freq, gust]
 }
 
 /// The camera's world position: the point that `view_proj` maps to clip x = y = w = 0. Falls back
@@ -583,7 +631,7 @@ fn draw_record_with(draw: &DrawItem, linear: &mut impl FnMut([f32; 3]) -> [f32; 
     let mut c2 = linear(s.color2);
     let mut color2_a = s.seed;
     let emissive = s.emissive.max(0.0);
-    let mut ext = [0, 0, draw.skin.unwrap_or(0), 0];
+    let mut ext = [0, 0, draw.skin.unwrap_or(0), wind_bits(draw)];
     let t = &s.textures;
     if draw.material == Material::Lit && *t != crate::MaterialTextures::NONE {
         // Slot + 1 in 16 bits (slots are below MAX_TEXTURE_SLOTS = 4096).
@@ -697,11 +745,11 @@ pub fn append_shadow_records(frame: &FrameDesc, shadow: &ShadowPlan, textures: &
     out.reserve(shadow.entries.len());
     out.extend(shadow.entries.iter().map(|&i| {
         let d = &frame.draws[i];
-        let mut ext = [0, 0, d.skin.unwrap_or(0), 0];
+        let mut ext = [0, 0, d.skin.unwrap_or(0), wind_bits(d)];
         if crate::shadow::masked(d) {
             let t = &d.surface.textures;
             ext[0] = t.base_color.and_then(|id| textures.slot(id)).map_or(0, |s| (s + 1) & 0xffff);
-            ext[3] = EXT_ALPHA_MASK | ((t.alpha_cutoff.min(1.0) * 255.0).round() as u32) << 8;
+            ext[3] |= EXT_ALPHA_MASK | ((t.alpha_cutoff.min(1.0) * 255.0).round() as u32) << 8;
         }
         DrawRecord { model: d.model, color: [0.0; 4], color2: [0.0; 4], params: [0.0; 4], ext }
     }));
@@ -1169,10 +1217,11 @@ enum VertexInput {
     /// [`Vertex`]: position, normal, colour; plus the skin stream (binding 1) and the surface
     /// stream (binding 2) when asked.
     Mesh { skinned: bool, textured: bool },
-    /// [`Vertex`]'s position only (plus the skin stream, and the UVs of the surface stream).
-    Position { skinned: bool, uv: bool },
-    /// [`Vertex`]'s position and normal (the ID buffer), plus the skin stream and the UVs of the
-    /// surface stream when asked.
+    /// [`Vertex`]'s position only (plus the skin stream, the UVs of the surface stream, and
+    /// the colour: the wind's painted weight).
+    Position { skinned: bool, uv: bool, color: bool },
+    /// [`Vertex`]'s position, normal and colour (the ID buffer: the colour's alpha is the wind's
+    /// painted weight), plus the skin stream and the UVs of the surface stream when asked.
     PositionNormal { skinned: bool, uv: bool },
 }
 
@@ -1250,7 +1299,9 @@ impl PipelineKey {
                 },
                 frag: masked.then_some(Shader::ShadowMaskFrag),
                 spec: 0,
-                vertex: VertexInput::Position { skinned, uv: masked },
+                // Alpha-masked casters also read normals: foliage cards edge-on to the sun cast
+                // nothing (shadow_mask.frag, frame.glsl foliage_edge).
+                vertex: if masked { VertexInput::PositionNormal { skinned, uv: true } } else { VertexInput::Position { skinned, uv: false, color: true } },
                 color: None,
                 depth: Some(SHADOW_FORMAT),
                 depth_test: true,
@@ -1451,7 +1502,7 @@ impl PipelineKey {
                 frag: Some(Shader::TerrainFrag),
                 spec: features | if format == HDR_FORMAT { FEAT_HDR } else { 0 } | FEAT_OPAQUE,
                 // The grid's positions hold its coordinates (`terrain::grid_mesh`).
-                vertex: VertexInput::Position { skinned: false, uv: false },
+                vertex: VertexInput::Position { skinned: false, uv: false, color: false },
                 color: Some(format),
                 depth: Some(DEPTH_FORMAT),
                 depth_test: true,
@@ -1465,7 +1516,7 @@ impl PipelineKey {
                 vert: Shader::TerrainShadowVert,
                 frag: None,
                 spec: 0,
-                vertex: VertexInput::Position { skinned: false, uv: false },
+                vertex: VertexInput::Position { skinned: false, uv: false, color: false },
                 color: None,
                 depth: Some(SHADOW_FORMAT),
                 depth_test: true,
@@ -1480,7 +1531,7 @@ impl PipelineKey {
                 frag: Some(if raster { Shader::IdsCountFrag } else { Shader::IdsFrag }),
                 // ids_count.frag's MODE: 1 raster.
                 spec: raster as u32,
-                vertex: VertexInput::Position { skinned: false, uv: false },
+                vertex: VertexInput::Position { skinned: false, uv: false, color: false },
                 color: Some(crate::idbuffer::ID_FORMAT),
                 depth: Some(DEPTH_FORMAT),
                 depth_test: !raster,
@@ -2278,7 +2329,9 @@ impl Pipelines {
             if full || matches!(d.vertex, VertexInput::PositionNormal { .. }) {
                 attributes.push(attribute(1, 0, VK_FORMAT_R32G32B32_SFLOAT, offset_of!(Vertex, normal)));
             }
-            if full {
+            // (The ID and shadow passes read the colour for the wind's painted weight; skinned
+            // draws never sway, so their variants don't.)
+            if full || matches!(d.vertex, VertexInput::PositionNormal { skinned: false, .. } | VertexInput::Position { color: true, skinned: false, .. }) {
                 attributes.push(attribute(2, 0, VK_FORMAT_R8G8B8A8_UNORM, offset_of!(Vertex, color)));
             }
         }
@@ -2857,6 +2910,35 @@ pub struct FrameShape {
     /// swapchain can be sampled); `flash_reset`: its state starts again.
     pub flash: bool,
     pub flash_reset: bool,
+}
+
+/// What a frame's content asked of its shape, apart from its size and the environment: a new
+/// size's graph is prepared ahead with the latest frame's ([`crate::Gpu::prewarm_target`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ContentHint {
+    /// It had shadow casters (with shadows on).
+    pub shadow_casters: bool,
+    pub overlay: bool,
+    pub two_d: bool,
+    pub particles: bool,
+    pub decals: bool,
+    pub water: bool,
+    pub blended: bool,
+}
+
+impl ContentHint {
+    /// The content of `frame`, prepared into `scratch`.
+    pub fn of(frame: &FrameDesc, scratch: &FrameScratch) -> ContentHint {
+        ContentHint {
+            shadow_casters: scratch.shadow.data.count > 0,
+            overlay: !frame.overlay.is_empty(),
+            two_d: !frame.draws_2d.is_empty(),
+            particles: !frame.effects.particles.is_empty(),
+            decals: !scratch.effects.decals.is_empty(),
+            water: scratch.plan.batches.iter().any(|b| b.material == crate::Material::Water),
+            blended: scratch.plan.batches.iter().any(|b| b.material.blended() && b.material != crate::Material::Water),
+        }
+    }
 }
 
 /// Declare a frame's passes into `g`: shadow → scene (+ overlay inline when the scene writes the
@@ -3581,10 +3663,56 @@ mod tests {
         assert_eq!(offset_of!(FrameData, shadow_fade), 1040);
         assert_eq!(offset_of!(FrameData, fog_color), 1056);
         assert_eq!(offset_of!(FrameData, sky_params), 1136);
-        assert_eq!(offset_of!(FrameData, gi_params), 1152);
-        assert_eq!(offset_of!(FrameData, gi_address), 1168);
-        assert_eq!(offset_of!(FrameData, gi_draws), 1176);
-        assert_eq!(size_of::<FrameData>(), 1184);
+        assert_eq!(offset_of!(FrameData, wind), 1152);
+        assert_eq!(offset_of!(FrameData, foliage), 1168);
+        assert_eq!(offset_of!(FrameData, gi_params), 1184);
+        assert_eq!(offset_of!(FrameData, gi_address), 1200);
+        assert_eq!(offset_of!(FrameData, gi_draws), 1208);
+        assert_eq!(size_of::<FrameData>(), 1216);
+    }
+
+    /// The wind as the shaders read it, and a draw's wind term in its record: only non-skinned
+    /// `Lit` draws sway; the alpha-mask bits beside it are untouched; bad values stay bounded.
+    #[test]
+    fn wind_terms_pack_into_frame_and_records() {
+        let w = crate::WindSettings { direction: [3.0, 9.0, 4.0], strength: 2.0, frequency: 0.5, gust: 0.25, fade_start: 10.0, fade_end: 20.0, shadow_end: 0.0 };
+        let d = wind_data(&w);
+        assert!((d[0] - 1.2).abs() < 1e-6 && (d[1] - 1.6).abs() < 1e-6 && d[2] == 0.5 && d[3] == 0.25, "{d:?}");
+        assert_eq!(foliage_data(&w), [10.0, 20.0, 0.0, 0.0]);
+        for still in [crate::WindSettings { strength: 0.0, ..w }, crate::WindSettings { direction: [0.0, 1.0, 0.0], ..w }, crate::WindSettings { strength: f32::NAN, ..w }] {
+            assert_eq!(wind_data(&still), [0.0; 4]);
+        }
+        assert_eq!(wind_data(&crate::WindSettings { strength: 99.0, ..w })[0], 0.6 * crate::MAX_WIND_STRENGTH);
+        assert_eq!(foliage_data(&crate::WindSettings { fade_start: 20.0, fade_end: 10.0, ..w }), [0.0; 4], "an empty fade is none");
+        const ID: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+        let mut grass = DrawItem::new(MeshId(1), ID, [1.0; 4]);
+        assert_eq!(wind_bits(&grass), 0, "no wind term, no bits");
+        grass.surface.wind = crate::Wind { amount: 0.07, height: 0.45, painted: false };
+        let b = wind_bits(&grass);
+        assert_eq!(b & 0xff, EXT_WIND);
+        assert_eq!((b >> 16) & 255, 18, "0.07 m in 1/255 m");
+        assert_eq!(b >> 24, 14, "0.45 m in 1/32 m");
+        grass.surface.wind.painted = true;
+        assert_eq!(wind_bits(&grass) & 0xff, EXT_WIND | EXT_WIND_PAINTED);
+        grass.surface.wind.height = f32::INFINITY;
+        assert_eq!(wind_bits(&grass) >> 24, 32, "a bad height falls back to 1 m");
+        let mut skinned = grass;
+        skinned.skin = Some(0);
+        assert_eq!(wind_bits(&skinned), 0, "skinned draws don't sway");
+        let mut glass = grass;
+        glass.material = Material::Glass;
+        assert_eq!(wind_bits(&glass), 0);
+        // Alongside an alpha mask, both survive in the record.
+        let mut cut = grass;
+        cut.surface.wind = crate::Wind { amount: 0.07, height: 0.45, painted: false };
+        cut.surface.textures = crate::MaterialTextures { base_color: Some(TextureId(3)), alpha_cutoff: 0.5, ..Default::default() };
+        let r = draw_record_with(&cut, &mut |c| c, &|_| Some(2));
+        assert_eq!(r.ext[3] & 0xff, EXT_WIND | EXT_ALPHA_MASK);
+        assert_eq!((r.ext[3] >> 8) & 255, 128, "the cutoff");
+        assert_eq!(r.ext[3] >> 16, (14 << 8) | 18, "the wind's amount and height");
+        // Culling reaches as far as the sway can.
+        assert!(crate::Wind { amount: 0.07, height: 0.45, painted: false }.reach() > 0.3);
+        assert_eq!(crate::Wind::NONE.reach(), 0.0);
     }
 
     #[test]

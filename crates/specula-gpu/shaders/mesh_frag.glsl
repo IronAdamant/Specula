@@ -285,7 +285,8 @@ vec4 shade_lit() {
     if (base_slot != 0u) {
         vec4 t = material_texture(base_slot);
         albedo *= t.rgb;
-        if ((ext.w & EXT_ALPHA_MASK) != 0u && t.a < float((ext.w >> 8) & 255u) / 255.0) {
+        // Foliage cards fade as they turn edge-on (frame.glsl foliage_edge).
+        if ((ext.w & EXT_ALPHA_MASK) != 0u && t.a * foliage_edge(ext.w, v_normal, v_world, camera_pos()) < float((ext.w >> 8) & 255u) / 255.0) {
             discard;
         }
     }
@@ -315,6 +316,14 @@ vec4 shade_lit() {
     if (dot(n, v) < 0.0) {
         n = -n; // the inside of an open shape
     }
+#ifdef TEXTURED
+    // Foliage cards (swaying and alpha-cut: grass) shade with their normal bent up towards the
+    // sky, like the ground they grow from: upright cards lit edge-on by a high moon read as dark
+    // specks from a game camera (review R1). Their own facing still shows a little.
+    if ((ext.w & (EXT_WIND | EXT_ALPHA_MASK)) == (EXT_WIND | EXT_ALPHA_MASK)) {
+        n = normalize(n + vec3(0.0, 2.0, 0.0));
+    }
+#endif
     // The ambient term: the flat ambient, or the baked GI's irradiance here (per draw or per
     // pixel, by the tier: gi.glsl).
     vec3 amb = gi_ambient_draw(v_draw, v_world, n, v);
@@ -634,6 +643,14 @@ vec4 shade_lava_lamp() {
 
 void main() {
     if (OPAQUE) {
+#ifdef TEXTURED
+        // Foliage past its fade distance (frame.glsl). Only in the textured pipeline, which cuts
+        // alpha-masked texels anyway: a discard in the plain opaque pipeline costs every Lit draw
+        // its early depth writes (review R1 measured the scene pass about 1 ms slower).
+        if (pc.material == MAT_LIT && foliage_faded(pc.frame, DRAW.ext.w, v_world, gl_FragCoord.xy)) {
+            discard;
+        }
+#endif
         out_color = shade_lit();
     } else if (pc.material == MAT_GLASS) {
         out_color = shade_glass();

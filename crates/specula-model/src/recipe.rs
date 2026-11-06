@@ -304,6 +304,58 @@ pub struct Recipe {
     rig: Option<RigDef>,
     /// Texture graphs by name: parsed inline, or a library recipe's name.
     textures: Vec<(String, TexSource)>,
+    /// How the model sways in the world's wind (foliage), if at all.
+    pub wind: Option<WindDef>,
+}
+
+/// A recipe's `"wind"`: its draws sway in the world's wind (`world_env {wind}`), weighted by
+/// height (0 at y = 0, rising as the square to 1 at `height`) or by paint (the vertex colour's
+/// alpha). Deterministic in simulation time; the scene, the sun's shadow and sight's ID buffer
+/// all move the same vertices.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindDef {
+    /// Metres of sway at full weight in a strength-1 wind, 0.005..=1.
+    pub amount: f32,
+    /// Where the weight reaches 1 (m, 0.03..=8); `None`: the model's height.
+    pub height: Option<f32>,
+    pub painted: bool,
+}
+
+/// A built model's wind term (see [`WindDef`]), its height resolved.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Wind {
+    pub amount: f32,
+    pub height: f32,
+    pub painted: bool,
+}
+
+fn wind_def(v: &Json) -> Result<WindDef, RecipeError> {
+    let o = v.as_object().ok_or_else(|| type_err("wind", "an object: {amount, height, painted}"))?;
+    for (k, _) in o {
+        if !["amount", "height", "painted", "note"].contains(&k.as_str()) {
+            return Err(e(&format!("wind.{k}"), ErrorCode::UnknownField, "wind accepts: amount, height, painted, note"));
+        }
+    }
+    let g = |k: &str| o.iter().find(|(n, _)| n == k).map(|(_, v)| v);
+    let num = |k: &str, lo: f64, hi: f64| -> Result<Option<f32>, RecipeError> {
+        match g(k) {
+            None => Ok(None),
+            Some(v) => {
+                let x = v.as_f64().ok_or_else(|| type_err(&format!("wind.{k}"), "a number"))?;
+                if !(lo..=hi).contains(&x) {
+                    return Err(e(&format!("wind.{k}"), ErrorCode::OutOfRange, format!("{k} must be {lo}..{hi}")).with_numbers(x, hi));
+                }
+                Ok(Some(x as f32))
+            }
+        }
+    };
+    let amount = num("amount", 0.005, 1.0)?.ok_or_else(|| e("wind.amount", ErrorCode::MissingField, "wind needs an \"amount\": metres of sway at the tips in a breeze (0.005..1; grass about 0.08)"))?;
+    let height = num("height", 0.03, 8.0)?;
+    let painted = match g("painted") {
+        None => false,
+        Some(v) => v.as_bool().ok_or_else(|| type_err("wind.painted", "true or false"))?,
+    };
+    Ok(WindDef { amount, height, painted })
 }
 
 #[derive(Clone, Debug)]
@@ -623,7 +675,7 @@ impl Recipe {
             return Err(e("texgraph", ErrorCode::WrongType, "this file is a texture graph, not a recipe: use it from a recipe's \"textures\" (\"textures\": {\"stone\": \"<this file's name>\"}) and a part's \"texture\""));
         }
         const TOP: &[&str] =
-            &["recipe", "name", "description", "category", "seed", "params", "let", "budget", "lods", "collider", "smooth_angle", "rig", "parts", "finish", "textures"];
+            &["recipe", "name", "description", "category", "seed", "params", "let", "budget", "lods", "collider", "smooth_angle", "rig", "parts", "finish", "textures", "wind"];
         for (k, _) in obj {
             if !TOP.contains(&k.as_str()) {
                 return Err(e(k, ErrorCode::UnknownField, format!("a recipe accepts: {}", TOP.join(", "))));
@@ -883,7 +935,8 @@ impl Recipe {
             parts.push(PartDef { path, name: pname.to_string(), material, color, when, source, ops, smooth_angle, lod_detail, bones, blend, texture, uv_scale });
         }
         let finish = p.ops("finish", get("finish"))?;
-        Ok(Recipe { name, category, seed, params, lets, max_triangles, min_triangles, lod_ratios, collider, smooth_angle, parts, finish, rig, textures })
+        let wind = get("wind").map(wind_def).transpose()?;
+        Ok(Recipe { name, category, seed, params, lets, max_triangles, min_triangles, lod_ratios, collider, smooth_angle, parts, finish, rig, textures, wind })
     }
 }
 
@@ -938,6 +991,8 @@ pub struct Model {
     pub rig: Option<Rig>,
     /// Tiers 2-4 output beyond the meshes: baked texture sets, a terrain, generator stats.
     pub extras: ModelExtras,
+    /// The recipe's wind term (foliage), its height resolved.
+    pub wind: Option<Wind>,
 }
 
 /// What procedural tiers 2-4 add to a [`Model`].
@@ -1193,6 +1248,14 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
         h.write_u8(1);
         r.hash_into(&mut h);
     }
+    // So do models without wind.
+    let wind = recipe.wind.map(|w| Wind { amount: w.amount, height: w.height.unwrap_or_else(|| lods[0].bounds().max[1].clamp(0.03, 8.0)), painted: w.painted });
+    if let Some(w) = &wind {
+        h.write_u8(2);
+        h.write_u32(w.amount.to_bits());
+        h.write_u32(w.height.to_bits());
+        h.write_u8(w.painted as u8);
+    }
     let terrain = tally.terrain.borrow().clone();
     let terrain_transform = tally.terrain_transform.get();
     let stats = tally.stats.borrow().clone();
@@ -1212,6 +1275,7 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
         notes,
         rig: rig.map(|(r, _)| r),
         extras: ModelExtras { textures, terrain, terrain_transform, stats },
+        wind,
     })
 }
 

@@ -369,7 +369,10 @@ pub fn plan_shadows(frame: &FrameDesc, plan: &Plan, bounds: impl Fn(MeshId) -> O
     let basis = LightBasis::new(frame.environment.sun_direction);
     out.cascades = fit_cascades(&rays, &basis, (near, far), count, resolution);
 
-    // Casters: opaque draws, as light-space spheres.
+    // Casters: opaque draws, as light-space spheres; swaying ones (foliage) only within the
+    // wind's shadow_end of the camera.
+    let sway_end = frame.environment.wind.shadow_end;
+    let sway_end = (sway_end.is_finite() && sway_end > 0.0).then_some(sway_end);
     out.spheres.clear();
     out.spheres.extend(frame.draws.iter().map(|d| {
         if !matches!(d.material, Material::Lit | Material::Terrain) {
@@ -379,6 +382,13 @@ pub fn plan_shadows(frame: &FrameDesc, plan: &Plan, bounds: impl Fn(MeshId) -> O
             Some(b) => draw_sphere(d, b),
             None => ([d.model[12], d.model[13], d.model[14]], f32::INFINITY),
         };
+        if let Some(end) = sway_end.filter(|_| !d.surface.wind.is_none()) {
+            // NaN depths (a broken model) cast no shadow either.
+            let nearest = rays.axis.depth(c) - r;
+            if nearest.is_nan() || nearest > end {
+                return None;
+            }
+        }
         let l = basis.project(c);
         (l.iter().all(|v| v.is_finite()) && !r.is_nan()).then_some((l, r))
     }));
@@ -738,6 +748,40 @@ mod tests {
         off.environment.shadow.enabled = false;
         plan_shadows(&off, &p, |_| Some(unit), &mut s);
         assert_eq!((s.data.count, s.entries.len(), s.batches.len()), (0, 0, 0));
+    }
+
+    /// Review R1 (major 2): swaying draws (foliage) cast the sun's shadow only within the wind's
+    /// `shadow_end` of the camera; still draws cast at any distance; 0 = no limit.
+    #[test]
+    fn swaying_casters_stop_at_the_winds_shadow_end() {
+        let unit = Bounds { center: [0.0; 3], radius: 0.87, half: [0.5; 3] };
+        let sway = crate::Wind { amount: 0.1, height: 0.5, painted: false };
+        let mut draws = vec![
+            DrawItem::new(MeshId(1), at(0.0, 0.0, 8.0), [1.0; 4]),  // near, swaying: casts
+            DrawItem::new(MeshId(1), at(0.0, 0.0, -20.0), [1.0; 4]), // far, swaying: no
+            DrawItem::new(MeshId(2), at(0.0, 0.0, -20.0), [1.0; 4]), // far, still: casts
+        ];
+        draws[0].surface.wind = sway;
+        draws[1].surface.wind = sway;
+        let mut environment = Environment { sun_direction: [0.3, 1.0, 0.2], ..Default::default() };
+        environment.shadow.enabled = true;
+        environment.wind.shadow_end = 10.0;
+        let frame = FrameDesc {
+            view_proj: camera([0.0, 6.0, 12.0], [0.0, 0.0, 0.0], true),
+            reverse_z: true,
+            draws: &draws,
+            environment,
+            ..Default::default()
+        };
+        let p = plan(&frame, |_| Some(unit));
+        let mut s = ShadowPlan::default();
+        plan_shadows(&frame, &p, |_| Some(unit), &mut s);
+        assert_eq!(s.entries.iter().copied().collect::<std::collections::BTreeSet<_>>(), [0, 2].into());
+        // No limit: every one casts.
+        let mut all = frame;
+        all.environment.wind.shadow_end = 0.0;
+        plan_shadows(&all, &p, |_| Some(unit), &mut s);
+        assert_eq!(s.entries.iter().copied().collect::<std::collections::BTreeSet<_>>(), [0, 1, 2].into());
     }
 
     #[test]

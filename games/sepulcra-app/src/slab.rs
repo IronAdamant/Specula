@@ -416,6 +416,9 @@ pub fn build(world: &mut GameWorld<'_>, agent: &str, map: &Map, geo: &SlabGeo) -
         }
     }
 
+    // Real grass on the graveyard and the rock's edges (alpha-cutout tufts swaying in the wind).
+    crate::grass::build(world, agent, map, geo, slab);
+
     // Cliffs: strata bands of rock, recessed climbing lanes, ledges with shelves, dark mouths
     // at the base where climbers come from. The south face has no cells: plain strata.
     let cliffs = ents::group(world, agent, Some(slab), "cliffs", Vec3::ZERO, Vec3::ZERO, &[], Json::Null);

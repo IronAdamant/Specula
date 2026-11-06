@@ -2417,6 +2417,7 @@ pub(crate) fn upload_next_level(gpu: &mut Gpu, models: &mut GpuModels, library: 
             Some(m) => textured_look(m, &all_textures),
             None => part_look(preset, p.mean),
         };
+        let surface = crate::models::with_wind(surface, built.model.wind);
         let influence = match (&built.anims, &p.skin) {
             (Some(set), Some(skin)) => part_influence(&set.skeleton, &p.vertices, skin),
             _ => Vec::new(),

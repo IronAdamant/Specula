@@ -312,23 +312,24 @@ and five compilers running): busy wave GPU p95 11.5 ms (8.99 ms without the pool
 water is cosmetic. The budget is 14 ms. Frames without water or terrain declare neither pass: Sepulcra's own frames
 are unchanged.
 
-## Known limits (polish)
+## Known limits (polish), and what M5 did about them
 
-The owner ruled these polish, not correctness, on 2026-10-30. Found by the sight-skeptic's last round (check16, Intel iGPU, 1600x900) and left for Sepulcra's map 2 (the frozen
-wasteland, part of the v1.0 maps work), when the frozen and swamp presets are refined:
+The owner ruled these polish, not correctness, on 2026-10-30 (found by the sight-skeptic's last round, check16,
+Intel iGPU, 1600x900). M5's render follow-ups (2026-11-06) addressed each in `water.frag`:
 
 - **Shallow-shelf hairlines.** Thin pale lines on clear water (`lake`) along shallow shelves and submerged crests at
-  mid and far distance (100 m and more): the bright floor shows through thin, clear water. Each round reduced them
-  (shallow water takes 45% of its colour within 50 cm; the waterline fade no longer opens across crest silhouettes);
-  they remain faint. Fix direction: tint the floor seen through water by thickness (a colour multiply needs the
-  scene colour as a texture: the distorted-refraction copy below), or raise shallow opacity with distance.
-- **Ice crack tiling.** `frozen` reads as a frosted body, but its crack network is one Worley scale of even width: an
-  even polygon tiling over a flat body. Fix direction: jitter the cells (a domain warp) and add a second, finer
-  crack scale with varying width; vary the frost with low-frequency noise.
-- **Swamp horizon.** Near the camera `swamp` is peat-brown (mean sRGB 53, 47, 40); toward the horizon distance fog
-  greys it (134, 141, 138) while `murk` (129, 153, 169) and `lake` (134, 172, 183) stay blue from the sky they
-  mirror. Fix direction: carry the preset's hue through the fog (fog the water toward a mix of the fog colour and
-  the preset's shallow colour).
+  mid and far distance (100 m and more): the bright floor showed through thin, clear water. **Now** the shallows take
+  more of their own colour with distance: from 40 m (near water is unchanged) up to 88% of the body's opacity by
+  140 m, over a band that deepens from 0.5 m to 2 m. The distorted-refraction route (a scene-colour copy) is still
+  open if a map needs more.
+- **Ice crack tiling.** `frozen`'s crack network was one Worley scale of even width: an even polygon tiling. **Now**
+  the cells are domain-warped (about 1.4 cells of noise), the cracks vary in width along their length (0.45x to
+  1.55x), a finer network (0.37 of the cell, thinner, 55% as strong) shows in patches and fades out sooner with
+  distance, and the frost's brightness varies in broad soft patches (0.9x to 1.08x).
+- **Swamp horizon.** Near the camera `swamp` was peat-brown, but distance fog greyed it (sRGB 134, 141, 138) while
+  `murk` and `lake` stayed blue from the sky they mirror. **Now** water fogs towards a mix of the fog's colour (65%)
+  and the preset's shallow colour at the fog's brightness (35%), so each preset keeps its hue into the distance;
+  `lava` fogs as before. `scripts/terrain_check.py` re-measures the presets.
 
 ## Not done (yet)
 

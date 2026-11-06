@@ -1258,14 +1258,10 @@ impl Live {
         self.world.set_clock_s(seconds);
     }
 
-    /// Re-resolves every model entity after recipes changed (derived data only).
-    pub(crate) fn refresh_models(&mut self) -> Vec<(u64, WorldError)> {
-        self.world.refresh_models()
-    }
-
-    /// Re-resolves the model entities whose builds finished (derived data only).
-    pub(crate) fn refresh_model_handles(&mut self, handles: &std::collections::BTreeSet<u32>) {
-        self.world.refresh_model_handles(handles);
+    /// Re-resolves the model entities whose builds finished, and after asset files changed the
+    /// unresolved ones too (derived data only).
+    pub(crate) fn refresh_model_handles(&mut self, handles: &std::collections::BTreeSet<u32>, files_changed: bool) {
+        self.world.refresh_model_handles(handles, files_changed);
     }
 
     /// The vector-shape budgets (perf.toml), checked by later writes.

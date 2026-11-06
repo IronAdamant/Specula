@@ -114,7 +114,8 @@ pub struct CaptureQueue {
     /// A call's views as its request worked them out, for a start in the same call: `(world
     /// generation, draw epoch, revision, views)`, used only while the world is unchanged.
     pub(super) views_hint: Option<ViewsHint>,
-    /// A step made a new size's target and its graph: the pass's captures end there.
+    /// A step made a new size's target or a slice of its graph's images: the pass's captures
+    /// end there.
     end_pass: bool,
     /// A step job's view in flight (`timeline_preview`'s tiles), with the job's own slot: submitted
     /// in one step and landed in a later one, so the GPU's work never holds the engine thread.
@@ -123,10 +124,24 @@ pub struct CaptureQueue {
     /// however many jobs submit after it, and a tile whose job ended goes with it (lead review R2:
     /// a shared map kept the newest 8, so more than about 9 concurrent previews lost tiles).
     pub(crate) step_flight: Option<(std::rc::Weak<StepTile>, Box<ViewInFlight>)>,
+    /// The size whose target was just made: its render graph's images are made a slice per pass
+    /// ([`specula_gpu::Gpu::prewarm_target`]) before its first view renders.
+    cold: Option<(u32, u32)>,
+    /// Passes a view waited for the asset studio's render on the GPU: after [`TURN_PASSES`] it
+    /// renders anyway (the studio's render is settled first: a short wait), so neither starves.
+    studio_waits: u32,
 }
 
 /// A step job's landed tile, in the slot the job owns ([`CaptureQueue::step_flight`]).
 pub(crate) type StepTile = std::cell::RefCell<Option<Result<Rendered, String>>>;
+
+/// Passes the capture flight and the asset studio give way to each other's render on the GPU
+/// before taking their turn.
+pub(crate) const TURN_PASSES: u32 = 3;
+
+/// Engine-thread time one pass gives to making a new size's render graph images (at least one
+/// image a pass). Making them all inside the first render held the thread 36-67 ms at 2048 x 2048.
+pub(crate) const PREWARM_SLICE: std::time::Duration = std::time::Duration::from_millis(4);
 
 /// A capture call not started yet (its views are worked out when its turn comes).
 struct Start {
@@ -287,6 +302,51 @@ impl Engine {
             // the new size) goes on the next one. (An empty warm-up frame made those images here
             // too, but its different shape built other pipeline variants and rebound the shadow
             // map: a 300 ms window frame in stall_load, so it was taken out; see WORKERS.md.)
+            self.captures.end_pass = true;
+            self.captures.cold = Some((w, h));
+            self.captures.waiting.push_front(Waiting::Next(Box::new(p)));
+            return;
+        }
+        if self.gpu.offscreen_pending() && self.captures.flight.is_none() && self.captures.step_flight.is_none() && self.captures.studio_waits < TURN_PASSES {
+            // The asset studio's render is on the GPU (its pump lands it without waiting): this
+            // view goes on a later pass rather than waiting for it here, a few passes at most. A
+            // step job's tile (`timeline_preview`) is landed by the render path itself, so a capture
+            // never waits for one.
+            self.captures.studio_waits += 1;
+            self.captures.end_pass = true;
+            self.captures.waiting.push_front(Waiting::Next(Box::new(p)));
+            return;
+        }
+        self.captures.studio_waits = 0;
+        if self.captures.cold == Some((w, h)) {
+            // The new size's render graph images (depth, post chain, SSAO, ID buffers), a slice a
+            // pass, predicted from the world's environment and the latest frame's content; the
+            // view renders once they exist (one the prediction missed is made by the render).
+            let target = self.targets.iter().find(|(size, _)| *size == (w, h)).map(|(_, t)| *t);
+            let done = match target {
+                Some(t) => {
+                    let env = self.world.env().light;
+                    // The ID buffers too when the view counts them (shared images, bucket sized).
+                    let ids = match &p.job {
+                        Job::Frame(spec) | Job::Mark { frame: spec, .. } => spec.ids,
+                        _ => true,
+                    };
+                    match self.gpu.prewarm_target(t, &env, ids, None, Instant::now() + PREWARM_SLICE) {
+                        Ok(done) => done,
+                        Err(e) => {
+                            // The render makes them (and reports a real failure itself).
+                            specula_core::trace_event!(&crate::trace_sink::SIGHT, Warn, "sight.prewarm_failed", width = w, height = h, error = e.to_string());
+                            true
+                        }
+                    }
+                }
+                None => true,
+            };
+            self.captures.cold = None;
+            if !done {
+                self.captures.cold = Some((w, h));
+            }
+            // This pass's captures end with the slice: the view renders on a later pass.
             self.captures.end_pass = true;
             self.captures.waiting.push_front(Waiting::Next(Box::new(p)));
             return;

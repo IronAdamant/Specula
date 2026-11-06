@@ -7,8 +7,8 @@ use crate::descriptors::Descriptors;
 use crate::graph::{Final, GraphInfo, Prior, TransientPool};
 use crate::idbuffer::{IdCounts, IdImage, IdResources};
 use crate::render::{
-    check_frame, declare_frame, frame_features, prepare_frame, prepare_graph, record_frame, CacheIdentity, FrameContext, FrameGraph,
-    FrameScratch, FrameShape, FrameUpload, Mesh, Pipelines, SurfaceVertex, Variants,
+    check_frame, declare_frame, frame_features, prepare_frame, prepare_graph, record_frame, CacheIdentity, ContentHint, FrameContext,
+    FrameGraph, FrameScratch, FrameShape, FrameUpload, Mesh, Pipelines, SurfaceVertex, Variants,
 };
 use crate::overlay::{check_pixels, vk_format, Texture, Textures};
 use crate::post::PostMode;
@@ -125,6 +125,10 @@ pub struct GpuInner {
     uploads: crate::stream::Uploads,
     /// The resident baked GI volumes (`gi.rs`).
     gi: crate::gi::GiBuffer,
+    /// The latest sight capture's and window frame's content ([`ContentHint`]): a new target's
+    /// graph is prepared ahead in their shape ([`GpuInner::prewarm_target`]).
+    hint_offscreen: Option<ContentHint>,
+    hint_window: Option<ContentHint>,
     // Dropped after `Drop::drop` released everything above, device before instance.
     device: Device,
     instance: Instance,
@@ -294,6 +298,8 @@ impl GpuInner {
             colour_record: Default::default(),
             uploads: crate::stream::Uploads::default(),
             gi: crate::gi::GiBuffer::default(),
+            hint_offscreen: None,
+            hint_window: None,
             device,
             instance,
         };
@@ -1143,6 +1149,48 @@ impl GpuInner {
         self.render_frame(target, frame, None, true)
     }
 
+    /// Makes `target`'s render graph images ahead of its first render, for a frame in `env`
+    /// with `content` (`None`: like the latest offscreen frame's, else the window's; else shadows
+    /// from `env` alone), with sight's ID passes when `ids`. Works until `until` (at least one image a
+    /// call), never waits for the GPU, binds and retires nothing: `Ok(true)` once every image
+    /// exists. A frame whose content differs makes what the prediction missed, as before.
+    pub fn prewarm_target(&mut self, target: TargetId, env: &crate::Environment, ids: bool, content: Option<ContentHint>, until: Instant) -> Result<bool, GpuError> {
+        let _z = specula_core::profile::zone("gpu.prewarm");
+        let hint = content.or(self.hint_offscreen).or(self.hint_window).unwrap_or(ContentHint { shadow_casters: true, ..ContentHint::default() });
+        let Some(t) = self.targets.get_mut(&target.0) else {
+            return Err(GpuError::unknown(crate::IdKind::Target, target.0, ""));
+        };
+        let extent = t.extent;
+        let shape = FrameShape {
+            out_name: "target",
+            format: TARGET_FORMAT,
+            extent,
+            prior: Prior::Discard { after: VK_PIPELINE_STAGE_2_COPY_BIT },
+            fin: Final::TransferSrc,
+            mode: PostMode::of(env).fit(extent),
+            shadow: (env.shadow.enabled && hint.shadow_casters).then(|| shadow_desc(&env.shadow)),
+            overlay: hint.overlay,
+            two_d: hint.two_d,
+            ssao: crate::ssao::ssao_extent(env, extent),
+            particles: hint.particles,
+            decals: hint.decals,
+            water: hint.water,
+            blended: hint.blended,
+            flash: false,
+            flash_reset: false,
+        };
+        declare_frame(&mut t.graph, &shape);
+        if ids {
+            crate::idbuffer::declare(&mut t.graph, extent, crate::idbuffer::bucket_for(extent, self.ids.bucket));
+        }
+        t.graph.prewarm(&self.device, &mut self.descriptors, &mut self.pool, until)
+    }
+
+    /// Transient images `target`'s graph, as last declared, still lacks (tests).
+    pub fn target_images_missing(&self, target: TargetId) -> usize {
+        self.targets.get(&target.0).map_or(0, |t| t.graph.missing_transients(&self.pool))
+    }
+
     /// [`GpuInner::render`] (or `render_with_ids` with `ids`), submitted without waiting: the
     /// colour image is copied into the target's readback buffer in the same submission. The
     /// render is settled by [`GpuInner::settle_offscreen`] (a poll, or a wait); every other
@@ -1157,6 +1205,10 @@ impl GpuInner {
     /// Whether an asynchronous render is in flight (not yet settled).
     pub fn offscreen_pending(&self) -> bool {
         self.pending.is_some()
+    }
+
+    pub fn offscreen_pending_target(&self) -> Option<TargetId> {
+        self.pending.as_ref().map(|p| TargetId(p.target))
     }
 
     /// The next asynchronous render to settle reports a lost device once it has really ended.
@@ -1304,6 +1356,11 @@ impl GpuInner {
         prepare_frame(&self.device, &self.meshes, &self.textures, frame, extent, upload, &mut self.scratch)?;
         drop(zf);
         let env = &frame.environment;
+        // Sight's renders (with ids) predict the next capture's shape; other offscreen renders
+        // (the asset studio's stage, filmstrips) pass their own content.
+        if ids.is_some() {
+            self.hint_offscreen = Some(ContentHint::of(frame, &self.scratch));
+        }
         let shadow = (env.shadow.enabled && self.scratch.shadow.data.count > 0).then(|| shadow_desc(&env.shadow));
         let features = frame_features(frame, &self.scratch, shadow.is_some());
         let mode = PostMode::of(env).fit(extent);
@@ -1512,6 +1569,7 @@ impl GpuInner {
         if presented {
             self.frame_no = frame_no;
             self.last_graph = Some(GraphSource::Window);
+            self.hint_window = Some(ContentHint::of(frame, &self.scratch));
         }
         Ok(())
     }

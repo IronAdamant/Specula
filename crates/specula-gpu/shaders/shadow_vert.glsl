@@ -5,14 +5,20 @@
 #include "frame.glsl"
 
 layout(location = 0) in vec3 in_position;
+#ifndef SKINNED
+layout(location = 2) in vec4 in_color; // the wind's painted weight (alpha)
+#endif
 #ifdef SKINNED
 layout(location = 3) in uvec4 in_joints;
 layout(location = 4) in vec4 in_weights;
 #endif
 #ifdef MASKED
+layout(location = 1) in vec3 in_normal;
 layout(location = 5) in vec2 in_uv;
 layout(location = 0) out vec2 v_uv;
 layout(location = 1) flat out uint v_draw;
+layout(location = 2) out vec3 v_world; // the foliage fade (shadow_mask.frag)
+layout(location = 3) out vec3 v_normal; // foliage cards edge-on to the sun (shadow_mask.frag)
 #endif
 
 // Must match `PushConstants` in src/render.rs.
@@ -30,9 +36,15 @@ void main() {
     model = model * skin_matrix(pc.bones, pc.draws.items[gl_InstanceIndex].ext.z, in_joints, in_weights);
 #endif
     vec4 world = model * vec4(in_position, 1.0);
+#ifndef SKINNED
+    // The wind, exactly as mesh_vert.glsl sways the draw.
+    world.xyz += wind_offset(pc.frame, pc.draws.items[gl_InstanceIndex].ext.w, in_position, world.xyz, in_color.a, wind_scale(model));
+#endif
     gl_Position = pc.frame.shadow_mats[pc.pass] * world;
 #ifdef MASKED
     v_uv = in_uv;
     v_draw = uint(gl_InstanceIndex);
+    v_world = world.xyz;
+    v_normal = mat3(model) * in_normal; // a direction is enough: only its angle to the sun is used
 #endif
 }

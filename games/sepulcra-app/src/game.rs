@@ -22,7 +22,7 @@ use sepulcra::map::Face;
 use sepulcra::script::{Journal, Player};
 use sepulcra::sim::{DustSource, Stone, Wall};
 use sepulcra::{CellId, Command, Content, Event, Motion, Outcome, Rejection, State, TICK_HZ};
-use specula::effects::{BloomPatch, FogPatch, GradingFields, GradingPatch, ShadowPatch, SkyPatch, SsaoPatch};
+use specula::effects::{BloomPatch, FogPatch, GradingFields, GradingPatch, ShadowPatch, SkyPatch, SsaoPatch, WindPatch};
 use specula::game::{Ctx, Frame, Game, Overlay, GameWorld};
 use specula::sight::Camera;
 use specula::world::EnvPatch;
@@ -1051,6 +1051,16 @@ pub fn night(world: &mut GameWorld<'_>) {
             intensity: Some(1.0),
             samples: Some(8),
             resolution: Some(0.5),
+        }),
+        // A breeze for the grass (grass.rs): the far side of the slab thins out with distance.
+        wind: Some(WindPatch {
+            strength: Some(crate::grass::WIND.0),
+            frequency: Some(crate::grass::WIND.1),
+            gust: Some(crate::grass::WIND.2),
+            fade_start: Some(crate::grass::FADE_START),
+            fade_end: Some(crate::grass::FADE_END),
+            shadow_end: Some(crate::grass::SHADOW_END),
+            ..Default::default()
         }),
         physics: None,
     };

@@ -2,7 +2,7 @@
 //!
 //! A graph is JSON: named nodes, each an op over earlier nodes (so no cycles by construction),
 //! and outputs naming nodes (or constants) for base colour, normal, roughness, metallic,
-//! ambient occlusion and emission. Everything tiles: noise lattices wrap at the tile edge and
+//! ambient occlusion, emission and opacity. Everything tiles: noise lattices wrap at the tile edge and
 //! every filter samples with wrap-around, so a texture repeats seamlessly on box-projected UVs.
 //!
 //! ```text
@@ -28,6 +28,12 @@
 //! `curvature` (in, strength), `gradient_map` (in, stops [[t, colour]...]). Colours are palette
 //! names, material names or `#rrggbb` from the game's style. An input may be a node name or an
 //! inline `{ "value": v }` / `{ "color": c }`.
+//!
+//! **Cutouts (foliage cards, leaves, grass, fences):** `outputs.opacity` (a grey node, 1 = solid)
+//! goes into the base colour's alpha, and `outputs.alpha_cutoff` (0.05..0.95, default 0.5) makes the
+//! material alpha-tested: texels below it are cut, in the scene, in the sun's shadow and in sight's
+//! ID buffer alike. The engine keeps a cutout's coverage through its mip chain
+//! (`specula_gpu::preserve_alpha_coverage`), so cards don't thin out with distance.
 //!
 //! **Bounds (the iGPU is the reference):** sizes are powers of two 16..[`MAX_SIZE`] (256 by
 //! default); at most [`MAX_NODES`] nodes; every node's cost is charged to [`MAX_WORK`] before it
@@ -128,6 +134,10 @@ pub struct Outputs {
     pub ao: Option<Input>,
     pub ao_from_height: Option<(u32, f32)>,
     pub emissive: Option<Input>,
+    /// Coverage (1 = solid) into the base colour's alpha; with it the material is alpha-tested
+    /// at `alpha_cutoff`.
+    pub opacity: Option<Input>,
+    pub alpha_cutoff: f32,
 }
 
 /// A parsed graph.
@@ -146,7 +156,7 @@ pub struct TexGraph {
 pub struct TextureSet {
     pub name: String,
     pub size: u32,
-    /// sRGB colour, alpha 255.
+    /// sRGB colour; alpha is `outputs.opacity` (255 without one).
     pub base_color: Vec<u8>,
     /// Tangent-space normal (x right = +u, y up = towards the top row, as the engine's normal
     /// maps), unorm.
@@ -155,6 +165,8 @@ pub struct TextureSet {
     pub metallic_roughness: Vec<u8>,
     /// sRGB emissive colour, when any.
     pub emissive: Option<Vec<u8>>,
+    /// Alpha-tested at this cutoff (the base colour's alpha is coverage); 0 = opaque.
+    pub alpha_cutoff: f32,
     /// Content hash of the images.
     pub hash: u64,
     pub work: u64,
@@ -448,7 +460,7 @@ impl TexGraph {
             p.names.push(n.clone());
         }
         let outs = g("outputs").and_then(|v| v.as_object()).ok_or_else(|| err(&pre("outputs"), ErrorCode::MissingField, "a texture graph needs \"outputs\" (base_color at least)"))?;
-        const OUTS: &[&str] = &["base_color", "normal", "height", "normal_strength", "roughness", "metallic", "ao", "emissive"];
+        const OUTS: &[&str] = &["base_color", "normal", "height", "normal_strength", "roughness", "metallic", "ao", "emissive", "opacity", "alpha_cutoff"];
         for (k, _) in outs {
             if !OUTS.contains(&k.as_str()) {
                 return Err(err(&format!("{}.{k}", pre("outputs")), ErrorCode::UnknownField, format!("outputs accept: {}", OUTS.join(", "))));
@@ -474,7 +486,12 @@ impl TexGraph {
             ao,
             ao_from_height,
             emissive: og("emissive").map(|v| p.input(&op("emissive"), Some(v))).transpose()?,
+            opacity: og("opacity").map(|v| p.input(&op("opacity"), Some(v))).transpose()?,
+            alpha_cutoff: ranged(&op("alpha_cutoff"), og("alpha_cutoff"), 0.5, 0.05, 0.95)?,
         };
+        if og("alpha_cutoff").is_some() && outputs.opacity.is_none() {
+            return Err(err(&op("alpha_cutoff"), ErrorCode::MissingField, "alpha_cutoff cuts the opacity: give outputs.opacity (a grey node, 1 = solid)"));
+        }
         if ao_from_height.is_some() && outputs.height.is_none() {
             return Err(err(&op("ao"), ErrorCode::MissingField, "ao {radius, strength} is derived from the height: give outputs.height"));
         }
@@ -515,6 +532,9 @@ impl TexGraph {
         }
         if self.outputs.emissive.is_some() {
             w += px * 4;
+        }
+        if self.outputs.opacity.is_some() {
+            w += px * 2;
         }
         w + px * 16
     }
@@ -802,7 +822,7 @@ pub fn bake(g: &TexGraph, threads: usize) -> Result<TextureSet, RecipeError> {
     }
     let end = g.ops.len();
     let o = &g.outputs;
-    for i in [Some(&o.base_color), o.normal.as_ref(), o.height.as_ref(), Some(&o.roughness), Some(&o.metallic), o.ao.as_ref(), o.emissive.as_ref()].into_iter().flatten() {
+    for i in [Some(&o.base_color), o.normal.as_ref(), o.height.as_ref(), Some(&o.roughness), Some(&o.metallic), o.ao.as_ref(), o.emissive.as_ref(), o.opacity.as_ref()].into_iter().flatten() {
         uses(i, end, &mut last);
     }
     let mut imgs: Vec<Option<Img>> = vec![None; g.ops.len()];
@@ -987,7 +1007,8 @@ pub fn bake(g: &TexGraph, threads: usize) -> Result<TextureSet, RecipeError> {
         let (x, y) = (p % size, p / size);
         let col = c.color(&o.base_color, x, y);
         let a = ao_img.as_ref().map_or(1.0, |ao| ao[p]);
-        base.extend_from_slice(&[to8(col[0] * a), to8(col[1] * a), to8(col[2] * a), 255]);
+        let alpha = o.opacity.as_ref().map_or(255, |i| to8(c.gray(i, x, y)));
+        base.extend_from_slice(&[to8(col[0] * a), to8(col[1] * a), to8(col[2] * a), alpha]);
     }
     let normal_src: Option<Vec<Rgba>> = match (&o.normal, &o.height) {
         (Some(i), _) if c.is_color(i) => Some((0..size * size).map(|p| c.color(i, p % size, p / size)).collect()),
@@ -1015,7 +1036,12 @@ pub fn bake(g: &TexGraph, threads: usize) -> Result<TextureSet, RecipeError> {
     if let Some(e) = &emissive {
         h.write_bytes(e);
     }
-    Ok(TextureSet { name: g.name.clone(), size: g.size, base_color: base, normal, metallic_roughness: mr, emissive, hash: h.finish(), work: cost })
+    let alpha_cutoff = if o.opacity.is_some() { o.alpha_cutoff } else { 0.0 };
+    // (Opaque sets hash exactly as they did before cutouts existed.)
+    if o.opacity.is_some() {
+        h.write_u32(alpha_cutoff.to_bits());
+    }
+    Ok(TextureSet { name: g.name.clone(), size: g.size, base_color: base, normal, metallic_roughness: mr, emissive, alpha_cutoff, hash: h.finish(), work: cost })
 }
 
 /// A tangent-space normal map from a height (0..1 per texel × `strength`): x along +u, y towards
@@ -1130,5 +1156,32 @@ mod tests {
         let big = r#"{ "size": 1024, "nodes": { "a": { "op": "noise", "kind": "worley", "octaves": 10 }, "b": { "op": "ao", "in": "a", "radius": 32 }, "c": { "op": "ao", "in": "b", "radius": 32 }, "d": { "op": "ao", "in": "c", "radius": 32 }, "e": { "op": "ao", "in": "d", "radius": 32 }, "f": { "op": "ao", "in": "e", "radius": 32 }, "g": { "op": "ao", "in": "f", "radius": 32 }, "h": { "op": "ao", "in": "g", "radius": 32 } }, "outputs": { "base_color": "h" } }"#;
         let g = TexGraph::parse(big, &s).unwrap();
         assert_eq!(bake(&g, 2).unwrap_err().code, ErrorCode::Limit);
+    }
+
+    /// `outputs.opacity` goes into the base colour's alpha and makes the set alpha-tested at
+    /// `alpha_cutoff` (0.5 by default); without it the alpha is solid and the set opaque.
+    #[test]
+    fn opacity_makes_a_cutout() {
+        let s = style();
+        let card = r#"{ "size": 16, "nodes": { "blade": { "op": "gradient", "axis": "u" } },
+          "outputs": { "base_color": { "color": "moss" }, "opacity": "blade" } }"#;
+        let set = bake(&TexGraph::parse(card, &s).unwrap(), 2).unwrap();
+        assert_eq!(set.alpha_cutoff, 0.5);
+        // Row 0: alpha rises with u from about 0 to about 255.
+        let alpha: Vec<u8> = (0..16).map(|x| set.base_color[x * 4 + 3]).collect();
+        assert!(alpha[0] < 16 && alpha[15] > 240 && alpha.windows(2).all(|w| w[0] <= w[1]), "{alpha:?}");
+        let tuned = card.replace(r#""opacity": "blade""#, r#""opacity": "blade", "alpha_cutoff": 0.3"#);
+        let set2 = bake(&TexGraph::parse(&tuned, &s).unwrap(), 2).unwrap();
+        assert_eq!(set2.alpha_cutoff, 0.3);
+        assert_ne!(set.hash, set2.hash, "the cutoff is part of the set's identity");
+        // Opaque without opacity.
+        let solid = bake(&TexGraph::parse(r#"{ "size": 16, "nodes": {}, "outputs": { "base_color": { "color": "moss" } } }"#, &s).unwrap(), 2).unwrap();
+        assert_eq!(solid.alpha_cutoff, 0.0);
+        assert!(solid.base_color.chunks(4).all(|p| p[3] == 255));
+        // A cutoff needs an opacity, and stays in range.
+        let e = TexGraph::parse(r#"{ "nodes": {}, "outputs": { "base_color": 1, "alpha_cutoff": 0.5 } }"#, &s).unwrap_err();
+        assert_eq!((e.path.as_str(), e.code), ("outputs.alpha_cutoff", ErrorCode::MissingField));
+        let e = TexGraph::parse(&card.replace(r#""opacity": "blade""#, r#""opacity": "blade", "alpha_cutoff": 1"#), &s).unwrap_err();
+        assert_eq!((e.path.as_str(), e.code), ("outputs.alpha_cutoff", ErrorCode::OutOfRange));
     }
 }

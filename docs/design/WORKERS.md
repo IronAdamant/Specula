@@ -204,11 +204,16 @@ Code: `crates/specula/src/capture/flight.rs`, `Gpu::render_async` / `Gpu::settle
   while the world is unchanged): the two together took 35-55 ms at 20,000 entities. Headless,
   the subject cache's rebuild uses the rest of the pass's share (not 3 ms), and the capture
   starts in the same pass once it is done. A new size's target is made in a pass of its own and
-  that pass's captures end there. Its render graph's images are still made by the view's own
-  render: an empty warm-up frame submitted with the target made them early, but its different
-  frame shape built other pipeline variants and rebound the shadow map (a 300 ms window frame in
-  `stall_load.py`), so it was taken out. Making them early needs a prepare-only GPU call with the
-  view's own frame shape (left for the follow-up).
+  that pass's captures end there. Its render graph's images (depth, HDR, the bloom chain, SSAO,
+  the ID buffers) are then made ahead, a 4 ms slice a pass (at least one image), by
+  `Gpu::prewarm_target`: a prepare-only call that declares the frame with the world's environment
+  and the latest frame's content (`ContentHint`: shadow casters, overlay, 2D, effects, water,
+  blended), creates only the transients the pool lacks, and binds, retires and waits for nothing
+  (no pipelines, no shadow-map rebind: what sank the earlier warm-up frame, a 300 ms window frame in
+  `stall_load.py`). The view renders on the pass after the last slice, and its own prepare finds
+  every image (`gpu.prepare_graph` 25 ms at 2048 x 2048 before, 0.01 ms after;
+  `scripts/size_prewarm_check.py`, Intel iGPU: 17 slices for 7 new sizes, the worst 8.3 ms; on a release build with the iGPU loaded by other engines one large image's allocation took 45-56 ms in its slice: the driver's `vkAllocateMemory`, still off the render's submit; allocating on a worker is the follow-up). A
+  frame whose content the prediction missed makes the missing images itself, as before.
 - **Why not synchronous headless.** Main rendered and read back synchronously inside the call,
   which is the fastest for small captures but holds the engine thread for the whole GPU frame:
   250-500 ms for a 2048 x 2048 capture of 20,000 entities, past every budget. The bounded waits
@@ -266,7 +271,7 @@ each over its budget at most once or twice a run, and within about twice it:
 
 | Stall | Engine-thread time | Why it is left |
 |---|---|---|
-| a capture's first render at a new size | 36-67 ms (2048x2048) | the render graph's images (depth, post chain) are made by the first frame of a size; the target itself is made in a pass of its own |
+| a capture's first render at a new size | 36-67 ms (2048x2048) | fixed in M5: the images are made ahead, a slice a pass (`Gpu::prewarm_target`, `size_prewarm_check.py`) |
 | `anim_filmstrip` tile | 34 ms | a tile renders and reads back synchronously (it shares the offscreen targets with captures); an async tile needs the GPU's one pending slot shared with the capture flight |
 | `sight_compare` diff at 2048x2048 | 35 ms | its submit (the draw list and subjects of 20,000 entities, the GPU's per-draw records) |
 | `world_query` / `world_list` with a filter | 4.3-4.5 ms (read budget 4) | the total is a count over every entity; an index per common filter (tags, creator, shape) would make it O(matches) |
@@ -289,6 +294,48 @@ is a known stall on release builds too, and `KNOWN` holds the peaks seen with ab
 `budget_check.py --known-ok`**; a known tool past its maximum, or any other stall, still fails.
 `lease_release {delete}` (40-95 ms on main and here: renaming a folder of 20,000 files and
 canonicalising its path) now moves the folders into the trash on a worker and answers from there.
+
+## Recipe writes and studio sheets in the window (M5 render follow-ups, 2026-11-06)
+
+The M4 exit proof's builder load (4 builders writing, checking and staging 33 recipes, then a contact sheet) still
+raised frame-budget incidents in Sepulcra's window on the iGPU. `scripts/recipe_stall_check.py` reproduces it (the
+same load, smaller) and reads every `engine.stall` and `frame.over_budget` of the run. Before: 51 `project_write`
+stalls (`worker_then`, 4-66 ms, growing with the recipe folder), 37 window frame stalls (up to 154 ms) and 3
+`frame.over_budget`. The causes, each found from zones (`perf_capture` over the writes):
+
+- **The model library's poll on the engine thread.** Each project write forced `Library::poll`: a `stat` of every
+  cached recipe file, reads of changed ones, and a re-key of **every** recipe in the folder (each parsed again),
+  under the library's lock. Now a poll is `scan_plan` (no disk) / `ScanPlan::run` (a worker, `JobKind::AssetScan`) /
+  `apply_scan` (`asset_scan.rs`); a project write puts its text (or its deletion, or a style) into the cache at once
+  (`note_written`) and re-keys only the written recipe and those including it (`RecipeInfo::includes`); a scan
+  planned before a note, or before a newer applied scan, is dropped (it read an older disk). `model_reload` keeps
+  the synchronous poll (it answers with the result).
+- **Model uploads waiting for the GPU.** A rebuilt model landing uploaded synchronously (`upload_mesh_with`, a fence
+  wait per mesh) and freed the old build with `destroy_mesh` (waits for frames in flight). Now uploads are queued
+  (`queue_mesh`, `queue_texture_levels`) and frees retired (`retire_*`), and a window frame uploads for at most 3 ms
+  (`GpuModels::upload_slice`, windowed engines only), the rest on the next frames.
+- **Studio renders waiting for the GPU.** Each studio render rendered and read back synchronously. Now one is in
+  flight at a time (`render_async`), landed by a later pump with a poll; a new size's target is prewarmed first; with
+  a window its GPU time is charged against the studio's 25% share too. Captures and studio renders give way to each
+  other at most three passes (`TURN_PASSES`), then land the other's render and go.
+
+Two more causes the zones showed on the way: re-resolving every model entity (with a draw-cache reset) after
+each write, 18 ms (now only the entities of the handles re-keyed, `Reload::handles`, plus the entities left
+unresolved, each distinct spec once, when files changed: they have no handle a re-key could name, and a written or
+fixed recipe must bring them back), and scans re-keying a whole folder when one file changed (now only the changed
+recipes and their includers). Review R1 then found the re-key itself at 12 ms on the engine thread under the load
+(parsing recipes and reading their anim sets): the engine's library re-keys in 2 ms slices (`REKEY_SLICE`, at least
+one recipe a call), the rest on the next loop passes (`Library::rekey_more`), the handles left keeping their last
+build meanwhile; `model_reload`'s synchronous poll is never sliced.
+
+After, the same script on release builds, the iGPU shared with six other lanes' builds and engines (runs vary a
+lot with that load): `project_write` stalls went from 51 (worst 66 ms) to 0-6 a run, almost all 4-10 ms (one of
+21 ms and one of 33 ms seen); `frame.over_budget` from 53 to 0 in the last three runs. What is left are window
+frames over 30 ms when the GPU is saturated: the queued upload path waiting for a command buffer or staging slot
+(`gpu.stage`/`vk.begin_cb`, up to 47 ms), texture and image allocation (`gpu.create_image`, `gpu.make_image`:
+45-61 ms for one large image on a loaded iGPU, also the worst prewarm slice), and Sepulcra's HUD waiting for a fence
+(`game_overlay/vk.wait_fence`, up to 32 ms). The next step is allocating images on a worker thread (Vulkan allows it)
+and a non-waiting staging slot policy.
 
 ## The guard
 

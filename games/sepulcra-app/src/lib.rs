@@ -30,6 +30,7 @@ pub mod looks;
 pub mod props;
 pub mod scene;
 pub mod slab;
+pub mod grass;
 pub mod tools;
 
 pub use game::SepulcraGame;

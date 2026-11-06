@@ -396,8 +396,11 @@ impl Scene {
             }
             let (anchor, _) = self.geo.anchor(map, c.id);
             let k = (c.id.0 % 7) as f32;
-            let p = Part::cube("", anchor + Vec3::new(0.0, 0.03, 0.0), Vec3::new(1.7, 0.06, 1.7), MOSS).rot(0.0, k * 9.0, 0.0).rough(1.0);
+            let size = Vec3::new(1.7, 0.06, 1.7);
+            let p = Part::cube("", anchor + Vec3::new(0.0, 0.03, 0.0), size, MOSS).rot(0.0, k * 9.0, 0.0).rough(1.0);
             let g = ents::part_named(world, &self.agent, self.roots_g, &map.cell_name(c.id), &p);
+            // Real grass on the moss (its child, undoing the patch's flat scale).
+            crate::grass::on_root(world, &self.agent, g, size, c.id);
             // Thin roots creeping over the moss (children of the flat patch: its scale flattens them).
             for (name, a, off) in [("root_a", 25.0, -0.18), ("root_b", 80.0, 0.12), ("root_c", 140.0, 0.25)] {
                 let root = Part::cube(name, Vec3::new(off, 0.9, 0.05), Vec3::new(0.06, 1.0, 0.85), ROOTS).rot(0.0, a + k * 23.0, 0.0).rough(1.0);

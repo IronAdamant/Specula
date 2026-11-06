@@ -1,0 +1,24 @@
+{
+  "date": "2026-11-06",
+  "time": "05:16",
+  "date_source": "run time",
+  "approximate": false,
+  "milestone": "M5",
+  "commit": "",
+  "subject": "terrain",
+  "topic": "engine test",
+  "title": "Water polish: swamp hue and ice cracks",
+  "note": "the frozen view repeats the 2026-10-30 framing closely; the swamp view shows the change",
+  "source": "scripts/terrain_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-frame-00010.jpg",
+      "caption": "swamp",
+      "original": "frame_00010.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 29740
+    }
+  ]
+}

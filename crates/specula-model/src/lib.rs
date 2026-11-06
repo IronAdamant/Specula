@@ -115,7 +115,7 @@ pub mod work;
 pub use collider::{Collider, ColliderKind};
 pub use error::{ErrorCode, RecipeError};
 pub use mesh::{Bounds, MeshData, MeshError, MeshErrorCode, Part};
-pub use recipe::{build, build_recipe, BuildParams, Model, ModelExtras, Recipe};
+pub use recipe::{build, build_recipe, BuildParams, Model, ModelExtras, Recipe, Wind, WindDef};
 pub use rig::{Bone, Rig, RigError};
 pub use shape::Shape;
 pub use style::{MaterialKind, MaterialPreset, Style};

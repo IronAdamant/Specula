@@ -1633,6 +1633,7 @@ pub(crate) fn convert(l: &Loaded, opts: &ImportOptions, mut warnings: Vec<Warnin
         notes,
         rig,
         extras: Default::default(),
+        wind: None,
     };
     Ok(Import { model, skeleton, clips, materials, textures, images, warnings, stats, generator: doc.generator.clone() })
 }

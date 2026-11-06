@@ -143,8 +143,8 @@ pub use idbuffer::{IdCounts, IdCoverage, IdImage};
 pub use atlas::{pack_atlas, Atlas, AtlasError, AtlasImage, AtlasOptions, AtlasRect, Flipbook, Playback};
 pub use sprite::{sprite_sphere, tiles_sphere, view_2d, Billboard, Draw2d, ShapeDraw, Sprite, SpriteBlend, TileChunk, View2d};
 pub use tilemap::{TileCell, TileGrid, CHUNK as TILE_CHUNK, MAX_TILE_FRAMES, ORIENT_FLIP_X, ORIENT_FLIP_Y, ORIENT_SWAP_XY};
-pub use material::{generate_mips, generate_mips_owned, generate_tangents, mip_count};
-pub use render::{BackgroundFault, PipelineVariants, VariantFailure};
+pub use material::{generate_mips, generate_mips_owned, generate_tangents, mip_count, preserve_alpha_coverage};
+pub use render::{BackgroundFault, ContentHint, PipelineVariants, VariantFailure};
 pub use stats::*;
 pub use stream::{UploadStats, ARENA_BYTES as UPLOAD_ARENA_BYTES};
 pub use terrain::{TerrainLayer, TerrainMaterial, TerrainPatch};
@@ -720,6 +720,8 @@ pub struct Surface {
     pub textures: MaterialTextures,
     /// The terrain patch or water look of those materials (ignored by the others).
     pub ext: MaterialExt,
+    /// The draw's sway in the world's wind (`Lit` and non-skinned only; none by default).
+    pub wind: Wind,
 }
 
 impl Default for Surface {
@@ -733,6 +735,7 @@ impl Default for Surface {
             seed: 0.0,
             textures: MaterialTextures::NONE,
             ext: MaterialExt::None,
+            wind: Wind::NONE,
         }
     }
 }
@@ -1066,6 +1069,76 @@ impl Default for SsaoSettings {
 
 /// Most SSAO samples per pixel.
 pub const MAX_SSAO_SAMPLES: u32 = 16;
+
+/// The world's wind, as the vertex shaders sway foliage with it ([`Wind`] on a draw). Only
+/// draws with a wind term move: a world without them renders exactly as before.
+///
+/// Deterministic in the frame's time ([`FrameDesc::time_s`]: the engine passes simulation time):
+/// a sway is a bend along the wind plus two sine trains rolling across the field along it (waves
+/// through grass), under a slow gust envelope; the same time gives the same vertices everywhere.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindSettings {
+    /// World direction the wind blows towards (its horizontal part; normalised by the renderer).
+    pub direction: [f32; 3],
+    /// 0 = still air, 1 = a breeze (a draw's [`Wind::amount`] of sway at the tips), up to
+    /// [`MAX_WIND_STRENGTH`].
+    pub strength: f32,
+    /// Sways per second (Hz) of the main train.
+    pub frequency: f32,
+    /// 0..1: how much the slow gust envelope varies the strength.
+    pub gust: f32,
+    /// Textured swaying draws (foliage cards) thin out by an ordered dither from `fade_start` to
+    /// `fade_end` metres from the camera, gone past it, in the scene and sight's ID buffer alike;
+    /// `fade_end` 0 = never. Untextured swaying draws never fade (the dither lives only in the
+    /// textured pipelines).
+    pub fade_start: f32,
+    pub fade_end: f32,
+    /// Swaying draws cast the sun's shadow only within `shadow_end` metres of the camera (view
+    /// depth to their nearest point); 0 = at any distance (the default). Far grass shadows are a
+    /// few texels each, and every caster costs the shadow pass its cutout fragments.
+    pub shadow_end: f32,
+}
+
+impl Default for WindSettings {
+    fn default() -> Self {
+        WindSettings { direction: [1.0, 0.0, 0.35], strength: 1.0, frequency: 0.6, gust: 0.5, fade_start: 0.0, fade_end: 0.0, shadow_end: 0.0 }
+    }
+}
+
+/// The strongest wind ([`WindSettings::strength`]): culling bounds of draws with a wind term grow
+/// by their sway at this strength.
+pub const MAX_WIND_STRENGTH: f32 = 4.0;
+
+/// A draw's wind term ([`Surface::wind`]): its vertices sway with the world's wind, in the scene,
+/// the sun's shadow and sight's ID buffer alike. `amount` 0 = still.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Wind {
+    /// Metres of sway at full weight in a strength-1 wind, 0..1 (stored to 1/255 m).
+    pub amount: f32,
+    /// Weighted by height: the object-space height (m, 0.03..8, stored to 1/32 m) where the
+    /// weight reaches 1, rising as its square from 0 at y = 0 (bases stay planted).
+    pub height: f32,
+    /// Weighted by paint instead: the vertex colour's alpha is the weight.
+    pub painted: bool,
+}
+
+impl Wind {
+    pub const NONE: Wind = Wind { amount: 0.0, height: 0.0, painted: false };
+
+    pub fn is_none(&self) -> bool {
+        self.amount.is_nan() || self.amount <= 0.0
+    }
+
+    /// The farthest a vertex can move in the draw's own units (times the model's scale in world
+    /// metres): the sway at full weight in the strongest wind.
+    pub fn reach(&self) -> f32 {
+        if self.is_none() {
+            0.0
+        } else {
+            self.amount.min(1.0) * MAX_WIND_STRENGTH * 1.25
+        }
+    }
+}
 /// Largest 3D LUT edge (N of an `N² × N` strip).
 pub const MAX_LUT_SIZE: u32 = 64;
 
@@ -1098,6 +1171,8 @@ pub struct Environment {
     pub grading: GradingSettings,
     /// Screen-space ambient occlusion (off by default).
     pub ssao: SsaoSettings,
+    /// The wind foliage sways in (only draws with a [`Wind`] term move).
+    pub wind: WindSettings,
 }
 
 impl Default for Environment {
@@ -1117,6 +1192,7 @@ impl Default for Environment {
             fog: FogSettings::default(),
             grading: GradingSettings::default(),
             ssao: SsaoSettings::default(),
+            wind: WindSettings::default(),
         }
     }
 }
@@ -1367,6 +1443,22 @@ impl Gpu {
         self.inner.create_target(width, height)
     }
 
+    /// Makes `target`'s render graph images (depth, HDR, the bloom chain, SSAO; the ID buffers
+    /// when `ids`) ahead of its first render, a slice at a time: works until `until` (at least
+    /// one image a call) and answers `Ok(true)` once every image exists. The frame is predicted
+    /// from `env` and `content` (`None`: the latest frame's); it never waits for the GPU and binds or
+    /// retires nothing, so a render of another shape in between is unaffected. Making a 2048 x
+    /// 2048 frame's images inside its first submit held the engine thread 36-67 ms on the iGPU.
+    pub fn prewarm_target(&mut self, target: TargetId, env: &Environment, ids: bool, content: Option<ContentHint>, until: std::time::Instant) -> Result<bool, GpuError> {
+        self.inner.prewarm_target(target, env, ids, content, until)
+    }
+
+    /// How many of `target`'s render graph images (as its graph was last declared) don't exist
+    /// yet: 0 once [`Gpu::prewarm_target`] finished, or after a render of that shape.
+    pub fn target_images_missing(&self, target: TargetId) -> usize {
+        self.inner.target_images_missing(target)
+    }
+
     /// Unknown ids are ignored.
     pub fn destroy_target(&mut self, target: TargetId) {
         self.inner.destroy_target(target)
@@ -1391,6 +1483,11 @@ impl Gpu {
     /// Whether a [`Gpu::render_async`] is in flight (not yet settled).
     pub fn offscreen_pending(&self) -> bool {
         self.inner.offscreen_pending()
+    }
+
+    /// The target of the [`Gpu::render_async`] in flight, if any.
+    pub fn offscreen_pending_target(&self) -> Option<TargetId> {
+        self.inner.offscreen_pending_target()
     }
 
     /// Settles the [`Gpu::render_async`] in flight: `wait` blocks until it ends, otherwise this

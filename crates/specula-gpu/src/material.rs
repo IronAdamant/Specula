@@ -78,6 +78,45 @@ pub fn generate_mips_owned(width: u32, height: u32, format: TextureFormat, pixel
     Ok(levels)
 }
 
+/// Keeps an alpha-tested texture's coverage through its mip chain (`levels` from
+/// [`generate_mips`], RGBA8 with alpha in byte 3, `levels[0]` the image): each smaller level's
+/// alpha is scaled so the share of its texels at or above `cutoff` (as the shaders compare it:
+/// quantised to 8 bits) matches level 0's. Plain averaging lets alpha fall below the cutoff, so
+/// cutouts (leaves, grass blades, fences) thin out and vanish with distance. Colour is untouched;
+/// deterministic (integer counts, `f32` basic operations). Opaque cutoffs (`<= 0`) and other
+/// formats are left alone.
+pub fn preserve_alpha_coverage(levels: &mut [Vec<u8>], cutoff: f32) {
+    if cutoff.is_nan() || cutoff <= 0.0 || levels.is_empty() || levels.iter().any(|l| l.len() % 4 != 0 || l.is_empty()) {
+        return;
+    }
+    let c8 = (cutoff.min(1.0) * 255.0).round() as u32;
+    let covered = |l: &[u8], s: f32| l.chunks_exact(4).filter(|p| ((p[3] as f32 * s).round().min(255.0) as u32) >= c8).count();
+    let base = &levels[0];
+    let target = covered(base, 1.0) as f64 / (base.len() / 4) as f64;
+    for level in levels.iter_mut().skip(1) {
+        let n = (level.len() / 4) as f64;
+        // Coverage grows with the scale: bisect for the smallest scale that reaches the target.
+        // (Unreachable even at the largest scale: every texel with any alpha is kept.)
+        let (mut lo, mut hi) = (0.0f32, 255.0f32);
+        if (covered(level, hi) as f64 / n) >= target {
+            for _ in 0..24 {
+                let mid = 0.5 * (lo + hi);
+                if (covered(level, mid) as f64 / n) < target {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+        }
+        // The nearer of the two sides (a level of equal averages can only cover none or all).
+        let err = |s: f32| (covered(level, s) as f64 / n - target).abs();
+        let s = if err(lo) < err(hi) { lo } else { hi };
+        for p in level.chunks_exact_mut(4) {
+            p[3] = (p[3] as f32 * s).round().min(255.0) as u8;
+        }
+    }
+}
+
 fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
@@ -190,6 +229,46 @@ mod tests {
         let flat = vec![77u8; 64 * 64 * 4];
         let levels = generate_mips(64, 64, TextureFormat::Rgba8Srgb, &flat).unwrap();
         assert!(levels.iter().all(|l| l.iter().all(|&v| v == 77)));
+    }
+
+    /// Thin blades: plain mips lose them below the cutoff; with coverage kept, every level covers
+    /// about level 0's share; opaque cutoffs change nothing.
+    #[test]
+    fn alpha_coverage_is_kept_through_the_mips() {
+        let (w, h) = (64u32, 64u32);
+        // Blades at irregular places with soft edges (alpha falls off from each blade's middle,
+        // narrower towards its tip), as a grass card's are.
+        let alpha = |x: u32, y: u32| -> u8 {
+            let h = (x / 6).wrapping_mul(2_654_435_761).rotate_left(11);
+            let centre = (6 * (x / 6) + h % 6) as f32 + 0.5;
+            let tip = ((y + h) % 64) as f32 / 64.0;
+            let half = 2.2 * (1.0 - tip) + 0.3;
+            (255.0 * (1.0 - ((x as f32 + 0.5) - centre).abs() / half).clamp(0.0, 1.0)).round() as u8
+        };
+        let px: Vec<u8> = (0..w * h).flat_map(|i| [60, 120, 40, alpha(i % w, i / w)]).collect();
+        let cover = |l: &[u8]| l.chunks_exact(4).filter(|p| p[3] >= 128).count() as f64 / (l.len() / 4) as f64;
+        let plain = generate_mips(w, h, TextureFormat::Rgba8Srgb, &px).unwrap();
+        let target = cover(&px);
+        assert!((0.15..0.35).contains(&target), "{target}");
+        assert!(cover(&plain[3]) < target * 0.5, "averaged blades fall under the cutoff: {}", cover(&plain[3]));
+        let mut kept = plain.clone();
+        preserve_alpha_coverage(&mut kept, 0.5);
+        assert_eq!(kept[0], plain[0], "level 0 is the image");
+        for (i, l) in kept.iter().enumerate().take(5) {
+            let c = cover(l);
+            assert!((c - target).abs() < 0.1, "level {i}: coverage {c}, level 0 {target}");
+            // Colour is untouched.
+            assert!(l.chunks_exact(4).zip(plain[i].chunks_exact(4)).all(|(a, b)| a[..3] == b[..3]));
+        }
+        // Deterministic, and a no-op for opaque materials.
+        let mut again = plain.clone();
+        preserve_alpha_coverage(&mut again, 0.5);
+        assert_eq!(again, kept);
+        let mut opaque = plain.clone();
+        preserve_alpha_coverage(&mut opaque, 0.0);
+        assert_eq!(opaque, plain);
+        preserve_alpha_coverage(&mut [], 0.5);
+        preserve_alpha_coverage(&mut [vec![1, 2, 3]], 0.5);
     }
 
     #[test]

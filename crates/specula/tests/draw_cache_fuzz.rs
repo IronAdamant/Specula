@@ -280,7 +280,7 @@ fn draw_cache_matches_the_full_walk_under_fuzz() {
             let wait = if r.next(4) == 0 { 30 } else { 0 };
             let (_, changed) = shared.lock().finish(Some(Duration::from_millis(wait)));
             if !changed.is_empty() {
-                world.refresh_model_handles(&changed);
+                world.refresh_model_handles(&changed, false);
             }
             models.refresh_ready(&mut gpu);
             lathes.sync(&mut gpu, &world, generation);

@@ -1291,6 +1291,53 @@ impl<T: Copy + PartialEq + fmt::Debug> RenderGraph<T> {
         Ok(())
     }
 
+    /// Make this declaration's transient images ahead of the frame that needs them, at most
+    /// until `until` (at least one image a call): compiles the declaration if it changed, then
+    /// creates the transients the pool doesn't hold yet. Nothing is bound and nothing replaced
+    /// (the frame's own [`RenderGraph::prepare`] finds them and retires what they replace), so
+    /// a frame of another shape in between is unaffected. `Ok(true)` once every transient
+    /// exists. Making a 2048 x 2048 frame's images inside its submit took 36-67 ms on the iGPU.
+    pub fn prewarm(&mut self, dev: &Device, descriptors: &mut Descriptors, pool: &mut TransientPool, until: std::time::Instant) -> Result<bool, GpuError> {
+        if !self.compiled || self.plan.decl != self.decl {
+            self.compiled = false;
+            self.compiles += 1;
+            self.plan.compile(&self.decl, self.compiles).map_err(graph_error)?;
+            self.compiled = true;
+        }
+        let mut made = 0usize;
+        for (i, r) in self.plan.decl.resources.iter().enumerate() {
+            let Kind::Transient { desc, shared } = r.kind else { continue };
+            let owner = if shared { SHARED_OWNER } else { self.owner };
+            if pool.find(owner, r.name, desc, self.plan.usage[i]).is_some() {
+                continue;
+            }
+            if made > 0 && std::time::Instant::now() >= until {
+                return Ok(false);
+            }
+            pool.create(dev, descriptors, owner, r.name, desc, self.plan.usage[i])?;
+            made += 1;
+        }
+        Ok(true)
+    }
+
+    /// Transients of this declaration the pool doesn't hold yet (after a compile; tests and
+    /// checks of [`RenderGraph::prewarm`]).
+    pub fn missing_transients(&self, pool: &TransientPool) -> usize {
+        if !self.compiled || self.plan.decl != self.decl {
+            return self.decl.resources.iter().filter(|r| matches!(r.kind, Kind::Transient { .. })).count();
+        }
+        self.plan
+            .decl
+            .resources
+            .iter()
+            .enumerate()
+            .filter(|(i, r)| match r.kind {
+                Kind::Transient { desc, shared } => pool.find(if shared { SHARED_OWNER } else { self.owner }, r.name, desc, self.plan.usage[*i]).is_none(),
+                _ => false,
+            })
+            .count()
+    }
+
     /// The handles of imported image `res` for this frame (after `prepare`).
     pub fn bind_image(&mut self, res: Res, image: VkImage, view: VkImageView) {
         let b = &mut self.bound[res.0 as usize].image;
@@ -1499,21 +1546,29 @@ impl TransientPool {
         desc: ImageDesc,
         usage: VkFlags,
     ) -> Result<usize, GpuError> {
-        let same_name = |e: &Entry| e.owner == owner && (ptr::eq(e.name, name) || e.name == name);
-        let found = self.entries.iter().position(|e| e.desc == desc && e.usage == usage && same_name(e));
-        match found {
+        match self.find(owner, name, desc, usage) {
             Some(i) => Ok(i),
-            None => {
-                #[cfg(test)]
-                if self.fail_creates == Some(0) {
-                    return Err(GpuError::new("injected transient creation failure"));
-                } else if let Some(n) = self.fail_creates.as_mut() {
-                    *n -= 1;
-                }
-                self.entries.push(create_entry(dev, descriptors, owner, name, desc, usage)?);
-                Ok(self.entries.len() - 1)
-            }
+            None => self.create(dev, descriptors, owner, name, desc, usage),
         }
+    }
+
+    /// The entry for (`owner`, `name`, `desc`, `usage`), if one exists.
+    fn find(&self, owner: u32, name: &'static str, desc: ImageDesc, usage: VkFlags) -> Option<usize> {
+        let same_name = |e: &Entry| e.owner == owner && (ptr::eq(e.name, name) || e.name == name);
+        self.entries.iter().position(|e| e.desc == desc && e.usage == usage && same_name(e))
+    }
+
+    /// A new entry (not committed: it replaces nothing until a frame's `prepare` commits it).
+    fn create(&mut self, dev: &Device, descriptors: &mut Descriptors, owner: u32, name: &'static str, desc: ImageDesc, usage: VkFlags) -> Result<usize, GpuError> {
+        #[cfg(test)]
+        if self.fail_creates == Some(0) {
+            return Err(GpuError::new("injected transient creation failure"));
+        } else if let Some(n) = self.fail_creates.as_mut() {
+            *n -= 1;
+        }
+        let _z = specula_core::profile::zone("gpu.make_image");
+        self.entries.push(create_entry(dev, descriptors, owner, name, desc, usage)?);
+        Ok(self.entries.len() - 1)
     }
 
     /// Entry `i` is what its owner and name stand for now: every other image of that owner and

@@ -46,7 +46,7 @@ sample_hz = 60
 case = "snake"
 max_len = 32
 file_matches_name = true
-categories = ["stone", "enemy", "boss", "wall", "graveyard", "slab", "vfx_placeholder", "component", "building", "ruin", "terrain", "set", "prop"]
+categories = ["stone", "enemy", "boss", "wall", "graveyard", "slab", "vfx_placeholder", "component", "building", "ruin", "terrain", "set", "prop", "foliage"]
 parts_named = true
 
 # Triangle budgets at LOD 0 (STYLE.md "Performance budget"; the rest from style.json's proposals).
@@ -130,6 +130,14 @@ max_triangles = 15000
 # so a stone's budget, not a tombstone's.
 category = "prop"
 max_triangles = 1500
+
+[[budget]]
+# Foliage (M5): alpha-cutout cards swaying in the wind. Cutout cards cost overdraw more than
+# triangles on the iGPU, so a patch (one slab cell of scattered tufts) stays small: 1500
+# triangles and one 128 px texture set (grass_patch: 12 tufts, about 430).
+category = "foliage"
+max_triangles = 1500
+max_texture_kb = 256
 
 [[budget]]
 # Scattered rocks, half-buried among the graves.

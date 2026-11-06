@@ -445,6 +445,16 @@ def main():
         gp = m.json("studio_stage", subjects=["recipes/shambler.json", "recipes/warding_stone.json"], view="gameplay", width=640, height=360, references=False)
         summary["captures"]["stage_gameplay"] = gp["image"]["path"]
         check(all(s.get("px_height", 0) > 0 for s in gp["subjects"]), "stage through the game camera reports pixel heights in its viewport", failures)
+        # The studio's renders land without waiting for the GPU: its last render must still land
+        # (the queue empty behind it), and a capture right after must not wait on it (review of
+        # the renderfollow lane: the last render never landed and captures stalled behind it).
+        t0 = time.perf_counter()
+        one = m.json("studio_stage", subjects=["recipes/tombstone.json"], view="front", width=320, height=240)
+        t1 = time.perf_counter()
+        after = m.json("sight_frame", width=320, height=180)
+        t2 = time.perf_counter()
+        check(one.get("image") is not None and (t1 - t0) < 20, f"a lone studio render lands ({t1 - t0:.1f} s)", failures)
+        check(after.get("image") is not None and (t2 - t1) < 10, f"a capture right after a studio render answers ({t2 - t1:.1f} s)", failures)
 
         print("a violation caught and fixed: a new graveyard prop")
         recipe = assets / "recipes" / "bone_pile.json"

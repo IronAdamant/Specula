@@ -301,6 +301,7 @@ pub fn check_env(p: &EnvPatch) -> Result<(), WorldError> {
         p.fog.map(|e| e.check()),
         p.grading.map(|e| e.check()),
         p.ssao.map(|e| e.check()),
+        p.wind.map(|e| e.check()),
         p.physics.map(|e| e.check()),
     ];
     for result in effects.into_iter().flatten() {
@@ -1018,6 +1019,7 @@ impl Env {
             ("fog", crate::effects::FogPatch::to_json(&l.fog, false)),
             ("grading", crate::effects::GradingPatch::to_json(&l.grading, &self.grading_lut, false)),
             ("ssao", crate::effects::SsaoPatch::to_json(&l.ssao, false)),
+            ("wind", crate::effects::WindPatch::to_json(&l.wind, false)),
             ("physics", crate::physics::PhysicsPatch::to_json(&self.physics)),
         ])
     }
@@ -1026,7 +1028,7 @@ impl Env {
     /// what world files store.
     pub fn to_json_exact(self) -> Json {
         let l = &self.light;
-        Json::obj([
+        let mut out = Json::obj([
             ("sun_direction", Json::arr(l.sun_direction.map(Json::from))),
             ("sun_color", color_json_exact(l.sun_color)),
             ("sun_intensity", Json::from(l.sun_intensity)),
@@ -1043,7 +1045,11 @@ impl Env {
             ("grading", crate::effects::GradingPatch::to_json(&l.grading, &self.grading_lut, true)),
             ("ssao", crate::effects::SsaoPatch::to_json(&l.ssao, true)),
             ("physics", crate::physics::PhysicsPatch::to_json(&self.physics)),
-        ])
+        ]);
+        if let (Some(w), Json::Obj(pairs)) = (crate::effects::WindPatch::to_json_if_set(&l.wind), &mut out) {
+            pairs.push(("wind".to_owned(), w));
+        }
+        out
     }
 }
 
@@ -1065,6 +1071,7 @@ pub struct EnvPatch {
     pub fog: Option<crate::effects::FogPatch>,
     pub grading: Option<crate::effects::GradingPatch>,
     pub ssao: Option<crate::effects::SsaoPatch>,
+    pub wind: Option<crate::effects::WindPatch>,
     pub physics: Option<crate::physics::PhysicsPatch>,
 }
 
@@ -1116,6 +1123,9 @@ impl EnvPatch {
         }
         if let Some(p) = &self.ssao {
             p.apply(&mut env.light.ssao);
+        }
+        if let Some(p) = &self.wind {
+            p.apply(&mut env.light.wind);
         }
         if let Some(p) = &self.physics {
             p.apply(&mut env.physics);
@@ -2527,21 +2537,39 @@ impl World {
 
     /// Re-resolves only the model entities whose handle is in `handles` (their builds just
     /// finished or changed). Derived data only, like [`World::refresh_models`].
-    pub fn refresh_model_handles(&mut self, handles: &std::collections::BTreeSet<u32>) {
+    ///
+    /// `files_changed`: asset files changed (a write, a scan, a reload), so model entities left
+    /// unresolved (their recipe missing or broken when they were spawned, loaded or recovered)
+    /// are resolved again too: they have no handle, so no re-key names them, and nothing else
+    /// would ever bring them back once their recipe is written or fixed. Each distinct spec is
+    /// resolved once a call.
+    pub fn refresh_model_handles(&mut self, handles: &std::collections::BTreeSet<u32>, files_changed: bool) {
         let Some(source) = self.models.0.clone() else { return };
         let mut touched = false;
         // Entities whose resolution changed, recorded for draw caches after the walk (a finished
         // build most frames changes nothing a cache holds).
         let mut changed = Vec::new();
+        let mut unresolved: BTreeMap<String, Option<ResolvedModel>> = BTreeMap::new();
         for e in self.entities.values_mut() {
-            let (Some(spec), Some(r)) = (&e.model, e.resolved) else { continue };
-            if handles.contains(&r.handle) {
-                let now = source.resolve(spec).ok();
-                if now != Some(r) {
-                    changed.push(e.id);
+            let Some(spec) = &e.model else { continue };
+            match e.resolved {
+                Some(r) if handles.contains(&r.handle) => {
+                    let now = source.resolve(spec).ok();
+                    if now != Some(r) {
+                        changed.push(e.id);
+                    }
+                    e.resolved = now;
+                    touched = true;
                 }
-                e.resolved = now;
-                touched = true;
+                None if files_changed => {
+                    let now = *unresolved.entry(spec.key()).or_insert_with(|| source.resolve(spec).ok());
+                    if now.is_some() {
+                        e.resolved = now;
+                        changed.push(e.id);
+                        touched = true;
+                    }
+                }
+                _ => {}
             }
         }
         for id in changed {
@@ -4774,6 +4802,7 @@ impl World {
         crate::effects::FogPatch::hash(&l.fog, &mut h);
         crate::effects::GradingPatch::hash(&l.grading, &self.env.grading_lut, &mut h);
         crate::effects::SsaoPatch::hash_if_set(&l.ssao, &mut h);
+        crate::effects::WindPatch::hash_if_set(&l.wind, &mut h);
         crate::physics::PhysicsPatch::hash_if_set(&self.env.physics, &mut h);
         h.write_u64(self.persistent_len() as u64);
         HashRun { h, next: 0 }
@@ -5773,14 +5802,14 @@ mod tests {
         put(&mut w, Shape::Cube, "c", None, Vec3::ZERO);
         let since = w.draw_epoch();
         // Handle 1's build finished, but FakeModels resolves it as before: nothing to record.
-        w.refresh_model_handles(&BTreeSet::from([1u32]));
+        w.refresh_model_handles(&BTreeSet::from([1u32]), false);
         assert_eq!(w.draw_changes_since(since).map(|c| c.count()), Some(0), "the record survives an unrelated build");
         // A handle no entity uses: nothing either.
-        w.refresh_model_handles(&BTreeSet::from([7u32]));
+        w.refresh_model_handles(&BTreeSet::from([7u32]), false);
         assert_eq!(w.draw_changes_since(since).map(|c| c.count()), Some(0));
         // A change of resolution (the source now resolves the spec differently) is recorded for that entity.
         w.models = SourceSlot(Some(Arc::new(Tier2)));
-        w.refresh_model_handles(&BTreeSet::from([1u32]));
+        w.refresh_model_handles(&BTreeSet::from([1u32]), false);
         assert_eq!(w.draw_changes_since(since).unwrap().collect::<Vec<_>>(), [a]);
     }
 

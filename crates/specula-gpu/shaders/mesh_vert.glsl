@@ -45,6 +45,13 @@ void main() {
     model = model * skin_matrix(pc.bones, pc.draws.items[gl_InstanceIndex].ext.z, in_joints, in_weights);
 #endif
     vec4 world = model * vec4(in_position, 1.0);
+#ifndef SKINNED
+    // Foliage sways (draws with a wind term; shadow_vert.glsl and ids_vert.glsl mirror it).
+    // (Lit draws only: other materials' records use those bits for themselves.)
+    if (pc.material == 0u) {
+        world.xyz += wind_offset(pc.frame, pc.draws.items[gl_InstanceIndex].ext.w, in_position, world.xyz, in_color.a, wind_scale(model));
+    }
+#endif
     gl_Position = pc.frame.view_proj * world;
     // Inverse-transpose of the model's 3x3: cofactor columns (b x c, c x a, a x b) / det.
     mat3 m = mat3(model);

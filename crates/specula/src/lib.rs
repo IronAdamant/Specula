@@ -69,6 +69,7 @@ mod playtest_engine;
 mod procgen_tools;
 pub mod project;
 mod project_engine;
+mod asset_scan;
 mod project_kinds;
 mod project_text;
 mod project_tools;
@@ -957,6 +958,8 @@ struct Engine {
     /// A project sync is writing on a worker; calls that read the disk wait for it (in order),
     /// and so do the calls waiting for the next sync's result (see `project_engine`).
     project_syncing: bool,
+    /// The model library's disk scan on a worker ([`asset_scan`]).
+    assets_scan: asset_scan::ScanState,
     project_deferred: VecDeque<project_engine::Deferred>,
     project_waiters: Vec<project_engine::SyncWaiter>,
     /// Work that needs the engine, in budgeted slices (see [`steps`]).
@@ -984,7 +987,9 @@ struct AutosaveJob {
 }
 
 impl Engine {
-    fn new(mut gpu: Gpu, captures_root: &Path, library: Library) -> Result<Engine, String> {
+    fn new(mut gpu: Gpu, captures_root: &Path, mut library: Library) -> Result<Engine, String> {
+        // Re-keys on the engine thread run in slices (the rest next pass: poll_assets_async).
+        library.set_rekey_slice(Some(models::REKEY_SLICE));
         let meshes = ShapeMeshes::upload(&mut gpu).map_err(|e| format!("mesh upload: {e}"))?;
         let two_d = two_d::TwoDGpu::new(library.root());
         let vfx = vfx::Vfx::new(library.root());
@@ -1116,6 +1121,7 @@ impl Engine {
             save_planning: None,
             waiting_saves: VecDeque::new(),
             project_syncing: false,
+            assets_scan: asset_scan::ScanState::default(),
             project_deferred: VecDeque::new(),
             project_waiters: Vec::new(),
             steps: steps::Steps::default(),
@@ -1635,8 +1641,16 @@ impl Engine {
 
     /// Rebuilds models whose recipe or style files changed (checked at most once a second;
     /// `force`: now). Returns the reload report when something was checked and changed.
+    /// Synchronous (disk on this thread): `model_reload`, which answers with the result. The
+    /// window and headless loops scan on a worker ([`Engine::poll_assets_async`]).
     fn poll_assets(&mut self, force: bool) -> Option<models::Reload> {
         let reload = self.library.lock().poll(force);
+        self.assets_upkeep(force);
+        self.assets_reloaded(reload)
+    }
+
+    /// Sprite reloads and the model library's garbage collection (each loop pass).
+    fn assets_upkeep(&mut self, force: bool) {
         // Sprite and tileset PNGs changed on disk are reloaded (failed ones retried).
         self.two_d.poll_files(force);
         // With streaming on, finished loads are uploaded within the frame's budget (stream_tick).
@@ -1668,11 +1682,14 @@ impl Engine {
             self.library.lock().collect_garbage(&live);
             self.last_gc = (Instant::now(), epoch);
         }
+    }
+
+    /// What a library poll changed reaches the world: models refreshed, anim sets reloaded.
+    fn assets_reloaded(&mut self, reload: Option<models::Reload>) -> Option<models::Reload> {
         let reload = reload?;
         if reload.files_changed > 0 || !reload.rebuilt.is_empty() || !reload.errors.is_empty() {
-            for (id, e) in self.world.refresh_models().into_iter().take(10) {
-                eprintln!("specula: model {} ({id}) not rebuilt: {e}", self.world.path_of(id));
-            }
+            // Only the entities of handles worked out again (`Reload::handles`).
+            self.world.refresh_model_handles(&reload.handles, reload.files_changed > 0);
             eprintln!(
                 "specula: recipes changed: {} rebuilt from the cache, {} rebuilding, {} error(s)",
                 reload.rebuilt.len(),
@@ -1692,7 +1709,7 @@ impl Engine {
     fn pump_builds(&mut self, wait: Option<Duration>) {
         let (finished, changed) = self.library.lock().finish(wait);
         if !changed.is_empty() {
-            self.world.refresh_model_handles(&changed);
+            self.world.refresh_model_handles(&changed, false);
         }
         let now = Instant::now();
         let mut waiters = std::mem::take(&mut self.build_waiters);
@@ -1915,7 +1932,11 @@ impl Engine {
         out: &mut Vec<DrawItem>,
         owners: Option<&mut Vec<u64>>,
     ) -> (LodStats, Vec<String>) {
+        // The window's own frames upload landed models a slice at a time (`upload_slice`);
+        // captures upload everything they draw.
+        self.models.upload_slice = (window && self.windowed).then_some(models::UPLOAD_SLICE);
         let errors = self.sync_meshes();
+        self.models.upload_slice = None;
         self.models.begin_frame(time_s);
         self.models.set_externals(&self.world);
         // HLOD (see `hlod`): the view's proxies first (the window switches cells in and out),
@@ -2039,7 +2060,7 @@ impl Engine {
             self.pump_world_saves();
             self.sweep_claims(server);
             self.lex_live_end_holds(server);
-            self.poll_assets(false);
+            self.poll_assets_async(false);
             self.pump_builds(None);
             self.poll_saves();
             self.project_pump();
@@ -2228,7 +2249,7 @@ impl Engine {
             self.pump_world_saves();
             self.sweep_claims(server);
             self.lex_live_end_holds(server);
-            self.poll_assets(false);
+            self.poll_assets_async(false);
             self.pump_builds(None);
             // Streaming headless: captures' views are the sources; retired memory is freed.
             self.stream_tick(None);

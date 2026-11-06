@@ -864,6 +864,7 @@ impl Engine {
 
     /// Runs the calls held while a sync wrote, in order, until one starts another sync.
     fn project_run_deferred(&mut self) {
+        let _z = specula_core::profile::zone("project.deferred");
         while !self.project_syncing {
             let Some(d) = self.project_deferred.pop_front() else { return };
             // Their answers go through their own reply channels; their commits count toward
@@ -879,7 +880,11 @@ impl Engine {
     /// A sync ended: what it found applied, races imported, what changed hot-reloaded, and the
     /// calls waiting for it answered with their file's state.
     fn project_synced(&mut self, done: project::SyncDone, waiters: Vec<SyncWaiter>) {
-        let synced = self.project.sync_apply(done);
+        let _z = specula_core::profile::zone("project.synced");
+        let synced = {
+            let _z = specula_core::profile::zone("project.sync_apply");
+            self.project.sync_apply(done)
+        };
         let mut changed = synced.changed;
         let state_of = |p: &str| -> Json {
             if let Some((_, e)) = synced.failed.iter().find(|(q, _)| q == p) {
@@ -906,7 +911,11 @@ impl Engine {
                 .collect();
             changed.extend(self.project_import(events));
         }
-        let reloaded = self.project_reload(&changed);
+        let reloaded = {
+            let _z = specula_core::profile::zone("project.reload");
+            self.project_reload(&changed)
+        };
+        let _w = specula_core::profile::zone("project.waiters");
         for (state, k) in states {
             k(self, state, reloaded.clone());
         }
@@ -921,9 +930,11 @@ impl Engine {
         }
         let assets: Vec<String> = changed.iter().filter_map(|p| p.strip_prefix("assets/")).map(str::to_owned).collect();
         if assets.iter().any(|r| matches!(project::kind_for(MountKind::Assets, r), Some(FileKind::Recipe | FileKind::Style | FileKind::AnimSet | FileKind::Glb | FileKind::Gltf | FileKind::Png))) {
-            self.poll_assets(true);
+            // The texts reach the model library now; its disk scan runs on a worker.
+            self.assets_written(changed);
             done.push("models");
         }
+        let _g = specula_core::profile::zone("project.game_assets");
         if !assets.is_empty() && self.game_call(crate::sim_writes::GameCall::AssetsChanged(&assets)) {
             done.push("game");
         }

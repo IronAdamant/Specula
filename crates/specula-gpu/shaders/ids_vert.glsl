@@ -10,6 +10,9 @@
 
 layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec3 in_normal;
+#ifndef SKINNED
+layout(location = 2) in vec4 in_color; // the wind's painted weight (alpha)
+#endif
 #ifdef SKINNED
 layout(location = 3) in uvec4 in_joints;  // bone indices into the draw's palette (uint8)
 layout(location = 4) in vec4 in_weights;  // unorm8, summing to 1
@@ -40,6 +43,12 @@ mat4 id_model() {
 void main() {
     mat4 model = id_model();
     vec4 world = model * vec4(in_position, 1.0);
+#ifndef SKINNED
+    // The wind, exactly as mesh_vert.glsl sways the draw.
+    if ((pc.faces & FACES_FOLIAGE) != 0u) {
+        world.xyz += wind_offset(pc.frame, pc.draws.items[gl_InstanceIndex].ext.w, in_position, world.xyz, in_color.a, wind_scale(model));
+    }
+#endif
     gl_Position = pc.frame.view_proj * world;
     v_ids = uvec2(pc.ids.items[gl_InstanceIndex], uint(gl_InstanceIndex));
     v_world = world.xyz;

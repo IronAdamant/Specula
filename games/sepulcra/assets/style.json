@@ -50,6 +50,7 @@
     "fire": { "color": "#ff7a1f", "roughness": 1.0, "emissive": 3.0, "specular": 0.0, "notes": "placeholder until particles" },
     "wraith": { "kind": "glass", "color": "#9cff4f", "emissive": 0.8, "opacity": 0.35, "roughness": 0.5, "specular": 0.4 },
     "moss": { "color": "#4f6b3a", "roughness": 0.95, "specular": 0.05 },
+    "grass": { "color": "#4f6b3a", "roughness": 0.9, "specular": 0.08, "notes": "alpha-cutout grass blades (tex_grass_blades): moss may exceed the saturation rule on map 1" },
     "graveyard_stone": { "color": "#a7a39a", "roughness": 0.85, "specular": 0.15, "notes": "tombstones (extends STYLE.md: Graveyard neutral)" },
     "wood": { "color": "#5a4632", "roughness": 0.9, "specular": 0.1, "notes": "weathered timber: coffins, grave boards, handles (extends STYLE.md: roots)" }
   }

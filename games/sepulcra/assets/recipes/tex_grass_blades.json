@@ -1,0 +1,314 @@
+{
+ "texgraph": 1,
+ "name": "grass_blades",
+ "description": "A card of grass blades for alpha-cutout foliage (STYLE.md moss: map 1 may exceed the saturation rule): fourteen thin blades at uneven spacing and heights, bent by noise, tapering to their tips, moss at the root to a paler tip (no near-black root: from the game's camera the blades' mips must read green, not as dark specks); the gaps are cut by opacity. Tiles sideways; 128 px for the iGPU.",
+ "size": 128,
+ "seed": 23,
+ "nodes": {
+  "across": {
+   "op": "gradient",
+   "axis": "u"
+  },
+  "bend": {
+   "op": "noise",
+   "kind": "fbm",
+   "scale": 3,
+   "octaves": 3
+  },
+  "bent": {
+   "op": "warp",
+   "in": "across",
+   "by": "bend",
+   "amount": 0.02
+  },
+  "profile": {
+   "op": "curve",
+   "in": "bent",
+   "points": [
+    [
+     0.0,
+     0.125
+    ],
+    [
+     0.035,
+     1.0
+    ],
+    [
+     0.07,
+     0.0
+    ],
+    [
+     0.105,
+     1.0
+    ],
+    [
+     0.1375,
+     0.0
+    ],
+    [
+     0.17,
+     1.0
+    ],
+    [
+     0.2075,
+     0.0
+    ],
+    [
+     0.245,
+     1.0
+    ],
+    [
+     0.2775,
+     0.0
+    ],
+    [
+     0.31,
+     1.0
+    ],
+    [
+     0.3475,
+     0.0
+    ],
+    [
+     0.385,
+     1.0
+    ],
+    [
+     0.4175,
+     0.0
+    ],
+    [
+     0.45,
+     1.0
+    ],
+    [
+     0.49,
+     0.0
+    ],
+    [
+     0.53,
+     1.0
+    ],
+    [
+     0.565,
+     0.0
+    ],
+    [
+     0.6,
+     1.0
+    ],
+    [
+     0.635,
+     0.0
+    ],
+    [
+     0.67,
+     1.0
+    ],
+    [
+     0.7075,
+     0.0
+    ],
+    [
+     0.745,
+     1.0
+    ],
+    [
+     0.78,
+     0.0
+    ],
+    [
+     0.815,
+     1.0
+    ],
+    [
+     0.85,
+     0.0
+    ],
+    [
+     0.885,
+     1.0
+    ],
+    [
+     0.92,
+     0.0
+    ],
+    [
+     0.955,
+     1.0
+    ],
+    [
+     0.995,
+     0.0
+    ],
+    [
+     1.0,
+     0.125
+    ]
+   ]
+  },
+  "heights": {
+   "op": "curve",
+   "in": "bent",
+   "points": [
+    [
+     0.0,
+     0.905
+    ],
+    [
+     0.035,
+     0.95
+    ],
+    [
+     0.105,
+     0.8
+    ],
+    [
+     0.17,
+     1.0
+    ],
+    [
+     0.245,
+     0.85
+    ],
+    [
+     0.31,
+     0.75
+    ],
+    [
+     0.385,
+     0.98
+    ],
+    [
+     0.45,
+     0.88
+    ],
+    [
+     0.53,
+     0.78
+    ],
+    [
+     0.6,
+     1.0
+    ],
+    [
+     0.67,
+     0.83
+    ],
+    [
+     0.745,
+     0.92
+    ],
+    [
+     0.815,
+     0.76
+    ],
+    [
+     0.885,
+     0.97
+    ],
+    [
+     0.955,
+     0.86
+    ],
+    [
+     1.0,
+     0.905
+    ]
+   ]
+  },
+  "blades": {
+   "op": "blend",
+   "a": "profile",
+   "b": "heights",
+   "mode": "multiply",
+   "amount": 1
+  },
+  "up": {
+   "op": "gradient",
+   "axis": "v"
+  },
+  "taper": {
+   "op": "curve",
+   "in": "up",
+   "points": [
+    [
+     0,
+     0.0
+    ],
+    [
+     0.25,
+     0.5
+    ],
+    [
+     0.6,
+     0.88
+    ],
+    [
+     1,
+     1.0
+    ]
+   ]
+  },
+  "shape": {
+   "op": "blend",
+   "a": "blades",
+   "b": "taper",
+   "mode": "multiply",
+   "amount": 1
+  },
+  "cover": {
+   "op": "levels",
+   "in": "shape",
+   "in_range": [
+    0.38,
+    0.56
+   ]
+  },
+  "shade": {
+   "op": "gradient_map",
+   "in": "up",
+   "stops": [
+    [
+     0,
+     "moss_light"
+    ],
+    [
+     0.55,
+     "moss_light"
+    ],
+    [
+     1,
+     "moss"
+    ]
+   ]
+  },
+  "speck": {
+   "op": "noise",
+   "kind": "value",
+   "scale": 24,
+   "octaves": 1
+  },
+  "albedo": {
+   "op": "blend",
+   "a": "shade",
+   "b": {
+    "color": "moss_light"
+   },
+   "mode": "mix",
+   "mask": "speck",
+   "amount": 0.2
+  },
+  "rough": {
+   "op": "constant",
+   "value": 0.9
+  }
+ },
+ "outputs": {
+  "base_color": "albedo",
+  "roughness": "rough",
+  "metallic": 0,
+  "opacity": "cover",
+  "alpha_cutoff": 0.5
+ }
+}

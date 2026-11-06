@@ -132,6 +132,13 @@ use std::time::{Duration, Instant, SystemTime};
 
 /// Recipe and style files are checked for changes at most this often.
 pub const POLL_EVERY: Duration = Duration::from_secs(1);
+
+/// How long one re-key may run on the engine thread (the window's and headless loops' library,
+/// [`Library::set_rekey_slice`]) before it leaves the rest of the forgotten recipes to the next
+/// pass ([`Library::rekey_more`]): parsing recipes and reading their anim sets took 12 ms in one
+/// re-key under the recipe-write load (review R1, minor 4). At least one recipe is worked out a
+/// call, so the re-key always moves.
+pub const REKEY_SLICE: Duration = Duration::from_millis(2);
 /// The style file looked for next to (and above) a recipe.
 pub const STYLE_FILE: &str = "style.json";
 /// Projected bounding-sphere diameter (pixels) at which each coarser LOD takes over: LOD k + 1
@@ -233,18 +240,29 @@ impl Built {
         let b = self.model.bounds;
         (Vec3::new(b.min[0], b.min[1], b.min[2]), Vec3::new(b.max[0], b.max[1], b.max[2]))
     }
+
+    /// [`Built::bounds`] grown sideways by the farthest its wind term can sway it (the recipe's
+    /// `wind` in the strongest wind): what it can cover on screen. Entities' boxes (sight's
+    /// projected boxes, placement) use it, so a swaying blade never draws outside its subject.
+    pub fn drawn_bounds(&self) -> (Vec3, Vec3) {
+        let (lo, hi) = self.bounds();
+        let reach = self.model.wind.map_or(0.0, |w| specula_gpu::Wind { amount: w.amount, height: w.height, painted: w.painted }.reach());
+        (Vec3::new(lo.x - reach, lo.y, lo.z - reach), Vec3::new(hi.x + reach, hi.y, hi.z + reach))
+    }
 }
 
 /// `(content, parameters as exact bits, seed)`.
 type BuildKey = (u64, String, Option<u64>);
 
 /// One file of a recipe folder as last read.
+#[derive(Clone)]
 struct SourceFile {
     text: Result<Arc<str>, String>,
     mtime: Option<SystemTime>,
 }
 
 /// A recipe folder: its regular `*.json` files (the include library).
+#[derive(Clone)]
 struct Folder {
     files: BTreeMap<String, SourceFile>,
     /// The folder's own modification time (files added or removed).
@@ -274,6 +292,9 @@ struct RecipeInfo {
     text: Arc<str>,
     /// The files it includes, transitively (stem → text).
     library: Arc<BTreeMap<String, String>>,
+    /// Every name it includes, transitively, found or not (a write to any of them, or to the
+    /// recipe itself, works it out again; others leave it be).
+    includes: BTreeSet<String>,
     style: Arc<Style>,
     style_path: PathBuf,
     recipe: Recipe,
@@ -308,7 +329,7 @@ impl Handle {
             (None, Some(_), _) => ModelState::Building,
             (None, None, _) => ModelState::Failed,
         };
-        ResolvedModel { handle: h, state, bounds: self.built.as_ref().map(|b| b.bounds()) }
+        ResolvedModel { handle: h, state, bounds: self.built.as_ref().map(|b| b.drawn_bounds()) }
     }
 }
 
@@ -389,6 +410,10 @@ pub struct Reload {
     /// Handles whose source content changed (so may their anim set): the engine re-settles the
     /// graph plays of their entities, journaled, at this point.
     pub anim_handles: BTreeSet<u32>,
+    /// Every handle whose key was worked out again: only their entities are resolved again
+    /// (re-resolving every model entity and resetting the draw cache took 18 ms a recipe write
+    /// in Sepulcra's window).
+    pub handles: BTreeSet<u32>,
 }
 
 impl Reload {
@@ -651,16 +676,18 @@ fn procgen_textures(model: &Model, x: &mut Extras) {
     for (key, set) in &model.extras.textures {
         let slots = *by_hash.entry(set.hash).or_insert_with(|| {
             let n = set.size;
-            let mut push = |rgba: &[u8], format: TextureFormat| -> Option<usize> {
-                let levels = specula_gpu::generate_mips_owned(n, n, format, rgba.to_vec()).ok()?;
+            let mut push = |rgba: &[u8], format: TextureFormat, cutoff: f32| -> Option<usize> {
+                let mut levels = specula_gpu::generate_mips_owned(n, n, format, rgba.to_vec()).ok()?;
+                // A cutout keeps its coverage with distance (cards don't thin out and vanish).
+                specula_gpu::preserve_alpha_coverage(&mut levels, cutoff);
                 x.textures.push(TextureData { width: n, height: n, format, mips: levels.len(), levels: Mutex::new(levels), sampler });
                 Some(x.textures.len() - 1)
             };
             [
-                push(&set.base_color, TextureFormat::Rgba8Srgb),
-                set.normal.as_deref().and_then(|n| push(n, TextureFormat::Rgba8Unorm)),
-                push(&set.metallic_roughness, TextureFormat::Rgba8Unorm),
-                set.emissive.as_deref().and_then(|e| push(e, TextureFormat::Rgba8Srgb)),
+                push(&set.base_color, TextureFormat::Rgba8Srgb, set.alpha_cutoff),
+                set.normal.as_deref().and_then(|n| push(n, TextureFormat::Rgba8Unorm, 0.0)),
+                push(&set.metallic_roughness, TextureFormat::Rgba8Unorm, 0.0),
+                set.emissive.as_deref().and_then(|e| push(e, TextureFormat::Rgba8Srgb, 0.0)),
             ]
         });
         let preset = model.materials.iter().find(|(n, _)| n == key).map(|(_, p)| p);
@@ -681,7 +708,7 @@ fn procgen_textures(model: &Model, x: &mut Extras) {
                 emissive: slots[3],
                 emissive_color,
                 emissive_strength,
-                alpha_cutoff: 0.0,
+                alpha_cutoff: set.alpha_cutoff,
             },
         );
     }
@@ -874,6 +901,19 @@ pub struct Library {
     /// Bumped whenever a handle's build changes (the GPU cache re-syncs on it).
     generation: u64,
     last_poll: Instant,
+    /// Counts scan plans and noted writes ([`Library::note_written`]). A scan planned before
+    /// `scan_floor` (a newer scan was applied) is dropped; a file noted after a scan's plan
+    /// (`notes`: its path and the note's place in the count) keeps the noted text over what that
+    /// scan read.
+    scan_seq: u64,
+    scan_floor: u64,
+    notes: BTreeMap<PathBuf, u64>,
+    /// How long a re-key may run before the rest waits for [`Library::rekey_more`] (`None`: all
+    /// at once, as tools and tests that answer with the reload need).
+    rekey_slice: Option<Duration>,
+    /// Forgotten recipes a sliced re-key left for the next pass, with their sources' contents
+    /// from before they were forgotten (so their anim sets count as changed only if they did).
+    rekey_left: BTreeMap<String, Option<u64>>,
     workers: Workers,
     pub cache_hits: u64,
     pub cache_misses: u64,
@@ -1035,6 +1075,11 @@ impl Library {
             next_id: 1,
             generation: 0,
             last_poll: Instant::now(),
+            scan_seq: 0,
+            scan_floor: 0,
+            notes: BTreeMap::new(),
+            rekey_slice: None,
+            rekey_left: BTreeMap::new(),
             workers: Workers::start(workers, if workers > 0 { HEAVY_WORKERS } else { 0 }),
             cache_hits: 0,
             cache_misses: 0,
@@ -1520,9 +1565,10 @@ impl Library {
         // The files it includes, transitively; a missing one is left for the build to report.
         let files = &self.folders[folder].files;
         let mut library = BTreeMap::new();
+        let mut includes = BTreeSet::new();
         let mut todo = parsed.includes();
         while let Some(name) = todo.pop() {
-            if library.contains_key(&name) {
+            if !includes.insert(name.clone()) || library.contains_key(&name) {
                 continue;
             }
             let Some(Ok(t)) = files.get(&name).map(|f| &f.text) else { continue };
@@ -1560,6 +1606,7 @@ impl Library {
             heavy,
             text,
             library: Arc::new(library),
+            includes,
             style,
             style_path,
             recipe: parsed,
@@ -1602,27 +1649,7 @@ impl Library {
 
     /// Like [`Library::read_folder`], reusing files from `old` whose modification time is the same.
     fn read_folder_from(&self, rel: &Path, old: Option<&Folder>) -> Option<Folder> {
-        let dir = self.root.join(rel);
-        let entries = std::fs::read_dir(&dir).ok()?;
-        let mut files = BTreeMap::new();
-        for e in entries.flatten() {
-            let path = e.path();
-            if !e.file_type().is_ok_and(|t| t.is_file()) || path.extension().is_none_or(|x| x != "json") {
-                continue;
-            }
-            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
-            if stem == "style" {
-                continue;
-            }
-            let modified = mtime(&path);
-            let reuse = old.and_then(|o| o.files.get(stem)).filter(|f| f.mtime == modified && modified.is_some());
-            let text = match reuse {
-                Some(f) => f.text.clone(),
-                None => std::fs::read_to_string(&path).map(Arc::from).map_err(|e| e.to_string()),
-            };
-            files.insert(stem.to_owned(), SourceFile { text, mtime: modified });
-        }
-        Some(Folder { files, mtime: mtime(&dir) })
+        read_folder_at(&self.root, rel, old)
     }
 
     /// Re-reads one cached folder when it changed; forgets the recipes there whose text changed.
@@ -1698,29 +1725,54 @@ impl Library {
     /// alone, a cached one is taken at once, anything else is queued. `None` when nothing was
     /// checked or nothing changed.
     pub fn poll(&mut self, force: bool) -> Option<Reload> {
-        if !force && self.last_poll.elapsed() < POLL_EVERY {
+        if !force && !self.poll_due() {
             return None;
         }
-        self.last_poll = Instant::now();
-        let mut report = Reload::default();
+        let plan = self.scan_plan();
+        let scanned = plan.run();
+        // Synchronous (model_reload answers with it): every forgotten recipe now, unsliced.
+        let slice = self.rekey_slice.take();
+        let reload = self.apply_scan(scanned, force);
+        self.rekey_slice = slice;
+        reload
+    }
+
+    /// Limits how long one re-key runs ([`REKEY_SLICE`] for the engine's loops); `None`: no limit.
+    pub fn set_rekey_slice(&mut self, slice: Option<Duration>) {
+        self.rekey_slice = slice;
+    }
+
+    /// Recipes a sliced re-key left for later.
+    pub fn rekey_pending(&self) -> usize {
+        self.rekey_left.len()
+    }
+
+    /// Goes on with the recipes a sliced re-key left (each loop pass, before anything else of
+    /// the library's): `None` when nothing was left.
+    pub fn rekey_more(&mut self) -> Option<Reload> {
+        if self.rekey_left.is_empty() {
+            return None;
+        }
         let contents: Vec<Option<u64>> = self.handles.iter().map(|h| h.as_ref().and_then(|h| self.source_content(&h.spec.recipe))).collect();
-        let folders: Vec<PathBuf> = self.folders.keys().cloned().collect();
-        for f in folders {
-            report.files_changed += self.refresh_folder(&f);
-        }
-        // Anim sets and glTF assets that changed (or appeared, or went): their keys are worked out again.
-        let before = self.recipes.len() + self.gltfs.len();
-        self.recipes.retain(|_, r| mtime(&r.anims_path) == r.anims_mtime);
-        self.gltfs.retain(|_, g| std::fs::symlink_metadata(&g.path).ok().is_some_and(|m| m.modified().ok() == g.mtime && m.len() == g.len));
-        report.files_changed += before - self.recipes.len() - self.gltfs.len();
-        let stale_styles: Vec<PathBuf> = self.styles.iter().filter(|(p, s)| mtime(p) != s.mtime).map(|(p, _)| p.clone()).collect();
-        for p in stale_styles {
-            let file = read_style(&p);
-            self.styles.insert(p.clone(), file);
-            self.recipes.retain(|_, r| r.style_path != p);
-            self.failed.clear();
-            report.files_changed += 1;
-        }
+        self.rekey_forgotten(Reload { files_changed: self.rekey_left.len(), ..Reload::default() }, contents, true)
+    }
+
+    /// A periodic poll is due ([`POLL_EVERY`] since the last one started).
+    pub fn poll_due(&self) -> bool {
+        self.last_poll.elapsed() >= POLL_EVERY
+    }
+
+    /// What a poll looks at on disk, from the caches (no disk: under the lock, on the engine
+    /// thread). [`ScanPlan::run`] reads the disk without the lock (on a worker) and
+    /// [`Library::apply_scan`] applies what it found. Scanning a recipe folder of a few dozen
+    /// files on the engine thread took 4-22 ms a poll in the M4 exit run (`stat` per file).
+    pub fn scan_plan(&mut self) -> ScanPlan {
+        self.last_poll = Instant::now();
+        self.scan_seq += 1;
+        let folders = self.folders.iter().map(|(rel, f)| (rel.clone(), f.clone())).collect();
+        let anims: BTreeSet<PathBuf> = self.recipes.values().map(|r| r.anims_path.clone()).collect();
+        let gltfs: BTreeSet<PathBuf> = self.gltfs.values().map(|g| g.path.clone()).collect();
+        let styles = self.styles.iter().map(|(p, s)| (p.clone(), s.mtime)).collect();
         // Folders handles need that weren't there (removed, or not made yet): back now?
         let missing: BTreeSet<PathBuf> = self
             .handles
@@ -1729,30 +1781,242 @@ impl Library {
             .map(|h| Path::new(&h.spec.recipe).parent().unwrap_or(Path::new("")).to_owned())
             .filter(|f| !self.folders.contains_key(f))
             .collect();
-        for f in missing {
-            if !self.folder_inside(&f) {
+        ScanPlan {
+            seq: self.scan_seq,
+            root: self.root.clone(),
+            canonical_root: self.canonical_root.clone(),
+            folders,
+            anims: anims.into_iter().collect(),
+            gltfs: gltfs.into_iter().collect(),
+            styles,
+            missing: missing.into_iter().collect(),
+        }
+    }
+
+    /// Applies a scan ([`ScanPlan::run`]): changed folders, anim sets, glTF files and styles are
+    /// forgotten and their handles' keys worked out again (from the cached texts: no disk but a
+    /// changed recipe's anims file). `force` reports even when nothing changed.
+    pub fn apply_scan(&mut self, scanned: Scanned, force: bool) -> Option<Reload> {
+        // Planned before a newer scan was applied: what it read is older than the cache.
+        if scanned.seq < self.scan_floor {
+            return None;
+        }
+        self.scan_floor = scanned.seq;
+        let plan = scanned.seq;
+        let report = Reload::default();
+        if self.canonical_root.is_none() {
+            self.canonical_root = scanned.canonical_root.clone();
+        }
+        let contents: Vec<Option<u64>> = self.handles.iter().map(|h| h.as_ref().and_then(|h| self.source_content(&h.spec.recipe))).collect();
+        let mut files_changed = 0;
+        let zf = specula_core::profile::zone("models.apply_folders");
+        for (rel, new) in scanned.folders {
+            files_changed += self.replace_folder(&rel, new, plan);
+        }
+        drop(zf);
+        // Anim sets and glTF assets that changed (or appeared, or went): their keys are worked out again.
+        let before = self.recipes.len() + self.gltfs.len();
+        self.recipes.retain(|_, r| scanned.anims.get(&r.anims_path).is_none_or(|m| *m == r.anims_mtime));
+        self.gltfs.retain(|_, g| scanned.gltfs.get(&g.path).is_none_or(|m| *m == Some((g.mtime, g.len))));
+        files_changed += before - self.recipes.len() - self.gltfs.len();
+        for (p, file) in scanned.styles {
+            if self.notes.get(&p).is_some_and(|&n| n > plan) {
+                continue; // the store wrote it after this scan was planned
+            }
+            self.styles.insert(p.clone(), file);
+            self.recipes.retain(|_, r| r.style_path != p);
+            self.failed.clear();
+            files_changed += 1;
+        }
+        let _zm = specula_core::profile::zone("models.apply_missing");
+        for (f, folder) in scanned.missing {
+            if self.folders.contains_key(&f) {
                 continue;
             }
-            if let Some(folder) = self.read_folder(&f) {
-                report.files_changed += folder.files.len().max(1);
-                self.folders.insert(f.clone(), folder);
-                self.recipes.retain(|_, r| r.folder != f);
-                self.failed.retain(|r, _| Path::new(r).parent().unwrap_or(Path::new("")) != f);
-            }
+            files_changed += folder.files.len().max(1);
+            self.folders.insert(f.clone(), folder);
+            self.recipes.retain(|_, r| r.folder != f);
+            self.failed.retain(|r, _| Path::new(r).parent().unwrap_or(Path::new("")) != f);
         }
+        drop(_zm);
+        // Notes this scan saw on the disk (made before it was planned) are settled.
+        self.notes.retain(|_, n| *n > plan);
+        self.rekey_after_poll(Reload { files_changed, ..report }, contents, force)
+    }
+
+    /// Puts a folder a scan re-read in place of the cached one (`None`: it went, or now leads
+    /// outside the root), forgetting the recipes there when any text changed. Returns how many
+    /// files changed.
+    fn replace_folder(&mut self, rel: &Path, new: Option<Folder>, plan: u64) -> usize {
+        let Some(old) = self.folders.remove(rel) else {
+            // Forgotten meanwhile: a resolve reads it again when it needs it.
+            return 0;
+        };
+        // Files the store wrote or deleted after the scan was planned keep the cache's version
+        // (the disk the scan read was older).
+        let noted_after = |stem: &str| self.notes.get(&rel.join(format!("{stem}.json"))).is_some_and(|&n| n > plan);
+        let new = new.map(|mut n| {
+            let stems: BTreeSet<String> = old.files.keys().chain(n.files.keys()).filter(|s| noted_after(s)).cloned().collect();
+            for stem in stems {
+                match old.files.get(&stem) {
+                    Some(f) => {
+                        n.files.insert(stem, f.clone());
+                    }
+                    None => {
+                        n.files.remove(&stem);
+                    }
+                }
+            }
+            n
+        });
+        let Some(n) = new else {
+            // The folder went: everything there is worked out again.
+            self.recipes.retain(|_, r| r.folder != rel);
+            self.failed.retain(|r, _| Path::new(r).parent().unwrap_or(Path::new("")) != rel);
+            return old.files.len().max(1);
+        };
+        let stems: BTreeSet<&String> = old.files.keys().chain(n.files.keys()).collect();
+        let changed: BTreeSet<String> = stems
+            .into_iter()
+            .filter(|s| match (old.files.get(*s), n.files.get(*s)) {
+                (Some(a), Some(b)) => a.text.as_ref().ok() != b.text.as_ref().ok() || a.text.is_err() != b.text.is_err(),
+                _ => true,
+            })
+            .cloned()
+            .collect();
+        self.folders.insert(rel.to_owned(), n);
+        if !changed.is_empty() {
+            // The changed recipes and those including one of them are worked out again (every
+            // recipe of the folder was, 20 ms a scan in the M4 exit's write load). Failures there
+            // are retried.
+            self.recipes.retain(|key, r| {
+                r.folder != rel
+                    || (!Path::new(key).file_stem().and_then(|s| s.to_str()).is_some_and(|s| changed.contains(s)) && !r.includes.iter().any(|i| changed.contains(i)))
+            });
+            self.failed.retain(|r, _| Path::new(r).parent().unwrap_or(Path::new("")) != rel);
+        }
+        changed.len()
+    }
+
+    /// Files the project store just wrote (paths under the assets root, texts): the cached
+    /// recipe folders take the new texts at once, so tools that read recipes right after a
+    /// `project_write` answers see them, with no disk scan on the engine thread. Their times are
+    /// left unknown, so the next scan (on a worker) reads them once. Returns whether a cached text
+    /// changed; then [`Library::rekey`] works the affected handles out again.
+    pub fn note_written(&mut self, files: &[(String, Option<Arc<str>>)]) -> bool {
+        let mut any = false;
+        for (rel, text) in files {
+            let rel = Path::new(rel);
+            if rel.extension().is_none_or(|x| x != "json") {
+                continue;
+            }
+            let Some(stem) = rel.file_stem().and_then(|s| s.to_str()) else { continue };
+            let folder = rel.parent().unwrap_or(Path::new("")).to_owned();
+            if stem == "style" {
+                // A style the store wrote: its recipes are worked out again with it (its time
+                // unknown, so the next scan reads it once).
+                let path = self.root.join(rel);
+                self.scan_seq += 1;
+                self.notes.insert(path.clone(), self.scan_seq);
+                match text {
+                    Some(t) => {
+                        let file = style_file(&path, Ok(t.to_string()), None);
+                        self.styles.insert(path.clone(), file);
+                    }
+                    None => {
+                        self.styles.remove(&path);
+                    }
+                }
+                self.recipes.retain(|_, r| r.style_path != path);
+                self.failed.clear();
+                any = true;
+                continue;
+            }
+            let Some(f) = self.folders.get_mut(&folder) else { continue };
+            match text {
+                Some(text) => {
+                    if f.files.get(stem).is_some_and(|old| old.text.as_ref().ok().is_some_and(|t| **t == **text)) {
+                        continue;
+                    }
+                    f.files.insert(stem.to_owned(), SourceFile { text: Ok(Arc::clone(text)), mtime: None });
+                }
+                // Deleted: gone from the cache at once (a resolve no longer finds it).
+                None => {
+                    if f.files.remove(stem).is_none() {
+                        continue;
+                    }
+                }
+            }
+            // Scans planned before this note keep its text (`replace_folder`).
+            self.scan_seq += 1;
+            self.notes.insert(rel.to_owned(), self.scan_seq);
+            // Only the recipe itself and those including it are worked out again (forgetting the
+            // whole folder re-keyed every recipe there: 10-70 ms a write in the M4 exit's load).
+            self.recipes.retain(|key, r| r.folder != folder || (Path::new(key).file_stem().and_then(|s| s.to_str()) != Some(stem) && !r.includes.contains(stem)));
+            self.failed.retain(|r, _| Path::new(r).parent().unwrap_or(Path::new("")) != folder);
+            any = true;
+        }
+        any
+    }
+
+    /// Works out again the keys of handles whose recipes were forgotten (after
+    /// [`Library::note_written`]): the in-memory half of a poll, with no disk scan.
+    pub fn rekey(&mut self, force: bool) -> Option<Reload> {
+        let contents: Vec<Option<u64>> = self.handles.iter().map(|h| h.as_ref().and_then(|h| self.source_content(&h.spec.recipe))).collect();
+        self.rekey_after_poll(Reload { files_changed: 1, ..Reload::default() }, contents, force)
+    }
+
+    fn rekey_after_poll(&mut self, report: Reload, contents: Vec<Option<u64>>, force: bool) -> Option<Reload> {
         if report.files_changed == 0 && !force {
             return None;
         }
+        self.rekey_forgotten(report, contents, false)
+    }
+
+    /// Works out again the keys of the handles whose recipes are forgotten, and of those an
+    /// earlier slice left (`left_only`: those alone), within the re-key slice: recipes not
+    /// reached are left for [`Library::rekey_more`] (their handles keep drawing their last build
+    /// meanwhile).
+    fn rekey_forgotten(&mut self, mut report: Reload, mut contents: Vec<Option<u64>>, left_only: bool) -> Option<Reload> {
+        let _z = specula_core::profile::zone("models.rekey");
+        let deadline = self.rekey_slice.map(|d| Instant::now() + d);
+        // Recipes left by an earlier slice compare their anim sets with what they were before
+        // they were forgotten.
+        let left = std::mem::take(&mut self.rekey_left);
+        for (h, slot) in self.handles.iter().enumerate() {
+            if let Some(was) = slot.as_ref().and_then(|s| left.get(&s.spec.recipe)) {
+                contents[h] = *was;
+            }
+        }
         // Handles whose recipe was forgotten above get their key worked out again: every handle
         // of it (the first one's key_for makes the recipe known again, so decide up front).
-        let forgotten: BTreeSet<String> = self.handles.iter().flatten().filter(|s| !self.known(&s.spec.recipe)).map(|s| s.spec.recipe.clone()).collect();
+        let forgotten: BTreeSet<String> = self
+            .handles
+            .iter()
+            .flatten()
+            // Left recipes are worked out even if a resolve made them known meanwhile (that
+            // resolve didn't re-key their existing handles).
+            .filter(|s| left.contains_key(&s.spec.recipe) || (!left_only && !self.known(&s.spec.recipe)))
+            .map(|s| s.spec.recipe.clone())
+            .collect();
+        let mut started: BTreeSet<String> = BTreeSet::new();
         for h in 0..self.handles.len() {
             let Some(slot) = &self.handles[h] else { continue };
             if !forgotten.contains(&slot.spec.recipe) {
                 continue;
             }
+            if !started.contains(&slot.spec.recipe) {
+                // Out of time (after at least one recipe): the rest waits for the next pass.
+                if !started.is_empty() && deadline.is_some_and(|d| Instant::now() >= d) {
+                    let was = contents.get(h).copied().flatten();
+                    self.rekey_left.entry(slot.spec.recipe.clone()).or_insert(was);
+                    continue;
+                }
+                started.insert(slot.spec.recipe.clone());
+            }
             let spec = slot.spec.clone();
             let current = self.handles[h].as_ref().and_then(|s| s.built.as_ref().map(|b| b.id));
+            report.handles.insert(h as u32);
             match self.key_for(&spec, false) {
                 Ok(key) => {
                     let unchanged = self.builds.get(&key).is_some_and(|b| Some(b.id) == current);
@@ -1778,9 +2042,13 @@ impl Library {
                 }
             }
         }
-        // Sources whose content changed: graph writes now settle against their new anim sets.
+        // Sources whose content changed: graph writes now settle against their new anim sets
+        // (those left for a later slice, when they are worked out).
         for (h, was) in contents.iter().enumerate() {
             let Some(slot) = &self.handles[h] else { continue };
+            if self.rekey_left.contains_key(&slot.spec.recipe) {
+                continue;
+            }
             if self.source_content(&slot.spec.recipe) != *was {
                 report.anim_handles.insert(h as u32);
             }
@@ -2041,8 +2309,115 @@ impl Library {
     }
 }
 
+/// What a model-library poll looks at on disk ([`Library::scan_plan`]): the cached folders with
+/// their texts and times, the anim-set, glTF and style files the caches know, and the folders
+/// handles need that aren't cached. Run without the library's lock ([`ScanPlan::run`]).
+pub struct ScanPlan {
+    seq: u64,
+    root: PathBuf,
+    canonical_root: Option<PathBuf>,
+    folders: Vec<(PathBuf, Folder)>,
+    anims: Vec<PathBuf>,
+    gltfs: Vec<PathBuf>,
+    styles: Vec<(PathBuf, Option<SystemTime>)>,
+    missing: Vec<PathBuf>,
+}
+
+/// What a scan found ([`Library::apply_scan`] applies it): only what changed.
+#[derive(Default)]
+pub struct Scanned {
+    /// Its plan's place in [`Library`]'s sequence.
+    seq: u64,
+    canonical_root: Option<PathBuf>,
+    /// Folders whose time or files' times changed, read again (`None`: gone, or outside the root).
+    folders: Vec<(PathBuf, Option<Folder>)>,
+    /// Every anim-set file's time now.
+    anims: BTreeMap<PathBuf, Option<SystemTime>>,
+    /// Every glTF file's (time, length) now (`None`: gone).
+    gltfs: BTreeMap<PathBuf, Option<(Option<SystemTime>, u64)>>,
+    /// Styles whose time changed, read again.
+    styles: Vec<(PathBuf, StyleFile)>,
+    /// Folders that weren't cached and exist now (inside the root).
+    missing: Vec<(PathBuf, Folder)>,
+}
+
+impl ScanPlan {
+    /// Reads the disk: `stat`s every cached file, re-reads folders and styles that changed (the
+    /// unchanged texts reused). Holds no lock; meant for a worker thread.
+    pub fn run(self) -> Scanned {
+        let _z = specula_core::profile::zone("models.scan");
+        let canonical_root = self.canonical_root.clone().or_else(|| self.root.canonicalize().ok());
+        let inside = |rel: &Path| canonical_root.as_ref().is_some_and(|root| self.root.join(rel).canonicalize().is_ok_and(|full| full.starts_with(root)));
+        let mut out = Scanned { seq: self.seq, canonical_root: canonical_root.clone(), ..Scanned::default() };
+        for (rel, old) in &self.folders {
+            let dir = self.root.join(rel);
+            let unchanged = mtime(&dir) == old.mtime && old.files.iter().all(|(stem, f)| f.mtime.is_some() && mtime(&dir.join(format!("{stem}.json"))) == f.mtime);
+            if unchanged {
+                continue;
+            }
+            // Re-read only while it still lies inside the root (it may have become a link).
+            let new = if inside(rel) { read_folder_at(&self.root, rel, Some(old)) } else { None };
+            out.folders.push((rel.clone(), new));
+        }
+        for p in self.anims {
+            let m = mtime(&p);
+            out.anims.insert(p, m);
+        }
+        for p in self.gltfs {
+            let meta = std::fs::symlink_metadata(&p).ok().map(|m| (m.modified().ok(), m.len()));
+            out.gltfs.insert(p, meta);
+        }
+        for (p, was) in self.styles {
+            if mtime(&p) != was {
+                let file = read_style(&p);
+                out.styles.push((p, file));
+            }
+        }
+        for f in self.missing {
+            if !inside(&f) {
+                continue;
+            }
+            if let Some(folder) = read_folder_at(&self.root, &f, None) {
+                out.missing.push((f, folder));
+            }
+        }
+        out
+    }
+}
+
+/// The folder's regular `*.json` files under `root` (links are not followed), reusing files from
+/// `old` whose modification time is the same; `None` if it doesn't exist.
+fn read_folder_at(root: &Path, rel: &Path, old: Option<&Folder>) -> Option<Folder> {
+    let dir = root.join(rel);
+    let entries = std::fs::read_dir(&dir).ok()?;
+    let mut files = BTreeMap::new();
+    for e in entries.flatten() {
+        let path = e.path();
+        if !e.file_type().is_ok_and(|t| t.is_file()) || path.extension().is_none_or(|x| x != "json") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+        if stem == "style" {
+            continue;
+        }
+        let modified = mtime(&path);
+        let reuse = old.and_then(|o| o.files.get(stem)).filter(|f| f.mtime == modified && modified.is_some());
+        let text = match reuse {
+            Some(f) => f.text.clone(),
+            None => std::fs::read_to_string(&path).map(Arc::from).map_err(|e| e.to_string()),
+        };
+        files.insert(stem.to_owned(), SourceFile { text, mtime: modified });
+    }
+    Some(Folder { files, mtime: mtime(&dir) })
+}
+
 fn read_style(path: &Path) -> StyleFile {
     let text = if is_regular(path) || path.is_file() { std::fs::read_to_string(path) } else { Err(std::io::ErrorKind::NotFound.into()) };
+    style_file(path, text, mtime(path))
+}
+
+/// A style file from its text (as read, or as the project store wrote it: `mtime` unknown).
+fn style_file(path: &Path, text: std::io::Result<String>, mtime: Option<SystemTime>) -> StyleFile {
     let mut h = StableHasher::with_seed(0x6d6f_6465_6c00_0003);
     let parsed = match &text {
         Ok(t) => {
@@ -2051,7 +2426,7 @@ fn read_style(path: &Path) -> StyleFile {
         }
         Err(e) => Err(RecipeError::new("", ErrorCode::Style, format!("can't read {}: {e}", path.display()))),
     };
-    StyleFile { parsed, mtime: mtime(path), hash: h.finish() }
+    StyleFile { parsed, mtime, hash: h.finish() }
 }
 
 /// Every part's vertices fit in one upload (u32 indices) and every material resolved.
@@ -2545,6 +2920,9 @@ impl AnimFrame {
 /// Uploaded builds and the handle → build map the renderer reads (see the module docs).
 #[derive(Default)]
 pub struct GpuModels {
+    /// With a window: the engine-thread time a sync may spend uploading (the rest go on later
+    /// frames); `None` (headless, tests): everything at once.
+    pub(crate) upload_slice: Option<Duration>,
     pub(crate) uploaded: BTreeMap<u64, GpuModel>,
     /// Handle → build id, as of the last sync.
     pub(crate) by_handle: Vec<Option<u64>>,
@@ -2590,7 +2968,7 @@ impl GpuModels {
         }
         self.synced = Some(key);
         let live = live_handles(world);
-        self.by_handle.clear();
+        let before = std::mem::take(&mut self.by_handle);
         let mut wanted: BTreeMap<u64, Arc<Built>> = BTreeMap::new();
         for &h in &live {
             let Some(b) = lib.built(h) else { continue };
@@ -2601,36 +2979,22 @@ impl GpuModels {
             wanted.insert(b.id, Arc::clone(b));
         }
         drop(lib);
-        let stale: Vec<u64> = self.uploaded.keys().copied().filter(|id| !wanted.contains_key(id) && !self.pinned.contains(id)).collect();
-        let mut released = Vec::new();
-        for id in stale {
-            if let Some(m) = self.uploaded.remove(&id) {
-                for mesh in m.lods.iter().flatten().map(|p| p.mesh) {
-                    gpu.destroy_mesh(mesh);
-                }
-                if !m.textures.is_empty() {
-                    released.push(id);
-                }
-                for t in m.textures {
-                    gpu.destroy_texture(t);
-                }
-            }
-            self.anim.get_mut().pool.remove(&id);
-        }
-        if !released.is_empty() {
-            // Their texture pixels are gone from the CPU too: the library forgets those builds.
-            let mut lib = library.lock();
-            for id in released {
-                lib.forget_build(id);
-            }
-        }
         self.failed.retain(|id, _| wanted.contains_key(id));
         let mut errors = Vec::new();
-        for (id, built) in wanted {
+        // Uploads are queued (copies into the staging arena, recorded for the next frame); a
+        // window frame takes at most `upload_slice` of them (dozens of rebuilt models landing at
+        // once held a window frame 10-20 ms), the rest go on the next frames.
+        let started = Instant::now();
+        let mut left = false;
+        for (&id, built) in &wanted {
             if self.uploaded.contains_key(&id) || self.failed.contains_key(&id) {
                 continue;
             }
-            match upload(gpu, &built) {
+            if self.upload_slice.is_some_and(|slice| started.elapsed() >= slice) {
+                left = true;
+                break;
+            }
+            match upload(gpu, built) {
                 Ok(m) => {
                     self.uploaded.insert(id, m);
                 }
@@ -2646,7 +3010,48 @@ impl GpuModels {
                 }
             }
         }
+        // A handle whose new build isn't uploaded yet keeps drawing its previous one (a rebuild
+        // never blinks out while the slice spreads the uploads); that build stays uploaded.
+        let mut standing = std::collections::BTreeSet::new();
+        for (h, slot) in self.by_handle.iter_mut().enumerate() {
+            let Some(new) = *slot else { continue };
+            if self.uploaded.contains_key(&new) {
+                continue;
+            }
+            if let Some(old) = before.get(h).copied().flatten().filter(|old| self.uploaded.contains_key(old)) {
+                *slot = Some(old);
+                standing.insert(old);
+            }
+        }
+        let stale: Vec<u64> = self.uploaded.keys().copied().filter(|id| !wanted.contains_key(id) && !self.pinned.contains(id) && !standing.contains(id)).collect();
+        let mut released = Vec::new();
+        for id in stale {
+            if let Some(m) = self.uploaded.remove(&id) {
+                // Retired, never waited for: freed once the frames that may draw them finish.
+                for mesh in m.lods.iter().flatten().map(|p| p.mesh) {
+                    gpu.retire_mesh(mesh);
+                }
+                if !m.textures.is_empty() {
+                    released.push(id);
+                }
+                for t in m.textures {
+                    gpu.retire_texture(t);
+                }
+            }
+            self.anim.get_mut().pool.remove(&id);
+        }
+        if !released.is_empty() {
+            // Their texture pixels are gone from the CPU too: the library forgets those builds.
+            let mut lib = library.lock();
+            for id in released {
+                lib.forget_build(id);
+            }
+        }
         self.sync_anim_sets(&library.lock(), world, true);
+        if left {
+            // Sync again next frame for the rest.
+            self.synced = None;
+        }
         errors
     }
 
@@ -3112,6 +3517,10 @@ fn max_axis_scale(world: &Mat4) -> f32 {
     [c[0], c[1], c[2]].iter().map(|v| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()).fold(0.0f32, f32::max)
 }
 
+/// Engine-thread time one window frame's model sync spends uploading builds (at least one a
+/// frame; [`GpuModels::upload_slice`]).
+pub const UPLOAD_SLICE: Duration = Duration::from_millis(3);
+
 /// Why a build could not be uploaded.
 enum UploadError {
     /// Its texture pixels went to the GPU in an earlier upload: import it again.
@@ -3120,14 +3529,16 @@ enum UploadError {
 }
 
 /// One mesh per LOD per material part (with its skin stream when rigged, and UVs when its
-/// material is textured), and the build's textures, once.
+/// material is textured), and the build's textures, once. Queued, never waited for: the copies
+/// go before the next frame on the same queue (a rebuilt model landing in the window used to
+/// upload and free synchronously, waiting for the GPU: frame stalls in the M4 exit run).
 fn upload(gpu: &mut Gpu, built: &Built) -> Result<GpuModel, UploadError> {
     let model = &built.model;
     let mut textures: Vec<TextureId> = Vec::with_capacity(built.textures.len());
     let mut meshes: Vec<MeshId> = Vec::new();
     let undo = |gpu: &mut Gpu, meshes: &[MeshId], textures: &[TextureId]| {
-        meshes.iter().for_each(|m| gpu.destroy_mesh(*m));
-        textures.iter().for_each(|t| gpu.destroy_texture(*t));
+        meshes.iter().for_each(|m| gpu.retire_mesh(*m));
+        textures.iter().for_each(|t| gpu.retire_texture(*t));
     };
     for t in &built.textures {
         // The pixels go to the GPU and leave the CPU (see `TextureData`).
@@ -3137,7 +3548,7 @@ fn upload(gpu: &mut Gpu, built: &Built) -> Result<GpuModel, UploadError> {
             return Err(UploadError::Released);
         }
         let levels: Vec<&[u8]> = data.iter().map(Vec::as_slice).collect();
-        match gpu.upload_texture_levels(t.width, t.height, t.format, &levels, t.sampler) {
+        match gpu.queue_texture_levels(t.width, t.height, t.format, &levels, t.sampler) {
             Ok(id) => textures.push(id),
             Err(e) => {
                 undo(gpu, &meshes, &textures);
@@ -3161,7 +3572,7 @@ fn upload(gpu: &mut Gpu, built: &Built) -> Result<GpuModel, UploadError> {
             }
             let streams = MeshStreams { skin: p.skin.as_deref(), uvs: p.uvs.as_deref(), tangents: p.tangents.as_deref() };
             mesh_bytes += p.bytes();
-            let mesh = match gpu.upload_mesh_with(&p.vertices, &p.indices, &streams) {
+            let mesh = match gpu.queue_mesh(&p.vertices, &p.indices, &streams) {
                 Ok(m) => m,
                 Err(e) => {
                     undo(gpu, &meshes, &textures);
@@ -3173,6 +3584,7 @@ fn upload(gpu: &mut Gpu, built: &Built) -> Result<GpuModel, UploadError> {
                 Some(m) => textured_look(m, &textures),
                 None => part_look(preset, p.mean),
             };
+            let surface = with_wind(surface, model.wind);
             let influence = match (&built.anims, &p.skin) {
                 (Some(set), Some(skin)) => part_influence(&set.skeleton, &p.vertices, skin),
                 _ => Vec::new(),
@@ -3267,6 +3679,14 @@ pub fn part_mesh(m: &MeshData, i: usize, with_uvs: bool) -> PartMesh {
         uvs: with_uvs.then_some(uvs),
         tangents: (with_tangents && tangents.iter().all(|t| t[0] != 0.0 || t[1] != 0.0 || t[2] != 0.0)).then_some(tangents),
     }
+}
+
+/// A part's surface with the recipe's wind term (foliage sways in `world_env {wind}`).
+pub(crate) fn with_wind(mut surface: Surface, wind: Option<specula_model::Wind>) -> Surface {
+    if let Some(w) = wind {
+        surface.wind = specula_gpu::Wind { amount: w.amount, height: w.height, painted: w.painted };
+    }
+    surface
 }
 
 /// A style preset as the engine's material (see the module docs).
@@ -3365,7 +3785,7 @@ mod tests {
 
     fn settle_shared(shared: &SharedLibrary, world: &mut World) {
         let changed = settle(&mut shared.lock());
-        world.refresh_model_handles(&changed);
+        world.refresh_model_handles(&changed, false);
     }
 
     /// Graph anims (A3): parameter writes settle and blend, are checked against the graph, round
@@ -3791,6 +4211,183 @@ mod tests {
         assert!(lib.request(&ModelSpec::new("recipes/late.json")).is_ok(), "the new recipe is found");
         assert!(lib.resolve(&ModelSpec::new("recipes/late.json")).is_ok());
         assert_eq!(lib.request(&ModelSpec::new("recipes/gone.json")).err().map(|e| e.code), Some("recipe_not_found"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The poll split for the engine thread: the plan touches no disk, the scan runs without
+    /// the library, and applying it rebuilds what changed. A project write's text reaches the
+    /// cache at once (`note_written`), and a scan planned before that write still applies but
+    /// never puts the older text (or a deleted recipe) back.
+    #[test]
+    fn scans_run_apart_and_noted_writes_win_over_older_scans() {
+        let root = scratch("scan_split", &[("block", &block(1.0)), ("other", &block(1.25))]);
+        let mut lib = Library::new(&root, None);
+        let spec = ModelSpec::new("recipes/block.json").with_param("tier", 2.0);
+        let r = lib.resolve(&spec).unwrap();
+        let other = lib.resolve(&ModelSpec::new("recipes/other.json")).unwrap();
+        settle(&mut lib);
+        let other_build = lib.built(other.handle).unwrap().id;
+        let first = lib.built(r.handle).unwrap().id;
+        // Nothing changed: a scan finds nothing and applying it reports nothing.
+        let quiet = lib.scan_plan().run();
+        assert!(quiet.folders.is_empty() && quiet.styles.is_empty() && quiet.missing.is_empty());
+        assert!(lib.apply_scan(quiet, false).is_none());
+        // Someone edits the disk (text B) and a scan reads it; before it is applied, the store
+        // writes a newer text (C), which is not on the disk yet.
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(root.join("recipes").join("block.json"), block(1.5)).unwrap();
+        let stale = lib.scan_plan().run();
+        assert_eq!(stale.folders.len(), 1, "the scan saw the edit");
+        let text: Arc<str> = Arc::from(block(2.0).as_str());
+        assert!(lib.note_written(&[("recipes/block.json".to_owned(), Some(Arc::clone(&text)))]));
+        assert!(!lib.note_written(&[("recipes/block.json".to_owned(), Some(Arc::clone(&text)))]), "the same text again changes nothing");
+        assert!(lib.recipes.contains_key("recipes/other.json"), "a recipe that doesn't include the written one is left be");
+        let reload = lib.rekey(true).unwrap();
+        assert_eq!(reload.rebuilding.len() + reload.rebuilt.len(), 1);
+        settle(&mut lib);
+        let second = lib.built(r.handle).unwrap().id;
+        assert_ne!(first, second, "rebuilt from the new text");
+        assert_eq!(lib.built(other.handle).unwrap().id, other_build);
+        // The older scan never puts text B back over C.
+        // (It still applies: whatever else it found lands; the noted file keeps its text.)
+        let _ = lib.apply_scan(stale, true);
+        settle(&mut lib);
+        assert_eq!(lib.built(r.handle).unwrap().id, second, "the noted text stands");
+        assert_eq!(lib.folders[Path::new("recipes")].files["block"].text.as_deref().ok(), Some(&*text));
+        // The store's sync reaches the disk; the next scan reads the file's time, and afterwards
+        // scans are quiet again.
+        std::fs::write(root.join("recipes").join("block.json"), block(2.0)).unwrap();
+        let s = lib.scan_plan().run();
+        let _ = lib.apply_scan(s, false);
+        let quiet = lib.scan_plan().run();
+        assert!(quiet.folders.is_empty(), "times known again");
+        // An older scan never lands after a newer one was applied either.
+        let older = lib.scan_plan();
+        let newer = lib.scan_plan().run();
+        let _ = lib.apply_scan(newer, false);
+        assert!(lib.apply_scan(older.run(), true).is_none());
+        // Write, then delete before any scan confirmed the write: the recipe is gone, and stays
+        // gone whatever scans planned before the delete find.
+        let before_delete = lib.scan_plan();
+        std::fs::write(root.join("recipes").join("late.json"), block(3.0)).unwrap();
+        assert!(lib.note_written(&[("recipes/late.json".to_owned(), Some(Arc::from(block(3.0).as_str())))]));
+        assert!(lib.resolve(&ModelSpec::new("recipes/late.json")).is_ok());
+        std::fs::remove_file(root.join("recipes").join("late.json")).unwrap();
+        assert!(lib.note_written(&[("recipes/late.json".to_owned(), None)]));
+        let _ = lib.apply_scan(before_delete.run(), true);
+        assert!(!lib.folders[Path::new("recipes")].files.contains_key("late"), "a scan planned before the delete doesn't bring it back");
+        let s = lib.scan_plan().run();
+        let _ = lib.apply_scan(s, true);
+        assert!(!lib.folders[Path::new("recipes")].files.contains_key("late"), "the deleted recipe stays gone");
+        assert_eq!(lib.request(&ModelSpec::new("recipes/late.json")).err().map(|e| e.code), Some("recipe_not_found"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Review R1 (major 1): an entity left unresolved (its recipe missing when it was loaded)
+    /// has no handle, so no re-key names it; when its recipe is written (or fixed), the reload
+    /// resolves it again, as `refresh_models` did on every reload before. Also the written-file
+    /// path through a scan (a recipe edited on disk), and a broken recipe fixed in place.
+    #[test]
+    fn unresolved_entities_resolve_when_their_recipe_is_written() {
+        let root = scratch("unresolved_written", &[("block", &block(1.0)), ("broken", "{\"recipe\":")]);
+        let shared = Arc::new(SharedLibrary::new(Library::new(&root, None)));
+        let mut world = World::default();
+        // The entities exist before the library (as after world_load or recover), naming a recipe
+        // that isn't there yet, and one that doesn't parse.
+        let late = world.spawn(SpawnSpec::model(ModelSpec::new("recipes/late.json")), "t").unwrap().id;
+        let late2 = world.spawn(SpawnSpec::model(ModelSpec::new("recipes/late.json")), "t").unwrap().id;
+        let broken = world.spawn(SpawnSpec::model(ModelSpec::new("recipes/broken.json")), "t").unwrap().id;
+        let fine = world.spawn(SpawnSpec::model(ModelSpec::new("recipes/block.json")), "t").unwrap().id;
+        let failed = world.set_model_source(Some(Arc::clone(&shared) as Arc<dyn ModelSource>));
+        assert_eq!(failed.len(), 3, "late twice and broken: {failed:?}");
+        settle_shared(&shared, &mut world);
+        for id in [late, late2, broken] {
+            assert_eq!(world.get(id).unwrap().model_state(), "unresolved");
+        }
+        assert_ne!(world.get(fine).unwrap().model_state(), "unresolved");
+        // A build that finishes (no files changed) leaves the unresolved ones alone (no resolve
+        // per finished build).
+        world.refresh_model_handles(&BTreeSet::new(), false);
+        assert_eq!(world.get(late).unwrap().model_state(), "unresolved");
+        // The store writes the recipe (project_write): noted, re-keyed, the reload applied.
+        let text: Arc<str> = Arc::from(block(2.0).as_str());
+        std::fs::write(root.join("recipes").join("late.json"), &*text).unwrap();
+        let reload = {
+            let mut lib = shared.lock();
+            assert!(lib.note_written(&[("recipes/late.json".to_owned(), Some(text))]));
+            lib.rekey(true).unwrap()
+        };
+        assert!(reload.files_changed > 0);
+        world.refresh_model_handles(&reload.handles, reload.files_changed > 0);
+        settle_shared(&shared, &mut world);
+        for id in [late, late2] {
+            assert_eq!(world.get(id).unwrap().model_state(), "ready", "the written recipe resolves its entities");
+            assert!(world.get(id).unwrap().local_bounds().is_some());
+        }
+        assert_eq!(world.get(late).unwrap().resolved_model().map(|r| r.handle), world.get(late2).unwrap().resolved_model().map(|r| r.handle));
+        assert_eq!(world.get(broken).unwrap().model_state(), "unresolved", "still broken");
+        // The broken recipe is fixed on disk (outside the store): a scan finds it.
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(root.join("recipes").join("broken.json"), block(1.5)).unwrap();
+        let reload = {
+            let mut lib = shared.lock();
+            let s = lib.scan_plan().run();
+            lib.apply_scan(s, true).unwrap()
+        };
+        world.refresh_model_handles(&reload.handles, reload.files_changed > 0);
+        settle_shared(&shared, &mut world);
+        assert_eq!(world.get(broken).unwrap().model_state(), "ready", "the fixed recipe resolves its entity");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Review R1 (minor 4): a re-key on the engine thread runs in slices. With a zero slice each
+    /// call works out one forgotten recipe and leaves the rest for `rekey_more`; meanwhile the
+    /// left handles keep their builds; a left recipe a resolve made known meanwhile is still
+    /// re-keyed; in the end every handle has its new build. The synchronous poll is never
+    /// sliced (model_reload answers with the whole reload).
+    #[test]
+    fn rekeys_run_in_slices_and_finish() {
+        let root = scratch("rekey_slices", &[("a", &block(1.0)), ("b", &block(1.25)), ("c", &block(1.5))]);
+        let mut lib = Library::new(&root, None);
+        let specs = ["a", "b", "c"].map(|n| ModelSpec::new(format!("recipes/{n}.json")));
+        let handles = specs.clone().map(|s| lib.resolve(&s).unwrap().handle);
+        settle(&mut lib);
+        let before = handles.map(|h| lib.built(h).unwrap().id);
+        lib.set_rekey_slice(Some(Duration::ZERO));
+        // A style write forgets all three recipes.
+        let style: Arc<str> = Arc::from(r##"{"style":"t","materials":{"stone":{"color":"#a0a0a0","roughness":0.6},
+                "ghost":{"kind":"glass","color":"#9cff4f","opacity":0.35,"emissive":0.5}}}"##);
+        assert!(lib.note_written(&[(STYLE_FILE.to_owned(), Some(style))]));
+        let first = lib.rekey(true).unwrap();
+        assert_eq!(first.rebuilding.len() + first.rebuilt.len(), 1, "one recipe a zero slice");
+        assert_eq!(lib.rekey_pending(), 2);
+        settle(&mut lib);
+        let built = |lib: &Library| handles.map(|h| lib.built(h).unwrap().id);
+        let changed = built(&lib).iter().zip(&before).filter(|(a, b)| a != b).count();
+        assert_eq!(changed, 1, "the left handles keep their builds meanwhile");
+        // A resolve makes the left "c" known again: it is still re-keyed when its turn comes.
+        assert!(lib.resolve(&specs[2]).is_ok());
+        let second = lib.rekey_more().unwrap();
+        assert_eq!(second.handles.len(), 1);
+        assert_eq!(lib.rekey_pending(), 1);
+        let third = lib.rekey_more().unwrap();
+        assert_eq!(third.handles.len(), 1);
+        assert_eq!(lib.rekey_pending(), 0);
+        assert!(lib.rekey_more().is_none(), "nothing left");
+        settle(&mut lib);
+        let after = built(&lib);
+        assert!(after.iter().zip(&before).all(|(a, b)| a != b), "every handle rebuilt with the new style: {before:?} -> {after:?}");
+        // The synchronous poll works everything out at once, whatever the slice.
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(
+            root.join(STYLE_FILE),
+            r##"{"style":"t","materials":{"stone":{"color":"#606060","roughness":0.5},
+                "ghost":{"kind":"glass","color":"#9cff4f","opacity":0.35,"emissive":0.5}}}"##,
+        )
+        .unwrap();
+        let polled = lib.poll(true).unwrap();
+        assert_eq!(polled.handles.len(), 3, "unsliced: {:?}", polled.handles);
+        assert_eq!(lib.rekey_pending(), 0);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -4294,7 +4891,13 @@ mod tests {
         world.spawn(SpawnSpec::model(stone.clone().with_param("tier", 3.0)), "t").unwrap();
         settle_shared(&shared, &mut world);
         let mut models = GpuModels::default();
-        assert!(models.sync(&mut gpu, &shared, &world, 0).is_empty());
+        // Uploads are sliced over frames (UPLOAD_SLICE): sync until every build is up.
+        for _ in 0..50 {
+            assert!(models.sync(&mut gpu, &shared, &world, 0).is_empty());
+            if models.stats_json().get("builds_uploaded") == Some(&Json::from(2)) {
+                break;
+            }
+        }
         let stats = models.stats_json();
         assert_eq!(stats.get("builds_uploaded"), Some(&Json::from(2)), "three tier-2 stones share one upload");
         let built = Arc::clone(shared.lock().built(world.get(ids[0]).unwrap().resolved_model().unwrap().handle).unwrap());

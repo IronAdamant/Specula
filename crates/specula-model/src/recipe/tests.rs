@@ -405,3 +405,34 @@ fn includes_bind_to_the_including_parts_bones() {
     let m = build(plain, &BuildParams { library: Some(&lib), ..BuildParams::new(&s) }).unwrap();
     assert!(m.rig.is_none() && !m.lods[0].is_skinned());
 }
+
+/// A recipe's `wind`: the model carries it (its height defaulting to the model's), it is part of
+/// the model's identity, and bad values are structured errors at their path.
+#[test]
+fn wind_terms_ride_on_the_model() {
+    let s = style();
+    let plain = build(PILLAR, &BuildParams::new(&s)).unwrap();
+    assert!(plain.wind.is_none());
+    let windy_text = PILLAR.replacen(r#""seed": 5,"#, r#""seed": 5, "wind": { "amount": 0.07 },"#, 1);
+    let windy = build(&windy_text, &BuildParams::new(&s)).unwrap();
+    let w = windy.wind.expect("a wind term");
+    assert_eq!(w.amount, 0.07);
+    assert!(!w.painted);
+    assert!((w.height - windy.bounds.max[1]).abs() < 1e-6, "height defaults to the model's: {} vs {}", w.height, windy.bounds.max[1]);
+    assert_ne!(plain.hash, windy.hash, "wind is part of the model's identity");
+    assert_eq!(plain.lods[0].positions, windy.lods[0].positions, "the mesh itself is the same");
+    let given = build(&PILLAR.replacen(r#""seed": 5,"#, r#""seed": 5, "wind": { "amount": 0.2, "height": 0.5, "painted": true },"#, 1), &BuildParams::new(&s)).unwrap();
+    assert_eq!(given.wind.map(|w| (w.height, w.painted)), Some((0.5, true)));
+    for (bad, path) in [
+        (r#""wind": { "height": 1 }"#, "wind.amount"),
+        (r#""wind": { "amount": 2 }"#, "wind.amount"),
+        (r#""wind": { "amount": 0.1, "height": 9 }"#, "wind.height"),
+        (r#""wind": { "amount": 0.1, "gusty": true }"#, "wind.gusty"),
+        (r#""wind": { "amount": 0.1, "painted": 1 }"#, "wind.painted"),
+        (r#""wind": 3"#, "wind"),
+    ] {
+        let text = PILLAR.replacen(r#""seed": 5,"#, &format!(r#""seed": 5, {bad},"#), 1);
+        let e = build(&text, &BuildParams::new(&s)).unwrap_err();
+        assert_eq!(e.path, path, "{bad}: {e:?}");
+    }
+}

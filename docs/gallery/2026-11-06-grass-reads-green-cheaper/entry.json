@@ -1,0 +1,40 @@
+{
+  "date": "2026-11-06",
+  "time": "10:50",
+  "date_source": "run time",
+  "approximate": false,
+  "milestone": "M5",
+  "commit": "",
+  "subject": "sepulcra",
+  "topic": "game",
+  "title": "Grass reads green, cheaper",
+  "note": "Review R1 fixes on the real grass: each card is one upright quad (6 triangles a tuft; the 4 mm boxes were 72), lit like the ground (normals bent up), the blade texture's root moss instead of near-black, no dashed lines from the texture's wrap or from edge-on cards; grass shadows only within 30 m of the camera. From the game's height (slab) the grass now reads as green tufts, not dark specks. Its own GPU cost in the game, measured in the same run with the grass shown and hidden: about +0.5-0.8 ms of GPU mean on the Intel iGPU (boxes: +3.8 ms p95).",
+  "source": "scripts/grass_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-slab.jpg",
+      "caption": "the slab from 42 m up: green tufts on the rock's edges",
+      "original": "slab.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 15034
+    },
+    {
+      "file": "02-graveyard.jpg",
+      "caption": "the graveyard: cut-out blades on the ground",
+      "original": "graveyard.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 29163
+    },
+    {
+      "file": "03-close.jpg",
+      "caption": "close: upright cards, no dashed tops",
+      "original": "close.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 16828
+    }
+  ]
+}

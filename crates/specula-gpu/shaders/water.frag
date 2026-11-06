@@ -187,10 +187,21 @@ void main() {
     float crust = 0.0;
     if (pattern == PATTERN_ICE) {
         float cell = max(scale * 0.35, 0.05);
-        vec2 w = worley(q / cell);
-        crack = 1.0 - smoothstep(0.0, 0.035, w.y - w.x);
+        // The cells are warped (a domain warp of about a cell), so the network isn't an even
+        // polygon tiling, and the cracks vary in width along their length.
+        vec2 qw = q + (vec2(value_noise2(q / cell * 0.21), value_noise2(q / cell * 0.21 + 17.0)) - 0.5) * cell * 1.4;
+        vec2 w = worley(qw / cell);
+        float width = 0.035 * (0.45 + 1.1 * value_noise2(q / cell * 0.9 + 5.0));
+        crack = 1.0 - smoothstep(0.0, width, w.y - w.x);
         // Cracks thinner than a few pixels fade out (they sparkle into noise far away).
         crack *= clamp((cell / max(fp, 1e-6) - 6.0) / 10.0, 0.0, 1.0);
+        // A finer network in patches (fainter, thinner), fading out sooner with distance.
+        float fine_cell = cell * 0.37;
+        float fine_k = clamp((fine_cell / max(fp, 1e-6) - 6.0) / 10.0, 0.0, 1.0) * smoothstep(0.45, 0.7, value_noise2(q / cell * 0.5 + 9.0));
+        if (fine_k > 0.0) {
+            vec2 w2 = worley(qw / fine_cell + 11.0);
+            crack = max(crack, (1.0 - smoothstep(0.0, width * 0.7, w2.y - w2.x)) * 0.55 * fine_k);
+        }
         slope = vec2(value_noise2(q * 0.7) - 0.5, value_noise2(q * 0.7 + 31.0) - 0.5) * 0.06 * strength;
     } else if (pattern == PATTERN_LAVA) {
         vec2 flow = q / scale + vec2(t * speed * 0.13, t * speed * 0.07);
@@ -234,6 +245,11 @@ void main() {
     // Shallow water still takes its own colour quickly: through clear water a bright floor right
     // under the surface (a bank, a submerged crest) showed as a pale line at a distance.
     body_a = max(body_a, c0.a * 0.45 * smoothstep(0.0, 0.5, depth));
+    // Far away (100 m and more) shallow shelves and submerged crests still showed as thin pale
+    // lines through clear water (TERRAIN.md, known limits): there the shallows take more of their
+    // own colour, over a deeper band (fading in from 40 m, so near water is as it was).
+    float far = smoothstep(40.0, 140.0, eye_dist);
+    body_a = max(body_a, c0.a * mix(0.45, 0.88, far) * smoothstep(0.0, 0.5 + 1.5 * far, depth) * step(0.001, far));
     vec3 body_light = body * (0.35 * diffuse + 0.15 * amb);
     // Shore foam: soft, broken patches in shallow water, never an outline. It fades out with
     // distance: past the terrain's fine rings the floor under the water is coarse triangles, and
@@ -287,6 +303,8 @@ void main() {
             float thick = sky ? 1.0 : smoothstep(0.0, 1.2, depth);
             body_a = max(body_a, mix(0.25, 0.92, thick) * smoothstep(0.0, 0.15, depth));
             body_light = mix(body_light, foam_col * (0.5 * diffuse + 0.3 * amb), crack * 0.22 * thick);
+            // The frost varies in broad, soft patches (not one even sheet).
+            body_light *= mix(0.9, 1.08, value_noise2(q * 0.12 + 3.0));
         }
         c = body_light * body_a * (1.0 - fresnel) + refl * fresnel;
         alpha = body_a + fresnel * (1.0 - body_a);
@@ -309,8 +327,23 @@ void main() {
         }
     }
     if (FOG) {
-        float tr;
-        c = fogged_at(v_world, c, alpha, tr);
+        if (pattern == PATTERN_LAVA) {
+            float tr;
+            c = fogged_at(v_world, c, alpha, tr);
+        } else {
+            // Distance fog leans towards the preset's own hue at the fog's brightness, so a
+            // brown swamp doesn't go the same grey as the fog while blue lakes stay blue from
+            // the sky they mirror (TERRAIN.md, known limits).
+            vec3 d = v_world - camera_pos();
+            float dist = length(d);
+            vec3 dir = d / max(dist, 1e-6);
+            float tr = fog_transmittance(pc.frame, dir, dist, false);
+            vec3 fr = fog_radiance(pc.frame, dir);
+            const vec3 LUM = vec3(0.2126, 0.7152, 0.0722);
+            vec3 hue = shallow * (dot(fr, LUM) / max(dot(shallow, LUM), 1e-4));
+            fr = mix(fr, hue, 0.35);
+            c = c * tr + fr * ((1.0 - tr) * alpha);
+        }
     }
     // SSAO: blended layers keep what they leave visible of the ambient below (the blend), and add
     // none of their own.

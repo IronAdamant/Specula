@@ -205,7 +205,7 @@ point it goes through now. Behaviour is unchanged on every path (same checks, sa
 | module load/reload/unload/disable records | module host | `journal.append_module` in lib.rs | `write_policy::module_event` |
 | review_decide approve with `promote` (and the review screen's Approve) | agent, or the owner at the window as `window:owner` | (M4, new) | `Live::commit`, `Rule::World`, one batch as the decider |
 | review_decide reject with `revert` | agent | (M4, new) | the queue's own refusals (`revert_request`), then `Live::undo` as the decider |
-| model builds landing, recipes reloaded | engine | `refresh_model_handles`, `refresh_models` (derived data, never recorded) | `Live::refresh_model_handles`, `Live::refresh_models` |
+| model builds landing, recipes reloaded | engine | `refresh_model_handles` (derived data, never recorded; after file changes also the unresolved model entities) | `Live::refresh_model_handles` |
 | the clock, shape budgets | engine | `set_clock_s`, `set_shape_limits` (not world state) | `Live::set_clock_s`, `Live::set_shape_limits` |
 
 Project files share the journal: `Change::File` writes (`put_file_raw` inside a command) are checked like entities

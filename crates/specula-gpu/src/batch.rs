@@ -144,18 +144,33 @@ pub struct Plan {
     /// Draws skipped by frustum culling.
     pub culled: u32,
     /// Sort scratch: visible opaque draws as keys, visible blended draws as (distance², index).
-    opaque_keys: Vec<(u32, u32, bool, bool, u32, usize)>,
+    opaque_keys: Vec<OpaqueKey>,
     blended_keys: Vec<(f32, usize)>,
-    /// Opaque batches to order near to far: (skinned, textured, nearest distance² bits, material,
-    /// mesh, first key, keys).
-    opaque_groups: Vec<(bool, bool, u32, u32, u32, usize, usize)>,
+    /// Opaque batches to order near to far: (alpha-cutout, skinned, textured, nearest distance²
+    /// bits, material, mesh, first key, keys).
+    opaque_groups: Vec<OpaqueGroup>,
 }
 
-/// Sort key for opaque draws: material (and so pipeline), mesh, skinned or not, then near to far
-/// (early depth rejection hides what is behind instead of shading it twice), then list position.
-/// `dist2` is non-negative or NaN, so its bits order like its value (NaN last).
-fn opaque_key(material: Material, mesh: MeshId, skinned: bool, textured: bool, dist2: f32, index: usize) -> (u32, u32, bool, bool, u32, usize) {
-    (material as u32, mesh.0, skinned, textured, dist2.to_bits(), index)
+/// An opaque draw's sort key ([`opaque_key`]).
+type OpaqueKey = (bool, u32, u32, bool, bool, u32, usize);
+/// An opaque batch to order: (alpha-cutout, skinned, textured, nearest distance² bits, material,
+/// mesh, first key, keys).
+type OpaqueGroup = (bool, bool, bool, u32, u32, u32, usize, usize);
+
+/// Sort key for opaque draws: alpha-cutout or not, material (and so pipeline), mesh, skinned or
+/// not, then near to far (early depth rejection hides what is behind instead of shading it
+/// twice), then list position. `dist2` is non-negative or NaN, so its bits order like its value
+/// (NaN last).
+fn opaque_key(d: &crate::DrawItem, dist2: f32, index: usize) -> OpaqueKey {
+    (crate::shadow::masked(d), d.material as u32, d.mesh.0, d.skin.is_some(), textured(d), dist2.to_bits(), index)
+}
+
+/// The largest column length of a model matrix: at least the scale the shaders sway a draw's
+/// wind term in (`frame.glsl` `wind_scale`), so culling reaches as far as the sway can.
+fn column_scale(m: &[f32; 16]) -> f32 {
+    let col = |c: usize| (m[c * 4] * m[c * 4] + m[c * 4 + 1] * m[c * 4 + 1] + m[c * 4 + 2] * m[c * 4 + 2]).sqrt();
+    let s = col(0).max(col(1)).max(col(2));
+    if s.is_finite() { s } else { 1.0 }
 }
 
 /// The world-space sphere a draw is culled (and cast as a shadow) with: its own
@@ -164,11 +179,12 @@ fn opaque_key(material: Material, mesh: MeshId, skinned: bool, textured: bool, d
 pub fn draw_sphere(d: &crate::DrawItem, bounds: Bounds) -> ([f32; 3], f32) {
     if let Some(b) = d.bounds {
         if b.iter().all(|v| v.is_finite()) && b[3] >= 0.0 {
-            return ([b[0], b[1], b[2]], b[3]);
+            return ([b[0], b[1], b[2]], b[3] + d.surface.wind.reach() * column_scale(&d.model));
         }
     }
     let (c, r) = world_sphere(&d.model, bounds);
-    (c, if d.skin.is_some() { f32::INFINITY } else { r })
+    // A swaying draw reaches past its mesh by its sway in the strongest wind.
+    (c, if d.skin.is_some() { f32::INFINITY } else { r + d.surface.wind.reach() * column_scale(&d.model) })
 }
 
 /// Cull, order and batch `frame`'s draws. `bounds` gives a mesh's object-space sphere (`None` =
@@ -178,8 +194,10 @@ pub fn draw_sphere(d: &crate::DrawItem, bounds: Bounds) -> ([f32; 3], f32) {
 /// a batch (by bounding-sphere centre), and the batches themselves near to far by their nearest
 /// draw within each pipeline variant (plain, skinned, textured), so hidden surfaces fail the
 /// depth test early instead of being shaded and then covered (on the iGPU most of a busy scene's
-/// fragment cost is that overdraw). Depth testing makes their order irrelevant except for exactly
-/// coplanar overlaps. Then blended draws
+/// fragment cost is that overdraw). Alpha-cutout batches (foliage) come after every other opaque
+/// one: their shader discards, so they can't reject what they cover early, but what covers them
+/// is already in the depth buffer and rejects their fragments before they are shaded. Depth
+/// testing makes their order irrelevant except for exactly coplanar overlaps. Then blended draws
 /// far to near by model origin; glass appears twice, back faces (pass 0) then front faces (pass 1).
 /// Blended draws sharing an origin are nested shells listed outermost first: all their back faces
 /// in list order, then their front faces in reverse, so an inner liquid sits inside its glass.
@@ -221,7 +239,7 @@ pub fn plan_into(frame: &FrameDesc, bounds: impl Fn(MeshId) -> Option<Bounds>, o
             let v = [center[0] - c[0], center[1] - c[1], center[2] - c[2]];
             // `abs` only clears the sign of a NaN, so every NaN sorts last.
             let dist2 = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).abs();
-            opaque.push(opaque_key(d.material, d.mesh, d.skin.is_some(), textured(d), dist2, i));
+            opaque.push(opaque_key(d, dist2, i));
         }
     }
 
@@ -232,13 +250,13 @@ pub fn plan_into(frame: &FrameDesc, bounds: impl Fn(MeshId) -> Option<Bounds>, o
     let mut start = 0;
     while start < opaque.len() {
         let k = opaque[start];
-        let len = opaque[start..].iter().take_while(|o| (o.0, o.1, o.2, o.3) == (k.0, k.1, k.2, k.3)).count();
-        groups.push((k.2, k.3, k.4, k.0, k.1, start, len));
+        let len = opaque[start..].iter().take_while(|o| (o.0, o.1, o.2, o.3, o.4) == (k.0, k.1, k.2, k.3, k.4)).count();
+        groups.push((k.0, k.3, k.4, k.5, k.1, k.2, start, len));
         start += len;
     }
     groups.sort_unstable();
     for g in groups.iter() {
-        entries.extend(opaque[g.5..g.5 + g.6].iter().map(|k| (k.5, 0)));
+        entries.extend(opaque[g.6..g.6 + g.7].iter().map(|k| (k.6, 0)));
     }
     blended.sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1))); // far to near
     for group in blended.chunk_by(|a, b| a.0 == b.0) {
@@ -405,6 +423,27 @@ mod tests {
         assert_eq!(p.entries, vec![(2, 0), (1, 0), (3, 0), (0, 0)]);
         // Three batches, mesh 1's two draws still one instanced call.
         assert_eq!(p.batches.iter().map(|b| (b.mesh.0, b.count)).collect::<Vec<_>>(), vec![(2, 1), (1, 2), (9, 1)]);
+    }
+
+    /// Review R1 (major 2): alpha-cutout batches (foliage) draw after every other opaque batch,
+    /// even when they are nearer, so what covers them rejects their fragments by depth before
+    /// their discarding shader runs.
+    #[test]
+    fn cutout_batches_draw_after_the_opaque_ones() {
+        let mut grass = draw(5, at(0.0, 0.0, -2.0), Material::Lit);
+        grass.surface.textures.base_color = Some(crate::TextureId(1));
+        grass.surface.textures.alpha_cutoff = 0.5;
+        let mut leaf = grass;
+        leaf.model = at(0.0, 0.0, -30.0);
+        // Textured but not cut out: an ordinary opaque draw.
+        let mut tiled = draw(6, at(0.0, 0.0, -25.0), Material::Lit);
+        tiled.surface.textures.base_color = Some(crate::TextureId(2));
+        let draws = [grass, draw(1, at(0.0, 0.0, -20.0), Material::Lit), leaf, tiled, draw(2, at(0.0, 0.0, -40.0), Material::Lit)];
+        let frame = FrameDesc { draws: &draws, view_proj: camera(0.0, true), reverse_z: true, ..Default::default() };
+        let p = plan(&frame, |_| Some(UNIT));
+        assert_eq!(p.entries, vec![(1, 0), (4, 0), (3, 0), (0, 0), (2, 0)]);
+        // The two cutout draws are still one instanced batch.
+        assert_eq!(p.batches.iter().map(|b| (b.mesh.0, b.count)).collect::<Vec<_>>(), vec![(1, 1), (2, 1), (6, 1), (5, 2)]);
     }
 
     #[test]

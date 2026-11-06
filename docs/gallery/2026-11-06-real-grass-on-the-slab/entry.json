@@ -1,0 +1,32 @@
+{
+  "date": "2026-11-06",
+  "time": "05:10",
+  "date_source": "run time",
+  "approximate": false,
+  "milestone": "M5",
+  "commit": "",
+  "subject": "sepulcra",
+  "topic": "game",
+  "title": "Real grass on the slab",
+  "note": "M5: alpha-cutout grass patches (grass_patch: scattered crossed cards of tex_grass_blades) on the graveyard and the rock's edges, swaying in the night's breeze; replaces the flat green moss. Slab view and a close view, Intel iGPU.",
+  "source": "scripts/grass_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-slab.jpg",
+      "caption": "the slab at the game's height",
+      "original": "slab.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 11421
+    },
+    {
+      "file": "02-close.jpg",
+      "caption": "close: blades cut from cards",
+      "original": "close.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 13950
+    }
+  ]
+}
