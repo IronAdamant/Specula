@@ -2682,6 +2682,16 @@ impl World {
         self.entities.get(&id)
     }
 
+    /// The ids carrying `tag`, ascending (the tag index: no walk of the world).
+    pub fn tagged(&self, tag: &str) -> impl Iterator<Item = u64> + '_ {
+        self.tagged.get(tag).into_iter().flat_map(|s| s.iter().copied())
+    }
+
+    /// How many entities carry `tag`.
+    pub fn tagged_count(&self, tag: &str) -> usize {
+        self.tagged.get(tag).map_or(0, BTreeSet::len)
+    }
+
     /// Every entity, by id.
     pub fn entities(&self) -> impl Iterator<Item = &Entity> + '_ {
         self.entities.values()

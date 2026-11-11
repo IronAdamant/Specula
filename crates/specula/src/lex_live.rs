@@ -2604,7 +2604,7 @@ mod tests {
         copy_dir(&repo.join("games").join("ambulo"), &dir);
         let sdk = repo.join("crates").join("specula-sdk");
         let manifest = format!(
-            "[package]\nname = \"ambulo\"\nversion = \"0.1.0\"\nedition = \"2021\"\npublish = false\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nspecula-sdk = {{ path = {:?} }}\n\n[workspace]\n",
+            "[package]\nname = \"ambulo\"\nversion = \"0.1.0\"\nedition = \"2021\"\npublish = false\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[features]\nlinked = []\n\n[dependencies]\nspecula-sdk = {{ path = {:?} }}\n\n[workspace]\n",
             sdk.to_string_lossy().replace('\\', "/")
         );
         std::fs::write(dir.join("Cargo.toml"), manifest).unwrap();

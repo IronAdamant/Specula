@@ -1,0 +1,32 @@
+{
+  "format": "specula.inventarium.v1",
+  "player": "/ambulo/player",
+  "pickup_range_m": 1.6,
+  "defaults": {"slots": 12, "max_weight_g": 20000},
+  "items": {
+    "bone": {
+      "name": {"key": "item.bone.name", "text": "Bone"},
+      "stack": 10, "weight_g": 300, "tags": ["quest"]
+    },
+    "lantern": {
+      "name": {"key": "item.lantern.name", "text": "Iron lantern"},
+      "stack": 1, "weight_g": 1500, "tags": ["tool"]
+    },
+    "lantern_oil": {
+      "name": {"key": "item.lantern_oil.name", "text": "Lantern oil"},
+      "stack": 5, "weight_g": 500, "tags": ["consumable"]
+    },
+    "grave_dust": {
+      "name": {"key": "item.grave_dust.name", "text": "Grave dust"},
+      "stack": 50, "weight_g": 20, "tags": ["reagent"]
+    },
+    "silver_key": {
+      "name": {"key": "item.silver_key.name", "text": "Silver key"},
+      "stack": 1, "weight_g": 50, "tags": ["key", "reward"]
+    },
+    "headstone": {
+      "name": {"key": "item.headstone.name", "text": "Headstone"},
+      "stack": 1, "weight_g": 45000, "tags": ["heavy"]
+    }
+  }
+}

@@ -1,7 +1,10 @@
-"""Live check of the module host (M3 exit proof): one agent builds the example module
+"""Live check of the module host (M3 exit proof): the lead builds the example module
 (games/ambulo) into a running engine and plays its character; another agent edits the module's
-source and rebuilds it while the world keeps running; the character, its state and the module's
-state store survive, and the new code takes over at a tick boundary.
+source and proposes it (a module is native code: only the owner or a granted lead builds one, so a
+builder's logic_build files a proposal); the lead approves it while the world keeps running; the
+character, its state and the module's state store survive, and the new code takes over at a tick
+boundary. A proposal whose folder changed since is refused (sources_changed), and a builder can't
+unload the module.
 
 Also: three agents asking for the same build at once share Cargo runs, a native hook is called
 with a reason, the journal still replays to the live world's hash, and a capture of the character
@@ -65,7 +68,8 @@ def main():
     a = ap.parse_args()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-    args = ["--captures", str(out / "captures")]
+    # Only the owner or a granted lead loads native code (docs/design/MODULES.md, "Who may load a module").
+    args = ["--captures", str(out / "captures"), "--lead", "ambulo-lead", "--lead", "swarm-0", "--lead", "swarm-1", "--lead", "swarm-2"]
     if not a.window:
         args.append("--headless")
     if a.adapter:
@@ -76,7 +80,7 @@ def main():
     try:
         with engine:
             builder, editor = engine.mcp("module-builder"), engine.mcp("module-editor")
-            builder.hello("ambulo-builder")
+            builder.hello("ambulo-lead", role="lead")
             editor.hello("ambulo-editor")
             check("logic_build" in builder.tools(), "the engine lists logic_build")
 
@@ -102,12 +106,26 @@ def main():
             # The physics controller rests a character half its 1 cm skin above the ground.
             check(abs(landed["position"][1]) < 0.006, f"landed (y = {landed['position'][1]})")
 
-            print("editor: WALK_SPEED 4 -> 8, logic_build while the world runs")
+            print("editor: WALK_SPEED 4 -> 8 and proposes it; the lead approves while the world runs")
             builder.json("time_control", action="resume")
             t0 = time.perf_counter()
-            SRC.write_bytes(original.replace(b"const WALK_SPEED: f32 = 4.0;", b"const WALK_SPEED: f32 = 8.0;", 1))
+            edited = original.replace(b"const WALK_SPEED: f32 = 4.0;", b"const WALK_SPEED: f32 = 8.0;", 1)
+            SRC.write_bytes(edited)
             r, err = build(editor)
+            check(err and r.get("error") == "lead_only" and isinstance(r.get("proposal"), dict), f"a builder's logic_build builds nothing: it files a proposal ({str(r)[:200]})")
+            pid = r["proposal"]["id"]
+            u = editor.request("tools/call", {"name": "logic_unload", "arguments": {"module": "ambulo"}})
+            check(u.get("isError") and "lead_only" in json.dumps(u), "a builder can't unload the module")
+            listed = builder.json("logic_status").get("proposals") or []
+            check(any(p.get("id") == pid and p.get("by") == "ambulo-editor" for p in listed), f"the lead sees the proposal ({listed})")
+            SRC.write_bytes(edited + b"\n// changed after the proposal\n")
+            r, err = build(builder, approve=pid)
+            check(err and r.get("error") == "sources_changed", f"a folder changed since the proposal is refused ({r.get('error')})")
+            SRC.write_bytes(edited)
+            r, err = build(builder, approve=pid)
             edit_to_reload_ms = (time.perf_counter() - t0) * 1000
+            check(not err and (r.get("approved") or {}).get("by") == "ambulo-editor", f"the lead approved the proposal ({r.get('error') or r.get('approved')})")
+            summary["proposal"] = {"id": pid, "approved": r.get("approved")}
             check(not err and r["reload"]["event"] == "reload" and r["reload"]["generation"] == 2, "reloaded as generation 2")
             builder.json("time_control", action="pause")
             p2 = player(builder)
@@ -125,9 +143,43 @@ def main():
             summary["reload_engine_ms"] = r["reload"]["timings_ms"]
             print(f"  edit -> reload {edit_to_reload_ms:.0f} ms; timings {r['timings_ms']}; in the engine {r['reload']['timings_ms']}")
 
+            # Review R2 of m5-gmods: sources swapped while the approved build runs, and put back,
+            # hash the same before and after. Whatever the timing, nothing but the proposed
+            # sources may load: the approval is refused (sources_changed) and the module stays.
+            print("editor: proposes WALK_SPEED 7, then swaps the file back and forth while the lead's approved build runs")
+            proposed = original.replace(b"const WALK_SPEED: f32 = 4.0;", b"const WALK_SPEED: f32 = 7.0;", 1)
+            evil = original.replace(b"const WALK_SPEED: f32 = 4.0;", b"const WALK_SPEED: f32 = 99.0;", 1)
+            SRC.write_bytes(proposed)
+            r, err = build(editor)
+            check(err and isinstance(r.get("proposal"), dict), "proposed")
+            pid = r["proposal"]["id"]
+            stop = threading.Event()
+
+            def swap():
+                while not stop.is_set():
+                    SRC.write_bytes(evil)
+                    time.sleep(0.03)
+                    SRC.write_bytes(proposed)
+                    time.sleep(0.03)
+
+            swapper = threading.Thread(target=swap)
+            swapper.start()
+            time.sleep(0.1)
+            r, err = build(builder, approve=pid)
+            stop.set()
+            swapper.join()
+            code = r.get("error") or (r.get("reload_error") or {}).get("error")
+            check(err and code == "sources_changed", f"a swap during the approved build loads nothing ({code}; {str(r)[:160]})")
+            m = builder.json("logic_status", module="ambulo", detailed=True)["modules"][0]
+            check(m["state"].get("loads") == 2, f"the module is the one approved before ({m['state']})")
+            summary["swap_during_build"] = code
+
             print("three agents rebuild at once (WALK_SPEED 8 -> 6)")
+            builds_before = len(builder.json("logic_status")["builds"]["recent"])
             SRC.write_bytes(original.replace(b"const WALK_SPEED: f32 = 4.0;", b"const WALK_SPEED: f32 = 6.0;", 1))
             agents = [engine.mcp(f"module-swarm-{i}") for i in range(3)]
+            for i, ag in enumerate(agents):
+                ag.hello(f"swarm-{i}", role="lead")
             answers = [None] * 3
 
             def go(i):
@@ -141,7 +193,7 @@ def main():
             merged = [ans[0].get("requests_merged") for ans in answers]
             check(all(not e and ans.get("ok") for ans, e in answers), "all three builds answered ok")
             builds = builder.json("logic_status")["builds"]["recent"]
-            runs = len(builds) - 2  # minus the two earlier builds
+            runs = len(builds) - builds_before
             check(runs <= 3, f"{runs} cargo runs for 3 requests (requests_merged per answer: {merged})")
             summary["swarm_rebuild"] = {"requests_merged": merged, "cargo_runs": runs}
             for ag in agents:

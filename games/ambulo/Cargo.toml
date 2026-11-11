@@ -12,7 +12,12 @@ publish = false
 # A module is a cdylib the engine loads (logic_build builds and reloads it). It depends on
 # specula-sdk only, so editing it never recompiles the engine.
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
+
+# The gameplay-module demo's tests link ambulo beside other modules; `linked` leaves out the
+# exported entry point so several modules fit in one test binary (docs/design/GAMEPLAY_MODULES.md).
+[features]
+linked = []
 
 [dependencies]
 specula-sdk = { path = "../../crates/specula-sdk" }

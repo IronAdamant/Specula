@@ -135,6 +135,9 @@ pub enum Site {
     AudioSettings,
     /// text_edit window_focus: pointing the human's keyboard (and clipboard) at a text entity.
     WindowFocus,
+    /// logic_build, logic_reload, logic_unload: native module code runs with the owner's user
+    /// rights, so only the owner or an operator-granted lead loads it (docs/design/MODULES.md).
+    NativeCode,
 }
 
 impl Site {
@@ -145,7 +148,7 @@ impl Site {
             Site::HelloGrantBound => "grant_bound",
             Site::HelloLeadTaken => "lead_taken",
             Site::HelloReservedName => "name_reserved",
-            Site::FrameFloor | Site::StreamSettings | Site::ToolsScope | Site::DiskPrune | Site::WorldSave | Site::GiSettings | Site::GiThreads | Site::AudioSettings | Site::WindowFocus => "lead_only",
+            Site::FrameFloor | Site::StreamSettings | Site::ToolsScope | Site::DiskPrune | Site::WorldSave | Site::GiSettings | Site::GiThreads | Site::AudioSettings | Site::WindowFocus | Site::NativeCode => "lead_only",
             Site::HelloBadName => "name_invalid",
             Site::ForceOverride => "force_needs_lead",
             Site::ReviewDecide | Site::ReviewScreen => "not_reviewer",
@@ -184,6 +187,7 @@ impl Site {
             Site::EditorInput => "editor_input",
             Site::AudioSettings => "audio_settings",
             Site::WindowFocus => "text_edit.window_focus",
+            Site::NativeCode => "logic.native_code",
         }
     }
 }
@@ -214,6 +218,26 @@ pub fn may_force(have: Authority, own: bool, what: &str) -> Result<(), WorldErro
     Err(refusal(Site::ForceOverride, format!("{what}: force on another agent's object needs lead authority (you have {}); ask its owner, or the lead", have.name()))
         .with("authority", have.name())
         .with("needs", Authority::Lead.name()))
+}
+
+/// Native module code (`logic_build`, `logic_reload`, `logic_unload`): a module is a library
+/// the engine loads into its own process, running with the owner's user rights, so it needs the
+/// owner or a lead **the operator granted** (`--lead NAME`, `--owner NAME`). The first-come
+/// fallback lead is not enough: with no grants at all, whoever says lead first would get native
+/// code execution. `granted` is whether the caller's identity holds an operator grant.
+pub fn may_load_native(have: Authority, granted: bool, what: &str) -> Result<(), WorldError> {
+    if have == Authority::Owner || (have >= Authority::Lead && granted) {
+        return Ok(());
+    }
+    let why = if have >= Authority::Lead {
+        "you are this run's fallback lead (the first to say lead), not one the operator granted: start the engine with --lead NAME to load native code"
+    } else {
+        "a module is native code that runs with the owner's user rights"
+    };
+    Err(refusal(Site::NativeCode, format!("{what} needs the owner or an operator-granted lead (--lead NAME): {why}"))
+        .with("authority", have.name())
+        .with("needs", Authority::Lead.name())
+        .with("granted", granted))
 }
 
 /// Characters that show nothing (Unicode format characters and the like): dropped from
@@ -358,6 +382,11 @@ impl Grants {
     /// Whether the identity `key` holds a grant or the fallback lead (never forgotten).
     pub fn holds(&self, key: &str) -> bool {
         self.bound.values().any(|k| k == key) || self.fallback_lead.as_ref().is_some_and(|(_, k)| k == key)
+    }
+
+    /// Whether the identity `key` holds a name the operator granted (never the fallback lead).
+    pub fn granted_key(&self, key: &str) -> bool {
+        self.bound.values().any(|k| k == key)
     }
 
     /// Whether `name` (or a look-alike) is a role word the operator didn't grant as a name.
@@ -642,7 +671,11 @@ pub fn access(tool: &str) -> Option<Access> {
         "playtest_run" | "playtest_report" => Owned(Store::Playtests),
         // world_undo is World: undoing others' entries or over their later changes needs force,
         // and force on another agent's object needs the lead (authority::may_force).
-        "logic_build" | "logic_reload" | "logic_unload" | "logic_hook" => Open("modules are the game's shared code, not an agent's object: any agent may build, reload, unload or hook one, unless another agent claims its root /<module>, which refuses the call (claimed)"),
+        // Native code in the engine's process, with the owner's user rights: the owner or an
+        // operator-granted lead only (may_load_native; the fallback lead isn't enough). A
+        // builder's logic_build files a proposal the lead approves (docs/design/MODULES.md).
+        "logic_build" | "logic_reload" | "logic_unload" => Lead,
+        "logic_hook" => Open("calls a hook of a module the owner or a granted lead loaded; its changes are checked against other agents' claims as the caller's, and every use is logged with its reason"),
         "lex_session" => Owned(Store::LexRuns),
         "project_upload" => Owned(Store::Uploads),
         "tools_request" => Owned(Store::Board),

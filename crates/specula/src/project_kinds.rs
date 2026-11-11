@@ -570,10 +570,10 @@ mod tests {
         let moved = ambulo.replace(sdk, "specula-sdk = { path = \"../../crates/specula-core\" }");
         assert!(check_module_manifest_at(&dir, "m", &moved).iter().any(|p| p.at == "dependencies.specula-sdk.path"), "the path must lead to the SDK");
         assert!(check_module_manifest_at(&dir, "m", &ambulo).is_empty());
-        assert!(codes(&ambulo.replace("crate-type = [\"cdylib\"]", "crate-type = [\"cdylib\"]\npath = \"../../crates/specula/src/lib.rs\"")).contains(&"source_path".to_owned()));
-        assert!(codes(&ambulo.replace("crate-type = [\"cdylib\"]", "crate-type = [\"cdylib\"]\npath = \"src/lib.rs\"")).is_empty());
+        assert!(codes(&ambulo.replace("crate-type = [\"cdylib\", \"rlib\"]", "crate-type = [\"cdylib\", \"rlib\"]\npath = \"../../crates/specula/src/lib.rs\"")).contains(&"source_path".to_owned()));
+        assert!(codes(&ambulo.replace("crate-type = [\"cdylib\", \"rlib\"]", "crate-type = [\"cdylib\", \"rlib\"]\npath = \"src/lib.rs\"")).is_empty());
         assert!(codes(&format!("{ambulo}[build_dependencies]\n")).contains(&"not_allowed".to_owned()));
-        assert!(codes(&ambulo.replace("crate-type = [\"cdylib\"]", "crate-type = [\"cdylib\"]\nproc_macro = true")).contains(&"build_script".to_owned()));
+        assert!(codes(&ambulo.replace("crate-type = [\"cdylib\", \"rlib\"]", "crate-type = [\"cdylib\", \"rlib\"]\nproc_macro = true")).contains(&"build_script".to_owned()));
         // .rs commits: compile-time paths stay in the module's folder.
         assert!(validate("modules/ambulo/src/lib.rs", FileKind::Rust, "const X: &str = include_str!(\"C:/Windows/win.ini\");", None, &[]).iter().any(|p| p.code == "source_path"));
         assert!(validate("modules/ambulo/src/lib.rs", FileKind::Rust, "#[path = \"../../../crates/specula/src/lib.rs\"]\nmod e;", None, &[]).iter().any(|p| p.code == "source_path"));

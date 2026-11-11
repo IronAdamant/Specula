@@ -36,6 +36,7 @@ const PLAYER: &str = "/ambulo/player";
 #[derive(Default)]
 pub struct Ambulo;
 
+#[cfg(not(feature = "linked"))]
 specula_sdk::export_module!(Ambulo);
 
 impl Module for Ambulo {

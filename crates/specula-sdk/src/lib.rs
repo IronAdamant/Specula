@@ -60,6 +60,10 @@ pub use specula_core::dmath;
 pub use specula_core::math::{Quat, Vec3};
 pub use value::Value;
 
+/// Most sounds one module call may ask for ([`Cx::sound`]); a module that plays several per
+/// call budgets for it before it changes anything.
+pub const MAX_SOUNDS_PER_CALL: usize = 16;
+
 /// `[a-z][a-z0-9_]{0,max-1}`: module and hook names.
 pub fn valid_name(s: &str, max: usize) -> bool {
     let b = s.as_bytes();

@@ -31,6 +31,7 @@
 pub mod character;
 mod handler;
 pub mod input;
+pub mod proposals;
 mod save;
 pub use save::LogicSnapshot;
 pub mod tools;
@@ -152,6 +153,25 @@ pub(crate) struct LogLine {
     pub module: String,
     pub message: String,
 }
+
+/// A sound a module asked for ([`specula_sdk::Cx::sound`]): presentation only, played by the
+/// engine after the call commits (`crate::module_sounds`). Never part of the simulation's state:
+/// not hashed, not saved, never delivered to modules.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoundCue {
+    pub module: String,
+    /// `[a-z][a-z0-9_]{0,63}`: a recipe `sounds/<name>.json`.
+    pub name: String,
+    /// World position (spatial), or flat.
+    pub at: Option<[f32; 3]>,
+    /// 0..4.
+    pub gain: f32,
+    pub tick: u64,
+}
+
+/// Sounds asked for and not yet taken by the engine: at most this many (more are dropped and
+/// counted; a sound is presentation, so dropping one never changes a run).
+pub const MAX_PENDING_SOUNDS: usize = 64;
 
 /// What the engine keeps for a module across reloads (and unloads, unless forgotten).
 #[derive(Clone, Default)]
@@ -285,6 +305,7 @@ pub(crate) enum CallError {
 struct Done {
     reply: Value,
     events: Vec<EventRec>,
+    sounds: Vec<SoundCue>,
     state_undo: Vec<(String, Option<Value>)>,
     rng_undo: Vec<(String, Option<Rng>)>,
 }
@@ -324,6 +345,7 @@ fn invoke(code: &ModuleCode, name: &str, parts: CallParts<'_>, call: u32, input:
         mover: parts.mover,
         events: Vec::new(),
         pending_events: parts.pending_events,
+        sounds: Vec::new(),
         log: parts.log,
         state_undo: Vec::new(),
         rng_undo: Vec::new(),
@@ -337,7 +359,7 @@ fn invoke(code: &ModuleCode, name: &str, parts: CallParts<'_>, call: u32, input:
         parts.fp.note(tick, &agent, d);
     }
     if out.ok() {
-        Ok(Done { reply: out.reply, events: h.events, state_undo: h.state_undo, rng_undo: h.rng_undo })
+        Ok(Done { reply: out.reply, events: h.events, sounds: h.sounds, state_undo: h.state_undo, rng_undo: h.rng_undo })
     } else {
         undo_shared(h.shared, std::mem::take(&mut h.state_undo), std::mem::take(&mut h.rng_undo));
         world.rollback_to(mark);
@@ -348,6 +370,7 @@ fn invoke(code: &ModuleCode, name: &str, parts: CallParts<'_>, call: u32, input:
 /// Staged hook calls: the events queued before them, and each call's state and RNG undo.
 struct Staged {
     events_at: usize,
+    sounds_at: usize,
     undo: Vec<(String, Done)>,
 }
 
@@ -378,6 +401,12 @@ pub struct LogicHost {
     module_events: Vec<ModuleEvent>,
     /// Floating-point environment changes found around module calls (and restored).
     fp: FpLog,
+    /// Sounds committed calls asked for, for the engine to play ([`LogicHost::take_sounds`]).
+    sounds: Vec<SoundCue>,
+    /// Sounds dropped because [`MAX_PENDING_SOUNDS`] were waiting.
+    sounds_dropped: u64,
+    /// Builders' modules waiting for the owner or a granted lead ([`proposals`]).
+    pub(crate) proposals: proposals::Proposals,
 }
 
 impl Default for LogicHost {
@@ -398,6 +427,9 @@ impl Default for LogicHost {
             hash_scratch: Vec::new(),
             module_events: Vec::new(),
             fp: FpLog::default(),
+            sounds: Vec::new(),
+            sounds_dropped: 0,
+            proposals: proposals::Proposals::default(),
         }
     }
 }
@@ -554,6 +586,34 @@ impl LogicHost {
         std::mem::take(&mut self.module_events)
     }
 
+    /// Queues committed calls' sounds (past [`MAX_PENDING_SOUNDS`] waiting, the rest are dropped
+    /// and counted).
+    fn queue_sounds(&mut self, sounds: Vec<SoundCue>) {
+        for s in sounds {
+            if self.sounds.len() >= MAX_PENDING_SOUNDS {
+                self.sounds_dropped += 1;
+            } else {
+                self.sounds.push(s);
+            }
+        }
+    }
+
+    /// The sounds committed module calls asked for since the last take, oldest first, for the
+    /// engine to play (`crate::module_sounds`). Presentation only: taking them changes nothing
+    /// a module can see.
+    pub fn take_sounds(&mut self) -> Vec<SoundCue> {
+        if self.staged.is_some() {
+            // A caller may still refuse the staged calls: their sounds wait for its answer.
+            return Vec::new();
+        }
+        std::mem::take(&mut self.sounds)
+    }
+
+    /// Sounds dropped because too many were waiting.
+    pub fn sounds_dropped(&self) -> u64 {
+        self.sounds_dropped
+    }
+
     /// The loaded modules' builds, by name (for replay files: a replay expects the same code).
     pub fn builds(&self) -> Vec<(String, u64)> {
         self.slots.iter().map(|(n, s)| (n.clone(), s.code.build_hash())).collect()
@@ -588,6 +648,7 @@ impl LogicHost {
             Ok(mut done) => match commit(world, mark, &agent, phase) {
                 Ok(()) => {
                     self.pending_events.extend(std::mem::take(&mut done.events));
+                    self.queue_sounds(std::mem::take(&mut done.sounds));
                     let reply = std::mem::replace(&mut done.reply, Value::Null);
                     if let Some(s) = &mut self.staged {
                         s.undo.push((name.to_owned(), done));
@@ -651,13 +712,17 @@ impl LogicHost {
         let mark = world.mark();
         let saved = self.shared.get(&name).cloned();
         let mut events = Vec::new();
+        let mut sounds = Vec::new();
         // 1. The old build stops (a disabled one isn't called again).
         let mut stop_error = None;
         if let Some(old) = self.slots.get(&name).filter(|s| s.disabled.is_none()) {
             let stop = Value::map().with("tick", tick).with("tick_hz", tick_hz).with("reason", "reload");
             let parts = Self::parts(&mut self.shared, &mut self.mover, &mut self.log, &mut self.fp, self.pending_events.len(), &name);
             match invoke(&old.code, &name, parts, entry::STOP, &stop, world, tick, "stop") {
-                Ok(done) => events.extend(done.events),
+                Ok(done) => {
+                    events.extend(done.events);
+                    sounds.extend(done.sounds);
+                }
                 Err(f) => stop_error = Some(f.json),
             }
         }
@@ -694,6 +759,7 @@ impl LogicHost {
             ),
             Ok(done) => {
                 events.extend(done.events);
+                sounds.extend(done.sounds);
                 commit(world, mark, &agent, Phase::Start).err()
             }
         };
@@ -708,6 +774,7 @@ impl LogicHost {
             return Err(e.with("module", name.as_str()));
         }
         self.pending_events.extend(events);
+        self.queue_sounds(sounds);
         let mut previous_build = None;
         if let Some(old) = self.slots.remove(&name) {
             previous_build = Some(old.code.build_hash());
@@ -973,7 +1040,7 @@ impl LogicHost {
     /// [`LogicHost::drop_staged`], each successful call's state, RNG draws and events can still
     /// be taken back (the caller rolls the world back itself).
     pub fn stage(&mut self) {
-        self.staged = Some(Staged { events_at: self.pending_events.len(), undo: Vec::new() });
+        self.staged = Some(Staged { events_at: self.pending_events.len(), sounds_at: self.sounds.len(), undo: Vec::new() });
     }
 
     /// A module's state store and RNG streams, and the events queued (tests).
@@ -998,6 +1065,7 @@ impl LogicHost {
             }
         }
         self.pending_events.truncate(s.events_at);
+        self.sounds.truncate(s.sounds_at);
     }
 
     /// Calls native hook `hook` (`module/name`) with `args`, for `caller` (an agent, or `lex`)
@@ -1158,6 +1226,7 @@ impl LogicHost {
             ("log", log),
             ("events", events),
             ("events_pending", Json::from(self.pending_events.len())),
+            ("sounds_dropped", Json::from(self.sounds_dropped)),
             ("hook_uses", hook_uses),
             ("hook_counts", Json::obj(self.hook_counts.iter().filter(|(h, _)| keep(h.split('/').next().unwrap_or_default())).map(|(h, c)| (h.as_str(), Json::from(*c))))),
         ]))

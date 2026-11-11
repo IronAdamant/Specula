@@ -10,6 +10,62 @@ dependencies = [
 ]
 
 [[package]]
+name = "colloquium"
+version = "0.1.0"
+dependencies = [
+ "specula",
+ "specula-core",
+ "specula-logic",
+ "specula-sdk",
+]
+
+[[package]]
+name = "exemplum"
+version = "0.1.0"
+dependencies = [
+ "ambulo",
+ "colloquium",
+ "facultas",
+ "inventarium",
+ "quaestio",
+ "specula",
+ "specula-audio",
+ "specula-core",
+ "specula-logic",
+ "specula-sdk",
+]
+
+[[package]]
+name = "facultas"
+version = "0.1.0"
+dependencies = [
+ "specula",
+ "specula-core",
+ "specula-logic",
+ "specula-sdk",
+]
+
+[[package]]
+name = "inventarium"
+version = "0.1.0"
+dependencies = [
+ "specula",
+ "specula-core",
+ "specula-logic",
+ "specula-sdk",
+]
+
+[[package]]
+name = "quaestio"
+version = "0.1.0"
+dependencies = [
+ "specula",
+ "specula-core",
+ "specula-logic",
+ "specula-sdk",
+]
+
+[[package]]
 name = "sepulcra"
 version = "0.1.0"
 dependencies = [

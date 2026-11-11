@@ -43,6 +43,7 @@ pub mod intents;
 pub mod journal;
 pub mod leases;
 pub mod logic;
+pub mod module_sounds;
 mod lex_live;
 /// Live Lex runs' work limits (perf.toml `[lex_live]`), for games that size their sets to them.
 pub use lex_live::{Limits as LexLiveLimits, LIMITS as LEX_LIVE_LIMITS};
@@ -499,6 +500,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     engine.stream = streaming::Streamer::new(perf_cfg.streaming.clone(), kind);
     engine.vfx.budget = perf_cfg.vfx.budget(kind);
     engine.vfx.enabled = args.vfx;
+    engine.module_sounds.set_audio(Arc::clone(&audio));
     // Baked GI files live with the pipeline cache, by hash (the world keeps only the hash).
     engine.gi.store.dir = cache_dir.join("gi");
     // The iGPU samples GI per draw by default (its budget); other adapters per pixel.
@@ -860,6 +862,8 @@ struct Engine {
     input: Vec<Event>,
     /// Where the window's keyboard types (a text entity; see text_world).
     text_typing: text_window::WindowTyping,
+    /// Sounds modules ask for (presentation only; docs/design/GAMEPLAY_MODULES.md).
+    module_sounds: module_sounds::ModuleSounds,
     /// A window title set by the game.
     game_title: Option<String>,
     /// The game's interface quads for the window frame (reused).
@@ -1013,6 +1017,7 @@ impl Engine {
         let meshes = ShapeMeshes::upload(&mut gpu).map_err(|e| format!("mesh upload: {e}"))?;
         let two_d = two_d::TwoDGpu::new(library.root());
         let vfx = vfx::Vfx::new(library.root());
+        let assets_root = library.root().to_path_buf();
         let started = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let capture_dir = captures_root.join(format!("run-{started}-{}", std::process::id()));
         let luts = luts::Luts::new(library.root());
@@ -1080,6 +1085,7 @@ impl Engine {
             last_advance: Instant::now(),
             input: Vec::new(),
             text_typing: Default::default(),
+            module_sounds: module_sounds::ModuleSounds::new(&assets_root),
             game_title: None,
             game_quads: Vec::new(),
             game_overlay_stats: (0, 0),
@@ -1412,6 +1418,8 @@ impl Engine {
             self.serve_game_requests();
             self.serve_game_timelines();
         }
+        // Sounds the ticks' (and agents' hook calls') module calls asked for: presentation only.
+        self.play_module_sounds();
     }
 
     /// The game's per-frame update: input, camera, title.
@@ -3328,6 +3336,7 @@ impl Engine {
         }
         if !self.logic.is_empty() {
             info.set("modules", self.logic.summary());
+            info.set("module_sounds", self.module_sounds.to_json());
         }
         if let Some(game) = &self.game {
             info.set("game", Json::obj([("name", Json::from(self.game_name.as_str())), ("status", game.status())]));

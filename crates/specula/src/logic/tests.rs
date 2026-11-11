@@ -456,8 +456,11 @@ fn claims_guard_module_loads_unloads_and_hooks() {
     let (so, si) = (session("owner0001"), session("intrud002"));
     let live = vec![so.clone(), si.clone()];
     let mut swarm = Swarm::default();
-    swarm.hello(&so, "modder".into(), "builder".into(), None, &live).unwrap();
-    swarm.hello(&si, "intruder".into(), "builder".into(), None, &live).unwrap();
+    // Loading native code needs a granted lead (both are, so the claim is what refuses below).
+    swarm.grants.grant("modder", crate::authority::Authority::Lead).unwrap();
+    swarm.grants.grant("intruder", crate::authority::Authority::Lead).unwrap();
+    swarm.hello(&so, "modder".into(), "lead".into(), None, &live).unwrap();
+    swarm.hello(&si, "intruder".into(), "lead".into(), None, &live).unwrap();
     let e = swarm.hello(&session("sneaky03"), "module:walker2".into(), "builder".into(), None, &live).unwrap_err();
     assert!(matches!(e.code, "name_reserved" | "name_invalid"), "the whole module: prefix is refused, loaded or not");
     let (ko, ki) = (swarm.key(&so), swarm.key(&si));
@@ -693,4 +696,80 @@ fn a_module_that_changes_the_rounding_mode_is_restored_and_reported() {
     })
     .join()
     .expect("test thread");
+}
+
+/// Review of the gmods lane (lead direction 1): loading, replacing and unloading a module is
+/// native code with the owner's user rights, so a builder, and the first-come fallback lead, are
+/// refused (lead_only) on the engine thread itself, whatever the caller thread checked; a lead
+/// the operator granted, and the owner, may. A builder's build becomes a proposal that the lead
+/// approves only while the folder still has the proposed digest.
+#[test]
+fn only_the_owner_or_a_granted_lead_loads_native_code() {
+    use crate::journal::Writer;
+    use crate::swarm::Swarm;
+    use specula_protocol::{Content, SessionInfo, ToolOutput};
+    let session = |id: &str| SessionInfo { id: id.into(), client_name: "t".into(), client_version: "1".into(), protocol_version: "x".into() };
+    let text = |o: &ToolOutput| match &o.content[0] {
+        Content::Text(t) => t.clone(),
+        _ => String::new(),
+    };
+    let code = |o: &ToolOutput| Json::parse(&text(o)).ok().and_then(|j| j.get("error").and_then(Json::as_str).map(str::to_owned)).unwrap_or_default();
+    let load = || tools::LogicCall::Load { code: ModuleCode::of::<WalkerV1>(), origin: Origin::default(), seed: None, open_ms: 0.0 };
+    let clock = crate::game::Clock::new(30);
+    let mut world = World::default();
+    world.set_recording(Recording::Full);
+
+    // No grants at all: the first lead hello is the fallback lead, which isn't enough.
+    let mut open = Swarm::default();
+    let (sf, sb) = (session("fallb001"), session("build002"));
+    let live = vec![sf.clone(), sb.clone()];
+    open.hello(&sf, "first".into(), "lead".into(), None, &live).unwrap();
+    open.hello(&sb, "ann".into(), "builder".into(), None, &live).unwrap();
+    let (kf, kb) = (open.key(&sf), open.key(&sb));
+    let mut host = LogicHost::new();
+    for (who, key) in [("first", &kf), ("ann", &kb)] {
+        let out = tools::handle(&mut host, load(), &mut world, &clock, &mut open, Writer::new(who, Some(key)));
+        assert!(out.is_error && code(&out) == "lead_only", "{who}: {}", text(&out));
+        assert!(text(&out).contains("logic.native_code"), "refused_at names the site: {}", text(&out));
+        let gate = tools::handle(&mut host, tools::LogicCall::Gate(tools::Doing::Reload), &mut world, &clock, &mut open, Writer::new(who, Some(key)));
+        assert_eq!(code(&gate), "lead_only", "{who} can't load a library either");
+    }
+    assert!(host.modules().is_empty(), "nothing loaded");
+
+    // A granted lead loads; a builder can't unload it, nor replace it.
+    let mut sw = Swarm::default();
+    sw.grants.grant("lee", crate::authority::Authority::Lead).unwrap();
+    let (sl, sa) = (session("lead0001"), session("ann00002"));
+    let live = vec![sl.clone(), sa.clone()];
+    sw.hello(&sl, "lee".into(), "lead".into(), None, &live).unwrap();
+    sw.hello(&sa, "ann".into(), "builder".into(), None, &live).unwrap();
+    let (kl, ka) = (sw.key(&sl), sw.key(&sa));
+    let (lee, ann) = (Writer::new("lee", Some(&kl)), Writer::new("ann", Some(&ka)));
+    let out = tools::handle(&mut host, load(), &mut world, &clock, &mut sw, lee);
+    assert!(!out.is_error, "{}", text(&out));
+    let out = tools::handle(&mut host, tools::LogicCall::Unload { module: "walker".into(), forget: false }, &mut world, &clock, &mut sw, ann);
+    assert_eq!(code(&out), "lead_only", "{}", text(&out));
+    assert_eq!(host.modules(), vec!["walker".to_owned()], "still loaded");
+
+    // ann proposes a module: nothing builds; lee approves it only with the proposed digest.
+    let digest = |hex: &str| Ok(specula_logic::digest::Digest { hex: hex.into(), files: 3, bytes: 99 });
+    let dir = std::path::PathBuf::from("games/anns");
+    let build = |digest, approve| tools::LogicCall::Gate(tools::Doing::Build { dir: dir.clone(), digest, approve });
+    let out = tools::handle(&mut host, build(digest("aa"), None), &mut world, &clock, &mut sw, ann);
+    assert_eq!(code(&out), "lead_only", "{}", text(&out));
+    let answer = Json::parse(&text(&out)).unwrap();
+    let id = answer.get("proposal").and_then(|p| p.get("id")).and_then(Json::as_u64).expect("the refusal carries the proposal");
+    assert!(answer.get("next").is_some(), "and says what happens next");
+    let out = tools::handle(&mut host, build(digest("aa"), Some(id)), &mut world, &clock, &mut sw, ann);
+    assert_eq!(code(&out), "lead_only", "ann can't approve her own proposal");
+    let out = tools::handle(&mut host, build(digest("bb"), Some(id)), &mut world, &clock, &mut sw, lee);
+    assert_eq!(code(&out), "sources_changed", "the folder changed since the proposal: {}", text(&out));
+    let out = tools::handle(&mut host, build(digest("aa"), Some(id)), &mut world, &clock, &mut sw, lee);
+    assert!(!out.is_error, "{}", text(&out));
+    assert_eq!(Json::parse(&text(&out)).unwrap().get("approved").and_then(|a| a.get("by")).and_then(Json::as_str), Some("ann"));
+    assert_eq!(host.proposals.len(), 0, "approved proposals are taken");
+    // A builder whose folder can't be digested gets no proposal, and says why.
+    let out = tools::handle(&mut host, build(Err(("too_big", "too many files".into())), None), &mut world, &clock, &mut sw, ann);
+    assert!(code(&out) == "lead_only" && text(&out).contains("proposal_refused"), "{}", text(&out));
+    assert_eq!(host.proposals.len(), 0);
 }

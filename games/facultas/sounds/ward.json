@@ -1,0 +1,21 @@
+{
+  "sound": 1,
+  "name": "ward",
+  "notes": "Grave ward: a low hum that swells under two soft bells.",
+  "bus": "sfx",
+  "seed": 312,
+  "duration": 1.4,
+  "loudness": -22,
+  "layers": [
+    { "name": "hum", "source": { "wave": "triangle", "freq": 196 },
+      "vibrato": { "rate": 4, "depth": 0.15 },
+      "env": { "attack": 0.25, "decay": 0.9, "sustain": 0 } },
+    { "name": "bell_a", "at": 0.1, "gain_db": -6,
+      "source": { "wave": "sine", "freq": 783.99, "partials": [[1, 1, 0.5], [2.76, 0.25, 0.2]] },
+      "env": { "attack": 0.002, "decay": 0.9, "sustain": 0 } },
+    { "name": "bell_b", "at": 0.28, "gain_db": -8,
+      "source": { "wave": "sine", "freq": 1174.66, "partials": [[1, 1, 0.5], [2.76, 0.25, 0.2]] },
+      "env": { "attack": 0.002, "decay": 0.8, "sustain": 0 } }
+  ],
+  "fx": [ { "type": "reverb", "room": 0.7, "damp": 0.5, "mix": 0.3 } ]
+}

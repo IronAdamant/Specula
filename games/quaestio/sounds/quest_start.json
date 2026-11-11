@@ -1,0 +1,16 @@
+{
+  "sound": 1,
+  "name": "quest_start",
+  "notes": "A quest taken: two low bells a fourth apart, solemn.",
+  "bus": "ui",
+  "seed": 331,
+  "duration": 1.2,
+  "loudness": -24,
+  "layers": [
+    { "name": "low", "source": { "wave": "sine", "freq": 392, "partials": [[1, 1, 0.5], [2.76, 0.25, 0.25]] },
+      "env": { "attack": 0.002, "decay": 0.9, "sustain": 0 } },
+    { "name": "high", "at": 0.18, "source": { "wave": "sine", "freq": 523.25, "partials": [[1, 1, 0.5], [2.76, 0.25, 0.25]] },
+      "env": { "attack": 0.002, "decay": 0.9, "sustain": 0 } }
+  ],
+  "fx": [ { "type": "reverb", "room": 0.7, "damp": 0.5, "mix": 0.25 } ]
+}

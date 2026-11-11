@@ -746,6 +746,8 @@ class Ctx:
     def __init__(self, url, workdir, transcript, allowed, deadline, max_calls, solver_role="builder"):
         self.url, self.workdir, self.transcript, self.allowed = url, Path(workdir), transcript, allowed
         self.solver_role = solver_role
+        # Whether the setup agent was granted the lead (setup that builds or loads modules).
+        self.setup_lead = False
         self.deadline, self.max_calls = deadline, max_calls
         self.clients, self.lock = {}, threading.Lock()
         self.snapshot = None
@@ -759,7 +761,11 @@ class Ctx:
             if c is None:
                 c = Client(self.url, agent, self.transcript, phase, self.allowed if restricted else None)
                 if agent not in ("verifier", "snapshot"):
-                    err, ans = c.call("agent_hello", {"name": agent, "role": self.solver_role if restricted else "harness"})
+                    # The setup agent prepares the task as the operator would: a granted lead
+                    # (--lead setup), since only a granted lead may build and load modules
+                    # (docs/design/MODULES.md, "Who may load a module").
+                    role = "lead" if agent == "setup" and not restricted and self.setup_lead else (self.solver_role if restricted else "harness")
+                    err, ans = c.call("agent_hello", {"name": agent, "role": role})
                     if err:
                         raise StepFailed(f"agent_hello as {agent}: {cut(ans, 300)}")
                 elif agent == "verifier":
@@ -1332,6 +1338,10 @@ def run_task(task, mode, port, run_dir, exe_dir, log=print, cache=None, agent_po
     if task.get("solver_role") == "lead":
         args += ["--lead", "solver"]
     args += ["--lead", "verifier"]
+    # Setup that builds or loads a module runs as a granted lead (only one may load native code).
+    setup_lead = any(str(st.get("call", "")).startswith("logic_") and st.get("as") == "setup" for st in task.get("setup", []) if isinstance(st, dict))
+    if setup_lead:
+        args += ["--lead", "setup"]
     eng = Engine(exe, port, run_dir / "engine.log", *args, cwd=str(cwd), env=env)
     try:
         eng.__enter__()
@@ -1343,6 +1353,7 @@ def run_task(task, mode, port, run_dir, exe_dir, log=print, cache=None, agent_po
     proxy = None
     ctx = Ctx(url_for(port), files_root, transcript, task["tools"], time.perf_counter() + float(limits.get("wall_s", MAX_WALL_DEFAULT)),
               int(limits.get("calls", MAX_CALLS_DEFAULT)), task.get("solver_role", "builder"))
+    ctx.setup_lead = setup_lead
     # `${work}`: the task's folder, relative to the engine's working directory (logic_build paths).
     ctx.vars["work"] = os.path.relpath(files_root, cwd).replace("\\", "/")
     actors = []

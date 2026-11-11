@@ -50,7 +50,8 @@ HLOD proxies, and sight packets mark subjects drawn_as \"hlod\" or \"not_residen
 stream_fly (a measured flight of the window camera) show and tune it. A game running in \
 the engine adds its own tools (play_*). Game logic as code: a module is a Rust cdylib depending only on specula-sdk; \
 logic_build compiles it (errors as data, fixes on request) and hot-reloads it at the next tick without losing the \
-world; logic_status, logic_input and logic_hook inspect, drive and call it. Gameplay rules are data: Lex rule sets \
+world (native code: only the owner or a granted lead builds; anyone else's logic_build files a proposal the lead \
+approves); logic_status, logic_input and logic_hook inspect, drive and call it. Gameplay rules are data: Lex rule sets \
 (lex_schema describes the language; lex_edit changes a set with validation, lex_simulate runs it headless and \
 deterministically). Navigation and AI: nav_build makes a navmesh from the world's geometry (edits rebuild only the tiles they touch), \
 nav_path and nav_point query it, nav_agent makes an entity walk it with the crowd, ai_set gives it a mind (behaviour \

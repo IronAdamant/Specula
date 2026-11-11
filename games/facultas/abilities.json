@@ -1,0 +1,47 @@
+{
+  "format": "specula.facultas.v1",
+  "player": "/ambulo/player",
+  "starting": ["flare"],
+  "resources": {
+    "stamina": {"name": {"key": "resource.stamina.name", "text": "Stamina"}, "max": 100, "regen_per_s": 12}
+  },
+  "abilities": {
+    "flare": {
+      "name": {"key": "ability.flare.name", "text": "Lantern flare"},
+      "summary": {"key": "ability.flare.summary", "text": "A burst of cyan light that banishes wisps within 5 m."},
+      "action": "ability_1",
+      "cooldown_ms": 2500,
+      "cost": {"stamina": 35},
+      "requires_item": "lantern",
+      "effects": [
+        {"kind": "vfx", "effect": "impact", "tint": "#5ee0e0", "offset": [0, 1.2, 0], "ms": 900},
+        {"kind": "vfx", "effect": "sparks", "tint": "#9ff3f3", "offset": [0, 1.2, 0], "ms": 700},
+        {"kind": "sound", "name": "flare", "gain": 1.0},
+        {"kind": "damage", "tag": "wisp", "radius_m": 5, "amount": 60}
+      ]
+    },
+    "ward": {
+      "name": {"key": "ability.ward.name", "text": "Grave ward"},
+      "summary": {"key": "ability.ward.summary", "text": "Motes circle you for 4 s; wisps cannot drain you while warded."},
+      "action": "ability_2",
+      "cooldown_ms": 8000,
+      "cost": {"stamina": 60},
+      "effects": [
+        {"kind": "vfx", "effect": "motes", "tint": "#5ee0e0", "offset": [0, 0.9, 0], "ms": 4000},
+        {"kind": "sound", "name": "ward", "gain": 0.9},
+        {"kind": "status", "status": "warded", "ms": 4000}
+      ]
+    },
+    "dash": {
+      "name": {"key": "ability.dash.name", "text": "Dust step"},
+      "summary": {"key": "ability.dash.summary", "text": "Leaves a puff of grave dust and tells the world you dashed."},
+      "action": "ability_3",
+      "cooldown_ms": 1200,
+      "cost": {"stamina": 20},
+      "effects": [
+        {"kind": "vfx", "effect": "dust_puff", "offset": [0, 0.2, 0], "ms": 800},
+        {"kind": "emit", "event": "facultas_dashed"}
+      ]
+    }
+  }
+}

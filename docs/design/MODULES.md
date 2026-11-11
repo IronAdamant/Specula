@@ -54,9 +54,57 @@ logic_build {path}            (connection thread)               (engine thread, 
 
 ## Trust: module code runs with the engine's privileges
 
-A module is native code in the engine's process: it can do anything the engine can (files, network, other processes).
-The rules below keep builds **zero-dependency** and free of **build-time code**, and keep a module's *world* changes
-inside claims, but they are no sandbox. Only load modules from people (and agents) you would let edit the engine.
+A module is native code in the engine's process: it can do anything the engine can, with the owner's user rights
+(read and write files, start programs, open sockets, read the window). **No source check can make that safe**: safe
+Rust can write a file into the Startup folder with `std::fs`, and the compiler has known soundness holes. So the
+boundary is **who may load a module**, and the checks below are lints behind it (defence in depth), not a sandbox.
+
+### Who may load a module (2026-11-07, review of m5-gmods)
+
+- `logic_build`, `logic_reload` and `logic_unload` need **the owner, or a lead the operator granted** (`--lead NAME`,
+  `--owner NAME`; `authority::may_load_native`, AUTHORITY.md). The first-come fallback lead is not enough: with no
+  grants at all, whoever said lead first would get code execution. Refused calls answer `lead_only` (`refused_at:
+  logic.native_code`), and the engine thread checks again when a library loads or a module unloads, whatever the
+  caller's thread checked.
+- **A builder proposes.** Any other agent's `logic_build` builds nothing: the engine files a **proposal** (the module's
+  folder, who, the tick, and the SHA-256 of every file in the folder, `specula_logic::digest`) and answers `lead_only`
+  with it. `project_write {build}` by a builder proposes the same way. `logic_status` lists proposals (at most 32; one
+  per agent and folder, the newest). The owner or lead reviews the files and runs `logic_build {path, approve: <id>}`:
+  it builds only while the folder still hashes as proposed (`sources_changed` otherwise), so nobody can swap the
+  sources between the review and the load. A builder can't approve, load a library (`logic_reload`) or unload a
+  module. Proposals live in the engine run (not saved).
+- **The sources checked are the sources compiled** (review R2, 2026-11-12). A digest before and after the build
+  isn't enough: sources swapped while Cargo runs and put back afterwards hash the same. So every build that loads:
+  - **holds the module folder** from the first digest until the load (`specula_logic::build::hold`). The engine's own
+    writers leave a held folder alone: a `project_write` or delete there is committed and journaled as usual, and its
+    disk write waits (`pending: module_building`) until the build ends;
+  - compares each file's **length and modification time** as well as the bytes (`digest::module_snapshot`), so a
+    write by anything else during the build loads nothing (`sources_changed`).
+- **An approved build is self-contained.** The digest covers the module's folder, so an approved build that compiled
+  a crate from anywhere else (but the engine's own `specula-sdk` and `specula-core`, by path) loads nothing
+  (`unpinned_sources`): a helper crate outside the folder could change after the review without the digest changing.
+  A proposed module keeps its helper crates inside its folder. The owner's or lead's own builds (no `approve`) may
+  use helper crates elsewhere in the project; they are the reviewer.
+- This guards against agents acting **through the engine**. A program with its own access to the disk already has
+  the owner's user rights and is outside it.
+- **The security seam:** every refused native-code call goes through `logic::proposals::report_refusal` (a
+  `logic.native_refused` trace event today). A proposal is ordinary work; a refused approve, reload or unload is an
+  attempt (`NativeRefusal::is_attempt`), which the security monitor (m5-inputguard's `inputguard::refused`) receives
+  once it merges.
+- `logic_hook` and `logic_input` stay open: they call code the owner or lead already loaded, and their world changes
+  are checked against claims as the caller's.
+
+### M6: a sandbox for untrusted modules
+
+Until then, modules are trusted code. For agents the owner doesn't trust to load code (other companies' swarms, cloud
+agents), M6 needs a real sandbox, and the choice is the owner's:
+- **An engine-run WASM interpreter** (zero dependencies, written here): modules compile to `wasm32`; the engine
+  interprets them with the `Cx` API as the only imports, so a module can reach nothing else. Portable (mobile, F6) and
+  deterministic by construction; slower than native (an interpreter, unless a JIT is written later).
+- **A separate low-integrity process** per module (Windows' low integrity level or an AppContainer; a sandbox profile
+  on macOS; namespaces and seccomp on Linux), speaking the same byte messages over a pipe: native speed, but three
+  OS-specific sandboxes to get right and a process hop per call.
+Both keep today's SDK and ABI messages; native modules would stay for the owner's own code.
 
 What `logic_build` lets a module build from, checked against `cargo metadata --offline` before Cargo compiles anything
 (`specula_logic::build::vet`):
@@ -84,7 +132,20 @@ What `logic_build` lets a module build from, checked against `cargo metadata --o
   the root, a build script that ran, or a proc-macro refuses the build and restores `Cargo.lock` (a manifest edited
   between the check and the build can't get anything loaded, though a build script it adds has already run);
 - Cargo runs `--offline`, so nothing is downloaded; if resolving would change `Cargo.lock` and the build is refused, the
-  lock file is put back.
+  lock file is put back;
+- **no native reach** (`specula_logic::build::check_reach`, 2026-11-07): the module's normal dependencies may not
+  include an engine crate that calls the operating system (`os_crate`: `specula-sys`, `-platform`, `-input`, `-gpu`,
+  `-audio`, `-protocol`, `-logic`, `specula`; dev-dependencies don't count), and neither its sources nor another path
+  crate it depends on may declare foreign functions, link a native library or use inline assembly (`native_code`, with
+  the file and line). The source check runs **after** the build, over every file rustc compiled (each crate's
+  dep-info, any extension: `#[path = "imp.txt"]`, `include!`, a `[lib] path` outside `src/`) for the module and every
+  other crate in the build except the engine's own SDK and core, which are trusted **by canonical path, never by
+  name**. Refused (`native_code`, naming the crate, file and line): any `extern` that isn't `extern crate`, `extern fn`
+  or `extern "abi" fn` (so a macro-built ABI counts), `#[link]`, `link_name`, any mention of `asm`, `global_asm` or
+  `naked_asm`, any `unsafe`, `std`'s `fs`, `process`, `net`, `os` and `env` (by path, in a `use` tree, or spliced from a
+  macro variable), `Command::new` and sockets; and files too many, too big or unreadable to check. This is a **lint**
+  that keeps the honest path honest, raceable by whoever can write the files during a build: the boundary is *Who may
+  load a module* above ([GAMEPLAY_MODULES.md](GAMEPLAY_MODULES.md), *What a module can reach*).
 
 ## The engine owns all state
 
@@ -148,7 +209,8 @@ All in `specula_sdk::abi`; version **1** (`ABI_VERSION`).
   `BAD_INPUT 3`, `UNKNOWN_ENTRY 4`.
 - Messages are `Value`s (null, bool, i64, f64, string, list, ordered map) in a canonical little-endian encoding.
   Requests are maps with an `op` (`find`, `get`, `query`, `spawn`, `set`, `delete`, `state_get`, `state_set`, `rng`,
-  `move_character`, `emit`, `log`); `spawn` and `set` take exactly the fields of the `world_spawn` and `world_set`
+  `move_character`, `emit`, `log`, `trace`, `sound`); `sound` (2026-11-07) asks the engine to play a recipe after the
+  call commits, presentation only ([GAMEPLAY_MODULES.md](GAMEPLAY_MODULES.md), *Sound*); `spawn` and `set` take exactly the fields of the `world_spawn` and `world_set`
   tools and are validated by the same code, so modules and agents share one vocabulary and one set of error messages.
 - Neither side frees the other's memory or keeps its pointers past a call. Answers live in an engine buffer valid until
   the module's next request; replies are copied by the engine.
@@ -173,10 +235,10 @@ All in `specula_sdk::abi`; version **1** (`ABI_VERSION`).
 
 | Tool | What it does |
 |---|---|
-| `logic_build {path, check?, fix?, release?, reload?, detailed?, seed?}` | Cargo build of the module crate, diagnostics as data, optional fixes, then reload. Timings: `queued`, `build`, `reload` (`open`, `load`, `start` inside), `total`. |
-| `logic_reload {module? \| library?}` | Reload from the last library (after building it yourself) or load a prebuilt one. |
-| `logic_unload {module, forget_state?}` | Stop and unload. |
-| `logic_status {module?, detailed?}` | Modules (status, why disabled, generation, build hash, ticks, failures, last error, tick µs, actions, held input, hooks, state size / values), recent loads, log, events, hook uses, builds. |
+| `logic_build {path, check?, fix?, release?, reload?, detailed?, seed?, approve?}` | Owner or granted lead: Cargo build of the module crate, diagnostics as data, optional fixes, then reload (`approve` builds a proposal's exact sources). Anyone else: files a proposal, builds nothing. Timings: `queued`, `build`, `reload` (`open`, `load`, `start` inside), `total`. |
+| `logic_reload {module? \| library?}` | Owner or granted lead: reload from the last library (after building it yourself) or load a prebuilt one. |
+| `logic_unload {module, forget_state?}` | Owner or granted lead: stop and unload. |
+| `logic_status {module?, detailed?}` | Modules (status, why disabled, generation, build hash, ticks, failures, last error, tick µs, actions, held input, hooks, state size / values), recent loads, log, events, hook uses, builds, proposals. |
 | `logic_input {module, actions, ticks?}` | Hold actions for N ticks (buttons true/false, axes numbers, 2D axes `[x, y]`). |
 | `logic_hook {hook, args?, reason}` | Call a native hook (logged with the reason). Its world changes are checked against other agents' claims, as `play_*` tools' are; a refusal keeps nothing the hook did. |
 

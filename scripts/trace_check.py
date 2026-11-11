@@ -350,7 +350,7 @@ def part_crash(a, out, summary):
     original, panicking = inject_panic()
     try:
         AMBULO.write_text(panicking, encoding="utf-8")
-        with Engine(a.exe, a.port + 1, out / "engine-crash.log", *engine_args(a, out, "crash", ["--paused", "--", "--seed", "7"]), cwd=str(ROOT)) as eng:
+        with Engine(a.exe, a.port + 1, out / "engine-crash.log", *engine_args(a, out, "crash", ["--paused", "--lead", "crash-lead", "--", "--seed", "7"]), cwd=str(ROOT)) as eng:
             m = eng.mcp("trace-crash")
             m.hello("crash-lead", role="lead")
             built, err = call_raw(m, "logic_build", path="games/ambulo")

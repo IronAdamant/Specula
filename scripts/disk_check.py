@@ -305,9 +305,11 @@ def phase_floor(exe, port, adapter, work, out, available_mb):
     perf = work / "perf_floor.toml"
     floor = int(available_mb) + 10240
     write_perf(perf, {"free_floor_mb": floor})
-    with Engine(exe, port + 1, out / "engine_floor.log", *engine_args(work, perf, adapter), cwd=str(ROOT)) as eng:
+    with Engine(exe, port + 1, out / "engine_floor.log", *engine_args(work, perf, adapter), "--lead", "floor-lead", cwd=str(ROOT)) as eng:
         a = eng.mcp("disk-floor")
         a.hello("ann")
+        fl = eng.mcp("disk-floor-lead")
+        fl.hello("floor-lead", role="lead")  # only the owner or a granted lead builds modules (docs/design/MODULES.md)
         e, up = raw(a, "project_upload", path="assets/textures/floor.png", data=base64.b64encode(png(8, 8, (9, 9, 9))).decode())
         check(e and up.get("error") == "disk_floor", f"project_upload refused: {up.get('error')}")
         check(up.get("floor_mb") == floor and "available_mb" in up and up.get("what_to_delete") is not None, "with the numbers and what to delete")
@@ -315,7 +317,7 @@ def phase_floor(exe, port, adapter, work, out, available_mb):
         check(e and ls.get("error") == "disk_floor", f"lease_take scratch refused: {ls.get('error')}")
         e, sv = raw(a, "save_write", name="floor")
         check(e and sv.get("error") == "disk_floor", f"save_write refused: {sv.get('error')}")
-        e, lb = raw(a, "logic_build", path="games/ambulo", check=True)
+        e, lb = raw(fl, "logic_build", path="games/ambulo", check=True)
         check(e and lb.get("error") == "disk_floor", f"logic_build refused before Cargo runs: {lb.get('error')}")
         # Review finding: world_save to new names was essential, so it went through the floor.
         a.json("world_spawn", shape="cube", name="box")

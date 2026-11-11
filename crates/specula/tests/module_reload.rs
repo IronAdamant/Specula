@@ -95,7 +95,7 @@ fn module_copy(repo: &Path, base: &Path) -> PathBuf {
     copy_dir(&repo.join("games").join("ambulo"), &dir);
     let sdk = repo.join("crates").join("specula-sdk");
     let manifest = format!(
-        "[package]\nname = \"ambulo\"\nversion = \"0.1.0\"\nedition = \"2021\"\npublish = false\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n\
+        "[package]\nname = \"ambulo\"\nversion = \"0.1.0\"\nedition = \"2021\"\npublish = false\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[features]\nlinked = []\n\n\
          [dependencies]\nspecula-sdk = {{ path = {:?} }}\n\n[workspace]\n\n[profile.dev]\ndebug = 0\nstrip = \"debuginfo\"\npanic = \"abort\"\n",
         sdk.to_string_lossy().replace('\\', "/")
     );

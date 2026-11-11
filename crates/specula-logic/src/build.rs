@@ -32,6 +32,9 @@ use std::time::{Duration, Instant};
 pub const MAX_FIX_ROUNDS: usize = 3;
 /// Builds kept for [`BuildService::recent`].
 const HISTORY: usize = 16;
+/// Crates one build may compile (the module, the SDK, core and helpers); past it the build is
+/// refused (a crate with no files has no dep-info).
+const MAX_COMPILED: usize = 64;
 /// Lines of Cargo's stderr kept for a failed build (manifest errors and the like).
 const STDERR_TAIL: usize = 30;
 
@@ -86,6 +89,9 @@ pub struct BuildReport {
     pub stderr_tail: Vec<String>,
     /// The module crate's artifacts (its library, or a check build's metadata).
     pub artifacts: Vec<PathBuf>,
+    /// Every crate the build compiled or found fresh (the module and its path dependencies):
+    /// what [`check_compiled`] scans after the build.
+    pub compiled: Vec<Compiled>,
     /// The Cargo command line (for humans reproducing it).
     pub command: String,
     /// Workspace root the file names are resolved against.
@@ -116,6 +122,15 @@ impl BuildReport {
     pub fn fixable(&self) -> usize {
         self.diagnostics.iter().flat_map(|d| &d.fixes).filter(|f| f.machine_applicable()).count()
     }
+}
+
+/// One crate of a build, from Cargo's artifact message.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Compiled {
+    pub manifest: PathBuf,
+    /// The library target's name.
+    pub name: String,
+    pub files: Vec<PathBuf>,
 }
 
 /// Runs one build (Cargo, or a stand-in in tests).
@@ -336,11 +351,198 @@ pub fn vet(req: &BuildRequest) -> Result<(), (&'static str, String)> {
     }
     let meta = specula_core::Json::parse(&String::from_utf8_lossy(&out.stdout))
         .map_err(|e| ("metadata_failed", format!("cargo metadata printed no JSON: {e:?}")));
-    let checked = meta.and_then(|m| check_metadata(&m, &roots));
+    let checked = meta.and_then(|m| check_metadata(&m, &roots).and_then(|()| check_reach(&m, &dir.join("Cargo.toml"))));
     if checked.is_err() {
         restore();
     }
     checked
+}
+
+/// Engine crates that call the operating system (windows, input, the GPU, audio, sockets, the
+/// loader). A module may not depend on them: through them it could read the window's keyboard
+/// or the clipboard outside the engine's rules (docs/design/GAMEPLAY_MODULES.md).
+pub const OS_CRATES: &[&str] = &["specula-sys", "specula-platform", "specula-input", "specula-gpu", "specula-audio", "specula-protocol", "specula-logic", "specula"];
+
+/// Crates a module may always depend on without a source check (the SDK and what it re-exports).
+const SDK_CRATES: &[&str] = &["specula-sdk", "specula-core"];
+
+/// What a module can reach outside the engine's API, before Cargo runs: its normal dependencies
+/// (not its dev-dependencies, which never reach the library) may not include an [`OS_CRATES`]
+/// crate (`os_crate`). The sources are checked after the build, over every file rustc compiled
+/// ([`check_compiled`]). A lint, not a sandbox: see the module docs.
+pub fn check_reach(meta: &specula_core::Json, manifest: &Path) -> Result<(), (&'static str, String)> {
+    use specula_core::Json;
+    let manifest = fix::canonical(manifest);
+    let packages = meta.get("packages").and_then(Json::as_array).unwrap_or_default();
+    let pkg = |id: &str| packages.iter().find(|p| p.get("id").and_then(Json::as_str) == Some(id));
+    let Some(module) = packages.iter().find(|p| p.get("manifest_path").and_then(Json::as_str).is_some_and(|m| fix::canonical(Path::new(m)) == manifest)) else {
+        return Err(("metadata_failed", "cargo metadata doesn't list the module's own package".into()));
+    };
+    let module_id = module.get("id").and_then(Json::as_str).unwrap_or_default().to_owned();
+    let nodes = meta.get("resolve").and_then(|r| r.get("nodes")).and_then(Json::as_array).unwrap_or_default();
+    // The module's normal-dependency closure (a dependency counts if any of its kinds is normal).
+    let mut seen = std::collections::BTreeSet::new();
+    let mut stack = vec![module_id.clone()];
+    while let Some(id) = stack.pop() {
+        if seen.len() >= 4096 {
+            return Err(("metadata_failed", "the module's dependency graph has more than 4096 packages: too many to check".into()));
+        }
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        let Some(node) = nodes.iter().find(|n| n.get("id").and_then(Json::as_str) == Some(id.as_str())) else { continue };
+        for d in node.get("deps").and_then(Json::as_array).unwrap_or_default() {
+            let normal = d.get("dep_kinds").and_then(Json::as_array).unwrap_or_default().iter().any(|k| k.get("kind").is_none_or(|k| k.is_null()));
+            if normal {
+                if let Some(p) = d.get("pkg").and_then(Json::as_str) {
+                    stack.push(p.to_owned());
+                }
+            }
+        }
+    }
+    let name_of = |id: &str| pkg(id).and_then(|p| p.get("name")).and_then(Json::as_str).unwrap_or("?").to_owned();
+    for id in &seen {
+        let name = name_of(id);
+        if *id != module_id && OS_CRATES.contains(&name.as_str()) {
+            return Err((
+                "os_crate",
+                format!("the module depends on {name}, an engine crate that calls the operating system; modules reach the world, input and sound through specula-sdk's Cx only (depend on specula-sdk)"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The manifests of the crates a module may use without a source check: the engine's own
+/// `specula-sdk` and `specula-core`, by canonical path (never by name: any package may call itself
+/// `specula-core`). The ones this engine was built from, and the ones under each build root.
+pub fn trusted_manifests(roots: &[PathBuf]) -> Vec<PathBuf> {
+    let built_from = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut out = Vec::new();
+    for base in std::iter::once(built_from).chain(roots.iter().map(|r| r.join("crates"))) {
+        for c in SDK_CRATES {
+            let m = base.join(c).join("Cargo.toml");
+            if m.is_file() {
+                out.push(fix::canonical(&m));
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// After a build: every file rustc read (its dep-info) for the module and for every other crate
+/// the build compiled, except the engine's SDK and core ([`trusted_manifests`]), is scanned for
+/// reaches around the engine's API ([`crate::lint::reach_scan`]): foreign functions, native
+/// libraries, inline assembly, `unsafe`, and `std`'s files, processes, sockets and environment.
+/// Any extension counts (`#[path = "imp.txt"]`, `include!`), wherever the crate's `[lib] path`
+/// points; a crate with no dep-info, or files too many or too big to read, is refused too.
+/// `Err(("native_code", message))` names the crate, file and line.
+pub fn check_compiled(compiled: &[Compiled], roots: &[PathBuf], workspace: &Path) -> Result<(), (&'static str, String)> {
+    let trusted = trusted_manifests(roots);
+    let mut budget = crate::lint::ScanBudget::default();
+    for c in compiled {
+        if trusted.contains(&fix::canonical(&c.manifest)) {
+            continue;
+        }
+        let refuse = |what: String| Err(("native_code", format!("{} ({}): {what}; the library isn't loaded (modules reach the machine only through specula-sdk's Cx)", c.name, c.manifest.display())));
+        let Some(dep) = c.files.iter().find_map(|a| crate::paths::find_dep_info(a, &c.name)) else {
+            return refuse("the build left no dep-info to say which files it compiled".into());
+        };
+        let Ok(text) = std::fs::read_to_string(&dep) else {
+            return refuse(format!("its dep-info {} can't be read", dep.display()));
+        };
+        let files: Vec<PathBuf> = crate::paths::dep_info_files(&text)
+            .into_iter()
+            .map(|f| {
+                let p = PathBuf::from(f);
+                if p.is_absolute() { p } else { workspace.join(p) }
+            })
+            .collect();
+        if files.is_empty() {
+            return refuse(format!("its dep-info {} lists no files", dep.display()));
+        }
+        if let Some((file, r)) = crate::lint::first_reach(&files, &mut budget) {
+            return Err((
+                "native_code",
+                format!(
+                    "{}:{} ({}) {}: {}; modules may not call the operating system, native libraries or std's files, processes and sockets, nor use unsafe code (the library isn't loaded; use specula-sdk's Cx)",
+                    file.display(),
+                    r.line,
+                    c.name,
+                    r.rule,
+                    r.what
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The first crate an approved build compiled that the proposal's digest doesn't cover: any crate
+/// outside the module's folder `dir`, except the engine's SDK and core ([`trusted_manifests`]).
+/// A proposed module is self-contained, so the folder's digest pins every source that is loaded
+/// (a helper crate elsewhere could change after the review without the digest changing).
+pub fn unpinned<'a>(compiled: &'a [Compiled], roots: &[PathBuf], dir: &Path) -> Option<&'a Compiled> {
+    let trusted = trusted_manifests(roots);
+    let dir = fix::canonical(dir);
+    compiled.iter().find(|c| {
+        let m = fix::canonical(&c.manifest);
+        !trusted.contains(&m) && !m.starts_with(&dir)
+    })
+}
+
+/// Module folders whose build is under way (canonical paths; a folder may be there twice).
+static BUILDING: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+static BUILDING_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A module folder held for a build: until it drops, [`building`] is true for every path in it.
+pub struct Building(PathBuf);
+
+/// Holds the module folder `dir` while its sources are digested, built, digested again and
+/// loaded. The engine's own writers leave a held folder alone ([`building`]), so an agent can't
+/// swap the sources for the build and put them back before the second digest.
+pub fn hold(dir: &Path) -> Building {
+    let dir = fix::canonical(dir);
+    BUILDING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(dir.clone());
+    BUILDING_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    Building(dir)
+}
+
+impl Drop for Building {
+    fn drop(&mut self) {
+        let mut held = BUILDING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(at) = held.iter().position(|d| *d == self.0) {
+            held.swap_remove(at);
+            BUILDING_COUNT.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
+/// Whether `path` (a file or folder, there or not) lies in a module folder being built.
+pub fn building(path: &Path) -> bool {
+    if BUILDING_COUNT.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+        return false;
+    }
+    // The nearest ancestor that exists, canonical, with the rest put back (a new file has no
+    // canonical path of its own).
+    let mut rest = Vec::new();
+    let mut at = path;
+    let base = loop {
+        if at.exists() {
+            break fix::canonical(at);
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(p), Some(n)) => {
+                rest.push(n.to_owned());
+                at = p;
+            }
+            _ => break at.to_owned(),
+        }
+    };
+    let full = rest.iter().rev().fold(base, |p, n| p.join(n));
+    BUILDING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|d| full.starts_with(d))
 }
 
 /// The rules of [`vet`] over `cargo metadata` output: every package is a path crate under one of
@@ -525,6 +727,17 @@ pub fn run_cargo(req: &BuildRequest) -> BuildReport {
             return BuildReport { build_time: start.elapsed(), ..report };
         }
     }
+    // What every compiled crate reaches (crate::lint::reach_scan over each crate's dep-info).
+    if report.ok {
+        if let Err((code, message)) = check_compiled(&report.compiled, &req.roots, &workspace_root(&req.dir)) {
+            report.ok = false;
+            report.error = Some((code, message));
+            report.library = None;
+            report.diagnostics.clear();
+            report.stderr_tail.clear();
+            return BuildReport { build_time: start.elapsed(), ..report };
+        }
+    }
     // Determinism lints on the module's sources (crate::lint): warnings after the compiler's.
     report.diagnostics.extend(crate::lint::scan_dir(&req.dir));
     report.build_time = start.elapsed();
@@ -610,6 +823,15 @@ fn cargo_once(req: &BuildRequest) -> BuildReport {
         let message = diag::parse_line(line, &root);
         if matches!(message, Message::Artifact { .. } | Message::BuildScript { .. }) {
             seen.push(message.clone());
+        }
+        if let Message::Artifact { manifest, name, files, .. } = &message {
+            if report.compiled.len() < MAX_COMPILED {
+                report.compiled.push(Compiled { manifest: manifest.clone(), name: name.clone(), files: files.clone() });
+            } else {
+                // More crates than any module needs: refused below rather than half-checked.
+                report.compiled.push(Compiled { manifest: PathBuf::new(), name: "(too many crates to check)".into(), files: Vec::new() });
+                report.compiled.truncate(MAX_COMPILED + 1);
+            }
         }
         match message {
             Message::Diagnostic { manifest: m, target, mut diagnostic } => {
@@ -852,5 +1074,132 @@ mod tests {
         let here = Path::new(env!("CARGO_MANIFEST_DIR"));
         let root = workspace_root(here);
         assert!(root.join("crates").join("specula-logic").exists(), "{}", root.display());
+    }
+
+    /// A module may not reach the OS through an engine crate; its dev-dependencies (tests) don't
+    /// count.
+    #[test]
+    fn modules_may_not_depend_on_os_crates() {
+        let base = std::env::temp_dir().join(format!("specula-reach-vet-{}", std::process::id()));
+        for d in ["m/src", "helper/src"] {
+            std::fs::create_dir_all(base.join(d)).unwrap();
+        }
+        std::fs::write(base.join("m/Cargo.toml"), "").unwrap();
+        std::fs::write(base.join("m/src/lib.rs"), "pub fn tick() {}\n").unwrap();
+        std::fs::write(base.join("helper/src/lib.rs"), "pub fn x() {}\n").unwrap();
+        let path = |p: &str| base.join(p).join("Cargo.toml").to_string_lossy().replace('\\', "/");
+        let meta = |deps: &str| {
+            let text = format!(
+                r#"{{"packages": [
+                    {{"id": "m", "name": "m", "manifest_path": "{}"}},
+                    {{"id": "sdk", "name": "specula-sdk", "manifest_path": "/x/sdk/Cargo.toml"}},
+                    {{"id": "eng", "name": "specula", "manifest_path": "/x/eng/Cargo.toml"}},
+                    {{"id": "plat", "name": "specula-platform", "manifest_path": "/x/plat/Cargo.toml"}},
+                    {{"id": "helper", "name": "helper", "manifest_path": "{}"}}],
+                  "resolve": {{"nodes": [{{"id": "m", "deps": [{deps}]}}, {{"id": "helper", "deps": []}}]}}}}"#,
+                path("m"),
+                path("helper")
+            );
+            specula_core::Json::parse(&text).unwrap()
+        };
+        let normal = |p: &str| format!(r#"{{"pkg": "{p}", "dep_kinds": [{{"kind": null}}]}}"#);
+        let dev = |p: &str| format!(r#"{{"pkg": "{p}", "dep_kinds": [{{"kind": "dev"}}]}}"#);
+        let manifest = base.join("m/Cargo.toml");
+        assert_eq!(check_reach(&meta(&[normal("sdk"), dev("eng")].join(",")), &manifest), Ok(()), "tests may link the engine");
+        assert_eq!(check_reach(&meta(&normal("plat")), &manifest).unwrap_err().0, "os_crate");
+        assert_eq!(check_reach(&meta(&[normal("sdk"), normal("eng")].join(",")), &manifest).unwrap_err().0, "os_crate");
+        assert_eq!(check_reach(&meta(&normal("helper")), &manifest), Ok(()));
+        // Sources are checked after the build (check_compiled), whatever the metadata says.
+        std::fs::write(base.join("helper/src/lib.rs"), "#[link(name = \"user32\")]
+extern \"system\" { fn GetAsyncKeyState(k: i32) -> i16; }
+").unwrap();
+        assert_eq!(check_reach(&meta(&normal("helper")), &manifest), Ok(()), "no source scan before the build");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// After the build: every compiled crate but the engine's SDK and core (trusted by canonical
+    /// path, never by name) is scanned over the files its dep-info lists, whatever their
+    /// extension; no dep-info, or too many crates, is refused.
+    #[test]
+    fn compiled_crates_are_scanned_except_the_trusted_sdk() {
+        let base = std::env::temp_dir().join(format!("specula-compiled-{}", std::process::id()));
+        let deps = base.join("target/debug/deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        std::fs::create_dir_all(base.join("m/src")).unwrap();
+        std::fs::write(base.join("m/src/lib.rs"), "#[path = \"imp.txt\"] mod imp;
+").unwrap();
+        std::fs::write(base.join("m/src/imp.txt"), "pub fn ok() {}
+").unwrap();
+        let rmeta = deps.join("libm-0123456789abcdef.rmeta");
+        std::fs::write(&rmeta, "").unwrap();
+        let dep = |files: &[&Path]| {
+            let list: Vec<String> = files.iter().map(|f| f.to_string_lossy().replace(' ', "\\ ")).collect();
+            std::fs::write(deps.join("m-0123456789abcdef.d"), format!("{}: {}
+", rmeta.display(), list.join(" "))).unwrap();
+        };
+        let (lib, imp) = (base.join("m/src/lib.rs"), base.join("m/src/imp.txt"));
+        dep(&[&lib, &imp]);
+        let m = Compiled { manifest: base.join("m/Cargo.toml"), name: "m".into(), files: vec![rmeta.clone()] };
+        let roots = vec![base.clone()];
+        assert_eq!(check_compiled(std::slice::from_ref(&m), &roots, &base), Ok(()));
+        std::fs::write(&imp, "extern \"system\" { fn GetAsyncKeyState(k: i32) -> i16; }
+").unwrap();
+        let e = check_compiled(std::slice::from_ref(&m), &roots, &base).unwrap_err();
+        assert!(e.0 == "native_code" && e.1.contains("imp.txt"), "{e:?}");
+        // The engine's SDK by path is trusted; a crate merely named specula-core is not.
+        let sdk = Path::new(env!("CARGO_MANIFEST_DIR")).join("../specula-sdk/Cargo.toml");
+        let trusted = Compiled { manifest: sdk, name: "specula_sdk".into(), files: vec![rmeta.clone()] };
+        assert_eq!(check_compiled(&[trusted], &roots, &base), Ok(()));
+        let named = Compiled { manifest: base.join("m/Cargo.toml"), name: "specula-core".into(), files: vec![rmeta.clone()] };
+        assert_eq!(check_compiled(&[named], &roots, &base).unwrap_err().0, "native_code");
+        // No dep-info to say what was compiled: refused.
+        let lost = Compiled { manifest: base.join("x/Cargo.toml"), name: "x".into(), files: vec![] };
+        assert!(check_compiled(&[lost], &roots, &base).unwrap_err().1.contains("dep-info"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Review R2 of m5-gmods: an approval pins the module folder's digest, so an approved build
+    /// may compile nothing outside that folder but the engine's SDK and core (by path).
+    #[test]
+    fn an_approved_build_compiles_only_what_its_digest_covers() {
+        let base = std::env::temp_dir().join(format!("specula-unpinned-{}", std::process::id()));
+        for d in ["m/src", "m/inner/src", "helper/src", "m2/src"] {
+            std::fs::create_dir_all(base.join(d)).unwrap();
+            std::fs::write(base.join(d).join("../Cargo.toml"), "").unwrap();
+        }
+        let c = |p: &str, name: &str| Compiled { manifest: base.join(p).join("Cargo.toml"), name: name.into(), files: vec![] };
+        let sdk = Compiled { manifest: Path::new(env!("CARGO_MANIFEST_DIR")).join("../specula-sdk/Cargo.toml"), name: "specula_sdk".into(), files: vec![] };
+        let roots = vec![base.clone()];
+        let dir = base.join("m");
+        assert!(unpinned(&[c("m", "m"), c("m/inner", "inner"), sdk.clone()], &roots, &dir).is_none(), "the module, a crate inside it and the SDK");
+        assert_eq!(unpinned(&[c("m", "m"), sdk.clone(), c("helper", "helper")], &roots, &dir).map(|c| c.name.as_str()), Some("helper"), "a helper next to the module");
+        assert_eq!(unpinned(&[c("m2", "m2")], &roots, &dir).map(|c| c.name.as_str()), Some("m2"), "a folder whose name starts the same isn't inside");
+        // Trust is by path: a crate that calls itself specula-sdk elsewhere is not pinned.
+        assert_eq!(unpinned(&[c("helper", "specula-sdk")], &roots, &dir).map(|c| c.name.as_str()), Some("specula-sdk"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Review R2 of m5-gmods: while a module folder is held for a build, every path in it reads
+    /// as building (the engine's writers leave it alone), and nothing else does.
+    #[test]
+    fn a_held_module_folder_covers_its_paths_until_released() {
+        let base = std::env::temp_dir().join(format!("specula-building-{}", std::process::id()));
+        std::fs::create_dir_all(base.join("m/src")).unwrap();
+        std::fs::create_dir_all(base.join("m2/src")).unwrap();
+        std::fs::write(base.join("m/src/lib.rs"), "").unwrap();
+        assert!(!building(&base.join("m/src/lib.rs")));
+        let held = hold(&base.join("m"));
+        assert!(building(&base.join("m/src/lib.rs")), "a file there");
+        assert!(building(&base.join("m/src/new/deep.rs")), "a file that doesn't exist yet");
+        assert!(building(&base.join("m")), "the folder itself");
+        assert!(building(&base.join("m/src/../src/lib.rs")), "by another spelling");
+        assert!(!building(&base.join("m2/src/lib.rs")), "a folder whose name starts the same");
+        assert!(!building(&base.join("other.rs")));
+        let again = hold(&base.join("m"));
+        drop(held);
+        assert!(building(&base.join("m/src/lib.rs")), "held twice: still held");
+        drop(again);
+        assert!(!building(&base.join("m/src/lib.rs")), "released");
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

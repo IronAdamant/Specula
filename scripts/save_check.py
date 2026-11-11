@@ -258,7 +258,8 @@ def run(args, work):
         print(f"  capture {label}: {entry.get('kept_path', entry['png'])}")
 
     pa, pb = args.ports
-    with Engine(exe, pa, work / "a.log", *common, "--captures", str(work / "cap-a"), "--worlds", str(work / "worlds-a"),
+    # Modules are native code: the owner or a granted lead builds them (docs/design/MODULES.md).
+    with Engine(exe, pa, work / "a.log", *common, "--captures", str(work / "cap-a"), "--worlds", str(work / "worlds-a"), "--lead", "save-lead",
                 "--", "--seed", "7", cwd=str(ROOT)):
         a = Mcp(url_for(pa), "save-check-a")
         a.json("agent_hello", name="saver", role="builder")
@@ -269,7 +270,9 @@ def run(args, work):
         shambler(a)
         nav_mesh = navigation(a)
         print(f"A: navmesh over the slab: {nav_mesh['polygons']} polygons; 3 walkers and a patrolling guard")
-        built = build_ambulo(a)
+        ml = Mcp(url_for(pa), "save-check-lead")
+        ml.json("agent_hello", name="save-lead", role="lead")
+        built = build_ambulo(ml)
         print(f"A: ambulo loaded ({built.get('reload', {}).get('status')})")
         start_live(a)
         a.json("logic_input", module="ambulo", actions={"move": [1, 0.3]}, ticks=args.save_at + args.ticks)
@@ -311,7 +314,7 @@ def run(args, work):
             report["stress_save"] = big
         a.close()
 
-    with Engine(exe, pb, work / "b.log", *common, "--captures", str(work / "cap-b"), "--worlds", str(work / "worlds-b"),
+    with Engine(exe, pb, work / "b.log", *common, "--captures", str(work / "cap-b"), "--worlds", str(work / "worlds-b"), "--lead", "loader",
                 "--", "--seed", "99", cwd=str(ROOT)):
         b = Mcp(url_for(pb), "save-check-b")
         b.json("agent_hello", name="loader", role="lead")  # force and overwrite of other worlds are the lead's (docs/design/AUTHORITY.md)

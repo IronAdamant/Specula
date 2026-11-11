@@ -141,6 +141,8 @@ const FIELDS: &[(&str, Class)] = &[
     // The text lane: the window's keyboard focus (an entity id) and the texts the operator opened
     // to the human's click; the hook drops both.
     ("text_typing", Reset("self.text_typing.world_replaced()")),
+    // The gameplay-modules lane: rendered module sounds by module and name (no entity ids).
+    ("module_sounds", NoIds("sound recipes rendered, by module and name")),
     ("taste", NoIds("gallery ids are names")),
     ("modal_open", NoIds("a flag")),
     ("game_pads", NoIds("the frame's pad states")),

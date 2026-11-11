@@ -1,0 +1,48 @@
+{
+  "date": "2026-11-07",
+  "time": "",
+  "date_source": "",
+  "approximate": false,
+  "milestone": "M5",
+  "commit": "",
+  "subject": "engine-tests",
+  "topic": "game",
+  "title": "Gameplay modules demo",
+  "note": "M5 gameplay modules (inventarium, facultas, colloquium, quaestio) in the exemplum demo, played by an agent over MCP: the Sexton's dialogue with conditional choices, the quest tracker mid-quest, the lantern flare (cyan impact and sparks), the finished quest. Same hashes as a headless run on the other adapter.",
+  "source": "scripts/gmods_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-frame-00001.jpg",
+      "caption": "The Sexton's line and the choices on offer",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 10741
+    },
+    {
+      "file": "02-frame-00002.jpg",
+      "caption": "Quest tracker: bones 3/3, wisps 0/2; wisps in grave green",
+      "original": "frame_00002.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 10297
+    },
+    {
+      "file": "03-frame-00003.jpg",
+      "caption": "Lantern flare: cyan impact and sparks around the player",
+      "original": "frame_00003.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 6151
+    },
+    {
+      "file": "04-frame-00004.jpg",
+      "caption": "The quest done",
+      "original": "frame_00004.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 6540
+    }
+  ]
+}

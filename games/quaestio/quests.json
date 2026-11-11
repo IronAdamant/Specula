@@ -1,0 +1,20 @@
+{
+  "format": "specula.quaestio.v1",
+  "tracker": {"actor": "/ambulo/player", "position": [-4.5, 2.4, -3.0]},
+  "quests": {
+    "bones": {
+      "title": {"key": "quest.bones.title", "text": "The Sexton's Bones"},
+      "summary": {"key": "quest.bones.summary", "text": "Gather scattered bones and banish the wisps that scattered them."},
+      "objectives": [
+        {"id": "collect", "text": {"key": "quest.bones.collect", "text": "Gather bones"},
+         "kind": "have_item", "item": "bone", "count": 3},
+        {"id": "banish", "text": {"key": "quest.bones.banish", "text": "Banish wisps"},
+         "kind": "event", "event": "facultas_defeated", "who": "caster", "match": {"tag": "wisp"}, "count": 2},
+        {"id": "return", "text": {"key": "quest.bones.return", "text": "Return the bones to the Sexton"},
+         "kind": "signal", "signal": "bones_returned", "after": ["collect"]}
+      ],
+      "rewards": [{"give": ["silver_key", 1]}, {"learn": "ward"}],
+      "then": null
+    }
+  }
+}

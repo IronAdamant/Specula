@@ -7,6 +7,7 @@
 //!   swarm ([`build::BuildService`]).
 //! - [`diag`]: Cargo's JSON messages as data (diagnostics with spans and suggested fixes).
 //! - [`fix`]: apply rustc's machine-applicable suggestions inside a module's folder.
+//! - [`digest`]: the digest of a module folder, which a proposal names and an approval pins.
 //! - [`paths`]: compile-time paths (`#[path]`, `include_str!`...) must stay in a module's own folder.
 //!
 //! The engine (`specula::logic`) owns the world, the modules' state and the tick; this crate
@@ -14,6 +15,7 @@
 
 pub mod build;
 pub mod diag;
+pub mod digest;
 pub mod disk;
 pub mod fix;
 pub mod lint;

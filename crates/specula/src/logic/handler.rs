@@ -3,7 +3,7 @@
 //! the world (state, RNG positions, events) is undone if the call fails, as the world is.
 
 use super::character::CharacterMover;
-use super::{EventRec, LogLine, Shared, LOG_LINES, MAX_PENDING_EVENTS, MAX_RNG_STREAMS};
+use super::{EventRec, LogLine, Shared, SoundCue, LOG_LINES, MAX_PENDING_EVENTS, MAX_RNG_STREAMS};
 use crate::write_policy::WorldWrite;
 use crate::world::{EntityKey, WorldError};
 use specula_core::rng::Rng;
@@ -23,7 +23,16 @@ pub const MAX_STATE_BYTES: usize = 1 << 20;
 /// Longest log line kept (longer ones are cut).
 const MAX_LOG_CHARS: usize = 400;
 
-const OPS: &str = "find, get, query, spawn, set, delete, state_get, state_set, rng, move_character, emit, log, trace";
+const OPS: &str = "find, get, query, spawn, set, delete, state_get, state_set, rng, move_character, emit, log, trace, sound";
+/// Most sounds one module call may ask for (the SDK's number, so modules can budget for it).
+pub const MAX_SOUNDS_PER_CALL: usize = specula_sdk::MAX_SOUNDS_PER_CALL;
+/// Tagged entities one `query {tag, near}` looks at, at most (the tag index's entries, never the
+/// world): past it the query is refused (`limit`), never cut short silently.
+pub const MAX_NEAR_SCAN: usize = 65_536;
+/// Largest gain a module's sound may ask for (1 = as authored).
+pub const MAX_SOUND_GAIN: f64 = 4.0;
+/// Farthest a module's sound may be placed from the origin, metres.
+const MAX_SOUND_COORD: f32 = 1.0e6;
 /// Trace events one module call may record (more are dropped, and counted on the last).
 pub const MAX_TRACE_PER_CALL: usize = 64;
 
@@ -47,6 +56,8 @@ pub(super) struct ModuleHandler<'a> {
     pub rng_undo: Vec<(String, Option<Rng>)>,
     /// Trace events this call recorded (at most [`MAX_TRACE_PER_CALL`]).
     pub traced: usize,
+    /// Sounds this call asked for (queued by the host only if the call commits).
+    pub sounds: Vec<SoundCue>,
 }
 
 /// The SDK's error map from a world error: `{code, message, ...details}`.
@@ -104,6 +115,38 @@ impl ModuleHandler<'_> {
                 let limit = req.get("limit").and_then(Value::as_u64).unwrap_or(256).clamp(1, MAX_QUERY) as usize;
                 let tag = req.get("tag").and_then(Value::as_str);
                 let prefix = req.get("path_prefix").and_then(Value::as_str);
+                // `near: {at: [x, y, z], radius}` (with a tag): entities whose world position is
+                // within `radius` of `at`, read from the tag's index, so the limit counts only
+                // what is in reach (review of m5-gmods, major 3).
+                if let Some(near) = req.get("near") {
+                    let at = near.get("at").and_then(Value::as_vec3).filter(|v| v.x.is_finite() && v.y.is_finite() && v.z.is_finite()).ok_or_else(|| refuse("invalid_field", "'near.at' must be [x, y, z]"))?;
+                    let radius = near.get("radius").and_then(Value::as_f64).filter(|r| r.is_finite() && *r >= 0.0).ok_or_else(|| refuse("invalid_field", "'near.radius' must be a number >= 0"))? as f32;
+                    let tag = tag.ok_or_else(|| refuse("invalid_field", "'near' needs a 'tag' (it reads the tag's index, never the whole world)"))?;
+                    let world = self.world.as_world();
+                    let n = world.tagged_count(tag);
+                    if n > MAX_NEAR_SCAN {
+                        return Err(refuse("limit", format!("{n} entities carry tag '{tag}'; a near query reads at most {MAX_NEAR_SCAN}: use a narrower tag")));
+                    }
+                    let mut ids = Vec::new();
+                    for id in world.tagged(tag) {
+                        if ids.len() == limit {
+                            break;
+                        }
+                        let Some(e) = world.get(id) else { continue };
+                        let d = e.world_position() - at;
+                        if d.dot(d) > radius * radius {
+                            continue;
+                        }
+                        if let Some(p) = prefix {
+                            let path = world.path_of(id);
+                            if !(path == p || path.strip_prefix(p).is_some_and(|rest| rest.starts_with('/') || p.ends_with('/'))) {
+                                continue;
+                            }
+                        }
+                        ids.push(Value::from(id));
+                    }
+                    return Ok(Value::List(ids));
+                }
                 let mut ids = Vec::new();
                 for e in self.world.entities() {
                     if ids.len() == limit {
@@ -240,6 +283,32 @@ impl ModuleHandler<'_> {
             }
             "trace" => {
                 trace_request(self.module, req, &mut self.traced)?;
+                Ok(Value::Null)
+            }
+            "sound" => {
+                // Presentation only: checked for shape, then queued; whether it plays (audio
+                // off, recipe missing) never changes the answer.
+                let name = str_arg(req, "name")?;
+                if !specula_sdk::valid_name(name, 64) {
+                    return Err(refuse("invalid_field", "a sound name is [a-z][a-z0-9_]{0,63} (a recipe sounds/<name>.json)"));
+                }
+                let gain = match req.get("gain") {
+                    None | Some(Value::Null) => 1.0,
+                    Some(g) => g.as_f64().filter(|g| g.is_finite() && (0.0..=MAX_SOUND_GAIN).contains(g)).ok_or_else(|| refuse("invalid_field", format!("'gain' must be 0..{MAX_SOUND_GAIN}")))?,
+                };
+                let at = match req.get("at") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(
+                        v.as_vec3()
+                            .filter(|p| [p.x, p.y, p.z].iter().all(|c| c.is_finite() && c.abs() <= MAX_SOUND_COORD))
+                            .map(|p| [p.x, p.y, p.z])
+                            .ok_or_else(|| refuse("invalid_field", "'at' must be null or [x, y, z] within 1e6 m"))?,
+                    ),
+                };
+                if self.sounds.len() >= MAX_SOUNDS_PER_CALL {
+                    return Err(refuse("too_many_sounds", format!("at most {MAX_SOUNDS_PER_CALL} sounds per call")));
+                }
+                self.sounds.push(SoundCue { module: self.module.to_owned(), name: name.to_owned(), at, gain: gain as f32, tick: self.tick });
                 Ok(Value::Null)
             }
             other => Err(refuse("unknown_op", format!("no request '{other}' (this engine answers: {OPS}); is the module's SDK newer than the engine?"))),

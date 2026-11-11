@@ -132,8 +132,11 @@ caller's `JobOwner` and a `check` of the caller's claims on what the bake writes
 
 - `World(Rule)`: writes the world through the write policy with that rule (claims as the caller).
 - `Owned(Store)`: changes items that have owners; the store checks the caller (claims, tasks, notes, intents,
-  leases, cameras, review submissions, critiques, jobs, saves, playtests, uploads, saved Lex runs). Modules are
-  `Open`: they are the game's shared code, refused only where another agent claims their root.
+  leases, cameras, review submissions, critiques, jobs, saves, playtests, uploads, saved Lex runs). Module
+  loads (`logic_build`, `logic_reload`, `logic_unload`) are `Lead`, and more: native code runs with the owner's user
+  rights, so they need the owner or an operator-granted lead (`may_load_native`; the fallback lead isn't enough), and
+  a builder's build becomes a proposal the lead approves (MODULES.md, *Who may load a module*). Hooks stay `Open`,
+  refused where another agent claims the module's root.
 - `Open(reason)`: anyone may, and the reason says why that's right (the clock is shared on purpose, say).
 
 A guard test fails if any tool in `tools/list` has no entry, and the live drill (`scripts/authority_drill.py`) has a

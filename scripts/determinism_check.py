@@ -69,11 +69,12 @@ def main():
     original = SRC.read_bytes()
     replay_file = ROOT / "playtests" / REPLAY
     summary = {}
-    engine = Engine(a.exe, a.port, out / "engine.log", "--headless", "--paused", "--captures", str(out / "captures"), cwd=str(ROOT))
+    # Modules are native code: the owner or a granted lead builds them (docs/design/MODULES.md).
+    engine = Engine(a.exe, a.port, out / "engine.log", "--headless", "--paused", "--captures", str(out / "captures"), "--lead", "determinism-check", cwd=str(ROOT))
     try:
         with engine:
             mcp = engine.mcp("determinism-check")
-            mcp.hello("determinism-check")
+            mcp.hello("determinism-check", role="lead")
             info = mcp.json("engine_info")
             fp = info["determinism"]["fp_env"]
             print(f"fp guard: {fp}")
@@ -99,10 +100,10 @@ def main():
             check(recorded.get("modules") == [{"module": "ambulo", "build_hash": build1}], "the replay file names the module build")
             # Same build in a fresh engine, from the same start: the replay verifies.
             print("second engine: same build, replay")
-            fresh = Engine(a.exe, a.port + 1, out / "engine2.log", "--headless", "--paused", "--captures", str(out / "captures2"), cwd=str(ROOT))
+            fresh = Engine(a.exe, a.port + 1, out / "engine2.log", "--headless", "--paused", "--captures", str(out / "captures2"), "--lead", "determinism-check-2", cwd=str(ROOT))
             with fresh:
                 m2 = fresh.mcp("determinism-check-2")
-                m2.hello("determinism-check-2")
+                m2.hello("determinism-check-2", role="lead")
                 r2 = build(m2)
                 check(r2.get("ok"), f"the second engine built and loaded ambulo ({r2.get('error')})")
                 check(m2.json("logic_status", module="ambulo")["modules"][0]["build_hash"] == build1, "with the same build hash")

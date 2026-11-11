@@ -1,0 +1,18 @@
+{
+  "sound": 1,
+  "name": "talk",
+  "notes": "A new line of dialogue: a soft, low paper-and-breath blip, quiet under the scene.",
+  "bus": "ui",
+  "seed": 321,
+  "duration": 0.18,
+  "loudness": -30,
+  "vary": { "pitch": [-1, 1] },
+  "layers": [
+    { "name": "breath", "source": { "wave": "noise" },
+      "env": { "attack": 0.01, "decay": 0.08, "sustain": 0, "release": 0.04 },
+      "filters": [ { "type": "lowpass", "cutoff": 1400 } ] },
+    { "name": "tone", "gain_db": -10,
+      "source": { "wave": "sine", "freq": 330 },
+      "env": { "attack": 0.005, "decay": 0.1, "sustain": 0 } }
+  ]
+}

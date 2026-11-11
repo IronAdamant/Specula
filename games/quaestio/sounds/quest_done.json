@@ -1,0 +1,18 @@
+{
+  "sound": 1,
+  "name": "quest_done",
+  "notes": "A quest finished: a rising three-bell figure resolving upward.",
+  "bus": "ui",
+  "seed": 332,
+  "duration": 1.6,
+  "loudness": -22,
+  "layers": [
+    { "name": "a", "source": { "wave": "sine", "freq": 523.25, "partials": [[1, 1, 0.5], [2.76, 0.25, 0.25]] },
+      "env": { "attack": 0.002, "decay": 0.9, "sustain": 0 } },
+    { "name": "b", "at": 0.12, "source": { "wave": "sine", "freq": 659.25, "partials": [[1, 1, 0.5], [2.76, 0.25, 0.25]] },
+      "env": { "attack": 0.002, "decay": 0.9, "sustain": 0 } },
+    { "name": "c", "at": 0.24, "source": { "wave": "sine", "freq": 1046.5, "partials": [[1, 1, 0.7], [2.76, 0.25, 0.3]] },
+      "env": { "attack": 0.002, "decay": 1.2, "sustain": 0 } }
+  ],
+  "fx": [ { "type": "reverb", "room": 0.75, "damp": 0.45, "mix": 0.3 } ]
+}

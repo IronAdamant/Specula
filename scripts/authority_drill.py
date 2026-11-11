@@ -743,6 +743,21 @@ def main():
         d.ok("bob", "world_set", path="/bob_field", visible=True)
         lead_focus = d.raw(d.agent("lee"), "text_edit", {"path": "/bob_field", "ops": [], "window_focus": True})
         d.check("the granted lead points the keyboard at a shown text", lead_focus[0] is None and (lead_focus[1] or {}).get("window_focus") is True, json.dumps(lead_focus[1])[:200])
+        # Native code (review of m5-gmods, lead direction 1): a module runs in the engine's
+        # process with the owner's user rights. A builder's logic_build builds nothing and files
+        # a proposal; it can't approve it, load a library or unload a module. The granted lead
+        # approves the proposal (here a check build: no library is loaded).
+        code, prop = d.raw(d.agent("bob"), "logic_build", {"path": "games/ambulo"})
+        d.probed.add("logic_build")
+        pid = ((prop or {}).get("proposal") or {}).get("id")
+        d.check("bob's logic_build is refused as lead_only and filed as a proposal", code == "lead_only" and isinstance(pid, int), json.dumps(prop)[:200])
+        d.expect("bob approves his own proposal", "bob", "logic_build", {"path": "games/ambulo", "approve": pid or 1}, ["lead_only"])
+        d.expect("bob loads a module library", "bob", "logic_reload", {"module": "ambulo"}, ["lead_only"])
+        d.expect("bob unloads a module", "bob", "logic_unload", {"module": "ambulo"}, ["lead_only"])
+        listed = d.ok("lee", "logic_status").get("proposals") or []
+        d.check("the lead sees bob's proposal", any(p.get("id") == pid and p.get("by") == "bob" for p in listed), json.dumps(listed)[:200])
+        code, built = d.raw(d.agent("lee"), "logic_build", {"path": "games/ambulo", "check": True, "approve": pid or 1})
+        d.check("the granted lead approves it", code is None and ((built or {}).get("approved") or {}).get("by") == "bob", json.dumps(built)[:300])
         d.raw(d.agent("lee"), "text_edit", {"path": "/bob_field", "ops": [], "window_focus": False})
         # Jobs: ann's perf capture records; bob can't replace it or switch the profiler under it.
         done = {}

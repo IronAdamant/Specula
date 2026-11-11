@@ -227,6 +227,54 @@ impl Value {
     }
 }
 
+/// Longest JSON text [`Value::parse_json`] reads (a module's data file, say).
+pub const MAX_JSON_BYTES: usize = 256 << 10;
+
+impl Value {
+    /// Parses JSON text (a module's data file, embedded with `include_str!`) into a value, as
+    /// [`Value::from_json`] converts it. Text over [`MAX_JSON_BYTES`] or nested deeper than
+    /// [`MAX_DEPTH`] is refused before any tree is built, with code `limit`; bad JSON is
+    /// `bad_json`, naming the byte offset.
+    ///
+    /// Modules are stateless (a fresh value handles every call), so parse data when a call needs
+    /// it, not every tick: a few KB parse in tens of microseconds.
+    pub fn parse_json(text: &str) -> Result<Value, crate::SdkError> {
+        if text.len() > MAX_JSON_BYTES {
+            return Err(crate::SdkError::new(
+                "limit",
+                format!("the JSON text is {} bytes; at most {} KiB are parsed", text.len(), MAX_JSON_BYTES >> 10),
+            ));
+        }
+        // Depth first, by brackets outside strings: cheap, and keeps encode/decode's limit.
+        let (mut depth, mut deepest, mut in_str, mut escaped) = (0usize, 0usize, false, false);
+        for b in text.bytes() {
+            if in_str {
+                match b {
+                    _ if escaped => escaped = false,
+                    b'\\' => escaped = true,
+                    b'"' => in_str = false,
+                    _ => {}
+                }
+                continue;
+            }
+            match b {
+                b'"' => in_str = true,
+                b'[' | b'{' => {
+                    depth += 1;
+                    deepest = deepest.max(depth);
+                }
+                b']' | b'}' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+        if deepest > MAX_DEPTH {
+            return Err(crate::SdkError::new("limit", format!("the JSON nests {deepest} deep; at most {MAX_DEPTH}")));
+        }
+        let json = Json::parse(text).map_err(|e| crate::SdkError::new("bad_json", format!("{e:?}")))?;
+        Ok(Value::from_json(&json))
+    }
+}
+
 fn len32(n: usize) -> u32 {
     u32::try_from(n).expect("a value part longer than 4 GiB")
 }
@@ -492,5 +540,22 @@ mod tests {
         assert_eq!(v.get("b"), Some(&Value::Num(2.5)));
         assert_eq!(v.to_json(), j);
         assert_eq!(Value::Num(f64::INFINITY).to_json(), Json::Null);
+    }
+
+    /// Module data files: parsed whole, refused over the size or depth caps before any tree is
+    /// built, bad JSON named; brackets inside strings don't count as depth.
+    #[test]
+    fn json_text_is_parsed_within_limits() {
+        let v = Value::parse_json(r#"{"items": {"bone": {"stack": 10, "name": "a [ { \" ] text"}}}"#).unwrap();
+        assert_eq!(v.get("items").and_then(|i| i.get("bone")).and_then(|b| b.get("stack")), Some(&Value::Int(10)));
+        assert_eq!(Value::parse_json("{\"a\": ").unwrap_err().code, "bad_json");
+        let big = format!("\"{}\"", "x".repeat(MAX_JSON_BYTES));
+        assert_eq!(Value::parse_json(&big).unwrap_err().code, "limit");
+        let deep = format!("{}{}", "[".repeat(MAX_DEPTH + 1), "]".repeat(MAX_DEPTH + 1));
+        assert_eq!(Value::parse_json(&deep).unwrap_err().code, "limit");
+        let ok = format!("{}{}", "[".repeat(MAX_DEPTH), "]".repeat(MAX_DEPTH));
+        assert!(Value::parse_json(&ok).is_ok());
+        let in_string = format!("\"{}\"", "[".repeat(MAX_DEPTH * 2));
+        assert!(Value::parse_json(&in_string).is_ok());
     }
 }

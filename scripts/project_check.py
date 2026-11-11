@@ -101,10 +101,10 @@ def fix_checks(args, work, check):
     env_target = os.environ.get("CARGO_TARGET_DIR")
     os.environ["CARGO_TARGET_DIR"] = str(work / "wstarget")
     try:
-        with Engine(exe, args.port + 1, work / "engine-fix.log", "--headless", "--assets", str(ws / "emptyassets"), "--captures", str(work / "caps-fix"), "--worlds", str(work / "worlds-fix"), "--saves", str(work / "saves-fix"), "--", "--mute", cwd=str(ws)) as eng:
+        with Engine(exe, args.port + 1, work / "engine-fix.log", "--headless", "--assets", str(ws / "emptyassets"), "--captures", str(work / "caps-fix"), "--worlds", str(work / "worlds-fix"), "--saves", str(work / "saves-fix"), "--lead", "ann", "--", "--mute", cwd=str(ws)) as eng:
             ann = eng.mcp("fix-ann")
             bob = eng.mcp("fix-bob")
-            ann.hello("ann")
+            ann.hello("ann", role="lead")  # only the owner or a granted lead builds modules (docs/design/MODULES.md)
             bob.hello("bob")
             m = ann.json("project_mount", module="mods/ambulo")
             ann.call("logic_build", path="mods/ambulo", check=True)  # warm (the first build compiles the SDK)

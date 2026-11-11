@@ -320,6 +320,114 @@ pub fn scan_limited(src: &str, room: usize) -> (Vec<Hit>, usize) {
     (hits, more)
 }
 
+/// What a module's source reaches outside the engine's API (docs/design/GAMEPLAY_MODULES.md,
+/// "What a module can reach"). Every rule refuses the build (`native_code`): this is a lint,
+/// defence in depth behind the rule that only the owner or a granted lead loads a module, never
+/// a sandbox (safe Rust has known soundness holes, and a lint can be raced by whoever writes the
+/// files during a build).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reach {
+    pub line: u32,
+    pub column: u32,
+    /// `native_import` (foreign functions, native libraries, inline assembly), `unsafe_code`,
+    /// `os_reach` (files, processes, sockets, the environment through `std`), `macro_path` (a
+    /// path segment spliced in from a macro variable, which could spell any of those).
+    pub rule: &'static str,
+    pub what: String,
+}
+
+/// `std` modules a module may not name: they reach the machine around the engine's rules.
+const OS_MODULES: [&str; 5] = ["fs", "process", "net", "os", "env"];
+
+/// Reaches in one source file, in order (at most `room`).
+pub fn reach_scan(src: &str, room: usize) -> Vec<Reach> {
+    let (toks, _) = tokenize(src);
+    let ident = |k: usize| match toks.get(k).map(|t| &t.tok) {
+        Some(Tok::Ident(s)) => Some(s.as_str()),
+        _ => None,
+    };
+    let punct = |k: usize, c: char| toks.get(k).is_some_and(|t| t.tok == Tok::Punct(c));
+    let lit = |k: usize| toks.get(k).is_some_and(|t| t.tok == Tok::Lit);
+    let path_sep_before = |k: usize| k >= 2 && punct(k - 1, ':') && punct(k - 2, ':');
+    let path_sep_after = |k: usize| punct(k + 1, ':') && punct(k + 2, ':');
+    let mut out = Vec::new();
+    // Inside a `use` item (its tree may rename a module: `use std::{fs as f}`).
+    let mut in_use = false;
+    for (k, t) in toks.iter().enumerate() {
+        if out.len() >= room {
+            break;
+        }
+        match &t.tok {
+            Tok::Punct(';') => in_use = false,
+            Tok::Ident(s) if s == "use" => in_use = true,
+            _ => {}
+        }
+        // `::$seg`: a path segment from a macro variable (`std::$m::write`); `$crate` is the
+        // macro's own crate.
+        if t.tok == Tok::Punct('$') && path_sep_before(k) && ident(k + 1) != Some("crate") {
+            out.push(Reach { line: t.line, column: t.col, rule: "macro_path", what: "a path segment from a macro variable (it could name std::fs or std::process)".into() });
+            continue;
+        }
+        let Tok::Ident(name) = &t.tok else { continue };
+        let found: Option<(&'static str, &str)> = match name.as_str() {
+            // Any `extern` but `extern crate`, `extern fn` and `extern "abi" fn` (definitions and
+            // pointer types) declares foreign items, however the ABI is spelled: a literal, a
+            // macro variable (`extern $abi { .. }`), or nothing.
+            "extern" if !(ident(k + 1) == Some("crate") || ident(k + 1) == Some("fn") || (lit(k + 1) && ident(k + 2) == Some("fn"))) => {
+                Some(("native_import", "an extern block (foreign functions)"))
+            }
+            // `#[link(...)]`, or `link(name = ...)` inside a `cfg_attr`.
+            "link" if (k >= 2 && punct(k - 1, '[') && punct(k - 2, '#')) || (punct(k + 1, '(') && matches!(ident(k + 2), Some("name") | Some("kind"))) => {
+                Some(("native_import", "#[link] (a native library)"))
+            }
+            "link_name" | "link_ordinal" => Some(("native_import", "link_name (a native symbol)")),
+            // Any mention: `asm!`, `core::arch::asm`, `use core::arch::asm as quiet`.
+            "asm" | "global_asm" | "naked_asm" => Some(("native_import", "inline assembly")),
+            "unsafe" => Some(("unsafe_code", "unsafe code (raw pointers can reach any function in the process)")),
+            m if OS_MODULES.contains(&m) && (path_sep_before(k) || path_sep_after(k) || in_use) => Some(("os_reach", "a std module that reaches the machine (files, processes, sockets, the environment)")),
+            "Command" if path_sep_after(k) && ident(k + 3) == Some("new") => Some(("os_reach", "std::process::Command (starts programs)")),
+            "TcpStream" | "TcpListener" | "UdpSocket" => Some(("os_reach", "a network socket")),
+            _ => None,
+        };
+        if let Some((rule, what)) = found {
+            out.push(Reach { line: t.line, column: t.col, rule, what: what.to_owned() });
+        }
+    }
+    out
+}
+
+/// Bounds of one build's reach scan: files and bytes read so far.
+#[derive(Default)]
+pub struct ScanBudget {
+    files: usize,
+    bytes: u64,
+}
+
+/// The first reach in `files` (every file rustc read for one crate, from its dep-info), or why
+/// the files can't be checked: too many or too big is refused too (what isn't checked isn't
+/// loaded).
+pub fn first_reach(files: &[PathBuf], budget: &mut ScanBudget) -> Option<(PathBuf, Reach)> {
+    let refuse = |file: &Path, what: String| Some((file.to_owned(), Reach { line: 0, column: 0, rule: "not_checked", what }));
+    for file in files {
+        budget.files += 1;
+        if budget.files > MAX_FILES {
+            return refuse(file, format!("more than {MAX_FILES} compiled files (too many to check)"));
+        }
+        let len = std::fs::metadata(file).map_or(u64::MAX, |m| m.len());
+        if len > MAX_FILE_BYTES || budget.bytes + len > MAX_TOTAL_BYTES {
+            return refuse(file, format!("a compiled file too big to check (over {} KiB, or {} MiB in all)", MAX_FILE_BYTES >> 10, MAX_TOTAL_BYTES >> 20));
+        }
+        budget.bytes += len;
+        let Ok(bytes) = std::fs::read(file) else {
+            return refuse(file, "a compiled file that can't be read back".into());
+        };
+        if let Some(r) = reach_scan(&String::from_utf8_lossy(&bytes), 1).into_iter().next() {
+            return Some((file.clone(), r));
+        }
+    }
+    None
+}
+
 /// The `.rs` files under `dir/src`, sorted (at most [`MAX_FILES`], walking at most [`MAX_DIRS`]
 /// folders).
 pub(crate) fn sources(dir: &Path) -> Vec<PathBuf> {
@@ -383,6 +491,8 @@ pub fn scan_dir(dir: &Path) -> Vec<Diagnostic> {
                 package: None,
             });
         }
+        // What a module reaches outside the engine's API is refused after the build, over every
+        // file rustc compiled (crate::build::check_compiled), not warned about here.
     }
     if more > 0 {
         if let Some(last) = out.last_mut() {
@@ -513,11 +623,74 @@ fn k(x: f32) -> f32 {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The example module follows the rules it is the template for.
+    /// The example modules follow the rules they are the templates for: no determinism
+    /// warnings, and (in every file their libraries compile) nothing that reaches the machine.
     #[test]
-    fn the_example_module_is_clean() {
-        let ambulo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../games/ambulo");
-        let d = scan_dir(&ambulo);
-        assert!(d.is_empty(), "{:?}", d.iter().map(|d| (&d.message, d.line)).collect::<Vec<_>>());
+    fn the_example_modules_are_clean() {
+        for m in ["ambulo", "inventarium", "facultas", "colloquium", "quaestio", "exemplum"] {
+            let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../games").join(m);
+            let d = scan_dir(&dir);
+            assert!(d.is_empty(), "{m}: {:?}", d.iter().map(|d| (&d.message, d.line)).collect::<Vec<_>>());
+            // Their libraries (not their #[cfg(test)] files, which never reach the library).
+            let mut lib: Vec<PathBuf> = sources(&dir).into_iter().filter(|f| !f.ends_with("tests.rs")).collect();
+            lib.extend(std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "json")));
+            assert_eq!(first_reach(&lib, &mut ScanBudget::default()), None, "{m}");
+        }
+    }
+
+    /// Reaching the machine is found however it is spelled (each of the review's bypasses of the
+    /// first scan, gmods R1 blocker 1); strings and comments don't count.
+    #[test]
+    fn native_imports_and_other_reaches_are_found() {
+        let rules = |s: &str| reach_scan(s, 64).into_iter().map(|r| r.rule).collect::<Vec<_>>();
+        let keylogger = r#"
+            #[link(name = "user32")]
+            extern "system" { fn GetAsyncKeyState(k: i32) -> i16; }
+        "#;
+        assert_eq!(rules(keylogger), vec!["native_import", "native_import"]);
+        assert_eq!(rules("extern { fn f(); }"), vec!["native_import"]);
+        assert_eq!(rules("#[cfg_attr(windows, link(name = \"x\"))] extern \"C\" {}"), vec!["native_import", "native_import"]);
+        assert_eq!(rules("extern \"C\" { #[link_name = \"y\"] fn x(); }"), vec!["native_import", "native_import"]);
+        assert_eq!(rules("fn f() { unsafe { core::arch::asm!(\"nop\") } }"), vec!["unsafe_code", "native_import"]);
+        assert_eq!(rules("macro_rules! m { () => { extern \"system\" { fn k(); } } }"), vec!["native_import"], "inside a macro too");
+        // p1: the ABI from a macro variable.
+        assert_eq!(rules("macro_rules! imp { ($abi:literal) => { extern $abi { fn k(); } } } imp!(\"system\");")[0], "native_import");
+        // p2: asm renamed on import.
+        assert_eq!(rules("use core::arch::asm as quiet; fn f() { quiet!(\"nop\") }"), vec!["native_import"]);
+        assert_eq!(rules("use core::arch::global_asm; use core::arch::naked_asm;"), vec!["native_import", "native_import"]);
+        // unsafe anywhere (raw pointers walk to GetProcAddress); #![deny(unsafe_code)] is not unsafe.
+        assert_eq!(rules("#![deny(unsafe_code)] fn f(p: *const u8) -> u8 { unsafe { *p } }"), vec!["unsafe_code"]);
+        // An extern "C" function definition, an extern fn pointer type and extern crate are no imports.
+        assert!(rules("pub extern \"C\" fn cb() {} type F = extern fn(); type G = unsafe_free; extern crate alloc; // extern \"C\" { }\nconst S: &str = \"extern {\";").is_empty());
+        // std's reach: by path, renamed in a use tree, through a glob, or spliced by a macro.
+        assert_eq!(rules("let c = std::process::Command::new(\"powershell\"); let s = std::net::TcpStream::connect(a);"), vec!["os_reach", "os_reach", "os_reach", "os_reach"]);
+        assert_eq!(rules("use std::{fs as f}; fn w() { f::write(\"x\", \"y\"); }"), vec!["os_reach"]);
+        assert_eq!(rules("use std::*; fn w() { fs::write(\"x\", \"y\"); }"), vec!["os_reach"]);
+        assert_eq!(rules("fn r() -> String { std::env::var(\"HOME\").unwrap() }"), vec!["os_reach"]);
+        assert_eq!(rules("macro_rules! w { ($m:ident) => { std::$m::write(\"a\", \"b\") } } w!(fs);"), vec!["macro_path"]);
+        assert!(rules("macro_rules! m { () => { $crate::x() } }").is_empty(), "$crate is the macro's own crate");
+        // Near misses are not reaches: a variable named link, an index, a call; Command without
+        // ::new; a method named process; env! (a compile-time constant).
+        assert!(rules("let link = 1; let a = v[link]; link(x); f(link, kind); let b = Command::other(); let c = x.Command; fn process(&self) {} let v = env!(\"CARGO_PKG_VERSION\");").is_empty());
+        assert_eq!(rules("#[link]
+fn f() {}"), vec!["native_import"], "an attribute at the very start");
+        assert_eq!(reach_scan(&"unsafe {} ".repeat(100), 5).len(), 5, "bounded");
+        // Compiled files (any extension: #[path = "imp.txt"], include!("imp.inc")): the first
+        // reach, or files too many or too big to check.
+        let dir = std::env::temp_dir().join(format!("specula-reach-test-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("src/deep")).unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "mod deep;\n").unwrap();
+        std::fs::write(dir.join("src/deep/imp.txt"), "fn a() {}\n").unwrap();
+        let files = vec![dir.join("src/lib.rs"), dir.join("src/deep/imp.txt")];
+        assert_eq!(first_reach(&files, &mut ScanBudget::default()), None);
+        std::fs::write(dir.join("src/deep/imp.txt"), "\n\nextern \"system\" { fn GetKeyState(k: i32) -> i16; }\n").unwrap();
+        let (file, r) = first_reach(&files, &mut ScanBudget::default()).unwrap();
+        assert!(file.ends_with("imp.txt") && r.line == 3 && r.rule == "native_import", "{file:?} {r:?}");
+        std::fs::write(dir.join("src/deep/imp.txt"), vec![b' '; MAX_FILE_BYTES as usize + 1]).unwrap();
+        assert_eq!(first_reach(&files, &mut ScanBudget::default()).unwrap().1.rule, "not_checked", "too big is refused");
+        let many = vec![dir.join("src/lib.rs"); MAX_FILES + 1];
+        assert_eq!(first_reach(&many, &mut ScanBudget::default()).unwrap().1.rule, "not_checked", "too many is refused");
+        assert_eq!(first_reach(&[dir.join("missing.rs")], &mut ScanBudget::default()).unwrap().1.rule, "not_checked", "unreadable is refused");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

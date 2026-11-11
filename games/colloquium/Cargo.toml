@@ -1,0 +1,31 @@
+[package]
+name = "colloquium"
+description = "Example Specula gameplay module: dialogue graphs as data (conditions, choices, effects, localisable lines), hot-reloadable"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+# A module is a cdylib the engine loads (logic_build builds and reloads it). The rlib lets the
+# demo's tests link it beside the other modules (with the `linked` feature, which leaves out the
+# exported entry point so several modules fit in one test binary).
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+linked = []
+
+[dependencies]
+specula-sdk = { path = "../../crates/specula-sdk" }
+
+# Tests run the module in the engine's real module host (linked in, same ABI and messages).
+[dev-dependencies]
+specula = { path = "../../crates/specula" }
+specula-logic = { path = "../../crates/specula-logic" }
+specula-core = { path = "../../crates/specula-core" }
+
+[lints]
+workspace = true

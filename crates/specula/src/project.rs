@@ -50,6 +50,9 @@ pub const MAX_TASTE_BYTES: usize = 64 << 20;
 pub const MAX_MODULE_MOUNTS: usize = 16;
 /// Scans go at most this deep and look at most this many directory entries per mount.
 const SCAN_DEPTH: usize = 8;
+/// Why a write into a module folder waits while that module is built (retried like any failed
+/// write, so it lands once the build has loaded).
+const BUILDING: &str = "module_building: this module is being built; the file is written when the build ends (the sources a build checks are the ones it compiles)";
 const SCAN_ENTRIES: usize = 20_000;
 /// Folders scans never enter (build output, the engine's own output).
 const SKIP_DIRS: [&str; 7] = ["target", "worlds", "saves", "captures", "node_modules", "specula-modules", "perf"];
@@ -792,6 +795,12 @@ impl SyncPlan {
                     continue;
                 }
             }
+            // A module folder being built is left alone until its build has loaded (the write
+            // is retried): the sources a build digests are the sources it compiles.
+            if specula_logic::build::building(&disk) {
+                outcomes.push((path, Outcome::Failed(BUILDING.into())));
+                continue;
+            }
             let o = match &file {
                 Some((kind, text, _)) => match write_entry(&mount.root, &disk, *kind, text, content) {
                     Ok((st, None)) => {
@@ -1250,6 +1259,38 @@ mod tests {
         assert_eq!(paths, ["assets/recipes/a.json", "assets/style.json", "assets/ui/hud.json", "assets/ui/theme.json"]);
         assert_eq!(disk.skipped[ASSETS].0.len(), 1, "the big recipe is listed as skipped");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Review R2 of m5-gmods: an agent swapped a module's sources through project_write while
+    /// the lead's approved build ran, and put them back before the build's second digest. A
+    /// folder held for a build is left alone: the write waits and lands when the build ends.
+    #[test]
+    fn writes_into_a_module_folder_wait_while_it_is_built() {
+        let root = scratch("building");
+        std::fs::create_dir_all(root.join("sounds")).unwrap();
+        std::fs::write(root.join("sounds/s.json"), "{\"a\": 1}").unwrap();
+        std::fs::write(root.join("sounds/gone.json"), "{\"g\": 1}").unwrap();
+        let mut disk = Disk::default();
+        let mut files = BTreeMap::new();
+        for (p, k, t, s) in disk.mount(Mount { name: ASSETS.into(), root: root.clone(), kind: MountKind::Assets }) {
+            disk.stamp(&p, s);
+            files.insert(p, ProjectFile::new(k, t, 1, Arc::from("disk")));
+        }
+        let path = "assets/sounds/s.json";
+        let held = specula_logic::build::hold(&root);
+        files.insert(path.into(), ProjectFile::new(FileKind::Sound, Arc::from("{\"evil\": 2}"), 2, Arc::from("mallory")));
+        files.remove("assets/sounds/gone.json");
+        let done = disk.sync(&files, 2);
+        assert_eq!(done.failed.len(), 2, "the write and the delete both wait: {done:?}");
+        assert!(done.failed.iter().all(|(_, e)| e.starts_with("module_building")), "{done:?}");
+        assert!(done.changed.is_empty());
+        assert_eq!(std::fs::read_to_string(root.join("sounds/s.json")).unwrap(), "{\"a\": 1}", "the disk is as the build read it");
+        assert!(root.join("sounds/gone.json").exists());
+        drop(held);
+        let done = disk.sync(&files, 3);
+        assert!(done.failed.is_empty(), "{done:?}");
+        assert_eq!(std::fs::read_to_string(root.join("sounds/s.json")).unwrap(), "{\"evil\": 2}", "written once the build ended");
+        assert!(!root.join("sounds/gone.json").exists());
     }
 
     /// Review finding: an outside edit that isn't UTF-8 (or is over 1 MiB) was never imported and the

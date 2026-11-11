@@ -30,6 +30,11 @@ members = [
     "games/sepulcra",
     "games/sepulcra-app",
     "games/ambulo",
+    "games/inventarium",
+    "games/facultas",
+    "games/colloquium",
+    "games/quaestio",
+    "games/exemplum",
 ]
 
 # Lints every member inherits (`[lints] workspace = true` in its Cargo.toml; crates/specula/tests/
@@ -137,6 +142,22 @@ opt-level = 2
 # copies and maps at every reload. Panic locations still work (they don't need debug info).
 # opt-level 0 was measured too: no faster for a thin module (linking dominates).
 [profile.dev.package.ambulo]
+debug = 0
+strip = "debuginfo"
+# The gameplay module examples (docs/design/GAMEPLAY_MODULES.md), likewise.
+[profile.dev.package.inventarium]
+debug = 0
+strip = "debuginfo"
+[profile.dev.package.facultas]
+debug = 0
+strip = "debuginfo"
+[profile.dev.package.colloquium]
+debug = 0
+strip = "debuginfo"
+[profile.dev.package.quaestio]
+debug = 0
+strip = "debuginfo"
+[profile.dev.package.exemplum]
 debug = 0
 strip = "debuginfo"
 

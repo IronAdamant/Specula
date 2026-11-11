@@ -333,7 +333,7 @@ pub(crate) const BRIEFS: &[(&str, &str)] = &[
     ("audio_settings", "bus volumes and duck rules (lead to change)"),
     ("terrain_info", "how a terrain is drawn; collider check"),
     ("terrain_edit", "sculpt and paint a terrain recipe"),
-    ("logic_build", "build and hot-reload a module"),
+    ("logic_build", "build and hot-reload a module (lead; others propose)"),
     ("logic_reload", "reload or load a module library"),
     ("logic_unload", "stop and unload a module"),
     ("logic_status", "loaded modules and their state"),

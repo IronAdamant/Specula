@@ -1,0 +1,59 @@
+{
+  "format": "specula.colloquium.v1",
+  "player": "/ambulo/player",
+  "talk_range_m": 2.5,
+  "speakers": {
+    "sexton": {"name": {"key": "speaker.sexton", "text": "The Sexton"}},
+    "you": {"name": {"key": "speaker.you", "text": "You"}}
+  },
+  "graphs": {
+    "sexton": {
+      "start": "greet",
+      "nodes": {
+        "greet": {
+          "speaker": "sexton",
+          "line": {"key": "dialogue.sexton.greet", "text": "Mind the mist, stranger. The dead are restless tonight."},
+          "choices": [
+            {"line": {"key": "dialogue.sexton.ask_help", "text": "Can I help?"}, "if": {"quest": ["bones", "none"]}, "next": "offer"},
+            {"line": {"key": "dialogue.sexton.about_bones", "text": "About those bones..."}, "if": {"quest": ["bones", "active"]}, "next": "progress"},
+            {"line": {"key": "dialogue.sexton.all_quiet", "text": "Is it quieter now?"}, "if": {"quest": ["bones", "done"]}, "next": "after"},
+            {"line": {"key": "dialogue.common.farewell", "text": "Farewell."}, "next": null}
+          ]
+        },
+        "offer": {
+          "speaker": "sexton",
+          "line": {"key": "dialogue.sexton.offer", "text": "Wisps scattered the bones of the old ossuary. Bring me three, and banish two wisps while you are at it."},
+          "choices": [
+            {"line": {"key": "dialogue.sexton.accept", "text": "I'll find them."}, "next": "accepted", "do": [{"quest_start": "bones"}]},
+            {"line": {"key": "dialogue.common.not_now", "text": "Not now."}, "next": null}
+          ]
+        },
+        "accepted": {
+          "speaker": "sexton",
+          "line": {"key": "dialogue.sexton.lantern", "text": "Take my old lantern. Its flare scares the wisps off (Q)."},
+          "do": [{"give": ["lantern", 1]}],
+          "next": null
+        },
+        "progress": {
+          "speaker": "sexton",
+          "line": {"key": "dialogue.sexton.progress", "text": "Any luck?"},
+          "choices": [
+            {"line": {"key": "dialogue.sexton.hand_over", "text": "Here are three bones."}, "if": {"has_item": ["bone", 3]}, "next": "thanks", "do": [{"take": ["bone", 3]}, {"signal": "bones_returned"}]},
+            {"line": {"key": "dialogue.sexton.still_looking", "text": "Still looking."}, "next": null}
+          ]
+        },
+        "thanks": {
+          "speaker": "sexton",
+          "line": {"key": "dialogue.sexton.thanks", "text": "Bless you. They will rest easier in the ossuary."},
+          "do": [{"flag": "helped_sexton"}],
+          "next": null
+        },
+        "after": {
+          "speaker": "sexton",
+          "line": {"key": "dialogue.sexton.after", "text": "Quieter, yes. The silver key is yours; the crypt gate remembers it."},
+          "next": null
+        }
+      }
+    }
+  }
+}

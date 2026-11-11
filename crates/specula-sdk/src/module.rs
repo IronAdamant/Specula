@@ -409,6 +409,16 @@ impl<'a> Cx<'a> {
         Ok(v.as_list().unwrap_or_default().iter().filter_map(Value::as_u64).map(Id).collect())
     }
 
+    /// Entities tagged `tag` whose world position is within `radius` metres of `at`, by id (at
+    /// most `limit`): read from the engine's tag index, never a walk of the world, and the limit
+    /// counts only what is in reach. Use it for "what is near me" (pickups, targets, talkers).
+    /// Refused (`limit`) when more than 65,536 entities carry the tag.
+    pub fn query_near(&mut self, tag: &str, at: Vec3, radius: f32, limit: u32) -> Result<Vec<Id>, SdkError> {
+        let near = Value::map().with("at", at).with("radius", radius);
+        let v = self.ask(Value::map().with("op", "query").with("tag", tag).with("near", near).with("limit", limit))?;
+        Ok(v.as_list().unwrap_or_default().iter().filter_map(Value::as_u64).map(Id).collect())
+    }
+
     pub fn spawn(&mut self, spawn: Spawn) -> Result<Id, SdkError> {
         let v = self.ask(Value::map().with("op", "spawn").with("spec", spawn.0))?;
         v.as_u64().map(Id).ok_or_else(|| SdkError::new("bad_answer", "spawn answered no id"))
@@ -491,6 +501,21 @@ impl<'a> Cx<'a> {
     /// same (nothing in a trace feeds back into the simulation). At most 64 events per call.
     pub fn trace(&mut self, level: TraceLevel, code: &str, fields: impl Into<Value>) -> Result<(), SdkError> {
         self.ask(Value::map().with("op", "trace").with("level", level.as_str()).with("code", code).with("fields", fields.into())).map(drop)
+    }
+
+    /// Plays a sound by name (`[a-z][a-z0-9_]{0,63}`: a lowercase letter first, so `"1up"` is
+    /// refused): a sound recipe the engine finds in the
+    /// module's own `sounds/<name>.json`, else the project's assets (`sounds/<name>.json`).
+    /// `at` places it in the world (spatial), else it plays flat; `gain` is 0..4 (1 = as
+    /// authored). It goes to the `sfx` bus, recorded as played by `module:<name>`
+    /// (`audio_played`).
+    ///
+    /// **Presentation only:** a sound never feeds back into the simulation. The engine plays it
+    /// after the call commits (a failed call plays nothing), skips it when audio is off or the
+    /// recipe can't be found or rendered (traced, never an error), and answers the same either
+    /// way, so runs with and without audio stay identical. At most 16 sounds per call.
+    pub fn sound(&mut self, name: &str, at: Option<Vec3>, gain: f32) -> Result<(), SdkError> {
+        self.ask(Value::map().with("op", "sound").with("name", name).with("at", at).with("gain", gain)).map(drop)
     }
 }
 

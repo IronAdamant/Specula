@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 /// Crates whose code runs in (or decides) the simulation: they carry the determinism clippy.toml.
-const SIMULATION: [&str; 15] = [
+const SIMULATION: [&str; 20] = [
     "crates/specula-physics",
     // Cosmetic, but reproducible: captures repeat bit for bit on every platform (docs/design/VFX.md).
     "crates/specula-scintilla",
@@ -36,6 +36,12 @@ const SIMULATION: [&str; 15] = [
     "crates/specula-model",
     "games/sepulcra",
     "games/ambulo",
+    // The gameplay-module examples and their demo (docs/design/GAMEPLAY_MODULES.md).
+    "games/inventarium",
+    "games/facultas",
+    "games/colloquium",
+    "games/quaestio",
+    "games/exemplum",
 ];
 
 /// Crates outside the simulation (rendering, platform, tools, presentation; or the engine, whose
@@ -61,7 +67,7 @@ const NOT_SIMULATION: [&str; 14] = [
 /// Crates with FFI (or other unsafe code, each block with a SAFETY comment): the rest forbid it.
 /// `specula-core` denies it outside its counting allocator; module crates (`ambulo`) deny it
 /// because `export_module!` allows its one exported function.
-const UNSAFE_ALLOWED: [&str; 8] = [
+const UNSAFE_ALLOWED: [&str; 13] = [
     "crates/specula-sys",
     "crates/specula-platform",
     "crates/specula-gpu",
@@ -70,6 +76,11 @@ const UNSAFE_ALLOWED: [&str; 8] = [
     "crates/specula-sdk",
     "crates/specula-core",
     "games/ambulo",
+    "games/inventarium",
+    "games/facultas",
+    "games/colloquium",
+    "games/quaestio",
+    "games/exemplum",
 ];
 
 /// The reference determinism clippy.toml.

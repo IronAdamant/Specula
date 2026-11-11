@@ -7,6 +7,7 @@
  "summary": "The code escape hatch: edit a hot-reloaded Rust module (a new input action and the physics of a jump), build it with logic_build, and prove it in the running world; judged by a playtest that presses jump on the ground and again in mid-air.",
  "game": null,
  "engine_cwd": "repo",
+ "solver_role": "lead",
  "files": [
   {
    "from": "evals/fixtures/saltus/Cargo.toml.txt",
@@ -34,7 +35,7 @@
    }
   }
  ],
- "brief": "A game module, \"saltus\" (a Rust cdylib in {work}/saltus, already built and running), adds a capsule character at /saltus/player that walks with the \"move\" action. Give it a jump: a button action named \"jump\" (bind Space and the gamepad's south button for players; agents press it with logic_input) that launches the character straight up only when it is standing on the ground, high enough that its feet rise at least 0.8 m (and no more than 1.2 m), after which it falls back and lands. Pressing jump again in mid-air must do nothing. Edit the module's files and rebuild it with logic_build {\"path\": \"{work}/saltus\"}; walking must keep working.",
+ "brief": "A game module, \"saltus\" (a Rust cdylib in {work}/saltus, already built and running), adds a capsule character at /saltus/player that walks with the \"move\" action. Give it a jump: a button action named \"jump\" (bind Space and the gamepad's south button for players; agents press it with logic_input) that launches the character straight up only when it is standing on the ground, high enough that its feet rise at least 0.8 m (and no more than 1.2 m), after which it falls back and lands. Pressing jump again in mid-air must do nothing. Edit the module's files and rebuild it with logic_build {\"path\": \"{work}/saltus\"} (modules are native code: only the owner or a granted lead builds them, and you are this run's lead); walking must keep working.",
  "tools": [
   "logic_*",
   "world_query",

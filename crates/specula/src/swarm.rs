@@ -191,6 +191,12 @@ impl Swarm {
         self.agents.values().filter(|a| a.key == key).map(|a| a.authority).max().unwrap_or_default()
     }
 
+    /// Whether the identity `key` may load native module code ([`crate::authority::may_load_native`]):
+    /// `Ok`, or the refusal naming `what`.
+    pub(crate) fn may_load_native(&self, key: &str, what: &str) -> Result<(), crate::world::WorldError> {
+        crate::authority::may_load_native(self.authority_of_key(key), self.grants.granted_key(key), what)
+    }
+
     /// What the session may do (read through [`crate::authority::authority`]).
     pub(crate) fn authority_of(&self, session_id: &str) -> crate::authority::Authority {
         self.agents.get(session_id).map_or(crate::authority::Authority::Agent, |a| a.authority)

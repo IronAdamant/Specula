@@ -670,6 +670,13 @@ fn pair(j: &Json, path: &str, lo: f64, hi: f64) -> Result<(f64, f64)> {
 }
 
 impl Recipe {
+    /// How long the rendered sound will be, in seconds, known before rendering (cost before
+    /// work: a caller with a shorter budget refuses the recipe without rendering it). The render
+    /// keeps `duration` (a loop's crossfade tail is folded back in), so this is exact up to a frame.
+    pub fn rendered_seconds(&self) -> f64 {
+        self.duration
+    }
+
     /// Parses and validates recipe JSON text.
     pub fn parse(text: &str) -> Result<Recipe> {
         let j = Json::parse(text).map_err(|e| AudioError::new(ErrorCode::Json, e.message).with_offset(e.offset))?;

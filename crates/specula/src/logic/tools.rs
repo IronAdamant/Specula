@@ -100,11 +100,25 @@ pub fn drop_stale(target: &Path) -> (u64, u64) {
 
 /// Diagnostics one `logic_build` answer lists (errors first); the rest are counted.
 pub const MAX_DIAGNOSTICS: usize = 30;
+/// The largest proposal id `approve` takes (ids count up from 1 per engine run).
+const MAX_PROPOSAL_ID: u64 = 1 << 40;
 /// How long `logic_build` waits for the engine to apply the reload after the build.
 const RELOAD_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// What a caller-thread tool asks the engine's authority gate before it touches Cargo or a library.
+pub enum Doing {
+    /// `logic_build` of the module folder `dir`, whose digest was just taken (a builder's call
+    /// becomes a proposal; `approve` pins a proposal's digest).
+    Build { dir: PathBuf, digest: Result<specula_logic::digest::Digest, (&'static str, String)>, approve: Option<u64> },
+    /// `logic_reload`: loading a library.
+    Reload,
+}
+
 /// A module-host command for the engine thread.
 pub enum LogicCall {
+    /// May the caller load native code? (see [`super::proposals`]): a refused build is filed as
+    /// a proposal; an approval takes its proposal.
+    Gate(Doing),
     /// Swap in a library already opened (and ABI-checked) off the engine thread.
     Load { code: ModuleCode, origin: Origin, seed: Option<u64>, open_ms: f64 },
     /// Where module `module` was loaded from (for `logic_reload`).
@@ -191,7 +205,10 @@ pub fn definitions() -> Vec<ToolDef> {
                           static mut / thread_local): each hit is a warning with code determinism::<rule> and a help note \
                           (determinism_warnings counts them; `// determinism: allowed: <why>` marks a deliberate use). \
                           One Cargo runs at a time engine-wide; identical queued \
-                          requests from several agents share one build (requests_merged). Timings in timings_ms. See \
+                          requests from several agents share one build (requests_merged). Timings in timings_ms. \
+                          WHO: a module is native code running with the owner's user rights, so only the owner or an \
+                          operator-granted lead (--lead NAME) builds and loads one. Anyone else's call builds nothing: it \
+                          files a proposal (refused as lead_only, with the proposal) that the lead approves with approve. See \
                           docs/design/MODULES.md."
                 .into(),
             input_schema: schema(
@@ -203,6 +220,15 @@ pub fn definitions() -> Vec<ToolDef> {
                     ("reload", t("boolean", "Load the built library into the world (default true)")),
                     ("detailed", t("boolean", "Include each diagnostic's full rustc rendering (default false; costs tokens)")),
                     ("seed", t("integer", "Re-seed the module's RNG streams (default: keep them)")),
+                    (
+                        "approve",
+                        Json::obj([
+                            ("type", Json::from("integer")),
+                            ("minimum", Json::from(1)),
+                            ("maximum", Json::from(MAX_PROPOSAL_ID)),
+                            ("description", Json::from("A proposal's id (logic_status lists proposals): build exactly the sources that agent proposed (refused as sources_changed if the folder changed since). Owner or granted lead only")),
+                        ]),
+                    ),
                 ],
                 &["path"],
             ),
@@ -372,8 +398,13 @@ fn check_module_owner(swarm: &Swarm, module: &str, w: Writer, doing: &str) -> Re
 /// a module whose root (`/<name>`) another agent has claimed can't be replaced or unloaded.
 pub fn handle(host: &mut LogicHost, call: LogicCall, world: &mut dyn WorldWrite, clock: &Clock, swarm: &mut Swarm, w: Writer) -> ToolOutput {
     let (tick, hz) = (clock.tick(), clock.hz());
+    let key = w.session.unwrap_or(w.name);
     let result = match call {
-        LogicCall::Load { code, origin, seed, open_ms } => LogicHost::name_of(&code)
+        LogicCall::Gate(doing) => gate(host, swarm, w, tick, doing),
+        // The caller thread asked the gate first; the engine checks again (one place can't be skipped).
+        LogicCall::Load { code, origin, seed, open_ms } => swarm
+            .may_load_native(key, "loading a module")
+            .and_then(|()| LogicHost::name_of(&code))
             .and_then(|name| check_module_owner(swarm, &name, w, "loading").map(|()| name))
             .and_then(|name| {
                 let report = host.load(code, origin, seed, world, tick, hz, &mut agent_commit(swarm, tick, w))?;
@@ -395,10 +426,14 @@ pub fn handle(host: &mut LogicHost, call: LogicCall, world: &mut dyn WorldWrite,
             ])),
             None => Err(WorldError::new("no_module", format!("no module '{module}' is loaded; give 'library' to load one")).with("module", module.as_str())),
         },
-        LogicCall::Unload { module, forget } => check_module_owner(swarm, &module, w, "unloading")
+        LogicCall::Unload { module, forget } => swarm
+            .may_load_native(key, "logic_unload (stopping a module every agent's game runs)")
+            .inspect_err(|_| super::proposals::report_refusal(w.name, key, &super::proposals::NativeRefusal::Unload { module: module.clone() }))
+            .and_then(|()| check_module_owner(swarm, &module, w, "unloading"))
             .and_then(|()| host.unload(&module, forget, world, tick, hz, &mut agent_commit(swarm, tick, w))),
         LogicCall::Status { module, detailed } => host.status(module.as_deref(), detailed).map(|mut j| {
             j.set("builds", builds_json());
+            j.set("proposals", host.proposals.json());
             j
         }),
         LogicCall::Input { module, actions, ticks } => host.hold(&module, &actions, ticks),
@@ -409,6 +444,48 @@ pub fn handle(host: &mut LogicHost, call: LogicCall, world: &mut dyn WorldWrite,
         }
     };
     output(result)
+}
+
+/// The authority gate of `logic_build` and `logic_reload` (engine thread): the owner or a granted
+/// lead passes (an `approve` takes its proposal, whose digest must still match); anyone else's
+/// build is filed as a proposal and refused, and every refusal goes to the security seam.
+fn gate(host: &mut LogicHost, swarm: &Swarm, w: Writer, tick: u64, doing: Doing) -> Result<Json, WorldError> {
+    use super::proposals::{report_refusal, NativeRefusal};
+    let key = w.session.unwrap_or(w.name);
+    let what = match &doing {
+        Doing::Build { .. } => "logic_build (building and loading a module)",
+        Doing::Reload => "logic_reload (loading a module library)",
+    };
+    match (swarm.may_load_native(key, what), doing) {
+        // Approving is the owner's or lead's: a builder's approve proposes nothing.
+        (Err(e), Doing::Build { dir, approve: Some(_), .. }) => {
+            report_refusal(w.name, key, &NativeRefusal::Build { dir });
+            Err(e)
+        }
+        (Err(e), Doing::Build { dir, digest: Ok(d), .. }) => {
+            let p = host.proposals.propose(&dir, w.name, key, tick, &d);
+            let (id, json) = (p.id, p.to_json());
+            report_refusal(w.name, key, &NativeRefusal::Proposed { dir, proposal: Some(id) });
+            Err(e.with("proposal", json).with(
+                "next",
+                "nothing was built: your module is proposed. The owner or lead reviews its files (logic_status lists proposals) and builds it with logic_build {path, approve: <id>}, which loads only these exact sources",
+            ))
+        }
+        (Err(e), Doing::Build { dir, digest: Err((code, message)), .. }) => {
+            report_refusal(w.name, key, &NativeRefusal::Build { dir });
+            Err(e.with("proposal_refused", Json::obj([("code", Json::from(code)), ("message", Json::from(message))])))
+        }
+        (Err(e), Doing::Reload) => {
+            report_refusal(w.name, key, &NativeRefusal::Reload);
+            Err(e)
+        }
+        (Ok(()), Doing::Build { dir, digest, approve: Some(id) }) => {
+            let d = digest.map_err(|(code, message)| WorldError::new(code, message).with("approve", id))?;
+            let p = host.proposals.approve(id, &dir, &d.hex)?;
+            Ok(Json::obj([("approved", p.to_json())]))
+        }
+        (Ok(()), _) => Ok(Json::Obj(Vec::new())),
+    }
 }
 
 /// The JSON an agent gets for a build.
@@ -462,8 +539,10 @@ fn report_json(r: &BuildReport, req: &BuildRequest, detailed: bool) -> Json {
 /// hand the reload to the engine thread and wait for it.
 pub fn build(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json) -> ToolOutput {
     let t0 = Instant::now();
-    let parsed = (|| -> Result<(BuildRequest, bool, bool, Option<u64>), String> {
-        check_keys(args, "logic_build", &[&["path", "check", "fix", "release", "reload", "detailed", "seed"]])?;
+    // (request, reload, detailed, seed, approve)
+    type Parsed = (BuildRequest, bool, bool, Option<u64>, Option<u64>);
+    let parsed = (|| -> Result<Parsed, String> {
+        check_keys(args, "logic_build", &[&["path", "check", "fix", "release", "reload", "detailed", "seed", "approve"]])?;
         let path = string_arg(args, "path")?.ok_or("'path' is required: the module crate's folder, e.g. games/ambulo")?;
         let dir = project_path(path, "path")?;
         if !dir.join("Cargo.toml").is_file() {
@@ -480,12 +559,29 @@ pub fn build(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json) ->
         req.fix = bool_arg(args, "fix")?.unwrap_or(false);
         req.release = bool_arg(args, "release")?.unwrap_or(false);
         let reload = bool_arg(args, "reload")?.unwrap_or(true) && !req.check;
-        Ok((req, reload, bool_arg(args, "detailed")?.unwrap_or(false), seed_arg(args)?))
+        let approve = int_arg(args, "approve", 1, MAX_PROPOSAL_ID)?;
+        if approve.is_some() && req.fix {
+            return Err("'approve' builds the proposed sources exactly as they are; 'fix' would change them (approve first, then fix)".to_owned());
+        }
+        Ok((req, reload, bool_arg(args, "detailed")?.unwrap_or(false), seed_arg(args)?, approve))
     })();
-    let (req, reload, detailed, seed) = match parsed {
+    let (req, reload, detailed, seed, approve) = match parsed {
         Ok(p) => p,
         Err(e) => return ToolOutput::error(argument_error(&e).to_pretty()),
     };
+    // Authority before anything else (docs/design/MODULES.md, "Who may load a module"): only the
+    // owner or a granted lead builds; anyone else's call is filed as a proposal. The folder's
+    // digest (read here, on the caller's thread) is what a proposal names and an approval pins.
+    // The folder is held from here until the load: the engine's own writers leave it alone
+    // (specula_logic::build::building), and the stamps show any other write, so the sources
+    // digested are the sources compiled (a swap put back before the second digest hashes the same).
+    let _held = specula_logic::build::hold(&req.dir);
+    let before = specula_logic::digest::module_snapshot(&req.dir);
+    let digest = before.as_ref().map(|(d, _)| d.clone()).map_err(Clone::clone);
+    let (gated, refused) = engine_call(to_engine, session, LogicCall::Gate(Doing::Build { dir: req.dir.clone(), digest: digest.clone(), approve }));
+    if refused {
+        return ToolOutput::error(gated.to_string());
+    }
     // Through the disk budget: a build is refused below the free-space floor (Cargo writes a lot).
     if let Err(e) = crate::disk::book().admit(crate::disk::Category::Modules, BUILD_ROOM, crate::disk::Need::Agent) {
         return ToolOutput::error(e.to_json().to_string());
@@ -519,7 +615,33 @@ pub fn build(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json) ->
     let queued_ms = report.queued.as_secs_f64() * 1000.0;
     let mut reload_ms = 0.0;
     let mut failed = !report.ok || fix_refused;
-    if let (true, Some(library)) = (report.ok && reload, report.library.clone()) {
+    if let Some(a) = gated.get("approved") {
+        out.set("approved", a.clone());
+    }
+    // The sources the build compiled are the ones digested before it (a fix round changes them
+    // itself): an edit during the build loads nothing.
+    let changed = match (&before, req.fix) {
+        (Ok(before), false) if report.ok && reload => specula_logic::digest::module_snapshot(&req.dir).ok().filter(|now| now == before).is_none(),
+        _ => false,
+    };
+    // An approval pins the folder's digest: what it built may come from nowhere else (but the
+    // engine's SDK and core), or a helper crate could change after the review, unseen.
+    let unpinned = if approve.is_some() && report.ok && reload { specula_logic::build::unpinned(&report.compiled, &req.roots, &req.dir) } else { None };
+    if changed {
+        failed = true;
+        out.set("reload_error", WorldError::new("sources_changed", "a file in the module folder was written while it was built: nothing was loaded; build again").to_json());
+    } else if let Some(c) = unpinned {
+        failed = true;
+        out.set(
+            "reload_error",
+            WorldError::new(
+                "unpinned_sources",
+                format!("the approved build compiled crate '{}' ({}) from outside the module folder, which the proposal's digest doesn't cover: nothing was loaded. A proposed module keeps its helper crates inside its own folder; the owner or lead can build it without 'approve' after reviewing that crate too", c.name, c.manifest.display()),
+            )
+            .with("crate", c.name.as_str())
+            .to_json(),
+        );
+    } else if let (true, Some(library)) = (report.ok && reload, report.library.clone()) {
         let t = Instant::now();
         let (loaded, is_error) = load_library(to_engine, session, library, Some(req.dir.clone()), seed);
         reload_ms = t.elapsed().as_secs_f64() * 1000.0;
@@ -697,6 +819,10 @@ pub fn reload(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json) -
         Ok(p) => p,
         Err(e) => return ToolOutput::error(argument_error(&e).to_pretty()),
     };
+    let (gated, refused) = engine_call(to_engine, session, LogicCall::Gate(Doing::Reload));
+    if refused {
+        return ToolOutput::error(gated.to_pretty());
+    }
     let (library, dir) = match (module, library) {
         (_, Some(lib)) => (lib, None),
         (Some(m), None) => {
