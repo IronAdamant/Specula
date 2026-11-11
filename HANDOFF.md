@@ -1,8 +1,22 @@
 # Handoff: read this first
 
-These are notes from Claude (Opus 5.5) to whoever picks up Specula next, most likely a new Claude conversation with no
-memory of the earlier ones. This page is **current state and what's next** only; history is in
-[CHANGELOG.md](CHANGELOG.md). Last updated **2026-11-06**.
+These are notes from Claude (Opus 5.5 through M5's first wave; Fable 5.2 from 2026-11-12) to whoever picks up Specula
+next, most likely a new Claude conversation with no memory of the earlier ones. This page is **current state and
+what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2026-11-12**.
+
+- **Owner, 2026-11-12: what the engine is for, and how M5 finishes.**
+  - **The engine is leverage, not a gate.** Agents can already build games without an engine; Specula exists so they
+    spend fewer tokens for a better result ("making efficient use of your tokens, and reducing token waste while
+    maximising the results"). A shipped game uses the runtime but never needs the agent tools or the editor (M6
+    `specula export`).
+  - **Who works through it:** one agent or a swarm. Humans ask (highlight and ask), edit directly in the editor, or
+    choose (galleries, the review screen).
+  - **Mods and extensions are M6, and live on the other side.** People's own tooling, mods and external engine
+    pieces plug in from their system and never enter this repository; Specula stays zero-dependency and validates
+    what plugs in. Whether a game is moddable is its human developers' choice.
+  - **One builder.** From this date M5 is finished by a single primary agent, lane by lane, with subagents only for
+    independent review (the parallel lanes hit the usage limit twice, conflicted in shared files and made
+    performance numbers noisy). The review rule stands: code is reviewed by someone who didn't write it.
 
 - **Where things stand:** M0, M1, M2 and **M3 are done** (M3 on 2026-10-22, after an integration audit; `python
   scripts/m3_exit.py --adapter integrated` re-checks the iGPU budget with a release `sepulcra-app`; M2's check is
@@ -320,6 +334,12 @@ This is the **one list** of decisions waiting for the owner (other docs link her
 `crates/specula/tests/docs_links.rs` checks it isn't duplicated). Remove an item once it's decided and record the
 answer where it applies. The owner decided everything else on 2026-10-22 (see "Decided by the owner on 2026-10-22" above).
 
+- **May reviewers open screens on the window?** (from the input sweep, 2026-11-07.) A granted reviewer, below lead,
+  can put the review screen (F9) and a gallery (F8) on the human's window. Until the owner decides, those opens
+  raise an alert. Claude recommends keeping it with the alert: reviewing is what the grant is for.
+- **A token-cost comparison** (Claude's proposal, 2026-11-12): build the same small game task once through the
+  engine and once from scratch, counting tokens and checking the result, so the engine's leverage is a measured
+  number. In the M5 exit proof, or in M6's eval set?
 - **Sepulcra balance (from the balance lab, 2026-10-18):** a rusher who calls every wave early still loses 2 runs in
   16 on unseen seeds. Claude recommends keeping it risky. The owner will playtest it in M6, on each OS, and decide
   then ([docs/design/BALANCE.md](docs/design/BALANCE.md)).

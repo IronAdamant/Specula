@@ -851,6 +851,11 @@ readback and the remaining engine-thread stalls.
   the owner at M6.
 - [ ] **Release order** (owner, 2026-10-22): verify on macOS and Linux with small games, then publish the
   crates to crates.io (open source), then market.
+- [ ] ➕ **Mods and outside extensions** (owner, 2026-11-12): how games built on Specula are modded, and how people
+  plug in their own tooling or engine pieces. These live **on their side, never in this repository**: the engine
+  stays zero-dependency and validates whatever plugs in, as it treats every agent as untrusted. Whether a game is
+  moddable is its developers' choice. Depends on the sandbox for untrusted modules (design/MODULES.md).
+  *Why:* the engine is leverage for building games, not a gate; nothing in the core may assume the only code is ours.
 
 ---
 
