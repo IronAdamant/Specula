@@ -320,6 +320,134 @@ name exists. That check is now a map lookup (`ToolHandler::has_tool`), and the d
 Scoping added nothing measurable, and the drill runs **about 2.2 times faster**. The drill's own sessions say
 `agent_hello {role: "builder"}`, so they also exercise the role path and its event-stream answers.
 
+## Kits by job (2026-11-12)
+
+**The owner's ask (2026-11-12):** an agent with a job should know at once which tools to pick up, "knowing which
+ones to get for a specific task", as a carpenter or a machinist knows their tools, without spending tokens to find
+out. Families sort the tools by what they are. A job needs the other index: which few tools it takes, in what
+order, and what says it is done.
+
+Code: `crates/specula/src/toolkits.rs` (the kits, the tags, the shared listing), `toolscope.rs` (a kit as an
+entry) and `toolscope_tools.rs` (the catalog's kit views). Live check: `scripts/toolscope_check.py`.
+
+### What a kit is
+
+A kit ([`KITS`](../../crates/specula/src/toolkits.rs)) is data:
+
+- **`tools`**: the two to six tools the job starts with. These are listed when the kit is activated.
+- **`more`**: tools the job sometimes needs. They are named with their catalog lines in the kit's entry and are
+  not listed until asked for, so the first list stays small. The steps and the done check may name them
+  (release the claim, run the style check).
+- **`steps`**: the order the tools are used in, one short paragraph.
+- **`done`**: what says the job is done. It always names a tool of the kit whose answer says so (`ui_check`
+  reports 0 errors, a replay ends on the same `world_hash`), never "it looks right".
+
+There are 21: `build_place`, `make_asset`, `make_menu`, `animate`, `write_rules`, `run_playtest`,
+`make_cutscene`, `translate`, `make_sound`, `make_effect`, `shape_terrain`, `find_paths`, `check_physics`,
+`light_scene`, `write_logic`, `find_slow_frame`, `find_cause`, `review_work`, `work_together`, `direct_swarm`
+and `ask_human`. Names are jobs, verb first, so they read apart from the families (`ui`, `physics`).
+
+### Using one
+
+- `tools_catalog {kits: true}` lists the kits: one line each, the tools each starts with, and what listing it
+  costs. Nothing else is in the answer (3.8 KB).
+- `tools_catalog {kit: "make_menu"}` shows one kit: its tools with their lines and tags, the `more` tools, the
+  steps and the done check (1.6 KB).
+- A kit is an entry wherever families and tool names are: `tools_activate {tools: ["kit:make_menu"]}`,
+  `agent_hello {tools}`, `/mcp?tools=kit:make_menu`, and the lead's `tools_scope`. The lead hands a subagent the
+  kit for its task in one entry.
+- **A kit lists its `tools`; a cap by kit allows its `tools` and its `more`.** With
+  `tools_scope {agent, tools: ["kit:build_place"], cap: true}` the agent lists five tools and may call (or
+  activate) the eleven the job sometimes needs. Listing only what the kit starts with keeps the list small;
+  capping to only that would leave the agent unable to release the claim its first step takes (review R1).
+- `tools_activate` answers the definitions as the session's list shows them (`world_set` by reference beside
+  `world_spawn`). A client that re-reads `tools/list` after `notifications/tools/list_changed` should pass
+  `schemas: false`, or it holds every definition twice.
+- `kit` and `kits` each answer on their own: another argument with them is refused, not ignored.
+- The plain catalog says the kits exist (one line naming them), and the engine's `instructions` say it at
+  `initialize`.
+- A mistyped kit is refused with the nearest one. No kit for a job: `tools_catalog {filter}` searches every tool,
+  and `tools_request` asks the lead.
+
+### Tags
+
+Every tool has tags that cut across families. `tools_catalog {tag: "checks"}` lists every tool that measures
+work, whatever family it is in.
+
+| Tag | Meaning |
+|---|---|
+| `reads` | changes nothing |
+| `writes` | changes the world, rules or project files (claims apply; journaled, undoable) |
+| `owned` | changes items that have owners (tasks, notes, claims, cameras) |
+| `open` | anyone may: no owner, claim or grant applies (the tool's description says what it changes) |
+| `lead`, `reviewer`, `owner` | changes need that operator grant |
+| `game` | the hosted game's own tool |
+| `checks` | measures your work and reports findings: what says a job is done |
+
+Tags are **derived**, never written by hand: the first seven come from the authority table
+(`authority::access`, which is what the engine enforces), and `checks` from the tool's name (`*_check`,
+`*_validate`). They can't drift from what the engine does.
+
+### One listing for arguments two tools share
+
+`world_set` takes the same component objects as `world_spawn` (material, light, collider, text and the rest:
+about 8 KB of schema). When a session lists both, `world_set`'s properties that are byte for byte
+`world_spawn`'s are listed as a reference (`"as world_spawn's light"`), and its description says so. Listed
+alone, `world_set` is in full.
+
+- Only the **listing** changes. Arguments are checked against the tool's own full schema as before, and
+  `tools_activate` still answers the full definition.
+- The pairs are data (`toolkits::SHARED`); `Catalog::listing` and `Catalog::list_bytes` apply them.
+
+### Guards
+
+- `every_tool_is_in_a_kit_or_says_why`: every engine tool is in a kit (`tools` or `more`) or in
+  `NOT_IN_A_KIT` with the reason (the core tools, the human's editor, the owner's own tool). A new tool has to
+  say which job it is for.
+- `kits_are_small_named_as_jobs_and_say_when_they_are_done`: two to six listed entries (one may be the hosted
+  game's family, which lists all of its tools); a job name that isn't a family's; every listed tool used in the
+  steps or the done check; a done check that names a tool of the kit.
+- Every tool the steps or the done check name is in the kit's `tools` or `more` (same test as the first): a
+  capped agent can do what its kit tells it to.
+- `a_cap_by_kit_reaches_what_the_kit_sometimes_needs`.
+- `kits_list_small`: every kit with the core lists at most 36 KB, and the median at most 16 KB.
+- `tags_follow_the_authority_table`.
+
+### Measured (Sepulcra hosted, 216 tools; `scripts/toolscope_check.py`, 2026-11-12; tokens are roughly bytes / 4)
+
+| List | Tools | Bytes | ~Tokens |
+|---|---:|---:|---:|
+| all | 216 | 298,202 | 74,600 |
+| role builder | 54 | 85,488 | 21,400 |
+| core | 6 | 5,756 | 1,440 |
+| **median kit, with the core** (`write_logic`) | 10 | **12,965** | **3,240** |
+| smallest kit, with the core (`check_physics`) | 11 | 10,531 | 2,630 |
+| largest kit, with the core (`build_place`) | 11 | 31,637 | 7,910 |
+| `tools_catalog {kits: true}` | | 3,812 | 950 |
+| `tools_catalog {kit}` | | 1,610 | 400 |
+| `tools_catalog` (every tool, one line each) | 216 | 14,502 | 3,630 |
+| `tools_activate {tools: ["kit:build_place"]}`: its answer, with definitions | 5 | 26,157 | 6,540 |
+| `world_spawn` + `world_set`, listed together | 2 | 16,595 | 4,150 |
+| the same two, each in full | 2 | 24,362 | 6,090 |
+
+So an agent with the median job pays about 1,440 tokens for the core, 400 for its kit's steps and done check and
+about 1,800 for the kit's tools: **roughly 3,600 tokens to the first useful call when the lead names the kit**,
+and 950 more when it has to read the list of kits first. The builder role costs 21,400 and everything 74,600.
+
+Two ways to receive a kit's definitions, and they shouldn't be paid twice: in `tools_activate`'s answer (a
+client that doesn't re-read its list), or by re-reading `tools/list` with `schemas: false` on the activation
+(a client that does). The table's kit rows are the list; the last row is the largest kit's activation answer.
+
+What the measurement corrected: the roles are heavy because they hold 45 to 81 tools, not because of two large
+schemas. The median tool is 1 KB; `world_spawn` and `world_set` together are 8% of the whole list. Kits save by
+being small. The shared listing saves a further 7.8 KB for any session that builds in the world.
+
+`build_place` is still the largest kit, because `world_spawn` (12.5 KB) and `sight_frame` (6.1 KB) are large on
+their own. Shrinking those two descriptions is the next saving.
+
+**Not measured yet:** whether an agent with a kit reaches its first *correct* call in fewer tokens than one with a
+role. That number comes from the measured comparison in the M5 exit proof (ROADMAP, "Measured leverage").
+
 ## Bounds (2026-10-30)
 
 Recurring bug class D (root-cause investigation, 2026-10-29): input reached loops and answers unbounded.

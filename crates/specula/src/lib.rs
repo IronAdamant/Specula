@@ -108,6 +108,7 @@ pub mod incidents;
 mod trace_engine;
 pub mod trace_sink;
 mod trace_tools;
+mod toolkits;
 mod toolscope;
 mod toolscope_tools;
 pub mod two_d;

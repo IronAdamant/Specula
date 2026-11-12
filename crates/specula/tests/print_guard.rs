@@ -38,7 +38,7 @@ const ALLOWED: [(&str, usize); 64] = [
     ("crates/specula/src/sight.rs", 1),
     ("crates/specula/src/swarm_engine.rs", 1),
     ("crates/specula/src/tools.rs", 1),
-    ("crates/specula/src/toolscope_tools.rs", 3),
+    ("crates/specula/src/toolscope_tools.rs", 6),
     // A GPU test's reasons for skipping (rule 7: say why, then pass).
     ("crates/specula/src/trace_engine.rs", 2),
     ("crates/specula/src/trace_sink.rs", 1),

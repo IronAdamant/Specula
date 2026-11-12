@@ -6,6 +6,7 @@
 //! `agent_hello {tools}` its effect.
 
 use crate::swarm::Swarm;
+use crate::toolkits::{self, KITS, KIT_PREFIX, TAGS};
 use crate::toolscope::{clip, listed_json, role_names, Change, ScopeError, Scopes, ToolSet, MAX_ENTRIES, MAX_ENTRY_CHARS, ROLES};
 use crate::tools::{bool_arg, check_keys, string_arg, Command, Tools};
 use specula_core::Json;
@@ -37,17 +38,21 @@ pub fn definitions() -> Vec<ToolDef> {
     let t = |ty: &str, d: &str| Json::obj([("type", Json::from(ty)), ("description", Json::from(d))]);
     let list = |d: &str| Json::obj([("type", Json::from("array")), ("items", Json::obj([("type", Json::from("string"))])), ("description", Json::from(d))]);
     let def = |name: &str, description: &str, input_schema: Json| ToolDef { name: name.into(), description: description.into(), input_schema };
-    let entries = "Families (world, sight, board ...) or tool names (anim_check), or \"all\"";
+    let entries = "Families (world, sight, board ...), tool names (anim_check), a job's kit (kit:make_menu), or \"all\"";
     vec![
         def(
             "tools_catalog",
-            "Every tool the engine has, by family, one line each, and your scope (your tools/list shows the core tools plus \
-             the ones activated for you). filter: words that must all appear (in names, lines or full descriptions); family: \
-             one family; roles: true adds the role templates. Then tools_activate what your task needs.",
+            "Every tool the engine has, one line each, and your scope (your tools/list shows the core plus what was \
+             activated for you). By job: kits: true lists the kits; kit: NAME shows one (its few tools, the order to use \
+             them in, the check that says the job is done). By kind: families, narrowed by filter (words that must all \
+             appear), family or tag; roles: true adds the role templates. Then tools_activate what you need.",
             schema(
                 vec![
+                    ("kits", t("boolean", "List the kits (make_menu, build_place ...)")),
+                    ("kit", t("string", "Show one kit")),
                     ("filter", t("string", "Search words, e.g. \"navmesh path\"")),
                     ("family", t("string", "Only this family")),
+                    ("tag", t("string", "reads, writes, checks, owned, open, lead, reviewer, owner or game")),
                     ("roles", t("boolean", "Add the role templates (families per role)")),
                     ("cursor", t("string", "next_cursor of the previous page")),
                 ],
@@ -145,20 +150,28 @@ fn entries_arg(args: &Json, key: &str) -> Result<Option<Vec<String>>, String> {
 
 /// The set named by `tools` and/or `role` (`None` when neither is given).
 fn selection(scopes: &Scopes, args: &Json) -> Result<Option<ToolSet>, ScopeError> {
+    Ok(selection_and_reach(scopes, args)?.map(|(set, _)| set))
+}
+
+/// The tools `tools` and `role` name (what is listed), and what a cap of them allows: the same,
+/// plus the tools a kit entry sometimes needs.
+fn selection_and_reach(scopes: &Scopes, args: &Json) -> Result<Option<(ToolSet, ToolSet)>, ScopeError> {
     let tools = entries_arg(args, "tools").map_err(|m| ScopeError::new("invalid_argument", m))?;
     let role = string_arg(args, "role").map_err(|m| ScopeError::new("invalid_argument", m))?;
     if tools.is_none() && role.is_none() {
         return Ok(None);
     }
-    let mut set = scopes.catalog.empty();
+    let (mut set, mut reach) = (scopes.catalog.empty(), scopes.catalog.empty());
     if let Some(t) = &tools {
         set.union(&scopes.catalog.select(t.iter().map(String::as_str))?);
+        reach.union(&scopes.catalog.select_reach(t.iter().map(String::as_str))?);
     }
     if let Some(r) = role {
         let s = scopes.catalog.role(r).ok_or_else(|| ScopeError::new("unknown_role", format!("'{}' is no role template: {}", clip(r, MAX_ENTRY_CHARS), role_names())).with("field", "role"))?;
         set.union(&s);
+        reach.union(&s);
     }
-    Ok(Some(set))
+    Ok(Some((set, reach)))
 }
 
 /// Every tool call comes through here (see the module docs).
@@ -235,10 +248,61 @@ fn hello(tools: &Tools, session: &SessionInfo, args: &Json) -> ToolOutput {
 }
 
 fn catalog(scopes: &Scopes, session: &SessionInfo, args: &Json) -> ToolOutput {
-    if let Err(m) = check_keys(args, "tools_catalog", &[&["filter", "family", "roles", "cursor"]]) {
+    if let Err(m) = check_keys(args, "tools_catalog", &[&["filter", "family", "roles", "cursor", "kit", "kits", "tag"]]) {
         return bad(m);
     }
     let c = &scopes.catalog;
+    let (kit, tag) = match (string_arg(args, "kit"), string_arg(args, "tag")) {
+        (Ok(k), Ok(t)) => (k, t),
+        (Err(m), _) | (_, Err(m)) => return bad(m),
+    };
+    let kits = match bool_arg(args, "kits") {
+        Ok(k) => k.unwrap_or(false),
+        Err(m) => return bad(m),
+    };
+    if tag.is_some_and(|t| !TAGS.iter().any(|(n, _)| *n == t)) {
+        return bad(format!("'tag' must be one of: {}", TAGS.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", ")));
+    }
+    // By job: one kit, or the list of them. Nothing else is answered with either (small
+    // answers), so the other arguments are refused with them, not ignored.
+    if kit.is_some() || kits {
+        let others = ["filter", "family", "roles", "cursor", "tag"].into_iter().filter(|k| args.get(k).is_some_and(|v| !v.is_null())).collect::<Vec<_>>();
+        if !others.is_empty() || (kit.is_some() && kits) {
+            return bad(format!(
+                "'kit' and 'kits' each answer on their own: leave out {}",
+                if others.is_empty() { "one of them".to_owned() } else { others.join(", ") }
+            ));
+        }
+    }
+    if let Some(k) = kit {
+        let k = k.trim();
+        let Some(found) = toolkits::kit(k.strip_prefix(KIT_PREFIX).unwrap_or(k)) else {
+            return bad(format!("'kit' must be a kit: {}", toolkits::kit_names()));
+        };
+        let entry = found.to_json(c, &scopes.listed(&session.id));
+        let used: Vec<&str> = found.tools.iter().flat_map(|t| toolkits::tags(t)).collect();
+        let legend = Json::obj(TAGS.iter().filter(|(n, _)| used.contains(n)).map(|(n, what)| ((*n).to_owned(), Json::from(*what))));
+        return ToolOutput::text(Json::obj([("kit", entry), ("tags", legend), ("scope", scopes.describe(&session.id))]).to_string());
+    }
+    if kits {
+        let all = KITS.iter().map(|k| {
+            let mut with_core = k.tools(c);
+            with_core.union(c.core());
+            (k.name.to_owned(), Json::obj([("about", Json::from(k.about)), ("tools", Json::arr(k.tools.iter().map(|t| Json::from(*t)))), ("list_bytes", Json::from(c.list_bytes(&with_core)))]))
+        });
+        let out = Json::obj([
+            ("kits", Json::obj(all)),
+            ("scope", scopes.describe(&session.id)),
+            (
+                "next",
+                Json::from(
+                    "tools_catalog {kit: NAME} shows a kit's steps, its done check and the tools it sometimes needs; tools_activate {tools: [\"kit:NAME\"]} lists its tools. \
+                     No kit for your job? tools_catalog {filter} searches every tool, and tools_request asks the lead",
+                ),
+            ),
+        ]);
+        return ToolOutput::text(out.to_string());
+    }
     let (filter, family, cursor) = match (string_arg(args, "filter"), string_arg(args, "family"), string_arg(args, "cursor")) {
         (Ok(f), Ok(fam), Ok(cur)) => (f, fam, cur),
         (Err(m), ..) | (_, Err(m), _) | (.., Err(m)) => return bad(m),
@@ -275,7 +339,7 @@ fn catalog(scopes: &Scopes, session: &SessionInfo, args: &Json) -> ToolOutput {
         if family.is_some_and(|want| want != fname) {
             continue;
         }
-        let members: Vec<usize> = c.members(f).filter(|i| hits.as_ref().is_none_or(|h| h.contains(i))).collect();
+        let members: Vec<usize> = c.members(f).filter(|i| hits.as_ref().is_none_or(|h| h.contains(i)) && tag.is_none_or(|t| toolkits::tags(c.name(*i)).contains(&t))).collect();
         if members.is_empty() {
             continue;
         }
@@ -296,6 +360,13 @@ fn catalog(scopes: &Scopes, session: &SessionInfo, args: &Json) -> ToolOutput {
         fams.set(fname, entry);
     }
     let mut out = Json::obj([("tools", Json::from(c.len())), ("scope", scopes.describe(&session.id)), ("families", fams)]);
+    if let Some(t) = tag.filter(|_| out.get("families").and_then(Json::as_object).is_some_and(|f| f.is_empty()) && next.is_none()) {
+        out.set("hint", Json::from(format!("no tool here has the tag '{t}'{}", if t == "game" { " (no game is hosted, or the family filter leaves it out)" } else { "" })));
+    }
+    if cursor.is_none() && family.is_none() {
+        // The other way in: by job.
+        out.set("kits", Json::from(format!("by job: {} (tools_catalog {{kits: true}} lists them, {{kit: NAME}} shows one)", toolkits::kit_names())));
+    }
     if let (Some(f), Some(h)) = (filter, &hits) {
         out.set("matches", Json::from(h.len()));
         if h.is_empty() {
@@ -325,18 +396,24 @@ fn catalog(scopes: &Scopes, session: &SessionInfo, args: &Json) -> ToolOutput {
     }
     out.set(
         "next",
-        Json::from("tools_activate {tools: [families or names]} lists them and answers their schemas; tools within your cap work unlisted too (tools_invoke)"),
+        Json::from("tools_activate {tools: [families, names or kit:NAME]} lists them and answers their schemas; tools within your cap work unlisted too (tools_invoke)"),
     );
     ToolOutput::text(out.to_string())
 }
 
 /// The definitions of `set` while they fit in [`MAX_SCHEMA_BYTES`], and the names of the rest.
-fn schemas(scopes: &Scopes, set: &ToolSet) -> (Json, Vec<String>) {
+/// The definitions of `set` as the session's list (`listed`) shows them: a tool whose sibling
+/// is listed too points at the arguments they share (`Catalog::listing`), so an activation's
+/// answer doesn't carry what the list beside it already says.
+fn schemas(scopes: &Scopes, set: &ToolSet, listed: &ToolSet) -> (Json, Vec<String>) {
     let mut shown = Vec::new();
     let mut omitted = Vec::new();
     let mut bytes = 0;
-    for i in set.iter() {
-        let j = listed_json(scopes.catalog.def(i));
+    let mut shows = listed.clone();
+    shows.union(set);
+    let listing = scopes.catalog.listing(&shows);
+    for (i, d) in shows.iter().zip(&listing).filter(|(i, _)| set.contains(*i)) {
+        let j = listed_json(d);
         let size = j.to_string().len() + 1;
         if bytes + size > MAX_SCHEMA_BYTES {
             omitted.push(scopes.catalog.name(i).to_owned());
@@ -377,7 +454,7 @@ fn activate(scopes: &Scopes, session: &SessionInfo, args: &Json) -> ToolOutput {
     };
     let mut out = change_json(scopes, &ch);
     if with_schemas {
-        let (defs, omitted) = schemas(scopes, &set);
+        let (defs, omitted) = schemas(scopes, &set, &ch.listed);
         out.set("tools", defs);
         if !omitted.is_empty() {
             out.set("schemas_omitted", Json::arr(omitted.into_iter().map(Json::from)));
@@ -606,7 +683,7 @@ fn scope(tools: &Tools, session: &SessionInfo, args: &Json) -> ToolOutput {
         (Ok(c), Ok(cl)) => (c.unwrap_or(false), cl.unwrap_or(false)),
         (Err(m), _) | (_, Err(m)) => return bad(m),
     };
-    let set = match selection(scopes, args) {
+    let set = match selection_and_reach(scopes, args) {
         Ok(s) => s,
         Err(e) => return fail(&e),
     };
@@ -642,7 +719,7 @@ fn scope(tools: &Tools, session: &SessionInfo, args: &Json) -> ToolOutput {
             .to_string(),
         );
     }
-    let set = set.expect("checked above");
+    let (set, reach) = set.expect("checked above");
     // The label from the deduplicated entries (each a valid name by now), cut to MAX_LABEL in
     // assign: "world,world,..." can't make every later answer carry a long label.
     let mut label = Vec::new();
@@ -655,7 +732,8 @@ fn scope(tools: &Tools, session: &SessionInfo, args: &Json) -> ToolOutput {
     }
     let mut listed = set.clone();
     listed.union(scopes.catalog.core());
-    let changes = scopes.assign(&by, &agent, &sessions, set, cap, label.join(" + "));
+    // A cap by kit allows the tools the kit sometimes needs too (its steps name them).
+    let changes = scopes.assign_capped(&by, &agent, &sessions, set, cap.then_some(reach), label.join(" + "));
     ToolOutput::text(
         Json::obj([
             ("agent", Json::from(agent.as_str())),
@@ -809,6 +887,199 @@ mod tests {
         for name in CORE {
             assert!(c.index(name).is_some(), "core tool '{name}' missing");
         }
+    }
+
+    /// A new tool says which job it is for: it is in a kit (listed, or among those the job
+    /// sometimes needs) or in NOT_IN_A_KIT with the reason. Kits name only real tools.
+    #[test]
+    fn every_tool_is_in_a_kit_or_says_why() {
+        let t = tools();
+        let c = &t.scopes().catalog;
+        let mut missing = Vec::new();
+        for i in 0..c.len() {
+            let name = c.name(i);
+            if c.family_name(i) == GAME_FAMILY {
+                continue;
+            }
+            let in_kit = KITS.iter().any(|k| k.tools.contains(&name) || k.more.contains(&name));
+            let excused = toolkits::NOT_IN_A_KIT.iter().any(|(n, _)| *n == name);
+            assert!(!(in_kit && excused), "'{name}' is in a kit and in NOT_IN_A_KIT");
+            if !in_kit && !excused {
+                missing.push(name.to_owned());
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "no kit names {missing:?}: put each in the kit of the job it is for (toolkits::KITS: `tools` if the job starts with it, else `more`), or in NOT_IN_A_KIT with the reason"
+        );
+        for k in KITS {
+            for e in k.tools.iter().chain(k.more) {
+                assert!(*e == GAME_FAMILY || c.index(e).is_some(), "the kit '{}' names '{e}', which is no tool", k.name);
+            }
+            // Every tool the steps or the done check name is the kit's (listed, or among those it
+            // sometimes needs): an agent capped to its kit can do what the kit tells it to
+            // (review R1 of m5-toolkits: check_physics told agents to use world_set, which no
+            // part of the kit held).
+            for word in k.steps.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_')).chain(k.done.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))) {
+                if c.index(word).is_some() {
+                    assert!(k.tools.contains(&word) || k.more.contains(&word), "the kit '{}' tells agents to use {word}, which is in neither its `tools` nor its `more`", k.name);
+                }
+            }
+        }
+        for (name, _) in toolkits::NOT_IN_A_KIT {
+            assert!(c.index(name).is_some(), "NOT_IN_A_KIT names '{name}', which is no tool");
+        }
+    }
+
+    /// The owner's ask (2026-11-12): an agent with a job finds its few tools at once, cheaply.
+    #[test]
+    fn a_kit_is_found_shown_and_activated_by_its_job() {
+        let t = tools();
+        let a = session("a");
+        opened(&t, &a, "");
+        // The catalog says kits exist; the list of them is small.
+        let (_, cat) = call_json(&t, &a, "tools_catalog", "{}");
+        assert!(cat.get("kits").and_then(Json::as_str).is_some_and(|k| k.contains("make_menu")), "{}", cat.get("kits").map(Json::to_string).unwrap_or_default());
+        let (err, list) = call_json(&t, &a, "tools_catalog", r#"{"kits": true}"#);
+        assert!(!err && list.get("families").is_none(), "the kit list carries no families");
+        assert_eq!(list.get("kits").unwrap().as_object().unwrap().len(), KITS.len());
+        assert!(list.to_string().len() < 6 * 1024, "{} bytes", list.to_string().len());
+        // One kit: tools with lines and tags, the ones it sometimes needs, the steps, the done check.
+        let (err, one) = call_json(&t, &a, "tools_catalog", r#"{"kit": "make_menu"}"#);
+        assert!(!err, "{one}");
+        let kit = one.get("kit").unwrap();
+        let check = kit.get("tools").unwrap().get("ui_check").unwrap();
+        assert_eq!(check.get("tags").unwrap().to_string(), r#"["reads","checks"]"#);
+        assert_eq!(check.get("listed").and_then(Json::as_bool), Some(false));
+        assert!(kit.get("more").unwrap().get("l10n_check").is_some() && kit.get("steps").is_some());
+        assert!(kit.get("done").and_then(Json::as_str).is_some_and(|d| d.contains("ui_check")));
+        assert!(one.get("tags").unwrap().get("checks").is_some() && one.get("tags").unwrap().get("owner").is_none(), "the legend holds the tags this kit uses");
+        assert!(one.to_string().len() < 4 * 1024, "{} bytes", one.to_string().len());
+        // Activating it lists exactly its tools beside the core.
+        let (err, got) = call_json(&t, &a, "tools_activate", r#"{"tools": ["kit:make_menu"], "schemas": false}"#);
+        assert!(!err, "{got}");
+        let mut now = listed(&t, &a);
+        now.retain(|n| !CORE.contains(&n.as_str()));
+        now.sort();
+        assert_eq!(now, ["project_read", "project_write", "ui_act", "ui_check", "ui_frame", "ui_tree"]);
+        let (_, one) = call_json(&t, &a, "tools_catalog", r#"{"kit": "kit:make_menu"}"#);
+        assert_eq!(one.get("kit").unwrap().get("tools").unwrap().get("ui_check").unwrap().get("listed").and_then(Json::as_bool), Some(true));
+        // A kit is an entry wherever families are: the connect URL too.
+        let b = session("b");
+        opened(&t, &b, "tools=kit:translate");
+        assert!(listed(&t, &b).contains(&"l10n_set".to_owned()) && !listed(&t, &b).contains(&"world_spawn".to_owned()));
+        // Unknown kits and tags are refused with what exists, and a huge name isn't echoed.
+        let (err, e) = call_json(&t, &a, "tools_activate", r#"{"tools": ["kit:make_menus"]}"#);
+        assert!(err && e.to_string().contains("did you mean 'kit:make_menu'"), "{e}");
+        let (err, e) = call_json(&t, &a, "tools_catalog", &Json::obj([("kit", Json::from("z".repeat(100_000)))]).to_string());
+        assert!(err && e.to_string().len() < 1024, "{} bytes", e.to_string().len());
+        let (err, e) = call_json(&t, &a, "tools_catalog", r#"{"kit": "make_menus"}"#);
+        assert!(err && e.to_string().contains("build_place"), "an unknown kit is answered with the kits there are: {e}");
+        let (err, e) = call_json(&t, &a, "tools_catalog", r#"{"tag": "fast"}"#);
+        assert!(err && e.to_string().contains("checks"), "{e}");
+        // By tag: what says a job is done, across every family.
+        let (_, checks) = call_json(&t, &a, "tools_catalog", r#"{"tag": "checks"}"#);
+        let fams = checks.get("families").unwrap();
+        assert!(fams.get("ui").unwrap().get("tools").unwrap().get("ui_check").is_some() && fams.get("ui").unwrap().get("tools").unwrap().get("ui_act").is_none(), "{fams}");
+        assert!(fams.get("lex").unwrap().get("tools").unwrap().get("lex_validate").is_some() && fams.get("world").is_none());
+    }
+
+    /// Review R1 of m5-toolkits, the major: a lead caps an agent to a kit. The agent lists the
+    /// kit's tools, and may call the ones the kit sometimes needs (it could take a claim and
+    /// never release it, and never run the kit's own done check). Beyond the kit it is refused.
+    #[test]
+    fn a_cap_by_kit_reaches_what_the_kit_sometimes_needs() {
+        let t = tools();
+        let (lead, smith) = (session("L"), session("S"));
+        opened(&t, &lead, "");
+        opened(&t, &smith, "");
+        call_json(&t, &lead, "agent_hello", r#"{"name": "lena", "role": "lead"}"#);
+        let (err, s) = call_json(&t, &lead, "tools_scope", r#"{"agent": "smith", "tools": ["kit:build_place"], "cap": true}"#);
+        assert!(!err, "{s}");
+        call_json(&t, &smith, "agent_hello", r#"{"name": "smith"}"#);
+        let mut now = listed(&t, &smith);
+        now.retain(|n| !CORE.contains(&n.as_str()));
+        now.sort();
+        assert_eq!(now, ["claim_take", "sight_frame", "world_query", "world_set", "world_spawn"], "it lists the kit's tools");
+        // The kit's `more` tools answer (the stand-in engine "runs" them): not refused by the cap.
+        for name in ["claim_release", "style_check", "world_place", "world_batch", "sight_compare"] {
+            let (err, e) = call_json(&t, &smith, name, "{}");
+            assert!(e.get("error").and_then(Json::as_str) != Some("not_in_scope"), "{name} is one of the kit's: {err} {e}");
+        }
+        let (err, got) = call_json(&t, &smith, "tools_activate", r#"{"tools": ["world_batch", "claim_release"], "schemas": false}"#);
+        assert!(!err, "the kit's other tools can be listed: {got}");
+        // Beyond the kit: refused, another kit too.
+        for (name, args) in [("lex_edit", "{}"), ("tools_activate", r#"{"tools": ["kit:write_rules"]}"#), ("tools_invoke", r#"{"tool": "gi_bake"}"#)] {
+            let (err, e) = call_json(&t, &smith, name, args);
+            assert!(err && e.get("error").and_then(Json::as_str) == Some("not_in_scope"), "{name}: {e}");
+        }
+        // Without a cap, a kit only lists: nothing else changes.
+        let (_, s) = call_json(&t, &lead, "tools_scope", r#"{"agent": "jo", "tools": ["kit:translate"]}"#);
+        assert_eq!(s.get("capped").and_then(Json::as_bool), Some(false), "{s}");
+    }
+
+    /// Review R1 of m5-toolkits: an activation's answer shows the tools as the list beside it
+    /// does (world_set by reference beside world_spawn), and the catalog refuses arguments it
+    /// would otherwise ignore.
+    #[test]
+    fn an_activation_answers_what_the_list_shows_and_the_catalog_ignores_nothing() {
+        let t = tools();
+        let a = session("a");
+        opened(&t, &a, "");
+        let (err, got) = call_json(&t, &a, "tools_activate", r#"{"tools": ["kit:build_place"]}"#);
+        assert!(!err, "{got}");
+        let defs = got.get("tools").unwrap().as_array().unwrap();
+        let set = defs.iter().find(|d| d.get("name").and_then(Json::as_str) == Some("world_set")).expect("world_set's definition");
+        assert!(set.to_string().contains("as world_spawn's"), "by reference, as tools/list shows it");
+        let spawn = defs.iter().find(|d| d.get("name").and_then(Json::as_str) == Some("world_spawn")).expect("world_spawn's definition");
+        assert!(!spawn.to_string().contains("as world_set's") && spawn.to_string().len() > set.to_string().len());
+        // Activated alone in a fresh session, world_set is answered in full.
+        let b = session("b");
+        opened(&t, &b, "");
+        let (_, alone) = call_json(&t, &b, "tools_activate", r#"{"tools": ["world_set"]}"#);
+        assert!(!alone.get("tools").unwrap().to_string().contains("as world_spawn's"));
+        // 'kit' and 'kits' answer on their own.
+        for args in [r#"{"kits": true, "filter": "menu"}"#, r#"{"kit": "make_menu", "tag": "checks"}"#, r#"{"kit": "make_menu", "kits": true}"#, r#"{"kits": true, "roles": true}"#] {
+            let (err, e) = call_json(&t, &a, "tools_catalog", args);
+            assert!(err && e.to_string().contains("on their own"), "{args}: {e}");
+        }
+        let (err, one) = call_json(&t, &a, "tools_catalog", r#"{"kit": "  make_menu "}"#);
+        assert!(!err && one.get("kit").is_some(), "a kit's name is trimmed like any entry: {one}");
+        // A tag nothing has says so.
+        let (err, none) = call_json(&t, &a, "tools_catalog", r#"{"tag": "owner", "family": "world"}"#);
+        assert!(!err && none.get("hint").and_then(Json::as_str).is_some_and(|h| h.contains("owner")), "{none}");
+    }
+
+    /// The numbers TOOLS.md quotes for kits (run with --nocapture), and their bound: a kit with
+    /// the core costs a fraction of a role.
+    #[test]
+    fn kits_list_small() {
+        let t = tools();
+        let c = &t.scopes().catalog;
+        let mut sizes = Vec::new();
+        for k in KITS {
+            let mut s = k.tools(c);
+            s.union(c.core());
+            let bytes = c.list_bytes(&s);
+            println!("  kit {:16} {:2} tools {:6} bytes", k.name, s.count(), bytes);
+            assert!(bytes <= 36 * 1024, "the kit '{}' lists {bytes} bytes: move tools to `more`", k.name);
+            sizes.push(bytes);
+        }
+        sizes.sort_unstable();
+        println!("  kits: median {} bytes, largest {} bytes", sizes[sizes.len() / 2], sizes[sizes.len() - 1]);
+        assert!(sizes[sizes.len() / 2] <= 16 * 1024, "the median kit stays under 16 KB (about 4,000 tokens): {}", sizes[sizes.len() / 2]);
+        // world_set beside world_spawn lists its components by reference; alone, in full.
+        let both = c.select(["world_spawn", "world_set"]).unwrap();
+        let alone = c.select(["world_set"]).unwrap();
+        let spawn = c.select(["world_spawn"]).unwrap();
+        let listing = c.listing(&both);
+        let set = listing.iter().find(|d| d.name == "world_set").unwrap();
+        assert!(set.description.contains("Listed beside world_spawn") && set.input_schema.to_string().contains("as world_spawn's material"), "{}", set.description);
+        assert_eq!(c.listing(&alone)[0], *c.def(c.index("world_set").unwrap()), "alone it is listed in full");
+        let json = Json::obj([("tools", Json::arr(listing.iter().map(listed_json)))]).to_string();
+        assert_eq!(c.list_bytes(&both), json.len(), "list_bytes counts the shared listing");
+        println!("  world_spawn + world_set: {} bytes listed ({} in full)", json.len(), c.list_bytes(&alone) + c.list_bytes(&spawn) - 12);
+        assert!(json.len() + 6 * 1024 < c.list_bytes(&alone) + c.list_bytes(&spawn), "sharing saves at least 6 KB");
     }
 
     /// The numbers TOOLS.md quotes (run with --nocapture to see them), and their bounds.

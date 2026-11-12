@@ -20,9 +20,10 @@ use std::sync::mpsc::{self, Sender};
 use std::time::{Duration, Instant};
 
 pub const INSTRUCTIONS: &str = "Specula is a live game engine you build in. Your tool list may show only the core \
-tools: tools_catalog lists every tool by family with one line each, tools_activate {tools: [families or names]} adds \
-them (answering their schemas), tools_invoke calls a tool your client doesn't list, and tools_request asks the lead for \
-a tool that doesn't exist; connect to /mcp?tools=all (or ?role=builder, ?tools=world,sight) to choose at once. The world is a tree of entities: \
+tools: tools_catalog lists every tool with one line each, by family or by job (tools_catalog {kits: true}: the few \
+tools a job starts with, the order to use them in and the check that says it is done), tools_activate {tools: [families, \
+names or kit:NAME]} adds them (answering their schemas), tools_invoke calls a tool your client doesn't list, and tools_request asks the lead for \
+a tool that doesn't exist; connect to /mcp?tools=all (or ?role=builder, ?tools=world,sight, ?tools=kit:make_menu) to choose at once. The world is a tree of entities: \
 each has a name unique among its siblings and a path like /slab/stones/ward_03; transforms are local to the \
 parent, and 'group' entities hold children without drawing anything. Add things with world_spawn (or many at \
 once, all-or-nothing, with world_batch; or by relations instead of coordinates, with world_place: on, against, along, \

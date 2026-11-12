@@ -108,6 +108,71 @@ def main():
             sizes[f"role {name}"] = {"tools": len(listed(r)), "bytes": list_bytes(r)}
             r.close()
 
+        print("kits by job")
+        kits, err = call(catalog, "tools_catalog", kits=True)
+        kit_bytes = len(json.dumps(kits, separators=(",", ":")))
+        check(not err and len(kits.get("kits", {})) >= 20 and "families" not in kits, f"tools_catalog {{kits: true}} lists the kits and nothing else ({len(kits.get('kits', {}))} kits, {kit_bytes} bytes)")
+        sizes["tools_catalog {kits}"] = {"bytes": kit_bytes}
+        kit_sizes = []
+        for name, k in kits["kits"].items():
+            r = Mcp(url + f"?tools=kit:{name}", f"toolscope-kit-{name}", tools=None)
+            names, b = listed(r), list_bytes(r)
+            r.close()
+            sizes[f"kit {name}"] = {"tools": len(names), "bytes": b}
+            kit_sizes.append(b)
+            # (The catalog's own count is of the server's bytes; this client re-encodes the JSON.)
+            if not all(t in names for t in k["tools"] if t != "game") or abs(b - k["list_bytes"]) > 0.03 * b:
+                check(False, f"kit {name} lists its tools at the size the catalog says ({len(names)} tools, {b} bytes; catalog {k['list_bytes']})")
+        kit_sizes.sort()
+        builder = sizes.get("role builder", {}).get("bytes", 0)
+        check(kit_sizes[len(kit_sizes) // 2] * 4 < builder, f"the median kit lists under a quarter of the builder role ({kit_sizes[len(kit_sizes) // 2]} against {builder} bytes)")
+        sizes["kits median"] = {"bytes": kit_sizes[len(kit_sizes) // 2]}
+        one, err = call(catalog, "tools_catalog", kit="make_menu")
+        kit = one.get("kit", {})
+        check(not err and kit.get("steps") and "ui_check" in kit.get("done", "") and kit.get("tools", {}).get("ui_check", {}).get("tags") == ["reads", "checks"] and "l10n_check" in kit.get("more", {}),
+              f"tools_catalog {{kit: make_menu}} gives its tools with tags, the ones it sometimes needs, the steps and the done check ({len(json.dumps(one))} bytes)")
+        sizes["tools_catalog {kit}"] = {"bytes": len(json.dumps(one, separators=(",", ":")))}
+        act = Mcp(url, "toolscope-kit-activate", tools=None)
+        got, err = call(act, "tools_activate", tools=["kit:translate"], schemas=False)
+        check(not err and {"l10n_get", "l10n_set", "l10n_check", "ui_check"} <= set(listed(act)) and "world_spawn" not in listed(act), "tools_activate {tools: [kit:translate]} lists that kit's tools")
+        # What an activation answers: the definitions as the list shows them (world_set by
+        # reference beside world_spawn), so a kit's answer is its list's size, not more.
+        place = Mcp(url, "toolscope-kit-place", tools=None)
+        got, err = call(place, "tools_activate", tools=["kit:build_place"])
+        answer = len(json.dumps(got, separators=(",", ":")))
+        ws = next((d for d in got.get("tools", []) if d.get("name") == "world_set"), {})
+        check(not err and "as world_spawn's" in json.dumps(ws) and answer < 30_000, f"tools_activate {{kit:build_place}} answers its definitions as listed ({answer} bytes)")
+        sizes["tools_activate {kit:build_place} answer"] = {"tools": len(got.get("tools", [])), "bytes": answer}
+        place.close()
+        bad, err = call(act, "tools_activate", tools=["kit:translat"])
+        check(err and "did you mean 'kit:translate'" in json.dumps(bad), "a mistyped kit is refused with the nearest one")
+        checks, _ = call(catalog, "tools_catalog", tag="checks")
+        fams = checks.get("families", {})
+        check("ui_check" in fams.get("ui", {}).get("tools", {}) and "ui_act" not in fams.get("ui", {}).get("tools", {}) and "world" not in fams,
+              f"tools_catalog {{tag: checks}} lists what measures work, across families ({checks.get('matches', sum(len(f['tools']) for f in fams.values()))} tools)")
+        act.close()
+
+        print("one listing for arguments two tools share")
+        both = Mcp(url + "?tools=world_spawn,world_set", "toolscope-shared", tools=None)
+        alone = Mcp(url + "?tools=world_set", "toolscope-alone", tools=None)
+        ws = next(t for t in both.request("tools/list", {})["tools"] if t["name"] == "world_set")
+        wa = next(t for t in alone.request("tools/list", {})["tools"] if t["name"] == "world_set")
+        slim, fullsize = len(json.dumps(ws, separators=(",", ":"))), len(json.dumps(wa, separators=(",", ":")))
+        check("as world_spawn's" in json.dumps(ws) and "as world_spawn's" not in json.dumps(wa) and slim + 6000 < fullsize,
+              f"beside world_spawn, world_set lists its components by reference ({slim} bytes; alone {fullsize})")
+        sizes["world_spawn + world_set"] = {"tools": 2, "bytes": list_bytes(both) - sizes["core"]["bytes"]}
+        sizes["world_set alone"] = {"tools": 1, "bytes": fullsize}
+        # The listing is all that changed: arguments are still checked against the full schema.
+        call(both, "agent_hello", name="kit-builder")
+        made, err = call(both, "world_spawn", name="kit_probe", shape="cube")
+        check(not err, f"world_spawn through the shared listing ({made.get('error')})")
+        wrong, err = call(both, "world_set", path="/kit_probe", material=5)
+        check(err and "material" in json.dumps(wrong), f"world_set still refuses a component of the wrong type ({wrong.get('error')}: {str(wrong.get('message'))[:80]})")
+        right, err = call(both, "world_set", path="/kit_probe", position=[1, 2, 3])
+        check(not err, f"and still takes a good change ({right.get('error')})")
+        both.close()
+        alone.close()
+
         print("the catalog")
         cat, err = call(bare, "tools_catalog")
         cat_bytes = len(json.dumps(cat, separators=(",", ":")))
@@ -178,6 +243,21 @@ def main():
         check(err and len(json.dumps(big)) < 1024, f"a huge selection is refused small ({big.get('error')})")
         board, _ = call(lead, "tools_invoke", tool="task_list", arguments={"tag": "tool_request"})
         check(any("Tool request" in t.get("title", "") for t in board.get("tasks", [])), "the lead finds it on the board (tag tool_request)")
+
+        print("a cap by kit")
+        s, err = call(lead, "tools_invoke", tool="tools_scope", arguments={"agent": "kit-smith", "tools": ["kit:build_place"], "cap": True})
+        check(not err and s.get("capped") is True, f"the lead caps an agent to kit:build_place ({s.get('error')})")
+        smith = Mcp(url, "toolscope-kit-smith", tools=None)
+        call(smith, "agent_hello", name="kit-smith")
+        names = [n for n in listed(smith) if not n.startswith("tools_") and n != "agent_hello"]
+        check(sorted(names) == ["claim_take", "sight_frame", "world_query", "world_set", "world_spawn"], f"it lists the kit's five tools ({sorted(names)})")
+        made, err = call(smith, "world_spawn", name="smith_cube", shape="cube")
+        took, err1 = call(smith, "claim_take", path="/smith_cube")
+        gave, err2 = call(smith, "tools_invoke", tool="claim_release", arguments={"claim": took.get("claim", took.get("id", 0))})
+        check(not err and not err1 and gave.get("error") != "not_in_scope", f"it can release the claim it took: claim_release is one the kit sometimes needs ({gave.get('error')})")
+        beyond, err = call(smith, "tools_invoke", tool="lex_edit", arguments={})
+        check(err and beyond.get("error") == "not_in_scope", f"and a tool beyond its kit is refused ({beyond.get('error')})")
+        smith.close()
 
         print("timing")
         t0 = time.perf_counter()

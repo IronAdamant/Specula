@@ -142,7 +142,7 @@ pub const ROLES: &[Role] = &[
 /// line here (`every_tool_has_a_family_and_a_brief` fails without one).
 pub(crate) const BRIEFS: &[(&str, &str)] = &[
     ("agent_hello", "say who you are (name, role, tools)"),
-    ("tools_catalog", "every tool by family, one line each; search"),
+    ("tools_catalog", "every tool by family or by job (kits), one line each"),
     ("tools_activate", "add tools to your list (returns schemas)"),
     ("tools_deactivate", "remove tools from your list"),
     ("tools_invoke", "call any tool by name (clients that don't refresh)"),
@@ -487,6 +487,9 @@ pub struct Catalog {
     core: ToolSet,
     /// Compact `tools/list` bytes of each definition.
     bytes: Vec<usize>,
+    /// Tools listed by reference beside a sibling (`toolkits::SHARED`): (tool, sibling, the
+    /// tool as it is listed then, its bytes then).
+    shared: Vec<(usize, usize, ToolDef, usize)>,
 }
 
 impl Catalog {
@@ -516,7 +519,16 @@ impl Catalog {
         let mut core = ToolSet::empty(defs.len());
         CORE.iter().filter_map(|n| index.get(*n)).for_each(|&i| core.insert(i));
         let bytes = defs.iter().map(|d| listed_json(d).to_string().len()).collect();
-        Catalog { defs, family, families, briefs, index, core, bytes }
+        let shared = crate::toolkits::SHARED
+            .iter()
+            .filter_map(|(tool, sibling)| {
+                let (t, s) = (*index.get(*tool)?, *index.get(*sibling)?);
+                let slim = crate::toolkits::shared_listing(&defs[t], &defs[s])?;
+                let n = listed_json(&slim).to_string().len();
+                Some((t, s, slim, n))
+            })
+            .collect();
+        Catalog { defs, family, families, briefs, index, core, bytes, shared }
     }
 
     pub fn len(&self) -> usize {
@@ -572,14 +584,37 @@ impl Catalog {
     /// The `tools/list` answer's bytes for `set` (compact JSON).
     pub fn list_bytes(&self, set: &ToolSet) -> usize {
         let n = set.count();
-        r#"{"tools":[]}"#.len() + set.iter().map(|i| self.bytes[i]).sum::<usize>() + n.saturating_sub(1)
+        let saved: usize = self.shared.iter().filter(|(t, s, ..)| set.contains(*t) && set.contains(*s)).map(|(t, _, _, slim)| self.bytes[*t].saturating_sub(*slim)).sum();
+        r#"{"tools":[]}"#.len() + set.iter().map(|i| self.bytes[i]).sum::<usize>() + n.saturating_sub(1) - saved
     }
 
-    /// The tools `entries` name: each one a family, a tool, `all` or `core`. Unknown entries are
+    /// The definitions of `set` as `tools/list` shows them: a tool whose sibling is listed too
+    /// points at the arguments they share instead of repeating them (`toolkits::SHARED`).
+    pub fn listing(&self, set: &ToolSet) -> Vec<ToolDef> {
+        set.iter()
+            .map(|i| match self.shared.iter().find(|(t, s, ..)| *t == i && set.contains(*s)) {
+                Some((_, _, slim, _)) => slim.clone(),
+                None => self.defs[i].clone(),
+            })
+            .collect()
+    }
+
+    /// The tools `entries` name: each one a family, a tool, a kit (`kit:make_menu`: the tools that
+    /// job starts with, `toolkits::KITS`), `all` or `core`. Unknown entries are
     /// refused: the first [`MAX_UNKNOWN_SHOWN`] each with the closest valid name, then a count. At
     /// most [`MAX_ENTRIES`] entries, each at most [`MAX_ENTRY_CHARS`] (longer ones name nothing
     /// and get no suggestion), so the work and the answer stay small whatever an agent sends.
     pub fn select<'a>(&self, entries: impl IntoIterator<Item = &'a str>) -> Result<ToolSet, ScopeError> {
+        self.select_as(entries, false)
+    }
+
+    /// [`Catalog::select`] for a cap: a kit entry reaches the tools it sometimes needs too
+    /// (`toolkits::Kit::reach`), so an agent capped to its kit can do the kit's own steps.
+    pub fn select_reach<'a>(&self, entries: impl IntoIterator<Item = &'a str>) -> Result<ToolSet, ScopeError> {
+        self.select_as(entries, true)
+    }
+
+    fn select_as<'a>(&self, entries: impl IntoIterator<Item = &'a str>, reach: bool) -> Result<ToolSet, ScopeError> {
         let mut set = self.empty();
         let mut unknown = Vec::new();
         let mut unknown_count = 0usize;
@@ -604,6 +639,17 @@ impl Catalog {
                 set.union(&self.core);
             } else if let Some(i) = self.index(e) {
                 set.insert(i);
+            } else if let Some(k) = e.strip_prefix(crate::toolkits::KIT_PREFIX) {
+                match crate::toolkits::kit(k) {
+                    Some(kit) => set.union(&if reach { kit.reach(self) } else { kit.tools(self) }),
+                    None => {
+                        unknown_count += 1;
+                        if unknown.len() < MAX_UNKNOWN_SHOWN {
+                            let hint = closest(k, crate::toolkits::KITS.iter().map(|k| k.name)).map(|c| format!(" (did you mean '{}{c}'?)", crate::toolkits::KIT_PREFIX)).unwrap_or_default();
+                            unknown.push(format!("'{e}'{hint}"));
+                        }
+                    }
+                }
             } else if let Some((f, _, _)) = self.families().find(|(_, n, _)| *n == e) {
                 self.members(f).collect::<Vec<_>>().into_iter().for_each(|i| set.insert(i));
             } else {
@@ -627,7 +673,7 @@ impl Catalog {
             Err(ScopeError::new(
                 "unknown_tools",
                 format!(
-                    "{}{more} {} no family or tool: tools_catalog lists them (entries are families like world, sight, board or tool names like anim_check; or all, core)",
+                    "{}{more} {} no family, tool or kit: tools_catalog lists them (entries are families like world, sight, board, tool names like anim_check, or kits like kit:make_menu; or all, core)",
                     unknown.join(", "),
                     if unknown_count == 1 { "names" } else { "name" }
                 ),
@@ -943,8 +989,7 @@ impl Scopes {
 
     /// `session`'s `tools/list`.
     pub fn tools_for(&self, session: &str) -> Vec<ToolDef> {
-        let listed = self.listed(session);
-        listed.iter().map(|i| self.catalog.def(i).clone()).collect()
+        self.catalog.listing(&self.listed(session))
     }
 
     pub fn version(&self, session: &str) -> u64 {
@@ -1097,11 +1142,18 @@ impl Scopes {
 
     /// The lead `by` sets agent `name`'s tools to `active` (and its cap to the same with `cap`),
     /// now on `sessions` (its open ones) and for any session that later says hello as `name`.
+    #[cfg(test)]
     pub fn assign(&self, by: &str, name: &str, sessions: &[String], active: ToolSet, cap: bool, label: String) -> Vec<Change> {
+        let cap = cap.then(|| active.clone());
+        self.assign_capped(by, name, sessions, active, cap, label)
+    }
+
+    /// [`Scopes::assign`] with the cap given apart from the list: a cap by kit allows more than
+    /// the kit lists (`Catalog::select_reach`).
+    pub fn assign_capped(&self, by: &str, name: &str, sessions: &[String], active: ToolSet, cap: Option<ToolSet>, label: String) -> Vec<Change> {
         let mut g = self.lock();
         g.clock += 1;
         let used = g.clock;
-        let cap = cap.then(|| active.clone());
         let label = clip(&format!("{label}, by the lead {by}"), MAX_LABEL);
         let a = Assignment { active, cap, label, by: by.to_owned(), used };
         put(&mut g.named, name, a.clone(), MAX_ASSIGNMENTS, |a| a.used);
@@ -1203,8 +1255,8 @@ pub fn add_to_schemas(defs: &mut [ToolDef]) {
                 (
                     "description",
                     Json::from(
-                        "The tools this session lists beyond the core: families (world, sight, board ...) or tool names, or \"all\". \
-                         Without it, a role named like a template (builder, reviewer, playtester ...) picks the list unless the URL or \
+                        "The tools this session lists beyond the core: families (world, sight, board ...), tool names, a job's kit \
+                         (kit:make_menu; tools_catalog {kits: true} lists them) or \"all\". Without it, a role named like a template (builder, reviewer, playtester ...) picks the list unless the URL or \
                          the lead chose. tools_catalog lists families and roles.",
                     ),
                 ),
@@ -1439,7 +1491,7 @@ mod tests {
     fn list_bytes_match_the_json() {
         let c = catalog();
         let set = c.select(["world", "core"]).unwrap();
-        let json = Json::obj([("tools", Json::arr(set.iter().map(|i| listed_json(c.def(i)))))]).to_string();
+        let json = Json::obj([("tools", Json::arr(c.listing(&set).iter().map(listed_json)))]).to_string();
         assert_eq!(c.list_bytes(&set), json.len());
     }
 }

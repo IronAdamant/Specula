@@ -241,7 +241,7 @@ entities only; everything else is the gap.
   *Done 2026-10-30:* one disk book for every writer, a `perf.toml [disk]` budget, a free-space floor, safe pruning, review evidence kept with each world (design/DISK.md).
 - [ ] **Role templates** (M1, growing): builder, reviewer, playtester, art director, sight-skeptic, performance
   auditor. They live in `.claude/agents/`, with Grok equivalents when used.
-- [ ] ➕ **Tool kits by job** (owner, 2026-11-12: "knowing which ones to get for a specific task", as a carpenter
+- [x] ➕ **Tool kits by job** (owner, 2026-11-12: "knowing which ones to get for a specific task", as a carpenter
   or machinist knows their tools). Families sort the tools by what they are; kits sort them by the job: a menu, a
   level, a character's motion, a balance pass, a cutscene, a translation. A kit names its few tools, the order they
   are used in and the check that says the job is done, and `tools_catalog {kit}` / `tools_activate {kit}` bring it
@@ -249,6 +249,10 @@ entities only; everything else is the gap.
   grant). With it: `world_spawn` and `world_set` share their component schemas, so a kit costs a few thousand
   tokens, not twenty thousand. *Measure:* tokens an agent spends before its first correct call, per job, in the
   evals. Before the M5 exit proof.
+  *Done 2026-11-12:* 21 kits (`toolkits.rs`); `kit:NAME` wherever families are; `tools_catalog {kits, kit, tag}`;
+  tags derived from the authority table; `world_set` listed by reference beside `world_spawn`. Measured: the
+  median kit lists 13.0 KB with the core (about 3,200 tokens) against 85.5 KB for the builder role
+  ([design/TOOLS.md](design/TOOLS.md)). The tokens-to-first-correct-call measure is part of "Measured leverage".
 - [x] **Headless playtest swarms** (M3): many headless engines on separate ports, each run by an agent testing one path,
   with results gathered into one report.
   *Why:* this is where swarms beat studios. QA scales with agents, not headcount.
