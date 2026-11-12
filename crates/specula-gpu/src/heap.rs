@@ -613,6 +613,34 @@ mod tests {
         }
     }
 
+    /// A fake `vkAllocateMemory` whose handle says how it was asked: 2 with the device-address
+    /// flag chained on, 1 without.
+    unsafe extern "system" fn telling_allocate(_: VkDevice, info: *const VkMemoryAllocateInfo, _: *const c_void, out: *mut VkDeviceMemory) -> VkResult {
+        // SAFETY: `RawAllocator::allocate` passes a valid info and out-pointer.
+        unsafe { *out = if (*info).p_next.is_null() { 1 } else { 2 } };
+        VK_SUCCESS
+    }
+
+    /// Mutation testing (Probatio, 2026-11-13) changed a block's allocation to ask for a shader
+    /// device address and no test noticed. Blocks hold images: they never ask for one (a device
+    /// without the feature refuses the flag, and one with it pays for address space no image
+    /// uses). An asker's own allocation carries exactly the flag it asked for.
+    #[test]
+    fn blocks_never_ask_for_a_device_address_and_own_allocations_ask_as_told() {
+        let mut w = Worker::start(RawAllocator::for_test(telling_allocate, no_free, no_map)).expect("the heap's threads");
+        w.grow.as_ref().unwrap().send(Job::Alloc(0, 64 << 20)).unwrap();
+        assert!(matches!(w.rx.recv_timeout(Duration::from_secs(30)), Ok(Done::Block((0, _, Ok(1))))), "a block: no device address");
+        w.tx.as_ref().unwrap().send(Job::Own(1, 0, 4096, true, false)).unwrap();
+        assert!(matches!(w.rx.recv_timeout(Duration::from_secs(30)), Ok(Done::Own(1, Ok((2, _))))), "asked with an address");
+        w.tx.as_ref().unwrap().send(Job::Own(2, 0, 4096, false, false)).unwrap();
+        assert!(matches!(w.rx.recv_timeout(Duration::from_secs(30)), Ok(Done::Own(2, Ok((1, _))))), "asked without");
+        w.tx = None;
+        w.grow = None;
+        for t in w.threads.drain(..) {
+            t.join().unwrap();
+        }
+    }
+
     #[test]
     fn ranges_take_at_alignment_and_coalesce_when_given_back() {
         let mut r = Ranges::new(1000);
