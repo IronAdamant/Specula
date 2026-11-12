@@ -818,11 +818,18 @@ readback and the remaining engine-thread stalls.
 - [ ] ➕ **Audio buses and effects** (reverb, low-pass), spatialisation, streaming music.
   *Progress 2026-10-13:* buses, ducking, reverb and low-pass in recipes, 3D spatialisation.
 - [ ] ➕ **Timeline/sequencer and camera rails** as data, for cutscenes.
-- [ ] ➕ **Localisation**: string tables, plural rules, per-locale fonts; agents translate and `ui_check` catches
+- [x] ➕ **Localisation**: string tables, plural rules, per-locale fonts; agents translate and `ui_check` catches
   overflow.
-- [ ] ➕ **Accessibility**: UI scale, colour-vision themes, subtitles, remapping, hold/toggle, reduced motion;
+  *Done 2026-11-12:* `specula-lingua` (locale chains, CLDR plural rules for 70 languages, a pseudo-locale), `@key`
+  texts in the UI, `l10n_*` tools with a review gate, Sepulcra in English and German
+  ([design/LOCALISATION.md](design/LOCALISATION.md)).
+- [x] ➕ **Accessibility**: UI scale, colour-vision themes, subtitles, remapping, hold/toggle, reduced motion;
   screen reader via Windows UI Automation (later).
-- [ ] ➕ **Reusable gameplay modules** as SDK examples: inventory, abilities, dialogue, quests.
+  *Done 2026-11-12:* all of it but the screen reader (a design note), with Sepulcra's shell: a title screen, saved
+  settings, rebinding, gamepad pause, handheld defaults ([design/ACCESSIBILITY.md](design/ACCESSIBILITY.md)).
+- [x] ➕ **Reusable gameplay modules** as SDK examples: inventory, abilities, dialogue, quests.
+  *Done 2026-11-12:* `inventarium`, `facultas`, `colloquium`, `quaestio` and the playable `exemplum`
+  ([design/MODULES.md](design/MODULES.md)).
 - [ ] **Human editor on the protocol**:
   - outliner and inspector
   - click to select

@@ -225,7 +225,8 @@ In practice that means six **foundations** that apply to every change from M1 on
   --seed 7` (see its TESTPLAN.md).
 - **Flags:** `--port N`, `--headless`, `--adapter discrete|integrated|<index>`, `--size WxH`, `--captures DIR`,
   `--worlds DIR`, `--world NAME` (autosaves to `worlds/NAME/`), `--cache DIR`, `--assets DIR`, `--style FILE`,
-  `--perf FILE`, `--paused` (start with the clock stopped, for replays), `--response-format concise|detailed`,
+  `--perf FILE`, `--settings DIR|off` (a hosted game's player settings: per user with a window, none headless;
+  scripts pass `off`), `--paused` (start with the clock stopped, for replays), `--response-format concise|detailed`,
   `--tools-default core|all` (agents list 6 core tools unless they ask; `.mcp.json` and the scripts ask for all),
   `--owner NAME` / `--lead NAME` / `--reviewer NAME` (operator grants: roles are never self-declared),
   `--trace DIR`, `--trace-file on|off`, `--strict-budget` (an engine-thread stall fails the run), `--terrain on|off`,
@@ -308,7 +309,6 @@ In practice that means six **foundations** that apply to every change from M1 on
 - Sepulcra uses physics only for its shamblers' ragdoll deaths (gameplay is still rules, not physics). It runs on its
   Rust rules by default (`--rules lex` plays it from Lex). Modules can't load off Windows yet (no `dlopen`), and a
   module stuck in a loop that makes no requests can't be preempted.
-- No title screen in the app, settings aren't saved and there's no rebinding.
 - **Windows only** at runtime: other platforms compile but report "unsupported" (Vulkan loading isn't implemented
   off Windows yet). CI has no GPU, so rendering is checked by hand with `scripts/window_check.py`.
 - **Localhost only:** no per-agent auth tokens yet, so the server must never bind beyond loopback.
