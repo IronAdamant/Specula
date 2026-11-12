@@ -23,7 +23,7 @@
         "children": [
           {
             "type": "label",
-            "text": "Controls",
+            "text": "@controls.controls",
             "role": "title",
             "text_align": "center"
           },
@@ -82,7 +82,7 @@
                 "type": "button",
                 "id": "controls_back",
                 "style": "primary",
-                "text": "Back",
+                "text": "@controls.back",
                 "action": "close_controls",
                 "width": "fill"
               }

@@ -7,7 +7,7 @@
   "focus": "ui_scale",
   "back": "close_settings",
   "opened_by": ["open_settings"],
-  "notes": "Each button cycles a setting. State: ui_scale (ratio), reduced_motion_text, glyph_style (Auto / Xbox / PlayStation / Steam Deck), volume (ratio), autosave_text (On / Off).",
+  "notes": "Each button cycles a setting. State: ui_scale (ratio), reduced_motion_text, glyph_style (Auto / Xbox / PlayStation / Steam Deck), volume (ratio), autosave_text (On / Off), language (the language's own name). Words come from the string table (assets/strings).",
   "root": {
     "type": "box",
     "children": [
@@ -19,15 +19,16 @@
         "max_width": "96%",
         "layout": "column",
         "align": "stretch",
-        "gap": 10,
+        "gap": 6,
         "children": [
-          { "type": "label", "text": "Settings", "role": "title", "text_align": "center" },
-          { "type": "button", "id": "ui_scale", "text": "Interface size: {ui_scale:pct}", "action": "cycle_ui_scale" },
-          { "type": "button", "id": "volume", "text": "Volume: {volume:pct}", "action": "cycle_volume" },
-          { "type": "button", "id": "glyphs", "text": "Button prompts: {glyph_style}", "action": "cycle_glyphs" },
-          { "type": "button", "id": "motion", "text": "Reduced motion: {reduced_motion_text}", "action": "toggle_motion", "tooltip": "Stops UI animation and camera shake." },
-          { "type": "button", "id": "autosave", "text": "Autosave: {autosave_text}", "action": "toggle_autosave", "tooltip": "Save to the two autosave slots, in turn, as each wave starts." },
-          { "type": "button", "id": "settings_back", "style": "primary", "text": "Back", "action": "close_settings" }
+          { "type": "label", "text": "@settings.settings", "role": "title", "text_align": "center" },
+          { "type": "button", "id": "ui_scale", "text": "@settings.interface_size_ui_scale", "action": "cycle_ui_scale" },
+          { "type": "button", "id": "volume", "text": "@settings.volume", "action": "cycle_volume" },
+          { "type": "button", "id": "glyphs", "text": "@settings.button_prompts_glyph_style", "action": "cycle_glyphs" },
+          { "type": "button", "id": "motion", "text": "@settings.reduced_motion_text", "action": "toggle_motion", "tooltip": "@settings.stops_ui_animation_camera" },
+          { "type": "button", "id": "autosave", "text": "@settings.autosave_text", "action": "toggle_autosave", "tooltip": "@settings.save_two_autosave_slots" },
+          { "type": "button", "id": "language", "text": "@settings.language", "action": "cycle_language", "tooltip": "@settings.language_tip" },
+          { "type": "button", "id": "settings_back", "style": "primary", "text": "@settings.back", "action": "close_settings" }
         ]
       }
     ]

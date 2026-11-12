@@ -158,11 +158,25 @@ fn errors_at(h: &mut Host, what: &str) -> Vec<String> {
     // legibility floor holds there (the Deck at 0.8 and 0.9 is under it; an open question).
     let smaller: Vec<String> = targets.iter().filter(|t| t.user_scale < 1.0).map(|t| t.name.clone()).collect();
     let mut errors = Vec::new();
-    for set in SETS {
-        let g = h.game.ui(UiPick::Live).expect("on");
-        let f = check_with(g.ui, set, g.state, g.input_map, &targets, &CheckOpts::default()).unwrap_or_else(|e| panic!("{set:?}: {e}"));
-        let counts = |f: &specula_ui::check::Finding| f.severity == Severity::Error && !(f.rule == "legibility" && smaller.contains(&f.target));
-        errors.extend(f.into_iter().filter(counts).map(|f| format!("{what} {set:?} [{}] {} {}:{} {}", f.rule, f.target, f.screen, f.widget, f.message)));
+    // Every language with a table, and the pseudo-locale (lane m5-l10n: words 35% longer).
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../sepulcra/assets/strings");
+    let l10n = sepulcra_app::l10n::L10n::load(Some(&dir), None);
+    assert!(l10n.problems.is_empty(), "{:?}", l10n.problems);
+    let mut langs: Vec<(String, CheckOpts)> = Vec::new();
+    for l in l10n.locales() {
+        let mut one = sepulcra_app::l10n::L10n::load(Some(&dir), None);
+        one.set_locale(&l).unwrap();
+        langs.push((l.to_string(), CheckOpts { strings: Some(one.strings()), ..CheckOpts::default() }));
+    }
+    assert!(langs.iter().any(|(l, _)| l == "de"), "German is shipped");
+    langs.push(("qps-ploc".into(), CheckOpts { pseudo: true, ..CheckOpts::default() }));
+    for (lang, opts) in &langs {
+        for set in SETS {
+            let g = h.game.ui(UiPick::Live).expect("on");
+            let f = check_with(g.ui, set, g.state, g.input_map, &targets, opts).unwrap_or_else(|e| panic!("{set:?}: {e}"));
+            let counts = |f: &specula_ui::check::Finding| f.severity == Severity::Error && !(f.rule == "legibility" && smaller.contains(&f.target));
+            errors.extend(f.into_iter().filter(counts).map(|f| format!("{what} {lang} {set:?} [{}] {} {}:{} {}", f.rule, f.target, f.screen, f.widget, f.message)));
+        }
     }
     errors
 }

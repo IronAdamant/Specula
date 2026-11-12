@@ -21,17 +21,17 @@
             "notes": "A veil behind the title keeps it readable over a bright sky (ui_check contrast, blended in linear light).",
             "children": [
               { "type": "icon", "shape": "warding", "size": "3.2em", "color": "rune" },
-              { "type": "label", "text": "SEPULCRA", "role": "title" },
-              { "type": "label", "text": "Guard the graves of the shattered slab", "role": "subtitle" }
+              { "type": "label", "text": "@title.sepulcra", "role": "title" },
+              { "type": "label", "text": "@title.guard_graves_shattered_slab", "role": "subtitle" }
             ]
           },
           {
             "type": "panel", "style": "menu", "width": "16em", "layout": "column", "align": "stretch", "gap": 10, "margin": [14, 0, 0, 0],
             "children": [
-              { "type": "button", "id": "start", "style": "primary", "text": "New run", "action": "new_run" },
-              { "type": "button", "id": "title_controls", "text": "Controls", "action": "open_controls" },
-              { "type": "button", "id": "title_settings", "text": "Settings", "action": "open_settings" },
-              { "type": "button", "id": "quit_game", "text": "Quit", "action": "quit_game" }
+              { "type": "button", "id": "start", "style": "primary", "text": "@title.new_run", "action": "new_run" },
+              { "type": "button", "id": "title_controls", "text": "@title.controls", "action": "open_controls" },
+              { "type": "button", "id": "title_settings", "text": "@title.settings", "action": "open_settings" },
+              { "type": "button", "id": "quit_game", "text": "@title.quit", "action": "quit_game" }
             ]
           }
         ]

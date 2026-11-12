@@ -19,11 +19,11 @@
         "children": [
           {
             "type": "box", "id": "wave_group", "layout": "row", "align": "center", "gap": 7,
-            "tooltip": "Waves survived and the next wave's timer.",
+            "tooltip": "@hud.waves_survived_next_wave",
             "children": [
               { "type": "icon", "shape": "wave", "color": "rune_pale" },
-              { "type": "label", "id": "wave", "text": "Wave {wave}/{waves}", "role": "value" },
-              { "type": "label", "id": "next_wave", "text": "next {next_wave_s:time}", "role": "small", "visible": "next_wave_s" }
+              { "type": "label", "id": "wave", "text": "@hud.wave_waves", "role": "value" },
+              { "type": "label", "id": "next_wave", "text": "@hud.next_wave_s", "role": "small", "visible": "next_wave_s" }
             ]
           },
           { "type": "panel", "style": "divider", "width": 1, "height": "1.5em", "padding": 0 },
@@ -32,7 +32,7 @@
             "children": [
               { "type": "icon", "shape": "dust", "color": "bone" },
               { "type": "label", "id": "dust", "text": "{dust}", "role": "value" },
-              { "type": "label", "text": "dust", "role": "small", "visible": "!ui.narrow" }
+              { "type": "label", "text": "@hud.dust", "role": "small", "visible": "!ui.narrow" }
             ]
           },
           { "type": "panel", "style": "divider", "width": 1, "height": "1.5em", "padding": 0 },
@@ -44,7 +44,7 @@
               { "type": "bar", "id": "tomb_bar", "value": "tombstones", "max": "tombstones_max", "width": "4.5em", "visible": "!ui.narrow" }
             ]
           },
-          { "type": "label", "id": "paused", "text": "PAUSED", "role": "heading", "color": "fire", "visible": "paused" },
+          { "type": "label", "id": "paused", "text": "@hud.paused", "role": "heading", "color": "fire", "visible": "paused" },
           { "type": "label", "id": "speed", "text": "x{speed}", "role": "heading", "color": "rune", "visible": "speed > 1" }
         ]
       },
@@ -58,10 +58,10 @@
         "visible": "ui.width >= 1200",
         "notes": "Touch-sized (44 logical px at least). Below 1200 logical px of width the same buttons sit under the top bar (corner_narrow).",
         "children": [
-          { "type": "button", "id": "speed_button", "style": "compact", "min_width": 52, "min_height": 44, "text": "x{speed}", "action": "speed", "tooltip": "Game speed: x1, x2, x4.", "children": [ { "type": "prompt", "action": "speed" } ] },
-          { "type": "button", "id": "pause_button", "style": "compact", "min_width": 52, "min_height": 44, "icon": "pause", "action": "pause", "shortcut": "pause", "visible": "!paused", "tooltip": "Active pause: building still works.", "children": [ { "type": "prompt", "action": "pause" } ] },
-          { "type": "button", "id": "resume_button", "style": "compact", "min_width": 52, "min_height": 44, "icon": "play", "action": "resume", "visible": "paused", "tooltip": "Resume." },
-          { "type": "button", "id": "menu_button", "style": "compact", "min_width": 52, "min_height": 44, "text": "Menu", "action": "open_menu", "shortcut": "cancel", "tooltip": "Settings, controls, restart.", "children": [ { "type": "prompt", "action": "cancel" } ] }
+          { "type": "button", "id": "speed_button", "style": "compact", "min_width": 52, "min_height": 44, "text": "x{speed}", "action": "speed", "tooltip": "@hud.game_speed_x1_x2", "children": [ { "type": "prompt", "action": "speed" } ] },
+          { "type": "button", "id": "pause_button", "style": "compact", "min_width": 52, "min_height": 44, "icon": "pause", "action": "pause", "shortcut": "pause", "visible": "!paused", "tooltip": "@hud.active_pause_building_still", "children": [ { "type": "prompt", "action": "pause" } ] },
+          { "type": "button", "id": "resume_button", "style": "compact", "min_width": 52, "min_height": 44, "icon": "play", "action": "resume", "visible": "paused", "tooltip": "@hud.resume" },
+          { "type": "button", "id": "menu_button", "style": "compact", "min_width": 52, "min_height": 44, "text": "@hud.menu", "action": "open_menu", "shortcut": "cancel", "tooltip": "@hud.settings_controls_restart", "children": [ { "type": "prompt", "action": "cancel" } ] }
         ]
       },
       {
@@ -76,7 +76,7 @@
           { "type": "button", "id": "speed_button_narrow", "style": "compact", "min_width": 52, "min_height": 44, "text": "x{speed}", "action": "speed" },
           { "type": "button", "id": "pause_button_narrow", "style": "compact", "min_width": 52, "min_height": 44, "icon": "pause", "action": "pause", "shortcut": "pause", "visible": "!paused" },
           { "type": "button", "id": "resume_button_narrow", "style": "compact", "min_width": 52, "min_height": 44, "icon": "play", "action": "resume", "visible": "paused" },
-          { "type": "button", "id": "menu_button_narrow", "style": "compact", "min_width": 52, "min_height": 44, "text": "Menu", "action": "open_menu", "shortcut": "cancel" }
+          { "type": "button", "id": "menu_button_narrow", "style": "compact", "min_width": 52, "min_height": 44, "text": "@hud.menu", "action": "open_menu", "shortcut": "cancel" }
         ]
       },
       { "type": "toasts", "anchor": "top", "margin": [72, 0, 0, 0], "width": "24em", "max": 4 },
@@ -119,15 +119,16 @@
             "children": [
               { "type": "icon", "shape": "dust", "color": "bone", "size": "1.1em" },
               { "type": "label", "id": "selected_cost", "text": "{selected_cost}", "role": "value" },
-              { "type": "label", "text": "Not enough dust", "role": "small", "color": "fire", "visible": "!affordable" }
+              { "type": "label", "text": "@hud.not_enough_dust", "role": "small", "color": "fire", "visible": "!affordable" }
             ]
           },
           {
-            "type": "box", "layout": "row", "align": "center", "gap": 16,
+            "type": "box", "layout": "grid", "columns": 2, "gap": 8,
+            "notes": "Two columns: the prompts' words are longer in other languages (German, the pseudo-locale).",
             "children": [
-              { "type": "prompt", "action": "place", "text": "Carve" },
-              { "type": "prompt", "action": "build_menu", "text": "Stones" },
-              { "type": "prompt", "action": "upgrade", "text": "Upgrade" }
+              { "type": "prompt", "action": "place", "text": "@hud.carve" },
+              { "type": "prompt", "action": "build_menu", "text": "@hud.stones" },
+              { "type": "prompt", "action": "upgrade", "text": "@hud.upgrade" }
             ]
           }
         ]
@@ -137,15 +138,15 @@
         "id": "call_wave",
         "anchor": "bottom_right",
         "margin": 12,
-        "text": "Call wave +{early_bonus}",
+        "text": "@hud.call_wave_early_bonus",
         "action": "call_wave",
         "shortcut": "call_wave",
         "visible": "next_wave_s && ui.width >= 1200",
-        "tooltip": "Start the next wave now for bonus dust.",
+        "tooltip": "@hud.start_next_wave_now",
         "children": [ { "type": "prompt", "action": "call_wave" } ]
       },
-      {"type": "panel", "id": "build_bar", "anchor": "bottom", "margin": [0, 0, 10, 0], "padding": 6, "layout": "row", "align": "center", "gap": 6, "visible": "running && ui.width >= 1200", "children": [{"type": "button", "id": "build_warding_on", "icon": "warding", "action": "select:warding", "shortcut": "build_menu", "visible": "sel_warding", "tooltip": "Warding stone: single target", "children": [{"type": "label", "text": "{cost_warding}", "role": "value", "visible": "can_warding"}, {"type": "label", "text": "{cost_warding}", "role": "value", "color": "fire", "visible": "!can_warding"}, {"type": "prompt", "action": "select_1"}], "style": "primary"}, {"type": "button", "id": "build_warding", "icon": "warding", "action": "select:warding", "shortcut": "build_menu", "visible": "!sel_warding", "tooltip": "Warding stone: single target", "children": [{"type": "label", "text": "{cost_warding}", "role": "value", "visible": "can_warding"}, {"type": "label", "text": "{cost_warding}", "role": "value", "color": "fire", "visible": "!can_warding"}, {"type": "prompt", "action": "select_1"}]}, {"type": "button", "id": "build_pillar_on", "icon": "pillar", "action": "select:pillar", "shortcut": "build_menu", "visible": "sel_pillar", "tooltip": "Rune pillar: slows an area", "children": [{"type": "label", "text": "{cost_pillar}", "role": "value", "visible": "can_pillar"}, {"type": "label", "text": "{cost_pillar}", "role": "value", "color": "fire", "visible": "!can_pillar"}, {"type": "prompt", "action": "select_2"}], "style": "primary"}, {"type": "button", "id": "build_pillar", "icon": "pillar", "action": "select:pillar", "shortcut": "build_menu", "visible": "!sel_pillar", "tooltip": "Rune pillar: slows an area", "children": [{"type": "label", "text": "{cost_pillar}", "role": "value", "visible": "can_pillar"}, {"type": "label", "text": "{cost_pillar}", "role": "value", "color": "fire", "visible": "!can_pillar"}, {"type": "prompt", "action": "select_2"}]}, {"type": "button", "id": "build_brazier_on", "icon": "brazier", "action": "select:brazier", "shortcut": "build_menu", "visible": "sel_brazier", "tooltip": "Brazier cairn: splash fire", "children": [{"type": "label", "text": "{cost_brazier}", "role": "value", "visible": "can_brazier"}, {"type": "label", "text": "{cost_brazier}", "role": "value", "color": "fire", "visible": "!can_brazier"}, {"type": "prompt", "action": "select_3"}], "style": "primary"}, {"type": "button", "id": "build_brazier", "icon": "brazier", "action": "select:brazier", "shortcut": "build_menu", "visible": "!sel_brazier", "tooltip": "Brazier cairn: splash fire", "children": [{"type": "label", "text": "{cost_brazier}", "role": "value", "visible": "can_brazier"}, {"type": "label", "text": "{cost_brazier}", "role": "value", "color": "fire", "visible": "!can_brazier"}, {"type": "prompt", "action": "select_3"}]}, {"type": "button", "id": "build_obelisk_on", "icon": "obelisk", "action": "select:obelisk", "shortcut": "build_menu", "visible": "sel_obelisk", "tooltip": "Sky obelisk: anti-air", "children": [{"type": "label", "text": "{cost_obelisk}", "role": "value", "visible": "can_obelisk"}, {"type": "label", "text": "{cost_obelisk}", "role": "value", "color": "fire", "visible": "!can_obelisk"}, {"type": "prompt", "action": "select_4"}], "style": "primary"}, {"type": "button", "id": "build_obelisk", "icon": "obelisk", "action": "select:obelisk", "shortcut": "build_menu", "visible": "!sel_obelisk", "tooltip": "Sky obelisk: anti-air", "children": [{"type": "label", "text": "{cost_obelisk}", "role": "value", "visible": "can_obelisk"}, {"type": "label", "text": "{cost_obelisk}", "role": "value", "color": "fire", "visible": "!can_obelisk"}, {"type": "prompt", "action": "select_4"}]}, {"type": "button", "id": "build_wall_on", "icon": "wall", "action": "select:wall", "shortcut": "build_menu", "visible": "sel_wall", "tooltip": "Stone wall: reroutes the dead", "children": [{"type": "label", "text": "{cost_wall}", "role": "value", "visible": "can_wall"}, {"type": "label", "text": "{cost_wall}", "role": "value", "color": "fire", "visible": "!can_wall"}, {"type": "prompt", "action": "select_wall"}], "style": "primary"}, {"type": "button", "id": "build_wall", "icon": "wall", "action": "select:wall", "shortcut": "build_menu", "visible": "!sel_wall", "tooltip": "Stone wall: reroutes the dead", "children": [{"type": "label", "text": "{cost_wall}", "role": "value", "visible": "can_wall"}, {"type": "label", "text": "{cost_wall}", "role": "value", "color": "fire", "visible": "!can_wall"}, {"type": "prompt", "action": "select_wall"}]}], "notes": "Selection is always allowed (the panel shows the stone, its range ring shows on hover); a cost in fire colour means you can't afford it yet."},
-      {"type": "panel", "id": "inspect", "anchor": "right", "margin": [0, 12, 0, 0], "width": "17em", "max_width": "96%", "layout": "column", "align": "stretch", "gap": 8, "visible": "inspect && !ui.short || inspect && !ui.open.radial", "children": [{"type": "box", "layout": "row", "align": "center", "gap": 10, "children": [{"type": "panel", "style": "inset", "padding": 5, "children": [{"type": "icon", "shape": "warding", "size": "2em", "color": "#aab4c0", "visible": "inspect_icon == warding"}, {"type": "icon", "shape": "pillar", "size": "2em", "color": "#aab4c0", "visible": "inspect_icon == pillar"}, {"type": "icon", "shape": "brazier", "size": "2em", "color": "#aab4c0", "visible": "inspect_icon == brazier"}, {"type": "icon", "shape": "obelisk", "size": "2em", "color": "#aab4c0", "visible": "inspect_icon == obelisk"}, {"type": "icon", "shape": "wall", "size": "2em", "color": "#aab4c0", "visible": "inspect_icon == wall"}]}, {"type": "label", "id": "inspect_name", "text": "{inspect}", "role": "heading", "width": "fill", "wrap": true}, {"type": "button", "id": "deselect", "style": "compact", "min_width": 44, "min_height": 44, "icon": "cross", "action": "deselect", "shortcut": "cancel", "tooltip": "Close (deselect)."}]}, {"type": "label", "id": "inspect_detail", "text": "{inspect_detail}", "role": "small", "wrap": true}, {"type": "label", "id": "upgrade_detail", "text": "{upgrade_detail}", "role": "small", "wrap": true, "color": "rune_pale", "visible": "inspect_stone"}, {"type": "box", "layout": "row", "gap": 8, "children": [{"type": "button", "id": "upgrade", "style": "primary", "text": "Carve +{upgrade_cost}", "action": "upgrade", "shortcut": "upgrade", "visible": "upgrade_cost", "enabled": "can_upgrade", "width": "fill", "tooltip": "Carve the next tier.", "children": [{"type": "prompt", "action": "upgrade"}]}, {"type": "button", "id": "sell", "text": "Sell +{refund}", "action": "sell", "shortcut": "sell", "visible": "inspect_stone", "width": "fill", "tooltip": "70% of what it cost.", "children": [{"type": "prompt", "action": "sell"}]}, {"type": "button", "id": "unwall", "text": "Remove +{refund}", "action": "unwall", "shortcut": "unwall", "visible": "inspect_wall", "width": "fill", "children": [{"type": "prompt", "action": "unwall"}]}]}]},
+      {"type": "panel", "id": "build_bar", "anchor": "bottom", "margin": [0, 0, 10, 0], "padding": 6, "layout": "row", "align": "center", "gap": 6, "visible": "running && ui.width >= 1200", "children": [{"type": "button", "id": "build_warding_on", "icon": "warding", "action": "select:warding", "shortcut": "build_menu", "visible": "sel_warding", "tooltip": "@hud.warding_stone_single_target", "children": [{"type": "label", "text": "{cost_warding}", "role": "value", "visible": "can_warding"}, {"type": "label", "text": "{cost_warding}", "role": "value", "color": "fire", "visible": "!can_warding"}, {"type": "prompt", "action": "select_1"}], "style": "primary"}, {"type": "button", "id": "build_warding", "icon": "warding", "action": "select:warding", "shortcut": "build_menu", "visible": "!sel_warding", "tooltip": "@hud.warding_stone_single_target", "children": [{"type": "label", "text": "{cost_warding}", "role": "value", "visible": "can_warding"}, {"type": "label", "text": "{cost_warding}", "role": "value", "color": "fire", "visible": "!can_warding"}, {"type": "prompt", "action": "select_1"}]}, {"type": "button", "id": "build_pillar_on", "icon": "pillar", "action": "select:pillar", "shortcut": "build_menu", "visible": "sel_pillar", "tooltip": "@hud.rune_pillar_slows_area", "children": [{"type": "label", "text": "{cost_pillar}", "role": "value", "visible": "can_pillar"}, {"type": "label", "text": "{cost_pillar}", "role": "value", "color": "fire", "visible": "!can_pillar"}, {"type": "prompt", "action": "select_2"}], "style": "primary"}, {"type": "button", "id": "build_pillar", "icon": "pillar", "action": "select:pillar", "shortcut": "build_menu", "visible": "!sel_pillar", "tooltip": "@hud.rune_pillar_slows_area", "children": [{"type": "label", "text": "{cost_pillar}", "role": "value", "visible": "can_pillar"}, {"type": "label", "text": "{cost_pillar}", "role": "value", "color": "fire", "visible": "!can_pillar"}, {"type": "prompt", "action": "select_2"}]}, {"type": "button", "id": "build_brazier_on", "icon": "brazier", "action": "select:brazier", "shortcut": "build_menu", "visible": "sel_brazier", "tooltip": "@hud.brazier_cairn_splash_fire", "children": [{"type": "label", "text": "{cost_brazier}", "role": "value", "visible": "can_brazier"}, {"type": "label", "text": "{cost_brazier}", "role": "value", "color": "fire", "visible": "!can_brazier"}, {"type": "prompt", "action": "select_3"}], "style": "primary"}, {"type": "button", "id": "build_brazier", "icon": "brazier", "action": "select:brazier", "shortcut": "build_menu", "visible": "!sel_brazier", "tooltip": "@hud.brazier_cairn_splash_fire", "children": [{"type": "label", "text": "{cost_brazier}", "role": "value", "visible": "can_brazier"}, {"type": "label", "text": "{cost_brazier}", "role": "value", "color": "fire", "visible": "!can_brazier"}, {"type": "prompt", "action": "select_3"}]}, {"type": "button", "id": "build_obelisk_on", "icon": "obelisk", "action": "select:obelisk", "shortcut": "build_menu", "visible": "sel_obelisk", "tooltip": "@hud.sky_obelisk_anti_air", "children": [{"type": "label", "text": "{cost_obelisk}", "role": "value", "visible": "can_obelisk"}, {"type": "label", "text": "{cost_obelisk}", "role": "value", "color": "fire", "visible": "!can_obelisk"}, {"type": "prompt", "action": "select_4"}], "style": "primary"}, {"type": "button", "id": "build_obelisk", "icon": "obelisk", "action": "select:obelisk", "shortcut": "build_menu", "visible": "!sel_obelisk", "tooltip": "@hud.sky_obelisk_anti_air", "children": [{"type": "label", "text": "{cost_obelisk}", "role": "value", "visible": "can_obelisk"}, {"type": "label", "text": "{cost_obelisk}", "role": "value", "color": "fire", "visible": "!can_obelisk"}, {"type": "prompt", "action": "select_4"}]}, {"type": "button", "id": "build_wall_on", "icon": "wall", "action": "select:wall", "shortcut": "build_menu", "visible": "sel_wall", "tooltip": "@hud.stone_wall_reroutes_dead", "children": [{"type": "label", "text": "{cost_wall}", "role": "value", "visible": "can_wall"}, {"type": "label", "text": "{cost_wall}", "role": "value", "color": "fire", "visible": "!can_wall"}, {"type": "prompt", "action": "select_wall"}], "style": "primary"}, {"type": "button", "id": "build_wall", "icon": "wall", "action": "select:wall", "shortcut": "build_menu", "visible": "!sel_wall", "tooltip": "@hud.stone_wall_reroutes_dead", "children": [{"type": "label", "text": "{cost_wall}", "role": "value", "visible": "can_wall"}, {"type": "label", "text": "{cost_wall}", "role": "value", "color": "fire", "visible": "!can_wall"}, {"type": "prompt", "action": "select_wall"}]}], "notes": "Selection is always allowed (the panel shows the stone, its range ring shows on hover); a cost in fire colour means you can't afford it yet."},
+      {"type": "panel", "id": "inspect", "anchor": "right", "margin": [0, 12, 0, 0], "width": "17em", "max_width": "96%", "layout": "column", "align": "stretch", "gap": 5, "visible": "inspect && !ui.short || inspect && !ui.open.radial", "children": [{"type": "box", "layout": "row", "align": "center", "gap": 10, "children": [{"type": "panel", "style": "inset", "padding": 5, "children": [{"type": "icon", "shape": "warding", "size": "2em", "color": "#aab4c0", "visible": "inspect_icon == warding"}, {"type": "icon", "shape": "pillar", "size": "2em", "color": "#aab4c0", "visible": "inspect_icon == pillar"}, {"type": "icon", "shape": "brazier", "size": "2em", "color": "#aab4c0", "visible": "inspect_icon == brazier"}, {"type": "icon", "shape": "obelisk", "size": "2em", "color": "#aab4c0", "visible": "inspect_icon == obelisk"}, {"type": "icon", "shape": "wall", "size": "2em", "color": "#aab4c0", "visible": "inspect_icon == wall"}]}, {"type": "label", "id": "inspect_name", "text": "{inspect}", "role": "heading", "width": "fill", "wrap": true}, {"type": "button", "id": "deselect", "style": "compact", "min_width": 44, "min_height": 44, "icon": "cross", "action": "deselect", "shortcut": "cancel", "tooltip": "@hud.close_deselect"}]}, {"type": "label", "id": "inspect_detail", "text": "{inspect_detail}", "role": "small", "wrap": true}, {"type": "label", "id": "upgrade_detail", "text": "{upgrade_detail}", "role": "small", "wrap": true, "color": "rune_pale", "visible": "inspect_stone"}, {"type": "box", "layout": "column", "align": "stretch", "gap": 4, "notes": "Stacked: Carve and Sell with their costs don't fit side by side in German.", "children": [{"type": "button", "id": "upgrade", "style": "primary", "text": "@hud.carve_upgrade_cost", "action": "upgrade", "shortcut": "upgrade", "visible": "upgrade_cost", "enabled": "can_upgrade", "width": "fill", "tooltip": "@hud.carve_next_tier", "children": [{"type": "prompt", "action": "upgrade"}]}, {"type": "button", "id": "sell", "text": "@hud.sell_refund", "action": "sell", "shortcut": "sell", "visible": "inspect_stone", "width": "fill", "tooltip": "@hud.t_70_what_cost", "children": [{"type": "prompt", "action": "sell"}]}, {"type": "button", "id": "unwall", "text": "@hud.remove_refund", "action": "unwall", "shortcut": "unwall", "visible": "inspect_wall", "width": "fill", "children": [{"type": "prompt", "action": "unwall"}]}]}]},
       {
         "type": "panel",
         "id": "hover",
@@ -185,12 +186,12 @@
               { "type": "label", "text": "{selected_cost}", "role": "value" }
             ]
           },
-          { "type": "label", "text": "Not enough dust", "role": "small", "color": "fire", "visible": "selected && !affordable" },
+          { "type": "label", "text": "@hud.not_enough_dust", "role": "small", "color": "fire", "visible": "selected && !affordable" },
           {
             "type": "box", "layout": "row", "gap": 8,
             "children": [
-              { "type": "button", "id": "stones_narrow", "text": "Stones", "action": "open_build_menu", "shortcut": "build_menu", "width": "fill" },
-              { "type": "button", "id": "call_wave_narrow", "text": "Call wave +{early_bonus}", "action": "call_wave", "shortcut": "call_wave", "width": "fill", "visible": "next_wave_s" }
+              { "type": "button", "id": "stones_narrow", "text": "@hud.stones", "action": "open_build_menu", "shortcut": "build_menu", "width": "fill" },
+              { "type": "button", "id": "call_wave_narrow", "text": "@hud.call_wave_early_bonus", "action": "call_wave", "shortcut": "call_wave", "width": "fill", "visible": "next_wave_s" }
             ]
           }
         ]

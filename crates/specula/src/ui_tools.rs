@@ -18,9 +18,9 @@ use specula_ui::Only;
 /// The interfaces the tools can look at.
 pub const SURFACES: [&str; 3] = ["game", "review", "gallery"];
 /// The `ui_check` rules (for `rules` filters).
-pub const RULES: [&str; 15] = [
+pub const RULES: [&str; 17] = [
     "legibility", "contrast", "non_text_contrast", "overlap", "offscreen", "overflow", "text_overflow", "missing_glyph", "touch_target", "focus_reachability",
-    "focus_scope", "gamepad_access", "unbound", "unknown_texture", "untranslated",
+    "focus_scope", "gamepad_access", "unbound", "unknown_texture", "untranslated", "missing_key", "hardcoded",
 ];
 
 /// Most screens one `ui_check` checks together.
@@ -206,6 +206,10 @@ pub struct CheckArgs {
     pub pseudo: bool,
     pub rules: Option<Vec<String>>,
     pub max_findings: usize,
+    /// `locale`: check in this language (`crate::l10n_tools` makes `strings` from the project's
+    /// string tables on the caller's connection before the call reaches the engine).
+    pub locale: Option<String>,
+    pub strings: Option<std::sync::Arc<specula_ui::Strings>>,
 }
 
 pub struct ActArgs {
@@ -231,6 +235,8 @@ pub enum UiCall {
     Check(CheckArgs),
     Act(ActArgs),
     Frame(Box<FrameArgs>),
+    /// The hosted game's language and the string-table keys its code uses (`l10n_*`).
+    Locale(std::sync::mpsc::Sender<crate::game::GameLocale>),
 }
 
 impl UiCall {
@@ -245,6 +251,7 @@ impl UiCall {
             // tool's half millisecond (review R1 of m5-uitools, finding 5).
             UiCall::Act(_) => Class::Big,
             UiCall::Frame(_) => Class::Render,
+            UiCall::Locale(_) => Class::Read,
         }
     }
 }
@@ -480,7 +487,7 @@ fn parse_tree(args: &Json) -> Result<TreeArgs, String> {
 }
 
 fn parse_check(args: &Json) -> Result<CheckArgs, String> {
-    check_keys(args, "ui_check", &[&["surface", "screens", "targets", "scales", "pseudo", "rules", "max_findings"]])?;
+    check_keys(args, "ui_check", &[&["surface", "screens", "targets", "scales", "pseudo", "rules", "max_findings", "locale"]])?;
     let rules = names_arg(args, "rules", RULES.len())?;
     if let Some(r) = rules.as_ref().and_then(|r| r.iter().find(|r| !RULES.contains(&r.as_str()))) {
         return Err(format!("'rules': unknown rule '{}' (one of {})", crate::bounds::echo(r), RULES.join(", ")));
@@ -492,6 +499,11 @@ fn parse_check(args: &Json) -> Result<CheckArgs, String> {
         pseudo: bool_arg(args, "pseudo")?.unwrap_or(false),
         rules,
         max_findings: int_arg(args, "max_findings", 1, MAX_FINDINGS as u64)?.unwrap_or(50) as usize,
+        locale: match string_arg(args, "locale")? {
+            Some(l) => Some(specula_lingua::Locale::parse(l).map_err(|e| format!("'locale': {}", e.message))?.to_string()),
+            None => None,
+        },
+        strings: None,
     })
 }
 
@@ -615,7 +627,7 @@ pub fn definitions() -> Vec<ToolDef> {
                  legibility (cap height in physical px against the Steam Deck rule, readable at 30 cm on an 800p screen), text_overflow and missing_glyph, contrast (WCAG: 4.5 body, 3 large) and non_text_contrast, \
                  overlap, offscreen (outside the safe area), overflow (out of its panel), touch_target (touch displays), focus_reachability (every menu widget reachable with the d-pad from the default focus), \
                  focus_scope (a modal that traps the gamepad with nothing to press, a menu with no way out), gamepad_access (HUD buttons need a shortcut with a gamepad binding, or a menu offering the same action), \
-                 unbound (template keys the state lacks), unknown_texture, and with pseudo: true untranslated (labels whose words come from game state) while every rule measures text about 35% longer. \
+                 unbound (template keys the state lacks), unknown_texture, missing_key (a @key text the string table lacks), hardcoded (with a string table: words a screen writes itself), and with pseudo: true untranslated (labels whose words come from game state) while every rule measures text about 35% longer. \
                  Answer: errors, warnings, by_rule, findings (errors first; rule, severity, target or \"all\", screen, widget, message, measured, required)."
                 .into(),
             input_schema: obj(vec![
@@ -624,6 +636,7 @@ pub fn definitions() -> Vec<ToolDef> {
                 ("targets", arr(target, MAX_TARGETS, "Displays to lay out for. Default: deck (1280x800), 1080p, 4k.")),
                 ("scales", arr(Json::obj([("type", Json::from("number")), ("minimum", Json::from(0.5)), ("maximum", Json::from(3))]), MAX_SCALES, "Player UI-scale settings to check each target at (default [1]). targets x scales at most 16.")),
                 ("pseudo", t("boolean", "Lay text out in a pseudo-locale: the screens' own words accented and about 35% longer (overflow before anyone translates), and untranslated findings.")),
+                ("locale", Json::obj([("type", Json::from("string")), ("maxLength", Json::from(specula_lingua::locale::MAX_LOCALE_BYTES)), ("description", Json::from("Check in this language (a locale with a string table: en, de, qps-ploc for the pseudo-locale; l10n_get lists them), with its words, numbers and faces; the player's language is put back after."))])),
                 ("rules", arr(Json::obj([("type", Json::from("string")), ("enum", Json::arr(RULES.map(Json::from)))]), RULES.len(), "Only these rules' findings.")),
                 ("max_findings", int(1, MAX_FINDINGS as u64, "Findings quoted (default 50; counts cover all).")),
             ]),

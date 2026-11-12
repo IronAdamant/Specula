@@ -16,6 +16,7 @@
 use crate::audio::Sfx;
 use crate::controls::{Action, Controls};
 use crate::hud::{self, Hud, HudInfo, Inspect, UI_SCALES};
+use crate::l10n::{put, Said};
 use crate::scene::{CursorLook, Scene};
 use crate::{looks::palette, tools};
 use sepulcra::map::Face;
@@ -30,7 +31,7 @@ use specula_core::math::Vec3;
 use specula_core::Json;
 use specula_input::PadStyle;
 use specula_protocol::{ToolDef, ToolOutput};
-use specula_ui::{UiEvent, UiEvents};
+use specula_ui::{ToastKind, UiEvent, UiEvents};
 use std::any::Any;
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -45,9 +46,9 @@ pub use saves::{MAX_RECORDING_BYTES, MAX_STATE_BYTES};
 const FRAMED_WITHIN: Duration = Duration::from_millis(250);
 const LOG_LEN: usize = 32;
 pub const SPEEDS: [u32; 3] = [1, 2, 4];
-/// Button-prompt styles the settings cycle through (`Auto` follows the pad).
+/// Button-prompt styles the settings cycle through (`Auto` follows the pad), by their table key.
 const GLYPHS: [(&str, Option<PadStyle>); 4] =
-    [("Auto", None), ("Xbox", Some(PadStyle::Xbox)), ("PlayStation", Some(PadStyle::PlayStation)), ("Steam Deck", Some(PadStyle::SteamDeck))];
+    [("glyphs.auto", None), ("glyphs.xbox", Some(PadStyle::Xbox)), ("glyphs.playstation", Some(PadStyle::PlayStation)), ("glyphs.deck", Some(PadStyle::SteamDeck))];
 
 /// What the open confirmation dialog will do on "yes".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,7 +99,11 @@ pub struct SepulcraGame {
     last_frame: Option<Instant>,
     /// The hovered cell and what stood there when its text was made.
     hover_key: Option<(CellId, Option<Stone>, Option<Wall>)>,
-    hover_text: String,
+    hover_said: Option<Said>,
+    /// The player's language and the game's words ([`crate::l10n`]).
+    pub(crate) l10n: crate::l10n::L10n,
+    /// `--locale`: the language the first run shows.
+    locale_arg: Option<String>,
     /// Recent messages with their tick, for agents (`play_state`).
     pub(crate) log: VecDeque<(u32, String)>,
     /// The seed `configure` was given (`--seed`), for the first run.
@@ -135,7 +140,7 @@ pub struct SepulcraGame {
     /// The player's slots as the last save_list showed them (the saves screen).
     slots: Vec<saves::SlotInfo>,
     /// "Saving…" / "Loading…" while a request runs.
-    saves_status: Option<String>,
+    saves_status: Option<Said>,
     /// Autosave at the start of each wave (Settings; on by default with a window).
     autosave_on: bool,
     /// The intro flyover and the victory shot (timelines the engine plays; see `cutscene`).
@@ -191,7 +196,9 @@ impl SepulcraGame {
             pres_ticks: 0,
             last_frame: None,
             hover_key: None,
-            hover_text: String::new(),
+            hover_said: None,
+            l10n: crate::l10n::L10n::load(None, None),
+            locale_arg: None,
             log: VecDeque::new(),
             seed_arg: None,
             mute: false,
@@ -225,7 +232,7 @@ impl SepulcraGame {
         }
         match crate::lexmode::LexRules::new(self.state.content(), self.state.seed()) {
             Ok(l) => self.lex = Some(l),
-            Err(e) => self.say(format!("Lex rules off: {e}")),
+            Err(e) => self.say(ToastKind::Info, Said::new("toast.lex_off").text("error", e.to_string())),
         }
     }
 
@@ -260,7 +267,7 @@ impl SepulcraGame {
             self.confirm = Some(Confirm::Desync);
             self.hud.show("pause", false);
             self.hud.show("confirm", true);
-            self.say(format!("Rules desync at tick {tick}: the run stopped (play_state has what differed)"));
+            self.say(ToastKind::Info, Said::new("toast.rules_desync").int("tick", tick));
         }
     }
 
@@ -340,7 +347,7 @@ impl SepulcraGame {
             self.hud.show(screen, false);
         }
         self.rebuild(world, agent);
-        self.say(format!("New game, seed {seed}"));
+        self.say(ToastKind::Info, Said::new("toast.new_game").text("seed", seed.to_string()));
     }
 
     /// Replaces the state (a loaded replay) and rebuilds the scene.
@@ -353,7 +360,7 @@ impl SepulcraGame {
                     Some(l)
                 }
                 Err(e) => {
-                    self.say(format!("Lex rules off: the replay doesn't run under them ({e})"));
+                    self.say(ToastKind::Info, Said::new("toast.lex_off_replay").text("error", e.to_string()));
                     None
                 }
             };
@@ -422,8 +429,12 @@ impl SepulcraGame {
         }
     }
 
-    pub(crate) fn say(&mut self, msg: String) {
-        self.hud.toast(&msg, hud::toast_kind(&msg), self.now);
+    /// Says `said`: a toast in the player's language, and the log (`play_state`) in the source
+    /// language, so agents read the same words whatever the player's language.
+    pub(crate) fn say(&mut self, kind: ToastKind, said: Said) {
+        let shown = self.l10n.text(&said);
+        self.hud.toast(&shown, kind, self.now);
+        let msg = self.l10n.source_text(&said);
         if self.log.len() == LOG_LEN {
             self.log.pop_front();
         }
@@ -440,31 +451,30 @@ impl SepulcraGame {
         let content = Arc::clone(self.state.content_arc());
         let map = &content.map;
         for ev in events {
-            let msg = match *ev {
-                Event::WaveStarted { wave, early } => {
-                    format!("Wave {wave} started{}", if early { " early" } else { "" })
-                }
-                Event::WaveCleared { wave } => format!("Wave {wave} cleared"),
-                Event::TombstonesLost { kind, lost, remaining, .. } => {
-                    format!("{} raised {lost} dead: {remaining} tombstones left", content.enemy(kind).name)
-                }
-                Event::WallBroken { cell } => format!("Wall at {} broken", map.cell_name(cell)),
-                Event::DustGained { amount, source: DustSource::EarlyCall } => format!("+{amount} dust for calling early"),
-                Event::StoneSold { cell, refund } => format!("Sold the stone at {} (+{refund})", map.cell_name(cell)),
-                Event::WallRemoved { cell, refund } => format!("Removed the wall at {} (+{refund})", map.cell_name(cell)),
+            let (kind, said) = match *ev {
+                Event::WaveStarted { wave, early } => (ToastKind::Info, Said::new(if early { "toast.wave_started_early" } else { "toast.wave_started" }).int("wave", wave)),
+                Event::WaveCleared { wave } => (ToastKind::Good, Said::new("toast.wave_cleared").int("wave", wave)),
+                Event::TombstonesLost { kind, lost, remaining, .. } => (
+                    ToastKind::Threat,
+                    Said::new("toast.tombstones_lost").key("enemy", format!("enemy.{}.name", content.enemy(kind).id)).int("lost", i64::from(lost)).int("remaining", i64::from(remaining)),
+                ),
+                Event::WallBroken { cell } => (ToastKind::Threat, Said::new("toast.wall_broken").text("cell", map.cell_name(cell))),
+                Event::DustGained { amount, source: DustSource::EarlyCall } => (ToastKind::Good, Said::new("toast.early_bonus").int("amount", i64::from(amount))),
+                Event::StoneSold { cell, refund } => (ToastKind::Good, Said::new("toast.stone_sold").text("cell", map.cell_name(cell)).int("refund", i64::from(refund))),
+                Event::WallRemoved { cell, refund } => (ToastKind::Info, Said::new("toast.wall_removed").text("cell", map.cell_name(cell)).int("refund", i64::from(refund))),
                 Event::Won => {
                     self.hud.show("pause", false);
                     self.hud.show("victory", true);
-                    "Victory! The graveyard holds.".into()
+                    (ToastKind::Good, Said::new("toast.victory"))
                 }
                 Event::Lost => {
                     self.hud.show("pause", false);
                     self.hud.show("defeat", true);
-                    "Defeat: the dead walk.".into()
+                    (ToastKind::Threat, Said::new("toast.defeat"))
                 }
                 _ => continue,
             };
-            self.say(msg);
+            self.say(kind, said);
         }
     }
 
@@ -494,32 +504,43 @@ impl SepulcraGame {
         }
     }
 
-    /// Why a command was refused, for people.
+    /// Why a command was refused, for agents: in the source language (the same words a
+    /// player sees in theirs, [`SepulcraGame::refusal`]).
     pub(crate) fn explain(&self, cmd: &Command, r: Rejection) -> String {
+        self.l10n.source_text(&self.refusal(cmd, r))
+    }
+
+    /// Why a command was refused, as a message ("Can't place Warding stone at top:3,4: need 50
+    /// dust, have 12").
+    pub(crate) fn refusal(&self, cmd: &Command, r: Rejection) -> Said {
         let content = self.state.content();
         let map = &content.map;
+        let at = |cell: CellId| map.cell_name(cell);
         let what = match *cmd {
             Command::PlaceStone { cell, stone } => {
-                format!("place {} at {}", content.stones.get(usize::from(stone.0)).map_or("?", |d| d.name.as_str()), map.cell_name(cell))
+                Said::new("refuse.what.place").key("stone", content.stones.get(usize::from(stone.0)).map_or("?".to_owned(), |d| format!("stone.{}.name", d.id))).text("cell", at(cell))
             }
-            Command::Upgrade { cell } => format!("upgrade at {}", map.cell_name(cell)),
-            Command::Sell { cell } => format!("sell at {}", map.cell_name(cell)),
-            Command::PlaceWall { cell } => format!("wall {}", map.cell_name(cell)),
-            Command::RemoveWall { cell } => format!("remove the wall at {}", map.cell_name(cell)),
-            Command::CallWave => "call the next wave".into(),
+            Command::Upgrade { cell } => Said::new("refuse.what.upgrade").text("cell", at(cell)),
+            Command::Sell { cell } => Said::new("refuse.what.sell").text("cell", at(cell)),
+            Command::PlaceWall { cell } => Said::new("refuse.what.wall").text("cell", at(cell)),
+            Command::RemoveWall { cell } => Said::new("refuse.what.remove_wall").text("cell", at(cell)),
+            Command::CallWave => Said::new("refuse.what.call_wave"),
         };
-        let hint = match r {
-            Rejection::NotEnoughDust { need, have } => format!("need {need} dust, have {have}"),
-            Rejection::Occupied => "a stone is there (select it to upgrade)".into(),
-            Rejection::NotBuildable => "stones go on raised fragments and cliff ledges".into(),
-            // "a grave angel stands here": the prop's own words, from the map data.
-            Rejection::PropBlocks { prop } => map.props.get(usize::from(prop)).map_or_else(|| "a prop stands here".into(), |p| format!("{} stands here", p.what)),
-            Rejection::NotWallable => "walls go on top-face lanes".into(),
-            Rejection::EnemyInTheWay { .. } => "an enemy is in the way".into(),
-            Rejection::MaxTier => "already tier III".into(),
-            r => r.code().replace('_', " "),
+        let why = match r {
+            Rejection::NotEnoughDust { need, have } => Said::new("refuse.why.not_enough_dust").int("need", i64::from(need)).int("have", i64::from(have)),
+            Rejection::Occupied => Said::new("refuse.why.occupied"),
+            Rejection::NotBuildable => Said::new("refuse.why.not_buildable"),
+            // "a grave angel stands here": the prop's own words, from the table by its name.
+            Rejection::PropBlocks { prop } => match map.props.get(usize::from(prop)) {
+                Some(p) => Said::new("refuse.why.prop_blocks").key("prop", format!("prop.{}.what", p.name)),
+                None => Said::new("refuse.why.a_prop"),
+            },
+            Rejection::NotWallable => Said::new("refuse.why.not_wallable"),
+            Rejection::EnemyInTheWay { .. } => Said::new("refuse.why.enemy_in_the_way"),
+            Rejection::MaxTier => Said::new("refuse.why.max_tier"),
+            r => Said::new("refuse.why.other").text("code", r.code().replace('_', " ")),
         };
-        format!("Can't {what}: {hint}")
+        Said::new("toast.refused").said("what", what).said("why", why)
     }
 
     /// Plays a command from the player (mouse, pad, touch, HUD): refusals are said and buzzed.
@@ -527,8 +548,8 @@ impl SepulcraGame {
         match self.command(world, cmd) {
             Ok(()) => true,
             Err(r) => {
-                let msg = self.explain(&cmd, r);
-                self.say(msg);
+                let said = self.refusal(&cmd, r);
+                self.say(ToastKind::Warn, said);
                 self.sfx.ui("ui_error", self.now);
                 false
             }
@@ -602,7 +623,7 @@ impl SepulcraGame {
                 if !self.running() {
                     self.new_run(world, agent);
                 } else {
-                    self.say("The run is still going (N starts a new game after the end)".into());
+                    self.say(ToastKind::Info, Said::new("toast.run_going"));
                 }
                 return;
             }
@@ -626,7 +647,7 @@ impl SepulcraGame {
                 }
                 UiEvent::Refused { .. } => {
                     self.sfx.ui("ui_error", self.now);
-                    self.say("Not enough dust".into());
+                    self.say(ToastKind::Warn, Said::new("toast.not_enough_dust"));
                 }
                 UiEvent::Back { .. } => {}
             }
@@ -683,6 +704,12 @@ impl SepulcraGame {
                 input.set_pad_style(GLYPHS[self.glyphs].1.unwrap_or(auto));
             }
             "toggle_motion" => self.reduced_motion = !self.reduced_motion,
+            "cycle_language" => {
+                let next = self.l10n.next_locale();
+                if self.l10n.set_locale(&next).is_ok() {
+                    self.hud.set_strings(self.l10n.strings());
+                }
+            }
             "restart" => {
                 self.confirm = Some(Confirm::Restart);
                 self.hud.show("confirm", true);
@@ -736,21 +763,23 @@ impl SepulcraGame {
         }
     }
 
-    fn hover_text(&self, cell: CellId) -> String {
+    /// What the hovered cell holds, as a message ("top 12,9 · Warding stone II").
+    fn hover_said(&self, cell: CellId) -> Said {
         let content = self.state.content();
         let map = &content.map;
-        let mut t = map.cell_name(cell);
+        let c = map.cell(cell);
+        let at = Said::new("hover.cell").key("face", format!("face.{}", c.face.name())).int("col", c.col).int("row", c.row);
         if let Some(s) = self.state.stone(cell) {
-            let def = content.stone(s.kind);
-            t.push_str(&format!(" · {} {}", def.name, ["I", "II", "III"][usize::from(s.tier.min(2))]));
+            Said::new("hover.stone").said("cell", at).said("stone", hud::stone_name(content, s.kind.0, s.tier))
         } else if let Some(w) = self.state.wall(cell) {
-            t.push_str(&format!(" · wall {}/{} HP", w.hp / 1000, w.max_hp / 1000));
+            Said::new("hover.wall").said("cell", at).int("hp", w.hp / 1000).int("max_hp", w.max_hp / 1000)
         } else if self.state.is_rooted(cell) {
-            t.push_str(" · rooted (slows the dead)");
+            Said::new("hover.rooted").said("cell", at)
         } else if let Some(p) = map.blocking_prop(cell).and_then(|i| map.props.get(usize::from(i))) {
-            t.push_str(&format!(" · {} (no building here)", p.what));
+            Said::new("hover.prop").said("cell", at).key("prop", format!("prop.{}.what", p.name))
+        } else {
+            at
         }
-        t
     }
 
     /// Cursor and range ring for the hovered (or selected) cell.
@@ -777,7 +806,7 @@ impl SepulcraGame {
                 scene.show_cursor(world, &self.state, CursorLook::Hidden);
                 scene.show_range(world, &self.state, None);
             }
-            self.hover_text.clear();
+            self.hover_said = None;
             self.hover_key = None;
             return;
         };
@@ -799,7 +828,7 @@ impl SepulcraGame {
         let key = (cell, self.state.stone(cell).copied(), self.state.wall(cell).copied());
         if self.hover_key != Some(key) {
             self.hover_key = Some(key);
-            self.hover_text = self.hover_text(cell);
+            self.hover_said = Some(self.hover_said(cell));
         }
     }
 
@@ -807,6 +836,10 @@ impl SepulcraGame {
     fn fill_hud(&mut self, camera: Option<&Camera>, size: (u32, u32)) {
         if !self.hud.enabled() {
             return;
+        }
+        // A language's faces read on their thread come in here (windowed and captures).
+        if let Some(strings) = self.l10n.poll() {
+            self.hud.set_strings(strings);
         }
         let s = &self.state;
         let content = Arc::clone(s.content_arc());
@@ -837,7 +870,7 @@ impl SepulcraGame {
             paused: self.paused,
             speed: self.speed,
             selected: self.selected,
-            hover: &self.hover_text,
+            hover: self.hover_said.as_ref(),
             inspect,
             kills: s.wave_stats().iter().map(|w| w.killed).sum(),
             run_time_s: f64::from(s.tick()) / f64::from(TICK_HZ),
@@ -849,23 +882,25 @@ impl SepulcraGame {
         hud::fill(&mut self.hud.state, &info, &mut self.hud_texts);
         hud::fill_scale(&mut self.hud.state, UI_SCALES[self.ui_scale]);
         if self.confirm == Some(Confirm::Restart) {
-            self.hud.state.set_str("confirm_title", "Restart this run?").set_str("confirm_body", "The slab, your stones and the waves start over with the same seed.");
+            self.hud.state.set_msg("confirm_title", "confirm.restart.title");
+            self.hud.state.set_msg("confirm_body", "confirm.restart.body");
         } else if let Some((title, body)) = self.confirm.and_then(|c| self.confirm_text(c)) {
-            self.hud.state.set_str("confirm_title", &title).set_str("confirm_body", &body);
+            put(&mut self.hud.state, "confirm_title", &title);
+            put(&mut self.hud.state, "confirm_body", &body);
         }
-        self.hud.state.set_str("autosave_text", if self.autosave_on { "On" } else { "Off" });
+        self.hud.state.set_msg("autosave_text", if self.autosave_on { "common.on" } else { "common.off" });
         if self.hud.visible("saves") {
             self.fill_saves();
         }
         if self.confirm == Some(Confirm::Desync) {
             let (tick, what) = self.lex.as_ref().and_then(|l| l.desync.clone()).unwrap_or_default();
             let what: String = what.chars().take(160).collect();
-            let body = format!("The Lex rules and the reference parted at tick {tick}: {what}. The run stopped there. Start it again?");
-            self.hud.state.set_str("confirm_title", "The rules disagree").set_str("confirm_body", &body);
+            self.hud.state.set_msg("confirm_title", "confirm.desync.title");
+            self.hud.state.set_msg("confirm_body", "confirm.desync.body").set_int("tick", i64::from(tick)).set_str("what", &what);
         }
         if let Some(cam) = camera {
             let groups = self.threat_groups();
-            hud::fill_threats(&mut self.hud.state, cam, size, &groups, &mut self.hud_texts);
+            hud::fill_threats(&mut self.hud.state, cam, size, &groups);
         }
         // The controls list only while it's open (prompts are made as text).
         if self.hud.visible("controls") {
@@ -875,8 +910,8 @@ impl SepulcraGame {
             for a in input.map().actions().iter().filter(|a| !a.name.starts_with("ui_")).take(24) {
                 let keys = input.prompt(&a.name).unwrap_or_default();
                 let row = bindings.push();
-                let label = if a.description.is_empty() { a.name.as_str() } else { a.description.as_str() };
-                row.set_str("label", label).set_str("keys", &keys);
+                row.set_msg("label", &format!("action.{}", a.name));
+                row.set_str("keys", &keys);
             }
         }
     }
@@ -884,7 +919,7 @@ impl SepulcraGame {
     /// Where the dead are, by face: the centre of each group and how many.
     fn threat_groups(&self) -> [(&'static str, Vec3, usize); 5] {
         let mut acc: [(&'static str, Vec3, usize); 5] =
-            [("North cliff", Vec3::ZERO, 0), ("East cliff", Vec3::ZERO, 0), ("West cliff", Vec3::ZERO, 0), ("South gorges", Vec3::ZERO, 0), ("Wraiths", Vec3::ZERO, 0)];
+            [("threat.north", Vec3::ZERO, 0), ("threat.east", Vec3::ZERO, 0), ("threat.west", Vec3::ZERO, 0), ("threat.south", Vec3::ZERO, 0), ("threat.air", Vec3::ZERO, 0)];
         let content = self.state.content();
         let half = content.map.half_z as f32 / 1000.0;
         for e in self.state.enemies() {
@@ -907,6 +942,7 @@ impl SepulcraGame {
 
     pub(crate) fn status_json(&self) -> Json {
         let mut j = self.status_core();
+        j.set("locale", Json::from(self.l10n.locale().as_str()));
         j.set("rules", match &self.lex {
             Some(l) => l.status_json(),
             None if self.rules_lex => Json::obj([("rules", Json::from("lex")), ("off", Json::from("see the log: the Lex rules couldn't start"))]),
@@ -1158,6 +1194,10 @@ impl Game for SepulcraGame {
                     Some("off") => self.cutscene.intro_off = true,
                     other => return Err(format!("--intro takes on or off, got {other:?}")),
                 }
+            } else if a == "--locale" {
+                let l = it.next().ok_or("--locale needs a value (en, de, qps-ploc...)")?;
+                specula_lingua::Locale::parse(l).map_err(|e| format!("--locale: {}", e.message))?;
+                self.locale_arg = Some(l.clone());
             } else if a == "--rules" {
                 match it.next().map(String::as_str) {
                     Some("lex") => self.rules_lex = true,
@@ -1198,6 +1238,11 @@ impl Game for SepulcraGame {
         // engine reloads recipes itself).
         let stem = |p: &str, dir: &str| p.strip_prefix(dir).and_then(|r| r.strip_suffix(".json")).filter(|r| !r.contains('/')).map(str::to_owned);
         let screens: Vec<String> = paths.iter().filter_map(|p| stem(p, "ui/")).collect();
+        if paths.iter().any(|p| stem(p, "strings/").is_some()) {
+            // A string table changed (on disk, or through l10n_set): read again on a thread; the
+            // HUD takes the new words at its next fill (L10n::poll).
+            self.l10n.reload();
+        }
         let sounds: Vec<String> = paths.iter().filter_map(|p| stem(p, "sounds/")).collect();
         let assets = self.assets.clone().unwrap_or_else(SepulcraGame::default_assets);
         if !screens.is_empty() {
@@ -1217,6 +1262,11 @@ impl Game for SepulcraGame {
 
     fn display(&mut self, display: &specula_ui::Display) {
         self.hud.set_display(display);
+    }
+
+    fn locale(&self) -> specula::game::GameLocale {
+        let actions: Vec<String> = self.controls.input().map().actions().iter().filter(|a| !a.name.starts_with("ui_")).map(|a| a.name.clone()).collect();
+        specula::game::GameLocale { locale: Some(self.l10n.locale().to_string()), keys: Some(crate::l10n::code_keys(self.state.content(), &actions)) }
     }
 
     fn ui(&mut self, pick: UiPick) -> Option<GameUi<'_>> {
@@ -1252,6 +1302,12 @@ impl Game for SepulcraGame {
         let assets = self.assets.clone().unwrap_or_else(SepulcraGame::default_assets);
         let ui_dir = assets.join("ui");
         self.hud = Hud::new(Some(&ui_dir), crate::controls::bindings().expect("the built-in bindings are valid (tested)"));
+        // The string tables (assets/strings; English is built in) and the player's language.
+        self.l10n = crate::l10n::L10n::load(Some(&assets.join("strings")), self.locale_arg.as_deref());
+        for p in self.l10n.problems.iter().take(16) {
+            specula_core::trace_event!(&specula::trace_sink::ENGINE, Warn, "sepulcra.strings_problem", problem = p.as_str());
+        }
+        self.hud.set_strings(self.l10n.strings());
         // Autosaves are for people playing: on with a window, off headless (agents' runs).
         self.autosave_on = ctx.windowed;
         // Sound and music through the engine's audio: off headless unless the engine was started
@@ -1263,7 +1319,7 @@ impl Game for SepulcraGame {
         };
         self.sfx.set_volume(self.volume);
         self.rebuild(&mut ctx.world, ctx.agent);
-        self.say(format!("Seed {}: carve stones before wave 1", self.state.seed()));
+        self.say(ToastKind::Info, Said::new("toast.seed_start").text("seed", self.state.seed().to_string()));
         // The intro flyover (windowed, unless --intro off or reduced motion): wave 1 waits for it.
         self.cutscene.intro(ctx.windowed, self.reduced_motion);
     }
@@ -1438,7 +1494,7 @@ impl Game for SepulcraGame {
 
     fn timeline_event(&mut self, _ctx: &mut Ctx, event: &specula::game::TimelineEvent) {
         if let Some(line) = self.cutscene.event(event) {
-            self.say(line);
+            self.say(ToastKind::Info, line);
         }
         if let specula::game::TimelineWhat::Cue(cue) = &event.what {
             if let Some(name) = crate::cutscene::cue_sound(&cue.sound) {

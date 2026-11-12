@@ -74,9 +74,12 @@ fn mount_of(path: &str) -> &str {
 }
 
 /// Problems no `allow_errors` overrides: for a module's `Cargo.toml` and `.rs` files, anything
-/// that would let a crates.io crate, a build script or files from outside into a build.
+/// that would let a crates.io crate, a build script or files from outside into a build; and any
+/// string table that doesn't parse. A broken table shows the game no words, and it hides every
+/// review it held from the review gate: one agent's broken draft locked everyone but reviewers
+/// out of fixing the file (review R2 of m5-l10n, minor 5).
 pub fn never_allowed(kind: FileKind, code: &str) -> bool {
-    matches!(kind, FileKind::Cargo | FileKind::Rust) && matches!(code, "not_a_module" | "third_party_crate" | "build_script" | "not_allowed" | "source_path")
+    matches!(kind, FileKind::Strings) || (matches!(kind, FileKind::Cargo | FileKind::Rust) && matches!(code, "not_a_module" | "third_party_crate" | "build_script" | "not_allowed" | "source_path"))
 }
 
 /// The nearest `style.json` from `recipe`'s folder up to its mount's root, among those `exists`
@@ -339,6 +342,13 @@ pub fn validate(path: &str, kind: FileKind, text: &str, old: Option<&str>, conte
                 out.push(Problem { file: path.to_owned(), severity: "error", code: e.code.into(), at: e.field.clone().unwrap_or_default(), message: e.message, offset: None });
             }
         }
+        // String tables: the format, keys, placeholders and plural rules (specula-lingua);
+        // checks across tables (missing keys, stale translations) are l10n_check's.
+        FileKind::Strings => {
+            if let Err(e) = specula_lingua::Table::parse(text) {
+                out.push(Problem { file: path.to_owned(), severity: "error", code: e.code.into(), at: e.field.clone(), message: e.to_string(), offset: e.offset });
+            }
+        }
         // Timelines: the format, then what the engine plays (anim and vfx values as world_set
         // takes them; docs/design/TIMELINE.md).
         FileKind::Timeline => out.extend(crate::timeline::validate_file(path, text)),
@@ -473,6 +483,11 @@ mod tests {
         assert!(!validate("assets/style.toml", FileKind::StyleRules, "[motion]\nbogus = 1\n", None, &[]).is_empty());
         assert!(!validate("assets/anims/a.json", FileKind::AnimSet, "{", None, &[]).is_empty());
         assert!(validate("modules/m/src/lib.rs", FileKind::Rust, "fn broken(", None, &[]).is_empty(), "rust is logic_build's");
+        // String tables: the format, keys and placeholders (docs/design/LOCALISATION.md).
+        let en = sepulcra("strings/en.json");
+        assert!(validate("assets/strings/en.json", FileKind::Strings, &en, None, &[]).is_empty());
+        let p = validate("assets/strings/en.json", FileKind::Strings, &en.replace("\"Wave {wave}/{waves}\"", "\"Wave {wave/{waves}\""), None, &[]);
+        assert!(p.iter().any(|p| p.is_error() && p.code == "bad_placeholder" && p.at.starts_with("strings.")), "{p:?}");
     }
 
     fn broken_style() -> String {

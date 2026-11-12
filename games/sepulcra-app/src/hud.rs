@@ -13,6 +13,7 @@
 //! Without a system font (a bare CI box) the HUD is off and says why ([`Hud::problem`]); the game
 //! plays the same.
 
+use crate::l10n::{put, Said};
 use crate::looks::palette;
 use sepulcra::content::{Attack, Targets};
 use sepulcra::{Content, Outcome};
@@ -23,8 +24,9 @@ use specula_core::Json;
 use specula_input::{ActionMap, Input};
 use specula_text::Bundled;
 use specula_ui::gpu::GpuOverlay;
-use specula_ui::{Display, FontSet, StateMap, Theme, ToastKind, Ui, UiEvents, Viewport};
+use specula_ui::{Display, FontSet, StateMap, Strings, Theme, ToastKind, Ui, UiEvents, Viewport};
 use std::path::Path;
+use std::sync::Arc;
 
 /// The screens the game uses, with built-in copies for when the assets folder lacks them.
 const SCREENS: [(&str, &str); 9] = [
@@ -72,6 +74,8 @@ pub struct Hud {
     /// The display the engine says the window (or, headless, the agents' virtual one) is: its
     /// OS scale and safe area apply to captures too, at their own size.
     display: Display,
+    /// The player's language ([`crate::l10n`]): the window's UI and the capture UI show it.
+    strings: Option<Arc<Strings>>,
 }
 
 /// Screens the game shows and hides (the capture UI mirrors their visibility).
@@ -109,6 +113,7 @@ impl Hud {
             capture: None,
             dir: ui_dir.map(Path::to_path_buf),
             display: Display::new([1280, 720]),
+            strings: None,
         };
         match Hud::load(ui_dir) {
             Ok(ui) => hud.ui = Some(ui),
@@ -179,7 +184,20 @@ impl Hud {
             capture: None,
             dir: None,
             display: Display::new([1280, 720]),
+            strings: None,
         }
+    }
+
+    /// Shows `strings`' language from the next frame (the window's UI and the capture UI).
+    pub fn set_strings(&mut self, strings: Arc<Strings>) {
+        if let Some(ui) = &mut self.ui {
+            ui.set_strings(Some(Arc::clone(&strings)));
+        }
+        if let Some((ui, _)) = &mut self.capture {
+            ui.set_strings(Some(Arc::clone(&strings)));
+        }
+        self.strings = Some(strings);
+        self.laid_out = None;
     }
 
     pub fn enabled(&self) -> bool {
@@ -237,7 +255,10 @@ impl Hud {
         let Some(win) = self.ui.as_ref() else { return };
         if self.capture.is_none() {
             match Hud::load(self.dir.as_deref()) {
-                Ok(ui) => self.capture = Some((ui, GpuOverlay::new())),
+                Ok(mut ui) => {
+                    ui.set_strings(self.strings.clone());
+                    self.capture = Some((ui, GpuOverlay::new()));
+                }
                 Err(e) => {
                     self.problem = Some(format!("capture HUD: {e}"));
                     return;
@@ -403,7 +424,7 @@ pub struct HudInfo<'a> {
     pub speed: u32,
     /// Stone index, or `None` for the wall.
     pub selected: Option<u8>,
-    pub hover: &'a str,
+    pub hover: Option<&'a Said>,
     /// The selected cell's stone (kind index, tier) or wall (hp, max hp), with what upgrading
     /// costs and selling gives back.
     pub inspect: Option<Inspect>,
@@ -412,6 +433,7 @@ pub struct HudInfo<'a> {
     pub outcome: Outcome,
     pub volume: f32,
     pub reduced_motion: bool,
+    /// The button-prompt style's table key (`glyphs.auto`).
     pub glyph_style: &'a str,
 }
 
@@ -435,30 +457,35 @@ fn secs(ticks: u32) -> f64 {
     f64::from(ticks) / f64::from(sepulcra::TICK_HZ)
 }
 
-/// One line on what a stone does at a tier.
-pub fn stone_detail(content: &Content, kind: u8, tier: u8) -> String {
+/// A stone's name at a tier ("Warding stone II"), in the player's language.
+pub fn stone_name(content: &Content, kind: u8, tier: u8) -> Said {
+    let id = content.stones.get(usize::from(kind)).map_or("?", |d| d.id.as_str());
+    Said::new("stone.tier_name").key("name", format!("stone.{id}.name")).key("tier", format!("tier.{}", tier.min(2) + 1))
+}
+
+/// What a stone does at a tier (its numbers from the content).
+pub fn stone_detail(content: &Content, kind: u8, tier: u8) -> Said {
     let def = &content.stones[usize::from(kind)];
-    let Some(t) = def.tiers.get(usize::from(tier)) else { return String::new() };
+    let Some(t) = def.tiers.get(usize::from(tier)) else { return Said::new("stone.fully_carved") };
     let range = t.range as f64 / 1000.0;
     let dmg = t.damage as f64 / 1000.0;
-    match def.attack {
-        Attack::Bolt => format!("Homing bolts: {dmg} damage every {:.1} s, {range} m range.", secs(t.cooldown)),
-        Attack::Lob => format!("Lobbed fire: {dmg} damage in {} m, every {:.1} s, {range} m range.", t.splash as f64 / 1000.0, secs(t.cooldown)),
-        Attack::Pulse => format!("Slows {} % for {:.1} s and deals {dmg} damage every {:.1} s, {range} m.", t.slow / 10, secs(t.slow_ticks), secs(t.cooldown)),
-    }
+    let s = match def.attack {
+        Attack::Bolt => Said::new("stone.detail.bolt"),
+        Attack::Lob => Said::new("stone.detail.lob").num("splash", t.splash as f64 / 1000.0),
+        Attack::Pulse => Said::new("stone.detail.pulse").int("slow", t.slow / 10).num("slow_time", secs(t.slow_ticks)),
+    };
+    s.num("damage", dmg).num("cooldown", secs(t.cooldown)).num("range", range)
 }
 
-fn role(content: &Content, kind: u8) -> &'static str {
+fn role(content: &Content, kind: u8) -> Said {
     let def = &content.stones[usize::from(kind)];
-    match (def.attack, def.targets) {
-        (_, Targets::Air) => "Anti-air · flyers only",
-        (Attack::Pulse, _) => "Area slow · ground",
-        (Attack::Lob, _) => "Splash fire · ground",
-        _ => "Single target · ground",
-    }
+    Said::new(match (def.attack, def.targets) {
+        (_, Targets::Air) => "stone.role.anti_air",
+        (Attack::Pulse, _) => "stone.role.area_slow",
+        (Attack::Lob, _) => "stone.role.splash",
+        _ => "stone.role.single",
+    })
 }
-
-const TIERS: [&str; 3] = ["I", "II", "III"];
 
 /// The build bar's state keys per icon: selected, cost, affordable.
 const BAR_KEYS: [(&str, &str, &str, &str); 4] = [
@@ -468,19 +495,16 @@ const BAR_KEYS: [(&str, &str, &str, &str); 4] = [
     ("obelisk", "sel_obelisk", "cost_obelisk", "can_obelisk"),
 ];
 
-/// The HUD's text that changes only with the content (or a wall's HP), made once and reused, so
-/// a frame's fill allocates nothing (F3).
+/// The HUD's messages that change only with the content, made once and reused: a frame's fill
+/// puts them in the state, whose storage is reused (F3: no allocation once warm).
 #[derive(Default)]
 pub struct Texts {
     content: Option<u64>,
-    /// Per stone kind and tier: "Warding stone II", what that tier does, and what the next adds.
-    names: Vec<[String; 3]>,
-    details: Vec<[String; 3]>,
-    upgrades: Vec<[String; 3]>,
-    wall: Option<(i32, i32)>,
-    wall_text: String,
-    /// Threat labels.
-    scratch: String,
+    /// Per stone kind and tier: its name, what that tier does, and what the next adds.
+    names: Vec<[Said; 3]>,
+    details: Vec<[Said; 3]>,
+    upgrades: Vec<[Said; 3]>,
+    roles: Vec<Said>,
 }
 
 impl Texts {
@@ -490,26 +514,19 @@ impl Texts {
         }
         self.content = Some(content.hash);
         let kinds = 0..content.stones.len() as u8;
-        self.names = kinds.clone().map(|k| TIERS.map(|t| format!("{} {t}", content.stones[usize::from(k)].name))).collect();
+        self.names = kinds.clone().map(|k| [0, 1, 2].map(|t| stone_name(content, k, t))).collect();
         self.details = kinds.clone().map(|k| [0, 1, 2].map(|t| stone_detail(content, k, t))).collect();
         self.upgrades = kinds
-            .map(|k| [0u8, 1, 2].map(|t| if t < 2 { format!("Tier {}: {}", TIERS[usize::from(t) + 1], stone_detail(content, k, t + 1)) } else { "Fully carved.".to_owned() }))
+            .clone()
+            .map(|k| [0u8, 1, 2].map(|t| if t < 2 { Said::new("stone.upgrade").key("tier", format!("tier.{}", t + 2)).said("detail", stone_detail(content, k, t + 1)) } else { Said::new("stone.fully_carved") }))
             .collect();
-    }
-
-    fn wall(&mut self, hp: i32, max_hp: i32) -> &str {
-        use std::fmt::Write;
-        if self.wall != Some((hp, max_hp)) {
-            self.wall = Some((hp, max_hp));
-            self.wall_text.clear();
-            let _ = write!(self.wall_text, "{} / {} HP. Removing it refunds what's left of it.", hp / 1000, max_hp / 1000);
-        }
-        &self.wall_text
+        self.roles = kinds.map(|k| role(content, k)).collect();
     }
 }
 
-/// Fills `s` from `info` (everything the screens bind to; see their `notes`). `texts` keeps the
-/// strings between frames.
+/// Fills `s` from `info` (everything the screens bind to; see their `notes`). Words are messages
+/// ([`put`]): the HUD shows them in the player's language. `texts` keeps the messages between
+/// frames.
 pub fn fill(s: &mut StateMap, info: &HudInfo, texts: &mut Texts) {
     let content = info.content;
     texts.ensure(content);
@@ -536,45 +553,51 @@ pub fn fill(s: &mut StateMap, info: &HudInfo, texts: &mut Texts) {
     match info.selected.filter(|&i| usize::from(i) < content.stones.len()) {
         Some(i) => {
             let def = &content.stones[usize::from(i)];
+            let k = usize::from(i);
             s.set_str("selected", icon_of(&def.id));
-            s.set_str("selected_name", &texts.names[usize::from(i)][0]);
-            s.set_str("selected_role", role(content, i));
-            s.set_str("selected_detail", &texts.details[usize::from(i)][0]);
+            put(s, "selected_name", &texts.names[k][0]);
+            put(s, "selected_role", &texts.roles[k]);
+            put(s, "selected_detail", &texts.details[k][0]);
             s.set_int("selected_cost", i64::from(def.tiers[0].cost)).set_bool("affordable", info.dust >= def.tiers[0].cost);
         }
         None => {
-            s.set_str("selected", "wall").set_str("selected_name", "Stone wall").set_str("selected_role", "Blocks a lane · reroutes the dead");
-            s.set_str("selected_detail", "Walls force the dead onto longer routes. With no route left they break the nearest wall.");
+            s.set_str("selected", "wall");
+            s.set_msg("selected_name", "wall.name");
+            s.set_msg("selected_role", "wall.role");
+            s.set_msg("selected_detail", "wall.detail");
             s.set_int("selected_cost", i64::from(wall_cost)).set_bool("affordable", info.dust >= wall_cost);
         }
     }
-    if !info.hover.is_empty() {
-        s.set_str("hover", info.hover);
+    if let Some(h) = info.hover {
+        put(s, "hover", h);
     }
     match info.inspect {
         Some(Inspect::Stone { kind, tier, upgrade, refund }) => {
             let def = &content.stones[usize::from(kind)];
             let (k, t) = (usize::from(kind), usize::from(tier.min(2)));
-            s.set_str("inspect", &texts.names[k][t]);
+            put(s, "inspect", &texts.names[k][t]);
             s.set_str("inspect_icon", icon_of(&def.id));
-            s.set_str("inspect_detail", &texts.details[k][t]);
+            put(s, "inspect_detail", &texts.details[k][t]);
             if let Some(cost) = upgrade {
                 s.set_int("upgrade_cost", i64::from(cost)).set_bool("can_upgrade", info.dust >= cost);
             }
-            s.set_str("upgrade_detail", &texts.upgrades[k][if upgrade.is_some() { t.min(1) } else { 2 }]);
+            put(s, "upgrade_detail", &texts.upgrades[k][if upgrade.is_some() { t.min(1) } else { 2 }]);
             s.set_int("refund", i64::from(refund)).set_bool("inspect_stone", true);
         }
         Some(Inspect::Wall { hp, max_hp, refund }) => {
-            s.set_str("inspect", "Stone wall").set_str("inspect_icon", "wall");
-            s.set_str("inspect_detail", texts.wall(hp, max_hp));
+            s.set_msg("inspect", "wall.name");
+            s.set_str("inspect_icon", "wall");
+            s.set_msg("inspect_detail", "wall.inspect").set_int("hp", i64::from(hp / 1000)).set_int("max_hp", i64::from(max_hp / 1000));
             s.set_int("refund", i64::from(refund)).set_bool("inspect_wall", true);
         }
         None => {}
     }
     s.set_int("kills", i64::from(info.kills)).set_num("run_time_s", info.run_time_s);
     // Settings.
-    s.set_num("volume", f64::from(info.volume)).set_str("reduced_motion_text", if info.reduced_motion { "On" } else { "Off" });
-    s.set_str("glyph_style", info.glyph_style);
+    s.set_num("volume", f64::from(info.volume));
+    s.set_msg("reduced_motion_text", if info.reduced_motion { "common.on" } else { "common.off" });
+    s.set_msg("glyph_style", info.glyph_style);
+    s.set_msg("language", "language.name");
 }
 
 /// Sets `ui_scale` (the settings screen shows it).
@@ -584,9 +607,8 @@ pub fn fill_scale(s: &mut StateMap, scale: f32) {
 
 /// Where threats are: one row per face (or the air) with enemies the camera can't see, for the
 /// screen-edge arrows (STYLE.md: grave green, pointing at the face under attack). `groups` are
-/// `(label, centre of its enemies, count)`.
-pub fn fill_threats(s: &mut StateMap, camera: &Camera, size: (u32, u32), groups: &[(&str, Vec3, usize)], texts: &mut Texts) {
-    use std::fmt::Write;
+/// `(label key, centre of its enemies, count)`.
+pub fn fill_threats(s: &mut StateMap, camera: &Camera, size: (u32, u32), groups: &[(&str, Vec3, usize)]) {
     let rows = s.list_mut("threats");
     rows.clear();
     let (w, h) = (size.0.max(1), size.1.max(1));
@@ -613,23 +635,7 @@ pub fn fill_threats(s: &mut StateMap, camera: &Camera, size: (u32, u32), groups:
         }
         let row = rows.push();
         row.set_num("x", f64::from(x)).set_num("y", f64::from(y)).set_bool("behind", behind);
-        texts.scratch.clear();
-        let _ = write!(texts.scratch, "{label} ({count})");
-        row.set_str("label", &texts.scratch);
-    }
-}
-
-/// The toast kind for a message the game says (threats in the enemy's green).
-pub fn toast_kind(text: &str) -> ToastKind {
-    let t = text.to_ascii_lowercase();
-    if t.contains("raised") || t.contains("defeat") || t.contains("broken") {
-        ToastKind::Threat
-    } else if t.starts_with("can't") || t.contains("need ") {
-        ToastKind::Warn
-    } else if t.contains("cleared") || t.contains("victory") || t.starts_with('+') || t.starts_with("sold") {
-        ToastKind::Good
-    } else {
-        ToastKind::Info
+        row.set_msg("label", label).set_int("count", count as i64);
     }
 }
 
@@ -653,14 +659,14 @@ mod tests {
             paused: false,
             speed: 1,
             selected: Some(0),
-            hover: "top:12,9",
+            hover: None,
             inspect: Some(Inspect::Stone { kind: 2, tier: 1, upgrade: Some(110), refund: 112 }),
             kills: 40,
             run_time_s: 200.0,
             outcome: Outcome::Running,
             volume: 0.75,
             reduced_motion: false,
-            glyph_style: "Auto",
+            glyph_style: "glyphs.auto",
         }
     }
 
@@ -670,12 +676,17 @@ mod tests {
         let mut s = StateMap::new();
         let mut texts = Texts::default();
         fill(&mut s, &info(&content), &mut texts);
-        for key in ["wave", "waves", "next_wave_s", "dust", "tombstones", "tombstones_max", "selected", "selected_cost", "affordable", "hover"] {
+        for key in ["wave", "waves", "next_wave_s", "dust", "tombstones", "tombstones_max", "selected", "selected_cost", "affordable", "selected_name", "language"] {
             assert!(s.get(key).is_some(), "{key} missing");
         }
         assert!(matches!(s.get("sel_warding"), Some(specula_ui::Value::Bool(true))));
         assert!(matches!(s.get("can_brazier"), Some(specula_ui::Value::Bool(false))), "55 dust can't buy an 80-dust brazier");
-        assert!(matches!(s.get("inspect"), Some(specula_ui::Value::Str(t)) if t == "Brazier cairn II"), "{:?}", s.get("inspect"));
+        // Words are messages in the player's language: the brazier at tier II.
+        let l10n = crate::l10n::L10n::load(None, None);
+        let mut shown = String::new();
+        specula_ui::state::Template::parse("{inspect}", "t").unwrap().render(&specula_ui::state::Scope::new(&s).with_strings(Some(&l10n.strings())), &mut shown);
+        assert_eq!(shown, "Brazier cairn II");
+        assert!(matches!(s.get("inspect"), Some(specula_ui::Value::Msg(m)) if m.key == "stone.tier_name"), "{:?}", s.get("inspect"));
         assert!(matches!(s.get("can_upgrade"), Some(specula_ui::Value::Bool(false))));
         // Nothing to inspect, no wave timer: the keys are gone (the panels hide).
         fill(&mut s, &HudInfo { inspect: None, next_wave_s: None, ..info(&content) }, &mut texts);
@@ -687,7 +698,7 @@ mod tests {
         let cam = Camera::new(Vec3::new(0.0, 30.0, 40.0), Vec3::ZERO, 45.0);
         let mut s = StateMap::new();
         let groups = [("Top", Vec3::ZERO, 3), ("West cliff", Vec3::new(-90.0, -8.0, 0.0), 2), ("Behind", Vec3::new(0.0, 10.0, 90.0), 1), ("None", Vec3::ZERO, 0)];
-        fill_threats(&mut s, &cam, (1280, 720), &groups, &mut Texts::default());
+        fill_threats(&mut s, &cam, (1280, 720), &groups);
         let rows = s.list("threats").unwrap();
         assert_eq!(rows.len(), 2, "the visible face and the empty group have no arrow");
     }

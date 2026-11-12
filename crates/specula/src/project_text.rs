@@ -253,9 +253,13 @@ fn find<'n>(root: &'n Node, steps: &[Step]) -> Result<&'n Node, (usize, &'n Node
 /// added after the last one; an index one past the end appends; missing objects on the way are
 /// created).
 pub fn json_set(text: &str, path: &str, value: &Json) -> Result<String, String> {
-    let steps = parse_path(path)?;
+    json_set_at(text, &parse_path(path)?, value)
+}
+
+/// [`json_set`] at steps (keys may hold dots: a string table's `strings` → `hud.wave`).
+pub fn json_set_at(text: &str, steps: &[Step], value: &Json) -> Result<String, String> {
     let root = scan(text)?;
-    let out = match find(&root, &steps) {
+    let out = match find(&root, steps) {
         Ok(node) => {
             let v = render(value, indent_at(text, node.start), eol_of(text));
             format!("{}{v}{}", &text[..node.start], &text[node.end..])
@@ -314,7 +318,12 @@ fn insert(text: &str, node: &Node, key: Option<&str>, value: &Json) -> String {
 
 /// Removes the member or item at `path` from JSON `text` (with its comma).
 pub fn json_remove(text: &str, path: &str) -> Result<String, String> {
-    let steps = parse_path(path)?;
+    json_remove_at(text, &parse_path(path)?)
+}
+
+/// [`json_remove`] at steps (keys may hold dots).
+pub fn json_remove_at(text: &str, steps: &[Step]) -> Result<String, String> {
+    let path = path_string(steps);
     let Some((last, parent_steps)) = steps.split_last() else { return Err("can't remove the whole document (project_delete deletes the file)".into()) };
     let root = scan(text)?;
     let parent = find(&root, parent_steps).map_err(|(k, _)| format!("{} doesn't exist", path_string(&steps[..=k])))?;

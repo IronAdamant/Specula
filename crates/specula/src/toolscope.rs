@@ -92,6 +92,7 @@ pub const FAMILIES: &[Family] = &[
     fam("audio", "hearing: what played, loudness and peaks per bus, offline previews, bus settings", &["audio_"], &[]),
     fam("logic", "game logic modules (Rust): build, reload, inspect, drive", &["logic_"], &[]),
     fam("ui", "the interface as data: widget trees, outlined captures, a player's input, measured checks", &["ui_"], &[]),
+    fam("l10n", "localisation: string tables per locale, translations and reviews, checks in every language", &["l10n_"], &[]),
     fam("trace", "the structured log: events, one call's causal tree, crash reports, incidents", &["trace_"], &[]),
     fam("editor", "the window's human editor: what it shows, and driving it as the human (owner)", &["editor_"], &[]),
 ];
@@ -178,6 +179,10 @@ pub(crate) const BRIEFS: &[(&str, &str)] = &[
     ("ui_frame", "capture with every widget outlined and labelled"),
     ("ui_act", "drive the interface: gamepad, keys, mouse, touch"),
     ("ui_check", "legibility, contrast, overflow, gamepad reach per display"),
+    ("l10n_get", "string tables and a locale's entries"),
+    ("l10n_set", "write, remove or review a locale's strings"),
+    ("l10n_check", "missing, stale, placeholders, overflow per language"),
+    ("l10n_tasks", "post translate and review tasks per locale"),
     ("claim_take", "claim a subtree or region"),
     ("claim_renew", "extend claim leases"),
     ("claim_release", "release claims"),

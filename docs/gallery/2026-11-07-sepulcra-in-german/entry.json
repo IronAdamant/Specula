@@ -1,0 +1,48 @@
+{
+  "date": "2026-11-07",
+  "time": "",
+  "date_source": "",
+  "approximate": false,
+  "milestone": "M5",
+  "commit": "",
+  "subject": "ui",
+  "topic": "UI",
+  "title": "Sepulcra in German",
+  "note": "Localisation (lane m5-l10n): every word now comes from string tables (assets/strings/en.json, de.json made by an agent through l10n_set, unreviewed). The same HUD, pause menu and settings in English and German, switched by the new Language button; decimal commas and German percent spacing; the selected panel's prompts in two columns and the inspect panel's buttons stacked so German and the pseudo-locale fit.",
+  "source": "scripts/l10n_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-frame-00001.jpg",
+      "caption": "English HUD",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 32508
+    },
+    {
+      "file": "02-frame-00006.jpg",
+      "caption": "German HUD",
+      "original": "frame_00006.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 32776
+    },
+    {
+      "file": "03-frame-00004.jpg",
+      "caption": "German settings, the Language button",
+      "original": "frame_00004.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 27206
+    },
+    {
+      "file": "04-frame-00005.jpg",
+      "caption": "German pause menu",
+      "original": "frame_00005.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 24969
+    }
+  ]
+}

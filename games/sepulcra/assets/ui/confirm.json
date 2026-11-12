@@ -26,8 +26,8 @@
           {
             "type": "box", "layout": "row", "gap": 10,
             "children": [
-              { "type": "button", "id": "confirm_yes", "text": "Yes", "action": "confirm_yes", "width": "fill" },
-              { "type": "button", "id": "confirm_no", "style": "primary", "text": "No", "action": "confirm_no", "width": "fill" }
+              { "type": "button", "id": "confirm_yes", "text": "@confirm.yes", "action": "confirm_yes", "width": "fill" },
+              { "type": "button", "id": "confirm_no", "style": "primary", "text": "@confirm.no", "action": "confirm_no", "width": "fill" }
             ]
           }
         ]

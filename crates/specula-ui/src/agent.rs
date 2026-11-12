@@ -148,10 +148,22 @@ impl Ui {
 
     /// Lay screens' text out in a pseudo-locale (`ui_check {pseudo: true}`): the screens' own
     /// words accented and about 35% longer, so overflow shows before anyone translates, and text
-    /// the game supplies through bindings is noted per label (`untranslated`).
+    /// the game supplies through bindings is noted per label (`untranslated`). With a string
+    /// table, the table is swapped for the pseudo-locale made from its source while this is on
+    /// (`@key` texts and messages included), and put back after.
     pub fn set_pseudo_locale(&mut self, on: bool) {
         self.pseudo = on;
+        if on && self.unpseudo.is_none() {
+            if let Some(p) = self.strings.as_ref().and_then(|s| s.pseudo()) {
+                self.use_faces(Some(&p));
+                self.unpseudo = Some(self.strings.replace(p));
+            }
+        }
         if !on {
+            if let Some(prev) = self.unpseudo.take() {
+                self.use_faces(prev.as_deref());
+                self.strings = prev;
+            }
             for s in &mut self.screens {
                 for r in &mut s.rt {
                     r.untranslated = None;
@@ -356,6 +368,11 @@ impl Ui {
                 pairs.push(("rect", rect_json(c.rect)));
                 if is_label {
                     pairs.push(("text", Json::Str(clip_text(&sr.rt[i].text))));
+                    if let Kind::Label { text: crate::screen::TextSource::Template(t), .. } = &n.kind {
+                        if let Some(k) = t.key() {
+                            pairs.push(("text_key", Json::Str(k.to_owned())));
+                        }
+                    }
                 }
                 if n.kind.interactive() {
                     pairs.push(("enabled", Json::Bool(sr.rt[i].enabled)));

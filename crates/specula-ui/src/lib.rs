@@ -36,6 +36,7 @@ pub mod preview;
 pub mod screen;
 pub mod shapes;
 pub mod state;
+pub mod strings;
 pub mod testfont;
 pub mod theme;
 mod ui;
@@ -46,7 +47,8 @@ pub use display::Display;
 pub use draw::{DrawCmd, DrawList, DrawStats, GlyphQuad, Rect, RectCmd, Vertex};
 pub use error::{ErrorCode, UiError};
 pub use screen::{Screen, SCREEN_FORMAT};
-pub use state::{StateList, StateMap, Value};
+pub use state::{Msg, StateList, StateMap, Value};
+pub use strings::{Strings, UiEntry};
 pub use theme::{Theme, THEME_FORMAT};
 pub use ui::{
     add_ui_actions, Consumed, FontSet, Frame, ScreenId, ToastKind, Ui, UiEvent, UiEvents, Viewport, WidgetRef, UI_ACTIONS,

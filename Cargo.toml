@@ -26,6 +26,7 @@ members = [
     "crates/specula-gustus",
     "crates/specula-lux",
     "crates/specula-tempus",
+    "crates/specula-lingua",
     "crates/specula",
     "games/sepulcra",
     "games/sepulcra-app",
@@ -83,6 +84,7 @@ specula-scintilla = { path = "crates/specula-scintilla" }
 specula-gustus = { path = "crates/specula-gustus" }
 specula-lux = { path = "crates/specula-lux" }
 specula-tempus = { path = "crates/specula-tempus" }
+specula-lingua = { path = "crates/specula-lingua" }
 
 [profile.dev]
 opt-level = 1

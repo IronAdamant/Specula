@@ -32,6 +32,7 @@ specula-scintilla = { workspace = true }
 specula-tempus = { workspace = true }
 specula-text = { workspace = true }
 specula-ui = { workspace = true }
+specula-lingua = { workspace = true }
 
 [dev-dependencies]
 # tests/prop_cells.rs builds the props' meshes to check the cells each one covers.

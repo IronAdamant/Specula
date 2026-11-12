@@ -88,6 +88,9 @@ pub enum FileKind {
     /// `*.json` in a folder named `timelines`: timelines, sequencer tracks and camera rails
     /// (docs/design/TIMELINE.md).
     Timeline,
+    /// `*.json` in a folder named `strings`: string tables, one per locale
+    /// (docs/design/LOCALISATION.md).
+    Strings,
     /// Binary files (see [`FileKind::is_binary`]).
     Png,
     Glb,
@@ -98,7 +101,7 @@ pub enum FileKind {
 }
 
 impl FileKind {
-    pub const ALL: [FileKind; 20] = [
+    pub const ALL: [FileKind; 21] = [
         FileKind::Recipe,
         FileKind::Style,
         FileKind::StyleRules,
@@ -114,6 +117,7 @@ impl FileKind {
         FileKind::StyleData,
         FileKind::StyleNotes,
         FileKind::Timeline,
+        FileKind::Strings,
         FileKind::Png,
         FileKind::Glb,
         FileKind::Gltf,
@@ -138,6 +142,7 @@ impl FileKind {
             FileKind::StyleData => "style_data",
             FileKind::StyleNotes => "style_notes",
             FileKind::Timeline => "timeline",
+            FileKind::Strings => "strings",
             FileKind::Png => "png",
             FileKind::Glb => "glb",
             FileKind::Gltf => "gltf",
@@ -397,6 +402,7 @@ pub fn kind_for(mount: MountKind, rel: &str) -> Option<FileKind> {
                 "music" => Some(FileKind::Music),
                 "anims" => Some(FileKind::AnimSet),
                 "timelines" => Some(FileKind::Timeline),
+                "strings" => Some(FileKind::Strings),
                 _ => None,
             }
         }
@@ -1172,6 +1178,7 @@ mod tests {
         assert_eq!(kind_for(a, "sounds/ui_click.json"), Some(FileKind::Sound));
         assert_eq!(kind_for(a, "anims/wraith.json"), Some(FileKind::AnimSet));
         assert_eq!(kind_for(a, "timelines/intro.json"), Some(FileKind::Timeline));
+        assert_eq!(kind_for(a, "strings/de.json"), Some(FileKind::Strings));
         assert_eq!(kind_for(a, "timelines/notes.txt"), None);
         assert_eq!(kind_for(a, "style.json"), Some(FileKind::Style));
         assert_eq!(kind_for(a, "x/style.toml"), Some(FileKind::StyleRules));

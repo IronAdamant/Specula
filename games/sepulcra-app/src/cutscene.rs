@@ -80,8 +80,15 @@ impl Cutscenes {
         std::mem::take(&mut self.swallow)
     }
 
-    /// The engine's word on a timeline; returns a line for the message log, if any.
-    pub fn event(&mut self, e: &TimelineEvent) -> Option<String> {
+    /// The engine's word on a timeline; returns a line for the message log, if any. Subtitle
+    /// texts and speakers that start with `@` are string-table keys (shown in the player's
+    /// language); others are shown as written.
+    pub fn event(&mut self, e: &TimelineEvent) -> Option<crate::l10n::Said> {
+        use crate::l10n::Said;
+        let words = |s: &str| match s.strip_prefix('@').filter(|k| !k.starts_with('@')) {
+            Some(key) => Said::new(key),
+            None => Said::new("common.text").text("text", s),
+        };
         let ours = self.playing.is_some_and(|(p, _)| p == e.path);
         match &e.what {
             TimelineWhat::Ended { how, error } => {
@@ -95,11 +102,11 @@ impl Cutscenes {
                 }
                 self.last_ended = Some((e.path.clone(), (*how).to_owned()));
                 // A cutscene that couldn't start (a broken file) says so and the run goes on.
-                error.as_ref().filter(|_| *how == "refused").map(|m| format!("Cutscene skipped: {m}"))
+                error.as_ref().filter(|_| *how == "refused").map(|m| Said::new("toast.cutscene_skipped").text("error", m.as_str()))
             }
             TimelineWhat::Subtitle(line) => Some(match &line.speaker {
-                Some(s) => format!("{s}: {}", line.text),
-                None => line.text.clone(),
+                Some(s) => Said::new("subtitle.line").said("speaker", words(s)).said("text", words(&line.text)),
+                None => words(&line.text),
             }),
             _ => None,
         }
@@ -158,7 +165,7 @@ mod tests {
         // A broken file: refused, and said.
         c.intro(true, false);
         let e = TimelineEvent { path: INTRO.into(), t: 0.0, what: TimelineWhat::Ended { how: "refused", error: Some("bad".into()) } };
-        assert!(c.event(&e).unwrap().contains("bad"));
+        assert!(crate::l10n::L10n::load(None, None).text(&c.event(&e).unwrap()).contains("bad"));
         assert!(!c.holds());
         // An agent was playing the intro's file: the game's request took it over, and the
         // agent's playback ending as replaced doesn't end the hold (lead review R2, minor 3).

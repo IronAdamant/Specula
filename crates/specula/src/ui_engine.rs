@@ -742,7 +742,15 @@ impl steps::StepJob for CheckJob {
     fn step(&mut self, engine: &mut Engine, _reply: &jobs::Reply) -> steps::Step {
         let started = Instant::now();
         let target = self.a.targets[self.next].clone();
-        let opts = CheckOpts { pseudo: self.a.pseudo };
+        if let (Some(l), None) = (&self.a.locale, &self.a.strings) {
+            // The string tables are read on the caller's connection (crate::l10n_tools); a
+            // playtest step runs on the engine thread, which can't wait for them.
+            return steps::Step::Done(world_error(&WorldError::new(
+                "locale_unavailable",
+                format!("ui_check {{locale: \"{}\"}} reads the project's string tables on your connection, which a playtest step can't: run it outside the playtest (or check pseudo: true inside one)", crate::bounds::echo(l)),
+            )));
+        }
+        let opts = CheckOpts { pseudo: self.a.pseudo, strings: self.a.strings.clone() };
         let want = self.screens.clone().or_else(|| self.a.screens.clone());
         let display = engine.ui_display_for(Some(&self.session)).0;
         let r = engine.with_ui(self.surface, display, |ui, state, _, map, _| {
@@ -820,6 +828,9 @@ impl CheckJob {
         j.set("targets", Json::arr(a.targets.iter().map(|t| Json::obj([("name", Json::from(t.name.as_str())), ("display", t.display().to_json()), ("ui_scale", Json::from(f64::from(t.user_scale)))]))));
         if a.pseudo {
             j.set("pseudo_locale", Json::Bool(true));
+        }
+        if let Some(s) = &a.strings {
+            j.set("locale", Json::from(s.locale().as_str()));
         }
         // Engine-thread time across the slices.
         j.set("ms", Json::from((self.spent.as_secs_f64() * 1e4).round() / 10.0));
@@ -973,6 +984,14 @@ impl Engine {
         let out = match call {
             UiCall::Tree(a) => self.ui_tree(a, session),
             UiCall::Check(_) => unreachable!("ui_check is a step job (start_ui_check)"),
+            UiCall::Locale(reply) => {
+                let mut l = self.game.as_ref().map(|g| g.locale()).unwrap_or_default();
+                if let Some(k) = &mut l.keys {
+                    k.truncate(crate::game::MAX_GAME_KEYS);
+                }
+                let _ = reply.send(l);
+                Ok(ToolOutput::text("{}"))
+            }
             UiCall::Act(a) => self.ui_act(a, w, tick, session),
             UiCall::Frame(_) => unreachable!("ui_frame goes through handle_sight"),
         };

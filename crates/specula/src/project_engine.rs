@@ -178,6 +178,13 @@ impl Engine {
                 let _ = reply.send(texts);
                 ToolOutput::text("{}")
             }
+            ProjectCall::OfKind { kind, max, reply } => {
+                // The store, as it is now (the watcher imports outside edits within a second):
+                // a filter over at most MAX_FILES entries, sharing the texts.
+                let files: Vec<(String, u64, Arc<str>)> = self.world.files().iter().filter(|(_, f)| f.kind == kind).take(max).map(|(p, f)| (p.clone(), f.version, Arc::clone(&f.text))).collect();
+                let _ = reply.send(files);
+                ToolOutput::text("{}")
+            }
             ProjectCall::Owner { reply } => {
                 // The identity key alone: a name given (or changed) by agent_hello later keeps them.
                 let _ = reply.send(w.session.unwrap_or(w.name).to_owned());

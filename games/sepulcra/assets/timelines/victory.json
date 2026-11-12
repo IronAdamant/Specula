@@ -11,7 +11,7 @@
       "look": {"point": [0, -2, 1]},
       "fov": [{"t": 0, "value": 45}, {"t": 6.5, "value": 52, "ease": "in_out"}]
     },
-    {"kind": "subtitles", "name": "captions", "lines": [{"t": 0.5, "duration": 5, "text": "Victory: the graveyard holds."}]},
+    {"kind": "subtitles", "name": "captions", "lines": [{"t": 0.5, "duration": 5, "text": "@subtitle.victory"}]},
     {"kind": "events", "name": "game", "events": [{"t": 0, "name": "victory_shot"}]}
   ]
 }

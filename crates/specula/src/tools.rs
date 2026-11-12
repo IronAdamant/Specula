@@ -633,6 +633,9 @@ pub enum CallerThread {
     Timeline,
     /// `text_edit`: ops are applied and laid out here; the engine commits the result.
     Text,
+    /// The `l10n_*` tools: string tables are parsed, checked and written (through
+    /// `project_write`) here; the engine lends texts, commits and lays the interface out.
+    L10n,
 }
 
 impl CallerThread {
@@ -646,6 +649,7 @@ impl CallerThread {
             "terrain_edit" => CallerThread::Terrain,
             "timeline_set" => CallerThread::Timeline,
             "text_edit" => CallerThread::Text,
+            n if n.starts_with("l10n_") => CallerThread::L10n,
             n if n.starts_with("lex_") => CallerThread::Lex,
             n if n.starts_with("studio_") => CallerThread::Studio,
             n if n.starts_with("project_") => CallerThread::Project,
@@ -681,6 +685,7 @@ impl CallerThread {
             CallerThread::Audio => "audio_* tools read the engine's audio and render previews outside the engine thread: hear (audio_played, audio_levels) before or after the playtest",
             CallerThread::Timeline => "timeline_set writes a project file outside the engine thread: write timelines before the playtest (timeline_play and the others work inside one)",
             CallerThread::Text => "text_edit lays text out on your connection, outside the engine thread: type before or after the playtest (a step may world_set a text component)",
+            CallerThread::L10n => "l10n_* tools read and write string tables on your connection: translate and check before or after the playtest (ui_check {pseudo: true} works inside one)",
         }
     }
 }
@@ -743,6 +748,11 @@ impl Tools {
         } else {
             arguments
         };
+        // ui_check {locale}: the locale's strings are made from the project's tables on this
+        // thread (fonts read here too), then it runs like any ui_check.
+        if name == "ui_check" && arguments.get("locale").is_some_and(|l| !l.is_null()) {
+            return crate::l10n_tools::ui_check(self, session, arguments);
+        }
         let parsed = if self.game_tools.iter().any(|t| t.name == name) {
             Ok(Command::Game { name: name.to_owned(), args: arguments.clone() })
         } else {
@@ -772,6 +782,8 @@ impl Tools {
                 Some(CallerThread::Timeline) => return crate::timeline_tools::set_tool(self, session, arguments),
                 // Ops are applied and laid out on this thread; the engine commits the result.
                 Some(CallerThread::Text) => return crate::text_world::call(self, session, arguments),
+                // String tables are parsed, checked and written on this thread.
+                Some(CallerThread::L10n) => return crate::l10n_tools::call(self, session, name, arguments),
                 // (Answered above.)
                 // tools_* reach here only from a caller that skipped `ToolHandler::call` (tests).
                 Some(CallerThread::LogicBuild | CallerThread::LogicReload | CallerThread::MergeSuggest | CallerThread::Scope) | None => parse(name, arguments),
@@ -2886,6 +2898,7 @@ pub(crate) fn definitions() -> Vec<ToolDef> {
     .chain(crate::gi_tools::definitions())
     .chain(crate::terrain_tools::definitions())
     .chain(crate::ui_tools::definitions())
+    .chain(crate::l10n_tools::definitions())
     .chain(crate::trace_tools::definitions())
     .chain(crate::editor_tools::definitions())
     .collect()

@@ -135,6 +135,8 @@ pub enum Site {
     AudioSettings,
     /// text_edit window_focus: pointing the human's keyboard (and clipboard) at a text entity.
     WindowFocus,
+    /// Marking string-table entries reviewed (l10n_set review, or a table written with them).
+    L10nReview,
     /// logic_build, logic_reload, logic_unload: native module code runs with the owner's user
     /// rights, so only the owner or an operator-granted lead loads it (docs/design/MODULES.md).
     NativeCode,
@@ -151,7 +153,7 @@ impl Site {
             Site::FrameFloor | Site::StreamSettings | Site::ToolsScope | Site::DiskPrune | Site::WorldSave | Site::GiSettings | Site::GiThreads | Site::AudioSettings | Site::WindowFocus | Site::NativeCode => "lead_only",
             Site::HelloBadName => "name_invalid",
             Site::ForceOverride => "force_needs_lead",
-            Site::ReviewDecide | Site::ReviewScreen => "not_reviewer",
+            Site::ReviewDecide | Site::ReviewScreen | Site::L10nReview => "not_reviewer",
             Site::EditorInput => "owner_only",
             Site::CritiqueUpdate => "not_yours",
             Site::CritiqueSource => "source_reserved",
@@ -187,6 +189,7 @@ impl Site {
             Site::EditorInput => "editor_input",
             Site::AudioSettings => "audio_settings",
             Site::WindowFocus => "text_edit.window_focus",
+            Site::L10nReview => "l10n.review",
             Site::NativeCode => "logic.native_code",
         }
     }
@@ -624,6 +627,13 @@ pub fn access(tool: &str) -> Option<Access> {
         // Live::game_tool, like a hosted game's tool (claims checked). The engine's own screens
         // (surface review or gallery) are the owner's: refused (owner_only) for anyone else.
         "ui_act" => World("world"),
+        // Localisation (docs/design/LOCALISATION.md): string tables are project files, written
+        // as the caller through the project store; marking entries reviewed needs reviewer
+        // authority (Site::L10nReview, also when a table is written with project_*).
+        "l10n_get" | "l10n_check" => ReadOnly,
+        "l10n_set" => World("project"),
+        // Posts one plan of board tasks (task_plan's store rules).
+        "l10n_tasks" => Owned(Store::Board),
         // Hearing (docs/design/AUDIO.md): what played and how loud, from the engine's audio.
         "audio_played" | "audio_levels" => ReadOnly,
         "audio_preview" => Open("renders or decodes a sound offline and measures it; its optional WAV and picture are new files in the captures folder; nothing shared changes"),

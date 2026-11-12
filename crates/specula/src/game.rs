@@ -197,6 +197,12 @@ pub trait Game {
     /// display at the capture's size, so agents measure what the player sees. Default: nothing.
     fn display(&mut self, _display: &specula_ui::Display) {}
 
+    /// Its interface's language and the string-table keys its code uses (`l10n_get`,
+    /// `l10n_check`; docs/design/LOCALISATION.md). A cheap read: no disk, no layout.
+    fn locale(&self) -> GameLocale {
+        GameLocale::default()
+    }
+
     /// The game's interface for the engine's `ui_tree`, `ui_frame`, `ui_act` and `ui_check`
     /// ([`UiPick`]). [`UiPick::Live`] first brings the state the screens bind to up to date (as a
     /// frame would). `None`: the game has no `specula-ui` interface. Default: `None`.
@@ -231,6 +237,19 @@ pub enum UiPick {
     /// outlines come from it. A game that draws captures with its live interface returns that.
     Capture,
 }
+
+/// A game's language, for the `l10n_*` tools ([`Game::locale`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GameLocale {
+    /// The locale its interface shows now (`None`: it has no string table).
+    pub locale: Option<String>,
+    /// The string-table keys its code may show (its screens' `@key` texts are read from the
+    /// screen files): `None` when it doesn't list them, so `l10n_check` can't call a key unused.
+    pub keys: Option<Vec<String>>,
+}
+
+/// Most keys [`GameLocale::keys`] may list (more are cut).
+pub const MAX_GAME_KEYS: usize = 8192;
 
 /// A game's interface lent to the engine's `ui_*` tools.
 pub struct GameUi<'a> {

@@ -6,6 +6,9 @@
 //! budget, F3).
 
 use crate::error::{ErrorCode, UiError};
+use crate::strings::{Strings, UiEntry};
+pub use specula_lingua::Fmt;
+use specula_lingua::{Arg, Category, NumberFormat};
 use std::fmt::Write as _;
 
 /// One bound value.
@@ -14,8 +17,20 @@ pub enum Value {
     Bool(bool),
     Int(i64),
     Num(f64),
+    /// Words the game supplies as they are (a save's name, a key's glyph): no string table
+    /// translates them (`ui_check`'s `untranslated` notes them in the pseudo-locale).
     Str(String),
     List(StateList),
+    /// A string-table entry and its arguments ([`StateMap::set_msg`]): shown in the UI's
+    /// language, like a screen's `@key` text.
+    Msg(Box<Msg>),
+}
+
+/// A string-table entry with its own arguments (its placeholders read `args` only).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Msg {
+    pub key: String,
+    pub args: StateMap,
 }
 
 impl Value {
@@ -26,6 +41,7 @@ impl Value {
             Value::Num(n) => *n != 0.0 && !n.is_nan(),
             Value::Str(s) => !s.is_empty(),
             Value::List(l) => !l.is_empty(),
+            Value::Msg(_) => true,
         }
     }
 
@@ -34,7 +50,7 @@ impl Value {
             Value::Bool(b) => Some(f64::from(u8::from(*b))),
             Value::Int(i) => Some(*i as f64),
             Value::Num(n) => Some(*n),
-            Value::Str(_) | Value::List(_) => None,
+            Value::Str(_) | Value::List(_) | Value::Msg(_) => None,
         }
     }
 }
@@ -97,6 +113,25 @@ impl StateMap {
             other => *other = Value::Str(v.to_owned()),
         }
         self
+    }
+
+    /// Sets a string-table entry (`msg_key`, e.g. `stone.warding.name`) and returns its
+    /// arguments, emptied, to fill (`set_msg("hint", "hint.cost").set_int("cost", 60)`). The
+    /// previous message's storage is reused.
+    pub fn set_msg(&mut self, key: &str, msg_key: &str) -> &mut StateMap {
+        let e = self.slot(key);
+        if !matches!(e.value, Value::Msg(_)) {
+            e.value = Value::Msg(Box::default());
+        }
+        match &mut e.value {
+            Value::Msg(m) => {
+                m.key.clear();
+                m.key.push_str(msg_key);
+                m.args.reset();
+                &mut m.args
+            }
+            _ => unreachable!("just made a message"),
+        }
     }
 
     /// A list (created empty if missing or of another type) to refill: `clear()` then `push()`.
@@ -228,11 +263,14 @@ impl Key {
 /// UI's own `ui.*` keys (`ui.width`, `ui.height`, `ui.portrait`, `ui.narrow` (under 760 logical
 /// px wide), `ui.short` (under 520 high), `ui.gamepad`, `ui.touch`, and `ui.open.<screen>` for
 /// each loaded screen) for layouts that adapt to the screen, the device and what else shows.
+/// `strings` is the UI's string table: `@key` texts and [`Value::Msg`] values read it, and
+/// numbers take its locale's format (without one they print as plain ASCII, as before tables).
 #[derive(Clone, Copy)]
 pub struct Scope<'a> {
     pub state: &'a StateMap,
     pub item: Option<(usize, &'a StateMap)>,
     pub env: Option<&'a StateMap>,
+    pub strings: Option<&'a Strings>,
 }
 
 /// A looked-up value, borrowed or synthesised (indices).
@@ -243,11 +281,16 @@ pub enum Lookup<'a> {
 
 impl<'a> Scope<'a> {
     pub fn new(state: &'a StateMap) -> Scope<'a> {
-        Scope { state, item: None, env: None }
+        Scope { state, item: None, env: None, strings: None }
     }
 
     pub fn with_env(mut self, env: &'a StateMap) -> Scope<'a> {
         self.env = Some(env);
+        self
+    }
+
+    pub fn with_strings(mut self, strings: Option<&'a Strings>) -> Scope<'a> {
+        self.strings = strings;
         self
     }
 
@@ -276,19 +319,6 @@ impl<'a> Scope<'a> {
     }
 }
 
-/// How a bound value is printed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Fmt {
-    /// Integers as integers, other numbers with up to 2 decimals (trailing zeros trimmed).
-    Auto,
-    /// `{key:.N}`: exactly N decimals (N ≤ 6).
-    Fixed(u8),
-    /// `{key:time}`: seconds as `m:ss`.
-    Time,
-    /// `{key:pct}`: a 0..1 ratio as a whole percentage.
-    Percent,
-}
-
 #[derive(Clone, Debug, PartialEq)]
 enum Seg {
     Lit(String),
@@ -298,14 +328,53 @@ enum Seg {
 /// Longest rendered template text, in bytes.
 pub const MAX_TEXT: usize = 512;
 
-/// Text with `{key}` bindings (`{{` and `}}` are literal braces).
+/// How deep string-table entries may nest through [`Value::Msg`] arguments: a message, a
+/// message in its arguments, and so on, [`MAX_DEPTH`] messages in all (a screen's own `@key`
+/// counts as the first). Past it a message shows as `@key`.
+pub const MAX_DEPTH: u8 = 4;
+
+/// Text with `{key}` bindings (`{{` and `}}` are literal braces), or a string-table reference:
+/// `"@hud.wave"` shows that entry of the UI's string table in its language (its placeholders
+/// read the same state); `"@@..."` is literal text starting with `@`.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Template {
     segs: Vec<Seg>,
+    /// `@key`: a string-table entry.
+    reference: Option<String>,
 }
 
 impl Template {
+    /// A screen's text: a `@key` reference, or text with bindings ([`Template::parse_text`]).
     pub fn parse(text: &str, path: &str) -> Result<Template, UiError> {
+        if let Some(rest) = text.strip_prefix('@') {
+            if let Some(lit) = rest.strip_prefix('@') {
+                let mut t = Template::parse_text(lit, path)?;
+                match t.segs.first_mut() {
+                    Some(Seg::Lit(l)) => l.insert(0, '@'),
+                    _ => t.segs.insert(0, Seg::Lit("@".into())),
+                }
+                return Ok(t);
+            }
+            let key = rest.trim();
+            if !specula_lingua::table::valid_key(key) {
+                return Err(UiError::new(
+                    ErrorCode::BadTemplate,
+                    path,
+                    format!("\"@{}\" is not a string-table key (1..96 of letters, digits, _ - . starting with a letter; @@ for a literal @)", specula_lingua::error::echo(key, 40)),
+                ));
+            }
+            return Ok(Template::reference(key));
+        }
+        Template::parse_text(text, path)
+    }
+
+    /// A reference to string-table entry `key` (not checked).
+    pub fn reference(key: &str) -> Template {
+        Template { segs: Vec::new(), reference: Some(key.to_owned()) }
+    }
+
+    /// Text with `{key}` bindings only (a string table's own texts: a leading `@` is literal).
+    pub fn parse_text(text: &str, path: &str) -> Result<Template, UiError> {
         let err = |m: String| UiError::new(ErrorCode::BadTemplate, path, m);
         let mut segs = Vec::new();
         let mut lit = String::new();
@@ -325,8 +394,8 @@ impl Template {
                     let end = rest.find('}').ok_or_else(|| err(format!("unclosed '{{' at character {i}")))?;
                     let inner = rest[..end].trim();
                     let (name, fmt) = match inner.split_once(':') {
-                        Some((n, f)) => (n.trim(), parse_fmt(f.trim()).ok_or_else(|| {
-                            err(format!("unknown format \"{f}\" in {{{inner}}}; use .N, time or pct"))
+                        Some((n, f)) => (n.trim(), Fmt::parse(f.trim()).ok_or_else(|| {
+                            err(format!("unknown format \"{f}\" in {{{inner}}}; use .N, time, pct or plain"))
                         })?),
                         None => (inner, Fmt::Auto),
                     };
@@ -350,22 +419,41 @@ impl Template {
         if !lit.is_empty() {
             segs.push(Seg::Lit(lit));
         }
-        Ok(Template { segs })
+        Ok(Template { segs, reference: None })
     }
 
     pub fn literal(text: &str) -> Template {
-        Template { segs: if text.is_empty() { Vec::new() } else { vec![Seg::Lit(text.to_owned())] } }
+        Template { segs: if text.is_empty() { Vec::new() } else { vec![Seg::Lit(text.to_owned())] }, reference: None }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.segs.is_empty()
+        self.segs.is_empty() && self.reference.is_none()
     }
 
-    /// True if the template has no bindings.
+    /// True if the template has no bindings and is no string-table reference (its text never
+    /// changes).
     pub fn is_static(&self) -> bool {
-        self.segs.iter().all(|s| matches!(s, Seg::Lit(_)))
+        self.reference.is_none() && self.segs.iter().all(|s| matches!(s, Seg::Lit(_)))
     }
 
+    /// The string-table key this template shows (`@key`).
+    pub fn key(&self) -> Option<&str> {
+        self.reference.as_deref()
+    }
+
+    /// The words the screen writes itself (its literal segments joined; empty for `@key`):
+    /// what `ui_check` calls hard-coded when the UI has a string table.
+    pub fn literal_text(&self) -> String {
+        self.segs
+            .iter()
+            .filter_map(|s| match s {
+                Seg::Lit(l) => Some(l.as_str()),
+                Seg::Bound { .. } => None,
+            })
+            .collect()
+    }
+
+    /// The state keys it reads (its own bindings; for `@key` see [`Template::keys_with`]).
     pub fn keys(&self) -> impl Iterator<Item = &Key> {
         self.segs.iter().filter_map(|s| match s {
             Seg::Bound { key, .. } => Some(key),
@@ -373,72 +461,75 @@ impl Template {
         })
     }
 
-    /// Render into `out` (cleared first). Missing keys print as `{key}` so they show in previews.
-    /// Output is capped at [`MAX_TEXT`] bytes (ending in `…`), so hostile state can't make a
-    /// label arbitrarily expensive.
-    pub fn render(&self, scope: &Scope<'_>, out: &mut String) {
-        self.render_uncapped(scope, out);
-        if out.len() > MAX_TEXT {
-            let mut cut = MAX_TEXT;
-            while !out.is_char_boundary(cut) {
-                cut -= 1;
-            }
-            out.truncate(cut);
-            out.push('…');
-        }
-    }
-
-    /// [`Template::render`] in a pseudo-locale (`ui_check {pseudo: true}`): the screen's own text
-    /// (literal segments) comes out accented and about 35% longer, in brackets, as a translation
-    /// might, so overflow shows before anyone translates. Returns the first bound key whose value
-    /// put words on screen (a string with letters): text the game supplies, which a screen's
-    /// string table can't translate.
-    pub fn render_pseudo(&self, scope: &Scope<'_>, out: &mut String) -> Option<String> {
-        out.clear();
-        let mut from_state = None;
-        let mut value = String::new();
-        for s in &self.segs {
-            match s {
-                Seg::Lit(l) => pseudo_text(l, out),
-                Seg::Bound { key, fmt } => {
-                    value.clear();
-                    match scope.get(key) {
-                        Some(Lookup::Value(v)) => {
-                            write_value(v, *fmt, &mut value);
-                            if from_state.is_none() && matches!(v, Value::Str(_)) && value.chars().filter(|c| c.is_alphabetic()).nth(1).is_some() {
-                                from_state = Some(key.name());
-                            }
-                        }
-                        Some(Lookup::Index(i)) => write_value(&Value::Int(i), *fmt, &mut value),
-                        None => value.push_str("{?}"),
-                    }
-                    out.push_str(&value);
+    /// The state keys it reads, through `strings` for a `@key` (every form's bindings and a
+    /// plural's count).
+    pub fn keys_with(&self, strings: Option<&Strings>) -> Vec<Key> {
+        let mut out: Vec<Key> = self.keys().cloned().collect();
+        if let (Some(k), Some(s)) = (&self.reference, strings) {
+            if let Some(e) = s.entry(k) {
+                if let UiEntry::Plural { count, .. } = e {
+                    out.push(count.clone());
+                }
+                for t in e.templates() {
+                    out.extend(t.keys().cloned());
                 }
             }
-            if out.len() > MAX_TEXT {
-                break;
-            }
         }
-        if out.len() > MAX_TEXT {
-            let mut cut = MAX_TEXT;
-            while !out.is_char_boundary(cut) {
-                cut -= 1;
-            }
-            out.truncate(cut);
-            out.push('…');
-        }
+        out.dedup();
+        out
+    }
+
+    /// Render into `out` (cleared first). Missing keys print as `{key}`, and a `@key` the string
+    /// table lacks (or with no table) as `@key`, so they show in previews. Output is capped at
+    /// [`MAX_TEXT`] bytes (ending in `…`), so hostile state can't make a label arbitrarily
+    /// expensive.
+    pub fn render(&self, scope: &Scope<'_>, out: &mut String) {
+        out.clear();
+        self.write_into(scope, out, 0, false, false);
+        cap(out);
+    }
+
+    /// [`Template::render`] in a pseudo-locale (`ui_check {pseudo: true}`): the screen's own
+    /// text (literal segments) comes out accented and about 35% longer, in brackets, as a
+    /// translation might, so overflow shows before anyone translates (`@key` texts come from the
+    /// scope's table, the pseudo-locale's while checking). Returns the first bound key whose
+    /// value put words on screen as they are (a [`Value::Str`] with letters): text the game
+    /// supplies, which no string table translates.
+    pub fn render_pseudo(&self, scope: &Scope<'_>, out: &mut String) -> Option<String> {
+        out.clear();
+        let from_state = self.write_into(scope, out, 0, true, true);
+        cap(out);
         from_state
     }
 
-    fn render_uncapped(&self, scope: &Scope<'_>, out: &mut String) {
-        out.clear();
+    /// Writes the text after what `out` holds; returns the first state key that supplied words
+    /// as they are. Stops adding once `out` is past [`MAX_TEXT`] (nested messages included), so
+    /// the work is bounded by the cap.
+    fn write_into(&self, scope: &Scope<'_>, out: &mut String, depth: u8, pseudo: bool, flag: bool) -> Option<String> {
+        if let Some(k) = &self.reference {
+            return write_entry(k, scope, out, depth, flag);
+        }
+        let mut from_state = None;
         for s in &self.segs {
+            if out.len() > MAX_TEXT {
+                break;
+            }
             match s {
+                Seg::Lit(l) if pseudo => pseudo_text(l, out),
                 Seg::Lit(l) => out.push_str(l),
                 Seg::Bound { key, fmt } => match scope.get(key) {
-                    Some(Lookup::Value(v)) => write_value(v, *fmt, out),
-                    Some(Lookup::Index(i)) => write_value(&Value::Int(i), *fmt, out),
+                    Some(Lookup::Value(v)) => {
+                        // Only the pseudo-locale asks (Key::name allocates; a HUD frame may not).
+                        if flag && from_state.is_none() && matches!(v, Value::Str(s) if s.chars().filter(|c| c.is_alphabetic()).nth(1).is_some()) {
+                            from_state = Some(key.name());
+                        }
+                        let inner = write_bound(v, *fmt, scope, out, depth, flag);
+                        from_state = from_state.or(inner);
+                    }
+                    Some(Lookup::Index(i)) => write_value(&Value::Int(i), *fmt, scope.strings.map(Strings::number), out),
+                    None if pseudo => out.push_str("{?}"),
                     None => {
+                        // Written in place (Key::name allocates; a HUD frame may not).
                         out.push('{');
                         match key {
                             Key::Global(k) => out.push_str(k),
@@ -453,6 +544,7 @@ impl Template {
                 },
             }
         }
+        from_state
     }
 
     /// Keys this template reads that `scope` doesn't have.
@@ -461,13 +553,55 @@ impl Template {
     }
 }
 
-fn parse_fmt(f: &str) -> Option<Fmt> {
-    match f {
-        "time" => Some(Fmt::Time),
-        "pct" => Some(Fmt::Percent),
-        _ => {
-            let n: u8 = f.strip_prefix('.')?.parse().ok()?;
-            (n <= 6).then_some(Fmt::Fixed(n))
+fn cap(out: &mut String) {
+    if out.len() > MAX_TEXT {
+        let mut cut = MAX_TEXT;
+        while !out.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        out.truncate(cut);
+        out.push('…');
+    }
+}
+
+/// String-table entry `key` in `scope`'s table, its form picked by its count's value.
+fn write_entry(key: &str, scope: &Scope<'_>, out: &mut String, depth: u8, flag: bool) -> Option<String> {
+    let entry = scope.strings.filter(|_| depth < MAX_DEPTH).and_then(|s| s.entry(key).map(|e| (s, e)));
+    let Some((strings, e)) = entry else {
+        out.push('@');
+        out.push_str(key);
+        return None;
+    };
+    let t = match e {
+        UiEntry::One(t) => Some(t),
+        UiEntry::Plural { count, fmt, .. } => {
+            let arg = match scope.get(count) {
+                Some(Lookup::Value(Value::Int(n))) => Some(Arg::Int(*n)),
+                Some(Lookup::Value(v)) => v.as_f64().map(Arg::Num),
+                Some(Lookup::Index(i)) => Some(Arg::Int(i)),
+                None => None,
+            };
+            let cat = arg.and_then(|a| specula_lingua::catalog::operands(a, *fmt)).map_or(Category::Other, |o| strings.rules().select(&o));
+            e.form(cat)
+        }
+    };
+    // The table's texts are already in the scope's language (the pseudo-locale's too): only
+    // the bindings below may still bring words from state.
+    t.and_then(|t| t.write_into(scope, out, depth + 1, false, flag))
+}
+
+/// A bound value: a message through the string table, else [`write_value`].
+fn write_bound(v: &Value, fmt: Fmt, scope: &Scope<'_>, out: &mut String, depth: u8, flag: bool) -> Option<String> {
+    match v {
+        Value::Msg(m) => {
+            // The entry's own text counts the level (write_entry): counting it here as well made
+            // each message cost two, so a message three deep showed its key (review R2 of m5-l10n).
+            let inner = Scope { state: &m.args, item: None, env: scope.env, strings: scope.strings };
+            write_entry(&m.key, &inner, out, depth, flag)
+        }
+        v => {
+            write_value(v, fmt, scope.strings.map(Strings::number), out);
+            None
         }
     }
 }
@@ -477,86 +611,39 @@ fn parse_fmt(f: &str) -> Option<Fmt> {
 /// word-bearing segment), the whole in brackets. Text without letters (separators, numbers) is
 /// left as it is.
 pub fn pseudo_text(text: &str, out: &mut String) {
-    let letters = text.chars().filter(|c| c.is_alphabetic()).count();
-    if letters == 0 {
-        out.push_str(text);
-        return;
-    }
-    out.push('[');
-    for c in text.chars() {
-        out.push(match c {
-            'a' => 'á',
-            'e' => 'é',
-            'i' => 'í',
-            'o' => 'ó',
-            'u' => 'ú',
-            'y' => 'ý',
-            'n' => 'ñ',
-            'c' => 'ç',
-            'A' => 'Á',
-            'E' => 'É',
-            'I' => 'Í',
-            'O' => 'Ó',
-            'U' => 'Ú',
-            'Y' => 'Ý',
-            'N' => 'Ñ',
-            'C' => 'Ç',
-            c => c,
-        });
-    }
-    let pad = (text.chars().count() * 35).div_ceil(100).max(1);
-    for _ in 0..pad {
-        out.push('·');
-    }
-    out.push(']');
+    specula_lingua::message::pseudo_plain(text, out);
 }
 
-fn write_value(v: &Value, fmt: Fmt, out: &mut String) {
+/// A value as `fmt` says. With a locale's number format (`nf`: the UI has a string table),
+/// numbers are grouped and use its decimal separator and percent pattern; without one they
+/// print as plain ASCII.
+fn write_value(v: &Value, fmt: Fmt, nf: Option<&NumberFormat>, out: &mut String) {
     // Writing to a String cannot fail.
     match (v, fmt) {
         (Value::Str(s), _) => out.push_str(s),
-        (Value::Bool(b), Fmt::Auto) => out.push_str(if *b { "true" } else { "false" }),
+        (Value::Msg(m), _) => {
+            // Only reached without a scope (write_bound handles messages): show the key.
+            out.push('@');
+            out.push_str(&m.key);
+        }
+        (Value::Bool(b), Fmt::Auto | Fmt::Plain) => out.push_str(if *b { "true" } else { "false" }),
         (Value::List(l), _) => {
             let _ = write!(out, "{}", l.len());
         }
+        (Value::Int(i), Fmt::Plain) => {
+            let _ = write!(out, "{i}");
+        }
+        (v, Fmt::Plain) => specula_lingua::number::write_auto_ascii(v.as_f64().unwrap_or(0.0), out),
+        (v, Fmt::Time) => specula_lingua::message::write_time(v.as_f64().unwrap_or(0.0), out),
         (v, fmt) => {
-            let n = v.as_f64().unwrap_or(0.0);
-            match fmt {
-                Fmt::Auto => match v {
-                    Value::Int(i) => {
-                        let _ = write!(out, "{i}");
-                    }
-                    _ if n.fract() == 0.0 && n.abs() < 1e15 => {
-                        let _ = write!(out, "{}", n as i64);
-                    }
-                    _ if !n.is_finite() || n.abs() >= 1e15 => {
-                        let _ = write!(out, "{n:.3e}");
-                    }
-                    _ => {
-                        let start = out.len();
-                        let _ = write!(out, "{n:.2}");
-                        while out.len() > start && out.ends_with('0') {
-                            out.pop();
-                        }
-                        if out.ends_with('.') {
-                            out.pop();
-                        }
-                    }
-                },
-                Fmt::Fixed(_) if !n.is_finite() || n.abs() >= 1e15 => {
-                    let _ = write!(out, "{n:.3e}");
-                }
-                Fmt::Fixed(d) => {
-                    let _ = write!(out, "{n:.*}", usize::from(d));
-                }
-                Fmt::Time => {
-                    let s = n.max(0.0).ceil() as i64;
-                    let _ = write!(out, "{}:{:02}", s / 60, s % 60);
-                }
-                Fmt::Percent => {
-                    let _ = write!(out, "{}%", (n * 100.0).round() as i64);
-                }
-            }
+            let arg = match v {
+                Value::Int(i) => Arg::Int(*i),
+                v => Arg::Num(v.as_f64().unwrap_or(0.0)),
+            };
+            // No table: ASCII as before tables (no grouping); made once (no allocation per value).
+            static PLAIN: std::sync::OnceLock<NumberFormat> = std::sync::OnceLock::new();
+            let nf = nf.unwrap_or_else(|| PLAIN.get_or_init(|| NumberFormat { group: None, ..NumberFormat::english() }));
+            specula_lingua::message::write_arg(arg, fmt, nf, out);
         }
     }
 }
@@ -846,7 +933,7 @@ mod tests {
         let rows = s.list("rows").unwrap();
         let t = Template::parse("{item.number}. {item.label}", "t").unwrap();
         let mut out = String::new();
-        t.render(&Scope { state: &s, item: Some((1, rows.row(1).unwrap())), env: None }, &mut out);
+        t.render(&Scope { state: &s, item: Some((1, rows.row(1).unwrap())), env: None, strings: None }, &mut out);
         assert_eq!(out, "2. second");
     }
 

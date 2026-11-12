@@ -26,6 +26,7 @@ mod ents;
 pub mod epitaphs;
 pub mod game;
 pub mod hud;
+pub mod l10n;
 pub mod lexmode;
 pub mod looks;
 pub mod props;

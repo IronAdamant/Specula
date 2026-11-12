@@ -16,6 +16,7 @@
 //! `save_write` / `save_read` with any name, or press the same buttons with `play_ui`.
 
 use super::*;
+use crate::l10n::{put, Said};
 use sepulcra::script::{Recording, Script};
 use specula::game::{GameRequest, GameWorld};
 use specula_core::bytes::{ByteReader, ByteWriter, DecodeError};
@@ -47,10 +48,10 @@ pub enum Slot {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SlotInfo {
     pub slot: Slot,
-    /// What it holds (its label: wave and tombstones).
-    pub title: String,
+    /// What it holds (its label: wave and tombstones), in the player's language.
+    pub title: Said,
     /// Time played and when it was saved.
-    pub detail: String,
+    pub detail: Option<Said>,
 }
 
 /// A parsed game section, waiting for [`SepulcraGame::apply_saved`].
@@ -183,7 +184,7 @@ impl SepulcraGame {
                 None => match crate::lexmode::LexRules::replayed(l.state.content(), l.state.seed(), &l.journal, l.state.tick()) {
                     Ok(lex) => Some(lex),
                     Err(e) => {
-                        self.say(format!("Lex rules off: the save doesn't run under them ({e})"));
+                        self.say(ToastKind::Info, Said::new("toast.lex_off_save").text("error", e.to_string()));
                         None
                     }
                 },
@@ -275,7 +276,7 @@ impl SepulcraGame {
 
     /// Saves to a slot (the engine writes it in the background; a toast says how it went).
     pub(crate) fn save_to(&mut self, slot: Slot) {
-        self.saves_status = Some("Saving...".into());
+        self.saves_status = Some(Said::new("saves.saving"));
         let label = match slot {
             Slot::Auto(_) => format!("Autosave, {}", self.save_label()),
             Slot::Player(_) => self.save_label(),
@@ -284,7 +285,7 @@ impl SepulcraGame {
     }
 
     pub(crate) fn load_from(&mut self, slot: Slot) {
-        self.saves_status = Some("Loading...".into());
+        self.saves_status = Some(Said::new("saves.loading"));
         self.request(GameRequest::Load { slot: Self::slot_name(slot) });
     }
 
@@ -330,12 +331,12 @@ impl SepulcraGame {
     }
 
     /// The confirm dialog's words for a save-screen question.
-    pub(crate) fn confirm_text(&self, c: Confirm) -> Option<(String, String)> {
-        let what = |slot: Slot| self.slots.iter().find(|s| s.slot == slot).map_or_else(|| "this save".into(), |s| s.title.clone());
+    pub(crate) fn confirm_text(&self, c: Confirm) -> Option<(Said, Said)> {
+        let what = |slot: Slot| self.slots.iter().find(|s| s.slot == slot).map_or_else(|| Said::new("saves.this_save"), |s| s.title.clone());
         Some(match c {
-            Confirm::Overwrite(n) => (format!("Save over slot {n}?"), format!("{} will be replaced by this run.", what(Slot::Player(n)))),
-            Confirm::Load(slot) => ("Load this save?".into(), format!("{}. The run in play is lost unless you saved it.", what(slot))),
-            Confirm::Delete(n) => (format!("Delete slot {n}?"), format!("{} will be gone for good.", what(Slot::Player(n)))),
+            Confirm::Overwrite(n) => (Said::new("confirm.overwrite.title").int("n", n), Said::new("confirm.overwrite.body").said("what", what(Slot::Player(n)))),
+            Confirm::Load(slot) => (Said::new("confirm.load.title"), Said::new("confirm.load.body").said("what", what(slot))),
+            Confirm::Delete(n) => (Said::new("confirm.delete.title").int("n", n), Said::new("confirm.delete.body").said("what", what(Slot::Player(n)))),
             Confirm::Restart | Confirm::Desync => return None,
         })
     }
@@ -344,7 +345,7 @@ impl SepulcraGame {
     pub(crate) fn fill_saves(&mut self) {
         let s = &mut self.hud.state;
         if let Some(t) = &self.saves_status {
-            s.set_str("saves_status", t);
+            put(s, "saves_status", t);
         } else {
             s.remove("saves_status");
         }
@@ -354,15 +355,20 @@ impl SepulcraGame {
                 Slot::Player(n) | Slot::Auto(n) => n,
             };
             let info = self.slots.iter().find(|i| i.slot == slot);
-            let name = if prefix == "slot" { format!("Slot {n}") } else { format!("Autosave {n}") };
-            let (what, detail) = match info {
-                Some(i) => (i.title.clone(), i.detail.clone()),
-                None => ("Empty".into(), String::new()),
-            };
-            s.set_str(&format!("{prefix}{n}_name"), &name)
-                .set_str(&format!("{prefix}{n}_title"), &what)
-                .set_str(&format!("{prefix}{n}_detail"), &detail)
-                .set_bool(&format!("{prefix}{n}_used"), info.is_some());
+            s.set_msg(&format!("{prefix}{n}_name"), if prefix == "slot" { "saves.slot_name" } else { "saves.autosave_name" }).set_int("n", i64::from(n));
+            match info {
+                Some(i) => put(s, &format!("{prefix}{n}_title"), &i.title),
+                None => {
+                    s.set_msg(&format!("{prefix}{n}_title"), "saves.empty");
+                }
+            }
+            match info.and_then(|i| i.detail.as_ref()) {
+                Some(d) => put(s, &format!("{prefix}{n}_detail"), d),
+                None => {
+                    s.set_str(&format!("{prefix}{n}_detail"), "");
+                }
+            }
+            s.set_bool(&format!("{prefix}{n}_used"), info.is_some());
         }
     }
 
@@ -375,21 +381,22 @@ impl SepulcraGame {
         self.saves_status = None;
         let autosave = matches!(req, GameRequest::Save { slot, .. } if slot.starts_with(AUTO_PREFIX));
         let error = |e: &Json| e.get("message").and_then(Json::as_str).unwrap_or("unknown error").chars().take(160).collect::<String>();
-        let msg = match (req, &result) {
-            (GameRequest::Save { .. }, Ok(_)) if autosave => "Autosaved".into(),
-            (GameRequest::Save { .. }, Ok(_)) => "Game saved".into(),
-            (GameRequest::Load { .. }, Ok(_)) => format!("Game loaded: wave {} of {}", self.state.wave(), self.state.waves_total()),
-            (GameRequest::Delete { .. }, Ok(_)) => "Save deleted".into(),
-            (GameRequest::Load { .. }, Err(e)) if e.get("error").and_then(Json::as_str) == Some("not_found") => "That save is gone".into(),
-            (GameRequest::Save { .. }, Err(e)) if autosave => format!("Autosave skipped: {}", error(e)),
-            (GameRequest::Save { .. }, Err(e)) => format!("Couldn't save: {}", error(e)),
-            (GameRequest::Load { .. }, Err(e)) if e.get("error").and_then(Json::as_str) == Some("playtest_running") => "Can't load while a playtest is running".into(),
-            (GameRequest::Load { .. }, Err(e)) => format!("Couldn't load: {}", error(e)),
-            (GameRequest::Delete { .. }, Err(e)) => format!("Couldn't delete: {}", error(e)),
+        let info = ToastKind::Info;
+        let (kind, msg) = match (req, &result) {
+            (GameRequest::Save { .. }, Ok(_)) if autosave => (info, Said::new("toast.autosaved")),
+            (GameRequest::Save { .. }, Ok(_)) => (info, Said::new("toast.game_saved")),
+            (GameRequest::Load { .. }, Ok(_)) => (info, Said::new("toast.game_loaded").int("wave", self.state.wave()).int("waves", self.state.waves_total())),
+            (GameRequest::Delete { .. }, Ok(_)) => (info, Said::new("toast.save_deleted")),
+            (GameRequest::Load { .. }, Err(e)) if e.get("error").and_then(Json::as_str) == Some("not_found") => (info, Said::new("toast.save_gone")),
+            (GameRequest::Save { .. }, Err(e)) if autosave => (info, Said::new("toast.autosave_skipped").text("error", error(e))),
+            (GameRequest::Save { .. }, Err(e)) => (info, Said::new("toast.save_failed").text("error", error(e))),
+            (GameRequest::Load { .. }, Err(e)) if e.get("error").and_then(Json::as_str) == Some("playtest_running") => (ToastKind::Warn, Said::new("toast.load_in_playtest")),
+            (GameRequest::Load { .. }, Err(e)) => (info, Said::new("toast.load_failed").text("error", error(e))),
+            (GameRequest::Delete { .. }, Err(e)) => (info, Said::new("toast.delete_failed").text("error", error(e))),
             (GameRequest::List, _) => return,
         };
         let failed = result.is_err();
-        self.say(msg);
+        self.say(kind, msg);
         if !autosave || failed {
             self.sfx.ui(if failed { "ui_error" } else { "ui_click" }, self.now);
         }
@@ -421,20 +428,52 @@ fn slots_of(list: &Json) -> Vec<SlotInfo> {
         };
         let Some(slot) = slot else { continue };
         if s.get("unreadable").is_some() {
-            out.push(SlotInfo { slot, title: "Damaged save".into(), detail: "Unreadable: save over it or delete it".into() });
+            out.push(SlotInfo { slot, title: Said::new("saves.damaged"), detail: Some(Said::new("saves.damaged_detail")) });
             continue;
         }
-        let label = s.get("label").and_then(Json::as_str).unwrap_or("A saved run");
-        let label = label.strip_prefix("Autosave, ").unwrap_or(label);
+        let title = match s.get("label").and_then(Json::as_str) {
+            Some(label) => {
+                let label = label.strip_prefix("Autosave, ").unwrap_or(label);
+                // The game's own labels are shown in the player's language; others as written.
+                parse_label(label).unwrap_or_else(|| Said::new("common.text").text("text", label.chars().take(40).collect::<String>()))
+            }
+            None => Said::new("saves.a_saved_run"),
+        };
         let played = s.get("tick").and_then(Json::as_u64).unwrap_or(0) / u64::from(TICK_HZ);
-        let when = s.get("created_unix_s").and_then(Json::as_u64).map(date_utc).unwrap_or_default();
-        out.push(SlotInfo { slot, title: label.chars().take(40).collect(), detail: format!("{}:{:02} played, {when}", played / 60, played % 60) });
+        let when = s.get("created_unix_s").and_then(Json::as_u64).map(date_said).unwrap_or_else(|| Said::new("common.text").text("text", ""));
+        out.push(SlotInfo { slot, title, detail: Some(Said::new("saves.played").int("played", played.min(i64::MAX as u64) as i64).said("when", when)) });
     }
     out
 }
 
+/// The game's own save label ("Wave 3/10, 9/10 tombstones", [`SepulcraGame::save_label`]) as a
+/// message, or `None` for any other label.
+fn parse_label(label: &str) -> Option<Said> {
+    let rest = label.strip_prefix("Wave ")?;
+    let (waves, rest) = rest.split_once(", ")?;
+    let (w, n) = waves.split_once('/')?;
+    let tomb = rest.strip_suffix(" tombstones")?;
+    let (t, m) = tomb.split_once('/')?;
+    let num = |s: &str| s.parse::<i64>().ok().filter(|v| (0..1_000_000).contains(v));
+    Some(Said::new("saves.label").int("wave", num(w)?).int("waves", num(n)?).int("tombstones", num(t)?).int("max", num(m)?))
+}
+
+/// When a save was made, as a message ("17 Oct 2026 20:03 UTC" in English).
+pub(crate) fn date_said(unix: u64) -> Said {
+    let (d, m, y, hh, mm) = civil(unix);
+    Said::new("saves.date").int("day", d).key("month", format!("month.{m}")).int("year", y).text("clock", format!("{hh:02}:{mm:02}"))
+}
+
+#[cfg(test)]
 /// `unix seconds` as "18 Oct 2026, 06:30 UTC" (no time zone database: UTC says so).
 pub(crate) fn date_utc(unix: u64) -> String {
+    let (d, m, y, hh, mm) = civil(unix);
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    format!("{d} {} {y} {hh:02}:{mm:02} UTC", MONTHS[(m - 1) as usize])
+}
+
+/// Day, month (1..12), year, hour and minute of `unix` seconds, UTC.
+fn civil(unix: u64) -> (i64, i64, i64, u64, u64) {
     let days = (unix / 86_400) as i64;
     let secs = unix % 86_400;
     // Civil from days (Hinnant).
@@ -447,8 +486,7 @@ pub(crate) fn date_utc(unix: u64) -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + i64::from(m <= 2);
-    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    format!("{d} {} {y} {:02}:{:02} UTC", MONTHS[(m - 1) as usize], secs / 3600, secs % 3600 / 60)
+    (d, m, y, secs / 3600, secs % 3600 / 60)
 }
 
 #[cfg(test)]
@@ -472,9 +510,11 @@ mod tests {
         let slots = slots_of(&list);
         assert_eq!(slots.len(), 3);
         assert_eq!(slots[0].slot, Slot::Player(2));
-        assert_eq!(slots[0].detail, "3:01 played, 17 Oct 2026 20:03 UTC");
+        let l = crate::l10n::L10n::load(None, None);
+        assert_eq!(l.text(slots[0].detail.as_ref().unwrap()), "3:01 played, 17 Oct 2026 20:03 UTC");
         assert_eq!(slots[1].slot, Slot::Auto(1));
-        assert_eq!(slots[1].title, "Wave 1/10, 10/10 tombstones");
-        assert_eq!(slots[2].title, "Damaged save");
+        assert_eq!(l.text(&slots[1].title), "Wave 1/10, 10/10 tombstones");
+        assert_eq!(slots[1].title.key, "saves.label", "the game's labels are shown in the player's language");
+        assert_eq!(l.text(&slots[2].title), "Damaged save");
     }
 }

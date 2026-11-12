@@ -15,8 +15,8 @@
       "kind": "subtitles",
       "name": "captions",
       "lines": [
-        {"t": 1, "duration": 4, "text": "Sepulcra"},
-        {"t": 6, "duration": 5, "speaker": "Warden", "text": "The dead rise at nightfall. Carve stones and hold the graveyard."}
+        {"t": 1, "duration": 4, "text": "@subtitle.intro.title"},
+        {"t": 6, "duration": 5, "speaker": "@speaker.warden", "text": "@subtitle.intro.warden"}
       ]
     },
     {"kind": "audio", "name": "sound", "cues": [{"t": 0.3, "sound": "brazier_whoosh", "volume": 0.7}]},

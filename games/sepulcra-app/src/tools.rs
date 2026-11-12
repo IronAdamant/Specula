@@ -767,7 +767,7 @@ fn replay(game: &mut SepulcraGame, ctx: &mut Ctx, args: &Json) -> Result<ToolOut
     }
     if load {
         game.load(&mut ctx.world, ctx.agent, replayed.state, rec.journal);
-        game.say(format!("Loaded replay {rel}"));
+        game.say(specula_ui::ToastKind::Info, crate::l10n::Said::new("toast.loaded_replay").text("file", rel.to_string()));
     }
     Ok(ToolOutput::text(out.to_pretty()))
 }

@@ -118,6 +118,7 @@ pub mod vfx;
 mod vfx_tools;
 mod timeline;
 mod timeline_tools;
+mod l10n_tools;
 mod gi;
 mod gi_tools;
 pub mod terrain;

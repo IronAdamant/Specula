@@ -14,6 +14,9 @@
 //! | `focus_reachability` | menu widgets the gamepad can't reach from the default focus |
 //! | `gamepad_access` | HUD buttons with no `shortcut` action (pointer-only), or a shortcut with no gamepad binding |
 //! | `unbound` | template keys the supplied state doesn't have |
+//! | `missing_key` | a `@key` text the UI's string table lacks |
+//! | `hardcoded` | (with a string table) words a screen writes itself instead of `@key` |
+//! | `untranslated` | (pseudo-locale) words the game supplies as they are ([`crate::Value::Str`]) |
 //!
 //! Resolution-independent rules (contrast, gamepad access, unbound keys) are reported once with
 //! target `"all"`, so reports stay small.
@@ -207,18 +210,27 @@ pub fn check(ui: &mut Ui, screens: &[&str], state: &StateMap, input_map: Option<
 }
 
 /// How [`check_with`] runs.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct CheckOpts {
     /// Lay text out in a pseudo-locale ([`Ui::set_pseudo_locale`]): every rule then measures
     /// the longer, accented text, and `untranslated` notes labels whose words come from state.
     pub pseudo: bool,
+    /// Check in this string table's language (another locale than the player's): every rule
+    /// measures its words, numbers and faces. The UI's own table is put back after.
+    pub strings: Option<std::sync::Arc<crate::strings::Strings>>,
 }
 
 /// [`check`] with options (the engine's `ui_check`).
 pub fn check_with(ui: &mut Ui, screens: &[&str], state: &StateMap, input_map: Option<&ActionMap>, targets: &[Target], opts: &CheckOpts) -> Result<Vec<Finding>, UiError> {
     let was_pseudo = ui.pseudo_locale();
+    ui.set_pseudo_locale(false);
+    let prev = opts.strings.clone().map(|s| ui.set_strings(Some(s)));
     ui.set_pseudo_locale(opts.pseudo);
     let r = check_inner(ui, screens, state, input_map, targets);
+    ui.set_pseudo_locale(false);
+    if let Some(p) = prev {
+        ui.set_strings(p);
+    }
     ui.set_pseudo_locale(was_pseudo);
     r
 }
@@ -706,21 +718,57 @@ fn global_rules(ui: &Ui, ids: &[usize], state: &StateMap, input_map: Option<&Act
         let modal_below = modal_pos.is_some_and(|m| m < k);
         for (i, node) in sr.screen.nodes.iter().enumerate() {
             // ---- unbound keys (also in hidden widgets: they may show later) ----
-            let scope = scope_for(&sr.screen, node, state, &ui.env);
+            let scope = scope_for(&sr.screen, node, state, &ui.env, ui.strings.as_deref());
             let mut keys: Vec<Key> = Vec::new();
             node.visible.keys(&mut keys);
             node.enabled.keys(&mut keys);
+            let strings = ui.strings.as_deref();
+            let mut templates: Vec<&crate::state::Template> = Vec::new();
             if let Kind::Label { text: TextSource::Template(t), .. } = &node.kind {
-                keys.extend(t.keys().cloned());
+                templates.push(t);
             }
             if let Some(t) = &node.tooltip {
-                keys.extend(t.keys().cloned());
+                templates.push(t);
             }
             if let Kind::RadialItem { detail, label, .. } = &node.kind {
-                keys.extend(detail.keys().cloned());
-                keys.extend(label.keys().cloned());
+                templates.push(detail);
+                templates.push(label);
             }
-            let probe = scope.unwrap_or(Scope::new(state).with_env(&ui.env));
+            for t in &templates {
+                keys.extend(t.keys_with(strings));
+            }
+            // ---- the string table: keys it lacks, words a screen writes itself ----
+            if let Some(st) = strings {
+                for t in &templates {
+                    match t.key() {
+                        Some(k) if st.entry(k).is_none() => push(
+                            "missing_key",
+                            Severity::Error,
+                            &sr.screen.name,
+                            widget_name(sr, i),
+                            format!("\"@{k}\" isn't in the {} string table (it shows as @{k}): add it to the source table", st.locale()),
+                            0.0,
+                            1.0,
+                        ),
+                        Some(_) => {}
+                        None => {
+                            let lit = t.literal_text();
+                            if lit.chars().filter(|c| c.is_alphabetic()).nth(1).is_some() {
+                                push(
+                                    "hardcoded",
+                                    Severity::Warning,
+                                    &sr.screen.name,
+                                    widget_name(sr, i),
+                                    format!("\"{}\" is written in the screen, so no language changes it: move it to the string table and write \"@key\"", short(&lit)),
+                                    0.0,
+                                    0.0,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            let probe = scope.unwrap_or(Scope::new(state).with_env(&ui.env).with_strings(ui.strings.as_deref()));
             for key in keys {
                 let missing = match &key {
                     Key::Global(_) => probe.get(&key).is_none(),

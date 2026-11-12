@@ -203,7 +203,7 @@ fn the_tree_filters_by_screen_and_marks_what_a_modal_blocks() {
 fn pseudo_locale_lengthens_screen_text_and_names_words_from_state() {
     let mut ui = menu_ui();
     let (s, v) = (state(), view(800, 600));
-    let opts = CheckOpts { pseudo: true };
+    let opts = CheckOpts { pseudo: true, ..CheckOpts::default() };
     let f = check_with(&mut ui, &["m"], &s, None, &[Target::new("t", [800, 600], None)], &opts).unwrap();
     let u: Vec<_> = f.iter().filter(|f| f.rule == "untranslated").collect();
     assert_eq!(u.len(), 1, "{f:#?}");

@@ -65,6 +65,9 @@ pub enum ProjectCall {
     CommitFixes { files: Vec<(String, u64, u64, String)>, reply: Sender<FixesCommitted> },
     /// Who the caller is (its identity key): uploads belong to it.
     Owner { reply: Sender<String> },
+    /// Every file of one kind as the store holds it now (`(path, version, text)`, at most
+    /// `max`; text shared, not copied): the string tables `l10n_*` read together.
+    OfKind { kind: FileKind, max: usize, reply: Sender<Vec<(String, u64, Arc<str>)>> },
 }
 
 /// An entity change committed with a project file ([`ProjectCall::Commit`]'s `also`).
@@ -101,7 +104,7 @@ impl ProjectCall {
     pub fn class(&self) -> Class {
         match self {
             ProjectCall::List { .. } | ProjectCall::Snapshot { .. } => Class::Read,
-            ProjectCall::FixGate { .. } | ProjectCall::ModuleTexts { .. } | ProjectCall::Owner { .. } => Class::Read,
+            ProjectCall::FixGate { .. } | ProjectCall::ModuleTexts { .. } | ProjectCall::Owner { .. } | ProjectCall::OfKind { .. } => Class::Read,
             ProjectCall::Commit { .. } | ProjectCall::Mount { .. } | ProjectCall::CommitFixes { .. } => Class::Disk,
         }
     }
@@ -619,7 +622,9 @@ fn edit_tool(tools: &Tools, session: &SessionInfo, args: &Json, tool: &'static s
         // workspace it may belong to): these never reach the disk, draft or not.
         let hard = problems.iter().filter(|p| p.is_error() && project_kinds::never_allowed(kind, &p.code)).count();
         if errors > 0 && (!allow_errors || hard > 0) {
-            let why = if hard > 0 {
+            let why = if hard > 0 && kind == crate::project::FileKind::Strings {
+                format!("{path}: a string table that doesn't parse is never saved, allow_errors or not (the game would show no words, and the table's reviews would be lost to the review gate); nothing was changed. Fix what the problems say")
+            } else if hard > 0 {
                 format!("{path}: {hard} problem(s) that allow_errors can't override (a module's manifest and sources must stay a module's: no crates.io dependencies, build scripts or files from outside); nothing was changed")
             } else {
                 format!("{path} would not load ({errors} error(s)); nothing was changed. Fix what the problems say (allow_errors stores a draft anyway)")
@@ -634,6 +639,12 @@ fn edit_tool(tools: &Tools, session: &SessionInfo, args: &Json, tool: &'static s
                 ])
                 .to_string(),
             ));
+        }
+        // Marking string-table entries reviewed is a reviewer's (l10n_tools::review_gate).
+        if kind == FileKind::Strings {
+            if let Err(out) = crate::l10n_tools::review_gate(session, old.as_deref(), next.as_deref()) {
+                return Ok(out);
+            }
         }
         let change = diff(kind, old.as_deref().unwrap_or(""), next.as_deref().unwrap_or(""));
         // The entity change that goes with this text (checked on a dry run too).

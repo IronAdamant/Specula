@@ -275,6 +275,10 @@ fn the_sepulcra_screens_pass_with_the_box_font() {
         }
     }
     assert!(names.len() >= 9, "{names:?}");
+    // Their words come from the English string table (games/sepulcra/assets/strings).
+    let en = specula_lingua::Table::parse(&std::fs::read_to_string(dir.join("../strings/en.json")).unwrap()).unwrap();
+    let strings = specula_ui::Strings::build(&specula_lingua::Locale::parse("en").unwrap(), &[std::sync::Arc::new(en)]).unwrap();
+    ui.set_strings(Some(std::sync::Arc::new(strings)));
     // Every screen parses and lays out at every target without errors.
     let mut s = StateMap::new();
     for k in ["wave", "waves", "dust", "tombstones", "tombstones_max", "selected_cost", "kills", "early_bonus", "speed"] {

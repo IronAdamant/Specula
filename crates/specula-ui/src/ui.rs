@@ -25,13 +25,18 @@ use specula_core::json::Json;
 use specula_input::{DeviceFamily, Input, PadStyle, Source};
 use specula_platform::{keys, GamepadButton, MouseButton};
 use specula_text::{layout_into, AtlasConfig, Font, GlyphAtlas, TextLayout, TextStyle};
+use crate::strings::Strings;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// Named fonts for the theme's roles (`"ui"`, `"title"`). A role whose font slot is missing uses
 /// the first font.
 #[derive(Default)]
 pub struct FontSet {
     fonts: Vec<(String, Font)>,
+    /// The string table's faces for slots in its locale (`ui` → a CJK face): they take those
+    /// slots' places while the table is set ([`Ui::set_strings`]). Indexed after `fonts`.
+    locale: Vec<(String, Arc<Font>)>,
 }
 
 impl FontSet {
@@ -55,16 +60,28 @@ impl FontSet {
         self.fonts.is_empty()
     }
 
-    /// Index of the font for a slot name (falls back to the first font).
+    /// Index of the font for a slot name (the locale's face for it first; falls back to the
+    /// first font).
     pub fn index(&self, name: &str) -> Option<usize> {
         if self.fonts.is_empty() {
             return None;
+        }
+        if let Some(k) = self.locale.iter().position(|(n, _)| n == name) {
+            return Some(self.fonts.len() + k);
         }
         Some(self.fonts.iter().position(|(n, _)| n == name).unwrap_or(0))
     }
 
     pub fn font(&self, i: usize) -> &Font {
-        &self.fonts[i].1
+        match i.checked_sub(self.fonts.len()) {
+            Some(k) => &self.locale[k].1,
+            None => &self.fonts[i].1,
+        }
+    }
+
+    /// The locale's faces per slot ([`Ui::set_strings`]).
+    pub fn set_locale_faces(&mut self, faces: &[(String, Arc<Font>)]) {
+        self.locale = faces.iter().map(|(s, f)| (s.clone(), Arc::clone(f))).collect();
     }
 
     pub fn names(&self) -> impl Iterator<Item = &str> {
@@ -175,6 +192,7 @@ pub(crate) struct NodeRt {
     laid_text: String,
     laid_wrap: f32,
     laid_size: f32,
+    /// The face it was laid out with (`Font::id`).
     laid_font: usize,
     laid_ok: bool,
     pub font: Option<usize>,
@@ -338,6 +356,10 @@ pub struct Ui {
     pub(crate) env: StateMap,
     /// Lay text out in a pseudo-locale (see [`Ui::set_pseudo_locale`]).
     pub(crate) pseudo: bool,
+    /// The string table `@key` texts and messages read ([`Ui::set_strings`]).
+    pub(crate) strings: Option<Arc<Strings>>,
+    /// While the pseudo-locale is on with a table: the table it replaced.
+    pub(crate) unpseudo: Option<Option<Arc<Strings>>>,
 }
 
 impl Ui {
@@ -369,6 +391,8 @@ impl Ui {
             last_view: None,
             env: StateMap::new(),
             pseudo: false,
+            strings: None,
+            unpseudo: None,
             textures: None,
         }
     }
@@ -379,6 +403,31 @@ impl Ui {
 
     pub fn fonts(&self) -> &FontSet {
         &self.fonts
+    }
+
+    /// The string table: what `@key` texts and [`crate::state::Value::Msg`] values show, the
+    /// locale's number format and plural rules, and its faces for font slots (`None`: screens'
+    /// own words, numbers in plain ASCII). Takes effect at the next frame; returns the table it
+    /// replaced.
+    pub fn set_strings(&mut self, strings: Option<Arc<Strings>>) -> Option<Arc<Strings>> {
+        if self.unpseudo.is_some() {
+            // The pseudo-locale is on: the new table is what comes back when it goes off.
+            return self.unpseudo.replace(strings).flatten();
+        }
+        self.use_faces(strings.as_deref());
+        std::mem::replace(&mut self.strings, strings)
+    }
+
+    /// The faces of `strings`' locale take their slots; layouts made with other faces are made
+    /// again (labels key their layouts by face; threat labels are dropped here).
+    pub(crate) fn use_faces(&mut self, strings: Option<&Strings>) {
+        self.fonts.set_locale_faces(strings.map_or(&[][..], |s| s.fonts()));
+        self.threat_text.clear();
+    }
+
+    /// The string table in force (the pseudo-locale's while it is on).
+    pub fn strings(&self) -> Option<&Arc<Strings>> {
+        self.strings.as_ref()
     }
 
     /// The glyph atlas the draw list's glyph quads sample (upload `take_dirty()` rects each frame).
@@ -732,6 +781,7 @@ impl Ui {
         let prompts = &self.prompts;
         let env = &self.env;
         let pseudo = self.pseudo;
+        let strings = self.strings.as_deref();
         let sr = &mut self.screens[s];
         let screen = &sr.screen;
         let n = screen.nodes.len();
@@ -741,9 +791,9 @@ impl Ui {
                 Some(p) => (sr.comp[p as usize].visible, sr.rt[p as usize].enabled),
                 None => (true, true),
             };
-            let scope = scope_for(screen, node, state, env);
+            let scope = scope_for(screen, node, state, env, strings);
             let mut vis = pv && scope.is_some();
-            let scope = scope.unwrap_or(Scope::new(state).with_env(env));
+            let scope = scope.unwrap_or(Scope::new(state).with_env(env).with_strings(strings));
             if vis {
                 vis = node.visible.eval(&scope);
             }
@@ -768,7 +818,7 @@ impl Ui {
                                 let focus = sr.focus.filter(|f| screen.nodes[*f as usize].parent == Some(*r));
                                 if let Some(f) = focus {
                                     if let Kind::RadialItem { detail, .. } = &screen.nodes[f as usize].kind {
-                                        let fs = scope_for(screen, &screen.nodes[f as usize], state, env).unwrap_or(Scope::new(state).with_env(env));
+                                        let fs = scope_for(screen, &screen.nodes[f as usize], state, env, strings).unwrap_or(Scope::new(state).with_env(env).with_strings(strings));
                                         detail.render(&fs, &mut rt.text);
                                     }
                                 }
@@ -1274,7 +1324,7 @@ impl Ui {
                 let (frac, fill_c) = {
                     let node = &self.screens[s].screen.nodes[i];
                     let Kind::Bar { value, max, color } = &node.kind else { return };
-                    let scope = scope_for(&self.screens[s].screen, node, state, &self.env).unwrap_or(Scope::new(state).with_env(&self.env));
+                    let scope = scope_for(&self.screens[s].screen, node, state, &self.env, None).unwrap_or(Scope::new(state).with_env(&self.env));
                     let get = |n: &Num| match n {
                         Num::Const(v) => f64::from(*v),
                         Num::Key(k) => scope.num(k).unwrap_or(0.0),
@@ -1606,7 +1656,7 @@ impl Ui {
         let sr = &self.screens[w.screen];
         let node = &sr.screen.nodes[w.node as usize];
         let Some(tpl) = &node.tooltip else { return };
-        let scope = scope_for(&sr.screen, node, state, &self.env).unwrap_or(Scope::new(state).with_env(&self.env));
+        let scope = scope_for(&sr.screen, node, state, &self.env, self.strings.as_deref()).unwrap_or(Scope::new(state).with_env(&self.env).with_strings(self.strings.as_deref()));
         tpl.render(&scope, &mut self.tip_text);
         let font = self.fonts.font(fi);
         let style = TextStyle::new(role.size).with_scale(scale).with_max_width(st.max_width);
@@ -1767,14 +1817,14 @@ pub(crate) fn draw_box(d: &mut DrawList, b: &BoxStyle, r: Rect, scale: f32) {
 
 /// The scope a node's bindings read: its list row inside a repeat, or the plain state. `None`
 /// when the node belongs to a repeat row that doesn't exist this frame.
-pub(crate) fn scope_for<'a>(screen: &Screen, node: &Node, state: &'a StateMap, env: &'a StateMap) -> Option<Scope<'a>> {
+pub(crate) fn scope_for<'a>(screen: &Screen, node: &Node, state: &'a StateMap, env: &'a StateMap, strings: Option<&'a Strings>) -> Option<Scope<'a>> {
     match node.item {
-        None => Some(Scope::new(state).with_env(env)),
+        None => Some(Scope::new(state).with_env(env).with_strings(strings)),
         Some((list, row)) => {
-            let Kind::List { repeat: Some(rep) } = &screen.nodes[list as usize].kind else { return Some(Scope::new(state).with_env(env)) };
+            let Kind::List { repeat: Some(rep) } = &screen.nodes[list as usize].kind else { return Some(Scope::new(state).with_env(env).with_strings(strings)) };
             let crate::state::Key::Global(k) = &rep.source else { return None };
             let r = state.list(k)?.row(row)?;
-            Some(Scope { state, item: Some((row, r)), env: Some(env) })
+            Some(Scope { state, item: Some((row, r)), env: Some(env), strings })
         }
     }
 }
@@ -1846,10 +1896,12 @@ impl Measure for Meas<'_> {
         let Kind::Label { role, align, .. } = &self.nodes[i].kind else { return [0.0, 0.0] };
         let role = self.theme.role(*role);
         let Some(fi) = self.fonts.index(&role.font) else { return [0.0, role.size * self.scale * 1.2] };
+        // Keyed by the face itself: a locale's face takes a slot's index (FontSet::index).
+        let face = self.fonts.font(fi).id().0 as usize;
         let rt = &mut self.rt[i];
         let wrap_key = wrap.unwrap_or(-1.0);
         let size = role.size * self.scale;
-        if !rt.laid_ok || rt.laid_text != rt.text || rt.laid_wrap != wrap_key || rt.laid_size != size || rt.laid_font != fi {
+        if !rt.laid_ok || rt.laid_text != rt.text || rt.laid_wrap != wrap_key || rt.laid_size != size || rt.laid_font != face {
             let mut style = TextStyle::new(role.size).with_scale(self.scale);
             style.line_height = role.line_height;
             style.align = *align;
@@ -1861,7 +1913,7 @@ impl Measure for Meas<'_> {
             rt.laid_text.push_str(&rt.text);
             rt.laid_wrap = wrap_key;
             rt.laid_size = size;
-            rt.laid_font = fi;
+            rt.laid_font = face;
             rt.laid_ok = true;
         }
         let w = rt.laid.lines.iter().map(|l| l.width).fold(0.0f32, f32::max);

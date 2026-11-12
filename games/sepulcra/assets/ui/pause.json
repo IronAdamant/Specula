@@ -21,20 +21,20 @@
         "align": "stretch",
         "gap": 10,
         "children": [
-          { "type": "label", "text": "Paused", "role": "title", "text_align": "center" },
-          { "type": "label", "text": "Wave {wave} of {waves}", "role": "subtitle", "text_align": "center", "visible": "!ui.short" },
+          { "type": "label", "text": "@pause.paused", "role": "title", "text_align": "center" },
+          { "type": "label", "text": "@pause.wave_waves", "role": "subtitle", "text_align": "center", "visible": "!ui.short" },
           { "type": "panel", "style": "divider", "height": 1, "padding": 0, "margin": [6, 0, 6, 0], "visible": "!ui.short" },
-          { "type": "button", "id": "resume", "style": "primary", "text": "Resume", "action": "resume" },
-          { "type": "button", "id": "pause_speed", "text": "Game speed x{speed}", "action": "speed", "tooltip": "x1, x2, x4: the HUD's speed button, for a gamepad." },
-          { "type": "button", "id": "saves", "text": "Save / Load", "action": "open_saves", "tooltip": "Save this run to a slot, or load a saved one." },
-          { "type": "button", "id": "settings", "text": "Settings", "action": "open_settings" },
-          { "type": "button", "id": "controls", "text": "Controls", "action": "open_controls" },
-          { "type": "button", "id": "restart", "text": "Restart run", "action": "restart", "tooltip": "Start this seed again. Your run is lost." },
+          { "type": "button", "id": "resume", "style": "primary", "text": "@pause.resume", "action": "resume" },
+          { "type": "button", "id": "pause_speed", "text": "@pause.game_speed_x", "action": "speed", "tooltip": "@pause.x1_x2_x4_hud" },
+          { "type": "button", "id": "saves", "text": "@pause.save_load", "action": "open_saves", "tooltip": "@pause.save_this_run_slot" },
+          { "type": "button", "id": "settings", "text": "@pause.settings", "action": "open_settings" },
+          { "type": "button", "id": "controls", "text": "@pause.controls", "action": "open_controls" },
+          { "type": "button", "id": "restart", "text": "@pause.restart_run", "action": "restart", "tooltip": "@pause.start_this_seed_again" },
           {
             "type": "box", "layout": "row", "justify": "center", "gap": 18, "margin": [6, 0, 0, 0],
             "children": [
-              { "type": "prompt", "action": "ui_accept", "text": "Select" },
-              { "type": "prompt", "action": "ui_back", "text": "Resume" }
+              { "type": "prompt", "action": "ui_accept", "text": "@pause.select" },
+              { "type": "prompt", "action": "ui_back", "text": "@pause.resume" }
             ]
           }
         ]
