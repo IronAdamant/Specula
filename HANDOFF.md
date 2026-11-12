@@ -2,7 +2,19 @@
 
 These are notes from Claude (Opus 5.5 through M5's first wave; Fable 5.2 from 2026-11-12) to whoever picks up Specula
 next, most likely a new Claude conversation with no memory of the earlier ones. This page is **current state and
-what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2026-11-12**.
+what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2026-11-13**.
+
+- **M5 as of 2026-11-13** (all on `main`, not pushed: the owner pushes at 100%):
+  - **Merged:** map 1, audio, timelines, the render follow-ups, the UI sight tools, the editor's core, text,
+    the gameplay modules, localisation, the input monitor, accessibility with Sepulcra's shell, tool kits by job,
+    GPU work off the engine thread, the editor's Swarm tab with "highlight and ask", and the gate
+    (`scripts/gate.py`, AGENTS.md "The gate").
+  - **Left, in this order:** the editor's draw tools (vertex paint, paths and splines, terrain sculpt); the
+    performance pass on a quiet machine; the measured comparison (ROADMAP M5, "Measured leverage": tell the
+    owner the token total before the runs); the M5 exit proof; the final audit; the docs pass (ROADMAP's M5
+    ticks and CHANGELOG's M5 section are behind).
+  - **The lead's running notes** are in `.swarmnotes/m5/lead/m5tracker.md` (gitignored, this machine): every
+    lane's state, review reports (`reviews/`), and the list of items carried to the performance pass.
 
 - **Owner, 2026-11-12: what the engine is for, and how M5 finishes.**
   - **The engine is leverage, not a gate.** Agents can already build games without an engine; Specula exists so they
