@@ -624,6 +624,12 @@ fn as_u64_exact(v: &Json) -> Option<u64> {
 }
 
 impl Recipe {
+    /// Its parts' names, in recipe order (at most `MAX_PARTS`): what a human can point at as
+    /// "a part of this model" (the editor's "highlight and ask").
+    pub fn part_names(&self) -> impl Iterator<Item = &str> + '_ {
+        self.parts.iter().map(|p| p.name.as_str())
+    }
+
     /// Assets this recipe includes directly (file stems, sorted, each once), whether or not a
     /// part's `when` switches them on: what its build may read from the library.
     pub fn includes(&self) -> Vec<String> {

@@ -408,7 +408,8 @@ fn terrain_edit_undoes_recipe_and_collider_together() {
 fn review_promote(f: &mut Fix, path: &str, to: &str) -> Result<(), WorldError> {
     let id = f.live.find_path(path)?;
     let (stamp, entities) = crate::review::stamp(&f.live, id, crate::review::MAX_SUBTREE);
-    let root = crate::review::Root { path: path.into(), id, version: f.live.get(id).map_or(0, |e| e.version), stamp, entities };
+    let entity = crate::entity_ref::EntityRef::of(&f.live, id).expect("found");
+    let root = crate::review::Root { path: path.into(), entity, version: f.live.get(id).map_or(0, |e| e.version), stamp, entities };
     let p = crate::review::Promote { to: to.into(), replace: false, remove_tag: None };
     let (ops, _) = crate::review_engine::promotion_ops(&f.live, &[root], &p)?;
     agent(f, MALLORY, Kind::Batch, Rule::World, |wd| wd.apply_batch(ops, "mallory").map(|_| ()).map_err(|(_, e)| e))

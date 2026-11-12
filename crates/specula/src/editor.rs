@@ -10,6 +10,7 @@
 //! selection, gizmos and every edit need the world and the protocol (`Engine::handle`).
 
 use crate::editor_gizmo::{Handle, Mode, Snap, Space};
+use crate::editor_swarm::SwAct;
 use specula_core::Json;
 use specula_gpu::{OverlayQuad, OverlayTextures};
 use specula_input::{ActionMap, Input, Source};
@@ -19,7 +20,7 @@ use specula_ui::gpu::GpuOverlay;
 use specula_ui::{FontSet, StateMap, Theme, Ui, Viewport};
 use std::collections::VecDeque;
 
-const THEME: &str = include_str!("../ui/editor_theme.json");
+pub(crate) const THEME: &str = include_str!("../ui/editor_theme.json");
 const SCREEN: &str = include_str!("../ui/editor.json");
 pub const SCREEN_NAME: &str = "editor";
 
@@ -176,6 +177,10 @@ pub enum UiAct {
     /// Step the active field by the snap step (-1 or +1).
     Step(FieldKey, f32),
     ToggleVisible,
+    /// The swarm panels (`editor_swarm`).
+    Swarm(crate::editor_swarm::SwAct),
+    /// "Ask the agents…" (`editor_ask`): the human's own press only.
+    AskOpen,
 }
 
 /// A mouse button (or the primary touch contact, as left) this frame.
@@ -348,6 +353,10 @@ pub struct EditorUi {
     focus: Option<&'static str>,
     /// Where the pointer was at the last frame.
     pointer: Option<[f32; 2]>,
+    /// The swarm panels' state (the right dock's Swarm tab, the claim map).
+    pub(crate) swarm: crate::editor_swarm::Panel,
+    /// The "Ask the agents…" box (its words are private to it).
+    pub(crate) ask: crate::editor_ask::AskBox,
 }
 
 impl Default for EditorUi {
@@ -386,6 +395,8 @@ impl Default for EditorUi {
             driven_by: None,
             focus: None,
             pointer: None,
+            swarm: crate::editor_swarm::Panel::default(),
+            ask: crate::editor_ask::AskBox::default(),
         }
     }
 }
@@ -404,7 +415,7 @@ fn load(fonts: FontSet) -> Result<Ui, String> {
     Ok(ui)
 }
 
-fn system_fonts() -> Result<FontSet, String> {
+pub(crate) fn system_fonts() -> Result<FontSet, String> {
     let (path, font) = specula_text::find_system_ui_font().ok_or("no system UI font found")?;
     let mut fonts = FontSet::new().with("ui", font);
     if let Some(dir) = path.parent() {
@@ -438,6 +449,13 @@ impl EditorUi {
     /// The editor's UI (for `editor_state` and the UI tools), once loaded.
     pub fn ui(&self) -> Option<&Ui> {
         self.ui.as_ref()
+    }
+
+    /// The UI tools' view of the editor (`surface: "editor"`): its UI, state and action map.
+    /// Never the Ask box's (its words are the human's alone).
+    pub(crate) fn ui_parts(&mut self) -> Option<(&mut Ui, &StateMap, Option<&ActionMap>)> {
+        let map = self.input.as_ref().map(Input::map);
+        Some((self.ui.as_mut()?, &self.state, map))
     }
 
     pub fn typing(&self) -> Option<(FieldKey, &str)> {
@@ -501,10 +519,16 @@ impl EditorUi {
             self.buttons = [false; 3];
             self.contact = None;
             self.dirty = true;
+            self.ask.close("editor_closed");
             if let Some(ui) = self.ui.as_mut() {
                 let _ = ui.hide(SCREEN_NAME);
             }
         }
+    }
+
+    /// The human is typing a request into the "Ask the agents…" box.
+    pub fn asking(&self) -> bool {
+        self.ask.is_open()
     }
 
     /// The panels' data changed: filled again at the next layout.
@@ -563,6 +587,9 @@ impl EditorUi {
         self.edit_base = None;
         self.undo.clear();
         self.redo.clear();
+        self.swarm.world_replaced();
+        // Its selection was the old world's.
+        self.ask.close("world_replaced");
         self.dirty = true;
     }
 
@@ -853,6 +880,23 @@ impl EditorUi {
                 self.dirty = true;
             }
             "toggle_visible" => acts.push(UiAct::ToggleVisible),
+            "ask_open" => acts.push(UiAct::AskOpen),
+            "tab_inspector" | "tab_swarm" => acts.push(UiAct::Swarm(SwAct::Shown(action == "tab_swarm"))),
+            "sw_select" => acts.extend(row.map(|r| UiAct::Swarm(SwAct::Select(r)))),
+            "sw_newest" => acts.push(UiAct::Swarm(SwAct::Newest)),
+            "sw_newer" => acts.push(UiAct::Swarm(SwAct::Newer)),
+            "sw_older" => acts.push(UiAct::Swarm(SwAct::Older)),
+            "sw_agent" => acts.push(UiAct::Swarm(SwAct::CycleAgent)),
+            "sw_place" => acts.push(UiAct::Swarm(SwAct::CyclePlace)),
+            "sw_game" => acts.push(UiAct::Swarm(SwAct::ToggleGame)),
+            "sw_show" => acts.push(UiAct::Swarm(SwAct::CycleBoard)),
+            "claim_map" => acts.push(UiAct::Swarm(SwAct::ClaimMap)),
+            "sw_open_review" => acts.push(UiAct::Swarm(SwAct::OpenReview)),
+            other if other.starts_with("sw_") => {
+                if let Some(v) = crate::editor_swarm::View::parse(&other[3..]) {
+                    acts.push(UiAct::Swarm(SwAct::View(v)));
+                }
+            }
             other => {
                 if let Some(f) = other.strip_prefix("field:").and_then(FieldKey::parse) {
                     // A text's words start as they are (Backspace edits from the end); other
@@ -999,6 +1043,8 @@ impl EditorUi {
             n => format!("{n} selected"),
         };
         s.set_str("sel_line", &format!("{sel} - {} - {}", self.mode.name(), self.space.name()));
+        // The swarm panels (the right dock's Swarm tab, the claim map toggle).
+        self.swarm.fill(s);
     }
 
     /// Where the panels leave the viewport, as `[x, y, w, h]` in pixels (the whole window before
@@ -1023,6 +1069,10 @@ impl EditorUi {
             names.push(format!("ol_row[{r}]"));
             names.push(format!("ol_row_on[{r}]"));
             names.push(format!("ol_x[{r}]"));
+        }
+        for r in 0..self.swarm.rows.len().min(crate::editor_swarm::ROWS) {
+            names.push(format!("sw_row[{r}]"));
+            names.push(format!("sw_row_on[{r}]"));
         }
         for n in names {
             if out.len() >= max {
@@ -1088,6 +1138,10 @@ const WIDGETS: &[&str] = &[
     "tb_move", "tb_move_on", "tb_rotate", "tb_rotate_on", "tb_scale", "tb_scale_on", "tb_space", "tb_snap", "tb_snap_on", "tb_undo", "tb_redo", "tb_frame",
     "tb_delete", "tb_close", "ol_search", "ol_search_clear", "ol_top", "ol_prev", "ol_next", "in_name", "in_text", "f_px", "f_py", "f_pz", "f_rx", "f_ry", "f_rz", "f_sx",
     "f_sy", "f_sz", "f_cr", "f_cg", "f_cb", "f_down", "f_up", "f_ok", "f_visible", "ed_viewport", "ed_outliner", "ed_inspector", "ed_toolbar", "ed_status",
+    // The swarm panels and "highlight and ask".
+    "tb_claims", "tb_claims_on", "tb_ask", "in_ask", "tab_inspector", "tab_inspector_on", "tab_swarm", "tab_swarm_on", "sw_panel", "sw_journal", "sw_journal_on",
+    "sw_claims", "sw_claims_on", "sw_board", "sw_board_on", "sw_review", "sw_review_on", "sw_cost", "sw_cost_on", "sw_agent", "sw_place", "sw_game", "sw_show",
+    "sw_list", "sw_open_review", "sw_newest", "sw_newer", "sw_older",
 ];
 
 fn button_index(b: MouseButton) -> Option<usize> {
@@ -1140,6 +1194,8 @@ mod tests {
             assert!(ui.widget(SCREEN_NAME, &format!("ol_row[{r}]")).is_some());
         }
         assert!(ui.widget(SCREEN_NAME, &format!("ol_row[{PAGE_ROWS}]")).is_none(), "PAGE_ROWS is the repeat's max");
+        let rows = crate::editor_swarm::ROWS;
+        assert!(ui.widget(SCREEN_NAME, &format!("sw_row[{}]", rows - 1)).is_some() && ui.widget(SCREEN_NAME, &format!("sw_row[{rows}]")).is_none(), "the swarm panel's ROWS is its repeat's max");
         actions().expect("actions");
     }
 

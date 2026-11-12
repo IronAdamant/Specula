@@ -16,7 +16,7 @@ use specula_ui::check::{Target, PRESETS};
 use specula_ui::Only;
 
 /// The interfaces the tools can look at.
-pub const SURFACES: [&str; 3] = ["game", "review", "gallery"];
+pub const SURFACES: [&str; 4] = ["game", "review", "gallery", "editor"];
 /// The `ui_check` rules (for `rules` filters).
 pub const RULES: [&str; 17] = [
     "legibility", "contrast", "non_text_contrast", "overlap", "offscreen", "overflow", "text_overflow", "missing_glyph", "touch_target", "focus_reachability",
@@ -61,6 +61,10 @@ pub enum Surface {
     Game,
     Review,
     Gallery,
+    /// The window's editor (F7): its panels (toolbar, outliner, inspector, the swarm panels).
+    /// Its buttons act as the window's owner, so `ui_act` on it is owner-only; never the
+    /// "Ask the agents" box, whose words are the human's alone.
+    Editor,
 }
 
 impl Surface {
@@ -69,6 +73,7 @@ impl Surface {
             Surface::Game => "game",
             Surface::Review => "review",
             Surface::Gallery => "gallery",
+            Surface::Editor => "editor",
         }
     }
 
@@ -77,6 +82,7 @@ impl Surface {
             "game" => Some(Surface::Game),
             "review" => Some(Surface::Review),
             "gallery" => Some(Surface::Gallery),
+            "editor" => Some(Surface::Editor),
             _ => None,
         }
     }
@@ -581,7 +587,7 @@ pub fn definitions() -> Vec<ToolDef> {
         Json::obj([
             ("type", Json::from("string")),
             ("enum", Json::arr(SURFACES.map(Json::from))),
-            ("description", Json::from("Which interface: the hosted game's, or the engine's review (F9) or gallery (F8) screen. Default: the engine screen that is open, else the game's.")),
+            ("description", Json::from("Which interface: the hosted game's, or the engine's review (F9) or gallery (F8) screen, or the editor (F7: its panels, the swarm panels included; ui_act on it is owner-only, one edit per call, refused while the human types into its Ask box). Default: the engine screen that is open, else the editor if open, else the game's.")),
         ])
     };
     let arr = |items: Json, max: usize, d: &str| Json::obj([("type", Json::from("array")), ("items", items), ("maxItems", Json::from(max)), ("description", Json::from(d))]);

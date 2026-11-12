@@ -295,6 +295,11 @@ impl Entry {
         self.changes.iter().any(|c| change_under(c, prefix))
     }
 
+    /// Whether a change of it is at or under `prefix` (where it was, or where it moved).
+    pub fn touches_path(&self, prefix: &str) -> bool {
+        self.matches_path(prefix)
+    }
+
     /// A compact summary; `detail` adds up to 50 changes.
     pub fn to_json(&self, detail: bool, path_prefix: Option<&str>) -> Json {
         let mut f = vec![
@@ -903,6 +908,13 @@ impl Journal {
     pub fn entries_after(&self, seq: u64, game: bool) -> impl Iterator<Item = &Entry> + '_ {
         let game = self.game.from(seq.saturating_add(1)).take(if game { usize::MAX } else { 0 });
         merged(self.agents.from(seq.saturating_add(1)), game, false)
+    }
+
+    /// Entries with ids up to `seq`, newest first; the hosted game's only with `game` (the
+    /// editor's journal timeline pages back from the newest).
+    pub fn entries_upto_rev(&self, seq: u64, game: bool) -> impl Iterator<Item = &Entry> + '_ {
+        let g = self.game.upto_rev(seq).take(if game { usize::MAX } else { 0 });
+        merged(self.agents.upto_rev(seq), g, true)
     }
 
     /// Entries that touched entity `id`, newest first, examining at most `scan` entries.

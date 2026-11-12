@@ -19,7 +19,7 @@
 
 use crate::authority::Authority;
 use crate::board::Owner;
-use crate::entity_ref::{EntityRef, Prefix};
+use crate::entity_ref::{EntityRef, Prefix, Referrers};
 use crate::journal::{path_under, Writer};
 use crate::world::{World, WorldError};
 use specula_core::Json;
@@ -275,14 +275,55 @@ impl Check {
 }
 
 /// An entity subtree a submission covers, as it was when submitted.
+///
+/// The root is held by identity ([`EntityRef`]), never by a bare id: after a `save_read` (or any
+/// world replacement) the same id may name another entity, and a decision must never promote,
+/// replace or blame that one. While the root's identity is gone (deleted, or not in the world
+/// loaded since) the submission can't be approved, not even with `force` ([`Root::attached`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Root {
+    /// The path it was submitted at (shown; the entity may have moved since).
     pub path: String,
-    pub id: u64,
+    /// Its identity, with its last known path (refreshed when it is deleted and before the world
+    /// is replaced).
+    pub entity: EntityRef,
     pub version: u64,
     /// [`stamp`] over the subtree (each entity's id and version).
     pub stamp: u64,
     pub entities: usize,
+}
+
+impl Root {
+    /// The root's id while the world has this very entity, else `None` (deleted, or replaced by
+    /// a load: an entity with the same id now is another one).
+    pub fn attached(&self, world: &World) -> Option<u64> {
+        self.entity.attached(world)
+    }
+
+    /// As shown to agents (`world`: the live world; `entity` is `{id, path}` or
+    /// `{path, detached: true}`) or saved (`None`: `entity` is `{id, born, path}`).
+    fn to_json(&self, world: Option<&World>) -> Json {
+        Json::obj([
+            ("path", Json::from(self.path.as_str())),
+            ("entity", world.map_or_else(|| self.entity.saved_json(), |w| self.entity.json(w))),
+            ("version", Json::from(self.version)),
+            ("entities", Json::from(self.entities)),
+            ("stamp", Json::from(format!("{:016x}", self.stamp))),
+        ])
+    }
+
+    /// Reads [`Root::to_json`]'s saved form. Older files kept a bare `id` beside the path: such a
+    /// root has no identity, so it stays detached (it can't be approved: resubmit the work).
+    fn parse(x: &Json) -> Root {
+        let text = |k: &str| x.get(k).and_then(Json::as_str).unwrap_or("").to_owned();
+        let num = |k: &str| x.get(k).and_then(Json::as_u64).unwrap_or(0);
+        let path = text("path");
+        let entity = x
+            .get("entity")
+            .and_then(EntityRef::from_saved)
+            .unwrap_or_else(|| EntityRef { uid: crate::world::EntityUid { lineage: 0, id: num("id") }, path: path.clone() });
+        Root { path, entity, version: num("version"), stamp: u64::from_str_radix(&text("stamp"), 16).unwrap_or(0), entities: num("entities") as usize }
+    }
 }
 
 /// Where approval moves the work.
@@ -378,7 +419,7 @@ impl Submission {
         let rec = |r: &Option<Recorded>| r.as_ref().map_or(0, Recorded::measure);
         let caps: usize = self.captures.iter().map(|c| 64 + c.path.len() + c.kind.len() + c.packet.as_ref().map_or(0, String::len) + c.caption.len() + rec(&c.recorded)).sum();
         let checks: usize = self.checks.iter().map(|c| 128 + c.kind.len() + c.name.len() + c.detail.len() + c.metric.as_ref().map_or(0, String::len) + rec(&c.recorded)).sum();
-        let roots: usize = self.roots.iter().map(|r| 96 + r.path.len()).sum();
+        let roots: usize = self.roots.iter().map(|r| 128 + r.path.len() + r.entity.path.len()).sum();
         let decision = self.decision.as_ref().map_or(0, |d| 128 + d.by.len() + d.note.len() + d.promoted.as_ref().map_or(0, |p| p.to_string().len()));
         512 + self.title.len() + self.summary.len() + self.kind.len() + self.batch.as_ref().map_or(0, String::len) + self.by.name.len() + caps + checks + roots + 12 * self.journal.len() + 12 * self.journal_ids.as_ref().map_or(0, Vec::len) + self.journal_epoch.len() + decision
             + self.promote.as_ref().map_or(0, |p| 64 + p.to.len())
@@ -541,15 +582,7 @@ impl Submission {
         j.set("checks", Json::arr(self.checks.iter().map(Check::to_json)));
         j.set(
             "roots",
-            Json::arr(self.roots.iter().map(|r| {
-                Json::obj([
-                    ("path", Json::from(r.path.as_str())),
-                    ("id", Json::from(r.id)),
-                    ("version", Json::from(r.version)),
-                    ("entities", Json::from(r.entities)),
-                    ("stamp", Json::from(format!("{:016x}", r.stamp))),
-                ])
-            })),
+            Json::arr(self.roots.iter().map(|r| r.to_json(world))),
         );
         j.set("journal", Json::arr(self.journal.iter().map(|s| Json::from(*s))));
         if !self.journal.is_empty() {
@@ -572,8 +605,10 @@ impl Submission {
     }
 }
 
-/// The FNV-1a stamp of a subtree: each persistent entity's id and version in walk order (stable
-/// across runs and toolchains, unlike std's hasher).
+/// The FNV-1a stamp of a subtree: each persistent entity's identity (lineage and id) and version
+/// in walk order (stable across runs and toolchains, unlike std's hasher). The lineage is in it
+/// because ids alone repeat across world replacements: a child loaded from an older save can
+/// have the id and version a different child had when the work was submitted.
 pub fn stamp(world: &World, root: u64, limit: usize) -> (u64, usize) {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     let mut n = 0usize;
@@ -582,7 +617,7 @@ pub fn stamp(world: &World, root: u64, limit: usize) -> (u64, usize) {
             return;
         }
         n += 1;
-        for b in e.id.to_le_bytes().into_iter().chain(e.version.to_le_bytes()) {
+        for b in e.born().to_le_bytes().into_iter().chain(e.id.to_le_bytes()).chain(e.version.to_le_bytes()) {
             h ^= u64::from(b);
             h = h.wrapping_mul(0x0000_0100_0000_01b3);
         }
@@ -839,11 +874,24 @@ pub struct SubmitSpec {
     pub supersedes: Option<u64>,
 }
 
+/// What names an entity in the queue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Holder {
+    Crit,
+    Sub,
+}
+
 /// See the module docs.
 #[derive(Default)]
 pub struct Review {
     subs: BTreeMap<u64, Submission>,
     crits: BTreeMap<u64, Critique>,
+    /// Which critiques and submissions name each entity ([`Referrers`]): kept by every path
+    /// that adds or drops one, so a delete never walks the queue.
+    refs: Referrers<Holder>,
+    /// How many critiques and submissions deletes have visited (a test's measure).
+    #[cfg(test)]
+    ref_visits: u64,
     next_sub: u64,
     next_crit: u64,
     /// The last change's sequence number (feeds: `changed_since`).
@@ -873,7 +921,84 @@ impl Review {
     /// many changed.
     pub fn remember_entity_paths(&mut self, world: &World) -> usize {
         let ids: Vec<u64> = self.crits.values().filter(|c| matches!(c.target, Some(Target::Entity(_)))).map(|c| c.id).collect();
-        ids.into_iter().filter(|id| self.refresh_critique(*id, world)).count()
+        let subs: Vec<u64> = self.subs.keys().copied().collect();
+        ids.into_iter().filter(|id| self.refresh_critique(*id, world)).count() + subs.into_iter().filter(|id| self.refresh_roots(*id, world)).count()
+    }
+
+    /// Brings submission `id`'s roots' last known paths up to date (while attached); a change
+    /// is saved with the queue. Whether any changed.
+    pub(crate) fn refresh_roots(&mut self, id: u64, world: &World) -> bool {
+        let Some(s) = self.subs.get_mut(&id) else { return false };
+        let mut changed = false;
+        for r in &mut s.roots {
+            changed |= r.entity.refresh(world);
+        }
+        if changed {
+            self.resize_sub(id);
+            self.revision += 1;
+        }
+        changed
+    }
+
+    /// Whether a critique or a submission names this entity identity (the index: a lookup).
+    pub(crate) fn names(&self, uid: &crate::world::EntityUid) -> bool {
+        self.refs.names(uid)
+    }
+
+    /// The index as a walk of every critique and submission makes it (a loaded queue's, and
+    /// what tests hold the kept one against).
+    fn refs_rebuilt(&self) -> Referrers<Holder> {
+        let mut refs = Referrers::default();
+        for c in self.crits.values() {
+            if let Some(Target::Entity(r)) = &c.target {
+                refs.add(r.uid, Holder::Crit, c.id);
+            }
+        }
+        for s in self.subs.values() {
+            for r in &s.roots {
+                refs.add(r.entity.uid, Holder::Sub, s.id);
+            }
+        }
+        refs
+    }
+
+    /// How many critiques and submissions deletes have visited since the last call.
+    #[cfg(test)]
+    pub(crate) fn take_ref_visits(&mut self) -> u64 {
+        std::mem::take(&mut self.ref_visits)
+    }
+
+    /// References to entities just deleted take the path each had then ([`EntityRef::deleted`]);
+    /// saved with the queue. Only the critiques and submissions that name one are visited (the
+    /// index). How many changed.
+    pub(crate) fn note_deleted(&mut self, gone: &crate::entity_ref::Gone<'_>) -> usize {
+        #[cfg(test)]
+        assert!(self.refs == self.refs_rebuilt(), "the queue's index of who names each entity is out of step with its critiques and submissions");
+        let mut n = 0;
+        for (kind, id) in self.refs.holders(gone) {
+            #[cfg(test)]
+            {
+                self.ref_visits += 1;
+            }
+            let changed = match kind {
+                Holder::Crit => match self.crits.get_mut(&id).map(|c| &mut c.target) {
+                    Some(Some(Target::Entity(r))) => r.deleted(gone),
+                    _ => false,
+                },
+                Holder::Sub => self.subs.get_mut(&id).is_some_and(|s| s.roots.iter_mut().fold(false, |any, r| r.entity.deleted(gone) | any)),
+            };
+            if changed {
+                match kind {
+                    Holder::Crit => self.resize_crit(id),
+                    Holder::Sub => self.resize_sub(id),
+                }
+                n += 1;
+            }
+        }
+        if n > 0 {
+            self.revision += 1;
+        }
+        n
     }
 
     pub fn revision(&self) -> u64 {
@@ -968,9 +1093,10 @@ impl Review {
         self.crits.values().filter(|c| c.submission == Some(submission)).collect()
     }
 
-    /// Brings the last known paths of the critiques a submission's listing shows (its first 16,
-    /// as [`Submission::to_json`] takes them) up to date.
+    /// Brings the last known paths a submission's listing shows (its roots, and the first 16
+    /// critiques, as [`Submission::to_json`] takes them) up to date.
     pub fn refresh_critiques_on(&mut self, submission: u64, world: &World) {
+        self.refresh_roots(submission, world);
         let ids: Vec<u64> = self.crits.values().filter(|c| c.submission == Some(submission)).take(16).map(|c| c.id).collect();
         for id in ids {
             self.refresh_critique(id, world);
@@ -1025,6 +1151,9 @@ impl Review {
         while self.subs.len() >= MAX_SUBMISSIONS || self.bytes + size > MAX_BYTES {
             let Some(old) = self.subs.values().find(|s| s.status != Status::Pending).map(|s| s.id) else { break };
             if let Some(s) = self.subs.remove(&old) {
+                for r in &s.roots {
+                    self.refs.forget(r.entity.uid, Holder::Sub, old);
+                }
                 self.bytes = self.bytes.saturating_sub(s.size);
             }
         }
@@ -1038,6 +1167,9 @@ impl Review {
         while self.crits.len() + n > MAX_CRITIQUES || self.bytes + size > MAX_BYTES {
             let Some(old) = self.crits.values().find(|c| !c.status.open()).map(|c| c.id) else { break };
             if let Some(c) = self.crits.remove(&old) {
+                if let Some(Target::Entity(r)) = &c.target {
+                    self.refs.forget(r.uid, Holder::Crit, old);
+                }
                 self.bytes = self.bytes.saturating_sub(c.size);
             }
         }
@@ -1099,6 +1231,9 @@ impl Review {
         s.id = self.next_sub;
         let id = s.id;
         s.updated_seq = self.bump();
+        for r in &s.roots {
+            self.refs.add(r.entity.uid, Holder::Sub, id);
+        }
         self.subs.insert(id, s);
         self.resize_sub(id);
         if let Some(old) = self.subs[&id].supersedes {
@@ -1232,6 +1367,9 @@ impl Review {
                     size: 0,
                 },
             );
+            if let Some(Target::Entity(r)) = &self.crits[&id].target {
+                self.refs.add(r.uid, Holder::Crit, id);
+            }
             self.resize_crit(id);
             ids.push(id);
         }
@@ -1493,13 +1631,7 @@ impl Review {
             let roots = arr("roots")
                 .iter()
                 .take(MAX_PATHS)
-                .map(|x| Root {
-                    path: text(x, "path"),
-                    id: num(x, "id"),
-                    version: num(x, "version"),
-                    stamp: u64::from_str_radix(&text(x, "stamp"), 16).unwrap_or(0),
-                    entities: num(x, "entities") as usize,
-                })
+                .map(Root::parse)
                 .collect();
             let decision = s.get("decision").filter(|d| matches!(d, Json::Obj(_))).map(|d| Decision {
                 verdict: d.get("verdict").and_then(Json::as_str).and_then(Status::parse).unwrap_or(status),
@@ -1584,6 +1716,7 @@ impl Review {
             r.next_crit = r.next_crit.max(id);
             r.resize_crit(id);
         }
+        r.refs = r.refs_rebuilt();
         Ok(r)
     }
 }
@@ -1631,7 +1764,13 @@ mod tests {
                 Check { kind: "taste".into(), name: "silhouette".into(), passed: Fact::Claimed(Claimed { by: "ann".into(), value: false }), severity: "warning".into(), metric: Some("iou".into()), value: Some(0.8), limit: Some(0.75), detail: String::new(), recorded: None },
                 Check { kind: "style".into(), name: "palette".into(), passed: Fact::Claimed(Claimed { by: "ann".into(), value: false }), severity: "error".into(), metric: None, value: None, limit: None, detail: String::new(), recorded: None },
             ],
-            roots: vec![Root { path: "/staging/crypt".into(), id: 7, version: 2, stamp: 0xabc, entities: 12 }],
+            roots: vec![Root {
+                path: "/staging/crypt".into(),
+                entity: EntityRef { uid: crate::world::EntityUid { lineage: 0xfeed, id: 7 }, path: "/staging/crypt".into() },
+                version: 2,
+                stamp: 0xabc,
+                entities: 12,
+            }],
             journal: vec![3, 4],
             journal_epoch: "00000000000000e1.0.1".into(),
             journal_ids: Some(vec![7, 8]),

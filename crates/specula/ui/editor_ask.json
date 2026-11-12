@@ -1,0 +1,48 @@
+{
+  "format": "specula.ui.screen.v1",
+  "name": "editor_ask",
+  "input": "hud",
+  "layer": 90,
+  "notes": "The editor's 'Ask the agents' box (docs/design/EDITOR.md, 'Highlight and ask'). Its own UI instance: never a UI-tools surface, so no agent reads the words while the human types. Placed below the selection (ask_below) or above it, as it was on screen when the human opened it. Actions: ask_send, ask_cancel, ask_part.",
+  "root": {
+    "type": "box", "width": "100%", "height": "100%",
+    "children": [
+      {
+        "type": "panel", "style": "dock", "id": "ask_panel_below", "anchor": "bottom", "margin": [0, 0, 64, 0], "width": "34em", "layout": "column", "align": "stretch", "gap": 6, "visible": "ask_below",
+        "children": [
+          { "type": "label", "text": "Ask the agents", "role": "heading" },
+          { "type": "label", "text": "{ask_about}", "role": "small", "wrap": true },
+          { "type": "button", "id": "ask_part_b", "style": "small", "text": "{ask_part}", "action": "ask_part", "visible": "ask_has_parts", "tooltip": "Which part the request is about (click to change)." },
+          { "type": "panel", "style": "field", "children": [ { "type": "label", "text": "{ask_text}", "role": "body", "wrap": true, "width": "fill" } ] },
+          { "type": "label", "text": "Only your keyboard types here, and no agent reads it until you send. Enter sends, Shift+Enter is a new line, Tab picks the part, Esc cancels.", "role": "small", "wrap": true },
+          {
+            "type": "box", "layout": "row", "align": "center", "gap": 6,
+            "children": [
+              { "type": "box", "width": "fill" },
+              { "type": "button", "id": "ask_cancel_b", "text": "Cancel", "action": "ask_cancel" },
+              { "type": "button", "id": "ask_send_b", "style": "primary", "text": "Send to the board", "action": "ask_send", "enabled": "ask_can_send" }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "panel", "style": "dock", "id": "ask_panel_above", "anchor": "top", "margin": [64, 0, 0, 0], "width": "34em", "layout": "column", "align": "stretch", "gap": 6, "visible": "ask_above",
+        "children": [
+          { "type": "label", "text": "Ask the agents", "role": "heading" },
+          { "type": "label", "text": "{ask_about}", "role": "small", "wrap": true },
+          { "type": "button", "id": "ask_part_a", "style": "small", "text": "{ask_part}", "action": "ask_part", "visible": "ask_has_parts", "tooltip": "Which part the request is about (click to change)." },
+          { "type": "panel", "style": "field", "children": [ { "type": "label", "text": "{ask_text}", "role": "body", "wrap": true, "width": "fill" } ] },
+          { "type": "label", "text": "Only your keyboard types here, and no agent reads it until you send. Enter sends, Shift+Enter is a new line, Tab picks the part, Esc cancels.", "role": "small", "wrap": true },
+          {
+            "type": "box", "layout": "row", "align": "center", "gap": 6,
+            "children": [
+              { "type": "box", "width": "fill" },
+              { "type": "button", "id": "ask_cancel_a", "text": "Cancel", "action": "ask_cancel" },
+              { "type": "button", "id": "ask_send_a", "style": "primary", "text": "Send to the board", "action": "ask_send", "enabled": "ask_can_send" }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

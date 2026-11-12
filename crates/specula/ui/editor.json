@@ -29,6 +29,10 @@
           { "type": "button", "id": "tb_redo", "text": "Redo", "action": "editor_redo", "enabled": "can_redo", "tooltip": "Redo (Ctrl+Y): undoes the undo." },
           { "type": "button", "id": "tb_frame", "text": "Frame", "action": "editor_frame", "enabled": "has_sel", "tooltip": "Frame the selection (F)." },
           { "type": "button", "id": "tb_delete", "text": "Delete", "action": "editor_delete", "enabled": "has_sel", "tooltip": "Delete the selection (Del): world_batch." },
+          { "type": "panel", "style": "divider", "width": 1, "height": 28, "padding": 0 },
+          { "type": "button", "id": "tb_claims", "text": "Claim map", "action": "claim_map", "visible": "!claim_map", "tooltip": "Draw every agent's claims in the viewport with the holder's name." },
+          { "type": "button", "id": "tb_claims_on", "style": "primary", "text": "Claim map", "action": "claim_map", "visible": "claim_map", "tooltip": "Draw every agent's claims in the viewport with the holder's name." },
+          { "type": "button", "id": "tb_ask", "text": "Ask...", "action": "ask_open", "enabled": "has_sel", "tooltip": "Ask the agents about what you highlighted (only your keyboard types there)." },
           { "type": "box", "width": "fill" },
           { "type": "label", "text": "{who}", "role": "small" },
           { "type": "button", "id": "tb_close", "text": "Close", "action": "editor_close", "tooltip": "Back to the game (F7)." }
@@ -83,9 +87,75 @@
           },
           { "type": "box", "id": "ed_viewport", "width": "fill" },
           {
-            "type": "panel", "style": "dock", "id": "ed_inspector", "width": "22em", "layout": "column", "align": "stretch", "gap": 5, "clip": true,
+            "type": "panel", "style": "dock", "id": "ed_inspector", "width": "24em", "layout": "column", "align": "stretch", "gap": 5, "clip": true,
             "children": [
-              { "type": "label", "text": "Inspector", "role": "heading" },
+              {
+                "type": "box", "layout": "row", "align": "center", "gap": 4,
+                "children": [
+                  { "type": "button", "id": "tab_inspector", "style": "small", "text": "Inspector", "action": "tab_inspector", "visible": "!tab_inspector", "tooltip": "The selected entity: its name, place and components." },
+                  { "type": "button", "id": "tab_inspector_on", "style": "primary", "text": "Inspector", "action": "tab_inspector", "visible": "tab_inspector" },
+                  { "type": "button", "id": "tab_swarm", "style": "small", "text": "Swarm", "action": "tab_swarm", "visible": "!tab_swarm", "tooltip": "What the agents are doing: journal, claims, board, review queue, cost." },
+                  { "type": "button", "id": "tab_swarm_on", "style": "primary", "text": "Swarm", "action": "tab_swarm", "visible": "tab_swarm" }
+                ]
+              },
+              {
+                "type": "box", "id": "sw_panel", "layout": "column", "align": "stretch", "gap": 4, "height": "fill", "visible": "tab_swarm",
+                "children": [
+                  {
+                    "type": "box", "layout": "row", "align": "center", "gap": 2,
+                    "children": [
+                      { "type": "button", "id": "sw_journal", "style": "small", "text": "Journal", "action": "sw_journal", "visible": "!sw_is_journal", "tooltip": "Which agent built this: journal entries, newest first." },
+                      { "type": "button", "id": "sw_journal_on", "style": "primary", "text": "Journal", "action": "sw_journal", "visible": "sw_is_journal" },
+                      { "type": "button", "id": "sw_claims", "style": "small", "text": "Claims", "action": "sw_claims", "visible": "!sw_is_claims", "tooltip": "Claims and leases, with their holders." },
+                      { "type": "button", "id": "sw_claims_on", "style": "primary", "text": "Claims", "action": "sw_claims", "visible": "sw_is_claims" },
+                      { "type": "button", "id": "sw_board", "style": "small", "text": "Board", "action": "sw_board", "visible": "!sw_is_board", "tooltip": "Tasks, intents and notes." },
+                      { "type": "button", "id": "sw_board_on", "style": "primary", "text": "Board", "action": "sw_board", "visible": "sw_is_board" },
+                      { "type": "button", "id": "sw_review", "style": "small", "text": "Review", "action": "sw_review", "visible": "!sw_is_review", "tooltip": "Work waiting for your decision." },
+                      { "type": "button", "id": "sw_review_on", "style": "primary", "text": "Review", "action": "sw_review", "visible": "sw_is_review" },
+                      { "type": "button", "id": "sw_cost", "style": "small", "text": "Cost", "action": "sw_cost", "visible": "!sw_is_cost", "tooltip": "Calls, commits and refusals per agent; progress per task." },
+                      { "type": "button", "id": "sw_cost_on", "style": "primary", "text": "Cost", "action": "sw_cost", "visible": "sw_is_cost" }
+                    ]
+                  },
+                  { "type": "label", "text": "{sw_title}", "role": "heading" },
+                  {
+                    "type": "box", "layout": "row", "align": "center", "gap": 2, "visible": "sw_is_journal",
+                    "children": [
+                      { "type": "button", "id": "sw_agent", "style": "small", "text": "{sw_agent}", "action": "sw_agent", "tooltip": "Only this agent's entries (click for the next agent seen)." },
+                      { "type": "button", "id": "sw_game", "style": "small", "text": "{sw_game}", "action": "sw_game", "tooltip": "The hosted game's own entries (every tick: many)." }
+                    ]
+                  },
+                  { "type": "button", "id": "sw_place", "style": "small", "text": "{sw_place}", "action": "sw_place", "visible": "sw_is_journal", "tooltip": "Only entries touching the selected entity (by identity), then under its path." },
+                  { "type": "button", "id": "sw_show", "style": "small", "text": "{sw_board}", "action": "sw_show", "visible": "sw_is_board", "tooltip": "Tasks, intents or notes." },
+                  {
+                    "type": "list", "id": "sw_list", "height": "fill", "gap": 6,
+                    "repeat": {
+                      "source": "sw_rows", "max": 10,
+                      "template": {
+                        "type": "box", "layout": "column", "align": "stretch",
+                        "children": [
+                          { "type": "button", "id": "sw_row", "style": "row", "action": "sw_select", "layout": "column", "align": "start", "visible": "!item.selected", "children": [ { "type": "label", "text": "{item.label}", "role": "small", "width": "fill", "wrap": true }, { "type": "label", "text": "{item.badge}", "role": "warn", "visible": "item.badge" } ] },
+                          { "type": "button", "id": "sw_row_on", "style": "row_on", "action": "sw_select", "layout": "column", "align": "start", "visible": "item.selected", "children": [ { "type": "label", "text": "{item.label}", "role": "small", "width": "fill", "wrap": true }, { "type": "label", "text": "{item.badge}", "role": "warn", "visible": "item.badge" } ] }
+                        ]
+                      }
+                    }
+                  },
+                  { "type": "label", "text": "{sw_note}", "role": "small", "visible": "sw_note", "wrap": true },
+                  { "type": "label", "text": "{sw_detail}", "role": "body", "visible": "sw_detail", "wrap": true },
+                  { "type": "button", "id": "sw_open_review", "style": "primary", "text": "Open in the review screen", "action": "sw_open_review", "visible": "sw_can_open", "tooltip": "Approve or reject it there (F9 closes it)." },
+                  {
+                    "type": "box", "layout": "row", "align": "center", "gap": 4,
+                    "children": [
+                      { "type": "button", "id": "sw_newest", "style": "small", "text": "Newest", "action": "sw_newest", "enabled": "sw_has_prev" },
+                      { "type": "button", "id": "sw_newer", "style": "small", "text": "Newer", "action": "sw_newer", "enabled": "sw_has_prev" },
+                      { "type": "label", "text": "{sw_page}", "role": "small", "width": "fill", "text_align": "center" },
+                      { "type": "button", "id": "sw_older", "style": "small", "text": "Older", "action": "sw_older", "enabled": "sw_has_next" }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "box", "id": "in_panel", "layout": "column", "align": "stretch", "gap": 5, "visible": "tab_inspector",
+                "children": [
               { "type": "label", "text": "Click an entity, or pick one in the outliner.", "role": "small", "visible": "!has_sel", "wrap": true },
               {
                 "type": "box", "layout": "column", "align": "stretch", "gap": 5, "visible": "has_sel",
@@ -144,7 +214,10 @@
                     ]
                   },
                   { "type": "button", "id": "f_visible", "text": "{visible_label}", "action": "toggle_visible", "tooltip": "Show or hide it (world_set visible)." },
-                  { "type": "label", "text": "{in_components}", "role": "small", "visible": "in_components", "wrap": true }
+                  { "type": "label", "text": "{in_components}", "role": "small", "visible": "in_components", "wrap": true },
+                  { "type": "button", "id": "in_ask", "style": "primary", "text": "Ask the agents...", "action": "ask_open", "tooltip": "Ask the swarm to change what you highlighted: your words go to the task board when you send them." }
+                ]
+              }
                 ]
               }
             ]

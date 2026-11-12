@@ -257,6 +257,15 @@ impl GalleryUi {
     }
 
     /// Opens with no gallery to show (it says so; agents put galleries here).
+    /// As [`crate::review_screen::ReviewUi::defuse`]: when the gallery took the window from
+    /// under the human's typing, its focus goes to Close, so the Enter or Space meant for their
+    /// words picks nothing (review R2 of m5-edswarm, N1).
+    pub fn defuse(&mut self) {
+        if self.open {
+            self.focus = Some("gl_close".into());
+        }
+    }
+
     pub fn open_empty(&mut self, _seen: crate::inputguard::Seen) {
         self.gallery = None;
         self.round = 0;

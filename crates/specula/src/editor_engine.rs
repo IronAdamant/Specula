@@ -72,6 +72,8 @@ enum Why {
     Undo(u64),
     /// Undoing an undo (redo).
     Redo(u64),
+    /// "Ask the agents…": the board task the human's request became.
+    Ask,
 }
 
 #[derive(Default)]
@@ -195,6 +197,8 @@ struct Rt {
     /// the calls that already made their one edit (one call, one commit: AGENTS rule 14).
     input_call: (u64, Option<Driver>),
     edited_calls: std::collections::VecDeque<u64>,
+    /// Submissions that waited for review when the editor last looked (it says so when more do).
+    pending_seen: usize,
     /// `editor_input` calls so far (their frames are tagged with it) and their drivers.
     input_seq: u64,
     input_tool_calls: BTreeMap<u64, Driver>,
@@ -205,6 +209,8 @@ struct Rt {
     framed: bool,
     /// The view (camera, size) the gizmo was last drawn in, for agents.
     gizmo_px: Option<(View, gz::Frame, Mode)>,
+    /// Names drawn on the viewport's swarm marks (claim holders, the highlighted entry's agent).
+    labeler: crate::sight_overlay::Labeler,
 }
 
 /// The editor: what the window shows ([`EditorUi`]) and its engine-side state.
@@ -215,6 +221,12 @@ pub struct Editor {
 }
 
 impl Editor {
+    /// Whether the input being handled now came from an owner's agent (`editor_input` or
+    /// `ui_act` frames), not the window's own devices.
+    pub(crate) fn input_is_injected(&self) -> bool {
+        self.rt.input_call.1.is_some()
+    }
+
     /// A drag is moving entities on screen (the window's draw list is patched).
     pub fn previewing(&self) -> bool {
         self.rt.drag.as_ref().is_some_and(|d| !d.delta.is_identity())
@@ -377,7 +389,16 @@ impl Engine {
         // Simulated input (editor_input) is the editor's alone: never the review or gallery
         // screens' or the game's (their decisions would be recorded as the human's). It waits while
         // another screen holds the window or the window is minimized.
-        let injected = if blocked || minimized { None } else { self.editor.ui.next_injected() };
+        // While the human types into the "Ask the agents…" box, injected frames wait (their
+        // calls are refused at once, `window_held`): only the human's own input acts then.
+        if self.editor.ui.asking() && blocked {
+            // A screen took the window (a lead's or the owner's review or gallery screen): the
+            // box closes and what was typed is dropped, never sent.
+            self.editor.ui.ask.close("engine_screen");
+            self.editor.ui.set_status("The Ask box closed: another screen took the window. Nothing was sent.", false);
+        }
+        let asking = self.editor.ui.asking();
+        let injected = if blocked || minimized || asking { None } else { self.editor.ui.next_injected() };
         let (input_id, extra) = injected.unwrap_or((0, Vec::new()));
         // Only commands caused by the injected events carry their call's driver (review R2, probe
         // 9): the human's own events run in a pass of their own first, with none, and an empty
@@ -409,7 +430,21 @@ impl Engine {
             }
             let open_before = self.editor.ui.is_open();
             self.editor.rt.input_call = if injected_pass { (input_id, driver.clone()) } else { (0, None) };
-            let (acts, view) = if injected_pass { self.editor.ui.frame(&extra, &pads, size, blocked) } else { self.editor.ui.frame(&self.input, &pads, size, blocked) };
+            let (acts, view) = if injected_pass {
+                self.editor.ui.frame(&extra, &pads, size, blocked)
+            } else if asking && !blocked && !minimized {
+                // The box takes the human's keys and pointer; the panels lay out and act on none.
+                let out = self.editor.ui.ask.frame_with_pads(&self.input, &pads, size, crate::editor::THEME, crate::editor::system_fonts);
+                // (The pointer is the box's: the panels see it leave, so no tooltip stays drawn
+                // under where it was. Review R1 of m5-edswarm, minor 12.)
+                let r = self.editor.ui.frame(&[Event::MouseMove { x: -1, y: -1 }], &[], size, blocked);
+                if let Some(out) = out {
+                    self.editor_ask_out(out);
+                }
+                r
+            } else {
+                self.editor.ui.frame(&self.input, &pads, size, blocked)
+            };
             if self.editor.ui.is_open() && !open_before {
                 self.editor_opened();
             }
@@ -609,6 +644,8 @@ impl Engine {
                 let what = format!("{} {}", if i.visible { "Hid" } else { "Showed" }, i.path);
                 let _ = self.editor_send("world_set", args, Why::Edit(what));
             }
+            UiAct::Swarm(s) => self.editor_swarm_act(s),
+            UiAct::AskOpen => self.editor_ask_open(),
         }
     }
 
@@ -716,6 +753,106 @@ impl Engine {
         let n = ops.len();
         if self.editor_send("world_batch", Json::obj([("ops", Json::Arr(ops))]), Why::Edit(format!("Deleted {n} entit{}", if n == 1 { "y" } else { "ies" }))) {
             self.editor.ui.select(&[], false);
+        }
+    }
+
+    /// "Ask the agents…": opens the box beside the selection. Only the human's own press opens
+    /// it: an `editor_input` frame (an agent driving the editor) is refused, so no agent can put
+    /// a box on the window that the human then types into.
+    fn editor_ask_open(&mut self) {
+        if self.editor.rt.input_call.0 != 0 {
+            let by = self.editor.rt.input_call.1.as_ref().map_or_else(String::new, |d| d.by.clone());
+            specula_core::trace_event!(&crate::trace_sink::ENGINE, Warn, "editor.ask_refused", by = by.as_str(), why = "injected");
+            self.editor.ui.set_status("Only the human opens the Ask box (agents post tasks with task_post).", false);
+            return;
+        }
+        if self.editor.ui.asking() {
+            return;
+        }
+        let sel: Vec<u64> = self.editor.ui.selection.iter().copied().filter(|id| self.world.get(*id).is_some()).collect();
+        let Some(&primary) = sel.last() else {
+            self.editor.ui.set_status("Highlight something first: click an entity (Shift adds more), then Ask.", false);
+            return;
+        };
+        // The selection by identity, the primary last (at most the board's link cap: the newest).
+        let skip = sel.len().saturating_sub(crate::editor_ask::MAX_ENTITIES);
+        let refs: Vec<crate::entity_ref::EntityRef> = sel[skip..].iter().filter_map(|id| crate::entity_ref::EntityRef::of(&self.world, *id)).collect();
+        let e = self.world.get(primary).expect("checked");
+        let path = self.world.path_of(primary);
+        let about = if refs.len() > 1 { format!("{path} and {} more", refs.len() - 1) } else { path };
+        // What part of it the request may be about: its recipe's named parts (the library has
+        // them parsed: no disk, no parse here), its words, or the ground around it.
+        let mut choices = Vec::new();
+        if let Some(m) = &e.model {
+            for name in self.library.lock().part_names(&m.recipe, 32).unwrap_or_default() {
+                choices.push(crate::editor_ask::Choice::Recipe(name));
+            }
+        }
+        if let Some(crate::two_d::TwoD::Text(t)) = &e.two_d {
+            choices.push(crate::editor_ask::Choice::Words(t.text.len() as u32));
+        }
+        let (lo, hi) = e.world_aabb();
+        let center = (lo + hi) * 0.5;
+        let radius = ((hi.x - lo.x).max(hi.z - lo.z) * 0.5).clamp(0.5, crate::ask::MAX_RADIUS_M);
+        choices.push(crate::editor_ask::Choice::Area { center: [center.x, lo.y, center.z], radius });
+        // Beside the selection as it is on screen now (it stays there: nothing moves it later).
+        let size = self.editor.rt.size;
+        let target = self.editor.rt.cam.and_then(|c| crate::sight_overlay::Painter::new(c.camera().view_proj(size.0, size.1), size.0, size.1).project(center));
+        self.editor.ui.ask.open(about, refs, choices, target, size);
+        self.editor.ui.set_status("Type your request; Enter sends it to the task board, Esc cancels. No agent reads it until you send.", true);
+    }
+
+    /// The box's Send or Cancel.
+    fn editor_ask_out(&mut self, out: crate::editor_ask::AskOut) {
+        match out {
+            crate::editor_ask::AskOut::Cancel => {
+                self.editor.ui.ask.close("cancelled");
+                self.editor.ui.set_status("Ask cancelled: nothing was sent.", true);
+            }
+            crate::editor_ask::AskOut::Send { text, entities, choice } => {
+                // By identity: what is still in the world (a deleted one can't be asked about).
+                let ids: Vec<u64> = entities.iter().filter_map(|r| r.attached(&self.world)).collect();
+                if ids.is_empty() && !entities.is_empty() {
+                    self.editor.ui.set_status("Not sent: what you highlighted is gone (deleted or replaced). Your words were kept in the box.", false);
+                    return;
+                }
+                let primary_kept = entities.last().and_then(|r| r.attached(&self.world)).is_some();
+                let mut part = if primary_kept { choice.part(ids.len() - 1) } else { None };
+                // "Its words" are the words as they are now (the text may have changed while the
+                // box was open: a span past it would be refused, `Engine::check_parts`).
+                if let (Some(crate::ask::Part { kind: crate::ask::PartKind::TextSpan { start, end }, .. }), Some(crate::two_d::TwoD::Text(t))) =
+                    (part.as_mut(), ids.last().and_then(|id| self.world.get(*id)).and_then(|e| e.two_d.as_ref()))
+                {
+                    (*start, *end) = (0, t.text.len() as u32);
+                }
+                let first_line = text.lines().next().unwrap_or("").trim();
+                let title = crate::editor_swarm::short(&format!("Ask: {first_line}"), crate::board::MAX_TITLE);
+                let mut detail = format!("{text}\n\nAsked by the window's owner in the editor (highlight and ask), about ");
+                detail.push_str(&ids.iter().take(8).map(|id| self.world.path_of(*id)).collect::<Vec<_>>().join(", "));
+                if let Some(p) = &part {
+                    detail.push_str(&format!("; {}", p.describe()));
+                }
+                detail.push_str(".\nTake it (task_take), make the change through the normal tools, then review_submit with this task: the owner decides in the review screen.");
+                let detail = crate::editor_swarm::short_keep_lines(&detail, crate::board::MAX_DETAIL);
+                let mut args = Json::obj([
+                    ("title", Json::from(title)),
+                    ("detail", Json::from(detail)),
+                    ("entities", Json::arr(ids.iter().map(|i| Json::from(*i)))),
+                    ("tags", Json::arr([Json::from(crate::ask::TAG)])),
+                    ("priority", Json::from(6)),
+                ]);
+                if let Some(p) = part {
+                    args.set("parts", Json::arr([p.to_json()]));
+                }
+                // The box stays open, with the words, until the board has taken the request
+                // (review R1 of m5-edswarm, minor 5: it closed when the request was queued, so a
+                // refused post, a full board for one, lost what the human had typed).
+                if self.editor_send("task_post", args, Why::Ask) {
+                    self.editor.ui.ask.set_sending(true);
+                    self.editor.ui.set_status("Sending your request to the board...", true);
+                    specula_core::trace_event!(&crate::trace_sink::ENGINE, Info, "editor.ask_sent", by = crate::authority::WINDOW_OWNER, entities = ids.len() as u64);
+                }
+            }
         }
     }
 
@@ -1007,11 +1144,23 @@ impl Engine {
     /// handler, reads their answers and the pick's, refreshes the panels, and points the window.
     pub(crate) fn editor_pump(&mut self, server: &Server) {
         let open = self.editor.ui.is_open();
+        // Work that came in for review while the editor is open: said on its status line (the
+        // window's "Review (n)" tab is not drawn over the editor).
+        let pending = self.swarm.review.pending_count();
+        if open && pending > self.editor.rt.pending_seen {
+            let line = if pending == 1 { "1 submission waits".to_owned() } else { format!("{pending} submissions wait") };
+            self.editor.ui.set_status(format!("{line} for your review: F9, or the Swarm tab's Review view."), true);
+        }
+        self.editor.rt.pending_seen = pending;
         // Commands, exactly as an agent's calls.
         for (tool, args, why, driver) in std::mem::take(&mut self.editor.rt.outbox) {
             let command = match crate::tools::parse(tool, &args) {
                 Ok(c) => c,
                 Err(e) => {
+                    if matches!(why, Why::Ask) {
+                        // Never sent: the words stay, to send again (review R2, N3).
+                        self.editor.ui.ask.set_sending(false);
+                    }
                     self.editor.ui.set_status(format!("Not sent ({tool}): {e}"), false);
                     continue;
                 }
@@ -1041,7 +1190,11 @@ impl Engine {
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) if Instant::now() < self.editor.rt.waiting[i].2 => i += 1,
                 Err(_) => {
-                    self.editor.rt.waiting.remove(i);
+                    let (_, why, _) = self.editor.rt.waiting.remove(i);
+                    if matches!(why, Why::Ask) {
+                        // No answer: the words stay, to send again.
+                        self.editor.ui.ask.set_sending(false);
+                    }
                     self.editor.ui.set_status("An edit got no answer (the engine dropped it); look at world_history for its outcome.", false);
                 }
             }
@@ -1101,6 +1254,7 @@ impl Engine {
             }
             self.editor_refresh_outliner();
             self.editor_refresh_inspector();
+            self.editor_swarm_refresh();
             self.editor_window_camera();
         }
         // editor_input calls whose frames have all run (they were fed this frame or earlier) are
@@ -1187,6 +1341,10 @@ impl Engine {
                     self.editor.ui.set_status(format!("Redo (undoing journal {seq}) refused and set aside (Ctrl+Y goes on with the next). {msg}"), false);
                 }
                 Why::Edit(what) => self.editor.ui.set_status(format!("{what}: not done. {msg}"), false),
+                Why::Ask => {
+                    self.editor.ui.ask.set_sending(false);
+                    self.editor.ui.set_status(format!("Your request was not posted. {msg} Your words are still in the box."), false);
+                }
             }
             self.editor.rt.inspected = None;
             return;
@@ -1209,6 +1367,23 @@ impl Engine {
                     self.editor.ui.undo.push(u);
                 }
                 self.editor.ui.set_status(format!("Redid it: undid the undo {seq} (journal {}).", journal.map_or("?".into(), |s| s.to_string())), true);
+            }
+            Why::Ask => {
+                // The box this request was sent from (one opened since, with other words, stays:
+                // review R2, N6).
+                if self.editor.ui.ask.sending() {
+                    self.editor.ui.ask.close("sent");
+                }
+                let task = j.get("id").and_then(Json::as_u64);
+                self.editor.ui.set_status(
+                    format!(
+                        "Asked the agents: task {} is on the board (tag \"ask\"). An agent takes it, edits, and submits; you decide in the review screen (F9, or the Swarm tab's Review).",
+                        task.map_or("?".into(), |t| t.to_string())
+                    ),
+                    true,
+                );
+                let p = &mut self.editor.ui.swarm;
+                p.built = None;
             }
         }
         self.editor.rt.inspected = None;
@@ -1520,9 +1695,29 @@ impl Engine {
                 }
             }
         }
+        // The swarm panels' marks: the selected row's entities, the claim map.
+        self.editor_swarm_overlay(&mut p);
+        // The Ask box's leader line to what it is about (from where the box is).
+        if let (Some(t), Some(r)) = (self.editor.ui.ask.target(), self.editor.ui.ask.rect()) {
+            let from = [r[0] + r[2] * 0.5, if t[1] < r[1] { r[1] } else { r[1] + r[3] }];
+            p.line2d(from, t, CYAN, 2.0);
+            p.rect2d([t[0] - 4.0, t[1] - 4.0, 8.0, 8.0], CYAN);
+        }
         let room = specula_gpu::MAX_OVERLAY_QUADS.saturating_sub(out.len());
-        let scene = std::mem::take(&mut p.quads);
+        let mut scene = std::mem::take(&mut p.quads);
+        // Names (claim holders, the highlighted entry's agent) on the marks, under the panels.
+        if !p.labels.is_empty() {
+            let labels = std::mem::take(&mut p.labels);
+            let labeler = &mut self.editor.rt.labeler;
+            let (placed, _) = crate::sight_overlay::place_labels(labels, [size.0 as f32, size.1 as f32], 48, &mut |t| labeler.measure(t));
+            if let Err(e) = labeler.draw(&mut self.gpu, &placed, &mut scene) {
+                specula_core::trace_event!(&crate::trace_sink::ENGINE, Warn, "editor.labels_failed", message = e.as_str());
+            }
+        }
         self.editor.ui.overlay(&mut self.gpu, size, room, &scene, out);
+        // The Ask box over the panels (its own UI: its words never enter the editor screen's state).
+        let room = specula_gpu::MAX_OVERLAY_QUADS.saturating_sub(out.len());
+        self.editor.ui.ask.overlay(&mut self.gpu, size, room, out);
     }
 
     /// Where the editor's pointer is (the last input it read).
@@ -1651,6 +1846,10 @@ impl Engine {
             ("window", Json::arr([size.0, size.1].map(Json::from))),
             ("viewport", Json::arr(ui.viewport_rect(size).map(|v| Json::from(f64::from(v))))),
             ("driven_by", ui.driven_by.as_deref().map_or(Json::Null, Json::from)),
+            // The swarm panels as shown (one page), and the Ask box: open or not and what it is
+            // about, never the human's words.
+            ("swarm", ui.swarm.to_json()),
+            ("ask", ui.ask.status_json()),
         ]);
         if let Some(c) = self.editor.rt.cam {
             j.set("camera", c.camera().to_json());
@@ -1700,9 +1899,84 @@ impl Engine {
             Some("the gallery screen (F8) is open")
         } else if self.editor.rt.framed && (w == 0 || h == 0) {
             Some("the window is minimized")
+        } else if self.editor.ui.asking() {
+            Some("the human is typing into the Ask the agents box (only their own input acts then)")
         } else {
             None
         }
+    }
+
+    /// The `window_held` refusal for an agent's input to the editor (`what`: the tool), if
+    /// something holds the window; the input monitor is told who was turned away and why
+    /// (review R1 of m5-edswarm, minor 11: these refusals never reached it).
+    pub(crate) fn editor_held_refusal(&self, what: &str, by: &str) -> Option<crate::world::WorldError> {
+        let held = self.editor_window_held()?;
+        crate::inputguard::note(crate::inputguard::Channel::ScreenInput, "window_held", &format!("{what} by {by}: {held}"));
+        Some(
+            crate::world::WorldError::new("window_held", format!("{what}: the window is held ({held}); its frames would not run. Call again once it is free"))
+                .with("held_by", held)
+                .with("retry", true)
+                .with("retry_after_s", 1),
+        )
+    }
+
+    /// `ui_act {surface: "editor"}` (owner only; checked by the caller): its frames run on the
+    /// editor as an agent's injected frames do (`editor_input`): its edit (one per call) is the
+    /// window owner's, journaled with the agent as `via` and charged to the call. Returns the
+    /// id its frames run under, or why it can't run now.
+    pub(crate) fn editor_ui_act_begin(&mut self, by: &str) -> Result<u64, crate::world::WorldError> {
+        if !self.windowed {
+            return Err(crate::world::WorldError::new("no_window", "the editor surface is the window's editor: this engine runs headless (start it without --headless)"));
+        }
+        if let Some(e) = self.editor_held_refusal("ui_act on the editor", by) {
+            return Err(e);
+        }
+        specula_core::trace_event!(&crate::trace_sink::ENGINE, Info, "editor.input", by = by, via = "ui_act");
+        self.editor.ui.driven_by = Some(by.chars().take(64).collect());
+        self.editor.rt.input_seq += 1;
+        let id = self.editor.rt.input_seq;
+        let driver = Driver { call: self.dispatch_call, trace: specula_core::trace::Ctx::current(), by: by.to_owned(), frames: 0 };
+        self.editor.rt.input_tool_calls.insert(id, driver);
+        Ok(id)
+    }
+
+    /// One `ui_act` frame on the editor (see [`Engine::editor_ui_act_begin`]): the events go to
+    /// the editor alone, as `id`'s.
+    pub(crate) fn editor_ui_act_frame(&mut self, id: u64, events: &[Event], pads: &[specula_platform::gamepad::GamepadState], size: (u32, u32)) {
+        let driver = self.editor.rt.input_tool_calls.get(&id).cloned();
+        if self.editor.ui.asking() || driver.is_none() {
+            // The human opened the Ask box meanwhile: only their input acts now.
+            return;
+        }
+        self.editor.rt.size = size;
+        self.editor.rt.input_call = (id, driver);
+        let open_before = self.editor.ui.is_open();
+        let (acts, view) = self.editor.ui.frame(events, pads, size, false);
+        if self.editor.ui.is_open() && !open_before {
+            self.editor_opened();
+        }
+        for a in acts {
+            self.editor_act(a);
+        }
+        if self.editor.ui.is_open() {
+            if view.focus_lost {
+                self.editor_cancel_drag();
+            }
+            self.editor_viewport(&view, size);
+        }
+        self.editor.rt.input_call = (0, None);
+    }
+
+    /// The `ui_act` call is done: its frames ran (its edit is sent at the next pump, charged to it).
+    /// The edits tool call `call`'s frames queued (their tools): each is sent by the window's
+    /// next frame, so its outcome isn't known when the call answers.
+    pub(crate) fn editor_queued_edits(&self, call: u64) -> Vec<&'static str> {
+        self.editor.rt.outbox.iter().filter(|(_, _, _, d)| d.as_ref().is_some_and(|d| d.call == call)).map(|(tool, ..)| *tool).collect()
+    }
+
+    pub(crate) fn editor_ui_act_end(&mut self, id: u64) {
+        // Kept until its command is sent: the outbox holds its own copy of the driver.
+        self.editor.rt.input_tool_calls.remove(&id);
     }
 
     /// `editor_input`: queues simulated window input as the window's human (owner only; checked
@@ -1714,15 +1988,8 @@ impl Engine {
             ));
             return;
         }
-        if let Some(held) = self.editor_window_held() {
-            // Refused at once (its frames would only wait out the call's deadline).
-            let e = crate::world::WorldError::new(
-                "window_held",
-                format!("editor_input: the window is held ({held}); its frames would not run. Call again once it is free"),
-            )
-            .with("held_by", held)
-            .with("retry", true)
-            .with("retry_after_s", 1);
+        // Refused at once (its frames would only wait out the call's deadline).
+        if let Some(e) = self.editor_held_refusal("editor_input", by) {
             reply.refuse(&e);
             return;
         }
@@ -2241,6 +2508,267 @@ mod tests {
             let _ = sw.hello(&s, format!("a{i}"), "builder".into(), None, std::slice::from_ref(&s));
         }
         assert_eq!(sw.agent_name(&win), crate::authority::WINDOW_OWNER, "never pruned");
+    }
+
+    /// Highlight and ask: only the human's own input opens the box and types into it; an agent's
+    /// injected press is refused; while it is open editor_input is refused (`window_held`) and no
+    /// agent read (editor_state, the editor screen's state that ui_tree reads) holds the words;
+    /// Send posts one task_post as window:owner with the selection and the part.
+    #[test]
+    fn the_ask_box_is_the_humans_alone() {
+        let Some(mut e) = engine() else { return };
+        let id = spawn(&mut e, "statue", "bob");
+        e.windowed = true;
+        let size = (800, 600);
+        e.input = vec![Event::KeyDown { code: 0x76, repeat: false }, Event::KeyUp { code: 0x76 }];
+        e.editor_frame(size, false);
+        if !e.editor.ui.is_open() {
+            crate::skip_test("editor_engine", "the editor's UI did not load (no system fonts)");
+            return;
+        }
+        e.editor.ui.select(&[id], false);
+        // An agent's injected press (editor_input, ui_act) can't open it.
+        e.editor.rt.input_call = (9, Some(Driver { call: 77, trace: specula_core::trace::Ctx::current(), by: "mallory".into(), frames: 1 }));
+        e.editor_act(UiAct::AskOpen);
+        e.editor.rt.input_call = (0, None);
+        assert!(!e.editor.ui.asking(), "an injected press opens nothing");
+        // The human's own press opens it.
+        e.editor_act(UiAct::AskOpen);
+        assert!(e.editor.ui.asking());
+        const WORDS: &str = "secret plan for the head";
+        e.input = WORDS.chars().map(Event::Char).collect();
+        e.editor_frame(size, false);
+        let state = e.editor_state_json(true, true).to_string();
+        assert!(!state.contains("secret"), "editor_state never holds the words: {state}");
+        assert!(state.contains("\"ask\":{\"open\":true"), "{state}");
+        let screen = format!("{:?}", e.editor.ui.ui_parts().map(|(_, s, _)| s.clone()));
+        assert!(!screen.contains("secret"), "the editor screen's state (what ui_tree reads) never holds them");
+        // editor_input is refused while it is open, at once.
+        let (reply, rx) = crate::jobs::channel();
+        e.editor_input(vec![vec![]], "owner-proxy", 5, reply, Instant::now() + Duration::from_secs(5), crate::inputguard::seen_for_test());
+        let out = rx.recv_timeout(Duration::from_secs(1)).expect("answered at once");
+        assert!(out.is_error && answer_json(&out).get("error").and_then(Json::as_str) == Some("window_held"), "{:?}", answer_json(&out));
+        assert_eq!(e.editor_ui_act_begin("owner-proxy").unwrap_err().code, "window_held", "and ui_act on the editor");
+        // Enter: one task_post as window:owner, with the statue by identity and nothing else.
+        e.input = vec![Event::KeyDown { code: 0x0D, repeat: false }];
+        e.editor_frame(size, false);
+        assert!(e.editor.ui.asking() && e.editor.ui.ask.sending(), "it stays open, with the words, until the board has answered");
+        let (tool, args, why, driver) = e.editor.rt.outbox.pop().expect("sent");
+        assert_eq!((tool, driver.is_none(), matches!(why, Why::Ask)), ("task_post", true, true), "the human's own command");
+        assert_eq!(args.get("entities"), Some(&Json::arr([Json::from(id)])));
+        assert_eq!(args.get("tags"), Some(&Json::arr([Json::from(crate::ask::TAG)])));
+        assert!(args.get("detail").and_then(Json::as_str).is_some_and(|d| d.starts_with(WORDS)));
+        assert!(args.get("parts").is_none(), "the whole statue (no part picked)");
+        // Enter again while the answer is awaited sends nothing more.
+        e.input = vec![Event::KeyDown { code: 0x0D, repeat: false }];
+        e.editor_frame(size, false);
+        assert!(e.editor.rt.outbox.is_empty(), "one request at a time");
+        // Refused (a full board): the words are kept, and Enter sends them again (review R1,
+        // minor 5: the box closed when the request was queued, and a refusal lost them).
+        e.editor_answer(Why::Ask, &ToolOutput::error(r#"{"error": "board_full", "message": "the board is full"}"#.to_owned()));
+        assert!(e.editor.ui.asking() && !e.editor.ui.ask.sending(), "still open after a refusal");
+        assert_eq!(e.editor.ui.ask.typed_for_test(), WORDS, "with the words");
+        e.input = vec![Event::KeyDown { code: 0x0D, repeat: false }];
+        e.editor_frame(size, false);
+        assert_eq!(e.editor.rt.outbox.len(), 1, "sent again");
+        e.editor.rt.outbox.clear();
+        // Posted: now it closes.
+        e.editor_answer(Why::Ask, &ToolOutput::text(r#"{"id": 1}"#.to_owned()));
+        assert!(!e.editor.ui.asking(), "posted: the box closes");
+        // A screen taking the window closes it, dropping the words.
+        e.editor_act(UiAct::AskOpen);
+        e.input = "abc".chars().map(Event::Char).collect();
+        e.editor_frame(size, false);
+        e.editor_frame(size, true);
+        assert!(!e.editor.ui.asking() && e.editor.rt.outbox.is_empty(), "closed, nothing sent");
+    }
+
+    /// Review R1 of m5-edswarm, B2: a lead put the review screen on the window while the human
+    /// typed into the Ask box, and the human's Enter, meant to send the request, approved a
+    /// submission as window:owner (the screens read a frame's keys before the editor's frame
+    /// closed the box). The box closes before any screen reads the frame, and the keys of that
+    /// frame reach no screen; Escape (or a click) is the human's own answer to what they see
+    /// now, and gives the keys back.
+    #[test]
+    fn keys_typed_into_the_ask_box_never_reach_a_screen_an_agent_opened() {
+        let Some(mut e) = engine() else { return };
+        let id = spawn(&mut e, "statue", "bob");
+        e.windowed = true;
+        let size = (800, 600);
+        e.input = vec![Event::KeyDown { code: 0x76, repeat: false }, Event::KeyUp { code: 0x76 }];
+        e.editor_frame(size, false);
+        if !e.editor.ui.is_open() {
+            crate::skip_test("editor_engine", "the editor's UI did not load (no system fonts)");
+            return;
+        }
+        e.editor.ui.select(&[id], false);
+        e.editor_act(UiAct::AskOpen);
+        e.input = "make it red".chars().map(Event::Char).collect();
+        e.editor_frame(size, false);
+        assert!(e.editor.ui.asking());
+        // An agent's screen takes the window (the gallery here; the review screen comes the
+        // same way), and the human, still typing, presses Enter to send.
+        e.review_ui.open(None, &e.swarm.review, crate::inputguard::seen_for_test());
+        e.input = vec![Event::Char('!'), Event::KeyDown { code: 0x0D, repeat: false }, Event::KeyUp { code: 0x0D }];
+        e.text_window_screens();
+        // Review R2, N1: the hold on the keys runs out 0.6 s after the last one; the Enter the
+        // human presses after a pause must decide nothing either. The screen that took the
+        // window has its focus on Close, not on Approve.
+        assert_eq!(e.review_ui.pending_focus(), Some("rv_close"), "a screen over the human's typing: its focus is on Close");
+        assert!(!e.editor.ui.asking(), "the box closed before any screen read the frame");
+        assert!(!e.input.iter().any(|ev| matches!(ev, Event::KeyDown { .. } | Event::Char(_))), "and the keys meant for it reach no screen");
+        assert!(e.editor.rt.outbox.is_empty(), "nothing was sent");
+        // Escape is the human's answer to the screen they now see: it passes, and so do the
+        // keys after it.
+        e.input = vec![Event::KeyDown { code: 0x1B, repeat: false }];
+        e.text_window_screens();
+        assert_eq!(e.input.len(), 1, "Escape reaches the screen");
+        e.input = vec![Event::KeyDown { code: 0x0D, repeat: false }];
+        e.text_window_screens();
+        assert_eq!(e.input.len(), 1, "and the keys are the screen's again");
+    }
+
+    /// Review R1 of m5-edswarm, minors 1 and 2. The journal's pages count from the first and
+    /// go back and forth (the second page was labelled "page 1" with Newer and Newest off, so
+    /// the newest page couldn't be reached again); and an entity the timeline is filtered to
+    /// keeps its history when it is deleted, with the entry that deleted it (it said "No entries
+    /// match" at the moment the human most wants to know who did it).
+    #[test]
+    fn the_timeline_pages_both_ways_and_keeps_a_deleted_entitys_history() {
+        use crate::editor_swarm::{Place, SwAct};
+        let Some(mut e) = engine() else { return };
+        let ids: Vec<u64> = (0..25).map(|i| spawn(&mut e, &format!("n{i}"), "ann")).collect();
+        e.editor.ui.swarm.shown = true;
+        e.editor_swarm_refresh();
+        let page = |e: &Engine| (e.editor.ui.swarm.page_label(), e.editor.ui.swarm.has_prev(), e.editor.ui.swarm.has_next);
+        assert_eq!(page(&e), ("page 1".to_owned(), false, true));
+        for want in [("page 2", true, true), ("page 3", true, false)] {
+            e.editor_swarm_act(SwAct::Older);
+            e.editor_swarm_refresh();
+            assert_eq!(page(&e), (want.0.to_owned(), want.1, want.2));
+        }
+        for want in [("page 2", true, true), ("page 1", false, true)] {
+            e.editor_swarm_act(SwAct::Newer);
+            e.editor_swarm_refresh();
+            assert_eq!(page(&e), (want.0.to_owned(), want.1, want.2), "Newer goes back a page, to the newest");
+        }
+        // The timeline of one entity, then bob deletes it.
+        e.editor.ui.select(&[ids[3]], false);
+        e.editor_swarm_act(SwAct::CyclePlace);
+        assert!(matches!(e.editor.ui.swarm.place, Place::Entity(_)));
+        e.editor_swarm_refresh();
+        assert_eq!(e.editor.ui.swarm.rows.len(), 1);
+        let bob = Writer::new("bob", Some("bob"));
+        e.world
+            .commit(&mut e.swarm, 0, bob, crate::journal::Kind::Delete, crate::write_policy::Rule::World, |wd| wd.delete(&crate::world::EntityKey::Id(ids[3]), None).map(|_| ()))
+            .unwrap();
+        e.editor.ui.swarm.built = None;
+        e.editor_swarm_refresh();
+        let labels: Vec<String> = e.editor.ui.swarm.rows.iter().map(|r| r.label.clone()).collect();
+        assert_eq!(labels.len(), 2, "its history stays, with who deleted it: {labels:?}");
+        assert!(labels[0].contains("bob: delete") && labels[1].contains("ann: spawn"), "{labels:?}");
+    }
+
+    /// Review R1 of m5-edswarm, minor 13: a task's parts are checked against the entities they
+    /// name, not only for shape.
+    #[test]
+    fn a_tasks_parts_are_checked_against_the_entities_they_name() {
+        use crate::ask::{Part, PartKind};
+        let Some(mut e) = engine() else { return };
+        let id = spawn(&mut e, "plain", "ann");
+        let span = [Part { entity: Some(0), kind: PartKind::TextSpan { start: 0, end: 5 } }];
+        let refused = e.check_parts(&[id], &span).unwrap_err();
+        assert!(refused.code == "invalid_argument" && refused.message.contains("parts[0]") && refused.message.contains("has no text"), "{}", refused.message);
+        let head = [Part { entity: Some(0), kind: PartKind::RecipePart { name: "head".into() } }];
+        let refused = e.check_parts(&[id], &head).unwrap_err();
+        assert!(refused.message.contains("has no model"), "{}", refused.message);
+        // A place needs no entity's leave.
+        let area = [Part { entity: None, kind: PartKind::Area { center: [0.0; 3], radius: 2.0 } }];
+        assert!(e.check_parts(&[id], &area).is_ok());
+    }
+
+    /// The swarm panels fill from the engine's stores: the journal timeline names who changed
+    /// what (filtered by the selected entity, by identity) and highlights it; the claims view
+    /// lists claims with their holder; the cost view counts calls and commits per agent.
+    #[test]
+    fn the_swarm_panels_show_who_did_what() {
+        use crate::editor_swarm::{Place, RowKey, SwAct, View};
+        let Some(mut e) = engine() else { return };
+        let a = spawn(&mut e, "a", "ann");
+        let b = spawn(&mut e, "b", "bob");
+        e.editor.ui.swarm.shown = true;
+        e.editor_swarm_refresh();
+        let labels = |e: &Engine| e.editor.ui.swarm.rows.iter().map(|r| r.label.clone()).collect::<Vec<_>>();
+        assert!(labels(&e).iter().any(|l| l.contains("ann: spawn /a")) && labels(&e).iter().any(|l| l.contains("bob: spawn /b")), "{:?}", labels(&e));
+        // The place filter: the selected entity (by identity).
+        e.editor.ui.select(&[a], false);
+        e.editor_swarm_act(SwAct::CyclePlace);
+        assert!(matches!(e.editor.ui.swarm.place, Place::Entity(_)));
+        e.editor_swarm_refresh();
+        assert_eq!(labels(&e).len(), 1, "{:?}", labels(&e));
+        e.editor_swarm_act(SwAct::Select(0));
+        assert_eq!(e.editor.ui.swarm.highlight, vec![a]);
+        assert!(e.editor.ui.swarm.detail.contains("by ann"), "{}", e.editor.ui.swarm.detail);
+        // Claims, with their holders.
+        let s = SessionInfo { id: "c".repeat(32), client_name: "c".into(), client_version: String::new(), protocol_version: String::new() };
+        e.swarm.hello(&s, "carol".into(), "builder".into(), None, std::slice::from_ref(&s)).unwrap();
+        let spec = crate::claims::ClaimSpec { scope: crate::claims::Scope::path("/b").unwrap(), lease: Duration::from_secs(60), note: String::new() };
+        e.swarm.take_claim(&e.world, &s, spec).unwrap();
+        e.editor_swarm_act(SwAct::View(View::Claims));
+        e.editor_swarm_refresh();
+        assert!(labels(&e).iter().any(|l| l == "carol: /b"), "{:?}", labels(&e));
+        e.editor_swarm_act(SwAct::Select(0));
+        assert_eq!(e.editor.ui.swarm.highlight, vec![b]);
+        // Cost: calls and commits per agent.
+        e.swarm.count_call("carol");
+        e.swarm.count_commits("carol", 2);
+        e.editor_swarm_act(SwAct::View(View::Cost));
+        e.editor_swarm_refresh();
+        assert!(labels(&e).iter().any(|l| l.starts_with("carol: 1 calls, 2 commits")), "{:?}", labels(&e));
+        assert!(e.editor.ui.swarm.rows.iter().any(|r| r.key == RowKey::Agent("carol".into()) && r.badge == "tokens not reported"));
+        // A world replacement drops what names the old world's entities.
+        e.editor_swarm_act(SwAct::View(View::Journal));
+        e.editor.ui.swarm.place = Place::All;
+        e.editor.ui.select(&[a], false);
+        e.editor_swarm_act(SwAct::CyclePlace);
+        e.editor_swarm_refresh();
+        e.editor_swarm_act(SwAct::Select(0));
+        assert!(matches!(e.editor.ui.swarm.place, Place::Entity(_)) && e.editor.ui.swarm.highlight == vec![a]);
+        e.world_changed_wholesale();
+        assert!(e.editor.ui.swarm.highlight.is_empty() && e.editor.ui.swarm.place == Place::All, "an entity filter is the old world's");
+        // A path filter is only a path: it stays.
+        e.editor.ui.swarm.place = Place::Path("/a".into());
+        e.world_changed_wholesale();
+        assert_eq!(e.editor.ui.swarm.place, Place::Path("/a".into()));
+    }
+
+    /// The journal timeline pages back without gaps or repeats, filtered by agent too.
+    #[test]
+    fn the_journal_timeline_pages_back_through_every_entry() {
+        use crate::editor_swarm::{RowKey, SwAct, ROWS};
+        let Some(mut e) = engine() else { return };
+        for i in 0..40 {
+            spawn(&mut e, &format!("e{i:02}"), if i % 2 == 0 { "ann" } else { "bob" });
+        }
+        e.editor.ui.swarm.shown = true;
+        let seqs = |e: &Engine| e.editor.ui.swarm.rows.iter().filter_map(|r| if let RowKey::Entry(s) = r.key { Some(s) } else { None }).collect::<Vec<u64>>();
+        let mut all = Vec::new();
+        for _ in 0..10 {
+            e.editor.ui.swarm.built = None;
+            e.editor_swarm_refresh();
+            all.extend(seqs(&e));
+            if !e.editor.ui.swarm.has_next {
+                break;
+            }
+            e.editor_swarm_act(SwAct::Older);
+        }
+        let want: Vec<u64> = e.swarm.journal().entries_upto_rev(u64::MAX, false).map(|x| x.seq).collect();
+        assert!(want.len() >= 40);
+        assert_eq!(all, want, "every entry once, newest first, {ROWS} a page");
+        e.editor_swarm_act(SwAct::Newest);
+        e.editor.ui.swarm.agent = Some("bob".into());
+        e.editor_swarm_refresh();
+        assert!(e.editor.ui.swarm.rows.iter().all(|r| r.label.contains(" bob: ")), "only bob's");
     }
 
     #[test]

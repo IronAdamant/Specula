@@ -151,11 +151,12 @@ pub struct BannerDrawn {
 }
 
 /// The refusal for an agent other than the operator putting a screen (`tool`) on the window
-/// while the human types into a text the operator pointed their keyboard at.
+/// while the human types: into a text the operator pointed their keyboard at, or into the
+/// editor's "Ask the agents" box.
 pub fn typing_busy(tool: &str) -> crate::world::WorldError {
     crate::world::WorldError::new(
         "window_typing",
-        format!("the human is typing into a text in the window: {tool} waits until they stop (Escape or a click), or the owner or a granted lead puts it there"),
+        format!("the human is typing in the window (into a text, or the editor's Ask the agents box): {tool} waits until they stop (Escape or a click), or the owner or a granted lead puts it there"),
     )
     .with("tool", tool)
 }
@@ -272,8 +273,20 @@ impl WindowTyping {
     /// While a guard holds ([`KEY_GUARD_GAP`]), the frame's keys, characters and IME events
     /// are withheld from the game (traced); a click, Escape, or a pause in typing ends it.
     fn guard_keys(&mut self, events: &mut Vec<Event>) {
+        self.guard_keys_at(events, Instant::now());
+    }
+
+    /// Withholds what the human goes on typing ([`TextTyping::guard_keys`]) for typing that
+    /// ended outside a text entity: the editor's "Ask the agents" box, closed under them.
+    pub fn hold_keys(&mut self, now: Instant, reason: &str) {
+        self.guard = Some((now, now));
+        crate::inputguard::note(crate::inputguard::Channel::Keyboard, "keys_held", reason);
+    }
+
+    /// [`TextTyping::guard_keys`] at `now` (one instant for a frame: a guard armed in a frame
+    /// holds that frame's keys whatever the machine's speed).
+    fn guard_keys_at(&mut self, events: &mut Vec<Event>, now: Instant) {
         let Some((began, last)) = self.guard else { return };
-        let now = Instant::now();
         let human = events.iter().any(|e| {
             matches!(e, Event::MouseDown { .. } | Event::PointerDown { .. } | Event::KeyDown { code: VK_ESCAPE, .. })
         });
@@ -716,11 +729,31 @@ impl crate::Engine {
     /// a gallery variant). Clicks, taps and pads pass: they are the human's choice.
     pub(crate) fn text_window_screens(&mut self) {
         let agents_screen = self.review_ui.is_open() || self.taste.screen.is_open();
+        let now = Instant::now();
         if agents_screen && self.text_typing.focus.is_some() {
             self.text_typing.drop_focus("engine_screen");
         }
+        // The editor's "Ask the agents" box is the human typing too. It closes here, before
+        // the screens read this frame, and the keys the human goes on typing are withheld the
+        // same way. (Review R1 of m5-edswarm, B2: the box was closed inside the editor's own
+        // frame, after the review screen had read the keys: a lead opened the review screen
+        // while the human typed a request, the human pressed Enter to send it, and Enter
+        // approved a submission as window:owner.)
+        let typing = agents_screen && (self.text_typing.focus.is_some() || self.editor.ui.asking());
+        if agents_screen && self.editor.ui.asking() {
+            self.editor.ui.ask.close("engine_screen");
+            self.editor.ui.set_status("The Ask box closed: another screen took the window. Nothing was sent.", false);
+            self.text_typing.hold_keys(now, "ask_box_closed");
+        }
+        if typing {
+            // The screen took the window from under the human's typing: whoever opened it, its
+            // focus goes to Close. The hold on the keys only covers what they type without a
+            // pause; this covers the Enter after one (review R2 of m5-edswarm, N1).
+            self.review_ui.defuse();
+            self.taste.screen.defuse();
+        }
         if self.text_typing.focus.is_none() {
-            self.text_typing.guard_keys(&mut self.input);
+            self.text_typing.guard_keys_at(&mut self.input, now);
         }
     }
 

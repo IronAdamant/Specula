@@ -99,6 +99,9 @@ pub struct ReviewUi {
     human_closed: Option<std::time::Instant>,
     /// Set when the queue changed: the state is filled again.
     dirty: bool,
+    /// The "Review (n)" tab is not drawn (the editor is open: its status bar is where the tab
+    /// sits, and it says itself when work waits).
+    tab_hidden: bool,
     /// The widget to focus at the end of the next window frame.
     focus: Option<&'static str>,
     /// The shown submission's batch as "Approve batch (n)" counted it, and when that changed.
@@ -133,6 +136,7 @@ impl Default for ReviewUi {
             started: std::time::Instant::now(),
             human_closed: None,
             dirty: true,
+            tab_hidden: false,
             focus: None,
             batch_ids: Vec::new(),
             batch_at: f64::NEG_INFINITY,
@@ -353,6 +357,25 @@ impl ReviewUi {
         }
     }
 
+    /// The screen took the window while the human was typing somewhere else (a text, the
+    /// editor's Ask box): its focus goes to Close, so the key they meant for their words (Enter,
+    /// Space) decides nothing. It closes the screen instead, and agents then can't reopen it for
+    /// a while; deciding takes a click, or a move to the button. (Review R2 of m5-edswarm, N1:
+    /// holding back the keys the human goes on typing only narrowed the accident; after a pause
+    /// of 0.6 s the next Enter approved, the screen's focus being on Approve. Whether every
+    /// screen an agent opens should start on Close is an open owner decision: HANDOFF.md.)
+    pub fn defuse(&mut self) {
+        if self.open {
+            self.focus = Some("rv_close");
+        }
+    }
+
+    /// The focus the next frame will set (tests).
+    #[cfg(test)]
+    pub fn pending_focus(&self) -> Option<&'static str> {
+        self.focus
+    }
+
     pub fn close(&mut self) {
         self.open = false;
         self.rejecting = false;
@@ -437,6 +460,7 @@ impl ReviewUi {
         let st = &mut self.state;
         st.reset();
         st.set_int("pending", pending.len() as i64);
+        st.set_bool("tab_shown", !pending.is_empty() && !self.tab_hidden);
         st.set_bool("rejecting", self.rejecting);
         st.set_str("status_line", &self.status.0);
         st.set_bool("status_good", self.status.1);
@@ -601,6 +625,15 @@ impl ReviewUi {
     /// One window frame: reads input (toggle, paging, the screen's buttons) and returns what the
     /// presses ask for, whether the screen took this frame's input (open now or when the frame
     /// began: modal), and whether it took the pointer (the tab).
+    /// Whether the "Review (n)" tab is left undrawn (the capture check of m5-edswarm: with the
+    /// editor open it drew over the status line's first words and the outliner's pager).
+    pub fn hide_tab(&mut self, hidden: bool) {
+        if self.tab_hidden != hidden {
+            self.tab_hidden = hidden;
+            self.dirty = true;
+        }
+    }
+
     pub fn frame(&mut self, events: &[Event], pads: &[GamepadState], size: (u32, u32), review: &Review) -> (Vec<Act>, bool, bool) {
         let mut acts = Vec::new();
         let was_open = self.open;
@@ -890,6 +923,22 @@ mod tests {
         let s = test_ui();
         assert!(s.ui.as_ref().unwrap().widget("review", "rv_image").is_some());
         assert!(s.ui.as_ref().unwrap().widget("review_tab", "rv_tab").is_some());
+    }
+
+    /// Review R2 of m5-edswarm, N1: opened, the screen's focus is Approve; when it took the
+    /// window from under the human's typing it is moved to Close, so the key meant for their
+    /// words decides nothing.
+    #[test]
+    fn a_screen_over_the_humans_typing_has_its_focus_moved_to_close() {
+        let r = review_with(2);
+        let mut s = test_ui();
+        s.open(None, &r, crate::inputguard::seen_for_test());
+        assert_eq!(s.pending_focus(), Some("rv_approve"), "opened");
+        s.defuse();
+        assert_eq!(s.pending_focus(), Some("rv_close"), "over the human's typing");
+        s.close();
+        s.defuse();
+        assert!(!s.is_open(), "a closed screen stays closed");
     }
 
     #[test]

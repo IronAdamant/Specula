@@ -155,6 +155,12 @@ impl Engine {
         let class = crate::call_class(&request.command);
         let _c = ctx.enter();
         let started = Instant::now();
+        // The editor's cost dashboard: calls per named agent (a map lookup; a session that hasn't
+        // said agent_hello has only a placeholder name, and its hello isn't work).
+        if self.swarm.introduced(&request.session.id) {
+            let by = self.swarm.agent_name(&request.session);
+            self.swarm.count_call(&by);
+        }
         self.handle(request, server);
         self.watch.last_request = Instant::now();
         self.engine_work_done(ctx.call, Some(class), "request", started.elapsed());

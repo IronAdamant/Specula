@@ -11,12 +11,65 @@
 //! Paths are only shown: an attached reference's current path is looked up when it is listed
 //! (the page's items only), and the stored *last known* path is refreshed then, when it is made,
 //! and once before the world is replaced ([`crate::swarm::Swarm::remember_entity_paths`]).
-//! Nothing runs per loop or per write, and renames (by anyone: agents, the human, modules, the
-//! hosted game) can't race a reference, since they don't change identity.
+//! Nothing runs per loop, and renames (by anyone: agents, the human, modules, the hosted game)
+//! can't race a reference, since they don't change identity.
+//!
+//! **Deletes** are the one write that matters: a deleted entity can't be looked up any more, so
+//! its references take the path it had when it was deleted ([`Gone`],
+//! [`crate::swarm::Swarm::note_deletes`], after each journaled write that deleted something a
+//! reference names). A note on `/dd` renamed to `/ee` and then deleted shows `/ee`.
 
 use crate::journal::path_under;
 use crate::world::{EntityUid, World, WorldError};
 use specula_core::Json;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// Entities just deleted that a reference names: identity → its path when it was deleted.
+pub type Gone<'a> = BTreeMap<EntityUid, &'a str>;
+
+/// Who names each entity identity: a store's index of its references, kept as they come and go
+/// (`K`: the kind of holder, with the holder's id). A delete then costs a lookup per deleted
+/// entity and a visit per holder that names it, whatever the store holds. (Review R1 of
+/// m5-edswarm, M1: the set of named identities was rebuilt from every note, task, critique and
+/// submission whenever the board's revision had moved, which every commit by a task's holder
+/// does: 69-77 ms a delete at the board's own caps, on the engine thread.)
+#[derive(Clone, Debug, PartialEq)]
+pub struct Referrers<K: Ord + Copy> {
+    by_uid: BTreeMap<EntityUid, BTreeSet<(K, u64)>>,
+}
+
+impl<K: Ord + Copy> Default for Referrers<K> {
+    fn default() -> Self {
+        Referrers { by_uid: BTreeMap::new() }
+    }
+}
+
+impl<K: Ord + Copy> Referrers<K> {
+    /// Holder (`kind`, `id`) names `uid` (once, however often it is said).
+    pub fn add(&mut self, uid: EntityUid, kind: K, id: u64) {
+        self.by_uid.entry(uid).or_default().insert((kind, id));
+    }
+
+    /// Holder (`kind`, `id`) no longer names `uid` (it was dropped).
+    pub fn forget(&mut self, uid: EntityUid, kind: K, id: u64) {
+        if let Some(holders) = self.by_uid.get_mut(&uid) {
+            holders.remove(&(kind, id));
+            if holders.is_empty() {
+                self.by_uid.remove(&uid);
+            }
+        }
+    }
+
+    /// Whether any holder names `uid`.
+    pub fn names(&self, uid: &EntityUid) -> bool {
+        self.by_uid.contains_key(uid)
+    }
+
+    /// The holders that name an identity in `gone`, each once.
+    pub fn holders(&self, gone: &Gone<'_>) -> BTreeSet<(K, u64)> {
+        gone.keys().filter_map(|uid| self.by_uid.get(uid)).flatten().copied().collect()
+    }
+}
 
 /// See the module docs. Equal when they name the same identity (paths are only shown).
 #[derive(Clone, Debug)]
@@ -77,6 +130,18 @@ impl EntityRef {
         }
         self.path = world.path_of(id);
         true
+    }
+
+    /// Takes the path its entity had when it was deleted, if `gone` has its identity. Whether it
+    /// changed.
+    pub fn deleted(&mut self, gone: &Gone<'_>) -> bool {
+        match gone.get(&self.uid) {
+            Some(&p) if p != self.path => {
+                p.clone_into(&mut self.path);
+                true
+            }
+            _ => false,
+        }
     }
 
     /// As shown to agents (call [`EntityRef::refresh`] first): `{id, path}` while attached,

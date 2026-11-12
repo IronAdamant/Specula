@@ -639,7 +639,7 @@ pub fn commit<T>(
     // `journal::commit` refuses transient writes, runs `check` step by step, rolls a failed
     // command back and journals the rest.
     let result = journaling(world, |world| journal::commit(world, journal, tick, w, kind, check, command));
-    prune_retired(world, swarm);
+    after_journaled(world, swarm);
     match &result {
         Err(e) => {
             swarm.count_rejection(w, e);
@@ -675,7 +675,7 @@ pub fn undo(world: &mut dyn WorldWrite, swarm: &mut Swarm, tick: u64, w: Writer,
     let mut check = |world: &World, change: &Change| claims_step(claims, world, change, w, now, true);
     let check: Option<&mut journal::Check> = if claims.could_block(w, now) { Some(&mut check) } else { None };
     let result = journaling(world, |world| journal.undo(world, tick, w, req, check));
-    prune_retired(world, swarm);
+    after_journaled(world, swarm);
     match &result {
         Err(e) => {
             swarm.count_rejection(w, e);
@@ -716,7 +716,7 @@ pub fn game_commit(world: &mut dyn WorldWrite, swarm: &mut Swarm, mark: Mark, ti
             swarm.note_commit();
         }
     }
-    prune_retired(world, swarm);
+    after_journaled(world, swarm);
     Ok(())
 }
 
@@ -763,7 +763,7 @@ pub fn journal_exempt(world: &mut dyn WorldWrite, swarm: &mut Swarm, tick: u64, 
         swarm.note_claim_crossings(world, &changes, why.by(), tick);
     }
     swarm.journal_mut(&KEY).append_snapshot(tick, why.by(), None, why.kind(), changes, world.next_id());
-    prune_retired(world, swarm);
+    after_journaled(world, swarm);
     broke
 }
 
@@ -794,6 +794,14 @@ pub fn module_agent_commit<'a>(swarm: &'a mut Swarm, tick: u64, w: Writer<'a>) -
 /// ([`Kind::Module`]), with no world changes.
 pub fn module_event(world: &World, swarm: &mut Swarm, by: Writer, via: Option<&str>, event: journal::ModuleEvent) -> u64 {
     swarm.journal_mut(&KEY).append_module(by, via, event, world.next_id())
+}
+
+/// After every journaled write: the removed-entity record is pruned ([`prune_retired`]), and
+/// references (notes, tasks, critiques, submission roots) to entities the write deleted take the
+/// path each had then ([`Swarm::note_deletes`]).
+fn after_journaled(world: &mut World, swarm: &mut Swarm) {
+    prune_retired(world, swarm);
+    swarm.note_deletes();
 }
 
 /// What the input monitor did (a freeze, a swarm pause, a clear, an allowance) is journaled as a

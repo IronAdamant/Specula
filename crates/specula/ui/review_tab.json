@@ -3,13 +3,13 @@
   "name": "review_tab",
   "input": "hud",
   "layer": 89,
-  "notes": "The tab that opens the review screen by mouse or touch while work is pending (keys: F9; gamepad: LB + RB + Y). State: pending.",
+  "notes": "The tab that opens the review screen by mouse or touch while work is pending (keys: F9; gamepad: LB + RB + Y). Not drawn while the editor is open (it sat on the editor's status bar: the editor says when work waits). State: pending, tab_shown.",
   "root": {
     "type": "box",
     "children": [
       {
         "type": "button", "id": "rv_tab", "style": "tab", "anchor": "bottom_left", "margin": [0, 0, 12, 12],
-        "text": "Review ({pending})", "action": "review_open", "visible": "pending > 0",
+        "text": "Review ({pending})", "action": "review_open", "visible": "tab_shown",
         "tooltip": "Open the review queue (F9)."
       }
     ]

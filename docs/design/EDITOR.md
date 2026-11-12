@@ -205,9 +205,21 @@ engine thread. So a reference holds an identity instead, and paths are only show
 - **Paths are looked up when shown.** Listings (`note_list`, `critique_list`, `task_get`) show an attached
   reference's current path, worked out for the page's items only; `path_prefix` filters resolve the prefix once and
   ask whether it is an ancestor (no allocation per reference). The last known path is refreshed then, when added,
-  and once before a world replacement (O(references x (log n + depth)), with the load).
-- **Nothing runs per loop or per write.** No journal walk, no hook in the write policy, nothing while the world is
-  idle or the game ticks. Concurrent renames can't race a reference, because a rename doesn't change identity.
+  once before a world replacement (O(references x (log n + depth)), with the load), and **when its entity is
+  deleted**: the reference takes the path the entity had then (wave 2: a note on `/dd` renamed to `/ee`, never
+  listed, then deleted, showed `/dd`).
+- **Deletes are the one write that matters** (`Swarm::note_deletes`, after every journaled write): the new
+  entries' changes are scanned (a discriminant check each); only a delete of a persistent entity looks its
+  identity up in the board's and the review queue's own indexes of who names each identity
+  (`entity_ref::Referrers`, kept as references come and go: nothing is rebuilt), and only the notes, tasks,
+  critiques and submissions that name it are visited (review R1: the set was rebuilt from all of them whenever
+  the board had changed, 69-77 ms a delete at the board's caps; a test counts the holders visited). No other
+  per-write work, nothing per loop, nothing while the world is idle. Concurrent renames can't race a reference,
+  because a rename doesn't change identity.
+- **Review submission roots** are references too (`review::Root`): approval promotes, revert checks and rework
+  tasks resolve a root by identity, and a root whose identity is gone refuses approval and promotion
+  (`root_gone`), `force` or not: after a `save_read` its old id may name another entity, which approval must
+  never move or replace. Subtree stamps include each entity's lineage. Older review files' roots load detached.
 
 ## How actions map onto tools
 
@@ -242,6 +254,106 @@ engine thread. So a reference holds an identity instead, and paths are only show
 - The pick render costs one offscreen view, only on a click or a box release.
 - The gizmo is at most a few hundred overlay triangles.
 - `editor_check.py` measures the window's frame time with the editor open against `perf.toml`'s budget on the iGPU.
+
+## Swarm panels (wave 2, `editor_swarm.rs`)
+
+The right dock has two tabs: **Inspector** and **Swarm**. The Swarm tab shows what the agents are doing, beside
+the world they are doing it to. Every panel is read-only: decisions stay in the review screen, edits stay
+protocol commands. Panels are rebuilt on change (the journal's last entry for the views that show it, the
+board's and queue's sequence numbers, the claim, lease and intent counts, the page and filters), at most four
+times a second, and only while the Swarm tab is shown; a page of 10 rows at a time, each from a bounded read
+of the engine's own stores: never a walk of the world. (A running game journals every tick, so the Journal
+and Cost views rebuild at that cap while it runs.) A row's label is at most 56 characters and wraps inside its row;
+the selected row's detail has the rest. A list that stops says so (the first 200 leases or intents).
+
+| View | Rows | Selecting a row |
+|---|---|---|
+| **Journal** | entries newest first (`#seq agent: kind path (+n)`, badges: `via`, `task N`, `undone`); paged back through the journal (Older, Newer, Newest). Filters: one **agent** (cycles through the agents on the page), a **place** (the selected entity, by identity; then its path), and the hosted game's own entries (hidden by default: every tick). A filtered page examines at most 20,000 entries and says so. | Its changes, its task, its call; the entities it touched are boxed in amber in the viewport with the agent's name: **which agent built this**. |
+| **Claims** | every live claim (holder, scope, seconds left, shared) then every lease (ports, GPU time, scratch). | The claim in words; its entity boxed. |
+| **Board** | tasks newest first (status, owner, `asked` for "highlight and ask" tasks), or intents, or notes. | The task's detail, the parts it is about, progress, work (entries, changes, refusals), result; its entities boxed. |
+| **Review** | pending submissions (title, submitter, task). | Its checks and roots (a gone root: "can't be approved"); **Open in the review screen** opens it there (F9) to decide. |
+| **Cost** | per agent: calls the engine handled, commits charged to its calls, refused writes; then every task in progress with its owner, progress and work. | The agent's refusals by code, claims and tasks in hand. |
+
+**Tokens:** shown only if a harness reports them, and then as reported by the agent, never as measured: no
+harness reports tokens to the engine yet, so the dashboard says "tokens not reported" (AGENTS rule 15:
+agent-reported values never show as engine results).
+
+**The claim map** (toolbar, *Claim map*) draws every live claim's scope in the viewport in its holder's colour
+(`sight_overlay::owner_color`) with the holder's name: a path claim boxes its entity, a region claim its box. It
+draws at most 256 claims a frame (a path lookup and a box each) and says on the status line when there are
+more; names are placed like sight's labels (at most 48).
+
+Agents see the same panels: `editor_state` carries `swarm` (the view, filters, one page of rows, the detail
+and what is highlighted). **The editor's screen itself is read and pressed by the owner only:**
+`ui_tree`, `ui_check` and `ui_act {surface: "editor"}` are for an agent the operator granted `--owner`, because
+the screen shows what the human types (an entity's name, a text's words, numbers, the outliner's search).
+Another agent's call that names the editor is refused `owner_only`, and one that names no surface is the
+game's, never the editor's (review R1, B1: a builder's `ui_tree` read the name being typed). `ui_act` on the
+editor answers when its frames have run: a press that made an edit says so (`edit.queued`), and the edit's
+outcome shows in `editor_state`'s status and `world_history` once the window's next frame has sent it
+(`editor_input` waits for its frames and returns that state).
+
+The window's "Review (n)" tab is not drawn while the editor is open (it sat on the status bar): the editor's
+status line says when work comes in for review, and the Swarm tab's Review view lists it.
+
+## Highlight and ask (wave 2, `editor_ask.rs`, `ask.rs`)
+
+The owner's idea (2026-11-07), the centrepiece of the director pattern: the human points at something and asks
+the swarm to change it; the swarm does it through the normal tools; the human decides.
+
+1. **Highlight.** Select an entity (Shift adds more). The box offers a **part** of the primary: a named part of
+   its model recipe (`Recipe::part_names`, read from the library's parsed recipe: no disk, no parse), its
+   words (a text entity), or the ground around it (a terrain or grass patch). Part descriptors are data
+   (`ask::Part`): `text_span {entity, start, end}`, `recipe_part {entity, name}`, `area {center, radius}`,
+   `rail {timeline, from_s, to_s}`; the editor-draw lane's partial selection (text spans, recipe parts picked
+   in the viewport) and timeline rails produce the same descriptors.
+2. **Ask.** *Ask...* (toolbar or inspector) opens the engine-owned **"Ask the agents"** box along the
+   window's bottom edge when the selection is in the top half of the window, else along its top edge, so it
+   never covers what it is about, with a leader line to the selection.
+3. **Send** (Enter; Shift+Enter is a new line; Esc cancels) posts one `task_post` as `window:owner` (a
+   protocol command like every editor edit): the request as the detail (its first line in the title), the
+   selection as `entities` (by identity: `EntityRef`), the part as `parts`, the tag `ask`, priority 6. The
+   human is its poster. The box stays open, with the words, until the board has taken the request: a refused
+   post (a full board) keeps them to send again. A pad's buttons press Send and Cancel too.
+4. **Agents act.** An agent finds it (`task_list {tag: "ask"}`), `task_take`s it, edits through the normal
+   tools (journaled, claim-checked, undoable; the board links each journal entry to the agent's current task),
+   and `review_submit`s with the task.
+5. **Review.** The human approves or rejects in the review screen (the Swarm tab's Review view opens it). The
+   journal timeline shows each entry's task, so the request links to its edits.
+
+Parts are checked when the task is posted (`Engine::check_parts`): a text span lies inside its entity's words,
+between characters, and a recipe part is one its entity's model recipe has. A rail's timeline is not checked
+yet (nothing produces rails until the editor's timeline tools do).
+
+**The box is the human's alone** (TEXT.md, "The window's keyboard"):
+
+- **A screen an agent opens never takes its keys.** When the review screen or a gallery is put on the window
+  while the box is open, the box closes before any screen reads that frame, and the keys the human goes on
+  typing are withheld from the screens (as for a text: TEXT.md, "Screens agents open"): every key, F9
+  included, until 0.6 s pass without one, or Escape or a click. And **a screen that takes the window while
+  the human types has its focus moved to Close**, off its decision: the Enter or Space the human presses after
+  a pause closes it (agents then can't reopen it for 30 s), and deciding takes a click or a move to the
+  button. Review R1, B2: a lead opened the review screen, and the human's Enter, meant to send the request,
+  approved a submission; R2: holding the keys back alone only narrowed that. (A screen an agent opens while
+  the human is *not* typing still starts on its decision, as M4 built it: whether it should is an open owner
+  decision, HANDOFF.md.)
+
+- Only the human's own window input opens it, types into it or presses its buttons. An agent's injected frame
+  (`editor_input`, `ui_act {surface: "editor"}`) can't open it (`editor.ask_refused` is traced), and while it is
+  open those calls are refused at once (`window_held`) and queued frames wait.
+- **No agent reads it while the human types.** The words live only in `editor_ask`'s private fields and its
+  own `specula-ui` instance (`ui/editor_ask.json`), which is not a UI-tools surface: never the editor screen's
+  state (`ui_tree`), never `editor_state` (which says only that it is open and what it is about), never a
+  trace. They leave only on Send, as the task the human sent.
+- **Agents can't create or move it:** it opens at the human's press, placed from where the selection was then,
+  and stays there. Moving the entity afterwards moves nothing.
+- **Screens:** while it is open only the owner or a granted lead puts the review or gallery screen on the
+  window (`window_typing`, as for window typing into a text); if one does, the box closes and what was typed
+  is dropped, never sent.
+- **The window's title** says "Asking the agents: only your keyboard types here" while it is open: the cue
+  world content can't fake.
+- Bounds: 2,000 characters; the selection's newest 64 entities; one part; IME compositions show inline and
+  commit as typed characters.
 
 ## Where wave 2 plugs in
 

@@ -20,6 +20,7 @@ pub mod jobs;
 mod balance_tools;
 mod bounds;
 pub mod board;
+pub mod ask;
 pub mod anim;
 mod anim_tools;
 pub mod cameras;
@@ -86,7 +87,9 @@ mod review_engine;
 mod review_screen;
 mod gallery_screen;
 mod editor;
+mod editor_ask;
 mod editor_engine;
+mod editor_swarm;
 mod editor_gizmo;
 mod editor_tools;
 mod taste;
@@ -2276,6 +2279,10 @@ impl Engine {
             if let Some(path) = self.text_typing.focused_path() {
                 next = format!("{next} — {}", text_window::cue_text(path));
             }
+            if self.editor.ui.asking() {
+                // The cue world content can't fake (TEXT.md): the editor's Ask box has the keys.
+                next = format!("{next} — Asking the agents: only your keyboard types here, Esc cancels");
+            }
             // A security incident or alert is in the title too (docs/design/SECURITY.md).
             if let Some(s) = self.security_title() {
                 next = format!("{s} — {next}");
@@ -3008,7 +3015,10 @@ impl Engine {
         // work it pumped was charged to its own calls).
         self.dispatch_call = outer_call;
         let made = self.swarm.end_dispatch();
-        self.charge_commits(call_id, made, independent, &by);
+        // (An editor command an agent's frames caused is the window owner's write and that
+        // agent's commit: `via`. Review R1 of m5-edswarm, minor 4: the cost view showed an
+        // owner's agent that deleted and undid through ui_act with 21 calls and no commits.)
+        self.charge_commits(call_id, made, independent, request.via.as_deref().unwrap_or(&by));
         if files_changed {
             let reply = request.reply;
             self.project_sync_after(move |_| {
@@ -3023,6 +3033,7 @@ impl Engine {
     /// Charges `made` commits to tool call `call` (one call, one commit): a breach is counted,
     /// traced (`write.multi_commit`) and, in debug builds, a panic.
     fn charge_commits(&mut self, call: u64, made: u64, independent: bool, by: &str) {
+        self.swarm.count_commits(by, made);
         if let Some(total) = self.commits.count(call, made, independent) {
             self.multi_commit_calls += 1;
             specula_core::trace_event!(&trace_sink::WRITES, Warn, "write.multi_commit", call = call, by = by, commits = total, why = "one tool call committed more than once: it can fail halfway");

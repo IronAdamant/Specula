@@ -771,8 +771,11 @@ def main():
         for who in ("bob", "lee", "rev"):
             if who == "lee":
                 d.expect_alert(f"{who} drives the window's editor", who, "editor_input", {"steps": [{"key": "F7"}]}, ["owner_only"])
+                # The editor as a UI-tools surface (its swarm panels included): the owner's too.
+                d.expect_alert(f"{who} presses the editor's panels", who, "ui_act", {"surface": "editor", "steps": [{"click": "tab_swarm"}]}, ["owner_only"])
             else:
                 d.expect_incident(f"{who} drives the window's editor", who, "editor_input", {"steps": [{"key": "F7"}]}, ["owner_only"])
+                d.expect_incident(f"{who} presses the editor's panels", who, "ui_act", {"surface": "editor", "steps": [{"click": "tab_swarm"}]}, ["owner_only"])
 
         print("bob acts on ann's things:")
         # World tools on ann's claimed box.

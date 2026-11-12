@@ -281,11 +281,20 @@ struct ScreenDriver<'a> {
     engine: &'a mut Engine,
     surface: Surface,
     size: (u32, u32),
+    /// The editor surface: the id its frames run under (`Engine::editor_ui_act_begin`).
+    editor: u64,
 }
 
 impl Driver for ScreenDriver<'_> {
     fn frame(&mut self, input: &Synth) {
         let e = &mut *self.engine;
+        if self.surface == Surface::Editor {
+            // The editor alone, as the calling agent's injected frame (never the human's input:
+            // its edit is the window owner's with the agent as `via`, charged to this call).
+            let pads: Vec<_> = input.pad.into_iter().collect();
+            e.editor_ui_act_frame(self.editor, &input.events, &pads, self.size);
+            return;
+        }
         e.input.clear();
         e.input.extend_from_slice(&input.events);
         e.logic.set_pad_override(Some(input.pad.into_iter().collect()));
@@ -301,6 +310,7 @@ impl Driver for ScreenDriver<'_> {
         let (ui, _, map) = match self.surface {
             Surface::Review => self.engine.review_ui.ui_parts()?,
             Surface::Gallery => self.engine.taste.screen.ui_parts()?,
+            Surface::Editor => self.engine.editor.ui.ui_parts()?,
             Surface::Game => return None,
         };
         Some((ui, map))
@@ -984,9 +994,41 @@ impl Engine {
             Surface::Review
         } else if self.taste.screen.is_open() {
             Surface::Gallery
+        } else if self.editor.ui.is_open() {
+            Surface::Editor
         } else {
             Surface::Game
         })
+    }
+
+    /// The surface a read (`ui_tree`, `ui_check`) means, for `session`. The editor's screen shows
+    /// what the human is typing (an entity's name, a text's words, numbers, the outliner's
+    /// search, and its labels are what `ui_check`'s findings quote), so only the owner reads
+    /// it, and a caller who named no surface is never given it: that call meant the game.
+    /// `editor_state` gives every agent the editor's state with the typing withheld. (Review R1
+    /// of m5-edswarm, B1: a builder's `ui_tree` read `Name: hunter2zq_`; the editor surface was
+    /// added with no redaction, and `ui_tree {}` chose it whenever the editor was open. The
+    /// input sweep's R3 had closed this leak in `editor_state`.)
+    pub(crate) fn ui_read_surface(&self, named: Option<Surface>, session: &SessionInfo, tool: &'static str) -> Result<Surface, WorldError> {
+        let owner = authority::authority(&self.swarm, &session.id) == Authority::Owner;
+        let s = match named {
+            Some(s) => s,
+            None if owner => self.ui_surface_of(None),
+            None if self.review_ui.is_open() => Surface::Review,
+            None if self.taste.screen.is_open() => Surface::Gallery,
+            None => Surface::Game,
+        };
+        if s == Surface::Editor && !owner {
+            let e = WorldError::new(
+                "owner_only",
+                format!("{tool} on the editor: its screen shows what the human types (names, texts, numbers, searches), so only an agent the operator granted --owner reads it. editor_state gives any agent the editor's state (the selection, the tool, the Swarm tab's page) with the typing withheld"),
+            )
+            .with("surface", s.name());
+            // Seen and recorded; a read is no try at the window's input, so nobody is frozen.
+            crate::inputguard::declined(crate::inputguard::Channel::ScreenInput, tool, &crate::inputguard::Actor::of(&self.swarm, session), e.code, s.name());
+            return Err(e);
+        }
+        Ok(s)
     }
 
     /// Runs `f` on a surface's live interface, its state, the player's UI scale, its input map
@@ -995,17 +1037,21 @@ impl Engine {
         match s {
             Surface::Game => {
                 let Some(game) = self.game.as_mut() else {
-                    return Err(WorldError::new("no_ui", "no game is running: the engine's own screens are surface review (F9) and gallery (F8)"));
+                    return Err(WorldError::new("no_ui", "no game is running: the engine's own screens are surface review (F9), gallery (F8) and editor (F7)"));
                 };
                 let Some(GameUi { ui, state, user_scale, input_map }) = game.ui(UiPick::Live) else {
                     return Err(WorldError::new("no_ui", "the hosted game has no specula-ui interface (or it is off: no font?)"));
                 };
                 Ok(f(ui, state, user_scale, input_map, display))
             }
-            Surface::Review | Surface::Gallery => {
+            Surface::Review | Surface::Gallery | Surface::Editor => {
                 // The engine's screens lay out for the image's size alone (no OS scale or insets).
                 let d = Display::new(display.size);
-                let parts = if s == Surface::Review { self.review_ui.ui_parts() } else { self.taste.screen.ui_parts() };
+                let parts = match s {
+                    Surface::Review => self.review_ui.ui_parts(),
+                    Surface::Gallery => self.taste.screen.ui_parts(),
+                    _ => self.editor.ui.ui_parts(),
+                };
                 let Some((ui, state, map)) = parts else {
                     return Err(WorldError::new("no_ui", format!("the {} screen hasn't loaded yet (it loads when first opened)", s.name())));
                 };
@@ -1033,7 +1079,7 @@ impl Engine {
     }
 
     fn ui_tree(&mut self, a: TreeArgs, session: &SessionInfo) -> Result<ToolOutput, WorldError> {
-        let s = self.ui_surface_of(a.surface);
+        let s = self.ui_read_surface(a.surface, session, "ui_tree")?;
         let opts = TreeOpts { screen: a.screen.clone(), only: a.only, offset: a.offset, limit: a.limit };
         let (shown, by) = self.ui_display_for(Some(&session.id));
         let by = by.map(str::to_owned);
@@ -1065,7 +1111,13 @@ impl Engine {
     /// budget). Findings that hold whatever the size ("all") are merged across the slices.
     pub(crate) fn start_ui_check(&mut self, request: Request) {
         let Request { command: Command::Ui(UiCall::Check(a)), session, reply, deadline, call, .. } = request else { unreachable!("only ui_check comes here") };
-        let surface = self.ui_surface_of(a.surface);
+        let surface = match self.ui_read_surface(a.surface, &session, "ui_check") {
+            Ok(s) => s,
+            Err(e) => {
+                reply.refuse(&e);
+                return;
+            }
+        };
         let job = CheckJob { a, surface, screens: None, next: 0, found: Vec::new(), global: Vec::new(), spent: Duration::ZERO, session: session.id.clone() };
         let owner = jobs::JobOwner { name: self.swarm.agent_name(&session), key: self.swarm.key(&session) };
         self.step_job(steps::StepStart { owner, session: session.id.clone(), call, reply, deadline, class: schedule::Class::Big }, Box::new(job));
@@ -1140,6 +1192,13 @@ impl Engine {
             crate::inputguard::refused(crate::inputguard::Channel::ScreenInput, "ui_act", &crate::inputguard::Actor::of(&self.swarm, session), e.code, s.name());
             return Err(e);
         }
+        // The editor held by something (a screen above it, the human typing into the Ask box):
+        // refused before it is recorded as input that ran (review R1 of m5-edswarm, minor 11).
+        if s == Surface::Editor && self.windowed {
+            if let Some(e) = self.editor_held_refusal("ui_act on the editor", w.name) {
+                return Err(e);
+            }
+        }
         if s != Surface::Game {
             // The owner's own (an --owner agent): seen and recorded, fine.
             let _seen = crate::inputguard::done(crate::inputguard::Channel::ScreenInput, "ui_act", &crate::inputguard::Actor::of(&self.swarm, session), s.name());
@@ -1201,6 +1260,22 @@ impl Engine {
         if players_only > 0 {
             j.push(("refused_players_only", Json::from(players_only)));
         }
+        // On the editor a press may have made an edit: a protocol command the window's next
+        // frame sends as window:owner (via this agent), so how it went isn't known yet. The
+        // answer says so. (Review R1 of m5-edswarm, minor 7: it said nothing; `editor_input`
+        // waits for its frames and returns the editor's state.)
+        if s == Surface::Editor {
+            let queued = self.editor_queued_edits(self.dispatch_call);
+            if !queued.is_empty() {
+                j.push((
+                    "edit",
+                    Json::obj([
+                        ("queued", Json::arr(queued.into_iter().map(Json::from))),
+                        ("outcome", Json::from("not known yet: the window's next frame sends it as window:owner (via you). editor_state's status and world_history then say how it went; editor_input waits for its frames and returns that state")),
+                    ]),
+                ));
+            }
+        }
         if let Some(why) = ran.stopped {
             j.push(("stopped", Json::from(why)));
             j.push(("frames_left", Json::from(ran.wait_left)));
@@ -1250,8 +1325,15 @@ impl Engine {
                     }
                 }
             }
+            Surface::Editor => {
+                let id = self.editor_ui_act_begin(w.name)?;
+                let mut d = ScreenDriver { engine: self, surface: s, size, editor: id };
+                let ran = run_steps(&mut d, a, !laid, budget);
+                self.editor_ui_act_end(id);
+                Ok(ran)
+            }
             _ => {
-                let mut d = ScreenDriver { engine: self, surface: s, size };
+                let mut d = ScreenDriver { engine: self, surface: s, size, editor: 0 };
                 Ok(run_steps(&mut d, a, !laid, budget))
             }
         }

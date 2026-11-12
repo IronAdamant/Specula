@@ -218,8 +218,11 @@ pub fn definitions() -> Vec<ToolDef> {
                           plane_xz, ring_y, uniform, ...), the outliner page (rows with path, depth, who last changed each, \
                           claimed_by), the inspector (position, rotation_deg, scale, colour, visible, claim), the status line \
                           (the last edit, or why it was refused and whose claim it is), the human's undo and redo journal ids, \
-                          what is still in flight (pick, edits, input frames), the window and viewport boxes and the camera. \
-                          detailed: also the panels' widget boxes ([x, y, w, h]: buttons, fields, outliner rows) to aim \
+                          what is still in flight (pick, edits, input frames), the window and viewport boxes and the camera, \
+                          the swarm panels (swarm: view journal/claims/board/review/cost, filters, one page of rows, the \
+                          selected row's detail and the entities it highlights) and the Ask box (ask: open and what it is \
+                          about, never the human's words). \
+                          detailed: also the panels' widget boxes ([x, y, w, h]: buttons, fields, outliner and swarm rows) to aim \
                           editor_input at. Every edit the editor makes is a world_set / world_batch / world_undo as window:owner: \
                           read them in world_history and world_changes."
                 .into(),

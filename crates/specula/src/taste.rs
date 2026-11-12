@@ -1151,7 +1151,7 @@ impl Engine {
         // The human is typing into a text the operator pointed their keyboard at: only the
         // operator takes the window from them (review R4 of m5-text: keys meant for the text
         // picked a gallery variant).
-        if !operator && self.text_typing.focus.is_some() && self.taste.screen.gallery() != Some(id) {
+        if !operator && self.human_typing() && self.taste.screen.gallery() != Some(id) {
             let e = crate::text_window::typing_busy("gallery_open");
             // The human's typing refused it, not the caller's choice: seen, never counted.
             declined(Channel::Screen, "gallery_open", actor, e.code, id);

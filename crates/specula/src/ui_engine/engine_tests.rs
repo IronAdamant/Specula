@@ -340,6 +340,43 @@ fn engine_screens_block_the_game_and_are_the_owners() {
     crate::inputguard::reset_for_test();
 }
 
+/// Review R1 of m5-edswarm, B1: the editor's screen shows what the human types, and `ui_tree`
+/// read it to any agent (a builder got `Name: hunter2zq_`), named or not: with the editor open a
+/// plain `ui_tree {}` was given the editor. Only the owner reads the editor's screen; another
+/// agent's unnamed read is the game's, as it meant; nobody is frozen for asking.
+#[test]
+fn the_editors_screen_is_read_by_the_owner_only() {
+    let _g = crate::inputguard::TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    crate::inputguard::reset_for_test();
+    let Some(mut e) = engine("editor_read") else { return };
+    e.swarm.grants.grant("boss", Authority::Owner).unwrap();
+    let b = hello(&mut e, "boss01", "boss", ROLE_OWNER);
+    let m = hello(&mut e, "malo01", "mallory", "builder");
+    e.windowed = true;
+    // The human opens the editor (F7).
+    e.input = vec![specula_platform::Event::KeyDown { code: 0x76, repeat: false }, specula_platform::Event::KeyUp { code: 0x76 }];
+    e.editor_frame((1280, 800), false);
+    if !e.editor.ui.is_open() {
+        crate::skip_test("ui_engine::engine_tests::editor_read", "the editor's UI did not load (no system fonts)");
+        return;
+    }
+    // Named: refused, whatever the tool.
+    let (r, err) = call(&mut e, &m, "mallory", "ui_tree", r#"{"surface": "editor"}"#);
+    assert!(err && r.get("error").and_then(Json::as_str) == Some("owner_only") && r.get("surface").and_then(Json::as_str) == Some("editor"), "{r}");
+    assert_eq!(e.ui_read_surface(Some(Surface::Editor), &m, "ui_check").unwrap_err().code, "owner_only", "ui_check's findings quote the same labels");
+    // Not named: the game's interface, never the editor's.
+    let (r, err) = call(&mut e, &m, "mallory", "ui_tree", r#"{"limit": 4}"#);
+    assert!(!err && r.get("surface").and_then(Json::as_str) == Some("game"), "{r}");
+    assert_eq!(e.ui_read_surface(None, &m, "ui_check").unwrap(), Surface::Game);
+    let key = e.swarm.key(&m);
+    assert_eq!(crate::inputguard::frozen(&m.id, Some(&key)), None, "a refused read freezes nobody");
+    // The owner reads it, named or as the open screen.
+    let (r, err) = call(&mut e, &b, "boss", "ui_tree", r#"{"surface": "editor", "limit": 4}"#);
+    assert!(!err && r.get("surface").and_then(Json::as_str) == Some("editor"), "{r}");
+    assert_eq!(e.ui_read_surface(None, &b, "ui_tree").unwrap(), Surface::Editor);
+    crate::inputguard::reset_for_test();
+}
+
 /// The answer's `rest` is ui_act's own step format.
 #[test]
 fn steps_round_trip_through_their_json() {

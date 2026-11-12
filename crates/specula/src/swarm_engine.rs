@@ -114,6 +114,9 @@ impl Engine {
                     Ok(r) => r,
                     Err(e) => return fail(&e),
                 };
+                if let Err(e) = self.check_parts(&ids, &spec.parts) {
+                    return fail(&e);
+                }
                 match self.swarm.board.post(w, tick, spec) {
                     Ok(t) => out(brief(t)),
                     Err(e) => fail(&e),
@@ -873,5 +876,50 @@ impl crate::steps::StepJob for TraceJob {
         let trace = self.gather.take().expect("checked").finish(e.swarm.journal());
         e.write_desync_trace(trace, &self.session, self.call, reply.clone());
         crate::steps::Step::Handed
+    }
+}
+
+impl Engine {
+    /// `task_post {parts}` against the entities they name: a text span lies inside its entity's
+    /// words (between characters), and a recipe part is one its entity's model recipe has.
+    /// (Review R1 of m5-edswarm, minor 13: parts were checked for shape only, so a span past the
+    /// text or a part the recipe doesn't have was posted and later shown as what a task is
+    /// about.) An area is a place, checked by its numbers; a rail's timeline is not checked here
+    /// (nothing produces rails yet: the editor's timeline tools will, and check them).
+    pub(crate) fn check_parts(&self, ids: &[u64], parts: &[crate::ask::Part]) -> Result<(), crate::world::WorldError> {
+        use crate::ask::PartKind;
+        for (i, p) in parts.iter().enumerate() {
+            let Some(id) = p.entity.and_then(|k| ids.get(k)).copied() else { continue };
+            let Some(e) = self.world.get(id) else { continue };
+            let path = self.world.path_of(id);
+            let bad = |why: String| crate::world::WorldError::new("invalid_argument", format!("parts[{i}]: {why}")).with("field", "parts").with("entity", path.as_str());
+            match &p.kind {
+                PartKind::TextSpan { start, end } => {
+                    let Some(crate::two_d::TwoD::Text(t)) = &e.two_d else {
+                        return Err(bad(format!("{path} has no text (a text_span is a span of a text entity's words)")));
+                    };
+                    let (from, to) = (*start as usize, *end as usize);
+                    if from > to || to > t.text.len() || !t.text.is_char_boundary(from) || !t.text.is_char_boundary(to) {
+                        return Err(bad(format!("bytes {from}..{to} are not a span of {path}'s text ({} bytes; a span starts and ends between characters)", t.text.len())).with("limit", t.text.len()));
+                    }
+                }
+                PartKind::RecipePart { name } => {
+                    let Some(m) = &e.model else {
+                        return Err(bad(format!("{path} has no model (a recipe_part is a named part of an entity's model recipe)")));
+                    };
+                    // A model the library has no parsed recipe for (not read yet, or a glTF) has
+                    // no part list to check against: the part is taken as named (review R2, N4:
+                    // it was refused with "its parts: none").
+                    let Some(names) = self.library.lock().part_names(&m.recipe, 4096) else { continue };
+                    if !names.iter().any(|n| n == name) {
+                        let some: Vec<&str> = names.iter().take(16).map(String::as_str).collect();
+                        let known = if some.is_empty() { "none".to_owned() } else { some.join(", ") };
+                        return Err(bad(format!("{path}'s recipe has no part named '{}' (its parts: {known})", crate::bounds::echo(name))));
+                    }
+                }
+                PartKind::Area { .. } | PartKind::Rail { .. } => {}
+            }
+        }
+        Ok(())
     }
 }

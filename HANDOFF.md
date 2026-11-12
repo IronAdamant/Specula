@@ -354,6 +354,16 @@ This is the **one list** of decisions waiting for the owner (other docs link her
 `crates/specula/tests/docs_links.rs` checks it isn't duplicated). Remove an item once it's decided and record the
 answer where it applies. The owner decided everything else on 2026-10-22 (see "Decided by the owner on 2026-10-22" above).
 
+- **Should a screen an agent opens start with its focus on Close?** (from the editor-swarm review, 2026-11-13.)
+  Today the review screen opens with its focus on Approve (the gallery: on the first variant), whoever opened
+  it: a lead shows a submission, you press Enter, it is approved (`scripts/review_check.py` holds that flow).
+  The review found the accident in it: you were typing a request in the editor's Ask box, a lead opened the
+  review screen, and your Enter approved a submission. That case is closed (a screen that takes the window
+  while you type has its focus moved to Close, and the keys you go on typing are held back). What is left:
+  you are pressing keys for the *game* when an agent opens the screen; 0.4 s later an Enter or Space decides.
+  Claude recommends yes: every screen an agent puts on the window starts on Close, so deciding takes one
+  click or one arrow key more, and a key meant for something else only closes it (and blocks the agent from
+  reopening it for 30 s). It changes how you approve when a lead shows you work, so it is yours to decide.
 - **May reviewers open screens on the window?** (from the input sweep, 2026-11-07.) A granted reviewer, below lead,
   can put the review screen (F9) and a gallery (F8) on the human's window. Until the owner decides, those opens
   raise an alert. Claude recommends keeping it with the alert: reviewing is what the grant is for.

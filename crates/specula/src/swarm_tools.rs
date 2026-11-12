@@ -218,7 +218,7 @@ fn trace_ref(args: &Json, key: &str) -> Result<TraceRef, String> {
 pub fn parse(name: &str, args: &Json) -> Option<Result<SwarmCall, String>> {
     let parsed = match name {
         "task_post" => (|| {
-            check_keys(args, name, &[&["title", "detail", "deps", "paths", "entities", "claims", "tags", "assign", "parent", "priority"]])?;
+            check_keys(args, name, &[&["title", "detail", "deps", "paths", "entities", "parts", "claims", "tags", "assign", "parent", "priority"]])?;
             let entities = ids_arg(args, "entities")?;
             Ok(SwarmCall::TaskPost(TaskSpec {
                 title: text_arg(args, "title", MAX_TITLE, true)?.expect("required"),
@@ -226,6 +226,7 @@ pub fn parse(name: &str, args: &Json) -> Option<Result<SwarmCall, String>> {
                 deps: ids_arg(args, "deps")?,
                 paths: paths_arg(args, "paths")?,
                 entities: Vec::new(),
+                parts: crate::ask::Part::parse_all(args.get("parts"), entities.len())?,
                 claims: ids_arg(args, "claims")?,
                 tags: tags_arg(args, "tags")?,
                 assignee: agent_arg(args, "assign")?,
@@ -505,6 +506,15 @@ pub fn definitions() -> Vec<ToolDef> {
                     ("deps", arr("integer", "Tasks that must be done first")),
                     ("paths", arr("string", "World paths it is about (\"/east_gate\")")),
                     ("entities", arr("integer", "Entity ids it is about")),
+                    (
+                        "parts",
+                        arr(
+                            "object",
+                            "Which parts it is about (at most 16; `entity` indexes `entities`): {kind: \"text_span\", entity, start, end} \
+                             (bytes), {kind: \"recipe_part\", entity, name}, {kind: \"area\", center: [x,y,z], radius} (a terrain or grass \
+                             patch), {kind: \"rail\", timeline, from_s, to_s}. The editor's \"Ask the agents\" box posts these",
+                        ),
+                    ),
                     ("claims", arr("integer", "Claims linked to it")),
                     ("tags", arr("string", "Labels for task_list {tag}")),
                     ("assign", t("string", "Only this agent may take it")),

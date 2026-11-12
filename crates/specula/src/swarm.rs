@@ -114,6 +114,26 @@ pub struct Swarm {
     /// firing as its holder is never the holder's call (round 2 of the review). One call, one
     /// commit (`docs/design/AUTHORITY.md`).
     dispatch: Option<(String, u64)>,
+    /// The newest journal entry [`Swarm::note_deletes`] examined.
+    deletes_seen: u64,
+    /// Agent name → calls the engine handled and commits charged to them, for the editor's
+    /// cost dashboard (at most [`MAX_AGENTS`] names).
+    usage: BTreeMap<String, Usage>,
+    /// Counts the cost view's updates ([`Usage::last`]).
+    usage_clock: u64,
+}
+
+/// One agent's use of the engine since it started (the editor's cost dashboard).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Usage {
+    /// Tool calls the engine handled for it.
+    pub calls: u64,
+    /// Journal entries charged to its calls (one call, one commit).
+    pub commits: u64,
+    /// Tokens, only if a harness reports them (none does yet): never measured by the engine.
+    pub tokens: Option<u64>,
+    /// When it was last counted (a counter): the name heard from longest ago makes room.
+    last: u64,
 }
 
 /// A paused dispatch count ([`Swarm::pause_dispatch`]).
@@ -406,6 +426,39 @@ impl Swarm {
         }
     }
 
+    /// Calls and commits per agent name (see [`Usage`]).
+    pub fn usage(&self) -> &BTreeMap<String, Usage> {
+        &self.usage
+    }
+
+    fn usage_of(&mut self, name: &str) -> &mut Usage {
+        if self.usage.len() >= MAX_AGENTS && !self.usage.contains_key(name) {
+            // The name heard from longest ago makes room (it was the first in the alphabet:
+            // review R1 of m5-edswarm, minor 4). A scan of at most MAX_AGENTS names, only when a
+            // new name arrives at the cap.
+            if let Some(oldest) = self.usage.iter().min_by_key(|(_, u)| u.last).map(|(n, _)| n.clone()) {
+                self.usage.remove(&oldest);
+            }
+        }
+        self.usage_clock += 1;
+        let at = self.usage_clock;
+        let u = self.usage.entry(name.to_owned()).or_default();
+        u.last = at;
+        u
+    }
+
+    /// A tool call by `name` reached the engine.
+    pub(crate) fn count_call(&mut self, name: &str) {
+        self.usage_of(name).calls += 1;
+    }
+
+    /// `n` commits were charged to a call by `name`.
+    pub(crate) fn count_commits(&mut self, name: &str, n: u64) {
+        if n > 0 {
+            self.usage_of(name).commits += n;
+        }
+    }
+
     /// Refused writes of `name` by error code (since the engine started).
     pub fn refused_of(&self, name: &str) -> Option<&BTreeMap<&'static str, u64>> {
         self.refused.get(name)
@@ -438,6 +491,41 @@ impl Swarm {
     /// O(references x (log n + depth)), once per replacement. Returns how many changed.
     pub fn remember_entity_paths(&mut self, world: &World) -> usize {
         self.board.remember_entity_paths(world) + self.review.remember_entity_paths(world)
+    }
+
+    /// After a journaled write (the write policy calls it with every one): references to
+    /// entities the new entries deleted take the path each had when it was deleted, so a note on
+    /// an entity renamed and then deleted shows where it last was (docs/design/EDITOR.md, "Stable
+    /// entity identity"). Cost: one pass over the new entries' changes (a discriminant check
+    /// each); only when one deleted a persistent entity, a lookup per delete in the board's and
+    /// the queue's own indexes of who names each identity (`entity_ref::Referrers`, kept as
+    /// references come and go: nothing is rebuilt here), then a visit to each note, task,
+    /// critique and submission that names a deleted one. Returns how many of them changed.
+    pub(crate) fn note_deletes(&mut self) -> usize {
+        let last = self.journal.last_seq();
+        let from = std::mem::replace(&mut self.deletes_seen, last);
+        if last <= from {
+            return 0;
+        }
+        let mut deleted: Vec<(crate::world::EntityUid, &str)> = Vec::new();
+        for e in self.journal.entries_after(from, true) {
+            for c in &e.changes {
+                if let Change::Delete { before, path } = c {
+                    if !before.transient {
+                        deleted.push((before.uid(), path.as_str()));
+                    }
+                }
+            }
+        }
+        if deleted.is_empty() {
+            return 0;
+        }
+        // A later delete of the same identity (an undo brought it back between) wins.
+        let gone: crate::entity_ref::Gone<'_> = deleted.into_iter().filter(|(uid, _)| self.board.names(uid) || self.review.names(uid)).collect();
+        if gone.is_empty() {
+            return 0;
+        }
+        self.board.note_deleted(&gone) + self.review.note_deleted(&gone)
     }
 
     /// The journal to write: the write policy's only (its key, [`crate::write_policy::PolicyKey`],
@@ -1058,5 +1146,70 @@ mod tests {
         assert_eq!((of_session("pub-rev-1"), of_session("pub-rev-2")), (Authority::Agent, Authority::Reviewer), "a resume moves it");
         sw.hello(&s2, "rev".into(), "builder".into(), None, std::slice::from_ref(&s2)).unwrap();
         assert_eq!(of_session("pub-rev-2"), Authority::Agent, "a plain role carries none");
+    }
+
+    /// Review R1 of m5-edswarm, M1: one delete commit walked every note, task, critique and
+    /// submission whenever the board had changed since the last delete (and every commit by a
+    /// task's holder changes it): 69-77 ms on the engine thread at the board's own caps. A
+    /// delete now visits only what names the deleted entity. The measure is a count of holders
+    /// visited, not a time: it is the same on any machine, and whatever the board holds.
+    #[test]
+    fn a_delete_visits_only_what_names_the_deleted_entity_whatever_the_board_holds() {
+        use crate::board::{NoteTarget, TaskSpec};
+        use crate::entity_ref::EntityRef;
+        use crate::world::EntityUid;
+        let mut world = World::default();
+        world.set_recording(Recording::Full);
+        let mut swarm = Swarm::default();
+        let w = Writer::new("ann", None);
+        // A board full of references to other entities: 600 tasks, 16 each.
+        let mut n = 0u64;
+        for t in 0..600 {
+            let entities = (0..16)
+                .map(|_| {
+                    n += 1;
+                    EntityRef { uid: EntityUid { lineage: 7, id: 1_000_000 + n }, path: format!("/x/e{n}") }
+                })
+                .collect();
+            swarm.board.post(w, 0, TaskSpec { title: format!("t{t}"), entities, ..TaskSpec::default() }).unwrap();
+        }
+        let spawn = |swarm: &mut Swarm, world: &mut World, name: &str| {
+            let mut s = SpawnSpec::new(Shape::Group);
+            s.name = Some(name.into());
+            swarm.commit(world, 0, w, Kind::Spawn, |wd| wd.spawn(s, "ann").map(|e| e.id)).unwrap().0
+        };
+        let (a, b) = (spawn(&mut swarm, &mut world, "a"), spawn(&mut swarm, &mut world, "b"));
+        let on_a = EntityRef::of(&world, a).unwrap();
+        let task = swarm.board.post(w, 0, TaskSpec { title: "about a".into(), entities: vec![on_a.clone()], ..TaskSpec::default() }).unwrap().id;
+        swarm.board.add_note(w, 0, NoteTarget::Entity(on_a), "look".into()).unwrap();
+        assert_eq!(swarm.board.len(), 601);
+        swarm.board.take_ref_visits();
+        // The board changes before each delete, as every commit by a task's holder changes it.
+        swarm.board.log("ann", 0, "link", Some(task), "x".into());
+        swarm.commit(&mut world, 1, w, Kind::Delete, |wd| wd.delete(&EntityKey::Id(b), None).map(|_| ())).unwrap();
+        assert_eq!(swarm.board.take_ref_visits() + swarm.review.take_ref_visits(), 0, "an entity nothing names: nothing is visited");
+        swarm.board.log("ann", 0, "link", Some(task), "x".into());
+        swarm.commit(&mut world, 2, w, Kind::Delete, |wd| wd.delete(&EntityKey::Id(a), None).map(|_| ())).unwrap();
+        assert_eq!((swarm.board.take_ref_visits(), swarm.review.take_ref_visits()), (2, 0), "its task and its note, of 601 tasks");
+        // Dropped holders leave the index: nothing names `a` once its task and note are gone...
+        assert!(swarm.board.names(&EntityUid { lineage: 7, id: 1_000_001 }), "a task still names this one");
+    }
+
+    /// Review R1 of m5-edswarm, minor 4: past its cap the cost view dropped the first name in
+    /// the alphabet, however busy it was. The name heard from longest ago makes room.
+    #[test]
+    fn the_cost_views_oldest_name_makes_room() {
+        let mut sw = Swarm::default();
+        sw.count_call("aaa");
+        for i in 0..MAX_AGENTS - 1 {
+            sw.count_call(&format!("n{i:05}"));
+        }
+        // Heard from again: the newest now, though first in the alphabet.
+        sw.count_call("aaa");
+        sw.count_call("zzz");
+        assert_eq!(sw.usage().len(), MAX_AGENTS);
+        assert!(sw.usage().contains_key("aaa") && sw.usage().contains_key("zzz"), "the busy name and the new one stay");
+        assert!(!sw.usage().contains_key("n00000"), "the one heard from longest ago went");
+        assert_eq!(sw.usage()["aaa"].calls, 2);
     }
 }

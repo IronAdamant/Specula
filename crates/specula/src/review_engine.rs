@@ -70,14 +70,20 @@ pub(crate) fn write_review(dir: &Path, text: &str) -> std::io::Result<()> {
 }
 
 /// The ops that move a submission's roots under `p.to` (and take the staging tag off them), and
-/// what moves where. Refused when the target is gone or a name there is taken (unless `replace`).
+/// what moves where. Refused when the target is gone, a root's identity is gone (deleted, or not
+/// in the world loaded since: the id it had may name another entity now, which must never be
+/// moved or replaced) or a name there is taken (unless `replace`).
 pub(crate) fn promotion_ops(world: &World, roots: &[Root], p: &review::Promote) -> Result<(Vec<Op>, Vec<Json>), WorldError> {
     world.find_path(&p.to).map_err(|_| WorldError::new("no_target", format!("promote.to '{}' no longer exists", p.to)).with("to", p.to.as_str()))?;
+    if let Some(r) = roots.iter().find(|r| r.attached(world).is_none()) {
+        return Err(root_gone(r));
+    }
     let mut ops: Vec<Op> = Vec::new();
     let mut moved: Vec<Json> = Vec::new();
     let mut taken: Vec<String> = Vec::new();
     for r in roots {
-        let Some(e) = world.get(r.id) else { continue };
+        let Some(id) = r.attached(world) else { continue };
+        let Some(e) = world.get(id) else { continue };
         let dest = format!("{}/{}", p.to, e.name);
         let already_there = e.parent.is_some_and(|parent| world.path_of(parent) == p.to);
         if !already_there {
@@ -95,7 +101,7 @@ pub(crate) fn promotion_ops(world: &World, roots: &[Root], p: &review::Promote) 
             continue;
         }
         ops.push(Op::Set(
-            EntityKey::Id(r.id),
+            EntityKey::Id(id),
             UpdateSpec { parent: (!already_there).then(|| Some(EntityKey::Path(p.to.clone()))), remove_tags: tag.into_iter().collect(), ..Default::default() },
         ));
         moved.push(Json::obj([("from", Json::from(r.path.as_str())), ("to", Json::from(dest))]));
@@ -108,6 +114,20 @@ pub(crate) fn promotion_ops(world: &World, roots: &[Root], p: &review::Promote) 
         .with("taken", Json::arr(taken.into_iter().map(Json::from))));
     }
     Ok((ops, moved))
+}
+
+/// A submission root whose entity is gone: approval (forced or not) and promotion are refused.
+pub(crate) fn root_gone(r: &Root) -> WorldError {
+    let last = if r.entity.path.is_empty() { r.path.as_str() } else { r.entity.path.as_str() };
+    WorldError::new(
+        "root_gone",
+        format!(
+            "the entity submitted at {} (last at {last}) is no longer in the world (deleted, or the world was replaced by a load): nothing to approve or promote, and force can't change that; reject it, or ask for a resubmission",
+            r.path
+        ),
+    )
+    .with("path", r.path.as_str())
+    .with("last_path", last)
 }
 
 /// What a rejection's revert would take back: a submission's journal entries, the journal epoch
@@ -180,8 +200,11 @@ pub(crate) fn revert_refusal(swarm: &Swarm, world: &World, r: RevertOf) -> Optio
     for s in &approved {
         for r in &s.roots {
             // Where the approved work is now (a promotion moved it).
-            let root_now = if world.get(r.id).is_some() { world.path_of(r.id) } else { r.path.clone() };
-            if touched.iter().any(|t| *t == r.id || (world.get(*t).is_some() && path_under(&world.path_of(*t), &root_now))) {
+            // By identity: an id the approved root had may name another entity since a load.
+            let id = r.attached(world);
+            let last = if r.entity.path.is_empty() { &r.path } else { &r.entity.path };
+            let root_now = id.map_or_else(|| last.clone(), |id| world.path_of(id));
+            if touched.iter().any(|t| Some(*t) == id || (world.get(*t).is_some() && path_under(&world.path_of(*t), &root_now))) {
                 return refuse("revert_overlaps_approved", format!("it touches {root_now}, approved as submission {}", s.id));
             }
         }
@@ -302,7 +325,7 @@ impl Engine {
             }
             // The human is typing into a text the operator pointed their keyboard at: only the
             // operator takes the window from them (review R4 of m5-text).
-            ReviewCall::Screen(ScreenOp::Open(_)) if !self.review_ui.is_open() && self.text_typing.focus.is_some() && crate::authority::trusted(&self.swarm, &session.id) < Authority::Lead => {
+            ReviewCall::Screen(ScreenOp::Open(_)) if !self.review_ui.is_open() && self.human_typing() && crate::authority::trusted(&self.swarm, &session.id) < Authority::Lead => {
                 let e = crate::text_window::typing_busy("review_screen");
                 // The human's typing refused it, not the reviewer's choice: seen, never counted.
                 crate::inputguard::declined(crate::inputguard::Channel::Screen, "review_screen", &crate::inputguard::Actor::of(&self.swarm, session), e.code, "the human is typing");
@@ -440,14 +463,15 @@ impl Engine {
                 return Err(WorldError::new("too_big", format!("the paths hold more than {} entities; submit smaller pieces (a batch label ties them together)", review::MAX_SUBTREE))
                     .with("limit", review::MAX_SUBTREE));
             }
-            roots.push(Root { path: p.clone(), id, version: e.version, stamp, entities: n });
+            let entity = EntityRef::of(&self.world, id).expect("found");
+            roots.push(Root { path: p.clone(), entity, version: e.version, stamp, entities: n });
         }
         // The models it covers (spec key → label), for the recorded checks to be matched against;
         // the same bounded walk as the stamps above (at most MAX_SUBTREE entities in all).
         let mut models: BTreeMap<String, String> = BTreeMap::new();
         if !a.results.is_empty() {
             for r in &roots {
-                self.world.walk(Some(r.id), |e, _| {
+                self.world.walk(Some(r.entity.uid.id), |e, _| {
                     if let Some(m) = e.model.as_ref().filter(|_| !e.transient) {
                         models.entry(m.key()).or_insert_with(|| crate::records::spec_label(m));
                     }
@@ -751,12 +775,13 @@ impl Engine {
         roots
             .iter()
             .filter_map(|r| {
-                let now = self.world.get(r.id);
-                let what = match now {
-                    None => "deleted".to_owned(),
-                    Some(_) if self.world.path_of(r.id) != r.path => format!("moved to {}", self.world.path_of(r.id)),
-                    Some(e) => {
-                        let (stamp, n) = review::stamp(&self.world, r.id, review::MAX_SUBTREE);
+                // By identity: after a load the id may name another entity.
+                let id = r.attached(&self.world);
+                let what = match id.and_then(|id| self.world.get(id).map(|e| (id, e))) {
+                    None => "gone (deleted, or not in the world loaded since)".to_owned(),
+                    Some((id, _)) if !self.world.path_is(id, &r.path) => format!("moved to {}", self.world.path_of(id)),
+                    Some((id, e)) => {
+                        let (stamp, n) = review::stamp(&self.world, id, review::MAX_SUBTREE);
                         if stamp == r.stamp {
                             return None;
                         }
@@ -785,6 +810,11 @@ impl Engine {
         let mut problems: Vec<Json> = Vec::new();
         match d.verdict {
             Status::Approved => {
+                // A root whose identity is gone can't be approved, forced or not: its id may name
+                // another entity now (a save_read), which approval must never promote or replace.
+                if let Some(r) = roots.iter().find(|r| r.attached(&self.world).is_none()) {
+                    return Err(root_gone(r).with("submission", d.id));
+                }
                 let stale = self.staleness(&roots);
                 if !stale.is_empty() && !force {
                     return Err(WorldError::new(
@@ -822,13 +852,13 @@ impl Engine {
                     detail: cut(&detail, crate::board::MAX_DETAIL),
                     deps: Vec::new(),
                     paths: roots.iter().take(crate::board::MAX_LINKS).map(|r| r.path.clone()).collect(),
-                    // By identity: each root still at its path with the id it was submitted with.
+                    // By identity: each root still in the world (wherever it is now).
                     entities: roots
                         .iter()
                         .take(crate::board::MAX_LINKS)
-                        .filter(|r| self.world.find_path(&r.path).ok() == Some(r.id))
-                        .filter_map(|r| EntityRef::of(&self.world, r.id))
+                        .filter_map(|r| r.attached(&self.world).and_then(|id| EntityRef::of(&self.world, id)))
                         .collect(),
+                    parts: Vec::new(),
                     claims: Vec::new(),
                     tags: vec!["review".into(), "rework".into(), format!("submission:{}", d.id)],
                     assignee: Some(submitter.clone()),
@@ -1221,6 +1251,7 @@ impl Engine {
     pub(crate) fn review_frame(&mut self, size: (u32, u32)) -> bool {
         let live = self.review_ui.is_open() || self.swarm.review.pending_count() > 0;
         let pads: Vec<specula_platform::gamepad::GamepadState> = if live { self.logic.pad_states(true).to_vec() } else { Vec::new() };
+        self.review_ui.hide_tab(self.editor.ui.is_open());
         let (acts, modal, pointer) = self.review_ui.frame(&self.input, &pads, size, &self.swarm.review);
         let decided = !acts.is_empty();
         for a in acts {
@@ -1294,7 +1325,105 @@ mod tests {
     fn root(world: &World, path: &str) -> Root {
         let id = world.find_path(path).unwrap();
         let (stamp, entities) = review::stamp(world, id, review::MAX_SUBTREE);
-        Root { path: path.into(), id, version: world.get(id).unwrap().version, stamp, entities }
+        Root { path: path.into(), entity: EntityRef::of(world, id).unwrap(), version: world.get(id).unwrap().version, stamp, entities }
+    }
+
+    /// Lane review (edswarm, "do these first"): roots were `{id, path}`, so after a save_read
+    /// an approval could promote, or `replace` delete, whatever took the root's id. Roots are
+    /// identities now: a root whose entity is gone refuses promotion, and its id in another
+    /// world names nothing it may move.
+    #[test]
+    fn a_root_is_its_identity_never_its_id() {
+        let mut world = World::default();
+        world.set_recording(Recording::Full);
+        let mut swarm = Swarm::default();
+        let w = Writer::new("ann", None);
+        spawn(&mut world, &mut swarm, w, "staging", None, &[]);
+        spawn(&mut world, &mut swarm, w, "world", None, &[]);
+        spawn(&mut world, &mut swarm, w, "props", Some("/staging"), &["staging"]);
+        let roots = vec![root(&world, "/staging/props")];
+        let p = Promote { to: "/world".into(), replace: true, remove_tag: Some("staging".into()) };
+        assert!(promotion_ops(&world, &roots, &p).is_ok());
+        // An older copy of the world (a save read): the same id is another entity there.
+        let mut other = World::default();
+        let mut other_swarm = Swarm::default();
+        spawn(&mut other, &mut other_swarm, w, "staging", None, &[]);
+        spawn(&mut other, &mut other_swarm, w, "world", None, &[]);
+        let impostor = spawn(&mut other, &mut other_swarm, w, "keep", Some("/staging"), &[]);
+        assert_eq!(impostor, roots[0].entity.uid.id, "the id was taken by another entity");
+        assert_eq!(roots[0].attached(&other), None);
+        let e = promotion_ops(&other, &roots, &p).err().unwrap();
+        assert_eq!((e.code, e.detail("path").and_then(Json::as_str)), ("root_gone", Some("/staging/props")));
+        // Deleted in this world: gone too, with its last path named.
+        let id = world.find_path("/staging/props").unwrap();
+        swarm.commit(&mut world, 1, w, Kind::Delete, |wd| wd.delete(&EntityKey::Id(id), None).map(|_| ())).unwrap();
+        assert_eq!(promotion_ops(&world, &roots, &p).err().unwrap().code, "root_gone");
+    }
+
+    /// An engine for decisions (`None`: no Vulkan here; said, and skipped).
+    fn engine(tag: &str) -> Option<Engine> {
+        if !specula_gpu::is_available() {
+            crate::skip_test(tag, "Vulkan is not available");
+            return None;
+        }
+        let Ok(gpu) = specula_gpu::Gpu::new(&specula_gpu::GpuOptions::default()) else {
+            crate::skip_test(tag, "no GPU");
+            return None;
+        };
+        let root = std::env::temp_dir().join(format!("specula-{tag}-{}", std::process::id()));
+        let assets = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../games/sepulcra/assets");
+        Some(Engine::new(gpu, &root.join("captures"), crate::models::Library::new(&assets, None)).expect("engine"))
+    }
+
+    /// Review R1 of m5-edswarm, M2: the decision's own refusal of a gone root had no test (the
+    /// check removed, all 981 library tests passed). It is the only guard for a submission with
+    /// no promote spec, and for `force` (which skips the staleness check): a root whose entity
+    /// was deleted can't be approved, forced or not, promoting or not; it can still be rejected.
+    #[test]
+    fn a_gone_root_refuses_approval_at_the_decision_forced_or_not() {
+        let Some(mut e) = engine("review-root-gone") else { return };
+        let ann = Writer::new("ann", Some("ann"));
+        let spawn = |e: &mut Engine, name: &str| {
+            let mut s = SpawnSpec::new(Shape::Group);
+            s.name = Some(name.into());
+            e.world.commit(&mut e.swarm, 0, ann, crate::journal::Kind::Spawn, crate::write_policy::Rule::World, |wd| wd.spawn(s, "ann").map(|x| x.id)).unwrap().0
+        };
+        spawn(&mut e, "world");
+        let props = spawn(&mut e, "props");
+        let args = |title: &str, promote: Option<Promote>| SubmitArgs {
+            kind: "scene".into(),
+            title: title.into(),
+            summary: String::new(),
+            batch: None,
+            task: None,
+            paths: vec!["/props".into()],
+            captures: Vec::new(),
+            checks: Vec::new(),
+            results: Vec::new(),
+            journal: Vec::new(),
+            journal_since: None,
+            promote,
+            supersedes: None,
+        };
+        e.submit(ann, "ann", args("plain", None)).unwrap();
+        e.submit(ann, "ann", args("to the world", Some(Promote { to: "/world".into(), replace: false, remove_tag: None }))).unwrap();
+        let pending: Vec<u64> = e.swarm.review.pending().map(|s| s.id).collect();
+        assert_eq!(pending.len(), 2, "two submissions wait");
+        // Its root is deleted.
+        e.world.commit(&mut e.swarm, 1, ann, crate::journal::Kind::Delete, crate::write_policy::Rule::World, |wd| wd.delete(&crate::world::EntityKey::Id(props), None).map(|_| ())).unwrap();
+        let owner = Writer::new(review::WINDOW_OWNER, None);
+        for id in &pending {
+            for (promote, force) in [(false, false), (false, true), (true, false), (true, true)] {
+                let d = DecideOne { id: *id, verdict: Status::Approved, note: String::new(), revert: false };
+                let refused = e.decide_one(owner, Authority::Owner, d, promote, force).unwrap_err();
+                assert_eq!(refused.code, "root_gone", "submission {id}, promote {promote}, force {force}: {}", refused.message);
+            }
+        }
+        assert_eq!(e.swarm.review.pending().count(), 2, "nothing was decided");
+        // Turning it down needs no root.
+        let d = DecideOne { id: pending[0], verdict: Status::Rejected, note: "its entity is gone".into(), revert: false };
+        e.decide_one(owner, Authority::Owner, d, false, false).unwrap();
+        assert_eq!(e.swarm.review.pending().count(), 1);
     }
 
     /// Review finding: promotion and revert had no cargo tests (only the live script).

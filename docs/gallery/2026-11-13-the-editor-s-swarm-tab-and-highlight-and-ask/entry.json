@@ -1,0 +1,56 @@
+{
+  "date": "2026-11-13",
+  "time": "05:30",
+  "date_source": "run",
+  "approximate": false,
+  "milestone": "M5",
+  "commit": "f46f0f80",
+  "subject": "ui",
+  "topic": "UI",
+  "title": "The editor's Swarm tab and highlight and ask",
+  "note": "The editor's right dock gains a Swarm tab (journal timeline, claims, board, review, cost) and a claim map in the viewport; the human highlights a statue and asks the agents to change its head in an engine-owned box, an agent does it, and the human approves it in the review screen. After two reviews: row labels wrap inside the dock, the window's Review tab is not drawn over the editor's status bar, and a screen that takes the window while the human types has its focus on Close.",
+  "source": "scripts/edswarm_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-window-00-ask-typing.jpg",
+      "caption": "Asking the agents about the statue's head (the words are the human's alone until sent)",
+      "original": "window_00_ask_typing.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 38975
+    },
+    {
+      "file": "02-window-01-journal-timeline.jpg",
+      "caption": "The journal timeline filtered to the statue: who changed it, for which task",
+      "original": "window_01_journal_timeline.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 37294
+    },
+    {
+      "file": "03-window-02-claim-map.jpg",
+      "caption": "The claim map: each live claim boxed in its holder's colour",
+      "original": "window_02_claim_map.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 33300
+    },
+    {
+      "file": "04-window-03-cost.jpg",
+      "caption": "The cost view: calls, commits and refused writes per agent (tokens only if reported)",
+      "original": "window_03_cost.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 40878
+    },
+    {
+      "file": "05-window-04-review-screen.jpg",
+      "caption": "The submission opened from the Swarm tab in the review screen",
+      "original": "window_04_review_screen.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 31212
+    }
+  ]
+}

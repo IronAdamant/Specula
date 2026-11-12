@@ -1210,6 +1210,12 @@ impl Library {
         Ok((h.finish(), BaseSource::Rig(rig, info.anims.clone())))
     }
 
+    /// The named parts of a recipe the library has read (parsed already: no disk, no parse
+    /// here), in recipe order, at most `max`; `None` for a recipe it hasn't read (or a glTF).
+    pub fn part_names(&self, recipe: &str, max: usize) -> Option<Vec<String>> {
+        self.recipes.get(recipe).map(|i| i.recipe.part_names().take(max).map(str::to_owned).collect())
+    }
+
     /// The content key of a source as the library knows it now (its recipe info or glTF file).
     fn source_content(&self, recipe: &str) -> Option<u64> {
         self.recipes.get(recipe).map(|i| i.content).or_else(|| self.gltfs.get(recipe).map(|g| g.content))

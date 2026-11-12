@@ -280,6 +280,65 @@ fn undoing_a_delete_attaches_its_references_again() {
     assert_eq!(t.noted("gate"), on(g, "/gate"));
 }
 
+/// Lane edswarm ("do these first", 2): a note on `/dd`, renamed to `/ee` without being listed
+/// in between, then deleted, showed `/dd`. A delete now hands every reference to the deleted
+/// entity the path it had then: notes, task entities, critiques and review roots, deleted alone
+/// or with an ancestor, by an agent, an undo or an exempt (game or module) write.
+#[test]
+fn a_delete_gives_its_references_the_path_it_had_then() {
+    let mut t = T::new();
+    let d = t.spawn("dd", None);
+    let kid = t.spawn("kid", Some(d));
+    t.note(d, "dd");
+    t.note(kid, "kid");
+    t.critique(kid, "kid");
+    let task = TaskSpec { title: "t".into(), entities: vec![EntityRef::of(&t.live, kid).unwrap()], ..TaskSpec::default() };
+    let task = t.sw.board.post(OTHER, 1, task).unwrap().id;
+    let (stamp, entities) = crate::review::stamp(&t.live, d, 100);
+    let root = crate::review::Root { path: "/dd".into(), entity: EntityRef::of(&t.live, d).unwrap(), version: 1, stamp, entities };
+    let spec = crate::review::SubmitSpec { title: "dd".into(), kind: "asset".into(), roots: vec![root], ..crate::review::SubmitSpec::default() };
+    let sub = t.sw.review.submit(OTHER, 1, spec).unwrap().id;
+    // Renamed, never listed, then deleted with its child.
+    t.batch(&[(d, Some("ee"), None)]);
+    let board_rev = t.sw.board.revision();
+    t.delete(d);
+    let undo = t.sw.journal().last_seq();
+    assert!(t.sw.board.revision() > board_rev, "saved with the board");
+    t.spawn("dd", None);
+    assert_eq!((t.noted("dd"), t.noted("kid"), t.critiqued("kid")), (detached("/ee"), detached("/ee/kid"), detached("/ee/kid")));
+    assert_eq!(t.sw.board.get(task).unwrap().entities[0].path, "/ee/kid");
+    assert_eq!(t.sw.review.get(sub).unwrap().roots[0].entity.path, "/ee");
+    assert_eq!(t.sw.review.get(sub).unwrap().roots[0].path, "/dd", "the submitted path stays as submitted");
+    // Undo brings it back (attached again); renamed and deleted again: the newer path.
+    t.live.undo(&mut t.sw, 0, OWN, &UndoRequest { ids: Some(vec![undo]), count: 1, force: false }).unwrap();
+    assert_eq!(t.noted("dd"), on(d, "/ee"));
+    t.batch(&[(d, Some("ff"), None)]);
+    t.delete(d);
+    assert_eq!((t.noted("dd"), t.noted("kid")), (detached("/ff"), detached("/ff/kid")));
+    // Kept through a save read (the board stays; nothing re-attaches by path).
+    let files = t.save();
+    t.read(&files);
+    assert_eq!((t.noted("dd"), t.critiqued("kid")), (detached("/ff"), detached("/ff/kid")));
+}
+
+/// Deletes by exempt writers (the hosted game's or a module's ticks) count too, and a delete no
+/// reference names changes nothing (no board revision, no save).
+#[test]
+fn exempt_deletes_count_and_unreferenced_ones_change_nothing() {
+    let mut t = T::new();
+    let a = t.spawn("a", None);
+    let b = t.spawn("b", None);
+    t.note(a, "a");
+    t.batch(&[(a, Some("a2"), None)]);
+    let rev = (t.sw.board.revision(), t.sw.review.revision());
+    t.delete(b);
+    assert_eq!((t.sw.board.revision(), t.sw.review.revision()), rev, "nothing names b");
+    // The hosted game's tick deletes a (exempt from claims; journaled as a snapshot).
+    let why = crate::write_policy::Exempt::Game { name: "sepulcra", kind: Kind::GameTick };
+    t.live.exempt(&mut t.sw, 0, why, |wd| wd.delete(&EntityKey::Id(a), None).map(|_| ())).unwrap();
+    assert_eq!(t.noted("a"), detached("/a2"));
+}
+
 /// R3 minor 2: renames made by modules and the hosted game are recorded by snapshot, with no
 /// `prev_path`, so descendants' notes didn't follow. Identity doesn't read the journal at all.
 #[test]

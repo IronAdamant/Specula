@@ -44,7 +44,7 @@
 //! Nothing here is simulation state: the board never changes the world, so it is not part of
 //! the state hash. Ticks and sequence numbers order it; no wall-clock time is stored.
 
-use crate::entity_ref::{EntityRef, Prefix};
+use crate::entity_ref::{EntityRef, Prefix, Referrers};
 use crate::journal::{path_under, Writer};
 use crate::world::{World, WorldError};
 use specula_core::Json;
@@ -200,6 +200,9 @@ pub struct Task {
     pub deps: Vec<u64>,
     pub paths: Vec<String>,
     pub entities: Vec<EntityRef>,
+    /// Which parts of its entities (or which area or rail stretch) it is about ("highlight and
+    /// ask", [`crate::ask::Part`]); `entity` indexes `entities`.
+    pub parts: Vec<crate::ask::Part>,
     pub claims: Vec<u64>,
     pub tags: Vec<String>,
     /// 0 (lowest) to 9; 5 by default.
@@ -237,6 +240,7 @@ impl Task {
             + strs(&self.paths)
             + strs(&self.tags)
             + self.entities.iter().map(|e| e.path.len() + 32).sum::<usize>()
+            + self.parts.iter().map(crate::ask::Part::measure).sum::<usize>()
             + 24 * (self.deps.len() + self.claims.len())
     }
 
@@ -304,6 +308,9 @@ impl Task {
         j.set("paths", strs(&self.paths));
         // As saved; task_get shows them against the world (`Task::entities_json`).
         j.set("entities", Json::arr(self.entities.iter().map(EntityRef::saved_json)));
+        if !self.parts.is_empty() {
+            j.set("parts", Json::arr(self.parts.iter().map(crate::ask::Part::to_json)));
+        }
         j.set("claims", ids(&self.claims));
         j.set("tags", strs(&self.tags));
         j.set("progress", Json::from(self.progress.as_str()));
@@ -437,6 +444,8 @@ pub struct TaskSpec {
     pub paths: Vec<String>,
     /// By identity: the handler makes them from the call's ids ([`EntityRef::of_ids`]).
     pub entities: Vec<EntityRef>,
+    /// Part descriptors ([`crate::ask::Part`]): `entity` indexes `entities`.
+    pub parts: Vec<crate::ask::Part>,
     pub claims: Vec<u64>,
     pub tags: Vec<String>,
     pub assignee: Option<String>,
@@ -533,11 +542,24 @@ pub fn check_text(what: &str, s: &str, max: usize, required: bool) -> Result<(),
     Ok(())
 }
 
+/// What names an entity on the board.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Holder {
+    Note,
+    Task,
+}
+
 /// See the module docs.
 #[derive(Default)]
 pub struct Board {
     tasks: BTreeMap<u64, Task>,
     notes: BTreeMap<u64, Note>,
+    /// Which notes and tasks name each entity ([`Referrers`]): kept by every path that adds or
+    /// drops one, so a delete never walks the board.
+    refs: Referrers<Holder>,
+    /// How many notes and tasks deletes have visited (a test's measure of their work).
+    #[cfg(test)]
+    ref_visits: u64,
     next_task: u64,
     next_note: u64,
     /// The last board event's sequence number.
@@ -581,12 +603,17 @@ impl Board {
         self.tasks.get(&id)
     }
 
-    pub fn tasks(&self) -> impl Iterator<Item = &Task> + '_ {
+    pub fn tasks(&self) -> impl DoubleEndedIterator<Item = &Task> + '_ {
         self.tasks.values()
     }
 
     pub fn notes_len(&self) -> usize {
         self.notes.len()
+    }
+
+    /// Every note, oldest first (`.rev()`: newest first).
+    pub fn notes(&self) -> impl DoubleEndedIterator<Item = &Note> + '_ {
+        self.notes.values()
     }
 
     /// The task `w` works on now: the one it took last, while still taken or blocked by it.
@@ -699,6 +726,9 @@ impl Board {
 
     fn remove_task(&mut self, id: u64) {
         if let Some(t) = self.tasks.remove(&id) {
+            for r in &t.entities {
+                self.refs.forget(r.uid, Holder::Task, id);
+            }
             self.bytes = self.bytes.saturating_sub(t.size);
         }
     }
@@ -742,8 +772,19 @@ impl Board {
             + spec.title.len()
             + spec.detail.len()
             + spec.paths.iter().chain(&spec.tags).map(|x| x.len() + 8).sum::<usize>()
-            + spec.entities.iter().map(|e| e.path.len() + 32).sum::<usize>();
+            + spec.entities.iter().map(|e| e.path.len() + 32).sum::<usize>()
+            + spec.parts.iter().map(crate::ask::Part::measure).sum::<usize>();
         self.make_room(size)?;
+        // Parts name entities by index: after duplicates go, each still names its own entity.
+        let entities = dedup(spec.entities.clone());
+        let parts: Vec<crate::ask::Part> = spec
+            .parts
+            .into_iter()
+            .map(|mut p| {
+                p.entity = p.entity.and_then(|i| spec.entities.get(i)).and_then(|r| entities.iter().position(|e| e == r));
+                p
+            })
+            .collect();
         self.next_task += 1;
         let id = self.next_task;
         let task = Task {
@@ -758,7 +799,8 @@ impl Board {
             parent: spec.parent,
             deps: dedup(spec.deps),
             paths: dedup(spec.paths),
-            entities: dedup(spec.entities),
+            entities,
+            parts,
             claims: dedup(spec.claims),
             tags: dedup(spec.tags),
             priority: spec.priority.unwrap_or(5),
@@ -776,6 +818,9 @@ impl Board {
             size: 0,
         };
         let title = task.title.clone();
+        for r in &task.entities {
+            self.refs.add(r.uid, Holder::Task, id);
+        }
         self.tasks.insert(id, task);
         self.event(w.name, tick, "post", Some(id), title);
         Ok(&self.tasks[&id])
@@ -1028,6 +1073,9 @@ impl Board {
         }
         push_new(&mut t.paths, p.add_paths, &mut linked, "path");
         push_new(&mut t.entities, p.add_entities, &mut linked, "entity");
+        for r in &t.entities {
+            self.refs.add(r.uid, Holder::Task, t.id);
+        }
         push_new(&mut t.claims, p.add_claims, &mut linked, "claim");
         push_new(&mut t.tags, p.add_tags, &mut linked, "tag");
         if !linked.is_empty() {
@@ -1124,6 +1172,9 @@ impl Board {
         }
         if self.notes.len() >= MAX_NOTES {
             if let Some((_, old)) = self.notes.pop_first() {
+                if let NoteTarget::Entity(r) = &old.target {
+                    self.refs.forget(r.uid, Holder::Note, old.id);
+                }
                 self.bytes = self.bytes.saturating_sub(old.measure());
             }
         }
@@ -1137,6 +1188,9 @@ impl Board {
         let seq = self.event(w.name, tick, "note", task, short(&text, 80));
         let note = Note { id, by: w.name.to_owned(), by_key: w.session.map(str::to_owned), target, text, tick, seq };
         self.bytes += note.measure();
+        if let NoteTarget::Entity(r) = &note.target {
+            self.refs.add(r.uid, Holder::Note, id);
+        }
         self.notes.insert(id, note);
         Ok(&self.notes[&id])
     }
@@ -1152,6 +1206,9 @@ impl Board {
         }
         crate::authority::may_force(authority, own, "note_delete").map_err(|e| e.with("note", id).with("by", n.by.as_str()))?;
         let n = self.notes.remove(&id).expect("checked");
+        if let NoteTarget::Entity(r) = &n.target {
+            self.refs.forget(r.uid, Holder::Note, id);
+        }
         self.bytes = self.bytes.saturating_sub(n.measure());
         let task = match &n.target {
             NoteTarget::Task(t) => Some(*t),
@@ -1224,6 +1281,77 @@ impl Board {
         let notes: Vec<u64> = self.notes.values().filter(|n| matches!(n.target, NoteTarget::Entity(_))).map(|n| n.id).collect();
         let tasks: Vec<u64> = self.tasks.values().filter(|t| !t.entities.is_empty()).map(|t| t.id).collect();
         notes.into_iter().filter(|id| self.refresh_note(*id, world)).count() + tasks.into_iter().filter(|id| self.refresh_task_entities(*id, world)).count()
+    }
+
+    /// Whether a note or a task names this entity identity (the index: a lookup).
+    pub(crate) fn names(&self, uid: &crate::world::EntityUid) -> bool {
+        self.refs.names(uid)
+    }
+
+    /// The index as a walk of every note and task makes it (a loaded board's, and what tests
+    /// hold the kept one against).
+    fn refs_rebuilt(&self) -> Referrers<Holder> {
+        let mut refs = Referrers::default();
+        for n in self.notes.values() {
+            if let NoteTarget::Entity(r) = &n.target {
+                refs.add(r.uid, Holder::Note, n.id);
+            }
+        }
+        for t in self.tasks.values() {
+            for r in &t.entities {
+                refs.add(r.uid, Holder::Task, t.id);
+            }
+        }
+        refs
+    }
+
+    /// How many notes and tasks deletes have visited since the last call.
+    #[cfg(test)]
+    pub(crate) fn take_ref_visits(&mut self) -> u64 {
+        std::mem::take(&mut self.ref_visits)
+    }
+
+    /// References to entities just deleted take the path each had then
+    /// ([`EntityRef::deleted`]); saved with the board. Only the notes and tasks that name one
+    /// are visited (the index). How many changed.
+    pub(crate) fn note_deleted(&mut self, gone: &crate::entity_ref::Gone<'_>) -> usize {
+        #[cfg(test)]
+        assert!(self.refs == self.refs_rebuilt(), "the board's index of who names each entity is out of step with its notes and tasks");
+        let mut n = 0;
+        let (mut grown, mut shrunk) = (0usize, 0usize);
+        for (kind, id) in self.refs.holders(gone) {
+            #[cfg(test)]
+            {
+                self.ref_visits += 1;
+            }
+            match kind {
+                Holder::Note => {
+                    let Some(Note { target: NoteTarget::Entity(r), .. }) = self.notes.get_mut(&id) else { continue };
+                    let old = r.path.len();
+                    if r.deleted(gone) {
+                        grown += r.path.len();
+                        shrunk += old;
+                        self.rendered_notes.remove(&id);
+                        n += 1;
+                    }
+                }
+                Holder::Task => {
+                    let Some(t) = self.tasks.get_mut(&id) else { continue };
+                    if t.entities.iter_mut().fold(false, |any, r| r.deleted(gone) | any) {
+                        let size = t.measure();
+                        self.bytes = (self.bytes + size).saturating_sub(t.size);
+                        t.size = size;
+                        self.rendered.remove(&id);
+                        n += 1;
+                    }
+                }
+            }
+        }
+        self.bytes = (self.bytes + grown).saturating_sub(shrunk);
+        if n > 0 {
+            self.revision += 1;
+        }
+        n
     }
 
     /// Notes on `task`, newest last (at most `limit`).
@@ -1354,6 +1482,36 @@ impl Board {
                     paths: strs(t, "paths"),
                     // Older files kept bare ids: no identity, so they are detached.
                     entities: t.get("entities").and_then(Json::as_array).unwrap_or_default().iter().filter_map(EntityRef::from_saved).take(MAX_LINKS).collect(),
+                    // A file's parts that don't read (or name no entity it kept) are left out. A
+                    // part names its entity by its place in the saved list, and an entry that
+                    // didn't read moves the ones after it up: each part's place moves with its
+                    // entity. (Review R1 of m5-edswarm, minor 14: the place was kept as saved, so
+                    // after one unreadable entry every later part named the entity before its own.)
+                    parts: {
+                        let saved = t.get("entities").and_then(Json::as_array).unwrap_or_default();
+                        let mut kept = 0usize;
+                        let place: Vec<Option<usize>> = saved
+                            .iter()
+                            .map(|j| {
+                                let reads = EntityRef::from_saved(j).is_some() && kept < MAX_LINKS;
+                                kept += usize::from(reads);
+                                reads.then(|| kept - 1)
+                            })
+                            .collect();
+                        t.get("parts")
+                            .and_then(Json::as_array)
+                            .unwrap_or_default()
+                            .iter()
+                            .take(crate::ask::MAX_PARTS)
+                            .filter_map(|p| {
+                                let mut part = crate::ask::Part::parse(p, saved.len()).ok()?;
+                                if let Some(i) = part.entity {
+                                    part.entity = Some((*place.get(i)?)?);
+                                }
+                                Some(part)
+                            })
+                            .collect()
+                    },
                     claims: Vec::new(), // claims are live coordination: not carried across runs
                     tags: strs(t, "tags"),
                     priority: num(t, "priority").min(9) as u8,
@@ -1390,6 +1548,7 @@ impl Board {
             t.size = t.measure();
         }
         b.bytes = b.tasks.values().map(|t| t.size).sum::<usize>() + b.notes.values().map(Note::measure).sum::<usize>();
+        b.refs = b.refs_rebuilt();
         Ok(b)
     }
 }
@@ -1705,5 +1864,39 @@ mod tests {
         }
         let t = b.get(2).unwrap();
         assert!(t.events.len() <= MAX_TASK_EVENTS && t.events_dropped > 0);
+    }
+
+    /// Review R1 of m5-edswarm, minor 14: a part names its entity by its place in the task's
+    /// list. When a board file's entity entry doesn't read, the entities after it move up, and
+    /// each part must move with its own (it named the one before it); a part of the entry that
+    /// didn't read is left out.
+    #[test]
+    fn a_loaded_tasks_parts_follow_their_entities_past_an_entry_that_does_not_read() {
+        use crate::ask::{Part, PartKind};
+        use crate::world::EntityUid;
+        let mut b = Board::default();
+        let w = Writer::new("ann", None);
+        let entities: Vec<EntityRef> = (1..=3).map(|i| EntityRef { uid: EntityUid { lineage: 9, id: i }, path: format!("/e{i}") }).collect();
+        let parts = vec![
+            Part { entity: Some(0), kind: PartKind::RecipePart { name: "base".into() } },
+            Part { entity: Some(2), kind: PartKind::RecipePart { name: "head".into() } },
+        ];
+        b.post(w, 0, TaskSpec { title: "t".into(), entities, parts, ..TaskSpec::default() }).unwrap();
+        // The file, with the first entity's entry damaged.
+        let mut doc = Json::parse(&b.render()).unwrap();
+        let mut tasks = doc.get("tasks").and_then(Json::as_array).unwrap().to_vec();
+        let mut ents = tasks[0].get("entities").and_then(Json::as_array).unwrap().to_vec();
+        ents[0] = Json::from("not an entity");
+        tasks[0].set("entities", Json::arr(ents));
+        doc.set("tasks", Json::arr(tasks));
+        let loaded = Board::parse(&doc.to_string()).unwrap();
+        let t = loaded.get(1).expect("the task");
+        assert_eq!(t.entities.iter().map(|r| r.uid.id).collect::<Vec<_>>(), [2, 3], "the two entries that read");
+        assert_eq!(t.parts.len(), 1, "the part of the entry that didn't read is left out: {:?}", t.parts);
+        let head = &t.parts[0];
+        assert_eq!(head.entity.map(|i| t.entities[i].uid.id), Some(3), "the head is still entity 3's");
+        // An undamaged file reads back as it was.
+        let same = Board::parse(&b.render()).unwrap();
+        assert_eq!(same.get(1).unwrap().parts, b.get(1).unwrap().parts);
     }
 }
