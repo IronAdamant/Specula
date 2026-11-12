@@ -114,8 +114,17 @@ def main():
             r, err = build(editor)
             check(err and r.get("error") == "lead_only" and isinstance(r.get("proposal"), dict), f"a builder's logic_build builds nothing: it files a proposal ({str(r)[:200]})")
             pid = r["proposal"]["id"]
-            u = editor.request("tools/call", {"name": "logic_unload", "arguments": {"module": "ambulo"}})
+            # Unloading is native code's business: a builder's try is refused and, with the input
+            # monitor, freezes the session that tried (docs/design/SECURITY.md). A third session
+            # tries, so the editor's proposals below stay ordinary work.
+            prober = engine.mcp("module-prober")
+            prober.hello("ambulo-prober")
+            u = prober.request("tools/call", {"name": "logic_unload", "arguments": {"module": "ambulo"}})
             check(u.get("isError") and "lead_only" in json.dumps(u), "a builder can't unload the module")
+            u = prober.request("tools/call", {"name": "logic_status", "arguments": {}})
+            check(u.get("isError") and "session_frozen" in json.dumps(u), "... and the try froze the session that made it (session_frozen)")
+            u = editor.request("tools/call", {"name": "logic_status", "arguments": {}})
+            check(not u.get("isError"), "the editor, who only proposed, is not frozen")
             listed = builder.json("logic_status").get("proposals") or []
             check(any(p.get("id") == pid and p.get("by") == "ambulo-editor" for p in listed), f"the lead sees the proposal ({listed})")
             SRC.write_bytes(edited + b"\n// changed after the proposal\n")
@@ -151,7 +160,7 @@ def main():
             evil = original.replace(b"const WALK_SPEED: f32 = 4.0;", b"const WALK_SPEED: f32 = 99.0;", 1)
             SRC.write_bytes(proposed)
             r, err = build(editor)
-            check(err and isinstance(r.get("proposal"), dict), "proposed")
+            check(err and isinstance(r.get("proposal"), dict), f"proposed ({err}; {json.dumps(r)[:400]})")
             pid = r["proposal"]["id"]
             stop = threading.Event()
 

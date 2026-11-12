@@ -918,7 +918,7 @@ def main():
 
         # Every owned tool has a probe, or a reason it is covered elsewhere.
         owned = sorted(n for n, v in table.items() if isinstance(v, str) and v.startswith("owned:"))
-        creates = {"task_post", "task_plan", "note_add", "intent_declare", "lease_take", "camera_set", "review_submit", "critique_add", "tools_request"}
+        creates = {"task_post", "task_plan", "note_add", "intent_declare", "lease_take", "camera_set", "review_submit", "critique_add", "tools_request", "l10n_tasks"}
         for n in owned:
             if n in d.probed:
                 continue
