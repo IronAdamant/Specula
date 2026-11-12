@@ -147,6 +147,21 @@ stele: disable locks, notes, messages, kv, embeddings
 wikifier: disable map, status
 ```
 
+## The gate
+
+`python scripts/gate.py` is what a change passes before it is reported or merged: the workspace's tests once, the
+engine's library tests five more times at a high thread count, once more with every worker thread starting late
+(`SPECULA_TEST_WORKER_DELAY_MS`), clippy for Windows and Linux with warnings denied, and the debug and release
+builds. It reads whole logs and keeps them (`<target>/gate/`).
+
+- **A gate must not pass by luck** (owner, 2026-11-12). A test that fails in some runs and passes in others is
+  reported as FLAKY and fails the gate. A failure seen once is a bug until its cause is found: "it passes when run
+  alone" is not an answer.
+- **No result may depend on when a worker thread runs.** The engine thread has the result or does the work itself.
+  The slow-worker run turns such a dependence into a failure every time.
+- **Tests assert what the design guarantees**, not how fast this machine was. A count of passes or an elapsed time
+  is a timing property; say why a pass ended instead (`capture::flight::PassEnd`).
+
 ## Live checks (GPU + desktop; CI can't run these)
 
 After changing `specula-gpu`, `specula-platform` or the engine's window loop, run
