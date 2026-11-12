@@ -135,10 +135,13 @@ pub enum Kind {
     Module,
     /// One fixed tick of navigation moving agents (coalesced, like physics; see [`crate::nav`]).
     Nav,
+    /// The input monitor froze a session, paused the swarm, or someone cleared or allowed
+    /// (docs/design/SECURITY.md): a record, no world changes, not undoable.
+    Security,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 15] = [
+    pub const ALL: [Kind; 16] = [
         Kind::Spawn,
         Kind::Set,
         Kind::Delete,
@@ -154,6 +157,7 @@ impl Kind {
         Kind::File,
         Kind::Module,
         Kind::Nav,
+        Kind::Security,
     ];
 
     pub fn name(self) -> &'static str {
@@ -173,6 +177,7 @@ impl Kind {
             Kind::File => "file",
             Kind::Module => "module",
             Kind::Nav => "nav",
+            Kind::Security => "security",
         }
     }
 
@@ -248,6 +253,8 @@ pub struct Entry {
     pub undone_by: Option<u64>,
     /// For [`Kind::Module`] entries: what happened to which module's code.
     pub module: Option<Box<ModuleEvent>>,
+    /// For [`Kind::Security`] entries: what the input monitor halted, cleared or allowed.
+    pub security: Option<Box<Json>>,
     /// The agent call that made it (`trace_call`; 0: none, e.g. the simulation's own writers).
     /// Observability only: never hashed, replayed or saved.
     pub call: u64,
@@ -280,7 +287,7 @@ impl Entry {
     /// Whether every change kept its previous state (game updates don't; module events are
     /// records of code, not world changes).
     pub fn undoable(&self) -> bool {
-        self.kind != Kind::Module
+        !matches!(self.kind, Kind::Module | Kind::Security)
             && self.changes.iter().all(|c| !matches!(c, Change::Set { before: None, .. } | Change::Pose { .. }))
     }
 
@@ -302,6 +309,9 @@ impl Entry {
         }
         if let Some(m) = &self.module {
             f.push(("module", m.to_json()));
+        }
+        if let Some(s) = &self.security {
+            f.push(("security", (**s).clone()));
         }
         if detail && self.call != 0 {
             f.push(("call", Json::from(self.call)));
@@ -714,6 +724,7 @@ impl Journal {
             undoes: Vec::new(),
             undone_by: None,
             module: None,
+            security: None,
             call: specula_core::trace::Ctx::current().call,
             ids,
             bytes,
@@ -850,6 +861,19 @@ impl Journal {
         if let Some(e) = self.agents.get_mut(seq) {
             e.bytes += extra;
             e.module = Some(Box::new(event));
+            self.agents.bytes += extra;
+        }
+        seq
+    }
+
+    /// Records what the input monitor did ([`Kind::Security`]) as `by`: no world changes, kept
+    /// with agents' entries. `record` is a small object (bounded by the caller). Returns its id.
+    pub fn append_security<'w>(&mut self, tick: u64, by: impl Into<Writer<'w>>, record: Json, next_id: u64) -> u64 {
+        let seq = self.append(tick, by, None, Kind::Security, Vec::new(), next_id);
+        let extra = std::mem::size_of::<Json>() + record.to_string().len();
+        if let Some(e) = self.agents.get_mut(seq) {
+            e.bytes += extra;
+            e.security = Some(Box::new(record));
             self.agents.bytes += extra;
         }
         seq

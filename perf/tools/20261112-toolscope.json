@@ -1,0 +1,70 @@
+{
+ "schema": "specula.toolscope/v1",
+ "sizes": {
+  "core": {
+   "tools": 6,
+   "bytes": 5260
+  },
+  "all": {
+   "tools": 211,
+   "bytes": 295455
+  },
+  "role lead": {
+   "tools": 211,
+   "bytes": 295455
+  },
+  "role director": {
+   "tools": 211,
+   "bytes": 295455
+  },
+  "role builder": {
+   "tools": 54,
+   "bytes": 92773
+  },
+  "role reviewer": {
+   "tools": 45,
+   "bytes": 66993
+  },
+  "role playtester": {
+   "tools": 48,
+   "bytes": 66962
+  },
+  "role art_director": {
+   "tools": 81,
+   "bytes": 118720
+  },
+  "role sight_skeptic": {
+   "tools": 17,
+   "bytes": 28447
+  },
+  "role performance": {
+   "tools": 29,
+   "bytes": 40805
+  },
+  "role designer": {
+   "tools": 42,
+   "bytes": 48763
+  },
+  "role animator": {
+   "tools": 58,
+   "bytes": 104374
+  },
+  "role coder": {
+   "tools": 55,
+   "bytes": 97954
+  },
+  "role debugger": {
+   "tools": 58,
+   "bytes": 73428
+  },
+  "tools_catalog": {
+   "bytes": 13713
+  }
+ },
+ "timing": {
+  "tools_list_all_ms": 18.43,
+  "tools_list_core_ms": 3.95,
+  "tools_catalog_ms": 3.04
+ },
+ "failures": []
+}

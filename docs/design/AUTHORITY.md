@@ -38,16 +38,22 @@ submitter typed in counted as "all N passed").
   granted. Asking without a grant is refused (`role_not_granted`), loudly, never quietly downgraded.
 - **The owner** is the human: the window (`window:owner`, the review screen) or an operator grant (`--owner NAME`
   when the engine starts, for scripts that act for the owner). Never self-declared over MCP.
-- **The lead** comes from the operator (`--lead NAME`, repeatable). **The documented fallback:** when the operator
-  granted nothing at all, the first identity whose hello says `lead` (or `director`) holds the lead for the run;
-  anyone else asking is refused with `lead_taken`, naming the holder. engine_info's `swarm.grants.fallback_lead` says
-  who. **Any operator grant turns the fallback off** (coordinator, 2026-10-29): with `--reviewer rev` and no
-  `--lead`, nobody becomes lead by asking first, so a granted reviewer is never outranked by a first-come lead.
+- **The lead** comes from the operator (`--lead NAME`, repeatable), and from nowhere else. **There is no fallback
+  lead** (owner, 2026-11-12: "if people or AI agents start with no --lead, then it shouldn't have lead powers").
+  Until then, when the operator had granted nothing, the first agent to say `lead` held it for the run: a role an
+  agent gave itself, and the way a frozen agent got out of the security monitor (SECURITY.md).
+  - A hello that says `lead` (or `director`) without a grant is refused (`role_not_granted`), and the message says
+    what to do: start the engine with `--lead NAME`. The agent, or its harness, learns it at its first call, while
+    whoever launched the run is still there. `engine_info`'s `swarm.grants.lead_granted` says whether anyone leads.
+  - **A run without a lead still works.** Agents build, claims and leases expire on their own, and agents choose
+    their own tools (`tools_activate`). What needs a lead waits for one: forcing over another agent's claims,
+    `tools_scope`, the frame floor, stream and audio settings, clearing security incidents. A run meant to go on
+    for hours unattended names its lead at launch.
 - **Reviewers** come from the operator (`--reviewer NAME`); a lead reviews too.
 - **A granted name is bound** to the identity that first says hello with it successfully (a refused hello binds
   nothing; its resume token carries it to later sessions). Another session can't take that name, or a look-alike
-  of it, for the rest of the run (`grant_bound`). Grant holders and the fallback lead are never pruned from the
-  identity table, so they can always come back.
+  of it, for the rest of the run (`grant_bound`). Grant holders are never pruned from the identity
+  table, so they can always come back.
 - **Engine writer names are reserved**: every `Exempt` writer's name (`physics`, `nav`, `anim_reload`, the hosted
   game's), `disk`, `engine:stray`, `window:owner`, and the prefixes `module:`, `lex:`, `engine:`, `window:`
   (`name_reserved`); also `taste`, the galleries lane's writer. `world_history` can no longer show an agent as
@@ -134,7 +140,7 @@ caller's `JobOwner` and a `check` of the caller's claims on what the bake writes
 - `Owned(Store)`: changes items that have owners; the store checks the caller (claims, tasks, notes, intents,
   leases, cameras, review submissions, critiques, jobs, saves, playtests, uploads, saved Lex runs). Module
   loads (`logic_build`, `logic_reload`, `logic_unload`) are `Lead`, and more: native code runs with the owner's user
-  rights, so they need the owner or an operator-granted lead (`may_load_native`; the fallback lead isn't enough), and
+  rights, so they need the owner or an operator-granted lead (`may_load_native`), and
   a builder's build becomes a proposal the lead approves (MODULES.md, *Who may load a module*). Hooks stay `Open`,
   refused where another agent claims the module's root.
 - `Open(reason)`: anyone may, and the reason says why that's right (the clock is shared on purpose, say).
@@ -245,7 +251,7 @@ integrator runs at milestone audits.
 
 ## Tests
 
-- `authority::tests`: roles admitted only when granted, the fallback lead, grants bound to the first identity,
+- `authority::tests`: roles admitted only when granted (nobody leads by asking), grants bound to the first identity,
   writer names reserved, `require`, and **every engine tool has an access entry** (Open entries need their reason).
 - `jobs::tests`: busy refused naming the owner (never replaced or answered), own restart replaces, owner-only cancel,
   a forced cancel needs a lead, the check runs on every start.

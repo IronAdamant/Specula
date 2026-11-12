@@ -125,6 +125,25 @@ fn block_under_modal(outlines: &mut [(&'static str, specula_ui::Outline)]) {
     }
 }
 
+/// Replaces, in a `ui_tree` answer, every label showing `shown` (what the human is typing, as the
+/// screen draws it; clipped labels by their start) with a redaction.
+fn redact_typing(tree: &mut Json, shown: &str) {
+    let Some(Json::Arr(widgets)) = tree.get("widgets").cloned() else { return };
+    let mut out = Vec::with_capacity(widgets.len());
+    for mut w in widgets {
+        let hit = w.get("text").and_then(Json::as_str).is_some_and(|t| {
+            let t = t.trim_end_matches('\u{2026}');
+            t == shown || (t.chars().count() >= 8 && shown.starts_with(t))
+        });
+        if hit {
+            w.set("text", Json::from("(redacted: the owner's typing)"));
+            w.set("redacted", Json::Bool(true));
+        }
+        out.push(w);
+    }
+    tree.set("widgets", Json::Arr(out));
+}
+
 /// One frame of synthetic input.
 #[derive(Default)]
 struct Synth {
@@ -1017,6 +1036,12 @@ impl Engine {
             Ok(t)
         })??;
         tree.set("surface", Json::from(s.name()));
+        // The note the human is typing on the gallery screen is theirs alone (input sweep R3).
+        if s == Surface::Gallery && authority::authority(&self.swarm, &session.id) < Authority::Owner {
+            if let Some(shown) = self.taste.screen.note_shown() {
+                redact_typing(&mut tree, &shown);
+            }
+        }
         Ok(ToolOutput::text(tree.to_string()))
     }
 
@@ -1082,8 +1107,27 @@ impl Engine {
         let started = Instant::now();
         let s = self.ui_surface_of(a.surface);
         let owner = authority::authority(&self.swarm, &session.id) == Authority::Owner;
+        // No surface named while an engine screen is open (the owner pressed F8 or F9, a reviewer
+        // opened one): the call meant the game, and the screen takes the window's input. That is
+        // state the agent didn't choose: refused as engine_screen_open, seen, never counted
+        // (review R1 of m5-inputguard, major 2: a human pressing F9 froze every playtester).
+        if a.surface.is_none() && s != Surface::Game && !owner {
+            let e = WorldError::new("engine_screen_open", format!("the {} screen is open on the window and takes all its input: a player couldn't reach the game now (the owner closes it)", s.name())).with("screen", s.name());
+            crate::inputguard::declined(crate::inputguard::Channel::ScreenInput, "ui_act", &crate::inputguard::Actor::of(&self.swarm, session), e.code, s.name());
+            return Err(e);
+        }
         if s != Surface::Game && !owner {
-            return Err(WorldError::new("owner_only", format!("the {} screen is the owner's (its buttons decide as the window's owner): only an agent the operator granted --owner may drive it", s.name())));
+            let e = authority::refusal(
+                authority::Site::ScreenAct,
+                format!("the {} screen is the owner's (its buttons decide as the window's owner): only an agent the operator granted --owner may drive it; a refused try freezes your session (docs/design/SECURITY.md)", s.name()),
+            );
+            // A refused try at driving the human's screen: a security incident.
+            crate::inputguard::refused(crate::inputguard::Channel::ScreenInput, "ui_act", &crate::inputguard::Actor::of(&self.swarm, session), e.code, s.name());
+            return Err(e);
+        }
+        if s != Surface::Game {
+            // The owner's own (an --owner agent): seen and recorded, fine.
+            let _seen = crate::inputguard::done(crate::inputguard::Channel::ScreenInput, "ui_act", &crate::inputguard::Actor::of(&self.swarm, session), s.name());
         }
         if s == Surface::Game {
             if let Some(open) = [(self.review_ui.is_open(), "review"), (self.taste.screen.is_open(), "gallery")].iter().find(|(o, _)| *o).map(|(_, n)| *n) {

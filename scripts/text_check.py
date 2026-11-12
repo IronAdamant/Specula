@@ -234,7 +234,7 @@ def sepulcra(exe, adapter, out, port, frames):
     """Sepulcra on `adapter` (the iGPU for the budgets), windowed: the epitaphs and the title stone
     in the game view, and the HUD's text cost while the game runs."""
     log = out / f"sepulcra_{adapter}.log"
-    args = ["--adapter", adapter, "--size", "1280x720", "--captures", str(out / "captures"), "--lead", "text-check", "--", "--seed", "7", "--mute"]
+    args = ["--adapter", adapter, "--size", "1280x720", "--captures", str(out / "captures"), "--lead", "text-check", "--owner", "text-check-owner", "--", "--seed", "7", "--mute"]
     with Engine(exe, port, log, *args, cwd=str(out)) as engine:
         with engine.mcp("text_check") as m:
             for _ in range(240):  # the game loads its models first: busy until then
@@ -296,6 +296,15 @@ def keyboard(engine, m, adapter, out):
         r = b.request("tools/call", {"name": "text_edit", "arguments": {"path": "/text_check_field", "ops": [], "window_focus": True}})
         body = json.loads(next((c["text"] for c in r.get("content", []) if c.get("type") == "text"), "{}"))
         check(r.get("isError") and body.get("error") == "lead_only", f"a builder can't take the human's keyboard ({body.get('error')})")
+    # The try is a security incident (docs/design/SECURITY.md): the lead sees it, then clears it.
+    sec = m.json("security_incidents", limit=50)
+    check(any(e.get("class") == "incident" and e.get("agent") == "mallory" for e in sec.get("events", [])), "the builder's try is a security incident")
+    m.json("security_clear", all=True, note="text_check's builder probe")
+    # The owner allows this lead for its session (docs/design/SECURITY.md): its pointing is then
+    # recorded as allowed, with no alert toast over the game while the HUD is measured.
+    with engine.mcp("text_check_owner") as o:
+        o.hello("text-check-owner", role="owner")
+        o.json("security_allow_lead", agent="text-check")
     hwnd = wc.find_window(engine.proc.pid)
     before = out / f"sepulcra_{adapter}_keyboard_off.png"
     wc.screenshot(hwnd, before)

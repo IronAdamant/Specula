@@ -334,7 +334,8 @@ impl ReviewUi {
         self.human_closed.is_some_and(|t| t.elapsed() < HUMAN_CLOSE_HOLD)
     }
 
-    pub fn open(&mut self, id: Option<u64>, review: &Review) {
+    /// Puts the screen on the window (the input monitor saw it first: `_seen`).
+    pub fn open(&mut self, id: Option<u64>, review: &Review, _seen: crate::inputguard::Seen) {
         self.open = true;
         self.rejecting = false;
         if let Some(id) = id {
@@ -618,7 +619,9 @@ impl ReviewUi {
             if self.open {
                 self.close_by_human();
             } else {
-                self.open(None, review);
+                // The human's own F9 (or pad combo): the owner's action, seen all the same.
+                let seen = crate::inputguard::done(crate::inputguard::Channel::Screen, "review_screen.toggle", &crate::inputguard::Actor::Human, "");
+                self.open(None, review, seen);
             }
         }
         if !self.open && pending == 0 {
@@ -656,7 +659,9 @@ impl ReviewUi {
         for a in events.actions() {
             match a {
                 "review_open" => {
-                    self.open(None, review);
+                    // The human clicked the pending-work tab.
+                    let seen = crate::inputguard::done(crate::inputguard::Channel::Screen, "review_screen.tab", &crate::inputguard::Actor::Human, "");
+                    self.open(None, review, seen);
                 }
                 "review_close" => close = true,
                 "review_next" => self.step(1, review),
@@ -891,7 +896,7 @@ mod tests {
     fn paging_follows_the_pending_submissions() {
         let mut r = review_with(3);
         let mut s = test_ui();
-        s.open(None, &r);
+        s.open(None, &r, crate::inputguard::seen_for_test());
         assert_eq!(s.shown(), Some(1));
         s.step(1, &r);
         s.step(1, &r);
@@ -928,7 +933,7 @@ mod tests {
         use specula_platform::MouseButton;
         let r = review_with(2);
         let mut s = test_ui();
-        s.open(None, &r);
+        s.open(None, &r, crate::inputguard::seen_for_test());
         s.frame(&[], &[], (1280, 800), &r);
         s.frame(&[], &[], (1280, 800), &r);
         let ui = s.ui.as_ref().unwrap();
@@ -971,7 +976,7 @@ mod tests {
         }
         let r = review_with(2);
         let mut s = test_ui();
-        s.open(None, &r);
+        s.open(None, &r, crate::inputguard::seen_for_test());
         s.frame(&[], &[], (1280, 800), &r);
         s.frame(&[], &[], (1280, 800), &r);
         let ui = s.ui.as_ref().unwrap();

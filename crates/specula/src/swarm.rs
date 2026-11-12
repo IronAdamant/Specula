@@ -129,9 +129,13 @@ pub const RETIRED_PRUNE_MIN: usize = 1024;
 
 /// A session's name before (or without) agent_hello.
 pub fn default_name(s: &SessionInfo) -> String {
-    // At most 48 characters of the client's name (clients choose it freely), without '/' or
-    // control characters, so the whole name stays within an agent name's 64.
-    let client: String = s.client_name.trim().chars().filter(|c| !c.is_control() && *c != '/').take(48).collect();
+    // At most 48 characters of the client's name, and only the characters an agent's own name
+    // may have (`authority::name_char`: ASCII letters, digits, space, _ . -). Clients choose
+    // their name freely, and this one is shown to the owner (the security toast, the window
+    // title, the journal): no bidirectional overrides, no look-alikes, nothing that reads as
+    // the engine's own words in another script (review R2 of m5-inputguard, major 5).
+    let client: String = s.client_name.chars().filter(|c| crate::authority::name_char(*c)).take(48).collect();
+    let client = client.trim().to_owned();
     let client = if client.is_empty() { "anonymous".to_owned() } else { client };
     let short: String = s.id.chars().take(6).collect();
     format!("{client}-{short}")
@@ -197,6 +201,22 @@ impl Swarm {
         crate::authority::may_load_native(self.authority_of_key(key), self.grants.granted_key(key), what)
     }
 
+    /// The session's authority as the operator's grants alone give it (read through
+    /// [`crate::authority::trusted`]): a lead nobody granted would be a plain agent here.
+    pub(crate) fn trusted_authority_of(&self, session_id: &str) -> crate::authority::Authority {
+        self.agents.get(session_id).map_or(crate::authority::Authority::Agent, |a| crate::authority::trust(a.authority, self.grants.granted_key(&a.key)))
+    }
+
+    /// [`Swarm::authority_of_key`] as the operator's grants alone give it.
+    pub(crate) fn trusted_authority_of_key(&self, key: &str) -> crate::authority::Authority {
+        crate::authority::trust(self.authority_of_key(key), self.grants.granted_key(key))
+    }
+
+    /// The identity a resume token belongs to: its key and the role it has now.
+    pub(crate) fn identity_of_token(&self, token: &str) -> Option<(String, String)> {
+        self.agents.values().find(|a| a.token == token).map(|a| (a.key.clone(), a.role.clone()))
+    }
+
     /// What the session may do (read through [`crate::authority::authority`]).
     pub(crate) fn authority_of(&self, session_id: &str) -> crate::authority::Authority {
         self.agents.get(session_id).map_or(crate::authority::Authority::Agent, |a| a.authority)
@@ -216,7 +236,7 @@ impl Swarm {
         let name = crate::authority::WINDOW_OWNER.to_owned();
         self.reserve(&name);
         let authority = crate::authority::Authority::Owner;
-        crate::authority::publish(session_id, authority);
+        crate::authority::publish_as(session_id, authority, true);
         let agent = Agent { name: name.clone(), role: crate::authority::ROLE_OWNER.to_owned(), authority, key: name, token: random_hex() };
         self.agents.insert(session_id.to_owned(), agent);
     }
@@ -284,7 +304,7 @@ impl Swarm {
         }
         if self.agents.len() >= MAX_AGENTS && !self.agents.contains_key(&session.id) {
             let ids: BTreeSet<&str> = live.iter().map(|s| s.id.as_str()).collect();
-            // Never a grant holder or the fallback lead: their bindings outlive their sessions
+            // Never a grant holder: their bindings outlive their sessions
             // (they come back with their resume tokens).
             let grants = &self.grants;
             self.agents.retain(|id, a| {
@@ -310,7 +330,7 @@ impl Swarm {
             ("resume_token", Json::from(token.as_str())),
             ("note", Json::from("keep resume_token private; a later session continues as this agent (claims and undo included) with agent_hello {name, resume_token}")),
         ]);
-        crate::authority::publish(&session.id, authority);
+        crate::authority::publish_as(&session.id, authority, self.grants.granted_key(&key));
         self.agents.insert(session.id.clone(), Agent { name, role, authority, key, token });
         Ok(reply)
     }
@@ -347,7 +367,7 @@ impl Swarm {
         agent.role = role;
         agent.authority = authority;
         crate::authority::unpublish(&old_sid);
-        crate::authority::publish(&session.id, authority);
+        crate::authority::publish_as(&session.id, authority, self.grants.granted_key(&agent.key));
         let reply = Json::obj([
             ("agent", Json::from(agent.name.as_str())),
             ("role", Json::from(agent.role.as_str())),
@@ -860,11 +880,11 @@ mod tests {
         let e = sw.hello(&sc, "carl".into(), ROLE_OWNER.into(), None, &live).unwrap_err();
         assert_eq!((e.code, e.detail("refused_at")), ("role_not_granted", Some(&Json::from("agent_hello.role"))));
         assert!(!sw.introduced("c"), "a refused hello names nobody");
-        // The first lead (the documented fallback) holds it; dave can't take it after.
-        sw.hello(&sa, "ann".into(), ROLE_LEAD.into(), None, &live).unwrap();
-        assert_eq!(authority(&sw, "a"), Authority::Lead);
-        assert_eq!(sw.hello(&sd, "dave".into(), ROLE_LEAD.into(), None, &live).unwrap_err().code, "lead_taken");
-        assert_eq!(sw.hello(&sd, "dave".into(), ROLE_DIRECTOR.into(), None, &live).unwrap_err().code, "lead_taken");
+        // Nobody becomes lead by asking, first or not (owner, 2026-11-12: no fallback lead).
+        assert_eq!(sw.hello(&sa, "ann".into(), ROLE_LEAD.into(), None, &live).unwrap_err().code, "role_not_granted");
+        assert_eq!(authority(&sw, "a"), Authority::Agent);
+        assert_eq!(sw.hello(&sd, "dave".into(), ROLE_DIRECTOR.into(), None, &live).unwrap_err().code, "role_not_granted");
+        sw.hello(&sa, "ann".into(), "builder".into(), None, &live).unwrap();
         // bob approved his own submission from a second identity with role reviewer.
         sw.hello(&sb, "bob".into(), "builder".into(), None, &live).unwrap();
         assert_eq!(sw.hello(&sb2, "bob2".into(), ROLE_REVIEWER.into(), None, &live).unwrap_err().code, "role_not_granted");
@@ -892,7 +912,7 @@ mod tests {
         // Its resume token carries the grant.
         sw.hello(&sa2, "rev".into(), ROLE_REVIEWER.into(), Some(token), &later).unwrap();
         assert_eq!(authority(&sw, "a2"), Authority::Reviewer);
-        // An operator lead turns the fallback off.
+        // With a lead granted, someone else asking still gets nothing.
         sw.grants.grant("lee", Authority::Lead).unwrap();
         assert_eq!(sw.hello(&sx, "dave".into(), ROLE_LEAD.into(), None, &later).unwrap_err().code, "role_not_granted");
     }
@@ -943,8 +963,9 @@ mod tests {
         let sb2 = session("boss-later", "c");
         sw.hello(&sb2, "boss".into(), ROLE_OWNER.into(), Some(tok), std::slice::from_ref(&sb2)).expect("the granted identity survives pruning");
         assert_eq!(authority(&sw, "boss-later"), Authority::Owner);
-        // The same for the fallback lead.
+        // The same for a granted lead.
         let mut sw = Swarm::default();
+        sw.grants.grant("lee", Authority::Lead).unwrap();
         let sl = session("lead-session", "c");
         let tok = sw.hello(&sl, "lee".into(), ROLE_LEAD.into(), None, std::slice::from_ref(&sl)).unwrap().get("resume_token").and_then(Json::as_str).unwrap().to_owned();
         for i in 0..(MAX_AGENTS + 80) {
@@ -952,7 +973,7 @@ mod tests {
             let _ = sw.hello(&s, format!("a{i}"), "builder".into(), None, std::slice::from_ref(&s));
         }
         let s2 = session("lead-later", "c");
-        sw.hello(&s2, "lee".into(), ROLE_LEAD.into(), Some(tok), std::slice::from_ref(&s2)).expect("the fallback lead survives pruning");
+        sw.hello(&s2, "lee".into(), ROLE_LEAD.into(), Some(tok), std::slice::from_ref(&s2)).expect("the granted lead survives pruning");
         // A refused hello bound the granted name to the refused session.
         let mut sw = Swarm::default();
         sw.grants.grant("rev", Authority::Reviewer).unwrap();
@@ -1009,7 +1030,7 @@ mod tests {
     }
 
     #[test]
-    fn any_operator_grant_turns_the_lead_fallback_off() {
+    fn asking_for_lead_gets_nothing_beside_another_grant() {
         use crate::authority::{authority, Authority, ROLE_LEAD, ROLE_REVIEWER};
         let mut sw = Swarm::default();
         sw.grants.grant("rev", Authority::Reviewer).unwrap();
@@ -1032,6 +1053,7 @@ mod tests {
         let tok = sw.hello(&s1, "rev".into(), ROLE_REVIEWER.into(), None, std::slice::from_ref(&s1)).unwrap().get("resume_token").and_then(Json::as_str).unwrap().to_owned();
         assert_eq!(of_session("pub-rev-1"), Authority::Reviewer);
         assert_eq!(of_session("pub-nobody"), Authority::Agent);
+        assert_eq!(crate::authority::trusted_of_session("pub-rev-1"), Authority::Reviewer, "a grant is trusted");
         sw.hello(&s2, "rev".into(), ROLE_REVIEWER.into(), Some(tok), std::slice::from_ref(&s2)).unwrap();
         assert_eq!((of_session("pub-rev-1"), of_session("pub-rev-2")), (Authority::Agent, Authority::Reviewer), "a resume moves it");
         sw.hello(&s2, "rev".into(), "builder".into(), None, std::slice::from_ref(&s2)).unwrap();

@@ -527,6 +527,12 @@ def main():
         # -- the inspector: type a value --
         s = ed.press_widget("f_py")
         check((s.get("typing") or {}).get("field") == "py", f"clicking the Y field starts typing it ({s.get('typing')})")
+        # Input sweep R3: what the human types is the owner's alone (docs/design/SECURITY.md).
+        s = ed.input({"text": "7"}, {"wait": 1})
+        own_t, b_t = s.get("typing") or {}, call(builder, "editor_state").get("typing") or {}
+        check(own_t.get("text") is not None and "text" not in b_t and b_t.get("redacted") is True and "chars" not in b_t,
+              f"the owner's editor_state shows the field being typed; another agent's has only its length ({own_t} / {b_t})")
+        ed.input({"key": "Backspace"}, {"wait": 1})
         s = ed.input({"text": "1.5"}, {"key": "Enter"}, {"wait": 2})
         y = call(builder, "world_query", path_prefix="/editor_test/crate_a", fields=["position"])["items"][0]["position"][1]
         check(abs(y - 1.5) < 1e-6, f"typing 1.5 and Enter sets position Y ({y})")
@@ -730,6 +736,13 @@ def main():
         # -- authority: only the owner drives the editor --
         err, _ = raw(builder, "editor_input", steps=[{"key": "Escape"}])
         check(err is not None and "owner_only" in err, f"a builder's editor_input is refused as owner_only ({(err or '')[:120]})")
+        # The try is a security incident (docs/design/SECURITY.md): the builder is frozen until the
+        # owner clears it.
+        ferr, _ = raw(builder, "world_query", limit=1)
+        check(ferr is not None and "session_frozen" in ferr, f"... a security incident: the builder's session is frozen ({(ferr or '')[:80]})")
+        call(owner, "security_clear", all=True, note="editor_check's builder probe")
+        ferr, _ = raw(builder, "world_query", limit=1)
+        check(ferr is None, f"... and works again once the owner clears it ({(ferr or '')[:80]})")
 
         # -- frame time with the editor open, on this GPU --
         call(owner, "time_control", action="resume")

@@ -189,7 +189,7 @@ def main():
         {"kind": "vfx", "name": f"v{k}", "target": f"/c0_{k}", "keys": [{"t": round(i * 1.1, 3), "vfx": {"effect": "fire"}} for i in range(512)]} for k in range(13)]}
     (assets / "timelines").mkdir(parents=True, exist_ok=True)
     (assets / "timelines" / "fat.json").write_text(json.dumps(fat, separators=(",", ":")))
-    args = ["--headless", "--strict-budget", "--captures", str(out / "captures"), "--worlds", str(out / "worlds"), "--assets", str(assets), "--saves", str(out / "saves")]
+    args = ["--headless", "--strict-budget", "--lead", "budget_lead", "--captures", str(out / "captures"), "--worlds", str(out / "worlds"), "--assets", str(assets), "--saves", str(out / "saves")]
     if a.adapter:
         args += ["--adapter", a.adapter]
     summary = {"stalls": [], "slow": [], "heavy": {}}

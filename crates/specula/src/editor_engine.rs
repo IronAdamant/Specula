@@ -1113,7 +1113,8 @@ impl Engine {
             for (reply, deadline, id) in waiters {
                 let pending = self.editor.ui.injected.iter().any(|(c, _)| *c == id);
                 if !pending {
-                    let s = state.get_or_insert_with(|| self.editor_state_json(false)).clone();
+                    // (editor_input is the owner's: its answer may show the typing.)
+                    let s = state.get_or_insert_with(|| self.editor_state_json(false, true)).clone();
                     let _ = reply.send(ToolOutput::text(Json::obj([("fed", Json::from(true)), ("editor", s)]).to_string()));
                     self.editor.rt.input_tool_calls.remove(&id);
                 } else if now > deadline {
@@ -1530,8 +1531,16 @@ impl Engine {
     }
 
     /// `editor_state`: what the editor shows, for agents (bounded).
-    pub(crate) fn editor_state_json(&mut self, detailed: bool) -> Json {
+    /// `owner`: the caller is the owner. What the human is typing (a field's text, the outliner's
+    /// search, and the rows that search filters while it is typed) is theirs alone (input sweep
+    /// R3): anyone else gets `redacted` and nothing more (not even its length).
+    pub(crate) fn editor_state_json(&mut self, detailed: bool, owner: bool) -> Json {
         let ui = &self.editor.ui;
+        // What the human typed into the search box shows in what it found: for anyone but the
+        // owner the rows, their count and their boxes are withheld while the search holds any
+        // text (not only while the box has focus), and typed text is never measured for them (a
+        // length polled per key gives the typing's rhythm and a secret's length away).
+        let typing_search = !owner && !ui.search.is_empty();
         let sel: Vec<Json> = ui
             .selection
             .iter()
@@ -1543,6 +1552,7 @@ impl Engine {
             .outliner
             .rows
             .iter()
+            .take(if typing_search { 0 } else { usize::MAX })
             .enumerate()
             .map(|(i, r)| {
                 let mut j = Json::obj([
@@ -1596,16 +1606,34 @@ impl Engine {
             (
                 "outliner",
                 Json::obj([
-                    ("page", Json::from(ui.outliner.page)),
-                    ("has_next", Json::from(ui.outliner.has_next)),
-                    ("search", Json::from(ui.search.as_str())),
+                    ("page", if typing_search { Json::Null } else { Json::from(ui.outliner.page) }),
+                    ("has_next", if typing_search { Json::Null } else { Json::from(ui.outliner.has_next) }),
+                    (
+                        "search",
+                        if owner || ui.search.is_empty() {
+                            Json::from(ui.search.as_str())
+                        } else {
+                            Json::obj([("redacted", Json::Bool(true))])
+                        },
+                    ),
+                    ("rows_withheld", Json::from(typing_search)),
                     ("scanning", Json::from(ui.outliner.scanning)),
-                    ("entities", Json::from(ui.outliner.total)),
+                    ("entities", if typing_search { Json::Null } else { Json::from(ui.outliner.total) }),
                     ("rows", Json::Arr(rows)),
                 ]),
             ),
             ("inspector", inspector),
-            ("typing", ui.typing().map_or(Json::Null, |(f, t)| Json::obj([("field", Json::from(f.key())), ("text", Json::from(t))]))),
+            (
+                "typing",
+                ui.typing().map_or(Json::Null, |(f, t)| {
+                    if owner {
+                        Json::obj([("field", Json::from(f.key())), ("text", Json::from(t))])
+                    } else {
+                        let _ = t;
+                        Json::obj([("field", Json::from(f.key())), ("redacted", Json::Bool(true))])
+                    }
+                }),
+            ),
             ("searching", Json::from(ui.searching())),
             ("panels_loaded", Json::from(ui.ui().is_some())),
             ("status", Json::obj([("text", Json::from(ui.status.0.as_str())), ("good", Json::from(ui.status.1))])),
@@ -1631,7 +1659,7 @@ impl Engine {
             j.set("problem", Json::from(p.as_str()));
         }
         if detailed {
-            j.set("widgets", ui.widget_boxes(160));
+            j.set("widgets", ui.widget_boxes(160, !typing_search));
         }
         j
     }
@@ -1640,17 +1668,24 @@ impl Engine {
     pub(crate) fn editor_call(&mut self, call: crate::editor_tools::EditorCall, session: &SessionInfo, tool_call: u64, reply: crate::jobs::Reply, deadline: Instant) {
         match call {
             crate::editor_tools::EditorCall::State { detailed } => {
-                let _ = reply.send(ToolOutput::text(self.editor_state_json(detailed).to_string()));
+                let owner = crate::authority::authority(&self.swarm, &session.id) == crate::authority::Authority::Owner;
+                let _ = reply.send(ToolOutput::text(self.editor_state_json(detailed, owner).to_string()));
             }
             crate::editor_tools::EditorCall::Input(frames) => {
                 use crate::authority::{self, Authority, Site};
+                use crate::inputguard::{done, refused, Actor, Channel};
                 let have = authority::authority(&self.swarm, &session.id);
-                if let Err(e) = authority::require(have, Authority::Owner, Site::EditorInput, "editor_input (its edits are the window's human's)") {
+                let actor = Actor::of(&self.swarm, session);
+                if let Err(e) = authority::require(have, Authority::Owner, Site::EditorInput, "editor_input (its edits are the window's human's; a refused try freezes your session: docs/design/SECURITY.md)") {
+                    // A refused try at acting as the window's human: a security incident.
+                    refused(Channel::EditorInput, "editor_input", &actor, e.code, &format!("{} frames", frames.len()));
                     reply.refuse(&e);
                     return;
                 }
+                // The owner's own (an --owner agent): seen and recorded, fine.
+                let seen = done(Channel::EditorInput, "editor_input", &actor, &format!("{} frames", frames.len()));
                 let by = self.swarm.agent_name(session);
-                self.editor_input(frames, &by, tool_call, reply, deadline);
+                self.editor_input(frames, &by, tool_call, reply, deadline, seen);
             }
         }
     }
@@ -1672,7 +1707,7 @@ impl Engine {
 
     /// `editor_input`: queues simulated window input as the window's human (owner only; checked
     /// by the caller) and answers once its frames have run.
-    pub(crate) fn editor_input(&mut self, frames: Vec<Vec<Event>>, by: &str, tool_call: u64, reply: crate::jobs::Reply, deadline: Instant) {
+    pub(crate) fn editor_input(&mut self, frames: Vec<Vec<Event>>, by: &str, tool_call: u64, reply: crate::jobs::Reply, deadline: Instant, _seen: crate::inputguard::Seen) {
         if !self.windowed {
             let _ = reply.send(ToolOutput::error(
                 Json::obj([("error", Json::from("no_window")), ("message", Json::from("editor_input drives the window's editor: this engine runs headless (start it without --headless)"))]).to_string(),
@@ -2111,7 +2146,7 @@ mod tests {
         // The human presses Delete during an agent's two `wait` frames.
         e.editor.ui.select(&[a], false);
         let (reply, _rx) = crate::jobs::channel();
-        e.editor_input(vec![vec![], vec![]], "own", 6, reply, deadline);
+        e.editor_input(vec![vec![], vec![]], "own", 6, reply, deadline, crate::inputguard::seen_for_test());
         e.input = delete();
         e.editor_frame(size, false);
         assert_eq!(sent(&mut e), vec![("world_batch", None)], "the human's delete is the human's");
@@ -2123,14 +2158,14 @@ mod tests {
         // The human's Delete in the same frame as an injected (non-empty) one: still the human's.
         e.editor.ui.select(&[b], false);
         let (reply, _rx2) = crate::jobs::channel();
-        e.editor_input(vec![vec![Event::MouseMove { x: 5, y: 5 }]], "own", 7, reply, deadline);
+        e.editor_input(vec![vec![Event::MouseMove { x: 5, y: 5 }]], "own", 7, reply, deadline, crate::inputguard::seen_for_test());
         e.input = delete();
         e.editor_frame(size, false);
         assert_eq!(sent(&mut e), vec![("world_batch", None)]);
         // An injected Delete is the agent's, charged to its call.
         e.editor.ui.select(&[c], false);
         let (reply, _rx3) = crate::jobs::channel();
-        e.editor_input(vec![delete()], "own", 8, reply, deadline);
+        e.editor_input(vec![delete()], "own", 8, reply, deadline, crate::inputguard::seen_for_test());
         e.input.clear();
         e.editor_frame(size, false);
         assert_eq!(sent(&mut e), vec![("world_batch", Some(("own".to_owned(), 8)))]);

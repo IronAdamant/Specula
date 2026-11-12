@@ -50,7 +50,7 @@ impl Run {
     }
 
     fn hold(&mut self, actions: &str, ticks: u64) {
-        self.host.hold("ambulo", &Json::parse(actions).unwrap(), ticks).unwrap();
+        self.host.hold("ambulo", &Json::parse(actions).unwrap(), ticks, None).unwrap();
     }
 
     fn status(&self) -> Json {

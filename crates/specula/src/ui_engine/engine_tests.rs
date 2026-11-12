@@ -303,6 +303,8 @@ fn set_cost(e: &mut Engine, cost: Duration) {
 /// only the owner may drive the review screen itself.
 #[test]
 fn engine_screens_block_the_game_and_are_the_owners() {
+    let _g = crate::inputguard::TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    crate::inputguard::reset_for_test();
     let Some(mut e) = engine("modal") else { return };
     e.swarm.grants.grant("boss", Authority::Owner).unwrap();
     let b = hello(&mut e, "boss01", "boss", ROLE_OWNER);
@@ -310,12 +312,21 @@ fn engine_screens_block_the_game_and_are_the_owners() {
     // The menu open with its focus on Bravo.
     let (r, err) = call(&mut e, &m, "mallory", "ui_act", r#"{"steps": [{"press": "open"}, {"focus": "b"}]}"#);
     assert!(!err && r.get("focused").and_then(Json::as_str) == Some("b"), "{r}");
-    e.review_ui.open(None, &e.swarm.review);
+    e.review_ui.open(None, &e.swarm.review, crate::inputguard::seen_for_test());
     e.review_frame((1280, 800));
     let (r, err) = call(&mut e, &m, "mallory", "ui_act", r#"{"surface": "game", "steps": [{"press": "back"}]}"#);
     assert!(err && r.get("error").and_then(Json::as_str) == Some("engine_screen_open"), "{r}");
+    // Review R1 of m5-inputguard, major 2: with no surface named, the open screen is state the
+    // agent didn't choose (the human pressed F9 mid-playtest). Refused the same way, and never
+    // counted: nobody is frozen.
+    let (r, err) = call(&mut e, &m, "mallory", "ui_act", r#"{"steps": []}"#);
+    assert!(err && r.get("error").and_then(Json::as_str) == Some("engine_screen_open"), "{r}");
+    let key = e.swarm.key(&m);
+    assert_eq!(crate::inputguard::frozen(&m.id, Some(&key)), None, "an implicit surface is no try at the screen");
+    // Naming the owner's screen is a try: refused, and the session freezes.
     let (r, err) = call(&mut e, &m, "mallory", "ui_act", r#"{"surface": "review", "device": "keyboard", "steps": [{"press": "Key.F9"}]}"#);
     assert!(err && r.get("error").and_then(Json::as_str) == Some("owner_only"), "{r}");
+    assert!(crate::inputguard::frozen(&m.id, Some(&key)).is_some(), "an explicit try at the owner's screen freezes");
     let mut p = Painter::new(Mat4::IDENTITY, 1280, 800);
     let j = e.paint_ui_outlines(&mut p, 64, true);
     let outlines = j.get("outlines").and_then(Json::as_array).unwrap();
@@ -326,6 +337,7 @@ fn engine_screens_block_the_game_and_are_the_owners() {
     let (r, err) = call(&mut e, &b, "boss", "ui_act", r#"{"surface": "review", "device": "keyboard", "steps": [{"press": "Key.F9"}]}"#);
     assert!(!err, "{r}");
     assert!(!e.review_ui.is_open());
+    crate::inputguard::reset_for_test();
 }
 
 /// The answer's `rest` is ui_act's own step format.

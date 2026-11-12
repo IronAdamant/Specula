@@ -577,6 +577,11 @@ fn incident(session: &SessionInfo, args: &Json) -> Result<ToolOutput, String> {
         // debugger role reviews incidents) or the lead; an incident naming nobody, only for a
         // reviewer or the lead.
         let Some(inc) = incidents::get(id) else { return Ok(error("no_incident", format!("no incident {id} (trace_incidents lists them)"))) };
+        // A security incident is the input monitor's: security_clear ends it (the owner or the
+        // lead), never its offender resolving it here (docs/design/SECURITY.md).
+        if inc.code.starts_with("security.") {
+            return Ok(error("use_security_clear", format!("incident {id} is a security incident: the owner or the lead clears it with security_clear (resolving it here wouldn't unfreeze anything)")));
+        }
         let allowed = viewer.resolver() || inc.agents.iter().any(|a| *a == by);
         if !allowed {
             let named = if inc.agents.is_empty() { "it names no agent".to_owned() } else { format!("it names {}", inc.agents.iter().cloned().collect::<Vec<_>>().join(", ")) };

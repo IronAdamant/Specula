@@ -62,8 +62,8 @@ boundary is **who may load a module**, and the checks below are lints behind it 
 ### Who may load a module (2026-11-07, review of m5-gmods)
 
 - `logic_build`, `logic_reload` and `logic_unload` need **the owner, or a lead the operator granted** (`--lead NAME`,
-  `--owner NAME`; `authority::may_load_native`, AUTHORITY.md). The first-come fallback lead is not enough: with no
-  grants at all, whoever said lead first would get code execution. Refused calls answer `lead_only` (`refused_at:
+  `--owner NAME`; `authority::may_load_native`, AUTHORITY.md). Nobody becomes lead by asking (AUTHORITY.md), so
+  with no grants at all nobody loads native code. Refused calls answer `lead_only` (`refused_at:
   logic.native_code`), and the engine thread checks again when a library loads or a module unloads, whatever the
   caller's thread checked.
 - **A builder proposes.** Any other agent's `logic_build` builds nothing: the engine files a **proposal** (the module's
@@ -87,10 +87,11 @@ boundary is **who may load a module**, and the checks below are lints behind it 
   use helper crates elsewhere in the project; they are the reviewer.
 - This guards against agents acting **through the engine**. A program with its own access to the disk already has
   the owner's user rights and is outside it.
-- **The security seam:** every refused native-code call goes through `logic::proposals::report_refusal` (a
-  `logic.native_refused` trace event today). A proposal is ordinary work; a refused approve, reload or unload is an
-  attempt (`NativeRefusal::is_attempt`), which the security monitor (m5-inputguard's `inputguard::refused`) receives
-  once it merges.
+- **Refused tries go to the security monitor.** Every refused native-code call goes through
+  `logic::proposals::report_refusal` (a `logic.native_refused` trace event). A proposal is ordinary work. A refused
+  approve, library load or unload is an attempt (`NativeRefusal::is_attempt`): the input monitor records it on its
+  `native_code` channel (docs/design/SECURITY.md), which freezes an agent below lead (a security incident) and
+  alerts the owner about a lead the operator didn't grant. The tools' descriptions say so.
 - `logic_hook` and `logic_input` stay open: they call code the owner or lead already loaded, and their world changes
   are checked against claims as the caller's.
 

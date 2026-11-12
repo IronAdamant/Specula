@@ -166,7 +166,7 @@ fn reload_keeps_the_world_and_the_state_and_takes_the_new_code() {
     let report = r.load(ModuleCode::of::<WalkerV1>()).unwrap();
     assert_eq!(report.get("event").and_then(Json::as_str), Some("load"));
     assert_eq!(r.state("walker", "reloaded"), Value::Bool(false));
-    r.host.hold("walker", &Json::parse(r#"{"move": [1, 0]}"#).unwrap(), 1000).unwrap();
+    r.host.hold("walker", &Json::parse(r#"{"move": [1, 0]}"#).unwrap(), 1000, None).unwrap();
     r.ticks(30);
     let id = r.walker().id;
     let x1 = r.walker().position.x;
@@ -191,7 +191,7 @@ fn reload_keeps_the_world_and_the_state_and_takes_the_new_code() {
 fn a_panic_disables_the_module_and_changes_nothing() {
     let mut r = Run::new();
     r.load(ModuleCode::of::<WalkerV1>()).unwrap();
-    r.host.hold("walker", &Json::parse(r#"{"move": [1, 0]}"#).unwrap(), 1000).unwrap();
+    r.host.hold("walker", &Json::parse(r#"{"move": [1, 0]}"#).unwrap(), 1000, None).unwrap();
     r.ticks(3);
     r.load(ModuleCode::of::<WalkerBomb>()).unwrap();
     r.ticks(2);
@@ -287,7 +287,7 @@ fn same_inputs_same_world() {
         let mut r = Run::new();
         r.load(ModuleCode::of::<WalkerV1>()).unwrap();
         r.load(ModuleCode::of::<Flaky>()).unwrap();
-        r.host.hold("walker", &Json::parse(r#"{"move": [0.7, 0], "jump": true}"#).unwrap(), 17).unwrap();
+        r.host.hold("walker", &Json::parse(r#"{"move": [0.7, 0], "jump": true}"#).unwrap(), 17, None).unwrap();
         r.ticks(40);
         (r.world.state_hash(), r.state("walker", "ticks"), r.walker().props.clone())
     };
@@ -500,7 +500,7 @@ fn claims_guard_module_loads_unloads_and_hooks() {
 fn a_saved_host_continues_exactly() {
     let mut a = Run::new();
     a.load(ModuleCode::of::<WalkerV1>()).unwrap();
-    a.host.hold("walker", &Json::parse(r#"{"move": [1, 0], "jump": true}"#).unwrap(), 25).unwrap();
+    a.host.hold("walker", &Json::parse(r#"{"move": [1, 0], "jump": true}"#).unwrap(), 25, None).unwrap();
     a.ticks(20);
     let bytes = a.host.save_state().expect("a module ran");
     let files = crate::persist::render(&a.world);
@@ -699,7 +699,7 @@ fn a_module_that_changes_the_rounding_mode_is_restored_and_reported() {
 }
 
 /// Review of the gmods lane (lead direction 1): loading, replacing and unloading a module is
-/// native code with the owner's user rights, so a builder, and the first-come fallback lead, are
+/// native code with the owner's user rights, so a builder (one that asked for lead included) is
 /// refused (lead_only) on the engine thread itself, whatever the caller thread checked; a lead
 /// the operator granted, and the owner, may. A builder's build becomes a proposal that the lead
 /// approves only while the folder still has the proposed digest.
@@ -718,12 +718,17 @@ fn only_the_owner_or_a_granted_lead_loads_native_code() {
     let clock = crate::game::Clock::new(30);
     let mut world = World::default();
     world.set_recording(Recording::Full);
+    // Refused tries go to the security monitor (global: one test at a time).
+    let _g = crate::inputguard::TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    crate::inputguard::reset_for_test();
 
-    // No grants at all: the first lead hello is the fallback lead, which isn't enough.
+    // No grants at all: nobody leads. Saying lead gets nothing (owner, 2026-11-12), and the
+    // agent that tried is a builder like any other.
     let mut open = Swarm::default();
     let (sf, sb) = (session("fallb001"), session("build002"));
     let live = vec![sf.clone(), sb.clone()];
-    open.hello(&sf, "first".into(), "lead".into(), None, &live).unwrap();
+    assert_eq!(open.hello(&sf, "first".into(), "lead".into(), None, &live).unwrap_err().code, "role_not_granted");
+    open.hello(&sf, "first".into(), "builder".into(), None, &live).unwrap();
     open.hello(&sb, "ann".into(), "builder".into(), None, &live).unwrap();
     let (kf, kb) = (open.key(&sf), open.key(&sb));
     let mut host = LogicHost::new();
@@ -735,6 +740,11 @@ fn only_the_owner_or_a_granted_lead_loads_native_code() {
         assert_eq!(code(&gate), "lead_only", "{who} can't load a library either");
     }
     assert!(host.modules().is_empty(), "nothing loaded");
+    // The monitor saw both tries on its native_code channel: each is an incident that freezes
+    // the identity that made it.
+    assert!(crate::inputguard::identity_frozen(&kb), "a builder's refused library load freezes it");
+    assert!(crate::inputguard::identity_frozen(&kf), "and the one that had asked for lead");
+    crate::inputguard::reset_for_test();
 
     // A granted lead loads; a builder can't unload it, nor replace it.
     let mut sw = Swarm::default();
@@ -750,6 +760,8 @@ fn only_the_owner_or_a_granted_lead_loads_native_code() {
     let out = tools::handle(&mut host, tools::LogicCall::Unload { module: "walker".into(), forget: false }, &mut world, &clock, &mut sw, ann);
     assert_eq!(code(&out), "lead_only", "{}", text(&out));
     assert_eq!(host.modules(), vec!["walker".to_owned()], "still loaded");
+    assert!(crate::inputguard::identity_frozen(&ka), "a builder's refused unload freezes it");
+    crate::inputguard::reset_for_test();
 
     // ann proposes a module: nothing builds; lee approves it only with the proposed digest.
     let digest = |hex: &str| Ok(specula_logic::digest::Digest { hex: hex.into(), files: 3, bytes: 99 });
@@ -760,8 +772,10 @@ fn only_the_owner_or_a_granted_lead_loads_native_code() {
     let answer = Json::parse(&text(&out)).unwrap();
     let id = answer.get("proposal").and_then(|p| p.get("id")).and_then(Json::as_u64).expect("the refusal carries the proposal");
     assert!(answer.get("next").is_some(), "and says what happens next");
+    assert!(!crate::inputguard::identity_frozen(&ka), "proposing is ordinary work: no incident");
     let out = tools::handle(&mut host, build(digest("aa"), Some(id)), &mut world, &clock, &mut sw, ann);
     assert_eq!(code(&out), "lead_only", "ann can't approve her own proposal");
+    assert!(crate::inputguard::identity_frozen(&ka), "approving without authority is a try: an incident");
     let out = tools::handle(&mut host, build(digest("bb"), Some(id)), &mut world, &clock, &mut sw, lee);
     assert_eq!(code(&out), "sources_changed", "the folder changed since the proposal: {}", text(&out));
     let out = tools::handle(&mut host, build(digest("aa"), Some(id)), &mut world, &clock, &mut sw, lee);
@@ -772,4 +786,5 @@ fn only_the_owner_or_a_granted_lead_loads_native_code() {
     let out = tools::handle(&mut host, build(Err(("too_big", "too many files".into())), None), &mut world, &clock, &mut sw, ann);
     assert!(code(&out) == "lead_only" && text(&out).contains("proposal_refused"), "{}", text(&out));
     assert_eq!(host.proposals.len(), 0);
+    crate::inputguard::reset_for_test();
 }

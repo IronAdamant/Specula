@@ -1,0 +1,48 @@
+{
+  "date": "2026-11-07",
+  "time": "03:30",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M5",
+  "commit": "",
+  "subject": "engine-tests",
+  "topic": "engine test",
+  "title": "Input monitor: alerts, frozen sessions and the swarm pause",
+  "note": "The input-integrity monitor's toast in the real window on the iGPU: a granted lead pointing the keyboard is an alert (Allow this lead / Dismiss); a builder's refused try freezes its session (Clear / Keep frozen); a second offender pauses the swarm, said on the toast. An agent's capture never shows the note the human is typing.",
+  "source": "scripts/inputguard_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-window-01-lead-alert.jpg",
+      "caption": "A lead points the keyboard: an alert",
+      "original": "window_01_lead_alert.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 9325
+    },
+    {
+      "file": "02-window-02-bob-frozen.jpg",
+      "caption": "A builder's refused try: its session frozen",
+      "original": "window_02_bob_frozen.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 8946
+    },
+    {
+      "file": "03-window-03-swarm-paused.jpg",
+      "caption": "A second offender: the swarm paused",
+      "original": "window_03_swarm_paused.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 9744
+    },
+    {
+      "file": "04-frame-00001.jpg",
+      "caption": "An agent's capture: the human's note withheld",
+      "original": "frame_00001.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 18250
+    }
+  ]
+}

@@ -796,6 +796,13 @@ pub fn module_event(world: &World, swarm: &mut Swarm, by: Writer, via: Option<&s
     swarm.journal_mut(&KEY).append_module(by, via, event, world.next_id())
 }
 
+/// What the input monitor did (a freeze, a swarm pause, a clear, an allowance) is journaled as a
+/// record ([`Kind::Security`]) under `by`, with no world changes (docs/design/SECURITY.md).
+/// `record` is the monitor's small, bounded object.
+pub fn security_event(world: &World, swarm: &mut Swarm, tick: u64, by: &str, record: specula_core::Json) -> u64 {
+    swarm.journal_mut(&KEY).append_security(tick, Writer::from(by), record, world.next_id())
+}
+
 /// Keeps the world's record of removed entities' versions (what restores go past, see
 /// [`World::version_floor`]) to what the journal can still restore: once it has grown past twice
 /// what was kept last time (and [`crate::swarm::RETIRED_PRUNE_MIN`]), ids no entry in the ring

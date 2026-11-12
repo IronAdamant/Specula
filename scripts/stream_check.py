@@ -252,7 +252,7 @@ def perf_toml(out, streaming_lines):
 def run_streaming(a, out, ops, report, check):
     log = out / "engine_stream.log"
     perf_file = perf_toml(out, [f"memory_mb = {a.memory_mb}", f"upload_ms = {a.upload_ms}", "upload_mb = 8"])
-    args = ["--assets", str(ASSETS), "--captures", str(out / "captures"), "--size", "1280x720", "--adapter", a.adapter,
+    args = ["--lead", "stream-check", "--assets", str(ASSETS), "--captures", str(out / "captures"), "--size", "1280x720", "--adapter", a.adapter,
             "--perf", str(perf_file), "--cache", str(out / "cache")]
     with Engine(a.exe, a.port, log, *args, cwd=str(ROOT)) as eng:
         mcp = eng.mcp("stream-check")

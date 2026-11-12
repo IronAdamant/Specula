@@ -42,9 +42,9 @@ impl Run {
     }
 
     fn press(&mut self, module: &str, action: &str) {
-        self.host.hold(module, &Json::parse(&format!(r#"{{"{action}": true}}"#)).unwrap(), 1).unwrap();
+        self.host.hold(module, &Json::parse(&format!(r#"{{"{action}": true}}"#)).unwrap(), 1, None).unwrap();
         self.ticks(1);
-        self.host.hold(module, &Json::parse(&format!(r#"{{"{action}": false}}"#)).unwrap(), 1).unwrap();
+        self.host.hold(module, &Json::parse(&format!(r#"{{"{action}": false}}"#)).unwrap(), 1, None).unwrap();
         self.ticks(3);
     }
 

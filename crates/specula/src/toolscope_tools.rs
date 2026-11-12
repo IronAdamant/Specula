@@ -222,9 +222,13 @@ fn hello(tools: &Tools, session: &SessionInfo, args: &Json) -> ToolOutput {
                 Some(_) => reply.get("role").and_then(Json::as_str).unwrap_or("").to_owned(),
                 None => String::new(),
             };
-            let summary = scopes.hello(&session.id, &agent, &role, wanted.as_ref());
-            reply.set("tool_scope", summary);
-            *text = reply.to_string();
+            // A frozen session's hello changes nothing (docs/design/SECURITY.md): its tool
+            // list stays as it was too.
+            if reply.get("unchanged").and_then(Json::as_bool) != Some(true) {
+                let summary = scopes.hello(&session.id, &agent, &role, wanted.as_ref());
+                reply.set("tool_scope", summary);
+                *text = reply.to_string();
+            }
         }
     }
     out

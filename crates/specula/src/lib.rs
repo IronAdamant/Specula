@@ -40,6 +40,9 @@ pub mod fpguard;
 pub mod game;
 pub mod hlod;
 pub mod intents;
+pub mod inputguard;
+mod inputguard_engine;
+mod inputguard_tools;
 pub mod journal;
 pub mod leases;
 pub mod logic;
@@ -707,6 +710,8 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     // to write that response before the server closes every connection.
     drop(requests);
     std::thread::sleep(Duration::from_millis(100));
+    // Calls waiting on the security monitor answer now (the server waits for its threads).
+    inputguard::stopping();
     server.shutdown();
     // Tear the GPU down (window surface included) before the window itself, and report any
     // validation messages raised during shutdown.
@@ -867,6 +872,9 @@ struct Engine {
     module_sounds: module_sounds::ModuleSounds,
     /// A window title set by the game.
     game_title: Option<String>,
+    /// The input monitor's engine side: the toast, and the clock a swarm pause stopped
+    /// (docs/design/SECURITY.md).
+    security: inputguard_engine::Guard,
     /// The game's interface quads for the window frame (reused).
     game_quads: Vec<OverlayQuad>,
     /// Quads in the game's last overlay, and how many it ever submitted past
@@ -1088,6 +1096,7 @@ impl Engine {
             text_typing: Default::default(),
             module_sounds: module_sounds::ModuleSounds::new(&assets_root),
             game_title: None,
+            security: inputguard_engine::Guard::default(),
             game_quads: Vec::new(),
             game_overlay_stats: (0, 0),
             swarm: Swarm::default(),
@@ -1393,6 +1402,8 @@ impl Engine {
                 // The game's rules: journaled, exempt from claims.
                 sim_writes::module_tick(&mut self.world, &mut self.swarm, &mut self.logic, self.clock.tick(), self.clock.hz());
                 self.return_physics();
+                // Holds the window's human took back this tick, on the monitor's record.
+                self.security_holds();
             }
             // Live Lex rule sets step on the same tick, after the modules (whose hooks they call).
             if !self.lex_live.is_empty() {
@@ -1429,6 +1440,8 @@ impl Engine {
         self.ui_window(ui.raw, size);
         self.input.clear();
         ui.drain_events(&mut self.input);
+        // The security toast's buttons take the clicks inside it (and nothing else).
+        self.security_toast_input();
         // Keys the human meant for a text never reach a screen an agent put on the window.
         self.text_window_screens();
         // The review screen reads input first; while it is open the game, modules and live Lex
@@ -1685,6 +1698,8 @@ impl Engine {
             ("typing", self.text_typing.json()),
             // A timeline driving the window through its rail camera (see `timeline`).
             ("timeline", self.timeline.window_path().map_or(Json::Null, Json::from)),
+            // The input monitor's toast as the last window frame drew it (docs/design/SECURITY.md).
+            ("security", self.security_window_json()),
         ])
     }
 
@@ -2180,7 +2195,11 @@ impl Engine {
             self.pump_steps(steps::WINDOW_SHARE, server);
             // Timelines whose starters left, or idle too long, end (see `timeline`).
             self.timeline_sweep(server);
-            self.pump_playtests(server, playtest_engine::WINDOW_SLICE);
+            // The input monitor's halts; a swarm pause holds playtests where they are.
+            self.security_pump();
+            if inputguard::paused().is_none() {
+                self.pump_playtests(server, playtest_engine::WINDOW_SLICE);
+            }
             self.pump_studio(studio::WINDOW_SHARE, server);
             self.gi_pump();
             self.advance_clock();
@@ -2196,6 +2215,10 @@ impl Engine {
             };
             if let Some(path) = self.text_typing.focused_path() {
                 next = format!("{next} — {}", text_window::cue_text(path));
+            }
+            // A security incident or alert is in the title too (docs/design/SECURITY.md).
+            if let Some(s) = self.security_title() {
+                next = format!("{s} — {next}");
             }
             if next != title {
                 ui.set_title(&next);
@@ -2247,6 +2270,8 @@ impl Engine {
             self.editor_overlay(size, &mut game_quads);
             self.gallery_overlay(size, false, &mut game_quads);
             self.review_overlay(size, false, &mut game_quads);
+            // The input monitor's toast: over everything but the typing banner.
+            self.security_overlay(size, &mut game_quads);
             // While the window's keyboard types into a text, a banner says which: the overlay's
             // last quads, over everything (text_window).
             self.text_focus_overlay(size, &mut game_quads);
@@ -2373,7 +2398,7 @@ impl Engine {
                 // Workers' answers go out promptly.
                 wait = wait.min(Duration::from_millis(2));
             }
-            if self.playtests.running() {
+            if self.playtests.running() && inputguard::paused().is_none() {
                 // Flat out, unless it waits for a deferred answer.
                 wait = if self.playtests.waiting_on_call() { wait.min(Duration::from_millis(1)) } else { Duration::ZERO };
             }
@@ -2411,7 +2436,11 @@ impl Engine {
             self.pump_workers(Some(server));
             self.pump_steps(steps::HEADLESS_SHARE, server);
             self.timeline_sweep(server);
-            self.pump_playtests(server, playtest_engine::HEADLESS_SLICE);
+            // The input monitor's halts; a swarm pause holds playtests where they are.
+            self.security_pump();
+            if inputguard::paused().is_none() {
+                self.pump_playtests(server, playtest_engine::HEADLESS_SLICE);
+            }
             self.pump_studio(studio::HEADLESS_SHARE, server);
             self.gi_pump();
             self.trace_idle_checks();
@@ -2423,6 +2452,13 @@ impl Engine {
         if Instant::now() > request.deadline {
             // The caller is about to give up; applying the command now would surprise it.
             let _ = request.reply.send(ToolOutput::error("skipped: the engine was busy too long; the command was not applied"));
+            return;
+        }
+        // The input monitor first: what an incident halted is applied, and a frozen session's or
+        // a paused swarm's request is refused here too (calls in flight, playtest steps).
+        self.security_pump();
+        if let Some(refused) = self.security_gate(&request) {
+            let _ = request.reply.send(refused);
             return;
         }
         // Every command (world edits, model builds, sight, saves, playtests) runs in the default
@@ -2579,8 +2615,8 @@ impl Engine {
             Command::Query(spec) => self.query(&spec),
             Command::TileGet { key, layer, region } => self.tile_get(&key, layer.as_deref(), region),
             Command::TextEdit(commit) => {
-                let have = authority::authority(&self.swarm, &request.session.id);
-                self.text_commit(*commit, w, tick, &by, have)
+                let actor = inputguard::Actor::of(&self.swarm, &request.session);
+                self.text_commit(*commit, w, tick, &by, actor)
             }
             Command::TextGet { key } => self.text_get(&key),
             Command::Lex(call) => {
@@ -2641,9 +2677,20 @@ impl Engine {
                 Ok(may) => self.load(may, name, force),
                 Err(e) => world_error(&e),
             },
-            Command::Hello { name, role, resume } => match self.swarm.hello(&request.session, name, role, resume, &server.all_sessions()) {
-                Ok(reply) => ToolOutput::text(reply.to_pretty()),
-                Err(e) => world_error(&e),
+            Command::Hello { name, role, resume } => match inputguard::frozen(&request.session.id, Some(&self.swarm.key(&request.session))) {
+                // A frozen session's hello is answered and changes nothing: it can't say a role,
+                // take another name or resume another identity to get out (docs/design/SECURITY.md).
+                Some(incident) => ToolOutput::text(inputguard_engine::frozen_hello(&self.swarm.agent_name(&request.session), authority::trusted(&self.swarm, &request.session.id), incident).to_pretty()),
+                None => {
+                    // A frozen identity resumed in a new session comes back with the role it had:
+                    // a freeze changes nothing about who it is, whichever session carries it
+                    // (review R3 of m5-inputguard, minor 1).
+                    let role = match resume.as_deref().and_then(|t| self.swarm.identity_of_token(t)) {
+                        Some((key, had)) if inputguard::identity_frozen(&key) => had,
+                        _ => role,
+                    };
+                    self.hello_unfrozen(&request.session, name, role, resume, &server.all_sessions())
+                }
             },
             Command::Frame(_) | Command::Sight(_) => unreachable!("answered by handle_sight"),
             Command::Env(patch) => match patch
@@ -2859,13 +2906,18 @@ impl Engine {
             Command::Ui(call) => self.ui_call(call, w, tick, &request.session),
             Command::SaveGame(call) => self.handle_save(call, w, &by, authority::authority(&self.swarm, &request.session.id)),
             Command::ModelBuild(_) | Command::ModelReload => unreachable!("answered by handle_model_call"),
-            Command::Logic(call) => {
-                self.lend_physics();
-                let out = sim_writes::logic_tools(&mut self.world, &mut self.swarm, &mut self.logic, &self.clock, call, w);
-                self.return_physics();
-                self.journal_module_events(Some(w));
-                out
-            }
+            // An agent's hold on an action the human is using takes their input over: judged by
+            // the input monitor first (docs/design/SECURITY.md).
+            Command::Logic(call) => match self.security_logic_input(&call, &request.session) {
+                Some(refused) => refused,
+                None => {
+                    self.lend_physics();
+                    let out = sim_writes::logic_tools(&mut self.world, &mut self.swarm, &mut self.logic, &self.clock, call, w);
+                    self.return_physics();
+                    self.journal_module_events(Some(w));
+                    out
+                }
+            },
             Command::Anim(call) => self.anim_call(call, w, tick),
             Command::StudioRender(_) | Command::StudioDone(_) => unreachable!("queued by studio_enqueue"),
             Command::Vfx(call) => self.vfx_call(call, w, tick),
@@ -2876,6 +2928,7 @@ impl Engine {
             Command::DiskGate => self.disk_gate(&request.session),
             Command::ReviewRoots => self.review_roots_json(),
             Command::EvidenceRefused(made) => self.evidence_refused(made),
+            Command::Security(call) => self.security_call(call, &request.session, &server.sessions()),
         };
         self.check_world_replaced();
         // Undo (or anything else) changed project files: the disk follows before the answer (the
@@ -3306,7 +3359,7 @@ impl Engine {
                 s.set("game_reserved_writes", Json::from(self.world.game_reserved_writes()));
                 // One tool call, one commit (see `count_commits`): calls that committed more.
                 s.set("multi_commit_calls", Json::from(self.multi_commit_calls));
-                // Who the operator made owner, lead or reviewer, and the fallback lead.
+                // Who the operator made owner, lead or reviewer, and whether anyone leads.
                 s.set("grants", self.swarm.grants.json());
                 if let Some((entry, tick)) = last {
                     s.set("last_world_replacement", Json::obj([("entry", Json::from(entry.as_str())), ("tick", Json::from(*tick))]));
@@ -3405,6 +3458,7 @@ fn call_class(command: &Command) -> Class {
         | Command::ClaimRelease { .. }
         | Command::ClaimShare { .. }
         | Command::Time(_)
+        | Command::Security(_)
         | Command::PerfCapture(_) => Class::Edit,
         Command::Query(_)
         | Command::TileGet { .. }

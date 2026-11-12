@@ -93,8 +93,6 @@ pub enum Site {
     HelloRole,
     /// agent_hello took a name the operator granted to another identity.
     HelloGrantBound,
-    /// agent_hello asked for the fallback lead someone else holds.
-    HelloLeadTaken,
     /// agent_hello took a name an engine writer uses.
     HelloReservedName,
     /// swarm_settings frame_floor_fps.
@@ -135,6 +133,18 @@ pub enum Site {
     AudioSettings,
     /// text_edit window_focus: pointing the human's keyboard (and clipboard) at a text entity.
     WindowFocus,
+    /// security_incidents and security_clear: the input monitor's log and clearing it (lead).
+    Security,
+    /// security_clear of an incident the owner chose to keep frozen.
+    SecurityKept,
+    /// security_allow_lead: the owner's alone.
+    SecurityAllow,
+    /// Putting an engine screen (gallery) on the window: owner, lead or reviewer (input sweep R1).
+    WindowScreen,
+    /// ui_act on an engine screen (its buttons decide as the window's owner).
+    ScreenAct,
+    /// logic_input overriding an action the human is using at the window.
+    HumanInput,
     /// Marking string-table entries reviewed (l10n_set review, or a table written with them).
     L10nReview,
     /// logic_build, logic_reload, logic_unload: native module code runs with the owner's user
@@ -148,13 +158,15 @@ impl Site {
         match self {
             Site::HelloRole => "role_not_granted",
             Site::HelloGrantBound => "grant_bound",
-            Site::HelloLeadTaken => "lead_taken",
             Site::HelloReservedName => "name_reserved",
-            Site::FrameFloor | Site::StreamSettings | Site::ToolsScope | Site::DiskPrune | Site::WorldSave | Site::GiSettings | Site::GiThreads | Site::AudioSettings | Site::WindowFocus | Site::NativeCode => "lead_only",
+            Site::FrameFloor | Site::StreamSettings | Site::ToolsScope | Site::DiskPrune | Site::WorldSave | Site::GiSettings | Site::GiThreads | Site::AudioSettings | Site::WindowFocus | Site::Security | Site::NativeCode => "lead_only",
+            Site::SecurityKept => "owner_kept",
+            Site::WindowScreen => "not_allowed",
+            Site::HumanInput => "human_input",
             Site::HelloBadName => "name_invalid",
             Site::ForceOverride => "force_needs_lead",
             Site::ReviewDecide | Site::ReviewScreen | Site::L10nReview => "not_reviewer",
-            Site::EditorInput => "owner_only",
+            Site::EditorInput | Site::SecurityAllow | Site::ScreenAct => "owner_only",
             Site::CritiqueUpdate => "not_yours",
             Site::CritiqueSource => "source_reserved",
             Site::JobBusy => "job_busy",
@@ -168,7 +180,6 @@ impl Site {
         match self {
             Site::HelloRole => "agent_hello.role",
             Site::HelloGrantBound => "agent_hello.grant",
-            Site::HelloLeadTaken => "agent_hello.lead",
             Site::HelloReservedName => "agent_hello.name",
             Site::FrameFloor => "swarm_settings.frame_floor_fps",
             Site::StreamSettings => "stream_settings",
@@ -189,6 +200,12 @@ impl Site {
             Site::EditorInput => "editor_input",
             Site::AudioSettings => "audio_settings",
             Site::WindowFocus => "text_edit.window_focus",
+            Site::Security => "security",
+            Site::SecurityKept => "security_clear.kept",
+            Site::SecurityAllow => "security_allow_lead",
+            Site::WindowScreen => "window.screen",
+            Site::ScreenAct => "ui_act.surface",
+            Site::HumanInput => "logic_input.override",
             Site::L10nReview => "l10n.review",
             Site::NativeCode => "logic.native_code",
         }
@@ -225,15 +242,15 @@ pub fn may_force(have: Authority, own: bool, what: &str) -> Result<(), WorldErro
 
 /// Native module code (`logic_build`, `logic_reload`, `logic_unload`): a module is a library
 /// the engine loads into its own process, running with the owner's user rights, so it needs the
-/// owner or a lead **the operator granted** (`--lead NAME`, `--owner NAME`). The first-come
-/// fallback lead is not enough: with no grants at all, whoever says lead first would get native
-/// code execution. `granted` is whether the caller's identity holds an operator grant.
+/// owner or a lead **the operator granted** (`--lead NAME`, `--owner NAME`). `granted` is whether
+/// the caller's identity holds an operator grant: asked for apart from `have`, so that no other
+/// way to lead authority (there is none today) would ever load native code.
 pub fn may_load_native(have: Authority, granted: bool, what: &str) -> Result<(), WorldError> {
     if have == Authority::Owner || (have >= Authority::Lead && granted) {
         return Ok(());
     }
     let why = if have >= Authority::Lead {
-        "you are this run's fallback lead (the first to say lead), not one the operator granted: start the engine with --lead NAME to load native code"
+        "your lead authority isn't an operator grant: start the engine with --lead NAME to load native code"
     } else {
         "a module is native code that runs with the owner's user rights"
     };
@@ -345,9 +362,6 @@ pub struct Grants {
     /// Skeleton of a granted name → the identity key that took it first (it keeps it; resumes
     /// carry the key).
     bound: BTreeMap<String, String>,
-    /// The fallback lead: the first identity whose hello said lead or director, when the
-    /// operator granted nothing at all: `(name, key)`.
-    fallback_lead: Option<(String, String)>,
 }
 
 /// Operator grants at most (flags are typed by a human; this bounds a script's mistake).
@@ -371,10 +385,10 @@ impl Grants {
         Ok(())
     }
 
-    /// The operator granted something (the first-come lead fallback is off then: a granted
-    /// reviewer is never outranked by whoever says lead first; coordinator, 2026-10-29).
-    fn operator_granted(&self) -> bool {
-        !self.operator.is_empty()
+    /// Whether the operator granted anyone lead (or owner) authority: without one, nobody in
+    /// this run can force over claims, set tool scopes or clear security incidents.
+    pub fn lead_granted(&self) -> bool {
+        self.operator.values().any(|(_, a)| *a >= Authority::Lead)
     }
 
     /// Whether `name` (or a look-alike) is granted and bound to an identity other than `key`.
@@ -382,12 +396,12 @@ impl Grants {
         self.bound.get(&skeleton(name)).is_some_and(|k| k != key)
     }
 
-    /// Whether the identity `key` holds a grant or the fallback lead (never forgotten).
+    /// Whether the identity `key` holds a grant (never forgotten).
     pub fn holds(&self, key: &str) -> bool {
-        self.bound.values().any(|k| k == key) || self.fallback_lead.as_ref().is_some_and(|(_, k)| k == key)
+        self.granted_key(key)
     }
 
-    /// Whether the identity `key` holds a name the operator granted (never the fallback lead).
+    /// Whether the identity `key` holds a name the operator granted.
     pub fn granted_key(&self, key: &str) -> bool {
         self.bound.values().any(|k| k == key)
     }
@@ -422,27 +436,13 @@ impl Grants {
         if granted.is_some_and(|g| g >= asked) {
             return Ok(asked);
         }
-        if asked == Authority::Lead && !self.operator_granted() {
-            // The documented fallback: with no grants at all, the first lead hello holds it.
-            match &self.fallback_lead {
-                None => {
-                    self.fallback_lead = Some((name.to_owned(), key.to_owned()));
-                    return Ok(Authority::Lead);
-                }
-                Some((_, k)) if k == key => return Ok(Authority::Lead),
-                Some((holder, _)) => {
-                    return Err(refusal(
-                        Site::HelloLeadTaken,
-                        format!("'{holder}' is this run's lead (the first agent that said role lead; start the engine with --lead NAME to choose); say another role"),
-                    )
-                    .with("lead", holder.as_str())
-                    .with("role", role));
-                }
-            }
-        }
+        // Nobody becomes lead by asking (owner, 2026-11-12: "if people or AI agents start with
+        // no --lead, then it shouldn't have lead powers"). Until then the first agent to say
+        // lead held it when the operator had granted nothing: a role an agent gave itself.
+        let _ = key;
         let how = match asked {
             Authority::Owner => "the owner is the human: at the window, or granted with --owner NAME when the engine starts",
-            Authority::Lead => "the operator names the lead with --lead NAME (with any grant given, nobody becomes lead by asking first)",
+            Authority::Lead => "the operator names the lead when the engine starts (--lead NAME, repeatable). Without one this run has no lead: agents still build (claims expire on their own, and agents choose their own tools), but nobody can force over another agent's claims, set tool scopes or clear security incidents until the operator restarts with --lead NAME",
             Authority::Reviewer => "reviewers are granted by the operator (--reviewer NAME, or --lead NAME: a lead reviews too)",
             Authority::Agent => "",
         };
@@ -457,9 +457,7 @@ impl Grants {
             "operator",
             Json::obj(self.operator.iter().map(|(sk, (n, a))| (n.clone(), Json::obj([("authority", Json::from(a.name())), ("bound", Json::from(self.bound.contains_key(sk)))])))),
         )];
-        if let Some((n, _)) = &self.fallback_lead {
-            f.push(("fallback_lead", Json::from(n.as_str())));
-        }
+        f.push(("lead_granted", Json::from(self.lead_granted())));
         Json::obj(f)
     }
 }
@@ -473,7 +471,7 @@ pub fn authority(swarm: &crate::swarm::Swarm, session_id: &str) -> Authority {
 /// caller's connection thread (no `&Swarm` there: `trace_*`, `taste_*`, the procgen and studio
 /// tools): the same answer as [`authority`], published by the swarm on every hello, resume and
 /// prune. At most [`MAX_PUBLISHED`] sessions (the oldest go first).
-static PUBLISHED: std::sync::Mutex<BTreeMap<String, (u64, Authority)>> = std::sync::Mutex::new(BTreeMap::new());
+static PUBLISHED: std::sync::Mutex<BTreeMap<String, (u64, Authority, bool)>> = std::sync::Mutex::new(BTreeMap::new());
 static PUBLISH_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Sessions [`of_session`] remembers.
@@ -482,16 +480,50 @@ pub const MAX_PUBLISHED: usize = 4096;
 /// What session `session_id` may do, read from the caller thread (see [`PUBLISHED`]):
 /// `Agent` for a session that never said hello (or was forgotten).
 pub fn of_session(session_id: &str) -> Authority {
-    PUBLISHED.lock().unwrap_or_else(|p| p.into_inner()).get(session_id).map_or(Authority::Agent, |(_, a)| *a)
+    PUBLISHED.lock().unwrap_or_else(|p| p.into_inner()).get(session_id).map_or(Authority::Agent, |(_, a, _)| *a)
 }
 
-/// The swarm publishes a session's admitted authority (hello, resume).
+/// The authority the operator's grants give: `a`, except that a lead nobody granted
+/// (`granted` false) counts as a plain agent.
+///
+/// Lead authority comes only from `--lead NAME` (there is no first-come lead any more: owner,
+/// 2026-11-12), so today this changes nothing. It stays as the second lock on what matters
+/// most: the checks on the human's input (pointing the keyboard, putting screens on the window,
+/// holding their actions), native code and the security monitor read [`trusted`] /
+/// [`trusted_of_session`], which ask for the grant itself. When a self-declared lead existed,
+/// it escaped the monitor's freezes by saying "lead" (review R2 of m5-inputguard, blocker 1).
+pub fn trust(a: Authority, granted: bool) -> Authority {
+    if a == Authority::Lead && !granted {
+        Authority::Agent
+    } else {
+        a
+    }
+}
+
+/// [`authority`] as the operator's grants alone give it ([`trust`]), on the engine thread.
+pub fn trusted(swarm: &crate::swarm::Swarm, session_id: &str) -> Authority {
+    swarm.trusted_authority_of(session_id)
+}
+
+/// [`of_session`] as the operator's grants alone give it ([`trust`]), on a caller thread.
+pub fn trusted_of_session(session_id: &str) -> Authority {
+    PUBLISHED.lock().unwrap_or_else(|p| p.into_inner()).get(session_id).map_or(Authority::Agent, |(_, a, g)| trust(*a, *g))
+}
+
+/// Tests publish a session's authority as an operator grant gives it.
+#[cfg(test)]
 pub(crate) fn publish(session_id: &str, a: Authority) {
+    publish_as(session_id, a, true);
+}
+
+/// The swarm publishes a session's admitted authority (hello, resume), and whether its identity
+/// holds an operator grant (`granted`).
+pub(crate) fn publish_as(session_id: &str, a: Authority, granted: bool) {
     let seq = PUBLISH_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut m = PUBLISHED.lock().unwrap_or_else(|p| p.into_inner());
-    m.insert(session_id.to_owned(), (seq, a));
+    m.insert(session_id.to_owned(), (seq, a, granted));
     while m.len() > MAX_PUBLISHED {
-        let Some(oldest) = m.iter().min_by_key(|(_, (s, _))| *s).map(|(k, _)| k.clone()) else { break };
+        let Some(oldest) = m.iter().min_by_key(|(_, (s, _, _))| *s).map(|(k, _)| k.clone()) else { break };
         m.remove(&oldest);
     }
 }
@@ -682,7 +714,7 @@ pub fn access(tool: &str) -> Option<Access> {
         // world_undo is World: undoing others' entries or over their later changes needs force,
         // and force on another agent's object needs the lead (authority::may_force).
         // Native code in the engine's process, with the owner's user rights: the owner or an
-        // operator-granted lead only (may_load_native; the fallback lead isn't enough). A
+        // operator-granted lead only (may_load_native). A
         // builder's logic_build files a proposal the lead approves (docs/design/MODULES.md).
         "logic_build" | "logic_reload" | "logic_unload" => Lead,
         "logic_hook" => Open("calls a hook of a module the owner or a granted lead loaded; its changes are checked against other agents' claims as the caller's, and every use is logged with its reason"),
@@ -710,6 +742,10 @@ pub fn access(tool: &str) -> Option<Access> {
         // Simulated window input: the editor's edits are the window's human's (window:owner), so
         // only the owner may drive it (docs/design/EDITOR.md, "Agents driving the editor").
         "editor_input" => Owner,
+        // The input monitor (docs/design/SECURITY.md): its log and clearing an incident are the
+        // lead's and the owner's; allowing a lead to point the keyboard is the owner's alone.
+        "security_incidents" | "security_clear" => Lead,
+        "security_allow_lead" => Owner,
         // Open, with the reason.
         "agent_hello" => Open("names the caller's own session; engine writer names, granted names and authority roles are refused"),
         "time_control" => Open("the clock is shared on purpose: any agent pauses or steps it for its checks (a playtest owns it while one runs); the answer's set_by names who moved it last"),
@@ -797,12 +833,16 @@ mod tests {
         assert_eq!(g.admit("ann", "k1", "builder").unwrap(), Authority::Agent);
         assert_eq!(g.admit("carl", "k2", ROLE_OWNER).unwrap_err().code, "role_not_granted");
         assert_eq!(g.admit("bob", "k3", ROLE_REVIEWER).unwrap_err().code, "role_not_granted");
-        // The fallback lead: the first lead hello, bound to its identity.
-        assert_eq!(g.admit("lee", "k4", ROLE_LEAD).unwrap(), Authority::Lead);
-        assert_eq!(g.admit("lee", "k4", ROLE_DIRECTOR).unwrap(), Authority::Lead, "the same identity again");
-        let e = g.admit("dave", "k5", ROLE_LEAD).unwrap_err();
-        assert_eq!((e.code, e.detail("lead")), ("lead_taken", Some(&Json::from("lee"))));
-        assert_eq!(e.detail("refused_at"), Some(&Json::from("agent_hello.lead")));
+        // Owner, 2026-11-12: nobody becomes lead by asking, first or not, grants or none.
+        for role in [ROLE_LEAD, ROLE_DIRECTOR] {
+            let e = g.admit("lee", "k4", role).unwrap_err();
+            assert_eq!((e.code, e.detail("refused_at")), ("role_not_granted", Some(&Json::from("agent_hello.role"))));
+            assert!(e.message.contains("--lead NAME"), "the refusal says how: {}", e.message);
+        }
+        assert!(!g.lead_granted() && !g.holds("k4"));
+        g.grant("lee", Authority::Lead).unwrap();
+        assert!(g.lead_granted());
+        assert_eq!(g.admit("lee", "k4", ROLE_LEAD).unwrap(), Authority::Lead, "the operator's grant");
     }
 
     #[test]
@@ -817,7 +857,7 @@ mod tests {
         assert_eq!(g.admit("rev", "k1", ROLE_LEAD).unwrap_err().code, "role_not_granted", "a reviewer grant isn't a lead's");
         assert_eq!(g.admit("boss", "k3", ROLE_OWNER).unwrap(), Authority::Owner);
         assert_eq!(g.admit("boss", "k3", ROLE_LEAD).unwrap(), Authority::Lead, "an owner grant covers less");
-        // An operator lead turns the fallback off.
+        // Someone else asking for lead gets nothing.
         assert_eq!(g.admit("dave", "k4", ROLE_LEAD).unwrap_err().code, "role_not_granted");
         assert_eq!(g.admit("lead1", "k5", ROLE_DIRECTOR).unwrap(), Authority::Lead);
         assert!(g.grant("physics", Authority::Lead).is_err());

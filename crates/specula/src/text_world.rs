@@ -1388,7 +1388,7 @@ pub fn tool_def() -> specula_protocol::ToolDef {
                     ("path", t("string", "Entity path")),
                     ("name", t("string", "Entity name (unique in the world)")),
                     ("expect_version", t("integer", "Refuse unless the entity is still at this version")),
-                    ("window_focus", t("boolean", "Owner or lead only (lead_only otherwise). true: the human's keyboard in the window (keys, characters, IME, the system clipboard) types into this text, under a banner naming it drawn over everything (no key lands before it shows), until Escape, any click, an engine screen, anyone else's write to the text or an ancestor, or the text is hidden, deleted, under half opaque, off screen or tiny (such a text is refused: not_visible, with reason). false: stop. A click never points the keyboard at a world text; the human types into one through the editor's Text field (F7)")),
+                    ("window_focus", t("boolean", "The owner or an operator-granted lead only. From anyone else it is refused (lead_only) whatever the text, and the refused try is a security incident that freezes the caller's session (docs/design/SECURITY.md). true: the human's keyboard in the window (keys, characters, IME, the system clipboard) types into this text, under a banner naming it drawn over everything (no key lands before it shows), until Escape, any click, an engine screen, anyone else's write to the text or an ancestor, or the text is hidden, deleted, under half opaque, off screen or tiny (such a text is refused: not_visible, with reason). false: stop. A click never points the keyboard at a world text; the human types into one through the editor's Text field (F7)")),
                     ("done", t("boolean", "true: end the edit after the ops (the caret and selection are no longer drawn)")),
                     (
                         "ops",
@@ -1467,7 +1467,9 @@ pub fn call(tools: &crate::tools::Tools, session: &specula_protocol::SessionInfo
     // Pointing the human's keyboard is the operator's: refused before any work (the engine checks
     // again where it commits).
     if window_focus.is_some() {
-        if let Err(e) = crate::authority::require(crate::authority::of_session(&session.id), crate::authority::Authority::Lead, crate::authority::Site::WindowFocus, WINDOW_FOCUS_WHAT) {
+        if let Err(e) = crate::authority::require(crate::authority::trusted_of_session(&session.id), crate::authority::Authority::Lead, crate::authority::Site::WindowFocus, WINDOW_FOCUS_WHAT) {
+            // A refused try at the human's keyboard: a security incident (docs/design/SECURITY.md).
+            crate::inputguard::refused(crate::inputguard::Channel::Keyboard, "text_edit.window_focus", &crate::inputguard::Actor::caller(session), e.code, &key.to_string());
             return error(&e);
         }
     }
@@ -1522,16 +1524,19 @@ impl crate::Engine {
 
     /// Commits a `text_edit` the caller's thread worked out ([`TextCommit`]) as one change, and
     /// points the window's keyboard when asked (the operator's only).
-    pub(crate) fn text_commit(&mut self, c: TextCommit, w: crate::journal::Writer, tick: u64, by: &str, have: crate::authority::Authority) -> specula_protocol::ToolOutput {
+    pub(crate) fn text_commit(&mut self, c: TextCommit, w: crate::journal::Writer, tick: u64, by: &str, actor: crate::inputguard::Actor) -> specula_protocol::ToolOutput {
         use crate::world::{EntityKey, UpdateSpec, WorldError};
         use specula_protocol::ToolOutput;
         let error = |e: &WorldError| ToolOutput::error(e.to_json().to_pretty());
         let TextCommit { id, next, report, base_version, expect_version, window_focus } = c;
+        let have = actor.authority();
         // The human's keyboard and clipboard are theirs: only the operator (an owner or lead
         // grant) points them at a text (review of cd954bd, major 2: a builder aimed them at a
-        // hidden text another agent read). Refused before anything else; nothing changes.
+        // hidden text another agent read). Refused before anything else; nothing changes. A
+        // refused try is a security incident (docs/design/SECURITY.md).
         if window_focus.is_some() {
             if let Err(e) = crate::authority::require(have, crate::authority::Authority::Lead, crate::authority::Site::WindowFocus, WINDOW_FOCUS_WHAT) {
+                crate::inputguard::refused(crate::inputguard::Channel::Keyboard, "text_edit.window_focus", &actor, e.code, &self.world.path_of(id));
                 return error(&e);
             }
         }
@@ -1555,7 +1560,10 @@ impl crate::Engine {
                     Some(true) => {
                         let path = self.world.path_of(id);
                         let watch = crate::text_window::watch_of(&self.world, id);
-                        self.text_typing.focus_on(id, path, &by, watch);
+                        // The monitor sees it first: a lead's pointing is an alert the owner is
+                        // told of (unless allowed for this session); the owner's is fine.
+                        let seen = crate::inputguard::done(crate::inputguard::Channel::Keyboard, "text_edit.window_focus", &actor, &path);
+                        self.text_typing.focus_on(id, path, actor, watch, seen);
                     }
                     Some(false) => {
                         if self.text_typing.focus == Some(id) {

@@ -83,7 +83,7 @@ def main():
     url = url_for(a.port)
     sizes = {}
     timing = {}
-    with Engine(exe, a.port, out / "engine.log", "--headless", "--captures", str(out / "captures"), cwd=str(ROOT)):
+    with Engine(exe, a.port, out / "engine.log", "--headless", "--lead", "lead-1", "--captures", str(out / "captures"), cwd=str(ROOT)):
         print("connect-time scopes")
         bare = Mcp(url, "toolscope-bare", tools=None)
         core = listed(bare)

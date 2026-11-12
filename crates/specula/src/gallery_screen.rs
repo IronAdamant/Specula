@@ -238,7 +238,8 @@ impl GalleryUi {
         self.human_closed.is_some_and(|t| t.elapsed() < HUMAN_CLOSE_HOLD)
     }
 
-    pub fn open(&mut self, id: &str, user: &str) {
+    /// Puts gallery `id` on the window (the input monitor saw it first: `_seen`).
+    pub fn open(&mut self, id: &str, user: &str, _seen: crate::inputguard::Seen) {
         if self.gallery.as_deref() != Some(id) {
             self.round = 0;
             self.selected = None;
@@ -256,7 +257,7 @@ impl GalleryUi {
     }
 
     /// Opens with no gallery to show (it says so; agents put galleries here).
-    pub fn open_empty(&mut self) {
+    pub fn open_empty(&mut self, _seen: crate::inputguard::Seen) {
         self.gallery = None;
         self.round = 0;
         self.open = true;
@@ -313,7 +314,15 @@ impl GalleryUi {
 
     /// What the screen shows, as data (with the widgets' places in window pixels, so scripts
     /// press what a human presses).
-    pub fn status_json(&self) -> Json {
+    /// The note as the screen shows it while the human types one (`None`: not typing, or empty):
+    /// `ui_tree` redacts it for anyone but the owner (input sweep R3).
+    pub fn note_shown(&self) -> Option<String> {
+        (self.editing && !self.note.is_empty()).then(|| format!("{}|", self.note))
+    }
+
+    /// `owner`: the caller is the owner. The note the human is typing is theirs alone (input sweep
+    /// R3): anyone else gets `note_redacted` and nothing more (not even its length).
+    pub fn status_json(&self, owner: bool) -> Json {
         let mut f = vec![
             ("open", Json::Bool(self.open)),
             ("gallery", self.gallery.as_deref().map_or(Json::Null, Json::from)),
@@ -324,8 +333,13 @@ impl GalleryUi {
             ("presses_seen", Json::from(self.presses_seen)),
             ("last_ui_action", self.last_ui_action.as_deref().map_or(Json::Null, Json::from)),
         ];
-        if self.editing {
+        if self.editing && owner {
             f.push(("note", Json::from(self.note.as_str())));
+        } else if self.editing {
+            // Not even its length: polled per key it gives the typing's rhythm away.
+            f.push(("note_redacted", Json::Bool(true)));
+        }
+        if self.editing {
             f.push(("chips_on", Json::arr(self.chips.iter().zip(&self.chips_on).filter(|(_, on)| **on).map(|(c, _)| Json::from(*c)))));
         }
         if !self.status.0.is_empty() {
@@ -607,8 +621,12 @@ impl GalleryUi {
                     if let Some((i, at)) = self.tile_at(*x as f32, *y as f32) {
                         match button {
                             MouseButton::Right => {
+                                // A Dislike waits the same settle as every decision (input sweep R1:
+                                // a right-click the moment a screen appeared counted).
                                 if let Some(g) = g.filter(|g| g.status() == Status::Open && !busy) {
-                                    acts.push(Act { gallery: g.id.clone(), round: n, decision: Decision::Dislike { variant: i, at: Some(at), note: String::new() } });
+                                    if self.may_decide(g, busy) {
+                                        acts.push(Act { gallery: g.id.clone(), round: n, decision: Decision::Dislike { variant: i, at: Some(at), note: String::new() } });
+                                    }
                                 }
                             }
                             _ => {
@@ -708,7 +726,9 @@ impl GalleryUi {
                 }
                 "gallery_dislike" => {
                     if let (Some(i), true) = (self.selected, g.status() == Status::Open && !busy) {
-                        acts.push(Act { gallery: id, round: n, decision: Decision::Dislike { variant: i, at: None, note: String::new() } });
+                        if self.may_decide(g, busy) {
+                            acts.push(Act { gallery: id, round: n, decision: Decision::Dislike { variant: i, at: None, note: String::new() } });
+                        }
                     }
                 }
                 "gallery_note_clear" => {
@@ -874,6 +894,13 @@ impl GalleryUi {
     /// Layout without new input (captures, a size the window frame didn't lay out, or state
     /// changed since).
     fn relayout(&mut self, size: (u32, u32), capture: bool) {
+        // A capture never shows the note the human is typing (input sweep R3: any agent's capture
+        // with the interface drew it); the window's next frame fills it in again.
+        let masked = capture && self.editing && !self.note.is_empty();
+        if masked {
+            self.state.set_str("note_display", "(the owner is typing a note: not shown in captures)");
+            self.dirty = true;
+        }
         {
             let ui = self.ui.as_mut().expect("ensured");
             if !ui.is_visible("gallery") {
@@ -974,14 +1001,14 @@ mod tests {
     fn the_screen_loads_and_lays_out() {
         let mut s = test_ui();
         let g = gallery();
-        s.open("moon", crate::authority::ROLE_OWNER);
+        s.open("moon", crate::authority::ROLE_OWNER, crate::inputguard::seen_for_test());
         let (acts, modal) = s.frame(&[], &[], (1280, 800), Some(&g), sheet(), false, None);
         assert!(acts.is_empty() && modal);
         let ui = s.ui.as_ref().unwrap();
         for id in ["gl_image", "gl_accept", "gl_edit", "gl_none", "gl_v0", "gl_v8"] {
             assert!(ui.widget("gallery", id).is_some(), "{id}");
         }
-        let st = s.status_json();
+        let st = s.status_json(false);
         assert!(st.get("rects").and_then(|r| r.get("gl_accept")).is_some(), "{st}");
         assert!(st.get("rects").and_then(|r| r.get("tile4")).is_some(), "{st}");
     }
@@ -996,7 +1023,7 @@ mod tests {
     fn a_relayout_between_press_and_release_keeps_the_press() {
         let mut s = test_ui();
         let g = gallery();
-        s.open("moon", crate::authority::ROLE_OWNER);
+        s.open("moon", crate::authority::ROLE_OWNER, crate::inputguard::seen_for_test());
         s.frame(&[], &[], (1280, 800), Some(&g), sheet(), false, None);
         s.selected = Some(1);
         s.dirty = true;
@@ -1018,7 +1045,7 @@ mod tests {
     fn a_tile_click_and_a_press_in_one_frame_both_count() {
         let mut s = test_ui();
         let g = gallery();
-        s.open("moon", crate::authority::ROLE_OWNER);
+        s.open("moon", crate::authority::ROLE_OWNER, crate::inputguard::seen_for_test());
         s.frame(&[], &[], (1280, 800), Some(&g), sheet(), false, None);
         s.frame(&[], &[], (1280, 800), Some(&g), sheet(), false, None);
         let t = s.tile_rect(2).unwrap();
@@ -1051,7 +1078,7 @@ mod tests {
         let p = g.plan_next().unwrap();
         g.push_round(p, Some("x.png".into()), vec![]).unwrap();
         let mut s = test_ui();
-        s.open("moon", crate::authority::ROLE_OWNER);
+        s.open("moon", crate::authority::ROLE_OWNER, crate::inputguard::seen_for_test());
         s.frame(&[], &[], (1280, 800), Some(&g), sheet(), false, None);
         s.selected = Some(0);
         s.editing = true;
@@ -1072,7 +1099,7 @@ mod tests {
         g.push_round(p, Some("x.png".into()), vec![]).unwrap();
         assert_eq!(Gallery::parse(&g.to_text()).unwrap().rounds[0].fit, Some(6));
         let mut s = test_ui();
-        s.open("moon", crate::authority::ROLE_OWNER);
+        s.open("moon", crate::authority::ROLE_OWNER, crate::inputguard::seen_for_test());
         s.frame(&[], &[], (1280, 800), Some(&g), sheet(), false, None);
         assert_eq!(s.state.get("round_line"), Some(&specula_ui::Value::Str("round 1 \u{b7} 6 options fit the style rules \u{b7} pick one".into())));
     }
@@ -1081,7 +1108,7 @@ mod tests {
     fn typing_paging_and_no_font() {
         let mut s = test_ui();
         let g = gallery();
-        s.open("moon", crate::authority::ROLE_OWNER);
+        s.open("moon", crate::authority::ROLE_OWNER, crate::inputguard::seen_for_test());
         s.frame(&[], &[], (1280, 800), Some(&g), sheet(), false, None);
         s.selected = Some(0);
         s.editing = true;
@@ -1102,7 +1129,7 @@ mod tests {
         let p = big.first_round(None);
         big.push_round(p, Some("x.png".into()), vec![]).unwrap();
         let mut s2 = test_ui();
-        s2.open("big", crate::authority::ROLE_OWNER);
+        s2.open("big", crate::authority::ROLE_OWNER, crate::inputguard::seen_for_test());
         s2.frame(&[], &[], (1280, 800), Some(&big), sheet(), false, None);
         s2.editing = true;
         s2.dirty = true;
@@ -1119,7 +1146,7 @@ mod tests {
     fn selection_edits_and_chips_need_no_keyboard() {
         let mut s = test_ui();
         let g = gallery();
-        s.open("moon", crate::authority::ROLE_OWNER);
+        s.open("moon", crate::authority::ROLE_OWNER, crate::inputguard::seen_for_test());
         s.frame(&[], &[], (1280, 800), Some(&g), sheet(), false, None);
         // A click on tile 5 selects it.
         let t = s.tile_rect(4).unwrap();
@@ -1133,12 +1160,19 @@ mod tests {
         s.frame(&[Event::Char('c'), Event::Char('o'), Event::KeyDown { code: 0x20, repeat: false }, Event::Char(' '), Event::KeyDown { code: VK_BACK, repeat: false }], &[], (1280, 800), Some(&g), sheet(), false, None);
         assert_eq!(s.note, "co", "space was text (not a press), backspace removed it");
         assert!(s.chips.contains(&"darker"));
-        // A right-click marks a dislike with the point.
+        // A right-click marks a dislike with the point, once the round has settled (input sweep
+        // R1: a right-click the moment the screen appeared counted).
         s.editing = false;
         let r = s.tile_rect(1).unwrap();
-        let (acts, _) = s.frame(&[Event::MouseDown { button: MouseButton::Right, x: (r[0] + r[2] / 2.0) as i32, y: (r[1] + r[3] / 4.0) as i32 }], &[], (1280, 800), Some(&g), sheet(), false, None);
-        assert!(matches!(acts.as_slice(), [Act { decision: Decision::Dislike { variant: 1, at: Some(at), .. }, .. }] if (at[0] - 0.5).abs() < 0.05 && (at[1] - 0.25).abs() < 0.05));
+        let right = [Event::MouseDown { button: MouseButton::Right, x: (r[0] + r[2] / 2.0) as i32, y: (r[1] + r[3] / 4.0) as i32 }];
+        let (acts, _) = s.frame(&right, &[], (1280, 800), Some(&g), sheet(), false, None);
+        assert!(acts.is_empty(), "not before the settle: {} acts", acts.len());
         // A press right after the round appeared (and with no sheet drawn) decides nothing.
         assert!(!s.may_decide(&g, false));
+        let key = s.want.clone().expect("a sheet is wanted");
+        s.image = Some(Image { key, texture: None, size: (0, 0), problem: Some("test: shown".into()) });
+        s.shown_at -= 2.0 * SETTLE_S;
+        let (acts, _) = s.frame(&right, &[], (1280, 800), Some(&g), sheet(), false, None);
+        assert!(matches!(acts.as_slice(), [Act { decision: Decision::Dislike { variant: 1, at: Some(at), .. }, .. }] if (at[0] - 0.5).abs() < 0.05 && (at[1] - 0.25).abs() < 0.05));
     }
 }

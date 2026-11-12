@@ -294,14 +294,19 @@ impl Engine {
                     out(j)
                 }
             }
-            ReviewCall::Screen(op) if op != ScreenOp::Status && crate::authority::authority(&self.swarm, &session.id) < Authority::Reviewer => fail(
-                &crate::authority::require(authority, Authority::Reviewer, crate::authority::Site::ReviewScreen, "putting work on the owner's review screen (anyone may ask for its status)")
-                    .expect_err("checked"),
-            ),
+            // A refused try at the human's screen is a security incident (docs/design/SECURITY.md).
+            ReviewCall::Screen(op) if op != ScreenOp::Status && crate::authority::trusted(&self.swarm, &session.id) < Authority::Reviewer => {
+                let e = crate::authority::require(crate::authority::trusted(&self.swarm, &session.id), Authority::Reviewer, crate::authority::Site::ReviewScreen, "putting work on the owner's review screen (anyone may ask for its status)").expect_err("checked");
+                crate::inputguard::refused(crate::inputguard::Channel::Screen, "review_screen", &crate::inputguard::Actor::of(&self.swarm, session), e.code, &format!("{op:?}"));
+                fail(&e)
+            }
             // The human is typing into a text the operator pointed their keyboard at: only the
             // operator takes the window from them (review R4 of m5-text).
-            ReviewCall::Screen(ScreenOp::Open(_)) if !self.review_ui.is_open() && self.text_typing.focus.is_some() && crate::authority::authority(&self.swarm, &session.id) < Authority::Lead => {
-                fail(&crate::text_window::typing_busy("review_screen"))
+            ReviewCall::Screen(ScreenOp::Open(_)) if !self.review_ui.is_open() && self.text_typing.focus.is_some() && crate::authority::trusted(&self.swarm, &session.id) < Authority::Lead => {
+                let e = crate::text_window::typing_busy("review_screen");
+                // The human's typing refused it, not the reviewer's choice: seen, never counted.
+                crate::inputguard::declined(crate::inputguard::Channel::Screen, "review_screen", &crate::inputguard::Actor::of(&self.swarm, session), e.code, "the human is typing");
+                fail(&e)
             }
             ReviewCall::Screen(ScreenOp::Open(_)) if self.review_ui.closed_by_human_recently() => fail(&WorldError::new(
                 "owner_closed",
@@ -313,7 +318,9 @@ impl Engine {
                         if let Some(id) = id.filter(|id| self.swarm.review.get(*id).is_none()) {
                             return fail(&WorldError::new("submission_not_found", format!("there is no submission {id}")).with("submission", id));
                         }
-                        self.review_ui.open(id, &self.swarm.review);
+                        // The monitor sees it first: a reviewer's or a lead's open is an alert.
+                        let seen = crate::inputguard::done(crate::inputguard::Channel::Screen, "review_screen", &crate::inputguard::Actor::of(&self.swarm, session), &id.map_or_else(String::new, |i| format!("submission {i}")));
+                        self.review_ui.open(id, &self.swarm.review, seen);
                     }
                     ScreenOp::Close => self.review_ui.close(),
                     ScreenOp::Next => self.review_ui.step(1, &self.swarm.review),

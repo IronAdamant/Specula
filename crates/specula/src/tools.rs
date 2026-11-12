@@ -291,6 +291,8 @@ pub enum Command {
     /// A refused review_submit or critique_add hands back the evidence it copied: collected
     /// unless the queue names it (see `evidence::Made`).
     EvidenceRefused(crate::evidence::Made),
+    /// `security_clear` and `security_allow_lead` (see [`crate::inputguard_tools`]).
+    Security(crate::inputguard_tools::SecurityCall),
 }
 
 /// time_control's actions on the simulation clock.
@@ -573,6 +575,14 @@ impl ToolHandler for Tools {
         // Every call gets an id its work carries everywhere (docs/design/TRACE.md).
         let call = crate::trace_sink::begin_call(session, name, arguments);
         let _ctx = specula_core::trace::Ctx { call, span: 0 }.enter();
+        // The input monitor's gate (docs/design/SECURITY.md): a frozen session, or a paused swarm
+        // (but the owner's and the lead's reads and security tools), is refused before routing.
+        if let Some(e) = crate::inputguard::gate(session, name, arguments) {
+            let out = crate::bounds::cap_answer(name, crate::response::tidy(ToolOutput::error(e.to_json().to_string())));
+            CALL.with(|c| c.set(outer));
+            crate::trace_sink::end_call(call, &out);
+            return out;
+        }
         // Every answer leaves as compact JSON, every error as {error: code, message} (tokens and
         // machine-readable codes, whoever built the answer). A disk budget warning rides along once
         // per session (in the answer to the write that crossed the line). Scopes first (the cap, the
@@ -633,6 +643,8 @@ pub enum CallerThread {
     Timeline,
     /// `text_edit`: ops are applied and laid out here; the engine commits the result.
     Text,
+    /// `security_incidents`: the input monitor's log, waited for here.
+    Security,
     /// The `l10n_*` tools: string tables are parsed, checked and written (through
     /// `project_write`) here; the engine lends texts, commits and lays the interface out.
     L10n,
@@ -649,6 +661,7 @@ impl CallerThread {
             "terrain_edit" => CallerThread::Terrain,
             "timeline_set" => CallerThread::Timeline,
             "text_edit" => CallerThread::Text,
+            "security_incidents" => CallerThread::Security,
             n if n.starts_with("l10n_") => CallerThread::L10n,
             n if n.starts_with("lex_") => CallerThread::Lex,
             n if n.starts_with("studio_") => CallerThread::Studio,
@@ -685,6 +698,7 @@ impl CallerThread {
             CallerThread::Audio => "audio_* tools read the engine's audio and render previews outside the engine thread: hear (audio_played, audio_levels) before or after the playtest",
             CallerThread::Timeline => "timeline_set writes a project file outside the engine thread: write timelines before the playtest (timeline_play and the others work inside one)",
             CallerThread::Text => "text_edit lays text out on your connection, outside the engine thread: type before or after the playtest (a step may world_set a text component)",
+            CallerThread::Security => "security_incidents waits for the input monitor on your connection: read it before or after the playtest",
             CallerThread::L10n => "l10n_* tools read and write string tables on your connection: translate and check before or after the playtest (ui_check {pseudo: true} works inside one)",
         }
     }
@@ -782,6 +796,8 @@ impl Tools {
                 Some(CallerThread::Timeline) => return crate::timeline_tools::set_tool(self, session, arguments),
                 // Ops are applied and laid out on this thread; the engine commits the result.
                 Some(CallerThread::Text) => return crate::text_world::call(self, session, arguments),
+                // The input monitor's log is global: read (and waited for) on this thread.
+                Some(CallerThread::Security) => return crate::inputguard_tools::incidents(session, arguments),
                 // String tables are parsed, checked and written on this thread.
                 Some(CallerThread::L10n) => return crate::l10n_tools::call(self, session, name, arguments),
                 // (Answered above.)
@@ -806,7 +822,9 @@ impl Tools {
                 specula_protocol::Content::Text(t) => Json::parse(t).ok(),
                 specula_protocol::Content::Image { .. } => None,
             });
-            if let Some(agent) = reply.as_ref().and_then(|r| r.get("agent")).and_then(Json::as_str) {
+            // (A frozen session's hello changes nothing: the trace keeps what it had.)
+            let unchanged = reply.as_ref().and_then(|r| r.get("unchanged")).and_then(Json::as_bool) == Some(true);
+            if let Some(agent) = reply.as_ref().and_then(|r| r.get("agent")).and_then(Json::as_str).filter(|_| !unchanged) {
                 let role = reply.as_ref().and_then(|r| r.get("role")).and_then(Json::as_str).unwrap_or("builder");
                 crate::trace_sink::set_name(&session.id, agent, role);
             }
@@ -996,7 +1014,11 @@ pub(crate) fn parse(name: &str, args: &Json) -> Result<Command, String> {
                                                 Some(call) => call.map(Command::Stream),
                                                 None => match crate::terrain_tools::parse(other, args) {
                                                     Some(call) => call.map(Command::Terrain),
-                                                    None => match crate::editor_tools::parse(other, args).map(|c| c.map(Command::Editor)).or_else(|| crate::ui_tools::parse(other, args).map(|c| c.map(Command::Ui))) {
+                                                    None => match crate::editor_tools::parse(other, args)
+                                                        .map(|c| c.map(Command::Editor))
+                                                        .or_else(|| crate::ui_tools::parse(other, args).map(|c| c.map(Command::Ui)))
+                                                        .or_else(|| crate::inputguard_tools::parse(other, args).map(|c| c.map(Command::Security)))
+                                                    {
                                                         Some(call) => call,
                                                         None => crate::logic::tools::parse(other, args).unwrap_or_else(|| Err(format!("unknown tool '{}'", crate::bounds::echo(other)))),
                                                     },
@@ -2901,6 +2923,7 @@ pub(crate) fn definitions() -> Vec<ToolDef> {
     .chain(crate::l10n_tools::definitions())
     .chain(crate::trace_tools::definitions())
     .chain(crate::editor_tools::definitions())
+    .chain(crate::inputguard_tools::definitions())
     .collect()
 }
 

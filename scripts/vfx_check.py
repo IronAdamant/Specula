@@ -113,7 +113,7 @@ def part_cosmetic(args, out):
         d = out / f"world_{label}"
         d.mkdir(parents=True, exist_ok=True)
         with Engine(args.exe, args.port, d / "engine.log", "--headless", "--paused", "--adapter", args.adapter,
-                    "--captures", str(d / "captures"), *flags, cwd=d) as eng:
+                    "--captures", str(d / "captures"), "--lead", "vfx-check", *flags, cwd=d) as eng:
             m = eng.mcp("vfx-check")
             m.hello("vfx-check", role="lead")  # force and overwrite of other worlds are the lead's (docs/design/AUTHORITY.md)
             hashes, digests = scripted(m, d, label != "off", label)
@@ -143,7 +143,7 @@ def part_budgets(args, out):
     if late.exists():
         late.unlink()
     with Engine(args.exe, args.port, d / "engine.log", "--headless", "--paused", "--adapter", args.adapter,
-                "--captures", str(d / "captures"), "--perf", str(perf), "--assets", str(assets), "--worlds", str(d / "worlds"), cwd=d) as eng:
+                "--captures", str(d / "captures"), "--perf", str(perf), "--assets", str(assets), "--worlds", str(d / "worlds"), "--lead", "vfx-budget", cwd=d) as eng:
         m = eng.mcp("vfx-budget")
         m.hello("vfx-budget", role="lead")  # its edge probes overwrite a world folder: the lead's (docs/design/AUTHORITY.md)
         m.json("world_env", tonemap=True, background="#0b1020")
@@ -329,7 +329,7 @@ def part_bounds(args, out):
         if not f.exists():
             f.write_bytes(png_bytes(8, 8, [200, 200, 255, 255]))
     res = {}
-    with Engine(args.exe, args.port, d / "engine.log", "--headless", "--paused", "--adapter", args.adapter, "--assets", str(d / "assets"),
+    with Engine(args.exe, args.port, d / "engine.log", "--headless", "--paused", "--lead", "alpha", "--adapter", args.adapter, "--assets", str(d / "assets"),
                 "--captures", str(d / "captures"), "--worlds", str(d / "worlds"), cwd=d) as eng:
         a = eng.mcp("vfx-bounds-a")
         b = eng.mcp("vfx-bounds-b")

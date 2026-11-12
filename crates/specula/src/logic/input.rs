@@ -17,11 +17,18 @@ use std::collections::BTreeMap;
 pub const MAX_HOLD_TICKS: u64 = 18_000;
 
 /// An action an agent holds.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct Hold {
     value: [f32; 2],
     ticks_left: u64,
+    /// Who placed it (`None`: restored from a save): a freeze of that identity releases it, and
+    /// the human taking the action back is reported under it (docs/design/SECURITY.md).
+    by: Option<crate::inputguard::Actor>,
 }
+
+/// Holds the human took back, kept until the engine reports them (a tick has at most one per
+/// action; this bounds a long run without a report).
+const MAX_ENDED: usize = 64;
 
 pub struct ModuleInput {
     map: ActionMap,
@@ -33,7 +40,17 @@ pub struct ModuleInput {
     holds: BTreeMap<String, Hold>,
     /// Seconds of window frames fed (only differences matter to [`Input`]).
     time_s: f64,
+    /// Per action: when (in `time_s`) the human last used it at the window. An agent's hold on an
+    /// action the human is using takes their input over: the input monitor judges it
+    /// (docs/design/SECURITY.md).
+    human_at: Vec<f64>,
+    /// Holds the window's human ended by using the held action (the window wins): `(action,
+    /// holder)`, until [`ModuleInput::take_ended`].
+    ended: Vec<(String, Option<crate::inputguard::Actor>)>,
 }
+
+/// An action the human used at the window this recently (seconds of window frames) is theirs.
+pub const HUMAN_RECENT_S: f64 = 1.0;
 
 impl ModuleInput {
     /// From the module's `specula.input.v1` text (empty: no actions).
@@ -47,7 +64,20 @@ impl ModuleInput {
             last: vec![ActionState::default(); n],
             holds: BTreeMap::new(),
             time_s: 0.0,
+            human_at: vec![f64::NEG_INFINITY; n],
+            ended: Vec::new(),
         })
+    }
+
+    /// The actions among `actions` (an object keyed by action name) the human used at the window
+    /// within [`HUMAN_RECENT_S`]: a hold on them would take the human's input over.
+    pub fn human_using(&self, actions: &Json) -> Vec<String> {
+        let Some(obj) = actions.as_object() else { return Vec::new() };
+        obj.iter()
+            .filter(|(name, _)| self.map.index_of(name).and_then(|i| self.human_at.get(i)).is_some_and(|t| self.time_s - t <= HUMAN_RECENT_S))
+            .map(|(name, _)| name.clone())
+            .take(16)
+            .collect()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -69,7 +99,7 @@ impl ModuleInput {
         }
         for (name, h) in &old.holds {
             if self.map.index_of(name).is_some() {
-                self.holds.insert(name.clone(), *h);
+                self.holds.insert(name.clone(), h.clone());
             }
         }
         for (i, a) in old.map.actions().iter().enumerate() {
@@ -121,7 +151,7 @@ impl ModuleInput {
             let value = [r.f32("holds.value")?, r.f32("holds.value")?];
             let ticks_left = r.u64("holds.ticks")?;
             if self.map.index_of(&name).is_some() {
-                holds.insert(name, Hold { value, ticks_left });
+                holds.insert(name, Hold { value, ticks_left, by: None });
             }
         }
         let n = r.count("actions", 4096, 30)?;
@@ -151,12 +181,17 @@ impl ModuleInput {
             l.held = st.held;
             let delta = a.kind != ActionKind::Button && a.output == AxisOutput::Delta;
             l.value = if delta { [l.value[0] + st.value[0], l.value[1] + st.value[1]] } else { st.value };
+            if st.held || st.pressed || st.released || st.value != [0.0, 0.0] {
+                if let Some(t) = self.human_at.get_mut(i) {
+                    *t = self.time_s;
+                }
+            }
         }
     }
 
-    /// `logic_input`: hold each named action for `ticks` (0 releases it). Values: `true`/`false`
-    /// for buttons, a number for axes, `[x, y]` for 2D axes.
-    pub fn hold(&mut self, actions: &Json, ticks: u64) -> Result<Json, String> {
+    /// `logic_input`: hold each named action for `ticks` (0 releases it), as `by`. Values:
+    /// `true`/`false` for buttons, a number for axes, `[x, y]` for 2D axes.
+    pub fn hold(&mut self, actions: &Json, ticks: u64, by: Option<crate::inputguard::Actor>) -> Result<Json, String> {
         let Some(obj) = actions.as_object() else {
             return Err("'actions' must be an object: {\"action\": true | number | [x, y]}".into());
         };
@@ -190,7 +225,7 @@ impl ModuleInput {
             if ticks == 0 || value == [0.0, 0.0] {
                 self.holds.remove(&name);
             } else {
-                self.holds.insert(name, Hold { value, ticks_left: ticks });
+                self.holds.insert(name, Hold { value, ticks_left: ticks, by: by.clone() });
             }
         }
         Ok(self.holds_json())
@@ -199,6 +234,18 @@ impl ModuleInput {
     /// Ends an agent's hold of `name` (whatever its kind), as if released.
     pub fn release(&mut self, name: &str) {
         self.holds.remove(name);
+    }
+
+    /// Ends every hold the identity `key` placed (its session froze); how many.
+    pub fn release_holds_of(&mut self, key: &str) -> usize {
+        let before = self.holds.len();
+        self.holds.retain(|_, h| h.by.as_ref().and_then(crate::inputguard::Actor::key) != Some(key));
+        before - self.holds.len()
+    }
+
+    /// Holds the window's human took back since the last call: `(action, holder)`.
+    pub fn take_ended(&mut self) -> Vec<(String, Option<crate::inputguard::Actor>)> {
+        std::mem::take(&mut self.ended)
     }
 
     pub fn holds_json(&self) -> Json {
@@ -217,6 +264,16 @@ impl ModuleInput {
             self.latch[i].held = w.held;
             if a.kind == ActionKind::Button || a.output == AxisOutput::Value {
                 self.latch[i].value = if a.kind == ActionKind::Button { [0.0, 0.0] } else { w.value };
+            }
+            // The window wins: the human's own input on a held action ends the hold (the action
+            // reports the window's state), and the engine reports who held it.
+            let human = w.held || w.pressed || w.released || w.value != [0.0, 0.0];
+            if human {
+                if let Some(h) = self.holds.remove(&a.name) {
+                    if self.ended.len() < MAX_ENDED {
+                        self.ended.push((a.name.clone(), h.by));
+                    }
+                }
             }
             let hold = self.holds.get_mut(&a.name).filter(|h| h.ticks_left > 0);
             let state = match hold {
@@ -271,7 +328,7 @@ mod tests {
     #[test]
     fn agent_holds_press_hold_and_release() {
         let mut m = ModuleInput::new(MAP).unwrap();
-        m.hold(&Json::parse(r#"{"jump": true, "move": [1, 0.5]}"#).unwrap(), 2).unwrap();
+        m.hold(&Json::parse(r#"{"jump": true, "move": [1, 0.5]}"#).unwrap(), 2, None).unwrap();
         let t1 = m.take_tick();
         assert_eq!(state(&t1, "jump"), Some((true, true, false, 1.0, 0.0)));
         assert_eq!(state(&t1, "move"), Some((true, true, false, 1.0, 0.5)));
@@ -286,9 +343,9 @@ mod tests {
     #[test]
     fn bad_holds_say_what_to_give() {
         let mut m = ModuleInput::new(MAP).unwrap();
-        let e = m.hold(&Json::parse(r#"{"jmup": true}"#).unwrap(), 1).unwrap_err();
+        let e = m.hold(&Json::parse(r#"{"jmup": true}"#).unwrap(), 1, None).unwrap_err();
         assert!(e.contains("jump, move"), "{e}");
-        let e = m.hold(&Json::parse(r#"{"move": true}"#).unwrap(), 1).unwrap_err();
+        let e = m.hold(&Json::parse(r#"{"move": true}"#).unwrap(), 1, None).unwrap_err();
         assert!(e.contains("[x, y]"), "{e}");
         assert!(ModuleInput::new("{\"format\": \"nope\"}").is_err());
         assert!(ModuleInput::new("").unwrap().is_empty());
@@ -297,7 +354,7 @@ mod tests {
     #[test]
     fn a_reload_mid_hold_is_no_new_press() {
         let mut old = ModuleInput::new(MAP).unwrap();
-        old.hold(&Json::parse(r#"{"jump": true}"#).unwrap(), 10).unwrap();
+        old.hold(&Json::parse(r#"{"jump": true}"#).unwrap(), 10, None).unwrap();
         assert_eq!(state(&old.take_tick(), "jump"), Some((true, true, false, 1.0, 0.0)));
         let mut new = ModuleInput::new(MAP).unwrap();
         new.adopt(old);
@@ -316,5 +373,44 @@ mod tests {
         let (held, pressed, released, ..) = state(&t, "jump").unwrap();
         assert!(!held && pressed && released, "{t:?}");
         assert_eq!(state(&m.take_tick(), "jump"), None);
+    }
+
+    /// Review R1 of m5-inputguard, major 5: an agent's hold never takes the human's input over.
+    /// The human's own input on a held action ends the hold (the window wins), reported under the
+    /// hold's holder; a freeze releases the holds its identity placed.
+    #[test]
+    fn the_human_takes_a_held_action_back_and_a_freeze_releases_holds() {
+        use crate::authority::Authority;
+        use crate::inputguard::Actor;
+        use specula_platform::keys;
+        let mut m = ModuleInput::new(MAP).unwrap();
+        let mallory = Actor::identity("mal-key", "mallory", Authority::Agent);
+        // Placed while the human was idle: 18,000 ticks of "move right".
+        m.hold(&Json::parse(r#"{"move": [1, 0], "jump": true}"#).unwrap(), MAX_HOLD_TICKS, Some(mallory.clone())).unwrap();
+        assert_eq!(state(&m.take_tick(), "move"), Some((true, true, false, 1.0, 0.0)));
+        // The human presses A (move left): the window wins at once, and the hold is over.
+        m.feed(&[Event::KeyDown { code: u32::from(b'A'), repeat: false }], &[], 0.016);
+        let t = m.take_tick();
+        assert_eq!(state(&t, "move").map(|s| (s.0, s.3)), Some((true, -1.0)), "the human's state is reported: {t:?}");
+        assert_eq!(m.take_ended(), vec![("move".to_owned(), Some(mallory.clone()))], "reported under its holder");
+        assert!(m.take_ended().is_empty());
+        m.feed(&[Event::KeyUp { code: u32::from(b'A') }], &[], 0.016);
+        let t = m.take_tick();
+        assert_eq!(state(&t, "move").map(|s| (s.0, s.2)), Some((false, true)), "released when the human lets go: the hold doesn't come back");
+        // The other hold (jump) stays until its identity is frozen.
+        assert_eq!(state(&t, "jump").map(|s| s.0), Some(true));
+        m.hold(&Json::parse(r#"{"move": [0, 1]}"#).unwrap(), 50, Some(Actor::identity("lee-key", "lee", Authority::Lead))).unwrap();
+        assert_eq!(m.release_holds_of("mal-key"), 1);
+        let t = m.take_tick();
+        assert_eq!(state(&t, "jump").map(|s| (s.0, s.2)), Some((false, true)), "mallory's jump is released");
+        assert_eq!(state(&t, "move").map(|s| s.0), Some(true), "another identity's hold stays");
+        // Bounded: a run nobody reports on keeps at most MAX_ENDED.
+        for _ in 0..(MAX_ENDED + 10) {
+            m.hold(&Json::parse(r#"{"jump": true}"#).unwrap(), 5, Some(mallory.clone())).unwrap();
+            m.feed(&[Event::KeyDown { code: keys::SPACE, repeat: false }], &[], 0.016);
+            let _ = m.take_tick();
+            m.feed(&[Event::KeyUp { code: keys::SPACE }], &[], 0.016);
+        }
+        assert_eq!(m.take_ended().len(), MAX_ENDED);
     }
 }

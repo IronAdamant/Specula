@@ -402,7 +402,7 @@ fn run(tools: &Tools, session: &SessionInfo, name: &str, args: &Json) -> Result<
             if preset.as_deref().is_some_and(|p| specula_gustus::presets::find(p).is_none()) {
                 return Err(bad(format!("preset: one of {}", specula_gustus::presets::names().join(", "))));
             }
-            send(tools, session, TasteCall::Onboard { action, subject: args.get("subject").cloned(), preset, user: user_of(args)?, open: flag(args, "open")?.unwrap_or(true), quote_notes: flag(args, "quote_notes")? })
+            send(tools, session, TasteCall::Onboard { action, subject: args.get("subject").cloned(), preset, user: user_of(args)?, open: flag(args, "open")?, quote_notes: flag(args, "quote_notes")? })
         }
         other => return Err(bad(format!("unknown tool '{other}'"))),
     })
@@ -622,7 +622,7 @@ pub fn definitions() -> Vec<ToolDef> {
                     ("subject", any("What the galleries show (as gallery_create's subject)")),
                     ("preset", t("string", "The base style to start from (default moonlit when style.toml exists, else clean)")),
                     ("user", t("string", "Who picks (default \"owner\")")),
-                    ("open", t("boolean", "Put the first gallery on the window (default true)")),
+                    ("open", t("boolean", "Put the first gallery on the window. Default: yes for the owner, a granted lead or a reviewer; anyone else starts without it. An explicit true from a caller who may not is refused as a try at the human's window (a security incident)")),
                     ("quote_notes", t("boolean", "Quote the owner's notes into the tracked notes.md (start or finish; default false: notes.md says what was chosen, never the owner's words). The review submission shows the quoted notes before the owner approves")),
                 ],
                 &[],

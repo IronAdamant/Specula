@@ -10,7 +10,10 @@ Read [HANDOFF.md](HANDOFF.md) first.
    packages only (`crates/specula/tests/zero_dep.rs` enforces it). Not even dev-dependencies.
 2. **OS/driver imports via raw-dylib.** Declare foreign functions with
    `#[link(name = "user32", kind = "raw-dylib")] extern "system" { … }` — never rely on import libraries.
-   Drivers that may be missing (e.g. `vulkan-1`) are loaded **at runtime** via `specula_sys::dynlib::Library`.
+   Drivers that may be missing (e.g. `vulkan-1`) are loaded **at runtime** via `specula_sys::dynlib::Library`:
+   `Library::open` takes a bare file name and loads **from System32 only**, so a DLL planted beside the executable is
+   never loaded. A DLL that ships with the game (`steam_api64.dll`) uses `open_beside_exe`, and a file the engine wrote
+   itself (a module copy) uses `open_path`. No crate declares `LoadLibraryW` (docs/design/SECURITY.md).
    **Each DLL is declared in exactly one crate** — on windows-gnu a second crate's raw-dylib imports from the same
    DLL are silently dropped (crash at call time). `kernel32` → `specula-sys`; `user32`, `winmm` and `imm32` →
    `specula-platform`; `ole32` → `specula-audio` (`crates/specula/tests/dll_owners.rs` checks this list against the

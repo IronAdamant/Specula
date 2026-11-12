@@ -70,7 +70,7 @@ def main():
     spec = importlib.util.spec_from_file_location("save_check", ROOT / "scripts" / "save_check.py")
     save_check = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(save_check)
-    common = ["--headless", "--paused", "--captures", str(work / "captures"), "--saves", str(work / "saves"), "--worlds", str(work / "worlds")]
+    common = ["--headless", "--paused", "--lead", "other", "--lead", "ll", "--captures", str(work / "captures"), "--saves", str(work / "saves"), "--worlds", str(work / "worlds")]
 
     print("1. world_load during a playtest")
     with Engine(exe, args.port, work / "playtest.log", *common, cwd=work) as eng:

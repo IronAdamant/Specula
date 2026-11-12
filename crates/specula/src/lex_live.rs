@@ -775,6 +775,23 @@ impl Live {
         }
     }
 
+    /// Ends every hold the identity `key` placed (the input monitor froze it): its actions are
+    /// released and fire nothing more as its. How many.
+    pub(crate) fn release_holds_of(&mut self, key: &str) -> usize {
+        let mut n = 0;
+        for run in self.runs.values_mut() {
+            let Some(input) = &mut run.input else { continue };
+            let theirs: Vec<(String, String)> = input.holders.iter().filter(|(_, h)| h.session.as_deref() == Some(key)).map(|(a, h)| (a.clone(), h.name.clone())).collect();
+            for (action, name) in theirs {
+                input.agents.release(&action);
+                input.holders.remove(&action);
+                push_recent(&mut run.recent, Json::obj([("event", Json::from("hold_ended")), ("action", Json::from(action.as_str())), ("by", Json::from(name.as_str())), ("why", Json::from("its session was frozen by a security incident"))]));
+                n += 1;
+            }
+        }
+        n
+    }
+
     pub(crate) fn has_input(&self) -> bool {
         self.runs.values().any(|r| r.input.is_some())
     }
@@ -834,7 +851,7 @@ impl Live {
                 }
                 // `ticks` are the run's own (Lex) ticks: held for that long at the engine's rate.
                 let engine_ticks = (ticks * u64::from(env.hz.max(1))).div_ceil(lex_hz).min(crate::logic::input::MAX_HOLD_TICKS);
-                match input.agents.hold(&actions, engine_ticks) {
+                match input.agents.hold(&actions, engine_ticks, None) {
                     Ok(held) => {
                         // The commands these actions fire run as this agent (claim-checked).
                         if let (Some(live), Some(sid)) = (&mut self.live_agents, &holder.session) {

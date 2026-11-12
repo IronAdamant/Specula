@@ -305,7 +305,10 @@ def moonlight(lead, win, report):
     check(k < 6, "the darker chip is on the screen")
     win.press("moonlight", f"gl_k{k}")
     st = win.screen("moonlight")
-    check(st.get("note") == "colder, less purple" and st.get("chips_on") == ["darker"], f"typed note and the darker chip: {st.get('note')!r} {st.get('chips_on')}")
+    # The note the human types is the owner's alone (input sweep R3, docs/design/SECURITY.md): the
+    # lead sees its length, never its words (inputguard_check reads it as the owner).
+    check("note" not in st and st.get("note_redacted") is True and "note_chars" not in st and st.get("chips_on") == ["darker"],
+          f"typed note (redacted for the lead, its length too) and the darker chip: {st.get('note')!r} {st.get('chips_on')}")
     win.shot("moonlight_edit")
     picked = g["round"]["variants"][4]["values"]
     win.press("moonlight", "gl_send")

@@ -1013,11 +1013,13 @@ impl EditorUi {
     }
 
     /// Named widgets' boxes (`[x, y, w, h]`), for agents (at most `max`).
-    pub fn widget_boxes(&self, max: usize) -> Json {
+    pub fn widget_boxes(&self, max: usize, rows: bool) -> Json {
         let Some(ui) = self.ui.as_ref().filter(|_| self.open) else { return Json::Obj(Vec::new()) };
         let mut out: Vec<(String, Json)> = Vec::new();
         let mut names: Vec<String> = WIDGETS.iter().map(|s| (*s).to_owned()).collect();
-        for r in 0..self.outliner.rows.len().min(PAGE_ROWS) {
+        // Without `rows` the outliner's row boxes are left out (how many there are says how many
+        // entities the human's search found).
+        for r in 0..if rows { self.outliner.rows.len().min(PAGE_ROWS) } else { 0 } {
             names.push(format!("ol_row[{r}]"));
             names.push(format!("ol_row_on[{r}]"));
             names.push(format!("ol_x[{r}]"));

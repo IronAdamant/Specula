@@ -245,7 +245,7 @@ fn interact_picks_up_the_nearest_pickup_in_reach_and_leaves_what_does_not_fit() 
     r.hook("inventarium/open", r#"{"owner": "/ambulo/player", "slots": 1, "max_weight_g": 100000}"#).unwrap();
     r.spawn("far_bones", [3.0, 0.0, 0.0], &["pickup"], r#"{"pickup": {"item": "bone", "count": 2}}"#);
     r.spawn("near_dust", [1.0, 0.0, 0.0], &["pickup"], r#"{"pickup": {"item": "grave_dust", "count": 70}}"#);
-    r.host.hold("inventarium", &Json::parse(r#"{"interact": true}"#).unwrap(), 1).unwrap();
+    r.host.hold("inventarium", &Json::parse(r#"{"interact": true}"#).unwrap(), 1, None).unwrap();
     r.ticks(1);
     // One slot of 50 dust: 20 stay on the ground.
     let inv = r.prop("/ambulo/player", "inventory");
@@ -254,9 +254,9 @@ fn interact_picks_up_the_nearest_pickup_in_reach_and_leaves_what_does_not_fit() 
     assert!(r.world.find_path("/far_bones").is_ok(), "out of reach");
     // Drop the dust, pick up the rest: the pickup is gone.
     r.hook("inventarium/open", r#"{"owner": "/ambulo/player", "slots": 2}"#).unwrap();
-    r.host.hold("inventarium", &Json::parse(r#"{"interact": false}"#).unwrap(), 1).unwrap();
+    r.host.hold("inventarium", &Json::parse(r#"{"interact": false}"#).unwrap(), 1, None).unwrap();
     r.ticks(1);
-    r.host.hold("inventarium", &Json::parse(r#"{"interact": true}"#).unwrap(), 1).unwrap();
+    r.host.hold("inventarium", &Json::parse(r#"{"interact": true}"#).unwrap(), 1, None).unwrap();
     r.ticks(1);
     assert!(r.world.find_path("/near_dust").is_err(), "picked up whole");
     assert_eq!(r.prop("/ambulo/player", "inventory").get("weight_g").and_then(Json::as_u64), Some(70 * 20));
@@ -319,7 +319,7 @@ fn a_pickup_past_256_others_is_picked_up() {
         r.spawn(&format!("coin{i}"), [100.0 + i as f32, 0.0, 0.0], &["pickup"], r#"{"pickup": {"item": "bone", "count": 1}}"#);
     }
     player_at(&mut r, 399.0);
-    r.host.hold("inventarium", &Json::parse(r#"{"interact": true}"#).unwrap(), 1).unwrap();
+    r.host.hold("inventarium", &Json::parse(r#"{"interact": true}"#).unwrap(), 1, None).unwrap();
     r.ticks(1);
     assert!(r.world.find_path("/coin299").is_err(), "picked up: {:?}", r.prop("/ambulo/player", "inventory"));
 }
@@ -341,7 +341,7 @@ fn a_press_never_walks_the_world() {
         r.ticks(2);
         let mut best = std::time::Duration::MAX;
         for _ in 0..7 {
-            r.host.hold("inventarium", &Json::parse(r#"{"interact": true}"#).unwrap(), 1).unwrap();
+            r.host.hold("inventarium", &Json::parse(r#"{"interact": true}"#).unwrap(), 1, None).unwrap();
             let t = std::time::Instant::now(); // determinism: allowed: the test times a press, nothing simulated reads it
             r.ticks(1);
             best = best.min(t.elapsed());

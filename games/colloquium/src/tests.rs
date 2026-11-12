@@ -99,9 +99,9 @@ impl Run {
     }
 
     pub fn press(&mut self, action: &str) {
-        self.host.hold("colloquium", &Json::parse(&format!(r#"{{"{action}": true}}"#)).unwrap(), 1).unwrap();
+        self.host.hold("colloquium", &Json::parse(&format!(r#"{{"{action}": true}}"#)).unwrap(), 1, None).unwrap();
         self.ticks(1);
-        self.host.hold("colloquium", &Json::parse(&format!(r#"{{"{action}": false}}"#)).unwrap(), 1).unwrap();
+        self.host.hold("colloquium", &Json::parse(&format!(r#"{{"{action}": false}}"#)).unwrap(), 1, None).unwrap();
         self.ticks(1);
     }
 

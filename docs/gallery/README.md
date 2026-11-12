@@ -154,6 +154,7 @@ Window checks, GPU test renders, sight checks and exit proofs.
 | 2026-10-30<br>M4 | <a href="2026-10-30-captures-through-the-capture-flight-fix-round/01-orbit-runner.jpg"><img src="2026-10-30-captures-through-the-capture-flight-fix-round/01-orbit-runner.jpg" width="240" alt="8-view orbit of the rigged runner with skeleton and bounds overlays"></a> | **[Captures through the capture flight, fix round](2026-10-30-captures-through-the-capture-flight-fix-round/entry.json)** (+1): sight_check on the stalls fix round (async capture readback with bounded waits, orbit views back to back, flash feed on the encode worker): the 8-view orbit with every overlay and the compare sheet, byte-identical to main for the same scene (same.py). New since the last entry: a mesh deleted while a capture renders is retired in queue order (no validation message). The window check is unchanged since 2026-10-13-window-check-on-the-new-renderer. |
 | 2026-11-06<br>M5 | <a href="2026-11-06-timeline-rail-checks/01-orbit-preview.jpg"><img src="2026-11-06-timeline-rail-checks/01-orbit-preview.jpg" width="240" alt="a good rail: the pillar on screen throughout"></a> | **[Timeline rail checks](2026-11-06-timeline-rail-checks/entry.json)** (+1): timeline_preview filmstrips in a scripted world: an orbit round a pillar that passes every rail check, and a deliberately bad rail (a step through the pillar, then looking straight down) that fails clearance, jump, upright and horizon_spin. |
 | 2026-11-06<br>M5 | <a href="2026-11-06-foliage-cutout-and-wind/01-cutout-t1.jpg"><img src="2026-11-06-foliage-cutout-and-wind/01-cutout-t1.jpg" width="240" alt="cutout blades and their shadow"></a> | **[Foliage: cutout and wind](2026-11-06-foliage-cutout-and-wind/entry.json)** (+1): M5: a grass tuft's alpha-cutout blades (texture graph opacity) with their cut shadow, and the same view at another simulation time (wind). foliage_check.py, Intel iGPU. |
+| 2026-11-07<br>M5 | <a href="2026-11-07-input-monitor/01-window-01-lead-alert.jpg"><img src="2026-11-07-input-monitor/01-window-01-lead-alert.jpg" width="240" alt="A lead points the keyboard: an alert"></a> | **[Input monitor: alerts, frozen sessions and the swarm pause](2026-11-07-input-monitor/entry.json)** (+3): The input-integrity monitor's toast in the real window on the iGPU: a granted lead pointing the keyboard is an alert (Allow this lead / Dismiss); a builder's refused try freezes its session (Clear / Keep frozen); a second offender pauses the swarm, said on the toast. An agent's capture never shows the note the human is typing. |
 | 2026-11-07<br>M5 | <a href="2026-11-07-gameplay-modules-demo/01-frame-00001.jpg"><img src="2026-11-07-gameplay-modules-demo/01-frame-00001.jpg" width="240" alt="The Sexton's line and the choices on offer"></a> | **[Gameplay modules demo](2026-11-07-gameplay-modules-demo/entry.json)** (+3): M5 gameplay modules (inventarium, facultas, colloquium, quaestio) in the exemplum demo, played by an agent over MCP: the Sexton's dialogue with conditional choices, the quest tracker mid-quest, the lantern flare (cyan impact and sparks), the finished quest. Same hashes as a headless run on the other adapter. |
 
 ### 2D over time
@@ -206,6 +207,21 @@ Grok-Bevy, the tooling Specula grew out of.
 | 2026-07-25<br>Bevy era (0.2.x) | <a href="2026-07-25-grok-bevy-crystal-drift-under-agent-control/01-crystal-drift-mcp-loop.jpg"><img src="2026-07-25-grok-bevy-crystal-drift-under-agent-control/01-crystal-drift-mcp-loop.jpg" width="240" alt="The MCP loop: query, mutate, re-query, screenshot"></a> | **[Grok-Bevy: Crystal Drift under agent control](2026-07-25-grok-bevy-crystal-drift-under-agent-control/entry.json)** (+1): Before Specula was its own engine: Grok-Bevy drove a Bevy game (Crystal Drift) through Bevy's remote protocol over MCP. Left: the query, mutate and screenshot loop an agent ran; right: the game it captured, flat shapes on grey. |
 
 ## Newest first
+
+### Input monitor: alerts, frozen sessions and the swarm pause
+
+*2026-11-07 03:30 (run id)* · M5 · engine test · integrated GPU · from `scripts/inputguard_check.py` · [entry](2026-11-07-input-monitor/entry.json)
+
+The input-integrity monitor's toast in the real window on the iGPU: a granted lead pointing the keyboard is an alert (Allow this lead / Dismiss); a builder's refused try freezes its session (Clear / Keep frozen); a second offender pauses the swarm, said on the toast. An agent's capture never shows the note the human is typing.
+
+<p>
+<a href="2026-11-07-input-monitor/01-window-01-lead-alert.jpg"><img src="2026-11-07-input-monitor/01-window-01-lead-alert.jpg" width="200" alt="A lead points the keyboard: an alert"></a>
+<a href="2026-11-07-input-monitor/02-window-02-bob-frozen.jpg"><img src="2026-11-07-input-monitor/02-window-02-bob-frozen.jpg" width="200" alt="A builder's refused try: its session frozen"></a>
+<a href="2026-11-07-input-monitor/03-window-03-swarm-paused.jpg"><img src="2026-11-07-input-monitor/03-window-03-swarm-paused.jpg" width="200" alt="A second offender: the swarm paused"></a>
+<a href="2026-11-07-input-monitor/04-frame-00001.jpg"><img src="2026-11-07-input-monitor/04-frame-00001.jpg" width="200" alt="An agent's capture: the human's note withheld"></a>
+</p>
+
+<sub>1. A lead points the keyboard: an alert 2. A builder's refused try: its session frozen 3. A second offender: the swarm paused 4. An agent's capture: the human's note withheld</sub>
 
 ### ui_frame after review R1: the player's focus, and the review screen on top
 

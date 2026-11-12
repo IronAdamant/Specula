@@ -164,6 +164,11 @@ const HATCHES: &[Rule] = &[
         why: "module events are journaled through write_policy::module_event",
     },
     Rule {
+        pattern: ".append_security(",
+        allowed: &["journal.rs", "write_policy.rs"],
+        why: "the input monitor's records are journaled through write_policy::security_event",
+    },
+    Rule {
         pattern: "journal.undo(",
         allowed: &["journal.rs", "write_policy.rs"],
         why: "undo goes through the policy (claims and joint rules per step)",

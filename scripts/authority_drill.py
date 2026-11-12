@@ -102,6 +102,28 @@ class Drill:
         self.results.append({"probe": label, "held": bool(cond), "detail": detail})
         print(f"  {'ok  ' if cond else 'FAIL'} {label}{(': ' + detail) if detail and not cond else ''}")
 
+    def expect_incident(self, label, who, tool, args, codes, m=None, clearer="boss"):
+        """A refused try at the window's input (docs/design/SECURITY.md): refused with one of
+        `codes`, it is a security incident that freezes `who`'s session; `clearer` (the owner by
+        default) clears it so the drill goes on."""
+        body = self.expect(label, who, tool, args, codes, m)
+        code, b = self.raw(m or self.agent(who), "world_query", {"limit": 1})
+        self.check(f"... a security incident: {who}'s session is frozen", code == "session_frozen", f"{code} {json.dumps(b)[:160]}")
+        code, b = self.raw(self.agent(clearer, "owner" if clearer == "boss" else "lead"), "security_clear", {"all": True, "note": label[:200]})
+        self.check(f"... {clearer} clears it", code is None and who in (b or {}).get("unfrozen", []), f"{code} {json.dumps(b)[:200]}")
+        return body
+
+    def expect_alert(self, label, who, tool, args, codes, m=None):
+        """A granted lead's refused try at the window's input: refused with one of `codes`, and
+        an alert, never a freeze (a swarm with a lead and no owner agent must never lock itself
+        out; review R1 of m5-inputguard, blocker 1)."""
+        body = self.expect(label, who, tool, args, codes, m)
+        code, b = self.raw(m or self.agent(who, "lead"), "world_query", {"limit": 1})
+        self.check(f"... an alert: {who} (a granted lead) is not frozen", code is None, f"{code} {json.dumps(b)[:160]}")
+        code, b = self.raw(m or self.agent(who, "lead"), "security_clear", {"all": True, "note": label[:200]})
+        self.check(f"... and {who}'s security tools still answer", code is None, f"{code} {json.dumps(b)[:160]}")
+        return body
+
 
 def wait_until(pred, timeout=30.0, step=0.2):
     end = time.time() + timeout
@@ -240,7 +262,13 @@ def window_click(exe, port, out):
         d.ok("lee", "text_edit", path="/field", ops=[], window_focus=True)
         wait_until(lambda: ((typing() or {}).get("banner") or {}).get("last"), timeout=10)
         code, body = d.raw(d.agent("bob"), "gallery_open", {"id": "bobs"})
-        check("bob's gallery_open while the human types is refused (window_typing)", code == "window_typing" and typing() is not None, f"{code} {json.dumps(body)[:200]}")
+        # (Input sweep R1: a maker can't put its gallery on the window at all now; the try is a
+        # security incident, cleared by the lead so the probes go on.)
+        check("bob's gallery_open while the human types is refused (not_allowed: a maker isn't an opener)", code == "not_allowed" and typing() is not None, f"{code} {json.dumps(body)[:200]}")
+        code, body = d.raw(d.agent("bob"), "world_query", {"limit": 1})
+        check("... a security incident: bob's session is frozen", code == "session_frozen", f"{code}")
+        code, body = d.raw(d.agent("lee"), "security_clear", {"all": True, "note": "probe_screen2"})
+        check("... the lead clears it", code is None, f"{code} {json.dumps(body)[:200]}")
         code, body = d.raw(d.agent("lee"), "gallery_open", {"id": "bobs"})
         check("the lead may put the gallery on the window", code is None, f"{code} {json.dumps(body)[:200]}")
         for vk in (0x32, 0x0D, 0x0D):
@@ -618,6 +646,63 @@ def forge_same_name(target, fake):
     return body + struct.pack("<Q", free) + tail
 
 
+def security_probes(d, eng):
+    """The input monitor (docs/design/SECURITY.md): who reads and clears its log, a frozen
+    session's every path, a resume carrying the freeze, the swarm pause and who may act in it, and
+    a security incident never resolved by its offender through trace_incident."""
+    boss, lee, rev = d.agent("boss", "owner"), d.agent("lee", "lead"), d.agent("rev", "reviewer")
+    for who in ("mal", "rev"):
+        d.expect(f"{who} reads the monitor's log", who, "security_incidents", {}, ["lead_only"])
+        d.expect(f"{who} clears security incidents", who, "security_clear", {"all": True}, ["lead_only"])
+    d.expect("the lead allows itself", "lee", "security_allow_lead", {"agent": "lee"}, ["owner_only"])
+    d.expect("mal allows the lead", "mal", "security_allow_lead", {"agent": "lee"}, ["owner_only"])
+    d.check("the lead reads the monitor's log", d.raw(lee, "security_incidents", {"wait_s": 0})[0] is None)
+    # mal's refused try at the window: frozen everywhere.
+    d.ok("mal", "world_spawn", name="mal_box", shape="cube", position=[9, 0.5, 9])
+    d.ok("mal", "claim_take", path="/mal_box")
+    hello = d.raw(d.agent("mal"), "agent_hello", {"name": "mal", "role": "builder"})
+    token = (hello[1] or {}).get("resume_token")
+    d.expect("mal drives the window's editor", "mal", "editor_input", {"steps": [{"key": "F7"}]}, ["owner_only"])
+    code, body = d.raw(d.agent("mal"), "world_set", {"path": "/mal_box", "color": "#ff0000"})
+    inc = (body or {}).get("incident")
+    d.check("mal's next call: session_frozen, naming the incident", code == "session_frozen" and isinstance(inc, int), f"{code} {json.dumps(body)[:160]}")
+    for tool, args in (("world_query", {"limit": 1}), ("tools_invoke", {"tool": "world_query", "arguments": {"limit": 1}}), ("security_clear", {"all": True}),
+                       ("trace_incidents", {}), ("project_list", {}), ("text_edit", {"path": "/mal_box", "ops": [{"insert": "x"}]})):
+        d.expect(f"frozen mal calls {tool}", "mal", tool, args, ["session_frozen"])
+    claims = d.ok("lee", "claim_list")
+    d.check("mal's claim was released", not any(c.get("owner") == "mal" for c in claims.get("claims", [])), json.dumps(claims)[:200])
+    resumed = eng.mcp("drill-mal-resume")
+    h2 = d.raw(resumed, "agent_hello", {"name": "mal", "role": "builder", "resume_token": token})
+    d.check("mal's agent_hello still answers, saying it is frozen", h2[0] is None and ((h2[1] or {}).get("security") or {}).get("frozen") is True, json.dumps(h2[1])[:200])
+    d.expect("mal's resumed session is frozen too", "mal", "world_query", {"limit": 1}, ["session_frozen"], m=resumed)
+    renamed = d.raw(resumed, "agent_hello", {"name": "mal-renamed", "role": "builder"})
+    d.check("a new name doesn't lift it", renamed[0] is None and ((renamed[1] or {}).get("security") or {}).get("frozen") is True, json.dumps(renamed[1])[:200])
+    d.expect("... mal-renamed calls world_query", "mal", "world_query", {"limit": 1}, ["session_frozen"], m=resumed)
+    d.expect("mal resolves its own security incident through trace_incident", "mal", "trace_incident", {"id": inc, "action": "resolve"}, ["session_frozen"])
+    d.expect("the lead resolves it through trace_incident (not the monitor's clear)", "lee", "trace_incident", {"id": inc, "action": "resolve"}, ["use_security_clear"])
+    # A second agent: the swarm pauses.
+    d.expect("nell points the human's keyboard", "nell", "text_edit", {"path": "/mal_box", "ops": [], "window_focus": True}, ["lead_only"])
+    st = d.ok("lee", "security_incidents", limit=100)
+    d.check("a second agent's incident pauses the swarm", (st.get("state") or {}).get("swarm_paused") is not None, json.dumps(st.get("state"))[:300])
+    d.expect("the lead writes during the pause", "lee", "world_spawn", {"name": "lp", "shape": "cube"}, ["swarm_paused"])
+    d.expect("the lead moves the clock during the pause", "lee", "time_control", {"action": "resume"}, ["swarm_paused"])
+    d.check("the lead reads during the pause", d.raw(lee, "world_query", {"limit": 1})[0] is None)
+    d.check("the lead invokes a read during the pause", d.raw(lee, "tools_invoke", {"tool": "world_query", "arguments": {"limit": 1}})[0] is None)
+    d.expect("a reviewer reads during the pause", "rev", "world_query", {"limit": 1}, ["swarm_paused"])
+    d.expect("a builder reads during the pause", "ann2", "world_query", {"limit": 1}, ["swarm_paused"])
+    d.check("the owner reads during the pause", d.raw(boss, "engine_info", {})[0] is None)
+    clock = d.ok("boss", "engine_info").get("clock", {})
+    d.check("the pause stopped the clock as engine:security", clock.get("paused") is True and "engine:security" in json.dumps(clock), json.dumps(clock)[:200])
+    c = d.ok("lee", "security_clear", all=True, note="drill")
+    d.check("the lead clears both: the pause lifts", set(c.get("unfrozen", [])) >= {"mal", "nell"} and c.get("swarm_unpaused") is True, json.dumps(c)[:200])
+    d.check("mal works again", d.raw(d.agent("mal"), "world_query", {"limit": 1})[0] is None)
+    hist = d.ok("lee", "world_history", kinds=["security"], limit=20)
+    d.check("the freeze, the pause and the clear are journaled (kind security)", len(hist.get("entries", [])) >= 4, json.dumps(hist)[:300])
+    d.expect("the owner's journal record is undone", "lee", "world_undo", {"ids": [hist["entries"][0]["id"]]} if hist.get("entries") else {"ids": [1]}, None)
+    for t in ("security_incidents", "security_clear", "security_allow_lead"):
+        d.probed.add(t)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--exe")
@@ -630,7 +715,7 @@ def main():
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
     args = ["--headless", "--captures", str(out / "captures"), "--worlds", str(out / "worlds"), "--saves", str(out / "saves"),
-            "--lead", "lee", "--reviewer", "rev", "--world", "ownerworld"]
+            "--lead", "lee", "--reviewer", "rev", "--owner", "boss", "--world", "ownerworld"]
     with Engine(exe, a.port, out / "engine.log", *args, cwd=str(ROOT)) as eng:
         d = Drill(eng)
         print("roles and names:")
@@ -661,6 +746,8 @@ def main():
         d.check("engine_info lists the access table", len(table) > 100, f"{len(table)} tools")
         d.check("the grants are listed", info.get("swarm", {}).get("grants", {}).get("operator", {}).get("lee") is not None)
         _ = (lee, rev)
+        print("the input monitor (docs/design/SECURITY.md):")
+        security_probes(d, eng)
 
         print("ann makes things:")
         d.agent("ann")
@@ -682,7 +769,10 @@ def main():
         # The window's editor acts as the human (window:owner): only the owner drives it
         # (docs/design/EDITOR.md); a lead or reviewer is refused like any agent.
         for who in ("bob", "lee", "rev"):
-            d.expect(f"{who} drives the window's editor", who, "editor_input", {"steps": [{"key": "F7"}]}, ["owner_only"])
+            if who == "lee":
+                d.expect_alert(f"{who} drives the window's editor", who, "editor_input", {"steps": [{"key": "F7"}]}, ["owner_only"])
+            else:
+                d.expect_incident(f"{who} drives the window's editor", who, "editor_input", {"steps": [{"key": "F7"}]}, ["owner_only"])
 
         print("bob acts on ann's things:")
         # World tools on ann's claimed box.
@@ -711,7 +801,7 @@ def main():
         d.expect("bob approves ann's submission", "bob", "review_decide", {"ids": [sub], "verdict": "approve"}, ["not_reviewer"])
         d.expect("bob withdraws ann's submission", "bob", "review_decide", {"ids": [sub], "verdict": "withdraw"}, ["not_yours", "not_reviewer"])
         d.expect("ann approves her own submission", "ann", "review_decide", {"ids": [sub], "verdict": "approve"}, ["not_reviewer", "self_review"])
-        d.expect("bob puts ann's work on the owner's screen", "bob", "review_screen", {"action": "open", "id": sub}, ["not_reviewer"])
+        d.expect_incident("bob puts ann's work on the owner's screen", "bob", "review_screen", {"action": "open", "id": sub}, ["not_reviewer"])
         d.expect("bob dismisses ann's critique", "bob", "critique_update", {"id": crit, "action": "dismiss", "note": "no"}, ["not_yours"])
         for src in ["owner", "Owner", "window:owner", "LEAD"]:
             d.expect(f"bob adds a critique claiming source {src!a}", "bob", "critique_add", {"items": [{"text": "x", "severity": "note", "source": src}]}, ["source_reserved"])
@@ -737,8 +827,8 @@ def main():
         # The human's keyboard and clipboard (review of m5-text, major 2): a builder can't point
         # them at a text (here one hidden under the world, which another agent could read).
         d.ok("bob", "world_spawn", name="bob_field", shape="text", position=[0, -500, 0], visible=False, text={"text": "x"})
-        d.expect("bob points the human's keyboard at his hidden text", "bob", "text_edit", {"path": "/bob_field", "ops": [], "window_focus": True}, ["lead_only"])
-        d.expect("bob stops the human's typing", "bob", "text_edit", {"path": "/bob_field", "ops": [], "window_focus": False}, ["lead_only"])
+        d.expect_incident("bob points the human's keyboard at his hidden text", "bob", "text_edit", {"path": "/bob_field", "ops": [], "window_focus": True}, ["lead_only"])
+        d.expect_incident("bob stops the human's typing", "bob", "text_edit", {"path": "/bob_field", "ops": [], "window_focus": False}, ["lead_only"])
         d.expect("the lead points it at a hidden text", "lee", "text_edit", {"path": "/bob_field", "ops": [], "window_focus": True}, ["not_visible"])
         d.ok("bob", "world_set", path="/bob_field", visible=True)
         lead_focus = d.raw(d.agent("lee"), "text_edit", {"path": "/bob_field", "ops": [], "window_focus": True})
@@ -751,9 +841,13 @@ def main():
         d.probed.add("logic_build")
         pid = ((prop or {}).get("proposal") or {}).get("id")
         d.check("bob's logic_build is refused as lead_only and filed as a proposal", code == "lead_only" and isinstance(pid, int), json.dumps(prop)[:200])
-        d.expect("bob approves his own proposal", "bob", "logic_build", {"path": "games/ambulo", "approve": pid or 1}, ["lead_only"])
-        d.expect("bob loads a module library", "bob", "logic_reload", {"module": "ambulo"}, ["lead_only"])
-        d.expect("bob unloads a module", "bob", "logic_unload", {"module": "ambulo"}, ["lead_only"])
+        # Proposing is ordinary work; approving, loading a library and unloading without
+        # authority are tries at native code: each is a security incident (docs/design/SECURITY.md).
+        code, _ = d.raw(d.agent("bob"), "world_query", {"limit": 1})
+        d.check("... and proposing froze nobody", code is None, str(code))
+        d.expect_incident("bob approves his own proposal", "bob", "logic_build", {"path": "games/ambulo", "approve": pid or 1}, ["lead_only"], clearer="lee")
+        d.expect_incident("bob loads a module library", "bob", "logic_reload", {"module": "ambulo"}, ["lead_only"], clearer="lee")
+        d.expect_incident("bob unloads a module", "bob", "logic_unload", {"module": "ambulo"}, ["lead_only"], clearer="lee")
         listed = d.ok("lee", "logic_status").get("proposals") or []
         d.check("the lead sees bob's proposal", any(p.get("id") == pid and p.get("by") == "bob" for p in listed), json.dumps(listed)[:200])
         code, built = d.raw(d.agent("lee"), "logic_build", {"path": "games/ambulo", "check": True, "approve": pid or 1})
@@ -782,8 +876,10 @@ def main():
         # deletes its own; the owner, a lead or a reviewer any; bob none of ann's.
         space = [{"name": "s", "target": "light.key_intensity", "min": 0.3, "max": 1.0}]
         d.ok("ann", "gallery_create", id="anns", subject={"stage": {}}, space=space, wait=False)
-        d.expect("bob puts ann's gallery on the owner's screen", "bob", "gallery_open", {"id": "anns"}, ["not_allowed"])
-        d.check("ann puts her own gallery on the screen", d.raw(d.agent("ann"), "gallery_open", {"id": "anns"})[0] is None)
+        d.expect_incident("bob puts ann's gallery on the owner's screen", "bob", "gallery_open", {"id": "anns"}, ["not_allowed"])
+        # Input sweep R1: being a gallery's maker isn't enough to take the human's window.
+        d.expect_incident("ann puts her own gallery on the screen", "ann", "gallery_open", {"id": "anns"}, ["not_allowed"])
+        d.check("the granted reviewer puts ann's gallery on the screen (an alert, R4)", d.raw(d.agent("rev"), "gallery_open", {"id": "anns"})[0] is None)
         d.expect("bob closes the screen showing ann's gallery", "bob", "gallery_close", {}, ["not_allowed"])
         rev_close = d.raw(d.agent("rev"), "gallery_close", {})
         d.check("the granted reviewer closes it", rev_close[0] is None, json.dumps(rev_close[1])[:200])

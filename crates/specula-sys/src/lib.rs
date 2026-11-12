@@ -19,6 +19,11 @@
 //! Tests and examples must not declare imports from a DLL their dependencies already declare;
 //! add the function here (or to the owning crate) instead.
 //!
+//! Runtime-loaded system DLLs come from `System32` only ([`dynlib::Library::open`]): one planted
+//! beside the executable is never loaded. DLLs that ship with the game load with
+//! [`dynlib::Library::open_beside_exe`]; files the engine wrote itself with
+//! [`dynlib::Library::open_path`] (docs/design/SECURITY.md).
+//!
 //! [`fpenv`] checks and restores the CPU's floating-point control register (determinism rule 6).
 
 pub mod fpenv;
@@ -32,7 +37,10 @@ pub mod kernel32 {
         pub fn GetLastError() -> u32;
         pub fn SetLastError(code: u32);
         pub fn GetModuleHandleW(module_name: *const u16) -> *mut c_void;
-        pub fn LoadLibraryW(file_name: *const u16) -> *mut c_void;
+        // No `LoadLibraryW`: its search order starts beside the executable, where a planted DLL
+        // would stand in for a system one. Libraries load through [`crate::dynlib`] only.
+        pub fn LoadLibraryExW(file_name: *const u16, file: *mut c_void, flags: u32) -> *mut c_void;
+        pub fn GetModuleFileNameW(module: *mut c_void, file_name: *mut u16, size: u32) -> u32;
         pub fn GetProcAddress(module: *mut c_void, proc_name: *const u8) -> *mut c_void;
         pub fn FreeLibrary(module: *mut c_void) -> i32;
         pub fn SetConsoleCtrlHandler(handler: Option<unsafe extern "system" fn(u32) -> i32>, add: i32) -> i32;
@@ -609,23 +617,75 @@ pub mod dynlib {
     // SAFETY: as above — GetProcAddress may be called concurrently.
     unsafe impl Sync for Library {}
 
+    /// `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR`: the loaded DLL's own folder (dependencies of a library
+    /// named by its full path).
+    const SEARCH_DLL_LOAD_DIR: u32 = 0x0000_0100;
+    /// `LOAD_LIBRARY_SEARCH_APPLICATION_DIR`: the executable's folder.
+    const SEARCH_APPLICATION_DIR: u32 = 0x0000_0200;
+    /// `LOAD_LIBRARY_SEARCH_SYSTEM32`: `%windir%\System32` only.
+    const SEARCH_SYSTEM32: u32 = 0x0000_0800;
+
+    /// Whether `name` is a bare file name (no folder, drive or stream part).
+    fn bare(name: &str) -> bool {
+        !name.is_empty() && !name.contains(['/', '\\', ':']) && name != "." && name != ".."
+    }
+
     impl Library {
-        /// Load by file name (e.g. `"vulkan-1.dll"`), using the OS search order.
+        /// Loads a **system** library by its file name (`"vulkan-1.dll"`, `"xinput1_4.dll"`,
+        /// `"bcrypt.dll"`) from `System32` only (`LoadLibraryExW(LOAD_LIBRARY_SEARCH_SYSTEM32)`):
+        /// a DLL of that name planted beside the executable, in the working folder or on `PATH`
+        /// is never loaded (docs/design/SECURITY.md). A DLL that ships with the game uses
+        /// [`Library::open_beside_exe`]; one the engine wrote itself, [`Library::open_path`].
         pub fn open(name: &str) -> Result<Library, LoadError> {
+            if !bare(name) {
+                return Err(LoadError {
+                    library: name.into(),
+                    message: "a system library is named by its file name only (vulkan-1.dll); a path the engine made loads with open_path".into(),
+                    os_code: None,
+                });
+            }
+            Self::load(name, name, SEARCH_SYSTEM32)
+        }
+
+        /// Loads a library that ships **beside the executable** (`"steam_api64.dll"`, an optional
+        /// extra): the executable's folder, then `System32`, never the working folder or `PATH`.
+        /// Only for libraries the game is distributed with; system libraries use [`Library::open`].
+        pub fn open_beside_exe(name: &str) -> Result<Library, LoadError> {
+            if !bare(name) {
+                return Err(LoadError { library: name.into(), message: "a library beside the executable is named by its file name only".into(), os_code: None });
+            }
+            Self::load(name, name, SEARCH_APPLICATION_DIR | SEARCH_SYSTEM32)
+        }
+
+        /// Loads the library at `path`, a file the engine itself wrote (a game module's copy); the
+        /// path is made absolute, and the library's own dependencies come from its folder and
+        /// `System32` only.
+        pub fn open_path(path: &std::path::Path) -> Result<Library, LoadError> {
+            let shown = path.display().to_string();
+            let full = std::path::absolute(path).map_err(|e| LoadError { library: shown.clone(), message: format!("cannot make the path absolute: {e}"), os_code: None })?;
+            let Some(s) = full.to_str() else {
+                return Err(LoadError { library: shown, message: "the library's path is not UTF-8".into(), os_code: None });
+            };
+            Self::load(s, &shown, SEARCH_DLL_LOAD_DIR | SEARCH_SYSTEM32)
+        }
+
+        fn load(spec: &str, name: &str, flags: u32) -> Result<Library, LoadError> {
             #[cfg(windows)]
             {
-                let wide = crate::wide(name);
-                // SAFETY: `wide` is a valid NUL-terminated UTF-16 string that outlives the call.
-                let handle = unsafe { crate::kernel32::LoadLibraryW(wide.as_ptr()) };
+                let wide = crate::wide(spec);
+                // SAFETY: `wide` is a valid NUL-terminated UTF-16 string that outlives the call; the
+                // reserved file handle is null as required; `flags` are documented search flags.
+                let handle = unsafe { crate::kernel32::LoadLibraryExW(wide.as_ptr(), std::ptr::null_mut(), flags) };
                 if handle.is_null() {
                     // SAFETY: reads the calling thread's last-error value; no preconditions.
                     let code = unsafe { crate::kernel32::GetLastError() };
-                    return Err(LoadError { library: name.into(), message: "LoadLibraryW failed".into(), os_code: Some(code) });
+                    return Err(LoadError { library: name.into(), message: "LoadLibraryExW failed".into(), os_code: Some(code) });
                 }
                 Ok(Library { handle, name: name.into() })
             }
             #[cfg(not(windows))]
             {
+                let _ = (spec, flags);
                 Err(LoadError {
                     library: name.into(),
                     message: "runtime library loading is not implemented on this platform yet".into(),
@@ -636,6 +696,21 @@ pub mod dynlib {
 
         pub fn name(&self) -> &str {
             &self.name
+        }
+
+        /// The file the OS loaded (`None` off Windows, or when it can't say).
+        pub fn path(&self) -> Option<std::path::PathBuf> {
+            #[cfg(windows)]
+            {
+                let mut buf = vec![0u16; 1024];
+                // SAFETY: `handle` is a live module handle owned by `self`; `buf` holds `len` u16s.
+                let n = unsafe { crate::kernel32::GetModuleFileNameW(self.handle, buf.as_mut_ptr(), buf.len() as u32) } as usize;
+                (n > 0 && n < buf.len()).then(|| std::path::PathBuf::from(String::from_utf16_lossy(&buf[..n])))
+            }
+            #[cfg(not(windows))]
+            {
+                None
+            }
         }
 
         /// Address of an exported symbol, or `None` if it isn't exported. The caller must transmute it
@@ -660,7 +735,7 @@ pub mod dynlib {
     impl Drop for Library {
         fn drop(&mut self) {
             #[cfg(windows)]
-            // SAFETY: `handle` came from LoadLibraryW and is released exactly once here.
+            // SAFETY: `handle` came from LoadLibraryExW and is released exactly once here.
             unsafe {
                 crate::kernel32::FreeLibrary(self.handle);
             }
@@ -763,5 +838,37 @@ mod tests {
         assert!(lib.symbol("NoSuchFunctionInKernel32").is_none());
         let err = dynlib::Library::open("specula-no-such-library.dll").err().expect("missing library errors");
         assert_eq!(err.os_code, Some(126)); // ERROR_MOD_NOT_FOUND
+        // A system library is named by its file name only.
+        assert!(dynlib::Library::open("C:\\Windows\\System32\\kernel32.dll").is_err());
+        assert!(dynlib::Library::open("..\\kernel32.dll").is_err());
+    }
+
+    /// A DLL planted beside the executable under a System32 name is never loaded for it
+    /// (docs/design/SECURITY.md): `open` takes System32's, while the application-folder search
+    /// (`open_beside_exe`) would have found the plant, so the test proves something.
+    #[cfg(windows)]
+    #[test]
+    fn a_planted_dll_beside_the_exe_is_not_loaded_for_a_system_name() {
+        // A System32 DLL this test process doesn't load otherwise (a module already loaded is
+        // found by name before any search).
+        const NAME: &str = "dciman32.dll";
+        let system = dynlib::Library::open(NAME).expect("a System32 DLL");
+        let sys_path = system.path().expect("its path");
+        drop(system);
+        let exe_dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+        let plant = exe_dir.join(NAME);
+        // (The test executable's folder is the build's own: always writable.)
+        std::fs::copy(&sys_path, &plant).expect("a copy planted beside the test executable");
+        let beside = dynlib::Library::open_beside_exe(NAME).expect("the plant loads beside the exe");
+        let beside_path = beside.path().unwrap();
+        drop(beside);
+        let loaded = dynlib::Library::open(NAME).expect("System32's");
+        let loaded_path = loaded.path().unwrap();
+        drop(loaded);
+        let _ = std::fs::remove_file(&plant);
+        let lower = |p: &std::path::Path| p.display().to_string().to_ascii_lowercase();
+        assert_eq!(lower(&beside_path), lower(&plant), "the application-folder search finds the plant (so the test means something)");
+        assert_eq!(lower(&loaded_path), lower(&sys_path), "open loads System32's, never the plant");
+        assert!(lower(&loaded_path).contains("system32"), "{}", loaded_path.display());
     }
 }

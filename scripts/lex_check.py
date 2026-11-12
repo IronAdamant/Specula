@@ -58,7 +58,7 @@ def main():
     ap.add_argument("--exe", default=str(target / "debug" / ("specula.exe" if sys.platform == "win32" else "specula")), help="default: $CARGO_TARGET_DIR (or target/) debug build")
     args = ap.parse_args()
     work = Path(tempfile.mkdtemp(prefix="lex_check_"))
-    with Engine(args.exe, args.port, work / "engine.log", "--headless", "--worlds", str(work / "worlds"), "--captures", str(work / "captures")) as eng:
+    with Engine(args.exe, args.port, work / "engine.log", "--headless", "--lead", "ann", "--worlds", str(work / "worlds"), "--captures", str(work / "captures")) as eng:
         ann, bob = eng.mcp("lex-check-ann"), eng.mcp("lex-check-bob")
         ann.hello("ann", role="lead")  # force and overwrite of other worlds are the lead's (docs/design/AUTHORITY.md)
         bob.hello("bob")

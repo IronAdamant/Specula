@@ -134,6 +134,9 @@ pub struct WindowTyping {
     banner: Option<BannerDrawn>,
     /// Keys withheld after the focus dropped by itself: when the guard began, and the last key.
     guard: Option<(Instant, Instant)>,
+    /// Who pointed the keyboard here (the input monitor judges the clipboard's accesses by it:
+    /// a paste into a text a lead chose is an alert; docs/design/SECURITY.md).
+    pointer: Option<crate::inputguard::Actor>,
 }
 
 /// The banner a window frame drew: for which focus, how many overlay quads, and whether they
@@ -231,10 +234,10 @@ impl WindowTyping {
         self.focus.map(|_| self.path.as_str())
     }
 
-    /// Points the keyboard at text `id` (`by`: who did, for the trace), watching the versions
-    /// `watch` ([`watch_of`]). Keys and a clipboard answer meant for another text are dropped;
-    /// no key applies until a window frame drew the banner for it.
-    pub fn focus_on(&mut self, id: u64, path: String, by: &str, watch: Vec<(u64, u64)>) {
+    /// Points the keyboard at text `id` for `by` (who did: the input monitor saw it first, `seen`),
+    /// watching the versions `watch` ([`watch_of`]). Keys and a clipboard answer meant for another
+    /// text are dropped; no key applies until a window frame drew the banner for it.
+    pub fn focus_on(&mut self, id: u64, path: String, by: crate::inputguard::Actor, watch: Vec<(u64, u64)>, seen: crate::inputguard::Seen) {
         if self.focus != Some(id) {
             self.forget_pending("focus_moved");
             self.banner = None;
@@ -242,7 +245,8 @@ impl WindowTyping {
         self.focus = Some(id);
         self.path = path;
         self.watch = watch;
-        specula_core::trace_event!(&crate::trace_sink::ENGINE, Info, "text.window_focus", id = id, path = self.path.as_str(), by = by);
+        specula_core::trace_event!(&crate::trace_sink::ENGINE, Info, "text.window_focus", id = id, path = self.path.as_str(), by = by.name(), monitor = seen.seq());
+        self.pointer = Some(by);
     }
 
     /// Takes the keyboard off its text (`reason` is traced).
@@ -260,6 +264,8 @@ impl WindowTyping {
         self.history_of = None;
         self.watch.clear();
         self.banner = None;
+        self.pointer = None;
+        crate::inputguard::note(crate::inputguard::Channel::Keyboard, "focus_dropped", reason);
         specula_core::trace_event!(&crate::trace_sink::ENGINE, Info, "text.window_focus_dropped", id = id, path = self.path.as_str(), reason = reason);
     }
 
@@ -445,8 +451,9 @@ fn clipboard_thread() -> Option<&'static Mutex<ClipQueue>> {
 }
 
 /// Sends `req` to the clipboard thread; the answer comes through the returned receiver when
-/// `answer` (`None`: the thread couldn't start).
-fn clipboard(req: ClipReq, answer: bool) -> Option<Option<Receiver<ClipAnswer>>> {
+/// `answer` (`None`: the thread couldn't start). The input monitor saw it first (`_seen`): the
+/// system clipboard is reached nowhere else (inputguard_guard).
+fn clipboard(req: ClipReq, answer: bool, _seen: crate::inputguard::Seen) -> Option<Option<Receiver<ClipAnswer>>> {
     let queue = clipboard_thread()?;
     let (reply, rx) = if answer {
         let (r, rx) = crate::jobs::channel();
@@ -671,7 +678,8 @@ impl crate::Engine {
         } else {
             ClipReq::Get
         };
-        match clipboard(req, true) {
+        let seen = self.text_typing.clip_seen(if cut { "cut" } else { "paste" });
+        match clipboard(req, true, seen) {
             Some(Some(rx)) => self.text_typing.clip = Some(ClipWait { cut, started: Instant::now(), rx }),
             _ => specula_core::trace_event!(&crate::trace_sink::ENGINE, Warn, "text.clipboard_failed", op = if cut { "set" } else { "get" }, message = "the clipboard thread couldn't start"),
         }
@@ -825,7 +833,7 @@ impl crate::Engine {
         if let Some(text) = copied {
             if typing.stuck.is_some() {
                 specula_core::trace_event!(&crate::trace_sink::ENGINE, Warn, "text.clipboard_failed", op = "set", message = "the clipboard hasn't answered an earlier request");
-            } else if clipboard(ClipReq::Set(text), false).is_none() {
+            } else if clipboard(ClipReq::Set(text), false, typing.clip_seen("copy")).is_none() {
                 specula_core::trace_event!(&crate::trace_sink::ENGINE, Warn, "text.clipboard_failed", op = "set", message = "the clipboard thread couldn't start");
             }
         }
@@ -834,6 +842,8 @@ impl crate::Engine {
             typing.undo.clear();
             typing.redo.clear();
             typing.history_of = None;
+            typing.pointer = None;
+            crate::inputguard::note(crate::inputguard::Channel::Keyboard, "focus_dropped", "escape");
             specula_core::trace_event!(&crate::trace_sink::ENGINE, Info, "text.window_focus_dropped", id = id, path = typing.path.as_str(), reason = "escape");
             if cur.edit.is_some() {
                 cur.edit = None;
@@ -923,6 +933,13 @@ impl WindowTyping {
         }
     }
 
+    /// The input monitor sees a clipboard access (`what`: paste, cut or copy), judged by who pointed
+    /// the keyboard at the text (the human's key, in a text an agent may have chosen).
+    fn clip_seen(&self, what: &str) -> crate::inputguard::Seen {
+        let by = self.pointer.clone().unwrap_or(crate::inputguard::Actor::Human);
+        crate::inputguard::done(crate::inputguard::Channel::Clipboard, what, &by, &self.path)
+    }
+
     /// The banner the last window frame showed for the held focus (drawn last in its overlay).
     fn shown(&self) -> bool {
         self.banner().is_some_and(|b| b.last && b.frames > 0)
@@ -991,7 +1008,7 @@ mod tests {
     #[test]
     fn keys_after_an_automatic_drop_are_withheld_until_a_pause_or_a_click() {
         let mut t = WindowTyping::default();
-        t.focus_on(7, "/f".into(), "test", Vec::new());
+        t.focus_on(7, "/f".into(), crate::inputguard::Actor::Human, Vec::new(), crate::inputguard::seen_for_test());
         t.drop_focus("occluded");
         let mut keys = vec![Event::Char('a'), Event::KeyDown { code: 0x41, repeat: false }, Event::KeyUp { code: 0x41 }];
         t.guard_keys(&mut keys);
@@ -1001,12 +1018,12 @@ mod tests {
         t.guard_keys(&mut keys);
         assert_eq!(keys.len(), 1, "after a pause the game gets its keys");
         assert!(t.guard.is_none());
-        t.focus_on(7, "/f".into(), "test", Vec::new());
+        t.focus_on(7, "/f".into(), crate::inputguard::Actor::Human, Vec::new(), crate::inputguard::seen_for_test());
         t.drop_focus("hidden");
         let mut keys = vec![Event::MouseDown { button: MouseButton::Left, x: 0, y: 0 }, Event::Char('c')];
         t.guard_keys(&mut keys);
         assert_eq!(keys.len(), 2, "a click ends it at once");
-        t.focus_on(7, "/f".into(), "test", Vec::new());
+        t.focus_on(7, "/f".into(), crate::inputguard::Actor::Human, Vec::new(), crate::inputguard::seen_for_test());
         t.drop_focus("clicked_elsewhere");
         let mut keys = vec![Event::Char('d')];
         t.guard_keys(&mut keys);
@@ -1116,7 +1133,7 @@ mod tests {
         let (next, report) = crate::text_world::prepare_edit(spec, &[], false).map_err(|x| x.code.to_string())?;
         let base_version = e.world.get(id).map_or(0, |x| x.version);
         let commit = crate::text_world::TextCommit { id, next, report, base_version, expect_version: None, window_focus: Some(true) };
-        let out = e.text_commit(commit, Writer::new(who, Some(who)), 0, who, have);
+        let out = e.text_commit(commit, Writer::new(who, Some(who)), 0, who, crate::inputguard::Actor::agent(who, who, have));
         let text = out.content.iter().map(|c| match c { specula_protocol::Content::Text(t) => t.as_str(), _ => "" }).collect::<String>();
         let body = Json::parse(&text).unwrap_or(Json::Null);
         if out.is_error {
@@ -1347,7 +1364,7 @@ mod tests {
         let (next, report) = crate::text_world::prepare_edit(spec, &[EditOp::Insert("b".into())], false).unwrap();
         let base_version = e.world.get(field).unwrap().version;
         let c = crate::text_world::TextCommit { id: field, next, report, base_version, expect_version: None, window_focus: None };
-        assert!(!e.text_commit(c, Writer::new("lee", Some("lee")), 0, "lee", Authority::Lead).is_error);
+        assert!(!e.text_commit(c, Writer::new("lee", Some("lee")), 0, "lee", crate::inputguard::Actor::agent("lee", "lee", Authority::Lead)).is_error);
         e.input = vec![Event::Char('c')];
         e.text_window_input();
         assert_eq!((e.text_typing.focus, plain(&e, field).as_str()), (Some(field), "nameabc"));
@@ -1364,7 +1381,7 @@ mod tests {
         let (next, report) = crate::text_world::prepare_edit(spec, &[EditOp::Insert("z".into())], false).unwrap();
         let base_version = e.world.get(field).unwrap().version;
         let c = crate::text_world::TextCommit { id: field, next, report, base_version, expect_version: None, window_focus: None };
-        assert!(!e.text_commit(c, Writer::new("mallory", Some("mallory")), 0, "mallory", Authority::Agent).is_error);
+        assert!(!e.text_commit(c, Writer::new("mallory", Some("mallory")), 0, "mallory", crate::inputguard::Actor::agent("mallory", "mallory", Authority::Agent)).is_error);
         e.text_window_input();
         assert_eq!(e.text_typing.focus, None, "a builder's text_edit");
         // A write to an ancestor (she moves the sign the field hangs on).
@@ -1386,7 +1403,7 @@ mod tests {
         let (next, report) = crate::text_world::prepare_edit(spec, &[EditOp::Insert("y".into())], false).unwrap();
         let base_version = e.world.get(field).unwrap().version;
         let c = crate::text_world::TextCommit { id: field, next, report, base_version, expect_version: None, window_focus: None };
-        assert!(!e.text_commit(c, Writer::new("lee", Some("lee")), 0, "lee", Authority::Lead).is_error);
+        assert!(!e.text_commit(c, Writer::new("lee", Some("lee")), 0, "lee", crate::inputguard::Actor::agent("lee", "lee", Authority::Lead)).is_error);
         e.text_window_input();
         assert_eq!(e.text_typing.focus, None, "the builder's write before the lead's");
         // An engine screen taking the window ends it too.
@@ -1406,7 +1423,7 @@ mod tests {
         let field = spawn(&mut e, r#"{"name": "field", "shape": "text", "text": {"text": "", "size": 0.5, "anchor": [0.5, 0.5], "editing": {"caret": 0}}}"#);
         focus(&mut e, field, "lee", Authority::Lead).unwrap();
         show(&mut e);
-        e.taste.screen.open("anns", "owner");
+        e.taste.screen.open("anns", "owner", crate::inputguard::seen_for_test());
         e.input = vec![Event::KeyDown { code: 0x32, repeat: false }, Event::Char('2'), Event::KeyDown { code: VK_RETURN, repeat: false }];
         e.text_window_screens();
         assert_eq!((e.text_typing.focus, e.input.len()), (None, 0), "the screen gets none of the keys");

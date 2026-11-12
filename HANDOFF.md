@@ -17,6 +17,26 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
   - **One builder.** From this date M5 is finished by a single primary agent, lane by lane, with subagents only for
     independent review (the parallel lanes hit the usage limit twice, conflicted in shared files and made
     performance numbers noisy). The review rule stands: code is reviewed by someone who didn't write it.
+  - **No fallback lead.** "If people or AI agents start with no --lead, then it shouldn't have lead powers." Lead
+    authority comes only from `--lead NAME`. Because owners are often away for hours while agents work, a run
+    without a lead must still work and must say so early: saying lead without a grant is refused at the first
+    hello with the fix in the message, and nothing ordinary needs a lead
+    ([docs/design/AUTHORITY.md](docs/design/AUTHORITY.md)). **Launch every unattended run with `--lead NAME`.**
+  - **Assets from people's own work** (an idea for after M5): convert a person's 3D model, 2D model or drawing
+    into a code-based asset that they can adjust, or ask agents to adjust, and save. It is in ROADMAP's long-term
+    list with what is and isn't feasible.
+  - **The engine's leverage is measured in M5** ("find a way to add in measured comparison please, for M5"). The
+    same game jobs are built through the engine and without it, by the same model on the same budget, and checked
+    against one list by someone who built neither; then an agent with no memory changes each game. Tokens, calls,
+    time and checks passed are reported for every run, failures included (ROADMAP M5, "Measured leverage"). The
+    owner's aim: "easily used by AI agents no matter the company", so that small teams can compete with large
+    studios; the briefs and checks are plain data any vendor's agent can run. **Tool kits by job** come first
+    (ROADMAP swarm track), so the measurement runs with them.
+  - **Scope and bar.** The engine is for medium to very large games. It stays fully open source and free. The bar
+    is "something you'd easily recommend to other users and not hesitate to use".
+  - **The display changes under you.** The owner works on a 49" monitor and switches it off to sleep, which moves
+    every window to a laptop screen at another scale. Checks that depend on a display pin their own
+    (`ui_act {display}`), and scripts speak to windows in physical pixels (`scripts/specula_mcp.py`).
 
 - **Where things stand:** M0, M1, M2 and **M3 are done** (M3 on 2026-10-22, after an integration audit; `python
   scripts/m3_exit.py --adapter integrated` re-checks the iGPU budget with a release `sepulcra-app`; M2's check is
@@ -337,9 +357,11 @@ answer where it applies. The owner decided everything else on 2026-10-22 (see "D
 - **May reviewers open screens on the window?** (from the input sweep, 2026-11-07.) A granted reviewer, below lead,
   can put the review screen (F9) and a gallery (F8) on the human's window. Until the owner decides, those opens
   raise an alert. Claude recommends keeping it with the alert: reviewing is what the grant is for.
-- **A token-cost comparison** (Claude's proposal, 2026-11-12): build the same small game task once through the
-  engine and once from scratch, counting tokens and checking the result, so the engine's leverage is a measured
-  number. In the M5 exit proof, or in M6's eval set?
+- **Remote agents' defaults** (from [docs/design/CLOUD_SWARMS.md](docs/design/CLOUD_SWARMS.md), for M6). Claude
+  recommends: a remote lead gets no native code, no window input and no module source unless its token names
+  them; owner authority is never given remotely unless the operator passes a flag for it; and tunnels
+  (Tailscale, WireGuard, SSH) come before OS TLS, because tokens, limits and the hardened server are where the
+  protection is. Agree, or change any of the three?
 - **Sepulcra balance (from the balance lab, 2026-10-18):** a rusher who calls every wave early still loses 2 runs in
   16 on unseen seeds. Claude recommends keeping it risky. The owner will playtest it in M6, on each OS, and decide
   then ([docs/design/BALANCE.md](docs/design/BALANCE.md)).

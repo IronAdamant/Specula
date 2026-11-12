@@ -95,6 +95,7 @@ pub const FAMILIES: &[Family] = &[
     fam("l10n", "localisation: string tables per locale, translations and reviews, checks in every language", &["l10n_"], &[]),
     fam("trace", "the structured log: events, one call's causal tree, crash reports, incidents", &["trace_"], &[]),
     fam("editor", "the window's human editor: what it shows, and driving it as the human (owner)", &["editor_"], &[]),
+    fam("security", "the input monitor: keyboard, clipboard and screen takeovers, frozen sessions, swarm pauses (lead, owner)", &["security_"], &[]),
 ];
 
 /// The catalog line of the hosted game's family.
@@ -310,6 +311,9 @@ pub(crate) const BRIEFS: &[(&str, &str)] = &[
     ("review_screen", "the window's review screen"),
     ("editor_state", "the window editor: selection, gizmo, panels, status"),
     ("editor_input", "drive the window editor as the human (owner only)"),
+    ("security_incidents", "what the input monitor saw; waits for the next (lead)"),
+    ("security_clear", "unfreeze sessions, lift a swarm pause (lead)"),
+    ("security_allow_lead", "let a lead point the keyboard without alerts (owner)"),
     ("critique_add", "record review findings"),
     ("critique_list", "critiques"),
     ("critique_update", "work a critique through"),

@@ -958,11 +958,35 @@ impl LogicHost {
         self.slots.values().any(|s| !s.input.is_empty())
     }
 
-    /// `logic_input`: an agent holds actions of module `name` for `ticks` ticks.
-    pub fn hold(&mut self, name: &str, actions: &Json, ticks: u64) -> Result<Json, WorldError> {
+    /// The actions among `actions` the human is using at the window in module `name` (a hold
+    /// would take them over; see [`input::ModuleInput::human_using`]).
+    pub fn human_using(&self, name: &str, actions: &Json) -> Vec<String> {
+        self.slots.get(name).map_or_else(Vec::new, |s| s.input.human_using(actions))
+    }
+
+    /// `logic_input`: an agent (`by`, recorded on each hold) holds actions of module `name` for
+    /// `ticks` ticks.
+    pub fn hold(&mut self, name: &str, actions: &Json, ticks: u64, by: Option<crate::inputguard::Actor>) -> Result<Json, WorldError> {
         let Some(slot) = self.slots.get_mut(name) else { return Err(self.no_module(name)) };
-        let held = slot.input.hold(actions, ticks).map_err(|m| WorldError::new("invalid_field", m).with("field", "actions"))?;
+        let held = slot.input.hold(actions, ticks, by).map_err(|m| WorldError::new("invalid_field", m).with("field", "actions"))?;
         Ok(Json::obj([("module", Json::from(name)), ("held", held)]))
+    }
+
+    /// Ends every hold the identity `key` placed, in every module (its session froze); how many.
+    pub fn release_holds_of(&mut self, key: &str) -> usize {
+        self.slots.values_mut().map(|s| s.input.release_holds_of(key)).sum()
+    }
+
+    /// Holds the window's human took back since the last call (their own input on a held action
+    /// ends the hold): `(module, action, holder)`.
+    pub fn take_holds_ended(&mut self) -> Vec<(String, String, Option<crate::inputguard::Actor>)> {
+        let mut out = Vec::new();
+        for (name, s) in &mut self.slots {
+            for (action, by) in s.input.take_ended() {
+                out.push((name.clone(), action, by));
+            }
+        }
+        out
     }
 
     /// Stops calling a module after a panic or a runaway.

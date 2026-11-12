@@ -86,6 +86,7 @@ const FIELDS: &[(&str, Class)] = &[
     ("last_advance", NoIds("a time")),
     ("input", NoIds("the frame's window events")),
     ("game_title", NoIds("a title")),
+    ("security", NoIds("the input monitor's toast (event seqs, boxes) and whether a swarm pause stopped the clock")),
     ("game_quads", NoIds("the frame's interface quads")),
     ("game_overlay_stats", NoIds("counts")),
     // Board notes, critiques and tasks' `entities` hold entities by identity (`EntityRef`);

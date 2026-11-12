@@ -127,7 +127,9 @@ impl ModuleCode {
             e
         };
         let copy_str = copy.to_str().ok_or_else(|| fail(LoadError::new("copy_failed", &copy, "the copy's path is not UTF-8")))?;
-        let lib = Library::open(copy_str).map_err(|e| {
+        // The engine wrote this copy itself: loaded by its full path (its dependencies from its
+        // folder and System32 only, docs/design/SECURITY.md).
+        let lib = Library::open_path(std::path::Path::new(copy_str)).map_err(|e| {
             fail(LoadError { os_code: e.os_code, ..LoadError::new("load_failed", path, format!("the OS refused the library: {}", e.message)) })
         })?;
         let Some(sym) = lib.symbol(abi::ENTRY_SYMBOL) else {

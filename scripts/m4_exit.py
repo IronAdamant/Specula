@@ -434,7 +434,7 @@ def phase1(a, out, report):
     assets = prepare_assets(out)
     with Engine(a.exe or EXE, a.port, out / "engine.log", *engine_args(a, out, assets), cwd=str(out)) as eng:
         report["engine_pid"] = eng.proc.pid
-        (out / "engine.pid").write_text(str(eng.proc.pid))
+        (out / "engine.pid").write_text(str(eng.proc.pid), encoding="utf-8")
         tokens = out / "tokens"
         tokens.mkdir(exist_ok=True)
         director = Agent(a.port, "director", "director", "?role=director", tokens)
@@ -593,7 +593,7 @@ def phase1(a, out, report):
         report["agents"] = {ag.name: ag.stats for ag in agents}
         show_on_screen(director, sub["id"], report, a.headless)
         director.call("world_save")
-        (out / "submission.json").write_text(json.dumps({"id": sub["id"], "port": a.port, "adapter": a.adapter}, indent=1))
+        (out / "submission.json").write_text(json.dumps({"id": sub["id"], "port": a.port, "adapter": a.adapter}, indent=1), encoding="utf-8")
         write_summary(out, report)
         print_instructions(a, sub["id"], out)
         if not a.no_wait:
@@ -643,7 +643,7 @@ def art_review(artdir, out, report):
         sh = artdir.call("studio_sheet", subjects=[{"recipe": f"recipes/{n}.json"} for n in names], views=["worst_light", "phone"],
                          response_format="detailed")
         shutil.copy(sh["image"]["path"], out / f"artdir_{gname}_worst_phone.png")
-        packet = json.loads(Path(sh["image"]["packet_path"]).read_text())
+        packet = json.loads(Path(sh["image"]["packet_path"]).read_text(encoding="utf-8"))
         for t in packet.get("tiles", []):
             m = t.get("shot") or {}
             v = t.get("view")
@@ -653,7 +653,7 @@ def art_review(artdir, out, report):
                 findings.append((t["subject"], f"too small on a phone: {m['px_height']:.0f} px tall", {"name": "phone_px", "value": m["px_height"], "limit": ART_BAR["phone_px"]}))
         ln = artdir.call("studio_lineup", subjects=[{"recipe": f"recipes/{n}.json"} for n in names], rig="game", response_format="detailed")
         shutil.copy(ln["image"]["path"], out / f"artdir_{gname}_lineup.png")
-        lp = json.loads(Path(ln["image"]["packet_path"]).read_text())
+        lp = json.loads(Path(ln["image"]["packet_path"]).read_text(encoding="utf-8"))
         subs = [s.get("subject", s.get("name")) if isinstance(s, dict) else s for s in lp.get("subjects", [])] or names
         iou = lp.get("silhouette_iou") or []
         for i, row in enumerate(iou):
@@ -784,12 +784,12 @@ def write_summary(out, report):
         return v
     root = str(ROOT)
     text = json.dumps(clean(report), indent=1).replace(root.replace("\\", "\\\\"), "<repo>").replace(str(out).replace("\\", "\\\\"), "<out>")
-    (out / "summary.json").write_text(text)
+    (out / "summary.json").write_text(text, encoding="utf-8")
 
 
 def review(a, out):
     """The owner's window on the saved world: show the submission and wait for the decision."""
-    sub = json.loads((out / "submission.json").read_text())
+    sub = json.loads((out / "submission.json").read_text(encoding="utf-8"))
     assets = out / "assets"
     with Engine(a.exe or EXE, a.port, out / "engine_review.log", *engine_args(a, out, assets), cwd=str(out)) as eng:
         director = Agent(a.port, "director", "director", "?role=director", out / "tokens")
@@ -826,7 +826,7 @@ def props_drawn(mcp, out, label, report):
         shutil.copy(f["image"]["packet_path"], out / f"{name}.json")
         frames.append(name)
         # The answer lists the most relevant subjects only; the saved packet has every one.
-        for s in json.loads(Path(f["image"]["packet_path"]).read_text()).get("subjects", []):
+        for s in json.loads(Path(f["image"]["packet_path"]).read_text(encoding="utf-8")).get("subjects", []):
             p = s.get("path", "")
             if p.startswith(PROPS_ROOT + "/"):
                 n = p.split("/")[-1]
@@ -841,7 +841,7 @@ def props_drawn(mcp, out, label, report):
                      response_format="detailed")
         shutil.copy(g["image"]["path"], out / f"{label}_close_{n}.png")
         shutil.copy(g["image"]["packet_path"], out / f"{label}_close_{n}.json")
-        for s in json.loads(Path(g["image"]["packet_path"]).read_text()).get("subjects", []):
+        for s in json.loads(Path(g["image"]["packet_path"]).read_text(encoding="utf-8")).get("subjects", []):
             if s.get("path") == f"{PROPS_ROOT}/{n}":
                 seen[n] = s.get("visible_px") or 0
                 close[n] = {"visible_px": s.get("visible_px"), "drawn_as": s.get("drawn_as")}
@@ -856,7 +856,7 @@ def after_approval(a, out):
     from m2_exit import PERF_TOML
     from m3_exit import measure
     from sepulcra_play import Run
-    sub = json.loads((out / "submission.json").read_text())
+    sub = json.loads((out / "submission.json").read_text(encoding="utf-8"))
     play = out / "play"
     if play.exists():
         shutil.rmtree(play)
@@ -902,7 +902,7 @@ def after_approval(a, out):
         # M5: the props are map data (games/sepulcra/data/slab_01.json). A prop the map data moved
         # from its approved place (the corner fence, so it doesn't block the lab's build spots) is
         # moved there by the game; every other one keeps the owner's approval as its last write.
-        data = {p["name"]: (p["at"][0], p["at"][1]) for p in json.loads((ROOT / "games" / "sepulcra" / "data" / "slab_01.json").read_text()).get("props", [])}
+        data = {p["name"]: (p["at"][0], p["at"][1]) for p in json.loads((ROOT / "games" / "sepulcra" / "data" / "slab_01.json").read_text(encoding="utf-8")).get("props", [])}
         moved = {n for n, (x, z) in data.items() if n in want and (abs(want[n][0] - x) > 1e-3 or abs(want[n][1] - z) > 1e-3)}
         report["moved_by_map_data"] = sorted(moved)
         bad = []

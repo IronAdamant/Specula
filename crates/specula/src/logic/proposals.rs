@@ -108,10 +108,11 @@ impl Proposals {
 /// A native-code call refused for lack of authority: what the security monitor gets.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeRefusal {
-    /// A builder's `logic_build`, filed as proposal `proposal` (ordinary work: not an incident).
+    /// A builder's `logic_build`, filed as proposal `proposal` (`None`: its folder couldn't be
+    /// digested, so nothing was filed). Ordinary work: not an incident.
     Proposed { dir: PathBuf, proposal: Option<u64> },
-    /// `logic_build` by an agent without authority that wasn't filed: an `approve`, or a folder
-    /// that can't be digested.
+    /// `logic_build {approve}` by an agent without authority: approving is the owner's or a
+    /// granted lead's.
     Build { dir: PathBuf },
     /// `logic_reload`: loading a library without authority.
     Reload,
@@ -135,13 +136,22 @@ impl NativeRefusal {
     }
 }
 
-/// The seam to the security monitor: every refused native-code call comes here (`by` is the
-/// agent's name, `key` its identity). Today a trace event (`logic.native_refused`); when the
-/// m5-inputguard monitor merges, attempts ([`NativeRefusal::is_attempt`]) go to its
-/// `inputguard::refused` as well.
-pub fn report_refusal(by: &str, key: &str, r: &NativeRefusal) {
-    let _ = key;
+/// Every refused native-code call comes here (`by` is the agent's name, `key` its identity,
+/// `authority` what the operator's grants give it): a trace event (`logic.native_refused`), and
+/// attempts ([`NativeRefusal::is_attempt`]) go to the security monitor on its `native_code`
+/// channel (docs/design/SECURITY.md): an incident that freezes the caller (a lead the operator
+/// didn't grant included: `authority` is already the trusted one). A proposal is ordinary work
+/// and isn't reported there.
+pub fn report_refusal(by: &str, key: &str, authority: crate::authority::Authority, r: &NativeRefusal) {
     specula_core::trace_event!(&crate::trace_sink::ENGINE, Warn, "logic.native_refused", by = by, kind = r.kind(), attempt = r.is_attempt());
+    // The monitor's detail names the module or its folder's own name, never a path on this machine.
+    let (what, detail) = match r {
+        NativeRefusal::Proposed { .. } => return,
+        NativeRefusal::Build { dir } => ("logic_build", dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
+        NativeRefusal::Reload => ("logic_reload", String::new()),
+        NativeRefusal::Unload { module } => ("logic_unload", module.clone()),
+    };
+    crate::inputguard::refused_identity(crate::inputguard::Channel::NativeCode, what, by, key, authority, crate::authority::Site::NativeCode.code(), &detail);
 }
 
 #[cfg(test)]

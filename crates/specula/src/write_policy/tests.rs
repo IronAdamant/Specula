@@ -697,6 +697,12 @@ const ROWS: &[(&str, Write, Expect)] = &[
         wd.put_file("assets/recipes/t.json", Some(crate::project::ProjectFile::new(crate::project::FileKind::Recipe, Arc::from("{}"), 1, Arc::from("disk"))), true);
         Ok(())
     }).map(|_| ()), Expect::Exempt("disk")),
+    // The input monitor's records (docs/design/SECURITY.md): no world change, journaled under the
+    // engine's security writer.
+    ("the input monitor's record (security_event)", |f| {
+        security_event(&f.live, &mut f.sw, 1, crate::inputguard_engine::WRITER, Json::obj([("event", Json::from("session_frozen"))]));
+        Ok(())
+    }, Expect::Exempt("engine:security")),
     // The review queue (M4): promotion is a Rule::World batch as the decider; a revert is the
     // policy's undo as the decider, after the queue's own refusals.
     ("review promotion moving work into a claimed path (M4)", |f| review_promote(f, "/mg", "/abox"), Expect::Refused("claimed")),

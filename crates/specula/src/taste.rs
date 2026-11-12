@@ -155,7 +155,8 @@ pub enum TasteCall {
     BoardPut { board: String, text: String },
     BoardGet { board: String },
     Camera { name: String, of: Option<String> },
-    Onboard { action: String, subject: Option<Json>, preset: Option<String>, user: String, open: bool, quote_notes: Option<bool> },
+    /// `open`: `Some(true)` asks for the window (a try at it), `None` opens it only for a caller who may.
+    Onboard { action: String, subject: Option<Json>, preset: Option<String>, user: String, open: Option<bool>, quote_notes: Option<bool> },
     /// The worker made a round.
     RoundReady { id: String, planned: Planned, result: Result<Rendered, Json>, rerender: bool },
     /// The window's "Try again" (or an agent's gallery_round): a failed round is made again.
@@ -826,9 +827,11 @@ impl Engine {
                 .map(str::to_owned)
                 .or_else(|| self.taste.galleries().rfind(|g| g.status() != Status::Accepted).map(|g| g.id.clone()));
             let user = self.taste.screen.user().to_owned();
+            // The human's own F8 (or pad combo): the owner's action, seen all the same.
+            let seen = crate::inputguard::done(crate::inputguard::Channel::Screen, "gallery_screen.toggle", &crate::inputguard::Actor::Human, id.as_deref().unwrap_or(""));
             match id {
-                Some(id) => self.taste.screen.open(&id, &user),
-                None => self.taste.screen.open_empty(),
+                Some(id) => self.taste.screen.open(&id, &user, seen),
+                None => self.taste.screen.open_empty(seen),
             }
             // The press that opened it isn't the game's.
             self.input.clear();
@@ -855,7 +858,12 @@ impl Engine {
                 continue;
             }
             let user = self.taste.screen.user().to_owned();
-            let result = self.taste_decide(&gallery, round, decision, Writer::new(WINDOW_OWNER, Some(WINDOW_OWNER)), &user);
+            // The human decides, but what an agent-made gallery writes (its apply targets) is the
+            // maker's choice: journaled as the window's with the maker as `via`, never bare owner
+            // attribution (input sweep R1).
+            let maker = self.taste.get(&gallery).map(|g| g.by.clone()).filter(|m| !m.is_empty() && m != WINDOW_OWNER);
+            let w = Writer::new(WINDOW_OWNER, Some(WINDOW_OWNER)).via(maker.as_deref());
+            let result = self.taste_decide(&gallery, round, decision, w, &user);
             self.taste.screen.report(&result);
         }
         if modal {
@@ -915,9 +923,13 @@ impl Engine {
         let key = self.swarm.key(session);
         let w = Writer::new(&by, Some(&key));
         let named = self.swarm.introduced(&session.id);
-        let auth = taste_authority(crate::authority::authority(&self.swarm, &session.id));
+        // The operator's grants only (a lead nobody granted puts nothing on the human's window).
+        let auth = taste_authority(crate::authority::trusted(&self.swarm, &session.id));
         // The owner or a granted lead (only they may take the window while the human types).
-        let operator = crate::authority::authority(&self.swarm, &session.id) >= crate::authority::Authority::Lead;
+        let operator = crate::authority::trusted(&self.swarm, &session.id) >= crate::authority::Authority::Lead;
+        // The human's in-progress note is the owner's alone (input sweep R3).
+        let owner = auth == TasteAuthority::Owner;
+        let actor = crate::inputguard::Actor::of(&self.swarm, session);
         let hello = |what: &str| fail(&WorldError::new("hello_required", format!("say agent_hello first: {what} are attributed to agents by name")));
         self.taste_refresh();
         match call {
@@ -930,20 +942,20 @@ impl Engine {
             TasteCall::Create { .. } | TasteCall::Round { .. } | TasteCall::Apply { .. } | TasteCall::BoardPut { .. } | TasteCall::Delete { .. } if !named => hello("galleries, applied values, boards and onboarding"),
             TasteCall::Create { gallery, start, open, user, wait: _ } => match self.taste_create(*gallery, start, session) {
                 Ok(g) => {
-                    let mut j = self.gallery_json(&g, None);
+                    let mut j = self.gallery_json(&g, None, owner);
                     if open {
-                        j.set("screen", self.taste_open(&g.id, &user, auth, &by, operator).unwrap_or_else(|e| e.to_json()));
+                        j.set("screen", self.taste_open(&g.id, &user, auth, &actor, operator).unwrap_or_else(|e| e.to_json()));
                     }
                     ToolOutput::text(j.to_string())
                 }
                 Err(e) => fail(&e),
             },
             TasteCall::Get { id, round } => match self.taste.get(&id).cloned() {
-                Some(g) => ToolOutput::text(self.gallery_json(&g, round).to_string()),
+                Some(g) => ToolOutput::text(self.gallery_json(&g, round, owner).to_string()),
                 None => fail(&WorldError::new("gallery_not_found", format!("there is no gallery '{id}' (gallery_list)")).with("id", id.as_str())),
             },
             TasteCall::List { status, after, limit } => ToolOutput::text(self.gallery_list(status.as_deref(), after.as_deref(), limit).to_string()),
-            TasteCall::Open { id, user } => match self.taste_open(&id, &user, auth, &by, operator) {
+            TasteCall::Open { id, user } => match self.taste_open(&id, &user, auth, &actor, operator) {
                 Ok(j) => ToolOutput::text(j.to_string()),
                 Err(e) => fail(&e),
             },
@@ -952,7 +964,7 @@ impl Engine {
                     return fail(&WorldError::new("not_allowed", "only the gallery's maker, the owner, or a granted lead or reviewer closes the human's gallery screen").with("authority", auth.name()));
                 }
                 self.taste.screen.close();
-                ToolOutput::text(self.taste.screen.status_json().to_string())
+                ToolOutput::text(self.taste.screen.status_json(owner).to_string())
             }
             TasteCall::Decide { .. } if auth != TasteAuthority::Owner => fail(&WorldError::new(
                 "owner_only",
@@ -1118,16 +1130,32 @@ impl Engine {
         Ok(Json::obj([("id", Json::from(id)), ("deleted", Json::Bool(true)), ("journal", out.get("journal").cloned().unwrap_or(Json::Null))]))
     }
 
-    fn taste_open(&mut self, id: &str, user: &str, auth: TasteAuthority, by: &str, operator: bool) -> Result<Json, WorldError> {
-        let g = self.taste.get(id).ok_or_else(|| WorldError::new("gallery_not_found", format!("there is no gallery '{id}'")).with("id", id))?;
-        if !auth.directs() && g.by != by {
-            return Err(WorldError::new("not_allowed", "the gallery's maker, the owner, or a granted lead or reviewer puts a gallery on the human's window").with("authority", auth.name()));
+    fn taste_open(&mut self, id: &str, user: &str, auth: TasteAuthority, actor: &crate::inputguard::Actor, operator: bool) -> Result<Json, WorldError> {
+        use crate::inputguard::{declined, done, refused, Channel};
+        if self.taste.get(id).is_none() {
+            return Err(WorldError::new("gallery_not_found", format!("there is no gallery '{id}'")).with("id", id));
+        }
+        // Putting a gallery on the human's window is the owner's, a granted lead's or a
+        // reviewer's: being its maker isn't enough (input sweep R1: the human's click became an
+        // owner decision writing what the maker chose). A refused try is a security incident
+        // (docs/design/SECURITY.md).
+        if !auth.directs() {
+            let e = crate::authority::refusal(
+                crate::authority::Site::WindowScreen,
+                "putting a gallery on the human's window needs the owner, a granted lead or a reviewer (its maker asks one of them: gallery_create without open, then tools_request or a note); a refused try freezes your session (docs/design/SECURITY.md)",
+            )
+            .with("authority", auth.name());
+            refused(Channel::Screen, "gallery_open", actor, e.code, id);
+            return Err(e);
         }
         // The human is typing into a text the operator pointed their keyboard at: only the
         // operator takes the window from them (review R4 of m5-text: keys meant for the text
         // picked a gallery variant).
         if !operator && self.text_typing.focus.is_some() && self.taste.screen.gallery() != Some(id) {
-            return Err(crate::text_window::typing_busy("gallery_open"));
+            let e = crate::text_window::typing_busy("gallery_open");
+            // The human's typing refused it, not the caller's choice: seen, never counted.
+            declined(Channel::Screen, "gallery_open", actor, e.code, id);
+            return Err(e);
         }
         if self.taste.screen.closed_by_human_recently() {
             return Err(WorldError::new("owner_closed", "the human closed the gallery screen moments ago; agents can't reopen it for 30 s (humans are never locked in)").with("retry_after_s", 30));
@@ -1135,13 +1163,16 @@ impl Engine {
         if !specula_gustus::valid_name(user) {
             return Err(WorldError::new("bad_user", "user is a label [a-z0-9_-] (\"owner\" by default)").with("field", "user"));
         }
-        self.taste.screen.open(id, user);
-        Ok(self.taste.screen.status_json())
+        // The monitor sees it first: a lead's or a reviewer's open is an alert the owner is told of.
+        let seen = done(Channel::Screen, "gallery_open", actor, id);
+        self.taste.screen.open(id, user, seen);
+        Ok(self.taste.screen.status_json(actor.authority() == crate::authority::Authority::Owner))
     }
 
     /// A gallery as data: its rounds, the shown round's variants (values and measures), the
     /// breadcrumb, the chips, its file and what it is doing.
-    pub(crate) fn gallery_json(&self, g: &Gallery, round: Option<usize>) -> Json {
+    /// (`owner`: the caller is the owner, who alone sees the human's in-progress note.)
+    pub(crate) fn gallery_json(&self, g: &Gallery, round: Option<usize>, owner: bool) -> Json {
         let n = round.unwrap_or(g.rounds.len()).min(g.rounds.len());
         let mut j = Json::obj([
             ("id", Json::from(g.id.as_str())),
@@ -1226,7 +1257,7 @@ impl Engine {
             j.set("warning", wn.clone());
         }
         if self.taste.screen.gallery() == Some(g.id.as_str()) {
-            j.set("screen", self.taste.screen.status_json());
+            j.set("screen", self.taste.screen.status_json(owner));
         }
         j
     }
@@ -1420,7 +1451,7 @@ impl Engine {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn onboard(&mut self, action: &str, subject: Option<Json>, preset: Option<String>, user: &str, open: bool, quote_notes: Option<bool>, w: Writer, auth: TasteAuthority, session: &SessionInfo) -> Result<Json, WorldError> {
+    fn onboard(&mut self, action: &str, subject: Option<Json>, preset: Option<String>, user: &str, open: Option<bool>, quote_notes: Option<bool>, w: Writer, auth: TasteAuthority, session: &SessionInfo) -> Result<Json, WorldError> {
         match action {
             "status" => Ok(self.onboard_status()),
             "start" => {
@@ -1435,8 +1466,16 @@ impl Engine {
                 o.quote_notes = quote_notes.unwrap_or(false);
                 let id = self.onboard_step(&mut o, 0, w)?;
                 let mut j = self.onboard_status();
-                if open {
-                    j.set("screen", self.taste_open(&id, user, auth, w.name, crate::authority::authority(&self.swarm, &session.id) >= crate::authority::Authority::Lead).unwrap_or_else(|e| e.to_json()));
+                // Putting the first gallery on the window is the default for a caller who may
+                // (the owner, a granted lead or reviewer). Anyone else starts the onboarding
+                // without it: the default is no try at the human's window, so it is never
+                // counted (review R2 of m5-inputguard, major 3: a builder's plain start froze
+                // it). Only an explicit `open: true` asks for the window.
+                if open.is_none() && !auth.directs() {
+                    j.set("screen", Json::obj([("opened", Json::Bool(false)), ("note", Json::from("not put on the window: that needs the owner, a granted lead or a reviewer (gallery_open); the onboarding runs without it"))]));
+                } else if open.unwrap_or(true) {
+                    let actor = crate::inputguard::Actor::of(&self.swarm, session);
+                    j.set("screen", self.taste_open(&id, user, auth, &actor, crate::authority::trusted(&self.swarm, &session.id) >= crate::authority::Authority::Lead).unwrap_or_else(|e| e.to_json()));
                 }
                 Ok(j)
             }
@@ -1516,7 +1555,9 @@ impl Engine {
         self.taste_enqueue(&next, None);
         if self.taste.screen.gallery() == Some(g.id.as_str()) {
             let user = self.taste.screen.user().to_owned();
-            self.taste.screen.open(&next.id, &user);
+            // The engine carries on the human's own acceptance on the screen they have open.
+            let seen = crate::inputguard::done(crate::inputguard::Channel::Screen, "gallery_open.next_step", &crate::inputguard::Actor::Engine("onboarding"), &next.id);
+            self.taste.screen.open(&next.id, &user, seen);
         }
         Ok(Json::obj([("next_step", Json::from(presets::STEPS[k])), ("gallery", Json::from(next.id.as_str()))]))
     }

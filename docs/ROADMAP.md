@@ -241,6 +241,14 @@ entities only; everything else is the gap.
   *Done 2026-10-30:* one disk book for every writer, a `perf.toml [disk]` budget, a free-space floor, safe pruning, review evidence kept with each world (design/DISK.md).
 - [ ] **Role templates** (M1, growing): builder, reviewer, playtester, art director, sight-skeptic, performance
   auditor. They live in `.claude/agents/`, with Grok equivalents when used.
+- [ ] ➕ **Tool kits by job** (owner, 2026-11-12: "knowing which ones to get for a specific task", as a carpenter
+  or machinist knows their tools). Families sort the tools by what they are; kits sort them by the job: a menu, a
+  level, a character's motion, a balance pass, a cutscene, a translation. A kit names its few tools, the order they
+  are used in and the check that says the job is done, and `tools_catalog {kit}` / `tools_activate {kit}` bring it
+  in one call. Every tool also carries tags that cut across families (reads, writes, checks, costly, needs a
+  grant). With it: `world_spawn` and `world_set` share their component schemas, so a kit costs a few thousand
+  tokens, not twenty thousand. *Measure:* tokens an agent spends before its first correct call, per job, in the
+  evals. Before the M5 exit proof.
 - [x] **Headless playtest swarms** (M3): many headless engines on separate ports, each run by an agent testing one path,
   with results gathered into one report.
   *Why:* this is where swarms beat studios. QA scales with agents, not headcount.
@@ -824,11 +832,33 @@ readback and the remaining engine-thread stalls.
   - claim map overlay, review queue, cost and progress dashboard
 
   *Why:* devs who want to edit by hand can; human edits are journaled like agent edits.
-- [ ] ➕ **Cloud swarm foundations** (owner, 2026-10-22; end of M5): the design notes for remote and cloud agents,
+- [ ] ➕ **Measured leverage** (owner, 2026-11-12: "find a way to add in measured comparison please, for M5"). Is
+  building through the engine cheaper and better than building without it, and from what size of game?
+  - **Jobs at three sizes:** a small one-screen game; a medium one (waves, a menu, saved settings, two
+    languages); and a **change round**, where an agent with no memory of the build makes three changes to the
+    medium game. The change round is where the engine's record should pay, so it is measured on its own.
+  - **Two arms, one brief:** through Specula, and without it (the agent builds with whatever it chooses from
+    what is on the machine). Same model, same token budget, same time limit.
+  - **One acceptance list for both,** checked by a party that built neither and doesn't see the costs. What the
+    engine verified from its own data is reported separately from what the judge found, so the engine never
+    marks its own homework unseen.
+  - **Measures per run:** tokens as the agent's own harness reports them (with bytes at the tool boundary as a
+    cross-check), calls, wall time, checks passed, defects found, and the change round's tokens.
+  - **Any vendor's agent can run it:** briefs, budgets and the acceptance list are plain data beside the evals
+    ([design/EVALS.md](design/EVALS.md)), and the results name the model. M5 runs Claude models; other vendors'
+    agents run it in M6 with the cloud swarm tests.
+  - **Reported honestly:** every run, failures included, with the number of runs stated (it will be small) and
+    scrubbed transcripts. A job the engine loses is a finding about where it is in the way.
+
+  Part of the M5 exit proof, after the tool kits (swarm track).
+- [x] ➕ **Cloud swarm foundations** (owner, 2026-10-22; end of M5): the design notes for remote and cloud agents,
   meaning per-agent auth tokens, scoped tools, rate limits and binding beyond loopback, ready to build in M6.
   **Encryption comes from the OS, never our own crypto** (owner, 2026-10-22): SChannel on Windows and
   Network.framework on macOS, called through raw-dylib like Vulkan; on Linux, a required tunnel (SSH or
   WireGuard/Tailscale). A security-first checklist for agents is in AGENTS.md rule 12.
+  *Done 2026-11-12:* [design/CLOUD_SWARMS.md](design/CLOUD_SWARMS.md): operator-issued tokens, the rule that the
+  port never opens without tokens and encryption, what a remote token may do by default, rates and fairness, the
+  monitor's door channel, what remote agents may read, and M6's build order.
 
 ---
 
@@ -988,6 +1018,14 @@ The aim is to make Rust's costs non-issues and then strengths. Research and meas
 - [ ] Networking and multiplayer: lockstep or rollback, which F2 makes possible.
 - [ ] Animation retargeting and parametric character generation.
 - [ ] Publish crates to crates.io: after M6 and the macOS and Linux checks (decided 2026-10-22; see M6).
+- [ ] ➕ **Assets from people's own work** (owner, 2026-11-12): convert a person's 3D model, 2D model or drawing
+  into a code-based asset (a recipe, vector shapes) that they can adjust, or ask agents to adjust, and save.
+  *Why:* code assets are small, sharp at any size and open to change; people shouldn't have to start from nothing.
+  *What is feasible* (Claude's read): drawings trace into vector shapes, and into 3D by extruding or turning them;
+  hard-surface models can be rebuilt by an agent that looks at the model, writes a recipe and lets the engine
+  measure the difference (the asset studio's measures) until it is close; sculpted, organic models can't be turned
+  into compact code exactly, so they become stylised re-creations or hybrids (code for the structure, a little
+  stored detail). The original stays beside the recipe as its reference.
 - [ ] **Realism foundations after v1.0** (owner, 2026-10-22): realistic, organic content at Unreal-class quality
   but more efficient (sculpting, materials, lighting, characters), with best-possible physics and animation.
   Start stylised; lay the foundations as M4-M6 build.

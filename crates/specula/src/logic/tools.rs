@@ -208,7 +208,8 @@ pub fn definitions() -> Vec<ToolDef> {
                           requests from several agents share one build (requests_merged). Timings in timings_ms. \
                           WHO: a module is native code running with the owner's user rights, so only the owner or an \
                           operator-granted lead (--lead NAME) builds and loads one. Anyone else's call builds nothing: it \
-                          files a proposal (refused as lead_only, with the proposal) that the lead approves with approve. See \
+                          files a proposal (refused as lead_only, with the proposal) that the lead approves with approve \
+                          (proposing is ordinary work; an approve by anyone else is a security incident that freezes the caller). See \
                           docs/design/MODULES.md."
                 .into(),
             input_schema: schema(
@@ -236,7 +237,10 @@ pub fn definitions() -> Vec<ToolDef> {
         ToolDef {
             name: "logic_reload".into(),
             description: "Reload a module from the library it was last loaded from (after building it yourself), or load a \
-                          prebuilt module library for the first time. Applied at a tick boundary; same guarantees as logic_build."
+                          prebuilt module library for the first time. Applied at a tick boundary; same guarantees as logic_build. \
+                          WHO: the owner or an operator-granted lead only (a library is native code). Anyone else's call is \
+                          refused (lead_only) and is a security incident that freezes the caller's session \
+                          (docs/design/SECURITY.md): builders propose a module with logic_build instead."
                 .into(),
             input_schema: schema(
                 vec![
@@ -250,7 +254,9 @@ pub fn definitions() -> Vec<ToolDef> {
         ToolDef {
             name: "logic_unload".into(),
             description: "Stop and unload a module (its stop runs first, e.g. removing what it spawned). Its state store and RNG \
-                          streams are kept for a later load unless forget_state is true."
+                          streams are kept for a later load unless forget_state is true. WHO: the owner or an operator-granted \
+                          lead only; anyone else's call is refused (lead_only) and is a security incident that freezes the \
+                          caller's session (docs/design/SECURITY.md)."
                 .into(),
             input_schema: schema(vec![("module", module.clone()), ("forget_state", t("boolean", "Also drop the module's state store and RNG streams"))], &["module"]),
         },
@@ -428,7 +434,7 @@ pub fn handle(host: &mut LogicHost, call: LogicCall, world: &mut dyn WorldWrite,
         },
         LogicCall::Unload { module, forget } => swarm
             .may_load_native(key, "logic_unload (stopping a module every agent's game runs)")
-            .inspect_err(|_| super::proposals::report_refusal(w.name, key, &super::proposals::NativeRefusal::Unload { module: module.clone() }))
+            .inspect_err(|_| super::proposals::report_refusal(w.name, key, swarm.trusted_authority_of_key(key), &super::proposals::NativeRefusal::Unload { module: module.clone() }))
             .and_then(|()| check_module_owner(swarm, &module, w, "unloading"))
             .and_then(|()| host.unload(&module, forget, world, tick, hz, &mut agent_commit(swarm, tick, w))),
         LogicCall::Status { module, detailed } => host.status(module.as_deref(), detailed).map(|mut j| {
@@ -436,7 +442,13 @@ pub fn handle(host: &mut LogicHost, call: LogicCall, world: &mut dyn WorldWrite,
             j.set("proposals", host.proposals.json());
             j
         }),
-        LogicCall::Input { module, actions, ticks } => host.hold(&module, &actions, ticks),
+        // Each hold records its holder: a freeze releases it, and the human taking the action
+        // back is reported under it (docs/design/SECURITY.md).
+        LogicCall::Input { module, actions, ticks } => {
+            let key = w.session.unwrap_or(w.name);
+            let by = crate::inputguard::Actor::identity(key, w.name, swarm.trusted_authority_of_key(key));
+            host.hold(&module, &actions, ticks, Some(by))
+        }
         // Like a game tool: the hook's changes may not reach into another agent's claim (if
         // they do, nothing the hook did is kept and the error says whose claim).
         LogicCall::Hook { hook, args, reason } => {
@@ -459,24 +471,27 @@ fn gate(host: &mut LogicHost, swarm: &Swarm, w: Writer, tick: u64, doing: Doing)
     match (swarm.may_load_native(key, what), doing) {
         // Approving is the owner's or lead's: a builder's approve proposes nothing.
         (Err(e), Doing::Build { dir, approve: Some(_), .. }) => {
-            report_refusal(w.name, key, &NativeRefusal::Build { dir });
+            report_refusal(w.name, key, swarm.trusted_authority_of_key(key), &NativeRefusal::Build { dir });
             Err(e)
         }
         (Err(e), Doing::Build { dir, digest: Ok(d), .. }) => {
             let p = host.proposals.propose(&dir, w.name, key, tick, &d);
             let (id, json) = (p.id, p.to_json());
-            report_refusal(w.name, key, &NativeRefusal::Proposed { dir, proposal: Some(id) });
+            report_refusal(w.name, key, swarm.trusted_authority_of_key(key), &NativeRefusal::Proposed { dir, proposal: Some(id) });
             Err(e.with("proposal", json).with(
                 "next",
                 "nothing was built: your module is proposed. The owner or lead reviews its files (logic_status lists proposals) and builds it with logic_build {path, approve: <id>}, which loads only these exact sources",
             ))
         }
+        // A builder's plain build of a folder that can't be digested (too big, a link in it)
+        // files no proposal, and is no try at native code either: it asked for nothing but
+        // what a proposal asks (review R2 of m5-inputguard, major 4: it froze the builder).
         (Err(e), Doing::Build { dir, digest: Err((code, message)), .. }) => {
-            report_refusal(w.name, key, &NativeRefusal::Build { dir });
+            report_refusal(w.name, key, swarm.trusted_authority_of_key(key), &NativeRefusal::Proposed { dir, proposal: None });
             Err(e.with("proposal_refused", Json::obj([("code", Json::from(code)), ("message", Json::from(message))])))
         }
         (Err(e), Doing::Reload) => {
-            report_refusal(w.name, key, &NativeRefusal::Reload);
+            report_refusal(w.name, key, swarm.trusted_authority_of_key(key), &NativeRefusal::Reload);
             Err(e)
         }
         (Ok(()), Doing::Build { dir, digest, approve: Some(id) }) => {

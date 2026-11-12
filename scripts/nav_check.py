@@ -493,7 +493,7 @@ def main():
     failures = []
     runs = []
     for i in range(2):
-        args = ["--adapter", a.adapter, "--captures", str(OUT / "captures"), "--worlds", str(OUT / f"worlds{i}"), "--assets", str(ROOT / "games" / "sepulcra" / "assets")]
+        args = ["--adapter", a.adapter, "--lead", "nav-check", "--captures", str(OUT / "captures"), "--worlds", str(OUT / f"worlds{i}"), "--assets", str(ROOT / "games" / "sepulcra" / "assets")]
         if not a.windowed:
             args.append("--headless")
         with Engine(a.exe, a.port + i, OUT / f"engine{i}.log", *args, cwd=str(OUT)) as eng:
