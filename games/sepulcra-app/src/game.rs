@@ -40,6 +40,8 @@ use std::time::{Duration, Instant};
 
 #[path = "saves.rs"]
 mod saves;
+#[path = "shell.rs"]
+mod shell;
 pub use saves::{MAX_RECORDING_BYTES, MAX_STATE_BYTES};
 
 /// A window frame this recent means another follows the next tick.
@@ -145,6 +147,8 @@ pub struct SepulcraGame {
     autosave_on: bool,
     /// The intro flyover and the victory shot (timelines the engine plays; see `cutscene`).
     pub(crate) cutscene: crate::cutscene::Cutscenes,
+    /// The title, saved settings, accessibility, rebinding, gamepad pause, subtitles (`shell`).
+    pub(crate) shell: shell::Shell,
 }
 
 /// Everything a game tool can change, for [`Game::checkpoint`]: the simulation, the recording,
@@ -221,6 +225,7 @@ impl SepulcraGame {
             saves_status: None,
             autosave_on: false,
             cutscene: crate::cutscene::Cutscenes::default(),
+            shell: shell::Shell::default(),
         }
     }
 
@@ -418,6 +423,9 @@ impl SepulcraGame {
         if self.running() {
             self.set_paused(world, true);
             self.hud.show("pause", true);
+            // A camera drag toggled on doesn't outlive the menu (the player would come back to a
+            // camera that swings with every mouse move).
+            self.controls.input_mut().clear_latches();
         }
     }
 
@@ -641,9 +649,10 @@ impl SepulcraGame {
     fn ui_events(&mut self, world: &mut GameWorld<'_>, agent: &str, events: &UiEvents) {
         for ev in &events.events {
             match ev {
-                UiEvent::Action { action, .. } => {
+                UiEvent::Action { action, widget } => {
                     self.sfx.ui("ui_click", self.now);
-                    self.ui_action(world, agent, action);
+                    let action = self.hud.row_action(action, *widget);
+                    self.ui_action(world, agent, &action);
                 }
                 UiEvent::Refused { .. } => {
                     self.sfx.ui("ui_error", self.now);
@@ -656,6 +665,9 @@ impl SepulcraGame {
 
     /// One HUD action (also what agents press with `play_ui`).
     pub(crate) fn ui_action(&mut self, world: &mut GameWorld<'_>, agent: &str, action: &str) {
+        if self.shell_action(world, agent, action) {
+            return;
+        }
         let content = self.content();
         let stone_of = |icon: &str| content.stones.iter().position(|s| hud::icon_of(&s.id) == icon).map(|i| i as u8);
         match action {
@@ -880,7 +892,7 @@ impl SepulcraGame {
             glyph_style: GLYPHS[self.glyphs].0,
         };
         hud::fill(&mut self.hud.state, &info, &mut self.hud_texts);
-        hud::fill_scale(&mut self.hud.state, UI_SCALES[self.ui_scale]);
+        hud::fill_scale(&mut self.hud.state, self.hud.user_scale);
         if self.confirm == Some(Confirm::Restart) {
             self.hud.state.set_msg("confirm_title", "confirm.restart.title");
             self.hud.state.set_msg("confirm_body", "confirm.restart.body");
@@ -902,18 +914,8 @@ impl SepulcraGame {
             let groups = self.threat_groups();
             hud::fill_threats(&mut self.hud.state, cam, size, &groups);
         }
-        // The controls list only while it's open (prompts are made as text).
-        if self.hud.visible("controls") {
-            let bindings = self.hud.state.list_mut("bindings");
-            bindings.clear();
-            let input = self.controls.input();
-            for a in input.map().actions().iter().filter(|a| !a.name.starts_with("ui_")).take(24) {
-                let keys = input.prompt(&a.name).unwrap_or_default();
-                let row = bindings.push();
-                row.set_msg("label", &format!("action.{}", a.name));
-                row.set_str("keys", &keys);
-            }
-        }
+        // Settings, the title, the controls list (rebinding), subtitles and captions.
+        self.fill_shell();
     }
 
     /// Where the dead are, by face: the centre of each group and how many.
@@ -948,6 +950,7 @@ impl SepulcraGame {
             None if self.rules_lex => Json::obj([("rules", Json::from("lex")), ("off", Json::from("see the log: the Lex rules couldn't start"))]),
             None => Json::from("rust"),
         });
+        j.set("shell", self.shell_status_json());
         j
     }
 
@@ -1003,6 +1006,8 @@ impl SepulcraGame {
 
     /// Presses a HUD widget by id, as a click would (`play_ui`). Returns the action it sent.
     pub(crate) fn press(&mut self, world: &mut GameWorld<'_>, agent: &str, id: &str) -> Result<Option<String>, String> {
+        // An agent's press (play_ui): its settings changes are the session's, never the player's.
+        self.shell.human = false;
         let cam = self.camera;
         self.fill_hud(cam.as_ref(), (1280, 720));
         let action = self.hud.press(id)?;
@@ -1188,7 +1193,13 @@ impl Game for SepulcraGame {
         let mut rest = Vec::new();
         let mut it = args.iter();
         while let Some(a) = it.next() {
-            if a == "--intro" {
+            if a == "--title" {
+                match it.next().map(String::as_str) {
+                    Some("on") => self.shell.title_off = false,
+                    Some("off") => self.shell.title_off = true,
+                    other => return Err(format!("--title takes on or off, got {other:?}")),
+                }
+            } else if a == "--intro" {
                 match it.next().map(String::as_str) {
                     Some("on") => self.cutscene.intro_off = false,
                     Some("off") => self.cutscene.intro_off = true,
@@ -1237,11 +1248,15 @@ impl Game for SepulcraGame {
         // Screens, the theme and sounds come from the assets folder: reload what changed (the
         // engine reloads recipes itself).
         let stem = |p: &str, dir: &str| p.strip_prefix(dir).and_then(|r| r.strip_suffix(".json")).filter(|r| !r.contains('/')).map(str::to_owned);
-        let screens: Vec<String> = paths.iter().filter_map(|p| stem(p, "ui/")).collect();
+        let mut screens: Vec<String> = paths.iter().filter_map(|p| stem(p, "ui/")).collect();
         if paths.iter().any(|p| stem(p, "strings/").is_some()) {
             // A string table changed (on disk, or through l10n_set): read again on a thread; the
             // HUD takes the new words at its next fill (L10n::poll).
             self.l10n.reload();
+        }
+        // The colour themes (beside ui/) build the theme too.
+        if paths.iter().any(|p| p == "vision.json") {
+            screens.push("vision".into());
         }
         let sounds: Vec<String> = paths.iter().filter_map(|p| stem(p, "sounds/")).collect();
         let assets = self.assets.clone().unwrap_or_else(SepulcraGame::default_assets);
@@ -1262,6 +1277,26 @@ impl Game for SepulcraGame {
 
     fn display(&mut self, display: &specula_ui::Display) {
         self.hud.set_display(display);
+        // "Auto" sizes follow the display (a handheld's legible default).
+        self.shell_display_changed();
+    }
+
+    fn use_settings(&mut self, text: Option<&str>, store: &specula::game::SettingsStore) {
+        self.shell_use_settings(text, store);
+    }
+
+    fn take_settings(&mut self) -> Option<String> {
+        self.take_settings_text()
+    }
+
+    fn take_quit(&mut self) -> bool {
+        self.take_quit_asked()
+    }
+
+    fn take_refused_presses(&mut self) -> u32 {
+        let n = self.shell.refused - self.shell.refused_told;
+        self.shell.refused_told = self.shell.refused;
+        n
     }
 
     fn locale(&self) -> specula::game::GameLocale {
@@ -1308,8 +1343,9 @@ impl Game for SepulcraGame {
             specula_core::trace_event!(&specula::trace_sink::ENGINE, Warn, "sepulcra.strings_problem", problem = p.as_str());
         }
         self.hud.set_strings(self.l10n.strings());
-        // Autosaves are for people playing: on with a window, off headless (agents' runs).
-        self.autosave_on = ctx.windowed;
+        // Autosaves are for people playing: on with a window, off headless (agents' runs),
+        // unless the player's settings say otherwise.
+        self.autosave_on = self.shell.settings.autosave.unwrap_or(ctx.windowed);
         // Sound and music through the engine's audio: off headless unless the engine was started
         // with `--audio null` (then agents hear a headless run too), never with `--mute`.
         self.sfx = match (&self.engine_audio, self.mute) {
@@ -1320,8 +1356,9 @@ impl Game for SepulcraGame {
         self.sfx.set_volume(self.volume);
         self.rebuild(&mut ctx.world, ctx.agent);
         self.say(ToastKind::Info, Said::new("toast.seed_start").text("seed", self.state.seed().to_string()));
-        // The intro flyover (windowed, unless --intro off or reduced motion): wave 1 waits for it.
-        self.cutscene.intro(ctx.windowed, self.reduced_motion);
+        // The player's settings, then the title (windowed); the intro flyover (unless --intro off
+        // or reduced motion) follows it, and wave 1 waits for both.
+        self.shell_start(ctx.windowed);
     }
 
     fn tick(&mut self, ctx: &mut Ctx) {
@@ -1334,7 +1371,7 @@ impl Game for SepulcraGame {
         let mut stepped = 0;
         let was = self.lex_flags();
         // A cutscene holding the run (the intro) waits like a pause: no step, no build time lost.
-        if !self.paused && !self.cutscene.holds() {
+        if !self.paused && !self.cutscene.holds() && !self.shell_holds() {
             for _ in 0..self.speed {
                 if !self.running() {
                     break;
@@ -1417,9 +1454,19 @@ impl Game for SepulcraGame {
         // The input that skipped a cutscene goes nowhere else (a click doesn't also build).
         if self.cutscene.take_swallow() {
             self.controls.begin(&[], &[]);
+        } else if frame.synthetic {
+            // An agent's frame: applied whatever the window's focus, and dropped while the
+            // player is choosing a key (it could otherwise answer for them, or cancel).
+            let carried = !frame.input.is_empty() || frame.pads.iter().any(|p| p.connected && p.buttons != 0);
+            if !self.controls.begin_synthetic(frame.input, frame.pads) && carried {
+                self.shell.refused += 1;
+            }
         } else {
             self.controls.begin(frame.input, frame.pads);
         }
+        // Whose input this is (the player's, or an agent's synthetic frame), a pad lost, a rebind
+        // that ended.
+        self.shell_frame(&mut ctx.world, frame);
         let cam = self.camera;
         self.fill_hud(cam.as_ref(), frame.size);
         let mut ui_events = std::mem::take(&mut self.ui_frame);
@@ -1432,6 +1479,8 @@ impl Game for SepulcraGame {
         for a in actions {
             self.act(&mut ctx.world, ctx.agent, a);
         }
+        // Start on an open pause menu closes it again.
+        self.shell_frame_end(&mut ctx.world, frame);
         self.controls.sync_camera(frame.camera, frame.agent_view);
         self.camera = *frame.camera;
         // An agent's synthetic input frame (ui_act) writes only what its input causes: that is
@@ -1484,7 +1533,14 @@ impl Game for SepulcraGame {
         // An agent acting on the run is never held by a cutscene.
         if matches!(name, "play_new" | "play_command" | "play_control" | "play_ui" | "play_replay") {
             self.cutscene.agent_acted();
+            // The title too, unless the call presses one of the title's own buttons.
+            let pressing = (name == "play_ui").then(|| args.get("press").and_then(Json::as_str).unwrap_or("")).filter(|p| !p.is_empty());
+            if name != "play_ui" || pressing.is_some() {
+                self.shell_agent_acted(pressing);
+            }
         }
+        // Whatever an agent's tool changes is the session's, never the player's saved settings.
+        self.shell.human = false;
         tools::call(self, ctx, name, args)
     }
 
@@ -1496,10 +1552,10 @@ impl Game for SepulcraGame {
         if let Some(line) = self.cutscene.event(event) {
             self.say(ToastKind::Info, line);
         }
-        if let specula::game::TimelineWhat::Cue(cue) = &event.what {
-            if let Some(name) = crate::cutscene::cue_sound(&cue.sound) {
-                self.sfx.ui(name, self.now);
-            }
+        // Subtitle lines are drawn (the subtitles screen); the engine plays audio cues itself
+        // (specula::timeline_audio, as `timeline:<path>`).
+        if let specula::game::TimelineWhat::Subtitle(line) = &event.what {
+            self.shell_subtitle(line);
         }
     }
 
@@ -1586,7 +1642,7 @@ impl Game for SepulcraGame {
         self.confirm = c.confirm;
         self.radial_cell = c.radial_cell;
         self.lex = c.lex;
-        for screen in ["pause", "victory", "defeat", "radial", "confirm", "settings", "controls", "saves"] {
+        for screen in ["pause", "victory", "defeat", "radial", "confirm", "settings", "controls", "saves", "access"] {
             let open = c.screens.iter().any(|s| s == screen);
             if self.hud.visible(screen) != open {
                 self.hud.show(screen, open);

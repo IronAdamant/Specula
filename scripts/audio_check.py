@@ -83,7 +83,7 @@ def run_engine(adapter, port, out, assets, audio, label):
     args = ["--adapter", adapter, "--assets", str(assets), "--captures", str(out / f"captures-{label}"), "--lead", AGENT, "--max-fps", "60"]
     if audio:
         args += ["--audio", audio]
-    return Engine(EXE, port, out / f"engine-{label}.log", *args, "--", "--seed", "7", cwd=str(out))
+    return Engine(EXE, port, out / f"engine-{label}.log", *args, "--", "--seed", "7", "--title", "off", cwd=str(out))
 
 
 def wait_for(fn, timeout, step=0.25):

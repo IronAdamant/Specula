@@ -31,7 +31,7 @@ const WRITERS: &[Rule] = &[
     Rule { pattern: "fs::copy", allowed: &["engine:disk.rs"], why: "copies are writes: through the book" },
     Rule {
         pattern: "fs::rename",
-        allowed: &["engine:blobs.rs", "engine:project.rs", "engine:persist.rs", "engine:save_tools.rs", "engine:swarm_engine.rs", "engine:review_engine.rs", "engine:disk.rs"],
+        allowed: &["engine:blobs.rs", "engine:project.rs", "engine:persist.rs", "engine:save_tools.rs", "engine:swarm_engine.rs", "engine:review_engine.rs", "engine:disk.rs", "engine:user_settings.rs"],
         why: "a rename moves bytes the budget hasn't seen: only atomic writers renaming their own admitted temporary files (and moving an unreadable file aside), and disk::move_to_trash (a folder moved within its own root, still counted there until a worker empties it)",
     },
     Rule { pattern: "fs::hard_link", allowed: &[], why: "links are writes the budget can't see: never" },

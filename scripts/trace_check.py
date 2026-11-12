@@ -134,7 +134,7 @@ def engine_args(a, out, sub, extra=()):
 
 def part_swarm(a, out, summary):
     print("swarm, correlation and the debugger:")
-    with Engine(a.exe, a.port, out / "engine-swarm.log", *engine_args(a, out, "swarm", ["--lead", "trace-lead", "--reviewer", "debugger", "--", "--seed", "7"]), cwd=str(ROOT)) as eng:
+    with Engine(a.exe, a.port, out / "engine-swarm.log", *engine_args(a, out, "swarm", ["--lead", "trace-lead", "--reviewer", "debugger", "--", "--seed", "7", "--title", "off"]), cwd=str(ROOT)) as eng:
         lead, ann, bob, dbg = (eng.mcp(n) for n in ("trace-lead", "trace-ann", "trace-bob", "trace-debugger"))
         lead.hello("trace-lead", role="lead")  # granted: authority comes from the operator (docs/design/AUTHORITY.md)
         ann.hello("ann")
@@ -234,7 +234,7 @@ def part_security(a, out, summary):
     """Review probe (b893d0a, blocker): another agent read a resume token out of trace_call's
     argument digest and took over its owner's identity."""
     print("no agent reads another's secrets through the trace:")
-    with Engine(a.exe, a.port + 6, out / "engine-security.log", *engine_args(a, out, "security", ["--", "--seed", "7"]), cwd=str(ROOT)) as eng:
+    with Engine(a.exe, a.port + 6, out / "engine-security.log", *engine_args(a, out, "security", ["--", "--seed", "7", "--title", "off"]), cwd=str(ROOT)) as eng:
         ann = eng.mcp("sec-ann")
         token = ann.json("agent_hello", name="ann", role="builder").get("resume_token")
         ann2 = eng.mcp("sec-ann-2")
@@ -350,7 +350,7 @@ def part_crash(a, out, summary):
     original, panicking = inject_panic()
     try:
         AMBULO.write_text(panicking, encoding="utf-8")
-        with Engine(a.exe, a.port + 1, out / "engine-crash.log", *engine_args(a, out, "crash", ["--paused", "--lead", "crash-lead", "--", "--seed", "7"]), cwd=str(ROOT)) as eng:
+        with Engine(a.exe, a.port + 1, out / "engine-crash.log", *engine_args(a, out, "crash", ["--paused", "--lead", "crash-lead", "--", "--seed", "7", "--title", "off"]), cwd=str(ROOT)) as eng:
             m = eng.mcp("trace-crash")
             m.hello("crash-lead", role="lead")
             built, err = call_raw(m, "logic_build", path="games/ambulo")
@@ -360,7 +360,7 @@ def part_crash(a, out, summary):
             check(bool(inc), "module.disabled is an incident")
     finally:
         AMBULO.write_text(original, encoding="utf-8")
-    with Engine(a.exe, a.port + 2, out / "engine-restart.log", *engine_args(a, out, "restart", ["--paused", "--", "--seed", "7"]), cwd=str(ROOT)) as eng:
+    with Engine(a.exe, a.port + 2, out / "engine-restart.log", *engine_args(a, out, "restart", ["--paused", "--", "--seed", "7", "--title", "off"]), cwd=str(ROOT)) as eng:
         m = eng.mcp("trace-restart")
         report = m.json("trace_crash")
         check(report.get("reason") == "module_panic" and "deliberate" in report.get("message", ""),
@@ -372,7 +372,7 @@ def part_crash(a, out, summary):
 
 
 def run_seeded(a, out, sub, port, level):
-    with Engine(a.exe, port, out / f"engine-{sub}.log", *engine_args(a, out, sub, ["--paused", "--", "--seed", "7"]), cwd=str(ROOT)) as eng:
+    with Engine(a.exe, port, out / f"engine-{sub}.log", *engine_args(a, out, sub, ["--paused", "--", "--seed", "7", "--title", "off"]), cwd=str(ROOT)) as eng:
         m = eng.mcp("trace-det")
         m.hello("det-lead", role="lead")
         m.json("trace_settings", level=level, subsystems={"mcp": level, "write_policy": level, "jobs": level})
@@ -412,7 +412,7 @@ def part_cost(a, out, summary):
         print("  skip (needs --window)")
         return
     res = {}
-    with Engine(a.exe, a.port + 5, out / "engine-cost.log", *engine_args(a, out, "cost", ["--", "--seed", "7"]), cwd=str(ROOT)) as eng:
+    with Engine(a.exe, a.port + 5, out / "engine-cost.log", *engine_args(a, out, "cost", ["--", "--seed", "7", "--title", "off"]), cwd=str(ROOT)) as eng:
         m = eng.mcp("trace-cost")
         m.hello("cost-lead", role="lead")
         m.json("play_new", seed=7)

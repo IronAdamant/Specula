@@ -109,7 +109,7 @@ def start(exe, out, port, run):
     log_path = out / f"engine_run{run}.log"
     log = open(log_path, "w")
     proc = subprocess.Popen(
-        [str(exe), "--headless", "--lead", "keeper", "--port", str(port), "--worlds", str(out / "worlds"), "--world", "e2e",
+        [str(exe), "--settings", "off", "--headless", "--lead", "keeper", "--port", str(port), "--worlds", str(out / "worlds"), "--world", "e2e",
          "--captures", str(out / "captures")],
         stderr=log, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
         cwd=str(ROOT),  # the walker's recipe path is relative to the repository

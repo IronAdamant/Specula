@@ -15,6 +15,26 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def _physical_window_pixels():
+    """This process speaks to windows in physical pixels (per-monitor DPI aware).
+
+    Without it, on a display scaled by the OS (125%, 175%), Windows gives a script scaled-down
+    window sizes and rescales the mouse messages it posts: a click posted at a widget's rect (which
+    the engine reports in the window's real pixels) lands somewhere else, and only on machines
+    whose display is scaled. Every script that touches a window imports this module, so it is set
+    here once (a second call by a script that sets it itself fails harmlessly)."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))  # PER_MONITOR_AWARE_V2
+    except (AttributeError, OSError):
+        pass
+
+
+_physical_window_pixels()
+
+
 # Tools that answer concisely by default (`response_format`, see docs/design/TOOLS.md). Scripts
 # check engine data in depth, so this client asks them for detailed answers unless a call passes
 # its own response_format (or the client is made with detailed=False, as an agent would see them).
@@ -104,13 +124,19 @@ class Mcp:
         token = None
         if token_file and os.path.exists(token_file):
             token = open(token_file).read().strip() or None
-        try:
-            reply = self.json("agent_hello", name=name, role=role, **({"resume_token": token} if token else {}))
-        except RuntimeError as e:
-            if token and "bad_resume_token" in str(e):  # a new engine run: start a new identity
-                reply = self.json("agent_hello", name=name, role=role)
-            else:
-                raise
+        for attempt in range(4):
+            try:
+                reply = self.json("agent_hello", name=name, role=role, **({"resume_token": token} if token else {}))
+                break
+            except RuntimeError as e:
+                if token and "bad_resume_token" in str(e):  # a new engine run: start a new identity
+                    token = None
+                elif "engine_busy" in str(e) and attempt < 3:
+                    # A cold engine on a loaded machine can take over 30 s to answer its first
+                    # call (it says so, with retry: true, and applied nothing): ask again.
+                    print(f"  (agent_hello: the engine was busy starting; asking again, try {attempt + 2} of 4)")
+                else:
+                    raise
         if token_file and reply.get("resume_token"):
             with open(token_file, "w") as f:
                 f.write(reply["resume_token"])
@@ -178,6 +204,15 @@ class Engine:
 
     def __init__(self, exe, port, log_path, *args, cwd=None, env=None):
         self.exe, self.port, self.log_path, self.args, self.cwd = Path(exe), port, Path(log_path), list(args), cwd
+        # A hosted game keeps no settings unless the script names a folder (--settings DIR). With
+        # a window and no flag, the game would read the real per-user settings of whoever runs
+        # the script (their saved reduced motion would skip an intro a check waits for), and the
+        # keys and clicks a script posts to the window count as the player's and would be
+        # written back into that file. (SPECULA_NO_SETTINGS_FLAG=1: for an older engine build
+        # that doesn't know the flag, in an A/B run.)
+        engine_args = self.args[: self.args.index("--")] if "--" in self.args else self.args
+        if "--settings" not in engine_args and not os.environ.get("SPECULA_NO_SETTINGS_FLAG"):
+            self.args[0:0] = ["--settings", "off"]
         # The engine's environment (default: this process's).
         self.env = env
         self.proc, self.startup_s, self.shutdown_log, self.exit_code = None, None, "", None

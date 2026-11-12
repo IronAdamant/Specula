@@ -29,7 +29,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 /// The screens the game uses, with built-in copies for when the assets folder lacks them.
-const SCREENS: [(&str, &str); 9] = [
+const SCREENS: [(&str, &str); 11] = [
     ("hud", include_str!("../../sepulcra/assets/ui/hud.json")),
     ("radial", include_str!("../../sepulcra/assets/ui/radial.json")),
     ("pause", include_str!("../../sepulcra/assets/ui/pause.json")),
@@ -38,10 +38,14 @@ const SCREENS: [(&str, &str); 9] = [
     ("settings", include_str!("../../sepulcra/assets/ui/settings.json")),
     ("controls", include_str!("../../sepulcra/assets/ui/controls.json")),
     ("saves", include_str!("../../sepulcra/assets/ui/saves.json")),
-    // Loaded (so agents check and press it), shown once the title flow lands (M5 shell).
+    // Shown when a windowed game starts (the shell: crate::game's shell module).
     ("title", include_str!("../../sepulcra/assets/ui/title.json")),
+    ("access", include_str!("../../sepulcra/assets/ui/access.json")),
+    ("subtitles", include_str!("../../sepulcra/assets/ui/subtitles.json")),
 ];
 const THEME: &str = include_str!("../../sepulcra/assets/ui/theme.json");
+/// Colour themes for colour-vision differences (the Colours setting), beside `ui/` in the assets.
+const VISION: &str = include_str!("../../sepulcra/assets/vision.json");
 const CONFIRM: &str = include_str!("../../sepulcra/assets/ui/confirm.json");
 
 /// Most widgets `play_ui` lists.
@@ -76,10 +80,78 @@ pub struct Hud {
     display: Display,
     /// The player's language ([`crate::l10n`]): the window's UI and the capture UI show it.
     strings: Option<Arc<Strings>>,
+    /// How the player's settings change the theme (text size, colours, motion), applied to the
+    /// window's UI and the capture UI alike.
+    look: Look,
+    /// The theme and the colour themes as read and parsed, kept until a hot reload: a look
+    /// change (every settings change an agent or the player makes) composes from these instead
+    /// of reading both files on the engine thread each time (review R1 of m5-a11y).
+    theme_src: Option<(Json, Json)>,
+}
+
+/// What the player's settings change in the theme ([`Hud::set_look`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Look {
+    /// Multiplies every text role's size.
+    pub text_size: f32,
+    /// Multiplies the subtitle and caption roles' sizes again.
+    pub subtitle_size: f32,
+    /// A colour theme's name in `vision.json` (`standard`: none).
+    pub vision: &'static str,
+    /// No pulsing (threat arrows).
+    pub reduced_motion: bool,
+}
+
+impl Default for Look {
+    fn default() -> Look {
+        Look { text_size: 1.0, subtitle_size: 1.0, vision: "standard", reduced_motion: false }
+    }
+}
+
+/// The text roles subtitles and captions use (sized again by the subtitle size).
+const SUBTITLE_ROLES: [&str; 3] = ["subtitle_line", "speaker", "caption"];
+
+/// The theme's JSON with `look` applied: role sizes, a colour theme's colours and focus width,
+/// no pulsing with reduced motion. `vision` is `vision.json`.
+pub fn compose_theme(base: &Json, vision: &Json, look: &Look) -> Json {
+    let mut t = base.clone();
+    if let Some(Json::Obj(roles)) = t.get("roles").cloned() {
+        let roles = roles
+            .into_iter()
+            .map(|(name, mut r)| {
+                let k = look.text_size * if SUBTITLE_ROLES.contains(&name.as_str()) { look.subtitle_size } else { 1.0 };
+                if let Some(size) = r.get("size").and_then(Json::as_f64) {
+                    r.set("size", Json::from((size * f64::from(k) * 100.0).round() / 100.0));
+                }
+                (name, r)
+            })
+            .collect();
+        t.set("roles", Json::Obj(roles));
+    }
+    if let Some(patch) = vision.get("themes").and_then(|th| th.get(look.vision)) {
+        if let (Some(Json::Obj(colors)), Some(Json::Obj(over))) = (t.get("colors").cloned(), patch.get("colors")) {
+            let colors = colors.into_iter().map(|(k, v)| (k.clone(), over.iter().find(|(o, _)| *o == k).map_or(v, |(_, c)| c.clone()))).collect();
+            t.set("colors", Json::Obj(colors));
+        }
+        if let (Some(w), Some(mut focus)) = (patch.get("focus_width").and_then(Json::as_f64), t.get("focus").cloned()) {
+            focus.set("width", Json::from(w));
+            t.set("focus", focus);
+        }
+    }
+    if (look.text_size - 1.0).abs() > 1e-4 {
+        t.set("text_scale", Json::from(f64::from(look.text_size)));
+    }
+    if look.reduced_motion {
+        if let Some(mut threat) = t.get("threat").cloned() {
+            threat.set("pulse_hz", Json::from(0.0));
+            t.set("threat", threat);
+        }
+    }
+    t
 }
 
 /// Screens the game shows and hides (the capture UI mirrors their visibility).
-const SHOWN: [&str; 10] = ["hud", "radial", "pause", "victory", "defeat", "settings", "controls", "saves", "confirm", "title"];
+const SHOWN: [&str; 12] = ["hud", "radial", "pause", "victory", "defeat", "settings", "controls", "saves", "confirm", "title", "access", "subtitles"];
 
 /// Seconds a message stays on a capture.
 const CAPTURE_TOAST_S: f32 = 4.0;
@@ -92,8 +164,15 @@ fn viewport(ui: &Ui, display: &Display, size: (u32, u32), user_scale: f32) -> Vi
     Display { size: [size.0.max(1), size.1.max(1)], ..*display }.viewport(ui.theme(), user_scale)
 }
 
+/// Largest interface file read (a theme or a screen is a few KiB); a larger one is passed over
+/// for the built-in copy.
+const MAX_UI_FILE: u64 = 512 << 10;
+
 fn read(dir: Option<&Path>, name: &str, builtin: &'static str) -> String {
-    dir.and_then(|d| std::fs::read_to_string(d.join(format!("{name}.json"))).ok()).unwrap_or_else(|| builtin.to_owned())
+    dir.map(|d| d.join(format!("{name}.json")))
+        .filter(|p| std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.len() <= MAX_UI_FILE))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_else(|| builtin.to_owned())
 }
 
 impl Hud {
@@ -114,6 +193,8 @@ impl Hud {
             dir: ui_dir.map(Path::to_path_buf),
             display: Display::new([1280, 720]),
             strings: None,
+            look: Look::default(),
+            theme_src: None,
         };
         match Hud::load(ui_dir) {
             Ok(ui) => hud.ui = Some(ui),
@@ -139,21 +220,81 @@ impl Hud {
         Ok(ui)
     }
 
+    /// The assets' theme and colour themes, parsed (read once; again after a hot reload).
+    fn theme_sources(&mut self) -> Result<(Json, Json), String> {
+        if self.theme_src.is_none() {
+            let dir = self.dir.as_deref();
+            let base = Json::parse(&read(dir, "theme", THEME)).map_err(|e| format!("ui/theme.json: {}", e.message))?;
+            let vision = Json::parse(&read(dir.and_then(Path::parent), "vision", VISION)).map_err(|e| format!("vision.json: {}", e.message))?;
+            self.theme_src = Some((base, vision));
+        }
+        Ok(self.theme_src.clone().expect("just filled"))
+    }
+
+    /// The theme with `look` applied, from the assets' theme and colour themes.
+    fn theme_for(src: &(Json, Json), look: &Look) -> Result<Theme, String> {
+        Theme::from_json(&compose_theme(&src.0, &src.1, look)).map_err(|e| format!("ui/theme.json with the player's settings: {e}"))
+    }
+
+    /// Applies the player's look (text size, colours, motion) to the window's UI and the capture
+    /// UI. A theme that doesn't build keeps the one there (the error is returned and kept).
+    pub fn set_look(&mut self, look: &Look) -> Result<(), String> {
+        if *look == self.look {
+            return Ok(());
+        }
+        self.look = look.clone();
+        self.apply_look()
+    }
+
+    fn apply_look(&mut self) -> Result<(), String> {
+        if self.ui.is_none() {
+            return Ok(());
+        }
+        let theme = self.theme_sources().and_then(|src| Hud::theme_for(&src, &self.look));
+        let theme = theme.inspect_err(|e| self.problem = Some(e.clone()))?;
+        for ui in self.ui.iter_mut().chain(self.capture.as_mut().map(|(ui, _)| ui)) {
+            ui.set_theme(theme.clone()).map_err(|e| e.to_string())?;
+        }
+        self.laid_out = None;
+        Ok(())
+    }
+
+    pub fn look(&self) -> &Look {
+        &self.look
+    }
+
+    /// A row action (`rebind_kbm@row`) pressed on row N of a list (its widget `bind_kbm[N]`)
+    /// becomes `rebind_kbm:N`; any other action is as it is.
+    pub fn row_action(&self, action: &str, widget: specula_ui::WidgetRef) -> String {
+        let Some(base) = action.strip_suffix("@row") else { return action.to_owned() };
+        let row = self.ui.as_ref().and_then(|ui| ui.widget_id(widget)).and_then(|id| id.rsplit_once('[')).and_then(|(_, n)| n.strip_suffix(']')).and_then(|n| n.parse::<usize>().ok());
+        match row {
+            Some(n) => format!("{base}:{n}"),
+            None => base.to_owned(),
+        }
+    }
+
     /// Hot reload: the theme and screens whose files changed (`names`: file stems under `ui/`,
     /// `theme` for the theme), in the window's UI and the capture UI. Screens keep their
     /// visibility. A file that doesn't load keeps what was there; its error is returned.
     pub fn reload(&mut self, names: &[String]) -> Vec<String> {
         let mut errors = Vec::new();
         let Some(dir) = self.dir.clone() else { return errors };
+        // The theme's files changed: read them again (once, for both interfaces).
+        let retheme = names.iter().any(|n| n == "theme" || n == "vision");
+        if retheme {
+            self.theme_src = None;
+        }
+        let themed = retheme.then(|| self.theme_sources().and_then(|src| Hud::theme_for(&src, &self.look)));
         let uis = self.ui.iter_mut().chain(self.capture.as_mut().map(|(ui, _)| ui));
         for ui in uis {
-            if names.iter().any(|n| n == "theme") {
-                let r = std::fs::read_to_string(dir.join("theme.json")).map_err(|e| e.to_string()).and_then(|t| Theme::from_json_str(&t).map_err(|e| e.to_string())).and_then(|t| ui.set_theme(t).map_err(|e| e.to_string()));
+            if let Some(themed) = &themed {
+                let r = themed.clone().and_then(|t| ui.set_theme(t).map_err(|e| e.to_string()));
                 if let Err(e) = r {
                     errors.push(format!("ui/theme.json: {e}"));
                 }
             }
-            for n in names.iter().filter(|n| *n != "theme") {
+            for n in names.iter().filter(|n| *n != "theme" && *n != "vision") {
                 let r = std::fs::read_to_string(dir.join(format!("{n}.json"))).map_err(|e| e.to_string()).and_then(|t| ui.load_screen(&t).map(|_| ()).map_err(|e| e.to_string()));
                 if let Err(e) = r {
                     errors.push(format!("ui/{n}.json: {e}"));
@@ -185,6 +326,8 @@ impl Hud {
             dir: None,
             display: Display::new([1280, 720]),
             strings: None,
+            look: Look::default(),
+            theme_src: None,
         }
     }
 
@@ -252,13 +395,18 @@ impl Hud {
     /// A capture's interface, from the capture UI: the window's screens, the messages still
     /// fresh at `now`, laid out for the capture's size with no input.
     fn capture_overlay(&mut self, out: &mut Overlay, now: f32) {
+        let themed = (self.capture.is_none() && self.ui.is_some() && self.look != Look::default()).then(|| self.theme_sources().and_then(|src| Hud::theme_for(&src, &self.look)));
         let Some(win) = self.ui.as_ref() else { return };
         if self.capture.is_none() {
-            match Hud::load(self.dir.as_deref()) {
-                Ok(mut ui) => {
-                    ui.set_strings(self.strings.clone());
-                    self.capture = Some((ui, GpuOverlay::new()));
+            let loaded = Hud::load(self.dir.as_deref()).and_then(|mut ui| {
+                if let Some(themed) = themed {
+                    ui.set_theme(themed?).map_err(|e| e.to_string())?;
                 }
+                ui.set_strings(self.strings.clone());
+                Ok(ui)
+            });
+            match loaded {
+                Ok(ui) => self.capture = Some((ui, GpuOverlay::new())),
                 Err(e) => {
                     self.problem = Some(format!("capture HUD: {e}"));
                     return;
@@ -342,7 +490,10 @@ impl Hud {
         if events.events.iter().any(|e| matches!(e, specula_ui::UiEvent::Refused { .. })) {
             return Err(format!("'{id}' is disabled (its condition doesn't hold, e.g. not enough dust)"));
         }
-        let action = events.actions().next().map(str::to_owned);
+        let action = events.events.iter().find_map(|e| match e {
+            specula_ui::UiEvent::Action { action, widget } => Some(self.row_action(action, *widget)),
+            _ => None,
+        });
         match action {
             Some(a) => Ok(Some(a)),
             None => Err(format!("pressing '{id}' sent no action")),
@@ -359,6 +510,11 @@ impl Hud {
 
     pub fn display(&self) -> Display {
         self.display
+    }
+
+    /// The live theme (the player's look applied), while the HUD is on.
+    pub fn theme(&self) -> Option<&Theme> {
+        self.ui.as_ref().map(|ui| ui.theme())
     }
 
     /// The live UI (`capture`: the one the last capture drew) and its state, for the engine's
@@ -645,6 +801,38 @@ pub const THREAT_COLOR: [f32; 3] = palette::GRAVE_GLOW;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R1 finding 15 of m5-a11y: a look change (every settings change) composes the theme from
+    /// what was read once, and reads the files again only on a hot reload.
+    #[test]
+    fn a_look_change_reads_no_theme_file_until_a_hot_reload() {
+        let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../sepulcra/assets");
+        let dir = std::env::temp_dir().join(format!("sepulcra-hud-theme-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("ui")).unwrap();
+        for e in std::fs::read_dir(assets.join("ui")).unwrap() {
+            let p = e.unwrap().path();
+            std::fs::copy(&p, dir.join("ui").join(p.file_name().unwrap())).unwrap();
+        }
+        std::fs::copy(assets.join("vision.json"), dir.join("vision.json")).unwrap();
+        let mut hud = Hud::new(Some(&dir.join("ui")), crate::controls::bindings().unwrap());
+        assert!(hud.theme().is_some(), "{:?}", hud.problem);
+        let look = |text_size: f32| Look { text_size, ..Look::default() };
+        hud.set_look(&look(1.15)).unwrap();
+        // The files become unreadable as themes: a look change doesn't notice, because it
+        // doesn't read them.
+        std::fs::write(dir.join("ui").join("theme.json"), "not a theme").unwrap();
+        std::fs::write(dir.join("vision.json"), "not json either").unwrap();
+        hud.set_look(&look(1.3)).expect("composed from what was read once");
+        // A hot reload reads them again, and says what is wrong with them.
+        let errors = hud.reload(&["theme".to_owned()]);
+        assert!(errors.iter().any(|e| e.contains("theme.json")), "{errors:?}");
+        // An oversized file is passed over for the built-in copy.
+        std::fs::write(dir.join("ui").join("theme.json"), vec![b' '; (MAX_UI_FILE + 1) as usize]).unwrap();
+        std::fs::copy(assets.join("vision.json"), dir.join("vision.json")).unwrap();
+        assert!(hud.reload(&["theme".to_owned()]).is_empty(), "the built-in theme stands in");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use sepulcra::Content;
 
     fn info(content: &Content) -> HudInfo<'_> {

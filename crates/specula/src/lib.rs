@@ -116,12 +116,14 @@ pub mod text_world;
 mod ui;
 mod ui_engine;
 mod ui_tools;
+pub mod user_settings;
 pub mod flashwatch;
 pub mod vfx;
 mod vfx_tools;
 mod timeline;
 mod timeline_tools;
 mod l10n_tools;
+pub mod timeline_audio;
 mod gi;
 mod gi_tools;
 pub mod terrain;
@@ -212,7 +214,7 @@ const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|integrated|<index>] [--size WxH] \
 [--captures DIR] [--worlds DIR] [--world NAME] [--saves DIR] [--cache DIR] [--assets DIR] [--style FILE] [--perf FILE] \
 [--paused] [--max-fps N] [--audio device|null|off] [--response-format concise|detailed] [--tools-default core|all] [--physics-threads N] [--vfx on|off] [--terrain on|off] \n[--trace DIR] [--trace-file on|off] [--strict-budget] \
-[--owner NAME] [--lead NAME] [--reviewer NAME] [-- GAME ARGS...]";
+[--owner NAME] [--lead NAME] [--reviewer NAME] [--settings DIR|off] [-- GAME ARGS...]";
 
 /// How long a capture waits (parked, the engine serving others) for models still building.
 const CAPTURE_BUILD_WAIT: Duration = Duration::from_secs(10);
@@ -247,6 +249,9 @@ struct Args {
     world: Option<String>,
     /// Where save games live (`--saves`, default `./saves`).
     saves: Option<PathBuf>,
+    /// The hosted game's player settings (`--settings DIR|off`; default the per-user folder with
+    /// a window, none headless): see [`user_settings`].
+    settings: Option<String>,
     /// Pipeline cache directory (`--cache`, default `./.specula-cache`).
     cache: Option<PathBuf>,
     /// How `--adapter` was given, to name the pipeline cache file.
@@ -306,6 +311,7 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
         worlds: None,
         world: None,
         saves: None,
+        settings: None,
         cache: None,
         adapter_label: "discrete".into(),
         perf: None,
@@ -416,6 +422,7 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--perf" => args.perf = Some(PathBuf::from(value()?)),
             "--worlds" => args.worlds = Some(PathBuf::from(value()?)),
             "--saves" => args.saves = Some(PathBuf::from(value()?)),
+            "--settings" => args.settings = Some(value()?),
             "--physics-threads" => {
                 args.physics_threads = value()?.parse().ok().filter(|n| (1..=64).contains(n)).ok_or_else(|| format!("--physics-threads must be 1..64\n{USAGE}"))?;
             }
@@ -486,6 +493,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     let library = Library::new(&assets, args.style.as_deref());
     let mut engine = Engine::new(gpu, &captures_root, library)?;
     engine.windowed = !args.headless;
+    engine.timeline_audio.configure(&assets, Arc::clone(&audio));
     engine.watch.strict = args.strict_budget;
     engine.formats = response::Defaults::new(args.response_format);
     engine.physics.threads = args.physics_threads;
@@ -517,9 +525,14 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     // pruned in the background (docs/design/DISK.md). Scratch leases default to the captures
     // root's `scratch` folder (as `lease_take` makes them).
     let scratch_root = engine.perf_cfg.swarm.scratch_root.clone().unwrap_or_else(|| captures_root.join("scratch"));
+    // The hosted game's player settings (per user with a window; none headless unless --settings).
+    if let Some(g) = &game {
+        engine.user_settings = user_settings::UserSettings::resolve(args.settings.as_deref(), !args.headless, g.name());
+    }
+    let settings_root: Vec<(disk::Category, PathBuf)> = engine.user_settings.dir().map(|d| (disk::Category::Settings, d.to_path_buf())).into_iter().collect();
     disk::book().configure(
         engine.perf_cfg.disk.clone(),
-        vec![
+        settings_root.into_iter().chain([
             (disk::Category::Captures, captures_root.clone()),
             (disk::Category::Cache, cache_dir.clone()),
             // The trace folder: self-bounded (its JSONL files and crash reports are capped by
@@ -535,7 +548,8 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
             // Playtest replays and the hosted game's recordings: measured, never pruned.
             (disk::Category::Recordings, cwd.join(playtest_engine::RECORD_DIR)),
             (disk::Category::Recordings, cwd.join(disk::RECORDINGS_DIR)),
-        ],
+        ])
+        .collect(),
         Some(engine.capture_dir.clone()),
     );
     // Finished runs' unsaved review queues died with their engines: their evidence goes.
@@ -698,6 +712,8 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     // Writes the engine owes (world files, project files, deletes) and answers on the workers
     // complete first.
     engine.workers_drain(Duration::from_secs(10));
+    // The player's last settings change, if a write was in flight when they quit.
+    engine.finish_settings();
     engine.finish_autosave(true);
     // Save games still being written land before the process ends.
     engine.join_saves();
@@ -853,6 +869,12 @@ struct Engine {
     game: Option<Box<dyn Game>>,
     /// The game's name, also its agent name in attribution.
     game_name: String,
+    /// The game's player settings: where they are saved, the write in flight.
+    pub(crate) user_settings: user_settings::UserSettings,
+    /// The game asked to quit from the window's own input ([`Game::take_quit`]).
+    game_quit: bool,
+    /// Timelines' audio cues on the engine's audio service.
+    pub(crate) timeline_audio: timeline_audio::TimelineAudio,
     /// Frame pacing and simulation cost, for perf_frame.
     pacing: perf::Pacing,
     /// With a window: when agents are served between presents (see `schedule`); a copy of the
@@ -1087,6 +1109,9 @@ impl Engine {
             clock: Clock::new(DEFAULT_TICK_HZ),
             game: None,
             game_name: String::new(),
+            user_settings: user_settings::UserSettings::default(),
+            timeline_audio: timeline_audio::TimelineAudio::default(),
+            game_quit: false,
             pacing: perf::Pacing::default(),
             schedule: Schedule::default(),
             profiler: perf::Profiler::new(120),
@@ -1317,6 +1342,11 @@ impl Engine {
 
     /// Calls the game's `start` once the engine is ready.
     fn start_game(&mut self) {
+        if self.game.is_none() {
+            return;
+        }
+        // Its player's saved settings first (read here, at start-up, before the loop).
+        self.settings_to_game();
         let Some(game) = self.game.as_mut() else { return };
         sim_writes::game_start(&mut self.world, &mut self.swarm, game.as_mut(), &self.clock, &self.game_name, self.windowed);
         self.last_advance = Instant::now();
@@ -2156,6 +2186,10 @@ impl Engine {
             schedule.set_frame_floor(self.frame_floor.0);
             schedule.set_max_fps(self.max_fps);
             self.schedule = schedule;
+            // The game's Quit (its title screen, the window's own input) stops like the close button.
+            if self.game_quit {
+                break;
+            }
             let window = if minimized { schedule::MINIMIZED_SERVE } else { schedule.window() };
             let serve_start = Instant::now();
             let ended = schedule.serve(
@@ -2814,7 +2848,13 @@ impl Engine {
                     let checkpoint = if self.swarm.claims.is_empty() { None } else { game.checkpoint() };
                     let (clock, agent, windowed) = (&self.clock, self.game_name.as_str(), self.windowed);
                     let call = |gw: &mut game::GameWorld| game.call_tool(&mut Ctx { world: gw.reborrow(), clock, agent, windowed }, &name, &args);
-                    match self.world.game_tool(&mut self.swarm, tick, agent, w, call) {
+                    let result = self.world.game_tool(&mut self.swarm, tick, agent, w, call);
+                    // Presses the game refused as the player's alone: told to the input monitor
+                    // (seen, never counted), whatever became of the call.
+                    if game.take_refused_presses() > 0 {
+                        inputguard::declined(inputguard::Channel::ScreenInput, &name, &inputguard::Actor::of(&self.swarm, &request.session), "players_only", "the hosted game");
+                    }
+                    match result {
                         Ok(out) => out,
                         Err(e) => {
                             // The world was rolled back; the game goes back with it.
@@ -3380,6 +3420,10 @@ impl Engine {
             ])),
             // Work off the engine thread (docs/design/WORKERS.md): the pool and the step jobs.
             ("workers", Json::obj([("pool", self.workers.to_json()), ("step_jobs", self.steps.to_json())])),
+            // The hosted game's settings file (where, writes made, a write that failed) and its
+            // timelines' cue sounds (played, skipped, cached, failed names remembered).
+            ("settings", self.user_settings.to_json()),
+            ("timeline_audio", self.timeline_audio.to_json()),
         ]);
         let mut info = info;
         if let Some(e) = &self.board_io.error {

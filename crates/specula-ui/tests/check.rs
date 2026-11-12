@@ -298,6 +298,12 @@ fn the_sepulcra_screens_pass_with_the_box_font() {
     s.set_str("inspect", "Brazier cairn II").set_str("inspect_icon", "brazier").set_bool("inspect_stone", true).set_bool("can_upgrade", true);
     s.set_str("inspect_detail", "Lobbed fire: 28 damage in 2 m, every 1.5 s, 6.5 m range.");
     s.set_str("upgrade_detail", "Tier III: lobbed fire: 45 damage in 2.3 m, every 1.4 s, 7 m range.");
+    // The accessibility screen's size buttons, as the game writes them (the widest forms: chosen;
+    // the box font has no multiplication sign, so an x stands for it).
+    s.set_str("ui_opt_auto", "[Auto 115%]");
+    for i in 0..6 {
+        s.set_str(&format!("ui_opt_{i}"), "[150% x1.55]").set_bool(&format!("ui_opt_{i}_ok"), true);
+    }
     for n in &names {
         let f = check(&mut ui, &[n], &s, None, &Target::defaults()).unwrap();
         let errors: Vec<&Finding> = f.iter().filter(|x| x.severity == Severity::Error && x.rule != "gamepad_access").collect();

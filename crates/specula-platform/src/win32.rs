@@ -141,6 +141,7 @@ extern "system" {
     fn MonitorFromWindow(hwnd: Hwnd, flags: u32) -> Handle;
     fn GetMonitorInfoW(monitor: Handle, info: *mut MonitorInfoExW) -> i32;
     fn EnumDisplaySettingsW(device: *const u16, mode: u32, devmode: *mut DevModeW) -> i32;
+    fn GetSystemMetrics(index: i32) -> i32;
     // Test-only imports live here too: each DLL is declared by exactly one crate (AGENTS.md
     // rule 2), so integration tests and examples cannot declare their own `user32` imports.
     #[cfg(test)]
@@ -557,6 +558,57 @@ pub(crate) fn dpi_of(hwnd: Hwnd) -> Option<u32> {
     // any thread.
     let dpi = unsafe { GetDpiForWindow(hwnd) };
     (dpi > 0).then_some(dpi)
+}
+
+/// `SM_DIGITIZER`, and its bits for a built-in touch screen that is ready.
+const SM_DIGITIZER: i32 = 94;
+const NID_INTEGRATED_TOUCH: i32 = 0x01;
+const NID_READY: i32 = 0x80;
+/// `MDT_RAW_DPI`: the monitor's physical density (from its EDID), not the scaled one.
+const MDT_RAW_DPI: u32 = 2;
+
+type GetDpiForMonitorFn = unsafe extern "system" fn(monitor: Handle, kind: u32, x: *mut u32, y: *mut u32) -> i32;
+
+/// `shcore`'s GetDpiForMonitor, loaded at run time once (`shcore.dll` ships with Windows 8.1+;
+/// loaded through `dynlib`, never linked, so no crate declares `shcore`).
+fn get_dpi_for_monitor() -> Option<GetDpiForMonitorFn> {
+    static F: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    let f = (*F.get_or_init(|| {
+        let lib = specula_sys::dynlib::Library::open("shcore.dll").ok()?;
+        let f = lib.symbol("GetDpiForMonitor")? as usize;
+        // Kept loaded for the process: the address above stays valid.
+        std::mem::forget(lib);
+        Some(f)
+    }))?;
+    // SAFETY: `f` is GetDpiForMonitor's address from shcore.dll, which is never unloaded (its
+    // Library was forgotten); the type matches its documented signature (HRESULT
+    // GetDpiForMonitor(HMONITOR, MONITOR_DPI_TYPE, UINT*, UINT*)).
+    Some(unsafe { std::mem::transmute::<usize, GetDpiForMonitorFn>(f) })
+}
+
+/// The monitor nearest `hwnd`: its size, raw density and whether the machine has a built-in touch
+/// screen. Callable from any thread.
+pub(crate) fn monitor_of(hwnd: Hwnd) -> Option<crate::Monitor> {
+    // SAFETY: MonitorFromWindow accepts any handle value with MONITOR_DEFAULTTONEAREST.
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    let mut info = MonitorInfoExW { cb_size: std::mem::size_of::<MonitorInfoExW>() as u32, rc_monitor: Rect::default(), rc_work: Rect::default(), flags: 0, device: [0; 32] };
+    // SAFETY: `info` is a writable MONITORINFOEXW with cbSize set; a stale monitor handle fails.
+    if monitor.is_null() || unsafe { GetMonitorInfoW(monitor, &mut info) } == 0 {
+        return None;
+    }
+    let r = info.rc_monitor;
+    let size = [(r.right - r.left).max(0) as u32, (r.bottom - r.top).max(0) as u32];
+    let raw_dpi = get_dpi_for_monitor().and_then(|f| {
+        let (mut x, mut y) = (0u32, 0u32);
+        // SAFETY: `monitor` is a live HMONITOR from MonitorFromWindow; `x` and `y` are writable.
+        let hr = unsafe { f(monitor, MDT_RAW_DPI, &mut x, &mut y) };
+        // A panel that reports nothing gives 96 or 0 here: treat both as unknown.
+        (hr >= 0 && x > 0 && x != 96).then_some(x as f32)
+    });
+    // SAFETY: GetSystemMetrics takes any index and returns 0 for unknown ones.
+    let digitizer = unsafe { GetSystemMetrics(SM_DIGITIZER) };
+    let touch = digitizer & NID_INTEGRATED_TOUCH != 0 && digitizer & NID_READY != 0;
+    Some(crate::Monitor { size, raw_dpi, touch })
 }
 
 /// The refresh rate of the display nearest `hwnd` (the primary one for a null or stale handle),

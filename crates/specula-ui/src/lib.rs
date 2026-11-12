@@ -39,11 +39,12 @@ pub mod state;
 pub mod strings;
 pub mod testfont;
 pub mod theme;
+pub mod vision;
 mod ui;
 
 pub use agent::{Only, Outline, TreeOpts};
 pub use check::{check, Finding, Severity, Target};
-pub use display::Display;
+pub use display::{Display, Handheld, Panel, ScaleOption};
 pub use draw::{DrawCmd, DrawList, DrawStats, GlyphQuad, Rect, RectCmd, Vertex};
 pub use error::{ErrorCode, UiError};
 pub use screen::{Screen, SCREEN_FORMAT};

@@ -671,7 +671,7 @@ def part_sepulcra(args, out):
     d = out / "sepulcra"
     d.mkdir(parents=True, exist_ok=True)
     res = {}
-    extra = ["--adapter", args.adapter, "--size", "1280x720", "--captures", str(d / "captures"), "--", "--seed", "7", "--mute"]
+    extra = ["--adapter", args.adapter, "--size", "1280x720", "--captures", str(d / "captures"), "--", "--seed", "7", "--mute", "--title", "off"]
     with Engine(args.game, args.port + 1, d / "engine.log", *extra, cwd=d) as eng:
         m = eng.mcp("vfx-sepulcra")
         res["gpu"] = m.json("engine_info")["gpu"]["name"]

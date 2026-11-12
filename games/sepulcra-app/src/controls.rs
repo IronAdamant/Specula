@@ -171,6 +171,18 @@ impl Controls {
         self.input.update(now, events, &pads);
     }
 
+    /// [`Controls::begin`] for an agent's synthetic frame (`ui_act`): applied whatever the
+    /// window's focus, and dropped while the player is choosing a key (`false`: see
+    /// `Input::update_synthetic`).
+    pub fn begin_synthetic(&mut self, events: &[Event], frame_pads: &[GamepadState]) -> bool {
+        let mut pads = [GamepadState::default(); MAX_GAMEPADS];
+        for (slot, p) in pads.iter_mut().zip(frame_pads) {
+            *slot = *p;
+        }
+        let now = self.started.elapsed().as_secs_f64();
+        self.input.update_synthetic(now, events, &pads)
+    }
+
     /// [`Controls::begin`] with an explicit input clock and pad states (tests, playtests).
     pub fn begin_at(&mut self, now_s: f64, events: &[Event], pads: &[GamepadState]) {
         self.input.update(now_s, events, pads);

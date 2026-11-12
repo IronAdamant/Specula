@@ -171,7 +171,7 @@ def check_adapter(exe, adapter, out, port, gpu_av=False, effects=False):
         env["VK_LAYER_ENABLES"] = "VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT"
     with open(log_path, "w") as log:
         proc = subprocess.Popen(
-            [str(exe), "--adapter", str(adapter), "--size", "960x540", "--port", str(port), "--captures", str(out / "captures")],
+            [str(exe), "--settings", "off", "--adapter", str(adapter), "--size", "960x540", "--port", str(port), "--captures", str(out / "captures")],
             stderr=log,
             env=env,
         )

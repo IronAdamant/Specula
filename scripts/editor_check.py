@@ -382,8 +382,9 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     args = ["--adapter", a.adapter, "--size", "1280x800", "--perf", str(PERF_TOML), "--captures", str(out / "captures"),
             "--worlds", str(out / "worlds"), "--saves", str(out / "saves"), "--owner", "owner-proxy", "--", "--seed", "7", "--mute",
-            # The game's own view, not the intro flyover's (its first pose is far out).
-            "--intro", "off"]
+            # The game's own view, not the intro flyover's (its first pose is far out), and no
+            # title screen holding the run (it hides the HUD).
+            "--intro", "off", "--title", "off"]
     report = {"adapter": a.adapter}
     with Engine(exe, a.port, out / "engine.log", *args, cwd=str(out)) as eng:
         owner, builder, claimer = eng.mcp("owner"), eng.mcp("builder"), eng.mcp("claimer")

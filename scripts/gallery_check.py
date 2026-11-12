@@ -697,7 +697,7 @@ def restart(exe, a, out, assets, report):
     and the window could never decide it. The engine renders it again."""
     print("\n-- after a restart on a fresh captures folder --")
     args = ["--adapter", a.adapter, "--size", "1280x800", "--assets", str(assets), "--captures", str(out / "captures-restart"), "--worlds", str(out / "worlds"), "--saves", str(out / "saves"),
-            "--lead", "conductor", "--owner", "owner-proxy", "--reviewer", "critic", "--reviewer", "pacer", "--reviewer", "pacer2", "--", "--seed", "7", "--mute"]
+            "--lead", "conductor", "--owner", "owner-proxy", "--reviewer", "critic", "--reviewer", "pacer", "--reviewer", "pacer2", "--", "--seed", "7", "--mute", "--title", "off"]
     with Engine(exe, a.port, out / "engine-restart.log", *args, cwd=str(ROOT)) as eng:
         lead = eng.mcp("lead")
         lead.hello("conductor", role="lead")
@@ -745,7 +745,7 @@ def main():
     shutil.copytree(ROOT / "games" / "sepulcra" / "assets", assets)
     report = {"assets": assets}
     args = ["--adapter", a.adapter, "--size", "1280x800", "--assets", str(assets), "--captures", str(out / "captures"), "--worlds", str(out / "worlds"), "--saves", str(out / "saves"),
-            "--lead", "conductor", "--owner", "owner-proxy", "--reviewer", "critic", "--reviewer", "pacer", "--reviewer", "pacer2", "--", "--seed", "7", "--mute"]
+            "--lead", "conductor", "--owner", "owner-proxy", "--reviewer", "critic", "--reviewer", "pacer", "--reviewer", "pacer2", "--", "--seed", "7", "--mute", "--title", "off"]
     with Engine(exe, a.port, out / "engine.log", *args, cwd=str(ROOT)) as eng:
         lead, owner, reviewer = eng.mcp("lead"), eng.mcp("owner"), eng.mcp("reviewer")
         lead.hello("conductor", role="lead")

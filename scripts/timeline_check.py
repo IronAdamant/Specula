@@ -334,7 +334,7 @@ def sepulcra(args, out):
 
     def start(n, log):
         flags = ["--adapter", args.adapter, "--size", "1280x720", "--assets", str(assets), "--captures", str(out / f"sep_captures{n}"),
-                 "--worlds", str(out / f"sep_worlds{n}"), "--saves", str(out / f"sep_saves{n}"), "--", "--seed", "7", "--mute"]
+                 "--worlds", str(out / f"sep_worlds{n}"), "--saves", str(out / f"sep_saves{n}"), "--", "--seed", "7", "--mute", "--title", "off"]
         return Engine(GAME, args.port + 3 + n, out / log, *flags, cwd=str(out))
 
     # A: the intro plays, the run waits, a key skips it.

@@ -18,7 +18,7 @@ Read [HANDOFF.md](HANDOFF.md) first.
    DLL are silently dropped (crash at call time). `kernel32` → `specula-sys`; `user32`, `winmm` and `imm32` →
    `specula-platform`; `ole32` → `specula-audio` (`crates/specula/tests/dll_owners.rs` checks this list against the
    code). Runtime-loaded through `dynlib` (any crate may load them): `vulkan-1`,
-   `xinput1_4`/`xinput9_1_0` (specula-platform), `avrt` (specula-audio),
+   `xinput1_4`/`xinput9_1_0` and `shcore` (specula-platform: gamepads; a monitor's physical size), `avrt` (specula-audio),
    `iphlpapi` (specula-sys: which ports have listeners), `bcrypt` (specula-sys `digest`: SHA-256 from the OS, for
    what the engine vouches for, such as recorded review evidence; never hand-rolled, rule 12).
    Tests/examples must not re-declare imports of a DLL their dependencies already declare.

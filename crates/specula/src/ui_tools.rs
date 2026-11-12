@@ -91,6 +91,9 @@ pub struct DisplayArg {
     pub os_scale: Option<Option<f32>>,
     pub safe_area: Option<[f32; 4]>,
     pub touch: Option<bool>,
+    /// A physical panel the size of the display, this many inches across (a handheld: the
+    /// game's handheld profile reads it). `Some(None)`: none.
+    pub diagonal_in: Option<Option<f32>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -304,10 +307,10 @@ fn size_arg(v: &Json, key: &str) -> Result<[u32; 2], String> {
     Ok([w as u32, h as u32])
 }
 
-/// `display {size, os_scale, safe_area, touch}`.
+/// `display {size, os_scale, safe_area, touch, diagonal_in}`.
 fn display_arg(args: &Json) -> Result<Option<DisplayArg>, String> {
     let Some(d) = args.get("display").filter(|v| !v.is_null()) else { return Ok(None) };
-    check_keys(d, "'display'", &[&["size", "os_scale", "safe_area", "touch"]])?;
+    check_keys(d, "'display'", &[&["size", "os_scale", "safe_area", "touch", "diagonal_in"]])?;
     let mut out = DisplayArg::default();
     if let Some(s) = d.get("size").filter(|v| !v.is_null()) {
         out.size = Some(size_arg(s, "display.size")?);
@@ -321,6 +324,11 @@ fn display_arg(args: &Json) -> Result<Option<DisplayArg>, String> {
         out.safe_area = Some(nums::<4>(s, "display.safe_area", 0.0, 2048.0)?.map(|v| v as f32));
     }
     out.touch = bool_arg(d, "touch")?;
+    match d.get("diagonal_in") {
+        None => {}
+        Some(Json::Null) => out.diagonal_in = Some(None),
+        Some(v) => out.diagonal_in = Some(Some(v.as_f64().filter(|x| (3.0..=100.0).contains(x)).ok_or("'display.diagonal_in' must be a number of inches from 3 to 100 (the panel's diagonal: 7 is a Steam Deck), or null")? as f32)),
+    }
     Ok(Some(out))
 }
 
@@ -586,6 +594,7 @@ pub fn definitions() -> Vec<ToolDef> {
         ("os_scale", t("number", "The OS's scale for the monitor (Windows: DPI / 96), 0.5..5, or null for the platform's: a floor for the UI scale.")),
         ("safe_area", arr(Json::obj([("type", Json::from("number")), ("minimum", Json::from(0)), ("maximum", Json::from(2048))]), 4, "Insets [top, right, bottom, left] in physical px (notches, TV overscan); each at most 40% of its side.")),
         ("touch", t("boolean", "Touch is a primary input.")),
+        ("diagonal_in", t("number", "A physical panel the size of the display, this many inches across (3..100, or null for none): a handheld (7 with 1280x800 is a Steam Deck) whose profile the game reads.")),
     ]);
     let step = Json::obj([
         ("type", Json::from("object")),
@@ -749,7 +758,7 @@ mod tests {
         assert!(!f.player_camera);
         // A display for this capture alone (review R1 of m5-uitools, finding 1).
         let Ok(UiCall::Frame(f)) = p("ui_frame", r#"{"display": {"os_scale": 1.5, "safe_area": [40, 0, 40, 0], "touch": true}}"#) else { panic!() };
-        assert_eq!(f.display, Some(DisplayArg { os_scale: Some(Some(1.5)), safe_area: Some([40.0, 0.0, 40.0, 0.0]), touch: Some(true), size: None }));
+        assert_eq!(f.display, Some(DisplayArg { os_scale: Some(Some(1.5)), safe_area: Some([40.0, 0.0, 40.0, 0.0]), touch: Some(true), size: None, diagonal_in: None }));
         assert!(p("ui_frame", r#"{"display": {"size": [4096, 4096]}}"#).err().unwrap().contains("past 4K"));
         assert!(p("ui_frame", r#"{"display": {"dpi": 2}}"#).is_err());
     }

@@ -356,6 +356,25 @@ impl AudioService {
         Bus::from_name(name)
     }
 
+    /// The plays logged after `seq` (oldest first, at most `max`) into `out`, and the cursor to
+    /// pass next time (captions follow the log with it; m5-a11y). Bounded: `max` and the log's
+    /// own length; a reader that fell behind skips what the log dropped.
+    pub fn played_after(&self, seq: u64, max: usize, out: &mut Vec<PlayRecord>) -> u64 {
+        out.clear();
+        let log = lock(&self.log);
+        let mut last = seq;
+        // Sequence numbers only grow: find the first newer one without walking the log.
+        let start = log.records.partition_point(|r| r.seq <= seq);
+        for r in log.records.range(start..).take(max) {
+            out.push(r.clone());
+            last = r.seq;
+        }
+        if out.len() < max {
+            last = last.max(log.seq);
+        }
+        last
+    }
+
     /// `audio_played`: plays in the last `seconds`, newest first, filtered, at most `limit`.
     pub fn played_json(&self, seconds: f64, bus: Option<Bus>, by: Option<&str>, prefix: Option<&str>, limit: usize) -> Json {
         let now = self.clock_s();

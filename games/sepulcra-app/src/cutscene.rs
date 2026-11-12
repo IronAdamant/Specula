@@ -124,12 +124,6 @@ impl Cutscenes {
     }
 }
 
-/// The sound a cue names, among the game's own (the engine's audio service binds cues later).
-pub fn cue_sound(name: &str) -> Option<&'static str> {
-    const SOUNDS: [&str; 6] = ["brazier_whoosh", "night_ambience", "wave_start", "upgrade_chime", "victory", "ui_click"];
-    SOUNDS.into_iter().find(|s| *s == name)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

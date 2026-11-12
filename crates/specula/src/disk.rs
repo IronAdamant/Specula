@@ -85,10 +85,13 @@ pub enum Category {
     /// Playtest replays (`<cwd>/playtests`) and the hosted game's recordings (Sepulcra's
     /// `play_record`, `<cwd>/recordings`): evidence and replays, measured, never pruned.
     Recordings,
+    /// The hosted game's player settings (`--settings`, by default the per-user settings folder
+    /// with a window): one small file, never pruned.
+    Settings,
 }
 
 impl Category {
-    pub const ALL: [Category; 9] = [
+    pub const ALL: [Category; 10] = [
         Category::Captures,
         Category::Cache,
         Category::Content,
@@ -98,6 +101,7 @@ impl Category {
         Category::Worlds,
         Category::Project,
         Category::Recordings,
+        Category::Settings,
     ];
 
     pub fn name(self) -> &'static str {
@@ -111,6 +115,7 @@ impl Category {
             Category::Worlds => "worlds",
             Category::Project => "project",
             Category::Recordings => "recordings",
+            Category::Settings => "settings",
         }
     }
 
@@ -135,6 +140,7 @@ impl Category {
             Category::Worlds => "world folders are never pruned: delete worlds you no longer need by hand",
             Category::Project => "project files are never pruned: project_delete removes files you no longer need",
             Category::Recordings => "playtest replays and game recordings are evidence, never pruned: delete ones you no longer need from playtests/ and recordings/ by hand",
+            Category::Settings => "the player's settings file is the player's: never pruned (a few KiB)",
         }
     }
 }
@@ -528,12 +534,24 @@ impl DiskBook {
 
     /// Writes `data` to `path` for `cat` (its folders are made): admitted first, then accounted.
     pub fn write(&self, cat: Category, source: &'static str, path: &Path, data: &[u8], need: Need) -> Result<(), DiskError> {
+        self.write_file(cat, source, path, data, need, false)
+    }
+
+    /// [`DiskBook::write`] with the data on disk before it returns: for a file that is then renamed
+    /// over another, so a power cut never leaves the new name with nothing in it.
+    pub fn write_synced(&self, cat: Category, source: &'static str, path: &Path, data: &[u8], need: Need) -> Result<(), DiskError> {
+        self.write_file(cat, source, path, data, need, true)
+    }
+
+    fn write_file(&self, cat: Category, source: &'static str, path: &Path, data: &[u8], need: Need, sync: bool) -> Result<(), DiskError> {
+        use std::io::Write as _;
         let old = std::fs::symlink_metadata(path).ok().filter(|m| m.is_file()).map(|m| m.len());
         self.admit(cat, (data.len() as u64).saturating_sub(old.unwrap_or(0)), need)?;
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent).map_err(|e| DiskError::io(parent, &e))?;
         }
-        std::fs::write(path, data).map_err(|e| DiskError::io(path, &e))?;
+        let mut f = std::fs::File::create(path).map_err(|e| DiskError::io(path, &e))?;
+        f.write_all(data).and_then(|()| if sync { f.sync_all() } else { Ok(()) }).map_err(|e| DiskError::io(path, &e))?;
         self.wrote(cat, source, data.len() as i64 - old.unwrap_or(0) as i64, i64::from(old.is_none()));
         Ok(())
     }
@@ -1604,6 +1622,10 @@ mod tests {
         // Overwriting counts the difference.
         book.write(Category::Captures, "sight", &caps.join("run-1-1").join("a.png"), &[0u8; 400], Need::Agent).unwrap();
         assert_eq!(book.used(Category::Captures), (400, 1));
+        // A synced write is the same write, on disk before it returns (R2 of m5-a11y).
+        book.write_synced(Category::Captures, "sight", &caps.join("run-1-1").join("a.png"), &[7u8; 400], Need::Agent).unwrap();
+        assert_eq!(book.used(Category::Captures), (400, 1));
+        assert_eq!(std::fs::read(caps.join("run-1-1").join("a.png")).unwrap(), vec![7u8; 400]);
         std::fs::write(caps.join("outside-the-book.bin"), [0u8; 50]).unwrap();
         book.measure_now();
         assert_eq!(book.used(Category::Captures), (450, 2), "the walk sees every file, and not scratch's");

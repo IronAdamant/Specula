@@ -170,6 +170,57 @@ pub fn defs() -> Vec<ToolDef> {
             ),
         },
         ToolDef {
+            name: "play_settings".into(),
+            description: "The player's settings (docs/design/ACCESSIBILITY.md): read them (no arguments), set some by name, bind inputs by \
+                          name, or reset the bindings. Answers live (the settings in effect), saving (where the player's file is and \
+                          whether agents' changes reach it: only in a folder the operator named with --settings; otherwise an agent's \
+                          changes last for the session), ui_scale (each option's effective scale on the current display, limited \
+                          ones named), handheld (the display's handheld, if any), colours (whether the colour theme keeps the dead, \
+                          magic and warnings apart for the deficiency it is for), conflicts (inputs another action also uses). \
+                          set: ui_scale (\"auto\" or 0.8, 0.9, 1, 1.15, 1.3, 1.5), text_size (\"auto\" or 0.9..1.5), volume \
+                          (0, 0.25, 0.5, 0.75, 1), reduced_motion, glyphs (Auto, Xbox, PlayStation, Steam Deck), autosave, vision \
+                          (standard, deuteranopia, protanopia, tritanopia, high_contrast), subtitles, captions, subtitle_size \
+                          (small, medium, large, huge), subtitle_background, camera_drag (hold or toggle). bind: up to 16 \
+                          {action, device: kbm | pad, input: \"Key.G\" | \"Mouse.Middle\" | \"Pad.North\"}, replacing the action's \
+                          first input of that device (buttons only). The game never listens for an input for an agent (that would \
+                          read the player's next key). Nothing changes when any part is refused."
+                .into(),
+            input_schema: obj([
+                ("type", Json::from("object")),
+                (
+                    "properties",
+                    obj([
+                        ("set", obj([("type", Json::from("object")), ("maxProperties", Json::from(12)), ("description", Json::from("Settings by name (see the description)"))])),
+                        (
+                            "bind",
+                            obj([
+                                ("type", Json::from("array")),
+                                ("maxItems", Json::from(16)),
+                                (
+                                    "items",
+                                    obj([
+                                        ("type", Json::from("object")),
+                                        (
+                                            "properties",
+                                            obj([
+                                                ("action", obj([("type", Json::from("string")), ("maxLength", Json::from(64))])),
+                                                ("device", obj([("type", Json::from("string")), ("enum", Json::arr(["kbm", "pad"].map(Json::from)))])),
+                                                ("input", obj([("type", Json::from("string")), ("maxLength", Json::from(64))])),
+                                            ]),
+                                        ),
+                                        ("required", Json::arr(["action", "device", "input"].map(Json::from))),
+                                    ]),
+                                ),
+                                ("description", Json::from("Inputs to bind by name")),
+                            ]),
+                        ),
+                        ("reset_bindings", prop("boolean", "Back to the player's saved bindings (the game's own where --settings DIR saves this call's changes), before any bind in the same call")),
+                    ]),
+                ),
+                ("additionalProperties", Json::Bool(false)),
+            ]),
+        },
+        ToolDef {
             name: "play_control".into(),
             description: "The game's own pause (the player's P key: the simulation stops, building still works) and speed \
                           (1, 2 or 4 simulation steps per tick). For agents' time, prefer the engine's time_control."
@@ -372,6 +423,9 @@ pub fn call(game: &mut SepulcraGame, ctx: &mut Ctx, name: &str, args: &Json) -> 
         "play_replay" => replay(game, ctx, args),
         "play_control" => control(game, ctx, args),
         "play_ui" => ui(game, ctx, args),
+        "play_settings" => {
+            check_keys(args, &["set", "bind", "reset_bindings"]).and_then(|()| game.play_settings(args).map(|j| ToolOutput::text(j.to_string())).map_err(|(code, m)| error(code, m, vec![])))
+        }
         other => Err(error("unknown_tool", format!("no game tool '{other}'"), vec![])),
     };
     result.unwrap_or_else(|e| e)

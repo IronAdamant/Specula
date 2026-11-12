@@ -83,6 +83,41 @@ pub fn os_scale_of(raw: RawWindow) -> Option<f32> {
     }
 }
 
+/// The monitor showing a window, as the operating system reports it: its native size in physical
+/// pixels, its raw pixel density (from the monitor's own description of its panel, EDID; `None`
+/// when it gives none, as projectors and some TVs don't) and whether the machine has a built-in
+/// touch screen. A game reads the panel's physical size from it (handheld profiles: a 7" panel
+/// wants larger text than a 27" one at the same resolution).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Monitor {
+    pub size: [u32; 2],
+    pub raw_dpi: Option<f32>,
+    pub touch: bool,
+}
+
+impl Monitor {
+    /// The panel's diagonal in inches, when its density is known.
+    pub fn diagonal_in(&self) -> Option<f32> {
+        let dpi = self.raw_dpi.filter(|d| d.is_finite() && *d >= 20.0)?;
+        let (w, h) = (self.size[0] as f32, self.size[1] as f32);
+        Some((w * w + h * h).sqrt() / dpi)
+    }
+}
+
+/// The monitor showing `raw` (the nearest one), from **any** thread: see [`Monitor`]. `None` when
+/// there is no backend. Like the OS scale it can change (the window moves): ask again now and then.
+pub fn monitor_of(raw: RawWindow) -> Option<Monitor> {
+    #[cfg(windows)]
+    {
+        win32::monitor_of(raw.hwnd)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = raw;
+        None
+    }
+}
+
 /// The refresh rate, in Hz, of the display showing `raw` (the nearest one), from **any** thread.
 /// `None` when the driver doesn't say or there is no backend. Variable-refresh displays report
 /// their highest rate. It can change (the window moves to another display): ask again now and then.
@@ -306,5 +341,21 @@ mod imp {
         pub(crate) fn set_ime_position(&mut self, _x: i32, _y: i32, _height: i32) {
             match *self {}
         }
+    }
+}
+
+#[cfg(test)]
+mod monitor_tests {
+    use super::Monitor;
+
+    #[test]
+    fn a_panels_diagonal_comes_from_its_density() {
+        // A Steam Deck LCD: 1280x800 at about 216 dpi is a 7" panel.
+        let deck = Monitor { size: [1280, 800], raw_dpi: Some(216.0), touch: true };
+        assert!((deck.diagonal_in().unwrap() - 6.99).abs() < 0.05, "{:?}", deck.diagonal_in());
+        // No density, or a nonsense one: unknown.
+        assert_eq!(Monitor { raw_dpi: None, ..deck }.diagonal_in(), None);
+        assert_eq!(Monitor { raw_dpi: Some(f32::NAN), ..deck }.diagonal_in(), None);
+        assert_eq!(Monitor { raw_dpi: Some(0.0), ..deck }.diagonal_in(), None);
     }
 }

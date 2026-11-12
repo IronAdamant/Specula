@@ -817,6 +817,11 @@ impl Engine {
         if self.timeline.pending.is_empty() {
             return;
         }
+        // Audio cues play on the engine's audio service, game or no game (timeline_audio).
+        if self.timeline.pending.iter().any(|e| matches!(e.what, TimelineWhat::Cue(_))) {
+            let cues: Vec<TimelineEvent> = self.timeline.pending.iter().filter(|e| matches!(e.what, TimelineWhat::Cue(_))).cloned().collect();
+            self.timeline_cues(&cues);
+        }
         if self.game.is_none() {
             self.timeline.pending.clear();
             return;

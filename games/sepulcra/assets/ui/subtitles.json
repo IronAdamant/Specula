@@ -1,0 +1,57 @@
+{
+  "format": "specula.ui.screen.v1",
+  "name": "subtitles",
+  "input": "none",
+  "layer": 18,
+  "notes": "Cutscene subtitles and sound captions at the bottom centre, over the game and under menus (docs/design/ACCESSIBILITY.md). On screen only while a line is said or a caption shows. State: subtitle_text (the line being said, absent when none), subtitle_speaker (who says it, absent when nobody), captions (rows: text, e.g. \"[A bell tolls, left]\"; at most 3, newest last), has_captions, subtitle_band (a dark band behind them: the Subtitle background setting). Sizes follow the Subtitle size setting (the theme's subtitle_line, speaker and caption roles).",
+  "root": {
+    "type": "box",
+    "children": [
+      {
+        "type": "box",
+        "anchor": "bottom",
+        "margin": [0, 0, 132, 0],
+        "width": "72%",
+        "overlap_ok": true,
+        "notes": "Over the HUD's bottom panels when the text is large: a line being said comes first (its band keeps it readable over them).",
+        "layout": "column",
+        "align": "center",
+        "gap": 6,
+        "children": [
+          {
+            "type": "panel", "style": "caption_band", "width": "fill", "layout": "column", "align": "center", "gap": 2,
+            "visible": "subtitle_text && subtitle_band", "overlap_ok": true,
+            "children": [
+              { "type": "label", "text": "{subtitle_speaker}", "role": "speaker", "visible": "has_speaker" },
+              { "type": "label", "text": "{subtitle_text}", "role": "subtitle_line", "text_align": "center", "wrap": true, "width": "fill" }
+            ]
+          },
+          {
+            "type": "panel", "style": "caption_clear", "width": "fill", "layout": "column", "align": "center", "gap": 2,
+            "visible": "subtitle_text && !subtitle_band", "overlap_ok": true,
+            "children": [
+              { "type": "label", "text": "{subtitle_speaker}", "role": "speaker", "visible": "has_speaker" },
+              { "type": "label", "text": "{subtitle_text}", "role": "subtitle_line", "text_align": "center", "wrap": true, "width": "fill" }
+            ]
+          },
+          {
+            "type": "list",
+            "id": "caption_list",
+            "width": "fill",
+            "gap": 4,
+            "visible": "has_captions",
+            "overlap_ok": true,
+            "repeat": {
+              "source": "captions",
+              "max": 3,
+              "template": {
+                "type": "panel", "style": "caption_band", "layout": "row",
+                "children": [{ "type": "label", "text": "{item.text}", "role": "caption", "wrap": true, "width": "fill" }]
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

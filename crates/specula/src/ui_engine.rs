@@ -64,6 +64,9 @@ pub(crate) struct UiState {
     owner: Option<(String, String, DisplayArg)>,
     /// The window: its size and OS scale, and when the scale was read.
     window: Option<([u32; 2], Option<f32>, Instant)>,
+    /// The window's monitor as a panel (native size, diagonal, built-in touch), read with the
+    /// OS scale: handheld profiles (m5-a11y).
+    panel: Option<specula_ui::Panel>,
     /// Headless: the camera the game's last synthetic frame chose (what `ui_frame` looks through).
     camera: Option<Camera>,
     last_sweep: Option<Instant>,
@@ -79,6 +82,12 @@ fn overlay(d: &mut Display, a: &DisplayArg) {
     }
     if let Some(t) = a.touch {
         d.touch = t;
+    }
+    // A panel the size of the display (`diagonal_in`: a handheld to test profiles on).
+    match a.diagonal_in {
+        Some(Some(diagonal_in)) => d.panel = Some(specula_ui::Panel { size: d.size, diagonal_in, touch: d.touch }),
+        Some(None) => d.panel = None,
+        None => {}
     }
 }
 
@@ -105,6 +114,9 @@ fn apply_display(set: &mut DisplayArg, d: DisplayArg) {
     }
     if d.touch.is_some() {
         set.touch = d.touch;
+    }
+    if d.diagonal_in.is_some() {
+        set.diagonal_in = d.diagonal_in;
     }
 }
 
@@ -864,7 +876,7 @@ impl Engine {
     pub(crate) fn ui_display_for(&self, session: Option<&str>) -> (Display, Option<&str>) {
         if self.windowed {
             let mut d = match self.ui_state.window {
-                Some((size, os, _)) => Display { os_scale: os, ..Display::new(size) },
+                Some((size, os, _)) => Display { os_scale: os, panel: self.ui_state.panel, ..Display::new(size) },
                 None => Display::new(HEADLESS_SIZE),
             };
             let by = self.ui_state.owner.as_ref().map(|(_, name, a)| {
@@ -957,7 +969,10 @@ impl Engine {
         let now = Instant::now();
         let os = match self.ui_state.window {
             Some((_, os, at)) if now - at < OS_SCALE_EVERY => (os, at),
-            _ => (specula_platform::os_scale_of(raw), now),
+            _ => {
+                self.ui_state.panel = specula_platform::monitor_of(raw).and_then(|m| m.diagonal_in().map(|diagonal_in| specula_ui::Panel { size: m.size, diagonal_in, touch: m.touch }));
+                (specula_platform::os_scale_of(raw), now)
+            }
         };
         self.ui_state.window = Some(([size.0, size.1], os.0, os.1));
         self.ui_tell_display();
@@ -1145,6 +1160,13 @@ impl Engine {
         self.ui_tell(display);
         let out = self.ui_act_frames(&a, s, display, w, tick, started);
         self.ui_tell_display();
+        // Presses the game refused as the player's alone (Quit, a rebind button): told to the
+        // input monitor (seen, never counted) and to the caller. Taken here, whatever became of
+        // the call, so a count is never left for the next caller to be blamed for.
+        let players_only = if s == Surface::Game { self.game.as_mut().map_or(0, |g| g.take_refused_presses()) } else { 0 };
+        if players_only > 0 {
+            crate::inputguard::declined(crate::inputguard::Channel::ScreenInput, "ui_act", &crate::inputguard::Actor::of(&self.swarm, session), "players_only", "the hosted game");
+        }
         let (ran, failed) = match out {
             Ok(r) => {
                 let failed = r.failed.is_some();
@@ -1175,6 +1197,9 @@ impl Engine {
         ];
         if !modal.is_null() {
             j.push(("modal", modal));
+        }
+        if players_only > 0 {
+            j.push(("refused_players_only", Json::from(players_only)));
         }
         if let Some(why) = ran.stopped {
             j.push(("stopped", Json::from(why)));

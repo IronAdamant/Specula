@@ -222,6 +222,66 @@ pub trait Game {
     /// fire on the tick they fall in, so a run with the same timeline at the same ticks sees the
     /// same calls. Default: nothing.
     fn timeline_event(&mut self, _ctx: &mut Ctx, _event: &TimelineEvent) {}
+
+    /// The player's saved settings (docs/design/ACCESSIBILITY.md), read by the engine before
+    /// [`Game::start`]: `text` is the settings file (`None`: none yet, unreadable, or settings
+    /// are off; `store.problem` says which), `store` where they are kept and who may save them.
+    /// Default: nothing.
+    fn use_settings(&mut self, _text: Option<&str>, _store: &SettingsStore) {}
+
+    /// The whole settings file to save, if the settings changed since the last call; the engine
+    /// writes it off its thread (the latest wins) into the per-user folder. Taken after every
+    /// frame, tick and game tool call. A game honours [`SettingsStore::agents_save`]: without
+    /// it, changes an agent made (a `play_*` call, `ui_act`'s synthetic frames) are the
+    /// session's and never reach the player's file. Default: `None`.
+    fn take_settings(&mut self) -> Option<String> {
+        None
+    }
+
+    /// The player asked to quit (a title screen's Quit, pressed with the window's own input):
+    /// the engine stops as when the window's close button is pressed. Never honoured headless;
+    /// a game must not ask for an agent (agents don't close the human's window). Taken after
+    /// every frame. Default: `false`.
+    fn take_quit(&mut self) -> bool {
+        false
+    }
+
+    /// How many presses the game refused since this was last taken because only the player may
+    /// make them (an agent pressing Quit, or a button that would listen for the player's next
+    /// key). The engine takes it after an agent's `ui_act` or game tool call and tells the input
+    /// monitor (seen, never counted: an agent walking a menu presses every button). Default: 0.
+    fn take_refused_presses(&mut self) -> u32 {
+        0
+    }
+}
+
+/// Where the player's settings live ([`Game::use_settings`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SettingsStore {
+    /// `per_user` (the operating system's per-user settings folder, the default with a window),
+    /// `folder` (the operator's `--settings DIR`), or `off` (headless by default, or
+    /// `--settings off`: nothing is read or saved).
+    pub kind: &'static str,
+    /// Changes agents make are saved too: only in a folder the operator named (scripts, tests),
+    /// never in the player's own per-user folder.
+    pub agents_save: bool,
+    /// Why the file wasn't read (too large, not UTF-8, unreadable), if it wasn't.
+    pub problem: Option<String>,
+}
+
+impl SettingsStore {
+    /// Whether settings are saved at all.
+    pub fn saving(&self) -> bool {
+        self.kind != "off" && !self.kind.is_empty()
+    }
+
+    pub fn to_json(&self) -> Json {
+        let mut j = Json::obj([("store", Json::from(if self.kind.is_empty() { "off" } else { self.kind })), ("agents_save", Json::from(self.agents_save))]);
+        if let Some(p) = &self.problem {
+            j.set("problem", Json::from(p.as_str()));
+        }
+        j
+    }
 }
 
 /// Which of a game's interfaces [`Game::ui`] hands out.
@@ -452,7 +512,10 @@ pub struct Frame<'a> {
     /// modal) they are all released, and a button still held from then stays released until it
     /// is let go (see [`PadGate`]), so the owner's presses there never also act in the game.
     pub pads: &'a [GamepadState],
-    /// An agent's synthetic input frame (`ui_act`), not the window's: every world write it makes
+    /// An agent's synthetic input frame (`ui_act`), not the window's. A game feeds its input with
+    /// `specula_input::Input::update_synthetic` for these (applied whatever the window's focus,
+    /// never the answer to a rebind) and treats nothing in them as the player's (settings they
+    /// change aren't saved; Quit and rebinding are refused). Every world write it makes
     /// commits as the calling agent's, checked against claims, so make only the writes its input
     /// causes (the commands a press sends). Leave out what only presents (interpolating moving
     /// things, hover markers): the window's next frame or a capture's `before_capture` draws

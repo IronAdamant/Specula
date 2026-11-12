@@ -52,7 +52,7 @@ def main():
     work.mkdir(parents=True)
     assets = work / "assets"
     shutil.copytree(ROOT / "games" / "sepulcra" / "assets", assets)
-    args = ["--adapter", a.adapter, "--lead", "stall_lead", "--size", "1280x720", "--captures", str(work / "captures"), "--worlds", str(work / "worlds"), "--assets", str(assets), "--", "--seed", "7", "--intro", "off"]
+    args = ["--adapter", a.adapter, "--lead", "stall_lead", "--size", "1280x720", "--captures", str(work / "captures"), "--worlds", str(work / "worlds"), "--assets", str(assets), "--", "--seed", "7", "--intro", "off", "--title", "off"]
     samples, calls = [], []
     with Engine(exe, a.port, work / "engine.log", *args, cwd=str(ROOT)) as eng:
         lead = eng.mcp("stall-lead")

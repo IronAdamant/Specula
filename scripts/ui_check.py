@@ -158,7 +158,7 @@ def probes(exe, port, adapter, out, summary):
     """The review probes of R1 (m5-uitools), headless: each a check that fails loudly."""
     res = {}
     args = ["--headless", "--adapter", adapter, "--owner", "boss", "--reviewer", "rev", "--strict-budget", "--captures", str(out / "probe-captures"),
-            "--saves", str(out / "probe-saves"), "--", "--seed", "7", "--mute"]
+            "--saves", str(out / "probe-saves"), "--", "--seed", "7", "--mute", "--title", "off"]
     with Engine(exe, port, out / "engine-probes.log", *args, cwd=out) as eng:
         boss, alice, mal, rev = (eng.mcp(n) for n in ("boss", "alice", "mallory", "rev"))
         for m, n, role in ((boss, "boss", "owner"), (alice, "alice", "builder"), (mal, "mallory", "builder"), (rev, "rev", "reviewer")):
@@ -291,7 +291,7 @@ def probes(exe, port, adapter, out, summary):
 def windowed_probe(exe, port, adapter, out, summary):
     """Finding 1 (p3): with a window, a non-owner's display override is refused and the human's
     HUD is unchanged; the owner's is attributed."""
-    args = ["--adapter", adapter, "--size", "1280x720", "--owner", "boss", "--captures", str(out / "window-captures"), "--", "--seed", "7", "--mute"]
+    args = ["--adapter", adapter, "--size", "1280x720", "--owner", "boss", "--captures", str(out / "window-captures"), "--", "--seed", "7", "--mute", "--title", "off"]
     res = {}
     with Engine(exe, port, out / "engine-window-probe.log", *args, cwd=out) as eng:
         mal, boss = eng.mcp("mallory"), eng.mcp("boss")
@@ -402,7 +402,7 @@ def main():
         summary["failures"] = failures
         (out / "summary.json").write_text(json.dumps(summary, indent=2))
         sys.exit(1 if failures else 0)
-    args = ["--headless", "--adapter", a.adapter, "--captures", str(out / "captures"), "--", "--seed", "7", "--mute"]
+    args = ["--headless", "--adapter", a.adapter, "--captures", str(out / "captures"), "--", "--seed", "7", "--mute", "--title", "off"]
     with Engine(exe, a.port, out / "engine.log", *args, cwd=out) as eng:
         mcp = eng.mcp("ui-playtester")
         mcp.json("agent_hello", name="ui-playtester", role="playtester")
@@ -491,7 +491,7 @@ def perf(exe, port, adapter, out):
     scale 1 at the Deck's 1280x800: the OS scale set to 1 through the owner's ui_act display). The
     budget (UI.md: 0.5 ms CPU, 0.3 ms GPU; the owner, 2026-11-07: it holds at the default) is
     checked at both."""
-    args = ["--adapter", adapter, "--size", "1280x800", "--owner", "ui-perf", "--captures", str(out / "perf-captures"), "--", "--seed", "7", "--mute"]
+    args = ["--adapter", adapter, "--size", "1280x800", "--owner", "ui-perf", "--captures", str(out / "perf-captures"), "--", "--seed", "7", "--mute", "--title", "off"]
     res = {}
     with Engine(exe, port, out / "engine-perf.log", *args, cwd=out) as eng:
         mcp = eng.mcp("ui-perf")

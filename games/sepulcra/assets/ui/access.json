@@ -1,0 +1,62 @@
+{
+  "format": "specula.ui.screen.v1",
+  "name": "access",
+  "input": "menu",
+  "layer": 32,
+  "modal": true,
+  "focus": "ui_opt_auto",
+  "back": "close_access",
+  "opened_by": ["open_access"],
+  "notes": "Accessibility settings (docs/design/ACCESSIBILITY.md). Interface size: Auto and each size, each showing what it gives on this display (ui_opt_N text, e.g. \"115% ×1.55\"); a size that changes nothing here is disabled (ui_opt_N_ok false) with its reason in ui_opt_N_note (limited by window size). ui_scale_line says the size now and a handheld's suggestion. Each other button cycles or toggles one setting. Actions: set_ui_scale:auto, set_ui_scale:N (N = 0..5), cycle_text_size, cycle_vision, toggle_subtitles, toggle_captions, cycle_subtitle_size, toggle_subtitle_bg, toggle_motion, toggle_camera_drag, close_access.",
+  "root": {
+    "type": "box",
+    "children": [
+      {
+        "type": "panel",
+        "style": "menu",
+        "anchor": "center",
+        "width": "32em",
+        "max_width": "96%",
+        "max_height": "94%",
+        "layout": "column",
+        "align": "stretch",
+        "gap": 8,
+        "children": [
+          { "type": "label", "text": "@access.title", "role": "title", "text_align": "center", "visible": "!ui.short" },
+          {
+            "type": "list",
+            "id": "access_list",
+            "height": "fill",
+            "gap": 8,
+            "padding": [0, 12, 0, 0],
+            "children": [
+              { "type": "label", "text": "@access.interface_size", "role": "heading" },
+              {
+                "type": "box", "layout": "grid", "columns": 4, "gap": 6,
+                "children": [
+                  { "type": "button", "id": "ui_opt_auto", "style": "compact", "min_width": 60, "min_height": 44, "text": "{ui_opt_auto}", "action": "set_ui_scale:auto", "tooltip": "@access.auto_tip" },
+                  { "type": "button", "id": "ui_opt_0", "style": "compact", "min_width": 60, "min_height": 44, "text": "{ui_opt_0}", "action": "set_ui_scale:0", "enabled": "ui_opt_0_ok", "tooltip": "{ui_opt_0_note}" },
+                  { "type": "button", "id": "ui_opt_1", "style": "compact", "min_width": 60, "min_height": 44, "text": "{ui_opt_1}", "action": "set_ui_scale:1", "enabled": "ui_opt_1_ok", "tooltip": "{ui_opt_1_note}" },
+                  { "type": "button", "id": "ui_opt_2", "style": "compact", "min_width": 60, "min_height": 44, "text": "{ui_opt_2}", "action": "set_ui_scale:2", "enabled": "ui_opt_2_ok", "tooltip": "{ui_opt_2_note}" },
+                  { "type": "button", "id": "ui_opt_3", "style": "compact", "min_width": 60, "min_height": 44, "text": "{ui_opt_3}", "action": "set_ui_scale:3", "enabled": "ui_opt_3_ok", "tooltip": "{ui_opt_3_note}" },
+                  { "type": "button", "id": "ui_opt_4", "style": "compact", "min_width": 60, "min_height": 44, "text": "{ui_opt_4}", "action": "set_ui_scale:4", "enabled": "ui_opt_4_ok", "tooltip": "{ui_opt_4_note}" },
+                  { "type": "button", "id": "ui_opt_5", "style": "compact", "min_width": 60, "min_height": 44, "text": "{ui_opt_5}", "action": "set_ui_scale:5", "enabled": "ui_opt_5_ok", "tooltip": "{ui_opt_5_note}" }
+                ]
+              },
+              { "type": "label", "text": "{ui_scale_line}", "role": "small" },
+              { "type": "button", "id": "text_size", "text": "@access.text_size", "action": "cycle_text_size", "tooltip": "@access.text_size_tip" },
+              { "type": "button", "id": "vision", "text": "@access.colours", "action": "cycle_vision", "tooltip": "@access.colours_tip" },
+              { "type": "button", "id": "subtitles", "text": "@access.subtitles", "action": "toggle_subtitles", "tooltip": "@access.subtitles_tip" },
+              { "type": "button", "id": "captions", "text": "@access.captions", "action": "toggle_captions", "tooltip": "@access.captions_tip" },
+              { "type": "button", "id": "subtitle_size", "text": "@access.subtitle_size", "action": "cycle_subtitle_size" },
+              { "type": "button", "id": "subtitle_bg", "text": "@access.subtitle_bg", "action": "toggle_subtitle_bg" },
+              { "type": "button", "id": "access_motion", "text": "@access.motion", "action": "toggle_motion", "tooltip": "@access.motion_tip" },
+              { "type": "button", "id": "camera_drag", "text": "@access.camera_drag", "action": "toggle_camera_drag", "tooltip": "@access.camera_drag_tip" }
+            ]
+          },
+          { "type": "button", "id": "access_back", "style": "primary", "text": "@access.back", "action": "close_access" }
+        ]
+      }
+    ]
+  }
+}

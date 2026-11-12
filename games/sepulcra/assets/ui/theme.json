@@ -33,7 +33,10 @@
     "keycap": { "font": "ui_bold", "size": 14.5, "color": "text" },
     "threat": { "font": "ui_bold", "size": 14.5, "color": "grave" },
     "title": { "font": "title", "size": 46, "color": "text", "shadow": "#000000b0" },
-    "subtitle": { "font": "title", "size": 20, "color": "text_dim" }
+    "subtitle": { "font": "title", "size": 20, "color": "text_dim" },
+    "subtitle_line": { "font": "ui", "size": 21, "color": "text", "line_height": 1.2, "shadow": "#000000c0" },
+    "speaker": { "font": "ui_bold", "size": 17, "color": "rune_pale", "shadow": "#000000c0" },
+    "caption": { "font": "ui", "size": 17, "color": "bone", "shadow": "#000000c0" }
   },
   "boxes": {
     "panel": {
@@ -156,7 +159,9 @@
       "radius": 14,
       "shadow": { "offset": [0, 0], "blur": 24, "color": "#070b16a0" },
       "padding": [14, 36]
-    }
+    },
+    "caption_band": { "fill": "#05080fd8", "radius": 6, "padding": [6, 16] },
+    "caption_clear": { "padding": [6, 16] }
   },
   "buttons": {
     "default": {

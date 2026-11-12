@@ -2,7 +2,7 @@
 
 use specula_input::{
     Action, ActionKind, ActionMap, Binding, BindingInput, BindingSlot, CancelReason, CompositePart, Device, DeviceFamily, ErrorCode,
-    Input, PadStyle, RebindOutcome, RebindRequest, Source, TextEvent,
+    HoldMode, Input, PadStyle, RebindOutcome, RebindRequest, Source, TextEvent,
 };
 use specula_platform::{keys, DeadZones, Event, GamepadButton, GamepadState, MouseButton, PointerKind, RawGamepad};
 
@@ -22,6 +22,12 @@ impl Harness {
     fn frame(&mut self, events: &[Event]) {
         self.t += DT;
         self.input.update(self.t, events, &self.pads);
+    }
+
+    /// A frame that isn't the window's (an agent's): its events with the harness's pads.
+    fn synthetic(&mut self, events: &[Event]) -> bool {
+        self.t += DT;
+        self.input.update_synthetic(self.t, events, &self.pads)
     }
 
     fn wait(&mut self, seconds: f64) {
@@ -219,6 +225,62 @@ fn focus_loss_releases_everything() {
     // The key-up arrives later (or never); nothing breaks.
     h.frame(&[Event::Focused(true), ku("Space")]);
     assert!(!h.input.held("jump"));
+}
+
+/// Review R1 of m5-a11y, finding 4: focus is about the human's devices. With the window in the
+/// background the human's pad is ignored; an agent's synthetic frame is applied.
+#[test]
+fn a_synthetic_frame_is_applied_whatever_the_windows_focus() {
+    let mut h = Harness::new(BASIC);
+    h.frame(&[Event::Focused(false)]);
+    h.pad(RawGamepad { buttons: GamepadButton::South.bit(), ..Default::default() });
+    h.frame(&[]);
+    assert!(!h.input.held("jump"), "the human's pad is ignored while their window is in the background");
+    assert!(h.synthetic(&[]), "applied");
+    assert!(h.input.held("jump") && h.input.pressed("jump"), "an agent's pad press reaches the action whatever the focus");
+    h.frame(&[]);
+    assert!(!h.input.held("jump"), "the next window frame is the human's again: still unfocused, still ignored");
+}
+
+/// Review R1 of m5-a11y, finding 1: a rebind hears the player's own devices only. An agent's
+/// key neither becomes the binding nor cancels the capture, and it reaches no action.
+#[test]
+fn a_synthetic_frame_never_answers_or_cancels_a_rebind() {
+    let mut h = Harness::new(BASIC);
+    h.frame(&[]);
+    h.input.start_rebind(RebindRequest::new("jump", BindingSlot::Replace(0))).unwrap();
+    assert!(!h.synthetic(&[kd("G")]), "dropped while a rebind listens");
+    assert!(!h.synthetic(&[ku("G")]));
+    assert!(h.input.rebinding() && h.input.take_rebind_outcome().is_none(), "an agent's key didn't end the player's rebind");
+    assert!(!h.synthetic(&[kd("Escape")]) && !h.synthetic(&[ku("Escape")]));
+    assert!(h.input.rebinding(), "nor did an agent's Escape cancel it");
+    assert!(!h.input.pressed("zap") && !h.input.held("jump"));
+    // The window's next frames carry nothing of it: no key of the agent's is "held" or fresh.
+    h.frame(&[]);
+    assert!(h.input.rebinding() && h.input.take_rebind_outcome().is_none());
+    // The player's own key answers.
+    h.frame(&[kd("H")]);
+    h.frame(&[ku("H")]);
+    match h.input.take_rebind_outcome() {
+        Some(RebindOutcome::Captured { binding, .. }) => assert_eq!(binding, Binding::source(Source::Key(code("H")))),
+        other => panic!("the player's H should be captured: {other:?}"),
+    }
+}
+
+/// Probatio's survivors on the fix above (2026-11-12): nothing an agent's frame does ends the
+/// player's rebind, its timeout included. The clock runs out on the player's own frames.
+#[test]
+fn a_rebinds_timeout_runs_out_on_the_players_frames_only() {
+    let mut h = Harness::new(r#"{"format": "specula.input.v1", "settings": {"rebind_timeout_s": 0.5}, "actions": [{"name": "jump", "kind": "button", "bindings": ["Key.Space"]}]}"#);
+    h.frame(&[]);
+    h.input.start_rebind(RebindRequest::new("jump", BindingSlot::Replace(0))).unwrap();
+    h.frame(&[]);
+    assert!(h.input.rebinding(), "listening, its clock started on the player's frame");
+    h.t += 1.0;
+    assert!(!h.synthetic(&[]), "dropped");
+    assert!(h.input.rebinding() && h.input.take_rebind_outcome().is_none(), "an agent's frame doesn't end the rebind, even past its timeout");
+    h.frame(&[]);
+    assert!(matches!(h.input.take_rebind_outcome(), Some(RebindOutcome::Cancelled { reason: CancelReason::Timeout, .. })), "the player's next frame does");
 }
 
 // ---- touch gestures ----
@@ -676,4 +738,93 @@ fn touch_cancel_is_reported_for_one_frame_and_is_not_a_tap() {
     assert_eq!(ids, vec![3, 4], "focus loss cancels every contact");
     h.frame(&[]);
     assert!(h.input.cancelled_contacts().is_empty());
+}
+
+fn mouse_down(b: MouseButton) -> Event {
+    Event::MouseDown { button: b, x: 100, y: 100 }
+}
+
+fn mouse_up(b: MouseButton) -> Event {
+    Event::MouseUp { button: b, x: 100, y: 100 }
+}
+
+/// Accessibility (hold or toggle): in toggle mode one press of a chord's modifier latches it, so
+/// the mouse looks without the right button held; a second press stops it. Hold mode is the
+/// map's own behaviour.
+#[test]
+fn toggle_mode_latches_a_chords_modifier() {
+    let mut h = Harness::new(BASIC);
+    // Hold (the default): moving with the button up does nothing.
+    h.frame(&[Event::MouseMove { x: 100, y: 100 }]);
+    h.frame(&[Event::MouseMove { x: 110, y: 100 }]);
+    assert_eq!(h.input.value2("look"), [0.0, 0.0]);
+    h.input.set_hold_mode("look", HoldMode::Toggle).unwrap();
+    assert_eq!(h.input.hold_mode("look"), HoldMode::Toggle);
+    // A click and release latches the chord: motion now looks.
+    h.frame(&[mouse_down(MouseButton::Right), mouse_up(MouseButton::Right)]);
+    assert!(h.input.latched("look"));
+    h.frame(&[Event::MouseMove { x: 130, y: 100 }]);
+    assert_eq!(h.input.value2("look"), [30.0, 0.0], "latched: moving looks with the button up (from the click at 100)");
+    // The second press lets go.
+    h.frame(&[mouse_down(MouseButton::Right)]);
+    h.frame(&[mouse_up(MouseButton::Right), Event::MouseMove { x: 140, y: 100 }]);
+    assert!(!h.input.latched("look"));
+    assert_eq!(h.input.value2("look"), [0.0, 0.0]);
+    // Losing focus lets go too (a latch never outlives the window's attention).
+    h.frame(&[mouse_down(MouseButton::Right), mouse_up(MouseButton::Right)]);
+    assert!(h.input.latched("look"));
+    h.frame(&[Event::Focused(false)]);
+    assert!(!h.input.latched("look"));
+    // Back to hold: the map's behaviour.
+    h.frame(&[Event::Focused(true), mouse_down(MouseButton::Right), mouse_up(MouseButton::Right)]);
+    h.input.set_hold_mode("look", HoldMode::Hold).unwrap();
+    assert!(!h.input.latched("look"));
+    h.frame(&[Event::MouseMove { x: 150, y: 100 }]);
+    assert_eq!(h.input.value2("look"), [0.0, 0.0]);
+}
+
+#[test]
+fn toggle_mode_makes_a_button_stay_held() {
+    let mut h = Harness::new(BASIC);
+    h.input.set_hold_mode("jump", HoldMode::Toggle).unwrap();
+    h.frame(&[kd("Space")]);
+    assert!(h.input.pressed("jump") && h.input.held("jump"));
+    h.frame(&[ku("Space")]);
+    h.frame(&[]);
+    assert!(h.input.held("jump") && !h.input.pressed("jump") && !h.input.released("jump"), "held after letting go");
+    h.frame(&[kd("Space")]);
+    assert!(h.input.released("jump") && !h.input.held("jump"));
+    // Another binding of the same action toggles on its own latch.
+    h.frame(&[ku("Space"), mouse_down(MouseButton::Left)]);
+    assert!(h.input.pressed("jump"));
+    // Text mode lets go of latches that can't act there.
+    h.input.set_text_mode(true);
+    h.frame(&[mouse_up(MouseButton::Left)]);
+    assert!(!h.input.held("jump"));
+    h.input.set_text_mode(false);
+    h.frame(&[]);
+    assert!(!h.input.held("jump"), "the latch was let go, not paused");
+    // Axes without anything held are unchanged; unknown actions are refused.
+    h.input.set_hold_mode("move", HoldMode::Toggle).unwrap();
+    h.frame(&[kd("D")]);
+    assert!(h.input.value2("move")[0] > 0.0);
+    h.frame(&[ku("D")]);
+    h.frame(&[]);
+    assert_eq!(h.input.value2("move"), [0.0, 0.0], "a composite isn't latched");
+    assert_eq!(h.input.set_hold_mode("nope", HoldMode::Toggle).unwrap_err().code, ErrorCode::UnknownAction);
+    assert_eq!(HoldMode::parse("toggle"), Some(HoldMode::Toggle));
+    assert_eq!(HoldMode::parse(HoldMode::Hold.name()), Some(HoldMode::Hold));
+}
+
+#[test]
+fn toggle_modes_survive_a_new_map() {
+    let mut h = Harness::new(BASIC);
+    h.input.set_hold_mode("look", HoldMode::Toggle).unwrap();
+    h.frame(&[mouse_down(MouseButton::Right), mouse_up(MouseButton::Right)]);
+    assert!(h.input.latched("look"));
+    // Rebinding gives a new map: the mode stays, the latch goes.
+    let map = h.input.map().clone();
+    h.input.set_map(map);
+    assert_eq!(h.input.hold_mode("look"), HoldMode::Toggle);
+    assert!(!h.input.latched("look"));
 }

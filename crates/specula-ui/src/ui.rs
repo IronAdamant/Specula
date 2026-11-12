@@ -713,7 +713,9 @@ impl Ui {
         }
         self.update_prompts(input);
         let safe = view.safe();
-        let (lw, lh) = (safe.w / view.scale, safe.h / view.scale);
+        // Room in text units: larger text (the theme's text_scale) leaves less room (m5-a11y).
+        let text = self.theme.text_scale.max(0.5);
+        let (lw, lh) = (safe.w / view.scale / text, safe.h / view.scale / text);
         let device = input.last_device().map(|d| d.family());
         self.env
             .set_num("ui.width", f64::from(lw.round()))

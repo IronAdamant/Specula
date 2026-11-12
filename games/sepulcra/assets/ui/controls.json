@@ -6,7 +6,8 @@
   "modal": true,
   "back": "close_controls",
   "opened_by": ["open_controls", "help"],
-  "notes": "The controls list (read only for now: rebinding is an open owner question). State: bindings (rows: label = action description, keys = current glyphs for the active device, e.g. \"LMB / A\").",
+  "focus": "controls_back",
+  "notes": "The controls, and rebinding (docs/design/ACCESSIBILITY.md). State: bindings (rows: label = what the action does, kbm = its keyboard and mouse inputs, pad = its gamepad inputs, rebindable = a button the player may rebind, conflict = the other actions on the same input, absent when none), rebind_status (what the screen is waiting for: \"Press a key for Call wave (Esc cancels)\", or what the last rebind did; absent when nothing). Pressing a row's keyboard or gamepad button listens for the next input from that device and binds it (row actions rebind_kbm@row and rebind_pad@row: the game reads the row from the widget, bind_kbm[N]); an input another action already uses is bound too and both rows show the conflict. Listening is the player's own: an agent's press is refused (agents set bindings with play_settings {bind}). Actions: reset_bindings, close_controls.",
   "root": {
     "type": "box",
     "children": [
@@ -14,61 +15,38 @@
         "type": "panel",
         "style": "menu",
         "anchor": "center",
-        "width": "30em",
+        "width": "36em",
         "max_width": "96%",
-        "max_height": "92%",
+        "max_height": "94%",
         "layout": "column",
         "align": "stretch",
-        "gap": 10,
+        "gap": 8,
         "children": [
-          {
-            "type": "label",
-            "text": "@controls.controls",
-            "role": "title",
-            "text_align": "center"
-          },
+          { "type": "label", "text": "@controls.controls", "role": "title", "text_align": "center", "visible": "!ui.short" },
+          { "type": "label", "text": "{rebind_status}", "role": "small", "text_align": "center", "visible": "has_rebind_status" },
           {
             "type": "list",
             "id": "binding_list",
-            "height": "18em",
+            "height": "fill",
             "gap": 4,
-            "padding": [
-              0,
-              12,
-              0,
-              0
-            ],
+            "padding": [0, 12, 0, 0],
             "repeat": {
               "source": "bindings",
               "max": 24,
               "template": {
                 "type": "box",
-                "layout": "row",
-                "justify": "space_between",
-                "align": "center",
-                "padding": [
-                  4,
-                  6
-                ],
+                "layout": "column",
+                "padding": [2, 6],
                 "children": [
                   {
-                    "type": "label",
-                    "text": "{item.label}",
-                    "role": "body"
-                  },
-                  {
-                    "type": "panel",
-                    "style": "keycap",
-                    "layout": "row",
-                    "align": "center",
+                    "type": "box", "layout": "row", "justify": "space_between", "align": "center", "gap": 8,
                     "children": [
-                      {
-                        "type": "label",
-                        "text": "{item.keys}",
-                        "role": "keycap"
-                      }
+                      { "type": "label", "text": "{item.label}", "role": "body", "width": "fill" },
+                      { "type": "button", "id": "bind_kbm", "style": "compact", "min_width": 96, "min_height": 44, "text": "{item.kbm}", "action": "rebind_kbm@row", "enabled": "item.rebindable", "tooltip": "@controls.bind_kbm_tip" },
+                      { "type": "button", "id": "bind_pad", "style": "compact", "min_width": 96, "min_height": 44, "text": "{item.pad}", "action": "rebind_pad@row", "enabled": "item.rebindable", "tooltip": "@controls.bind_pad_tip" }
                     ]
-                  }
+                  },
+                  { "type": "label", "text": "{item.conflict}", "role": "small", "color": "fire", "visible": "item.has_conflict" }
                 ]
               }
             }
@@ -78,19 +56,12 @@
             "layout": "row",
             "gap": 10,
             "children": [
-              {
-                "type": "button",
-                "id": "controls_back",
-                "style": "primary",
-                "text": "@controls.back",
-                "action": "close_controls",
-                "width": "fill"
-              }
+              { "type": "button", "id": "reset_bindings", "text": "@controls.reset_to_defaults", "action": "reset_bindings", "width": "fill" },
+              { "type": "button", "id": "controls_back", "style": "primary", "text": "@controls.back", "action": "close_controls", "width": "fill" }
             ]
           }
         ]
       }
     ]
-  },
-  "focus": "controls_back"
+  }
 }

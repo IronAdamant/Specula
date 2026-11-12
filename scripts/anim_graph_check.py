@@ -49,7 +49,7 @@ def main():
         sys.exit(f"{exe} not found: cargo build -p sepulcra-app --release")
     out = Path(args.out) if args.out else TARGET / "anim-graph-check" / args.adapter
     out.mkdir(parents=True, exist_ok=True)
-    extra = ["--adapter", args.adapter, "--captures", str(out / "captures"), "--size", "1280x720", "--", "--seed", "7", "--mute"]
+    extra = ["--adapter", args.adapter, "--captures", str(out / "captures"), "--size", "1280x720", "--", "--seed", "7", "--mute", "--title", "off"]
     summary = {"adapter": args.adapter}
     with Engine(exe, args.port, out / "engine.log", *extra, cwd=out) as eng:
         mcp = eng.mcp("anim-check")

@@ -80,6 +80,39 @@ pub enum CancelReason {
     Requested,
 }
 
+/// How an action that needs a button held works (accessibility: hold or toggle, docs/design/
+/// ACCESSIBILITY.md). In [`HoldMode::Toggle`] one press stands for holding: a button action
+/// stays held until pressed again, and a chord's modifiers (`Mouse.Right` in
+/// `Mouse.Right+Mouse.Motion`) latch, so a player who can't hold a button while moving the mouse
+/// presses once to start orbiting and once to stop. Composites, sticks and other axes are
+/// unchanged (nothing is held for them).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HoldMode {
+    #[default]
+    Hold,
+    Toggle,
+}
+
+impl HoldMode {
+    pub fn name(self) -> &'static str {
+        match self {
+            HoldMode::Hold => "hold",
+            HoldMode::Toggle => "toggle",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<HoldMode> {
+        match s {
+            "hold" => Some(HoldMode::Hold),
+            "toggle" => Some(HoldMode::Toggle),
+            _ => None,
+        }
+    }
+}
+
+/// Most actions [`Input::set_hold_mode`] keeps a mode for (caps a hostile settings file).
+pub const MAX_HOLD_MODES: usize = 256;
+
 /// How a rebind ended. Nothing is changed until [`Input::apply_rebind`]: show `conflicts`
 /// first if there are any.
 #[derive(Clone, Debug, PartialEq)]
@@ -227,6 +260,11 @@ pub struct Input {
     rebind_outcome: Option<RebindOutcome>,
     last_time: Option<f64>,
     dt: f32,
+    /// Actions in [`HoldMode::Toggle`], by name (kept across [`Input::set_map`]).
+    toggles: std::collections::BTreeSet<String>,
+    /// `[action][binding]`: the latch of a toggled binding (its chord's modifiers, or the button
+    /// itself), read for the actions in `toggles` only.
+    latched: Vec<Vec<bool>>,
 }
 
 impl Input {
@@ -250,6 +288,8 @@ impl Input {
             rebind_outcome: None,
             last_time: None,
             dt: 0.0,
+            toggles: std::collections::BTreeSet::new(),
+            latched: Vec::new(),
         };
         input.set_map(map);
         input
@@ -263,6 +303,7 @@ impl Input {
     /// buttons still held are ignored until released.
     pub fn set_map(&mut self, map: ActionMap) {
         self.states = vec![ActionState::default(); map.actions().len()];
+        self.latched = map.actions().iter().map(|a| vec![false; a.bindings.len()]).collect();
         self.map = map;
         self.rebuild_blockers();
         self.rebind = None;
@@ -300,6 +341,31 @@ impl Input {
     /// typically in response to an action read this frame: the next `update` then only sees
     /// newer input, so the press that opened the mode never feeds it.
     pub fn update(&mut self, time_s: f64, events: &[Event], pads: &[GamepadState]) {
+        self.advance(time_s, events, pads, false);
+    }
+
+    /// One frame of input that isn't from this window's own devices: an agent driving the
+    /// interface (`ui_act`), a scripted playtest.
+    ///
+    /// - It is applied whatever the window's focus is. Focus says whether the *human's* devices
+    ///   are meant for this window; a window behind another one says nothing about an agent's
+    ///   pad. (Review R1 of m5-a11y: an agent's gamepad presses did nothing whenever another
+    ///   window was in front, and the call still answered "pressed".)
+    /// - It never answers a rebind. While [`Input::rebinding`] the frame is dropped whole: a
+    ///   rebind listens for the player's next input, and an agent's key must neither become
+    ///   their binding nor cancel their choice. Returns `false` then (what the devices held stays
+    ///   held, and actions stay idle as on any frame of a rebind).
+    pub fn update_synthetic(&mut self, time_s: f64, events: &[Event], pads: &[GamepadState]) -> bool {
+        if self.rebind.is_some() {
+            let held = self.dev.pads;
+            self.advance(time_s, &[], &held, true);
+            return false;
+        }
+        self.advance(time_s, events, pads, true);
+        true
+    }
+
+    fn advance(&mut self, time_s: f64, events: &[Event], pads: &[GamepadState], synthetic: bool) {
         let max_dt = f64::from(self.map.settings.max_dt_s);
         self.dt = self.last_time.map_or(0.0, |t| (time_s - t).clamp(0.0, max_dt)) as f32;
         self.last_time = Some(time_s);
@@ -307,14 +373,14 @@ impl Input {
         for e in events {
             self.event(e, time_s);
         }
-        self.update_pads(pads);
+        self.update_pads(pads, synthetic);
         self.gestures.tick(time_s, &self.map.settings);
         self.touches.clear();
         self.touches.extend(self.gestures.contacts().iter().map(|c| Touch { id: c.id, x: c.pos[0], y: c.pos[1] }));
         // Actions stay idle for the whole frame that ends a rebind, so the input that completed
         // or cancelled it never reaches gameplay.
         let listening = self.rebind.is_some();
-        if listening {
+        if listening && !synthetic {
             self.capture_rebind(time_s);
         }
         self.evaluate(listening);
@@ -428,6 +494,7 @@ impl Input {
                 self.focused = false;
                 self.dev.release_all();
                 self.gestures.clear();
+                self.clear_latches();
             }
             Event::Focused(true) => {
                 if !self.focused {
@@ -445,9 +512,11 @@ impl Input {
         }
     }
 
-    fn update_pads(&mut self, pads: &[GamepadState]) {
+    fn update_pads(&mut self, pads: &[GamepadState], synthetic: bool) {
         let threshold = self.map.settings.press_threshold;
-        let ignore = !self.focused && !self.map.settings.background_pads;
+        // The human's pads are ignored while their window is in the background; a synthetic
+        // frame's aren't theirs.
+        let ignore = !synthetic && !self.focused && !self.map.settings.background_pads;
         for i in 0..MAX_GAMEPADS {
             let new = if ignore { GamepadState::default() } else { pads.get(i).copied().unwrap_or_default() };
             self.dev.pad_prev[i] = self.dev.pads[i];
@@ -656,8 +725,53 @@ impl Input {
             })
     }
 
+    /// Flips the latches of toggled actions: a chord's latch when its last modifier goes down
+    /// (all held, one fresh), a modifier-free button binding's latch when its button goes down.
+    /// An action that can't act now (suppressed, text mode) lets go of its latches.
+    fn update_latches(&mut self, suppressed: bool) {
+        if self.toggles.is_empty() {
+            return;
+        }
+        let mut latched = std::mem::take(&mut self.latched);
+        for (i, a) in self.map.actions().iter().enumerate() {
+            if !self.toggles.contains(&a.name) {
+                continue;
+            }
+            let row = &mut latched[i];
+            if suppressed || (self.text_mode && !a.text_mode) {
+                row.iter_mut().for_each(|l| *l = false);
+                continue;
+            }
+            for (j, b) in a.bindings.iter().enumerate() {
+                if !b.modifiers.is_empty() {
+                    let all = b.modifiers.iter().all(|&m| self.press(m).active);
+                    let fresh = b.modifiers.iter().any(|&m| self.press(m).fresh);
+                    if all && fresh {
+                        row[j] = !row[j];
+                    }
+                } else if a.kind == ActionKind::Button {
+                    if let BindingInput::Source(s) = b.input {
+                        if s.is_holdable_button() && self.press(s).fresh {
+                            row[j] = !row[j];
+                        }
+                    }
+                }
+            }
+        }
+        self.latched = latched;
+    }
+
+    /// Whether binding `j` of action `i` is toggled: its action is in [`HoldMode::Toggle`] and it
+    /// has something to hold (a chord's modifiers, or a button action's own button).
+    fn toggled(&self, i: usize, b: &Binding) -> bool {
+        let a = &self.map.actions()[i];
+        (!b.modifiers.is_empty() || (a.kind == ActionKind::Button && matches!(b.input, BindingInput::Source(s) if s.is_holdable_button())))
+            && self.toggles.contains(&a.name)
+    }
+
     /// Recomputes every action's state in place. `suppressed`: everything reads idle.
     fn evaluate(&mut self, suppressed: bool) {
+        self.update_latches(suppressed);
         let mut states = std::mem::take(&mut self.states);
         for (i, a) in self.map.actions().iter().enumerate() {
             let prev = states[i];
@@ -667,7 +781,16 @@ impl Input {
                     let (mut held, mut repress) = (false, false);
                     if live {
                         for (j, b) in a.bindings.iter().enumerate() {
-                            if !self.binding_live(i, j, b) {
+                            if self.toggled(i, b) {
+                                if !self.latched[i][j] {
+                                    continue;
+                                }
+                                if b.modifiers.is_empty() {
+                                    // The latch stands for holding the button.
+                                    held = true;
+                                    continue;
+                                }
+                            } else if !self.binding_live(i, j, b) {
                                 continue;
                             }
                             let BindingInput::Source(s) = b.input else { continue };
@@ -693,7 +816,8 @@ impl Input {
                     let mut level = [0.0f32; 2];
                     if live {
                         for (j, b) in a.bindings.iter().enumerate() {
-                            if !self.binding_live(i, j, b) {
+                            let live = if self.toggled(i, b) { self.latched[i][j] } else { self.binding_live(i, j, b) };
+                            if !live {
                                 continue;
                             }
                             let (v, is_delta) = match b.input {
@@ -843,12 +967,57 @@ impl Input {
         if self.text_mode && !on {
             self.dev.mask_all();
         }
+        if on {
+            self.clear_latches();
+        }
         self.text_mode = on;
     }
 
     /// This frame's text events (text mode only), in order.
     pub fn text(&self) -> &[TextEvent] {
         &self.text
+    }
+
+    // ---- hold or toggle ----
+
+    /// Sets how `action` treats held buttons ([`HoldMode`]). Kept by name across
+    /// [`Input::set_map`]; switching lets go of the action's latches.
+    pub fn set_hold_mode(&mut self, action: &str, mode: HoldMode) -> Result<(), InputError> {
+        let i = self.map.index_of(action).ok_or_else(|| InputError::new(ErrorCode::UnknownAction, "", format!("no action named {action:?}")))?;
+        match mode {
+            HoldMode::Toggle if !self.toggles.contains(action) => {
+                if self.toggles.len() >= MAX_HOLD_MODES {
+                    return Err(InputError::new(ErrorCode::BadValue, "", format!("at most {MAX_HOLD_MODES} actions can be toggled")));
+                }
+                self.toggles.insert(action.to_owned());
+            }
+            HoldMode::Hold => {
+                self.toggles.remove(action);
+            }
+            HoldMode::Toggle => {}
+        }
+        self.latched[i].iter_mut().for_each(|l| *l = false);
+        Ok(())
+    }
+
+    pub fn hold_mode(&self, action: &str) -> HoldMode {
+        if self.toggles.contains(action) {
+            HoldMode::Toggle
+        } else {
+            HoldMode::Hold
+        }
+    }
+
+    /// Whether a toggled `action` is latched on now (a HUD can say "orbiting: press again to stop").
+    pub fn latched(&self, action: &str) -> bool {
+        self.map.index_of(action).is_some_and(|i| self.toggles.contains(action) && self.latched[i].iter().any(|&l| l))
+    }
+
+    /// Lets go of every latch (a menu opened, the window lost focus, a mode changed).
+    pub fn clear_latches(&mut self) {
+        for row in &mut self.latched {
+            row.iter_mut().for_each(|l| *l = false);
+        }
     }
 
     // ---- rebinding ----

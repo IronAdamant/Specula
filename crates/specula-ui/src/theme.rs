@@ -265,11 +265,16 @@ pub struct Theme {
     pub check: CheckRules,
     /// Colours the world behind un-backed UI can be (darkest and brightest typical), for contrast.
     pub scene: Vec<Rgba>,
+    /// How much larger than designed the theme's text is (a player's text-size setting; the
+    /// role sizes already include it). Screens' room conditions (`ui.width`, `ui.height`,
+    /// `ui.narrow`, `ui.short`) count in text units: room divided by this, so a layout that
+    /// switches to its compact form on a small screen also does when the text grows (m5-a11y).
+    pub text_scale: f32,
 }
 
 const TOP_FIELDS: &[&str] = &[
     "format", "name", "colors", "roles", "boxes", "buttons", "spacing", "focus", "bar", "radial", "threat", "toast",
-    "tooltip", "keycap", "dim", "scale", "check", "scene", "notes",
+    "tooltip", "keycap", "dim", "scale", "check", "scene", "notes", "text_scale",
 ];
 
 impl Theme {
@@ -335,6 +340,7 @@ impl Theme {
             scale: ScaleRule { reference: [1280.0, 800.0], reference_ppi: 215.0, min: 0.5, max: 6.0, max_aspect: None, max_boost: None, min_logical: None },
             check: CheckRules { min_cap_px: 9.0, min_touch_px: 44.0, contrast_body: 4.5, contrast_large: 3.0, large_text_px: 24.0 },
             scene: Vec::new(),
+            text_scale: 1.0,
         };
 
         if let Some(j) = o.get("spacing") {
@@ -521,6 +527,12 @@ impl Theme {
             c.contrast_large = f.num("contrast_large")?.unwrap_or(c.contrast_large);
             c.large_text_px = f.num("large_text_px")?.unwrap_or(c.large_text_px);
             f.finish(&["min_cap_px", "min_touch_px", "contrast_body", "contrast_large", "large_text_px"])?;
+        }
+        if let Some(t) = o.num("text_scale")? {
+            if !(0.5..=3.0).contains(&t) {
+                return Err(bad("text_scale", format!("{t} must be 0.5..3 (1 = as designed)")));
+            }
+            theme.text_scale = t;
         }
         if let Some(j) = o.get("scene") {
             let arr = j.as_array().ok_or_else(|| wrong("scene", "an array of colours", j))?;

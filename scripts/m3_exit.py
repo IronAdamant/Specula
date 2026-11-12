@@ -275,7 +275,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     cap = ["--max-fps", str(args.max_fps)] if args.max_fps else []
     extra = [*cap, "--adapter", args.adapter, "--size", "1280x720", "--perf", str(PERF_TOML),
-             "--captures", str(out / "captures"), "--lead", "m3-exit", "--", "--seed", str(args.seed), "--mute", "--rules", "lex"]
+             "--captures", str(out / "captures"), "--lead", "m3-exit", "--", "--seed", str(args.seed), "--mute", "--rules", "lex", "--title", "off"]
     summary = {"adapter": args.adapter, "seed": args.seed, "rules": "lex", "frames_per_capture": args.frames,
                "max_fps": args.max_fps, "gi": args.gi}
     measured = []

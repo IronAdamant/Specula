@@ -1,0 +1,48 @@
+{
+  "date": "2026-11-12",
+  "time": "",
+  "date_source": "",
+  "approximate": false,
+  "milestone": "M5",
+  "commit": "",
+  "subject": "ui",
+  "topic": "UI",
+  "title": "Sepulcra's shell and accessibility",
+  "note": "Lane m5-a11y: the title screen, saved settings, rebinding, gamepad pause, subtitles and captions, colour-vision themes and handheld profiles. Shown: the title on a Steam Deck profile (interface x1.15 by default); the accessibility screen on a 175% display, where the two largest interface sizes change nothing and are greyed out; a cutscene line as a subtitle with its speaker; the pause menu in the red-green (deuteranopia) theme after a gamepad's Start. From the live check on the Intel iGPU (37 checks).",
+  "source": "scripts/a11y_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-handheld-deck-title.jpg",
+      "caption": "The title on a Steam Deck profile (x1.15)",
+      "original": "handheld_deck_title.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 15548
+    },
+    {
+      "file": "02-access-limited.jpg",
+      "caption": "Interface sizes: 130% and 150% change nothing here and are greyed",
+      "original": "access_limited.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 23405
+    },
+    {
+      "file": "03-intro-subtitles.jpg",
+      "caption": "The intro's line as a subtitle, with its speaker",
+      "original": "intro_subtitles.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 23409
+    },
+    {
+      "file": "04-pause-deuteranopia.jpg",
+      "caption": "Pause from the gamepad, red-green theme",
+      "original": "pause_deuteranopia.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 22189
+    }
+  ]
+}

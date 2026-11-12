@@ -204,7 +204,7 @@ def engine_args(a, out, assets):
     return [*(["--headless"] if a.headless else []), "--adapter", a.adapter, "--size", a.size, "--assets", str(assets), "--captures", str(out / "captures"),
             "--worlds", str(out / "worlds"), "--world", WORLD, "--saves", str(out / "saves"), "--trace", str(out / "trace"),
             "--lead", "director", "--reviewer", "artdir", "--reviewer", "debugger",
-            "--", "--seed", str(a.seed), "--mute"]
+            "--", "--seed", str(a.seed), "--mute", "--title", "off"]
 
 
 # ---------------------------------------------------------------- the debugger
@@ -866,7 +866,7 @@ def after_approval(a, out):
     args = [*(["--headless"] if a.headless else []), "--adapter", a.adapter, "--size", "1280x720", "--perf", str(PERF_TOML),
             "--assets", str(out / "assets"), "--captures", str(play / "captures"), "--worlds", str(play / "worlds"), "--world", WORLD,
             "--saves", str(play / "saves"), "--trace", str(play / "trace"), "--lead", "director",
-            "--", "--seed", str(a.seed), "--mute", "--rules", "lex"]
+            "--", "--seed", str(a.seed), "--mute", "--rules", "lex", "--title", "off"]
     report = {"phase": 2, "started": time.strftime("%Y-%m-%d %H:%M"), "adapter": a.adapter, "submission": sub["id"]}
     measured = []
     with Engine(a.exe or EXE, a.port, play / "engine.log", *args, cwd=str(play)) as eng:

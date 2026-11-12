@@ -1,0 +1,17 @@
+{
+  "format": "sepulcra.captions.v1",
+  "notes": "Sound captions (the Sound captions setting): a sound's name in the engine's audio log (audio_played) to the string-table key of the words shown for it (assets/strings/<locale>.json), with where it came from (left, right, behind) when it was positioned. A sound that isn't here has no caption.",
+  "sounds": {
+    "boss_call": "caption.boss_call",
+    "colossus_collapse": "caption.colossus_collapse",
+    "wave_start": "caption.wave_start",
+    "wave_cleared": "caption.wave_cleared",
+    "tombstone_lost": "caption.tombstone_lost",
+    "wall_broken": "caption.wall_broken",
+    "wall_hit": "caption.wall_hit",
+    "victory": "caption.victory",
+    "defeat": "caption.defeat",
+    "brazier_whoosh": "caption.brazier_whoosh",
+    "ui_error": "caption.ui_error"
+  }
+}

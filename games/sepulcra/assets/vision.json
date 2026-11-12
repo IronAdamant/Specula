@@ -1,0 +1,19 @@
+{
+  "format": "sepulcra.vision.v1",
+  "notes": "Colour themes for colour-vision differences (the settings' Colours option): each replaces named colours of theme.json. The meaning-carrying colours are rune (the player's magic, focus, good news), grave (the dead: threats and their arrows) and fire (warnings, can't afford). Each theme keeps those three apart for its deficiency, checked by simulating it (Machado 2009, full severity) with a CIE76 difference of at least 30 (games/sepulcra-app tests: vision_themes_keep_meaning_apart). high_contrast brightens text and darkens panels for low vision.",
+  "themes": {
+    "deuteranopia": {
+      "colors": { "rune": "#5fb8ff", "rune_deep": "#1f6fb0", "rune_pale": "#d2ebff", "grave": "#e0e040", "grave_deep": "#6b6b14", "fire": "#c0ffc0" }
+    },
+    "protanopia": {
+      "colors": { "rune": "#5fb8ff", "rune_deep": "#1f6fb0", "rune_pale": "#d2ebff", "grave": "#e0e040", "grave_deep": "#6b6b14", "fire": "#c0ffc0" }
+    },
+    "tritanopia": {
+      "colors": { "grave": "#e0c040", "grave_deep": "#705a14", "fire": "#c0e0a0" }
+    },
+    "high_contrast": {
+      "colors": { "text": "#ffffff", "text_dim": "#ece7da", "text_faint": "#c9c4b8", "stone": "#15181d", "stone_hi": "#1d2127", "stone_lo": "#101317", "recess": "#0c0e12" },
+      "focus_width": 3
+    }
+  }
+}

@@ -75,6 +75,10 @@ pub enum JobKind {
     ScratchTrash,
     /// The model library's scan of the assets folder (recipe, style, anim-set and glTF times).
     AssetScan,
+    /// The hosted game's player settings written to their per-user file (`user_settings`).
+    SettingsWrite,
+    /// A timeline's audio cue: its sound recipe found and rendered (`timeline_audio`).
+    TimelineSound,
     /// A module's sound recipe found and rendered (`Cx::sound`; presentation only).
     ModuleSound,
 }
@@ -101,6 +105,8 @@ impl JobKind {
             JobKind::FlashFeed => "flash_feed",
             JobKind::ScratchTrash => "scratch_trash",
             JobKind::AssetScan => "asset_scan",
+            JobKind::SettingsWrite => "settings_write",
+            JobKind::TimelineSound => "timeline_sound",
             JobKind::ModuleSound => "module_sound",
         }
     }

@@ -5,7 +5,7 @@
   "layer": 40,
   "modal": true,
   "focus": "start",
-  "notes": "A minimal title screen over the slab. Actions: new_run, open_controls, open_settings, quit_game.",
+  "notes": "The title screen over the slab, shown when a windowed game starts (headless runs and -- --title off skip it); the run waits under it. Actions: title_start (play: the intro flyover, then wave 1's countdown), title_continue (load the newest save; enabled when has_save), open_saves, open_settings, open_controls, quit_game (the player's own input only). State: has_save, continue_detail (what Continue loads).",
   "root": {
     "type": "box",
     "children": [
@@ -14,23 +14,25 @@
         "anchor": "center",
         "layout": "column",
         "align": "center",
-        "gap": 12,
+        "gap": 8,
         "children": [
           {
-            "type": "panel", "style": "veil", "layout": "column", "align": "center", "gap": 10,
+            "type": "panel", "style": "veil", "layout": "column", "align": "center", "gap": 6,
             "notes": "A veil behind the title keeps it readable over a bright sky (ui_check contrast, blended in linear light).",
             "children": [
-              { "type": "icon", "shape": "warding", "size": "3.2em", "color": "rune" },
+              { "type": "icon", "shape": "warding", "size": "2.8em", "color": "rune", "visible": "!ui.short" },
               { "type": "label", "text": "@title.sepulcra", "role": "title" },
-              { "type": "label", "text": "@title.guard_graves_shattered_slab", "role": "subtitle" }
+              { "type": "label", "text": "@title.guard_graves_shattered_slab", "role": "subtitle", "visible": "!ui.short" }
             ]
           },
           {
-            "type": "panel", "style": "menu", "width": "16em", "layout": "column", "align": "stretch", "gap": 10, "margin": [14, 0, 0, 0],
+            "type": "panel", "style": "menu", "width": "16em", "layout": "column", "align": "stretch", "gap": 8, "margin": [6, 0, 0, 0],
+            "notes": "Five buttons and the title above them must fit a display 520 text units high (below that ui.short hides the icon and the subtitle): the spacing here is what that leaves.",
             "children": [
-              { "type": "button", "id": "start", "style": "primary", "text": "@title.new_run", "action": "new_run" },
-              { "type": "button", "id": "title_controls", "text": "@title.controls", "action": "open_controls" },
+              { "type": "button", "id": "start", "style": "primary", "text": "@title.new_run", "action": "title_start" },
+              { "type": "button", "id": "title_continue", "text": "@title.continue", "action": "title_continue", "enabled": "has_save", "tooltip": "{continue_detail}" },
               { "type": "button", "id": "title_settings", "text": "@title.settings", "action": "open_settings" },
+              { "type": "button", "id": "title_controls", "text": "@title.controls", "action": "open_controls" },
               { "type": "button", "id": "quit_game", "text": "@title.quit", "action": "quit_game" }
             ]
           }

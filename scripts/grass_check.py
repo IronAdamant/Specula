@@ -75,7 +75,7 @@ def main():
         shutil.rmtree(out)
     out.mkdir(parents=True)
     args = ["--adapter", a.adapter, "--size", "1280x720", "--captures", str(out / "captures"), "--trace", str(out / "trace"),
-            "--", "--seed", "7", "--mute"]
+            "--", "--seed", "7", "--mute", "--title", "off"]
     report = {}
     with Engine(Path(a.exe), a.port, out / "engine.log", *args, cwd=str(out)) as eng:
         m = eng.mcp("grass-check")

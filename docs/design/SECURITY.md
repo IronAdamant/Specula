@@ -89,7 +89,10 @@ Neither is a refusal caused by state the agent didn't choose. Those are **noted*
 - `engine_screen_open`: `ui_act` with no `surface` while the human (or a reviewer) has an engine screen open. The
   call meant the game; only `surface: "review"` or `"gallery"` named explicitly is a try at the screen;
 - `human_input`: a `logic_input` hold on an action the human is using, and a hold the human took back (below);
-- `owner_closed`: reopening a screen the human closed moments ago.
+- `owner_closed`: reopening a screen the human closed moments ago;
+- `players_only`: a press the hosted game refused because only the player may make it (Quit, a button that would
+  listen for the player's next key), from `ui_act` or a game tool (`Game::take_refused_presses`). An agent walking
+  a menu presses every button, so this is never counted.
 
 **A granted lead is never frozen.** Its refused tries are alerts. A swarm with a lead and no `--owner` agent can
 therefore never lock itself out, and the owner's and the lead's `security_*` tools always answer.
@@ -194,8 +197,8 @@ text lands in a world text, and every agent can read world texts.
 ## System DLLs load from System32 only
 
 `specula_sys::dynlib::Library::open(name)` takes a bare file name and loads it with
-`LoadLibraryExW(LOAD_LIBRARY_SEARCH_SYSTEM32)`, so a `bcrypt.dll`, `vulkan-1.dll`, `xinput1_4.dll`, `iphlpapi.dll`
-or `avrt.dll` planted beside the executable is never loaded. There are two other deliberate paths:
+`LoadLibraryExW(LOAD_LIBRARY_SEARCH_SYSTEM32)`, so a `bcrypt.dll`, `vulkan-1.dll`, `xinput1_4.dll`, `iphlpapi.dll`,
+`shcore.dll` or `avrt.dll` planted beside the executable is never loaded. There are two other deliberate paths:
 
 - `Library::open_beside_exe(name)`, for DLLs that ship with the game (`steam_api64.dll` later). It searches the
   application folder and System32.

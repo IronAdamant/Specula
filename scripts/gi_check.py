@@ -376,7 +376,7 @@ def part_sepulcra(args, out):
     d.mkdir(parents=True, exist_ok=True)
     res = {}
     extra = ["--adapter", args.adapter, "--size", "1280x720", "--cache", str(d / "cache"), "--captures", str(d / "captures"), "--lead", "gi-lead",
-             "--", "--seed", "7", "--mute"]
+             "--", "--seed", "7", "--mute", "--title", "off"]
     with Engine(args.game, args.port + 2, d / "engine.log", *extra, cwd=d) as eng:
         m = eng.mcp("gi-sepulcra")
         # The game loads its models first: the engine may answer "busy" for a while.

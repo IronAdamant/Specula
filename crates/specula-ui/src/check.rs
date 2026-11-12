@@ -99,7 +99,7 @@ impl Target {
 
     /// What the target is, as a display.
     pub fn display(&self) -> crate::display::Display {
-        crate::display::Display { size: self.size, ppi: self.ppi, os_scale: self.os_scale, safe_area: self.safe_area, touch: self.touch }
+        crate::display::Display { size: self.size, ppi: self.ppi, os_scale: self.os_scale, safe_area: self.safe_area, touch: self.touch, panel: None }
     }
 
     /// Steam Deck: 1280×800, ~205 ppi, 7" screen.

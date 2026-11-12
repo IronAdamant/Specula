@@ -31,6 +31,7 @@ pub mod lexmode;
 pub mod looks;
 pub mod props;
 pub mod scene;
+pub mod settings;
 pub mod slab;
 pub mod grass;
 pub mod tools;
