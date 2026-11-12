@@ -193,7 +193,9 @@ def probes(exe, port, adapter, out, summary):
         res["ui_scale_settings_os175"] = seen
         # Every setting changes the size until the window has no more room (the theme's
         # min_logical, 800x480: 1.5 on a 1280x720 window); 0.8, 1.0 and 1.5 always differ.
-        by = sorted(seen)
+        # (The game's cycle passes over sizes that change nothing here, so it comes round to the
+        # first ones again within these presses: each setting is looked at once.)
+        by = sorted(set(seen))
         room = 720 / 480
         for (u0, v0), (u1, v1) in zip(by, by[1:]):
             if not (v1 > v0 + 1e-4 or abs(v0 - room) < 1e-3):
