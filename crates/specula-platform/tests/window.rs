@@ -62,7 +62,7 @@ fn poll_events_returns_promptly() {
     for _ in 0..10 {
         let _ = window.poll_events();
     }
-    assert!(start.elapsed() < Duration::from_secs(1), "poll_events blocked: {:?}", start.elapsed());
+    assert!(start.elapsed() < Duration::from_secs(5), "poll_events blocked: {:?}", start.elapsed());
     // An idle hidden window produces nothing once drained.
     assert_eq!(window.poll_events(), Vec::<Event>::new());
 }

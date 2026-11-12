@@ -2066,20 +2066,20 @@ impl Streamer {
     /// pixels aren't counted on their own, `visible_px` is null) or `"not_resident"` (built, not
     /// on the GPU: not drawn), and `resident_lods_from` when finer levels are still streaming.
     pub fn annotate(&self, subjects: &mut [Subject], world: &World, models: &GpuModels) {
-        let notes = self.notes(subjects, world, models);
+        let notes = self.notes(subjects.iter().map(|s| &*s.base), world, models);
         apply_notes(subjects, &notes);
     }
 
     /// What [`Streaming::annotate`] says of the subjects, read when the frame is drawn (a capture
     /// writes them once its ID counts are in, [`apply_notes`]): `(subject index, note)`. Visits
     /// model subjects only.
-    pub fn notes(&self, subjects: &[Subject], world: &World, models: &GpuModels) -> Vec<(usize, Note)> {
+    pub fn notes<'a>(&self, subjects: impl Iterator<Item = &'a sight::SubjectBase>, world: &World, models: &GpuModels) -> Vec<(usize, Note)> {
         let mut out = Vec::new();
         if !self.cfg.enabled {
             return out;
         }
-        for (i, s) in subjects.iter().enumerate() {
-            if !s.base.is_model() {
+        for (i, s) in subjects.enumerate() {
+            if !s.is_model() {
                 continue;
             }
             let Some(e) = world.get(s.id).filter(|e| e.shape == Shape::Model) else { continue };

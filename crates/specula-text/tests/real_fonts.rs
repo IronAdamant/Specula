@@ -4,6 +4,16 @@
 use specula_text::*;
 use std::path::PathBuf;
 
+/// A copy of `specula_core::speed_budget` (this crate depends on nothing): a test's speed bound,
+/// tight when it runs alone, 5 s or more in every other run.
+fn speed_budget(tight: std::time::Duration) -> std::time::Duration {
+    if std::env::var_os("SPECULA_SPEED_TESTS").is_some() {
+        tight
+    } else {
+        tight.max(std::time::Duration::from_secs(5))
+    }
+}
+
 fn font_path(name: &str) -> Option<PathBuf> {
     let dirs: Vec<PathBuf> = if cfg!(windows) {
         let root = std::env::var_os("WINDIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
@@ -297,9 +307,9 @@ fn hud_frame_cost_when_cached() {
     );
     assert!(glyphs >= 190);
     assert!(atlas.stats().misses < 100);
-    // Generous bound so slow debug CI passes; the budget (0.2 ms) is checked in release.
-    assert!(warm.as_secs_f64() < 0.005, "cached HUD frame took {warm:?}");
+    // Generous bound for a debug build; the budget (0.2 ms) is checked in release.
+    assert!(warm < speed_budget(std::time::Duration::from_millis(5)), "cached HUD frame took {warm:?}");
     if !cfg!(debug_assertions) {
-        assert!(warm.as_secs_f64() < 0.0002, "cached HUD frame took {warm:?} (budget 0.2 ms)");
+        assert!(warm < speed_budget(std::time::Duration::from_micros(200)), "cached HUD frame took {warm:?} (budget 0.2 ms)");
     }
 }

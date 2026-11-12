@@ -46,7 +46,10 @@ struct SyncTimes {
 
 struct Target {
     color: Image,
+    /// Its memory is allocated on the image heap's worker ([`Target::readback_ahead`] until it
+    /// is back: a null buffer here meanwhile; `GpuInner::target_readback` finishes it).
     readback: Buffer,
+    readback_ahead: Option<crate::device::PendingBuffer>,
     extent: VkExtent2D,
     /// Its frame graph; the depth buffer and post-chain images are the graph's transients.
     graph: FrameGraph,
@@ -309,6 +312,7 @@ impl GpuInner {
         // On error `gpu` drops and releases whatever was created.
         gpu.cmd_pool = gpu.device.create_command_pool()?;
         gpu.uploads.warm(&gpu.device)?;
+        gpu.device.warm_image_heap()?;
         gpu.sync_cmd = gpu.device.allocate_command_buffer(gpu.cmd_pool)?;
         gpu.sync_fence = gpu.device.create_fence(false)?;
         gpu.async_cmd = gpu.device.allocate_command_buffer(gpu.cmd_pool)?;
@@ -1094,9 +1098,17 @@ impl GpuInner {
         Ok((offsets, total))
     }
 
+    /// Writes a region of a one-level texture, queued: the copy goes in the upload batch,
+    /// submitted before the next frame or offscreen render on the same queue, so that frame
+    /// samples the new texels and frames already submitted finish reading the old ones first
+    /// (the batch's barrier). A HUD's glyph atlas growing used to wait for the GPU here (a fence
+    /// per update, 10-32 ms on a loaded iGPU).
+    ///
+    /// Two cases still cost the caller's thread, and callers that run every frame should stay
+    /// out of them: with no batch recording and all six upload slots in flight it waits for the
+    /// oldest one (`gpu.slot_wait`), and an update over 8 MB gets a staging buffer of its own,
+    /// allocated here.
     pub fn update_texture(&mut self, texture: TextureId, x: u32, y: u32, width: u32, height: u32, pixels: &[u8]) -> Result<(), GpuError> {
-        // A queued texture whose copy may not have run yet: finish the batches first.
-        self.settle_upload_of(texture.0);
         let t = self.textures.map.get(&texture.0).ok_or_else(|| GpuError::unknown(crate::IdKind::Texture, texture.0, ""))?;
         if t.levels > 1 {
             return Err(GpuError::new(format!(
@@ -1113,7 +1125,19 @@ impl GpuInner {
                 format!("update_texture: region {width}x{height} at ({x}, {y}) leaves the {}x{} texture", t.width, t.height),
             ));
         }
-        self.copy_to_image(t.image.handle, false, x, y, width, height, pixels)
+        let image = t.image.handle;
+        let bytes = pixels.len() as u64;
+        let staged = {
+            let _z = specula_core::profile::zone("gpu.stage");
+            self.uploads.stage(&self.device, bytes)?
+        };
+        // SAFETY: `staged.dst` holds at least `bytes` bytes that no submitted batch uses.
+        unsafe { ptr::copy_nonoverlapping(pixels.as_ptr(), staged.dst, pixels.len()) };
+        let cmd = self.uploads.recording_cmd(&self.device)?;
+        crate::stream::record_image_update(&self.device, cmd, &staged, image, (x, y, width, height));
+        // Pending until its batch finishes: destroying the texture first settles it.
+        self.uploads.queued(texture.0, bytes);
+        Ok(())
     }
 
     pub fn has_texture(&self, texture: TextureId) -> bool {
@@ -1149,7 +1173,10 @@ impl GpuInner {
             MemoryKind::RenderTargets,
             "target colour",
         )?;
-        let readback = match dev.create_buffer(
+        // The readback's memory (16 MB at 2048 x 2048, host-visible: 10-45 ms of
+        // `vkAllocateMemory` on a loaded iGPU) is allocated on the image heap's worker; the first
+        // use finishes it (waiting only if it isn't back), a prewarm polls it.
+        let readback = match dev.create_buffer_ahead(
             width as u64 * height as u64 * 4,
             VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -1165,22 +1192,45 @@ impl GpuInner {
         };
         let id = self.next_id();
         let graph = FrameGraph::new(id);
+        let none = Buffer { handle: VK_NULL_HANDLE, memory: VK_NULL_HANDLE, mapped: ptr::null_mut(), bytes: 0, kind: MemoryKind::Readback };
         self.targets.insert(
             id,
-            Target { color, readback, extent: VkExtent2D { width, height }, graph, rendered: false, copied: false },
+            Target { color, readback: none, readback_ahead: Some(readback), extent: VkExtent2D { width, height }, graph, rendered: false, copied: false },
         );
         Ok(TargetId(id))
+    }
+
+    /// Whether `target`'s readback buffer is there (`wait`: makes sure it is, waiting for the
+    /// image heap's worker if it must).
+    fn target_readback(&mut self, target: u32, wait: bool) -> Result<bool, GpuError> {
+        let Some(t) = self.targets.get_mut(&target) else {
+            return Err(GpuError::unknown(crate::IdKind::Target, target, ""));
+        };
+        let Some(p) = t.readback_ahead.take() else { return Ok(true) };
+        match self.device.finish_buffer(p, wait)? {
+            Ok(b) => {
+                t.readback = b;
+                Ok(true)
+            }
+            Err(p) => {
+                t.readback_ahead = Some(p);
+                Ok(false)
+            }
+        }
     }
 
     pub fn destroy_target(&mut self, target: TargetId) {
         if self.pending.as_ref().is_some_and(|p| p.target == target.0) {
             let _ = self.settle_offscreen(true);
         }
-        let Some(t) = self.targets.remove(&target.0) else { return };
+        let Some(mut t) = self.targets.remove(&target.0) else { return };
         // Offscreen work is synchronous (an asynchronous render of it was settled above), so
         // nothing on the GPU still uses the target or its graph's images.
         self.pool.release_owner(&self.device, &mut self.descriptors, target.0);
         self.ids.forget(target.0);
+        if let Some(p) = t.readback_ahead.take() {
+            self.device.abandon_buffer(p);
+        }
         self.device.destroy_buffer(&t.readback);
         self.device.destroy_image(&t.color);
         if self.last_graph == Some(GraphSource::Target(target.0)) {
@@ -1199,6 +1249,12 @@ impl GpuInner {
     /// exists. A frame whose content differs makes what the prediction missed, as before.
     pub fn prewarm_target(&mut self, target: TargetId, env: &crate::Environment, ids: bool, content: Option<ContentHint>, until: Instant) -> Result<bool, GpuError> {
         let _z = specula_core::profile::zone("gpu.prewarm");
+        // The target's readback and the ID buffers for its size come from the image heap's
+        // worker: polled here, never waited for.
+        let readback = {
+            let _z = specula_core::profile::zone("gpu.prewarm_readback");
+            self.target_readback(target.0, false)?
+        };
         let hint = content.or(self.hint_offscreen).or(self.hint_window).unwrap_or(ContentHint { shadow_casters: true, ..ContentHint::default() });
         let Some(t) = self.targets.get_mut(&target.0) else {
             return Err(GpuError::unknown(crate::IdKind::Target, target.0, ""));
@@ -1226,7 +1282,12 @@ impl GpuInner {
         if ids {
             crate::idbuffer::declare(&mut t.graph, extent, crate::idbuffer::bucket_for(extent, self.ids.bucket));
         }
-        t.graph.prewarm(&self.device, &mut self.descriptors, &mut self.pool, until)
+        let images = t.graph.prewarm(&self.device, &mut self.descriptors, &mut self.pool, until)?;
+        let id_buffers = {
+            let _z = specula_core::profile::zone("gpu.prewarm_ids");
+            !ids || self.ids.prewarm(&self.device, extent, hint.blended || hint.two_d)?
+        };
+        Ok(images && readback && id_buffers)
     }
 
     /// Transient images `target`'s graph, as last declared, still lacks (tests).
@@ -1383,6 +1444,8 @@ impl GpuInner {
         self.settle_offscreen(true)?;
         let zp = specula_core::profile::zone("gpu.prepare");
         check_frame(&self.meshes, &self.textures, frame)?;
+        // Its readback (made ahead on the image heap's worker; a prewarm has usually finished it).
+        self.target_readback(target.0, true)?;
         // Queued uploads go first on the queue: the frame draws with them.
         {
             let _z = specula_core::profile::zone("gpu.flush_uploads");
@@ -1452,6 +1515,7 @@ impl GpuInner {
         t.graph.bind_image(res.out, t.color.handle, t.color.view);
         let id_frame = match (ids, id_res) {
             (Some((ids, occluders)), Some(id_res)) => {
+                let _z = specula_core::profile::zone("gpu.ids_frame");
                 let plans = (&self.scratch.plan, &self.scratch.two_d);
                 self.ids.set_occluders(occluders, extent);
                 Some(self.ids.frame(&self.device, &mut self.pipelines, plans, frame, ids, id_res, target.0, extent, &mut t.graph)?)
@@ -1684,7 +1748,10 @@ impl Drop for GpuInner {
         for (_, t) in self.textures.map.drain() {
             dev.destroy_image(&t.image);
         }
-        for (_, t) in self.targets.drain() {
+        for (_, mut t) in self.targets.drain() {
+            if let Some(p) = t.readback_ahead.take() {
+                dev.abandon_buffer(p);
+            }
             dev.destroy_buffer(&t.readback);
             dev.destroy_image(&t.color);
         }

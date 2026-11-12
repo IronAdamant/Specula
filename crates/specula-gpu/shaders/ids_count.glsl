@@ -47,6 +47,13 @@ bool shown() {
     return true;
 }
 
+// Glass's body opacity (shade_glass in mesh_frag.glsl: its alpha is never below it). The rim
+// that grazing angles and Fresnel make nearly opaque on thin glass is left out: a pane's edges
+// don't hide what is behind them in the counts.
+float glass_alpha() {
+    return clamp(pc.draws.items[v_ids.y].color.a, 0.0, 1.0);
+}
+
 void main() {
     uint id = v_ids.x;
     if (id == 0u || !shown()) {
@@ -55,6 +62,10 @@ void main() {
     if (MODE == 1u) {
         id_rasterized(id_target(), id);
     } else {
+        // Glass about as opaque as a wall paints over what was drawn before it here.
+        if (pc.cover != 0u && (pc.faces & FACES_COVER_GLASS) != 0u && glass_alpha() >= COVER_ALPHA) {
+            id_cover(id_target(), uvec2(gl_FragCoord.xy), record_seq(v_ids.y));
+        }
         id_insert(id_target(), id, uvec2(gl_FragCoord.xy));
     }
 }

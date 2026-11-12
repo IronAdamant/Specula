@@ -390,6 +390,9 @@ pub struct DrawCache {
     transient_levels: BTreeMap<u64, u8>,
     rebuilds: u64,
     patches: u64,
+    /// Captures' cache ([`DrawCache::for_captures`]): models choose their LOD afresh every frame
+    /// (`LodChoice::Fresh`, reproducible), never from a remembered level.
+    fresh: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -435,6 +438,14 @@ impl Cached {
 }
 
 impl DrawCache {
+    /// A cache for captures: the same draws in the same order as [`draw_list`] with
+    /// `LodChoice::Fresh` (each model's LOD chosen afresh, as captures always did), kept between
+    /// captures and patched with what changed, so a capture of a 20,000-entity world no longer
+    /// reads every entity (M5 gpuwork; `docs/design/WORKERS.md`).
+    pub fn for_captures() -> DrawCache {
+        DrawCache { fresh: true, ..DrawCache::default() }
+    }
+
     /// How many times the entries were rebuilt from every entity.
     pub fn rebuilds(&self) -> u64 {
         self.rebuilds
@@ -465,7 +476,7 @@ impl DrawCache {
         if fresh {
             for c in &mut self.entries {
                 let before = out.len();
-                draw_cached(c, world, meshes, view, &mut stats, out);
+                draw_cached(c, world, meshes, view, self.fresh, &mut stats, out);
                 if let Some(o) = owners.as_deref_mut() {
                     o.extend(std::iter::repeat_n(c.id(), out.len() - before));
                 }
@@ -483,7 +494,7 @@ impl DrawCache {
                     self.entries.push(c);
                     if let Some(c) = self.entries.last_mut() {
                         let before = out.len();
-                        draw_cached(c, world, meshes, view, &mut stats, out);
+                        draw_cached(c, world, meshes, view, self.fresh, &mut stats, out);
                         if let Some(o) = owners.as_deref_mut() {
                             o.extend(std::iter::repeat_n(c.id(), out.len() - before));
                         }
@@ -505,6 +516,7 @@ impl DrawCache {
         }
         let mut transient = View { camera: view.camera, viewport_h: view.viewport_h, include_ui: view.include_ui, lod: match view.lod {
             LodChoice::Fixed(l) => LodChoice::Fixed(l),
+            _ if self.fresh => LodChoice::Fresh,
             _ => LodChoice::Remembered(&mut self.transient_levels),
         } };
         for e in world.transient_entities() {
@@ -571,7 +583,7 @@ impl DrawCache {
 }
 
 /// Appends a cached entry's draws (a model's at its LOD for this view, posed if animated).
-fn draw_cached(c: &mut Cached, world: &World, meshes: &Meshes, view: &View, stats: &mut LodStats, out: &mut Vec<DrawItem>) {
+fn draw_cached(c: &mut Cached, world: &World, meshes: &Meshes, view: &View, fresh: bool, stats: &mut LodStats, out: &mut Vec<DrawItem>) {
     match c {
         Cached::Item { d, .. } => out.push(*d),
         Cached::Model { m, animated, drawn, level } => {
@@ -581,6 +593,7 @@ fn draw_cached(c: &mut Cached, world: &World, meshes: &Meshes, view: &View, stat
             let entity = if *animated { world.get(m.id) } else { None };
             let mut choice = match view.lod {
                 LodChoice::Fixed(l) => LodChoice::Fixed(l),
+                _ if fresh => LodChoice::Fresh,
                 _ => LodChoice::Slot(level),
             };
             meshes.models.draw_model(m, entity, view.camera.eye, view.camera.fov_y_deg, view.viewport_h, &mut choice, stats, out);
@@ -1136,26 +1149,83 @@ pub fn subjects(world: &World, view_proj: &Mat4, width: u32, height: u32, includ
 /// [`subjects`] from the cache (brought up to date by the caller): only the projection is made
 /// per capture, plus transient entities and 2D cards read live.
 pub fn subjects_cached(cache: &SubjectCache, world: &World, view_proj: &Mat4, width: u32, height: u32, include_ui: bool) -> Vec<Subject> {
-    // Billboards turn to the camera: their subject is the card as drawn.
+    subject_set(cache, world, view_proj, width, height, include_ui).project()
+}
+
+/// A capture's subjects before their projection: the bases in the frame, in [`subjects`]'s
+/// order, each with its 2D card as drawn (billboards turn to the camera). Made on the engine
+/// thread (it reads the world: transient entities, cards); [`SubjectSet::project`] needs nothing
+/// else, so a worker makes the projection (6-8 ms at 20,000 entities on the reference iGPU,
+/// `docs/design/WORKERS.md`).
+pub struct SubjectSet {
+    items: Vec<(std::sync::Arc<SubjectBase>, Option<[Vec3; 4]>)>,
+    view_proj: Mat4,
+    width: u32,
+    height: u32,
+    ortho: bool,
+}
+
+/// [`subjects_cached`] up to the projection (see [`SubjectSet`]).
+pub fn subject_set(cache: &SubjectCache, world: &World, view_proj: &Mat4, width: u32, height: u32, include_ui: bool) -> SubjectSet {
     let view = specula_gpu::view_2d(&view_proj.to_cols_array(), true);
-    let ortho = view.ortho;
-    let project = |base: std::sync::Arc<SubjectBase>, e: Option<&Entity>| -> Subject {
-        let card = if base.flat {
-            e.or_else(|| world.get(base.id)).and_then(|e| e.two_d.as_ref().and_then(|t| crate::two_d::billboard_corners(t, &e.model(), &view)))
-        } else {
-            None
-        };
-        let (screen, distance) = project_box(&base.corners, card, view_proj, width, height, ortho);
-        let area = screen.map_or(0, |r| u64::from(r[2]) * u64::from(r[3]));
-        Subject { id: base.id, base, on_screen: screen.is_some(), screen, distance, vis: None, json: Json::Obj(Vec::new()), area, projected_area: area }
+    let card = |base: &SubjectBase, e: Option<&Entity>| -> Option<[Vec3; 4]> {
+        if !base.flat {
+            return None;
+        }
+        e.or_else(|| world.get(base.id)).and_then(|e| e.two_d.as_ref().and_then(|t| crate::two_d::billboard_corners(t, &e.model(), &view)))
     };
-    let mut out: Vec<Subject> = cache.entries().iter().filter(|b| b.in_frame(include_ui)).map(|b| project(std::sync::Arc::clone(b), None)).collect();
+    let mut items: Vec<(std::sync::Arc<SubjectBase>, Option<[Vec3; 4]>)> =
+        cache.entries().iter().filter(|b| b.in_frame(include_ui)).map(|b| (std::sync::Arc::clone(b), card(b, None))).collect();
     for e in world.transient_entities() {
         if let Some(b) = SubjectBase::of(world, e).filter(|b| b.in_frame(include_ui)) {
-            out.push(project(std::sync::Arc::new(b), Some(e)));
+            let c = card(&b, Some(e));
+            items.push((std::sync::Arc::new(b), c));
         }
     }
-    out
+    SubjectSet { items, view_proj: *view_proj, width, height, ortho: view.ortho }
+}
+
+impl SubjectSet {
+    /// No subjects (tests of who projects a view's subjects).
+    #[cfg(test)]
+    pub(crate) fn empty() -> SubjectSet {
+        SubjectSet { items: Vec::new(), view_proj: Mat4::IDENTITY, width: 1, height: 1, ortho: false }
+    }
+
+    /// The bases, in the subjects' order (index `i` is the projection's `i`-th subject).
+    pub fn bases(&self) -> impl Iterator<Item = &SubjectBase> {
+        self.items.iter().map(|(b, _)| &**b)
+    }
+
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    /// The subjects, projected (the same as [`subjects_cached`] made from the same world).
+    pub fn project(&self) -> Vec<Subject> {
+        self.items
+            .iter()
+            .map(|(base, card)| {
+                let (screen, distance) = project_box(&base.corners, *card, &self.view_proj, self.width, self.height, self.ortho);
+                let area = screen.map_or(0, |r| u64::from(r[2]) * u64::from(r[3]));
+                Subject {
+                    id: base.id,
+                    base: std::sync::Arc::clone(base),
+                    on_screen: screen.is_some(),
+                    screen,
+                    distance,
+                    vis: None,
+                    json: Json::Obj(Vec::new()),
+                    area,
+                    projected_area: area,
+                }
+            })
+            .collect()
+    }
 }
 
 /// The clipped box's screen rectangle and nearest view depth ([`clip_points`], without
@@ -1182,6 +1252,10 @@ fn project_box(corners: &[Vec3; 8], card: Option<[Vec3; 4]>, view_proj: &Mat4, w
 pub fn dense_ids(owners: &[u64]) -> (Vec<u32>, Vec<u64>) {
     let mut entities: Vec<u64> = Vec::new();
     let mut index: std::collections::HashMap<u64, u32> = std::collections::HashMap::new();
+    // Draw lists come in entity id order (the draw caches), each entity's draws together: the
+    // same owner again, or one above every owner so far, needs no lookup (a capture of 20,000
+    // entities spent milliseconds hashing them). Owners out of that order use the map.
+    let (mut last, mut last_id, mut top, mut sorted) = (0u64, 0u32, 0u64, 0usize);
     let ids = owners
         .iter()
         .map(|&e| {
@@ -1189,10 +1263,25 @@ pub fn dense_ids(owners: &[u64]) -> (Vec<u32>, Vec<u64>) {
             if e == 0 {
                 return 0;
             }
-            *index.entry(e).or_insert_with(|| {
+            if e == last && last_id != 0 {
+                return last_id;
+            }
+            let id = if e > top && sorted == entities.len() {
+                // Still in order: the entities so far are sorted (searched below, never hashed).
                 entities.push(e);
+                sorted = entities.len();
+                top = e;
                 entities.len() as u32
-            })
+            } else if let Ok(i) = entities[..sorted].binary_search(&e) {
+                i as u32 + 1
+            } else {
+                *index.entry(e).or_insert_with(|| {
+                    entities.push(e);
+                    entities.len() as u32
+                })
+            };
+            (last, last_id) = (e, id);
+            id
         })
         .collect();
     (ids, entities)
@@ -2037,6 +2126,18 @@ mod tests {
         // A model's parts share its id; ids are dense in draw order.
         let (ids, entities) = dense_ids(&[7, 7, 3, 9, 3]);
         assert_eq!((ids, entities.clone()), (vec![1, 1, 2, 3, 2], vec![7, 3, 9]));
+        // The in-order fast path gives what a plain map gives, in and out of order.
+        let naive = |owners: &[u64]| {
+            let mut ents: Vec<u64> = Vec::new();
+            let ids: Vec<u32> = owners
+                .iter()
+                .map(|&e| if e == 0 { 0 } else { ents.iter().position(|&x| x == e).map_or_else(|| { ents.push(e); ents.len() as u32 }, |i| i as u32 + 1) })
+                .collect();
+            (ids, ents)
+        };
+        for owners in [vec![1u64, 2, 2, 5, 9, 9, 9, 12], vec![4, 0, 4, 8, 2, 8, 0, 3, 9, 4, 2, 10, 1], vec![3, 5, 5, 1, 5, 7, 3, 1, 20, 6], vec![]] {
+            assert_eq!(dense_ids(&owners), naive(&owners), "{owners:?}");
+        }
         let mut world = World::default();
         spawn(&mut world, Shape::Cube, "front", Vec3::ZERO);
         spawn(&mut world, Shape::Cube, "behind", Vec3::new(0.0, 0.0, -3.0));

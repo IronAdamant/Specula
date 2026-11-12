@@ -1,5 +1,6 @@
 // Specula shadow pipeline, vertex stage: shadow casters into cascade `pc.pass` of the sun's
-// shadow map. Included by shadow.vert, shadow_skin.vert (SKINNED), and shadow_mask.vert /
+// shadow map. Included by shadow.vert, shadow_sway.vert (SWAY: unmasked swaying casters pass
+// their world position to shadow_sway.frag), shadow_skin.vert (SKINNED), and shadow_mask.vert /
 // shadow_skin_mask.vert (MASKED: alpha-masked materials pass their UVs to shadow_mask.frag,
 // which cuts the shadow where the base colour's alpha is). Compile with shaders/build.sh.
 #include "frame.glsl"
@@ -11,6 +12,10 @@ layout(location = 2) in vec4 in_color; // the wind's painted weight (alpha)
 #ifdef SKINNED
 layout(location = 3) in uvec4 in_joints;
 layout(location = 4) in vec4 in_weights;
+#endif
+#ifdef SWAY
+layout(location = 0) out vec3 v_world; // shadow_sway.frag: the fade near the wind's shadow_end
+layout(location = 1) flat out uint v_draw;
 #endif
 #ifdef MASKED
 layout(location = 1) in vec3 in_normal;
@@ -41,6 +46,10 @@ void main() {
     world.xyz += wind_offset(pc.frame, pc.draws.items[gl_InstanceIndex].ext.w, in_position, world.xyz, in_color.a, wind_scale(model));
 #endif
     gl_Position = pc.frame.shadow_mats[pc.pass] * world;
+#ifdef SWAY
+    v_world = world.xyz;
+    v_draw = uint(gl_InstanceIndex);
+#endif
 #ifdef MASKED
     v_uv = in_uv;
     v_draw = uint(gl_InstanceIndex);

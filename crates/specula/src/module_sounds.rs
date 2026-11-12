@@ -373,7 +373,7 @@ mod tests {
         let t = Instant::now();
         let e = render(&[long]).unwrap_err();
         assert!(e.contains("refused before rendering"), "{e}");
-        assert!(t.elapsed() < Duration::from_secs(1), "no 60 s render first: {:?}", t.elapsed());
+        assert!(t.elapsed() < specula_core::speed_budget(std::time::Duration::from_secs(1)), "no 60 s render first: {:?}", t.elapsed());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

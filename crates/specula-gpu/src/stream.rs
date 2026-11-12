@@ -35,8 +35,11 @@ use std::collections::VecDeque;
 use std::ptr;
 use std::time::{Duration, Instant};
 
-/// Batches that may be recorded or in flight at once.
-pub const MAX_SLOTS: usize = 3;
+/// Batches that may be recorded or in flight at once. Six (three before M5 gpuwork): a batch is
+/// submitted with every frame and offscreen render, so on a saturated iGPU three could all be in
+/// flight and the next upload waited for the oldest (`gpu.slot_wait`, up to 47 ms); callers that
+/// can wait a frame check [`Uploads::slot_free`] first and defer instead.
+pub const MAX_SLOTS: usize = 6;
 /// Staging bytes each slot keeps mapped (items that don't fit get a buffer of their own).
 pub const ARENA_BYTES: u64 = 8 << 20;
 /// Time one poll spends freeing retired resources at most (freeing memory can take a driver a
@@ -157,7 +160,7 @@ impl Grower {
             .name("specula-mesh-alloc".into())
             .spawn(move || {
                 for (size, type_index) in jobs {
-                    let r = alloc.allocate(size, type_index);
+                    let r = alloc.allocate(size, type_index, false);
                     if let Err(std::sync::mpsc::SendError(Ok(m))) = done.send(r) {
                         alloc.free(m); // nobody is listening any more
                     }
@@ -534,6 +537,8 @@ impl Uploads {
         // A block grown ahead joins once its memory is there (an error is counted, not fatal:
         // the next growth tries again).
         let _ = self.blocks.poll_grow(dev, false);
+        // So do image heap blocks (`heap.rs`).
+        dev.poll_image_heap();
         if self.recording.is_none() && self.retired_now.is_empty() {
             return Ok(());
         }
@@ -748,6 +753,52 @@ pub(crate) fn record_image_copy(dev: &Device, cmd: VkCommandBuffer, staged: &Sta
             VK_PIPELINE_STAGE_2_COPY_BIT,
             VK_ACCESS_2_TRANSFER_WRITE_BIT,
             VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        )],
+    );
+}
+
+/// Records a write of a region `(x, y, width, height)` of level 0 of a sampled image already in
+/// `SHADER_READ_ONLY_OPTIMAL` (texels tightly packed at `staged`): frames and copies submitted
+/// earlier on the queue (and earlier in this batch) finish with it first, and later frames read
+/// the new texels.
+pub(crate) fn record_image_update(dev: &Device, cmd: VkCommandBuffer, staged: &Staged, image: VkImage, (x, y, width, height): (u32, u32, u32, u32)) {
+    dev.barrier(
+        cmd,
+        &[],
+        &[image_barrier(
+            image,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COPY_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COPY_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        )],
+    );
+    let region = VkBufferImageCopy {
+        buffer_offset: staged.offset,
+        buffer_row_length: 0,
+        buffer_image_height: 0,
+        image_subresource: VkImageSubresourceLayers { aspect_mask: VK_IMAGE_ASPECT_COLOR_BIT, mip_level: 0, base_array_layer: 0, layer_count: 1 },
+        image_offset: VkOffset3D { x: x as i32, y: y as i32, z: 0 },
+        image_extent: VkExtent3D { width, height, depth: 1 },
+    };
+    // SAFETY: recording; the region lies inside the staged range and the image (checked by the
+    // caller); the image is in TRANSFER_DST_OPTIMAL.
+    unsafe { (dev.fns.cmd_copy_buffer_to_image)(cmd, staged.buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region) };
+    dev.barrier(
+        cmd,
+        &[],
+        &[image_barrier(
+            image,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            VK_PIPELINE_STAGE_2_COPY_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,

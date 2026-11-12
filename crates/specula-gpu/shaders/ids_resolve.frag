@@ -10,12 +10,13 @@
 
 layout(location = 0) in vec2 v_uv; // from fullscreen.vert (the pixel comes from gl_FragCoord)
 
-// Whether slot value `v` (current epoch) is in pixel `q`'s set.
+// Whether slot value `v` (current epoch) is in pixel `q`'s set, and shows there (nothing painted
+// over it afterwards: ids_core.glsl, covers).
 bool has(uint v, uvec2 q) {
     uint at = seen_at(q);
     for (uint k = 0u; k < SEEN_SLOTS; k++) {
         if (pc.seen.slot[at + k] == v) {
-            return true;
+            return !id_hidden(v & ((1u << SEEN_ID_BITS) - 1u), q);
         }
     }
     return false;
@@ -33,6 +34,9 @@ void main() {
             return; // claimed slots form a prefix
         }
         uint id = v & ((1u << SEEN_ID_BITS) - 1u);
+        if (id_hidden(id, p)) {
+            continue; // painted over by a later draw (the colour pass's order)
+        }
         bvec4 edges = bvec4(
             p.x == 0u || !has(v, p - uvec2(1u, 0u)),
             p.y == 0u || !has(v, p - uvec2(0u, 1u)),

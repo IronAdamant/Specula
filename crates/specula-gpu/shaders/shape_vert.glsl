@@ -13,6 +13,7 @@ layout(location = 0) out vec4 v_color;   // linear, straight alpha
 layout(location = 1) out vec3 v_world;
 #ifdef IDS
 layout(location = 2) flat out uint v_id; // sight's id of the shape's entity (0: none)
+layout(location = 3) flat out uint v_seq; // its draw number (ids_core.glsl, covers)
 #endif
 
 void main() {
@@ -42,5 +43,6 @@ void main() {
     v_world = p;
 #ifdef IDS
     v_id = pc.idp.ids.items[gl_InstanceIndex];
+    v_seq = pc.idp.ids.items[pc.idp.seq_at + gl_InstanceIndex];
 #endif
 }

@@ -2990,7 +2990,9 @@ impl GpuModels {
             if self.uploaded.contains_key(&id) || self.failed.contains_key(&id) {
                 continue;
             }
-            if self.upload_slice.is_some_and(|slice| started.elapsed() >= slice) {
+            // A window frame never waits for an upload slot either (every batch slot in flight:
+            // the GPU is behind); the rest go on the next frames.
+            if self.upload_slice.is_some_and(|slice| started.elapsed() >= slice) || (self.upload_slice.is_some() && !gpu.upload_slot_free()) {
                 left = true;
                 break;
             }
@@ -3942,7 +3944,7 @@ mod tests {
         assert_eq!(queued.0, landed.0, "1,600 builds queued ahead");
         assert!(queued.2 > 0, "builds still in flight at the write");
         eprintln!("graph write: {:?} built, {:?} never built, {:?} with 1,600 queued", landed.1, never.1, queued.1);
-        assert!(queued.1 < Duration::from_secs(2), "the write took {:?}", queued.1);
+        assert!(queued.1 < specula_core::speed_budget(std::time::Duration::from_secs(2)), "the write took {:?}", queued.1);
     }
 
     /// Review round 2, finding 1: a source changed on disk while its rebuild is in flight: writes
@@ -4028,7 +4030,7 @@ mod tests {
         let lib = shared.lock();
         assert_eq!(lib.writes.bases.len(), 1, "one rig and anims file: one anim set");
         assert_eq!(lib.writes.aliases.len(), 100);
-        assert!(rounds[2] < Duration::from_secs(1), "{rounds:?}");
+        assert!(rounds[2] < specula_core::speed_budget(std::time::Duration::from_secs(1)), "{rounds:?}");
     }
 
     /// Review round 3, finding 3: the write-set cache is bounded in bytes as well as entries.

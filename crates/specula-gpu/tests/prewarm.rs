@@ -56,23 +56,36 @@ fn a_prewarmed_size_renders_without_making_images() {
         let (w, h) = (640, 400);
         let target = gpu.create_target(w, h).unwrap();
         let mut calls = 0;
+        let started = Instant::now();
         while !gpu.prewarm_target(target, &env(), true, None, Instant::now()).unwrap() {
             calls += 1;
-            assert!(calls < 64, "{test}: the prewarm never finished");
+            // A slice may also wait for the image heap's worker to make room (deferred, never
+            // allocated in the call): give it a moment.
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            assert!(started.elapsed() < std::time::Duration::from_secs(20), "{test}: the prewarm never finished ({calls} calls)");
         }
         assert!(calls >= 4, "{test}: a frame with shadows, bloom, SSAO and FXAA has several images, made one a call ({calls} calls)");
         assert_eq!(gpu.target_images_missing(target), 0, "{test}: every image exists");
-        // Done is done: another call makes nothing.
-        let before = gpu.memory_stats().allocations;
+        // Done is done: another call makes nothing. (The image heap's blocks come and go on its
+        // worker: what is counted is every other allocation, and the images in the heap.)
+        let images = |s: &specula_gpu::MemoryStats| (s.allocations - s.image_heap.blocks, s.image_heap.images);
+        let before = images(&gpu.memory_stats());
         assert!(gpu.prewarm_target(target, &env(), true, None, Instant::now()).unwrap());
-        assert_eq!(gpu.memory_stats().allocations, before, "{test}: a finished prewarm makes nothing");
+        assert_eq!(images(&gpu.memory_stats()), before, "{test}: a finished prewarm makes nothing");
+        let heap = gpu.memory_stats().image_heap;
+        assert_eq!(heap.sync_blocks, 0, "{test}: no image heap block was allocated on the caller's thread: {heap:?}");
 
         // The first render at the new size makes no image of its own.
         let stats = gpu.memory_stats();
         gpu.render_with_ids(target, &frame(&draws, w, h), &[1, 2]).unwrap();
         let after = gpu.memory_stats();
-        assert_eq!((after.allocations, after.bytes(MemoryKind::PostTargets), after.bytes(MemoryKind::RenderTargets)),
-            (stats.allocations, stats.bytes(MemoryKind::PostTargets), stats.bytes(MemoryKind::RenderTargets)), "{test}: the first render found every image");
+        assert_eq!((images(&after).1, after.bytes(MemoryKind::PostTargets), after.bytes(MemoryKind::RenderTargets)),
+            (images(&stats).1, stats.bytes(MemoryKind::PostTargets), stats.bytes(MemoryKind::RenderTargets)), "{test}: the first render found every image");
+        // Nor any buffer: the ID readback made ahead replaced the smaller one (one allocation
+        // fewer), nothing was allocated in the render.
+        assert!(images(&after).0 <= images(&stats).0, "{test}: the first render allocated: {stats:?} -> {after:?}");
+        assert_eq!(after.image_heap.sync_blocks, 0, "{test}: {:?}", after.image_heap);
+        assert!(after.image_heap.buffers_ahead >= 2, "{test}: the target's readback and the ID readback were made ahead: {:?}", after.image_heap);
         assert_eq!(gpu.target_images_missing(target), 0);
         let warm = gpu.read_rgba8(target).unwrap();
         let counts = gpu.id_coverage(target, 2).unwrap().per_id;

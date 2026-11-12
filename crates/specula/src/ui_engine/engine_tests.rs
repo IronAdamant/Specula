@@ -261,7 +261,7 @@ fn ui_act_stops_at_its_time_budget_and_hands_back_the_rest() {
     let took = started.elapsed();
     assert!(!err, "{r}");
     assert_eq!(r.get("stopped").and_then(Json::as_str), Some("time_budget"), "{r}");
-    assert!(took < Duration::from_millis(30), "{took:?}");
+    assert!(took < specula_core::speed_budget(std::time::Duration::from_millis(30)), "{took:?}");
     let left = r.get("frames_left").and_then(Json::as_u64).unwrap();
     let frames = r.get("frames").and_then(Json::as_u64).unwrap();
     assert!(left > 0 && frames + left == 121, "the first settle frame and the wait's: {frames} + {left}: {r}");

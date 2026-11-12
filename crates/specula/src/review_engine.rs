@@ -1184,12 +1184,13 @@ impl Engine {
     }
 
     /// Reads the queue saved with the world in `dir` (an empty one when there is none). An
-    /// unreadable file is moved aside and the queue starts empty; the message says so.
-    pub(crate) fn load_review(&mut self, dir: &Path) -> Option<String> {
+    /// unreadable file is moved aside and the queue starts empty; the message says so. `text`:
+    /// the file, read already (`Engine::load_board_read` reads it, or world_load's worker).
+    pub(crate) fn load_review_read(&mut self, dir: &Path, text: std::io::Result<String>) -> Option<String> {
         let path = dir.join(REVIEW_FILE);
         self.review_ui.close();
         self.board_io.review_blocked = false;
-        let problem = match std::fs::read_to_string(&path) {
+        let problem = match text {
             Ok(text) => match Review::parse(&text) {
                 Ok(r) => {
                     self.swarm.review = r;

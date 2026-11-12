@@ -110,6 +110,6 @@ fn searching_a_100k_world_allocates_nothing_per_entity_and_keeps_its_time_budget
     }
     assert_eq!(scan.read, total);
     assert!(slices > 1, "100k entities don't fit in one 0.5 ms slice");
-    // Generous for a loaded CI machine: the budget is 0.5 ms plus at most CHECK_EVERY entities.
-    assert!(longest < Duration::from_millis(25), "the longest slice took {longest:?}");
+    // The budget is 0.5 ms plus at most CHECK_EVERY entities.
+    assert!(longest < specula_core::speed_budget(std::time::Duration::from_millis(25)), "the longest slice took {longest:?}");
 }

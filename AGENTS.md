@@ -151,8 +151,11 @@ wikifier: disable map, status
 
 `python scripts/gate.py` is what a change passes before it is reported or merged: the workspace's tests once, the
 engine's library tests five more times at a high thread count, once more with every worker thread starting late
-(`SPECULA_TEST_WORKER_DELAY_MS`), clippy for Windows and Linux with warnings denied, and the debug and release
-builds. It reads whole logs and keeps them (`<target>/gate/`).
+(`SPECULA_TEST_WORKER_DELAY_MS`), the tests that hold a speed budget one at a time (`SPECULA_SPEED_TESTS`), clippy
+for Windows and Linux with warnings denied, and the debug and release builds. It first reports which GPU adapters
+the tests will see, and fails without one unless told `--no-gpu` (GPU tests skip themselves cleanly, so a machine
+whose driver stopped loading would otherwise pass having tested nothing). It reads whole logs and keeps them
+(`<target>/gate/`); a run in which no test ran, or one past its time limit, fails.
 
 - **A gate must not pass by luck** (owner, 2026-11-12). A test that fails in some runs and passes in others is
   reported as FLAKY and fails the gate. A failure seen once is a bug until its cause is found: "it passes when run
@@ -160,7 +163,13 @@ builds. It reads whole logs and keeps them (`<target>/gate/`).
 - **No result may depend on when a worker thread runs.** The engine thread has the result or does the work itself.
   The slow-worker run turns such a dependence into a failure every time.
 - **Tests assert what the design guarantees**, not how fast this machine was. A count of passes or an elapsed time
-  is a timing property; say why a pass ended instead (`capture::flight::PassEnd`).
+  is a timing property; say why a pass ended instead (`capture::flight::PassEnd`), or what the code did (a counter
+  that didn't move, an order, an output).
+- **A speed is asserted as a budget:** `assert!(took < specula_core::speed_budget(Duration::from_millis(20)))`. The
+  bound is tight when the test runs alone (the gate's `speed` step) and at least 5 s in every other run, where
+  sixteen test threads share the machine. A bare bound under 5 s on a time fails
+  `crates/specula/tests/clock_guard.rs` (its header lists the forms it reads, and the two it can't). GPU time is a
+  time too: it is measured on a queue other processes use.
 
 ## Live checks (GPU + desktop; CI can't run these)
 

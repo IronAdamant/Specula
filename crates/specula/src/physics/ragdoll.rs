@@ -1606,7 +1606,7 @@ pub(crate) mod tests {
         }
         let took = started.elapsed();
         assert_eq!(p.ragdolls.parses, 20 + 20 * 30);
-        assert!(took < std::time::Duration::from_millis(1500), "30 ticks of 20 changing ragdoll entities took {took:?}");
+        assert!(took < specula_core::speed_budget(std::time::Duration::from_millis(1500)), "30 ticks of 20 changing ragdoll entities took {took:?}");
     }
 
     /// Review round 4, finding 3 (probe stalecache.py): a force-undo that restored a deleted

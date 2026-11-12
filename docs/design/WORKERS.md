@@ -168,8 +168,10 @@ short queue (4), and `world_load` writes the waiting saves first.
   render itself is not waited for (below, "The capture flight").
 - **A world save's final step and a project sync's plan**: they read the world, which only the
   engine thread may. The save's copies are taken in slices (below).
-- **Loading** (`world_load`, `save_read`'s apply): a load replaces the world; its read and parse
-  already run on a worker (`save_tools`), and `world_load` is a lead-gated, rare call.
+- **Loading** (`world_load`, `save_read`'s apply): a load replaces the world. Its read and parse
+  run on a worker (`save_tools`; `world_load.rs` since M5 gpuwork, below); the replacement itself
+  (`Live::replace`: the journal's base copy, the old world dropped) stays: about 25-40 ms at 5,000
+  entities.
 - **The bounds overlay's two renders**: a capture with `overlays: ["bounds"]` and the ID buffer
   renders, counts, paints the boxes from the counts and renders again, waiting for the GPU
   (a debug view, not a hot path).
@@ -336,6 +338,58 @@ frames over 30 ms when the GPU is saturated: the queued upload path waiting for 
 45-61 ms for one large image on a loaded iGPU, also the worst prewarm slice), and Sepulcra's HUD waiting for a fence
 (`game_overlay/vk.wait_fence`, up to 32 ms). The next step is allocating images on a worker thread (Vulkan allows it)
 and a non-waiting staging slot policy.
+
+## GPU memory, view preparation and loads off the engine thread (M5 gpuwork, 2026-11-07)
+
+What the render follow-ups left (above) was allocation, not drawing:
+
+- **The image heap** (`specula-gpu/src/heap.rs`). Every image (graph transients, textures,
+  targets, the window's depth, GI volumes) is placed in device-local blocks of 64 MB that a worker
+  thread (`specula-image-heap`) allocates ahead: after each placement the heap keeps a free range
+  of 40 MB per memory type (a 2048 x 2048 RGBA16F image), and empty blocks are freed there too.
+  The engine thread allocates only when an image must be placed now and nothing holds it (bigger
+  than a block, or a burst past the room ahead): counted as `sync_blocks` (perf_frame
+  `memory.image_heap`, with `grown_ahead`, `growth_waits`, `deferred`, `freed_ahead`,
+  `buffers_ahead`), and their room is the `reserve` memory kind. A capture's prewarm slice never
+  allocates: with no room it defers (a growth sized for the image starts) and the next slice places
+  it. Drivers that require an image's own allocation still get one.
+- **Buffers made ahead.** A target's readback (16 MB at 2048 x 2048, host-visible) and sight's ID
+  readback and sets for a new size get their memory on the same worker
+  (`Device::create_buffer_ahead`); the prewarm polls them, the render adopts them.
+- **Uploads never wait for a slot**: six batch slots (three before), and a window frame's model
+  uploads stop for the frame when every slot is in flight. `update_texture` (a HUD's glyph atlas
+  growing) is queued in the upload batch instead of a staging allocation and a fence wait.
+- **Captures' draw list** comes from a cache of their own (`DrawCache::for_captures`: one without
+  and one with the `ui` layer, LODs chosen afresh as before), patched with what changed instead of
+  a walk of every entity per view; `tests/draw_cache_fuzz.rs` holds it equal to the walk.
+- **Subjects projected on a worker.** A view's subject bases are taken on the engine thread
+  (`sight::subject_set`: the cache's bases in the frame, 2D cards as drawn); their projection runs
+  on a worker (`JobKind::SubjectProject`) while the GPU renders. **Whoever gets there first
+  projects:** the worker if it picked the job up before the view settled, else the view itself, at
+  once (`captures.late_projections` counts those); a worker in the middle of it is waited for (at
+  most 250 ms, the work the view would otherwise repeat). A view never waits passes for a worker:
+  it used to wait up to three, which made an orbit's pass count depend on the pool's timing
+  (review R1). Views that paint overlays project at once (the overlays need the boxes).
+- **world_load** (`world_load.rs`) checks the write policy, force and unsaved changes, then reads
+  and parses the world, writes the outgoing board and reads the new one on a worker in the world
+  files' lane; its continuation checks again (agents may have written meanwhile) and replaces the
+  world. A load waits while the world's folder is being written (until its request's deadline);
+  a second load meanwhile is refused with `job_busy`, naming the loader, and `retry`. At 5,000
+  cubes the engine thread went from 112-250 ms to about 42 ms (the replacement).
+- **A load is a world write.** From the moment a load is accepted until it has answered, a
+  `world_save` is refused (`job_busy`, the loader as `owner`, `retry`), and the autosave and the
+  board's autosave skip their turn. Before this (review R1, the blocker) a save that arrived
+  while the load read was written after it and named the loaded world after the one it
+  replaced, so the next save wrote the new world over the old one's folder; and an autosave in
+  that window saved the changes `force` discards. As a backstop for every path, a save's or an
+  autosave's result that comes back to a different world (`world_generation`) marks nothing.
+- **The image heap has two threads.** Askers' own allocations (a target's readback, which its
+  first render may wait for on the engine thread) go to one; speculative 64 MB block growth to
+  the other. On one thread the readback queued behind the growth: 45-178 ms on a loaded iGPU
+  (review R1).
+
+`scripts/size_prewarm_check.py` and `scripts/recipe_stall_check.py` read the image heap's
+counters and fail when a block was allocated on the engine thread during their load.
 
 ## The guard
 

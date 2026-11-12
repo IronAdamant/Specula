@@ -36,6 +36,7 @@ const FIELDS: &[(&str, Class)] = &[
     ("lod_capture", NoIds("counts")),
     ("draws", NoIds("the frame's draw list, rebuilt each frame")),
     ("draw_cache", Keyed("its key includes world_generation; a new world carries no LOD levels over")),
+    ("capture_draw_cache", Keyed("its key includes world_generation; captures choose LODs afresh")),
     ("lights", NoIds("the frame's lights")),
     ("two_d", NoIds("tile cells compare their stored grid: a reused id only uploads again")),
     ("draws_2d", NoIds("the frame's 2D draws")),
@@ -155,6 +156,7 @@ const FIELDS: &[(&str, Class)] = &[
     ("world_save_running", NoIds("a flag")),
     ("save_planning", Keyed("a plan checks world_generation before it is written")),
     ("waiting_saves", NoIds("flushed before world_load and save_read replace the world")),
+    ("loading", NoIds("a world_load request parked or reading: the world it brings replaces this one")),
     ("project_syncing", NoIds("a flag")),
     // The model library's disk scan: recipe files by path.
     ("assets_scan", NoIds("a flag for the library's disk scan on a worker")),

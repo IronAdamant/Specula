@@ -1,0 +1,40 @@
+{
+  "date": "2026-11-07",
+  "time": "",
+  "date_source": "",
+  "approximate": false,
+  "milestone": "M5",
+  "commit": "",
+  "subject": "engine-tests",
+  "topic": "sight",
+  "title": "Sight follows the paint order",
+  "note": "M5 gpuwork: a text field with covers drawn after it from behind (blended draws write no depth). Opaque glass and a higher-layer 2D shape paint over it: the image shows none of it and sight reports 0 px, occluded. Wide capitals on a higher layer paint over part: the image keeps 0.81 of the field, sight 0.84. scripts/gpuwork_check.py, Intel iGPU, release.",
+  "source": "",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-field-alone.jpg",
+      "caption": "the field alone (918 px)",
+      "original": "field_alone.png",
+      "width": 480,
+      "height": 320,
+      "bytes": 2840
+    },
+    {
+      "file": "02-cover-cube-glass.jpg",
+      "caption": "opaque glass behind it: 0 px, occluded",
+      "original": "cover_cube_glass.png",
+      "width": 480,
+      "height": 320,
+      "bytes": 2391
+    },
+    {
+      "file": "03-cover-text-flat.jpg",
+      "caption": "capitals on a higher layer behind it: 774 of 918 px",
+      "original": "cover_text_flat.png",
+      "width": 480,
+      "height": 320,
+      "bytes": 6906
+    }
+  ]
+}

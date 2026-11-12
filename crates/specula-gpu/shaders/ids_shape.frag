@@ -15,6 +15,7 @@ layout(constant_id = 0) const uint MODE = 1u;
 layout(location = 0) in vec4 v_color;
 layout(location = 1) in vec3 v_world;
 layout(location = 2) flat in uint v_id;
+layout(location = 3) flat in uint v_seq;
 
 layout(location = 0) out uint out_id;
 
@@ -30,7 +31,12 @@ void main() {
     t.seen = pc.idp.seen;
     t.width = pc.idp.width;
     t.epoch = pc.idp.epoch;
+    t.height = pc.idp.height;
+    t.cover = pc.idp.cover;
     if (MODE == 1u) {
+        if (t.cover != 0u && clamp(v_color.a, 0.0, 1.0) >= COVER_ALPHA) {
+            id_cover(t, uvec2(gl_FragCoord.xy), v_seq);
+        }
         id_insert(t, v_id, uvec2(gl_FragCoord.xy));
     } else if (MODE == 2u) {
         id_rasterized(t, v_id);

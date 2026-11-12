@@ -68,6 +68,11 @@ jobs:
         run: cargo build --workspace --all-targets
       - name: Test
         run: cargo test --workspace
+      # A gate must not pass by luck (AGENTS.md, "The gate"): the engine's library tests twice
+      # more and once with every worker thread starting late. A test that fails in some runs and
+      # passes in others fails the job as flaky.
+      - name: Repeat, and slow workers
+        run: python scripts/gate.py --only repeat,slow --repeat 2 --jobs 4 --no-gpu
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 

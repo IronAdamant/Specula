@@ -126,6 +126,13 @@ def main():
                 time.sleep(2)
         report["gpu"] = director.json("engine_info")["gpu"]["name"]
         log(f"gpu: {report['gpu']}")
+
+        def heap():
+            """The image heap's counters (None on builds before it existed, M5 gpuwork)."""
+            p = director.json("perf_frame")
+            return (((p.get("window") or p.get("offscreen") or {}).get("memory") or {}).get("image_heap")) or None
+
+        heap_before = heap()
         director.call("world_spawn", shape="group", name="staging", position=[0, 0, 0])
         director.call("world_spawn", shape="group", name="recipe_stall", parent="/staging", position=[200, 0, 0])
         builders = [Builder(a.port, f"builder-{i + 1}", NAMES[i::4]) for i in range(4)]
@@ -167,6 +174,14 @@ def main():
         log(f"contact sheet: {(sheet.get('image') or {}).get('path')}")
         director.json("studio_sheet", subjects=subjects[:24], views=["worst_light", "phone"])
         time.sleep(2.0)
+        heap_after = heap()
+        report["image_heap"] = {"before": heap_before, "after": heap_after}
+        if heap_before and heap_after:
+            sync = heap_after["sync_blocks"] - heap_before["sync_blocks"]
+            log(f"image heap: {heap_after['blocks']} blocks ({heap_after['block_mb']} MB, {heap_after['images']} images), "
+                f"{heap_after['grown_ahead'] - heap_before['grown_ahead']} grown ahead, {sync} on the engine thread")
+            if sync > 0:
+                fails.append(f"{sync} image heap block(s) were allocated on the engine thread during the load")
         report["seconds"] = round(time.time() - t0, 1)
     trace_files = sorted((out / "trace").glob("*.jsonl"))
     events = []

@@ -132,7 +132,37 @@ pub struct CaptureQueue {
     /// Passes a view waited for the asset studio's render on the GPU: after [`TURN_PASSES`] it
     /// renders anyway (the studio's render is settled first: a short wait), so neither starves.
     studio_waits: u32,
+    /// Views that landed before their projection came back (projected on the engine thread).
+    pub(crate) late_projections: u64,
+    /// Why the last pass ended ([`PassEnd`]), and how many views have landed.
+    pub(crate) last_pass: PassEnd,
+    pub(crate) landed_views: u64,
+    /// The subject cache was still being read when `start_next` gave up this pass.
+    warming: bool,
 }
+
+/// Why a capture pass ended. A pass may end because something outside the engine thread isn't
+/// ready (`Gpu`), because a piece of work is sliced over passes (`Slice`) or because its share
+/// of the loop is used up (`Time`). It must never end with a view waiting and nothing in the
+/// way (`Held` while views wait is the engine wasting a pass): the capture tests hold that, so
+/// they pass or fail by what the code does, not by how fast the GPU or a worker happened to be
+/// (the orbit's pass count used to be asserted, and failed one gate in four).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum PassEnd {
+    /// Nothing to do.
+    #[default]
+    Idle,
+    /// The GPU is still rendering the view in flight.
+    Gpu,
+    /// A sliced step took its slice: a new size's images, the subject cache, the studio's turn.
+    Slice,
+    /// The pass's share of the loop is used up.
+    Time,
+    /// Calls wait and none could start (no room on the workers for their owners), or the view
+    /// in flight was kept back for another reason.
+    Held,
+}
+
 
 /// A step job's landed tile, in the slot the job owns ([`CaptureQueue::step_flight`]).
 pub(crate) type StepTile = std::cell::RefCell<Option<Result<Rendered, String>>>;
@@ -432,16 +462,33 @@ impl Engine {
         self.flash.absorb();
         let (share, most) = if self.windowed { (WINDOW_PASS, WINDOW_WAIT) } else { (HEADLESS_PASS, HEADLESS_WAIT) };
         let end = Instant::now() + share;
+        self.captures.last_pass = PassEnd::Idle;
         loop {
             if let Some(f) = self.captures.flight.take() {
                 let wait = end.saturating_duration_since(Instant::now()).min(most);
                 if !self.flight_step(f, wait, end) {
-                    return; // still on the GPU: polled again next pass
+                    // Still on the GPU (`flight_step` says so): polled again next pass. Kept back
+                    // for any other reason, the pass was wasted.
+                    if self.captures.last_pass != PassEnd::Gpu {
+                        self.captures.last_pass = PassEnd::Held;
+                    }
+                    return;
                 }
-            } else if self.captures.waiting.is_empty() || !self.start_next(end) {
+            } else if self.captures.waiting.is_empty() {
+                return;
+            } else {
+                self.captures.warming = false;
+                if !self.start_next(end) {
+                    self.captures.last_pass = if std::mem::take(&mut self.captures.warming) { PassEnd::Slice } else { PassEnd::Held };
+                    return;
+                }
+            }
+            if std::mem::take(&mut self.captures.end_pass) {
+                self.captures.last_pass = PassEnd::Slice;
                 return;
             }
-            if std::mem::take(&mut self.captures.end_pass) || Instant::now() >= end {
+            if Instant::now() >= end {
+                self.captures.last_pass = PassEnd::Time;
                 return;
             }
         }
@@ -461,8 +508,11 @@ impl Engine {
                     self.engine_work_done(trace.call, Some(crate::schedule::Class::Render), "capture_wait", started.elapsed());
                 }
                 self.captures.flight = Some(f);
+                self.captures.last_pass = PassEnd::Gpu;
                 return false;
             }
+            // (Its subjects: the worker's if it got to them first, else projected as the view
+            // lands. It never waits passes for a worker: `Engine::view_subjects`.)
             // An editor pick needs neither the pixels nor the ID counts: it lands now and reads
             // only the pixels it picks from (`land_flight`).
             let pick = matches!(f.pending.state, State::Pick);
@@ -506,6 +556,7 @@ impl Engine {
         };
         if !warm {
             self.engine_work_done(0, None, "subject_cache", started.elapsed());
+            self.captures.warming = true;
             return false;
         }
         let Some(next) = self.next_waiting() else { return false };
@@ -596,6 +647,7 @@ impl Engine {
     }
 
     fn land_flight(&mut self, f: Flight, settled: Result<(), specula_gpu::GpuError>) {
+        self.captures.landed_views += 1;
         let Flight { view, pending, taken } = f;
         if let (Job::Pick(spec), State::Pick) = (&pending.job, &pending.state) {
             // The IDs are read before anything else renders offscreen (it would overwrite them):
@@ -1170,30 +1222,56 @@ mod tests {
         Json::parse(text).unwrap()
     }
 
-    /// A 12-view orbit lands in at most views + 2 passes (its views back to back, each landed
-    /// and the next submitted in the same pass), and its sheet is charged to the workers' byte cap
-    /// while its views render (released once its encode job holds it).
+    /// A 12-view orbit's views go back to back: each lands and the next is submitted in the same
+    /// pass, so no pass is wasted. Every pass that ends with views still to render ends because
+    /// the GPU is still rendering one, a sliced step took its slice, or the pass's time is used
+    /// up ([`PassEnd`]); never with a view waiting and nothing in the way. (This used to assert
+    /// "at most views + 2 passes": true on a quiet machine, and a matter of luck in a full test
+    /// run, where a view can take longer than one pass waits for the GPU. It failed one gate in
+    /// four, and once more after a fix that was said to cure it.) Its sheet is charged to the
+    /// workers' byte cap while its views render (released once its encode job holds it).
     #[test]
-    fn an_orbit_takes_at_most_views_plus_two_passes_and_its_sheet_is_charged() {
+    fn an_orbits_views_go_back_to_back_and_its_sheet_is_charged() {
         let Some(mut e) = engine("orbit") else { return };
+        let landed = e.captures.landed_views;
         let rx = ask(&mut e, "sight_orbit", r#"{"point": [3, 0, 2], "views": 12, "tile_width": 256, "tile_height": 256}"#, 1, soon());
         let (tw, th, sw, sh) = orbit::layout(12, (256, 256));
         assert_eq!((tw, th), (256, 256));
         let sheet = u64::from(sw) * u64::from(sh) * 4;
         let mut charged = Vec::new();
-        // Passes until its views are all rendered (its answer then waits for the encode only).
-        let mut rendering = 0;
+        // Why each pass ended while views were still to render (its answer then waits for the
+        // encode only).
+        let mut ends = Vec::new();
         let (_, out) = run(&mut e, &[&rx], |e| {
             charged.push(e.workers.held_bytes());
-            rendering += u32::from(e.captures.busy());
+            if e.captures.busy() {
+                ends.push(e.captures.last_pass);
+            }
         });
-        let passes = rendering + 1;
-        assert!(passes <= 12 + 2, "{passes} passes for 12 views");
+        let wasted: Vec<&PassEnd> = ends.iter().filter(|p| !matches!(p, PassEnd::Gpu | PassEnd::Slice | PassEnd::Time)).collect();
+        assert!(wasted.is_empty(), "{} of {} passes ended with a view waiting and nothing in the way: {ends:?}", wasted.len(), ends.len());
+        assert_eq!(e.captures.landed_views - landed, 12, "every view landed once");
         // Mid-orbit (when a pass ended between its views) its sheet was charged, and only it.
         assert!(charged.iter().all(|&b| b == 0 || b == sheet), "{charged:?} (sheet {sheet})");
         assert_eq!(e.workers.held_bytes(), 0, "released once encoded");
         let p = packet(&out[0]);
         assert_eq!(p.get("views").and_then(Json::as_array).map(<[Json]>::len), Some(12));
+        // The same orbit again, with nothing left to warm (the size's images, the subject
+        // cache): now only the GPU, or a pass's time running out, may end a pass. (Review R2:
+        // an engine that ended the pass after every landed view, so the next view waited a
+        // pass with the GPU idle, passed the check above, because a slice is a fair reason
+        // the first time.)
+        let landed = e.captures.landed_views;
+        let again = ask(&mut e, "sight_orbit", r#"{"point": [3, 0, 2], "views": 12, "tile_width": 256, "tile_height": 256}"#, 2, soon());
+        let mut ends = Vec::new();
+        let _ = run(&mut e, &[&again], |e| {
+            if e.captures.busy() {
+                ends.push(e.captures.last_pass);
+            }
+        });
+        let early: Vec<&PassEnd> = ends.iter().filter(|p| !matches!(p, PassEnd::Gpu | PassEnd::Time)).collect();
+        assert!(early.is_empty(), "{} of {} passes of a warm orbit ended with views waiting and the GPU free: {ends:?}", early.len(), ends.len());
+        assert_eq!(e.captures.landed_views - landed, 12, "every view landed once");
         // The charge counts against the cap like a queued job's bytes.
         let held = e.workers.hold(crate::workers::MAX_PENDING_BYTES);
         let owner = e.capture_owner(&session());

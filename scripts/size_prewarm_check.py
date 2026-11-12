@@ -92,6 +92,12 @@ def main():
         def record():
             rec["out"] = eng.mcp("size-prewarm-perf").json("perf_capture", frames=600, trace=False, label="sizes")
 
+        def heap():
+            """The image heap's counters (None on builds before it existed)."""
+            p = mcp.json("perf_frame")
+            return (((p.get("window") or p.get("offscreen") or {}).get("memory") or {}).get("image_heap")) or None
+
+        heap_before = heap()
         t = threading.Thread(target=record)
         t.start()
         time.sleep(0.3)
@@ -104,6 +110,18 @@ def main():
             print(f"  {w}x{h}: call {ms:.1f} ms")
         # Let the recording cover the last capture's passes, then stop it early.
         t.join(timeout=60)
+        # Every image of the new sizes came from the image heap's blocks, grown ahead on its
+        # worker: none was allocated on the engine thread (M5 gpuwork).
+        heap_after = heap()
+        report["image_heap"] = {"before": heap_before, "after": heap_after}
+        if heap_before and heap_after:
+            sync = heap_after["sync_blocks"] - heap_before["sync_blocks"]
+            print(f"image heap: {heap_after['blocks']} blocks, {heap_after['grown_ahead'] - heap_before['grown_ahead']} grown ahead, "
+                  f"{heap_after['deferred'] - heap_before['deferred']} deferred, {heap_after['growth_waits'] - heap_before['growth_waits']} growth waits, {sync} on the engine thread")
+            if sync > 0:
+                fails.append(f"{sync} image heap block(s) were allocated on the engine thread during the new sizes")
+        else:
+            print("image heap: not reported by this build")
         cap = rec.get("out") or {}
         if not cap.get("path"):
             fails.append(f"perf_capture gave no file: {str(cap)[:200]}")

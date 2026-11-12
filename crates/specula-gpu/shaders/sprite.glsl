@@ -43,11 +43,16 @@ const uint FLAG_CUTOUT = 128u;
 // padding. Must match `IdParams2d` in src/idbuffer.rs.
 #include "ids_core.glsl"
 layout(buffer_reference, std430, buffer_reference_align = 8) readonly buffer IdParams {
-    Ids ids;      // one id per 2D record (the plan's order)
+    Ids ids;      // one id per 2D record (the plan's order); ids.items[seq_at + i]: record i's
+                  // draw number (src/idbuffer.rs, "Covers")
     Stats stats;
     Seen seen;
     uint width;
     uint epoch;
+    uint height;
+    uint seq_at;
+    uint cover;
+    uint pad;
 };
 #endif
 

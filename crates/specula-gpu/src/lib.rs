@@ -115,6 +115,7 @@ mod device;
 mod effects;
 mod gi;
 mod gpu;
+mod heap;
 mod graph;
 mod idbuffer;
 mod glyphs;
@@ -146,6 +147,7 @@ pub use sprite::{sprite_sphere, text_sphere, tiles_sphere, view_2d, Billboard, D
 pub use tilemap::{TileCell, TileGrid, CHUNK as TILE_CHUNK, MAX_TILE_FRAMES, ORIENT_FLIP_X, ORIENT_FLIP_Y, ORIENT_SWAP_XY};
 pub use material::{generate_mips, generate_mips_owned, generate_tangents, mip_count, preserve_alpha_coverage};
 pub use render::{BackgroundFault, ContentHint, PipelineVariants, VariantFailure};
+pub use heap::{ImageHeapStats, BLOCK_BYTES as IMAGE_BLOCK_BYTES};
 pub use stats::*;
 pub use glyphs::MAX_GLYPH_WORDS;
 pub use stream::{UploadStats, ARENA_BYTES as UPLOAD_ARENA_BYTES};

@@ -1314,7 +1314,11 @@ impl<T: Copy + PartialEq + fmt::Debug> RenderGraph<T> {
             if made > 0 && std::time::Instant::now() >= until {
                 return Ok(false);
             }
-            pool.create(dev, descriptors, owner, r.name, desc, self.plan.usage[i])?;
+            // The image heap may have no room yet: a block for it grows on the worker and the next
+            // slice makes it (never a `vkAllocateMemory` here).
+            if pool.create(dev, descriptors, owner, r.name, desc, self.plan.usage[i], true)?.is_none() {
+                return Ok(false);
+            }
             made += 1;
         }
         Ok(true)
@@ -1548,7 +1552,7 @@ impl TransientPool {
     ) -> Result<usize, GpuError> {
         match self.find(owner, name, desc, usage) {
             Some(i) => Ok(i),
-            None => self.create(dev, descriptors, owner, name, desc, usage),
+            None => self.create(dev, descriptors, owner, name, desc, usage, false)?.ok_or_else(|| GpuError::new("internal: a frame's image was deferred")),
         }
     }
 
@@ -1559,7 +1563,9 @@ impl TransientPool {
     }
 
     /// A new entry (not committed: it replaces nothing until a frame's `prepare` commits it).
-    fn create(&mut self, dev: &Device, descriptors: &mut Descriptors, owner: u32, name: &'static str, desc: ImageDesc, usage: VkFlags) -> Result<usize, GpuError> {
+    /// `defer`: `Ok(None)` when the image heap has no room for it yet (see `Device::try_create_image_with`).
+    #[allow(clippy::too_many_arguments)]
+    fn create(&mut self, dev: &Device, descriptors: &mut Descriptors, owner: u32, name: &'static str, desc: ImageDesc, usage: VkFlags, defer: bool) -> Result<Option<usize>, GpuError> {
         #[cfg(test)]
         if self.fail_creates == Some(0) {
             return Err(GpuError::new("injected transient creation failure"));
@@ -1567,8 +1573,9 @@ impl TransientPool {
             *n -= 1;
         }
         let _z = specula_core::profile::zone("gpu.make_image");
-        self.entries.push(create_entry(dev, descriptors, owner, name, desc, usage)?);
-        Ok(self.entries.len() - 1)
+        let Some(entry) = create_entry(dev, descriptors, owner, name, desc, usage, defer)? else { return Ok(None) };
+        self.entries.push(entry);
+        Ok(Some(self.entries.len() - 1))
     }
 
     /// Entry `i` is what its owner and name stand for now: every other image of that owner and
@@ -1671,7 +1678,8 @@ fn create_entry(
     name: &'static str,
     desc: ImageDesc,
     usage: VkFlags,
-) -> Result<Entry, GpuError> {
+    defer: bool,
+) -> Result<Option<Entry>, GpuError> {
     let aspect = aspect_of(desc.format);
     let bindless = desc.bindless && usage & VK_IMAGE_USAGE_SAMPLED_BIT != 0;
     let slot = if bindless { descriptors.alloc_slot()? } else { NO_SLOT };
@@ -1679,8 +1687,19 @@ fn create_entry(
     // a usage that can be viewed, so such images are also made sampleable (never bound).
     let viewable = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     let create_usage = if usage & viewable == 0 { usage | VK_IMAGE_USAGE_SAMPLED_BIT } else { usage };
-    let image = match dev.create_image_with(desc.format, desc.width, desc.height, 1, desc.layers, create_usage, aspect, desc.memory, name) {
-        Ok(i) => i,
+    let made = if defer {
+        dev.try_create_image_with(desc.format, desc.width, desc.height, 1, desc.layers, create_usage, aspect, desc.memory, name)
+    } else {
+        dev.create_image_with(desc.format, desc.width, desc.height, 1, desc.layers, create_usage, aspect, desc.memory, name).map(Some)
+    };
+    let image = match made {
+        Ok(Some(i)) => i,
+        Ok(None) => {
+            if slot != NO_SLOT {
+                descriptors.free_slot(slot);
+            }
+            return Ok(None);
+        }
         Err(e) => {
             if slot != NO_SLOT {
                 descriptors.free_slot(slot);
@@ -1734,7 +1753,7 @@ fn create_entry(
     if slot != NO_SLOT {
         descriptors.write_texture(dev, slot, entry.image.view);
     }
-    Ok(entry)
+    Ok(Some(entry))
 }
 
 fn destroy_entry(dev: &Device, descriptors: &mut Descriptors, e: Entry) {

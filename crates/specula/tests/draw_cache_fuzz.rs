@@ -78,6 +78,9 @@ fn draw_cache_matches_the_full_walk_under_fuzz() {
         journal.rebase(&world, "world:t");
         let mut generation = 0u64;
         let mut cache = DrawCache::default();
+        // Captures' cache (M5 gpuwork): what the full walk draws with LODs chosen afresh.
+        let mut capture_cache = DrawCache::for_captures();
+        let mut capture_mismatches = 0;
         let mut remembered: BTreeMap<u64, u8> = BTreeMap::new();
         let mut eye = Vec3::new(0.0, 3.0, 10.0);
         let mut include_ui = true;
@@ -315,6 +318,27 @@ fn draw_cache_matches_the_full_walk_under_fuzz() {
                     eprintln!("seed {seed} step {step} op {op}: MISMATCH draws {} vs {} stats {:?} vs {:?} bones_eq {}", a.len(), b.len(), sa, sb, ba2 == bb2);
                 }
             }
+            // Captures: the full walk with fresh LODs against the capture cache, owners too.
+            models.begin_frame(t);
+            let (mut c, mut co) = (Vec::new(), Vec::new());
+            let mut v = View { camera, viewport_h: 480, include_ui, lod: LodChoice::Fresh };
+            let sc = sight::draw_list(&world, &meshes, &mut v, &mut c, Some(&mut co));
+            let bc = models.take_bones();
+            let bc2 = bc.clone();
+            models.put_bones(bc);
+            models.begin_frame(t);
+            let (mut d, mut dw) = (Vec::new(), Vec::new());
+            let mut v = View { camera, viewport_h: 480, include_ui, lod: LodChoice::Fresh };
+            let sd = capture_cache.draw_list_owned(&world, generation, &meshes, &mut v, &mut d, Some(&mut dw));
+            let bd = models.take_bones();
+            let bd2 = bd.clone();
+            models.put_bones(bd);
+            if c != d || co != dw || sc != sd || bc2 != bd2 {
+                capture_mismatches += 1;
+                if capture_mismatches <= 5 {
+                    eprintln!("seed {seed} step {step} op {op}: CAPTURE MISMATCH draws {} vs {} owners_eq {} stats {:?} vs {:?}", c.len(), d.len(), co == dw, sc, sd);
+                }
+            }
         }
         eprintln!(
             "seed {seed}: entities {} models drawn {drawn_models} lod hist {lod_hist:?} rebuilds {} patches {} mismatches {mismatches}",
@@ -323,6 +347,8 @@ fn draw_cache_matches_the_full_walk_under_fuzz() {
             cache.patches()
         );
         assert_eq!(mismatches, 0, "seed {seed}: the cache drew differently from the full walk");
+        assert_eq!(capture_mismatches, 0, "seed {seed}: the capture cache drew differently from the full walk with fresh LODs");
+        assert!(capture_cache.patches() > 0, "seed {seed}: the capture cache was patched, not only rebuilt");
         assert!(drawn_models > 0, "seed {seed}: models were drawn");
         
     }

@@ -360,7 +360,7 @@ fn waits_end_when_the_engine_stops_and_are_bounded() {
     state().waiters = MAX_WAITERS;
     let t1 = std::time::Instant::now();
     let _ = wait_events(0, false, 10, Duration::from_secs(60));
-    assert!(t1.elapsed() < Duration::from_secs(2));
+    assert!(t1.elapsed() < specula_core::speed_budget(std::time::Duration::from_secs(2)));
     reset_for_test();
 }
 

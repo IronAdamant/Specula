@@ -1523,8 +1523,8 @@ mod tests {
         held.sort();
         // A walk of 100k entities takes several milliseconds even in release (about 70 ns each);
         // the text's own checks take microseconds, even in a debug build.
-        assert!(checks[10] < Duration::from_micros(500), "focus checks at 100k: median {:?}", checks[10]);
-        assert!(held[10] < Duration::from_millis(4), "a held frame's typing at 100k: median {:?}", held[10]);
+        assert!(checks[10] < specula_core::speed_budget(std::time::Duration::from_micros(500)), "focus checks at 100k: median {:?}", checks[10]);
+        assert!(held[10] < specula_core::speed_budget(std::time::Duration::from_millis(4)), "a held frame's typing at 100k: median {:?}", held[10]);
     }
 
     /// Review of cd954bd, minor 5: a paste waits for the clipboard thread's answer (never the

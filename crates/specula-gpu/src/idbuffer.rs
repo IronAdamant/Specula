@@ -51,8 +51,8 @@
 //! So any number of layers of one id at a pixel (both faces of a shell, a concave cup or torus,
 //! the camera inside a glass box, glass's two passes) counts that pixel once, exactly, while at
 //! most [`SEEN_SLOTS`] different blended ids overlap there. Glass behind glass is counted; glass
-//! never hides anything. A blended model whose own glass lies over its own opaque part counts
-//! that pixel in both. Blended materials count their whole mesh: a lava lamp its proxy box, a
+//! hides nothing by depth (only in the paint order: "Covers" below). A blended model whose
+//! own glass lies over its own opaque part counts that pixel in both. Blended materials count their whole mesh: a lava lamp its proxy box, a
 //! blob shadow its quad (including its faded corners). (Earlier attempts chose faces by mesh
 //! topology, or kept only the first ids to arrive; the first broke on seams, concave shells and
 //! cameras inside glass, the second on order.)
@@ -94,6 +94,36 @@
 //! opaque ids (depth tested "or equal" and written, as in the scene), blended items and shapes
 //! join the id sets, and every item marks itself rasterized. Their shaders find the capture's
 //! buffers through an [`IdParams2d`] pointer in the 2D push constants' padding.
+//!
+//! **Covers: the colour pass's order** (M5 gpuwork). Blended surfaces write no depth, so in the
+//! image a later draw paints over an earlier one wherever it passes the depth test: glass drawn
+//! after every 2D item covers text in front of it, a 2D item on a higher layer covers one on a
+//! lower layer even from behind. The depth-ordered steps above can't see that, so every record
+//! has a **draw number** in the colour pass's order (opaque meshes 0; the 2D items 1.. in their
+//! sorted order; the blended meshes after them in theirs; water last), uploaded after the ids
+//! with each id's **last** number (its records' largest). Fragments that paint over what lies under
+//! them — blended 2D items and shapes at alpha >= 0.9 (as `ui_occluders`' panels), glass of
+//! opacity >= 0.9 (its body: thin glass's Fresnel rim is left out), and cutout items where they ended up in front (drawn again in
+//! the insert step with depth *equal*) — raise their pixel's **cover** to their number
+//! (`atomicMax` of `(epoch << 20) | number`, one word per pixel after the sets, so order-free and
+//! never cleared). An id counts at a pixel only when its last number is at least the pixel's
+//! cover: the resolve skips covered set members (and treats them as absent for the edges), and the
+//! CPU's opaque count reads the covers' host copy (`id_copy` copies them) and leaves covered
+//! opaque ids out. A covered id with no pixel left was still rasterized: `occluded`. Frames
+//! without blended draws (or without fragment atomics) write and read no covers.
+//!
+//! **What covers, and what doesn't** (review R1 of m5-gpuwork: "sight follows the paint order"
+//! said more than this does):
+//! - Covers: blended 2D items and shapes, text glyph interiors, cutout 2D where it ended up in
+//!   front, and glass, each at alpha or opacity **0.9 or more**.
+//! - Never covers, whatever is painted: the lava lamp material, water, blob shadows, and
+//!   anything under 0.9. A lava lamp in front of a text hid 15% of it in the picture while its
+//!   `visible_px` stayed whole.
+//! - **0.9 is a cliff.** Glass at 0.89 over a text leaves it unreadable in the picture (about
+//!   11% contrast) and fully counted; at 0.90 the text has 0 px and is `occluded`. `visible_px`
+//!   says which pixels are the subject's own or seen through something; it does not say the
+//!   subject can be read. For legibility, measure the picture (`ui_check`'s contrast rule, the
+//!   studio's measures), not the count.
 //!
 //! The window path never declares these passes.
 
@@ -151,6 +181,11 @@ pub struct IdPush {
     pub height: u32,
     /// The frame's bone palettes (skinned draws; `FrameUpload::bones_address`).
     pub bones: u64,
+    /// Where the draw numbers start in the id upload (see "Covers" in the module docs): record
+    /// `r`'s at `ids[seq_at + r]`, id `i`'s last at `ids[2 seq_at + i - 1]`.
+    pub seq_at: u32,
+    /// 1: covers are written and honoured (the frame has blended draws to count).
+    pub cover: u32,
 }
 
 
@@ -164,6 +199,10 @@ pub struct IdParams2d {
     pub seen: u64,
     pub width: u32,
     pub epoch: u32,
+    pub height: u32,
+    pub seq_at: u32,
+    pub cover: u32,
+    pub pad: u32,
 }
 
 /// Every fragment the rasteriser produces is shown: opaque draws, glass (the scene draws its back
@@ -176,6 +215,14 @@ pub const FACES_LAVA: u32 = 2;
 /// sway and fade as in the scene: `ids_vert.glsl`, `ids_opaque.glsl`, `ids_count.glsl`). Other
 /// materials' records use those bits for themselves (terrain levels, water strength).
 pub const FACES_FOLIAGE: u32 = 4;
+/// A flag beside the faces: glass, which paints over what lies under it where it is about opaque
+/// (`ids_count.glsl` mirrors `shade_glass`'s alpha; see "Covers").
+pub const FACES_COVER_GLASS: u32 = 8;
+/// The largest draw number (`SEQ_MASK` in `shaders/ids_core.glsl`): later draws share it.
+pub const MAX_SEQ: u32 = (1 << 20) - 1;
+/// Words per pixel in the sets buffer: the [`SEEN_SLOTS`] slots, and (after every pixel's slots)
+/// the pixel's cover.
+pub const SEEN_WORDS: u64 = SEEN_SLOTS + 1;
 /// Blended ids kept per pixel: the smallest [`SEEN_SLOTS`], in `u32` slots (16 bytes a pixel).
 pub const SEEN_SLOTS: u64 = 4;
 /// Bits of a slot holding the id (`SEEN_ID_BITS` in `shaders/ids.glsl`); the rest tag the capture.
@@ -263,6 +310,11 @@ pub struct IdFrame {
     pub res: IdRes,
     pub readback: VkBuffer,
     pub extent: VkExtent2D,
+    /// See [`IdPush::seq_at`] and [`IdPush::cover`].
+    pub seq_at: u32,
+    pub cover: u32,
+    /// The covers' host copy (null without covers).
+    pub cover_host: VkBuffer,
 }
 
 /// The id of each draw record, in record order (`plan.entries`), from one id per draw.
@@ -362,6 +414,30 @@ pub fn record(ctx: &FrameContext, cmd: VkCommandBuffer, g: &FrameGraph, p: usize
                 );
                 dev.barrier(cmd, &[copy_to_host], &[]);
             }
+            if f.cover != 0 && f.cover_host != VK_NULL_HANDLE && f.seen != VK_NULL_HANDLE {
+                // The covers (after every pixel's slots) for the opaque ids' count on the CPU.
+                let pixels = f.extent.width as u64 * f.extent.height as u64;
+                let covers_to_copy = buffer_barrier(
+                    f.seen,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                    VK_PIPELINE_STAGE_2_COPY_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT,
+                );
+                dev.barrier(cmd, &[covers_to_copy], &[]);
+                let copy = VkBufferCopy { src_offset: pixels * SEEN_SLOTS * 4, dst_offset: 0, size: pixels * 4 };
+                // SAFETY: recording; the sets buffer holds SEEN_WORDS words per pixel of at least
+                // this capture, the host copy at least `pixels` words.
+                unsafe { (dev.fns.cmd_copy_buffer)(cmd, f.seen, f.cover_host, 1, &copy) };
+                let copy_to_host = buffer_barrier(
+                    f.cover_host,
+                    VK_PIPELINE_STAGE_2_COPY_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                    VK_PIPELINE_STAGE_2_HOST_BIT,
+                    VK_ACCESS_2_HOST_READ_BIT,
+                );
+                dev.barrier(cmd, &[copy_to_host], &[]);
+            }
         }
         _ => unreachable!("not an ID pass"),
     }
@@ -380,6 +456,8 @@ fn push_for(ctx: &FrameContext, f: &IdFrame) -> IdPush {
         epoch: f.epoch,
         height: f.extent.height,
         bones: ctx.upload.bones_address(ctx.scratch.records.len(), ctx.scratch.overlay.len()),
+        seq_at: f.seq_at,
+        cover: f.cover,
     }
 }
 
@@ -454,6 +532,9 @@ unsafe fn draw_batches(ctx: &FrameContext, cmd: VkCommandBuffer, f: &IdFrame, st
         if batch.material == crate::Material::Lit && !terrain {
             push.faces |= FACES_FOLIAGE;
         }
+        if step == Step::Insert && batch.material == crate::Material::Glass {
+            push.faces |= FACES_COVER_GLASS;
+        }
         // Terrain patches read their terrain's material record through the bones address.
         let bones = if terrain { ctx.upload.terrains_address(ctx.scratch.terrains_at) } else { push_for(ctx, f).bones };
         if push.bones != bones {
@@ -504,10 +585,14 @@ unsafe fn draw_2d(ctx: &FrameContext, cmd: VkCommandBuffer, f: &IdFrame, step: S
     push.pad = [f.params_2d as u32, (f.params_2d >> 32) as u32];
     let compare = if ctx.frame.reverse_z { VK_COMPARE_OP_GREATER_OR_EQUAL } else { VK_COMPARE_OP_LESS_OR_EQUAL };
     let mut bound = VK_NULL_HANDLE;
+    let mut bound_compare = None;
     let mut bound_mesh = None;
     for b in &plan.batches {
         let pipeline = match (step, b.kind) {
             (Step::Opaque, BatchKind::Cutout) => f.sprite[0],
+            // Covers: cutout items paint over what was drawn before them where they ended up in
+            // front (depth equal to the depth they wrote in the opaque step).
+            (Step::Insert, BatchKind::Cutout) if f.cover != 0 => f.sprite[1],
             (Step::Insert, BatchKind::Blended | BatchKind::Glyph) => f.sprite[1],
             (Step::Insert, BatchKind::Shape(_)) => f.shape[0],
             (Step::Raster, BatchKind::Shape(_)) => f.shape[1],
@@ -532,10 +617,13 @@ unsafe fn draw_2d(ctx: &FrameContext, cmd: VkCommandBuffer, f: &IdFrame, step: S
                         &push as *const crate::sprite::SpritePush as *const c_void,
                     );
                 }
-                if step != Step::Raster {
-                    (dev.fns.cmd_set_depth_compare_op)(cmd, compare);
-                }
                 bound = pipeline;
+                bound_compare = None;
+            }
+            let want = if step == Step::Insert && b.kind == BatchKind::Cutout { VK_COMPARE_OP_EQUAL } else { compare };
+            if step != Step::Raster && bound_compare != Some(want) {
+                (dev.fns.cmd_set_depth_compare_op)(cmd, want);
+                bound_compare = Some(want);
             }
             match b.kind {
                 BatchKind::Shape(mesh) => {
@@ -696,6 +784,83 @@ impl Grown {
         }
         Ok(slot.as_ref().expect("just made"))
     }
+
+    /// Puts `ahead`'s buffer in `slot` when it is there, big enough for `bytes` and `slot`'s
+    /// isn't: the buffer made ahead by [`IdResources::prewarm`] replaces it (offscreen renders
+    /// settle first: the old one is idle).
+    fn adopt(slot: &mut Option<Grown>, ahead: &mut Option<Grown>, dev: &Device, bytes: u64) {
+        if slot.as_ref().is_some_and(|g| g.size >= bytes) || ahead.as_ref().is_none_or(|g| g.size < bytes) {
+            return;
+        }
+        if let Some(old) = std::mem::replace(slot, ahead.take()) {
+            dev.destroy_buffer(&old.buffer);
+        }
+    }
+}
+
+/// A [`Grown`] buffer being made ahead of the render that needs it ([`IdResources::prewarm`]):
+/// its memory on the image heap's worker until [`Device::finish_buffer`] has it.
+enum Ahead {
+    Pending(crate::device::PendingBuffer),
+    Ready(Grown),
+}
+
+impl Ahead {
+    fn size(&self) -> u64 {
+        match self {
+            Ahead::Pending(p) => p.size,
+            Ahead::Ready(g) => g.size,
+        }
+    }
+}
+
+/// Makes a buffer of `want` bytes ahead in `ahead` unless `slot` or `ahead` already holds `need`;
+/// polls it (never waits). True once `slot` or a finished `ahead` holds `need`.
+#[allow(clippy::too_many_arguments)]
+fn make_ahead(slot: &Option<Grown>, ahead: &mut Option<Ahead>, dev: &Device, need: u64, want: u64, usage: VkFlags, memory: Memory, what: &str) -> Result<bool, GpuError> {
+    if slot.as_ref().is_some_and(|g| g.size >= need) {
+        return Ok(true);
+    }
+    if ahead.as_ref().is_some_and(|a| a.size() < need) {
+        // Made for a smaller frame: a bigger one replaces it.
+        match ahead.take() {
+            Some(Ahead::Pending(p)) => dev.abandon_buffer(p),
+            Some(Ahead::Ready(g)) => dev.destroy_buffer(&g.buffer),
+            None => {}
+        }
+    }
+    if ahead.is_none() {
+        let host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        let (required, preferred, kind) = match memory {
+            Memory::Upload => (host, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, MemoryKind::PerFrame),
+            Memory::Device => (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, MemoryKind::PerFrame),
+            Memory::Readback => (host, VK_MEMORY_PROPERTY_HOST_CACHED_BIT, MemoryKind::Readback),
+            Memory::Shared => (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, MemoryKind::RenderTargets),
+        };
+        *ahead = Some(Ahead::Pending(dev.create_buffer_ahead(want, usage, required, preferred, kind, what)?));
+    }
+    match ahead.take() {
+        Some(Ahead::Pending(p)) => match dev.finish_buffer(p, false)? {
+            Ok(buffer) => {
+                let address = if usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT != 0 { dev.buffer_address(&buffer) } else { 0 };
+                *ahead = Some(Ahead::Ready(Grown { buffer, address, size: want }));
+            }
+            Err(p) => *ahead = Some(Ahead::Pending(p)),
+        },
+        other => *ahead = other,
+    }
+    Ok(matches!(ahead, Some(Ahead::Ready(_))))
+}
+
+/// The finished buffer of `ahead`, taken (pending ones stay).
+fn take_ready(ahead: &mut Option<Ahead>) -> Option<Grown> {
+    match ahead.take() {
+        Some(Ahead::Ready(g)) => Some(g),
+        other => {
+            *ahead = other;
+            None
+        }
+    }
 }
 
 /// Every ID buffer resource of a `Gpu`: per-record ids, the shared readback, the stats buffers,
@@ -724,6 +889,15 @@ pub struct IdResources {
     last: Option<Last>,
     /// The ID render being recorded's occluders, clamped to its extent (reused).
     occluders: Vec<VkClearRect>,
+    /// The readback and the id sets made ahead for a bigger capture ([`IdResources::prewarm`]):
+    /// a 2048 x 2048 capture's are 16 and 64 MB, whose `vkAllocateMemory` took the engine
+    /// thread 40-45 ms in its render on a loaded iGPU (size_prewarm_check, M5 gpuwork).
+    readback_ahead: Option<Ahead>,
+    seen_ahead: Option<Ahead>,
+    /// The covers' host copy (see "Covers" in the module docs).
+    cover_host: Option<Grown>,
+    /// The draw numbers and each id's last, for the upload (reused).
+    seqs: Vec<u32>,
 }
 
 /// What an ID render's results describe.
@@ -738,6 +912,8 @@ struct Last {
     has_blended: Vec<bool>,
     /// This render clears the id sets.
     cleared: bool,
+    /// Covers were written: each id's last draw number (index `id - 1`) and the render's epoch.
+    cover: Option<(Vec<u32>, u32)>,
 }
 
 impl IdResources {
@@ -764,6 +940,37 @@ impl IdResources {
         let ids_2d_at = self.scratch.len();
         let ids_2d = &draw_ids[draws.len().min(draw_ids.len())..];
         self.scratch.extend(plan_2d.order.iter().map(|&i| ids_2d.get(i as usize).copied().unwrap_or(0)));
+        // Covers: every record's draw number in the colour pass's order (opaque meshes 0, then
+        // the 2D items in their order, then the blended meshes in theirs, water last), then
+        // each id's last (the largest of its records), after the ids.
+        let total = self.scratch.len();
+        let max_id = draw_ids.iter().copied().max().unwrap_or(0);
+        let seqs = &mut self.seqs;
+        seqs.clear();
+        seqs.resize(total, 0);
+        for (r, s) in seqs[ids_2d_at..].iter_mut().enumerate() {
+            *s = (r as u32 + 1).min(MAX_SEQ);
+        }
+        let mut next = (total - ids_2d_at) as u32 + 1;
+        for water in [false, true] {
+            for b in plan.batches.iter().filter(|b| b.material.blended() && (b.material == crate::Material::Water) == water) {
+                for r in b.first as usize..(b.first + b.count) as usize {
+                    if let Some(s) = seqs.get_mut(r) {
+                        *s = next.min(MAX_SEQ);
+                        next = next.saturating_add(1);
+                    }
+                }
+            }
+        }
+        let mut last = vec![0u32; max_id as usize];
+        for (&id, &s) in self.scratch.iter().zip(seqs.iter()) {
+            if id != 0 && id <= max_id {
+                let l = &mut last[(id - 1) as usize];
+                *l = (*l).max(s);
+            }
+        }
+        self.scratch.extend_from_slice(seqs);
+        self.scratch.extend_from_slice(&last);
         let addr = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
         let upload = Grown::ensure(&mut self.upload, dev, (self.scratch.len().max(1) * 4) as u64, addr, Memory::Upload, "id upload")?;
         // SAFETY: `mapped` is coherent host memory of at least `scratch.len()` u32s that the GPU
@@ -772,10 +979,14 @@ impl IdResources {
         let ids_address = upload.address;
         let ids_2d_address = upload.address + ids_2d_at as u64 * 4;
         let pixels = extent.width as u64 * extent.height as u64;
+        let mut spare = take_ready(&mut self.readback_ahead);
+        Grown::adopt(&mut self.readback, &mut spare, dev, pixels * BYTES_PER_PIXEL);
+        if let Some(g) = spare {
+            self.readback_ahead = Some(Ahead::Ready(g));
+        }
         let readback = Grown::ensure(&mut self.readback, dev, pixels * BYTES_PER_PIXEL, VK_BUFFER_USAGE_TRANSFER_DST_BIT, Memory::Readback, "id readback")?;
         let readback = readback.buffer.handle;
         graph.bind_buffer(res.readback, readback);
-        let max_id = draw_ids.iter().copied().max().unwrap_or(0);
         let mut has_blended = vec![false; max_id as usize];
         for (d, &id) in draws.iter().zip(draw_ids) {
             if id != 0 && d.material.blended() {
@@ -814,9 +1025,14 @@ impl IdResources {
                 // Only frames with blended draws use the sets. Sized for the shared images'
                 // bucket, so captures of other sizes reuse them (clearing them is slow on an
                 // iGPU, hence the epochs).
-                let bucket_bytes = (self.bucket.0 as u64 * self.bucket.1 as u64).max(pixels) * SEEN_SLOTS * 4;
-                let usage = addr | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+                let bucket_bytes = (self.bucket.0 as u64 * self.bucket.1 as u64).max(pixels) * SEEN_WORDS * 4;
+                let usage = addr | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
                 let before = self.seen.as_ref().map(|g| g.buffer.handle);
+                let mut spare = take_ready(&mut self.seen_ahead);
+                Grown::adopt(&mut self.seen, &mut spare, dev, bucket_bytes);
+                if let Some(g) = spare {
+                    self.seen_ahead = Some(Ahead::Ready(g));
+                }
                 let s = Grown::ensure(&mut self.seen, dev, bucket_bytes, usage, Memory::Shared, "id sets")?;
                 (seen, seen_address) = (s.buffer.handle, s.address);
                 if before != Some(seen) {
@@ -828,6 +1044,12 @@ impl IdResources {
             }
             stats_host = Grown::ensure(&mut self.stats_host, dev, stats_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, Memory::Readback, "id stats readback")?.buffer.handle;
             raster = streams(IdPass::Raster);
+        }
+        // Covers: only where the sets are counted (blended draws and atomics).
+        let cover = u32::from(seen != VK_NULL_HANDLE);
+        let mut cover_host = VK_NULL_HANDLE;
+        if cover != 0 {
+            cover_host = Grown::ensure(&mut self.cover_host, dev, pixels * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, Memory::Readback, "id covers readback")?.buffer.handle;
         }
         // 2D items: cutouts always (opaque ids); blended items and shapes through the sets.
         let built = |pass: IdPass, shape: bool| pipelines.built(PipelineKey::Ids2d { pass, shape }).unwrap_or(VK_NULL_HANDLE);
@@ -843,13 +1065,23 @@ impl IdResources {
         let mut params_address = 0;
         if !plan_2d.batches.is_empty() {
             let p = Grown::ensure(&mut self.params_2d, dev, size_of::<IdParams2d>() as u64, addr, Memory::Upload, "id 2d params")?;
-            let params = IdParams2d { ids: ids_2d_address, stats: stats_address, seen: seen_address, width: extent.width, epoch: self.epoch };
+            let params = IdParams2d {
+                ids: ids_2d_address,
+                stats: stats_address,
+                seen: seen_address,
+                width: extent.width,
+                epoch: self.epoch,
+                height: extent.height,
+                seq_at: total as u32,
+                cover,
+                pad: 0,
+            };
             // SAFETY: `mapped` is coherent host memory of at least one IdParams2d that the GPU no
             // longer reads (offscreen renders wait for completion); the mapping is 8-byte aligned.
             unsafe { ptr::write(p.buffer.mapped as *mut IdParams2d, params) };
             params_address = p.address;
         }
-        self.pending = Some(Last { target, extent, max_id, blended_counted: count_blended, has_blended, cleared: seen_clear });
+        self.pending = Some(Last { target, extent, max_id, blended_counted: count_blended, has_blended, cleared: seen_clear, cover: (cover != 0).then_some((last, self.epoch)) });
         // Terrain patches (opaque ids, rasterized marks), with the terrain variant.
         let terrain_ids = |raster: bool| {
             if ready.terrain {
@@ -882,6 +1114,9 @@ impl IdResources {
             res,
             readback,
             extent,
+            seq_at: total as u32,
+            cover,
+            cover_host,
         })
     }
 
@@ -982,7 +1217,17 @@ impl IdResources {
     /// blended draws are marked `counted: false` (their pixels are unknown).
     pub fn counts(&self, target: u32, max_id: u32) -> Result<IdCounts, GpuError> {
         let last = self.check(target, "id_coverage")?;
-        let mut per_id = coverage(self.opaque_ids(last.extent), last.extent.width, max_id);
+        let covers = match (&last.cover, &self.cover_host) {
+            (Some((last_seq, epoch)), Some(host)) => {
+                let n = last.extent.width as usize * last.extent.height as usize;
+                // SAFETY: coherent mapped memory of at least n u32s (sized for this render), written
+                // by the finished render's copy (copy → host barrier recorded); 4-byte aligned.
+                let c = unsafe { std::slice::from_raw_parts(host.buffer.mapped as *const u32, n) };
+                Some(Covers { covers: c, last_seq, epoch: *epoch })
+            }
+            _ => None,
+        };
+        let mut per_id = coverage_covered(self.opaque_ids(last.extent), last.extent.width, max_id, covers.as_ref());
         let rendered_max = last.max_id;
         if let (Some(host), true) = (&self.stats_host, last.blended_counted && rendered_max > 0) {
             let n = rendered_max.min(max_id) as usize;
@@ -1004,12 +1249,37 @@ impl IdResources {
     }
 
     pub fn destroy(&mut self, dev: &Device) {
-        for g in [self.upload.take(), self.params_2d.take(), self.readback.take(), self.stats.take(), self.stats_host.take(), self.seen.take()]
+        for g in [self.upload.take(), self.params_2d.take(), self.readback.take(), self.stats.take(), self.stats_host.take(), self.seen.take(), self.cover_host.take()]
             .into_iter()
             .flatten()
         {
             dev.destroy_buffer(&g.buffer);
         }
+        for a in [self.readback_ahead.take(), self.seen_ahead.take()].into_iter().flatten() {
+            match a {
+                Ahead::Pending(p) => dev.abandon_buffer(p),
+                Ahead::Ready(g) => dev.destroy_buffer(&g.buffer),
+            }
+        }
+    }
+
+    /// Makes the readback (and, for frames with blended draws, the id sets) a capture of
+    /// `extent` needs ahead of its render, on the image heap's worker (never waits): true once
+    /// they exist. The render adopts them ([`Grown::adopt`]); a render that comes first makes
+    /// its own, as before.
+    pub fn prewarm(&mut self, dev: &Device, extent: VkExtent2D, blended: bool) -> Result<bool, GpuError> {
+        let pixels = extent.width as u64 * extent.height as u64;
+        let need = pixels * BYTES_PER_PIXEL;
+        let want = need.max(self.readback.as_ref().map_or(1024, |g| g.size * 2));
+        let readback = make_ahead(&self.readback, &mut self.readback_ahead, dev, need, want, VK_BUFFER_USAGE_TRANSFER_DST_BIT, Memory::Readback, "id readback")?;
+        let mut seen = true;
+        if blended && dev.fragment_atomics && !self.blended_disabled {
+            let bucket = bucket_for(extent, self.bucket);
+            let bytes = (bucket.0 as u64 * bucket.1 as u64).max(pixels) * SEEN_WORDS * 4;
+            let usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+            seen = make_ahead(&self.seen, &mut self.seen_ahead, dev, bytes, bytes, usage, Memory::Shared, "id sets")?;
+        }
+        Ok(readback && seen)
     }
 }
 
@@ -1129,6 +1399,38 @@ const PARALLEL_PIXELS: usize = 1 << 18;
 /// Opaque coverage of `ids` (rows `width` wide) for ids `1..=max_id`: runs of one id along a row
 /// are added at once (and runs of 0 skipped), in parallel row bands for big images.
 pub fn coverage(ids: &[u32], width: u32, max_id: u32) -> Vec<IdCoverage> {
+    coverage_covered(ids, width, max_id, None)
+}
+
+/// A capture's covers (see "Covers" in the module docs), for the opaque count: pixel `p`'s
+/// opaque id counts only when no draw numbered after its last painted over `p`.
+pub struct Covers<'a> {
+    /// Per pixel: `(epoch << 20) | draw number` (another epoch's: none).
+    pub covers: &'a [u32],
+    /// Per id (`id - 1`): its last draw number.
+    pub last_seq: &'a [u32],
+    pub epoch: u32,
+}
+
+impl Covers<'_> {
+    /// `id` at pixel `i`, or 0 when it was painted over there.
+    fn shown(&self, id: u32, i: usize) -> u32 {
+        if id == 0 {
+            return 0;
+        }
+        let v = self.covers.get(i).copied().unwrap_or(0);
+        let seq = if v >> 20 == self.epoch { v & MAX_SEQ } else { 0 };
+        let last = self.last_seq.get((id - 1) as usize).copied().unwrap_or(0);
+        if seq > last {
+            0
+        } else {
+            id
+        }
+    }
+}
+
+/// [`coverage`], with the opaque ids `covers` hides left out.
+pub fn coverage_covered(ids: &[u32], width: u32, max_id: u32, covers: Option<&Covers>) -> Vec<IdCoverage> {
     let w = width as usize;
     if w == 0 || ids.is_empty() {
         return vec![IdCoverage::default(); max_id as usize];
@@ -1140,7 +1442,7 @@ pub fn coverage(ids: &[u32], width: u32, max_id: u32) -> Vec<IdCoverage> {
         1
     };
     if threads <= 1 {
-        return coverage_rows(ids, w, 0, max_id);
+        return coverage_rows(ids, w, 0, max_id, covers);
     }
     let band = rows.div_ceil(threads);
     let parts: Vec<Vec<IdCoverage>> = std::thread::scope(|s| {
@@ -1148,7 +1450,7 @@ pub fn coverage(ids: &[u32], width: u32, max_id: u32) -> Vec<IdCoverage> {
             .map(|t| {
                 let (r0, r1) = (t * band, ((t + 1) * band).min(rows));
                 let slice = &ids[r0 * w..r1 * w];
-                s.spawn(move || coverage_rows(slice, w, r0 as u32, max_id))
+                s.spawn(move || coverage_rows(slice, w, r0 as u32, max_id, covers))
             })
             .collect();
         handles.into_iter().map(|h| h.join().expect("counting thread")).collect()
@@ -1164,16 +1466,18 @@ pub fn coverage(ids: &[u32], width: u32, max_id: u32) -> Vec<IdCoverage> {
     out
 }
 
-fn coverage_rows(ids: &[u32], w: usize, first_row: u32, max_id: u32) -> Vec<IdCoverage> {
+fn coverage_rows(ids: &[u32], w: usize, first_row: u32, max_id: u32, covers: Option<&Covers>) -> Vec<IdCoverage> {
     let mut out = vec![IdCoverage::default(); max_id as usize];
     for (y, row) in ids.chunks_exact(w).enumerate() {
         let y = first_row + y as u32;
+        let at = y as usize * w;
+        let id_at = |x: usize| covers.map_or(row[x], |c| c.shown(row[x], at + x));
         let mut x = 0;
         while x < w {
-            let id = row[x];
+            let id = id_at(x);
             let start = x;
             x += 1;
-            while x < w && row[x] == id {
+            while x < w && id_at(x) == id {
                 x += 1;
             }
             if id != 0 && id <= max_id {
@@ -1288,7 +1592,7 @@ mod tests {
 
     #[test]
     fn slot_epochs_clear_only_when_needed() {
-        let last = |cleared| Last { target: 1, extent: VkExtent2D { width: 1, height: 1 }, max_id: 0, blended_counted: true, has_blended: Vec::new(), cleared };
+        let last = |cleared| Last { target: 1, extent: VkExtent2D { width: 1, height: 1 }, max_id: 0, blended_counted: true, has_blended: Vec::new(), cleared, cover: None };
         let mut r = IdResources { seen_dirty: true, ..Default::default() };
         assert!(r.next_epoch(), "new memory is cleared");
         // Reviewer finding: a render that fails after choosing to clear must not lose the clear.

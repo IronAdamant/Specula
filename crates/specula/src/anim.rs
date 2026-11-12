@@ -488,7 +488,7 @@ mod tests {
             let took = t.elapsed();
             assert_eq!(g.len(), 1);
             assert!(g.cells.len() + g.coarse.len() <= 256, "{side} m: {} cells", g.cells.len() + g.coarse.len());
-            assert!(took.as_millis() < 20, "{side} m: {took:?}");
+            assert!(took < specula_core::speed_budget(std::time::Duration::from_millis(20)), "{side} m: {took:?}");
             // The cube's top is 0.5 m: anywhere on it, edges included.
             assert_eq!(g.height(0.0, 0.0, 1.0, 1.0), Some(0.5));
             assert_eq!(g.height(side * 0.49, -side * 0.49, 1.0, 1.0), Some(0.5));

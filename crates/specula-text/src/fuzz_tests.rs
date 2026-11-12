@@ -230,7 +230,7 @@ fn line_breaks_of_hostile_text_hold_their_invariants() {
     let big = hostile_text(&mut Rng(7), 1 << 18);
     let started = std::time::Instant::now();
     crate::linebreak::breaks_into(&big, &mut out);
-    assert!(started.elapsed().as_millis() < 2000, "{:?} for {} bytes", started.elapsed(), big.len());
+    assert!(started.elapsed() < crate::speed_budget(std::time::Duration::from_millis(2000)), "{:?} for {} bytes", started.elapsed(), big.len());
 }
 
 #[test]

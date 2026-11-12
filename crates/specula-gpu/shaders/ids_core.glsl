@@ -40,9 +40,42 @@ const uint SEEN_ID_BITS = 20u;
 struct IdTarget {
     Stats stats;
     Seen seen;
-    uint width; // pixels per row (indexes `seen`)
-    uint epoch; // this capture's tag in `seen` (1..4095)
+    uint width;  // pixels per row (indexes `seen`)
+    uint epoch;  // this capture's tag in `seen` (1..4095)
+    uint height; // rows (the covers follow the sets: `id_cover_at`)
+    uint cover;  // 1: the frame paints over (covers are written and honoured; src/idbuffer.rs)
 };
+
+// The paint order (src/idbuffer.rs, "Covers"): every draw has a sequence number in the colour
+// pass's order (opaque meshes 0, then the 2D items, then the blended meshes), and each pixel
+// keeps the largest sequence number of a fragment that painted over it (alpha at least
+// COVER_ALPHA: blended items and glass that hide what lies under them, and cutout items, which
+// replace it), tagged with the capture's epoch like the sets. Whatever was painted there before
+// it (a smaller number) is hidden: an id counts at a pixel only when its last draw's number is at
+// least the pixel's cover. Atomic maxima: the result doesn't depend on the order fragments run in.
+const float COVER_ALPHA = 0.9;
+const uint SEQ_MASK = (1u << SEEN_ID_BITS) - 1u;
+
+uint id_cover_at(IdTarget t, uvec2 p) {
+    return t.width * t.height * SEEN_SLOTS + p.y * t.width + p.x;
+}
+
+// A fragment of draw number `seq` painted over pixel `p`.
+void id_cover(IdTarget t, uvec2 p, uint seq) {
+    uint v = (t.epoch << SEEN_ID_BITS) | min(seq, SEQ_MASK);
+    uint at = id_cover_at(t, p);
+    // Read first: most fragments of a pixel's covering draw find it set already (iGPUs serialise
+    // atomics on one address).
+    if (t.seen.slot[at] < v) {
+        atomicMax(t.seen.slot[at], v);
+    }
+}
+
+// The largest draw number that painted over pixel `p` this capture (0: none).
+uint id_cover_seq(IdTarget t, uvec2 p) {
+    uint v = t.seen.slot[id_cover_at(t, p)];
+    return (v >> SEEN_ID_BITS) == t.epoch ? v & SEQ_MASK : 0u;
+}
 
 uint id_seen_at(IdTarget t, uvec2 p) {
     return (p.y * t.width + p.x) * SEEN_SLOTS;

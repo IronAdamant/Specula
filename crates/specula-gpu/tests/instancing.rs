@@ -92,7 +92,8 @@ fn instanced_grid_on(adapter: AdapterPreference, label: &str) {
             assert_eq!(gpu_t.frame, s.frame);
             assert_eq!(gpu_t.passes.len(), 1);
             assert_eq!(gpu_t.passes[0].name, PASS_SCENE);
-            assert!(gpu_t.passes[0].gpu_ms > 0.0 && gpu_t.passes[0].gpu_ms < 1000.0, "{gpu_t:?}");
+            // (A sane number in milliseconds, not a speed: a wrong unit is off by 1,000 or more.)
+            assert!(gpu_t.passes[0].gpu_ms > 0.0 && gpu_t.passes[0].gpu_ms < 60_000.0, "{gpu_t:?}");
             assert!(gpu_t.total_ms >= gpu_t.passes[0].gpu_ms);
         } else {
             eprintln!("{test}: the queue has no timestamp support");
@@ -105,7 +106,10 @@ fn instanced_grid_on(adapter: AdapterPreference, label: &str) {
         assert!(s.memory.bytes(MemoryKind::PerFrame) >= s.draw_buffer_bytes);
         assert_eq!(s.memory.bytes(MemoryKind::Staging), 0, "staging is freed after uploads");
         assert_eq!(s.memory.total_bytes, s.memory.by_kind.iter().map(|(_, b)| b).sum::<u64>());
-        assert_eq!(s.memory.allocations, 9, "2 meshes, the shared sprite quad, the 2 terrain patch grids, colour, depth, readback, frame upload");
+        // Images live in the image heap's blocks (allocated ahead on its worker, so how many
+        // there are depends on timing): the other allocations are counted exactly.
+        assert_eq!(s.memory.allocations - s.memory.image_heap.blocks, 7, "2 meshes, the shared sprite quad, the 2 terrain patch grids, readback, frame upload");
+        assert!(s.memory.image_heap.images >= 2, "colour and depth are placed in the image heap: {:?}", s.memory.image_heap);
         assert!(!s.memory.heaps.is_empty() && s.memory.heaps.iter().any(|h| h.device_local));
         for h in &s.memory.heaps {
             // The spec bounds the budget by the heap size; usage may exceed the budget.

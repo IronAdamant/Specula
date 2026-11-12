@@ -128,6 +128,34 @@ pub(crate) struct Rendered {
     pub(crate) gi_stretch: Option<(f32, f32)>,
 }
 
+/// A view's subjects being projected on a worker. **Whoever gets there first projects them**
+/// ([`Projected`]): the worker when it picks the job up before the view lands, else the view
+/// itself, at once. A view never waits passes for a worker (review R1 of m5-gpuwork: it waited
+/// up to three, so an orbit's pass count depended on when a pool worker was free, and the
+/// gate's pass-count test failed three runs in four).
+pub(crate) struct Projection {
+    slot: std::sync::Arc<(std::sync::Mutex<Projected>, std::sync::Condvar)>,
+    set: std::sync::Arc<sight::SubjectSet>,
+}
+
+/// Where a view's projection is.
+#[derive(Default)]
+enum Projected {
+    /// The job is queued; nobody has started.
+    #[default]
+    Queued,
+    /// A worker is projecting now.
+    Working,
+    /// The worker's result, for the view to take.
+    Done(Vec<Subject>),
+    /// The view took it, or projected its own (a job that starts after this does nothing).
+    Taken,
+}
+
+/// The longest a landing view waits for a worker that is already projecting its subjects (the
+/// same work it would otherwise do itself; past this it does, in case the worker died).
+const PROJECTION_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// A view submitted to the GPU and not yet landed ([`Engine::render_view_submit`]): what its
 /// packet says about the world, taken when it was drawn.
 pub(crate) struct ViewInFlight {
@@ -143,6 +171,8 @@ pub(crate) struct ViewInFlight {
     /// Interface rectangles that hid the scene in the ID counts, and how many were left out.
     occluders: (usize, usize),
     subjects: Vec<Subject>,
+    /// The subjects being projected on a worker ([`Engine::view_subjects`]).
+    projection: Option<Projection>,
     record: sight::FrameRecord,
     notes: Vec<(usize, crate::streaming::Note)>,
     /// Streaming's notes are in the subjects.
@@ -827,10 +857,17 @@ impl Engine {
         let fx = self.vfx.take_frame();
         let mut effects = self.vfx.packet_json(&self.world, &fx_view);
         drop(zg);
-        let mut subjects = {
+        // The subjects' bases (cached; read live for transient entities and 2D cards): their
+        // projection is made on a worker unless overlays are painted from it now (an orbit's
+        // caption needs no subject).
+        let painted = !opts.overlays.is_empty() || opts.caption.is_some();
+        let project_now = !opts.overlays.is_empty();
+        let (set, mut subjects) = {
             let _z = profile::zone("sight.subjects");
             self.subject_cache.refresh(&self.world, self.world_generation);
-            sight::subjects_cached(&self.subject_cache, &self.world, &view_proj, w, h, opts.include_ui)
+            let set = sight::subject_set(&self.subject_cache, &self.world, &view_proj, w, h, opts.include_ui);
+            let subjects = if project_now { set.project() } else { Vec::new() };
+            (std::sync::Arc::new(set), subjects)
         };
         // Sprites, tile chunks and shapes: their ids follow the meshes' (render_with_ids takes
         // one id per mesh draw, then one per 2D draw).
@@ -861,7 +898,6 @@ impl Engine {
             ..sight::frame(&self.world, &view_proj, &draws, &lights, opts.time_s as f32)
         };
         self.luts.apply(&mut self.gpu, self.world.env(), &mut frame, true);
-        let painted = !opts.overlays.is_empty() || opts.caption.is_some();
         let second_render = painted && opts.ids && opts.overlays.has(Kind::Bounds);
         let mut overlays = None;
         // A hosted game's interface (include_ui), under the debug overlays.
@@ -898,12 +934,12 @@ impl Engine {
         // now (the frame as drawn), written once the ID counts are in (in the packet's order).
         let notes = {
             let _z = profile::zone("sight.annotate");
-            self.stream.notes(&subjects, &self.world, &self.models)
+            self.stream.notes(set.bases(), &self.world, &self.models)
         };
         let proxies = self.stream.hlod.capture_groups.clone();
         let mut kinds = Vec::new();
         let wet: BTreeMap<u64, String> = self.world.water_entities().filter_map(|e| e.water.as_ref().map(|w| (e.id, w.preset.as_str().to_owned()))).collect();
-        for (i, s) in subjects.iter().enumerate() {
+        for (i, s) in set.bases().enumerate() {
             if self.terrain.covers(s.id) {
                 kinds.push((i, SubjectKind::Terrain(self.terrain.drawn(s.id).map(|d| d.patches))));
             } else if let Some(preset) = wet.get(&s.id) {
@@ -944,6 +980,7 @@ impl Engine {
             entities,
             occluders: (occluders.len(), occluders_dropped),
             subjects: std::mem::take(&mut subjects),
+            projection: None,
             record: std::mem::take(&mut record),
             notes,
             noted: false,
@@ -968,6 +1005,9 @@ impl Engine {
             self.vfx.put_frame(fx);
             self.terrain.frame = terrains;
             submitted?;
+            if !project_now {
+                v.projection = Some(self.project_on_worker(set));
+            }
             return Ok(Submitted::Flying(Box::new(v)));
         }
         if let Err(e) = submitted {
@@ -994,6 +1034,37 @@ impl Engine {
         again?;
         v.ids = false; // counted above
         self.render_view_land(v).map(|r| Submitted::Done(Box::new(r)))
+    }
+
+    /// Projects a view's subjects on a worker (`JobKind::SubjectProject`, an engine job), which
+    /// puts them in the view's own slot ([`Projection`]): a view that settles in the same pass it
+    /// was submitted in (an orbit's views, back to back) finds them there without waiting for the
+    /// job's continuation, which runs only at the pass's `pump_workers`.
+    fn project_on_worker(&mut self, set: std::sync::Arc<sight::SubjectSet>) -> Projection {
+        let slot: std::sync::Arc<(std::sync::Mutex<Projected>, std::sync::Condvar)> = std::sync::Arc::default();
+        let (work, into) = (std::sync::Arc::clone(&set), std::sync::Arc::clone(&slot));
+        let job = crate::workers::Offload::engine(crate::workers::JobKind::SubjectProject).class(crate::schedule::Class::Render);
+        let offloaded = self.offload(job, move |_| project_if_first(&work, &into), |_, _| {});
+        if offloaded.is_err() {
+            // (Engine jobs are never refused; projected when the view lands.)
+            specula_core::trace_event!(&crate::trace_sink::SIGHT, Warn, "sight.projection_inline", subjects = set.len() as u64);
+        }
+        Projection { slot, set }
+    }
+
+    /// A view's subjects, projected: the worker's when it got there first, else projected here,
+    /// now. (A worker in the middle of it is waited for: that is the work this thread would
+    /// otherwise repeat, and it is bounded by [`PROJECTION_WAIT`].)
+    fn view_subjects(&mut self, v: &mut ViewInFlight) {
+        let Some(p) = v.projection.take() else { return };
+        match take_projection(&p.slot) {
+            Some(subjects) => v.subjects = subjects,
+            None => {
+                let _z = profile::zone("sight.subjects_late");
+                self.captures.late_projections += 1;
+                v.subjects = p.set.project();
+            }
+        }
     }
 
     /// The ID counts of a settled view into its subjects and record, then its streaming notes.
@@ -1049,6 +1120,7 @@ impl Engine {
         if v.rgba.is_some() {
             return Ok(());
         }
+        self.view_subjects(v);
         if v.ids {
             self.view_counts(v)?;
             v.ids = false;
@@ -1529,9 +1601,76 @@ fn tri_text(t: u64) -> String {
     }
 }
 
+/// The worker's half of a [`Projection`]: projects unless the view already took the job.
+fn project_if_first(set: &sight::SubjectSet, slot: &(std::sync::Mutex<Projected>, std::sync::Condvar)) {
+    let (state, landed) = slot;
+    {
+        let mut g = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !matches!(*g, Projected::Queued) {
+            return;
+        }
+        *g = Projected::Working;
+    }
+    let subjects = set.project();
+    *state.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Projected::Done(subjects);
+    landed.notify_all();
+}
+
+/// The view's half: the worker's subjects if it has (or is about to have) them, else `None` and
+/// the job is marked taken (the view projects its own; a worker that starts later does nothing).
+fn take_projection(slot: &(std::sync::Mutex<Projected>, std::sync::Condvar)) -> Option<Vec<Subject>> {
+    let (state, landed) = slot;
+    let mut g = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let asked = std::time::Instant::now();
+    while matches!(*g, Projected::Working) && asked.elapsed() < PROJECTION_WAIT {
+        g = landed.wait_timeout(g, PROJECTION_WAIT).unwrap_or_else(std::sync::PoisonError::into_inner).0;
+    }
+    match std::mem::replace(&mut *g, Projected::Taken) {
+        Projected::Done(subjects) => Some(subjects),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review R1 of m5-gpuwork, M2: whoever gets to a view's projection first does it, and
+    /// nobody waits passes for the other.
+    #[test]
+    fn a_views_subjects_are_projected_by_whoever_gets_there_first() {
+        let slot = || std::sync::Arc::<(std::sync::Mutex<Projected>, std::sync::Condvar)>::default();
+        let set = sight::SubjectSet::empty();
+        // The view lands before any worker picked the job up: it takes it (and projects its own).
+        let s = slot();
+        assert!(take_projection(&s).is_none(), "nothing to wait for: the view projects now");
+        project_if_first(&set, &s);
+        assert!(matches!(*s.0.lock().unwrap(), Projected::Taken), "the job that starts later does nothing");
+        // The worker got there first: the view finds its subjects.
+        let s = slot();
+        project_if_first(&set, &s);
+        assert!(take_projection(&s).is_some());
+        // A worker in the middle of it is waited for, not raced: the view gets the worker's result.
+        let s = slot();
+        *s.0.lock().unwrap() = Projected::Working;
+        let worker = {
+            let s = std::sync::Arc::clone(&s);
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(30));
+                *s.0.lock().unwrap() = Projected::Done(Vec::new());
+                s.1.notify_all();
+            })
+        };
+        // (Its result, not `None`, is what says the view waited for the worker and got it.)
+        assert!(take_projection(&s).is_some(), "the worker's result");
+        worker.join().unwrap();
+        // A worker that never finishes (it died) is not waited for past the bound.
+        let s = slot();
+        *s.0.lock().unwrap() = Projected::Working;
+        let asked = std::time::Instant::now();
+        assert!(take_projection(&s).is_none());
+        assert!(asked.elapsed() >= PROJECTION_WAIT, "{:?}", asked.elapsed());
+    }
 
     /// Reviewer finding (round 6): approximate counts are lower bounds (possibly 0 for an entity
     /// in plain view); the "visible" filter, overlays and totals must treat them as showing.

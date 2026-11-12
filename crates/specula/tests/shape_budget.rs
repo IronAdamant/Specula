@@ -77,7 +77,7 @@ fn identical_shapes_count_once_and_distinct_ones_fill_the_budget() {
     assert!(world.entities().all(|e| spec_of(e.two_d.as_ref().unwrap()).same(&first)), "one shape for all");
     assert_eq!((world.shape_budget().distinct(), world.shape_budget().vertices()), (1, first.vertices), "counted once");
     eprintln!("100 identical spawns in {:.0} ms", elapsed.as_secs_f64() * 1e3);
-    assert!(elapsed.as_secs_f64() < 2.0);
+    assert!(elapsed < specula_core::speed_budget(std::time::Duration::from_secs(2)), "{elapsed:?}");
 
     // Distinct shapes fill the budget, then the next is refused with a structured error. The
     // answer is the same whether the shapes were tessellated or not.

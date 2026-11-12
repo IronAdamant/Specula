@@ -53,6 +53,12 @@ grass blades should replace flat green").
 - **Shadow distance** (`shadow_end`, metres of view depth; 0 = any distance, the default): swaying draws further
   than that from the camera cast no sun shadow at all (`shadow::plan_shadows` leaves them out of every cascade).
   Far grass shadows are a few texels each, and every caster costs the shadow pass its cutout fragments.
+  Since M5 gpuwork the shadow **fades** over the last quarter of that range (at least 2 m:
+  `shadow::sway_shadow_fade`, Sepulcra's 30 m fades from 22.5 m) instead of popping off at it: an ordered 4 x 4
+  dither by shadow-map texel (`frame.glsl` `sway_shadow_faded`, frame data `foliage.zw`), in `shadow_mask.frag` for
+  alpha-cut casters and in a pipeline of its own for unmasked swaying casters (`PipelineKey::ShadowSway`,
+  `shadow_sway.vert/.frag`; every other caster keeps the depth-only pipeline). `tests/shadow_fade.rs` measures the
+  shadow left on the floor at 12-31 m: 1, 1, 0.81, 0.40, 0.17, 0.06, 0.
 
 ## Draw order and cost
 

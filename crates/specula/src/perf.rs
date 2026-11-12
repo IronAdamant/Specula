@@ -130,6 +130,7 @@ fn kind_name(k: MemoryKind) -> &'static str {
         MemoryKind::Textures => "textures",
         MemoryKind::Gi => "gi",
         MemoryKind::Glyphs => "glyphs",
+        MemoryKind::Reserve => "reserve",
     }
 }
 
@@ -271,6 +272,7 @@ pub fn stats_json(s: &FrameStats) -> Json {
                 ("by_kind_mb", Json::obj(m.by_kind.iter().map(|(k, b)| (kind_name(*k), mb(*b))))),
                 ("draw_buffer_kb", Json::from((s.draw_buffer_bytes as f64 / 1024.0).round())),
                 ("heaps", Json::arr(heaps)),
+                ("image_heap", image_heap_json(&m.image_heap)),
             ]),
         ),
     ]);
@@ -1146,6 +1148,25 @@ fn gpu_memory_json(s: &FrameStats) -> Json {
         ("total_mb", mb(s.memory.total_bytes)),
         ("allocations", Json::from(s.memory.allocations)),
         ("by_kind_mb", Json::obj(s.memory.by_kind.iter().map(|(k, b)| (kind_name(*k), mb(*b))))),
+        ("image_heap", image_heap_json(&s.memory.image_heap)),
+    ])
+}
+
+/// The image heap (specula-gpu `heap.rs`): its blocks, and every `vkAllocateMemory` it made ahead on
+/// its worker or had to make on the engine thread (`sync_blocks`), counted since the start.
+fn image_heap_json(h: &specula_gpu::ImageHeapStats) -> Json {
+    Json::obj([
+        ("blocks", Json::from(h.blocks)),
+        ("block_mb", mb(h.block_bytes)),
+        ("used_mb", mb(h.used_bytes)),
+        ("images", Json::from(h.images)),
+        ("grown_ahead", Json::from(h.grown_ahead)),
+        ("sync_blocks", Json::from(h.sync_blocks)),
+        ("growth_waits", Json::from(h.growth_waits)),
+        ("deferred", Json::from(h.deferred)),
+        ("dedicated", Json::from(h.dedicated)),
+        ("freed_ahead", Json::from(h.freed_ahead)),
+        ("grow_failures", Json::from(h.grow_failures)),
     ])
 }
 

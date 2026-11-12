@@ -211,7 +211,7 @@ fn generation_is_budgeted() {
     let heavy: Vec<String> = (0..128).map(|i| format!(r#"{{ "name": "g{i}", "kind": "gait", "duration": 60, "rate": 120, "stride": 0.9, {legs} }}"#)).collect();
     let t = std::time::Instant::now();
     let e = set_with(&heavy.join(", ")).unwrap_err();
-    assert!(t.elapsed() < std::time::Duration::from_millis(500), "{:?}", t.elapsed());
+    assert!(t.elapsed() < specula_core::speed_budget(std::time::Duration::from_millis(500)), "refused before generating (which took 13.8 s and more): {:?}", t.elapsed());
     assert_eq!(e.code, AnimErrorCode::Limit, "{e}");
     assert_eq!(e.path, "clips[0].duration");
     assert_eq!(e.limit, Some(gen::MAX_CLIP_WORK as f64));

@@ -75,6 +75,10 @@ pub enum JobKind {
     ScratchTrash,
     /// The model library's scan of the assets folder (recipe, style, anim-set and glTF times).
     AssetScan,
+    /// A capture view's subjects projected onto its image (`sight::SubjectSet::project`).
+    SubjectProject,
+    /// world_load's disk work: the outgoing board written, the world and its board read.
+    WorldLoad,
     /// The hosted game's player settings written to their per-user file (`user_settings`).
     SettingsWrite,
     /// A timeline's audio cue: its sound recipe found and rendered (`timeline_audio`).
@@ -105,6 +109,8 @@ impl JobKind {
             JobKind::FlashFeed => "flash_feed",
             JobKind::ScratchTrash => "scratch_trash",
             JobKind::AssetScan => "asset_scan",
+            JobKind::SubjectProject => "subject_project",
+            JobKind::WorldLoad => "world_load",
             JobKind::SettingsWrite => "settings_write",
             JobKind::TimelineSound => "timeline_sound",
             JobKind::ModuleSound => "module_sound",
@@ -281,6 +287,17 @@ impl Drop for Workers {
     }
 }
 
+/// Tests only: how late a worker starts a job it took (`SPECULA_TEST_WORKER_DELAY_MS`; unset: at
+/// once). `scripts/gate.py` runs the engine's tests once with it set. Nothing may depend on when
+/// a worker thread happens to run (the engine thread has a result or does the work itself): with
+/// every worker late, code that does depend on it fails every time, where on a quiet machine it
+/// failed one run in four (the orbit's pass count, review R1 of m5-gpuwork).
+#[cfg(test)]
+fn test_delay() -> Option<Duration> {
+    static DELAY: std::sync::OnceLock<Option<Duration>> = std::sync::OnceLock::new();
+    *DELAY.get_or_init(|| std::env::var("SPECULA_TEST_WORKER_DELAY_MS").ok().and_then(|v| v.trim().parse::<u64>().ok()).filter(|ms| *ms > 0).map(Duration::from_millis))
+}
+
 fn worker_loop(shared: &Shared, done: &Sender<(u64, Result<Payload, Failed>)>) {
     loop {
         let task = {
@@ -301,6 +318,10 @@ fn worker_loop(shared: &Shared, done: &Sender<(u64, Result<Payload, Failed>)>) {
             }
         };
         let Task { id, lane, cancel, work, trace } = task;
+        #[cfg(test)]
+        if let Some(late) = test_delay() {
+            std::thread::sleep(late);
+        }
         let result = if cancel.is_set() {
             // What the job owns goes now (a slot guard gives its slot back), before it is answered.
             drop(work);

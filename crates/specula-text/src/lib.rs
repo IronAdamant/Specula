@@ -48,6 +48,17 @@ pub mod system;
 #[cfg(test)]
 mod fuzz_tests;
 
+/// A copy of `specula_core::speed_budget` (this crate depends on nothing): a test's speed bound,
+/// tight when it runs alone, 5 s or more in every other run.
+#[cfg(test)]
+pub(crate) fn speed_budget(tight: std::time::Duration) -> std::time::Duration {
+    if std::env::var_os("SPECULA_SPEED_TESTS").is_some() {
+        tight
+    } else {
+        tight.max(std::time::Duration::from_secs(5))
+    }
+}
+
 pub use bundled::Bundled;
 pub use slug::{SlugError, SlugGlyph, SlugStore, StoredGlyph};
 pub use atlas::{AtlasConfig, AtlasGlyph, AtlasStats, DirtyRect, GlyphAtlas, GlyphKey, NO_PAGE, SUBPIXEL_BINS};

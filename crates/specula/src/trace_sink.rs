@@ -65,6 +65,10 @@ const SINK_EVERY: Duration = Duration::from_millis(100);
 /// Characters kept of a call's argument digest, and of each key in it.
 const DIGEST_CHARS: usize = 160;
 const DIGEST_KEY_CHARS: usize = 32;
+/// A key longer than this many bytes isn't read further: it is shown cut and its value is
+/// redacted (a key too long to check could name a secret anywhere in it). So a digest's work is
+/// bounded per key whatever a caller sends.
+const DIGEST_KEY_SCAN: usize = 256;
 /// The crash report file prefixes.
 pub const CRASH_PREFIX: &str = "crash-";
 pub const CAUGHT_PREFIX: &str = "caught-";
@@ -324,8 +328,9 @@ pub fn digest(args: &Json) -> String {
         if i > 0 {
             out.push_str(", ");
         }
-        let key: String = k.chars().filter(|c| !c.is_control()).take(DIGEST_KEY_CHARS).collect();
-        let _ = if secret_key(k) {
+        // (At most 4 x the cut is looked at for the key's first printable characters.)
+        let key: String = k.chars().take(4 * DIGEST_KEY_CHARS).filter(|c| !c.is_control()).take(DIGEST_KEY_CHARS).collect();
+        let _ = if k.len() > DIGEST_KEY_SCAN || secret_key(k) {
             write!(out, "{key}:<redacted>")
         } else {
             match v {
@@ -847,12 +852,23 @@ mod tests {
         let d = digest(&big);
         assert!(d.chars().count() <= DIGEST_CHARS + 8, "{d}");
         assert_eq!(digest(&Json::Null), "");
-        // Review probe: a 16 MB key cost 35 ms under the global lock. Keys are cut.
-        let huge_key = Json::obj([("k".repeat(1 << 20), Json::from(1u64))]);
-        let started = std::time::Instant::now();
-        let d = digest(&huge_key);
+        // Review probe: a 16 MB key cost 35 ms under the global lock. A key is read to a fixed
+        // length and no further, so the digest of a huge key is the digest of its start. (This
+        // used to assert "under 50 ms", which a busy test run broke 1 time in 11, and which a
+        // key's secret check, reading the whole key, was quietly spending.)
+        let start = "k".repeat(DIGEST_KEY_SCAN + 1);
+        let d = digest(&Json::obj([("k".repeat(1 << 20), Json::from(1u64))]));
         assert!(d.len() < DIGEST_CHARS + 16, "{}", d.len());
-        assert!(started.elapsed() < Duration::from_millis(50));
+        assert_eq!(d, digest(&Json::obj([(start, Json::from(1u64))])), "nothing past the scan length is read");
+        assert!(d.ends_with(":<redacted>}"), "a key too long to check has its value redacted: {d}");
+        // A key of control characters is cut at the same length (its printable start is empty).
+        let d = digest(&Json::obj([("\u{7}".repeat(1 << 20), Json::from(1u64))]));
+        assert_eq!(d, "{:<redacted>}");
+        // A long key naming a secret far into it never shows its value.
+        let d = digest(&Json::obj([(format!("{}_token", "a".repeat(100_000)), Json::from(12345u64))]));
+        assert!(!d.contains("12345"), "{d}");
+        // Keys of ordinary length are judged as before.
+        assert_eq!(digest(&Json::obj([("api_key", Json::from(7u64)), ("width", Json::from(7u64))])), "{api_key:<redacted>, width:7}");
     }
 
     /// Review probe (b893d0a, major 2): under concurrency about a third of the records couldn't

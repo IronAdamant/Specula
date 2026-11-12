@@ -135,6 +135,7 @@ mod hash_verify;
 mod steps;
 mod workers;
 mod world_save;
+mod world_load;
 pub mod world;
 pub mod write_policy;
 
@@ -782,6 +783,10 @@ struct Engine {
     draws: Vec<DrawItem>,
     /// The window's draw list between world changes (and each model's LOD, for hysteresis).
     draw_cache: sight::DrawCache,
+    /// Captures' draw lists, kept between captures and patched with what changed (LODs chosen
+    /// afresh each capture: `DrawCache::for_captures`): without and with the `ui` layer, so
+    /// captures that alternate never rebuild.
+    capture_draw_cache: [sight::DrawCache; 2],
     /// The window frame's point lights (reused like `draws`).
     lights: Vec<specula_gpu::PointLight>,
     /// Textures, tile cell textures and shape meshes of 2D entities.
@@ -1011,6 +1016,8 @@ struct Engine {
     /// The explicit save whose plan is being taken off the world (`world_save.rs`).
     save_planning: Option<world_save::SavePlanning>,
     waiting_saves: VecDeque<world_save::WaitingSave>,
+    /// A world_load parked behind a save, or reading on a worker (`world_load.rs`).
+    loading: Option<world_load::Loading>,
     /// A project sync is writing on a worker; calls that read the disk wait for it (in order),
     /// and so do the calls waiting for the next sync's result (see `project_engine`).
     project_syncing: bool,
@@ -1039,6 +1046,8 @@ struct AutosaveJob {
     /// The world revision the job is writing, and the journal's last entry then.
     revision: u64,
     seq: u64,
+    /// The world it was planned from (`world_generation`): one replaced since marks nothing.
+    generation: u64,
     done: Receiver<Result<(persist::Saved, persist::SaveReport), persist::PersistError>>,
 }
 
@@ -1069,6 +1078,7 @@ impl Engine {
             draws: Vec::new(),
             lights: Vec::new(),
             draw_cache: sight::DrawCache::default(),
+            capture_draw_cache: [sight::DrawCache::for_captures(), sight::DrawCache::for_captures()],
             two_d,
             draws_2d: Vec::new(),
             last_2d_gc: (Instant::now(), 0),
@@ -1186,6 +1196,7 @@ impl Engine {
             world_save_running: false,
             save_planning: None,
             waiting_saves: VecDeque::new(),
+            loading: None,
             project_syncing: false,
             assets_scan: asset_scan::ScanState::default(),
             project_deferred: VecDeque::new(),
@@ -1609,8 +1620,10 @@ impl Engine {
         self.last_autosave = Instant::now();
         self.finish_autosave(false);
         let Some(name) = self.world_name.clone() else { return };
-        // Never beside an explicit save of the same folder (see `world_save`).
-        if self.autosave_job.is_some() || self.world_save_running || !self.dirty() {
+        // Never beside an explicit save of the same folder (see `world_save`), and never while a
+        // load is replacing the world: it would save the changes `force` discards, into the
+        // outgoing world's folder (`world_load`'s module docs).
+        if self.autosave_job.is_some() || self.world_save_running || !self.dirty() || (self.loading.is_some() && !wait) {
             return;
         }
         let plan = {
@@ -1633,7 +1646,7 @@ impl Engine {
             let o = workers::Offload::engine(workers::JobKind::Autosave).lane(workers::Lane::World);
             let _ = self.offload(o, move |_| job(), |_, _| {});
         }
-        self.autosave_job = Some(AutosaveJob { revision, seq: self.swarm.journal().last_seq(), done });
+        self.autosave_job = Some(AutosaveJob { revision, seq: self.swarm.journal().last_seq(), generation: self.world_generation, done });
         self.finish_autosave(wait);
     }
 
@@ -1654,7 +1667,13 @@ impl Engine {
             None => Err(persist::PersistError::new("io", "the autosave thread stopped without reporting")),
         };
         let (revision, seq) = (job.revision, job.seq);
+        let replaced = job.generation != self.world_generation;
         self.autosave_job = None;
+        if replaced {
+            // The world it saved is gone: its revision and cache say nothing about this one.
+            specula_core::trace_event!(&crate::trace_sink::ENGINE, Warn, "autosave.world_replaced", revision = revision);
+            return;
+        }
         match result {
             Ok((saved, report)) => {
                 self.replace_saved(saved);
@@ -1665,6 +1684,10 @@ impl Engine {
             }
             Err(e) => {
                 eprintln!("specula: autosave failed: {e}");
+                // Unsaved work is at risk until the next one succeeds: agents debug from traces
+                // (rule 15), and `engine_info` keeps the last failure (`last_autosave_error`).
+                let message = e.to_string();
+                specula_core::trace_event!(&crate::trace_sink::ENGINE, Error, "autosave.failed", code = e.code, error = message.as_str(), revision = revision);
                 let mut j = e.to_json();
                 j.set("at_revision", Json::from(revision));
                 self.autosave_error = Some(j);
@@ -2127,7 +2150,9 @@ impl Engine {
             // (Owners only while the editor previews a drag.)
             self.draw_cache.draw_list_owned(&self.world, self.world_generation, &meshes, &mut view, out, owners.as_deref_mut())
         } else {
-            sight::draw_list(&self.world, &meshes, &mut view, out, owners.as_deref_mut())
+            // Captures patch their own cache (LODs afresh): no walk of every entity per view.
+            let _z = profile::zone("sight.draw_cache");
+            self.capture_draw_cache[usize::from(include_ui)].draw_list_owned(&self.world, self.world_generation, &meshes, &mut view, out, owners.as_deref_mut())
         };
         let hlod = &mut self.stream.hlod;
         std::mem::swap(&mut self.models.cover, if window { &mut hlod.window_cover } else { &mut hlod.capture_cover });
@@ -2567,6 +2592,11 @@ impl Engine {
             self.handle_world_save(request);
             return;
         }
+        if matches!(request.command, Command::Load { .. }) {
+            // Checked here, read on a worker, applied when read (see `world_load`).
+            self.handle_world_load(request);
+            return;
+        }
         if matches!(request.command, Command::Anim(anim_tools::AnimCall::Check { .. } | anim_tools::AnimCall::Filmstrip { .. })) {
             // A check or a tile per step; a filmstrip's sheet is encoded on a worker (see `anim_steps`).
             self.start_anim_job(request);
@@ -2701,17 +2731,7 @@ impl Engine {
             Command::Save { .. } => unreachable!("answered by handle_world_save"),
             // A playtest owns the clock and the world until it ends (as for save_read): a load
             // would replace the world under it. Not even with force. Nor while others hold claims.
-            Command::Load { name, force } => match write_policy::may_replace(&self.swarm, w, &self.playtests) {
-                // Force discards every agent's unsaved changes (coordinator, 2026-10-29): the
-                // lead's call; with nothing unsaved it changes nothing.
-                Ok(_) if force && self.dirty() && authority::authority(&self.swarm, &request.session.id) < authority::Authority::Lead && self.others_unsaved(&session).is_some() => world_error(
-                    &authority::may_force(authority::authority(&self.swarm, &request.session.id), false, "world_load {force} (it discards another agent's unsaved changes)")
-                        .expect_err("not the lead")
-                        .with("unsaved_by", self.others_unsaved(&session).unwrap_or_default()),
-                ),
-                Ok(may) => self.load(may, name, force),
-                Err(e) => world_error(&e),
-            },
+            Command::Load { .. } => unreachable!("answered by handle_world_load"),
             Command::Hello { name, role, resume } => match inputguard::frozen(&request.session.id, Some(&self.swarm.key(&request.session))) {
                 // A frozen session's hello is answered and changes nothing: it can't say a role,
                 // take another name or resume another identity to get out (docs/design/SECURITY.md).
@@ -3133,83 +3153,6 @@ impl Engine {
             return Ok(None);
         }
         persist::WorldLock::acquire(dir).map(Some)
-    }
-
-    fn load(&mut self, may: write_policy::MayReplace, name: String, force: bool) -> ToolOutput {
-        // Saves asked for before this load are of the world it replaces: written first.
-        self.flush_world_saves();
-        self.finish_autosave(true);
-        // The outgoing world's task board is kept with it (a world without a folder can't keep one).
-        self.save_board_now();
-        let board_unsaved = self.board_unsaved();
-        if (self.dirty() || board_unsaved) && !force {
-            let current = self.world_name.as_deref().map_or(Json::Null, Json::from);
-            return ToolOutput::error(
-                Json::obj([
-                    ("error", Json::from("unsaved_changes")),
-                    (
-                        "message",
-                        Json::from(
-                            "the live world (or its task board) has unsaved changes; world_save first, or pass force: true to discard them",
-                        ),
-                    ),
-                    ("current_world", current),
-                    ("board_unsaved", Json::from(board_unsaved)),
-                    ("entities", Json::from(self.world.len())),
-                ])
-                .to_pretty(),
-            );
-        }
-        let dir = self.worlds_dir.join(&name);
-        let lock = match self.lock_for(&dir) {
-            Ok(lock) => lock,
-            Err(e) => return ToolOutput::error(e.to_json().to_pretty()),
-        };
-        match persist::load_limited(&dir, self.world.shape_limits()) {
-            Ok((mut world, saved)) => {
-                if lock.is_some() {
-                    self.world_lock = lock;
-                }
-                // Live Lex runs presented into the outgoing world, and world files hold no runs:
-                // they stop, and what the files kept of /lex_live (nothing would update it) goes.
-                let removed = lex_live::remove_presentation(&mut world);
-                let stopped = self.lex_live.stop_all();
-                let mut problems = self.replace_world(may, world, &name);
-                problems.extend(saved.warnings.iter().cloned());
-                let board_problem = self.load_board(&dir);
-                let had_problem = board_problem.is_some();
-                problems.extend(board_problem);
-                // The loaded queue's evidence lives in the world's folder (older queues point into captures).
-                let (_, missing) = self.adopt_evidence(&dir, had_problem);
-                if missing > 0 {
-                    problems.push(format!("{missing} file(s) the review queue names are missing from its evidence (review_list marks them missing)"));
-                }
-                self.replace_saved(saved);
-                self.world_name = Some(name.clone());
-                self.saved_revision = self.world.revision();
-                self.saved_seq = self.swarm.journal().last_seq();
-                self.last_autosave = Instant::now();
-                let mut out = vec![
-                    ("loaded", Json::from(name)),
-                    ("dir", Json::from(dir.display().to_string())),
-                    ("entities", Json::from(self.world.len())),
-                    ("state_hash", Json::from(format!("{:016x}", self.world.state_hash()))),
-                    ("warnings", Json::arr(problems.into_iter().take(20).map(Json::from))),
-                ];
-                if !stopped.is_empty() || removed > 0 {
-                    out.push((
-                        "lex_live",
-                        Json::obj([
-                            ("stopped", Json::arr(stopped.into_iter().map(Json::from))),
-                            ("presentation_removed", Json::from(removed)),
-                            ("note", Json::from("world files hold no live Lex runs: runs live before the load stopped, and /lex_live entities in the files were removed; lex_live {action: start} runs a set again (save_write / save_read keep runs)")),
-                        ]),
-                    ));
-                }
-                ToolOutput::text(Json::obj(out).to_pretty())
-            }
-            Err(e) => ToolOutput::error(e.to_json().to_pretty()),
-        }
     }
 
     /// The hosted game's `before_capture`: presentation up to the current tick (a headless engine

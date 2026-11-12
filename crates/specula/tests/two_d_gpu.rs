@@ -196,7 +196,7 @@ fn oversized_textures_are_refused_from_the_header_and_problems_do_not_allocate()
     frame(&mut t, &mut gpu, &mut out);
     wait_loaded(&mut t, &mut gpu);
     frame(&mut t, &mut gpu, &mut out);
-    assert!(start.elapsed() < Duration::from_secs(2));
+    assert!(start.elapsed() < specula_core::speed_budget(std::time::Duration::from_secs(2)));
     assert!(t.problems().iter().any(|p| p.contains("16384x16384") && p.contains("8192")), "{:?}", t.problems());
     assert_eq!(t.problems().len(), 2, "{:?}", t.problems());
     let n = allocations_during(|| {

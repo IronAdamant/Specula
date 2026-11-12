@@ -1745,9 +1745,9 @@ pub(crate) mod tests {
         assert_eq!(j.get("field").and_then(Json::as_str), Some("ops"));
         assert_eq!(j.get("limit").and_then(Json::as_u64), Some(EDIT_LAYOUT_CHARS as u64));
         assert_eq!(j.get("got").and_then(Json::as_u64), Some(c.chars as u64));
-        let started = std::time::Instant::now();
+        let here = laid_here();
         assert!(apply_edits(&s, &mixed).unwrap_err().contains("past the"));
-        assert!(started.elapsed().as_millis() < 50, "refused before the work: {:?}", started.elapsed());
+        assert_eq!(laid_here(), here, "refused before the work: no layout was made");
         // The most a call may do: changes and moves up to the budget on the longest text, then
         // the edit ends. It finishes, and makes no more layouts than the model said.
         let full = TextSpec::parse(&Json::obj([("text", Json::from(&words[..MAX_TEXT_BYTES])), ("max_width", Json::from(5.0)), ("editing", Json::obj([("caret", Json::from(0u64))]))])).unwrap();
@@ -1770,7 +1770,7 @@ pub(crate) mod tests {
         let took = started.elapsed();
         assert!(r.layouts < c.layouts, "{} layouts, the model said {}", r.layouts, c.layouts);
         // About 3 ms in release; a debug build is ~15x slower.
-        assert!(took.as_millis() < 1000, "{took:?}");
+        assert!(took < specula_core::speed_budget(std::time::Duration::from_millis(1000)), "{took:?}");
         // A paste may bring the longest text (the window's clipboard holds anything).
         let paste = [EditOp::SelectAll, EditOp::Copy, EditOp::Paste, EditOp::Paste, EditOp::Up { select: false }];
         assert_eq!(edit_cost(&s, &paste, false).longest, MAX_TEXT_BYTES);
@@ -1832,7 +1832,7 @@ pub(crate) mod tests {
             let s = TextSpec::parse(&v).unwrap();
             let took = started.elapsed();
             // About 2 ms in release (one layout and one ink box).
-            assert!(took.as_millis() < 250, "{took:?}");
+            assert!(took < specula_core::speed_budget(std::time::Duration::from_millis(250)), "{took:?}");
             assert!(s.laid().layout.lines.len() <= MAX_TEXT_BYTES + 1);
             let mut g = TextGpu::default();
             g.begin_frame();
@@ -1988,13 +1988,20 @@ pub(crate) mod tests {
         assert_eq!(laid_here(), here, "no layout on the loading thread");
         assert!(specs.iter().all(TextSpec::layout_pending));
         assert!(specs[0].laid().layout.glyphs.is_empty(), "nothing is drawn before its layout");
+        // As the engine does: adopt between turns until none is pending. (A text is laid out a
+        // moment before its batch is marked done, and only a done batch is adopted: waiting for
+        // the layouts and then adopting once left the last batch pending now and then. The
+        // gate's repeat step caught it, 1 run in 6.)
         let until = std::time::Instant::now() + std::time::Duration::from_secs(120);
-        while specs.iter().any(|s| s.laid.loaded.get().is_none()) {
-            assert!(std::time::Instant::now() < until, "the load thread lays them out ({} queued)", loads_queued());
+        loop {
+            adopt_relayouts();
+            if specs.iter().all(|s| !s.layout_pending()) {
+                break;
+            }
+            assert!(std::time::Instant::now() < until, "the load thread lays them out and frames adopt them ({} queued)", loads_queued());
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        adopt_relayouts();
-        assert!(specs.iter().all(|s| !s.layout_pending()));
+        assert!(specs.iter().all(|s| s.laid.loaded.get().is_some()), "adopted means laid out");
         let direct = TextSpec::parse(&v).unwrap();
         assert_eq!(specs[0].laid().layout.glyphs.len(), direct.laid().layout.glyphs.len());
         assert_eq!(specs[0].laid().ink, direct.laid().ink);

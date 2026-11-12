@@ -499,8 +499,8 @@ fn tput_writes_cost_no_reference_work_at_the_limits() {
     let changed = t.sw.remember_entity_paths(&t.live);
     let remembered = started.elapsed();
     assert_eq!(changed, 2 * 1000 - 51, "the renamed entities' notes (less the listed page and the one past it) and critiques");
-    assert!(listed < std::time::Duration::from_millis(250), "a page of notes took {listed:?}");
-    assert!(remembered < std::time::Duration::from_millis(1500), "remembering 16384 paths took {remembered:?}");
+    assert!(listed < specula_core::speed_budget(std::time::Duration::from_millis(250)), "a page of notes took {listed:?}");
+    assert!(remembered < specula_core::speed_budget(std::time::Duration::from_millis(1500)), "remembering 16384 paths took {remembered:?}");
 }
 
 /// Probatio's survivors on the board: paging past a cursor with a filter, and what refreshing

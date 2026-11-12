@@ -1206,6 +1206,6 @@ mod tests {
         assert!(l.glyphs.len() > 50_000);
         assert_eq!(l.glyphs.last().map(|g| g.span as usize), Some(crate::rich::MAX_SPANS), "the last span listed wins");
         // About 25 ms in a debug build; the old per-character lookup took seconds.
-        assert!(took.as_millis() < 1500, "{took:?}");
+        assert!(took < crate::speed_budget(std::time::Duration::from_millis(1500)), "{took:?}");
     }
 }

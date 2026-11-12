@@ -289,6 +289,9 @@ pub struct ShadowBatch {
     pub masked: bool,
     /// Its draws are terrain patches (the terrain caster pipeline, see `terrain.rs`).
     pub terrain: bool,
+    /// Its draws sway and are neither masked nor skinned, and the wind has a `shadow_end`: they
+    /// thin out near it ([`PipelineKey::ShadowSway`](crate::render::PipelineKey)).
+    pub sway: bool,
     pub first: u32,
     pub count: u32,
 }
@@ -320,7 +323,7 @@ pub struct ShadowPlan {
     pub batches: Vec<ShadowBatch>,
     /// Light-space sphere of every draw (`None` = doesn't cast), scratch.
     spheres: Vec<Option<([f32; 3], f32)>>,
-    keys: Vec<(u32, bool, bool, bool, u32, usize)>,
+    keys: Vec<(u32, bool, bool, bool, bool, u32, usize)>,
 }
 
 /// A shadow caster cut by its base colour's alpha (an alpha-masked textured `Lit` draw).
@@ -403,17 +406,18 @@ pub fn plan_shadows(frame: &FrameDesc, plan: &Plan, bounds: impl Fn(MeshId) -> O
                 // Near the light first (early depth rejection), batched by mesh.
                 let depth = (l[2] - r - cascade.z_near + MAX_CASTER_REACH).max(0.0);
                 let d = &frame.draws[i];
-                out.keys.push((d.mesh.0, d.skin.is_some(), masked(d), d.material == Material::Terrain, depth.to_bits(), i));
+                let sway = sway_end.is_some() && !d.surface.wind.is_none() && d.skin.is_none() && !masked(d);
+                out.keys.push((d.mesh.0, d.skin.is_some(), masked(d), d.material == Material::Terrain, sway, depth.to_bits(), i));
             }
         }
         cascade.z_near = z_near.max(cascade.z_far - 2.0 * cascade.radius - MAX_CASTER_REACH);
         out.keys.sort_unstable();
         let base = out.entries.len() as u32;
-        for (n, &(mesh, skinned, masked, terrain, _, i)) in out.keys.iter().enumerate() {
+        for (n, &(mesh, skinned, masked, terrain, sway, _, i)) in out.keys.iter().enumerate() {
             out.entries.push(i);
             match out.batches.last_mut() {
-                Some(b) if b.cascade == k as u32 && b.mesh.0 == mesh && b.skinned == skinned && b.masked == masked && b.terrain == terrain => b.count += 1,
-                _ => out.batches.push(ShadowBatch { cascade: k as u32, mesh: MeshId(mesh), skinned, masked, terrain, first: base + n as u32, count: 1 }),
+                Some(b) if b.cascade == k as u32 && b.mesh.0 == mesh && b.skinned == skinned && b.masked == masked && b.terrain == terrain && b.sway == sway => b.count += 1,
+                _ => out.batches.push(ShadowBatch { cascade: k as u32, mesh: MeshId(mesh), skinned, masked, terrain, sway, first: base + n as u32, count: 1 }),
             }
         }
     }
@@ -426,6 +430,18 @@ pub fn plan_shadows(frame: &FrameDesc, plan: &Plan, bounds: impl Fn(MeshId) -> O
         softness: s.softness.clamp(0.0, 16.0),
         normal_offset: 1.5 * s.bias.clamp(0.0, 16.0),
     };
+}
+
+/// `[fade start, end]` view depths of the swaying casters' shadow fade for the wind's `shadow_end`
+/// (`[0, 0]`: no limit): the last quarter of the range, at least 2 m (all of it when shorter).
+/// The shaders dither casters out across it (`frame.glsl` `sway_shadow_faded`); the CPU culls
+/// casters wholly past the end ([`plan_shadows`]).
+pub fn sway_shadow_fade(shadow_end: f32) -> [f32; 2] {
+    if !(shadow_end.is_finite() && shadow_end > 0.0) {
+        return [0.0, 0.0];
+    }
+    let band = (0.25 * shadow_end).max(2.0).min(shadow_end);
+    [shadow_end - band, shadow_end]
 }
 
 pub fn clamp_resolution(r: u32) -> u32 {
@@ -473,7 +489,7 @@ pub struct SpriteCasters {
 pub fn record_shadow_pass(
     dev: &Device,
     cmd: VkCommandBuffer,
-    pipeline: [VkPipeline; 4],
+    pipeline: [VkPipeline; 5],
     layout: VkPipelineLayout,
     meshes: &HashMap<u32, Mesh>,
     g: &FrameGraph,
@@ -536,7 +552,13 @@ pub fn record_shadow_pass(
                 let Some(mesh) = meshes.get(&b.mesh.0) else { continue };
                 let skinned = b.skinned && mesh.skin_offset.is_some();
                 let masked = b.masked && mesh.surface_offset.is_some();
-                let mut want = if b.terrain { terrain.0 } else { pipeline[skinned as usize | (masked as usize) << 1] };
+                let mut want = if b.terrain {
+                    terrain.0
+                } else if b.sway && !skinned && !masked && pipeline[4] != VK_NULL_HANDLE {
+                    pipeline[4]
+                } else {
+                    pipeline[skinned as usize | (masked as usize) << 1]
+                };
                 if want == VK_NULL_HANDLE && !b.terrain {
                     want = pipeline[skinned as usize]; // masking not built yet: cast solid
                 }
@@ -777,11 +799,30 @@ mod tests {
         let mut s = ShadowPlan::default();
         plan_shadows(&frame, &p, |_| Some(unit), &mut s);
         assert_eq!(s.entries.iter().copied().collect::<std::collections::BTreeSet<_>>(), [0, 2].into());
-        // No limit: every one casts.
+        // The near swaying caster is drawn by the fading pipeline (it thins out near the end);
+        // the still one is not.
+        let sway_of = |s: &ShadowPlan, draw: usize| {
+            s.batches.iter().filter(|b| (b.first..b.first + b.count).any(|e| s.entries[e as usize] == draw)).all(|b| b.sway)
+        };
+        assert!(sway_of(&s, 0) && !sway_of(&s, 2), "{:?}", s.batches);
+        // No limit: every one casts, none fades.
         let mut all = frame;
         all.environment.wind.shadow_end = 0.0;
         plan_shadows(&all, &p, |_| Some(unit), &mut s);
         assert_eq!(s.entries.iter().copied().collect::<std::collections::BTreeSet<_>>(), [0, 1, 2].into());
+        assert!(s.batches.iter().all(|b| !b.sway), "{:?}", s.batches);
+    }
+
+    /// The shadow fade covers the last quarter before `shadow_end` (at least 2 m, at most all of
+    /// it), and nothing without a limit.
+    #[test]
+    fn the_sway_shadow_fade_spans_the_last_quarter() {
+        assert_eq!(sway_shadow_fade(30.0), [22.5, 30.0]);
+        assert_eq!(sway_shadow_fade(4.0), [2.0, 4.0]);
+        assert_eq!(sway_shadow_fade(1.5), [0.0, 1.5]);
+        assert_eq!(sway_shadow_fade(0.0), [0.0, 0.0]);
+        assert_eq!(sway_shadow_fade(f32::NAN), [0.0, 0.0]);
+        assert_eq!(sway_shadow_fade(-3.0), [0.0, 0.0]);
     }
 
     #[test]

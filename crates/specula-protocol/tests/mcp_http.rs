@@ -576,7 +576,7 @@ fn shutdown_is_prompt_with_idle_connections() {
     std::thread::sleep(Duration::from_millis(100));
     let t = Instant::now();
     server.shutdown();
-    assert!(t.elapsed() < Duration::from_secs(3), "shutdown took {:?}", t.elapsed());
+    assert!(t.elapsed() < specula_core::speed_budget(std::time::Duration::from_secs(3)), "shutdown took {:?}", t.elapsed());
     assert!(idle.is_closed());
     assert!(TcpStream::connect_timeout(&addr, Duration::from_millis(500)).is_err() || {
         // Some stacks accept into a dead backlog briefly; the request must still fail.
@@ -663,7 +663,7 @@ fn shutdown_is_prompt_with_rejections_queued() {
     std::thread::sleep(Duration::from_millis(200));
     let t = Instant::now();
     server.shutdown();
-    assert!(t.elapsed() < Duration::from_secs(3), "shutdown took {:?}", t.elapsed());
+    assert!(t.elapsed() < specula_core::speed_budget(std::time::Duration::from_secs(3)), "shutdown took {:?}", t.elapsed());
     drop((held, queued));
 }
 

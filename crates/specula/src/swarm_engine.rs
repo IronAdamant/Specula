@@ -38,7 +38,7 @@ pub(crate) struct BoardSaver {
 }
 
 impl BoardSaver {
-    fn note(&mut self, revision: u64, result: WriteResult) {
+    pub(crate) fn note(&mut self, revision: u64, result: WriteResult) {
         match result {
             Ok(()) => {
                 self.saved = revision;
@@ -82,7 +82,7 @@ fn hello_required(what: &str) -> ToolOutput {
 }
 
 /// Writes `text` to `dir/board.json` (temporary file, then rename).
-fn write_board(dir: &Path, text: &str) -> std::io::Result<()> {
+pub(crate) fn write_board(dir: &Path, text: &str) -> std::io::Result<()> {
     use std::io::Write as _;
     // Essential (the board beside the world): accounted, written even below the floor.
     let old = crate::disk::file_len(&dir.join(BOARD_FILE));
@@ -708,7 +708,7 @@ impl Engine {
     }
 
     /// Where the board is written: the current world's folder, once the world has been saved there.
-    fn board_dir(&self) -> Option<PathBuf> {
+    pub(crate) fn board_dir(&self) -> Option<PathBuf> {
         if self.board_io.blocked {
             return None;
         }
@@ -720,7 +720,9 @@ impl Engine {
     /// changed are rendered again) and writes it on a worker thread, like the world's autosave.
     pub(crate) fn save_board_if_due(&mut self) {
         self.finish_board_save(false);
-        if self.board_io.job.is_some() || !self.board_unsaved() {
+        // A load writes the outgoing board itself, on its worker: not beside it (two writers of
+        // one temporary file), and not into the folder of a world being replaced.
+        if self.board_io.job.is_some() || !self.board_unsaved() || self.load_busy("").is_some() {
             return;
         }
         let Some(dir) = self.board_dir() else { return };
@@ -743,7 +745,7 @@ impl Engine {
     }
 
     /// Collects a finished board write (or waits for it with `block`).
-    fn finish_board_save(&mut self, block: bool) {
+    pub(crate) fn finish_board_save(&mut self, block: bool) {
         let Some((revision, done)) = &self.board_io.job else { return };
         let result = if block {
             done.recv().ok()
@@ -786,8 +788,17 @@ impl Engine {
     /// Returns a warning when the file is there but unreadable (the board then starts empty and
     /// the file is kept until the next save replaces it).
     pub(crate) fn load_board(&mut self, dir: &Path) -> Option<String> {
+        let board = std::fs::read_to_string(dir.join(BOARD_FILE));
+        let review = std::fs::read_to_string(dir.join(crate::review_engine::REVIEW_FILE));
+        self.load_board_read(dir, board, review)
+    }
+
+    /// [`Engine::load_board`] from the board's and the review queue's files read already (on a
+    /// worker: world_load reads them with the world, `world_load.rs`). Only an unreadable file
+    /// touches the disk here (it is moved aside, rarely).
+    pub(crate) fn load_board_read(&mut self, dir: &Path, board: std::io::Result<String>, review: std::io::Result<String>) -> Option<String> {
         let path = dir.join(BOARD_FILE);
-        let problem = match std::fs::read_to_string(&path) {
+        let problem = match board {
             Ok(text) => match Board::parse(&text) {
                 Ok(b) => {
                     self.swarm.board = b;
@@ -822,14 +833,14 @@ impl Engine {
                 ("file", Json::from(path.display().to_string())),
                 ("moved_to", Json::from(moved.map(|p| p.display().to_string()))),
             ]));
-            let review = self.load_review(dir);
+            let review = self.load_review_read(dir, review);
             self.board_io.saved = self.board_revision();
             return Some(match review {
                 Some(r) => format!("{message}; {r}"),
                 None => message,
             });
         }
-        let review = self.load_review(dir);
+        let review = self.load_review_read(dir, review);
         self.board_io.saved = self.board_revision();
         if let Some(r) = &review {
             self.board_io.warning = Some(Json::obj([("error", Json::from("review_unreadable")), ("message", Json::from(r.as_str()))]));

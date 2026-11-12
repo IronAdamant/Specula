@@ -78,6 +78,12 @@ impl Engine {
             let _ = reply.send(world_error(&e.with("current", self.world_name.as_deref().unwrap_or(""))));
             return;
         }
+        // A load is replacing the world: a save now would be written after it, of a world that
+        // is no longer the one this caller meant (`world_load`'s module docs).
+        if let Some(e) = self.load_busy("a save now would be of the world it replaces") {
+            reply.refuse(&e);
+            return;
+        }
         let target = name.clone().or_else(|| self.world_name.clone());
         if self.world_write_busy() {
             // The same world waiting already: one write answers both.
@@ -109,8 +115,17 @@ impl Engine {
     pub(crate) fn pump_world_saves(&mut self) {
         self.pump_save_planning();
         self.finish_autosave(false);
+        // A load parked behind the saves: it starts once they are written, and answers at its
+        // deadline if they aren't. (Review R2 of m5-gpuwork: this was called only from the
+        // branch below, where nothing is being written, so the deadline answer could never
+        // run: a load behind a stuck save held every save off until its caller gave up.)
+        self.pump_world_load();
         while !self.world_write_busy() {
-            let Some(save) = self.waiting_saves.pop_front() else { return };
+            let Some(save) = self.waiting_saves.pop_front() else {
+                // A load parked behind the saves goes once they are written.
+                self.pump_world_load();
+                return;
+            };
             if Instant::now() > save.deadline {
                 let out = ToolOutput::error(
                     Json::obj([
@@ -253,6 +268,7 @@ impl Engine {
             Written { exists: None, result, board }
         };
         let refused = replies.clone();
+        let generation = self.world_generation;
         let then = move |e: &mut Engine, r: Result<Written, crate::workers::Failed>| {
             e.world_save_running = false;
             let w = match r {
@@ -263,6 +279,22 @@ impl Engine {
                     return;
                 }
             };
+            // The backstop for every path at once: a write that comes back to a world that
+            // isn't the one it was planned from names, marks and caches nothing (the files
+            // hold the old world as it was). Loads refuse saves, so this shouldn't happen.
+            if e.world_generation != generation {
+                specula_core::trace_event!(&crate::trace_sink::ENGINE, Warn, "world_save.world_replaced", name = name.as_str());
+                let out = ToolOutput::error(
+                    Json::obj([
+                        ("error", Json::from("world_replaced")),
+                        ("message", Json::from("the world was replaced while this save was being written: the files hold the world as it was when the save began, and the live world was left as it is; save again if you meant the live one")),
+                    ])
+                    .to_string(),
+                );
+                answer_all(&replies, &out);
+                e.pump_world_saves();
+                return;
+            }
             if let Some(refusal) = w.exists {
                 answer_all(&replies, &ToolOutput::error(refusal.to_string()));
                 e.pump_world_saves();
@@ -331,6 +363,252 @@ impl Engine {
 mod tests {
     use super::*;
     use crate::journal::Writer;
+
+    /// An engine whose live world autosaves to `worlds/A` in a scratch folder (what `--world A`
+    /// sets up). `None`: no Vulkan here; said, and skipped.
+    fn autosaving(tag: &str) -> Option<(Engine, std::path::PathBuf)> {
+        if !specula_gpu::is_available() {
+            crate::skip_test(tag, "Vulkan is not available");
+            return None;
+        }
+        let Ok(gpu) = specula_gpu::Gpu::new(&specula_gpu::GpuOptions::default()) else {
+            crate::skip_test(tag, "no GPU");
+            return None;
+        };
+        let root = std::env::temp_dir().join(format!("specula-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let assets = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../games/sepulcra/assets");
+        let mut e = Engine::new(gpu, &root.join("captures"), crate::models::Library::new(&assets, None)).expect("engine");
+        e.worlds_dir = root.join("worlds");
+        e.world_name = Some("A".into());
+        Some((e, root))
+    }
+
+    fn cube(e: &mut Engine, name: &str) {
+        let op = crate::world::Op::Spawn(crate::tools::parse_spawn(&Json::parse(&format!(r#"{{"name": "{name}", "shape": "cube"}}"#)).unwrap()).unwrap());
+        let w = Writer::new("t", Some("t"));
+        e.world.commit(&mut e.swarm, 0, w, journal::Kind::Batch, crate::write_policy::Rule::World, |wd| wd.apply_batch(vec![op], "t").map(|_| ()).map_err(|(_, err)| err)).unwrap();
+    }
+
+    /// The autosave's turn comes (the loop's own call).
+    fn due(e: &mut Engine) {
+        e.last_autosave = Instant::now() - crate::AUTOSAVE_EVERY * 2;
+        e.autosave_if_due();
+    }
+
+    /// Lets an autosave's worker finish, and collects it as the loop does.
+    fn collect(e: &mut Engine) {
+        for _ in 0..6000 {
+            if e.autosave_job.is_none() {
+                return;
+            }
+            e.workers_drain(Duration::from_millis(10));
+            e.pump_workers(None);
+            e.finish_autosave(false);
+        }
+        panic!("the autosave never finished");
+    }
+
+    fn on_disk(e: &Engine) -> Option<u64> {
+        crate::persist::peek_entity_count(&e.worlds_dir.join("A")).unwrap()
+    }
+
+    /// The autosave writes a changed world and marks it saved; with nothing changed it does
+    /// nothing. A change made **while it writes** is not in the files and stays unsaved: the
+    /// job marks the revision it planned from, not the one the world has when it comes back
+    /// (the test never asks whether the worker has finished yet, so it holds whenever it runs).
+    #[test]
+    fn an_autosave_marks_what_it_planned_and_later_changes_stay_unsaved() {
+        let Some((mut e, root)) = autosaving("autosave-marks") else { return };
+        cube(&mut e, "a");
+        assert!(e.dirty());
+        let planned = e.world.revision();
+        due(&mut e);
+        // Changed again while (or just after) it writes.
+        cube(&mut e, "b");
+        collect(&mut e);
+        assert_eq!(e.saved_revision, planned, "it marks the revision it wrote");
+        assert!(e.dirty(), "the later change is unsaved");
+        assert_eq!(on_disk(&e), Some(1), "and is not in the files");
+        assert!(e.autosave_error.is_none());
+        // Its next turn writes the rest.
+        due(&mut e);
+        collect(&mut e);
+        assert!(!e.dirty());
+        assert_eq!(on_disk(&e), Some(2));
+        // Nothing changed: no job, and its turn is taken (the timer starts again).
+        let before = Instant::now();
+        due(&mut e);
+        assert!(e.autosave_job.is_none(), "an unchanged world is not written");
+        assert!(e.last_autosave >= before, "the timer starts from this turn");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// When it doesn't run: no world to save to, an explicit save writing the same folder, or
+    /// an autosave already in flight (one write of the folder at a time).
+    #[test]
+    fn an_autosave_skips_its_turn_when_it_has_nowhere_to_write_or_a_write_is_running() {
+        let Some((mut e, root)) = autosaving("autosave-skips") else { return };
+        cube(&mut e, "a");
+        e.world_name = None;
+        due(&mut e);
+        assert!(e.autosave_job.is_none() && e.dirty(), "a world with no name is not autosaved");
+        assert!(!e.worlds_dir.exists(), "nothing was written anywhere");
+        e.world_name = Some("A".into());
+        e.world_save_running = true;
+        due(&mut e);
+        assert!(e.autosave_job.is_none() && e.dirty(), "not beside an explicit save");
+        e.world_save_running = false;
+        // One in flight (held open here: its worker hasn't reported): no second one.
+        let (tx, done) = std::sync::mpsc::channel();
+        e.autosave_job = Some(crate::AutosaveJob { revision: 0, seq: 0, generation: e.world_generation, done });
+        due(&mut e);
+        assert!(e.autosave_job.as_ref().is_some_and(|j| j.revision == 0), "the one in flight is kept, and none is started beside it");
+        assert_eq!(on_disk(&e), None, "nothing was written");
+        drop(tx);
+        e.autosave_job = None;
+        due(&mut e);
+        collect(&mut e);
+        assert!(!e.dirty() && on_disk(&e) == Some(1), "and it writes on its next turn");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The backstop behind "no autosave beside a load" (review R2 of m5-gpuwork: it had no
+    /// test): an autosave that comes back to a world that isn't the one it was planned from
+    /// marks and caches nothing. The new world's revision counter and saved state are its own;
+    /// marking them from the old world's job would call unsaved changes saved.
+    #[test]
+    fn an_autosave_that_comes_back_to_a_replaced_world_marks_nothing() {
+        let Some((mut e, root)) = autosaving("autosave-replaced") else { return };
+        cube(&mut e, "a");
+        // The job's own work, done here so that its result is in hand before the world changes
+        // under it (whatever a worker's timing).
+        let result = crate::persist::execute(crate::persist::plan(&e.world, &e.worlds_dir.join("A"), None));
+        assert!(result.is_ok(), "the write itself succeeded");
+        let (tx, done) = std::sync::mpsc::channel();
+        tx.send(result).unwrap();
+        e.autosave_job = Some(crate::AutosaveJob { revision: e.world.revision(), seq: e.swarm.journal().last_seq(), generation: e.world_generation, done });
+        let (revision, seq) = (e.saved_revision, e.saved_seq);
+        // Another world takes its place while it writes.
+        e.world_generation += 1;
+        e.finish_autosave(false);
+        assert!(e.autosave_job.is_none(), "collected");
+        assert_eq!((e.saved_revision, e.saved_seq), (revision, seq), "the live world is not marked saved");
+        assert!(e.saved.is_none(), "and the old world's files are not its cache");
+        assert!(e.dirty() && e.autosave_error.is_none());
+        // The same result for the world it was planned from is taken.
+        let result = crate::persist::execute(crate::persist::plan(&e.world, &e.worlds_dir.join("A"), None));
+        let (tx, done) = std::sync::mpsc::channel();
+        tx.send(result).unwrap();
+        e.autosave_job = Some(crate::AutosaveJob { revision: e.world.revision(), seq: e.swarm.journal().last_seq(), generation: e.world_generation, done });
+        e.finish_autosave(false);
+        assert!(!e.dirty() && e.saved.is_some());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A failed autosave is kept as an error with the revision it was writing (`engine_info`'s
+    /// `last_autosave_error`), leaves the world unsaved, and is tried again on its next turn;
+    /// the next success clears it. So is a worker that stopped without reporting.
+    #[test]
+    fn a_failed_autosave_is_reported_leaves_the_world_unsaved_and_is_tried_again() {
+        let Some((mut e, root)) = autosaving("autosave-fails") else { return };
+        cube(&mut e, "a");
+        // The world's folder can't be made: a file has its name.
+        std::fs::create_dir_all(&e.worlds_dir).unwrap();
+        std::fs::write(e.worlds_dir.join("A"), b"not a folder").unwrap();
+        let revision = e.world.revision();
+        due(&mut e);
+        collect(&mut e);
+        let error = e.autosave_error.clone().expect("the failure is kept");
+        assert_eq!(error.get("at_revision").and_then(Json::as_u64), Some(revision), "{error}");
+        assert!(error.get("error").and_then(Json::as_str).is_some(), "it has a code: {error}");
+        assert!(e.dirty(), "nothing is marked saved");
+        let traced = specula_core::trace::read(|r| r.iter().rev().any(|ev| ev.code == "autosave.failed" && ev.field("revision").and_then(|v| v.as_u64()) == Some(revision)));
+        assert!(traced, "a failed autosave is a trace event (agents debug from traces)");
+        // The cause goes away: its next turn writes, and the error is cleared.
+        std::fs::remove_file(e.worlds_dir.join("A")).unwrap();
+        due(&mut e);
+        collect(&mut e);
+        assert!(!e.dirty() && e.autosave_error.is_none() && on_disk(&e) == Some(1));
+        // A worker that stopped without reporting (it panicked): an error, not a wait for ever.
+        cube(&mut e, "b");
+        let (tx, done) = std::sync::mpsc::channel();
+        drop(tx);
+        e.autosave_job = Some(crate::AutosaveJob { revision: e.world.revision(), seq: 0, generation: e.world_generation, done });
+        e.finish_autosave(false);
+        assert!(e.autosave_job.is_none());
+        let error = e.autosave_error.clone().expect("kept");
+        assert!(error.to_string().contains("stopped without reporting"), "{error}");
+        assert!(e.dirty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// At shutdown the autosave writes before it returns (no worker: the process is ending),
+    /// and collects one still in flight first.
+    #[test]
+    fn the_shutdown_autosave_writes_before_it_returns() {
+        let Some((mut e, root)) = autosaving("autosave-shutdown") else { return };
+        cube(&mut e, "a");
+        due(&mut e);
+        cube(&mut e, "b");
+        // What the engine does on its way out.
+        e.finish_autosave(true);
+        e.autosave(true);
+        assert!(e.autosave_job.is_none() && !e.dirty(), "everything is written when it returns");
+        assert_eq!(on_disk(&e), Some(2));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The backstop behind "a load refuses saves": a write that comes back to a world that isn't
+    /// the one it was planned from names, marks and caches nothing (review R2 of m5-gpuwork: it
+    /// had no test). Skipped cleanly without Vulkan.
+    #[test]
+    fn a_write_that_comes_back_to_a_replaced_world_names_and_marks_nothing() {
+        if !specula_gpu::is_available() {
+            crate::skip_test("world_save::tests::written_replaced", "Vulkan is not available");
+            return;
+        }
+        let Ok(gpu) = specula_gpu::Gpu::new(&specula_gpu::GpuOptions::default()) else {
+            crate::skip_test("world_save::tests::written_replaced", "no GPU");
+            return;
+        };
+        let root = std::env::temp_dir().join(format!("specula-save-written-replaced-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let assets = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../games/sepulcra/assets");
+        let mut e = Engine::new(gpu, &root.join("captures"), crate::models::Library::new(&assets, None)).expect("engine");
+        e.worlds_dir = root.join("worlds");
+        let w = Writer::new("t", Some("t"));
+        let op = crate::world::Op::Spawn(crate::tools::parse_spawn(&Json::parse(r#"{"name": "c", "shape": "cube"}"#).unwrap()).unwrap());
+        e.world.commit(&mut e.swarm, 0, w, journal::Kind::Batch, crate::write_policy::Rule::World, |wd| wd.apply_batch(vec![op], "t").map(|_| ()).map_err(|(_, err)| err)).unwrap();
+        let revision = e.saved_revision;
+        let session = specula_protocol::SessionInfo { id: "save-test".into(), client_name: "t".into(), client_version: "0".into(), protocol_version: "x".into() };
+        let (reply, rx) = jobs::channel();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        e.handle_world_save(Request { session, call: 1, command: Command::Save { name: Some("small".into()), overwrite: false }, reply, deadline, trace: specula_core::trace::Ctx::current(), via: None });
+        // Planned, and its write on a worker (nothing comes back until the workers are pumped).
+        for _ in 0..1000 {
+            if e.save_planning.is_none() {
+                break;
+            }
+            e.pump_save_planning();
+        }
+        assert!(e.save_planning.is_none() && e.world_save_running, "the write is on its worker");
+        // Another world takes its place while it writes (what a load would do, did it not
+        // refuse saves).
+        e.world_generation += 1;
+        let out = loop {
+            if let Ok(out) = rx.try_recv() {
+                break out;
+            }
+            e.workers_drain(Duration::from_millis(10));
+            e.pump_workers(None);
+        };
+        assert!(out.is_error && format!("{:?}", out.content).contains("world_replaced"), "{:?}", out.content);
+        assert!(e.world_name.is_none(), "the live world is not named after the save");
+        assert_eq!(e.saved_revision, revision, "and is not marked saved");
+        assert!(!e.world_write_busy());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// Review of 07f3276: a world that took the live world's place while a `world_save` of it
     /// was being planned in slices was saved under the old world's name. A plan whose world was

@@ -1031,7 +1031,7 @@ mod tests {
         let e = Music::parse(&many).unwrap_err();
         assert_eq!((e.code, e.path.as_str()), (ErrorCode::Limit, "instruments"), "{e}");
         assert!(e.message.contains("`i0`"), "names the instruments: {e}");
-        assert!(start.elapsed() < std::time::Duration::from_secs(1), "refused before any synthesis");
+        assert!(start.elapsed() < specula_core::speed_budget(std::time::Duration::from_secs(1)), "refused before any synthesis");
     }
 
     /// Review round 3 probe "synth": 16 instruments × 4 variations of a short but dense recipe
@@ -1061,7 +1061,7 @@ mod tests {
         assert_eq!((e.code, e.path.as_str()), (ErrorCode::Limit, "instruments"), "{e}");
         assert!(e.message.contains("synthesise"), "says it is the synthesis work: {e}");
         assert!(e.message.contains("`i"), "names the instruments: {e}");
-        assert!(start.elapsed() < std::time::Duration::from_secs(1), "refused before any synthesis");
+        assert!(start.elapsed() < specula_core::speed_budget(std::time::Duration::from_secs(1)), "refused before any synthesis");
         // A piece within the budget reports its synthesis work and renders.
         let small = format!(
             r#"{{ "music": 1, "name": "ok", "tempo": 120, "bars": 1, "instruments": {{ "a": {{ "sound": {dense}, "root": "A4" }} }},
@@ -1091,7 +1091,7 @@ mod tests {
         let e = Music::parse(&dense).unwrap_err();
         assert_eq!(e.code, ErrorCode::Limit, "{e}");
         assert!(e.path.starts_with("tracks"), "{e}");
-        assert!(start.elapsed() < std::time::Duration::from_secs(2), "{:?}", start.elapsed());
+        assert!(start.elapsed() < specula_core::speed_budget(std::time::Duration::from_secs(2)), "{:?}", start.elapsed());
         // Many short notes at once: refused for voices.
         let chord: Vec<String> = (0..100).map(|_| "[0, 69, 4]".to_string()).collect();
         let wall = format!(

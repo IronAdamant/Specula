@@ -207,10 +207,12 @@ pub enum MemoryKind {
     Gi,
     /// The resident Slug glyph store of in-world text (`glyphs.rs`).
     Glyphs,
+    /// Image heap blocks made ahead that no image uses yet (`heap.rs`): room for the next ones.
+    Reserve,
 }
 
 impl MemoryKind {
-    pub const ALL: [MemoryKind; 10] = [
+    pub const ALL: [MemoryKind; 11] = [
         MemoryKind::Meshes,
         MemoryKind::RenderTargets,
         MemoryKind::Readback,
@@ -221,6 +223,7 @@ impl MemoryKind {
         MemoryKind::Textures,
         MemoryKind::Gi,
         MemoryKind::Glyphs,
+        MemoryKind::Reserve,
     ];
 
     pub(crate) fn index(self) -> usize {
@@ -248,9 +251,11 @@ pub struct MemoryStats {
     pub by_kind: Vec<(MemoryKind, u64)>,
     /// Sum of `by_kind`.
     pub total_bytes: u64,
-    /// Live `vkAllocateMemory` allocations.
+    /// Live `vkAllocateMemory` allocations (the image heap's blocks included).
     pub allocations: u32,
     pub heaps: Vec<HeapStats>,
+    /// The image heap: its blocks, and the allocations it made ahead or had to make at once.
+    pub image_heap: crate::ImageHeapStats,
 }
 
 impl MemoryStats {

@@ -513,7 +513,7 @@ mod tests {
         let start = std::time::Instant::now();
         let mut budget = RESYNC_BUDGET;
         assert_eq!(find_page_within(&spam, 0, &mut budget), None);
-        assert!(start.elapsed() < std::time::Duration::from_secs(2), "{:?}", start.elapsed());
+        assert!(start.elapsed() < specula_core::speed_budget(std::time::Duration::from_secs(2)), "{:?}", start.elapsed());
         // Every truncation of a stream.
         let g = page(FLAG_BOS, 0, 1, 0, &[&[1u8; 300]]);
         for n in 0..g.len() {

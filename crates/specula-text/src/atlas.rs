@@ -639,7 +639,7 @@ mod tests {
         let st = atlas.stats();
         assert_eq!((st.too_large, st.misses, st.hits, st.rasterized), (1, 1, 1000, 0), "refused without a bitmap");
         assert_eq!(atlas.page_count(), 0, "nothing was packed");
-        assert!(started.elapsed().as_millis() < 500, "{:?}", started.elapsed());
+        assert!(started.elapsed() < crate::speed_budget(std::time::Duration::from_millis(500)), "{:?}", started.elapsed());
         // The measure is the rasteriser's own box: a glyph that just fits a page (with its
         // padding) is packed; one too wide (or too tall) alone is refused unrasterised.
         let o = font.glyph_outline(1).unwrap();

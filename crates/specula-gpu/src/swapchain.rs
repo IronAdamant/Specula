@@ -370,7 +370,12 @@ impl Window {
                 "window frame resources were lost after a failed submit; attach the window again",
             ));
         }
-        dev.wait_fence(f.fence)?;
+        {
+            // The GPU still drawing the frame that last used this slot (or work queued before it:
+            // a big capture) holds the window here.
+            let _z = specula_core::profile::zone("gpu.frame_fence");
+            dev.wait_fence(f.fence)?;
+        }
         // The fence shows the GPU finished the frame that last used this slot (and every frame
         // submitted before it): its timestamps are ready and its upload buffer is free.
         *completed = (*completed).max(f.submission);

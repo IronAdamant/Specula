@@ -26,7 +26,7 @@ use std::ptr;
 use std::time::Instant;
 
 /// Every shader module, by name (for errors) and SPIR-V; [`Shader`] indexes this table.
-static SHADERS: [(&str, &[u8]); 53] = [
+static SHADERS: [(&str, &[u8]); 55] = [
     ("mesh.vert", include_bytes!("../shaders/mesh.vert.spv")),
     ("mesh.frag", include_bytes!("../shaders/mesh.frag.spv")),
     ("shadow.vert", include_bytes!("../shaders/shadow.vert.spv")),
@@ -80,6 +80,8 @@ static SHADERS: [(&str, &[u8]); 53] = [
     ("terrain_shadow.vert", include_bytes!("../shaders/terrain_shadow.vert.spv")),
     ("ids_terrain.vert", include_bytes!("../shaders/ids_terrain.vert.spv")),
     ("water.frag", include_bytes!("../shaders/water.frag.spv")),
+    ("shadow_sway.vert", include_bytes!("../shaders/shadow_sway.vert.spv")),
+    ("shadow_sway.frag", include_bytes!("../shaders/shadow_sway.frag.spv")),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,6 +139,8 @@ enum Shader {
     TerrainShadowVert = 50,
     IdsTerrainVert = 51,
     WaterFrag = 52,
+    ShadowSwayVert = 53,
+    ShadowSwayFrag = 54,
 }
 
 /// Offscreen targets and the tone mapped image FXAA reads (readback bytes are sRGB RGBA8).
@@ -545,14 +549,17 @@ pub fn frame_data(frame: &FrameDesc, extent: VkExtent2D, shadow: &ShadowData) ->
     }
 }
 
-/// The foliage fade as the shaders read it: `[start, end, 0, 0]`, none (end 0) unless
-/// `0 <= start < end`.
+/// The foliage fade as the shaders read it: `[start, end, shadow fade start, shadow end]`. The
+/// camera fade is none (end 0) unless `0 <= start < end`; the shadow fade (none: 0) thins swaying
+/// casters out over the last quarter (at least 2 m) before the wind's `shadow_end`
+/// ([`crate::shadow::sway_shadow_fade`]).
 fn foliage_data(w: &crate::WindSettings) -> [f32; 4] {
     let (a, b) = (w.fade_start, w.fade_end);
+    let [c, d] = crate::shadow::sway_shadow_fade(w.shadow_end);
     if a.is_finite() && b.is_finite() && a >= 0.0 && b > a {
-        [a, b, 0.0, 0.0]
+        [a, b, c, d]
     } else {
-        [0.0; 4]
+        [0.0, 0.0, c, d]
     }
 }
 
@@ -1143,6 +1150,10 @@ pub enum PipelineKey {
     /// Depth-only shadow casters into a D16 layer (skinned or not; alpha-masked ones read their
     /// UVs and cut by the base colour's alpha).
     Shadow { skinned: bool, masked: bool },
+    /// Unmasked swaying shadow casters (foliage without a texture), thinned out by a dither near
+    /// the wind's `shadow_end` (`shaders/shadow_sway.frag`); the depth-only [`PipelineKey::Shadow`]
+    /// pipeline has no fragment stage to do it, and stays without one for every other caster.
+    ShadowSway,
     /// Bloom downsample (and bright pass) into an HDR level.
     BloomDown,
     /// Bloom upsample: the blur below, tent-filtered, plus this level.
@@ -1305,6 +1316,20 @@ impl PipelineKey {
                 // Alpha-masked casters also read normals: foliage cards edge-on to the sun cast
                 // nothing (shadow_mask.frag, frame.glsl foliage_edge).
                 vertex: if masked { VertexInput::PositionNormal { skinned, uv: true } } else { VertexInput::Position { skinned, uv: false, color: true } },
+                color: None,
+                depth: Some(SHADOW_FORMAT),
+                depth_test: true,
+                depth_write: true,
+                compare: Some(VK_COMPARE_OP_LESS),
+                blend: Blend::Off,
+                depth_bias: true,
+                cull_front: false,
+            },
+            PipelineKey::ShadowSway => PipelineDesc {
+                vert: Shader::ShadowSwayVert,
+                frag: Some(Shader::ShadowSwayFrag),
+                spec: 0,
+                vertex: VertexInput::Position { skinned: false, uv: false, color: true },
                 color: None,
                 depth: Some(SHADOW_FORMAT),
                 depth_test: true,
@@ -1698,8 +1723,9 @@ pub struct FramePipelines {
     pub opaque: [VkPipeline; 4],
     /// By `skinned as usize`.
     pub blended: [VkPipeline; 2],
-    /// By caster streams: `skinned as usize | (masked as usize) << 1`.
-    pub shadow: [VkPipeline; 4],
+    /// By caster streams: `skinned as usize | (masked as usize) << 1`; `[4]`: unmasked swaying
+    /// casters near the wind's shadow_end ([`PipelineKey::ShadowSway`]).
+    pub shadow: [VkPipeline; 5],
     pub sky: VkPipeline,
     pub bloom_down: VkPipeline,
     pub bloom_up: VkPipeline,
@@ -1909,6 +1935,7 @@ impl Pipelines {
         for (skinned, masked) in OPAQUE_VARIANTS.into_iter().filter(|(s, m)| built.has(*s, *m)) {
             self.get(dev, PipelineKey::Shadow { skinned, masked })?;
         }
+        self.get(dev, PipelineKey::ShadowSway)?;
         self.get(dev, PipelineKey::SpriteShadow)?;
         self.prebuild_scene(dev, HDR_FORMAT)?;
         self.get(dev, PipelineKey::BloomDown)?;
@@ -1952,7 +1979,8 @@ impl Pipelines {
         // Only the variants built: a frame never compiles one (meshes needing the others don't
         // exist yet).
         let mut opaque = [VK_NULL_HANDLE; 4];
-        let mut shadow = [VK_NULL_HANDLE; 4];
+        let mut shadow = [VK_NULL_HANDLE; 5];
+        shadow[4] = get(shadows, PipelineKey::ShadowSway)?;
         for (a, b) in OPAQUE_VARIANTS {
             let have = built.has(a, b);
             let key = PipelineKey::Mesh { format: scene_format, blended: false, features, skinned: a, textured: b };

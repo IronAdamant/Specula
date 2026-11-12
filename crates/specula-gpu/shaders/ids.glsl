@@ -20,6 +20,9 @@ layout(push_constant) uniform Push {
     uint epoch;    // this capture's tag in `seen` (1..4095)
     uint height;   // rows of the capture
     Bones bones;   // skinned draws: the palette starts at draws.items[i].ext.z (as mesh.vert)
+    uint seq_at;   // ids.items[seq_at + record]: the record's draw number; [2 seq_at + id - 1]: the
+                   // id's last draw number (src/idbuffer.rs, "Covers")
+    uint cover;    // 1: covers are written and honoured (ids_core.glsl)
 } pc;
 
 // Which fragments of a draw the scene shows, mirroring mesh.frag's discards (src/idbuffer.rs).
@@ -28,6 +31,9 @@ const uint FACES_LAVA = 2u;  // the lava lamp's proxy: near faces, or far faces 
 // A flag beside them: the batch is `Lit` meshes, whose records may carry a wind term (sway and
 // fade, frame.glsl); other materials use those record bits for themselves.
 const uint FACES_FOLIAGE = 4u;
+// A flag beside them: glass, whose fragments paint over what lies under them at COVER_ALPHA
+// (ids_count.glsl mirrors shade_glass's alpha).
+const uint FACES_COVER_GLASS = 8u;
 
 // This capture's counts (see ids_core.glsl).
 IdTarget id_target() {
@@ -36,7 +42,24 @@ IdTarget id_target() {
     t.seen = pc.seen;
     t.width = pc.width;
     t.epoch = pc.epoch;
+    t.height = pc.height;
+    t.cover = pc.cover;
     return t;
+}
+
+// A mesh record's draw number in the colour pass's order.
+uint record_seq(uint record) {
+    return pc.ids.items[pc.seq_at + record];
+}
+
+// The last draw number of `id` (its draws' largest).
+uint id_last_seq(uint id) {
+    return pc.ids.items[2u * pc.seq_at + id - 1u];
+}
+
+// Whether pixel `p` was painted over after `id`'s last draw there (src/idbuffer.rs, "Covers").
+bool id_hidden(uint id, uvec2 p) {
+    return pc.cover != 0u && id_cover_seq(id_target(), p) > id_last_seq(id);
 }
 
 uint seen_at(uvec2 p) {

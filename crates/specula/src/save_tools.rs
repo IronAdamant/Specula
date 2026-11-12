@@ -857,6 +857,36 @@ impl Engine {
         })
     }
 
+    /// The refusal for a `world_load` while a save game is being read (`None`: none is):
+    /// `job_busy` with the reader as `owner` (AGENTS rule 14) and `retry`. One replacement of
+    /// the world at a time (`Engine::load_busy` is the same rule from the other side).
+    pub(crate) fn save_read_busy(&self) -> Option<crate::world::WorldError> {
+        let l = self.save_load.as_ref()?;
+        Some(
+            crate::authority::refusal(crate::authority::Site::JobBusy, format!("{}'s save_read of `{}` is in progress (one replacement of the world at a time): call again when it has answered", l.by, l.name))
+                .with("job", "save_read")
+                .with("owner", l.by.as_str())
+                .with("retry_after_s", 1)
+                .with("retry", true),
+        )
+    }
+
+    /// A save game's read in flight, for tests of what must wait for one (no reader thread).
+    #[cfg(test)]
+    pub(crate) fn save_read_in_flight_for_test(&mut self, name: &str, by: &str, reply: crate::jobs::Reply) {
+        self.save_load = Some(Loading {
+            name: name.to_owned(),
+            force: false,
+            by: by.to_owned(),
+            key: Some(by.to_owned()),
+            revision: self.world.revision(),
+            generation: self.world_generation + 1,
+            started: Instant::now(),
+            handle: None,
+            dest: Dest::Tool(reply),
+        });
+    }
+
     /// The checks a load can do now (claims, unsaved changes), then a reader on a worker thread.
     fn start_load(&mut self, name: &str, force: bool, by: &str, key: Option<String>, dest: Dest) -> Result<(), SaveError> {
         validate_save_name(name).map_err(|m| SaveError::new("invalid_argument", m))?;
@@ -894,7 +924,15 @@ impl Engine {
 
     /// Claims and unsaved changes: checked when a load starts and again when it swaps in
     /// (`since`: the world's revision when it started; changes after it are unsaved too).
-    fn check_load_allowed(&mut self, force: bool, by: &str, key: Option<&str>, since: Option<u64>) -> Result<crate::write_policy::MayReplace, SaveError> {
+    pub(crate) fn check_load_allowed(&mut self, force: bool, by: &str, key: Option<&str>, since: Option<u64>) -> Result<crate::write_policy::MayReplace, SaveError> {
+        // One replacement of the world at a time: a `world_load` waiting or reading is replacing
+        // it (and its worker may be writing the board, which this path writes on the engine
+        // thread below). Refused like a second load, naming the loader (`Engine::load_busy`).
+        if let Some(e) = self.load_busy("one replacement of the world at a time") {
+            let mut s = SaveError::new(e.code, e.message.clone());
+            s.details = e.details.clone();
+            return Err(s);
+        }
         // A playtest owns the clock and the world until it ends: a load would move both under it
         // (and its replay would record a run nobody can reproduce). Not even with force. Nor
         // while other agents hold claims.

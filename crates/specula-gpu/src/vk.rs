@@ -159,6 +159,10 @@ pub const ST_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES: VkStructureType = 51;
 pub const ST_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO: VkStructureType = 1_000_161_000;
 pub const ST_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES: VkStructureType = 53;
 pub const ST_MEMORY_ALLOCATE_FLAGS_INFO: VkStructureType = 1_000_060_000;
+pub const ST_MEMORY_DEDICATED_REQUIREMENTS: VkStructureType = 1_000_127_000;
+pub const ST_MEMORY_DEDICATED_ALLOCATE_INFO: VkStructureType = 1_000_127_001;
+pub const ST_IMAGE_MEMORY_REQUIREMENTS_INFO_2: VkStructureType = 1_000_146_001;
+pub const ST_MEMORY_REQUIREMENTS_2: VkStructureType = 1_000_146_003;
 pub const ST_BUFFER_DEVICE_ADDRESS_INFO: VkStructureType = 1_000_244_001;
 pub const ST_PHYSICAL_DEVICE_FEATURES_2: VkStructureType = 1_000_059_000;
 pub const ST_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2: VkStructureType = 1_000_059_006;
@@ -321,6 +325,7 @@ pub const VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT: VkFlags = 0x4;
 // Synchronization2 (64-bit flags)
 pub const VK_PIPELINE_STAGE_2_NONE: VkFlags64 = 0;
 pub const VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT: VkFlags64 = 0x80;
+pub const VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT: VkFlags64 = 0x08;
 pub const VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT: VkFlags64 = 0x100;
 pub const VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT: VkFlags64 = 0x200;
 pub const VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT: VkFlags64 = 0x400;
@@ -705,6 +710,40 @@ pub struct VkMemoryAllocateFlagsInfo {
     pub p_next: *const c_void,
     pub flags: VkFlags,
     pub device_mask: u32,
+}
+
+/// `VkImageMemoryRequirementsInfo2` (Vulkan 1.1).
+#[repr(C)]
+pub struct VkImageMemoryRequirementsInfo2 {
+    pub s_type: VkStructureType,
+    pub p_next: *const c_void,
+    pub image: VkImage,
+}
+
+/// `VkMemoryRequirements2` (Vulkan 1.1).
+#[repr(C)]
+pub struct VkMemoryRequirements2 {
+    pub s_type: VkStructureType,
+    pub p_next: *mut c_void,
+    pub memory_requirements: VkMemoryRequirements,
+}
+
+/// `VkMemoryDedicatedRequirements` (Vulkan 1.1), chained to [`VkMemoryRequirements2`].
+#[repr(C)]
+pub struct VkMemoryDedicatedRequirements {
+    pub s_type: VkStructureType,
+    pub p_next: *mut c_void,
+    pub prefers_dedicated_allocation: VkBool32,
+    pub requires_dedicated_allocation: VkBool32,
+}
+
+/// `VkMemoryDedicatedAllocateInfo` (Vulkan 1.1), chained to [`VkMemoryAllocateInfo`].
+#[repr(C)]
+pub struct VkMemoryDedicatedAllocateInfo {
+    pub s_type: VkStructureType,
+    pub p_next: *const c_void,
+    pub image: VkImage,
+    pub buffer: VkBuffer,
 }
 
 #[repr(C)]
@@ -1556,8 +1595,8 @@ fn_table! {
         create_image = c"vkCreateImage":
             fn(VkDevice, *const VkImageCreateInfo, *const c_void, *mut VkImage) -> VkResult;
         destroy_image = c"vkDestroyImage": fn(VkDevice, VkImage, *const c_void);
-        get_image_memory_requirements = c"vkGetImageMemoryRequirements":
-            fn(VkDevice, VkImage, *mut VkMemoryRequirements);
+        get_image_memory_requirements2 = c"vkGetImageMemoryRequirements2":
+            fn(VkDevice, *const VkImageMemoryRequirementsInfo2, *mut VkMemoryRequirements2);
         bind_image_memory = c"vkBindImageMemory":
             fn(VkDevice, VkImage, VkDeviceMemory, VkDeviceSize) -> VkResult;
         create_image_view = c"vkCreateImageView":
@@ -1715,6 +1754,10 @@ mod tests {
             VkPhysicalDeviceVulkan13Features => 80, 8;
             VkPhysicalDeviceVulkan12Features => 208, 8;
             VkMemoryAllocateFlagsInfo => 24, 8;
+            VkImageMemoryRequirementsInfo2 => 24, 8;
+            VkMemoryRequirements2 => 40, 8;
+            VkMemoryDedicatedRequirements => 24, 8;
+            VkMemoryDedicatedAllocateInfo => 32, 8;
             VkBufferDeviceAddressInfo => 24, 8;
             VkFormatProperties => 12, 4;
             VkDeviceQueueCreateInfo => 40, 8;

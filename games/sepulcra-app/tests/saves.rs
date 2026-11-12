@@ -212,5 +212,5 @@ fn the_game_section_is_parsed_off_the_engine_thread() {
     let started = std::time::Instant::now();
     let Err(e) = std::thread::spawn(move || parse(&big).map(|_| ())).join().unwrap() else { panic!("an oversized recording must be refused") };
     assert!(e.contains("recording") || e.contains("damaged"), "{e}");
-    assert!(started.elapsed().as_millis() < 500, "refused by the cap before parsing: {:?}", started.elapsed());
+    assert!(started.elapsed() < specula_core::speed_budget(std::time::Duration::from_millis(500)), "refused by the cap before parsing: {:?}", started.elapsed());
 }

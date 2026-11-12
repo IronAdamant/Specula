@@ -226,7 +226,7 @@ fn hostile_sizes_stay_cheap() {
     let t0 = std::time::Instant::now();
     let e = ui.load_screen(&text).unwrap_err();
     assert_eq!(e.code, ErrorCode::UnknownField);
-    assert!(t0.elapsed().as_secs_f64() < 2.0, "{:?}", t0.elapsed());
+    assert!(t0.elapsed() < specula_core::speed_budget(std::time::Duration::from_secs(2)), "{:?}", t0.elapsed());
 }
 
 #[test]

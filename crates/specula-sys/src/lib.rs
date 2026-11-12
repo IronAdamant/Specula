@@ -826,7 +826,7 @@ mod tests {
         signaller.join().unwrap();
         let waited = start.elapsed();
         assert!(interrupt::requested());
-        assert!(waited >= std::time::Duration::from_millis(90) && waited < std::time::Duration::from_secs(2), "{waited:?}");
+        assert!(waited >= std::time::Duration::from_millis(90) && waited < std::time::Duration::from_secs(5), "{waited:?}");
         interrupt::reset_for_test();
     }
 

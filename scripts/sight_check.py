@@ -70,9 +70,10 @@ def build_scene(m):
          "rotation_deg": [0, 30, 0]},
         # A district another agent claims by subtree.
         {"op": "spawn", "shape": "group", "name": "district_east", "position": [8, 0, 6]},
-        # Glass behind glass, left of the wall: the back pane shows through the front one.
+        # Glass behind glass, left of the wall: the back pane shows through the front one (a
+        # see-through front pane: opaque glass hides what is behind it, in the image and the counts).
         {"op": "spawn", "shape": "cube", "name": "front_pane", "position": [-5.5, 1.5, 3], "scale": [1.6, 1.6, 0.05],
-         "material": "glass", "color": "#cfe3ff"},
+         "material": "glass", "opacity": 0.4, "color": "#cfe3ff"},
         {"op": "spawn", "shape": "cube", "name": "back_pane", "position": [-5.5, 1.5, 1.5], "scale": [0.7, 0.7, 0.05],
          "material": "glass", "color": "#ffd2a6"},
     ]
@@ -233,6 +234,17 @@ def main():
                   f"glass behind glass is visible (front {fp['visible_px']} px, back {bp['visible_px']} px)", failures)
             bx = bp["screen_box_exact"]
             check(bp["visible_px"] >= 0.9 * bx[2] * bx[3], "...counted over its whole face, once", failures)
+            # Opaque glass in front hides what lies behind it: drawn after it (far to near), it
+            # paints over it, and the ID buffer follows the colour pass's order (M5 gpuwork,
+            # "Covers"). From this camera the back pane sticks out past the front one's right
+            # edge (about half of it): only that part still counts.
+            builder.json("world_set", path="/front_pane", opacity=1.0)
+            opaque = builder.frame(camera="front", width=1280, height=720, time_s=1, max_subjects=50)
+            bq = subject(opaque, "/back_pane")
+            shown = (bq or {}).get("visible_px", 0)
+            check(bq is not None and 0 < shown < 0.7 * bp["visible_px"],
+                  f"opaque glass in front hides the back pane's part behind it ({shown} of {bp['visible_px']} px still count)", failures)
+            builder.json("world_set", path="/front_pane", opacity=0.4)
             # Its top half shows over the low wall: about half a disc as wide as its exact box.
             d = ps["screen_box_exact"][2]
             ratio = ps["visible_px"] / (3.14159 * (d / 2) ** 2)

@@ -44,7 +44,7 @@ impl MessageSink {
 /// and `data` valid for the duration of the call.
 unsafe extern "system" fn debug_callback(
     severity: VkFlags,
-    _types: VkFlags,
+    types: VkFlags,
     data: *const VkDebugUtilsMessengerCallbackDataEXT,
     user_data: *mut c_void,
 ) -> VkBool32 {
@@ -56,27 +56,32 @@ unsafe extern "system" fn debug_callback(
     let (sink, data) = unsafe { (&*(user_data as *const MessageSink), &*data) };
     // SAFETY: both strings are NUL-terminated (or null) and valid for this call.
     let (id_name, message) = unsafe { (opt_cstr(data.p_message_id_name), opt_cstr(data.p_message)) };
-    let severity = if severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT != 0 {
-        Severity::Error
+    sink.push(ValidationMessage { severity: classify(severity, types), id_name, message });
+    VK_FALSE
+}
+
+/// How serious a message is to us. An **error** is the validation layer saying this program
+/// used Vulkan wrongly (or wastefully: the performance type). A message of the general type
+/// alone comes from the loader or a driver about the machine ("Loader Message": a driver's
+/// library failed to load in this process, so its adapter isn't listed): however the loader
+/// rates it, it is a warning here. It says something about where the program runs, not what
+/// the program did, and tests and live checks that require "zero validation errors" must not
+/// fail on it. (Seen once in a full test run on 2026-11-12: the Intel driver didn't load in
+/// one test process while many others held the GPU, and the test failed for it.)
+fn classify(severity: VkFlags, types: VkFlags) -> Severity {
+    let ours = types & (VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT) != 0;
+    if severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT != 0 {
+        if ours {
+            Severity::Error
+        } else {
+            Severity::Warning
+        }
     } else if severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT != 0 {
         Severity::Warning
     } else if severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT != 0 {
         Severity::Info
     } else {
         Severity::Verbose
-    };
-    sink.push(ValidationMessage { severity, id_name, message });
-    VK_FALSE
-}
-
-/// # Safety
-/// `p` must be null or point to a NUL-terminated string.
-unsafe fn opt_cstr(p: *const c_char) -> String {
-    if p.is_null() {
-        String::new()
-    } else {
-        // SAFETY: guaranteed by the caller.
-        unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
     }
 }
 
@@ -452,5 +457,36 @@ impl Drop for Instance {
         // SAFETY: all child objects (devices, surfaces) are destroyed by their owners before the
         // instance is dropped; the instance is destroyed exactly once.
         unsafe { (self.fns.destroy_instance)(self.handle, ptr::null()) };
+    }
+}
+
+/// # Safety
+/// `p` must be null or point to a NUL-terminated string.
+unsafe fn opt_cstr(p: *const c_char) -> String {
+    if p.is_null() {
+        String::new()
+    } else {
+        // SAFETY: guaranteed by the caller.
+        unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
+    }
+}
+
+#[cfg(test)]
+mod classify_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_validation_layers_errors_are_errors() {
+        let (error, warning) = (VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT, VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT);
+        let (general, validation, performance) = (VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT, VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT, VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT);
+        assert_eq!(classify(error, validation), Severity::Error);
+        assert_eq!(classify(error, performance), Severity::Error);
+        assert_eq!(classify(error, general | validation), Severity::Error);
+        // The loader's "a driver failed to load": about the machine, not about this program.
+        assert_eq!(classify(error, general), Severity::Warning);
+        assert_eq!(classify(error, 0), Severity::Warning);
+        assert_eq!(classify(warning, validation), Severity::Warning);
+        assert_eq!(classify(VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT, general), Severity::Info);
+        assert_eq!(classify(0, validation), Severity::Verbose);
     }
 }

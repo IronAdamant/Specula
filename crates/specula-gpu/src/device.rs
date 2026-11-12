@@ -3,7 +3,8 @@
 use crate::instance::Instance;
 use crate::vk::*;
 use crate::{GpuError, HeapStats, MemoryKind, MemoryStats};
-use std::cell::Cell;
+use crate::heap::{HeapRange, ImageHeap};
+use std::cell::{Cell, RefCell};
 use std::ffi::{c_char, c_void, CStr};
 use std::ptr;
 
@@ -35,6 +36,8 @@ pub struct Device {
     /// Bytes allocated per [`MemoryKind`], and the live allocation count.
     allocated: Cell<[u64; MemoryKind::ALL.len()]>,
     allocations: Cell<u32>,
+    /// Device-local memory for images, carved from blocks made ahead on a worker (`heap.rs`).
+    heap: RefCell<ImageHeap>,
 }
 
 impl Device {
@@ -134,6 +137,7 @@ impl Device {
         };
         let timestamp_valid_bits =
             instance.queue_families(physical).get(queue_family as usize).map_or(0, |f| f.timestamp_valid_bits);
+        let heap_alloc = RawAllocator { device: handle, allocate: fns.allocate_memory, free: fns.free_memory, map: fns.map_memory };
         let mut device = Device {
             physical,
             handle,
@@ -149,6 +153,7 @@ impl Device {
             memory: instance.memory_properties(physical),
             allocated: Cell::new([0; MemoryKind::ALL.len()]),
             allocations: Cell::new(0),
+            heap: RefCell::new(ImageHeap::new(heap_alloc)),
         };
         if want_swapchain {
             device.swapchain = Some(
@@ -211,12 +216,17 @@ impl Device {
 
     /// Record one allocation of `bytes` for `kind` made (`added`) or freed.
     fn account(&self, kind: MemoryKind, bytes: u64, added: bool) {
+        self.account_bytes(kind, bytes, added);
+        let n = self.allocations.get();
+        self.allocations.set(if added { n + 1 } else { n.saturating_sub(1) });
+    }
+
+    /// `bytes` of `kind` placed in memory counted elsewhere (an image heap block), or released.
+    fn account_bytes(&self, kind: MemoryKind, bytes: u64, added: bool) {
         let mut all = self.allocated.get();
         let slot = &mut all[kind.index()];
         *slot = if added { slot.saturating_add(bytes) } else { slot.saturating_sub(bytes) };
         self.allocated.set(all);
-        let n = self.allocations.get();
-        self.allocations.set(if added { n + 1 } else { n.saturating_sub(1) });
     }
 
     /// Bytes our allocator holds, plus per-heap sizes and (with `VK_EXT_memory_budget`) budgets.
@@ -247,7 +257,14 @@ impl Device {
                 usage: self.memory_budget.then_some(budget.heap_usage[i]),
             })
             .collect();
-        MemoryStats { total_bytes: bytes.iter().sum(), by_kind, allocations: self.allocations.get(), heaps }
+        // The image heap's blocks are allocations; their room no image uses yet is `Reserve`.
+        let h = self.heap.borrow().stats();
+        let mut by_kind = by_kind;
+        if let Some(r) = by_kind.iter_mut().find(|(k, _)| *k == MemoryKind::Reserve) {
+            r.1 = h.block_bytes.saturating_sub(h.used_bytes);
+        }
+        let total_bytes = by_kind.iter().map(|(_, b)| *b).sum();
+        MemoryStats { total_bytes, by_kind, allocations: self.allocations.get() + h.blocks, heaps, image_heap: h }
     }
 
     /// A buffer with its own memory. Host-visible buffers are persistently mapped.
@@ -357,9 +374,76 @@ impl Device {
         }
     }
 
+    /// A buffer whose memory is allocated on the image heap's worker ([`PendingBuffer`]): the
+    /// buffer now (cheap), its memory later; [`Device::finish_buffer`] binds it once it is back.
+    /// Like [`Device::create_buffer`] otherwise (host-visible buffers come back mapped).
+    pub(crate) fn create_buffer_ahead(&self, size: u64, usage: VkFlags, required: VkFlags, preferred: VkFlags, kind: MemoryKind, what: &str) -> Result<PendingBuffer, GpuError> {
+        let (handle, req) = self.create_buffer_unbound(size, usage)?;
+        let Some(type_index) = self.memory_type(req.memory_type_bits, required, preferred) else {
+            self.discard_unbound(handle, VK_NULL_HANDLE);
+            return Err(GpuError::new(format!("no memory type for {what} (type bits {:#x}, flags {required:#x})", req.memory_type_bits)));
+        };
+        let device_address = usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT != 0;
+        let map = required & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT != 0;
+        let ticket = self.heap.borrow_mut().alloc_own(type_index, req.size, device_address, map);
+        let pending = PendingBuffer { handle, bytes: req.size, size, type_index, ticket, map, device_address, kind };
+        Ok(pending)
+    }
+
+    /// The buffer of `p` once its memory is back (`wait`: blocks until it is): `Ok(Err(p))`
+    /// while it is still on the worker. A failed allocation is retried here, synchronously, once.
+    pub(crate) fn finish_buffer(&self, p: PendingBuffer, wait: bool) -> Result<Result<Buffer, PendingBuffer>, GpuError> {
+        let got = match p.ticket {
+            Some(t) => match self.heap.borrow_mut().take_own(t, wait) {
+                Some(r) => r,
+                None => return Ok(Err(p)),
+            },
+            None => Err(VK_ERROR_OUT_OF_HOST_MEMORY),
+        };
+        let (memory, mapped) = match got {
+            Ok(m) => m,
+            Err(_) => {
+                // No worker, or its allocation failed: once more here, for the real error.
+                let _z = specula_core::profile::zone("gpu.heap_sync");
+                let raw = self.raw_allocator();
+                match raw.allocate(p.bytes, p.type_index, p.device_address) {
+                    Ok(m) => (m, 0),
+                    Err(r) => {
+                        self.discard_unbound(p.handle, VK_NULL_HANDLE);
+                        return Err(GpuError::vk(&format!("vkAllocateMemory ({} bytes, made ahead)", p.bytes), r));
+                    }
+                }
+            }
+        };
+        let mut buffer = {
+            let _z = specula_core::profile::zone("vk.bind_memory");
+            self.adopt_buffer(p.handle, memory, p.bytes, p.kind)?
+        };
+        if mapped != 0 {
+            buffer.mapped = mapped as *mut c_void;
+        } else if p.map {
+            let _z = specula_core::profile::zone("vk.map_memory");
+            // SAFETY: host-visible memory, mapped once for the buffer's lifetime.
+            let r = unsafe { (self.fns.map_memory)(self.handle, buffer.memory, 0, VK_WHOLE_SIZE, 0, &mut buffer.mapped) };
+            if r != VK_SUCCESS {
+                self.destroy_buffer(&buffer);
+                return Err(GpuError::vk("vkMapMemory", r));
+            }
+        }
+        Ok(Ok(buffer))
+    }
+
+    /// Gives up a buffer made ahead (its memory is freed whenever it comes back).
+    pub(crate) fn abandon_buffer(&self, p: PendingBuffer) {
+        if let Some(t) = p.ticket {
+            self.heap.borrow_mut().abandon_own(t);
+        }
+        self.discard_unbound(p.handle, VK_NULL_HANDLE);
+    }
+
     /// What a worker thread needs to call `vkAllocateMemory` (and `vkFreeMemory`) on this device.
     pub(crate) fn raw_allocator(&self) -> RawAllocator {
-        RawAllocator { device: self.handle, allocate: self.fns.allocate_memory, free: self.fns.free_memory }
+        RawAllocator { device: self.handle, allocate: self.fns.allocate_memory, free: self.fns.free_memory, map: self.fns.map_memory }
     }
 
     /// GPU address of a buffer created with `VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT`.
@@ -400,7 +484,9 @@ impl Device {
     }
 
     /// Like [`Device::create_image`], with `mips` levels and `layers` array layers. The view
-    /// covers everything: `2D` for one layer, `2D_ARRAY` for more.
+    /// covers everything: `2D` for one layer, `2D_ARRAY` for more. Its memory comes from the
+    /// image heap (`heap.rs`): placed in a block made ahead, never a `vkAllocateMemory` of its
+    /// own unless no block or growth holds it.
     #[allow(clippy::too_many_arguments)]
     pub fn create_image_with(
         &self,
@@ -414,6 +500,41 @@ impl Device {
         kind: MemoryKind,
         what: &str,
     ) -> Result<Image, GpuError> {
+        match self.make_image(format, (width, height, mips, layers), usage, aspect, kind, what, false)? {
+            Some(i) => Ok(i),
+            None => Err(GpuError::new(format!("internal: the image heap deferred {what} unasked"))),
+        }
+    }
+
+    /// [`Device::create_image_with`] for callers that can come back: `Ok(None)` when the image
+    /// heap has no room for it yet (a growth for it starts on the worker; ask again later).
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_create_image_with(
+        &self,
+        format: VkFormat,
+        width: u32,
+        height: u32,
+        mips: u32,
+        layers: u32,
+        usage: VkFlags,
+        aspect: VkFlags,
+        kind: MemoryKind,
+        what: &str,
+    ) -> Result<Option<Image>, GpuError> {
+        self.make_image(format, (width, height, mips, layers), usage, aspect, kind, what, true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn make_image(
+        &self,
+        format: VkFormat,
+        (width, height, mips, layers): (u32, u32, u32, u32),
+        usage: VkFlags,
+        aspect: VkFlags,
+        kind: MemoryKind,
+        what: &str,
+        defer: bool,
+    ) -> Result<Option<Image>, GpuError> {
         let info = VkImageCreateInfo {
             s_type: ST_IMAGE_CREATE_INFO,
             p_next: ptr::null(),
@@ -437,29 +558,143 @@ impl Device {
         if r != VK_SUCCESS {
             return Err(GpuError::vk(&format!("vkCreateImage ({what}, {width}x{height})"), r));
         }
-        let mut image = Image { handle, memory: VK_NULL_HANDLE, view: VK_NULL_HANDLE, bytes: 0, kind };
-        let mut req = VkMemoryRequirements::default();
-        // SAFETY: `handle` is a live image of this device.
-        unsafe { (self.fns.get_image_memory_requirements)(self.handle, handle, &mut req) };
+        let mut image = Image { handle, memory: VK_NULL_HANDLE, view: VK_NULL_HANDLE, bytes: 0, kind, range: None };
         let result = (|| {
-            image.memory = self.allocate(&req, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, false, kind, what)?;
-            image.bytes = req.size;
-            // SAFETY: memory matches the image's requirements; offset 0.
-            let r = unsafe { (self.fns.bind_image_memory)(self.handle, handle, image.memory, 0) };
-            if r != VK_SUCCESS {
-                return Err(GpuError::vk("vkBindImageMemory", r));
+            if !self.bind_new_image(&mut image, kind, what, defer)? {
+                return Ok(false);
             }
             let view_type = if layers > 1 { VK_IMAGE_VIEW_TYPE_2D_ARRAY } else { VK_IMAGE_VIEW_TYPE_2D };
             image.view = self.create_view_range(handle, format, aspect, view_type, (0, mips), (0, layers))?;
-            Ok(())
+            Ok(true)
         })();
         match result {
-            Ok(()) => Ok(image),
+            Ok(true) => Ok(Some(image)),
+            Ok(false) => {
+                self.destroy_image(&image);
+                Ok(None)
+            }
             Err(e) => {
                 self.destroy_image(&image);
                 Err(e)
             }
         }
+    }
+
+    /// An image's memory requirements, and whether its driver requires an allocation of its own.
+    fn image_requirements(&self, image: VkImage) -> (VkMemoryRequirements, bool) {
+        let mut dedicated = VkMemoryDedicatedRequirements {
+            s_type: ST_MEMORY_DEDICATED_REQUIREMENTS,
+            p_next: ptr::null_mut(),
+            prefers_dedicated_allocation: 0,
+            requires_dedicated_allocation: 0,
+        };
+        let mut req = VkMemoryRequirements2 {
+            s_type: ST_MEMORY_REQUIREMENTS_2,
+            p_next: &mut dedicated as *mut _ as *mut c_void,
+            memory_requirements: VkMemoryRequirements::default(),
+        };
+        let info = VkImageMemoryRequirementsInfo2 { s_type: ST_IMAGE_MEMORY_REQUIREMENTS_INFO_2, p_next: ptr::null(), image };
+        // SAFETY: `image` is a live image of this device; `req` (with `dedicated` chained) is a
+        // valid out-structure for the call.
+        unsafe { (self.fns.get_image_memory_requirements2)(self.handle, &info, &mut req) };
+        (req.memory_requirements, dedicated.requires_dedicated_allocation != 0)
+    }
+
+    /// Memory for a new, unbound image: a range of the image heap (or its own allocation when its
+    /// driver requires one), bound. False when `defer` and the heap has no room yet.
+    fn bind_new_image(&self, image: &mut Image, kind: MemoryKind, what: &str, defer: bool) -> Result<bool, GpuError> {
+        let (req, dedicated) = self.image_requirements(image.handle);
+        let type_index = self.memory_type(req.memory_type_bits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0).ok_or_else(|| {
+            GpuError::new(format!("no device-local memory type for {what} (type bits {:#x})", req.memory_type_bits))
+        })?;
+        if dedicated {
+            let ded = VkMemoryDedicatedAllocateInfo { s_type: ST_MEMORY_DEDICATED_ALLOCATE_INFO, p_next: ptr::null(), image: image.handle, buffer: VK_NULL_HANDLE };
+            let info = VkMemoryAllocateInfo {
+                s_type: ST_MEMORY_ALLOCATE_INFO,
+                p_next: &ded as *const _ as *const c_void,
+                allocation_size: req.size,
+                memory_type_index: type_index,
+            };
+            let mut memory = VK_NULL_HANDLE;
+            // SAFETY: valid device and allocate info (the dedicated info names a live image).
+            let r = unsafe { (self.fns.allocate_memory)(self.handle, &info, ptr::null(), &mut memory) };
+            if r != VK_SUCCESS {
+                return Err(GpuError::vk(&format!("vkAllocateMemory ({what}, dedicated, {} bytes)", req.size), r));
+            }
+            image.memory = memory;
+            image.bytes = req.size;
+            self.account(kind, req.size, true);
+            self.heap.borrow_mut().count_dedicated();
+            // SAFETY: memory allocated for this image; offset 0.
+            let r = unsafe { (self.fns.bind_image_memory)(self.handle, image.handle, memory, 0) };
+            if r != VK_SUCCESS {
+                return Err(GpuError::vk("vkBindImageMemory", r));
+            }
+            return Ok(true);
+        }
+        let mut heap = self.heap.borrow_mut();
+        let range = match heap.place(type_index, req.size, req.alignment) {
+            Some(r) => r,
+            None if defer && heap.need(type_index, req.size) => return Ok(false),
+            None => heap.place_now(type_index, req.size, req.alignment).map_err(|r| {
+                GpuError::vk(&format!("vkAllocateMemory (an image heap block for {what}, {} bytes)", req.size), r)
+            })?,
+        };
+        let memory = heap.memory(range.block);
+        // SAFETY: the range lies inside the block's memory, at the image's alignment, and of its
+        // size; no other live image uses it.
+        let r = unsafe { (self.fns.bind_image_memory)(self.handle, image.handle, memory, range.offset) };
+        if r != VK_SUCCESS {
+            heap.release(range);
+            return Err(GpuError::vk("vkBindImageMemory", r));
+        }
+        drop(heap);
+        image.memory = memory;
+        image.range = Some(range);
+        image.bytes = req.size;
+        self.account_bytes(kind, req.size, true);
+        Ok(true)
+    }
+
+    /// Starts the image heap's first block on its worker (at device creation): the memory type
+    /// of an ordinary colour image, probed with a 4 x 4 one (never bound).
+    pub(crate) fn warm_image_heap(&self) -> Result<(), GpuError> {
+        let usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        let info = VkImageCreateInfo {
+            s_type: ST_IMAGE_CREATE_INFO,
+            p_next: ptr::null(),
+            flags: 0,
+            image_type: VK_IMAGE_TYPE_2D,
+            format: VK_FORMAT_R8G8B8A8_UNORM,
+            extent: VkExtent3D { width: 4, height: 4, depth: 1 },
+            mip_levels: 1,
+            array_layers: 1,
+            samples: VK_SAMPLE_COUNT_1_BIT,
+            tiling: VK_IMAGE_TILING_OPTIMAL,
+            usage,
+            sharing_mode: VK_SHARING_MODE_EXCLUSIVE,
+            queue_family_index_count: 0,
+            p_queue_family_indices: ptr::null(),
+            initial_layout: VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+        let mut handle = VK_NULL_HANDLE;
+        // SAFETY: valid device and create info.
+        let r = unsafe { (self.fns.create_image)(self.handle, &info, ptr::null(), &mut handle) };
+        if r != VK_SUCCESS {
+            return Err(GpuError::vk("vkCreateImage (image heap probe)", r));
+        }
+        let (req, _) = self.image_requirements(handle);
+        // SAFETY: the probe image was never bound or used; destroyed once.
+        unsafe { (self.fns.destroy_image)(self.handle, handle, ptr::null()) };
+        if let Some(t) = self.memory_type(req.memory_type_bits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0) {
+            self.heap.borrow_mut().warm(t);
+        }
+        Ok(())
+    }
+
+    /// Adopts image heap blocks allocated ahead since the last call (never waits; once a frame).
+    pub fn poll_image_heap(&self) {
+        self.heap.borrow_mut().poll();
     }
 
     pub fn create_view(&self, image: VkImage, format: VkFormat, aspect: VkFlags) -> Result<VkImageView, GpuError> {
@@ -506,10 +741,19 @@ impl Device {
         unsafe {
             (self.fns.destroy_image_view)(self.handle, image.view, ptr::null());
             (self.fns.destroy_image)(self.handle, image.handle, ptr::null());
-            (self.fns.free_memory)(self.handle, image.memory, ptr::null());
         }
-        if image.memory != VK_NULL_HANDLE {
-            self.account(image.kind, image.bytes, false);
+        match image.range {
+            // Its range goes back to its block (the image is gone, so nothing uses it).
+            Some(r) => {
+                self.heap.borrow_mut().release(r);
+                self.account_bytes(image.kind, image.bytes, false);
+            }
+            None if image.memory != VK_NULL_HANDLE => {
+                // SAFETY: the image's own allocation, unused now, freed once.
+                unsafe { (self.fns.free_memory)(self.handle, image.memory, ptr::null()) };
+                self.account(image.kind, image.bytes, false);
+            }
+            None => {}
         }
     }
 
@@ -745,6 +989,8 @@ impl Device {
 
 impl Drop for Device {
     fn drop(&mut self) {
+        // Every image is gone (their owners destroyed them first): the heap's blocks go now.
+        self.heap.get_mut().destroy();
         // SAFETY: owners destroyed every child object before dropping the device; the device is
         // idle (the `Gpu` waits) and destroyed exactly once.
         unsafe { (self.fns.destroy_device)(self.handle, ptr::null()) };
@@ -758,6 +1004,7 @@ pub(crate) struct RawAllocator {
     device: VkDevice,
     allocate: unsafe extern "system" fn(VkDevice, *const VkMemoryAllocateInfo, *const c_void, *mut VkDeviceMemory) -> VkResult,
     free: unsafe extern "system" fn(VkDevice, VkDeviceMemory, *const c_void),
+    map: unsafe extern "system" fn(VkDevice, VkDeviceMemory, VkDeviceSize, VkDeviceSize, VkFlags, *mut *mut c_void) -> VkResult,
 }
 
 // SAFETY: a VkDevice may be used from any thread; neither vkAllocateMemory nor vkFreeMemory has
@@ -766,9 +1013,26 @@ pub(crate) struct RawAllocator {
 unsafe impl Send for RawAllocator {}
 
 impl RawAllocator {
-    /// One allocation of `size` bytes of memory type `type_index`.
-    pub(crate) fn allocate(&self, size: u64, type_index: u32) -> Result<VkDeviceMemory, VkResult> {
-        let info = VkMemoryAllocateInfo { s_type: ST_MEMORY_ALLOCATE_INFO, p_next: ptr::null(), allocation_size: size, memory_type_index: type_index };
+    /// A stand-in for tests of the image heap's threads: no device, the given functions.
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        allocate: unsafe extern "system" fn(VkDevice, *const VkMemoryAllocateInfo, *const c_void, *mut VkDeviceMemory) -> VkResult,
+        free: unsafe extern "system" fn(VkDevice, VkDeviceMemory, *const c_void),
+        map: unsafe extern "system" fn(VkDevice, VkDeviceMemory, VkDeviceSize, VkDeviceSize, VkFlags, *mut *mut c_void) -> VkResult,
+    ) -> RawAllocator {
+        RawAllocator { device: ptr::null_mut(), allocate, free, map }
+    }
+
+    /// One allocation of `size` bytes of memory type `type_index` (`device_address`: for a
+    /// buffer with a shader device address).
+    pub(crate) fn allocate(&self, size: u64, type_index: u32, device_address: bool) -> Result<VkDeviceMemory, VkResult> {
+        let flags = VkMemoryAllocateFlagsInfo { s_type: ST_MEMORY_ALLOCATE_FLAGS_INFO, p_next: ptr::null(), flags: VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT, device_mask: 0 };
+        let info = VkMemoryAllocateInfo {
+            s_type: ST_MEMORY_ALLOCATE_INFO,
+            p_next: if device_address { &flags as *const _ as *const c_void } else { ptr::null() },
+            allocation_size: size,
+            memory_type_index: type_index,
+        };
         let mut memory = VK_NULL_HANDLE;
         // SAFETY: the device is live (see the type's docs); valid allocate info and out-pointer.
         let r = unsafe { (self.allocate)(self.device, &info, ptr::null(), &mut memory) };
@@ -779,10 +1043,42 @@ impl RawAllocator {
         }
     }
 
+    /// Maps all of `memory` (host-visible, not mapped yet): on Windows the first map of a new
+    /// allocation can wait for the GPU's paging queue (190 ms seen on a loaded iGPU), so buffers
+    /// made ahead are mapped on the worker too. The pointer as an address.
+    pub(crate) fn map_whole(&self, memory: VkDeviceMemory) -> Result<usize, VkResult> {
+        let mut ptr = ptr::null_mut();
+        // SAFETY: `memory` came from `allocate`, is host-visible (the caller asks only for those),
+        // is mapped by nobody else (its owner hasn't got it yet), and `ptr` is a valid out-pointer.
+        let r = unsafe { (self.map)(self.device, memory, 0, VK_WHOLE_SIZE, 0, &mut ptr) };
+        if r == VK_SUCCESS {
+            Ok(ptr as usize)
+        } else {
+            Err(r)
+        }
+    }
+
     pub(crate) fn free(&self, memory: VkDeviceMemory) {
         // SAFETY: `memory` came from `allocate`, is unused, and is freed once.
         unsafe { (self.free)(self.device, memory, ptr::null()) };
     }
+}
+
+/// A buffer made with [`Device::create_buffer_ahead`]: created, its memory still on the image
+/// heap's worker. Finish it ([`Device::finish_buffer`]) or abandon it
+/// ([`Device::abandon_buffer`]); dropping it leaks the buffer handle.
+#[derive(Debug)]
+pub(crate) struct PendingBuffer {
+    handle: VkBuffer,
+    /// The memory's size (the buffer's requirements) and the size asked for.
+    bytes: u64,
+    pub(crate) size: u64,
+    type_index: u32,
+    /// `None`: no worker took it (finished synchronously).
+    ticket: Option<u64>,
+    map: bool,
+    device_address: bool,
+    kind: MemoryKind,
 }
 
 pub struct Buffer {
@@ -797,10 +1093,13 @@ pub struct Buffer {
 
 pub struct Image {
     pub handle: VkImage,
+    /// Its own allocation, or (with `range`) the image heap block it lies in.
     pub memory: VkDeviceMemory,
     pub view: VkImageView,
     pub bytes: u64,
     pub kind: MemoryKind,
+    /// Its place in an image heap block (`heap.rs`); `None`: `memory` is its own.
+    pub(crate) range: Option<HeapRange>,
 }
 
 pub fn full_range(aspect: VkFlags) -> VkImageSubresourceRange {

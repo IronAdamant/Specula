@@ -468,7 +468,7 @@ fn instant_loops_left_at_runtime_are_idempotent_and_reported() {
     let t = std::time::Instant::now();
     let a = play::root_motion(gr, &play, tm, 0.0, 30.0, &mut sc);
     assert_eq!(a, play::root_motion(gr, &play, tm, 0.0, 30.0, &mut sc), "deterministic");
-    assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
+    assert!(t.elapsed() < specula_core::speed_budget(std::time::Duration::from_secs(2)), "{:?}", t.elapsed());
 }
 
 /// Root motion integrated along one resolve agrees with the exact displacement of a leap

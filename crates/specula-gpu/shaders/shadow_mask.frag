@@ -26,6 +26,10 @@ void main() {
     if (foliage_faded(pc.frame, ext.w, v_world, gl_FragCoord.xy)) {
         discard;
     }
+    // Near the wind's shadow_end the caster thins out (frame.glsl sway_shadow_faded).
+    if (sway_shadow_faded(pc.frame, ext.w, v_world, gl_FragCoord.xy)) {
+        discard;
+    }
     uint base_slot = ext.x & 0xffffu;
     if (base_slot != 0u && (ext.w & EXT_ALPHA_MASK) != 0u) {
         // Foliage cards edge-on to the sun cast nothing: their blades would draw dashed lines on

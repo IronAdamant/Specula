@@ -596,7 +596,7 @@ mod tests {
         for _ in 0..200 {
             let _ = resample::resample(&x, 1, 44_100, 48_000);
         }
-        assert!(start.elapsed() < std::time::Duration::from_secs(1), "{:?}", start.elapsed());
+        assert!(start.elapsed() < specula_core::speed_budget(std::time::Duration::from_secs(1)), "{:?}", start.elapsed());
     }
 
     /// The threaded worker fills streams on its own (a worker that never ran survived the

@@ -109,8 +109,8 @@ fn event_floods_are_capped_and_flagged() {
     let mut out = Vec::new();
     let t = Instant::now();
     assert!(c.events_between(0.0, 1.0 / 60.0 * 8.0, &mut out), "truncated");
-    assert_eq!(out.len(), MAX_EVENTS_PER_STEP);
-    assert!(t.elapsed().as_secs_f64() < 0.1);
+    assert_eq!(out.len(), MAX_EVENTS_PER_STEP, "the cap is the work's bound");
+    assert!(t.elapsed() < specula_core::speed_budget(std::time::Duration::from_millis(100)), "the scan stops at the cap: {:?}", t.elapsed());
     let mut set = AnimSet::new(skel());
     let id = set.add(c).unwrap();
     let mut a = Animator::new(&set, id);
@@ -154,7 +154,7 @@ fn hostile_generator_specs_fail_fast() {
     let t = Instant::now();
     let e = gen::generate(&Json::parse(&spec(1000)).unwrap(), "", &s).unwrap_err();
     assert_eq!((e.code, e.path.as_str()), (AnimErrorCode::Limit, "legs"));
-    assert!(t.elapsed().as_secs_f64() < 0.5);
+    assert!(t.elapsed() < specula_core::speed_budget(std::time::Duration::from_millis(500)), "refused at the limit, before generating: {:?}", t.elapsed());
     // The same bone in two legs.
     let e = gen::generate(&Json::parse(&spec(2)).unwrap(), "", &s).unwrap_err();
     assert_eq!((e.code, e.path.as_str()), (AnimErrorCode::Duplicate, "legs[1]"));
@@ -164,7 +164,7 @@ fn hostile_generator_specs_fail_fast() {
     let t = Instant::now();
     let e = AnimSet::load(&text, s.clone()).unwrap_err();
     assert_eq!((e.code, e.path.as_str()), (AnimErrorCode::Limit, "masks"));
-    assert!(t.elapsed().as_secs_f64() < 1.0, "{:.2} s", t.elapsed().as_secs_f64());
+    assert!(t.elapsed() < specula_core::speed_budget(std::time::Duration::from_secs(1)), "{:.2} s", t.elapsed().as_secs_f64());
     // Wobbles and arm lists too.
     let wob = vec![r#"{ "bone": "hips", "deg": 1 }"#; 65].join(",");
     let e = gen::generate(&Json::parse(&format!(r#"{{ "name": "w", "kind": "wobble", "duration": 1, "wobble": [{wob}] }}"#)).unwrap(), "", &s).unwrap_err();

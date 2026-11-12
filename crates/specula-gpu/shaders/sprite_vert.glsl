@@ -22,6 +22,7 @@ layout(location = 6) flat out vec4 v_tile;   // tiles: tile size (px) | both: 1 
 layout(location = 7) flat out vec3 v_normal;
 #ifdef IDS
 layout(location = 8) flat out uint v_id; // sight's id of the item's entity (0: none)
+layout(location = 10) flat out uint v_seq; // its draw number (ids_core.glsl, covers)
 #endif
 // Glyphs: the store's address (xy), its resident words, the glyph's band counts.
 layout(location = 9) flat out uvec4 v_glyph;
@@ -56,6 +57,7 @@ void glyph_vertex(Item it) {
     gl_Position = pc.frame.view_proj * vec4(world, 1.0);
 #ifdef IDS
     v_id = pc.idp.ids.items[gl_InstanceIndex];
+    v_seq = pc.idp.ids.items[pc.idp.seq_at + gl_InstanceIndex];
 #endif
     // The address's bits read as integers (an Item is seven 16-byte rows; v5 is row 5).
     uvec2 address = ItemRows(pc.items).rows[gl_InstanceIndex * 7 + 5].zw;
@@ -90,6 +92,7 @@ void main() {
     gl_Position = clip;
 #ifdef IDS
     v_id = pc.idp.ids.items[gl_InstanceIndex];
+    v_seq = pc.idp.ids.items[pc.idp.seq_at + gl_InstanceIndex];
 #endif
     v_world = c.world;
     v_tint = it.tint;

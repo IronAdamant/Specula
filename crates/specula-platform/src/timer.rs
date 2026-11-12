@@ -71,6 +71,16 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
+    /// A copy of `specula_core::speed_budget` (this crate doesn't depend on it): a test's speed
+    /// bound, tight when it runs alone, 5 s or more in every other run.
+    fn speed_budget(tight: std::time::Duration) -> std::time::Duration {
+        if std::env::var_os("SPECULA_SPEED_TESTS").is_some() {
+            tight
+        } else {
+            tight.max(std::time::Duration::from_secs(5))
+        }
+    }
+
     #[test]
     fn a_short_timed_wait_ends_within_a_few_milliseconds() {
         let timer = FineTimer::request();
@@ -86,6 +96,6 @@ mod tests {
             })
             .min()
             .unwrap();
-        assert!(best >= Duration::from_millis(2) && best < Duration::from_millis(12), "a 2 ms wait took {best:?}");
+        assert!(best >= Duration::from_millis(2) && best < speed_budget(Duration::from_millis(12)), "a 2 ms wait took {best:?}");
     }
 }

@@ -561,6 +561,11 @@ it; the fix is a suggestion, not done here.
 4. **Partial occlusion is invisible in sight packets**: `occluded` is set only when no pixel shows, so a pillar 99 %
    behind a wall reads `visible_px: 10` with no flag (`camera_overview`). An `occluded_fraction` (visible pixels vs the
    subject drawn alone) or `occluded_px` would let agents ask "is it fully in view?".
+   - *2026-11-12 (M5 gpuwork):* blended surfaces now count too, in the paint order: glass, 2D items and text at
+     alpha 0.9 or more hide what they paint over. The lava lamp material, water, blob shadows and anything
+     under 0.9 hide nothing, and 0.9 is a cliff (glass at 0.89 over a text leaves it unreadable and fully
+     counted). `visible_px` is not legibility: measure the picture for that (`specula-gpu` `idbuffer.rs`, "What
+     covers").
 5. **Another agent's cameras can't be listed**: `camera_list` shows only the caller's; a verifier (or a reviewer) has
    to find the owner in `world_history {kinds: [camera]}` before `sight_frame {camera_of}`. Add `owner` / `all` to
    `camera_list`.

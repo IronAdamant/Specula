@@ -1802,7 +1802,7 @@ mod tests {
         let (want, open) = t.pump_candidates(&[], Instant::now());
         let spent = started.elapsed();
         assert_eq!((want.len(), open.len()), (PUMP_TAKES, PUMP_TAKES));
-        assert!(spent < Duration::from_millis(20), "picking took {spent:?} over 512 galleries");
+        assert!(spent < specula_core::speed_budget(std::time::Duration::from_millis(20)), "picking took {spent:?} over 512 galleries");
         // Known sheets are not looked for again.
         for id in &open {
             t.sheets.insert((id.clone(), 1), (PathBuf::new(), vec![], (0, 0)));

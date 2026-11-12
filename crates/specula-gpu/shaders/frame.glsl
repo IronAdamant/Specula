@@ -197,3 +197,21 @@ bool foliage_faded(Frame f, uint flags, vec3 world, vec2 frag) {
     uvec2 p = uvec2(frag) & 3u;
     return t > (float(BAYER[p.y * 4u + p.x]) + 0.5) / 16.0;
 }
+
+// Whether a fragment of a swaying shadow caster is cut from the sun's shadow map near the wind's
+// shadow_end (src/lib.rs `WindSettings::shadow_end`): an ordered 4 x 4 dither, by shadow-map
+// texel, from frame.foliage.z to .w metres of view depth (the CPU culls casters wholly past .w;
+// w = 0: no limit), so the shadow thins out instead of popping at the boundary. Shadow passes only.
+bool sway_shadow_faded(Frame f, uint flags, vec3 world, vec2 frag) {
+    if ((flags & EXT_WIND) == 0u || f.foliage.w <= 0.0) {
+        return false;
+    }
+    float depth = dot(f.shadow_axis.xyz, world) + f.shadow_axis.w;
+    float t = clamp((depth - f.foliage.z) / max(f.foliage.w - f.foliage.z, 1e-3), 0.0, 1.0);
+    if (t <= 0.0) {
+        return false;
+    }
+    const uint BAYER[16] = uint[](0u, 8u, 2u, 10u, 12u, 4u, 14u, 6u, 3u, 11u, 1u, 9u, 15u, 7u, 13u, 5u);
+    uvec2 p = uvec2(frag) & 3u;
+    return t > (float(BAYER[p.y * 4u + p.x]) + 0.5) / 16.0;
+}

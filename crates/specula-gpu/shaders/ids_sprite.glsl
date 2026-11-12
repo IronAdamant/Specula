@@ -29,6 +29,7 @@ layout(location = 6) flat in vec4 v_tile;
 layout(location = 7) flat in vec3 v_normal;
 layout(location = 8) flat in uint v_id;
 layout(location = 9) flat in uvec4 v_glyph;
+layout(location = 10) flat in uint v_seq;
 
 layout(location = 0) out uint out_id;
 
@@ -60,10 +61,19 @@ void main() {
     t.seen = pc.idp.seen;
     t.width = pc.idp.width;
     t.epoch = pc.idp.epoch;
+    t.height = pc.idp.height;
+    t.cover = pc.idp.cover;
     if (MODE == 0u) {
         out_id = v_id;
     } else if (MODE == 1u) {
-        id_insert(t, v_id, uvec2(gl_FragCoord.xy));
+        // Cutout items come to this step only to cover (depth equal: where they ended up in
+        // front); blended ones cover where they are about opaque, then join the sets.
+        if (t.cover != 0u && (cutout || a >= COVER_ALPHA)) {
+            id_cover(t, uvec2(gl_FragCoord.xy), v_seq);
+        }
+        if (!cutout) {
+            id_insert(t, v_id, uvec2(gl_FragCoord.xy));
+        }
     } else {
         id_rasterized(t, v_id);
     }
