@@ -125,6 +125,15 @@ the reason and that it came from the window.
   is pending), keyboard (F9 opens and closes it, arrows and Enter move and press, PageUp / PageDown page), gamepad
   (focus navigation, A to press, B to close, LB / RB to page; LB + RB + Y opens and closes it). F5: humans are never
   locked out; F6: nothing needs a keyboard.
+- **Where its focus starts** (owner, 2026-11-13: "many human devs will likely be present but many will also be
+  away"). Opened by the human (F9, the pad combo, their own press in the editor's Review tab), the screen starts
+  on **Approve**, ready to decide. Put on the window by an agent (`review_screen open` / `show`, whoever the
+  agent is: a reviewer, a lead, the owner's own agent, or an owner's agent's injected frames in the editor), it
+  starts on **Close**; an agent's `next` / `prev` on an open screen moves the focus to Close too. So a key the
+  human meant for something else (the game, a text) only closes the screen, after which agents can't reopen it
+  for 30 s, and deciding takes a click, a tap or a move to the button. The screens read who acted from the
+  input monitor's own record of the open (`inputguard::Seen::by_agent`), so no caller can skip it. The gallery
+  screen does the same (an agent's `gallery_open` starts on Close; the human's F8 on the first variant).
 - **Modal while open**: the hosted game, modules and live Lex runs get no window input then (a click on Approve never
   also places a stone). Gamepads too: the engine polls them and hands them to the game in `Frame::pads`
   (Sepulcra reads them there, not from its own poll), all released while the screen is open, and a button held then

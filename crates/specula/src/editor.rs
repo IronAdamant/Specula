@@ -9,6 +9,7 @@
 //! [`ViewIn`] (the viewport's pointer and buttons); `editor_engine` applies them, because
 //! selection, gizmos and every edit need the world and the protocol (`Engine::handle`).
 
+use crate::editor_brush::{Brush, BrushKind};
 use crate::editor_gizmo::{Handle, Mode, Snap, Space};
 use crate::editor_swarm::SwAct;
 use specula_core::Json;
@@ -54,6 +55,8 @@ const ACTIONS: &str = r#"{
     { "name": "editor_redo", "kind": "button", "group": "editor", "description": "Redo.", "bindings": ["Key.Ctrl+Key.Y", "Key.Ctrl+Key.Shift+Key.Z"] },
     { "name": "editor_delete", "kind": "button", "group": "editor", "description": "Delete the selection.", "bindings": ["Key.Delete"] },
     { "name": "editor_frame_sel", "kind": "button", "group": "editor", "description": "Frame the selection.", "bindings": ["Key.F"] },
+    { "name": "editor_brush_narrower", "kind": "button", "group": "editor", "description": "A narrower brush (the draw tools).", "bindings": ["Key.O"] },
+    { "name": "editor_brush_wider", "kind": "button", "group": "editor", "description": "A wider brush (the draw tools).", "bindings": ["Key.P"] },
     { "name": "editor_orbit", "kind": "axis2", "output": "delta", "group": "editor", "description": "Orbit the editor camera (radians this frame).", "bindings": [{ "source": "Pad.RightStick", "scale": [2.2, 1.6] }, { "source": "Touch.TwoFingerDrag", "scale": [-0.006, -0.006] }] },
     { "name": "editor_zoom", "kind": "axis", "output": "delta", "group": "editor", "description": "Zoom the editor camera (+ = in).", "bindings": [{ "source": "Pad.RightTrigger", "scale": 1.5 }, { "source": "Pad.LeftTrigger", "scale": -1.5 }, { "source": "Touch.Pinch", "scale": 1.0 }] }
   ]
@@ -181,6 +184,27 @@ pub enum UiAct {
     Swarm(crate::editor_swarm::SwAct),
     /// "Ask the agents…" (`editor_ask`): the human's own press only.
     AskOpen,
+    /// The draw tools (`editor_brush`).
+    Brush(BrushAct),
+}
+
+/// A press on the Draw bar.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BrushAct {
+    /// Opens or closes the Draw bar (closing it puts the brush down).
+    Bar,
+    /// The sculpt brush (pressed again: its next op).
+    Sculpt,
+    /// The splat brush (pressed again: the next layer).
+    Splat,
+    /// The paint brush (pressed again: the next colour).
+    Paint,
+    /// The path tool (pressed again: the model's next sweep part).
+    Path,
+    /// A wider (`true`) or narrower brush.
+    Radius(bool),
+    /// A stronger (`true`) or weaker brush.
+    Amount(bool),
 }
 
 /// A mouse button (or the primary touch contact, as left) this frame.
@@ -209,6 +233,171 @@ pub struct ViewIn {
     pub zoom: f32,
     /// The window lost focus this frame: a drag in progress is cancelled, never committed.
     pub focus_lost: bool,
+    /// The other side's hold ended this frame because it had gone quiet (with `focus_lost`, so
+    /// what it held is cancelled). See [`Holds`].
+    pub hold_lapsed: bool,
+    /// Presses in this frame's events that were not taken: the other side holds the viewport
+    /// (or this frame took it back from a quiet hold: press again).
+    pub presses_refused: u8,
+}
+
+/// A hold whose side has been quiet this long, seconds, yields to the other side's press: the
+/// human takes the viewport back from an agent that pressed and went away, and an agent takes it
+/// from a human hold whose release never came (it went to another window).
+pub const AGENT_HOLD_S: f64 = 5.0;
+/// And a hold lapses by itself after this long without anything from its side.
+pub const AGENT_HOLD_MAX_S: f64 = 120.0;
+
+/// Who holds the viewport's buttons: the human's own hand, or an agent's injected frames.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Human,
+    Agent,
+}
+
+/// The viewport's mouse buttons (and the touch or pen contact that acts as the left one), and
+/// who holds them.
+///
+/// - **All held buttons belong to one side at a time.** A press is taken only when nothing is
+///   held, or by the side that holds; a release only from the side that holds. So the human's
+///   focus change, mouse, touch or pen never ends an agent's drag, and an agent's frames never
+///   take over or end the human's (a live run lost an agent's stroke to a click in another
+///   window; reviews R1 and R2 of m5-eddraw found the mixed states a per-button rule left: two
+///   sides each holding a button and neither getting the viewport, a contact outliving its
+///   button).
+/// - **Nobody is locked out.** A hold whose side has been quiet for [`AGENT_HOLD_S`] yields to
+///   the other side's press (that press ends the hold; the next one is taken), and any hold
+///   lapses after [`AGENT_HOLD_MAX_S`] of quiet. A window that takes no input for the human
+///   (another screen holds it, the Ask box, minimized) lets the human's holds go: their
+///   release would never be read.
+/// - **A press that is not taken is counted**, so an agent's call can say its drag did not
+///   start.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Holds {
+    buttons: [bool; 3],
+    side: Option<Side>,
+    /// The touch or pen contact holding the left button.
+    contact: Option<u32>,
+    /// When each side's pointer last did anything (`[human, agent]`, the editor's clock).
+    last: [f64; 2],
+    /// Where each side's own pointer is (from its own events), and which side's acted last.
+    /// The viewport's pointer is its holder's own; with nothing held, the one that acted last.
+    /// (The window's pointer state is one for both sides: an agent's injected moves bent a
+    /// stroke the human was drawing, and it was sent as the human's own. Found by the live
+    /// check, after review R2.)
+    pointers: [Option<[f32; 2]>; 2],
+    last_active: Option<Side>,
+    /// Each side's own Shift and Ctrl (from its own key events): while a side holds, its drag
+    /// reads its own. (The window's key state is one for both sides, and the window's focus
+    /// loss clears it: review R3 of m5-eddraw, F2: the human's focus change dropped the Ctrl an
+    /// agent's drag was holding, and its snapping flipped mid-drag.)
+    mods: [[bool; 2]; 2],
+}
+
+impl Holds {
+    fn at(side: Side) -> usize {
+        match side {
+            Side::Human => 0,
+            Side::Agent => 1,
+        }
+    }
+
+    pub(crate) fn holder(&self) -> Option<Side> {
+        self.side
+    }
+
+    /// Shift and Ctrl as the viewport reads them: the holder's own while a side holds; with
+    /// nothing held, the window's (`shared`).
+    fn modifiers(&self, shared: (bool, bool)) -> (bool, bool) {
+        match self.side {
+            Some(s) => (self.mods[Self::at(s)][0], self.mods[Self::at(s)][1]),
+            None => shared,
+        }
+    }
+
+    /// The viewport's pointer: the holder's own; with nothing held, the pointer of the side
+    /// that acted last. `None`: neither side's pointer has been anywhere yet.
+    fn pointer(&self) -> Option<[f32; 2]> {
+        self.side.or(self.last_active).and_then(|s| self.pointers[Self::at(s)])
+    }
+
+    /// Nothing held means nobody holds, and no contact outlives the left button.
+    fn settle(&mut self) {
+        if !self.buttons.iter().any(|b| *b) {
+            self.side = None;
+        }
+        if !self.buttons[0] {
+            self.contact = None;
+        }
+    }
+
+    /// Lets go of everything `side` holds (marking each in `released`). Whether it held anything.
+    pub(crate) fn drop_side(&mut self, side: Side, released: &mut [bool; 3]) -> bool {
+        if self.side != Some(side) {
+            return false;
+        }
+        for (b, held) in self.buttons.iter_mut().enumerate() {
+            if std::mem::take(held) {
+                released[b] = true;
+            }
+        }
+        self.settle();
+        true
+    }
+
+    /// The start of `side`'s frame at time `now`. `active`: its pointer did something this
+    /// frame; `presses`: it pressed. The other side's hold ends here when it has been quiet
+    /// long enough ([`AGENT_HOLD_S`] and a press, or [`AGENT_HOLD_MAX_S`]): returns whether one
+    /// did (its buttons are marked in `released`).
+    fn begin(&mut self, side: Side, now: f64, active: bool, presses: bool, released: &mut [bool; 3]) -> bool {
+        if active {
+            self.last[Self::at(side)] = now;
+            self.last_active = Some(side);
+        }
+        let Some(holder) = self.side.filter(|h| *h != side) else { return false };
+        let quiet = now - self.last[Self::at(holder)];
+        if quiet > AGENT_HOLD_MAX_S || (quiet > AGENT_HOLD_S && presses) {
+            return self.drop_side(holder, released);
+        }
+        false
+    }
+
+    /// `side` presses button `b`: taken when nothing is held or `side` holds.
+    fn press(&mut self, side: Side, b: usize) -> bool {
+        if self.side.is_some_and(|h| h != side) {
+            return false;
+        }
+        self.buttons[b] = true;
+        self.side = Some(side);
+        true
+    }
+
+    /// `side` releases button `b`: read unless the other side holds.
+    fn release(&mut self, side: Side, b: usize) -> bool {
+        if self.side.is_some_and(|h| h != side) {
+            return false;
+        }
+        self.buttons[b] = false;
+        self.settle();
+        true
+    }
+
+    /// A touch or pen contact goes down for `side`: it acts as the left button. `None`: there is
+    /// a contact already (a second finger: not a press at all).
+    fn contact_down(&mut self, side: Side, id: u32) -> Option<bool> {
+        if self.contact.is_some() {
+            return None;
+        }
+        let taken = self.press(side, 0);
+        if taken {
+            self.contact = Some(id);
+        }
+        Some(taken)
+    }
+
+    fn contact_up(&mut self, side: Side, id: u32) -> bool {
+        self.contact == Some(id) && self.release(side, 0)
+    }
 }
 
 /// One outliner row, filled by the engine.
@@ -339,10 +528,11 @@ pub struct EditorUi {
     // Undo: the human's own journal ids, newest last; redo: the undos' ids.
     pub(crate) undo: Vec<u64>,
     pub(crate) redo: Vec<u64>,
-    // Input state.
-    buttons: [bool; 3],
-    /// The touch contact acting as the left button.
-    contact: Option<u32>,
+    // Input state: the viewport's buttons, and who holds them ([`Holds`]).
+    holds: Holds,
+    /// Whether the frame being read is an agent's injected one (the engine sets it around
+    /// [`EditorUi::frame`]).
+    pub(crate) injected_pass: bool,
     /// A press that began on the panels: its whole press is theirs.
     ui_press: bool,
     /// Simulated input frames (`editor_input`), each fed on a window frame of its own with the
@@ -357,6 +547,11 @@ pub struct EditorUi {
     pub(crate) swarm: crate::editor_swarm::Panel,
     /// The "Ask the agents…" box (its words are private to it).
     pub(crate) ask: crate::editor_ask::AskBox,
+    /// The brush in hand (the draw tools: while one is, the viewport's left button draws).
+    pub brush: Option<Brush>,
+    /// The Draw bar is open; and the brush as it was last held (its size and strength are kept).
+    pub draw_bar: bool,
+    brush_kept: Brush,
 }
 
 impl Default for EditorUi {
@@ -388,8 +583,8 @@ impl Default for EditorUi {
             status: ("Click to select; drag the gizmo to move; every edit is journaled as window:owner.".into(), true),
             undo: Vec::new(),
             redo: Vec::new(),
-            buttons: [false; 3],
-            contact: None,
+            holds: Holds::default(),
+            injected_pass: false,
             ui_press: false,
             injected: VecDeque::new(),
             driven_by: None,
@@ -397,6 +592,9 @@ impl Default for EditorUi {
             pointer: None,
             swarm: crate::editor_swarm::Panel::default(),
             ask: crate::editor_ask::AskBox::default(),
+            brush: None,
+            draw_bar: false,
+            brush_kept: Brush::default(),
         }
     }
 }
@@ -516,8 +714,7 @@ impl EditorUi {
             self.typing = None;
             self.searching = false;
             self.ui_press = false;
-            self.buttons = [false; 3];
-            self.contact = None;
+            self.holds = Holds::default();
             self.dirty = true;
             self.ask.close("editor_closed");
             if let Some(ui) = self.ui.as_mut() {
@@ -623,6 +820,8 @@ impl EditorUi {
         let mut acts = Vec::new();
         let mut view = ViewIn::default();
         if size.0 == 0 || size.1 == 0 || !self.ensure() {
+            // (Minimized: the human's release would never be read.)
+            self.holds.drop_side(Side::Human, &mut [false; 3]);
             return (acts, view);
         }
         let now = self.started.elapsed().as_secs_f64();
@@ -640,6 +839,10 @@ impl EditorUi {
         let input = self.input.as_mut().expect("ensured");
         input.update(now, if blocked { &empty } else { ui_events }, if blocked { &[] } else { pads });
         if blocked {
+            // Another screen holds the window: the human's release would never be read here
+            // (review R2 of m5-eddraw, N1: their hold then kept every agent out of the
+            // viewport, silently, until their next click).
+            self.holds.drop_side(Side::Human, &mut [false; 3]);
             return (acts, view);
         }
         if !typing && input.pressed("editor_toggle") {
@@ -669,6 +872,15 @@ impl EditorUi {
             ] {
                 if i.pressed(name) {
                     acts.push(act);
+                }
+            }
+            // The brush's size, without leaving the stroke for the Draw bar (letters: the
+            // bracket keys have no code that holds on every keyboard layout).
+            if self.brush.is_some() {
+                for (name, wider) in [("editor_brush_narrower", false), ("editor_brush_wider", true)] {
+                    if i.pressed(name) {
+                        acts.push(UiAct::Brush(BrushAct::Radius(wider)));
+                    }
                 }
             }
         }
@@ -707,45 +919,77 @@ impl EditorUi {
         view.zoom = input.value("editor_zoom");
         let mut pressed = [false; 3];
         let mut released = [false; 3];
+        let side = if self.injected_pass { Side::Agent } else { Side::Human };
+        // (An agent's frame is its pointer acting, whatever it holds; the human's is when their
+        // pointer does something.)
+        let pointer_event = |e: &Event| matches!(e, Event::MouseMove { .. } | Event::MouseDown { .. } | Event::MouseUp { .. } | Event::MouseWheel { .. } | Event::PointerDown { .. } | Event::PointerMove { .. } | Event::PointerUp { .. });
+        let presses = events.iter().any(|e| matches!(e, Event::MouseDown { .. } | Event::PointerDown { .. }));
+        let active = self.injected_pass || events.iter().any(pointer_event);
+        // The other side's quiet hold ends with this side's press (or by itself, after
+        // minutes): what it held is cancelled, and this frame's press is the one that ended it,
+        // not a press of its own (press again).
+        for e in events {
+            if let Event::MouseMove { x, y } | Event::MouseDown { x, y, .. } | Event::MouseUp { x, y, .. } | Event::PointerDown { x, y, .. } | Event::PointerMove { x, y, .. } | Event::PointerUp { x, y, .. } = *e {
+                self.holds.pointers[Holds::at(side)] = Some([x as f32, y as f32]);
+            }
+            // (This side's own Shift and Ctrl; its own focus loss lets them go.)
+            let mods = &mut self.holds.mods[Holds::at(side)];
+            match *e {
+                Event::KeyDown { code: VK_SHIFT, .. } => mods[0] = true,
+                Event::KeyUp { code: VK_SHIFT } => mods[0] = false,
+                Event::KeyDown { code: VK_CONTROL, .. } => mods[1] = true,
+                Event::KeyUp { code: VK_CONTROL } => mods[1] = false,
+                Event::Focused(false) => *mods = [false; 2],
+                _ => {}
+            }
+        }
+        let took_back = self.holds.begin(side, now, active, presses, &mut released);
+        if took_back {
+            view.focus_lost = true;
+            view.hold_lapsed = true;
+        }
+        let mut refused = 0u8;
         for e in events {
             match *e {
                 Event::MouseDown { button, .. } => {
                     if let Some(b) = button_index(button) {
-                        pressed[b] = true;
-                        self.buttons[b] = true;
+                        if !took_back && self.holds.press(side, b) {
+                            pressed[b] = true;
+                        } else {
+                            refused = refused.saturating_add(1);
+                        }
                     }
                 }
                 Event::MouseUp { button, .. } => {
-                    if let Some(b) = button_index(button) {
+                    if let Some(b) = button_index(button).filter(|b| self.holds.release(side, *b)) {
                         released[b] = true;
-                        self.buttons[b] = false;
                     }
                 }
-                Event::PointerDown { id, kind, .. } if kind != PointerKind::Mouse && self.contact.is_none() => {
-                    self.contact = Some(id);
-                    pressed[0] = true;
-                    self.buttons[0] = true;
-                }
-                Event::PointerUp { id, .. } if self.contact == Some(id) => {
-                    self.contact = None;
-                    released[0] = true;
-                    self.buttons[0] = false;
+                Event::PointerDown { id, kind, .. } if kind != PointerKind::Mouse => match self.holds.contact_down(side, id).filter(|_| !took_back) {
+                    Some(true) => pressed[0] = true,
+                    Some(false) => refused = refused.saturating_add(1),
+                    None if took_back => refused = refused.saturating_add(1),
+                    None => {}
+                },
+                Event::PointerUp { id, .. } => {
+                    if self.holds.contact_up(side, id) {
+                        released[0] = true;
+                    }
                 }
                 Event::MouseWheel { delta } => view.wheel += delta,
-                Event::Focused(false) => {
-                    view.focus_lost = true;
-                    for (b, held) in self.buttons.iter_mut().enumerate() {
-                        if *held {
-                            released[b] = true;
-                        }
-                        *held = false;
-                    }
-                    self.contact = None;
-                }
+                // A side's focus loss ends what that side holds (the human's release would go to
+                // another window): said to the viewport when it let something go, or when
+                // nobody holds anything.
+                Event::Focused(false) if self.holds.drop_side(side, &mut released) || self.holds.holder().is_none() => view.focus_lost = true,
                 _ => {}
             }
         }
-        if let (Some(id), Some(t)) = (self.contact, input.touches().iter().find(|t| Some(t.id) == self.contact)) {
+        // (Its holder's own pointer and modifiers, not the window's shared ones: see `Holds`.)
+        if let Some(at) = self.holds.pointer() {
+            view.pointer = Some(at);
+        }
+        (view.shift, view.ctrl) = self.holds.modifiers((view.shift, view.ctrl));
+        if let (Some(id), Some(t)) = (self.holds.contact, input.touches().iter().find(|t| Some(t.id) == self.holds.contact)) {
             let _ = id;
             view.pointer = Some([t.x, t.y]);
         }
@@ -755,10 +999,14 @@ impl EditorUi {
             self.ui_press = events_out.consumed.pointer;
         }
         view.over_ui = events_out.consumed.pointer || self.ui_press;
-        if !self.buttons.iter().any(|b| *b) && !any_pressed {
+        // A press that landed on a panel was the panel's (and it acted): only a press meant
+        // for the viewport is one that was "not taken". (Review R3 of m5-eddraw, F1: an agent
+        // told to retry a toolbar click pressed it twice.)
+        view.presses_refused = if view.over_ui { 0 } else { refused };
+        if self.holds.holder().is_none() && !any_pressed {
             self.ui_press = false;
         }
-        let b = |i: usize| Btn { pressed: pressed[i], held: self.buttons[i], released: released[i] };
+        let b = |i: usize| Btn { pressed: pressed[i], held: self.holds.buttons[i], released: released[i] };
         view.left = b(0);
         view.right = b(1);
         view.middle = b(2);
@@ -839,6 +1087,15 @@ impl EditorUi {
             "mode_translate" => acts.push(UiAct::Mode(Mode::Translate)),
             "mode_rotate" => acts.push(UiAct::Mode(Mode::Rotate)),
             "mode_scale" => acts.push(UiAct::Mode(Mode::Scale)),
+            "draw_bar" => acts.push(UiAct::Brush(BrushAct::Bar)),
+            "brush_sculpt" => acts.push(UiAct::Brush(BrushAct::Sculpt)),
+            "brush_splat" => acts.push(UiAct::Brush(BrushAct::Splat)),
+            "brush_paint" => acts.push(UiAct::Brush(BrushAct::Paint)),
+            "brush_path" => acts.push(UiAct::Brush(BrushAct::Path)),
+            "brush_radius_up" => acts.push(UiAct::Brush(BrushAct::Radius(true))),
+            "brush_radius_down" => acts.push(UiAct::Brush(BrushAct::Radius(false))),
+            "brush_amount_up" => acts.push(UiAct::Brush(BrushAct::Amount(true))),
+            "brush_amount_down" => acts.push(UiAct::Brush(BrushAct::Amount(false))),
             "space_toggle" => acts.push(UiAct::SpaceToggle),
             "snap_toggle" => acts.push(UiAct::SnapToggle),
             "editor_undo" => acts.push(UiAct::Undo),
@@ -924,6 +1181,25 @@ impl EditorUi {
         s.set_bool("mode_t", self.mode == Mode::Translate);
         s.set_bool("mode_r", self.mode == Mode::Rotate);
         s.set_bool("mode_s", self.mode == Mode::Scale);
+        let kind = self.brush.as_ref().map(|b| b.kind);
+        let sculpting = matches!(kind, Some(BrushKind::Raise | BrushKind::Lower | BrushKind::Flatten | BrushKind::Smooth));
+        s.set_bool("draw_bar", self.draw_bar);
+        s.set_bool("brush_on", self.brush.is_some());
+        s.set_bool("brush_sculpt", sculpting);
+        s.set_bool("brush_splat", matches!(kind, Some(BrushKind::Splat(_))));
+        s.set_bool("brush_paint", kind == Some(BrushKind::Paint));
+        s.set_bool("brush_path", matches!(kind, Some(BrushKind::Path(_))));
+        s.set_str("path_label", &match kind {
+            Some(BrushKind::Path(k)) => format!("Path: sweep {}", k + 1),
+            _ => "Path".to_owned(),
+        });
+        s.set_str("sculpt_label", &kind.filter(|_| sculpting).map_or("Sculpt".to_owned(), |k| format!("Sculpt: {}", k.name())));
+        s.set_str("splat_label", &match kind {
+            Some(BrushKind::Splat(layer)) => format!("Splat: layer {layer}"),
+            _ => "Splat".to_owned(),
+        });
+        s.set_str("paint_label", &self.brush.as_ref().filter(|b| b.kind == BrushKind::Paint).map_or("Paint".to_owned(), |b| format!("Paint: {}", b.color)));
+        s.set_str("brush_label", &self.brush.as_ref().map_or("Pick a brush; then drag on the selected terrain or model.".to_owned(), Brush::label));
         s.set_str("space_label", if self.space == Space::World { "World" } else { "Local" });
         s.set_bool("snap_on", self.snap.on);
         let snap = format!("Snap {} m {} deg x{}", num(self.snap.translate), num(self.snap.rotate), num(self.snap.scale));
@@ -1139,6 +1415,8 @@ const WIDGETS: &[&str] = &[
     "tb_delete", "tb_close", "ol_search", "ol_search_clear", "ol_top", "ol_prev", "ol_next", "in_name", "in_text", "f_px", "f_py", "f_pz", "f_rx", "f_ry", "f_rz", "f_sx",
     "f_sy", "f_sz", "f_cr", "f_cg", "f_cb", "f_down", "f_up", "f_ok", "f_visible", "ed_viewport", "ed_outliner", "ed_inspector", "ed_toolbar", "ed_status",
     // The swarm panels and "highlight and ask".
+    // The draw tools.
+    "tb_draw", "tb_draw_on", "ed_draw", "br_sculpt", "br_sculpt_on", "br_splat", "br_splat_on", "br_paint", "br_paint_on", "br_path", "br_path_on", "br_r_down", "br_r_up", "br_a_down", "br_a_up",
     "tb_claims", "tb_claims_on", "tb_ask", "in_ask", "tab_inspector", "tab_inspector_on", "tab_swarm", "tab_swarm_on", "sw_panel", "sw_journal", "sw_journal_on",
     "sw_claims", "sw_claims_on", "sw_board", "sw_board_on", "sw_review", "sw_review_on", "sw_cost", "sw_cost_on", "sw_agent", "sw_place", "sw_game", "sw_show",
     "sw_list", "sw_open_review", "sw_newest", "sw_newer", "sw_older",
@@ -1176,6 +1454,91 @@ fn tail(s: &str, n: usize) -> String {
 fn row_of(id: &str) -> Option<usize> {
     let open = id.rfind('[')?;
     id[open + 1..].strip_suffix(']')?.parse().ok()
+}
+
+impl EditorUi {
+    /// A press on the Draw bar. The bar closed means no brush; a brush button pressed again
+    /// steps to its next op, layer or colour; size and strength are kept from brush to brush.
+    pub fn brush_act(&mut self, a: BrushAct) {
+        let held = self.brush.as_ref().map(|b| b.kind);
+        let with = |kind: BrushKind, kept: &Brush| Brush { kind, ..kept.clone() };
+        match a {
+            BrushAct::Bar => {
+                self.draw_bar = !self.draw_bar;
+                if !self.draw_bar {
+                    self.brush = None;
+                }
+            }
+            BrushAct::Sculpt => {
+                let kind = match held {
+                    Some(k @ (BrushKind::Raise | BrushKind::Lower | BrushKind::Flatten | BrushKind::Smooth)) => k.next_sculpt(),
+                    _ => BrushKind::Raise,
+                };
+                self.brush = Some(with(kind, &self.brush_kept));
+            }
+            BrushAct::Splat => {
+                let layer = match held {
+                    Some(BrushKind::Splat(l)) => (l + 1) % 4,
+                    _ => 0,
+                };
+                self.brush = Some(with(BrushKind::Splat(layer), &self.brush_kept));
+            }
+            BrushAct::Paint => {
+                let mut b = with(BrushKind::Paint, &self.brush_kept);
+                if held == Some(BrushKind::Paint) {
+                    b.color = b.next_color().to_owned();
+                }
+                self.brush = Some(b);
+            }
+            BrushAct::Path => {
+                let sweep = match held {
+                    Some(BrushKind::Path(k)) => (k + 1) % crate::editor_brush::MAX_PATH_SWEEPS,
+                    _ => 0,
+                };
+                self.brush = Some(with(BrushKind::Path(sweep), &self.brush_kept));
+            }
+            BrushAct::Radius(up) => {
+                if let Some(b) = self.brush.as_mut() {
+                    b.radius = b.stepped_radius(up);
+                }
+            }
+            BrushAct::Amount(up) => {
+                if let Some(b) = self.brush.as_mut() {
+                    b.amount = b.stepped_amount(up);
+                }
+            }
+        }
+        if let Some(b) = &self.brush {
+            self.draw_bar = true;
+            self.brush_kept = b.clone();
+        }
+        self.dirty = true;
+    }
+
+    /// Whether an agent's injected frames hold the viewport's buttons now (a drag or a stroke of
+    /// theirs is in progress): the viewport is theirs until they release, or their hold ends.
+    pub fn agent_holds(&self) -> bool {
+        self.holds.holder() == Some(Side::Agent)
+    }
+
+    /// Whether the human's own hand holds them: the viewport is theirs, and an agent's injected
+    /// frames move nothing in it meanwhile.
+    pub fn human_holds(&self) -> bool {
+        self.holds.holder() == Some(Side::Human)
+    }
+
+    /// The human's holds are let go (the window takes no input for them: another screen holds
+    /// it, the Ask box, minimized). Whether they held anything.
+    pub fn release_human_holds(&mut self) -> bool {
+        self.holds.drop_side(Side::Human, &mut [false; 3])
+    }
+
+    /// Puts the brush down (Escape, or the editor closing); the bar stays as it is.
+    pub fn brush_down(&mut self) -> bool {
+        let had = self.brush.take().is_some();
+        self.dirty |= had;
+        had
+    }
 }
 
 #[cfg(test)]
@@ -1288,6 +1651,187 @@ mod tests {
         e.overlay(&mut NoGpu, size, 60_000, &[], &mut quads);
         e.frame(&[Event::MouseUp { button: MouseButton::Left, x, y }], &[], size, false);
         assert_eq!(e.typing().map(|(f, _)| f), Some(FieldKey::Pos(1)), "the click on the Y field went through");
+    }
+
+    /// The rule itself ([`Holds`]): all held buttons belong to one side; the other side's
+    /// press and release are not read; a quiet hold yields to a press, and lapses by itself
+    /// after minutes; no contact outlives its button. (A live run lost an agent's stroke to a
+    /// click in another window; reviews R1 and R2 of m5-eddraw found the mixed states.)
+    #[test]
+    fn all_held_buttons_belong_to_one_side_and_a_quiet_hold_yields() {
+        let mut none = [false; 3];
+        for (holder, other) in [(Side::Agent, Side::Human), (Side::Human, Side::Agent)] {
+            let mut h = Holds::default();
+            assert!(!h.begin(holder, 10.0, true, true, &mut none) && h.press(holder, 0));
+            assert_eq!(h.holder(), Some(holder));
+            // The other side: no press of any button, no release, no contact.
+            assert!(!h.press(other, 0) && !h.press(other, 1) && !h.release(other, 0));
+            assert_eq!(h.contact_down(other, 7), Some(false));
+            assert!(h.contact.is_none() && h.buttons == [true, false, false] && h.holder() == Some(holder));
+            assert!(!h.drop_side(other, &mut none), "its focus loss lets go of nothing");
+            // The holder presses a second button and releases both: nobody holds.
+            assert!(h.press(holder, 1) && h.release(holder, 0) && h.holder() == Some(holder));
+            assert!(h.release(holder, 1) && h.holder().is_none());
+            // Quiet for under the limit: the other's press is still refused. Past it: the press
+            // ends the hold (and is not itself a press). With no press, it holds for minutes.
+            assert!(h.press(holder, 0));
+            h.last[Holds::at(holder)] = 10.0;
+            assert!(!h.begin(other, 10.0 + AGENT_HOLD_S - 0.1, true, true, &mut none));
+            assert!(!h.begin(other, 10.0 + AGENT_HOLD_S + 1.0, true, false, &mut none), "quiet, but nobody presses");
+            let mut released = [false; 3];
+            assert!(h.begin(other, 10.0 + AGENT_HOLD_S + 1.0, true, true, &mut released));
+            assert!(released == [true, false, false] && h.holder().is_none());
+            assert!(h.press(holder, 2));
+            h.last[Holds::at(holder)] = 10.0;
+            assert!(!h.begin(other, 10.0 + AGENT_HOLD_MAX_S - 1.0, false, false, &mut none));
+            assert!(h.begin(other, 10.0 + AGENT_HOLD_MAX_S + 1.0, false, false, &mut none) && h.holder().is_none());
+            // The holder's own activity keeps its hold (it is not quiet).
+            assert!(h.press(holder, 0));
+            h.last[Holds::at(holder)] = 10.0;
+            assert!(!h.begin(holder, 10.0 + AGENT_HOLD_S + 100.0, true, false, &mut none));
+            assert!(!h.begin(other, 10.0 + AGENT_HOLD_S + 101.0, true, true, &mut none), "it moved a second ago");
+        }
+        // A contact is the left button: it never outlives it (review R2, N2: a lapse cleared the
+        // button and left the contact, and every later touch read as not pressed).
+        let mut h = Holds::default();
+        assert_eq!(h.contact_down(Side::Agent, 9), Some(true));
+        assert_eq!(h.contact_down(Side::Agent, 10), None, "a second finger is no press");
+        h.last[1] = 0.0;
+        assert!(h.begin(Side::Human, AGENT_HOLD_S + 1.0, true, true, &mut none) && h.contact.is_none());
+        assert_eq!(h.contact_down(Side::Human, 3), Some(true), "the human's next touch is theirs");
+        assert!(!h.contact_up(Side::Human, 4) && h.contact_up(Side::Human, 3) && h.holder().is_none());
+        // A touch down then the same side's mouse-up of the left button: the contact goes too.
+        assert_eq!(h.contact_down(Side::Agent, 5), Some(true));
+        assert!(h.release(Side::Agent, 0) && h.contact.is_none() && h.holder().is_none());
+        // A focus loss ends what its own side holds.
+        assert!(h.press(Side::Human, 0) && h.press(Side::Human, 2));
+        let mut released = [false; 3];
+        assert!(h.drop_side(Side::Human, &mut released) && released == [true, false, true] && h.holder().is_none());
+    }
+
+    /// The same through a frame's events: what the viewport is told.
+    #[test]
+    fn the_viewport_is_told_whose_hold_it_is_and_what_was_refused() {
+        use specula_platform::PointerKind;
+        let size = (1280, 800);
+        let (x, y) = (640, 400);
+        let down = Event::MouseDown { button: MouseButton::Left, x, y };
+        let up = Event::MouseUp { button: MouseButton::Left, x, y };
+        let mut e = test_ui();
+        e.open();
+        e.frame(&[], &[], size, false);
+        // The human's own drag: a focus loss releases it and says so.
+        let (_, v) = e.frame(&[Event::MouseMove { x, y }, down.clone()], &[], size, false);
+        assert!(v.left.pressed && v.left.held && e.human_holds() && v.presses_refused == 0);
+        // (An agent's press meanwhile is refused and counted; its release and its own focus
+        // loss touch nothing of the human's.)
+        e.injected_pass = true;
+        let (_, v) = e.frame(&[down.clone(), Event::MouseDown { button: MouseButton::Right, x, y }], &[], size, false);
+        assert!(!v.left.pressed && !v.right.pressed && v.presses_refused == 2 && e.human_holds(), "{v:?}");
+        let (_, v) = e.frame(&[up.clone(), Event::Focused(false)], &[], size, false);
+        assert!(!v.left.released && !v.focus_lost && v.left.held && e.human_holds(), "{v:?}");
+        e.injected_pass = false;
+        let (_, v) = e.frame(&[Event::Focused(false)], &[], size, false);
+        assert!(v.focus_lost && v.left.released && !v.left.held && !e.human_holds());
+        // An agent's hold: the window's focus loss, the human's mouse, touch and pen leave it.
+        e.injected_pass = true;
+        let (_, v) = e.frame(&[Event::MouseMove { x, y }, down.clone()], &[], size, false);
+        assert!(v.left.pressed && e.agent_holds());
+        e.injected_pass = false;
+        let (_, v) = e.frame(&[Event::Focused(false), up.clone(), down.clone()], &[], size, false);
+        assert!(!v.focus_lost && !v.left.released && !v.left.pressed && v.left.held && v.presses_refused == 1 && e.agent_holds(), "{v:?}");
+        for kind in [PointerKind::Touch, PointerKind::Pen] {
+            let (_, v) = e.frame(&[Event::PointerDown { id: 5, kind, x: x + 30, y }], &[], size, false);
+            assert!(!v.left.pressed && v.left.held && v.presses_refused == 1, "{kind:?}");
+            let (_, v) = e.frame(&[Event::PointerUp { id: 5, kind, x: x + 30, y }], &[], size, false);
+            assert!(!v.left.released && v.left.held && e.agent_holds(), "{kind:?}");
+        }
+        // The agent's own release ends it; the human's next press is theirs.
+        e.injected_pass = true;
+        let (_, v) = e.frame(std::slice::from_ref(&up), &[], size, false);
+        assert!(v.left.released && !e.agent_holds());
+        // An agent that pressed and went quiet: the human's press takes the viewport back (that
+        // press ends the hold and is not taken itself; their next one is).
+        e.frame(std::slice::from_ref(&down), &[], size, false);
+        e.injected_pass = false;
+        e.holds.last[1] -= AGENT_HOLD_S + 1.0;
+        let (_, v) = e.frame(&[Event::MouseMove { x, y }], &[], size, false);
+        assert!(!v.hold_lapsed && v.left.held && e.agent_holds(), "quiet, but the human only moved");
+        let (_, v) = e.frame(std::slice::from_ref(&down), &[], size, false);
+        assert!(v.hold_lapsed && v.focus_lost && v.left.released && !v.left.pressed && !v.left.held && v.presses_refused == 1, "{v:?}");
+        let (_, v) = e.frame(std::slice::from_ref(&down), &[], size, false);
+        assert!(v.left.pressed && e.human_holds() && !v.hold_lapsed);
+        // The other way (review R2, N1): a human hold whose release never came yields to an
+        // agent's press once it has been quiet.
+        e.holds.last[0] -= AGENT_HOLD_S + 1.0;
+        e.injected_pass = true;
+        let (_, v) = e.frame(std::slice::from_ref(&down), &[], size, false);
+        assert!(v.hold_lapsed && v.focus_lost && v.presses_refused == 1 && !e.human_holds() && !e.agent_holds(), "{v:?}");
+        let (_, v) = e.frame(std::slice::from_ref(&down), &[], size, false);
+        assert!(v.left.pressed && e.agent_holds());
+        e.frame(std::slice::from_ref(&up), &[], size, false);
+        e.injected_pass = false;
+        // A window that takes no input for the human lets their hold go: blocked by another
+        // screen, minimized, or told so by the engine (the Ask box); and closing forgets all.
+        for case in 0..4 {
+            let (_, v) = e.frame(std::slice::from_ref(&down), &[], size, false);
+            assert!(v.left.pressed && e.human_holds(), "case {case}");
+            match case {
+                0 => drop(e.frame(&[], &[], size, true)),
+                1 => drop(e.frame(&[], &[], (0, 0), false)),
+                2 => assert!(e.release_human_holds()),
+                _ => {
+                    e.close();
+                    e.open();
+                }
+            }
+            assert!(!e.human_holds(), "case {case}");
+        }
+        // The viewport's pointer is its holder's own: an agent's injected moves don't bend a
+        // stroke the human is drawing (found by the live check: the human's stroke was sent
+        // with the agent's points in it), nor the human's mouse an agent's.
+        let (_, v) = e.frame(&[Event::MouseMove { x: 300, y: 300 }, Event::MouseDown { button: MouseButton::Left, x: 300, y: 300 }], &[], size, false);
+        assert_eq!(v.pointer, Some([300.0, 300.0]));
+        e.injected_pass = true;
+        e.frame(&[Event::MouseMove { x: 900, y: 500 }], &[], size, false);
+        e.injected_pass = false;
+        let (_, v) = e.frame(&[], &[], size, false);
+        assert_eq!(v.pointer, Some([300.0, 300.0]), "the human holds: their own pointer");
+        let (_, v) = e.frame(&[Event::MouseUp { button: MouseButton::Left, x: 310, y: 300 }], &[], size, false);
+        assert_eq!(v.pointer, Some([310.0, 300.0]));
+        // With nothing held the pointer is whichever side's acted last (an agent's hover shows).
+        e.injected_pass = true;
+        e.frame(&[Event::MouseMove { x: 900, y: 500 }, Event::MouseDown { button: MouseButton::Left, x: 900, y: 500 }], &[], size, false);
+        e.injected_pass = false;
+        let (_, v) = e.frame(&[Event::MouseMove { x: 20, y: 20 }], &[], size, false);
+        assert_eq!(v.pointer, Some([900.0, 500.0]), "the agent holds: its pointer, whatever the human's mouse does");
+        e.injected_pass = true;
+        e.frame(&[Event::MouseUp { button: MouseButton::Left, x: 900, y: 500 }], &[], size, false);
+        e.injected_pass = false;
+        let (_, v) = e.frame(&[], &[], size, false);
+        assert_eq!(v.pointer, Some([900.0, 500.0]), "nothing held: the agent's pointer acted last");
+        let (_, v) = e.frame(&[Event::MouseMove { x: 20, y: 20 }], &[], size, false);
+        assert_eq!(v.pointer, Some([20.0, 20.0]), "then the human's");
+        // A side's own Shift and Ctrl while it holds (review R3, F2: the window's focus loss
+        // dropped the Ctrl an agent's drag held, and its snapping flipped mid-drag).
+        e.injected_pass = true;
+        e.frame(&[Event::MouseUp { button: MouseButton::Left, x: 900, y: 500 }], &[], size, false);
+        let (_, v) = e.frame(&[Event::KeyDown { code: 0x11, repeat: false }, Event::MouseMove { x: 700, y: 400 }, Event::MouseDown { button: MouseButton::Left, x: 700, y: 400 }], &[], size, false);
+        assert!(v.ctrl && !v.shift && v.left.pressed && e.agent_holds(), "{v:?}");
+        e.injected_pass = false;
+        e.frame(&[Event::Focused(false), Event::KeyDown { code: 0x10, repeat: false }], &[], size, false);
+        e.injected_pass = true;
+        let (_, v) = e.frame(&[Event::MouseMove { x: 720, y: 400 }], &[], size, false);
+        assert!(v.ctrl && !v.shift && v.left.held, "the agent's Ctrl is its own; the human's Shift is not its: {v:?}");
+        let (_, v) = e.frame(&[Event::KeyUp { code: 0x11 }, Event::MouseUp { button: MouseButton::Left, x: 720, y: 400 }], &[], size, false);
+        assert!(v.left.released && !e.agent_holds());
+        e.injected_pass = false;
+        // (An agent's hold is not the blocked window's to end: its frames wait and come back.)
+        e.injected_pass = true;
+        e.frame(std::slice::from_ref(&down), &[], size, false);
+        e.injected_pass = false;
+        e.frame(&[], &[], size, true);
+        assert!(e.agent_holds() && !e.release_human_holds());
     }
 
     #[test]

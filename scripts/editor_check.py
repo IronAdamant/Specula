@@ -50,6 +50,7 @@ import time
 import zlib
 from pathlib import Path
 
+import specula_mcp
 from specula_mcp import ROOT, Engine
 from sepulcra_play import EXE
 from m2_exit import PERF_TOML, is_frame_metric, other_engines
@@ -115,14 +116,11 @@ def find_window(pid):
 
 
 def park_cursor(hwnd):
-    """Moves the physical cursor off the window (beside it), so its moves never mix with the
-    injected input (review R1: an OS click once selected 12 entities when the cursor hovered)."""
-    if not hwnd:
-        return
-    r = wintypes.RECT()
-    user32.GetWindowRect(hwnd, ctypes.byref(r))
-    x = r.right + 40 if r.left < 200 else r.left - 40
-    user32.SetCursorPos(int(x), int(r.top + 10))
+    """Keeps the human's pointer from mixing with the injected input (review R1: an OS click
+    once selected 12 entities when the cursor hovered over the window) WITHOUT touching the
+    pointer: the engine's window is moved out from under it (specula_mcp.clear_of_pointer).
+    The name is from when this moved the pointer; it never does now (owner, 2026-11-13)."""
+    specula_mcp.clear_of_pointer(hwnd)
 
 
 def os_key(hwnd, vk):

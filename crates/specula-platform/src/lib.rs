@@ -31,11 +31,16 @@ pub struct WindowDesc {
     /// Hidden windows still have a valid surface handle (useful for tests).
     pub visible: bool,
     pub resizable: bool,
+    /// Whether showing the window makes it the active one (it takes the keyboard). `false`: it
+    /// is shown behind the other windows, and the window the human is in keeps the keyboard and
+    /// stays in front: for an engine that an agent or a script starts on a machine someone is
+    /// using.
+    pub activate: bool,
 }
 
 impl Default for WindowDesc {
     fn default() -> Self {
-        WindowDesc { title: "Specula".into(), width: 1280, height: 720, visible: true, resizable: true }
+        WindowDesc { title: "Specula".into(), width: 1280, height: 720, visible: true, resizable: true, activate: true }
     }
 }
 

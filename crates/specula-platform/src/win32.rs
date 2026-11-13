@@ -135,6 +135,8 @@ extern "system" {
     fn ShowWindow(hwnd: Hwnd, cmd: i32) -> i32;
     fn IsWindowVisible(hwnd: Hwnd) -> i32;
     fn SetCapture(hwnd: Hwnd) -> Hwnd;
+    #[cfg(test)]
+    fn GetForegroundWindow() -> Hwnd;
     fn ReleaseCapture() -> i32;
     fn ScreenToClient(hwnd: Hwnd, point: *mut Point) -> i32;
     fn GetPointerType(pointer_id: u32, pointer_type: *mut u32) -> i32;
@@ -230,6 +232,8 @@ const GWLP_USERDATA: i32 = -21;
 const PM_REMOVE: u32 = 0x0001;
 const SW_HIDE: i32 = 0;
 const SW_SHOW: i32 = 5;
+const SW_SHOWNOACTIVATE: i32 = 4;
+const SWP_NOSIZE: u32 = 0x0001;
 const SWP_NOMOVE: u32 = 0x0002;
 const SWP_NOZORDER: u32 = 0x0004;
 const SWP_NOACTIVATE: u32 = 0x0010;
@@ -448,8 +452,10 @@ impl Window {
             // SAFETY: as above; flags keep position and Z order.
             unsafe { SetWindowPos(hwnd, null_mut(), 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE) };
         }
-        if desc.visible {
+        if desc.visible && desc.activate {
             window.set_visible(true);
+        } else if desc.visible {
+            window.show_inactive();
         }
         Ok(window)
     }
@@ -501,6 +507,25 @@ impl Window {
                 ImmSetCompositionWindow(himc, &form);
                 ImmReleaseContext(self.hwnd, himc);
             }
+        }
+    }
+
+    /// Shows the window without making it the active one ([`WindowDesc::activate`]): the window
+    /// the human is in keeps the keyboard, and stays in front (this one opens behind the
+    /// others; the taskbar brings it forward).
+    fn show_inactive(&mut self) {
+        /// `HWND_BOTTOM`: behind every other window.
+        const BOTTOM: Hwnd = 1 as Hwnd;
+        // SAFETY: `hwnd` is a live window owned by this thread; the flags keep its place and
+        // size and activate nothing.
+        unsafe {
+            ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
+            // (As in `set_visible`: a launcher's STARTUPINFO may override a process's first
+            // ShowWindow; a second call is honoured as given.)
+            if IsWindowVisible(self.hwnd) == 0 {
+                ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
+            }
+            SetWindowPos(self.hwnd, BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
     }
 
@@ -946,7 +971,7 @@ mod tests {
     }
 
     fn hidden(width: u32, height: u32) -> WindowDesc {
-        WindowDesc { title: "specula-platform test".into(), width, height, visible: false, resizable: true }
+        WindowDesc { title: "specula-platform test".into(), width, height, visible: false, resizable: true, activate: true }
     }
 
     fn try_window(desc: &WindowDesc) -> Option<PubWindow> {
@@ -967,6 +992,22 @@ mod tests {
 
     fn point(x: i16, y: i16) -> isize {
         ((usize::from(y as u16) << 16) | usize::from(x as u16)) as isize
+    }
+
+    /// `WindowDesc::activate = false` (the engine's `--no-activate`): the window is shown, and
+    /// it is not the window the human is in. An engine an agent or a script starts on a
+    /// machine someone is using must not take their keyboard (owner, 2026-11-13; review R3 of
+    /// m5-eddraw, F9: nothing tested it). The window opens behind the others for the moment
+    /// this test lasts.
+    #[test]
+    fn a_window_shown_without_activating_is_visible_and_never_the_foreground_one() {
+        let desc = WindowDesc { visible: true, activate: false, ..hidden(200, 120) };
+        let Some(window) = try_window(&desc) else { return };
+        let hwnd = window.raw().hwnd;
+        // SAFETY: queries on a live window handle, and of the desktop's foreground window.
+        let (visible, foreground) = unsafe { (IsWindowVisible(hwnd), GetForegroundWindow()) };
+        assert_ne!(visible, 0, "it is shown");
+        assert_ne!(foreground, hwnd, "and the foreground window is still someone else's (or none)");
     }
 
     #[test]

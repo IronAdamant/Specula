@@ -1261,9 +1261,10 @@ impl Engine {
             j.push(("refused_players_only", Json::from(players_only)));
         }
         // On the editor a press may have made an edit: a protocol command the window's next
-        // frame sends as window:owner (via this agent), so how it went isn't known yet. The
-        // answer says so. (Review R1 of m5-edswarm, minor 7: it said nothing; `editor_input`
-        // waits for its frames and returns the editor's state.)
+        // frame sends as window:owner (via this agent), so how it went isn't known yet. This
+        // answer says so, and the dispatcher holds it until the edit is answered: then
+        // `edit` says how it went (`Engine::editor_hold_answer`). It is sent as it stands
+        // only at the call's deadline. (Review R1 of m5-edswarm, minor 7.)
         if s == Surface::Editor {
             let queued = self.editor_queued_edits(self.dispatch_call);
             if !queued.is_empty() {
@@ -1271,9 +1272,15 @@ impl Engine {
                     "edit",
                     Json::obj([
                         ("queued", Json::arr(queued.into_iter().map(Json::from))),
-                        ("outcome", Json::from("not known yet: the window's next frame sends it as window:owner (via you). editor_state's status and world_history then say how it went; editor_input waits for its frames and returns that state")),
+                        ("outcome", Json::from("not known yet: the edit was sent as window:owner (via you) and was not answered within this call's time. editor_state's status and world_history say how it went")),
                     ]),
                 ));
+            }
+        }
+        if s == Surface::Editor {
+            // Presses the human's own hold kept from being taken: the drag did not start.
+            if let Some(refused) = self.editor_refused_presses(self.dispatch_call) {
+                j.push(("presses_refused", refused));
             }
         }
         if let Some(why) = ran.stopped {

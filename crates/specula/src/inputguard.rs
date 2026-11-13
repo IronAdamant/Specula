@@ -229,6 +229,9 @@ impl Actor {
 #[must_use = "a Seen is the monitor's record of an action: hand it to the action"]
 pub struct Seen {
     seq: u64,
+    /// An agent did it (not the human at the window, nor the engine carrying on what the human
+    /// did).
+    by_agent: bool,
 }
 
 impl Seen {
@@ -236,12 +239,25 @@ impl Seen {
     pub fn seq(&self) -> u64 {
         self.seq
     }
+
+    /// Whether an agent did this. A screen an agent puts on the window starts with its focus
+    /// on Close (owner, 2026-11-13): the screens read it here, from the monitor's own record
+    /// of who acted, so no caller can open one on a decision by leaving a step out.
+    pub fn by_agent(&self) -> bool {
+        self.by_agent
+    }
 }
 
-/// Tests elsewhere in the crate exercise the guarded actions directly.
+/// Tests elsewhere in the crate exercise the guarded actions directly (as the human would).
 #[cfg(test)]
 pub(crate) fn seen_for_test() -> Seen {
-    Seen { seq: 0 }
+    Seen { seq: 0, by_agent: false }
+}
+
+/// As [`seen_for_test`], for an action an agent took.
+#[cfg(test)]
+pub(crate) fn seen_by_agent_for_test() -> Seen {
+    Seen { seq: 0, by_agent: true }
 }
 
 /// One thing the monitor saw.
@@ -593,7 +609,7 @@ fn classify(s: &State, channel: Channel, actor: &Actor, outcome: Outcome<'_>) ->
 /// action takes. A lead's action raises an alert; an action by an agent below what the channel
 /// allows (it got past a check that should have refused it) is an incident.
 pub fn done(channel: Channel, what: &str, actor: &Actor, detail: &str) -> Seen {
-    Seen { seq: record(channel, what, actor, Outcome::Done, detail) }
+    Seen { seq: record(channel, what, actor, Outcome::Done, detail), by_agent: matches!(actor, Actor::Agent { .. }) }
 }
 
 /// Records an explicit refused attempt by `actor` (refused with `code`): a security incident for

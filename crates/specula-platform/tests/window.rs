@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use specula_platform::{Event, Window, WindowDesc};
 
 fn hidden(width: u32, height: u32) -> WindowDesc {
-    WindowDesc { title: "specula-platform test".into(), width, height, visible: false, resizable: true }
+    WindowDesc { title: "specula-platform test".into(), width, height, visible: false, resizable: true, activate: true }
 }
 
 /// `None` (after printing the reason) when windows can't be created here.

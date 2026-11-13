@@ -35,6 +35,64 @@ def _physical_window_pixels():
 _physical_window_pixels()
 
 
+_POINTER_NOTED = []
+
+
+def clear_of_pointer(hwnd, margin=8):
+    """Gets the engine's window out from under the human's mouse pointer WITHOUT moving the
+    pointer: the window is moved, to the corner of its own monitor farthest from the pointer.
+
+    A pointer over the engine's window mixes into what a script injects there (a real mouse-move
+    between an injected press and release drags a selection box). Scripts used to move the
+    pointer away. Someone may be using this machine: their pointer is theirs, and a script never
+    moves it (owner, 2026-11-13: "I can see the agent moving my cursor around while I'm reading").
+    The window is the script's own, so that is what moves; it is not activated, resized or
+    raised. Returns whether the pointer is clear of the window (False: no corner of the monitor
+    keeps the window away from it; said once, and the run goes on)."""
+    if sys.platform != "win32" or not hwnd:
+        return True
+    import ctypes
+    from ctypes import wintypes
+    u = ctypes.WinDLL("user32")
+    u.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.RECT)]
+    u.MonitorFromWindow.restype = ctypes.c_void_p
+    u.MonitorFromWindow.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+    u.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    u.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+    r, at = wintypes.RECT(), wintypes.POINT()
+    if not u.GetWindowRect(hwnd, ctypes.byref(r)) or not u.GetCursorPos(ctypes.byref(at)):
+        return True
+    w, h = r.right - r.left, r.bottom - r.top
+
+    def under(left, top):
+        return left - margin <= at.x <= left + w + margin and top - margin <= at.y <= top + h + margin
+
+    if not under(r.left, r.top):
+        return True
+
+    class MonitorInfo(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT), ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+
+    info = MonitorInfo()
+    info.cbSize = ctypes.sizeof(info)
+    monitor = u.MonitorFromWindow(hwnd, 2)  # MONITOR_DEFAULTTONEAREST: stay on its own display (and its scale)
+    free = []
+    if monitor and u.GetMonitorInfoW(monitor, ctypes.byref(info)):
+        area = info.rcWork
+        corners = [(area.left, area.top), (area.right - w, area.top), (area.left, area.bottom - h), (area.right - w, area.bottom - h)]
+        free = [c for c in corners if not under(*c)]
+    if not free:
+        if not _POINTER_NOTED:
+            _POINTER_NOTED.append(True)
+            print("note: the mouse pointer is over the engine's window and no corner of its monitor keeps the window clear of it; "
+                  "this script never moves the pointer, so a pointer moved over the window may disturb what it injects")
+        return False
+    left, top = max(free, key=lambda c: (c[0] + w / 2 - at.x) ** 2 + (c[1] + h / 2 - at.y) ** 2)
+    u.SetWindowPos(hwnd, None, int(left), int(top), 0, 0, 0x0001 | 0x0004 | 0x0010)  # NOSIZE | NOZORDER | NOACTIVATE
+    time.sleep(0.15)
+    return True
+
+
 # Tools that answer concisely by default (`response_format`, see docs/design/TOOLS.md). Scripts
 # check engine data in depth, so this client asks them for detailed answers unless a call passes
 # its own response_format (or the client is made with detailed=False, as an agent would see them).
@@ -213,6 +271,12 @@ class Engine:
         engine_args = self.args[: self.args.index("--")] if "--" in self.args else self.args
         if "--settings" not in engine_args and not os.environ.get("SPECULA_NO_SETTINGS_FLAG"):
             self.args[0:0] = ["--settings", "off"]
+        # A script's engine opens its window without taking the keyboard from whoever is using
+        # this machine (owner, 2026-11-13). Headless engines have no window. SPECULA_ACTIVATE=1
+        # lets a window take the keyboard as a person's own launch does (and is for an older
+        # engine build that doesn't know the flag).
+        if "--no-activate" not in engine_args and "--headless" not in engine_args and not os.environ.get("SPECULA_ACTIVATE"):
+            self.args[0:0] = ["--no-activate"]
         # The engine's environment (default: this process's).
         self.env = env
         self.proc, self.startup_s, self.shutdown_log, self.exit_code = None, None, "", None

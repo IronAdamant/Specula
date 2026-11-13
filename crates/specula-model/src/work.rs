@@ -49,6 +49,8 @@ pub const TIER1_POINT: u64 = 30;
 pub const TIER1_SUBDIVIDE: u64 = 150;
 pub const TIER1_COPY: u64 = 80;
 pub const ASSEMBLE_VERTEX: u64 = 2500;
+/// One vertex looked at by one paint stroke (a recipe's `"edits"`).
+pub const PAINT_VERTEX: u64 = 12;
 pub const SIMPLIFY_TRIANGLE: u64 = 3000;
 pub const HULL_POINT: u64 = 600;
 

@@ -339,7 +339,7 @@ impl ReviewUi {
     }
 
     /// Puts the screen on the window (the input monitor saw it first: `_seen`).
-    pub fn open(&mut self, id: Option<u64>, review: &Review, _seen: crate::inputguard::Seen) {
+    pub fn open(&mut self, id: Option<u64>, review: &Review, seen: crate::inputguard::Seen) {
         self.open = true;
         self.rejecting = false;
         if let Some(id) = id {
@@ -349,7 +349,11 @@ impl ReviewUi {
             self.settle(review);
         }
         self.dirty = true;
-        self.focus = Some("rv_approve");
+        // The human's own F9 (or their press in the editor's Review tab) opens it ready to
+        // decide. A screen an agent puts on the window starts on Close (owner, 2026-11-13):
+        // a key the human meant for something else (the game, a text) only closes it, and
+        // deciding takes a click or a move to the button.
+        self.focus = Some(if seen.by_agent() { "rv_close" } else { "rv_approve" });
         // Opening is when it is first seen: decisions wait the settle time from now.
         self.shown_at = self.started.elapsed().as_secs_f64();
         if let Some(ui) = self.ui.as_mut() {
@@ -357,13 +361,13 @@ impl ReviewUi {
         }
     }
 
-    /// The screen took the window while the human was typing somewhere else (a text, the
-    /// editor's Ask box): its focus goes to Close, so the key they meant for their words (Enter,
-    /// Space) decides nothing. It closes the screen instead, and agents then can't reopen it for
-    /// a while; deciding takes a click, or a move to the button. (Review R2 of m5-edswarm, N1:
-    /// holding back the keys the human goes on typing only narrowed the accident; after a pause
-    /// of 0.6 s the next Enter approved, the screen's focus being on Approve. Whether every
-    /// screen an agent opens should start on Close is an open owner decision: HANDOFF.md.)
+    /// Moves the focus of an open screen to Close, off its decision, so a key the human meant
+    /// for something else (Enter, Space) decides nothing: it closes the screen instead, and
+    /// agents then can't reopen it for a while; deciding takes a click, or a move to the
+    /// button. For what an agent does to a screen that is open: it takes the window while the
+    /// human types somewhere else (a text, the editor's Ask box; review R2 of m5-edswarm, N1),
+    /// it steps to another submission, or its injected frames press the editor's button that
+    /// opens it. (An agent's own open starts on Close by itself: [`ReviewUi::open`].)
     pub fn defuse(&mut self) {
         if self.open {
             self.focus = Some("rv_close");
@@ -933,12 +937,29 @@ mod tests {
         let r = review_with(2);
         let mut s = test_ui();
         s.open(None, &r, crate::inputguard::seen_for_test());
-        assert_eq!(s.pending_focus(), Some("rv_approve"), "opened");
+        assert_eq!(s.pending_focus(), Some("rv_approve"), "opened by the human: ready to decide");
         s.defuse();
         assert_eq!(s.pending_focus(), Some("rv_close"), "over the human's typing");
         s.close();
         s.defuse();
         assert!(!s.is_open(), "a closed screen stays closed");
+    }
+
+    /// Owner, 2026-11-13: a screen an agent puts on the window starts on Close, whoever the
+    /// agent is; the human's own open starts on its decision.
+    #[test]
+    fn a_screen_an_agent_opens_starts_on_close() {
+        let r = review_with(2);
+        let mut s = test_ui();
+        s.open(None, &r, crate::inputguard::seen_by_agent_for_test());
+        assert_eq!(s.pending_focus(), Some("rv_close"), "an agent's open");
+        s.close();
+        s.open(None, &r, crate::inputguard::seen_for_test());
+        assert_eq!(s.pending_focus(), Some("rv_approve"), "the human's own");
+        // An agent that shows another submission on the open screen moves the focus off the
+        // decision again.
+        s.open(None, &r, crate::inputguard::seen_by_agent_for_test());
+        assert_eq!(s.pending_focus(), Some("rv_close"), "an agent's show on an open screen");
     }
 
     #[test]

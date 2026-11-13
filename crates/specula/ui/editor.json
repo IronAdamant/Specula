@@ -33,9 +33,32 @@
           { "type": "button", "id": "tb_claims", "text": "Claim map", "action": "claim_map", "visible": "!claim_map", "tooltip": "Draw every agent's claims in the viewport with the holder's name." },
           { "type": "button", "id": "tb_claims_on", "style": "primary", "text": "Claim map", "action": "claim_map", "visible": "claim_map", "tooltip": "Draw every agent's claims in the viewport with the holder's name." },
           { "type": "button", "id": "tb_ask", "text": "Ask...", "action": "ask_open", "enabled": "has_sel", "tooltip": "Ask the agents about what you highlighted (only your keyboard types there)." },
+          { "type": "button", "id": "tb_draw", "text": "Draw", "action": "draw_bar", "visible": "!draw_bar", "tooltip": "The draw tools: sculpt and paint the selected terrain, paint a model's colours." },
+          { "type": "button", "id": "tb_draw_on", "style": "primary", "text": "Draw", "action": "draw_bar", "visible": "draw_bar", "tooltip": "Close the draw tools (the brush is put down)." },
           { "type": "box", "width": "fill" },
           { "type": "label", "text": "{who}", "role": "small" },
           { "type": "button", "id": "tb_close", "text": "Close", "action": "editor_close", "tooltip": "Back to the game (F7)." }
+        ]
+      },
+      {
+        "type": "panel", "style": "bar", "id": "ed_draw", "layout": "row", "align": "center", "gap": 6, "visible": "draw_bar",
+        "children": [
+          { "type": "button", "id": "br_sculpt", "text": "Sculpt", "action": "brush_sculpt", "visible": "!brush_sculpt", "tooltip": "Sculpt the selected terrain: raise, lower, flatten, smooth (press again for the next). A stroke is one terrain_edit." },
+          { "type": "button", "id": "br_sculpt_on", "style": "primary", "text": "{sculpt_label}", "action": "brush_sculpt", "visible": "brush_sculpt", "tooltip": "Press again for the next: raise, lower, flatten, smooth." },
+          { "type": "button", "id": "br_splat", "text": "Splat", "action": "brush_splat", "visible": "!brush_splat", "tooltip": "Paint one of the selected terrain's four ground layers (press again for the next layer)." },
+          { "type": "button", "id": "br_splat_on", "style": "primary", "text": "{splat_label}", "action": "brush_splat", "visible": "brush_splat", "tooltip": "Press again for the next layer." },
+          { "type": "button", "id": "br_paint", "text": "Paint", "action": "brush_paint", "visible": "!brush_paint", "tooltip": "Paint the selected model's colours (press again for the next colour). A stroke is one model_paint: every entity that draws this recipe shows it." },
+          { "type": "button", "id": "br_paint_on", "style": "primary", "text": "{paint_label}", "action": "brush_paint", "visible": "brush_paint", "tooltip": "Press again for the next colour." },
+          { "type": "button", "id": "br_path", "text": "Path", "action": "brush_path", "visible": "!brush_path", "tooltip": "Sketch where a sweep part of the selected model runs (a rail, a pipe, a road): drag on its ground plane; the path keeps its height. A stroke is one model_path. Size is the distance between points, Strength the smoothing." },
+          { "type": "button", "id": "br_path_on", "style": "primary", "text": "{path_label}", "action": "brush_path", "visible": "brush_path", "tooltip": "Press again for the model's next sweep part." },
+          { "type": "panel", "style": "divider", "width": 1, "height": 28, "padding": 0 },
+          { "type": "label", "text": "Size", "role": "small" },
+          { "type": "button", "id": "br_r_down", "style": "small", "text": "-", "action": "brush_radius_down", "enabled": "brush_on", "tooltip": "A narrower brush (O)." },
+          { "type": "button", "id": "br_r_up", "style": "small", "text": "+", "action": "brush_radius_up", "enabled": "brush_on", "tooltip": "A wider brush (P)." },
+          { "type": "label", "text": "Strength", "role": "small" },
+          { "type": "button", "id": "br_a_down", "style": "small", "text": "-", "action": "brush_amount_down", "enabled": "brush_on", "tooltip": "A weaker brush." },
+          { "type": "button", "id": "br_a_up", "style": "small", "text": "+", "action": "brush_amount_up", "enabled": "brush_on", "tooltip": "A stronger brush." },
+          { "type": "label", "id": "br_label", "text": "{brush_label}", "role": "small", "width": "fill", "wrap": true }
         ]
       },
       {

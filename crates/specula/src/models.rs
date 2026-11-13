@@ -1216,6 +1216,12 @@ impl Library {
         self.recipes.get(recipe).map(|i| i.recipe.part_names().take(max).map(str::to_owned).collect())
     }
 
+    /// The sweep parts of a recipe the library has read, by name, in recipe order (at most
+    /// `max`): what the editor's path tool can sketch. `None` as [`Library::part_names`].
+    pub fn sweep_names(&self, recipe: &str, max: usize) -> Option<Vec<String>> {
+        self.recipes.get(recipe).map(|i| i.recipe.sweep_parts().take(max).map(str::to_owned).collect())
+    }
+
     /// The content key of a source as the library knows it now (its recipe info or glTF file).
     fn source_content(&self, recipe: &str) -> Option<u64> {
         self.recipes.get(recipe).map(|i| i.content).or_else(|| self.gltfs.get(recipe).map(|g| g.content))

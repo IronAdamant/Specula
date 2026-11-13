@@ -51,6 +51,9 @@ pub enum Choice {
     Words(u32),
     /// The ground around the primary (a terrain or grass patch).
     Area { center: [f32; 3], radius: f32 },
+    /// The spot the human's brush last touched on the primary (the draw tools): a place they
+    /// pointed at, not one worked out from the entity's bounds.
+    Spot { center: [f32; 3], radius: f32 },
 }
 
 impl Choice {
@@ -60,6 +63,7 @@ impl Choice {
             Choice::Recipe(n) => format!("its part \"{n}\""),
             Choice::Words(_) => "its words".into(),
             Choice::Area { radius, .. } => format!("the ground around it ({radius:.1} m)"),
+            Choice::Spot { radius, .. } => format!("the spot under your brush ({:.1} m wide)", radius * 2.0),
         }
     }
 
@@ -69,7 +73,7 @@ impl Choice {
             Choice::Whole => return None,
             Choice::Recipe(n) => PartKind::RecipePart { name: n.clone() },
             Choice::Words(len) => PartKind::TextSpan { start: 0, end: *len },
-            Choice::Area { center, radius } => return Some(Part { entity: None, kind: PartKind::Area { center: *center, radius: *radius } }),
+            Choice::Area { center, radius } | Choice::Spot { center, radius } => return Some(Part { entity: None, kind: PartKind::Area { center: *center, radius: *radius } }),
         };
         Some(Part { entity: Some(primary), kind })
     }
@@ -168,6 +172,15 @@ impl AskBox {
             let _ = ui.show(SCREEN_NAME);
         }
         specula_core::trace_event!(&crate::trace_sink::ENGINE, Info, "editor.ask_open", by = crate::authority::WINDOW_OWNER, about = self.about.as_str());
+    }
+
+    /// Starts the open box on choice `i` of the list `open` was given (0: the first after "the
+    /// whole selection"): what the human pointed at before asking. Tab still steps through all.
+    pub fn choose(&mut self, i: usize) {
+        if self.open && i + 1 < self.choices.len() {
+            self.choice = i + 1;
+            self.dirty = true;
+        }
     }
 
     /// Closes it; what was typed is forgotten (`why` is traced).

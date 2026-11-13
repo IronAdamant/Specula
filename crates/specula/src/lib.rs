@@ -88,6 +88,7 @@ mod review_screen;
 mod gallery_screen;
 mod editor;
 mod editor_ask;
+mod editor_brush;
 mod editor_engine;
 mod editor_swarm;
 mod editor_gizmo;
@@ -131,6 +132,8 @@ pub mod timeline_audio;
 mod gi;
 mod gi_tools;
 pub mod terrain;
+mod paint_tools;
+mod path_tools;
 mod terrain_tools;
 pub mod water;
 mod sim_writes;
@@ -219,7 +222,7 @@ const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|integrated|<index>] [--size WxH] \
 [--captures DIR] [--worlds DIR] [--world NAME] [--saves DIR] [--cache DIR] [--assets DIR] [--style FILE] [--perf FILE] \
 [--paused] [--max-fps N] [--audio device|null|off] [--response-format concise|detailed] [--tools-default core|all] [--physics-threads N] [--vfx on|off] [--terrain on|off] \n[--trace DIR] [--trace-file on|off] [--strict-budget] \
-[--owner NAME] [--lead NAME] [--reviewer NAME] [--settings DIR|off] [-- GAME ARGS...]";
+[--owner NAME] [--lead NAME] [--reviewer NAME] [--settings DIR|off] [--no-activate] [-- GAME ARGS...]";
 
 /// How long a capture waits (parked, the engine serving others) for models still building.
 const CAPTURE_BUILD_WAIT: Duration = Duration::from_secs(10);
@@ -247,6 +250,9 @@ const REFRESH_ASK_EVERY: Duration = Duration::from_secs(1);
 struct Args {
     port: u16,
     headless: bool,
+    /// `--no-activate`: the window opens without taking the keyboard from the window the human
+    /// is in (an engine started by an agent or a script while someone uses the machine).
+    no_activate: bool,
     adapter: AdapterPreference,
     window_size: (u32, u32),
     captures: Option<PathBuf>,
@@ -310,6 +316,7 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut args = Args {
         port: DEFAULT_PORT,
         headless: false,
+        no_activate: false,
         adapter: AdapterPreference::HighPerformance,
         window_size: (1280, 720),
         captures: None,
@@ -348,6 +355,7 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--style" => args.style = Some(PathBuf::from(value()?)),
             "--port" => args.port = value()?.parse().map_err(|_| format!("bad port\n{USAGE}"))?,
             "--headless" => args.headless = true,
+            "--no-activate" => args.no_activate = true,
             "--paused" => args.paused = true,
             "--terrain" => {
                 args.terrain = match value()?.as_str() {
@@ -666,7 +674,11 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
                 .with_audio(Arc::clone(&audio))
                 .with_procgen(procgen_tools::Context { assets: assets.clone(), style: args.style.clone(), captures: engine.capture_dir.clone() });
             engine.scopes = Some(tools.shared_scopes());
-            Arc::new(tools)
+            let tools = Arc::new(tools);
+            // The editor's draw tools call tools that run on their caller's thread (terrain_edit,
+            // model_paint): the engine keeps a way to the handler that doesn't keep it alive.
+            engine.tools = Some(Arc::downgrade(&tools));
+            tools
         },
     )
     .map_err(|e| format!("MCP server: {e}"))?;
@@ -680,7 +692,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         None
     } else {
         let (width, height) = args.window_size;
-        let ui = UiThread::spawn(WindowDesc { title: "Specula".into(), width, height, ..WindowDesc::default() })
+        let ui = UiThread::spawn(WindowDesc { title: "Specula".into(), width, height, activate: !args.no_activate, ..WindowDesc::default() })
             .map_err(|e| format!("window: {e}"))?;
         let (w, h) = client_size_of(ui.raw);
         engine.gpu.attach_window(ui.raw.hinstance, ui.raw.hwnd, w, h).map_err(|e| format!("swapchain: {e}"))?;
@@ -983,6 +995,9 @@ struct Engine {
     /// Each session's tool scope, shared with the tools: a playtest calls only what its starter
     /// may (see `toolscope`).
     scopes: Option<Arc<toolscope::Scopes>>,
+    /// The protocol's tool handler, for the editor's draw tools (`Engine::editor_tool`); `None`
+    /// in an engine no server was started for.
+    tools: Option<std::sync::Weak<tools::Tools>>,
     /// Project files on disk: mounts, the watcher, failed writes (see [`project`]).
     project: project::Disk,
     /// When failed project writes were last tried.
@@ -1181,6 +1196,7 @@ impl Engine {
             flash_epoch: Instant::now(),
             formats: response::Defaults::new(response::Format::Concise),
             scopes: None,
+            tools: None,
             project: project::Disk::default(),
             project_retry: Instant::now(),
             content: None,
@@ -2659,6 +2675,7 @@ impl Engine {
         let tick = self.clock.tick();
         // A game tool (play_ui pressing a menu's Save) may queue requests for the engine.
         let game_call = matches!(request.command, Command::Game { .. } | Command::Ui(ui_tools::UiCall::Act(_)));
+        let ui_act = matches!(request.command, Command::Ui(ui_tools::UiCall::Act(_)));
         let output = match request.command {
             Command::Spawn(spec) => match self.world.commit(&mut self.swarm, tick, w, Kind::Spawn, crate::write_policy::Rule::World, |wd| wd.spawn(spec, &by).map(|e| e.id)) {
                 Ok((id, seq)) => self.entity_output(id, seq),
@@ -3026,8 +3043,18 @@ impl Engine {
             });
             return;
         }
+        // ui_act on the editor that made an edit answers with how the edit went: held until
+        // the window's frame has sent it and it is answered (`editor_engine`).
+        let (output, reply) = if ui_act {
+            match self.editor_hold_answer(call_id, output, request.reply, request.deadline) {
+                Some(answer) => answer,
+                None => return,
+            }
+        } else {
+            (output, request.reply)
+        };
         // The caller may have timed out; nothing to do then.
-        let _ = request.reply.send(output);
+        let _ = reply.send(output);
     }
 
     /// Charges `made` commits to tool call `call` (one call, one commit): a breach is counted,

@@ -429,6 +429,11 @@ impl Engine {
                         };
                         let seen = crate::inputguard::done(crate::inputguard::Channel::Screen, "editor.open_review", &actor, &what);
                         self.review_ui.open(Some(id), &self.swarm.review, seen);
+                        if self.editor.input_is_injected() {
+                            // An owner's agent pressed it with injected frames: an agent's
+                            // open, so it starts on Close like any other.
+                            self.review_ui.defuse();
+                        }
                         self.editor.ui.set_status(format!("Submission {id} is open in the review screen: approve or reject it there (F9 closes it)."), true);
                     }
                 }

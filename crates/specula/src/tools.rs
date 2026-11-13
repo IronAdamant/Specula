@@ -531,7 +531,8 @@ impl Tools {
     pub(crate) fn send(&self, session: &SessionInfo, command: Command) -> ToolOutput {
         let (reply, answer) = crate::jobs::channel();
         let deadline = Instant::now() + APPLY_DEADLINE;
-        let request = Request { session: session.clone(), call: current_call(), command, reply, deadline, trace: specula_core::trace::Ctx::current(), via: None };
+        let via = VIA.with(|v| v.borrow().clone());
+        let request = Request { session: session.clone(), call: current_call(), command, reply, deadline, trace: specula_core::trace::Ctx::current(), via };
         if self.to_engine.send(request).is_err() {
             return ToolOutput::error("the engine is shutting down");
         }
@@ -563,6 +564,21 @@ static NEXT_CALL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::n
 /// The tool call this thread serves (0 outside one).
 pub(crate) fn current_call() -> u64 {
     CALL.with(std::cell::Cell::get)
+}
+
+std::thread_local! {
+    /// The agent whose input made this thread's requests, when they are the window owner's
+    /// (see [`Request::via`]): only the editor's own tool thread sets it.
+    static VIA: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Marks this thread as making the window owner's requests for tool call `call`, caused by
+/// agent `via` (`None`: the human's own hand). The editor's draw tools run a caller-thread
+/// tool on a thread of their own; its commits are then journaled and counted as an edit made
+/// through the editor is (`Engine::editor_tool`).
+pub(crate) fn serve_as(call: u64, via: Option<String>) {
+    CALL.with(|c| c.set(call));
+    VIA.with(|v| *v.borrow_mut() = via);
 }
 
 impl ToolHandler for Tools {
@@ -659,7 +675,7 @@ impl CallerThread {
             "logic_reload" => CallerThread::LogicReload,
             "merge_suggest" => CallerThread::MergeSuggest,
             "style_check" => CallerThread::Studio,
-            "terrain_edit" => CallerThread::Terrain,
+            "terrain_edit" | "model_paint" | "model_path" => CallerThread::Terrain,
             "timeline_set" => CallerThread::Timeline,
             "text_edit" => CallerThread::Text,
             "security_incidents" => CallerThread::Security,
@@ -688,7 +704,7 @@ impl CallerThread {
             CallerThread::Studio => "studio_* and style_check wait for builds and renders outside the engine thread: stage, sheet and check assets before or after the playtest",
             CallerThread::Project => "project_* tools patch and validate files outside the engine thread: edit project files before the playtest",
             CallerThread::Procgen => "procgen_* tools bake textures, terrains and scatters outside the engine thread: generate before the playtest (a playtest can world_batch what they make)",
-            CallerThread::Terrain => "terrain_edit patches the recipe and waits for its rebuild outside the engine thread: sculpt and paint before the playtest (terrain_info works inside one)",
+            CallerThread::Terrain => "terrain_edit, model_paint and model_path patch a recipe and wait for its rebuild outside the engine thread: sculpt and paint before the playtest (terrain_info works inside one)",
             CallerThread::Balance => "balance_* tools simulate outside the engine thread: sweep and tune before or after the playtest",
             CallerThread::Taste => "gallery_*, taste_*, board_* and style_onboard wait for renders and the owner's picks outside the engine thread: run galleries before or after the playtest",
             CallerThread::Trace => "trace_* tools read the trace on your own connection: query it before or after the playtest (the playtest's work is traced under its call)",
@@ -2920,6 +2936,8 @@ pub(crate) fn definitions() -> Vec<ToolDef> {
     .chain(crate::taste_tools::definitions())
     .chain(crate::gi_tools::definitions())
     .chain(crate::terrain_tools::definitions())
+    .chain(crate::paint_tools::definitions())
+    .chain(crate::path_tools::definitions())
     .chain(crate::ui_tools::definitions())
     .chain(crate::l10n_tools::definitions())
     .chain(crate::trace_tools::definitions())

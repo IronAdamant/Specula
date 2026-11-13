@@ -43,8 +43,11 @@ DEFAULT_PORT = 7491
 URL = f"http://127.0.0.1:{DEFAULT_PORT}/mcp"
 
 WM_CLOSE = 0x0010
-SW_MINIMIZE, SW_RESTORE = 6, 9
-SWP_NOMOVE, SWP_NOZORDER = 0x0002, 0x0004
+# Minimized and restored WITHOUT activating (SW_SHOWMINNOACTIVE, SW_SHOWNOACTIVATE): a script
+# never takes the keyboard from whoever is using this machine (review R3 of m5-eddraw, F4: this
+# check restored the window with SW_RESTORE, which activates it).
+SW_MINIMIZE, SW_RESTORE = 7, 4
+SWP_NOMOVE, SWP_NOZORDER, SWP_NOACTIVATE = 0x0002, 0x0004, 0x0010
 PW_CLIENTONLY_RENDERFULLCONTENT = 3
 
 if sys.platform != "win32":
@@ -171,7 +174,7 @@ def check_adapter(exe, adapter, out, port, gpu_av=False, effects=False):
         env["VK_LAYER_ENABLES"] = "VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT"
     with open(log_path, "w") as log:
         proc = subprocess.Popen(
-            [str(exe), "--settings", "off", "--adapter", str(adapter), "--size", "960x540", "--port", str(port), "--captures", str(out / "captures")],
+            [str(exe), "--settings", "off", "--no-activate", "--adapter", str(adapter), "--size", "960x540", "--port", str(port), "--captures", str(out / "captures")],
             stderr=log,
             env=env,
         )
@@ -229,7 +232,7 @@ def check_adapter(exe, adapter, out, port, gpu_av=False, effects=False):
             problems.append(f"initial window capture is blank: {shots[0]}")
         sizes = [client_size(hwnd)]
 
-        user32.SetWindowPos(hwnd, None, 0, 0, 1240, 760, SWP_NOMOVE | SWP_NOZORDER)
+        user32.SetWindowPos(hwnd, None, 0, 0, 1240, 760, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE)
         time.sleep(1.0)
         sizes.append(client_size(hwnd))
         user32.ShowWindow(hwnd, SW_MINIMIZE)

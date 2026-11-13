@@ -7,10 +7,16 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
 - **M5 as of 2026-11-13** (all on `main`, not pushed: the owner pushes at 100%):
   - **Merged:** map 1, audio, timelines, the render follow-ups, the UI sight tools, the editor's core, text,
     the gameplay modules, localisation, the input monitor, accessibility with Sepulcra's shell, tool kits by job,
-    GPU work off the engine thread, the editor's Swarm tab with "highlight and ask", and the gate
-    (`scripts/gate.py`, AGENTS.md "The gate").
-  - **Left, in this order:** the editor's draw tools (vertex paint, paths and splines, terrain sculpt); the
-    performance pass on a quiet machine; the measured comparison (ROADMAP M5, "Measured leverage": tell the
+    GPU work off the engine thread, the editor's Swarm tab with "highlight and ask", the editor's draw tools
+    (sculpt, splat, vertex paint, sketched paths), and the gate (`scripts/gate.py`, AGENTS.md "The gate").
+  - **Left, in this order:** the launcher (owner, 2026-11-13: the engine must be openable, list the projects
+    worked on with the last one first, resume it or pick another from the window or by asking an agent, and be
+    found and called from a terminal: `specula projects`, `open`, `list`, `tools`, `call`; branch
+    `m5-launch` has the tested building blocks, not yet wired into the executable; Windows first, the macOS
+    and Linux variants after); asset export for other engines (`model_export`: the glTF exporter in
+    `specula-gltf` round-trips in tests but no tool exposes it; the owner asked on 2026-11-13 that assets be
+    easy to carry elsewhere); the performance pass on a quiet machine (the editor's panels still read one
+    pointer for the human and an agent: docs/design/EDITOR.md, "Known limits"); the measured comparison (ROADMAP M5, "Measured leverage": tell the
     owner the token total before the runs); the M5 exit proof; the final audit; the docs pass (ROADMAP's M5
     ticks and CHANGELOG's M5 section are behind).
   - **The lead's running notes** are in `.swarmnotes/m5/lead/m5tracker.md` (gitignored, this machine): every
@@ -162,6 +168,17 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     `perf/drills/`.
   - Deferred: CI rendering checks (need Vulkan loading on Linux first; Platform track), per-agent auth tokens
     (needed before any non-localhost bind). Outlier-aware auto-framing was done at the end of M4.
+- **Owner answers, 2026-11-13:**
+  - **A screen an agent puts on the window starts with its focus on Close: yes.** "Many human devs will likely
+    be present but many will also be away, thus relying on you to be more autonomous." The review screen and
+    the gallery start on Close when an agent opens them (or pages the review screen); the human's own F9 / F8
+    still open ready to decide ([docs/design/REVIEW.md](docs/design/REVIEW.md), "Where its focus starts").
+    When a lead shows you work, approving takes a click or a move to Approve.
+  - **Reviewers may open screens on the window: yes**, "on my window, or on human dev's windows". A granted
+    reviewer's `review_screen` and `gallery_open` stay as built: allowed, and seen by the input monitor as an
+    alert, like a lead's ([docs/design/SECURITY.md](docs/design/SECURITY.md)).
+  - **The raw screen recordings of 2026-11-12** (they show the owner's own windows): not deleted yet; the
+    owner decides in M6. Don't share, move or delete them.
 - **How work runs:** as **lanes**: one subagent per crate/area in a git worktree, each attacked by a
   `lane-reviewer` before merge (`.claude/agents/`), and visual claims checked by `sight-skeptic`. Check `git log`
   and the roadmap ticks for where things stand.
@@ -176,6 +193,15 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
   in a running engine; `cargo run --release -p specula-gpu --example bench`; Sepulcra's headless sweep
   (`cargo run -p sepulcra --example headless --release -- --layout all --sweep 1000`); `scripts/swarm_drill.py`
   for agent throughput.
+- **Scripts keep their hands off the machine's human** (owner, 2026-11-13: "I can see the agent moving my
+  cursor around while I'm reading"). A script never moves the mouse pointer, presses keys or buttons for the
+  person, or takes the keyboard from the window they are in: it posts messages to the engine's own window
+  and uses the protocol; a pointer over the engine's window is handled by moving that window
+  (`specula_mcp.clear_of_pointer`); script-started engines open with `--no-activate`.
+  `crates/specula/tests/script_settings_guard.rs` holds it.
+- **Recordings show the engine's window only.** `scripts/window_recorder.py` records one window as an
+  animated PNG (it asks Windows for that window's contents, so the desktop and other programs can't be in the
+  picture); `python scripts/eddraw_check.py --record` uses it. Never record the screen.
 - **Visual history (owner, 2026-10-18, "for historical review"):** [docs/gallery](docs/gallery/README.md). After
   every live run (tests, playtests, assets, animation, physics, navigation), add 2-6 representative captures with
   `python scripts/gallery.py add ...` (`gallery.py subjects` lists the subjects; `dupes` and `drop` keep it lean). Thumbnails
@@ -242,7 +268,8 @@ In practice that means six **foundations** that apply to every change from M1 on
   `--tools-default core|all` (agents list 6 core tools unless they ask; `.mcp.json` and the scripts ask for all),
   `--owner NAME` / `--lead NAME` / `--reviewer NAME` (operator grants: roles are never self-declared),
   `--trace DIR`, `--trace-file on|off`, `--strict-budget` (an engine-thread stall fails the run), `--terrain on|off`,
-  and `-- GAME ARGS` for a hosted game. Agent names are plain ASCII.
+  `--no-activate` (the window opens behind the others without taking the keyboard from the window you are in:
+  the scripts pass it), and `-- GAME ARGS` for a hosted game. Agent names are plain ASCII.
 - **Answers are concise by default** on the heavy tools; pass `response_format: "detailed"` (per call, or once in
   `agent_hello`) for everything. Repo scripts use `scripts/specula_mcp.py` or `specula_mcp.detailed()`.
 - **Tools** (each one's schema is in `tools/list`):
@@ -254,8 +281,8 @@ In practice that means six **foundations** that apply to every change from M1 on
   - Sight: `sight_frame` (PNG plus a packet: exact screen boxes, `visible_px`, `occluded` from the ID buffer,
     overlays), `sight_orbit` (turntable), `sight_compare` (before/after), `sight_query`, named persistent cameras
     (`camera_set` / `camera_list` / `camera_delete`), `window_view` (point the human's window).
-  - Assets: `model_build` / `model_reload` (procedural recipes and glTF/GLB), 2D tilemaps (`tilemap_get` /
-    `tilemap_set`).
+  - Assets: `model_build` / `model_reload` (procedural recipes and glTF/GLB), `model_paint` (vertex colours as
+    strokes in the recipe), `model_path` (a sweep part's path), 2D tilemaps (`tilemap_get` / `tilemap_set`).
   - Coordination: `task_*` (the task board), `intent_*`, `note_*`, `world_rollup`, `lease_*` (ports, GPU time,
     scratch folders), `swarm_settings` (the frame floor; lead only), `desync_trace` / `desync_compare`.
   - Gameplay as data (Lex): `lex_schema`, `lex_list`, `lex_get`, `lex_edit`, `lex_validate`, `lex_simulate`,
@@ -366,19 +393,6 @@ This is the **one list** of decisions waiting for the owner (other docs link her
 `crates/specula/tests/docs_links.rs` checks it isn't duplicated). Remove an item once it's decided and record the
 answer where it applies. The owner decided everything else on 2026-10-22 (see "Decided by the owner on 2026-10-22" above).
 
-- **Should a screen an agent opens start with its focus on Close?** (from the editor-swarm review, 2026-11-13.)
-  Today the review screen opens with its focus on Approve (the gallery: on the first variant), whoever opened
-  it: a lead shows a submission, you press Enter, it is approved (`scripts/review_check.py` holds that flow).
-  The review found the accident in it: you were typing a request in the editor's Ask box, a lead opened the
-  review screen, and your Enter approved a submission. That case is closed (a screen that takes the window
-  while you type has its focus moved to Close, and the keys you go on typing are held back). What is left:
-  you are pressing keys for the *game* when an agent opens the screen; 0.4 s later an Enter or Space decides.
-  Claude recommends yes: every screen an agent puts on the window starts on Close, so deciding takes one
-  click or one arrow key more, and a key meant for something else only closes it (and blocks the agent from
-  reopening it for 30 s). It changes how you approve when a lead shows you work, so it is yours to decide.
-- **May reviewers open screens on the window?** (from the input sweep, 2026-11-07.) A granted reviewer, below lead,
-  can put the review screen (F9) and a gallery (F8) on the human's window. Until the owner decides, those opens
-  raise an alert. Claude recommends keeping it with the alert: reviewing is what the grant is for.
 - **Remote agents' defaults** (from [docs/design/CLOUD_SWARMS.md](docs/design/CLOUD_SWARMS.md), for M6). Claude
   recommends: a remote lead gets no native code, no window input and no module source unless its token names
   them; owner authority is never given remotely unless the operator passes a flag for it; and tunnels

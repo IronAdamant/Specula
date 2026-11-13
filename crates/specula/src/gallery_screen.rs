@@ -99,6 +99,9 @@ pub struct GalleryUi {
     human_closed: Option<std::time::Instant>,
     dirty: bool,
     focus: Option<String>,
+    /// An agent put what is shown on the window (its `gallery_open`): the first round the
+    /// screen shows keeps its focus on Close.
+    by_agent: bool,
     retired: Vec<TextureId>,
     /// LB + RB + X held at the last closed frame (edge detection while closed).
     pad_combo: bool,
@@ -148,6 +151,7 @@ impl Default for GalleryUi {
             human_closed: None,
             dirty: true,
             focus: None,
+            by_agent: false,
             retired: Vec::new(),
             pad_combo: false,
             rects: Vec::new(),
@@ -239,7 +243,7 @@ impl GalleryUi {
     }
 
     /// Puts gallery `id` on the window (the input monitor saw it first: `_seen`).
-    pub fn open(&mut self, id: &str, user: &str, _seen: crate::inputguard::Seen) {
+    pub fn open(&mut self, id: &str, user: &str, seen: crate::inputguard::Seen) {
         if self.gallery.as_deref() != Some(id) {
             self.round = 0;
             self.selected = None;
@@ -250,13 +254,16 @@ impl GalleryUi {
         self.open = true;
         self.dirty = true;
         self.shown_at = self.started.elapsed().as_secs_f64();
-        self.focus = Some("gl_v0".into());
+        // The human's own F8, and the next onboarding step after their own acceptance, open on
+        // the first variant. A gallery an agent puts on the window starts on Close (owner,
+        // 2026-11-13), as the review screen does: a key meant for something else picks nothing.
+        self.by_agent = seen.by_agent();
+        self.focus = Some(if seen.by_agent() { "gl_close".into() } else { "gl_v0".into() });
         if let Some(ui) = self.ui.as_mut() {
             let _ = ui.show("gallery");
         }
     }
 
-    /// Opens with no gallery to show (it says so; agents put galleries here).
     /// As [`crate::review_screen::ReviewUi::defuse`]: when the gallery took the window from
     /// under the human's typing, its focus goes to Close, so the Enter or Space meant for their
     /// words picks nothing (review R2 of m5-edswarm, N1).
@@ -266,6 +273,13 @@ impl GalleryUi {
         }
     }
 
+    /// The focus the next frame will set (tests).
+    #[cfg(test)]
+    pub fn pending_focus(&self) -> Option<&str> {
+        self.focus.as_deref()
+    }
+
+    /// Opens with no gallery to show (it says so; agents put galleries here).
     pub fn open_empty(&mut self, _seen: crate::inputguard::Seen) {
         self.gallery = None;
         self.round = 0;
@@ -551,6 +565,7 @@ impl GalleryUi {
         // The round shown: the last one.
         let n = g.map_or(0, |g| g.rounds.len());
         if n != self.round {
+            let first_shown = self.round == 0;
             self.round = n;
             self.crumb_end = None;
             self.selected = None;
@@ -561,7 +576,17 @@ impl GalleryUi {
             }
             self.shown_at = self.started.elapsed().as_secs_f64();
             self.dirty = true;
-            self.focus = Some("gl_v0".into());
+            // A round that appears starts on its first variant when it is the human's: one
+            // their own decision led to (the engine made it from their pick), or the first
+            // they see of a gallery they opened. One an agent put on the window leaves the
+            // focus on Close: the first round of a gallery an agent opened, and any round an
+            // agent made itself (`Made::Agent`). The round says who made it, so nothing has to
+            // be remembered between a decision and its round. (Review R1 of m5-eddraw, M2: an
+            // agent's open set Close and this line moved it to the first variant on the first
+            // frame; R2, N6: a flag set by a decision outlived it.)
+            let agents_round = g.and_then(|g| g.rounds.last()).is_some_and(|r| r.made == specula_gustus::gallery::Made::Agent);
+            let humans = !agents_round && !(first_shown && self.by_agent);
+            self.focus = Some(if humans { "gl_v0".into() } else { "gl_close".into() });
         }
         if let Some(g) = g {
             let chips = g.space.chips();
@@ -1028,6 +1053,76 @@ mod tests {
     /// re-layout between a button's press and its release (the overlay's, when anything changed)
     /// ran with an input that had no pointer, which the UI read as "released, nowhere": the press
     /// was dropped. The layout pass now sees the pointer and the held button.
+    /// Review R1 of m5-eddraw, M2: the rule holds once frames run, not only as the open leaves
+    /// it. An agent's open stays on Close through the first frames; a round an agent makes
+    /// unasked puts the focus on Close; the human's own open, and a round their decision asked
+    /// for, start on the first variant.
+    #[test]
+    fn an_agents_gallery_stays_on_close_once_its_frames_run() {
+        let focused = |s: &GalleryUi| {
+            let ui = s.ui.as_ref().unwrap();
+            ui.focused().and_then(|w| ui.widget_id(w)).map(str::to_owned)
+        };
+        let size = (1280, 800);
+        let mut g = gallery();
+        let mut s = test_ui();
+        s.open("moon", crate::authority::ROLE_OWNER, crate::inputguard::seen_by_agent_for_test());
+        for _ in 0..3 {
+            s.frame(&[], &[], size, Some(&g), sheet(), false, None);
+        }
+        assert_eq!(focused(&s).as_deref(), Some("gl_close"), "an agent's open, after its frames");
+        // The human's own open of the same gallery: the first variant.
+        s.close();
+        s.open("moon", crate::authority::ROLE_OWNER, crate::inputguard::seen_for_test());
+        for _ in 0..3 {
+            s.frame(&[], &[], size, Some(&g), sheet(), false, None);
+        }
+        assert_eq!(focused(&s).as_deref(), Some("gl_v0"), "the human's own open");
+        // An agent makes a round nobody asked for: the screen turns to it, on Close.
+        let mut next = g.first_round(None);
+        next.after = g.rounds.len();
+        next.made = specula_gustus::gallery::Made::Agent;
+        g.push_round(next, Some("gallery-moon-r2.png".into()), vec![]).unwrap();
+        for _ in 0..3 {
+            s.frame(&[], &[], size, Some(&g), sheet(), false, None);
+        }
+        assert_eq!(focused(&s).as_deref(), Some("gl_close"), "a round made unasked");
+        // A round the human's own decision led to (the engine makes it from their pick): the
+        // first variant again. The round says who made it: nothing is remembered in between
+        // (review R2 of m5-eddraw, N6).
+        let last = g.rounds.len();
+        g.decide(last, specula_gustus::gallery::Kind::None { note: "colder".into() }, "window:owner", crate::authority::ROLE_OWNER).unwrap();
+        let next = g.plan_next().expect("a decision that asks for another round");
+        assert!(next.made != specula_gustus::gallery::Made::Agent);
+        g.push_round(next, Some("gallery-moon-r3.png".into()), vec![]).unwrap();
+        for _ in 0..3 {
+            s.frame(&[], &[], size, Some(&g), sheet(), false, None);
+        }
+        assert_eq!(focused(&s).as_deref(), Some("gl_v0"), "a round the human's decision led to");
+        // And an agent's own round after that: Close, whatever was decided before it.
+        let mut own = g.first_round(None);
+        own.after = g.rounds.len();
+        own.made = specula_gustus::gallery::Made::Agent;
+        g.push_round(own, Some("gallery-moon-r4.png".into()), vec![]).unwrap();
+        for _ in 0..3 {
+            s.frame(&[], &[], size, Some(&g), sheet(), false, None);
+        }
+        assert_eq!(focused(&s).as_deref(), Some("gl_close"), "an agent's round after the human's decision");
+    }
+
+    /// Owner, 2026-11-13: a gallery an agent puts on the window starts on Close; the human's
+    /// own open starts on the first variant.
+    #[test]
+    fn a_gallery_an_agent_opens_starts_on_close() {
+        let mut s = test_ui();
+        s.open("moon", crate::authority::ROLE_OWNER, crate::inputguard::seen_by_agent_for_test());
+        assert_eq!(s.pending_focus(), Some("gl_close"), "an agent's open");
+        s.open("moon", crate::authority::ROLE_OWNER, crate::inputguard::seen_for_test());
+        assert_eq!(s.pending_focus(), Some("gl_v0"), "the human's own");
+        s.defuse();
+        assert_eq!(s.pending_focus(), Some("gl_close"), "taken from under their typing");
+    }
+
     #[test]
     fn a_relayout_between_press_and_release_keeps_the_press() {
         let mut s = test_ui();

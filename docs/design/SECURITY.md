@@ -60,7 +60,7 @@ name: a name is a label any agent can say.
 |---|---|---|
 | the human at the window, or an agent granted `--owner` | **fine** (recorded) | (never refused for authority) |
 | a granted lead | **alert**, unless the owner allowed this lead for this session (then **allowed**) | **alert** |
-| a granted reviewer (screens only, R4) | **alert** | **incident** |
+| a granted reviewer (screens only, R4; the owner confirmed on 2026-11-13 that reviewers may put the review screen and galleries on the window) | **alert** | **incident** |
 | any other agent | **incident** | **incident** |
 | the engine itself, following the human's own action (the next onboarding step) | **fine** | none |
 

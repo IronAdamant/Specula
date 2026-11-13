@@ -180,13 +180,24 @@ def main():
         ask = st.get("ask") or {}
         if not check(ask.get("open") is True and "/edswarm/statue" in str(ask.get("about")), f"the human's click opens the Ask box about the statue ({ask})"):
             return 1
-        # Tab to the head part (the recipe's parts come first: plinth, body, head).
+        # Tab to the head part (the recipe's parts come first: plinth, body, head). Each press
+        # is waited for: this loop used to read the part straight after posting the key, and on
+        # a slow start (the engine's frame not yet run) it read the old part, pressed again and
+        # went round past the head. A press that changes nothing in 5 s is said as that.
+        seen = [(ed.state().get("ask") or {}).get("part")]
+        lost = False
         for _ in range(6):
-            if "head" in str((ed.state().get("ask") or {}).get("part")):
+            if "head" in str(seen[-1]):
                 break
             os_key(hwnd, 0x09)
-        part = (ed.state().get("ask") or {}).get("part")
-        check("head" in str(part), f"Tab picks the statue's head part ({part})")
+            nxt = wait_for(lambda: (lambda p: p if p != seen[-1] else None)((ed.state().get("ask") or {}).get("part")), 5)
+            if nxt is None:
+                lost = True
+                break
+            seen.append(nxt)
+        part = seen[-1]
+        check(not lost, f"every Tab the human presses in the Ask box changes its part ({seen})")
+        check("head" in str(part), f"Tab picks the statue's head part ({seen})")
         os_chars(hwnd, WORDS)
         time.sleep(0.3)
         ed.shot("ask_typing")

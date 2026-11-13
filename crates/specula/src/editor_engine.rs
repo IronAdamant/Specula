@@ -33,6 +33,9 @@ use std::time::{Duration, Instant};
 pub const WINDOW_SESSION: &str = "window:operator";
 /// The editor's commands give up after this (as an agent's call would).
 const DEADLINE: Duration = Duration::from_secs(10);
+/// How long a draw tool's command may take (it validates and patches a recipe, and for a sculpt
+/// builds the terrain's collider, on a thread of its own).
+const TOOL_DEADLINE: Duration = Duration::from_secs(90);
 /// Entities a drag's live preview moves (the dragged ones and everything below them); past it
 /// the rest move on release.
 pub const PREVIEW_MAX: usize = 4096;
@@ -57,6 +60,9 @@ pub const PICK_RADIUS: i64 = 3;
 const MAX_WAITING: usize = 32;
 /// `editor_input` calls waiting for their frames to run.
 const MAX_INPUT_WAITERS: usize = 8;
+/// A held `ui_act` answer is sent this long before its call's deadline (the caller gives up at
+/// the deadline: the answer as it stood must reach it first).
+const ACT_ANSWER_MARGIN: Duration = Duration::from_millis(400);
 
 /// The window operator's session.
 pub fn window_session() -> SessionInfo {
@@ -74,6 +80,47 @@ enum Why {
     Redo(u64),
     /// "Ask the agents…": the board task the human's request became.
     Ask,
+}
+
+/// Where a brush would touch: the selection's surface under the pointer.
+struct BrushTarget {
+    entity: u64,
+    /// The entity's recipe (the file a stroke is written into) and its path (a sculpt's
+    /// collider, when the terrain has one).
+    recipe: String,
+    collider: Option<String>,
+    /// The point, in the frame strokes are written in: the terrain's own, or the model's.
+    point: [f32; 3],
+    /// That frame in the world.
+    to_world: Mat4,
+    /// A terrain's offset (its strokes' `at` includes it).
+    offset: [f32; 2],
+    /// World metres per unit of that frame, along the surface and in height ([`frame_scale`]):
+    /// the brush's sizes are world metres, a stroke is written in the frame's units.
+    scale: (f32, f32),
+}
+
+/// A stroke in progress: its samples, and what it is on (kept from where it began: a stroke
+/// never crosses to another entity).
+struct BrushStroke {
+    stroke: crate::editor_brush::Stroke,
+    entity: u64,
+    recipe: String,
+    collider: Option<String>,
+    to_world: Mat4,
+    offset: [f32; 2],
+    scale: (f32, f32),
+}
+
+/// World metres per unit of a frame: along its ground (the mean of its x and z axes; with
+/// `solid`, of all three: a paint brush is a sphere) and in height (its y axis). An entity
+/// scaled unevenly gets the mean: its brush is round in its own space.
+/// (Read from the matrix's own axes: a point transformed and subtracted loses the scale's
+/// digits when the entity is far from the origin. Review R2 of m5-eddraw, N5.)
+fn frame_scale(to_world: &Mat4, solid: bool) -> (f32, f32) {
+    let len = |c: [f32; 4]| (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt();
+    let (x, y, z) = (len(to_world.cols[0]), len(to_world.cols[1]), len(to_world.cols[2]));
+    (if solid { (x + y + z) / 3.0 } else { (x + z) / 2.0 }, y)
 }
 
 #[derive(Default)]
@@ -105,6 +152,20 @@ struct Driver {
     by: String,
     /// Frames it sent.
     frames: usize,
+}
+
+/// One call for the editor's tool thread: a caller-thread tool, as the window's owner.
+struct ToolJob {
+    tools: std::sync::Arc<crate::tools::Tools>,
+    tool: &'static str,
+    args: Json,
+    call: u64,
+    via: Option<String>,
+    trace: specula_core::trace::Ctx,
+    /// (A tool's answer goes through a `jobs::Reply`, as every other one does.)
+    answer: crate::jobs::Reply,
+    /// Counted down when the call is done (`Rt::tool_running`).
+    running: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 /// A selected entity as a drag found it.
@@ -173,11 +234,35 @@ struct Rt {
     /// Commands to send at the pump, each with the `editor_input` call that drove it (`None`:
     /// the human's own input).
     outbox: Vec<(&'static str, Json, Why, Option<Driver>)>,
-    waiting: Vec<(Receiver<ToolOutput>, Why, Instant)>,
+    /// Commands sent and not answered yet: the answer's channel, why it was sent, when to give
+    /// up on it, and the tool call that drove it (0: the human's own hand).
+    waiting: Vec<(Receiver<ToolOutput>, Why, Instant, u64, &'static str)>,
+    /// Presses an agent's frames made that were not taken (the human's hand held the viewport,
+    /// or the press took it back from a quiet hold), by the tool call that sent them: its
+    /// answer says so. At most `MAX_INPUT_WAITERS * 4` calls are remembered.
+    refused_presses: std::collections::BTreeMap<u64, u32>,
+    /// Calls the editor's tool thread has not finished (queued or running). A world
+    /// replacement empties `waiting`; this still counts the call that is running, so "one
+    /// stroke in flight" holds across it.
+    tool_running: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// `ui_act` calls on the editor whose answer waits for how their edit went: the reply, the
+    /// answer as it stood (it says the outcome isn't known), the call and its deadline.
+    act_waiters: Vec<(crate::jobs::Reply, ToolOutput, u64, Instant)>,
     pick: Option<(Receiver<ToolOutput>, bool, Instant)>,
     /// A pick asked for this frame: `(rect, click, add)`, sent at the pump.
     want_pick: Option<([u32; 4], bool, bool)>,
     drag: Option<GizmoDrag>,
+    /// The draw tools: the stroke the brush is making, and where the brush is over the
+    /// selection's surface (world space, with the brush's radius there: the overlay's ring).
+    stroke: Option<BrushStroke>,
+    /// The last place the brush in hand touched: the entity, the point (world space) and the
+    /// brush's radius there. Kept while the pointer is elsewhere (on the toolbar's Ask button):
+    /// "Ask the agents" with a brush in hand is about this spot.
+    brush_spot: Option<(u64, Vec3, f32)>,
+    /// The editor's tool thread (started at the first stroke): its queue of calls.
+    tool_thread: Option<std::sync::mpsc::Sender<ToolJob>>,
+    /// (`true`: on a terrain, where the ring lies on the ground; on a model it faces the camera.)
+    brush_hover: Option<(Vec3, f32, bool)>,
     /// The left press in the viewport (a click or a box), and the right or middle drag's last
     /// pointer (orbit, pan).
     press: Option<[f32; 2]>,
@@ -234,6 +319,29 @@ impl Editor {
 }
 
 /// The text of a tool's answer, parsed (an unparsable one as `{"message": text}`).
+/// A held `ui_act` answer with how its edit went in place of "not known yet": `edit.done`,
+/// `edit.status` (the editor's status line), and the journal entry or the refusal's code.
+fn with_outcome(answer: &ToolOutput, out: Option<&ToolOutput>, status: &str) -> ToolOutput {
+    let mut j = answer_json(answer);
+    let Json::Obj(fields) = &mut j else { return ToolOutput::text(j.to_string()) };
+    let queued = fields.iter().find(|(k, _)| k == "edit").and_then(|(_, e)| e.get("queued").cloned()).unwrap_or(Json::Null);
+    let mut edit = vec![("queued", queued), ("done", Json::from(out.is_some_and(|o| !o.is_error))), ("status", Json::from(status))];
+    match out {
+        Some(o) => {
+            let a = answer_json(o);
+            for key in if o.is_error { ["error", "retry"] } else { ["journal", "version"] } {
+                if let Some(v) = a.get(key) {
+                    edit.push((key, v.clone()));
+                }
+            }
+        }
+        None => edit.push(("error", Json::from("no_answer"))),
+    }
+    fields.retain(|(k, _)| k != "edit");
+    fields.push(("edit".to_owned(), Json::obj(edit)));
+    ToolOutput::text(j.to_string())
+}
+
 fn answer_json(out: &ToolOutput) -> Json {
     let text = out.content.iter().find_map(|c| match c {
         Content::Text(t) => Some(t.as_str()),
@@ -246,6 +354,16 @@ fn answer_json(out: &ToolOutput) -> Json {
 }
 
 /// A refusal in words: its code and message, plainly (whose claim, which version).
+/// `text` cut to `max` characters (with an ellipsis).
+fn short_text(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
+    out.push('\u{2026}');
+    out
+}
+
 pub fn explain(err: &Json) -> String {
     let code = err.get("error").and_then(Json::as_str).unwrap_or("refused");
     let message = err.get("message").and_then(Json::as_str).unwrap_or("");
@@ -258,6 +376,14 @@ pub fn explain(err: &Json) -> String {
         other => format!("Refused ({other})"),
     };
     let mut s = format!("{lead}. {message}");
+    // A file that would not load says what is wrong with it: the first problem, in the status
+    // line (the draw tools' strokes go into recipes: "would not load (1 error)" alone told the
+    // human nothing they could act on).
+    if let Some(first) = err.get("problems").and_then(Json::as_array).and_then(|a| a.first()) {
+        let what = first.get("message").and_then(Json::as_str).map_or_else(|| first.to_string(), str::to_owned);
+        let at = first.get("path").or_else(|| first.get("at")).and_then(Json::as_str).map_or(String::new(), |p| format!(" (at {p})"));
+        s.push_str(&format!(" First problem: {}{at}.", short_text(&what, 220)));
+    }
     // A changed-meanwhile refusal names who changed it (conflict help's `theirs`).
     let changes = err.get("conflict").and_then(|c| c.get("theirs")).and_then(|t| t.get("changes")).and_then(Json::as_array);
     if let Some(changes) = changes.filter(|c| !c.is_empty()) {
@@ -430,6 +556,7 @@ impl Engine {
             }
             let open_before = self.editor.ui.is_open();
             self.editor.rt.input_call = if injected_pass { (input_id, driver.clone()) } else { (0, None) };
+            self.editor.ui.injected_pass = injected_pass;
             let (acts, view) = if injected_pass {
                 self.editor.ui.frame(&extra, &pads, size, blocked)
             } else if asking && !blocked && !minimized {
@@ -437,6 +564,8 @@ impl Engine {
                 let out = self.editor.ui.ask.frame_with_pads(&self.input, &pads, size, crate::editor::THEME, crate::editor::system_fonts);
                 // (The pointer is the box's: the panels see it leave, so no tooltip stays drawn
                 // under where it was. Review R1 of m5-edswarm, minor 12.)
+                // (And their holds in the viewport are let go: its releases are not read here.)
+                self.editor.ui.release_human_holds();
                 let r = self.editor.ui.frame(&[Event::MouseMove { x: -1, y: -1 }], &[], size, blocked);
                 if let Some(out) = out {
                     self.editor_ask_out(out);
@@ -451,7 +580,12 @@ impl Engine {
             for a in acts {
                 self.editor_act(a);
             }
-            if self.editor.ui.is_open() && !blocked && !minimized {
+            self.editor_note_holds(&view, injected_pass);
+            // While one side holds a button the viewport is that side's: the other's pass
+            // moves nothing in it (its pointer would bend the stroke, and its focus loss
+            // would cancel the gizmo drag). The human's hand and an agent's frames, alike.
+            let theirs = if injected_pass { self.editor.ui.human_holds() } else { self.editor.ui.agent_holds() };
+            if self.editor.ui.is_open() && !blocked && !minimized && !theirs {
                 if view.focus_lost {
                     self.editor_cancel_drag();
                 }
@@ -459,6 +593,7 @@ impl Engine {
             }
             ever_open |= self.editor.ui.is_open();
         }
+        self.editor.ui.injected_pass = false;
         self.editor.rt.input_call = (0, None);
         self.editor.rt.pads = pads;
         let holds = ever_open;
@@ -515,6 +650,11 @@ impl Engine {
         rt.want_pick = None;
         rt.outbox.clear();
         rt.waiting.clear();
+        // A stroke in hand, and where the brush last touched, name entities of the world that
+        // was (held `ui_act` answers are sent as they stood at the next pump: their edit is gone).
+        rt.stroke = None;
+        rt.brush_hover = None;
+        rt.brush_spot = None;
         rt.inspected = None;
         rt.gizmo_px = None;
         let epoch = rt.outliner.epoch + 1;
@@ -568,7 +708,11 @@ impl Engine {
             UiAct::FrameSelection => self.editor_frame_selection(),
             UiAct::Delete => self.editor_delete(),
             UiAct::Escape => {
-                if self.editor.rt.drag.is_some() || self.editor.rt.press.is_some() {
+                if self.editor.ui.brush_down() {
+                    // The brush is put down first (a stroke in progress goes with it, unsent).
+                    self.editor.ui.set_status("Brush put down.", true);
+                    self.editor.ui.changed();
+                } else if self.editor.rt.drag.is_some() || self.editor.rt.press.is_some() {
                     self.editor_cancel_drag();
                 } else if !self.editor.ui.selection.is_empty() {
                     self.editor.ui.select(&[], false);
@@ -613,6 +757,10 @@ impl Engine {
                     self.editor_cancel_drag();
                     self.editor.ui.select(&[id], add);
                     self.editor.rt.outliner.built = None;
+                    // As a click in the viewport says (the line would otherwise go on showing
+                    // the last edit's outcome, about another entity: found by the capture check).
+                    let n = self.editor.ui.selection.len();
+                    self.editor.ui.set_status(if n == 1 { format!("Selected {}.", self.world.path_of(id)) } else { format!("Selected {n} entities.") }, true);
                 }
             }
             UiAct::Search => {
@@ -646,6 +794,20 @@ impl Engine {
             }
             UiAct::Swarm(s) => self.editor_swarm_act(s),
             UiAct::AskOpen => self.editor_ask_open(),
+            UiAct::Brush(a) => {
+                // A gizmo drag in progress is let go of first: the pointer changes hands.
+                self.editor_cancel_drag();
+                let path = matches!(a, crate::editor::BrushAct::Path);
+                self.editor.ui.brush_act(a);
+                if path {
+                    self.editor_path_picked();
+                } else if let Some(b) = &self.editor.ui.brush {
+                    let on = if b.kind.on_terrain() { "the selected terrain" } else { "the selected model" };
+                    let hint = if b.kind.is_path() { String::new() } else { format!(" Drag on {on}.") };
+                    self.editor.ui.set_status(format!("{}.{hint}", b.label()), true);
+                }
+                self.editor.ui.changed();
+            }
         }
     }
 
@@ -795,11 +957,39 @@ impl Engine {
         let center = (lo + hi) * 0.5;
         let radius = ((hi.x - lo.x).max(hi.z - lo.z) * 0.5).clamp(0.5, crate::ask::MAX_RADIUS_M);
         choices.push(crate::editor_ask::Choice::Area { center: [center.x, lo.y, center.z], radius });
+        // What the human pointed at before asking, first in the list and chosen to begin with
+        // (carried from the reviews of m5-edswarm: a part came only from a list, never from
+        // what was highlighted). With a brush in hand that is the spot it last touched on this
+        // entity; with the path tool, the sweep part it would redraw.
+        let mut pointed = None;
+        match self.editor.ui.brush.as_ref().map(|b| b.kind) {
+            Some(crate::editor_brush::BrushKind::Path(k)) => {
+                let sweep = e.model.as_ref().and_then(|m| self.library.lock().sweep_names(&m.recipe, crate::editor_brush::MAX_PATH_SWEEPS as usize)).and_then(|s| s.get(k as usize).cloned());
+                if let Some(at) = sweep.and_then(|name| choices.iter().position(|c| *c == crate::editor_ask::Choice::Recipe(name.clone()))) {
+                    let part = choices.remove(at);
+                    choices.insert(0, part);
+                    pointed = Some("the sweep part your path tool is on");
+                }
+            }
+            Some(_) => {
+                if let Some((_, at, r)) = self.editor.rt.brush_spot.filter(|(entity, _, _)| *entity == primary) {
+                    choices.insert(0, crate::editor_ask::Choice::Spot { center: [at.x, at.y, at.z], radius: r.clamp(0.05, crate::ask::MAX_RADIUS_M) });
+                    pointed = Some("the spot under your brush");
+                }
+            }
+            None => {}
+        }
         // Beside the selection as it is on screen now (it stays there: nothing moves it later).
         let size = self.editor.rt.size;
         let target = self.editor.rt.cam.and_then(|c| crate::sight_overlay::Painter::new(c.camera().view_proj(size.0, size.1), size.0, size.1).project(center));
         self.editor.ui.ask.open(about, refs, choices, target, size);
-        self.editor.ui.set_status("Type your request; Enter sends it to the task board, Esc cancels. No agent reads it until you send.", true);
+        match pointed {
+            Some(what) => {
+                self.editor.ui.ask.choose(0);
+                self.editor.ui.set_status(format!("Asking about {what} (Tab changes what it is about). Type your request; Enter sends it to the task board, Esc cancels."), true);
+            }
+            None => self.editor.ui.set_status("Type your request; Enter sends it to the task board, Esc cancels. No agent reads it until you send.", true),
+        }
     }
 
     /// The box's Send or Cancel.
@@ -918,6 +1108,15 @@ impl Engine {
         if !v.right.held && !v.middle.held {
             self.editor.rt.nav = None;
         }
+        // The draw tools: with a brush in hand the left button strokes, and selects nothing.
+        if self.editor.ui.brush.is_some() {
+            let over = v.pointer.filter(|p| inside(*p) && !v.over_ui);
+            self.editor_brush_input(&view, v, over);
+            return;
+        }
+        self.editor.rt.stroke = None;
+        self.editor.rt.brush_hover = None;
+        self.editor.rt.brush_spot = None;
         // Selection and gizmos.
         let snap_on = self.editor.ui.snap.on != v.ctrl;
         let pointer = v.pointer;
@@ -995,8 +1194,220 @@ impl Engine {
         }
     }
 
+    /// The path tool was picked (or stepped): it is pointed at one of the selection's sweep
+    /// parts, by name, when the library has read the model's recipe (the button then steps
+    /// through those only). A model with none is told here, not at the first drag.
+    fn editor_path_picked(&mut self) {
+        use crate::editor_brush::{BrushKind, MAX_PATH_SWEEPS};
+        let Some(BrushKind::Path(k)) = self.editor.ui.brush.as_ref().map(|b| b.kind) else { return };
+        let recipe = self.editor.ui.primary().and_then(|id| self.world.get(id)).and_then(|e| e.model.as_ref().map(|m| m.recipe.clone()));
+        let Some(recipe) = recipe else {
+            self.editor.ui.set_status("Path: select a model whose recipe has a sweep part (a rail, a pipe, a road), then drag on its ground plane.", true);
+            return;
+        };
+        // (A recipe the library hasn't parsed, or a glTF: `model_path` answers at the drag.)
+        let Some(sweeps) = self.library.lock().sweep_names(&recipe, MAX_PATH_SWEEPS as usize) else { return };
+        if sweeps.is_empty() {
+            self.editor.ui.set_status(format!("Path: {recipe} has no sweep part to sketch (a path is drawn for a part whose shape is a sweep)."), false);
+            return;
+        }
+        let k = k as usize % sweeps.len();
+        if let Some(b) = self.editor.ui.brush.as_mut() {
+            b.kind = BrushKind::Path(k as u32);
+        }
+        self.editor.ui.set_status(format!("Path: drag on the model's ground plane to redraw '{}' (sweep {} of {}); it keeps its height.", sweeps[k], k + 1, sweeps.len()), true);
+    }
+
+    /// What the brush in hand would touch at `cursor`: the primary selection's surface. A
+    /// terrain's brush wants a terrain the terrain renderer draws (its heights are read where
+    /// the ray comes down: at most `editor_brush::MAX_MARCH` looks); the paint brush wants a
+    /// model, tested against its coarsest LOD (at most `MAX_HIT_TRIANGLES` triangles); the path
+    /// tool draws on the model's ground plane (y = 0 in its own frame).
+    fn editor_brush_target(&self, view: &View, cursor: [f32; 2]) -> Option<BrushTarget> {
+        use crate::editor_brush as eb;
+        let brush = self.editor.ui.brush.as_ref()?;
+        let id = self.editor.ui.primary()?;
+        let e = self.world.get(id)?;
+        let recipe = e.model.as_ref()?.recipe.clone();
+        let ray = view.ray(cursor);
+        // The ray in a frame: its origin, and a unit direction there.
+        let local = |to_world: &Mat4| -> Option<([f32; 3], [f32; 3])> {
+            let inv = to_world.inverse()?;
+            let o = inv.transform_point(ray.origin);
+            let d = inv.transform_point(ray.origin + ray.dir) - o;
+            let len = d.length();
+            (len > 1e-9 && len.is_finite()).then(|| ([o.x, o.y, o.z], [d.x / len, d.y / len, d.z / len]))
+        };
+        if brush.kind.is_path() {
+            let to_world = e.model();
+            let (o, d) = local(&to_world)?;
+            let point = eb::plane_hit(o, d, eb::PATH_REACH)?;
+            return Some(BrushTarget { entity: id, recipe, collider: None, point, scale: frame_scale(&to_world, false), to_world, offset: [0.0, 0.0] });
+        }
+        let lib = self.library.lock();
+        if brush.kind.on_terrain() {
+            let (_, t, model_from_terrain) = crate::terrain::terrain_of(e, &lib)?;
+            let to_world = e.model() * model_from_terrain;
+            let (o, d) = local(&to_world)?;
+            let half = [(t.columns.saturating_sub(1)) as f32 * t.cell[0] * 0.5, (t.rows.saturating_sub(1)) as f32 * t.cell[1] * 0.5];
+            let step = 0.5 * t.cell[0].min(t.cell[1]);
+            let point = eb::terrain_hit(o, d, half, step, |x, z| t.height_at(x, z))?;
+            // A sculpt moves the surface: a terrain that has a collider keeps it on the surface.
+            let collider = e.collider.is_some().then(|| self.world.path_of(id));
+            Some(BrushTarget { entity: id, recipe, collider, point, scale: frame_scale(&to_world, false), to_world, offset: t.offset })
+        } else {
+            let built = lib.built(e.resolved_model()?.handle)?;
+            let mesh = built.model.lods.iter().rev().find(|m| m.indices.len() / 3 <= eb::MAX_HIT_TRIANGLES)?;
+            let to_world = e.model();
+            let (o, d) = local(&to_world)?;
+            let point = eb::mesh_hit(o, d, &mesh.positions, &mesh.indices)?;
+            Some(BrushTarget { entity: id, recipe, collider: None, point, scale: frame_scale(&to_world, true), to_world, offset: [0.0, 0.0] })
+        }
+    }
+
+    /// The brush's frame of input: where it hovers, the stroke it makes while the left button
+    /// is held (samples half a radius apart, one tool call's worth at most), and its release,
+    /// which sends the stroke as one command. A right click, or the window losing focus, lets
+    /// the stroke go unsent.
+    fn editor_brush_input(&mut self, view: &View, v: &ViewIn, over: Option<[f32; 2]>) {
+        let Some(brush) = self.editor.ui.brush.clone() else { return };
+        let target = over.and_then(|p| self.editor_brush_target(view, p));
+        // (The path tool's ring is the distance to its next point, flat on the ground plane.)
+        let path = brush.kind.is_path();
+        let ring = if path { brush.radius * 0.5 } else { brush.radius };
+        let end = target.as_ref().map(|t| (t.entity, t.point));
+        if let (Some(t), Some((at, _, _))) = (target.as_ref(), self.editor.rt.brush_hover) {
+            self.editor.rt.brush_spot = Some((t.entity, at, brush.radius));
+        }
+        self.editor.rt.brush_hover = target.as_ref().map(|t| (t.to_world.transform_point(Vec3::new(t.point[0], t.point[1], t.point[2])), ring, brush.kind.on_terrain() || path));
+        if v.focus_lost || v.right.pressed {
+            if self.editor.rt.stroke.take().is_some() {
+                // Which of the two it was is said and traced: a live run lost a stroke once
+                // and nothing recorded why (the window's focus is the machine's, not the
+                // engine's: someone at the desk takes it by clicking elsewhere).
+                let why = if v.hold_lapsed && self.editor.rt.input_call.0 != 0 {
+                    "your hold went quiet and an agent's press took the viewport"
+                } else if v.hold_lapsed {
+                    "the agent driving it went quiet"
+                } else if v.focus_lost {
+                    "the window lost focus"
+                } else {
+                    "right click"
+                };
+                specula_core::trace_event!(&crate::trace_sink::ENGINE, Info, "editor.stroke_let_go", why = why);
+                self.editor.ui.set_status(format!("Stroke let go ({why}): nothing was sent."), true);
+            }
+            return;
+        }
+        let in_flight = !(self.editor.rt.outbox.is_empty() && self.editor.rt.waiting.is_empty()) || self.editor.rt.tool_running.load(std::sync::atomic::Ordering::SeqCst) != 0;
+        if v.left.pressed && over.is_some() && in_flight {
+            // One stroke in flight at a time: a stroke is written into the recipe the last one
+            // is still changing (the second would be refused as stale, or drawn on a surface
+            // about to be rebuilt).
+            self.editor.ui.set_status("Your last edit is still being written: draw again in a moment.", false);
+        } else if v.left.pressed && over.is_some() {
+            match target {
+                Some(t) => {
+                    let mut stroke = crate::editor_brush::Stroke::default();
+                    // (Sampled in the frame's own units: the ring is world metres.)
+                    stroke.add(t.point, brush.radius / t.scale.0.max(1e-6));
+                    self.editor.rt.stroke = Some(BrushStroke { stroke, entity: t.entity, recipe: t.recipe, collider: t.collider, to_world: t.to_world, offset: t.offset, scale: t.scale });
+                    // (The line would otherwise still show the last stroke's outcome.)
+                    self.editor.ui.set_status(format!("Drawing ({}): let go to send it; a right click lets it go.", brush.label()), true);
+                }
+                None => {
+                    // A model being rebuilt (the last stroke changed its recipe) has no surface
+                    // to draw on for a moment: said as that, not as "nothing there".
+                    let building = self.editor.ui.primary().and_then(|id| self.world.get(id)).is_some_and(|e| e.model_state() == "building");
+                    if building {
+                        self.editor.ui.set_status("It is being rebuilt (your last stroke changed its recipe): draw again in a moment.", false);
+                    } else if path {
+                        self.editor.ui.set_status("Nothing to draw on there: select a model with a sweep part, then drag on its ground plane (the level plane through its origin).", false);
+                    } else {
+                        let what = if brush.kind.on_terrain() { "a terrain (a model the terrain renderer draws)" } else { "a model" };
+                        self.editor.ui.set_status(format!("Nothing to draw on there: select {what}, then drag on it."), false);
+                    }
+                }
+            }
+        } else if v.left.held {
+            if let (Some(s), Some(t)) = (self.editor.rt.stroke.as_mut(), target.as_ref()) {
+                if t.entity == s.entity && s.stroke.add(t.point, brush.radius / s.scale.0.max(1e-6)) && s.stroke.full() {
+                    let full = if path { "This path holds all it can (64 points): let go to send it (a wider Size reaches farther)." } else { "This stroke holds all it can (64 dabs): let go to send it, then go on." };
+                    self.editor.ui.set_status(full, true);
+                }
+            }
+        }
+        if v.left.released || !v.left.held {
+            if let Some(mut s) = self.editor.rt.stroke.take() {
+                // A path ends where the pointer was let go, not at its last sample.
+                if let Some((_, p)) = end.filter(|(entity, _)| path && *entity == s.entity) {
+                    s.stroke.end_at(p, brush.radius / s.scale.0.max(1e-6));
+                }
+                self.editor_brush_send(&brush, s);
+            }
+        }
+    }
+
+    /// A finished stroke as its one command: `terrain_edit`, `model_paint` or `model_path`,
+    /// through the editor's tool path (journaled as window:owner, claim-checked, on the undo
+    /// stack).
+    fn editor_brush_send(&mut self, brush: &crate::editor_brush::Brush, s: BrushStroke) {
+        use crate::editor_brush as eb;
+        let n = s.stroke.points.len();
+        // The brush as the stroke's frame measures it (review R1, M4): what is written is what
+        // the ring showed, on a scaled entity too. Labels and the status stay in world metres.
+        let world = brush;
+        let brush = &eb::in_frame(world, s.scale.0, s.scale.1);
+        // (The tools' own refusals would speak in the entity's units: review R2, N4.)
+        if let Some(why) = eb::out_of_range(world, brush, s.scale.0) {
+            self.editor.ui.set_status(format!("{why} Nothing was sent."), false);
+            return;
+        }
+        if brush.kind.is_path() {
+            let Some(args) = eb::model_path_args(&s.recipe, brush, &s.stroke.points) else {
+                self.editor.ui.set_status("A path needs a drag: two points or more. Nothing was sent.", false);
+                return;
+            };
+            if self.editor_tool("model_path", args, Why::Edit(format!("Sketched the path ({n} points; {})", world.label()))) {
+                self.editor.ui.set_status(format!("Sketched the path: sending {n} points..."), true);
+            }
+            return;
+        }
+        let (tool, args, what) = if brush.kind.on_terrain() {
+            let what = if matches!(brush.kind, eb::BrushKind::Splat(_)) { "Painted the terrain" } else { "Sculpted the terrain" };
+            ("terrain_edit", eb::terrain_edit_args(&s.recipe, s.collider.as_deref(), brush, &s.stroke.points, s.offset), what)
+        } else {
+            ("model_paint", eb::model_paint_args(&s.recipe, brush, &s.stroke.points), "Painted the model")
+        };
+        let Some(args) = args else { return };
+        // Paint colours vertices: a stroke that reaches none would be written and change
+        // nothing. (Checked against the model's own mesh when that is quick enough to do
+        // here, `MAX_REACH_TESTS`; a denser one has vertices everywhere a brush can be.)
+        if tool == "model_paint" {
+            let reaches = self.world.get(s.entity).and_then(|e| e.resolved_model()).and_then(|m| {
+                let lib = self.library.lock();
+                let mesh = lib.built(m.handle)?.model.lods.first()?;
+                eb::paint_reaches(&mesh.positions, &s.stroke.points, brush.radius)
+            });
+            if reaches == Some(false) {
+                self.editor.ui.set_status(
+                    format!("Nothing to paint there: no vertex of the model lies within {:.2} m of the stroke (paint colours vertices). Widen the brush, or paint where the model has detail. Nothing was sent.", world.radius),
+                    false,
+                );
+                return;
+            }
+        }
+        if self.editor_tool(tool, args, Why::Edit(format!("{what} ({n} dab{} of {})", if n == 1 { "" } else { "s" }, world.label()))) {
+            self.editor.ui.set_status(format!("{what}: sending {n} dab{}...", if n == 1 { "" } else { "s" }), true);
+        }
+    }
+
     /// The gizmo's frame for the selection (at the primary's origin), if anything is selected.
     fn editor_gizmo_frame(&self, view: &View) -> Option<gz::Frame> {
+        // (With a brush in hand the left button is the brush's: no gizmo is drawn or hit.)
+        if self.editor.ui.brush.is_some() {
+            return None;
+        }
         let id = self.editor.ui.primary()?;
         let e = self.world.get(id)?;
         let m = e.model();
@@ -1140,6 +1551,137 @@ impl Engine {
         true
     }
 
+    /// Sends a tool that runs on its caller's thread (`terrain_edit`, `model_paint`,
+    /// `model_path`) as the
+    /// window's owner: the draw tools' one command per stroke. Such a tool waits for the engine
+    /// (it reads and patches a recipe through the project store), so it can't run here on the
+    /// engine thread: it runs on a thread of its own, and its answer comes back through the
+    /// editor's waiting list like any command's (journal id on the undo stack, the status line).
+    /// Driven by an agent's injected frames, its commits are journaled `via` that agent and
+    /// charged to its call, as `editor_pump` does. False when it wasn't sent (the status says why).
+    fn editor_tool(&mut self, tool: &'static str, args: Json, why: Why) -> bool {
+        if self.editor.rt.outbox.len() + self.editor.rt.waiting.len() >= MAX_WAITING {
+            self.editor.ui.set_status("Busy: earlier edits are still being answered; try again.", false);
+            return false;
+        }
+        let Some(tools) = self.tools.as_ref().and_then(std::sync::Weak::upgrade) else {
+            self.editor.ui.set_status(format!("Not sent ({tool}): this engine serves no tools."), false);
+            return false;
+        };
+        let input_id = self.editor.rt.input_call.0;
+        if input_id != 0 {
+            // One tool call, one commit: an editor_input call makes at most one edit.
+            if self.editor.rt.edited_calls.contains(&input_id) {
+                self.editor.ui.set_status("Not sent: this editor_input call already made its one edit (one call, one commit); send the next edit in a call of its own.", false);
+                return false;
+            }
+            self.editor.rt.edited_calls.push_back(input_id);
+            while self.editor.rt.edited_calls.len() > MAX_INPUT_WAITERS * 4 {
+                self.editor.rt.edited_calls.pop_front();
+            }
+        }
+        // (The thread works inside the driving call's trace context, as `editor_pump`'s
+        // commands do: trace_call on an editor_input that drew a stroke follows it there.)
+        let (call, via, trace) = match &self.editor.rt.input_call.1 {
+            Some(d) => (d.call, Some(d.by.clone()), d.trace),
+            None => (0, None, specula_core::trace::Ctx::current()),
+        };
+        specula_core::trace_event!(&crate::trace_sink::ENGINE, Info, "editor.command", tool = tool, by = crate::authority::WINDOW_OWNER, via = via.clone());
+        let (answer, rx) = crate::jobs::channel();
+        let running = std::sync::Arc::clone(&self.editor.rt.tool_running);
+        let job = ToolJob { tools, tool, args, call, via, trace, answer, running };
+        // One thread, started once, takes the calls in turn (one stroke is in flight at a
+        // time). Such a tool waits on this thread's own answers and on a rebuild: it can't run
+        // here, and it would hold one of the pool's two workers for as long. The thread keeps
+        // the tool handler alive only while a call runs, and ends with the engine.
+        if self.editor.rt.tool_thread.is_none() {
+            let (jobs, queue) = std::sync::mpsc::channel::<ToolJob>();
+            let spawned = std::thread::Builder::new().name("specula-editor-tool".into()).spawn(move || {
+                for job in queue {
+                    let in_call = job.trace.enter();
+                    crate::tools::serve_as(job.call, job.via);
+                    // A tool that panics answers as an error and the thread goes on, as a
+                    // protocol handler's does (the panic is recorded as caught, not as a crash).
+                    let ran = specula_core::trace::catch_unwind(std::panic::AssertUnwindSafe(|| crate::terrain_tools::call(&job.tools, &window_session(), job.tool, &job.args)));
+                    let out = ran.unwrap_or_else(|_| {
+                        ToolOutput::error(Json::obj([("error", Json::from("tool_panicked")), ("message", Json::from(format!("{} panicked; nothing more is known (trace_crash has the report)", job.tool)))]).to_string())
+                    });
+                    crate::tools::serve_as(0, None);
+                    drop(in_call);
+                    job.running.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                    let _ = job.answer.send(out);
+                }
+            });
+            match spawned {
+                Ok(_) => self.editor.rt.tool_thread = Some(jobs),
+                Err(e) => {
+                    self.editor.ui.set_status(format!("Not sent ({tool}): no thread for it ({e})."), false);
+                    return false;
+                }
+            }
+        }
+        self.editor.rt.tool_running.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if !self.editor.rt.tool_thread.as_ref().is_some_and(|t| t.send(job).is_ok()) {
+            // Its thread is gone: the next stroke starts another.
+            self.editor.rt.tool_running.store(0, std::sync::atomic::Ordering::SeqCst);
+            self.editor.rt.tool_thread = None;
+            self.editor.ui.set_status(format!("Not sent ({tool}): the editor's tool thread stopped; draw again."), false);
+            return false;
+        }
+        self.editor.rt.waiting.push((rx, why, Instant::now() + TOOL_DEADLINE, call, tool));
+        true
+    }
+
+    /// `ui_act` on the editor made an edit: its answer waits here for how the edit went, so the
+    /// agent that pressed a button learns the outcome from the same call (review R1 of
+    /// m5-edswarm, minor 7: it answered before the edit was sent, and a second call had to ask).
+    /// `output` is the answer as it stood (it names the edit and says its outcome isn't known):
+    /// it is sent as it is at the call's deadline. Gives the answer back when nothing waits
+    /// for it (no edit of this call is queued or in flight, or too many answers are held).
+    pub(crate) fn editor_hold_answer(&mut self, call: u64, output: ToolOutput, reply: crate::jobs::Reply, deadline: Instant) -> Option<(ToolOutput, crate::jobs::Reply)> {
+        let rt = &self.editor.rt;
+        if call == 0 || output.is_error || !self.editor_edit_alive(call) || rt.act_waiters.len() >= MAX_INPUT_WAITERS {
+            return Some((output, reply));
+        }
+        self.editor.rt.act_waiters.push((reply, output, call, deadline));
+        None
+    }
+
+    /// Whether an edit driven by tool call `call` is queued or sent and not answered.
+    fn editor_edit_alive(&self, call: u64) -> bool {
+        let rt = &self.editor.rt;
+        rt.outbox.iter().any(|(_, _, _, d)| d.as_ref().is_some_and(|d| d.call == call)) || rt.waiting.iter().any(|w| w.3 == call)
+    }
+
+    /// The edit driven by tool call `call` was answered (`out`), or got no answer: the `ui_act`
+    /// answers held for it are sent, saying how it went (the editor's status line, the journal
+    /// entry it made, the refusal's code).
+    fn editor_act_outcome(&mut self, call: u64, out: Option<&ToolOutput>) {
+        if call == 0 || self.editor.rt.act_waiters.is_empty() {
+            return;
+        }
+        let status = self.editor.ui.status.0.clone();
+        let (held, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.editor.rt.act_waiters).into_iter().partition(|w| w.2 == call);
+        self.editor.rt.act_waiters = rest;
+        for (reply, answer, _, _) in held {
+            let _ = reply.send(with_outcome(&answer, out, &status));
+        }
+    }
+
+    /// Held `ui_act` answers whose deadline is near, or whose edit is gone (the world was
+    /// replaced with it still queued), are sent as they stood.
+    fn editor_act_sweep(&mut self) {
+        if self.editor.rt.act_waiters.is_empty() {
+            return;
+        }
+        let soon = Instant::now() + ACT_ANSWER_MARGIN;
+        let (keep, send): (Vec<_>, Vec<_>) = std::mem::take(&mut self.editor.rt.act_waiters).into_iter().partition(|w| soon < w.3 && self.editor_edit_alive(w.2));
+        self.editor.rt.act_waiters = keep;
+        for (reply, answer, _, _) in send {
+            let _ = reply.send(answer);
+        }
+    }
+
     /// After the window frame's input: sends the editor's commands through the engine's request
     /// handler, reads their answers and the pick's, refreshes the panels, and points the window.
     pub(crate) fn editor_pump(&mut self, server: &Server) {
@@ -1177,7 +1719,7 @@ impl Engine {
             drop(in_call);
             let request = Request { session: window_session(), call, command, reply, deadline: Instant::now() + DEADLINE, trace, via };
             self.handle_traced(request, server);
-            self.editor.rt.waiting.push((rx, why, Instant::now() + DEADLINE));
+            self.editor.rt.waiting.push((rx, why, Instant::now() + DEADLINE, call, tool));
         }
         // Answers (most come at once; a deferred one a frame or more later).
         let mut i = 0;
@@ -1185,20 +1727,23 @@ impl Engine {
             let got = self.editor.rt.waiting[i].0.try_recv();
             match got {
                 Ok(out) => {
-                    let (_, why, _) = self.editor.rt.waiting.remove(i);
+                    let (_, why, _, call, _) = self.editor.rt.waiting.remove(i);
                     self.editor_answer(why, &out);
+                    self.editor_act_outcome(call, Some(&out));
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) if Instant::now() < self.editor.rt.waiting[i].2 => i += 1,
                 Err(_) => {
-                    let (_, why, _) = self.editor.rt.waiting.remove(i);
+                    let (_, why, _, call, _) = self.editor.rt.waiting.remove(i);
                     if matches!(why, Why::Ask) {
                         // No answer: the words stay, to send again.
                         self.editor.ui.ask.set_sending(false);
                     }
                     self.editor.ui.set_status("An edit got no answer (the engine dropped it); look at world_history for its outcome.", false);
+                    self.editor_act_outcome(call, None);
                 }
             }
         }
+        self.editor_act_sweep();
         // The pick.
         if self.editor.rt.pick.is_none() {
             if let Some((rect, click, add)) = self.editor.rt.want_pick.take() {
@@ -1269,12 +1814,20 @@ impl Engine {
                 if !pending {
                     // (editor_input is the owner's: its answer may show the typing.)
                     let s = state.get_or_insert_with(|| self.editor_state_json(false, true)).clone();
-                    let _ = reply.send(ToolOutput::text(Json::obj([("fed", Json::from(true)), ("editor", s)]).to_string()));
-                    self.editor.rt.input_tool_calls.remove(&id);
+                    let mut answer = vec![("fed", Json::from(true))];
+                    let call = self.editor.rt.input_tool_calls.remove(&id).map(|d| d.call);
+                    if let Some(refused) = call.and_then(|c| self.editor_refused_presses(c)) {
+                        answer.push(("presses_refused", refused));
+                    }
+                    answer.push(("editor", s));
+                    let _ = reply.send(ToolOutput::text(Json::obj(answer).to_string()));
                 } else if now > deadline {
                     let dropped = self.editor.ui.injected.iter().filter(|(c, _)| *c == id).count();
                     self.editor.ui.drop_injected(id);
-                    let sent = self.editor.rt.input_tool_calls.remove(&id).map_or(dropped, |d| d.frames).max(dropped);
+                    let driver = self.editor.rt.input_tool_calls.remove(&id);
+                    // (Its refused presses go with it: said here, and not left in the tally.)
+                    let refused = driver.as_ref().and_then(|d| self.editor.rt.refused_presses.remove(&d.call));
+                    let sent = driver.map_or(dropped, |d| d.frames).max(dropped);
                     let held = self.editor_window_held();
                     let mut e = crate::world::WorldError::new(
                         "input_dropped",
@@ -1287,6 +1840,9 @@ impl Engine {
                     .with("frames_run", (sent - dropped) as u64)
                     .with("frames_dropped", dropped as u64)
                     .with("retry", false);
+                    if let Some(n) = refused {
+                        e = e.with("presses_refused", u64::from(n));
+                    }
                     if let Some(h) = held {
                         e = e.with("held_by", h);
                     }
@@ -1695,6 +2251,35 @@ impl Engine {
                 }
             }
         }
+        // The draw tools: the brush's ring where it hovers, and the stroke so far.
+        if let Some((centre, radius, on_ground)) = self.editor.rt.brush_hover {
+            const RING: usize = 40;
+            // On a terrain the ring lies on the ground; on a model it faces the camera.
+            let fwd = (camera.target - camera.eye).normalize();
+            let right = fwd.cross(Vec3::Y);
+            let right = if right.length() < 1e-3 { Vec3::X } else { right.normalize() };
+            let (u, w) = if on_ground { (Vec3::X, Vec3::Z) } else { (right, right.cross(fwd).normalize()) };
+            let at = |k: usize| {
+                let a = k as f32 / RING as f32 * std::f32::consts::TAU;
+                centre + u * (a.cos() * radius) + w * (a.sin() * radius)
+            };
+            for k in 0..RING {
+                p.line(at(k), at(k + 1), CYAN, 2.0);
+            }
+            p.dot(centre, 3.0, CYAN);
+        }
+        if let Some(s) = &self.editor.rt.stroke {
+            let world = |q: &[f32; 3]| s.to_world.transform_point(Vec3::new(q[0], q[1], q[2]));
+            // A sketched path is a line through its points; a brush's stroke is its dabs.
+            if self.editor.ui.brush.as_ref().is_some_and(|b| b.kind.is_path()) {
+                for w in s.stroke.points.windows(2) {
+                    p.line(world(&w[0]), world(&w[1]), CYAN, 2.0);
+                }
+            }
+            for q in &s.stroke.points {
+                p.dot(world(q), 4.0, CYAN_DIM);
+            }
+        }
         // The swarm panels' marks: the selected row's entities, the claim map.
         self.editor_swarm_overlay(&mut p);
         // The Ask box's leader line to what it is about (from where the box is).
@@ -1789,6 +2374,21 @@ impl Engine {
             ("operator", Json::from(crate::authority::WINDOW_OWNER)),
             ("mode", Json::from(ui.mode.name())),
             ("space", Json::from(ui.space.name())),
+            (
+                "brush",
+                match &ui.brush {
+                    Some(b) => Json::obj([
+                        ("kind", Json::from(b.kind.name())),
+                        ("radius", Json::Num(f64::from(b.radius))),
+                        ("amount", Json::Num(f64::from(b.amount))),
+                        ("color", if b.kind == crate::editor_brush::BrushKind::Paint { Json::from(b.color.as_str()) } else { Json::Null }),
+                        ("layer", if let crate::editor_brush::BrushKind::Splat(l) = b.kind { Json::from(l) } else { Json::Null }),
+                        ("sweep", if let crate::editor_brush::BrushKind::Path(k) = b.kind { Json::from(k) } else { Json::Null }),
+                        ("label", Json::from(b.label())),
+                    ]),
+                    None => Json::Null,
+                },
+            ),
             (
                 "snap",
                 Json::obj([("on", Json::from(ui.snap.on)), ("translate_m", Json::from(f64::from(ui.snap.translate))), ("rotate_deg", Json::from(f64::from(ui.snap.rotate))), ("scale", Json::from(f64::from(ui.snap.scale)))]),
@@ -1920,6 +2520,50 @@ impl Engine {
         )
     }
 
+    /// What a pass's frame said about the viewport's holds, traced and kept: a quiet hold that
+    /// ended (the other side's), and presses that were not taken. An agent's refused presses
+    /// are counted for its call (its answer says its drag did not start: review R2 of
+    /// m5-eddraw, N1 and N3: the call answered as fed and the drag was a silent no-op); the
+    /// human's are said on the status line.
+    fn editor_note_holds(&mut self, view: &ViewIn, injected_pass: bool) {
+        if view.hold_lapsed {
+            let whose = if injected_pass { "human" } else { "agent" };
+            specula_core::trace_event!(&crate::trace_sink::ENGINE, Warn, "editor.hold_lapsed", whose = whose, driven_by = self.editor.ui.driven_by.clone().unwrap_or_default(), quiet_s = crate::editor::AGENT_HOLD_S);
+        }
+        if view.presses_refused == 0 {
+            return;
+        }
+        if !injected_pass {
+            // (The press that ended a quiet hold is not a press of its own: review R3, F6: it
+            // was told the agent still held.)
+            let line = if view.hold_lapsed {
+                "You took the viewport back: the agent's drag had gone quiet and was let go, unsent. Press again to draw."
+            } else {
+                "An agent's drag holds the viewport: your press was not taken. It ends when the agent lets go; once the agent has been quiet for 5 s your press takes the viewport back."
+            };
+            self.editor.ui.set_status(line, view.hold_lapsed);
+            return;
+        }
+        let call = self.editor.rt.input_call.1.as_ref().map_or(0, |d| d.call);
+        specula_core::trace_event!(&crate::trace_sink::ENGINE, Info, "editor.press_refused", call = call, presses = u64::from(view.presses_refused), took_back = view.hold_lapsed);
+        let kept = &mut self.editor.rt.refused_presses;
+        *kept.entry(call).or_insert(0) += u32::from(view.presses_refused);
+        while kept.len() > MAX_INPUT_WAITERS * 4 {
+            kept.pop_first();
+        }
+    }
+
+    /// The presses of tool call `call`'s frames that were not taken, as its answer says them
+    /// (taken out: said once). `None`: all were taken.
+    pub(crate) fn editor_refused_presses(&mut self, call: u64) -> Option<Json> {
+        let n = self.editor.rt.refused_presses.remove(&call)?;
+        Some(Json::obj([
+            ("count", Json::from(n)),
+            ("why", Json::from("a press in the viewport was not taken: the human's own hand held its buttons (or this press ended a hold of theirs that had gone quiet), so no drag or stroke began there. Presses on the panels are not counted here: they were the panels'")),
+            ("retry", Json::from(true)),
+        ]))
+    }
+
     /// `ui_act {surface: "editor"}` (owner only; checked by the caller): its frames run on the
     /// editor as an agent's injected frames do (`editor_input`): its edit (one per call) is the
     /// window owner's, journaled with the agent as `via` and charged to the call. Returns the
@@ -1951,14 +2595,18 @@ impl Engine {
         self.editor.rt.size = size;
         self.editor.rt.input_call = (id, driver);
         let open_before = self.editor.ui.is_open();
+        self.editor.ui.injected_pass = true;
         let (acts, view) = self.editor.ui.frame(events, pads, size, false);
+        self.editor.ui.injected_pass = false;
+        self.editor_note_holds(&view, true);
         if self.editor.ui.is_open() && !open_before {
             self.editor_opened();
         }
         for a in acts {
             self.editor_act(a);
         }
-        if self.editor.ui.is_open() {
+        // (As the window frame's injected pass: not while the human's own hand holds a button.)
+        if self.editor.ui.is_open() && !self.editor.ui.human_holds() {
             if view.focus_lost {
                 self.editor_cancel_drag();
             }
@@ -1970,8 +2618,12 @@ impl Engine {
     /// The `ui_act` call is done: its frames ran (its edit is sent at the next pump, charged to it).
     /// The edits tool call `call`'s frames queued (their tools): each is sent by the window's
     /// next frame, so its outcome isn't known when the call answers.
+    /// (And the ones already sent and not answered: a draw tool's stroke goes straight to the
+    /// editor's tool thread. Review R1 of m5-eddraw, m3: `edit.queued` was null for those.)
     pub(crate) fn editor_queued_edits(&self, call: u64) -> Vec<&'static str> {
-        self.editor.rt.outbox.iter().filter(|(_, _, _, d)| d.as_ref().is_some_and(|d| d.call == call)).map(|(tool, ..)| *tool).collect()
+        let rt = &self.editor.rt;
+        let queued = rt.outbox.iter().filter(|(_, _, _, d)| d.as_ref().is_some_and(|d| d.call == call)).map(|(tool, ..)| *tool);
+        queued.chain(rt.waiting.iter().filter(|w| w.3 == call).map(|w| w.4)).collect()
     }
 
     pub(crate) fn editor_ui_act_end(&mut self, id: u64) {
@@ -2669,6 +3321,119 @@ mod tests {
         assert!(labels[0].contains("bob: delete") && labels[1].contains("ann: spawn"), "{labels:?}");
     }
 
+    /// Review R1 of m5-edswarm, minor 7: `ui_act` on the editor answers with how its edit went.
+    /// Its answer is held while the edit its frames queued is unanswered, sent with the outcome
+    /// when the edit is, and sent as it stood when the deadline nears or the edit is gone.
+    #[test]
+    fn a_ui_act_answer_on_the_editor_waits_for_its_edits_outcome() {
+        let Some(mut e) = engine() else { return };
+        let stood = || ToolOutput::text(r#"{"surface":"editor","frames":3,"edit":{"queued":["world_delete"],"outcome":"not known yet"}}"#.to_owned());
+        let driver = |call: u64| Some(Driver { call, trace: specula_core::trace::Ctx::current(), by: "owner-proxy".into(), frames: 1 });
+        let far = Instant::now() + Duration::from_secs(30);
+        let text = |out: &ToolOutput| answer_json(out).to_string();
+        // No edit of this call anywhere: nothing to wait for.
+        let (reply, _rx) = crate::jobs::channel();
+        assert!(e.editor_hold_answer(7, stood(), reply, far).is_some());
+        // Presses that were not taken are said to the call that made them, once (review R2 of
+        // m5-eddraw, N1: the call answered as fed and its drag was a silent no-op).
+        e.editor.rt.input_call = (3, driver(40));
+        e.editor_note_holds(&ViewIn { presses_refused: 2, ..ViewIn::default() }, true);
+        e.editor_note_holds(&ViewIn { presses_refused: 1, hold_lapsed: true, ..ViewIn::default() }, true);
+        e.editor.rt.input_call = (0, None);
+        let said = e.editor_refused_presses(40).expect("counted for its call").to_string();
+        assert!(said.contains(r#""count":3"#) && said.contains(r#""retry":true"#), "{said}");
+        assert!(e.editor_refused_presses(40).is_none() && e.editor_refused_presses(41).is_none());
+        // (The human's own refused press is said on their status line, and counted for no call;
+        // the press that took the viewport back says that instead: review R3, F6.)
+        e.editor_note_holds(&ViewIn { presses_refused: 1, ..ViewIn::default() }, false);
+        assert!(e.editor.rt.refused_presses.is_empty() && e.editor.ui.status.0.contains("An agent's drag holds the viewport"));
+        e.editor_note_holds(&ViewIn { presses_refused: 1, hold_lapsed: true, focus_lost: true, ..ViewIn::default() }, false);
+        assert!(e.editor.ui.status.0.contains("You took the viewport back") && e.editor.ui.status.1, "{}", e.editor.ui.status.0);
+        // A draw tool's stroke goes straight to the tool thread: it is an edit of the call
+        // too, and named (review R1 of m5-eddraw, m3: `queued` was null for these).
+        let (_tool_reply, tool_rx) = crate::jobs::channel();
+        e.editor.rt.waiting.push((tool_rx, Why::Edit("Painted the model".into()), far, 12, "model_paint"));
+        assert_eq!(e.editor_queued_edits(12), vec!["model_paint"]);
+        let (reply, rx12) = crate::jobs::channel();
+        assert!(e.editor_hold_answer(12, stood(), reply, far).is_none());
+        e.editor.rt.waiting.clear();
+        e.editor_act_sweep();
+        assert!(rx12.try_recv().is_ok() && e.editor.rt.act_waiters.is_empty(), "its edit gone, it is answered as it stood");
+        // Its edit is queued: the answer is held, and sent with the outcome when it comes.
+        e.editor.rt.outbox.push(("world_delete", Json::Null, Why::Edit("Deleted /a".into()), driver(7)));
+        assert_eq!(e.editor_queued_edits(7), vec!["world_delete"]);
+        let (reply, rx) = crate::jobs::channel();
+        assert!(e.editor_hold_answer(7, stood(), reply, far).is_none());
+        // (Another call's, and the human's own, wait for nothing.)
+        let (other, _rx2) = crate::jobs::channel();
+        assert!(e.editor_hold_answer(8, stood(), other, far).is_some());
+        let (human, _rx3) = crate::jobs::channel();
+        assert!(e.editor_hold_answer(0, stood(), human, far).is_some());
+        e.editor_act_sweep();
+        assert!(rx.try_recv().is_err(), "held while its edit waits to be sent");
+        e.editor.rt.outbox.clear();
+        e.editor.ui.set_status("Deleted /a (journal 12, as window:owner).", true);
+        e.editor_act_outcome(7, Some(&ToolOutput::text(r#"{"journal":12,"deleted":1}"#.to_owned())));
+        let got = text(&rx.try_recv().expect("answered with the outcome"));
+        assert!(got.contains(r#""edit":{"queued":["world_delete"],"done":true,"status":"Deleted /a (journal 12, as window:owner).","journal":12}"#), "{got}");
+        assert!(got.contains(r#""frames":3"#) && !got.contains("not known yet"), "{got}");
+        assert!(e.editor.rt.act_waiters.is_empty());
+        // A refused edit says so, with the refusal's code.
+        e.editor.rt.outbox.push(("world_delete", Json::Null, Why::Edit("Deleted /a".into()), driver(9)));
+        let (reply, rx) = crate::jobs::channel();
+        assert!(e.editor_hold_answer(9, stood(), reply, far).is_none());
+        e.editor.rt.outbox.clear();
+        e.editor.ui.set_status("Deleted /a: not done. Refused (claimed).", false);
+        e.editor_act_outcome(9, Some(&ToolOutput::error(r#"{"error":"claimed","message":"bob holds it","retry":true}"#.to_owned())));
+        let got = text(&rx.try_recv().unwrap());
+        assert!(got.contains(r#""done":false"#) && got.contains(r#""error":"claimed""#) && got.contains(r#""retry":true"#), "{got}");
+        // The deadline nears: sent as it stood. And an edit that is gone (the world was replaced
+        // with it queued) leaves nothing to wait for.
+        e.editor.rt.outbox.push(("world_delete", Json::Null, Why::Edit("x".into()), driver(10)));
+        let (reply, rx) = crate::jobs::channel();
+        assert!(e.editor_hold_answer(10, stood(), reply, Instant::now() + Duration::from_millis(50)).is_none());
+        e.editor_act_sweep();
+        assert!(text(&rx.try_recv().expect("sent before its deadline")).contains("not known yet"));
+        let (reply, rx) = crate::jobs::channel();
+        assert!(e.editor_hold_answer(10, stood(), reply, far).is_none());
+        e.editor.rt.outbox.clear();
+        e.editor_act_sweep();
+        assert!(text(&rx.try_recv().expect("its edit is gone")).contains("not known yet"));
+        // An error answer is never held; nor one past what is held at once.
+        e.editor.rt.outbox.push(("world_delete", Json::Null, Why::Edit("x".into()), driver(11)));
+        let (reply, _rx4) = crate::jobs::channel();
+        assert!(e.editor_hold_answer(11, ToolOutput::error("{}".to_owned()), reply, far).is_some());
+        let mut kept = Vec::new();
+        for _ in 0..MAX_INPUT_WAITERS {
+            let (reply, rx) = crate::jobs::channel();
+            assert!(e.editor_hold_answer(11, stood(), reply, far).is_none());
+            kept.push(rx);
+        }
+        let (reply, _rx5) = crate::jobs::channel();
+        assert!(e.editor_hold_answer(11, stood(), reply, far).is_some(), "at most {MAX_INPUT_WAITERS} held");
+    }
+
+    /// Review R1 of m5-eddraw, M4: world metres per unit of a stroke's frame, so a brush's
+    /// size on a scaled entity is what its ring shows.
+    #[test]
+    fn a_frames_scale_is_read_from_its_matrix() {
+        use specula_core::math::Quat;
+        let m = Mat4::from_trs(Vec3::new(5.0, 1.0, -2.0), Quat::IDENTITY, Vec3::new(3.0, 3.0, 3.0));
+        let (across, up) = frame_scale(&m, true);
+        assert!((across - 3.0).abs() < 1e-5 && (up - 3.0).abs() < 1e-5);
+        // Uneven: the ground's mean (or all three for a paint brush), and the height's own.
+        let m = Mat4::from_trs(Vec3::ZERO, Quat::IDENTITY, Vec3::new(2.0, 5.0, 4.0));
+        let (ground, up) = frame_scale(&m, false);
+        assert!((ground - 3.0).abs() < 1e-5 && (up - 5.0).abs() < 1e-5);
+        assert!((frame_scale(&m, true).0 - 11.0 / 3.0).abs() < 1e-5);
+        assert_eq!(frame_scale(&Mat4::IDENTITY, false), (1.0, 1.0));
+        // Far from the origin the scale is read as exactly (review R2, N5: by a transformed
+        // point it lost its digits there).
+        let far = Mat4::from_trs(Vec3::new(9_000_000.0, 0.0, -9_000_000.0), Quat::IDENTITY, Vec3::new(0.01, 0.01, 0.01));
+        let (across, up) = frame_scale(&far, true);
+        assert!((across - 0.01).abs() < 1e-7 && (up - 0.01).abs() < 1e-7, "{across} {up}");
+    }
+
     /// Review R1 of m5-edswarm, minor 13: a task's parts are checked against the entities they
     /// name, not only for shape.
     #[test]
@@ -2685,6 +3450,111 @@ mod tests {
         // A place needs no entity's leave.
         let area = [Part { entity: None, kind: PartKind::Area { center: [0.0; 3], radius: 2.0 } }];
         assert!(e.check_parts(&[id], &area).is_ok());
+    }
+
+    /// The draw tools: with a brush in hand the viewport's left button is the brush's. On
+    /// something it can't draw on it says so and sends nothing, and it never selects; pressing a
+    /// brush's button again steps it; Escape puts the brush down before it clears a selection;
+    /// closing the Draw bar puts it down too; `editor_state` says what is in hand.
+    #[test]
+    fn a_brush_in_hand_has_the_left_button_and_selects_nothing() {
+        use crate::editor::BrushAct;
+        use crate::editor_brush::BrushKind;
+        let Some(mut e) = engine() else { return };
+        let id = spawn(&mut e, "cube", "bob");
+        e.windowed = true;
+        let size = (800, 600);
+        e.input = vec![Event::KeyDown { code: 0x76, repeat: false }, Event::KeyUp { code: 0x76 }];
+        e.editor_frame(size, false);
+        if !e.editor.ui.is_open() {
+            crate::skip_test("editor_engine", "the editor's UI did not load (no system fonts)");
+            return;
+        }
+        e.editor.ui.select(&[id], false);
+        e.editor_act(UiAct::Brush(BrushAct::Sculpt));
+        assert_eq!(e.editor.ui.brush.as_ref().map(|b| b.kind), Some(BrushKind::Raise));
+        assert!(e.editor.ui.draw_bar, "a brush opens its bar");
+        // Its size by keys: P wider, O narrower (with no brush in hand they do nothing).
+        let radius = |e: &Engine| e.editor.ui.brush.as_ref().map(|b| b.radius);
+        let r0 = radius(&e).unwrap();
+        e.input = vec![Event::KeyDown { code: 0x50, repeat: false }, Event::KeyUp { code: 0x50 }];
+        e.editor_frame(size, false);
+        assert_eq!(radius(&e), Some(r0 * 1.25), "P: a wider brush");
+        e.input = vec![Event::KeyDown { code: 0x4F, repeat: false }, Event::KeyUp { code: 0x4F }];
+        e.editor_frame(size, false);
+        assert!((radius(&e).unwrap() - r0).abs() < 1e-5, "O: narrower again");
+        // A press and release in the middle of the viewport: a cube is no terrain.
+        let rect = e.editor.ui.viewport_rect(size);
+        let p = [rect[0] + rect[2] * 0.5, rect[1] + rect[3] * 0.5];
+        let button = |pressed: bool, held: bool, released: bool| ViewIn { pointer: Some(p), left: Btn { pressed, held, released }, ..ViewIn::default() };
+        e.editor_viewport(&button(true, true, false), size);
+        assert!(e.editor.rt.stroke.is_none() && e.editor.rt.press.is_none(), "no stroke begins, and no click or box select");
+        assert!(e.editor_state_json(true, true).to_string().contains("Nothing to draw on there"), "it says why");
+        e.editor_viewport(&button(false, false, true), size);
+        assert!(e.editor.rt.want_pick.is_none(), "the brush's click selects nothing");
+        assert_eq!(e.editor.ui.selection.to_vec(), vec![id], "the selection is as it was");
+        assert!(e.editor.rt.outbox.is_empty() && e.editor.rt.waiting.is_empty(), "nothing was sent");
+        // The button again: the next op. The state names what is in hand.
+        e.editor_act(UiAct::Brush(BrushAct::Sculpt));
+        assert_eq!(e.editor.ui.brush.as_ref().map(|b| b.kind), Some(BrushKind::Lower));
+        e.editor_act(UiAct::Brush(BrushAct::Splat));
+        e.editor_act(UiAct::Brush(BrushAct::Splat));
+        let state = e.editor_state_json(true, true).to_string();
+        assert!(state.contains(r#""brush":{"kind":"splat""#) && state.contains(r#""layer":1"#), "{state}");
+        // Escape: the brush first, the selection only after it.
+        e.editor_act(UiAct::Escape);
+        assert!(e.editor.ui.brush.is_none() && !e.editor.ui.selection.is_empty());
+        e.editor_act(UiAct::Escape);
+        assert!(e.editor.ui.selection.is_empty());
+        // "Ask the agents" with a brush in hand is about the spot the brush last touched on
+        // the selection (carried from the reviews of m5-edswarm): chosen to begin with, sent
+        // as an area part. A spot on another entity is nobody's.
+        e.editor.ui.select(&[id], false);
+        e.editor_act(UiAct::Brush(BrushAct::Sculpt));
+        e.editor.rt.brush_spot = Some((id + 1000, Vec3::new(9.0, 9.0, 9.0), 1.0));
+        e.editor_act(UiAct::AskOpen);
+        if e.editor.ui.asking() {
+            assert!(e.editor.ui.ask.status_json().to_string().contains("the whole selection"), "another entity's spot is not offered");
+            e.editor.ui.ask.close("test");
+            e.editor.rt.brush_spot = Some((id, Vec3::new(1.0, 0.5, -2.0), 1.5));
+            e.editor_act(UiAct::AskOpen);
+            let ask = e.editor.ui.ask.status_json().to_string();
+            assert!(ask.contains("the spot under your brush (3.0 m wide)"), "{ask}");
+            assert!(e.editor_state_json(true, true).to_string().contains("Asking about the spot under your brush"));
+            let spot = crate::editor_ask::Choice::Spot { center: [1.0, 0.5, -2.0], radius: 1.5 };
+            let part = spot.part(0).unwrap();
+            assert_eq!(part.to_json().to_string(), r#"{"kind":"area","center":[1,0.5,-2],"radius":1.5}"#);
+            assert!(e.check_parts(&[id], &[part]).is_ok());
+            e.editor.ui.ask.close("test");
+        }
+        e.editor_act(UiAct::Escape);
+        assert!(e.editor.ui.brush.is_none());
+        // (Putting the brush down forgets its spot at the next viewport frame.)
+        e.editor_viewport(&button(false, false, false), size);
+        assert!(e.editor.rt.brush_spot.is_none());
+        // The path tool on a model with no sweep part: said when it is picked, and a drag on
+        // its ground plane is still a stroke (the tool answers for a recipe not read yet).
+        e.editor.ui.select(&[id], false);
+        e.editor_act(UiAct::Brush(BrushAct::Path));
+        assert_eq!(e.editor.ui.brush.as_ref().map(|b| b.kind), Some(BrushKind::Path(0)));
+        let state = e.editor_state_json(true, true).to_string();
+        assert!(state.contains(r#""kind":"path""#) && state.contains(r#""sweep":0"#), "{state}");
+        e.editor_act(UiAct::Brush(BrushAct::Path));
+        assert!(matches!(e.editor.ui.brush.as_ref().map(|b| b.kind), Some(BrushKind::Path(_))), "pressed again: still the path tool");
+        // A click is no path: nothing is sent, and it says so.
+        e.editor_viewport(&button(true, true, false), size);
+        if e.editor.rt.stroke.is_some() {
+            e.editor_viewport(&button(false, false, true), size);
+            assert!(e.editor.rt.outbox.is_empty() && e.editor.rt.waiting.is_empty(), "one point is no path");
+            assert!(e.editor_state_json(true, true).to_string().contains("A path needs a drag"), "it says why");
+        }
+        e.editor_act(UiAct::Escape);
+        // Closing the bar puts the brush down.
+        e.editor_act(UiAct::Brush(BrushAct::Paint));
+        assert_eq!(e.editor.ui.brush.as_ref().map(|b| b.kind), Some(BrushKind::Paint));
+        e.editor_act(UiAct::Brush(BrushAct::Bar));
+        assert!(e.editor.ui.brush.is_none() && !e.editor.ui.draw_bar);
+        assert!(e.editor_state_json(true, true).to_string().contains(r#""brush":null"#));
     }
 
     /// The swarm panels fill from the engine's stores: the journal timeline names who changed

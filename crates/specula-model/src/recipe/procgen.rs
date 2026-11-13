@@ -223,8 +223,12 @@ impl Parser<'_> {
             Obj(schema) => Val::Obj(self.node(path, v, last, schema, false)?),
             Objs(schema) => {
                 let items = self.list(path, v, "a list of objects")?;
-                if items.len() > 64 {
-                    return Err(e(path, ErrorCode::Limit, format!("{} entries; at most 64", items.len())).with_numbers(items.len() as f64, 64.0));
+                // A terrain's strokes have a cap of their own (`terrain::MAX_EDITS`, which
+                // `terrain_edit` documents): this list's general cap stopped a terrain at 64
+                // strokes, an eighth of it. Found by the editor's sculpt brush, five drags in.
+                let most = if last == "edits" { terrain::MAX_EDITS } else { 64 };
+                if items.len() > most {
+                    return Err(e(path, ErrorCode::Limit, format!("{} entries; at most {most}", items.len())).with_numbers(items.len() as f64, most as f64));
                 }
                 Val::List(items.iter().enumerate().map(|(i, x)| self.node(&format!("{path}[{i}]"), x, last, schema, false).map(Val::Obj)).collect::<Result<_, _>>()?)
             }

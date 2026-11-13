@@ -346,8 +346,13 @@ impl Engine {
                         self.review_ui.open(id, &self.swarm.review, seen);
                     }
                     ScreenOp::Close => self.review_ui.close(),
-                    ScreenOp::Next => self.review_ui.step(1, &self.swarm.review),
-                    ScreenOp::Prev => self.review_ui.step(-1, &self.swarm.review),
+                    // An agent that turns the page under the human moves the focus off the
+                    // decision, as its open does: their Enter must not approve a submission
+                    // they have not looked at.
+                    ScreenOp::Next | ScreenOp::Prev => {
+                        self.review_ui.step(if matches!(op, ScreenOp::Next) { 1 } else { -1 }, &self.swarm.review);
+                        self.review_ui.defuse();
+                    }
                     ScreenOp::Status => {}
                 }
                 let mut j = self.review_ui.status_json(&self.swarm.review);

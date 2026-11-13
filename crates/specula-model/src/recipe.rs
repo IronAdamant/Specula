@@ -306,6 +306,111 @@ pub struct Recipe {
     textures: Vec<(String, TexSource)>,
     /// How the model sways in the world's wind (foliage), if at all.
     pub wind: Option<WindDef>,
+    /// Paint strokes, applied to the built model's vertex colours in order ([`PaintEdit`]).
+    pub edits: Vec<PaintEdit>,
+}
+
+/// Most strokes a recipe's `"edits"` hold (as a terrain's).
+pub const MAX_PAINT_EDITS: usize = 512;
+/// A stroke's radius, metres.
+pub const PAINT_RADIUS: (f64, f64) = (0.005, 64.0);
+/// How far from the model's origin a stroke may be centred, metres.
+pub const PAINT_REACH: f64 = 10_000.0;
+
+/// One of a recipe's `"edits"`: a paint stroke as data, `{"op": "paint", "at": [x, y, z],
+/// "radius": m, "color": "#rrggbb" or a palette name, "amount": 0..1}`. Every vertex of the built
+/// model within `radius` of `at` (model space, metres) takes the colour, fully at the centre and
+/// easing to nothing at the rim, times `amount`; alpha (the wind's painted weight) is left as it
+/// is. Strokes apply in order, after the parts are built and before the LODs are made, so every
+/// LOD carries them. Textured parts don't read vertex colours and are left alone. A recipe's
+/// edits are its own model's: they are not applied where another recipe includes it.
+///
+/// This is the editor's vertex-paint tool as data (docs/design/EDITOR.md, "Draw tools"): a stroke
+/// is a line in the recipe's file, so it is journaled, undoable and readable like the rest.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PaintEdit {
+    pub at: [f32; 3],
+    pub radius: f32,
+    /// A palette or material name, or `#rrggbb` (known to the style the recipe was parsed with).
+    pub color: String,
+    pub amount: f32,
+}
+
+fn paint_edits(v: &Json, style: &Style) -> Result<Vec<PaintEdit>, RecipeError> {
+    let items = v.as_array().ok_or_else(|| type_err("edits", "a list of strokes {op, at, radius, color, amount}"))?;
+    if items.len() > MAX_PAINT_EDITS {
+        return Err(e("edits", ErrorCode::Limit, format!("{} strokes; at most {MAX_PAINT_EDITS} (bake them into the parts' colours, or start the list again)", items.len()))
+            .with_numbers(items.len() as f64, MAX_PAINT_EDITS as f64));
+    }
+    let mut out = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        let at_path = |k: &str| format!("edits[{i}].{k}");
+        let o = item.as_object().ok_or_else(|| type_err(&format!("edits[{i}]"), "an object {op, at, radius, color, amount}"))?;
+        for (k, _) in o {
+            if !["op", "at", "radius", "color", "amount", "note"].contains(&k.as_str()) {
+                return Err(e(&at_path(k), ErrorCode::UnknownField, "a stroke accepts: op, at, radius, color, amount, note"));
+            }
+        }
+        let g = |k: &str| o.iter().find(|(n, _)| n == k).map(|(_, v)| v);
+        if let Some(op) = g("op") {
+            if op.as_str() != Some("paint") {
+                return Err(e(&at_path("op"), ErrorCode::OutOfRange, "the only op is \"paint\""));
+            }
+        }
+        let at = g("at").and_then(Json::as_array).filter(|a| a.len() == 3).ok_or_else(|| e(&at_path("at"), ErrorCode::MissingField, "a stroke needs \"at\": [x, y, z] in the model's metres"))?;
+        let mut centre = [0.0f32; 3];
+        for (k, c) in at.iter().enumerate() {
+            let x = c.as_f64().filter(|x| x.is_finite()).ok_or_else(|| type_err(&at_path("at"), "three finite numbers"))?;
+            if x.abs() > PAINT_REACH {
+                return Err(e(&at_path("at"), ErrorCode::OutOfRange, format!("a stroke is centred within {PAINT_REACH} m of the model's origin")).with_numbers(x, PAINT_REACH));
+            }
+            centre[k] = x as f32;
+        }
+        let radius = g("radius").and_then(Json::as_f64).ok_or_else(|| e(&at_path("radius"), ErrorCode::MissingField, "a stroke needs a \"radius\" in metres"))?;
+        if !(PAINT_RADIUS.0..=PAINT_RADIUS.1).contains(&radius) {
+            return Err(e(&at_path("radius"), ErrorCode::OutOfRange, format!("radius must be {}..{} m", PAINT_RADIUS.0, PAINT_RADIUS.1)).with_numbers(radius, PAINT_RADIUS.1));
+        }
+        let color = g("color").and_then(Json::as_str).ok_or_else(|| e(&at_path("color"), ErrorCode::MissingField, "a stroke needs a \"color\": #rrggbb or a palette name"))?;
+        if style.color(color).is_none() {
+            return Err(e(&at_path("color"), ErrorCode::OutOfRange, "not #rrggbb, nor a colour or material of the style"));
+        }
+        let amount = match g("amount") {
+            None => 1.0,
+            Some(a) => a.as_f64().filter(|a| (0.0..=1.0).contains(a)).ok_or_else(|| e(&at_path("amount"), ErrorCode::OutOfRange, "amount must be 0..1").with_numbers(a.as_f64().unwrap_or(f64::NAN), 1.0))?,
+        };
+        out.push(PaintEdit { at: centre, radius: radius as f32, color: color.to_owned(), amount: amount as f32 });
+    }
+    Ok(out)
+}
+
+/// Applies a recipe's paint strokes to its built parts (see [`PaintEdit`]). Work: every stroke
+/// looks at every vertex once (charged before it starts).
+fn apply_paint(edits: &[PaintEdit], built: &mut [BuiltPart], style: &Style, tally: &Tally) -> Result<(), RecipeError> {
+    if edits.is_empty() {
+        return Ok(());
+    }
+    let vertices: u64 = built.iter().filter(|b| b.uv_scale.is_none()).map(|b| b.shape.positions.len() as u64).sum();
+    charge(tally, "edits", vertices.saturating_mul(edits.len() as u64).saturating_mul(crate::work::PAINT_VERTEX))?;
+    for ed in edits {
+        let color = style.color(&ed.color).unwrap_or([1.0; 4]);
+        let r2 = ed.radius * ed.radius;
+        for b in built.iter_mut().filter(|b| b.uv_scale.is_none()) {
+            for (p, c) in b.shape.positions.iter().zip(b.shape.colors.iter_mut()) {
+                let (dx, dy, dz) = (p[0] - ed.at[0], p[1] - ed.at[1], p[2] - ed.at[2]);
+                let d2 = dx * dx + dy * dy + dz * dz;
+                if d2 >= r2 {
+                    continue;
+                }
+                // 1 at the centre, 0 at the rim, eased (no square root: the same on every platform).
+                let t = 1.0 - d2 / r2;
+                let w = ed.amount * t * t * (3.0 - 2.0 * t);
+                for k in 0..3 {
+                    c[k] += (color[k] - c[k]) * w;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A recipe's `"wind"`: its draws sway in the world's wind (`world_env {wind}`), weighted by
@@ -630,6 +735,12 @@ impl Recipe {
         self.parts.iter().map(|p| p.name.as_str())
     }
 
+    /// Its parts whose shape is a sweep, by name, in recipe order: the parts a path can be
+    /// sketched for (the editor's path tool; `model_path` counts them the same way).
+    pub fn sweep_parts(&self) -> impl Iterator<Item = &str> + '_ {
+        self.parts.iter().filter(|p| matches!(&p.source, Source::Shape(n) if n.op == "sweep")).map(|p| p.name.as_str())
+    }
+
     /// Assets this recipe includes directly (file stems, sorted, each once), whether or not a
     /// part's `when` switches them on: what its build may read from the library.
     pub fn includes(&self) -> Vec<String> {
@@ -681,7 +792,7 @@ impl Recipe {
             return Err(e("texgraph", ErrorCode::WrongType, "this file is a texture graph, not a recipe: use it from a recipe's \"textures\" (\"textures\": {\"stone\": \"<this file's name>\"}) and a part's \"texture\""));
         }
         const TOP: &[&str] =
-            &["recipe", "name", "description", "category", "seed", "params", "let", "budget", "lods", "collider", "smooth_angle", "rig", "parts", "finish", "textures", "wind"];
+            &["recipe", "name", "description", "category", "seed", "params", "let", "budget", "lods", "collider", "smooth_angle", "rig", "parts", "finish", "textures", "wind", "edits"];
         for (k, _) in obj {
             if !TOP.contains(&k.as_str()) {
                 return Err(e(k, ErrorCode::UnknownField, format!("a recipe accepts: {}", TOP.join(", "))));
@@ -942,7 +1053,8 @@ impl Recipe {
         }
         let finish = p.ops("finish", get("finish"))?;
         let wind = get("wind").map(wind_def).transpose()?;
-        Ok(Recipe { name, category, seed, params, lets, max_triangles, min_triangles, lod_ratios, collider, smooth_angle, parts, finish, rig, textures, wind })
+        let edits = get("edits").map(|v| paint_edits(v, style)).transpose()?.unwrap_or_default();
+        Ok(Recipe { name, category, seed, params, lets, max_triangles, min_triangles, lod_ratios, collider, smooth_angle, parts, finish, rig, textures, wind, edits })
     }
 }
 
@@ -1111,7 +1223,8 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
     let seed = params.seed.unwrap_or(recipe.seed);
     let mut stack = vec![recipe.name.clone()];
     let tally = Tally::default();
-    let (built, vars) = build_parts(recipe, params.values, seed, params, &mut stack, &tally, false)?;
+    let (mut built, vars) = build_parts(recipe, params.values, seed, params, &mut stack, &tally, false)?;
+    apply_paint(&recipe.edits, &mut built, params.style, &tally)?;
     let mut notes = Vec::new();
     let rig = match &recipe.rig {
         Some(def) => Some(build_rig(recipe, def, &Ctx { vars: &vars, style: params.style, seed, tally: &Tally::default(), coarse: false, paint: std::cell::Cell::new([1.0; 4]) })?),

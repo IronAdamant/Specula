@@ -228,12 +228,24 @@ fn stroke(v: &Json, i: usize) -> Result<Json, String> {
 
 /// `terrain_edit` (on the calling agent's protocol thread).
 pub fn call(tools: &Tools, session: &SessionInfo, name: &str, args: &Json) -> ToolOutput {
+    // (The model's strokes go the same way: a recipe patched on this thread.)
+    if name == "model_paint" {
+        return crate::paint_tools::call(tools, session, args);
+    }
+    if name == "model_path" {
+        return crate::path_tools::call(tools, session, args);
+    }
     if name != "terrain_edit" {
         return err("unknown_tool", format!("unknown terrain tool '{name}'"), vec![]);
     }
     if let Err(m) = check_keys(args, name, &[&["recipe", "part", "strokes", "collider", "expect_version", "dry_run"]]) {
         return ToolOutput::error(crate::tools::argument_error(&m).to_string());
     }
+    // (A wrong-typed one was ignored and the call committed: review R1 of m5-eddraw, M1.)
+    let (expect, dry) = match crate::paint_tools::guards(args) {
+        Ok(g) => g,
+        Err(m) => return ToolOutput::error(crate::tools::argument_error(&m).to_string()),
+    };
     let Some(recipe) = args.get("recipe").and_then(Json::as_str) else {
         return err("invalid_argument", "'recipe' is required: the terrain recipe under the assets folder (\"recipes/field.json\")", vec![("field", Json::from("recipe"))]);
     };
@@ -289,7 +301,7 @@ pub fn call(tools: &Tools, session: &SessionInfo, name: &str, args: &Json) -> To
     }
     let read = Json::parse(&text_of(&read)).unwrap_or(Json::Null);
     let version = read.get("version").and_then(Json::as_u64).unwrap_or(0);
-    if let Some(want) = args.get("expect_version").and_then(Json::as_u64) {
+    if let Some(want) = expect {
         if want != version {
             return err("stale_version", format!("{path} is at version {version}, not {want}"), vec![("version", Json::from(version))]);
         }
@@ -307,7 +319,6 @@ pub fn call(tools: &Tools, session: &SessionInfo, name: &str, args: &Json) -> To
     let added = strokes.len();
     edits.extend(strokes);
     let ops = Json::arr([Json::obj([("set", Json::from(format!("parts[{k}].generate.edits"))), ("value", Json::arr(edits.clone()))])]);
-    let dry = args.get("dry_run").and_then(Json::as_bool).unwrap_or(false);
     let patch = Json::obj([("path", Json::from(path.as_str())), ("ops", ops), ("expect_version", Json::from(version)), ("dry_run", Json::from(dry))]);
     // The collider from the edited text (built here, before anything is committed), committed
     // with the recipe in one journal entry: claims are checked on both, and one world_undo takes

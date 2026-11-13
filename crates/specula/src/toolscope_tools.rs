@@ -1213,7 +1213,11 @@ mod tests {
         let (_, cat) = call_json(&t, &a, "tools_catalog", r#"{"filter": "navmesh path"}"#);
         let fams = cat.get("families").unwrap();
         assert!(fams.get("nav").unwrap().get("tools").unwrap().get("nav_path").is_some(), "{cat}");
-        let (_, none) = call_json(&t, &a, "tools_catalog", r#"{"filter": "paint vertex colours"}"#);
+        // (Painting vertex colours was this test's example of something no tool did, until the
+        // editor's draw tools brought `model_paint`.)
+        let (_, paint) = call_json(&t, &a, "tools_catalog", r#"{"filter": "paint vertex colours"}"#);
+        assert_eq!(paint.get("matches").and_then(Json::as_u64), Some(1), "{paint}");
+        let (_, none) = call_json(&t, &a, "tools_catalog", r#"{"filter": "fold proteins quickly"}"#);
         assert_eq!(none.get("matches").and_then(Json::as_u64), Some(0));
         assert!(none.get("closest").is_some(), "{none}");
         let (err, e) = call_json(&t, &a, "tools_catalog", r#"{"family": "wrld"}"#);

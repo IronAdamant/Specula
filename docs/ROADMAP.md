@@ -834,13 +834,17 @@ readback and the remaining engine-thread stalls.
 - [x] ➕ **Reusable gameplay modules** as SDK examples: inventory, abilities, dialogue, quests.
   *Done 2026-11-12:* `inventarium`, `facultas`, `colloquium`, `quaestio` and the playable `exemplum`
   ([design/MODULES.md](design/MODULES.md)).
-- [ ] **Human editor on the protocol**:
+- [x] **Human editor on the protocol**:
   - outliner and inspector
   - click to select
   - **3D gizmos** to drag, rotate and scale
   - **draw tools**: paint vertex colours, sketch paths and splines, sculpt terrain
   - journal timeline ("which agent built this")
   - claim map overlay, review queue, cost and progress dashboard
+
+  *Done 2026-11-13* ([design/EDITOR.md](design/EDITOR.md)): the draw tools were the last piece. Sculpt and
+  splat send `terrain_edit`, the paint brush `model_paint`, the path tool `model_path`; every stroke
+  is data in the recipe's file, one journaled command, undone with Ctrl+Z.
 
   *Why:* devs who want to edit by hand can; human edits are journaled like agent edits.
 - [ ] ➕ **Measured leverage** (owner, 2026-11-12: "find a way to add in measured comparison please, for M5"). Is

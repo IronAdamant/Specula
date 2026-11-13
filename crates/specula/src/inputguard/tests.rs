@@ -34,6 +34,22 @@ fn now() -> u64 {
     crate::incidents::Stamp::now().time_us
 }
 
+/// Owner, 2026-11-13: a screen an agent puts on the window starts on Close. The screens read
+/// who acted from the monitor's own record: every agent is an agent here, the owner's own
+/// included; the human at the window, and the engine carrying on what the human did, are not.
+#[test]
+fn the_record_of_an_action_says_whether_an_agent_took_it() {
+    let _g = lock();
+    for authority in [Authority::Owner, Authority::Lead, Authority::Reviewer, Authority::Agent] {
+        assert!(done(Channel::Screen, "review_screen", &agent("s9", "ann", authority), "").by_agent(), "{authority:?}");
+    }
+    assert!(done(Channel::Screen, "gallery_open", &Actor::identity("k", "ann", Authority::Lead), "").by_agent(), "an identity with no session");
+    assert!(!done(Channel::Screen, "review_screen.toggle", &Actor::Human, "").by_agent(), "the human's own F9");
+    assert!(!done(Channel::Screen, "gallery_open.next_step", &Actor::Engine("onboarding"), "").by_agent(), "the engine, after the human's acceptance");
+    // The window's own operator session is the human, whatever tool it came through.
+    assert!(!done(Channel::Screen, "review_screen", &Actor::keyed("s0", "k0", WINDOW_OWNER, Authority::Owner), "").by_agent());
+}
+
 #[test]
 fn the_owner_is_fine_a_lead_alerts_and_everyone_else_is_an_incident() {
     let _g = lock();

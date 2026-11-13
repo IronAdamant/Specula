@@ -4,8 +4,8 @@ A scripted lead turns a design-doc section into tasks for three builders and a r
 (task_plan, assign by_role). The builders stage Sepulcra props, take contact sheets
 (sight_orbit) and submit them to the review queue with checks; a sight-skeptic files critiques.
 Then: a rejection becomes a rework task, a critique becomes a task whose end resolves it, the
-owner approves one submission at the window's review screen by keyboard (F9, Enter: posted to the
-real window), a batch is approved and promoted into /world/props (one refused while its source is
+owner approves one submission at the window's review screen (a lead shows it: it starts with its
+focus on Close, so the owner's click on Approve decides, posted to the real window; F9 closes it), a batch is approved and promoted into /world/props (one refused while its source is
 claimed, then approved), stale work is refused, three-way merges are offered on a stale world_set
 and a stale lex_edit and accepted, merge_suggest merges a recipe, and task_progress reports the
 plan complete. Finally the world is saved and reloaded by a fresh headless engine: the queue and
@@ -98,6 +98,17 @@ def key(hwnd, vk, scan):
     user32.PostMessageW(hwnd, 0x0100, vk, 1 | (scan << 16))
     time.sleep(0.05)
     user32.PostMessageW(hwnd, 0x0101, vk, 1 | (scan << 16) | (0xC0 << 24))
+
+
+def click(hwnd, x, y):
+    """A left click posted to the window at a client point (physical pixels), as a human's mouse."""
+    lp = (int(y) << 16) | (int(x) & 0xFFFF)
+    user32.PostMessageW(hwnd, 0x0200, 0, lp)
+    time.sleep(0.05)
+    user32.PostMessageW(hwnd, 0x0201, 1, lp)
+    time.sleep(0.08)
+    user32.PostMessageW(hwnd, 0x0202, 0, lp)
+    time.sleep(0.15)
 
 
 def screenshot(hwnd, path):
@@ -264,7 +275,9 @@ def main():
         cl = call(sk, "critique_list", status="resolved")
         check(any(c["id"] == c1 for c in cl["critiques"]), "the critique resolved itself when its task was done")
 
-        # -- the owner at the window: show #b1 on the review screen, press Enter --
+        # -- the owner at the window: a lead shows #b1 on the review screen; the owner clicks
+        # Approve. A screen an agent puts on the window starts with its focus on Close (owner,
+        # 2026-11-13): a key meant for something else decides nothing. --
         hwnd = find_window(eng.proc.pid) if sys.platform == "win32" else None
         st = call(lead, "review_screen", action="show", id=subs["b1_props"])
         check(st["open"] and st["shown"] == subs["b1_props"], "the lead puts submission b1 on the review screen")
@@ -275,12 +288,17 @@ def main():
         check(frame["id_buffer"].get("ui_occluders", 0) >= 1, f"the review screen hides the scene in the sight packet ({frame['id_buffer'].get('ui_occluders')} occluders)")
         if hwnd:
             check(screenshot(hwnd, out / "review_screen_window.png"), "the real window shows the review screen (screenshot)")
-            key(hwnd, 0x0D, 0x1C)  # Enter on the focused Approve
+            tree = call(lead, "ui_tree", screen="review", only="interactive", limit=100)
+            buttons = {w.get("id"): w for w in tree.get("widgets", [])}
+            check(buttons.get("rv_close", {}).get("focused") is True and not buttons.get("rv_approve", {}).get("focused"),
+                  f"the screen a lead opened has its focus on Close, not on Approve ({[k for k, w in buttons.items() if w.get('focused')]})")
+            r = buttons.get("rv_approve", {}).get("rect") or [0, 0, 0, 0]
+            click(hwnd, r[0] + r[2] / 2, r[1] + r[3] / 2)  # the owner's click on Approve
             # Presses are no longer dropped by a re-layout between press and release (the review
             # screen's layout hears the live pointer and held button), so a short wait does.
             got = wait_for(lambda: call(rev, "review_list", id=subs["b1_props"])["status"] != "pending", 5)
             s1 = call(rev, "review_list", id=subs["b1_props"])
-            check(s1["status"] == "approved" and s1["decision"]["by"] == "window:owner", f"Enter approved b1 as the window's owner ({s1['status']}, {s1.get('decision', {}).get('by')})")
+            check(s1["status"] == "approved" and s1["decision"]["by"] == "window:owner", f"the owner's click approved b1 as the window's owner ({s1['status']}, {s1.get('decision', {}).get('by')})")
             check(s1.get("decision", {}).get("promoted", {}).get("moved"), "the window's approval promoted b1 into /world/props")
             key(hwnd, 0x0D, 0x1C)  # a second, hasty Enter: the next submission has only just appeared
             time.sleep(0.8)

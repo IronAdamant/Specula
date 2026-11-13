@@ -1,0 +1,64 @@
+{
+  "date": "2026-11-13",
+  "time": "14:30",
+  "date_source": "run",
+  "approximate": false,
+  "milestone": "M5",
+  "commit": "9aea0892",
+  "subject": "terrain",
+  "topic": "tooling",
+  "title": "The editor's draw tools: sculpt, splat, paint, path",
+  "note": "First captures of the editor's Draw bar. A drag with the sculpt brush raises a ridge on a terrain (three strokes, each one terrain_edit, journaled as window:owner and undone with Ctrl+Z); the splat brush paints a ground layer along it; the paint brush colours a barrel's vertices (model_paint: paint colours vertices, so a stroke that reaches none is refused); the path tool redraws a rail's sweep path from a sketched arc (model_path). Every stroke is data in the recipe's file.",
+  "source": "scripts/eddraw_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-window-00-field-before.jpg",
+      "caption": "The field before, with the Draw bar open",
+      "original": "window_00_field_before.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 26581
+    },
+    {
+      "file": "02-window-02-field-sculpted.jpg",
+      "caption": "A ridge raised by three strokes of the sculpt brush",
+      "original": "window_02_field_sculpted.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 28570
+    },
+    {
+      "file": "03-window-03-field-splat.jpg",
+      "caption": "The earth layer painted along the ridge with the splat brush",
+      "original": "window_03_field_splat.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 28867
+    },
+    {
+      "file": "04-window-06-barrel-painted.jpg",
+      "caption": "A barrel's vertex colours painted with the paint brush",
+      "original": "window_06_barrel_painted.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 34859
+    },
+    {
+      "file": "05-window-08-fence-sketching.jpg",
+      "caption": "The path tool: an arc sketched on the model's ground plane",
+      "original": "window_08_fence_sketching.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 32762
+    },
+    {
+      "file": "06-window-09-fence-sketched.jpg",
+      "caption": "The rail follows the sketched path, at its own height",
+      "original": "window_09_fence_sketched.png",
+      "width": 640,
+      "height": 400,
+      "bytes": 32874
+    }
+  ]
+}

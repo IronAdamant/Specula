@@ -1228,6 +1228,35 @@ pub(crate) mod tests {
         e.world.commit(&mut e.swarm, 0, ALICE, Kind::Spawn, crate::write_policy::Rule::World, |wd| wd.spawn(s, "alice").map(|_| ())).unwrap();
     }
 
+    /// Carried from the reviews of m5-edswarm: a task's rail part names a timeline the project
+    /// has and a stretch within its length; a timeline nobody parsed yet is taken as named.
+    #[test]
+    fn a_tasks_rail_part_is_checked_against_the_projects_timelines() {
+        use crate::ask::{Part, PartKind};
+        let Some(mut e) = engine("a_tasks_rail_part_is_checked_against_the_projects_timelines") else { return };
+        spawn(&mut e, "railed", 0.0);
+        // (A text of this test's own: the parsed-timeline cache is shared by every test.)
+        let text = r#"{"schema": "specula.timeline.v1", "description": "the rail part's test", "duration": 4, "tracks": [
+          {"kind": "entity", "name": "mv", "target": "/railed", "position": [{"t": 0, "value": [0,0,0]}, {"t": 1, "value": [0,5,0]}]}]}"#;
+        put(&mut e, "assets/timelines/intro.json", text);
+        let rail = |timeline: &str, from_s: f32, to_s: f32| [Part { entity: None, kind: PartKind::Rail { timeline: timeline.into(), from_s, to_s } }];
+        assert!(e.check_parts(&[], &rail("intro", 0.0, 99.0)).is_ok(), "not parsed yet: taken as named");
+        let hash = e.world.files().get("assets/timelines/intro.json").unwrap().hash;
+        warm(text, hash);
+        assert!(e.check_parts(&[], &rail("intro", 1.0, 3.5)).is_ok());
+        assert!(e.check_parts(&[], &rail("assets/timelines/intro.json", 0.0, 4.0)).is_ok(), "by its project path, to its very end");
+        let long = e.check_parts(&[], &rail("intro", 1.0, 4.5)).unwrap_err();
+        assert!(long.code == "invalid_argument" && long.message.contains("parts[0]") && long.message.contains("4.00 s long"), "{}", long.message);
+        let none = e.check_parts(&[], &rail("outro", 0.0, 1.0)).unwrap_err();
+        assert!(none.message.contains("no timeline at assets/timelines/outro.json") && none.message.contains("assets/timelines/intro.json"), "{}", none.message);
+        let odd = e.check_parts(&[], &rail("../secrets", 0.0, 1.0)).unwrap_err();
+        assert!(odd.message.contains("not a timeline's name"), "{}", odd.message);
+        // The part after a bad rail is never reached; one after a good rail is still checked.
+        let two = [rail("intro", 0.0, 1.0)[0].clone(), Part { entity: Some(0), kind: PartKind::TextSpan { start: 0, end: 1 } }];
+        let id = e.world.resolve(&EntityKey::Path("/railed".into())).unwrap();
+        assert!(e.check_parts(&[id], &two).unwrap_err().message.contains("parts[1]"));
+    }
+
     fn step(e: &mut crate::Engine, ticks: u64) {
         e.clock.set_paused(true);
         e.clock.step(ticks);

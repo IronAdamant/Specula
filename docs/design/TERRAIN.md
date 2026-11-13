@@ -24,7 +24,9 @@ except colliders, which are world data written by tools) and **F4** (the collide
   `edge_lock` (samples) eases erosion out to the noise-only heights at the tile's border, so neighbouring tiles share
   their edge heights exactly (see *Seams*).
 - **Sculpt and paint as data.** The generator's `edits`: an ordered list of strokes (`raise`, `lower`, `flatten`,
-  `smooth`, `paint`) applied after erosion and splat, each a disc with a falloff. `terrain_edit` appends strokes to
+  `smooth`, `paint`) applied after erosion and splat, each a disc with a falloff (512 a terrain: until
+  2026-11-13 the recipe parser's general list cap stopped a terrain at 64, found by the editor's sculpt brush;
+  the editor's Sculpt and Splat brushes send these, EDITOR.md "Draw tools"). `terrain_edit` appends strokes to
   the recipe (through the project store: journaled, claim-checked, undoable with `world_undo`) and, by default,
   rewrites the entity's heightfield collider from the edited heights in the same call. Bounded: 512 strokes a
   terrain, 64 a call, radius at most a quarter of the terrain's size.

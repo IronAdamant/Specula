@@ -136,7 +136,12 @@ can steer (`gallery_round`).
 0.4 s, and focus moves off the decision buttons after a decision. While open the screen is **modal** (the game,
 modules and live Lex get no input; under an open review screen the gallery gets none either). Opening and closing:
 F8, or LB + RB + X on a pad (pads are polled with or without a hosted game), or `gallery_open` / `gallery_close`
-from an agent (after the human closes it, agents can't reopen it for 30 s). Esc or a pad's B while typing a note
+from an agent (after the human closes it, agents can't reopen it for 30 s). A gallery an agent puts on the
+window starts with its focus on **Close**, not on a variant (owner, 2026-11-13; REVIEW.md, "The review
+screen"): a key the human meant for something else picks nothing. It stays there through the screen's first
+frames, and a round an agent makes itself (`gallery_round`) on an open gallery puts the focus on Close too; a
+round the engine makes from the human's own decision, and the human's own F8, start on the first variant (the
+round says who made it). Esc or a pad's B while typing a note
 leaves the note, not the screen; chips and the breadcrumb page, so every one is reachable by hand; without a UI
 font the screen never holds the window.
 

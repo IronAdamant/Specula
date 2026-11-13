@@ -1,7 +1,7 @@
 # Design: the human editor
 
 Status: M5 core (2026-11-06): editor mode, docked panels, outliner, inspector, click and box select, gizmos with
-snapping, undo and redo. Wave 2 adds the draw tools and the swarm panels (below, "Where wave 2 plugs in").
+snapping, undo and redo. Wave 2 added the swarm panels, highlight and ask, and the draw tools (below).
 Plan: [ROADMAP.md](../ROADMAP.md) M5 "Human editor on the protocol"; toolkit: [UI.md](UI.md); rules:
 [WRITE_POLICY.md](WRITE_POLICY.md), [AUTHORITY.md](AUTHORITY.md), [TOOLS.md](TOOLS.md).
 
@@ -289,9 +289,11 @@ and what is highlighted). **The editor's screen itself is read and pressed by th
 the screen shows what the human types (an entity's name, a text's words, numbers, the outliner's search).
 Another agent's call that names the editor is refused `owner_only`, and one that names no surface is the
 game's, never the editor's (review R1, B1: a builder's `ui_tree` read the name being typed). `ui_act` on the
-editor answers when its frames have run: a press that made an edit says so (`edit.queued`), and the edit's
-outcome shows in `editor_state`'s status and `world_history` once the window's next frame has sent it
-(`editor_input` waits for its frames and returns that state).
+editor that made an edit **answers with how the edit went**: the answer is held until the window's frame has
+sent the edit and it is answered, then `edit` carries `queued` (the tool: a draw tool's stroke names
+`terrain_edit`, `model_paint` or `model_path`), `done`, `status` (the editor's status line) and
+the journal entry, or the refusal's code. Only at the call's deadline is it sent as
+it stood (`outcome: "not known yet"`); at most 8 answers are held at once.
 
 The window's "Review (n)" tab is not drawn while the editor is open (it sat on the status bar): the editor's
 status line says when work comes in for review, and the Swarm tab's Review view lists it.
@@ -322,8 +324,9 @@ the swarm to change it; the swarm does it through the normal tools; the human de
    journal timeline shows each entry's task, so the request links to its edits.
 
 Parts are checked when the task is posted (`Engine::check_parts`): a text span lies inside its entity's words,
-between characters, and a recipe part is one its entity's model recipe has. A rail's timeline is not checked
-yet (nothing produces rails until the editor's timeline tools do).
+between characters; a recipe part is one its entity's model recipe has; a rail names a timeline the project has
+and a stretch within its length (the length is read from the timeline as it was parsed when its file was
+validated: never parsed on the engine thread; one not in that cache is taken as named).
 
 **The box is the human's alone** (TEXT.md, "The window's keyboard"):
 
@@ -334,9 +337,9 @@ yet (nothing produces rails until the editor's timeline tools do).
   the human types has its focus moved to Close**, off its decision: the Enter or Space the human presses after
   a pause closes it (agents then can't reopen it for 30 s), and deciding takes a click or a move to the
   button. Review R1, B2: a lead opened the review screen, and the human's Enter, meant to send the request,
-  approved a submission; R2: holding the keys back alone only narrowed that. (A screen an agent opens while
-  the human is *not* typing still starts on its decision, as M4 built it: whether it should is an open owner
-  decision, HANDOFF.md.)
+  approved a submission; R2: holding the keys back alone only narrowed that. Since 2026-11-13 (the owner's
+  decision) **every screen an agent puts on the window starts on Close**, typing or not: REVIEW.md, "The
+  review screen".
 
 - Only the human's own window input opens it, types into it or presses its buttons. An agent's injected frame
   (`editor_input`, `ui_act {surface: "editor"}`) can't open it (`editor.ask_refused` is traced), and while it is
@@ -355,17 +358,107 @@ yet (nothing produces rails until the editor's timeline tools do).
 - Bounds: 2,000 characters; the selection's newest 64 entities; one part; IME compositions show inline and
   commit as typed characters.
 
+## Draw tools (`editor_brush.rs`, `paint_tools.rs`, `path_tools.rs`)
+
+The toolbar's **Draw** opens a bar with four tools. With one in hand the viewport's left button is the tool's:
+it selects nothing and no gizmo is drawn; the camera's buttons and wheel are unchanged. Escape puts the tool
+down (a second Escape clears the selection), and closing the bar does too.
+
+| Tool | Draws on | A release sends | Pressed again |
+|---|---|---|---|
+| **Sculpt** | the selected terrain | one `terrain_edit` (raise, lower, flatten to where the stroke began, smooth) | the next op |
+| **Splat** | the selected terrain | one `terrain_edit` (`paint` on one of its four ground layers) | the next layer |
+| **Paint** | the selected model | one `model_paint` (vertex colours) | the next colour |
+| **Path** | the selected model's ground plane | one `model_path` (a sweep part's path) | the model's next sweep part |
+
+- **A stroke is data, and one command.** While the button is held the stroke samples points half a brush radius
+  apart (64 at most: one tool call's worth) and previews them in the overlay with the brush's ring. The release
+  sends them as one protocol command, as the window's owner: journaled once, claim-checked (a claim on
+  `/project/assets/recipes/...` refuses it), on the editor's undo stack (Ctrl+Z takes the whole stroke
+  back). The strokes are appended to the recipe's file (`edits`), so everything that draws the recipe shows
+  them, the file can be read and changed as text, and nothing lives only in the editor. A right click, or the
+  window losing focus, lets the human's stroke go unsent; the status says which (`editor.stroke_let_go` is
+  traced).
+- **The viewport's buttons are held by one side at a time** (`editor::Holds`): the human's own hand, or an
+  agent's injected frames (`editor_input`, `ui_act`). A press is taken only when nothing is held or by the
+  side that holds, and a release only from that side; a touch or pen contact acts as the left button and is
+  held the same way. So the human's focus change, mouse, touch or pen never ends an agent's drag or stroke, an
+  agent's frames never take over or end the human's, and while one side holds, the other's pass moves nothing
+  in the viewport.
+  - **Nobody is locked out.** A hold whose side has been quiet for 5 s (`AGENT_HOLD_S`) yields to the other
+    side's press: that press ends the hold (what it held is cancelled, unsent) and the next one is taken. So
+    the human takes the viewport back from an agent that pressed and went away, and an agent takes it from a
+    human hold whose release never came. Any hold lapses after two quiet minutes. A window that takes no input
+    for the human (another screen holds it, the Ask box is open, it is minimized) lets the human's holds go.
+    `editor.hold_lapsed` is traced.
+  - **Each side's pointer and its Shift and Ctrl are its own while it holds** (the window keeps one pointer and
+    one key state for both; an agent's moves bent a stroke the human was drawing, and the human's focus change
+    dropped the Ctrl an agent's drag was holding).
+  - **A press that is not taken is said.** An agent's call answers with `presses_refused` (`count`,
+    `why`, `retry`) when the human's hand held the viewport, so a drag that never began is not
+    reported as done; the human's own refused press is said on the status line.
+  - **Known limits (the panels).** The toolbar, the outliner and the inspector still read the window's one
+    pointer. If the human clicks inside the engine's window between an agent's press and release on a panel
+    button (two window frames of an `editor_input` click), the agent's click is lost and its call still
+    answers as fed; and after an agent's pointer rested on a panel, the human's wheel over the viewport is
+    ignored until they move the mouse. `ui_act` runs its frames with no pass of the human's between them, so
+    its clicks are not exposed. Presses on the panels are not counted in `presses_refused`.
+  - Found in a live run with the owner at the desk (clicking into another window took the engine window's
+    focus and released the button an agent's stroke was holding), then by two reviews: a rule per button left
+    states where each side held one and neither got the viewport, and a contact outlived its button.
+- **Where the pointer meets the surface** (all bounded): a terrain is marched along the ray (512 looks at most,
+  then 16 bisections; a ray that comes in through the terrain's side under a raised rim meets the border); a
+  model is tested against its coarsest LOD of at most 20,000 triangles; the path tool meets the model's ground
+  plane (y = 0 in its own frame).
+- **Sizes are world metres.** The ring shows what a stroke will change. A stroke is written in the entity's
+  own units, so on a scaled entity its radius, the distance between dabs and a sculpt's height are divided by
+  the entity's scale (unevenly scaled: by the mean; the brush is round in the entity's own space). A brush the
+  scale puts outside what a stroke takes (0.005..64 of the entity's units across; a sculpt weaker than a
+  stroke keeps) is not sent, and the status says, in world metres, how wide a brush fits there.
+- **Size and Strength.** Size steps the radius by a quarter (0.05..64 m; keys **O** narrower, **P** wider);
+  Strength steps by a tenth. For raise and lower Strength is metres at the centre; for the others 0..1. For the
+  path tool Size is twice the distance between points and Strength the smoothing (1..8 rings between points).
+- **The path tool** sketches where a sweep part runs (a rail, a pipe, a road's ribbon), seen from above. The
+  path keeps the height of its first point; it ends where the pointer was let go (not at its last sample);
+  scales given one per old point are reset to their first and last. The button names the part it will redraw
+  ("'rail' (sweep 1 of 2)") and steps through the model's sweep parts only; a model with none is told when the
+  tool is picked. A click is no path (two points or more).
+- **Paint colours vertices.** A paint stroke that reaches no vertex of the model (a small brush in the middle
+  of a large flat face: a box has vertices only at its corners) is not sent, and the status says why and what to
+  do. Found by the capture check: a "painted" crate looked as before. An agent's `model_paint` is written
+  as given; a stroke of its that reaches no vertex changes nothing.
+- **One stroke in flight.** A stroke begun while the last edit is still being written is refused with a line
+  saying so (the second would be written into a recipe the first is changing). The draw tools' commands run on
+  the editor's one tool thread (they wait on the engine thread's answers, so they can run neither on it nor on a
+  pool worker). A model being rebuilt from its
+  changed recipe has no surface for a moment: the status says that, not "nothing there".
+- **Refusals name the problem.** When the project store refuses a stroke because the recipe would not load,
+  the status line carries the file's first problem and where it is. (That is how a terrain's 64-stroke cap was
+  found: `terrain_edit` documents 512, and the recipe parser's general list cap stopped it at 64.)
+- **Agents.** `model_paint` and `model_path` are tools of their own (PROCEDURAL_MODELLING.md);
+  `terrain_edit` is TERRAIN.md's. An owner's agent drives the brushes with `editor_input` or
+  `ui_act {surface: "editor"}`; its strokes are journaled `via` it and counted to its call. A builder
+  is refused (`owner_only`).
+- **Asking about what you point at.** "Ask the agents" with a brush in hand starts on the spot the brush last
+  touched on the selection (an `area` part, the brush's radius), or with the path tool on the sweep part
+  it would redraw (a `recipe_part`); Tab still steps through every choice.
+- **Not yet:** a gamepad has no pointer in the viewport, so strokes need a mouse, a pen or touch (on a pad: ask
+  the agents); a path is sketched flat on the model's ground plane (heights are edited in the recipe, or with
+  `model_path`'s `[x, y, z]` points); a text span and a timeline's rail still come from the Ask
+  box's list, not from a selection in the viewport.
+- **Checked by** `scripts/eddraw_check.py` at the real window (`--record` also saves animated PNGs of
+  the engine's own window through `scripts/window_recorder.py`), and the unit tests in
+  `editor_brush.rs`, `paint_tools.rs`, `path_tools.rs` and `editor_engine.rs`.
+
 ## Where wave 2 plugs in
 
 - **Panels** are screens in `editor.json` (or more screens loaded by `EditorUi::load`): the journal timeline, claim
   map, task board, intents and notes, and the cost and progress dashboard each add a dock panel whose state is filled
   from the engine's own stores (`Swarm::journal`, `claims`, `board`, `intents`) in `editor_engine.rs` on change, like
   the outliner. Panels toggle from the toolbar.
-- **Tools** (`Tool` in `editor.rs`): a tool owns the viewport's pointer while active, like the gizmo does. The draw
-  tools (vertex paint, splines and paths, terrain sculpt and splat) are tools whose strokes preview in the overlay and
-  commit on release as one protocol command each (`world_set` of the entity's data, `terrain_edit`, `project_write`
-  of a spline recipe), through the same `editor_engine::send` path, so they are journaled, claimed and undoable with
-  no new write path.
+- **Tools**: a tool owns the viewport's pointer while in hand, like the gizmo does. The draw tools ("Draw
+  tools", above) are built this way: a stroke previews in the overlay and commits on release as one protocol
+  command, so it is journaled, claimed and undoable with no new write path.
 - **Overlays** (claim map, journal "who built this" tints) are painted in `Engine::editor_overlay` with the same
   painter.
 

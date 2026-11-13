@@ -86,6 +86,7 @@ const FIELDS: &[(&str, Class)] = &[
     ("perf_cfg", NoIds("budgets")),
     ("last_advance", NoIds("a time")),
     ("input", NoIds("the frame's window events")),
+    ("tools", NoIds("a weak handle to the tool handler (the editor's draw tools call caller-thread tools through it)")),
     ("game_title", NoIds("a title")),
     ("security", NoIds("the input monitor's toast (event seqs, boxes) and whether a swarm pause stopped the clock")),
     ("game_quads", NoIds("the frame's interface quads")),

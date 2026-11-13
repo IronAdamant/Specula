@@ -886,9 +886,35 @@ impl Engine {
     /// text or a part the recipe doesn't have was posted and later shown as what a task is
     /// about.) An area is a place, checked by its numbers; a rail's timeline is not checked here
     /// (nothing produces rails yet: the editor's timeline tools will, and check them).
+    /// A rail part names a timeline the project has, and a stretch within its length (carried
+    /// from the reviews of m5-edswarm: a rail was taken as written, so a request could point at
+    /// a cutscene that isn't there). The length is read from the timeline as it was parsed when
+    /// its file was validated or read: never parsed here, on the engine thread; one that isn't
+    /// in that cache is taken as named.
+    fn check_rail(&self, i: usize, timeline: &str, from_s: f32, to_s: f32) -> Result<(), crate::world::WorldError> {
+        let bad = |why: String| crate::world::WorldError::new("invalid_argument", format!("parts[{i}]: {why}")).with("field", "parts");
+        let Ok(path) = crate::timeline_tools::timeline_path(timeline) else {
+            return Err(bad(format!("'{}' is not a timeline's name (\"intro\" is assets/timelines/intro.json)", crate::bounds::echo(timeline))));
+        };
+        let files = self.world.files();
+        let Some(f) = files.get(&path).filter(|f| f.kind == crate::project::FileKind::Timeline) else {
+            let names: Vec<&str> = files.iter().filter(|(_, f)| f.kind == crate::project::FileKind::Timeline).map(|(p, _)| p.as_str()).take(16).collect();
+            return Err(bad(format!("the project has no timeline at {path} (there are: {})", if names.is_empty() { "none".to_owned() } else { names.join(", ") })));
+        };
+        let Some(ready) = crate::timeline::cached(&f.text, f.hash) else { return Ok(()) };
+        if f64::from(to_s) > ready.tl.duration + 1e-3 {
+            return Err(bad(format!("{path} is {:.2} s long: the stretch {from_s:.2}..{to_s:.2} s runs past its end", ready.tl.duration)));
+        }
+        Ok(())
+    }
+
     pub(crate) fn check_parts(&self, ids: &[u64], parts: &[crate::ask::Part]) -> Result<(), crate::world::WorldError> {
         use crate::ask::PartKind;
         for (i, p) in parts.iter().enumerate() {
+            if let PartKind::Rail { timeline, from_s, to_s } = &p.kind {
+                self.check_rail(i, timeline, *from_s, *to_s)?;
+                continue;
+            }
             let Some(id) = p.entity.and_then(|k| ids.get(k)).copied() else { continue };
             let Some(e) = self.world.get(id) else { continue };
             let path = self.world.path_of(id);
@@ -917,6 +943,7 @@ impl Engine {
                         return Err(bad(format!("{path}'s recipe has no part named '{}' (its parts: {known})", crate::bounds::echo(name))));
                     }
                 }
+                // (An area needs no entity's leave; a rail was checked above.)
                 PartKind::Area { .. } | PartKind::Rail { .. } => {}
             }
         }
