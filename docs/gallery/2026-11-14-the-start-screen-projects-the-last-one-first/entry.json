@@ -1,0 +1,48 @@
+{
+  "date": "2026-11-14",
+  "time": "03:10",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M5",
+  "commit": "1749eb75",
+  "subject": "ui",
+  "topic": "UI",
+  "title": "The start screen: projects, the last one first",
+  "note": "The engine opened with no project shows the projects worked on, the last one first (Enter resumes it), with New project, Open a folder and Forget; an empty list says so. With something in the world that belongs to no project, it says what opening one would leave behind. The engine's own captures never show the screen: a person's project list is served by no tool. New in M5 (the launcher lane).",
+  "source": "scripts/launch_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-01-empty-list.png",
+      "caption": "An empty list offers a new project",
+      "original": "01_empty_list.png",
+      "width": 640,
+      "height": 442,
+      "bytes": 19766
+    },
+    {
+      "file": "02-04-two-projects.png",
+      "caption": "Two projects, the last one worked on first",
+      "original": "04_two_projects.png",
+      "width": 640,
+      "height": 442,
+      "bytes": 28485
+    },
+    {
+      "file": "03-05-before-close.png",
+      "caption": "A world in no project: what opening one would leave behind",
+      "original": "05_before_close.png",
+      "width": 640,
+      "height": 442,
+      "bytes": 36366
+    },
+    {
+      "file": "04-05-capture-while-open.png",
+      "caption": "The engine's own capture at that moment: the scene, no start screen",
+      "original": "05_capture_while_open.png",
+      "width": 480,
+      "height": 270,
+      "bytes": 2231
+    }
+  ]
+}

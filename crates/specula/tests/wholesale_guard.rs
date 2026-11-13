@@ -68,6 +68,8 @@ const FIELDS: &[(&str, Class)] = &[
     ("game_save_retry", NoIds("game save requests")),
     ("game_save_notes", NoIds("game save requests")),
     ("world_name", NoIds("set by the load paths")),
+    ("start", NoIds("the start screen: the person's project list as shown, and the project chosen (folders, never entities)")),
+    ("opened_project", NoIds("the opened project's folder and name")),
     ("saved_revision", NoIds("set by the load paths")),
     ("saved_seq", NoIds("a journal id, set by replace_world")),
     ("checkpoint_seq", NoIds("a journal id, set by replace_world")),

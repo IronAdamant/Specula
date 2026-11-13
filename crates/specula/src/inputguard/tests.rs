@@ -362,9 +362,26 @@ fn uncounted_events_never_push_the_feed_out_and_gaps_are_told() {
 fn waits_end_when_the_engine_stops_and_are_bounded() {
     let _g = lock();
     let t0 = std::time::Instant::now();
-    let waiters: Vec<_> = (0..3).map(|_| std::thread::spawn(|| wait_events(0, false, 10, Duration::from_secs(60)))).collect();
-    std::thread::sleep(Duration::from_millis(150));
-    assert_eq!(state().waiters, 3);
+    // The monitor is one for the whole process, and other modules' tests record events in it
+    // while this one runs (a screen opened, a paste). A wait from cursor 0 ends at the first
+    // of them: this test failed that way under load (seen twice, 2026-11-13), with its
+    // waiters gone before it looked. These waits are from a cursor no event passes, so only
+    // the engine stopping ends them. And the three are counted when they are there, not after
+    // a pause that was hoped to be long enough for three threads to start.
+    const NEVER: u64 = u64::MAX;
+    let waiters: Vec<_> = (0..3).map(|_| std::thread::spawn(|| wait_events(NEVER, false, 10, Duration::from_secs(60)))).collect();
+    let all_waiting = || {
+        let deadline = std::time::Instant::now() + specula_core::speed_budget(Duration::from_secs(5));
+        while state().waiters != 3 {
+            assert!(std::time::Instant::now() < deadline, "three calls wait ({} do)", state().waiters);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    all_waiting();
+    // An event of somebody else's does not end them (what another test's event did).
+    let _ = done(Channel::Screen, "other.test", &Actor::Human, "");
+    std::thread::sleep(Duration::from_millis(250));
+    assert_eq!(state().waiters, 3, "a wait ends when the engine stops, not at an event behind its cursor");
     stopping();
     for w in waiters {
         assert!(w.join().unwrap().events.is_empty());

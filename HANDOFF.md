@@ -2,18 +2,19 @@
 
 These are notes from Claude (Opus 5.5 through M5's first wave; Fable 5.2 from 2026-11-12) to whoever picks up Specula
 next, most likely a new Claude conversation with no memory of the earlier ones. This page is **current state and
-what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2026-11-13**.
+what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2026-11-14**.
 
-- **M5 as of 2026-11-13** (all on `main`, not pushed: the owner pushes at 100%):
+- **M5 as of 2026-11-14** (all on `main`, not pushed: the owner pushes at 100%):
   - **Merged:** map 1, audio, timelines, the render follow-ups, the UI sight tools, the editor's core, text,
     the gameplay modules, localisation, the input monitor, accessibility with Sepulcra's shell, tool kits by job,
     GPU work off the engine thread, the editor's Swarm tab with "highlight and ask", the editor's draw tools
-    (sculpt, splat, vertex paint, sketched paths), and the gate (`scripts/gate.py`, AGENTS.md "The gate").
-  - **Left, in this order:** the launcher (owner, 2026-11-13: the engine must be openable, list the projects
-    worked on with the last one first, resume it or pick another from the window or by asking an agent, and be
-    found and called from a terminal: `specula projects`, `open`, `list`, `tools`, `call`; branch
-    `m5-launch` has the tested building blocks, not yet wired into the executable; Windows first, the macOS
-    and Linux variants after); asset export for other engines (`model_export`: the glTF exporter in
+    (sculpt, splat, vertex paint, sketched paths), the gate (`scripts/gate.py`, AGENTS.md "The gate"), and the
+    launcher (owner, 2026-11-13: the engine is openable, lists the projects worked on with the last one first,
+    resumes it or opens another from the start screen or by asking an agent, and is found and called from a
+    terminal: `specula projects`, `open`, `new`, `list`, `tools`, `call`, `stop`; one engine a project;
+    Windows first, the macOS and Linux variants with those ports: [docs/design/LAUNCH.md](docs/design/LAUNCH.md),
+    `scripts/launch_check.py`).
+  - **Left, in this order:** asset export for other engines (`model_export`: the glTF exporter in
     `specula-gltf` round-trips in tests but no tool exposes it; the owner asked on 2026-11-13 that assets be
     easy to carry elsewhere); the performance pass on a quiet machine (the editor's panels still read one
     pointer for the human and an agent: docs/design/EDITOR.md, "Known limits"); the measured comparison (ROADMAP M5, "Measured leverage": tell the
@@ -259,7 +260,10 @@ In practice that means six **foundations** that apply to every change from M1 on
 ## What works today
 
 - **Run it:** `cargo run -p specula` opens a window and serves MCP at `http://127.0.0.1:7471/mcp`; Claude Code opened
-  in this folder connects through `.mcp.json`. Sepulcra: `cargo run -p sepulcra-app --release -- --port 7486 --
+  in this folder connects through `.mcp.json`. With no argument the window shows the **start screen** (the
+  projects worked on, the last one first); from a shell, `specula projects`, `open --last`, `new NAME`, `list`,
+  `tools`, `call TOOL '{json}'` and `stop` do the same and find a running engine
+  ([docs/design/LAUNCH.md](docs/design/LAUNCH.md)). Sepulcra: `cargo run -p sepulcra-app --release -- --port 7486 --
   --seed 7` (see its TESTPLAN.md).
 - **Flags:** `--port N`, `--headless`, `--adapter discrete|integrated|<index>`, `--size WxH`, `--captures DIR`,
   `--worlds DIR`, `--world NAME` (autosaves to `worlds/NAME/`), `--cache DIR`, `--assets DIR`, `--style FILE`,
@@ -269,7 +273,8 @@ In practice that means six **foundations** that apply to every change from M1 on
   `--owner NAME` / `--lead NAME` / `--reviewer NAME` (operator grants: roles are never self-declared),
   `--trace DIR`, `--trace-file on|off`, `--strict-budget` (an engine-thread stall fails the run), `--terrain on|off`,
   `--no-activate` (the window opens behind the others without taking the keyboard from the window you are in:
-  the scripts pass it), and `-- GAME ARGS` for a hosted game. Agent names are plain ASCII.
+  the scripts pass it), `--project DIR` (the engine starts in that folder, as a project), `--launcher` (the
+  start screen, as with no argument), and `-- GAME ARGS` for a hosted game. Agent names are plain ASCII.
 - **Answers are concise by default** on the heavy tools; pass `response_format: "detailed"` (per call, or once in
   `agent_hello`) for everything. Repo scripts use `scripts/specula_mcp.py` or `specula_mcp.detailed()`.
 - **Tools** (each one's schema is in `tools/list`):

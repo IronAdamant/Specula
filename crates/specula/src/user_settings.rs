@@ -53,17 +53,23 @@ fn folder_name(game: &str) -> String {
 /// user's folder would leak into this public repository).
 const ROAMING: &str = concat!("APP", "DATA");
 
-/// The per-user settings folder for `game`, from the environment (`None` when it names none).
-pub fn per_user_dir(game: &str, var: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+/// The engine's own per-user folder, from the environment (`None` when it names none): where
+/// the project list and the running engines' files are (docs/design/LAUNCH.md), and, in a
+/// folder per game, each game's player settings.
+pub fn per_user_base(var: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
     let nonempty = |k: &str| var(k).filter(|v| !v.trim().is_empty()).map(PathBuf::from);
-    let base = if cfg!(windows) {
+    if cfg!(windows) {
         nonempty(ROAMING).map(|d| d.join("Specula"))
     } else if cfg!(target_os = "macos") {
         nonempty("HOME").map(|h| h.join("Library").join("Application Support").join("Specula"))
     } else {
         nonempty("XDG_CONFIG_HOME").or_else(|| nonempty("HOME").map(|h| h.join(".config"))).map(|d| d.join("specula"))
-    }?;
-    Some(base.join(folder_name(game)))
+    }
+}
+
+/// The per-user settings folder for `game`, from the environment (`None` when it names none).
+pub fn per_user_dir(game: &str, var: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    Some(per_user_base(var)?.join(folder_name(game)))
 }
 
 impl UserSettings {

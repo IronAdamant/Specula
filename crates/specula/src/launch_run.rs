@@ -1,0 +1,802 @@
+//! Doing what the command line asked (docs/design/LAUNCH.md): `launch_cli` reads the words,
+//! this runs them. Each command answers one JSON document on stdout and an exit code: 0 done,
+//! 1 the engine's tool (or the command) refused, 2 the command could not reach an engine.
+//!
+//! This runs in the command's own short process, never in an engine: it may read the user's
+//! per-user folder, wait, and start an engine process.
+
+use crate::launch_cli::{Cli, Target, Which};
+use crate::launch_client::{Client, ClientError};
+use crate::launch_instances::{self as instances, Instance};
+use crate::launch_list::{same_path, Found, Project, ProjectList};
+use crate::launch_store::{self as store, Store};
+use specula_core::Json;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+/// How long `specula open` waits for the engine it started to serve (a cold start on a loaded
+/// machine can take most of a minute).
+pub const START_WAIT: Duration = Duration::from_secs(180);
+/// How long `specula stop` waits for the engine to be gone (it saves its world first).
+pub const STOP_WAIT: Duration = Duration::from_secs(90);
+/// How long `specula open` waits for the engine that holds a project's lock to say where it is.
+pub const LOCK_WAIT: Duration = Duration::from_secs(30);
+/// How long after a start screen's engine is gone `specula open` still expects the engine it
+/// became (it starts again in the project handed to it).
+pub const HANDOVER_GONE_WAIT: Duration = Duration::from_secs(45);
+/// The port an engine serves on when none is named: where a configured MCP client looks.
+pub const USUAL_PORT: u16 = 7471;
+/// How long one `specula call` may take.
+pub const CALL_WAIT: Duration = Duration::from_secs(300);
+/// Tools `specula tools` lists, and the characters of each one's description it shows.
+const MAX_TOOLS_LISTED: usize = 600;
+const DESCRIPTION_CHARS: usize = 160;
+/// The folder new projects are made in, inside the user's home folder.
+pub const PROJECTS_FOLDER: &str = "Specula Projects";
+/// The name of the variable that holds the user's home folder on Windows. Spelt in halves, as
+/// `user_settings::ROAMING` is (`tests/private_paths.rs`).
+const WINDOWS_HOME: &str = concat!("USER", "PROFILE");
+
+/// Where a command finds things.
+pub struct Ctx {
+    /// The engine's per-user folder (`--settings DIR`, or the operating system's).
+    pub store: Store,
+    /// The command named that folder itself (`--settings DIR`): an engine it starts is given
+    /// the same one. Without it the engine finds the per-user folder as the command did.
+    pub settings_given: bool,
+    /// The user's home folder, if the environment names one (new projects go under it).
+    pub home: Option<PathBuf>,
+    /// This executable (`specula open` starts it again as an engine when a project names none).
+    pub exe: PathBuf,
+    /// Now: seconds since the Unix epoch, UTC.
+    pub now: u64,
+    /// Whether the engine an instance file names is serving now ([`instances::serving`]).
+    pub alive: fn(&Instance) -> bool,
+}
+
+impl Ctx {
+    /// From the environment. `settings`: the command's `--settings DIR`.
+    pub fn from_env(settings: Option<PathBuf>) -> Result<Ctx, String> {
+        let var = |k: &str| std::env::var(k).ok();
+        let settings_given = settings.is_some();
+        let dir = match settings {
+            // (Absolute: an engine this command starts changes its working directory to the
+            // project's folder, and must read the same folder this command does. Review R1-5.)
+            Some(d) => std::path::absolute(&d).unwrap_or(d),
+            None => crate::user_settings::per_user_base(var).ok_or("this machine's environment names no per-user folder for the project list: pass --settings FOLDER")?,
+        };
+        let home = var(if cfg!(windows) { WINDOWS_HOME } else { "HOME" }).filter(|h| !h.trim().is_empty()).map(PathBuf::from);
+        let exe = std::env::current_exe().map_err(|e| format!("this executable's own path is not known ({e})"))?;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        Ok(Ctx { store: Store::new(dir), settings_given, home, exe, now, alive: instances::serving })
+    }
+
+    /// The engines serving now (each one's own process owns its port), newest first.
+    fn engines(&self) -> Vec<Instance> {
+        instances::list(&self.store.dir, self.alive).0
+    }
+}
+
+fn refusal(code: &str, message: impl Into<String>) -> (i32, Json) {
+    (1, Json::obj([("error", Json::from(code)), ("message", Json::from(message.into()))]))
+}
+
+/// A call that got no tool answer: exit code 2 when no engine was reached (nothing answers,
+/// it timed out, it answered something that is not the protocol), 1 when the engine answered
+/// and refused the request itself (a tool it does not have).
+fn unreachable_engine(e: &ClientError) -> (i32, Json) {
+    (if e.code == "rpc" { 1 } else { 2 }, e.to_json())
+}
+
+/// One project as `specula projects` shows it: what the list holds, whether its folder is still
+/// there, and the engine that has it open now.
+fn project_json(p: &Project, engines: &[Instance], exists: impl Fn(&Path) -> bool) -> Json {
+    let mut j = p.to_json();
+    if !exists(&p.path) {
+        j.set("missing", Json::from(true));
+    }
+    if let Some(i) = engines.iter().find(|i| i.project.as_ref().is_some_and(|(path, _)| same_path(path, &p.path))) {
+        j.set("running", Json::obj([("port", Json::from(u32::from(i.port))), ("pid", Json::from(i.pid)), ("url", Json::from(i.url()))]));
+    }
+    j
+}
+
+/// The project a word means, or why none: not listed, or a name several folders share.
+fn pick_project<'a>(list: &'a ProjectList, which: &Which) -> Result<&'a Project, (i32, Json)> {
+    match which {
+        Which::Last => list.last().ok_or_else(|| refusal("no_projects", "no project has been worked on yet: 'specula new NAME' makes one, 'specula open FOLDER' opens a folder as one")),
+        Which::Word(word) => match list.find(word) {
+            Found::One(p) => Ok(p),
+            Found::None => Err(refusal("not_listed", format!("no project is called '{word}' and none is listed at that folder ('specula projects' lists them)"))),
+            Found::Several(paths) => {
+                let (code, mut j) = refusal("ambiguous", format!("{} projects are called '{word}': say which by its folder", paths.len()));
+                j.set("folders", Json::arr(paths.iter().map(|p| Json::from(p.to_string_lossy().as_ref()))));
+                Err((code, j))
+            }
+        },
+    }
+}
+
+/// The running engine a command means, or why none.
+pub(crate) fn pick_engine(target: &Target, engines: &[Instance], list: &ProjectList) -> Result<Instance, (i32, Json)> {
+    let listed = || Json::arr(engines.iter().take(16).map(Instance::to_json));
+    match target {
+        Target::Port(p) => Ok(engines.iter().find(|i| i.port == *p).cloned().unwrap_or(Instance { launcher: false, pid: 0, port: *p, project: None, world: None, window: false, started: 0, version: String::new(), game: None })),
+        Target::Any => match engines {
+            [] => Err((2, Json::obj([("error", Json::from("no_engine")), ("message", Json::from("no engine is running on this machine: 'specula open --last' starts one on the project last worked on"))]))),
+            [one] => Ok(one.clone()),
+            _ => {
+                let (code, mut j) = refusal("several_engines", format!("{} engines are running: say which with --port N or --project NAME", engines.len()));
+                j.set("engines", listed());
+                Err((code, j))
+            }
+        },
+        Target::Project(word) => {
+            let folder = match list.find(word) {
+                Found::One(p) => Some(p.path.clone()),
+                Found::None => None,
+                Found::Several(paths) => {
+                    let (code, mut j) = refusal("ambiguous", format!("{} projects are called '{word}': say which by its folder", paths.len()));
+                    j.set("folders", Json::arr(paths.iter().map(|p| Json::from(p.to_string_lossy().as_ref()))));
+                    return Err((code, j));
+                }
+            };
+            // By the list's folder, or (a project opened from a folder the list has dropped) by
+            // what the engine itself says it has open.
+            let hit = engines.iter().find(|i| i.project.as_ref().is_some_and(|(path, name)| folder.as_ref().is_some_and(|f| same_path(f, path)) || name.eq_ignore_ascii_case(word) || same_path(path, Path::new(word))));
+            hit.cloned().ok_or_else(|| {
+                let (_, mut j) = refusal("not_running", format!("no running engine has '{word}' open: 'specula open {word}' starts one"));
+                j.set("engines", listed());
+                (2, j)
+            })
+        }
+    }
+}
+
+/// Runs a command: its exit code and the JSON it answers.
+pub fn run(cli: Cli, ctx: &Ctx) -> (i32, Json) {
+    match cli {
+        Cli::Help => (0, Json::obj([("help", Json::from(crate::launch_cli::HELP))])),
+        Cli::Projects => {
+            let (list, problem) = ctx.store.load();
+            let engines = ctx.engines();
+            let mut out = vec![("projects", Json::arr(list.projects.iter().map(|p| project_json(p, &engines, |f| f.is_dir())))), ("count", Json::from(list.projects.len()))];
+            if let Some(last) = list.last() {
+                out.push(("last", Json::from(last.name.as_str())));
+            }
+            if let Some(p) = problem {
+                out.push(("problem", Json::from(p)));
+            }
+            (0, Json::obj(out))
+        }
+        Cli::List => {
+            let engines = ctx.engines();
+            (0, Json::obj([("engines", Json::arr(engines.iter().map(Instance::to_json))), ("count", Json::from(engines.len()))]))
+        }
+        Cli::New { name, parent } => {
+            let Some(parent) = parent.or_else(|| ctx.home.as_ref().map(|h| h.join(PROJECTS_FOLDER))) else {
+                return refusal("no_home", "this machine's environment names no home folder to make projects in: say where with --in FOLDER");
+            };
+            let parent = std::path::absolute(&parent).unwrap_or(parent);
+            match store::create(&parent, &name) {
+                Err(why) => refusal("not_made", why),
+                Ok(folder) => {
+                    let project = Project { path: folder, name, exe: None, last_world: None, last_opened: ctx.now, version: env!("CARGO_PKG_VERSION").to_owned() };
+                    let listed = ctx.store.opened(project.clone());
+                    let mut j = Json::obj([("project", project.to_json()), ("next", Json::from(format!("specula open \"{}\"", project.path.display())))]);
+                    if let Err(e) = listed {
+                        j.set("warning", Json::from(format!("the project was made but could not be listed ({e})")));
+                    }
+                    (0, j)
+                }
+            }
+        }
+        Cli::Forget { which } => {
+            let (list, _) = ctx.store.load();
+            let folder = match pick_project(&list, &Which::Word(which)) {
+                Ok(p) => p.path.clone(),
+                Err(no) => return no,
+            };
+            match ctx.store.forget(&folder) {
+                Ok(_) => (0, Json::obj([("forgotten", Json::from(folder.to_string_lossy().as_ref())), ("note", Json::from("its folder was not touched"))])),
+                Err(e) => refusal("not_saved", format!("the list could not be written ({e})")),
+            }
+        }
+        Cli::Open { which, front, engine_args } => open(ctx, &which, front, &engine_args),
+        Cli::Stop { target } => {
+            let (list, _) = ctx.store.load();
+            let engine = match pick_engine(&target, &ctx.engines(), &list) {
+                Ok(e) => e,
+                Err(no) => return no,
+            };
+            // (An engine that keeps no instance file, `--settings off`, has no folder to be
+            // asked through: it is stopped where it was started.)
+            if engine.pid == 0 {
+                return refusal("not_listed", format!("no engine listed here serves port {}: one started with --settings off (or with another --settings folder) is stopped where it was started", engine.port));
+            }
+            if let Err(e) = instances::request_stop(&ctx.store.dir, engine.pid) {
+                return refusal("not_asked", format!("the stop request could not be written ({e})"));
+            }
+            // Stopped means gone: no longer serving, and its process ended (it saves its
+            // world and frees the GPU after it stops serving).
+            let deadline = Instant::now() + STOP_WAIT;
+            while ctx.engines().iter().any(|i| i.pid == engine.pid) || specula_sys::process_is_running(engine.pid) {
+                if Instant::now() > deadline {
+                    return refusal("still_running", format!("the engine (pid {}) has not stopped within {} s (it may still be saving): 'specula list' shows when it has", engine.pid, STOP_WAIT.as_secs()));
+                }
+                std::thread::sleep(Duration::from_millis(150));
+            }
+            (0, Json::obj([("stopped", Json::from(true)), ("pid", Json::from(engine.pid)), ("port", Json::from(u32::from(engine.port)))]))
+        }
+        Cli::Tools { target, filter } => {
+            let (list, _) = ctx.store.load();
+            let engine = match pick_engine(&target, &ctx.engines(), &list) {
+                Ok(e) => e,
+                Err(no) => return no,
+            };
+            let mut client = Client::new(engine.port, true, CALL_WAIT);
+            let listed = client.connect("specula-cli").and_then(|_| client.tools());
+            client.close();
+            match listed {
+                Err(e) => unreachable_engine(&e),
+                Ok(tools) => {
+                    let wanted = filter.map(|f| f.to_lowercase());
+                    let rows: Vec<Json> = tools
+                        .iter()
+                        .filter_map(|t| {
+                            let name = t.get("name").and_then(Json::as_str)?;
+                            let description = t.get("description").and_then(Json::as_str).unwrap_or("");
+                            let hit = wanted.as_ref().is_none_or(|w| name.to_lowercase().contains(w) || description.to_lowercase().contains(w));
+                            hit.then(|| Json::obj([("name", Json::from(name)), ("description", Json::from(description.chars().take(DESCRIPTION_CHARS).collect::<String>()))]))
+                        })
+                        .take(MAX_TOOLS_LISTED)
+                        .collect();
+                    (0, Json::obj([("port", Json::from(u32::from(engine.port))), ("count", Json::from(rows.len())), ("tools", Json::Arr(rows))]))
+                }
+            }
+        }
+        Cli::Call { target, tool, args, as_name } => {
+            let (list, _) = ctx.store.load();
+            let engine = match pick_engine(&target, &ctx.engines(), &list) {
+                Ok(e) => e,
+                Err(no) => return no,
+            };
+            call(ctx, &engine, &tool, args, as_name.as_deref())
+        }
+    }
+}
+
+/// `specula call`: one tool call in a session of its own. With `--as NAME` the session says who
+/// it is first (`agent_hello`), resuming the identity an earlier call under that name left (its
+/// resume token is kept beside the engine's instance file), so claims and undo carry over from
+/// one command to the next.
+fn call(ctx: &Ctx, engine: &Instance, tool: &str, args: Json, as_name: Option<&str>) -> (i32, Json) {
+    let mut client = Client::new(engine.port, true, CALL_WAIT);
+    if let Err(e) = client.connect("specula-cli") {
+        return unreachable_engine(&e);
+    }
+    if let Some(name) = as_name.filter(|_| tool != "agent_hello") {
+        let token_file = ctx.store.dir.join(instances::FOLDER).join(format!("{}.{name}.token", engine.pid));
+        let token = std::fs::read_to_string(&token_file).ok().map(|t| t.trim().to_owned()).filter(|t| !t.is_empty() && t.len() <= 256);
+        let hello = |client: &mut Client, token: Option<&str>| {
+            let mut f = vec![("name", Json::from(name))];
+            if let Some(t) = token {
+                f.push(("resume_token", Json::from(t)));
+            }
+            client.call("agent_hello", Json::obj(f))
+        };
+        let mut said = hello(&mut client, token.as_deref());
+        // A token from an engine that has since restarted: a new identity under the name.
+        if said.as_ref().is_ok_and(|a| a.is_error && a.text.contains("bad_resume_token")) {
+            said = hello(&mut client, None);
+        }
+        match said {
+            Err(e) => {
+                client.close();
+                return unreachable_engine(&e);
+            }
+            Ok(a) if a.is_error => {
+                client.close();
+                return (1, Json::parse(&a.text).unwrap_or_else(|_| Json::from(a.text.as_str())));
+            }
+            Ok(a) => {
+                if let Some(t) = Json::parse(&a.text).ok().and_then(|j| j.get("resume_token").and_then(Json::as_str).map(str::to_owned)) {
+                    let _ = store::write_small(&token_file, &t);
+                }
+            }
+        }
+    }
+    let answer = client.call(tool, args);
+    // One command, one session: closed, named or not. A named agent's identity and claims
+    // outlive its session (the next command resumes them with the token kept above); a session
+    // left open would never end, and a swarm driven from a shell would fill the engine's
+    // session table with them (review R1-8).
+    client.close();
+    match answer {
+        Err(e) => unreachable_engine(&e),
+        Ok(a) => (i32::from(a.is_error), Json::parse(&a.text).unwrap_or_else(|_| Json::from(a.text.as_str()))),
+    }
+}
+
+/// `specula open`: finds the engine that has the project open, or starts one on it and waits
+/// until it serves. A word that is a folder and not listed is opened as a project (the engine
+/// lists it).
+fn open(ctx: &Ctx, which: &Which, front: bool, engine_args: &[String]) -> (i32, Json) {
+    let (list, _) = ctx.store.load();
+    let (folder, exe) = match (pick_project(&list, which), which) {
+        (Ok(p), _) => (p.path.clone(), p.exe.clone()),
+        // Not listed, but a folder that is there: opened as a project.
+        (Err(_), Which::Word(word)) if Path::new(word).is_dir() => (std::path::absolute(Path::new(word)).unwrap_or_else(|_| PathBuf::from(word)), None),
+        (Err(no), _) => return no,
+    };
+    if !folder.is_dir() {
+        return refusal("missing", format!("{} is not there any more: 'specula forget \"{}\"' takes it off the list", folder.display(), folder.display()));
+    }
+    let answer = |i: &Instance, started: bool| {
+        let mut j = i.to_json();
+        j.set("started", Json::from(started));
+        (0, j)
+    };
+    // (One folder however it is spelt: a junction or a short name is the same project.)
+    let has_it = |i: &Instance| i.project.as_ref().is_some_and(|(path, _)| store::same_folder(path, &folder));
+    if let Some(running) = ctx.engines().iter().find(|i| has_it(i)) {
+        return answer(running, false);
+    }
+    // An engine holds the project's lock and is not listed yet (it is starting: another
+    // command got here first), or never will be: found, never doubled (review R1-2).
+    if crate::launch_engine::project_locked(&folder) {
+        return found_or_in_use(ctx, &folder);
+    }
+    // A start screen that is waiting (the window a person opened with no project) becomes the
+    // project, on its port, rather than a second engine beside it. Not when the command names
+    // engine flags (a start screen keeps its own), not when another command's hand-over waits
+    // there, and not when it does not take it (its screen was closed, or its world is in use):
+    // then an engine is started as always.
+    if engine_args.is_empty() {
+        if let Some(waiting) = ctx.engines().into_iter().find(|i| i.launcher && i.project.is_none()) {
+            if instances::request_open(&ctx.store.dir, waiting.pid, &folder, front).unwrap_or(false) {
+                let deadline = Instant::now() + START_WAIT;
+                let mut gone: Option<Instant> = None;
+                loop {
+                    let engines = ctx.engines();
+                    if let Some(i) = engines.iter().find(|i| i.pid != waiting.pid && has_it(i)) {
+                        let mut j = i.to_json();
+                        j.set("started", Json::from(true));
+                        j.set("from_start_screen", Json::from(true));
+                        return (0, j);
+                    }
+                    if instances::take_refused(&ctx.store.dir, waiting.pid) {
+                        break;
+                    }
+                    // Its engine is gone and nothing took its place with this project (it was
+                    // closed, or took another): an engine is started as always.
+                    if engines.iter().any(|i| i.pid == waiting.pid) {
+                        gone = None;
+                    } else if gone.get_or_insert_with(Instant::now).elapsed() > HANDOVER_GONE_WAIT && !crate::launch_engine::project_locked(&folder) {
+                        break;
+                    }
+                    if Instant::now() > deadline {
+                        return refusal("not_serving", format!("the start screen's engine (pid {}) was handed the project but none serves it after {} s; 'specula list' shows it once it does", waiting.pid, START_WAIT.as_secs()));
+                    }
+                    std::thread::sleep(Duration::from_millis(150));
+                }
+            }
+        }
+    }
+    // Where the engine will say it is running: made (and admitted by the disk book) before it
+    // starts, so the wait below reads a folder that is there.
+    if let Err(e) = crate::disk::book().make_dir(crate::disk::Category::Settings, &ctx.store.dir.join(instances::FOLDER), crate::disk::Need::Essential) {
+        return refusal("no_per_user_folder", format!("{} could not be made ({e})", ctx.store.dir.display()));
+    }
+    // A game's own executable, if that is what opened the project last and it is still there;
+    // else this one. (Another copy of this same program is not "the game's": the one the
+    // person ran is the one that opens it. Review R1-15.)
+    let exe = exe.filter(|e| e.is_file() && e.file_stem() != ctx.exe.file_stem()).unwrap_or_else(|| ctx.exe.clone());
+    let named_port = engine_args.iter().any(|a| a == "--port");
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let mut command = std::process::Command::new(&exe);
+        command.arg("--project").arg(&folder);
+        if ctx.settings_given {
+            command.arg("--settings").arg(&ctx.store.dir);
+        }
+        // Its window opens behind the others and takes no keyboard, unless a person asked to see
+        // it (`--front`): whoever is using this machine is not interrupted by an agent's engine.
+        let windowed = !engine_args.iter().any(|a| a == "--headless");
+        if windowed && !front && !engine_args.iter().any(|a| a == "--no-activate") {
+            command.arg("--no-activate");
+        }
+        // The usual port when it is free (a configured client finds the engine there), else one
+        // the system has free now. A second try (the usual port was taken between the look and
+        // the engine's bind: two commands at once) is always on a free one.
+        if !named_port && (attempt > 1 || instances::port_taken(USUAL_PORT)) {
+            match free_port() {
+                Some(port) => {
+                    command.arg("--port").arg(port.to_string());
+                }
+                None => return refusal("no_port", "no free port for the engine"),
+            }
+        }
+        command.args(engine_args);
+        command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            // Its own process group and no console of ours: it outlives this command.
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0000_0008 | 0x0000_0200);
+        }
+        // The engine outlives this command: it must not hold this command's output open (whoever
+        // reads the answer would wait for the engine to end).
+        specula_sys::process::keep_std_handles();
+        let mut child = match command.spawn() {
+            Ok(c) => c,
+            Err(e) => return refusal("not_started", format!("{} could not be started ({e})", exe.display())),
+        };
+        let pid = child.id();
+        let deadline = Instant::now() + START_WAIT;
+        let status = loop {
+            let engines = ctx.engines();
+            if let Some(i) = engines.iter().find(|i| i.pid == pid) {
+                return answer(i, true);
+            }
+            if let Ok(Some(status)) = child.try_wait() {
+                break status;
+            }
+            if Instant::now() > deadline {
+                return refusal("not_serving", format!("the engine (pid {pid}) has not served within {} s; 'specula list' shows it once it does", START_WAIT.as_secs()));
+            }
+            std::thread::sleep(Duration::from_millis(150));
+        };
+        // It ended before it served. Another command's engine took the project first (ours was
+        // refused the lock): that one is the answer.
+        if crate::launch_engine::project_locked(&folder) || ctx.engines().iter().any(&has_it) {
+            return found_or_in_use(ctx, &folder);
+        }
+        if attempt == 1 && !named_port {
+            continue;
+        }
+        return refusal("engine_exited", format!("the engine stopped before it served ({status}): run it in a terminal to see why: \"{}\" --project \"{}\"", exe.display(), folder.display()));
+    }
+}
+
+/// An engine holds the project's lock: the one listed here that has it open, once it says so
+/// (it may still be starting); else that it is in use by one that is not listed here.
+fn found_or_in_use(ctx: &Ctx, folder: &Path) -> (i32, Json) {
+    let deadline = Instant::now() + LOCK_WAIT;
+    loop {
+        if let Some(i) = ctx.engines().into_iter().find(|i| i.project.as_ref().is_some_and(|(path, _)| store::same_folder(path, folder))) {
+            let mut j = i.to_json();
+            j.set("started", Json::from(false));
+            return (0, j);
+        }
+        if !crate::launch_engine::project_locked(folder) || Instant::now() > deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(150));
+    }
+    refusal(
+        "in_use",
+        format!("{} is open in an engine that is not listed here (one started with --settings off or with another --settings folder), or in one that stopped this moment: 'specula list' shows the engines found here", folder.display()),
+    )
+}
+
+/// The folder new projects are made in when none is named: "Specula Projects" in the user's
+/// home folder, if the environment names one.
+pub fn default_parent(var: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    var(if cfg!(windows) { WINDOWS_HOME } else { "HOME" }).filter(|h| !h.trim().is_empty()).map(|h| PathBuf::from(h).join(PROJECTS_FOLDER))
+}
+
+/// A port the system has free now (loopback).
+pub fn free_port() -> Option<u16> {
+    std::net::TcpListener::bind(("127.0.0.1", 0)).and_then(|l| l.local_addr()).ok().map(|a| a.port())
+}
+
+/// A command line that is not one: the answer is JSON like every other, exit code 1 (the one
+/// other place a command prints).
+pub fn usage(message: &str) -> i32 {
+    println!("{}", refusal("usage", message).1.to_pretty());
+    1
+}
+
+/// The arguments an engine that showed the start screen starts again with, in `folder`: its
+/// own, without `--launcher` and any `--project`, and the project chosen. `quiet`: the project
+/// was handed over by a command, not chosen at the window: the window opens behind the others
+/// (`--no-activate`), as every engine a command starts does.
+pub fn respawn_args(argv: &[String], folder: &Path, quiet: bool) -> Vec<std::ffi::OsString> {
+    let mut out: Vec<std::ffi::OsString> = vec!["--project".into(), folder.as_os_str().to_owned()];
+    let own = &argv[..argv.iter().position(|a| a == "--").unwrap_or(argv.len())];
+    if quiet && !own.iter().any(|a| a == "--no-activate") {
+        out.push("--no-activate".into());
+    }
+    let mut words = argv.iter();
+    while let Some(a) = words.next() {
+        match a.as_str() {
+            "--launcher" => {}
+            "--project" => {
+                words.next();
+            }
+            // (A hosted game's own arguments: kept as they are.)
+            "--" => {
+                out.push(a.into());
+                out.extend(words.by_ref().map(Into::into));
+            }
+            _ => out.push(a.into()),
+        }
+    }
+    out
+}
+
+/// Starts this executable again in the project chosen on the start screen, after the engine
+/// that showed it has shut down (its port and its window are free). It runs on in this
+/// process's console, in its place.
+pub fn respawn(argv: &[String], folder: &Path, quiet: bool) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("this executable's own path is not known ({e})"))?;
+    std::process::Command::new(&exe).args(respawn_args(argv, folder, quiet)).spawn().map(|_| ()).map_err(|e| format!("{} could not be started again in {} ({e})", exe.display(), folder.display()))
+}
+
+/// The command line's whole answer: prints the JSON (stdout, or stderr for a failure to reach
+/// an engine) and returns the exit code. The one place the commands print.
+pub fn answer(cli: Cli, settings: Option<PathBuf>) -> i32 {
+    let (code, json) = match Ctx::from_env(settings) {
+        Ok(ctx) => run(cli, &ctx),
+        Err(why) => refusal("no_per_user_folder", why),
+    };
+    // (`help` is words for a person: printed as text.)
+    let text = json.get("help").and_then(Json::as_str).map_or_else(|| json.to_pretty(), str::to_owned);
+    if code == 2 {
+        eprintln!("{text}");
+    } else {
+        println!("{text}");
+    }
+    code
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(test: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("specula-launch-run-{test}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn ctx(dir: &Path) -> Ctx {
+        // (An engine here is a port of the test's own: "serving" is "something answers there".)
+        Ctx { store: Store::new(dir.join("user")), settings_given: true, home: Some(dir.join("home")), exe: PathBuf::from("specula-test-exe"), now: 1_800_000_000, alive: |i| instances::answers(i.port) }
+    }
+
+    fn engine(pid: u32, port: u16, project: Option<(&str, &str)>) -> Instance {
+        Instance { launcher: false, pid, port, project: project.map(|(p, n)| (PathBuf::from(p), n.to_owned())), world: None, window: true, started: u64::from(pid), version: "0.3.0".into(), game: None }
+    }
+
+    /// The owner's words, 2026-11-13: no project before, an empty list; a project worked on is
+    /// listed; the last one worked on is first.
+    #[test]
+    fn projects_are_listed_most_recent_first_and_an_unused_machine_lists_none() {
+        let dir = scratch("projects");
+        let c = ctx(&dir);
+        let (code, j) = run(Cli::Projects, &c);
+        assert_eq!((code, j.to_string()), (0, r#"{"projects":[],"count":0}"#.to_owned()));
+        // `new` makes the folder under the home's projects folder and lists it.
+        let (code, j) = run(Cli::New { name: "crypt".into(), parent: None }, &c);
+        assert_eq!(code, 0, "{j}");
+        let crypt = dir.join("home").join(PROJECTS_FOLDER).join("crypt");
+        assert!(crypt.join("assets").is_dir() && crypt.join(crate::launch_list::MARKER).is_file());
+        let (_, j) = run(Cli::New { name: "frost".into(), parent: Some(dir.join("elsewhere")) }, &c);
+        assert!(dir.join("elsewhere").join("frost").is_dir(), "{j}");
+        let names = |j: &Json| j.get("projects").and_then(Json::as_array).unwrap().iter().map(|p| p.get("name").and_then(Json::as_str).unwrap().to_owned()).collect::<Vec<_>>();
+        let (_, j) = run(Cli::Projects, &c);
+        assert_eq!(names(&j), ["frost", "crypt"]);
+        assert_eq!(j.get("last").and_then(Json::as_str), Some("frost"));
+        // A name in use is refused; a folder that is gone is still listed, as missing.
+        let (code, j) = run(Cli::New { name: "crypt".into(), parent: None }, &c);
+        assert!(code == 1 && j.to_string().contains("not empty"), "{j}");
+        std::fs::remove_dir_all(dir.join("elsewhere")).unwrap();
+        let (_, j) = run(Cli::Projects, &c);
+        let frost = &j.get("projects").and_then(Json::as_array).unwrap()[0];
+        assert_eq!(frost.get("missing").and_then(Json::as_bool), Some(true));
+        let (code, j) = run(Cli::Open { which: Which::Word("frost".into()), front: false, engine_args: vec![] }, &c);
+        assert!(code == 1 && j.get("error").and_then(Json::as_str) == Some("missing"), "{j}");
+        // Forgetting takes it off the list; the other stays, and is the last now.
+        assert_eq!(run(Cli::Forget { which: "frost".into() }, &c).0, 0);
+        let (_, j) = run(Cli::Projects, &c);
+        assert_eq!((names(&j), j.get("last").and_then(Json::as_str)), (vec!["crypt".to_owned()], Some("crypt")));
+        assert_eq!(run(Cli::Forget { which: "frost".into() }, &c).1.get("error").and_then(Json::as_str), Some("not_listed"));
+        // Nothing to resume on a machine that has no project: said, with what to do.
+        let empty = ctx(&dir.join("fresh"));
+        let (code, j) = run(Cli::Open { which: Which::Last, front: false, engine_args: vec![] }, &empty);
+        assert!(code == 1 && j.get("error").and_then(Json::as_str) == Some("no_projects"), "{j}");
+        let (code, j) = run(Cli::List, &empty);
+        assert_eq!((code, j.to_string()), (0, r#"{"engines":[],"count":0}"#.to_owned()));
+        // Nothing to stop, and an engine that is not listed here, are said.
+        let (code, j) = run(Cli::Stop { target: Target::Any }, &empty);
+        assert!(code == 2 && j.get("error").and_then(Json::as_str) == Some("no_engine"), "{j}");
+        let (code, j) = run(Cli::Stop { target: Target::Port(7999) }, &empty);
+        assert!(code == 1 && j.get("error").and_then(Json::as_str) == Some("not_listed"), "{j}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_command_finds_its_engine_by_port_project_or_being_the_only_one() {
+        let mut list = ProjectList::default();
+        for (path, name, at) in [("C:/games/crypt", "crypt", 1), ("C:/a/demo", "demo", 2), ("C:/b/demo", "demo", 3)] {
+            list.opened(Project { path: PathBuf::from(path), name: name.into(), exe: None, last_world: None, last_opened: at, version: String::new() });
+        }
+        let (crypt, plain) = (engine(10, 7471, Some(("C:/games/crypt", "crypt"))), engine(20, 7500, None));
+        let code = |r: Result<Instance, (i32, Json)>| r.map(|i| i.port).map_err(|(c, j)| (c, j.get("error").and_then(Json::as_str).unwrap_or("").to_owned()));
+        // No engine, one engine, several.
+        assert_eq!(code(pick_engine(&Target::Any, &[], &list)), Err((2, "no_engine".into())));
+        assert_eq!(code(pick_engine(&Target::Any, std::slice::from_ref(&plain), &list)), Ok(7500));
+        assert_eq!(code(pick_engine(&Target::Any, &[crypt.clone(), plain.clone()], &list)), Err((1, "several_engines".into())));
+        // By port: the engine listed there, or the port as given (the call says if none answers).
+        assert_eq!(code(pick_engine(&Target::Port(7500), &[crypt.clone(), plain.clone()], &list)), Ok(7500));
+        assert_eq!(code(pick_engine(&Target::Port(9000), std::slice::from_ref(&crypt), &list)), Ok(9000));
+        // By project: its name, its folder, whatever the case; not running, and a shared name.
+        for word in ["crypt", "CRYPT", "C:/games/crypt", "C:\\games\\crypt\\"] {
+            assert_eq!(code(pick_engine(&Target::Project(word.into()), &[plain.clone(), crypt.clone()], &list)), Ok(7471), "{word}");
+        }
+        assert_eq!(code(pick_engine(&Target::Project("crypt".into()), std::slice::from_ref(&plain), &list)), Err((2, "not_running".into())));
+        assert_eq!(code(pick_engine(&Target::Project("demo".into()), std::slice::from_ref(&crypt), &list)), Err((1, "ambiguous".into())));
+        // A project the list has dropped is still found by what its engine says it has open.
+        let stray = engine(30, 7600, Some(("D:/stray", "stray")));
+        assert_eq!(code(pick_engine(&Target::Project("stray".into()), &[stray], &list)), Ok(7600));
+    }
+
+    #[test]
+    fn open_hands_the_project_to_a_waiting_start_screen_and_starts_an_engine_when_refused() {
+        let dir = scratch("handover");
+        let c = ctx(&dir);
+        let (_, j) = run(Cli::New { name: "crypt".into(), parent: None }, &c);
+        let crypt = PathBuf::from(j.get("project").and_then(|p| p.get("path")).and_then(Json::as_str).unwrap());
+        // A start screen and, later, the engine it became: "serving" is a port of this test's.
+        let (screen, after) = (std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap(), std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap());
+        let port = |l: &std::net::TcpListener| l.local_addr().unwrap().port();
+        let waiting = Instance { launcher: true, ..engine(901, port(&screen), None) };
+        let open = |engine_args: Vec<String>| Cli::Open { which: Which::Word("crypt".into()), front: false, engine_args };
+        // `specula open crypt` while the start screen's side does `then` with the hand-over.
+        let handed = |then: &(dyn Fn() + Sync)| {
+            instances::write(&c.store.dir, &waiting).unwrap();
+            std::thread::scope(|s| {
+                let call = s.spawn(|| run(open(vec![]), &c));
+                let deadline = Instant::now() + specula_core::speed_budget(Duration::from_secs(5));
+                while !instances::open_file(&c.store.dir, 901).exists() {
+                    assert!(Instant::now() < deadline, "the hand-over never arrived");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                assert_eq!(instances::take_open(&c.store.dir, 901), Some((crypt.clone(), false)), "the project's folder is what is handed over");
+                then();
+                call.join().unwrap()
+            })
+        };
+        let error = |j: &Json| j.get("error").and_then(Json::as_str).map(str::to_owned);
+        // Refused (its screen was closed, or its world is in use): the command starts an engine
+        // itself. This test's executable is not one: that it was tried is the proof.
+        let (code, j) = handed(&|| instances::refuse_open(&c.store.dir, 901));
+        assert_eq!((code, error(&j)), (1, Some("not_started".into())), "{j}");
+        assert!(!instances::refused_file(&c.store.dir, 901).exists(), "the refusal was read");
+        // Taken: the start screen's engine goes and one with the project serves; the command
+        // answers with that engine and starts none.
+        let became = engine(902, port(&after), Some((crypt.to_str().unwrap(), "crypt")));
+        let (code, j) = handed(&|| {
+            instances::remove(&c.store.dir, 901);
+            instances::write(&c.store.dir, &became).unwrap();
+        });
+        assert_eq!(code, 0, "{j}");
+        assert_eq!((j.get("pid").and_then(Json::as_u64), j.get("from_start_screen").and_then(Json::as_bool), j.get("started").and_then(Json::as_bool)), (Some(902), Some(true), Some(true)));
+        // With engine flags the start screen is not asked (it keeps its own): nothing is handed.
+        instances::remove(&c.store.dir, 902);
+        instances::write(&c.store.dir, &waiting).unwrap();
+        let (code, j) = run(open(vec!["--headless".into()]), &c);
+        assert_eq!((code, error(&j)), (1, Some("not_started".into())), "{j}");
+        assert!(!instances::open_file(&c.store.dir, 901).exists());
+        // An engine with a project, or one that shows no start screen, is never handed one.
+        instances::write(&c.store.dir, &Instance { launcher: false, ..waiting.clone() }).unwrap();
+        let (_, j) = run(open(vec![]), &c);
+        assert!(error(&j) == Some("not_started".into()) && !instances::open_file(&c.store.dir, 901).exists(), "{j}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Review R1-2 and R1-15.
+    #[test]
+    fn a_project_an_engine_holds_is_found_never_opened_twice() {
+        let dir = scratch("held");
+        let c = ctx(&dir);
+        let (_, j) = run(Cli::New { name: "crypt".into(), parent: None }, &c);
+        let crypt = PathBuf::from(j.get("project").and_then(|p| p.get("path")).and_then(Json::as_str).unwrap());
+        let open = || Cli::Open { which: Which::Word("crypt".into()), front: false, engine_args: vec!["--headless".into()] };
+        let error = |j: &Json| j.get("error").and_then(Json::as_str).map(str::to_owned);
+        // Nobody has it: the command starts an engine (this test's executable is not one).
+        assert_eq!(error(&run(open(), &c).1), Some("not_started".into()));
+        if !crate::launch_engine::locks_here() {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        // An engine holds it and says so a moment later (it was starting): that engine is the
+        // answer, and none is started.
+        let held = crate::launch_engine::lock(&crypt).unwrap();
+        let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let holder = engine(903, port.local_addr().unwrap().port(), Some((crypt.to_str().unwrap(), "crypt")));
+        let (code, j) = std::thread::scope(|s| {
+            let call = s.spawn(|| run(open(), &c));
+            std::thread::sleep(Duration::from_millis(300));
+            instances::write(&c.store.dir, &holder).unwrap();
+            call.join().unwrap()
+        });
+        assert_eq!((code, j.get("pid").and_then(Json::as_u64), j.get("started").and_then(Json::as_bool)), (0, Some(903), Some(false)), "{j}");
+        // The same folder by another spelling is the same project (review R2-1: opened through
+        // a junction, it waited out the lock and said the engine was "not listed here").
+        let link = dir.join("link-to-crypt");
+        let linked = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&link).arg(&crypt).output().is_ok_and(|o| o.status.success());
+        if linked {
+            assert!(!same_path(&link, &crypt) && store::same_folder(&link, &crypt));
+            let (code, j) = run(Cli::Open { which: Which::Word(link.to_string_lossy().into_owned()), front: false, engine_args: vec!["--headless".into()] }, &c);
+            assert_eq!((code, j.get("pid").and_then(Json::as_u64), j.get("started").and_then(Json::as_bool)), (0, Some(903), Some(false)), "{j}");
+            let _ = std::fs::remove_dir(&link);
+        }
+        // The holder is not listed here and its lock goes while the command waits: said, and
+        // nothing is started behind the person's back.
+        instances::remove(&c.store.dir, 903);
+        let (code, j) = std::thread::scope(|s| {
+            let call = s.spawn(|| run(open(), &c));
+            std::thread::sleep(Duration::from_millis(300));
+            drop(held);
+            call.join().unwrap()
+        });
+        assert_eq!((code, error(&j)), (1, Some("in_use".into())), "{j}");
+        // The executable that opened a project last is used only when it is a game's own (another
+        // name than this program's): a copy of this program elsewhere is not.
+        let (mut list, _) = c.store.load();
+        let own_copy = dir.join("elsewhere").join("specula-test-exe");
+        std::fs::create_dir_all(own_copy.parent().unwrap()).unwrap();
+        std::fs::write(&own_copy, "").unwrap();
+        list.projects[0].exe = Some(own_copy);
+        c.store.save(&list).unwrap();
+        let (_, j) = run(open(), &c);
+        assert!(j.to_string().contains("specula-test-exe could not be started") && !j.to_string().contains("elsewhere"), "{j}");
+        crate::launch_engine::forget_lock_for_test(&crypt);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_engine_starts_again_with_its_own_flags_in_the_project_chosen() {
+        let with = |argv: &[&str], quiet: bool| respawn_args(&argv.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>(), Path::new("D:/games/crypt"), quiet).into_iter().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>();
+        let args = |argv: &[&str]| with(argv, false);
+        // Handed over by a command (review R1-13): the window opens behind the others, once.
+        assert_eq!(with(&[], true), ["--project", "D:/games/crypt", "--no-activate"]);
+        assert_eq!(with(&["--no-activate", "--port", "7663"], true), ["--project", "D:/games/crypt", "--no-activate", "--port", "7663"]);
+        assert_eq!(with(&["--", "--no-activate"], true), ["--project", "D:/games/crypt", "--no-activate", "--", "--no-activate"], "a game's own flag is not the engine's");
+        assert_eq!(args(&[]), ["--project", "D:/games/crypt"]);
+        assert_eq!(args(&["--launcher", "--port", "7663", "--settings", "D:/u", "--no-activate"]), ["--project", "D:/games/crypt", "--port", "7663", "--settings", "D:/u", "--no-activate"]);
+        // Its own --project (it showed the start screen all the same) is replaced, not doubled.
+        assert_eq!(args(&["--project", "D:/old", "--launcher", "--adapter", "integrated"]), ["--project", "D:/games/crypt", "--adapter", "integrated"]);
+        assert_eq!(args(&["--project"]), ["--project", "D:/games/crypt"], "a flag with no value ends the list");
+        // What follows -- is a hosted game's: never read as the engine's flags.
+        assert_eq!(args(&["--launcher", "--", "--launcher", "--project", "x"]), ["--project", "D:/games/crypt", "--", "--launcher", "--project", "x"]);
+        let env = |k: &str| (k == "HOME" || k == WINDOWS_HOME).then(|| "C:/people/ann".to_owned());
+        assert_eq!(default_parent(env), Some(PathBuf::from("C:/people/ann").join(PROJECTS_FOLDER)));
+        assert_eq!(default_parent(|_| Some("  ".into())), None);
+        assert_eq!(default_parent(|_| None), None);
+    }
+
+    #[test]
+    fn exit_codes_tell_no_engine_from_an_engines_refusal() {
+        let code = |c: &'static str| unreachable_engine(&ClientError { code: c, message: "m".into() }).0;
+        assert_eq!((code("no_engine"), code("timeout"), code("bad_answer"), code("http")), (2, 2, 2, 2));
+        assert_eq!(code("rpc"), 1, "the engine answered: it has no such tool");
+        assert_eq!(refusal("missing", "x").0, 1);
+    }
+
+    #[test]
+    fn a_listed_project_says_when_its_engine_is_running_and_when_its_folder_is_gone() {
+        let p = Project { path: PathBuf::from("C:/games/crypt"), name: "crypt".into(), exe: None, last_world: Some("night".into()), last_opened: 5, version: "0.3.0".into() };
+        let running = [engine(10, 7471, Some(("C:/games/crypt/", "crypt")))];
+        let here = project_json(&p, &running, |_| true);
+        assert_eq!(here.get("running").and_then(|r| r.get("port")).and_then(Json::as_u64), Some(7471));
+        assert!(here.get("missing").is_none());
+        let gone = project_json(&p, &[], |_| false);
+        assert!(gone.get("running").is_none() && gone.get("missing").and_then(Json::as_bool) == Some(true));
+    }
+}

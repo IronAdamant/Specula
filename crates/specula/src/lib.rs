@@ -128,6 +128,15 @@ mod vfx_tools;
 mod timeline;
 mod timeline_tools;
 mod l10n_tools;
+pub mod launch_cli;
+pub mod launch_client;
+pub mod launch_engine;
+pub mod launch_instances;
+pub mod launch_list;
+pub mod launch_run;
+mod launch_screen;
+mod launch_window;
+pub mod launch_store;
 pub mod timeline_audio;
 mod gi;
 mod gi_tools;
@@ -222,7 +231,8 @@ const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|integrated|<index>] [--size WxH] \
 [--captures DIR] [--worlds DIR] [--world NAME] [--saves DIR] [--cache DIR] [--assets DIR] [--style FILE] [--perf FILE] \
 [--paused] [--max-fps N] [--audio device|null|off] [--response-format concise|detailed] [--tools-default core|all] [--physics-threads N] [--vfx on|off] [--terrain on|off] \n[--trace DIR] [--trace-file on|off] [--strict-budget] \
-[--owner NAME] [--lead NAME] [--reviewer NAME] [--settings DIR|off] [--no-activate] [-- GAME ARGS...]";
+[--owner NAME] [--lead NAME] [--reviewer NAME] [--settings DIR|off] [--no-activate] [--project DIR] [--launcher] [-- GAME ARGS...]\n\
+commands (specula help): projects | open --last|NAME|FOLDER | new NAME | forget NAME | list | tools [FILTER] | call TOOL ['{json}']";
 
 /// How long a capture waits (parked, the engine serving others) for models still building.
 const CAPTURE_BUILD_WAIT: Duration = Duration::from_secs(10);
@@ -253,6 +263,11 @@ struct Args {
     /// `--no-activate`: the window opens without taking the keyboard from the window the human
     /// is in (an engine started by an agent or a script while someone uses the machine).
     no_activate: bool,
+    /// `--project DIR`: the engine starts in that folder, as a project (docs/design/LAUNCH.md).
+    project: Option<PathBuf>,
+    /// `--launcher`: the start screen (the project list) opens over the window, as it does
+    /// when the executable is started with no argument at all.
+    launcher: bool,
     adapter: AdapterPreference,
     window_size: (u32, u32),
     captures: Option<PathBuf>,
@@ -317,6 +332,8 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
         port: DEFAULT_PORT,
         headless: false,
         no_activate: false,
+        project: None,
+        launcher: false,
         adapter: AdapterPreference::HighPerformance,
         window_size: (1280, 720),
         captures: None,
@@ -356,6 +373,8 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--port" => args.port = value()?.parse().map_err(|_| format!("bad port\n{USAGE}"))?,
             "--headless" => args.headless = true,
             "--no-activate" => args.no_activate = true,
+            "--project" => args.project = Some(PathBuf::from(value()?)),
+            "--launcher" => args.launcher = true,
             "--paused" => args.paused = true,
             "--terrain" => {
                 args.terrain = match value()?.as_str() {
@@ -467,7 +486,61 @@ pub fn run_game(game: Box<dyn Game>) -> Result<(), String> {
 }
 
 fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
-    let args = parse_args()?;
+    // The command line's words (docs/design/LAUNCH.md): `specula projects`, `open`, `list`,
+    // `tools`, `call`... answer and end here, in a process that never becomes an engine.
+    // Arguments that start with a flag (or none at all) are the engine's own, as before.
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.first().is_some_and(|a| !a.starts_with('-')) {
+        // (A command line that is not one is answered as every command answers: JSON, exit
+        // code 1. Review R1-10.)
+        let code = match launch_cli::take_settings(&argv).and_then(|(words, settings)| Ok((launch_cli::parse(&words)?, settings))) {
+            Ok((Some(cli), settings)) => launch_run::answer(cli, settings),
+            Ok((None, _)) => launch_run::usage(USAGE),
+            Err(why) => launch_run::usage(&why),
+        };
+        std::process::exit(code);
+    }
+    let mut args = parse_args()?;
+    if args.project.is_some() {
+        // `--project` makes that folder the working directory. Every other folder the command
+        // line names was written against the one the engine was started in, and is read there:
+        // above all `--settings`, the person's own folder, which a relative path would have put
+        // inside the project (review R1-5).
+        for folder in [&mut args.assets, &mut args.style, &mut args.trace, &mut args.captures, &mut args.cache, &mut args.perf, &mut args.worlds, &mut args.saves] {
+            if let Some(absolute) = folder.as_ref().and_then(|f| std::path::absolute(f).ok()) {
+                *folder = Some(absolute);
+            }
+        }
+        if let Some(absolute) = args.settings.as_ref().filter(|s| s.as_str() != "off").and_then(|s| std::path::absolute(s).ok()) {
+            args.settings = Some(absolute.to_string_lossy().into_owned());
+        }
+    }
+    // The executable opened with no argument (double-clicked) while another program has the
+    // usual port: a free one, said in its instance file, rather than no window at all.
+    if argv.is_empty() && launch_instances::port_taken(args.port) {
+        if let Some(free) = launch_run::free_port() {
+            args.port = free;
+        }
+    }
+    // `--project DIR` (or a working directory that is a project): the engine starts there.
+    let project = match &args.project {
+        Some(dir) => Some(launch_engine::open(dir, true)?),
+        None => std::env::current_dir().ok().and_then(|cwd| launch_engine::of_working_directory(&cwd)),
+    };
+    // One engine a project: its lock is held from here to the end of the run.
+    let (_project_lock, unlocked) = match &project {
+        Some(p) => match launch_engine::lock(&p.path) {
+            Ok(lock) => (Some(lock), None),
+            Err(launch_engine::LockRefused::Held) => {
+                return Err(format!("{} ({}) is open in another engine: 'specula list' finds it, and 'specula open' answers with it", p.name, p.path.display()));
+            }
+            Err(launch_engine::LockRefused::Unavailable(why)) => (None, Some(format!("{} could not be locked ({why}): nothing stops a second engine from opening it", p.name))),
+        },
+        None => (None, None),
+    };
+    for note in project.as_ref().and_then(|p| p.note.clone()).into_iter().chain(unlocked) {
+        eprintln!("specula: {note}");
+    }
     match game.as_mut() {
         Some(g) => g.configure(&args.game_args).map_err(|e| format!("{}: {e}", g.name()))?,
         None if !args.game_args.is_empty() => {
@@ -492,8 +565,9 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     let gpu = Gpu::new(&GpuOptions { validation: Validation::Auto, adapter: args.adapter, pipeline_cache })
         .map_err(|e| format!("GPU init failed: {e}"))?;
     let captures_root = args.captures.unwrap_or_else(|| cwd.join("captures"));
-    // `--assets`, else the hosted game's own folder, else the working directory.
-    let named_assets = args.assets.or_else(|| game.as_ref().and_then(|g| g.assets_root()));
+    // `--assets`, else the project's own assets folder, else the hosted game's own folder, else
+    // the working directory.
+    let named_assets = args.assets.or_else(|| project.as_ref().and_then(|p| p.assets.clone())).or_else(|| game.as_ref().and_then(|g| g.assets_root()));
     let assets = named_assets.clone().unwrap_or_else(|| cwd.clone());
     if let Some(g) = game.as_mut() {
         g.use_assets(&assets);
@@ -682,6 +756,37 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         },
     )
     .map_err(|e| format!("MCP server: {e}"))?;
+    // Serving: the project is first in the user's list and this engine can be found (its
+    // instance file), unless `--settings off` (docs/design/LAUNCH.md).
+    engine.opened_project = project.as_ref().map(|p| (p.path.clone(), p.name.clone()));
+    let launch_store = launch_engine::store_for(args.settings.as_deref(), |k| std::env::var(k).ok());
+    // The start screen: the executable opened with no argument at all (double-clicked), or
+    // `--launcher`, when there is a window, a project list to show, no project open and no
+    // hosted game (a game's executable is its own project).
+    let start_screen = (args.launcher || argv.is_empty()) && !args.headless && project.is_none() && game.is_none() && launch_store.is_some();
+    if args.launcher && !start_screen {
+        specula_core::trace_event!(&trace_sink::ENGINE, Warn, "launch.no_start_screen", why = "--launcher needs a window, a project list (not --settings off), no --project and no hosted game");
+    }
+    let handover = start_screen.then(launch_engine::Handover::default);
+    let announced = launch_store.clone().map(|store| {
+        let serving = launch_engine::Serving {
+            launcher: handover.clone(),
+            stop: interrupt::request,
+            // (The port it is bound to, which is not the one asked for when that was 0.)
+            port: server.local_addr().port(),
+            project: project.as_ref(),
+            world: engine.world_name.as_deref(),
+            window: !args.headless,
+            game: game.as_ref().map(|g| g.name()),
+            exe: std::env::current_exe().ok(),
+            now: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()),
+        };
+        let (announced, problems) = launch_engine::announce(store, &serving);
+        for p in problems {
+            eprintln!("specula: {p}");
+        }
+        announced
+    });
     eprintln!("specula: MCP at http://{}/mcp — Ctrl+C to stop", server.local_addr());
 
     // Only now that the port is ours: tidy old capture runs (never a running engine's), then open
@@ -698,6 +803,9 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         engine.gpu.attach_window(ui.raw.hinstance, ui.raw.hwnd, w, h).map_err(|e| format!("swapchain: {e}"))?;
         Some(ui)
     };
+    if let (Some(store), Some(handover)) = (launch_store, handover) {
+        engine.start.open(store, launch_run::default_parent(|k| std::env::var(k).ok()), handover);
+    }
     // Assets that will need skinned or textured pipelines get them now, not at their first spawn.
     let (skinned, textured) = models::asset_streams(engine.library.lock().root());
     engine.gpu.prepare_variants(skinned, textured).map_err(|e| format!("pipelines: {e}"))?;
@@ -746,6 +854,10 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     // Calls waiting on the security monitor answer now (the server waits for its threads).
     inputguard::stopping();
     server.shutdown();
+    // No longer found; the project remembers the world it had open.
+    if let Some(a) = announced {
+        a.finish(engine.world_name.as_deref());
+    }
     // Tear the GPU down (window surface included) before the window itself, and report any
     // validation messages raised during shutdown.
     match engine.gpu.pipeline_cache_data() {
@@ -775,6 +887,13 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     eprintln!("specula: shut down ({errors} validation errors)");
     trace_sink::finish();
     interrupt::finished();
+    // A project chosen on the start screen (or handed to it by `specula open`): this engine
+    // has shut down, its port and window are free, and the executable starts again there.
+    if result.is_ok() {
+        if let Some((folder, quiet)) = engine.start.take_chosen() {
+            launch_run::respawn(&argv, &folder, quiet)?;
+        }
+    }
     let strict = trace_engine::strict_failures();
     if result.is_ok() && engine.watch.strict && strict > 0 {
         return Err(format!("--strict-budget: {strict} engine-thread stall(s) past their budget (trace_incidents {{code: \"engine.stall\"}} lists them)"));
@@ -866,6 +985,10 @@ struct Engine {
     game_save_notes: Vec<(game::GameRequest, save_tools::RetryInfo)>,
     /// The world autosave writes to: `--world`, or the last world_save / world_load.
     world_name: Option<String>,
+    /// The project this engine has open: its folder and name (docs/design/LAUNCH.md).
+    opened_project: Option<(PathBuf, String)>,
+    /// The start screen of an engine opened with no project (`launch_window`).
+    start: launch_window::Start,
     /// `world.revision()` as last saved or loaded.
     saved_revision: u64,
     /// The journal's last entry when the world was last written to its files or a save
@@ -1126,6 +1249,8 @@ impl Engine {
             game_save_retry: Vec::new(),
             game_save_notes: Vec::new(),
             world_name: None,
+            opened_project: None,
+            start: launch_window::Start::default(),
             saved_revision: 0,
             saved_seq: 0,
             checkpoint_seq: 0,
@@ -1505,9 +1630,12 @@ impl Engine {
         self.security_toast_input();
         // Keys the human meant for a text never reach a screen an agent put on the window.
         self.text_window_screens();
-        // The review screen reads input first; while it is open the game, modules and live Lex
+        // The start screen (an engine opened with no project) reads the person's input first:
+        // while it is open nothing under it gets any.
+        let start = self.launch_frame(size);
+        // The review screen reads input next; while it is open the game, modules and live Lex
         // runs get none (no keys, pointer or pads).
-        let modal = self.review_frame(size);
+        let modal = self.review_frame(size) || start;
         // The gallery screen next: under an open review screen it gets no input (no keys, pointer
         // or pads).
         let modal = self.gallery_frame(size, modal) || modal;
@@ -2353,6 +2481,8 @@ impl Engine {
             self.editor_overlay(size, &mut game_quads);
             self.gallery_overlay(size, false, &mut game_quads);
             self.review_overlay(size, false, &mut game_quads);
+            // The start screen: over the engine's other screens (window frames only).
+            self.launch_overlay(size, &mut game_quads);
             // The input monitor's toast: over everything but the typing banner.
             self.security_overlay(size, &mut game_quads);
             // While the window's keyboard types into a text, a banner says which: the overlay's
@@ -3371,6 +3501,8 @@ impl Engine {
             ("world", world),
             ("frames_captured", Json::from(self.frames_captured)),
             ("captures", Json::from(self.capture_dir.display().to_string())),
+            // The project this engine has open (`--project`, or started in its folder).
+            ("project", self.opened_project.as_ref().map_or(Json::Null, |(path, name)| Json::obj([("name", Json::from(name.as_str())), ("path", Json::from(path.display().to_string()))]))),
             ("agents", Json::arr(agents)),
             ("clock", self.clock_json()),
             ("swarm", {

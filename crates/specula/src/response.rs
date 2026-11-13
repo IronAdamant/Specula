@@ -442,7 +442,7 @@ fn perf_frame(v: &Json) -> Json {
 }
 
 fn engine_info(v: &Json) -> Json {
-    let mut out = keep(v, &["engine", "gpu", "validation", "entities", "agents", "clock", "window", "game", "modules", "board_save_error", "board_warning"]);
+    let mut out = keep(v, &["engine", "gpu", "validation", "entities", "agents", "clock", "window", "game", "project", "modules", "board_save_error", "board_warning"]);
     // The floating-point guard only when it had something to restore.
     let restored = |k: &str| v.get("determinism").and_then(|d| d.get(k)).and_then(|f| f.get("restored")).and_then(Json::as_u64).unwrap_or(0);
     if restored("fp_env") + restored("fp_env_modules") > 0 {

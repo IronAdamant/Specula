@@ -13,7 +13,9 @@
 use std::path::Path;
 
 /// Scripts that start a process which isn't the engine, and what it is.
-const NOT_AN_ENGINE: &[(&str, &str)] = &[("m3_exit.py", "the PowerShell GPU-load sampler"), ("gate.py", "cargo (tests, clippy and builds): it starts no game")];
+const NOT_AN_ENGINE: &[(&str, &str)] = &[("m3_exit.py", "the PowerShell GPU-load sampler"), ("gate.py", "cargo (tests, clippy and builds): it starts no game"),
+    ("launch_check.py", "the executable's own commands (specula projects, open, call...), each given --settings; the engines `specula open` starts are headless or open with --no-activate"),
+];
 
 /// How many lines after `subprocess.Popen(` the flag may stand on (the argument list).
 const WINDOW: usize = 8;

@@ -46,6 +46,7 @@ pub mod kernel32 {
         pub fn SetConsoleCtrlHandler(handler: Option<unsafe extern "system" fn(u32) -> i32>, add: i32) -> i32;
         pub fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> *mut c_void;
         pub fn GetExitCodeProcess(process: *mut c_void, exit_code: *mut u32) -> i32;
+        pub fn WaitForSingleObject(handle: *mut c_void, milliseconds: u32) -> u32;
         pub fn CloseHandle(handle: *mut c_void) -> i32;
         pub fn GetSystemPowerStatus(status: *mut SystemPowerStatus) -> i32;
         pub fn GetDiskFreeSpaceExW(directory: *const u16, free_to_caller: *mut u64, total: *mut u64, total_free: *mut u64) -> i32;
@@ -56,6 +57,9 @@ pub mod kernel32 {
         pub fn GlobalUnlock(memory: *mut c_void) -> i32;
         pub fn GlobalFree(memory: *mut c_void) -> *mut c_void;
         pub fn GlobalSize(memory: *mut c_void) -> usize;
+        pub fn GetStdHandle(std_handle: u32) -> *mut c_void;
+        pub fn SetHandleInformation(object: *mut c_void, mask: u32, flags: u32) -> i32;
+        pub fn GetHandleInformation(object: *mut c_void, flags: *mut u32) -> i32;
     }
 
     /// `GMEM_MOVEABLE`: what clipboard data must be allocated as.
@@ -71,6 +75,64 @@ pub mod kernel32 {
         pub system_status_flag: u8,
         pub battery_life_time: u32,
         pub battery_full_life_time: u32,
+    }
+}
+
+/// This process's standard handles and the processes it starts.
+pub mod process {
+    /// Marks this process's standard input, output and error as not inherited by the processes
+    /// it starts from now on. Returns how many handles were changed.
+    ///
+    /// A program that starts a long-lived child and then exits (the command line starting an
+    /// engine: `specula open`) calls this first. On Windows a child inherits every inheritable
+    /// handle of its parent, whatever its own standard handles are set to: the engine held the
+    /// command's output pipes open, and whoever was reading the command's answer (an agent's
+    /// shell, a script) went on waiting for the engine to end. Found by the launcher's live
+    /// check, which waited 40 minutes. Elsewhere a child's standard handles are replaced and
+    /// the rest close when it starts: nothing to do.
+    pub fn keep_std_handles() -> usize {
+        #[cfg(windows)]
+        {
+            /// `STD_INPUT_HANDLE`, `STD_OUTPUT_HANDLE`, `STD_ERROR_HANDLE`.
+            const STD: [u32; 3] = [-10i32 as u32, -11i32 as u32, -12i32 as u32];
+            const HANDLE_FLAG_INHERIT: u32 = 1;
+            let mut changed = 0;
+            for id in STD {
+                // SAFETY: GetStdHandle takes one of the three ids; SetHandleInformation is
+                // given the handle it returned, checked to be a real one.
+                unsafe {
+                    let h = super::kernel32::GetStdHandle(id);
+                    if !h.is_null() && h as isize != -1 && super::kernel32::SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0) != 0 {
+                        changed += 1;
+                    }
+                }
+            }
+            changed
+        }
+        #[cfg(not(windows))]
+        {
+            0
+        }
+    }
+
+    #[cfg(all(test, windows))]
+    mod tests {
+        /// After it, no standard handle of this process is inheritable (a test's own may be
+        /// absent: only the ones that are there are looked at).
+        #[test]
+        fn standard_handles_are_no_longer_inherited() {
+            super::keep_std_handles();
+            for id in [-10i32 as u32, -11i32 as u32, -12i32 as u32] {
+                // SAFETY: a query on the handle GetStdHandle returned, checked to be a real one.
+                unsafe {
+                    let h = crate::kernel32::GetStdHandle(id);
+                    let mut flags = 0u32;
+                    if !h.is_null() && h as isize != -1 && crate::kernel32::GetHandleInformation(h, &mut flags) != 0 {
+                        assert_eq!(flags & 1, 0, "standard handle {} is still inheritable", id as i32);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -107,6 +169,13 @@ pub mod net {
 
     /// Ports (any local address, IPv4 or IPv6) with a listening TCP socket right now.
     pub fn tcp_listening_ports() -> Result<BTreeSet<u16>, NetError> {
+        tcp_listeners().map(|l| l.into_iter().map(|(port, _)| port).collect())
+    }
+
+    /// Every listening TCP socket right now (any local address, IPv4 or IPv6): its port and the
+    /// id of the process that owns it. "Something answers on that port" does not say who: a
+    /// program that stopped leaves its port to the next one, and this tells them apart.
+    pub fn tcp_listeners() -> Result<BTreeSet<(u16, u32)>, NetError> {
         #[cfg(windows)]
         {
             windows::listening()
@@ -135,8 +204,10 @@ pub mod net {
         /// `MIB_TCPROW_OWNER_PID` and `MIB_TCP6ROW_OWNER_PID` sizes, and where `dwLocalPort` sits.
         const ROW4: usize = 24;
         const PORT4: usize = 8;
+        const PID4: usize = 20;
         const ROW6: usize = 56;
         const PORT6: usize = 20;
+        const PID6: usize = 52;
 
         fn library() -> Result<&'static Library, NetError> {
             static LIB: OnceLock<Result<Library, NetError>> = OnceLock::new();
@@ -147,7 +218,7 @@ pub mod net {
             .map_err(Clone::clone)
         }
 
-        pub fn listening() -> Result<BTreeSet<u16>, NetError> {
+        pub fn listening() -> Result<BTreeSet<(u16, u32)>, NetError> {
             let lib = library()?;
             let sym = lib
                 .symbol("GetExtendedTcpTable")
@@ -156,7 +227,7 @@ pub mod net {
             // DWORD(PVOID, PDWORD, BOOL, ULONG, TCP_TABLE_CLASS, ULONG); `lib` lives for the process.
             let get: GetExtendedTcpTable = unsafe { std::mem::transmute::<*mut c_void, GetExtendedTcpTable>(sym) };
             let mut ports = BTreeSet::new();
-            for (af, row, port_at) in [(AF_INET, ROW4, PORT4), (AF_INET6, ROW6, PORT6)] {
+            for (af, row, port_at, pid_at) in [(AF_INET, ROW4, PORT4, PID4), (AF_INET6, ROW6, PORT6, PID6)] {
                 // Without an IPv6 stack there can be no IPv6 listeners: only the IPv4 table must read.
                 let words = match table(get, af) {
                     Ok(words) => words,
@@ -166,10 +237,11 @@ pub mod net {
                 let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_ne_bytes()).collect();
                 let count = words.first().copied().unwrap_or(0) as usize;
                 for i in 0..count {
-                    let at = 4 + i * row + port_at;
-                    let Some(b) = bytes.get(at..at + 4) else { break };
+                    let at = 4 + i * row;
+                    let (Some(b), Some(p)) = (bytes.get(at + port_at..at + port_at + 4), bytes.get(at + pid_at..at + pid_at + 4)) else { break };
                     // dwLocalPort: the port in network byte order in its low 16 bits.
-                    ports.insert(u16::from_be_bytes([b[0], b[1]]));
+                    // dwOwningPid: the row's last word.
+                    ports.insert((u16::from_be_bytes([b[0], b[1]]), u32::from_ne_bytes([p[0], p[1], p[2], p[3]])));
                 }
             }
             Ok(ports)
@@ -448,26 +520,33 @@ pub mod disk {
 
 /// Whether a process with this id is currently running. Conservative: on platforms without an
 /// implementation, or when the answer can't be determined (e.g. access denied), returns `true`.
+///
+/// A process is running **until it has ended**: until the system has closed what it held (its
+/// files, its ports, its window) and signalled its process object. Its exit code is set
+/// earlier, when it starts to end, and read alone it said "gone" of a process still on its way
+/// out: the launcher's `specula stop` answered while the engine it stopped was still listed and
+/// still held its port and its GPU (seen in its live check, 2026-11-14). An exit code of 259
+/// (`STILL_ACTIVE`) also read as "running" for ever.
 pub fn process_is_running(pid: u32) -> bool {
     #[cfg(windows)]
     {
-        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-        const STILL_ACTIVE: u32 = 259;
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+        const WAIT_OBJECT_0: u32 = 0;
         const ERROR_INVALID_PARAMETER: u32 = 87;
         // SAFETY: plain call; a null result is handled below.
-        let handle = unsafe { kernel32::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        let handle = unsafe { kernel32::OpenProcess(SYNCHRONIZE, 0, pid) };
         if handle.is_null() {
             // ERROR_INVALID_PARAMETER means no such process; anything else (access denied) is unknown.
             // SAFETY: reads the calling thread's last-error value; no preconditions.
             return unsafe { kernel32::GetLastError() } != ERROR_INVALID_PARAMETER;
         }
-        let mut code = 0u32;
-        // SAFETY: `handle` is a live process handle with query rights; `code` is writable. The handle
-        // is closed exactly once.
+        // SAFETY: `handle` is a live process handle with the right to wait on it; a wait of
+        // 0 ms only asks whether it is signalled. The handle is closed exactly once.
         unsafe {
-            let ok = kernel32::GetExitCodeProcess(handle, &mut code) != 0;
+            let state = kernel32::WaitForSingleObject(handle, 0);
             kernel32::CloseHandle(handle);
-            !ok || code == STILL_ACTIVE
+            // (Signalled: ended. Not yet, or the wait failed: running, or not known.)
+            state != WAIT_OBJECT_0
         }
     }
     #[cfg(not(windows))]
@@ -795,6 +874,18 @@ mod tests {
         // The pid may be reused in theory, but not within this instant in practice.
         assert!(!process_is_running(pid));
         assert!(!process_is_running(0xFFFF_FFF0));
+        // A process that ended with exit code 259 (which reads as "still active") has ended.
+        let mut odd = std::process::Command::new("cmd").args(["/C", "exit 259"]).spawn().unwrap();
+        let pid = odd.id();
+        assert_eq!(odd.wait().unwrap().code(), Some(259));
+        assert!(!process_is_running(pid), "its process object is signalled: it has ended, whatever its exit code");
+        drop(odd);
+        // One that runs is running, for as long as it runs (its exit code is not asked).
+        let mut waiting = std::process::Command::new("cmd").args(["/C", "pause"]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).spawn().unwrap();
+        assert!(process_is_running(waiting.id()));
+        drop(waiting.stdin.take());
+        waiting.wait().unwrap();
+        assert!(!process_is_running(waiting.id()));
     }
 
     #[test]

@@ -25,6 +25,28 @@ The previous Bevy-based tooling (formerly *Grok-Bevy*) is preserved at tag
 [`bevy-tooling-final`](https://github.com/IronAdamant/Specula/tree/bevy-tooling-final); its docs are in
 `docs/archive/bevy-era/`.
 
+## Open it
+
+- **Double-click `specula.exe`**, or run `specula` with no argument: the start screen lists your projects, the last
+  one worked on first. Open one, make a new one, or open any folder as a project.
+- **From a terminal**, for people and agents alike:
+
+  ```
+  specula projects            the projects worked on, most recent first
+  specula open --last         resume the last one (or find the engine that has it open)
+  specula new "My Game"       make a project
+  specula list                the engines running on this machine
+  specula call engine_info    call any tool, with no MCP client
+  specula help
+  ```
+
+- **MCP clients** connect to `http://127.0.0.1:7471/mcp` (`.mcp.json` does it for Claude Code opened in this
+  folder).
+- From source: `cargo run -p specula` (the start screen), or `cargo run -p specula -- --project FOLDER`.
+
+A project is a folder: copy it to another machine and open it there. Details:
+[docs/design/LAUNCH.md](docs/design/LAUNCH.md).
+
 ## Network and firewall
 
 Specula talks only to agents on the same machine.

@@ -85,6 +85,9 @@ pub enum JobKind {
     TimelineSound,
     /// A module's sound recipe found and rendered (`Cx::sound`; presentation only).
     ModuleSound,
+    /// The start screen's disk work: a folder checked or made, the project list read or
+    /// written, the clipboard read for a pasted path (`launch_window`).
+    Launch,
 }
 
 impl JobKind {
@@ -114,6 +117,7 @@ impl JobKind {
             JobKind::SettingsWrite => "settings_write",
             JobKind::TimelineSound => "timeline_sound",
             JobKind::ModuleSound => "module_sound",
+            JobKind::Launch => "launch",
         }
     }
 }

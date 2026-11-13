@@ -27,11 +27,11 @@ const WRITERS: &[Rule] = &[
     },
     Rule { pattern: "File>::", allowed: &[], why: "call File's functions by their path (File::create), so this guard sees them" },
     Rule { pattern: "File::options", allowed: &[], why: "writes go through the book" },
-    Rule { pattern: "OpenOptions::new", allowed: &["engine:disk.rs", "engine:blobs.rs", "engine:persist.rs"], why: "the content store's uploads and the world lock / world files, admitted through the book" },
+    Rule { pattern: "OpenOptions::new", allowed: &["engine:disk.rs", "engine:blobs.rs", "engine:persist.rs", "engine:launch_engine.rs", "engine:launch_store.rs"], why: "the content store's uploads and the world lock / world files, admitted through the book; the project's lock file opened for reading only, to hold or ask for its lock (its one write goes through the book); and a hand-over file made only if it is not there yet (admitted by the book first)" },
     Rule { pattern: "fs::copy", allowed: &["engine:disk.rs"], why: "copies are writes: through the book" },
     Rule {
         pattern: "fs::rename",
-        allowed: &["engine:blobs.rs", "engine:project.rs", "engine:persist.rs", "engine:save_tools.rs", "engine:swarm_engine.rs", "engine:review_engine.rs", "engine:disk.rs", "engine:user_settings.rs"],
+        allowed: &["engine:blobs.rs", "engine:project.rs", "engine:persist.rs", "engine:save_tools.rs", "engine:swarm_engine.rs", "engine:review_engine.rs", "engine:disk.rs", "engine:user_settings.rs", "engine:launch_store.rs"],
         why: "a rename moves bytes the budget hasn't seen: only atomic writers renaming their own admitted temporary files (and moving an unreadable file aside), and disk::move_to_trash (a folder moved within its own root, still counted there until a worker empties it)",
     },
     Rule { pattern: "fs::hard_link", allowed: &[], why: "links are writes the budget can't see: never" },
@@ -58,8 +58,8 @@ const WRITERS: &[Rule] = &[
     // its output is the modules category the walker measures (and admitted before each build).
     Rule {
         pattern: "Command::new",
-        allowed: &["logic:build.rs", "engine:lex_live.rs", "engine:playtest_engine.rs", "engine:models.rs"],
-        why: "processes the engine starts write where they like: only Cargo (admitted before the build) and the engine re-running itself for a playtest",
+        allowed: &["logic:build.rs", "engine:lex_live.rs", "engine:playtest_engine.rs", "engine:models.rs", "engine:launch_run.rs"],
+        why: "processes the engine starts write where they like: only Cargo (admitted before the build), the engine re-running itself for a playtest, and the command line starting an engine on a project (`specula open`: that engine admits its own writes)",
     },
     // Spelled in full, so the patterns above see every call: no imports of std::fs items or groups.
     Rule { pattern: "usestd::fs::", allowed: &[], why: "call std::fs functions by their path (fs::write), so this guard sees them" },

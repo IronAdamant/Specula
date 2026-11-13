@@ -11,11 +11,14 @@
 use std::path::{Path, PathBuf};
 
 /// `(file, outputs allowed)`: the files that had console output on 2026-10-29.
-const ALLOWED: [(&str, usize); 64] = [
+const ALLOWED: [(&str, usize); 65] = [
     ("crates/specula/src/capture.rs", 3),
     ("crates/specula/src/disk.rs", 4),
     ("crates/specula/src/evidence.rs", 5),
     ("crates/specula/src/fpguard.rs", 1),
+    // The command line's commands (`specula projects`, `call`...): their answer IS their
+    // standard output, in a process that is never an engine; the one place they print.
+    ("crates/specula/src/launch_run.rs", 3),
     ("crates/specula/src/leases.rs", 1),
     ("crates/specula/src/lex_live.rs", 5),
     ("crates/specula/src/lib.rs", 28),

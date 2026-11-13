@@ -1,0 +1,588 @@
+{
+  "format": "specula.ui.screen.v1",
+  "name": "start",
+  "input": "menu",
+  "layer": 95,
+  "modal": true,
+  "focus": "st_new",
+  "back": "start_back",
+  "notes": "The engine's start screen (docs/design/LAUNCH.md): the projects worked on, the last one first; open one, make a new one, or open a folder as a project. Its own UI instance, drawn in the window only: never a UI-tools surface and never in a capture, so no agent reads the person's project list from it. Actions: start_open:N, start_forget:N, start_forget_yes, start_new, start_folder, start_ok, start_cancel, start_prev, start_next, start_close, start_back. State: version, listing, typing, forgetting, has_rows, first_page, list_title, row_N, row_N_name, row_N_path, row_N_when, row_N_warn, paged, has_prev, has_next, page_line, type_title, typed, type_note, type_ok, can_ok, forget_line, world_note, status_line, status_good.",
+  "root": {
+    "type": "box",
+    "children": [
+      {
+        "type": "panel",
+        "style": "sheet",
+        "id": "st_sheet",
+        "anchor": "top",
+        "margin": [
+          "5%",
+          0,
+          0,
+          0
+        ],
+        "width": "94%",
+        "max_width": "56em",
+        "layout": "column",
+        "align": "stretch",
+        "gap": 10,
+        "children": [
+          {
+            "type": "box",
+            "layout": "row",
+            "align": "center",
+            "gap": 12,
+            "children": [
+              {
+                "type": "label",
+                "text": "Specula",
+                "role": "title"
+              },
+              {
+                "type": "label",
+                "text": "{version}",
+                "role": "small",
+                "width": "fill"
+              },
+              {
+                "type": "button",
+                "id": "st_close",
+                "text": "Close",
+                "action": "start_close",
+                "tooltip": "Use the engine with no project (Esc)."
+              }
+            ]
+          },
+          {
+            "type": "panel",
+            "style": "divider",
+            "height": 1,
+            "padding": 0
+          },
+          {
+            "type": "box",
+            "layout": "column",
+            "align": "stretch",
+            "gap": 8,
+            "visible": "listing",
+            "children": [
+              {
+                "type": "label",
+                "text": "{list_title}",
+                "role": "heading"
+              },
+              {
+                "type": "label",
+                "text": "No project has been worked on here yet. Make a new one, or open a folder as a project.",
+                "role": "body",
+                "visible": "!has_rows",
+                "wrap": true
+              },
+              {
+                "type": "box",
+                "layout": "row",
+                "align": "center",
+                "gap": 10,
+                "visible": "row_0",
+                "children": [
+                  {
+                    "type": "button",
+                    "id": "st_row_0",
+                    "text": "{row_0_name}",
+                    "action": "start_open:0",
+                    "width": "17em",
+                    "visible": [
+                      "row_0",
+                      "first_page"
+                    ],
+                    "tooltip": "Open this project.",
+                    "style": "primary"
+                  },
+                  {
+                    "type": "button",
+                    "id": "st_row_0b",
+                    "text": "{row_0_name}",
+                    "action": "start_open:0",
+                    "width": "17em",
+                    "visible": [
+                      "row_0",
+                      "!first_page"
+                    ],
+                    "tooltip": "Open this project."
+                  },
+                  {
+                    "type": "box",
+                    "layout": "column",
+                    "width": "fill",
+                    "gap": 2,
+                    "clip": true,
+                    "children": [
+                      {
+                        "type": "label",
+                        "text": "{row_0_path}",
+                        "role": "small"
+                      },
+                      {
+                        "type": "label",
+                        "text": "{row_0_when}",
+                        "role": "small",
+                        "visible": "!row_0_warn"
+                      },
+                      {
+                        "type": "label",
+                        "text": "{row_0_when}",
+                        "role": "warn",
+                        "visible": "row_0_warn"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "button",
+                    "id": "st_forget_0",
+                    "text": "Forget",
+                    "action": "start_forget:0",
+                    "tooltip": "Take it off this list. Its folder is not touched."
+                  }
+                ]
+              },
+              {
+                "type": "box",
+                "layout": "row",
+                "align": "center",
+                "gap": 10,
+                "visible": "row_1",
+                "children": [
+                  {
+                    "type": "button",
+                    "id": "st_row_1",
+                    "text": "{row_1_name}",
+                    "action": "start_open:1",
+                    "width": "17em",
+                    "visible": "row_1",
+                    "tooltip": "Open this project."
+                  },
+                  {
+                    "type": "box",
+                    "layout": "column",
+                    "width": "fill",
+                    "gap": 2,
+                    "clip": true,
+                    "children": [
+                      {
+                        "type": "label",
+                        "text": "{row_1_path}",
+                        "role": "small"
+                      },
+                      {
+                        "type": "label",
+                        "text": "{row_1_when}",
+                        "role": "small",
+                        "visible": "!row_1_warn"
+                      },
+                      {
+                        "type": "label",
+                        "text": "{row_1_when}",
+                        "role": "warn",
+                        "visible": "row_1_warn"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "button",
+                    "id": "st_forget_1",
+                    "text": "Forget",
+                    "action": "start_forget:1",
+                    "tooltip": "Take it off this list. Its folder is not touched."
+                  }
+                ]
+              },
+              {
+                "type": "box",
+                "layout": "row",
+                "align": "center",
+                "gap": 10,
+                "visible": "row_2",
+                "children": [
+                  {
+                    "type": "button",
+                    "id": "st_row_2",
+                    "text": "{row_2_name}",
+                    "action": "start_open:2",
+                    "width": "17em",
+                    "visible": "row_2",
+                    "tooltip": "Open this project."
+                  },
+                  {
+                    "type": "box",
+                    "layout": "column",
+                    "width": "fill",
+                    "gap": 2,
+                    "clip": true,
+                    "children": [
+                      {
+                        "type": "label",
+                        "text": "{row_2_path}",
+                        "role": "small"
+                      },
+                      {
+                        "type": "label",
+                        "text": "{row_2_when}",
+                        "role": "small",
+                        "visible": "!row_2_warn"
+                      },
+                      {
+                        "type": "label",
+                        "text": "{row_2_when}",
+                        "role": "warn",
+                        "visible": "row_2_warn"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "button",
+                    "id": "st_forget_2",
+                    "text": "Forget",
+                    "action": "start_forget:2",
+                    "tooltip": "Take it off this list. Its folder is not touched."
+                  }
+                ]
+              },
+              {
+                "type": "box",
+                "layout": "row",
+                "align": "center",
+                "gap": 10,
+                "visible": "row_3",
+                "children": [
+                  {
+                    "type": "button",
+                    "id": "st_row_3",
+                    "text": "{row_3_name}",
+                    "action": "start_open:3",
+                    "width": "17em",
+                    "visible": "row_3",
+                    "tooltip": "Open this project."
+                  },
+                  {
+                    "type": "box",
+                    "layout": "column",
+                    "width": "fill",
+                    "gap": 2,
+                    "clip": true,
+                    "children": [
+                      {
+                        "type": "label",
+                        "text": "{row_3_path}",
+                        "role": "small"
+                      },
+                      {
+                        "type": "label",
+                        "text": "{row_3_when}",
+                        "role": "small",
+                        "visible": "!row_3_warn"
+                      },
+                      {
+                        "type": "label",
+                        "text": "{row_3_when}",
+                        "role": "warn",
+                        "visible": "row_3_warn"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "button",
+                    "id": "st_forget_3",
+                    "text": "Forget",
+                    "action": "start_forget:3",
+                    "tooltip": "Take it off this list. Its folder is not touched."
+                  }
+                ]
+              },
+              {
+                "type": "box",
+                "layout": "row",
+                "align": "center",
+                "gap": 10,
+                "visible": "row_4",
+                "children": [
+                  {
+                    "type": "button",
+                    "id": "st_row_4",
+                    "text": "{row_4_name}",
+                    "action": "start_open:4",
+                    "width": "17em",
+                    "visible": "row_4",
+                    "tooltip": "Open this project."
+                  },
+                  {
+                    "type": "box",
+                    "layout": "column",
+                    "width": "fill",
+                    "gap": 2,
+                    "clip": true,
+                    "children": [
+                      {
+                        "type": "label",
+                        "text": "{row_4_path}",
+                        "role": "small"
+                      },
+                      {
+                        "type": "label",
+                        "text": "{row_4_when}",
+                        "role": "small",
+                        "visible": "!row_4_warn"
+                      },
+                      {
+                        "type": "label",
+                        "text": "{row_4_when}",
+                        "role": "warn",
+                        "visible": "row_4_warn"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "button",
+                    "id": "st_forget_4",
+                    "text": "Forget",
+                    "action": "start_forget:4",
+                    "tooltip": "Take it off this list. Its folder is not touched."
+                  }
+                ]
+              },
+              {
+                "type": "box",
+                "layout": "row",
+                "align": "center",
+                "gap": 10,
+                "visible": "row_5",
+                "children": [
+                  {
+                    "type": "button",
+                    "id": "st_row_5",
+                    "text": "{row_5_name}",
+                    "action": "start_open:5",
+                    "width": "17em",
+                    "visible": "row_5",
+                    "tooltip": "Open this project."
+                  },
+                  {
+                    "type": "box",
+                    "layout": "column",
+                    "width": "fill",
+                    "gap": 2,
+                    "clip": true,
+                    "children": [
+                      {
+                        "type": "label",
+                        "text": "{row_5_path}",
+                        "role": "small"
+                      },
+                      {
+                        "type": "label",
+                        "text": "{row_5_when}",
+                        "role": "small",
+                        "visible": "!row_5_warn"
+                      },
+                      {
+                        "type": "label",
+                        "text": "{row_5_when}",
+                        "role": "warn",
+                        "visible": "row_5_warn"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "button",
+                    "id": "st_forget_5",
+                    "text": "Forget",
+                    "action": "start_forget:5",
+                    "tooltip": "Take it off this list. Its folder is not touched."
+                  }
+                ]
+              },
+              {
+                "type": "box",
+                "layout": "row",
+                "align": "center",
+                "gap": 10,
+                "children": [
+                  {
+                    "type": "button",
+                    "id": "st_new",
+                    "text": "New project",
+                    "action": "start_new",
+                    "tooltip": "Make a project: a folder with an assets folder."
+                  },
+                  {
+                    "type": "button",
+                    "id": "st_folder",
+                    "text": "Open a folder",
+                    "action": "start_folder",
+                    "tooltip": "Open any folder as a project."
+                  },
+                  {
+                    "type": "box",
+                    "width": "fill"
+                  },
+                  {
+                    "type": "button",
+                    "id": "st_prev",
+                    "text": "Prev",
+                    "action": "start_prev",
+                    "visible": "paged",
+                    "enabled": "has_prev"
+                  },
+                  {
+                    "type": "label",
+                    "text": "{page_line}",
+                    "role": "small",
+                    "visible": "paged"
+                  },
+                  {
+                    "type": "button",
+                    "id": "st_next",
+                    "text": "Next",
+                    "action": "start_next",
+                    "visible": "paged",
+                    "enabled": "has_next"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "box",
+            "layout": "column",
+            "align": "stretch",
+            "gap": 8,
+            "visible": "typing",
+            "children": [
+              {
+                "type": "label",
+                "text": "{type_title}",
+                "role": "heading"
+              },
+              {
+                "type": "panel",
+                "style": "field",
+                "children": [
+                  {
+                    "type": "label",
+                    "text": "{typed}",
+                    "role": "body",
+                    "wrap": true,
+                    "width": "fill"
+                  }
+                ]
+              },
+              {
+                "type": "label",
+                "text": "{type_note}",
+                "role": "small",
+                "wrap": true
+              },
+              {
+                "type": "box",
+                "layout": "row",
+                "align": "center",
+                "gap": 10,
+                "children": [
+                  {
+                    "type": "box",
+                    "width": "fill"
+                  },
+                  {
+                    "type": "button",
+                    "id": "st_cancel",
+                    "text": "Cancel",
+                    "action": "start_cancel"
+                  },
+                  {
+                    "type": "button",
+                    "id": "st_ok",
+                    "style": "primary",
+                    "text": "{type_ok}",
+                    "action": "start_ok",
+                    "enabled": "can_ok"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "box",
+            "layout": "column",
+            "align": "stretch",
+            "gap": 8,
+            "visible": "forgetting",
+            "children": [
+              {
+                "type": "label",
+                "text": "{forget_line}",
+                "role": "body",
+                "wrap": true
+              },
+              {
+                "type": "box",
+                "layout": "row",
+                "align": "center",
+                "gap": 10,
+                "children": [
+                  {
+                    "type": "box",
+                    "width": "fill"
+                  },
+                  {
+                    "type": "button",
+                    "id": "st_keep",
+                    "text": "Keep it",
+                    "action": "start_cancel"
+                  },
+                  {
+                    "type": "button",
+                    "id": "st_forget_yes",
+                    "text": "Take it off the list",
+                    "action": "start_forget_yes"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "label",
+            "text": "{world_note}",
+            "role": "warn",
+            "visible": "world_note",
+            "wrap": true
+          },
+          {
+            "type": "label",
+            "text": "{status_line}",
+            "role": "good",
+            "visible": [
+              "status_line",
+              "status_good"
+            ],
+            "wrap": true
+          },
+          {
+            "type": "label",
+            "text": "{status_line}",
+            "role": "warn",
+            "visible": [
+              "status_line",
+              "!status_good"
+            ],
+            "wrap": true
+          },
+          {
+            "type": "label",
+            "text": "From a terminal, for people and agents: specula projects, specula open --last, specula help.",
+            "role": "small",
+            "wrap": true
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -208,6 +208,30 @@ text lands in a world text, and every agent can read world texts.
 The test plants a copy of a System32 DLL beside the test executable. It checks that `open` loads System32's and that
 `open_beside_exe` would have loaded the plant.
 
+## The launcher's files
+
+The project list, the files that say which engines are running, and the two requests an engine reads from disk
+(stop, and a project handed to a waiting start screen) live in the engine's per-user folder
+([LAUNCH.md](LAUNCH.md)).
+
+- **They grant nothing new.** Whoever can write a person's per-user folder can already start and end that
+  person's programs. A stop request does what Ctrl+C does. A hand-over makes the engine start **its own
+  executable** again in a folder that exists, and only while it is still nothing but a start screen.
+- **The list of a person's projects is served by no tool.** It says what they work on. The start screen is
+  no UI-tools surface, hears the window's own input only, and is never drawn in a capture;
+  `engine_info.project` names the one project an engine has open, to the agents working in it. The
+  launcher's traces name no folder and no count (agents read traces).
+- **The start screen's paste is the person's own.** Ctrl+V in its folder field reads the clipboard on
+  `text_window`'s clipboard thread, recorded by the monitor as the human's paste, like every other read.
+- **A command is never sent to the wrong engine.** An instance file counts only while the process it names
+  owns its port, so a program that took a dead engine's port is never called or stopped in its name.
+- **`specula open` never takes the keyboard.** The engine it starts opens its window behind the others
+  unless a person passes `--front`.
+- **`specula call` speaks to loopback only**, as every client does. `--as NAME` keeps a resume token beside
+  the engine's instance file, readable by the person's own account, removed when the engine is gone.
+- **`--settings off` keeps none of it:** such an engine is not listed and cannot be asked to stop from
+  outside (every script's and test's engine).
+
 ## Limits, said plainly
 
 - **Two sessions can pause the swarm.** Any client with two identities can make two refused tries and pause every

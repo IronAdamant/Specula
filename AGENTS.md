@@ -182,3 +182,9 @@ Open the PNGs in `target/window-check/` and look at them before claiming the win
 
 The running engine serves MCP at `http://127.0.0.1:7471/mcp` (see `.mcp.json`). Tool names use
 `^[a-zA-Z0-9_-]{1,64}$` (`world_spawn`, `sight_frame`).
+
+From a shell, with no MCP client ([docs/design/LAUNCH.md](docs/design/LAUNCH.md)): `specula list` finds the
+engines running on this machine, `specula tools [FILTER]` and `specula call TOOL '{json}'` use one, and
+`specula projects` / `open --last` / `open NAME` / `new NAME` / `stop` manage projects and engines. The
+executable with no argument opens the start screen (the project list). The list of a person's projects is
+never an MCP tool, and scripts' engines (`--settings off`) are never listed.

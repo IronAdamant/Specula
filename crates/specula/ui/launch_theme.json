@@ -1,0 +1,423 @@
+{
+  "format": "specula.ui.theme.v1",
+  "name": "specula_start",
+  "notes": "The engine's start screen (docs/design/LAUNCH.md): the review screen's neutral slate, ivory text and Specula cyan, with a field for the typed name or folder. Buttons keep the 44 px touch height.",
+  "colors": {
+    "slate": "#262b33",
+    "slate_hi": "#2f353f",
+    "slate_lo": "#1e2228",
+    "edge": "#4c5562",
+    "dark": "#12151a",
+    "recess": "#171a1f",
+    "text": "#ece6d6",
+    "text_dim": "#b9b2a1",
+    "text_faint": "#8e897d",
+    "accent": "#3fe0d0",
+    "accent_deep": "#1a8f9e",
+    "warn": "#ffc46b",
+    "bad": "#ff8a7a",
+    "good": "#8fe39a"
+  },
+  "spacing": {
+    "xs": 4,
+    "s": 8,
+    "m": 12,
+    "l": 20
+  },
+  "roles": {
+    "body": {
+      "font": "ui",
+      "size": 15,
+      "color": "text",
+      "line_height": 1.2
+    },
+    "small": {
+      "font": "ui",
+      "size": 13,
+      "color": "text_dim",
+      "line_height": 1.15
+    },
+    "heading": {
+      "font": "ui_bold",
+      "size": 18,
+      "color": "text"
+    },
+    "title": {
+      "font": "ui_bold",
+      "size": 22,
+      "color": "text"
+    },
+    "button": {
+      "font": "ui_bold",
+      "size": 15,
+      "color": "text"
+    },
+    "keycap": {
+      "font": "ui_bold",
+      "size": 13,
+      "color": "text"
+    },
+    "warn": {
+      "font": "ui",
+      "size": 14,
+      "color": "warn"
+    },
+    "good": {
+      "font": "ui",
+      "size": 14,
+      "color": "good"
+    }
+  },
+  "boxes": {
+    "sheet": {
+      "fill": [
+        "#2c323cf8",
+        "#1f232af8"
+      ],
+      "border": 1.5,
+      "border_color": [
+        "#5b6472",
+        "dark"
+      ],
+      "radius": 10,
+      "bevel": {
+        "width": 1,
+        "light": "#ffffff1a",
+        "dark": "#00000040"
+      },
+      "shadow": {
+        "offset": [
+          0,
+          8
+        ],
+        "blur": 24,
+        "color": "#000000c0"
+      },
+      "padding": [
+        16,
+        20
+      ]
+    },
+    "panel": {
+      "fill": [
+        "slate_hi",
+        "slate_lo"
+      ],
+      "border": 1,
+      "border_color": [
+        "edge",
+        "dark"
+      ],
+      "radius": 6,
+      "padding": [
+        8,
+        12
+      ]
+    },
+    "inset": {
+      "fill": [
+        "recess",
+        "#1d2026"
+      ],
+      "border": 1,
+      "border_color": [
+        "dark",
+        "#353b45"
+      ],
+      "radius": 4,
+      "padding": 6
+    },
+    "tab": {
+      "fill": [
+        "#1f5e66f0",
+        "#164a52f0"
+      ],
+      "border": 1,
+      "border_color": [
+        "accent",
+        "#0e3338"
+      ],
+      "radius": 6,
+      "shadow": {
+        "offset": [
+          0,
+          2
+        ],
+        "blur": 6,
+        "color": "#000000a0"
+      }
+    },
+    "keycap": {
+      "fill": [
+        "#525b68",
+        "#3a414c"
+      ],
+      "border": 1,
+      "border_color": [
+        "#7a8392",
+        "dark"
+      ],
+      "radius": 4,
+      "padding": [
+        1,
+        6
+      ]
+    },
+    "button": {
+      "fill": [
+        "#3d444f",
+        "#2c3139"
+      ],
+      "border": 1,
+      "border_color": [
+        "#5f6876",
+        "dark"
+      ],
+      "radius": 5
+    },
+    "button_hot": {
+      "fill": [
+        "#44505a",
+        "#2f3a41"
+      ],
+      "border": 1.5,
+      "border_color": [
+        "accent",
+        "accent_deep"
+      ],
+      "radius": 5
+    },
+    "button_down": {
+      "fill": [
+        "#22272e",
+        "#2c3139"
+      ],
+      "border": 1,
+      "border_color": [
+        "dark",
+        "accent_deep"
+      ],
+      "radius": 5
+    },
+    "button_off": {
+      "fill": [
+        "#2a2e35",
+        "#24282e"
+      ],
+      "border": 1,
+      "border_color": [
+        "#3a404a",
+        "#1a1d22"
+      ],
+      "radius": 5
+    },
+    "primary": {
+      "fill": [
+        "#1f5e66",
+        "#164a52"
+      ],
+      "border": 1,
+      "border_color": [
+        "accent",
+        "#0e3338"
+      ],
+      "radius": 5
+    },
+    "primary_hot": {
+      "fill": [
+        "#26737c",
+        "#1a5a63"
+      ],
+      "border": 2,
+      "border_color": [
+        "#b8fff6",
+        "accent"
+      ],
+      "radius": 5
+    },
+    "tooltip": {
+      "fill": "#15181df2",
+      "border": 1,
+      "border_color": "edge",
+      "radius": 4,
+      "padding": [
+        6,
+        10
+      ]
+    },
+    "toast": {
+      "fill": [
+        "#2b3038f0",
+        "#20242af0"
+      ],
+      "border": 1,
+      "border_color": [
+        "edge",
+        "dark"
+      ],
+      "radius": 6,
+      "padding": [
+        7,
+        14
+      ]
+    },
+    "divider": {
+      "fill": "#4c556280"
+    },
+    "field": {
+      "fill": [
+        "#171a1f",
+        "#1d2026"
+      ],
+      "border": 1,
+      "border_color": [
+        "dark",
+        "#3a414c"
+      ],
+      "radius": 4,
+      "padding": [
+        8,
+        10
+      ]
+    }
+  },
+  "buttons": {
+    "default": {
+      "normal": {
+        "box": "button",
+        "text": "text"
+      },
+      "hover": {
+        "box": "button_hot",
+        "text": "#b8fff6"
+      },
+      "focused": {
+        "box": "button_hot",
+        "text": "#b8fff6"
+      },
+      "pressed": {
+        "box": "button_down",
+        "text": "accent"
+      },
+      "disabled": {
+        "box": "button_off",
+        "text": "text_faint"
+      },
+      "role": "button",
+      "padding": [
+        9,
+        18
+      ],
+      "min_height": 44
+    },
+    "primary": {
+      "normal": {
+        "box": "primary",
+        "text": "#f4fffd"
+      },
+      "hover": {
+        "box": "primary_hot",
+        "text": "#ffffff"
+      },
+      "focused": {
+        "box": "primary_hot",
+        "text": "#ffffff"
+      },
+      "pressed": {
+        "box": "button_down",
+        "text": "accent"
+      },
+      "disabled": {
+        "box": "button_off",
+        "text": "text_faint"
+      },
+      "role": "button",
+      "padding": [
+        9,
+        22
+      ],
+      "min_height": 44
+    },
+    "tab": {
+      "normal": {
+        "box": "tab",
+        "text": "#f4fffd"
+      },
+      "hover": {
+        "box": "primary_hot",
+        "text": "#ffffff"
+      },
+      "focused": {
+        "box": "primary_hot",
+        "text": "#ffffff"
+      },
+      "pressed": {
+        "box": "button_down",
+        "text": "accent"
+      },
+      "disabled": {
+        "box": "button_off",
+        "text": "text_faint"
+      },
+      "role": "button",
+      "padding": [
+        8,
+        14
+      ],
+      "min_height": 44
+    }
+  },
+  "focus": {
+    "color": "accent",
+    "width": 2,
+    "gap": 2
+  },
+  "tooltip": {
+    "box": "tooltip",
+    "role": "small",
+    "delay_s": 0.45,
+    "max_width": 280
+  },
+  "toast": {
+    "box": "toast",
+    "role": "body",
+    "info": "text_dim",
+    "good": "accent",
+    "warn": "warn",
+    "threat": "bad",
+    "duration_s": 3.5,
+    "fade_s": 0.5
+  },
+  "threat": {
+    "label_box": "tooltip"
+  },
+  "keycap": {
+    "box": "keycap",
+    "role": "keycap",
+    "min_width": 24
+  },
+  "dim": "#05080fb0",
+  "scale": {
+    "reference": [
+      1280,
+      800
+    ],
+    "reference_ppi": 215,
+    "min": 0.75,
+    "max": 4
+  },
+  "check": {
+    "min_cap_px": 9,
+    "min_touch_px": 44,
+    "contrast_body": 4.5,
+    "contrast_large": 3,
+    "large_text_px": 24
+  },
+  "scene": [
+    "#0b1020",
+    "#2a3448",
+    "#5b6470",
+    "#a7a39a",
+    "#c9d6ff"
+  ]
+}

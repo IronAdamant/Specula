@@ -478,6 +478,14 @@ fn clipboard(req: ClipReq, answer: bool, _seen: crate::inputguard::Seen) -> Opti
     Some(rx)
 }
 
+/// The clipboard's text for the start screen's folder field: the human's own Ctrl+V at the
+/// window (`launch_screen` hears the window's input only). Seen by the input monitor as a
+/// paste like any other, and read on the clipboard thread; `None`: that thread couldn't start.
+pub(crate) fn paste_for_start_screen() -> Option<Receiver<ClipAnswer>> {
+    let seen = crate::inputguard::done(crate::inputguard::Channel::Clipboard, "launch.paste", &crate::inputguard::Actor::Human, "the start screen's folder field");
+    clipboard(ClipReq::Get, true, seen).flatten()
+}
+
 /// The clipboard's text cut to what a text holds (at a character boundary).
 fn fit(mut s: String) -> String {
     if s.len() > MAX_TEXT_BYTES {
