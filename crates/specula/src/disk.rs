@@ -662,9 +662,18 @@ impl DiskBook {
         out
     }
 
-    /// `engine_info.disk` (`detailed`: per writer, the prune log, every root) and `disk_status`.
+    /// `disk_status` (`detailed`: per writer, the prune log, every root), with free space read
+    /// now where its reading is stale. For a caller's own thread: it asks the system.
     pub fn report(&self, detailed: bool) -> Json {
         self.refresh_space(None, false);
+        self.report_as_read(detailed)
+    }
+
+    /// The report from what the book already holds, without asking the system: `engine_info.disk`,
+    /// built on the engine thread. Free space is the background reader's last reading (it reads
+    /// every second or two); asked here, on a volume that was slow to answer, it held the engine
+    /// thread 10 ms inside `engine_info` (performance pass, 2026-11-14).
+    pub fn report_as_read(&self, detailed: bool) -> Json {
         let mut st = self.lock();
         if !st.configured {
             return Json::obj([("configured", Json::Bool(false))]);
@@ -697,9 +706,10 @@ impl DiskBook {
         }
         let roots: Vec<(Category, PathBuf)> = st.roots.iter().filter_map(|(c, r)| r.first().map(|p| (*c, p.clone()))).collect();
         let mut volumes: BTreeMap<String, (Json, Vec<&'static str>)> = BTreeMap::new();
-        let mut unsupported = None;
+        let (mut unsupported, mut unread) = (None, false);
         for (c, r) in &roots {
             match st.space_of(r) {
+                Err(e) if e.code == "not_read" => unread = true,
                 Ok(s) => {
                     let key = s.volume.display().to_string();
                     let e = volumes.entry(key.clone()).or_insert_with(|| {
@@ -728,6 +738,8 @@ impl DiskBook {
         }
         if let Some(u) = unsupported {
             out.push(("free_space", Json::obj([("unsupported", Json::from(u))])));
+        } else if unread {
+            out.push(("free_space", Json::obj([("pending", Json::from("not read yet: the background reader reads it within a second or two (disk_status reads it now)"))])));
         }
         if let Some((_, w, _)) = &st.warning {
             out.push(("warning", w.clone()));
@@ -1604,6 +1616,26 @@ mod tests {
         assert!(plays.join("r.json").is_file() && recs.join("a.json").is_file(), "never pruned: {pruned}");
         let r = book.report(true);
         assert!(r.to_string().contains("recordings"), "{r}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// `engine_info`'s report never asks the system for free space (the engine thread builds
+    /// it): a book nobody has read space for says so, and holds no reading afterwards either.
+    #[test]
+    fn the_engine_threads_report_never_reads_the_disk() {
+        let base = scratch("as-read");
+        let book = DiskBook::default();
+        book.configure_local(DiskConfig::default(), vec![(Category::Captures, base.join("captures"))], None);
+        let r = book.report_as_read(false);
+        assert!(r.get("volumes").is_none() && r.get("free_space").and_then(|f| f.get("pending")).is_some(), "{r}");
+        assert!(book.lock().space.is_empty(), "and it read nothing");
+        // The caller-thread report reads it, where the platform can.
+        let r = book.report(false);
+        assert!(r.get("free_space").and_then(|f| f.get("pending")).is_none(), "{r}");
+        assert_eq!(book.lock().space.len(), 1);
+        // From then on the engine thread's report shows that reading.
+        let again = book.report_as_read(false);
+        assert_eq!(again.get("volumes"), r.get("volumes"));
         let _ = std::fs::remove_dir_all(&base);
     }
 

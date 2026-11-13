@@ -79,15 +79,7 @@ def main():
     report = {}
     with Engine(Path(a.exe), a.port, out / "engine.log", *args, cwd=str(out)) as eng:
         m = eng.mcp("grass-check")
-        # A cold pipeline cache (new shaders) can keep the first frames busy past 30 s.
-        for attempt in range(10):
-            try:
-                m.hello("grass-check", role="builder")
-                break
-            except RuntimeError as e:
-                if "engine_busy" not in str(e) or attempt == 9:
-                    raise
-                time.sleep(2)
+        m.hello("grass-check", role="builder")
         report["gpu"] = m.json("engine_info")["gpu"]["name"]
         print(f"gpu: {report['gpu']}")
         patches = []

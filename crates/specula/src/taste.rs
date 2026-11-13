@@ -188,6 +188,10 @@ impl TasteCall {
     pub fn class(&self) -> Class {
         match self {
             TasteCall::Get { .. } | TasteCall::List { .. } | TasteCall::Query(_) | TasteCall::BoardGet { .. } | TasteCall::Camera { .. } => Class::Read,
+            // An accepted pick written into the project: every file the gallery names is checked
+            // and committed in this call, then reloaded (a theme against every screen: 5 ms on
+            // the iGPU laptop). Once a decision, like a review's: the big budget.
+            TasteCall::Apply { .. } => Class::Big,
             _ => Class::Edit,
         }
     }

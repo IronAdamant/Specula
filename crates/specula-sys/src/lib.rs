@@ -60,6 +60,8 @@ pub mod kernel32 {
         pub fn GetStdHandle(std_handle: u32) -> *mut c_void;
         pub fn SetHandleInformation(object: *mut c_void, mask: u32, flags: u32) -> i32;
         pub fn GetHandleInformation(object: *mut c_void, flags: *mut u32) -> i32;
+        pub fn GetCurrentThread() -> *mut c_void;
+        pub fn QueryThreadCycleTime(thread: *mut c_void, cycles: *mut u64) -> i32;
     }
 
     /// `GMEM_MOVEABLE`: what clipboard data must be allocated as.
@@ -514,6 +516,104 @@ pub mod disk {
                     eprintln!("free space unavailable here: {e}");
                 }
             }
+        }
+    }
+}
+
+/// How long the calling thread itself has run.
+pub mod thread {
+    use std::time::{Duration, Instant};
+
+    /// The calling thread's own processor time, in milliseconds since some fixed point: what
+    /// it ran, not what passed while it waited (for a processor, a lock, a disk or the GPU).
+    ///
+    /// Beside wall time it tells "this work took 55 ms" apart from "this work took 6 ms and
+    /// then waited 49": on a machine whose processors are all busy the second is common, and
+    /// reads exactly like the first without it (performance pass, 2026-11-14: frame stalls
+    /// that only appeared beside compilers).
+    ///
+    /// Windows counts a thread's processor cycles exactly at every switch
+    /// (`QueryThreadCycleTime`); its thread *times* are counted in 15.6 ms steps and are no
+    /// use here. Cycles become milliseconds by the rate measured in [`CpuClock::calibrate`].
+    #[derive(Clone, Copy, Debug)]
+    pub struct CpuClock {
+        cycles_per_ms: f64,
+    }
+
+    /// The calling thread's cycle count, where the system keeps one.
+    fn cycles() -> Option<u64> {
+        #[cfg(windows)]
+        {
+            let mut n = 0u64;
+            // SAFETY: the calling thread's own pseudo-handle is always valid and needs no
+            // closing; `n` is a valid out-pointer for the call.
+            let ok = unsafe { crate::kernel32::QueryThreadCycleTime(crate::kernel32::GetCurrentThread(), &mut n) };
+            (ok != 0).then_some(n)
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
+    }
+
+    impl CpuClock {
+        /// Measures how many cycles a millisecond of running is: three busy milliseconds on
+        /// the calling thread, the fastest of them kept. A measure taken while the thread was
+        /// switched out is too low, which makes later readings too high: an error towards
+        /// "the thread ran", never towards "it waited". `None` where threads' cycles are not
+        /// counted.
+        pub fn calibrate() -> Option<CpuClock> {
+            let mut best = 0.0f64;
+            for _ in 0..3 {
+                let (from, started) = (cycles()?, Instant::now());
+                while started.elapsed() < Duration::from_millis(1) {
+                    std::hint::spin_loop();
+                }
+                let (to, took) = (cycles()?, started.elapsed());
+                best = best.max(to.saturating_sub(from) as f64 / (took.as_secs_f64() * 1e3));
+            }
+            (best > 0.0).then_some(CpuClock { cycles_per_ms: best })
+        }
+
+        /// The rate measured: the thread's processor cycles a millisecond of running.
+        pub fn cycles_per_ms(&self) -> f64 {
+            self.cycles_per_ms
+        }
+
+        /// The calling thread's processor time so far, in milliseconds.
+        pub fn now_ms(&self) -> Option<f64> {
+            cycles().map(|c| c as f64 / self.cycles_per_ms)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// Running counts and waiting does not. (Bounds are loose on purpose: the thread may
+        /// be switched out during the busy part, never switched in during the sleep.)
+        #[test]
+        fn a_threads_own_time_counts_running_and_not_waiting() {
+            std::thread::spawn(|| {
+                let Some(clock) = CpuClock::calibrate() else {
+                    eprintln!("skipped: threads' processor cycles are not counted on this platform");
+                    return;
+                };
+                let at = |c: &CpuClock| c.now_ms().expect("counted a moment ago");
+                let before = at(&clock);
+                let started = Instant::now();
+                while started.elapsed() < Duration::from_millis(20) {
+                    std::hint::spin_loop();
+                }
+                let ran = at(&clock) - before;
+                assert!(ran > 5.0 && ran < 40.0, "20 ms of running read as {ran} ms");
+                let before = at(&clock);
+                std::thread::sleep(Duration::from_millis(40));
+                let slept = at(&clock) - before;
+                assert!(slept < 5.0, "40 ms asleep read as {slept} ms of running");
+            })
+            .join()
+            .unwrap();
         }
     }
 }

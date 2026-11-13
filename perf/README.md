@@ -13,6 +13,52 @@ What it measures:
   statistics and budget errors against `perf.example.toml` (when the engine has it), CPU zone p95s
   (`perf_zones`) and heap use (`perf_memory`), working-set memory, validation errors and a clean shutdown.
 
+**Start-up, stage by stage.** Every engine records one `engine.started` trace event: `listening_ms` (when
+the port answered), `ready_ms` (when its loop began) and `stages` (`setup`, `gpu`, `engine`, `server`,
+`prune_captures`, `window`, `asset_streams`, `pipelines`, `game`, `sweep`, each in ms). Measured on
+2026-11-14 (Intel iGPU, a quiet machine, Sepulcra headless): `gpu` 1.0 s and `pipelines` 4 ms without the
+Vulkan validation layer, which is what a player's machine does; 2.3 s and 1.8 s with it (the layer checks
+every shader of the 182 start-up pipelines, about 16 ms each, and a warm pipeline cache does not shorten
+that). Almost all of the 1.0 s is `vkCreateInstance` loading both vendors' drivers. With 32 busy processes
+beside it, the same start takes 5.4 s and 4.4 s. The validation layer is on whenever it is installed
+(`Validation::Auto`), so every number taken on a developer's machine includes it.
+
+**Worked or waited.** An `engine.stall` carries `cpu_ms`, the engine thread's own processor time over the
+work (Windows counts a thread's cycles exactly; `specula_sys::thread::CpuClock`). `ms` 55 with `cpu_ms` 6
+means the thread ran 6 ms and waited 49: for a processor on a busy machine, a lock another thread holds, a
+disk or the GPU. Its incident says so in words. `lock_ms` beside it is what the thread waited for the model library's lock,
+the one it shares with the build workers (`lockwait.rs`): a wait with `lock_ms` near zero was for a
+processor, a disk or the GPU. Measured on 2026-11-14 on the iGPU: `recipe_stall_check`
+and ten `window_check` runs raise no stall on a quiet machine; beside 32 busy processes (as many as the
+machine has threads) `recipe_stall_check` raises 14 to 32, in every zone, and a build step on a worker
+takes 650 to 790 ms where it takes 88. One step of thread priority for the frame thread was tried and
+changed nothing (the waits are for work other threads owe), so it was not kept. **A window resize is its
+own entry:** a new size is a new swapchain (the device waits for the frames in flight, then the window
+system makes the images), 17 to 24 ms quiet and 100 to 140 ms beside the 32 busy processes. It is timed
+apart from the frame (`window.resized`, and `engine.stall` with zone `window_resize` past 30 ms); it used
+to read as a nameless slow frame now and then.
+
+**What the stalls that were the engine's own turned out to be** (2026-11-14, `cpu_ms` equal to `ms`):
+- `engine_info`, 4.5 to 10 ms: it built the authority table of some 230 tools on every call (1 ms; built
+  once now), laid its 15 KB answer out over lines before the answer was made compact again, and asked the
+  system for free disk space on the engine thread (10 ms when a volume was slow to answer; it shows the
+  background reader's last reading now, `DiskBook::report_as_read`).
+- `project_delete` and every other asset write, 5.4 ms at 100,000 entities: refreshing the model entities
+  and listing the model handles in use each visited every entity of the world. The world keeps an index
+  of its model entities (`World::model_entities`, as it does of water and effects): 0.3 ms.
+- `scripts/edswarm_check.py` measured its frame budgets up to three times until they held; it measures
+  once now, and holds on a quiet machine. `scripts/gallery_check.py` clicked "This one" up to three times
+  until it was accepted; it clicks once.
+- `gallery_apply` (5.3 ms) and `review_decide` approving the style configurator's result (7.9 ms), seen in
+  `gallery_check.py`: every project file the decision names is checked and committed on the engine thread
+  in that call (`project_put_all`), and an interface theme is checked against every screen. They are one a
+  human decision and are in the big class now (30 ms), like a large batch. Checking those files off the
+  engine thread, as `project_write` does on its caller's thread, is the change that would shorten them.
+  The hosted game's own reload follows: Sepulcra applies a changed theme to both of its interfaces in
+  5.7 ms (`project.game_assets`), when `ui/theme.json` or `vision.json` changes.
+- A landing view waited up to 250 ms of engine-thread time for a worker in the middle of projecting its
+  subjects: 20 ms now, under the render budget.
+
 **Take baselines on an idle machine.** The script records whole-machine CPU use before and after and
 warns above 20%: with parallel builds running, single calls show 15–25 ms scheduler delays instead of
 under 1 ms, and build timings double.

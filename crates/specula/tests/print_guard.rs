@@ -71,7 +71,9 @@ const ALLOWED: [(&str, usize); 65] = [
     ("crates/specula-scintilla/src/eval.rs", 4),
     ("crates/specula-scintilla/src/flash.rs", 2),
     ("crates/specula-sys/src/fpenv.rs", 3),
-    ("crates/specula-sys/src/lib.rs", 2),
+    // Tests saying why they skip (free space, SHA-256 and a thread's own processor time are
+    // not read on every platform); specula-sys is below the trace.
+    ("crates/specula-sys/src/lib.rs", 3),
     ("crates/specula-text/src/font.rs", 1),
     // Text tests saying why they skip (no system CJK face).
     ("crates/specula-text/src/layout.rs", 2),

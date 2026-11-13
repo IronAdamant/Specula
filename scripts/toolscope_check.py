@@ -45,7 +45,7 @@ def raw_post(url, body, session=None, accept="application/json, text/event-strea
         headers["Mcp-Session-Id"] = session
     req = urllib.request.Request(url, json.dumps(body).encode(), headers)
     try:
-        with urllib.request.urlopen(req, timeout=60) as r:
+        with urllib.request.urlopen(req, timeout=180) as r:  # longer than the engine may hold a call (startgate.rs: 120 s, then the call's own 30 s)
             return r.status, r.headers.get("Content-Type"), r.read().decode(), r.headers.get("Mcp-Session-Id")
     except urllib.error.HTTPError as e:
         return e.code, e.headers.get("Content-Type"), e.read().decode(), None

@@ -79,8 +79,20 @@ pretty, 4,528 compact). Every answer now leaves compact (`response::tidy` re-ser
 newlines; text that isn't JSON, such as `play_map`'s map, is untouched).
 
 **Every error coded.** Plain-text errors now arrive as `{"error": code, "message": ...}`: `shutting_down`,
-`engine_busy` (with `"retry": true`), `no_game`, `unknown_tool`, and the generic `error` for the rest (a failed render,
+`engine_busy` (with `"retry": true`), `engine_starting` (see below), `no_game`, `unknown_tool`, and the generic `error` for the rest (a failed render,
 a module host's timeout), so an agent can branch on a code everywhere.
+
+**A call sent while the engine starts waits for the start.** The port answers before the engine's loop
+begins (the port has to be this engine's before it opens a window), and what comes between takes seconds on a
+machine with the Vulkan validation layer installed. A call sent in that time is held on its own connection
+(`startgate.rs`) and runs when the loop begins, with its whole deadline; it used to queue behind the start with
+its deadline running, and came back `engine_busy` from a cold engine on a loaded machine. Only a start that
+takes more than 120 s answers `engine_starting` (`"retry": true`, nothing applied), and a start that
+fails answers every waiting call at once with `engine_start_failed` (`"retry": false`: the engine is
+stopping). The start gate comes before the input monitor's gate, so the monitor's verdict is of the moment
+the call goes on. The trace event
+`engine.started` says what the start spent its time on, stage by stage
+(`trace_query {code: "engine.started"}`).
 
 **`disk_warning` rides on answers.** When the engine's output crosses the disk budget's soft line, every session
 hears it once: a structured `disk_warning` object (`code: disk_budget`, what crossed, the biggest categories with

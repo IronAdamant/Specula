@@ -70,6 +70,7 @@ mod joint_tools;
 mod ragdoll_tools;
 pub mod nav;
 mod nav_tools;
+mod lockwait;
 mod locus;
 pub mod playtest;
 mod playtest_engine;
@@ -147,6 +148,7 @@ mod path_tools;
 mod terrain_tools;
 pub mod water;
 mod sim_writes;
+mod startgate;
 mod hash_verify;
 mod steps;
 mod workers;
@@ -281,8 +283,6 @@ struct Args {
     settings: Option<String>,
     /// Pipeline cache directory (`--cache`, default `./.specula-cache`).
     cache: Option<PathBuf>,
-    /// How `--adapter` was given, to name the pipeline cache file.
-    adapter_label: String,
     /// Budgets file (`--perf`, default `./perf.toml` when present).
     perf: Option<PathBuf>,
     /// Where model recipes live (`--assets`, default the working directory).
@@ -343,7 +343,6 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
         saves: None,
         settings: None,
         cache: None,
-        adapter_label: "discrete".into(),
         perf: None,
         assets: None,
         style: None,
@@ -428,7 +427,6 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             }
             "--adapter" => {
                 let v = value()?;
-                args.adapter_label = v.clone();
                 args.adapter = match v.as_str() {
                     "discrete" => AdapterPreference::HighPerformance,
                     "integrated" => AdapterPreference::LowPower,
@@ -486,6 +484,48 @@ pub fn run_game(game: Box<dyn Game>) -> Result<(), String> {
     run_with(Some(game))
 }
 
+/// Start-up, stage by stage: what the engine thread did before its loop began, and how long
+/// each part took. One `engine.started` trace event says it (`listening_ms`: when the port
+/// answered; `ready_ms`: when the first call could be served), so a slow start is read from the
+/// trace rather than guessed at.
+struct Startup {
+    began: Instant,
+    last: Instant,
+    stages: Vec<(&'static str, f64)>,
+    listening_ms: f64,
+}
+
+impl Startup {
+    fn begin() -> Startup {
+        let now = Instant::now();
+        Startup { began: now, last: now, stages: Vec::new(), listening_ms: 0.0 }
+    }
+
+    /// The stage that just ended.
+    fn mark(&mut self, stage: &'static str) {
+        let now = Instant::now();
+        self.stages.push((stage, now.duration_since(self.last).as_secs_f64() * 1e3));
+        self.last = now;
+    }
+
+    fn listening(&mut self) {
+        self.listening_ms = self.began.elapsed().as_secs_f64() * 1e3;
+    }
+
+    /// `gpu=412.3 world=1.0 ...`, in order.
+    fn text(&self) -> String {
+        self.stages.iter().map(|(name, ms)| format!("{name}={ms:.1}")).collect::<Vec<_>>().join(" ")
+    }
+
+    /// `thread_clock`: the engine thread's processor cycles a millisecond, as measured for
+    /// `cpu_ms` (0: not read here). A rate far under the machine's says the measure was taken
+    /// while the thread was switched out, and `cpu_ms` then reads high for the whole run.
+    fn report(&self, thread_clock: Option<f64>) {
+        let ready = self.began.elapsed().as_secs_f64() * 1e3;
+        specula_core::trace_event!(&trace_sink::ENGINE, Info, "engine.started", ready_ms = ready, listening_ms = self.listening_ms, stages = self.text(), thread_cycles_per_ms = thread_clock.unwrap_or(0.0));
+    }
+}
+
 fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     // The command line's words (docs/design/LAUNCH.md): `specula projects`, `open`, `list`,
     // `tools`, `call`... answer and end here, in a process that never becomes an engine.
@@ -502,6 +542,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         std::process::exit(code);
     }
     let mut args = parse_args()?;
+    let mut startup = Startup::begin();
     if args.project.is_some() {
         // `--project` makes that folder the working directory. Every other folder the command
         // line names was written against the one the engine was started in, and is read there:
@@ -561,10 +602,12 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     // A cached pipeline blob skips shader compilation at start-up. The GPU crate rejects one made
     // by another GPU or driver, so a stale file only costs a cache miss.
     let cache_dir = args.cache.clone().unwrap_or_else(|| cwd.join(".specula-cache"));
-    let cache_path = perf::pipeline_cache_path(&cache_dir, &args.adapter_label);
-    let pipeline_cache = std::fs::read(&cache_path).ok();
-    let gpu = Gpu::new(&GpuOptions { validation: Validation::Auto, adapter: args.adapter, pipeline_cache })
+    startup.mark("setup");
+    let gpu = Gpu::new(&GpuOptions { validation: Validation::Auto, adapter: args.adapter, pipeline_cache: None, pipeline_cache_dir: Some(cache_dir.clone()) })
         .map_err(|e| format!("GPU init failed: {e}"))?;
+    startup.mark("gpu");
+    // (The file is the adapter's own, whatever `--adapter` called it: perf::pipeline_cache_path.)
+    let cache_path = perf::pipeline_cache_path(&cache_dir, gpu.adapter());
     let captures_root = args.captures.unwrap_or_else(|| cwd.join("captures"));
     // `--assets`, else the project's own assets folder, else the hosted game's own folder, else
     // the working directory.
@@ -728,7 +771,12 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     engine.swarm.grants = args.grants.clone();
     let game_tools = game.as_ref().map(|g| g.tools()).unwrap_or_default();
     engine.lex_natives = game.as_ref().map(|g| g.lex_natives()).unwrap_or_default();
+    startup.mark("engine");
     let (to_engine, requests) = mpsc::channel();
+    // (Built once, here: engine_info copies it.)
+    authority::warm_access_json();
+    // Calls that arrive before the loop begins wait for it (the server listens first).
+    let start_gate = startgate::StartGate::closed();
     // The gallery worker sends its renders through the same channel as agents.
     engine.taste.connect(to_engine.clone(), Arc::clone(&engine.studio.shared));
     let server = Server::start(
@@ -747,7 +795,8 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
                 .with_studio(Arc::clone(&engine.studio.shared))
                 .with_content(Arc::clone(&content))
                 .with_audio(Arc::clone(&audio))
-                .with_procgen(procgen_tools::Context { assets: assets.clone(), style: args.style.clone(), captures: engine.capture_dir.clone() });
+                .with_procgen(procgen_tools::Context { assets: assets.clone(), style: args.style.clone(), captures: engine.capture_dir.clone() })
+                .with_start_gate(Arc::clone(&start_gate));
             engine.scopes = Some(tools.shared_scopes());
             let tools = Arc::new(tools);
             // The editor's draw tools call tools that run on their caller's thread (terrain_edit,
@@ -757,6 +806,13 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         },
     )
     .map_err(|e| format!("MCP server: {e}"))?;
+    // A start that ends without its loop (an error below, a panic) fails the gate as
+    // `starting` is dropped: no call waits for a loop that will not come. DECLARED AFTER
+    // `server`, so that it is dropped before it: the server joins its connection threads when
+    // it is dropped, and those are the threads waiting at the gate. Declared before it, the
+    // failed engine and its port lived on for the calls' two minutes
+    // (tests/start_fail.rs runs the executable and holds this order).
+    let starting = startgate::Starting::new(Arc::clone(&start_gate));
     // Serving: the project is first in the user's list and this engine can be found (its
     // instance file), unless `--settings off` (docs/design/LAUNCH.md).
     engine.opened_project = project.as_ref().map(|p| (p.path.clone(), p.name.clone()));
@@ -789,10 +845,22 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         announced
     });
     eprintln!("specula: MCP at http://{}/mcp — Ctrl+C to stop", server.local_addr());
+    startup.mark("server");
+    startup.listening();
+    // Tests only (`SPECULA_TEST_FAIL_START`, tests/start_fail.rs): the start fails here, after
+    // the port answers, once a call is waiting at the start gate (or after a minute).
+    if std::env::var_os("SPECULA_TEST_FAIL_START").is_some() {
+        let asked = Instant::now();
+        while start_gate.waiting() == 0 && asked.elapsed() < Duration::from_secs(60) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        return Err("the start was failed on purpose (SPECULA_TEST_FAIL_START is set: tests only)".to_owned());
+    }
 
     // Only now that the port is ours: tidy old capture runs (never a running engine's), then open
     // the window — a second engine on a taken port fails above without touching either.
     prune_capture_runs(&captures_root, MAX_CAPTURE_RUNS - 1, &engine.capture_dir);
+    startup.mark("prune_captures");
 
     let window = if args.headless {
         None
@@ -807,13 +875,17 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     if let (Some(store), Some(handover)) = (launch_store, handover) {
         engine.start.open(store, launch_run::default_parent(|k| std::env::var(k).ok()), handover);
     }
+    startup.mark("window");
     // Assets that will need skinned or textured pipelines get them now, not at their first spawn.
     let (skinned, textured) = models::asset_streams(engine.library.lock().root());
+    startup.mark("asset_streams");
     engine.gpu.prepare_variants(skinned, textured).map_err(|e| format!("pipelines: {e}"))?;
+    startup.mark("pipelines");
     // Loading is done: from here on, building a pipeline is a visible hitch and a budget error.
     engine.gpu.mark_warm();
     engine.game = game.take();
     engine.start_game();
+    startup.mark("game");
     if args.paused {
         engine.clock.set_paused(true);
     }
@@ -823,6 +895,12 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     // The built-in effects are parsed once per run, on a worker now rather than by the first
     // vfx_get or capture (it took 25-85 ms of the engine thread in a dev build).
     engine.warm_effects();
+    startup.mark("sweep");
+    // (After the stages are marked: its three busy milliseconds are not a stage.)
+    let thread_clock = engine.watch_own_time();
+    startup.report(thread_clock);
+    // The loop begins: calls that waited for the start go on now.
+    starting.done();
     let result = match &window {
         Some(ui) => engine.run_windowed(ui, &requests, &server),
         None => engine.run_headless(&requests, &server),
@@ -1969,8 +2047,12 @@ impl Engine {
 
     /// Sprite reloads and the model library's garbage collection (each loop pass).
     fn assets_upkeep(&mut self, force: bool) {
+        let _z = profile::zone("models.upkeep");
         // Sprite and tileset PNGs changed on disk are reloaded (failed ones retried).
-        self.two_d.poll_files(force);
+        {
+            let _z = profile::zone("sprites.poll_files");
+            self.two_d.poll_files(force);
+        }
         // With streaming on, finished loads are uploaded within the frame's budget (stream_tick).
         if self.two_d.loading() > 0 && !self.stream.enabled() {
             self.two_d.pump(&mut self.gpu, None);
@@ -1986,7 +2068,7 @@ impl Engine {
         };
         let drops = self.world.model_drops();
         if in_flight > 0 && drops != self.last_unwanted.1 && self.last_unwanted.0.elapsed() >= GC_UNWANTED_EVERY {
-            let mut live: Vec<u32> = self.world.entities().filter_map(|e| e.resolved_model().map(|r| r.handle)).collect();
+            let mut live: Vec<u32> = self.world.model_entities().filter_map(|e| e.resolved_model().map(|r| r.handle)).collect();
             live.sort_unstable();
             live.dedup();
             self.library.lock().drop_unwanted(&live);
@@ -1996,7 +2078,11 @@ impl Engine {
             // More specs than the world could use: certainly garbage, collect now.
             || specs > self.world.len() + models::SPARE_HANDLES;
         if force || due {
-            let live = models::live_handles(&self.world);
+            let _z = profile::zone("models.gc");
+            let live = {
+                let _z = profile::zone("models.live_handles");
+                models::live_handles(&self.world)
+            };
             self.library.lock().collect_garbage(&live);
             self.last_gc = (Instant::now(), epoch);
         }
@@ -2007,7 +2093,10 @@ impl Engine {
         let reload = reload?;
         if reload.files_changed > 0 || !reload.rebuilt.is_empty() || !reload.errors.is_empty() {
             // Only the entities of handles worked out again (`Reload::handles`).
-            self.world.refresh_model_handles(&reload.handles, reload.files_changed > 0);
+            {
+                let _z = profile::zone("models.refresh_handles");
+                self.world.refresh_model_handles(&reload.handles, reload.files_changed > 0);
+            }
             eprintln!(
                 "specula: recipes changed: {} rebuilt from the cache, {} rebuilding, {} error(s)",
                 reload.rebuilt.len(),
@@ -2407,6 +2496,10 @@ impl Engine {
             self.trace_idle_checks();
             let frame_zone = profile::zone("frame");
             let frame_started = Instant::now();
+            // (The thread's own processor time from here: a slow frame says how much it ran.)
+            let frame_ran_from = self.watch_mark();
+            // What a change of the window's size took this frame (the swapchain's rebuild).
+            let mut resize_took = Duration::ZERO;
             self.autosave_if_due();
             self.pump_world_saves();
             self.sweep_claims(server);
@@ -2462,7 +2555,16 @@ impl Engine {
             let now = client_size_of(ui.raw);
             if now != size {
                 size = now;
+                // A new size is a new swapchain: the device waits for the frames in flight
+                // (a queued present among them) and the window system makes the images. That
+                // is 17 to 24 ms on a quiet machine and 100 to 140 ms beside 32 busy processes
+                // (performance pass, 2026-11-14), and it is not the frame's own work: it is
+                // timed and reported by name, where it read as a nameless slow frame.
+                let resize_started = Instant::now();
                 self.gpu.resize_window(size.0, size.1).map_err(|e| format!("resize: {e}"))?;
+                resize_took = resize_started.elapsed();
+                specula_core::trace_event!(&trace_sink::ENGINE, Info, "window.resized", width = size.0 as u64, height = size.1 as u64, ms = resize_took.as_secs_f64() * 1e3);
+                self.engine_work_done(0, None, "window_resize", resize_took);
             }
             minimized = size.0 == 0 || size.1 == 0;
             if minimized {
@@ -2567,7 +2669,8 @@ impl Engine {
             // FIFO present paces the loop to the display refresh. How long it blocked sizes the
             // next serve window.
             let present = profile::zone("present");
-            let frame_cpu = frame_started.elapsed();
+            let frame_cpu = frame_started.elapsed().saturating_sub(resize_took);
+            let frame_ran = self.watch_ran_since(frame_ran_from);
             // Whether the typing banner is the overlay's last quads, on what this frame sends.
             self.text_typing.overlay_sent(frame.overlay);
             let presented = self.gpu.present(&frame).map_err(|e| format!("present: {e}"));
@@ -2579,7 +2682,7 @@ impl Engine {
             let (frame_no, cpu) = self.gpu.last_window_timing();
             let blocked = Duration::from_secs_f64((cpu.wait_ms + cpu.submit_ms).max(0.0) / 1000.0);
             schedule.presented(frame_no, served, blocked, Instant::now());
-            self.trace_frame(frame_no, frame_cpu);
+            self.trace_frame(frame_no, frame_cpu, Some(frame_ran));
             self.models.put_bones(bones);
             self.vfx.put_frame(fx);
             self.terrain.frame = terrains;
@@ -3575,7 +3678,9 @@ impl Engine {
         if let Some(game) = &self.game {
             info.set("game", Json::obj([("name", Json::from(self.game_name.as_str())), ("status", game.status())]));
         }
-        ToolOutput::text(info.to_pretty())
+        // (Compact: the answer is tidied to compact JSON on its way out, and laying it out
+        // over lines here first was a second pass over 15 KB on the engine thread.)
+        ToolOutput::text(info.to_string())
     }
 }
 

@@ -289,12 +289,11 @@ def main():
         print(f"GPU: {summary['gpu']}")
         run = Run(mcp, out)
         if args.gi:
-            # The game loads its models first: the engine may answer "busy" for a while.
-            for attempt in range(120):
-                r = mcp.request("tools/call", {"name": "agent_hello", "arguments": {"name": "m3-exit", "role": "lead"}})
-                if not r.get("isError"):
-                    break
-                time.sleep(1.0)
+            # (Asked once: a call sent while the engine starts waits for the start, startgate.rs.
+            # This asked up to 120 times while it answered "busy".)
+            r = mcp.request("tools/call", {"name": "agent_hello", "arguments": {"name": "m3-exit", "role": "lead"}})
+            if r.get("isError"):
+                sys.exit(f"agent_hello was refused: {r}")
         mcp.call("time_control", action="pause")
         mcp.json("play_new", seed=args.seed)
         if args.water:

@@ -387,7 +387,7 @@ lower in the sorted builds in three of four comparisons (lowest 1.89 and 2.63 ms
 within the noise above: no clear gain and no loss. The CPU cost is one pass over the sorted keys and a sort of the
 batches (tens to hundreds), not measurable against the draw list. A depth pre-pass was not tried.
 
-**Pipelines.** The engine has a `VkPipelineCache` (`<cache>/pipelines-<adapter>.bin`, loaded at start, saved at
+**Pipelines.** The engine has a `VkPipelineCache` (`<cache>/pipelines-<vendor>-<device>.bin`, named for the adapter itself, loaded at start, saved at
 shutdown). With both GI sets built at once, the GI pipelines were ready 52 and 132 s after the first bake with a cold
 cache under the contention above (14 s cold on the quieter machine), and still 40 and 48 s with the warm cache from
 the previous run: the Intel driver's cache hit saves little here, and the GI request waited behind the skinned and

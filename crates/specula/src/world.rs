@@ -2315,6 +2315,12 @@ pub struct World {
     /// Ids of the entities with a `water` surface (see [`World::water_entities`]), so frames find
     /// water without visiting every entity. Kept by `link`, `unlink` and `update`.
     wet: BTreeSet<u64>,
+    /// Ids of the entities with a `model` (see [`World::model_entities`]): what a changed asset
+    /// file refreshes and what the model library's garbage collection reads. Both visited every
+    /// entity of the world on the engine thread at each asset write (2.5 ms each at 100,000
+    /// entities: performance pass, 2026-11-14). Kept by `link`, `unlink` and `update`; an entity
+    /// never loses its model except by being removed.
+    modelled: BTreeSet<u64>,
     /// Joint data by body: the persistent entities whose `props.joint` names each body as `a` or
     /// `b` (the claims' joint rules ask it per change). Kept by `link`, `unlink` and `update`.
     joints_by_body: BTreeMap<u64, BTreeSet<u64>>,
@@ -2607,7 +2613,8 @@ impl World {
         };
         let mut failed = Vec::new();
         self.draw_reset();
-        for e in self.entities.values_mut() {
+        for id in &self.modelled {
+            let Some(e) = self.entities.get_mut(id) else { continue };
             let Some(spec) = &e.model else { continue };
             match source.resolve(spec) {
                 Ok(r) => e.resolved = Some(r),
@@ -2636,7 +2643,10 @@ impl World {
         // build most frames changes nothing a cache holds).
         let mut changed = Vec::new();
         let mut unresolved: BTreeMap<String, Option<ResolvedModel>> = BTreeMap::new();
-        for e in self.entities.values_mut() {
+        // (The model entities alone, from the index: this runs on the engine thread at every
+        // asset write, and visited every entity of the world.)
+        for id in &self.modelled {
+            let Some(e) = self.entities.get_mut(id) else { continue };
             let Some(spec) = &e.model else { continue };
             match e.resolved {
                 Some(r) if handles.contains(&r.handle) => {
@@ -2806,6 +2816,11 @@ impl World {
     /// visited).
     pub fn water_entities(&self) -> impl Iterator<Item = &Entity> + '_ {
         self.wet.iter().filter_map(|id| self.entities.get(id))
+    }
+
+    /// The entities with a `model`, in id order (from an index: no other entity is visited).
+    pub fn model_entities(&self) -> impl Iterator<Item = &Entity> + '_ {
+        self.modelled.iter().filter_map(|id| self.entities.get(id))
     }
 
     pub fn two_d_entities(&self) -> impl Iterator<Item = &Entity> + '_ {
@@ -3731,6 +3746,7 @@ impl World {
         if let Some((spec, resolved)) = new_model {
             e.model = Some(spec);
             e.resolved = resolved;
+            self.modelled.insert(id);
         }
         if let Some(v) = change.visible {
             e.visible = v;
@@ -3971,6 +3987,9 @@ impl World {
         if e.water.is_some() {
             self.wet.insert(e.id);
         }
+        if e.model.is_some() {
+            self.modelled.insert(e.id);
+        }
         self.draw_touch(e.id);
         // (Not in the map yet: stamped here.)
         e.draw_stamp.0 = if e.transient { 0 } else { self.draw_epoch };
@@ -4010,6 +4029,7 @@ impl World {
         self.flat.remove(&id);
         self.fx.remove(&id);
         self.wet.remove(&id);
+        self.modelled.remove(&id);
         self.layout_epoch += 1;
         self.children.remove(&(e.parent.unwrap_or(ROOT), e.name.clone()));
         self.names.remove(&(e.name.clone(), id));
@@ -4679,6 +4699,7 @@ impl World {
         self.flat.remove(&id);
         self.fx.remove(&id);
         self.wet.remove(&id);
+        self.modelled.remove(&id);
         self.layout_epoch += 1;
         let key = (e.parent.unwrap_or(ROOT), e.name.clone());
         if self.children.get(&key) == Some(&id) {
@@ -6086,6 +6107,46 @@ mod tests {
         let failed = w.set_model_source(None);
         assert!(failed.is_empty() && w.get(id).unwrap().local_bounds().is_none());
         assert_eq!(w.state_hash(), before);
+    }
+
+    /// Performance pass, 2026-11-14: an asset write refreshed model entities and listed the
+    /// handles in use by visiting every entity of the world, twice, on the engine thread. Both
+    /// read an index now: it holds exactly the entities with a model, whatever happened to them.
+    #[test]
+    fn the_model_index_holds_exactly_the_model_entities() {
+        fn check(w: &World, what: &str) {
+            let walked: Vec<u64> = w.entities().filter(|e| e.model.is_some()).map(|e| e.id).collect();
+            let indexed: Vec<u64> = w.model_entities().map(|e| e.id).collect();
+            assert_eq!(indexed, walked, "{what}");
+        }
+        let mut w = with_models();
+        check(&w, "an empty world");
+        let a = w.spawn(SpawnSpec::model(ModelSpec::new("recipes/a.json")), "t").unwrap().id;
+        let cube = put(&mut w, Shape::Cube, "c", None, Vec3::ZERO);
+        let b = w.spawn(SpawnSpec::model(ModelSpec::new("recipes/stone.json").with_param("tier", 2.0)), "t").unwrap().id;
+        check(&w, "two models and a cube");
+        assert_eq!(w.model_entities().count(), 2);
+        // A model's spec changed, and a change that is refused.
+        w.update(&EntityKey::Id(b), UpdateSpec { params: Some(vec![("tier".into(), 3.0)]), ..Default::default() }, "t").unwrap();
+        assert!(w.update(&EntityKey::Id(cube), UpdateSpec { recipe: Some("a.json".into()), ..Default::default() }, "t").is_err());
+        check(&w, "after updates");
+        // An old state put back (undo), with a model and then at a new id.
+        let old = w.get(a).unwrap().clone();
+        w.put_raw(old.clone());
+        check(&w, "a state put back over itself");
+        w.delete(&EntityKey::Id(a), None).unwrap();
+        check(&w, "a model deleted");
+        assert_eq!(w.model_entities().map(|e| e.id).collect::<Vec<_>>(), [b]);
+        w.put_raw(old);
+        check(&w, "the deleted model put back");
+        w.delete(&EntityKey::Id(cube), None).unwrap();
+        check(&w, "the cube deleted");
+        // What reads the index sees what a walk of the world saw: the handles in use, and a
+        // refresh that reaches every model entity (the source resolves nothing now).
+        assert_eq!(crate::models::live_handles(&w), w.entities().filter_map(|e| e.resolved_model().map(|r| r.handle)).collect());
+        let failed = w.set_model_source(None);
+        assert!(failed.is_empty() && w.entities().all(|e| e.resolved_model().is_none()));
+        check(&w, "with no model source");
     }
 
     /// Reviewer finding: a journal state put back whose spec no longer resolves kept its old

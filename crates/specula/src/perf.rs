@@ -1483,12 +1483,14 @@ fn chrome_trace(frames: &[CapturedFrame]) -> Json {
     Json::obj([("traceEvents", Json::Arr(events)), ("displayTimeUnit", Json::from("ms"))])
 }
 
-/// Where the pipeline cache for an `--adapter` choice lives. The GPU crate checks the blob's
-/// vendor, device and driver before using it, so a stale or foreign file is only a cache miss.
-pub fn pipeline_cache_path(dir: &Path, adapter_label: &str) -> PathBuf {
-    let safe: String =
-        adapter_label.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
-    dir.join(format!("pipelines-{safe}.bin"))
+/// Where the pipeline cache of the adapter the engine runs on lives: named for the adapter
+/// itself (`specula_gpu::pipeline_cache_file_name`), which is the file the GPU crate reads
+/// from the cache folder at start. Named for the `--adapter` choice (`pipelines-0.bin`), it
+/// went to the other GPU whenever a display change swapped the adapters' order, and every
+/// start after one was a cold start (performance pass, 2026-11-14). The GPU crate still
+/// checks a blob's vendor, device and driver before using it.
+pub fn pipeline_cache_path(dir: &Path, adapter: &specula_gpu::AdapterInfo) -> PathBuf {
+    dir.join(specula_gpu::pipeline_cache_file_name(adapter.vendor_id, adapter.device_id))
 }
 
 #[cfg(test)]
@@ -1781,8 +1783,9 @@ gpu_ms_per_s = 2000
 
     #[test]
     fn cache_paths_are_file_safe() {
-        assert_eq!(pipeline_cache_path(Path::new("c"), "integrated"), Path::new("c").join("pipelines-integrated.bin"));
-        assert_eq!(pipeline_cache_path(Path::new("c"), "../x"), Path::new("c").join("pipelines-___x.bin"));
+        let adapter = |index: usize| specula_gpu::AdapterInfo { index, name: "x".into(), vendor_id: 0x8086, device_id: 0xa7a0, kind: specula_gpu::AdapterKind::Integrated, api_version: (1, 3, 0), driver_version: 1 };
+        assert_eq!(pipeline_cache_path(Path::new("c"), &adapter(0)), Path::new("c").join("pipelines-8086-a7a0.bin"));
+        assert_eq!(pipeline_cache_path(Path::new("c"), &adapter(1)), pipeline_cache_path(Path::new("c"), &adapter(0)), "its place in the order is not in the name");
     }
 
     /// Tests that collect the process-wide profiler run one at a time.

@@ -9,7 +9,9 @@ Status: built 2026-10-30 (the bounds lane). Code: `crates/specula/src/workers.rs
 
 One engine thread owns the world, the GPU and the journal. Agents' calls are served between the
 window's presents (`schedule.rs`), and the tracing lane times every call against its class budget
-(`engine.stall`: 4 ms for reads and edits, 30 ms for renders, disk work, big batches; see
+(`engine.stall`, which also says how long the thread itself ran, `cpu_ms`: well under `ms`, it waited
+rather than worked, and `lock_ms` says how much of that was for the model library's lock, which the
+build workers share; 4 ms for reads and edits, 30 ms for renders, disk work, big batches; see
 `trace_sink::Budgets`). A root-cause investigation (2026-10-29) found that the budgets were being
 broken by the same mistake over and over (recurring bug class C):
 
@@ -367,7 +369,8 @@ What the render follow-ups left (above) was allocation, not drawing:
   on a worker (`JobKind::SubjectProject`) while the GPU renders. **Whoever gets there first
   projects:** the worker if it picked the job up before the view settled, else the view itself, at
   once (`captures.late_projections` counts those); a worker in the middle of it is waited for (at
-  most 250 ms, the work the view would otherwise repeat). A view never waits passes for a worker:
+  most 20 ms, under the render budget: the work the view would otherwise repeat; it was 250 ms, which a
+  worker switched out on a busy machine could use up). A view never waits passes for a worker:
   it used to wait up to three, which made an orbit's pass count depend on the pool's timing
   (review R1). Views that paint overlays project at once (the overlays need the boxes).
 - **world_load** (`world_load.rs`) checks the write policy, force and unsaved changes, then reads

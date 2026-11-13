@@ -143,7 +143,8 @@ pub enum Class {
     Render,
     /// Disk: saves, loads, model builds and reloads.
     Disk,
-    /// Big work: large batches, a journal replay check.
+    /// Big work: large batches, a journal replay check, a decision applied (`review_decide`,
+    /// `gallery_apply`: several project files checked, committed and reloaded in one call).
     Big,
     /// Simulation: stepping the clock.
     Sim,

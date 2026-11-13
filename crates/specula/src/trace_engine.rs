@@ -70,6 +70,14 @@ static STRICT_FAILURES: AtomicU64 = AtomicU64::new(0);
 
 /// The watchdogs' state (one field of the engine).
 pub(crate) struct Watch {
+    /// The engine thread's own processor time (`None` where it can't be read), and its last
+    /// readings with when they were taken: a stall says how much of its time the thread ran
+    /// (`cpu_ms`), and so whether it worked or waited.
+    cpu: Option<specula_sys::thread::CpuClock>,
+    cpu_marks: VecDeque<(Instant, f64)>,
+    /// The thread's waits for the locks it shares with workers ([`crate::lockwait`]), read at
+    /// the same moments: a stall's `lock_ms`.
+    lock_marks: VecDeque<(Instant, f64)>,
     last_request: Instant,
     stalls: VecDeque<Json>,
     gpu_sampled: Option<Instant>,
@@ -92,6 +100,9 @@ pub(crate) struct Watch {
 impl Default for Watch {
     fn default() -> Watch {
         Watch {
+            cpu: None,
+            cpu_marks: VecDeque::new(),
+            lock_marks: VecDeque::new(),
             last_request: Instant::now(),
             stalls: VecDeque::new(),
             gpu_sampled: None,
@@ -131,6 +142,55 @@ impl Watch {
     }
 }
 
+/// Readings of the thread's processor time kept (one a piece of work reported, one a frame).
+const CPU_MARKS: usize = 64;
+
+/// The engine thread's own counts at one moment: its processor time (ms; `None` where it
+/// can't be read) and what it has waited for locks shared with workers (ms).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Reading {
+    cpu: Option<f64>,
+    lock: f64,
+}
+
+fn push_mark(marks: &mut VecDeque<(Instant, f64)>, at: Instant, value: f64) {
+    if marks.len() >= CPU_MARKS {
+        marks.pop_front();
+    }
+    marks.push_back((at, value));
+}
+
+/// The thread's processor time since the last reading taken at or before `began`: at least
+/// what work that began then has run. `None` when no reading that old is kept.
+fn ran_since(marks: &VecDeque<(Instant, f64)>, began: Instant, cpu_now: f64) -> Option<f64> {
+    marks.iter().rev().find(|(at, _)| *at <= began).map(|(_, cpu)| cpu_now - cpu)
+}
+
+/// A stall's `cpu_ms`: the thread's processor time over the work, to 0.01 ms, never negative
+/// and never more than the work took.
+fn ran_ms(cpu: f64, ms: f64) -> f64 {
+    (cpu.clamp(0.0, ms) * 100.0).round() / 100.0
+}
+
+/// Whether a stall was mostly waiting: the thread ran for under half of it, and waited at
+/// least 2 ms (for a processor, a lock another thread holds, a disk or the GPU).
+pub(crate) fn mostly_waited(ms: f64, cpu_ms: Option<f64>) -> bool {
+    cpu_ms.is_some_and(|cpu| cpu < ms * 0.5 && ms - cpu >= 2.0)
+}
+
+fn stall_summary(tool: &str, ms: f64, class: &str, budget: f64, cpu_ms: Option<f64>, lock_ms: Option<f64>) -> String {
+    let base = format!("{tool} held the engine thread {ms} ms (its {class} budget is {budget} ms)");
+    match cpu_ms {
+        Some(cpu) if mostly_waited(ms, cpu_ms) => match lock_ms.filter(|lock| *lock >= 1.0) {
+            // A lock it shares with the workers (the model library's): its holder was slow,
+            // or switched out.
+            Some(lock) => format!("{base}; the thread itself ran {cpu} ms of that and waited the rest, {lock} ms of it for the model library's lock (a worker held it)"),
+            None => format!("{base}; the thread itself ran {cpu} ms of that and waited the rest (for a processor on a busy machine, a disk or the GPU: not for the model library's lock)"),
+        },
+        _ => base,
+    }
+}
+
 /// Stalls that failed a strict run.
 pub fn strict_failures() -> u64 {
     STRICT_FAILURES.load(Relaxed)
@@ -149,6 +209,33 @@ pub fn class_name(c: Class) -> &'static str {
 }
 
 impl Engine {
+    /// On the engine thread, before its loop: from here on a stall says how long the thread
+    /// itself ran (three busy milliseconds measure the rate; nothing where it can't be read).
+    /// Returns the rate measured (the thread's processor cycles a millisecond), for the trace.
+    pub(crate) fn watch_own_time(&mut self) -> Option<f64> {
+        self.watch.cpu = specula_sys::thread::CpuClock::calibrate();
+        self.watch_mark();
+        self.watch.cpu.as_ref().map(specula_sys::thread::CpuClock::cycles_per_ms)
+    }
+
+    /// The engine thread's own counts now, noted with the time they were read: work that
+    /// begins after this is measured from them.
+    pub(crate) fn watch_mark(&mut self) -> Reading {
+        let at = Instant::now();
+        let now = Reading { cpu: self.watch.cpu.as_ref().and_then(|c| c.now_ms()), lock: crate::lockwait::total_ms() };
+        if let Some(cpu) = now.cpu {
+            push_mark(&mut self.watch.cpu_marks, at, cpu);
+        }
+        push_mark(&mut self.watch.lock_marks, at, now.lock);
+        now
+    }
+
+    /// What the thread ran, and waited for locks, since a reading of [`Engine::watch_mark`].
+    pub(crate) fn watch_ran_since(&self, mark: Reading) -> Reading {
+        let cpu = self.watch.cpu.as_ref().and_then(|c| c.now_ms()).zip(mark.cpu).map(|(now, from)| now - from);
+        Reading { cpu, lock: crate::lockwait::total_ms() - mark.lock }
+    }
+
     /// Handles one agent request inside its call's context, timing it against its class budget.
     pub(crate) fn handle_traced(&mut self, request: crate::tools::Request, server: &specula_protocol::Server) {
         let ctx = request.trace;
@@ -168,7 +255,35 @@ impl Engine {
 
     /// One piece of engine-thread work took `took`: past its budget it is `engine.stall`.
     pub(crate) fn engine_work_done(&mut self, call: u64, class: Option<Class>, zone: &'static str, took: Duration) {
+        self.engine_work_done_ran(call, class, zone, took, None);
+    }
+
+    /// [`Engine::engine_work_done`] for work whose own processor time the caller measured
+    /// (`ran`, ms: a window frame, which does not end where it is reported). Without it the
+    /// work is taken to have ended now and begun `took` ago, and its processor time is read
+    /// from the last reading taken at or before its beginning: at least what the work ran,
+    /// never less, whatever other pieces were reported while it ran.
+    pub(crate) fn engine_work_done_ran(&mut self, call: u64, class: Option<Class>, zone: &'static str, took: Duration, ran: Option<Reading>) {
         let ms = took.as_secs_f64() * 1000.0;
+        let at = Instant::now();
+        let cpu_now = self.watch.cpu.as_ref().and_then(|c| c.now_ms());
+        let lock_now = crate::lockwait::total_ms();
+        let began = at.checked_sub(took);
+        let cpu_ms = match ran {
+            Some(r) => r.cpu,
+            None => cpu_now.zip(began).and_then(|(now, began)| ran_since(&self.watch.cpu_marks, began, now)),
+        }
+        .map(|cpu| ran_ms(cpu, ms));
+        // (The lock waits the same way: since the last reading at or before the work began.)
+        let lock_ms = match ran {
+            Some(r) => Some(r.lock),
+            None => began.and_then(|began| ran_since(&self.watch.lock_marks, began, lock_now)),
+        }
+        .map(|lock| ran_ms(lock, ms));
+        if let Some(now) = cpu_now {
+            push_mark(&mut self.watch.cpu_marks, at, now);
+        }
+        push_mark(&mut self.watch.lock_marks, at, lock_now);
         // The class's budget first (atomics, no lock); a tool with a budget of its own is looked
         // up only past it.
         if ms <= trace_sink::budget_for(None, class) {
@@ -199,6 +314,8 @@ impl Engine {
             ("budget_ms", Json::from(budget)),
             ("args", Json::from(args.as_str())),
             ("frame", Json::from(trace::now().1)),
+            ("cpu_ms", cpu_ms.map_or(Json::Null, Json::from)),
+            ("lock_ms", lock_ms.map_or(Json::Null, Json::from)),
         ]);
         if self.watch.stalls.len() >= RECENT_STALLS {
             self.watch.stalls.pop_front();
@@ -209,15 +326,24 @@ impl Engine {
             level,
             code: "engine.stall",
             key: &tool_name,
-            summary: format!("{tool_name} held the engine thread {ms_r} ms (its {class_str} budget is {budget} ms)"),
-            fields: vec![
-                ("tool", Value::from(tool_name.as_str())),
-                ("class", Value::Str(class_str)),
-                ("zone", Value::Str(zone)),
-                ("ms", Value::F64(ms_r)),
-                ("budget_ms", Value::F64(budget)),
-                ("args", Value::from(args.as_str())),
-            ],
+            summary: stall_summary(&tool_name, ms_r, class_str, budget, cpu_ms, lock_ms),
+            fields: {
+                let mut fields = vec![
+                    ("tool", Value::from(tool_name.as_str())),
+                    ("class", Value::Str(class_str)),
+                    ("zone", Value::Str(zone)),
+                    ("ms", Value::F64(ms_r)),
+                    ("budget_ms", Value::F64(budget)),
+                    ("args", Value::from(args.as_str())),
+                ];
+                if let Some(cpu) = cpu_ms {
+                    fields.push(("cpu_ms", Value::F64(cpu)));
+                }
+                if let Some(lock) = lock_ms {
+                    fields.push(("lock_ms", Value::F64(lock)));
+                }
+                fields
+            },
             evidence: stall,
             call,
             agent: None,
@@ -226,9 +352,10 @@ impl Engine {
 
     /// After a window frame: its CPU work (outside serving and present) against the frame step
     /// budget; twice a second, the GPU's frame time against `perf.toml` and GPU memory.
-    pub(crate) fn trace_frame(&mut self, frame_no: u64, frame_cpu: Duration) {
+    /// `ran`: the thread's own processor time and lock waits over that work, as measured there.
+    pub(crate) fn trace_frame(&mut self, frame_no: u64, frame_cpu: Duration, ran: Option<Reading>) {
         trace::set_frame(frame_no);
-        self.engine_work_done(0, None, "frame", frame_cpu);
+        self.engine_work_done_ran(0, None, "frame", frame_cpu, ran);
         self.trace_gpu_sample();
     }
 
@@ -788,6 +915,92 @@ mod tests {
         ];
         assert!(check_packet(&s, 320, 240, None).is_empty());
         assert!(check_packet(&s, 320, 240, Some(&DrawnRecord::from_recorded(&[1, 1, 2, 3], 3, &[0, 2], &[0]))).is_empty());
+    }
+
+    /// Performance pass, 2026-11-14: frame stalls that only appeared beside compilers read
+    /// exactly like the engine's own slow work. A stall now says how long the thread ran.
+    #[test]
+    fn a_stall_says_whether_the_thread_worked_or_waited() {
+        // Never negative, never more than the work took (the reading starts a little before it).
+        assert_eq!(ran_ms(-0.4, 50.0), 0.0);
+        assert_eq!(ran_ms(61.237, 50.0), 50.0);
+        assert_eq!(ran_ms(6.126, 50.0), 6.13);
+        // Measured from the last reading at or before the work began, whatever was reported
+        // while it ran (a frame's capture pieces): never from a reading inside it, which
+        // would count less than the work ran and say "waited" of work.
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let marks: VecDeque<(Instant, f64)> = [(at(0), 100.0), (at(10), 104.0), (at(30), 120.0), (at(40), 128.0)].into();
+        assert_eq!(ran_since(&marks, at(12), 130.0), Some(26.0), "from the reading at 10 ms, not the ones inside the work");
+        assert_eq!(ran_since(&marks, at(10), 130.0), Some(26.0), "a reading taken as the work began counts");
+        assert_eq!(ran_since(&marks, at(45), 130.0), Some(2.0));
+        assert_eq!(ran_since(&marks, t0.checked_sub(Duration::from_millis(1)).unwrap_or(t0), 130.0).filter(|_| t0.checked_sub(Duration::from_millis(1)).is_some()), None, "older than every reading kept: not said");
+        // Mostly waiting: under half of it running, and at least 2 ms of waiting.
+        assert!(mostly_waited(55.0, Some(6.0)));
+        assert!(!mostly_waited(55.0, Some(40.0)), "it worked most of that");
+        assert!(!mostly_waited(4.5, Some(3.0)) && !mostly_waited(3.0, Some(1.2)), "a wait under 2 ms is not said");
+        assert!(!mostly_waited(55.0, None), "nothing is said where the thread's time can't be read");
+        let waited = stall_summary("frame", 55.0, "frame", 30.0, Some(6.0), Some(0.02));
+        assert!(waited.starts_with("frame held the engine thread 55 ms (its frame budget is 30 ms); the thread itself ran 6 ms of that and waited the rest"), "{waited}");
+        assert!(waited.ends_with("not for the model library's lock)"), "what it did not wait for is said too: {waited}");
+        // A wait for the lock the workers share is named, with how long (the final live run
+        // of the performance pass had a stall that waited, and nothing said for what).
+        let locked = stall_summary("world_spawn", 5.94, "edit", 4.0, Some(0.63), Some(4.9));
+        assert!(locked.ends_with("waited the rest, 4.9 ms of it for the model library's lock (a worker held it)"), "{locked}");
+        assert_eq!(stall_summary("world_save", 55.0, "disk", 30.0, Some(51.0), Some(30.0)), "world_save held the engine thread 55 ms (its disk budget is 30 ms)");
+        assert_eq!(stall_summary("world_save", 55.0, "disk", 30.0, None, None), "world_save held the engine thread 55 ms (its disk budget is 30 ms)");
+    }
+
+    /// A stall carries `cpu_ms` once the engine thread's clock is calibrated, and a piece of
+    /// work that slept reads as waiting.
+    #[test]
+    fn a_stalls_event_carries_the_threads_own_time() {
+        let Some(mut engine) = crate::workers::charge_tests::engine() else { return };
+        engine.watch_own_time();
+        if engine.watch.cpu.is_none() {
+            crate::skip_test("a_stalls_event_carries_the_threads_own_time", "threads' processor cycles are not counted on this platform");
+            return;
+        }
+        let started = Instant::now();
+        std::thread::sleep(Duration::from_millis(60));
+        engine.engine_work_done(0, None, "window_resize", started.elapsed());
+        let stall = engine.watch.stalls.back().expect("60 ms is past the 30 ms frame budget").clone();
+        assert_eq!(stall.get("zone").and_then(Json::as_str), Some("window_resize"));
+        let (ms, cpu) = (stall.get("ms").and_then(Json::as_f64).unwrap(), stall.get("cpu_ms").and_then(Json::as_f64).expect("cpu_ms is there"));
+        assert!(mostly_waited(ms, Some(cpu)), "asleep for {ms} ms, the thread ran {cpu} ms");
+        assert_eq!(stall.get("lock_ms").and_then(Json::as_f64), Some(0.0), "and it waited for no lock");
+        // Work that waited for the model library's lock says so: a worker holds it for 60 ms
+        // (taken before this thread asks, released after), and the wait is this thread's.
+        let library = std::sync::Arc::clone(&engine.library);
+        let (held_tx, held) = std::sync::mpsc::channel::<()>();
+        let holder = std::thread::spawn(move || {
+            let _held = library.lock();
+            held_tx.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(60));
+        });
+        held.recv().unwrap();
+        let started = Instant::now();
+        drop(engine.library.lock());
+        engine.engine_work_done(0, None, "window_resize", started.elapsed());
+        holder.join().unwrap();
+        let stall = engine.watch.stalls.back().unwrap().clone();
+        let (ms, lock) = (stall.get("ms").and_then(Json::as_f64).unwrap(), stall.get("lock_ms").and_then(Json::as_f64).expect("lock_ms is there"));
+        assert!(lock > 30.0 && lock <= ms, "{ms} ms of work, {lock} ms of it waiting for the lock");
+        // A frame that worked, with a piece of work reported in the middle of it (a capture
+        // read): the frame's own time is what its caller measured, not what ran since that
+        // piece. It read from the last report before, and said "waited" of such a frame.
+        let from = engine.watch_mark();
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_millis(40) {
+            std::hint::spin_loop();
+        }
+        engine.engine_work_done(0, None, "capture_read", Duration::from_millis(1));
+        let ran = engine.watch_ran_since(from);
+        engine.trace_frame(7, started.elapsed(), Some(ran));
+        let stall = engine.watch.stalls.back().unwrap().clone();
+        assert_eq!(stall.get("zone").and_then(Json::as_str), Some("frame"));
+        let (ms, cpu) = (stall.get("ms").and_then(Json::as_f64).unwrap(), stall.get("cpu_ms").and_then(Json::as_f64).expect("cpu_ms is there"));
+        assert!(!mostly_waited(ms, Some(cpu)) && cpu > 10.0, "a frame that ran for {ms} ms read as {cpu} ms of running");
     }
 
     #[test]

@@ -847,6 +847,18 @@ readback and the remaining engine-thread stalls.
   is data in the recipe's file, one journaled command, undone with Ctrl+Z.
 
   *Why:* devs who want to edit by hand can; human edits are journaled like agent edits.
+- [ ] ➕ **The model library's lock** (performance pass, 2026-11-14). Beside a full CPU load the engine thread
+  waits 30 to 40 ms a frame for the lock it shares with the build workers and with the checks that run on
+  agents' connections (`lock_ms` on `engine.stall`; `recipe_stall_check` fails on a busy machine for this,
+  and passes on a quiet one). Find who holds it and for how long, then shorten or split what is done under
+  it, until no frame waits for it under that load.
+- [ ] ➕ **A decision's files are checked off the engine thread** (performance pass, 2026-11-14).
+  `review_decide` and `gallery_apply` check and commit every project file their decision names on the engine
+  thread (`project_put_all`): 5 to 8 ms on the iGPU laptop, most of it an interface theme checked against
+  every screen. They are in the big class (30 ms) meanwhile, which makes their alarm 7.5 times looser. The
+  change: check on the caller's thread against a snapshot and commit if the files are still as read, as
+  `project_write` does; then they go back to the edit class. The hosted game's own reload is the same kind
+  of work (Sepulcra applies a changed theme to both of its interfaces in 5.7 ms).
 - [ ] ➕ **Measured leverage** (owner, 2026-11-12: "find a way to add in measured comparison please, for M5"). Is
   building through the engine cheaper and better than building without it, and from what size of game?
   - **Jobs at three sizes:** a small one-screen game; a medium one (waves, a menu, saved settings, two
@@ -864,6 +876,10 @@ readback and the remaining engine-thread stalls.
     agents run it in M6 with the cloud swarm tests.
   - **Reported honestly:** every run, failures included, with the number of runs stated (it will be small) and
     scrubbed transcripts. A job the engine loses is a finding about where it is in the way.
+  - **Its sizes are data** (owner, 2026-11-14: "gonna have to be a variable as we don't know what other
+    people's requirements and their system"): runs a cell, the token cap a job, the time limit and the model
+    are in the brief file, and every report states them. The owner approved M5's own runs at two a cell and
+    about 15M tokens in all (Sonnet 5.5 builders, an Opus judge).
 
   Part of the M5 exit proof, after the tool kits (swarm track).
 - [x] ➕ **Cloud swarm foundations** (owner, 2026-10-22; end of M5): the design notes for remote and cloud agents,
@@ -888,6 +904,13 @@ readback and the remaining engine-thread stalls.
   achievements, cloud saves and Steam Input. Games build and run without it, and the docs tell devs and agents so.
 - [ ] ➕ **Steam Deck Verified pass**: controller-only playthrough by agents, 800p legibility, at least 30 fps.
 - [ ] ➕ **Soak tests**: long headless runs for leaks and crashes.
+- [ ] ➕ **An agent sets the variables on a machine it has never seen** (owner, 2026-11-14: "for other people's
+  system, I'm gonna trust you, when you're in their system, building a game, to work out the best variables
+  here... unlike you, on its own, it's not gonna know what you're seeing in theirs"). On each of the owner's
+  other systems, an agent that starts cold finds what the engine measured there (`engine.started`,
+  `perf_frame`, `cpu_ms` and `lock_ms` on stalls) and chooses its own budgets, quality preset, frame floor
+  and run sizes, with nothing from the development laptop to lean on. What it could not find or had to guess
+  is the finding.
 - [ ] **Ship the owner's original game.**
 - [ ] ➕ **Cloud swarms, tested** (owner, 2026-10-22): per-agent auth tokens, then thorough tests with real cloud
   swarms from several vendors (Claude, Grok Build, OpenAI ...).

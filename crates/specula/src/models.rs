@@ -2499,7 +2499,7 @@ pub fn anim_problem(lib: &Library, e: &Entity) -> Option<String> {
 
 /// The model handles the world's model entities use.
 pub fn live_handles(world: &World) -> BTreeSet<u32> {
-    world.entities().filter_map(|e| e.resolved_model().map(|r| r.handle)).collect()
+    world.model_entities().filter_map(|e| e.resolved_model().map(|r| r.handle)).collect()
 }
 
 /// The library as the world's [`ModelSource`], shared with the engine.
@@ -2512,8 +2512,15 @@ impl SharedLibrary {
 
     /// The library (a poisoned lock is taken over: the library's state stays consistent between
     /// calls).
+    ///
+    /// The time it takes to get is counted for the calling thread ([`crate::lockwait`]): the
+    /// engine thread shares this lock with the build workers, and a stall says how much of it
+    /// was a wait for this.
     pub fn lock(&self) -> std::sync::MutexGuard<'_, Library> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        let asked = Instant::now();
+        let library = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        crate::lockwait::waited(asked.elapsed());
+        library
     }
 }
 

@@ -398,6 +398,9 @@ pub struct Tools {
     pub(crate) uploads: std::sync::Arc<crate::blobs::Uploads>,
     /// The engine's audio service (the `audio_*` tools read it on this side).
     pub(crate) audio: Option<std::sync::Arc<crate::audio_service::AudioService>>,
+    /// Closed while the engine starts: calls wait for it (see [`crate::startgate`]). `None`:
+    /// whoever answers the calls is already answering (a test's engine).
+    start: Option<std::sync::Arc<crate::startgate::StartGate>>,
 }
 
 impl Tools {
@@ -436,7 +439,25 @@ impl Tools {
             content: None,
             uploads: Default::default(),
             audio: None,
+            start: None,
         }
+    }
+
+    /// The gate the engine opens when its loop begins: calls before that wait for it.
+    pub fn with_start_gate(mut self, gate: std::sync::Arc<crate::startgate::StartGate>) -> Tools {
+        self.start = Some(gate);
+        self
+    }
+
+    /// A call that arrives while the engine is still starting waits here, on its own
+    /// connection's thread, until the engine can serve it: its deadlines then start. `Some`:
+    /// the refusal of a call that waited `limit` in vain.
+    fn await_start(&self, limit: Duration) -> Option<ToolOutput> {
+        let why = self.start.as_ref()?.wait(limit).err()?;
+        if let crate::startgate::Refused::Slow(waited) = why {
+            specula_core::trace_event!(&crate::trace_sink::ENGINE, Error, "engine.start_slow", waited_ms = waited.as_secs_f64() * 1e3, call = current_call());
+        }
+        Some(ToolOutput::error(crate::startgate::refusal(why).to_string()))
     }
 
     /// The engine's audio service, for the `audio_*` tools.
@@ -595,10 +616,14 @@ impl ToolHandler for Tools {
         // Every call gets an id its work carries everywhere (docs/design/TRACE.md).
         let call = crate::trace_sink::begin_call(session, name, arguments);
         let _ctx = specula_core::trace::Ctx { call, span: 0 }.enter();
-        // The input monitor's gate (docs/design/SECURITY.md): a frozen session, or a paused swarm
-        // (but the owner's and the lead's reads and security tools), is refused before routing.
-        if let Some(e) = crate::inputguard::gate(session, name, arguments) {
-            let out = crate::bounds::cap_answer(name, crate::response::tidy(ToolOutput::error(e.to_json().to_string())));
+        // The start gate first: a call sent before the engine's loop began waits for it. Then
+        // the input monitor's gate (docs/design/SECURITY.md): a frozen session, or a paused
+        // swarm (but the owner's and the lead's reads and security tools), is refused before
+        // routing. In that order: the monitor's verdict is of the moment the call goes on, not
+        // of up to two minutes before (review R1 of m5-perf).
+        let refused = self.await_start(crate::startgate::START_WAIT).or_else(|| crate::inputguard::gate(session, name, arguments).map(|e| ToolOutput::error(e.to_json().to_string())));
+        if let Some(refused) = refused {
+            let out = crate::bounds::cap_answer(name, crate::response::tidy(refused));
             CALL.with(|c| c.set(outer));
             crate::trace_sink::end_call(call, &out);
             return out;
@@ -3474,6 +3499,62 @@ mod tests {
             }
         }
         assert!(caller >= 20, "the caller-thread families are in the definitions ({caller})");
+    }
+
+    /// Performance pass, 2026-11-14: the server listens before the engine's loop begins, and a
+    /// call sent in between waits for the start instead of racing its deadline against it
+    /// (scripts had grown retries around their first `agent_hello`: `engine_busy` from a cold
+    /// engine on a loaded machine). Nothing reaches the engine before the gate opens; the call
+    /// is then answered, not refused.
+    #[test]
+    fn a_call_sent_while_the_engine_starts_waits_for_the_start_and_is_answered() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (tx, rx) = mpsc::channel::<Request>();
+        let reached = std::sync::Arc::new(AtomicUsize::new(0));
+        let seen = std::sync::Arc::clone(&reached);
+        std::thread::spawn(move || {
+            for r in rx {
+                seen.fetch_add(1, Ordering::SeqCst);
+                let _ = r.reply.send(ToolOutput::text("{\"engine\":\"here\"}"));
+            }
+        });
+        let gate = crate::startgate::StartGate::closed();
+        let tools = std::sync::Arc::new(Tools::new(tx, Vec::new()).with_start_gate(std::sync::Arc::clone(&gate)));
+        let session = SessionInfo { id: "start001".into(), client_name: "early".into(), client_version: "1".into(), protocol_version: "x".into() };
+        let caller = {
+            let (tools, session) = (std::sync::Arc::clone(&tools), session.clone());
+            std::thread::spawn(move || ToolHandler::call(&*tools, &session, "engine_info", &Json::Obj(Vec::new())))
+        };
+        // The call is waiting at the gate, and the engine has seen nothing of it.
+        while gate.waiting() == 0 {
+            std::thread::yield_now();
+        }
+        assert_eq!(reached.load(Ordering::SeqCst), 0, "nothing is queued behind the start");
+        gate.open();
+        let out = caller.join().unwrap();
+        assert!(!out.is_error, "answered once the engine could: {out:?}");
+        assert_eq!(reached.load(Ordering::SeqCst), 1);
+        // An engine that never finishes starting: the call is told so, with nothing applied.
+        let said = |out: &ToolOutput| {
+            Json::parse(match &out.content[0] {
+                specula_protocol::Content::Text(t) => t,
+                _ => unreachable!(),
+            })
+            .unwrap()
+        };
+        let (tx, _rx) = mpsc::channel::<Request>();
+        let never = crate::startgate::StartGate::closed();
+        let stuck = Tools::new(tx, Vec::new()).with_start_gate(std::sync::Arc::clone(&never));
+        let out = stuck.await_start(Duration::from_millis(1)).expect("the wait ends at its limit");
+        let j = said(&out);
+        assert!(out.is_error && j.get("error").and_then(Json::as_str) == Some("engine_starting") && j.get("retry") == Some(&Json::Bool(true)), "{j}");
+        // An engine whose start failed (review R1: such a call sat out its two minutes, and
+        // held the failed process and its port with it): refused at once, through the whole
+        // handler, with a refusal that does not say to try again.
+        never.fail();
+        let out = ToolHandler::call(&stuck, &session, "engine_info", &Json::Obj(Vec::new()));
+        let j = said(&out);
+        assert!(out.is_error && j.get("error").and_then(Json::as_str) == Some("engine_start_failed") && j.get("retry") == Some(&Json::Bool(false)), "{j}");
     }
 
     /// The bounds fuzz (docs/design/TOOLS.md, "Bounds"): every tool, each property in turn given

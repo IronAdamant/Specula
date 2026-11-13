@@ -249,11 +249,12 @@ const PLAIN_ERRORS: [(&str, &str); 5] = [
 /// needs for now (another agent's claim, a busy worker or GPU, a load or build in progress).
 /// Every other refusal is lasting: the call fails again until the caller changes something.
 /// An error may also say so itself (`retry` set where it is made), which wins.
-pub const TRANSIENT: [&str; 17] = [
+pub const TRANSIENT: [&str; 18] = [
     "claimed",
     "claims_overlap",
     "busy",
     "engine_busy",
+    "engine_starting",
     "job_busy",
     "studio_busy",
     "gpu_busy",

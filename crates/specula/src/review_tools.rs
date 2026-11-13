@@ -100,6 +100,12 @@ impl ReviewCall {
         match self {
             ReviewCall::List { .. } | ReviewCall::CritiqueList(_) | ReviewCall::Progress { .. } | ReviewCall::Screen(ScreenOp::Status) => Class::Read,
             ReviewCall::Submit(_) | ReviewCall::Plan(PlanArgs { source: PlanSource::File { .. }, .. }) => Class::Disk,
+            // A decision is a batch: each submission decided may promote its files, revert its
+            // entries, or have a taste result written (project files checked and committed here,
+            // then reloaded). One a human decision, never a stream of them: the big budget.
+            // (The style configurator's approval is 8 ms on the iGPU laptop, most of it the
+            // interface theme checked against every screen: performance pass, 2026-11-14.)
+            ReviewCall::Decide { .. } => Class::Big,
             _ => Class::Edit,
         }
     }
@@ -812,6 +818,15 @@ pub fn definitions() -> Vec<ToolDef> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Performance pass, 2026-11-14: a decision applies a batch (files promoted, entries
+    /// reverted, a taste result written); listing and reading the queue stay small calls.
+    #[test]
+    fn a_decision_has_the_batch_budget_and_reading_the_queue_does_not() {
+        let call = |name: &str, args: &str| parse(name, &Json::parse(args).unwrap()).expect("a review tool").unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(call("review_decide", r#"{"ids": [1], "verdict": "approve", "note": "yes"}"#).class(), Class::Big);
+        assert_eq!(call("review_list", r#"{"status": "pending"}"#).class(), Class::Read);
+    }
 
     fn call(name: &str, a: &str) -> Result<ReviewCall, String> {
         parse(name, &Json::parse(a).unwrap()).expect("one of ours")

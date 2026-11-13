@@ -179,12 +179,26 @@ pub struct GpuOptions {
     /// Bytes from an earlier [`Gpu::pipeline_cache_data`], to skip shader compilation. A blob
     /// from another GPU or driver is safely ignored; [`PipelineStats::cache`] says what happened.
     pub pipeline_cache: Option<Vec<u8>>,
+    /// A folder of such blobs, one a GPU, named by [`pipeline_cache_file_name`]: the file of
+    /// the adapter that is chosen is read (when `pipeline_cache` gives none). The caller can't
+    /// name the file itself: which adapter "the first one" or "the discrete one" is, is known
+    /// only here, and their order changes when a display is plugged in or switched off.
+    pub pipeline_cache_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for GpuOptions {
     fn default() -> Self {
-        GpuOptions { validation: Validation::Auto, adapter: AdapterPreference::HighPerformance, pipeline_cache: None }
+        GpuOptions { validation: Validation::Auto, adapter: AdapterPreference::HighPerformance, pipeline_cache: None, pipeline_cache_dir: None }
     }
+}
+
+/// Largest pipeline cache file read from [`GpuOptions::pipeline_cache_dir`] (they are a few MiB).
+pub const MAX_PIPELINE_CACHE_FILE: u64 = 256 << 20;
+
+/// The pipeline cache's file name for a GPU: its vendor and device ids, which stay the same
+/// however the adapters are ordered or chosen.
+pub fn pipeline_cache_file_name(vendor_id: u32, device_id: u32) -> String {
+    format!("pipelines-{vendor_id:04x}-{device_id:04x}.bin")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

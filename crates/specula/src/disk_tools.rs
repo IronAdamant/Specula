@@ -80,7 +80,8 @@ impl crate::Engine {
     /// `engine_info.disk`: the book's summary, plus what only the engine knows (the journal's
     /// binary history).
     pub(crate) fn disk_json(&self) -> Json {
-        let mut j = disk::book().report(false);
+        // (As the book holds it: the engine thread never asks the system for free space.)
+        let mut j = disk::book().report_as_read(false);
         let (held, budget) = self.swarm.journal().file_blobs();
         j.set("journal_binary_history_mb", Json::obj([("held", Json::from(held >> 20)), ("budget", Json::from(budget >> 20))]));
         j

@@ -211,6 +211,52 @@ fn gpu_with_cache(blob: Option<Vec<u8>>) -> Gpu {
     Gpu::new(&options(Validation::On)).or_else(|_| Gpu::new(&options(Validation::Off))).expect("Gpu::new")
 }
 
+/// The cache file is the adapter's own (performance pass, 2026-11-14): named by its vendor and
+/// device, found in a folder by the GPU that chose the adapter. A file named for how the
+/// command line chose it (`pipelines-0.bin`) went to the other GPU when a display change
+/// swapped their order: a cold start every time.
+#[test]
+fn the_pipeline_cache_file_is_the_adapters_own() {
+    let test = "the_pipeline_cache_file_is_the_adapters_own";
+    let Some(gpu) = gpu_or_skip(test, AdapterPreference::HighPerformance) else { return };
+    let (vendor, device) = (gpu.adapter().vendor_id, gpu.adapter().device_id);
+    let blob = gpu.pipeline_cache_data().unwrap();
+    assert!(validation_errors(test, gpu).is_empty());
+    let dir = std::env::temp_dir().join(format!("specula-gpu-cache-dir-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let with_dir = |dir: &std::path::Path| {
+        let options = |validation| GpuOptions { validation, pipeline_cache_dir: Some(dir.to_owned()), ..Default::default() };
+        Gpu::new(&options(Validation::On)).or_else(|_| Gpu::new(&options(Validation::Off))).expect("Gpu::new")
+    };
+    let name = specula_gpu::pipeline_cache_file_name(vendor, device);
+    assert_eq!(name, format!("pipelines-{vendor:04x}-{device:04x}.bin"));
+    // An empty folder: nothing to load, and nothing is written there by the GPU.
+    let cold = with_dir(&dir);
+    assert_eq!(cold.last_frame_stats().pipelines.cache, PipelineCacheLoad::NotProvided);
+    assert!(validation_errors(test, cold).is_empty());
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    // Files named for another GPU, and for a place in the order, are not this adapter's.
+    std::fs::write(dir.join(specula_gpu::pipeline_cache_file_name(vendor ^ 1, device)), &blob).unwrap();
+    std::fs::write(dir.join("pipelines-0.bin"), &blob).unwrap();
+    std::fs::write(dir.join("pipelines-discrete.bin"), &blob).unwrap();
+    let other = with_dir(&dir);
+    assert_eq!(other.last_frame_stats().pipelines.cache, PipelineCacheLoad::NotProvided);
+    assert!(validation_errors(test, other).is_empty());
+    // Its own file is found, whichever way the adapter was chosen.
+    std::fs::write(dir.join(&name), &blob).unwrap();
+    let warm = with_dir(&dir);
+    assert_eq!(warm.last_frame_stats().pipelines.cache, PipelineCacheLoad::Loaded { bytes: blob.len() });
+    assert_eq!((warm.adapter().vendor_id, warm.adapter().device_id), (vendor, device));
+    assert!(validation_errors(test, warm).is_empty());
+    // A blob given outright comes first (the folder is not read).
+    let options = |validation| GpuOptions { validation, pipeline_cache: Some(b"not a cache".to_vec()), pipeline_cache_dir: Some(dir.clone()), ..Default::default() };
+    let given = Gpu::new(&options(Validation::On)).or_else(|_| Gpu::new(&options(Validation::Off))).expect("Gpu::new");
+    assert!(matches!(given.last_frame_stats().pipelines.cache, PipelineCacheLoad::Rejected(CacheRejection::TooShort { .. })), "{:?}", given.last_frame_stats().pipelines.cache);
+    assert!(validation_errors(test, given).is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn pipeline_cache_round_trip() {
     let test = "pipeline_cache_round_trip";

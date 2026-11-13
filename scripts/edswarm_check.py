@@ -344,25 +344,20 @@ def main():
             cpu.sort()
             return round(cpu[int(0.95 * (len(cpu) - 1))], 3) if cpu else None
 
-        runs = []
-        for attempt in range(3):
-            pair = {}
-            for mode in ("inspector", "panels"):
-                ui_click(owner, "tab_inspector" if mode == "inspector" else "tab_swarm")
-                if (mode == "panels") != bool((ed.settled().get("swarm") or {}).get("claim_map")):
-                    ui_click(owner, "tb_claims_on" if mode == "inspector" else "tb_claims")
-                label = f"edswarm_{mode}_{attempt}"
-                perf = call(other, "perf_capture", frames=a.frames, trace=False, label=label)
-                errs = [e for e in perf.get("budget_errors") or [] if is_frame_metric(e.get("metric", ""))]
-                pair[mode] = {"frame_ms": perf.get("frame_ms"), "cpu_frame_p95_ms": cpu_p95(label), "frame_budget_errors": errs}
-            pair["other_engines_running"] = other_engines(eng.proc.pid)
-            runs.append(pair)
-            if not pair["panels"]["frame_budget_errors"]:
-                break
-            time.sleep(5.0)
-        report["perf"] = runs
-        last = runs[-1]
-        check(not last["panels"]["frame_budget_errors"], f"the window's frame budgets hold with the panels and claim map on ({last['panels']['frame_budget_errors']}; inspector alone then: {last['inspector']['frame_budget_errors']}; {len(runs)} pair(s))")
+        # Measured once (performance pass, 2026-11-14: this ran up to three times until it
+        # passed; on a quiet machine the first measure holds, and a miss is a finding).
+        last = {}
+        for mode in ("inspector", "panels"):
+            ui_click(owner, "tab_inspector" if mode == "inspector" else "tab_swarm")
+            if (mode == "panels") != bool((ed.settled().get("swarm") or {}).get("claim_map")):
+                ui_click(owner, "tb_claims_on" if mode == "inspector" else "tb_claims")
+            label = f"edswarm_{mode}"
+            perf = call(other, "perf_capture", frames=a.frames, trace=False, label=label)
+            errs = [e for e in perf.get("budget_errors") or [] if is_frame_metric(e.get("metric", ""))]
+            last[mode] = {"frame_ms": perf.get("frame_ms"), "cpu_frame_p95_ms": cpu_p95(label), "frame_budget_errors": errs}
+        last["other_engines_running"] = other_engines(eng.proc.pid)
+        report["perf"] = [last]
+        check(not last["panels"]["frame_budget_errors"], f"the window's frame budgets hold with the panels and claim map on ({last['panels']['frame_budget_errors']}; inspector alone then: {last['inspector']['frame_budget_errors']})")
         base, pan = last["inspector"]["cpu_frame_p95_ms"], last["panels"]["cpu_frame_p95_ms"]
         check(base is not None and pan is not None and pan - base <= 1.0, f"the panels and claim map add at most 1 ms to the engine thread's frame, p95 ({base} -> {pan} ms)")
         ui_click(owner, "tab_swarm")

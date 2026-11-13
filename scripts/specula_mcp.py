@@ -144,7 +144,10 @@ class Mcp:
         if self.session:
             headers["Mcp-Session-Id"] = self.session
         req = urllib.request.Request(self.url, json.dumps(msg).encode(), headers)
-        with urllib.request.urlopen(req, timeout=120) as r:
+        # (Longer than the engine may hold a call: up to 120 s for its start, startgate.rs, and
+        # then the call's own 30 s. A shorter wait here read as a socket timeout what the
+        # engine was about to answer.)
+        with urllib.request.urlopen(req, timeout=180) as r:
             self.session = self.session or r.headers.get("Mcp-Session-Id")
             body = r.read()
         return reply_of(body)
@@ -182,19 +185,15 @@ class Mcp:
         token = None
         if token_file and os.path.exists(token_file):
             token = open(token_file).read().strip() or None
-        for attempt in range(4):
-            try:
-                reply = self.json("agent_hello", name=name, role=role, **({"resume_token": token} if token else {}))
-                break
-            except RuntimeError as e:
-                if token and "bad_resume_token" in str(e):  # a new engine run: start a new identity
-                    token = None
-                elif "engine_busy" in str(e) and attempt < 3:
-                    # A cold engine on a loaded machine can take over 30 s to answer its first
-                    # call (it says so, with retry: true, and applied nothing): ask again.
-                    print(f"  (agent_hello: the engine was busy starting; asking again, try {attempt + 2} of 4)")
-                else:
-                    raise
+        # (No retry on engine_busy: a call sent while the engine is still starting waits for the
+        # start, crates/specula/src/startgate.rs. A busy answer here is a finding.)
+        try:
+            reply = self.json("agent_hello", name=name, role=role, **({"resume_token": token} if token else {}))
+        except RuntimeError as e:
+            if not (token and "bad_resume_token" in str(e)):
+                raise
+            # A new engine run: start a new identity.
+            reply = self.json("agent_hello", name=name, role=role)
         if token_file and reply.get("resume_token"):
             with open(token_file, "w") as f:
                 f.write(reply["resume_token"])

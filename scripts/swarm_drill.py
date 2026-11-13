@@ -66,7 +66,7 @@ class Agent:
         if self.session:
             headers["Mcp-Session-Id"] = self.session
         req = urllib.request.Request(self.url, json.dumps(msg).encode(), headers)
-        with urllib.request.urlopen(req, timeout=120) as r:
+        with urllib.request.urlopen(req, timeout=180) as r:  # longer than the engine may hold a call (startgate.rs: 120 s, then the call's own 30 s)
             self.session = self.session or r.headers.get("Mcp-Session-Id")
             body = r.read()
         return reply_of(body)

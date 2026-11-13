@@ -266,7 +266,16 @@ impl GpuInner {
             & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT
             != 0;
         let mut descriptors = Descriptors::new(&device, shadow_linear)?;
-        let pipelines = match Pipelines::new(&device, descriptors.layout, options.pipeline_cache.as_deref(), &id) {
+        // The chosen adapter's own cache file, when the caller gave a folder and no blob.
+        let from_dir = match (&options.pipeline_cache, &options.pipeline_cache_dir) {
+            (None, Some(dir)) => {
+                let file = dir.join(crate::pipeline_cache_file_name(props.vendor_id, props.device_id));
+                std::fs::metadata(&file).ok().filter(|m| m.is_file() && m.len() <= crate::MAX_PIPELINE_CACHE_FILE).and_then(|_| std::fs::read(&file).ok())
+            }
+            _ => None,
+        };
+        let cache_blob = options.pipeline_cache.as_deref().or(from_dir.as_deref());
+        let pipelines = match Pipelines::new(&device, descriptors.layout, cache_blob, &id) {
             Ok(p) => p,
             Err(e) => {
                 descriptors.destroy(&device);

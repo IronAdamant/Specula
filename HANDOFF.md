@@ -17,12 +17,43 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     is reused, copied and modified, and easy to carry elsewhere: `model_export` writes any recipe as a `.glb`
     with its baked textures, rig and clips, and says what it does not carry;
     [docs/design/EXPORT.md](docs/design/EXPORT.md), `scripts/export_check.py`).
-  - **Left, in this order:** the performance pass on a quiet machine (the editor's panels still read one
-    pointer for the human and an agent: docs/design/EDITOR.md, "Known limits"); the measured comparison (ROADMAP M5, "Measured leverage": tell the
-    owner the token total before the runs); the M5 exit proof; the final audit; the docs pass (ROADMAP's M5
-    ticks and CHANGELOG's M5 section are behind).
+  - **The performance pass is in** (2026-11-14; what was measured and why each change was made is in
+    [perf/README.md](perf/README.md), the paragraphs of that date). What it leaves an agent to work with:
+    - **A call sent while the engine starts waits for the start** (`startgate.rs`): no retry around a first
+      `agent_hello`. A start that fails refuses its callers at once.
+    - **A stall says whether the engine worked or waited:** `engine.stall` carries `cpu_ms` (the engine thread's
+      own run time) and `lock_ms` (its wait for the model library's lock). On a quiet machine the live checks
+      raise no stall; beside compilers nearly every stall is a wait. Read those two before chasing a stall.
+    - **`engine.started`** says what the start spent its time on, stage by stage. With the Vulkan SDK
+      installed, the validation layer's shader checks are about 3 s of every start.
+    - **Scripts try once.** The retries that made live checks pass by luck are gone (`edswarm_check`,
+      `gallery_check`, `m3_exit`, the first `agent_hello` everywhere): a miss is a finding.
+  - **Left, in this order:** the model library's lock (a short lane: under a full CPU load the engine thread
+    waits 30 to 40 ms a frame for it, which is why `recipe_stall_check` fails on a busy machine: find the
+    holders, shorten or split what they do under it); the measured comparison (ROADMAP M5, "Measured
+    leverage": approved by the owner on 2026-11-14 at two runs a cell and about 15M tokens, below); the M5
+    exit proof; the final audit; the docs pass (ROADMAP's M5 ticks and CHANGELOG's M5 section are behind).
+    The editor's panels still read one pointer for the human and an agent (docs/design/EDITOR.md, "Known
+    limits").
   - **The lead's running notes** are in `.swarmnotes/m5/lead/m5tracker.md` (gitignored, this machine): every
     lane's state, review reports (`reviews/`), and the list of items carried to the performance pass.
+
+- **Owner, 2026-11-14 (on remote, during the performance pass):**
+  - **The measured comparison goes ahead at Claude's recommendation:** two runs a cell, about 15M tokens in
+    all (small game 600k a run, medium 2.0M, change round 500k, four runs each; judging about 1.5M; pilot
+    runs about 1M), Sonnet 5.5 for the builders and Opus for the judge. No further go-ahead is needed.
+  - **Its sizes are variables:** "gonna have to be a variable as we don't know what other people's
+    requirements and their system." Runs a cell, the token cap a job, the time limit and the model are data
+    in the brief file, the figures above are only its defaults, and every report states the settings used.
+  - **The agent sets the variables for the machine it is on.** "You know this laptop's system and
+    requirements by now and have a benchmark. But for other people's system, I'm gonna trust you, when you're
+    in their system, building a game, to work out the best variables here. This engine is still agent first
+    and native. But unlike you, on its own, it's not gonna know what you're seeing in theirs." So: nothing
+    measured on this laptop is baked in as a default for everyone; budgets, caps, quality and frame settings
+    are data with safe defaults; and the engine's part is to report what it measured where it runs
+    (`engine.started`, `cpu_ms`, `lock_ms`, `perf_frame`), so the agent there can choose. Whether an agent
+    arriving cold on another system finds those and chooses well is tested in M6, on the owner's other
+    machines (ROADMAP M6).
 
 - **Owner, 2026-11-12: what the engine is for, and how M5 finishes.**
   - **The engine is leverage, not a gate.** Agents can already build games without an engine; Specula exists so they

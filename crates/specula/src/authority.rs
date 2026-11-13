@@ -783,7 +783,21 @@ impl Access {
 }
 
 /// The authority table as data (engine_info, detailed): tool → label, and each Open reason.
+/// The table never changes while the engine runs: it is built once (about 1 ms for some 230
+/// tools, which was half of every `engine_info` on the engine thread: performance pass,
+/// 2026-11-14) and copied from then on. [`warm_access_json`] builds it at start-up.
 pub fn access_json() -> Json {
+    ACCESS_TABLE.get_or_init(build_access_json).clone()
+}
+
+static ACCESS_TABLE: std::sync::OnceLock<Json> = std::sync::OnceLock::new();
+
+/// Builds the table now (start-up), so the first `engine_info` does not.
+pub fn warm_access_json() {
+    ACCESS_TABLE.get_or_init(build_access_json);
+}
+
+fn build_access_json() -> Json {
     let mut tools: Vec<(String, Json)> = Vec::new();
     for name in crate::tools::engine_tool_names() {
         let Some(a) = access(&name) else { continue };
@@ -799,6 +813,17 @@ pub fn access_json() -> Json {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The table handed out is the table as it is built, every time (it is built once).
+    #[test]
+    fn the_access_table_is_built_once_and_stays_what_it_was() {
+        let built = build_access_json();
+        assert_eq!(access_json(), built);
+        warm_access_json();
+        assert_eq!(access_json(), built, "warming it changes nothing");
+        let Json::Obj(tools) = &built else { panic!("an object") };
+        assert!(tools.len() > 150 && tools.iter().any(|(name, _)| name == "engine_info"), "{} tools", tools.len());
+    }
 
     #[test]
     fn one_call_one_commit() {

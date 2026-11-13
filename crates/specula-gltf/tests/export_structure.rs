@@ -312,6 +312,112 @@ fn every_sepulcra_export_is_structurally_valid() {
     assert!(checked >= 15);
 }
 
+fn sepulcra_library() -> (Style, BTreeMap<String, String>) {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../games/sepulcra/assets");
+    let style = Style::parse(&std::fs::read_to_string(root.join("style.json")).unwrap()).unwrap();
+    let mut lib = BTreeMap::new();
+    for e in std::fs::read_dir(root.join("recipes")).unwrap() {
+        let p = e.unwrap().path();
+        lib.insert(p.file_stem().unwrap().to_string_lossy().to_string(), std::fs::read_to_string(&p).unwrap());
+    }
+    (style, lib)
+}
+
+fn sepulcra(name: &str) -> specula_model::Model {
+    let (style, lib) = sepulcra_library();
+    build(&lib[name], &BuildParams { library: Some(&lib), ..BuildParams::new(&style) }).unwrap()
+}
+
+/// The file's JSON, checked first by the structural checker.
+fn doc_of(model: &specula_model::Model) -> Json {
+    let glb = export_glb(&ExportInput::new(model)).unwrap();
+    let errs = check(&glb);
+    assert!(errs.is_empty(), "{errs:?}");
+    let jl = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
+    Json::parse(std::str::from_utf8(&glb[20..20 + jl]).unwrap().trim_end()).unwrap()
+}
+
+fn material<'a>(doc: &'a Json, name: &str) -> &'a Json {
+    arr(doc, "materials").iter().find(|m| m.get("name").and_then(Json::as_str) == Some(name)).unwrap_or_else(|| panic!("no material {name}"))
+}
+
+/// What a material and a primitive say about textures and wind weights, which a round trip
+/// can't see (the importer reads either form back the same). Mutation testing of the export
+/// lane found every one of these lines unchecked:
+/// - a cut-out set is `MASK` at its cutoff, and an opaque set says no alpha mode at all;
+/// - `_WIND` is there only when some vertex has a weight other than 1;
+/// - a set's emissive image is written only when a preset drawn with that set emits, and only
+///   the materials that emit name it.
+#[test]
+fn materials_and_primitives_say_what_their_textures_and_weights_are() {
+    // The grass: one baked cut-out set.
+    let grass = sepulcra("grass_patch");
+    let (key, set) = grass.extras.textures.first().cloned().expect("grass_patch is drawn with a baked texture set");
+    assert!(set.alpha_cutoff > 0.0, "the grass set is a cut-out");
+    let doc = doc_of(&grass);
+    let m = material(&doc, &key);
+    assert_eq!(m.get("alphaMode").and_then(Json::as_str), Some("MASK"));
+    assert!((m.get("alphaCutoff").and_then(Json::as_f64).unwrap() - set.alpha_cutoff as f64).abs() < 1e-6);
+    // The same set, opaque: no alpha mode (glTF's default is OPAQUE), and no cutoff.
+    let mut opaque = grass.clone();
+    let mut solid = (*set).clone();
+    solid.alpha_cutoff = 0.0;
+    opaque.extras.textures[0].1 = std::sync::Arc::new(solid);
+    let doc = doc_of(&opaque);
+    let m = material(&doc, &key);
+    assert!(m.get("alphaMode").is_none() && m.get("alphaCutoff").is_none(), "{m}");
+
+    // Wind weights: their own attribute, only when a vertex has one.
+    let wind_of = |doc: &Json| arr(doc, "meshes")[0].get("primitives").and_then(Json::as_array).unwrap().iter().map(|p| p.get("attributes").and_then(|a| a.get("_WIND")).map(|a| u(Some(a)))).collect::<Vec<_>>();
+    let mut still = sepulcra("tombstone");
+    for c in &mut still.lods[0].colors {
+        c[3] = 255;
+    }
+    assert!(wind_of(&doc_of(&still)).iter().all(Option::is_none), "no vertex has a weight: no _WIND");
+    let mut swaying = still.clone();
+    swaying.lods[0].colors[0][3] = 51;
+    let doc = doc_of(&swaying);
+    let wind = wind_of(&doc);
+    assert!(wind.iter().all(Option::is_some), "one weight is enough: {wind:?}");
+    let acc = &arr(&doc, "accessors")[wind[0].unwrap()];
+    assert_eq!((acc.get("type").and_then(Json::as_str), u(acc.get("count"))), (Some("SCALAR"), swaying.lods[0].colors.len()));
+
+    // Emission. Two materials of one model, each drawn with a set of its own that has an
+    // emissive image; only the first material's preset emits.
+    let (style, lib) = sepulcra_library();
+    let mut two = lib.keys().filter(|n| !lib[*n].contains("\"texgraph\"")).map(|n| build(&lib[n], &BuildParams { library: Some(&lib), ..BuildParams::new(&style) }).unwrap()).find(|m| m.extras.textures.is_empty() && m.rig.is_none() && m.lods[0].parts.iter().map(|p| &p.material).collect::<BTreeSet<_>>().len() >= 2).expect("a Sepulcra model with two materials and no textures");
+    let names: Vec<String> = two.lods[0].parts.iter().map(|p| p.material.clone()).collect::<BTreeSet<_>>().into_iter().take(2).collect();
+    let (glowing, dull) = (names[0].clone(), names[1].clone());
+    let baked = |name: &str, hash: u64| {
+        let mut t = (*set).clone();
+        (t.name, t.hash, t.alpha_cutoff) = (name.to_owned(), hash, 0.0);
+        t.emissive = Some(vec![200; t.base_color.len()]);
+        std::sync::Arc::new(t)
+    };
+    let emit = |m: &mut specula_model::Model, name: &str, e: f32| m.materials.iter_mut().find(|(n, _)| n == name).unwrap().1.emissive = e;
+    let per_set = 2 + usize::from(set.normal.is_some());
+    two.extras.textures = vec![(glowing.clone(), baked("ember", 11)), (dull.clone(), baked("ash", 22))];
+    emit(&mut two, &glowing, 2.0);
+    emit(&mut two, &dull, 0.0);
+    let doc = doc_of(&two);
+    let image_names: Vec<&str> = arr(&doc, "images").iter().filter_map(|i| i.get("name").and_then(Json::as_str)).collect();
+    assert!(material(&doc, &glowing).get("emissiveTexture").is_some() && material(&doc, &dull).get("emissiveTexture").is_none(), "{doc}");
+    assert!(image_names.contains(&"ember_emissive") && !image_names.contains(&"ash_emissive"), "{image_names:?}");
+    assert_eq!(image_names.len(), 2 * per_set + 1, "{image_names:?}");
+    // Neither emits: no emissive image at all.
+    emit(&mut two, &glowing, 0.0);
+    let doc = doc_of(&two);
+    assert_eq!(arr(&doc, "images").len(), 2 * per_set);
+    assert!(material(&doc, &glowing).get("emissiveTexture").is_none());
+    // Both drawn with ONE set, and one emits: the image is written once, and only the
+    // material that emits names it.
+    two.extras.textures = vec![(glowing.clone(), baked("ember", 11)), (dull.clone(), baked("ember", 11))];
+    emit(&mut two, &glowing, 2.0);
+    let doc = doc_of(&two);
+    assert_eq!(arr(&doc, "images").len(), per_set + 1);
+    assert!(material(&doc, &glowing).get("emissiveTexture").is_some() && material(&doc, &dull).get("emissiveTexture").is_none(), "{doc}");
+}
+
 /// The checker itself catches broken files.
 #[test]
 fn the_checker_finds_defects() {

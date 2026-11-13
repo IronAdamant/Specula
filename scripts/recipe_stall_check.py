@@ -115,15 +115,7 @@ def main():
     t0 = time.time()
     with Engine(Path(a.exe), a.port, out / "engine.log", *args, cwd=str(out)) as eng:
         director = eng.mcp("director")
-        # A cold pipeline cache (new shaders) can keep the first frames busy past 30 s.
-        for attempt in range(10):
-            try:
-                director.hello("director", role="lead")
-                break
-            except RuntimeError as e:
-                if "engine_busy" not in str(e) or attempt == 9:
-                    raise
-                time.sleep(2)
+        director.hello("director", role="lead")
         report["gpu"] = director.json("engine_info")["gpu"]["name"]
         log(f"gpu: {report['gpu']}")
 
@@ -193,14 +185,19 @@ def main():
                 continue
             if e.get("code") in ("engine.stall", "frame.over_budget") and e.get("unix_ms", 0) >= load_started:
                 events.append(e)
-    report["events"] = [{"code": e["code"], "t_ms": e.get("t_ms"), **{k: e["fields"].get(k) for k in ("tool", "zone", "ms", "budget_ms", "cause", "gpu_ms")}} for e in events]
+    report["events"] = [{"code": e["code"], "t_ms": e.get("t_ms"), **{k: e["fields"].get(k) for k in ("tool", "zone", "ms", "budget_ms", "cpu_ms", "lock_ms", "cause", "gpu_ms")}} for e in events]
     stalls = [e for e in report["events"] if e["code"] == "engine.stall" and (e.get("tool") in WATCHED)]
     over = [e for e in report["events"] if e["code"] == "frame.over_budget"]
     log(f"engine.stall events: {len([e for e in report['events'] if e['code'] == 'engine.stall'])} ({len(stalls)} from this load); frame.over_budget: {len(over)}")
     for e in report["events"][:40]:
         log(f"  {e}")
     if stalls:
-        fails.append(f"{len(stalls)} engine-thread stalls from recipe writes, staging and studio calls (worst {max(e['ms'] or 0 for e in stalls)} ms)")
+        # A stall whose thread ran for under half of it waited for the rest (a processor on a
+        # busy machine, a lock, the GPU): still a late frame or call, and said as what it is.
+        waited = [e for e in stalls if e.get("cpu_ms") is not None and e["cpu_ms"] < (e["ms"] or 0) * 0.5 and (e["ms"] or 0) - e["cpu_ms"] >= 2]
+        locked = [e for e in waited if (e.get("lock_ms") or 0) >= 1]
+        note = f"; in {len(waited)} of them the engine thread ran for under half the time and waited the rest ({len(locked)} for the model library's lock, which a worker held; the others for a processor, a disk or the GPU: is the machine busy?)" if waited else ""
+        fails.append(f"{len(stalls)} engine-thread stalls from recipe writes, staging and studio calls (worst {max(e['ms'] or 0 for e in stalls)} ms){note}")
     if over:
         fails.append(f"{len(over)} frame.over_budget incidents (window GPU time past perf.toml)")
     errors = eng.validation_errors()

@@ -153,8 +153,12 @@ enum Projected {
 }
 
 /// The longest a landing view waits for a worker that is already projecting its subjects (the
-/// same work it would otherwise do itself; past this it does, in case the worker died).
-const PROJECTION_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
+/// same work it would otherwise do itself; past this it does). Under the render budget: the
+/// wait is engine-thread time, and it was 250 ms, which a worker switched out on a busy
+/// machine could use up (performance pass, 2026-11-14). A worker that is running finishes in
+/// far less; one that is not is not waited for.
+/// (Engine-thread time: keep it under the render budget of 30 ms.)
+const PROJECTION_WAIT: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// A view submitted to the GPU and not yet landed ([`Engine::render_view_submit`]): what its
 /// packet says about the world, taken when it was drawn.
@@ -1619,11 +1623,17 @@ fn project_if_first(set: &sight::SubjectSet, slot: &(std::sync::Mutex<Projected>
 /// The view's half: the worker's subjects if it has (or is about to have) them, else `None` and
 /// the job is marked taken (the view projects its own; a worker that starts later does nothing).
 fn take_projection(slot: &(std::sync::Mutex<Projected>, std::sync::Condvar)) -> Option<Vec<Subject>> {
+    take_projection_within(slot, PROJECTION_WAIT)
+}
+
+/// [`take_projection`], waiting at most `limit` for a worker in the middle of it.
+fn take_projection_within(slot: &(std::sync::Mutex<Projected>, std::sync::Condvar), limit: std::time::Duration) -> Option<Vec<Subject>> {
     let (state, landed) = slot;
     let mut g = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let asked = std::time::Instant::now();
-    while matches!(*g, Projected::Working) && asked.elapsed() < PROJECTION_WAIT {
-        g = landed.wait_timeout(g, PROJECTION_WAIT).unwrap_or_else(std::sync::PoisonError::into_inner).0;
+    while matches!(*g, Projected::Working) {
+        let Some(left) = limit.checked_sub(asked.elapsed()).filter(|d| !d.is_zero()) else { break };
+        g = landed.wait_timeout(g, left).unwrap_or_else(std::sync::PoisonError::into_inner).0;
     }
     match std::mem::replace(&mut *g, Projected::Taken) {
         Projected::Done(subjects) => Some(subjects),
@@ -1661,15 +1671,18 @@ mod tests {
                 s.1.notify_all();
             })
         };
-        // (Its result, not `None`, is what says the view waited for the worker and got it.)
-        assert!(take_projection(&s).is_some(), "the worker's result");
+        // (Its result, not `None`, is what says the view waited for the worker and got it. The
+        // limit here is long: what is tested is the hand-over, not how fast this machine is.)
+        assert!(take_projection_within(&s, std::time::Duration::from_secs(60)).is_some(), "the worker's result");
         worker.join().unwrap();
-        // A worker that never finishes (it died) is not waited for past the bound.
+        // A worker that does not finish (switched out, or dead) is not waited for past the
+        // bound: the view projects its own, and the job is marked taken.
         let s = slot();
         *s.0.lock().unwrap() = Projected::Working;
         let asked = std::time::Instant::now();
         assert!(take_projection(&s).is_none());
         assert!(asked.elapsed() >= PROJECTION_WAIT, "{:?}", asked.elapsed());
+        assert!(matches!(*s.0.lock().unwrap(), Projected::Taken));
     }
 
     /// Reviewer finding (round 6): approximate counts are lower bounds (possibly 0 for an entity

@@ -571,17 +571,15 @@ def onboarding(lead, owner, win, report):
             gap = min((max(min_gap([a[k], b[k]]) for k in a if isinstance(a[k], str) and a[k].startswith("#")) for i, a in enumerate(vs) for b in vs[i + 1:]), default=1.0)
             check(gap >= 0.05, f"the interface step's variants all read apart (closest pair dE {gap:.3f}; accents {[v.get('accent') for v in vs]})")
         tile = 0 if step == "base" else 4
-        ok = False
-        for attempt in range(3):
-            click_rect(win.hwnd, s["rects"][f"tile{tile}"])
-            time.sleep(0.4)
-            win.press(gid, "gl_accept")
-            ok = wait_for(lambda: call(lead, "gallery_get", id=gid).get("status") == "accepted", 6)
-            if ok:
-                break
+        # Clicked once (performance pass, 2026-11-14: this clicked up to three times until the
+        # pick was accepted; on a quiet machine the first click is, and a miss is a finding).
+        click_rect(win.hwnd, s["rects"][f"tile{tile}"])
+        time.sleep(0.4)
+        win.press(gid, "gl_accept")
+        ok = wait_for(lambda: call(lead, "gallery_get", id=gid).get("status") == "accepted", 6)
+        if not ok:
             sc = win.screen(gid)
-            print(f"     (step {step}, try {attempt + 1}: not accepted yet; screen selected={sc.get('selected')} last_action={sc.get('last_action')!r})")
-            s = win.ready(gid, 1)
+            print(f"     (step {step}: not accepted; screen selected={sc.get('selected')} last_action={sc.get('last_action')!r})")
         check(ok, f"step {step}: \"This one\" at the window")
         if k < 3:
             nxt = wait_for(lambda: call(lead, "style_onboard", action="status")["steps"][k + 1]["gallery"], 10)
