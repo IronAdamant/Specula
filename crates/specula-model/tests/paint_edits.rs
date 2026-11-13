@@ -123,3 +123,13 @@ fn a_recipe_names_its_sweep_parts_in_order() {
     let none = specula_model::Recipe::parse(r#"{"name":"x","collider":"none","lods":[],"parts":[{"name":"a","material":"m","shape":{"op":"box","size":[1,1,1]}}]}"#, &style).unwrap();
     assert_eq!(none.sweep_parts().count(), 0);
 }
+
+/// Mutation testing after the lane merged (Probatio) changed the reach check's `>` to `>=` and
+/// no test noticed: a stroke centred exactly at the reach is taken; one past it is refused.
+#[test]
+fn a_stroke_centred_exactly_at_the_reach_is_taken() {
+    let at = |x: f64| format!(r##"[{{"op":"paint","at":[{x},0,0],"radius":1,"color":"#ff0000"}}]"##);
+    assert!(run(&at(specula_model::PAINT_REACH)).is_ok(), "exactly at the reach");
+    assert!(run(&at(-specula_model::PAINT_REACH)).is_ok(), "and on the other side");
+    assert!(matches!(run(&at(specula_model::PAINT_REACH + 0.5)), Err(e) if e.code == ErrorCode::OutOfRange), "past it");
+}
