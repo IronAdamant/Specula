@@ -69,7 +69,7 @@ pub const KITS: &[Kit] = &[
         name: "make_asset",
         about: "a prop or building from a recipe (a model as code)",
         tools: &["project_write", "model_build", "studio_sheet", "studio_check", "review_submit"],
-        more: &["project_read", "project_patch", "project_list", "project_delete", "project_upload", "model_reload", "model_collider", "model_paint", "model_path", "studio_stage", "studio_lineup", "studio_compare", "style_check", "procgen_texture"],
+        more: &["project_read", "project_patch", "project_list", "project_delete", "project_upload", "model_reload", "model_collider", "model_paint", "model_path", "model_export", "studio_stage", "studio_lineup", "studio_compare", "style_check", "procgen_texture"],
         steps: "project_write the recipe; model_build it; studio_sheet to see it from every side; studio_check and style_check; review_submit it with the sheet",
         done: "studio_check and style_check report no errors, and review_submit put it in the owner's queue",
     },

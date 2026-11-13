@@ -84,11 +84,51 @@ fn diff(a: &specula_model::MeshData, b: &specula_model::MeshData) -> String {
         .unwrap_or_else(|| "no difference".into())
 }
 
+/// The mesh of `lod` as the file carries it: the vertices of parts drawn from a baked texture
+/// set white, everything else as built.
+fn carried(model: &Model, lod: usize) -> specula_model::MeshData {
+    let mut mesh = model.lods[lod].clone();
+    let textured: Vec<_> = mesh.parts.iter().filter(|p| model.extras.textures.iter().any(|(key, _)| key == &p.material)).cloned().collect();
+    for p in &textured {
+        for i in p.first_index..p.first_index + p.index_count {
+            let v = mesh.indices[i as usize] as usize;
+            mesh.colors[v] = [255, 255, 255, mesh.colors[v][3]];
+        }
+    }
+    mesh
+}
+
 fn check(label: &str, model: &Model, set: Option<&AnimSet>, imp: &Import) {
     assert!(imp.warnings.is_empty(), "{label}: warnings {:?}", imp.warnings);
-    let (a, b) = (&model.lods[0], &imp.model.lods[0]);
+    // What the file carries of a part drawn from a baked texture set: white vertices (the
+    // engine draws such a part from the texture alone, and glTF would multiply the colour in;
+    // the wind's weight, the colour's alpha here, travels in its own attribute and comes back).
+    let expected = carried(model, 0);
+    let (a, b) = (&expected, &imp.model.lods[0]);
     assert_eq!(a.content_hash(), b.content_hash(), "{label}: mesh differs: {}", diff(a, b));
+    // The baked sets themselves are in the file, pixel for pixel, on the materials that use them.
+    for (key, set) in &model.extras.textures {
+        if !model.lods[0].parts.iter().any(|p| &p.material == key) {
+            continue;
+        }
+        let m = imp.materials.iter().find(|m| &m.name == key).unwrap_or_else(|| panic!("{label}: material {key} is in the file"));
+        let image_of = |t: Option<specula_gltf::TextureRef>| t.and_then(|t| imp.textures.get(t.texture)).and_then(|t| t.image).and_then(|i| imp.images.get(i));
+        let base = image_of(m.base_color_texture).unwrap_or_else(|| panic!("{label}: {key} has its base colour texture"));
+        assert_eq!((base.width, base.height), (set.size, set.size), "{label}: {key}");
+        assert!(base.rgba == set.base_color, "{label}: {key}: the base colour image is the baked one, pixel for pixel");
+        let mr = image_of(m.metallic_roughness_texture).unwrap_or_else(|| panic!("{label}: {key} has its metallic-roughness texture"));
+        assert!(mr.rgba == set.metallic_roughness, "{label}: {key}: metallic-roughness");
+        assert_eq!(image_of(m.normal_texture).map(|i| i.rgba == *set.normal.as_ref().unwrap()), set.normal.as_ref().map(|_| true), "{label}: {key}: normal");
+        assert_eq!((m.metallic, m.roughness, m.base_color), (1.0, 1.0, [1.0; 4]), "{label}: {key}: the textures carry the values");
+        if set.alpha_cutoff > 0.0 {
+            assert_eq!((m.alpha_mode, m.alpha_cutoff), (specula_gltf::AlphaMode::Mask, set.alpha_cutoff), "{label}: {key}: a cut-out");
+        }
+    }
+    if model.extras.textures.is_empty() {
+        assert!(imp.images.is_empty(), "{label}: no image without a texture set");
+    }
     assert_eq!(model.materials, imp.model.materials, "{label}: material presets");
+    assert_eq!(model.wind, imp.model.wind, "{label}: the wind term");
     assert!(imp.materials.iter().all(|m| m.from_specula), "{label}");
     match (&model.rig, &imp.model.rig) {
         (None, None) => {}
@@ -157,7 +197,7 @@ fn every_sepulcra_asset_round_trips_through_glb() {
         for lod in 1..model.lods.len() {
             let glb = export_glb(&ExportInput { lod, ..input }).unwrap();
             let imp = import_bytes(&glb, None, &ImportOptions::default()).unwrap();
-            assert_eq!(imp.model.lods[0].content_hash(), model.lods[lod].content_hash(), "{label} lod {lod}");
+            assert_eq!(imp.model.lods[0].content_hash(), carried(model, lod).content_hash(), "{label} lod {lod}");
         }
     }
     assert_eq!(rigged, 5, "rigged creatures with anim sets");

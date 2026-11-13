@@ -697,7 +697,7 @@ pub fn access(tool: &str) -> Option<Access> {
         // A terrain recipe's strokes (and its collider, in the same journal entry) through the
         // project store, as the caller.
         "terrain_edit" => World("project"),
-        "model_paint" | "model_path" => World("project"),
+        "model_paint" | "model_path" | "model_export" => World("project"),
         // Their `force` discards every agent's unsaved changes: the lead's (force_needs_lead).
         "world_load" | "save_read" => ReplacesWorld,
         // Owned stores.

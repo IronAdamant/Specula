@@ -382,7 +382,7 @@ pub fn upload_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<
     commit_upload(tools, session, &store, &by, &u)
 }
 
-fn commit_upload(tools: &Tools, session: &SessionInfo, store: &ContentStore, by: &str, u: &Upload) -> Result<ToolOutput, String> {
+pub(crate) fn commit_upload(tools: &Tools, session: &SessionInfo, store: &ContentStore, by: &str, u: &Upload) -> Result<ToolOutput, String> {
     let ups = &tools.uploads;
     let (u, bytes) = match ups.take(by, &u.id) {
         Ok(x) => x,
@@ -437,6 +437,15 @@ fn commit_upload(tools: &Tools, session: &SessionInfo, store: &ContentStore, by:
         remember(id, kind, &checked_now);
         let text = blobs::pointer(id, bytes.len() as u64);
         if snap.current.as_ref().is_some_and(|f| *f.text == *text) {
+            // Claims first: a write that changes nothing is still refused where a write would be
+            // (as project_write does; an identical upload under another agent's claim answered
+            // `unchanged`: review R2 of m5-export, N3).
+            if let Some(e) = &snap.claimed {
+                let mut j = e.to_json();
+                j.set("upload", Json::from(u.id.as_str()));
+                j.set("note", Json::from("nothing was changed; the upload stays open (commit again once the claim is gone, or abort it)"));
+                return Ok(ToolOutput::error(j.to_string()));
+            }
             ups.finish(store, by, &u.id);
             return Ok(ToolOutput::text(Json::obj([("path", Json::from(path.as_str())), ("version", Json::from(cur_v)), ("unchanged", Json::Bool(true)), ("content", Json::from(id.hex()))]).to_string()));
         }

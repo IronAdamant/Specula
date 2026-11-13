@@ -82,9 +82,23 @@ pub fn generate_mips_owned(width: u32, height: u32, format: TextureFormat, pixel
 /// [`generate_mips`], RGBA8 with alpha in byte 3, `levels[0]` the image): each smaller level's
 /// alpha is scaled so the share of its texels at or above `cutoff` (as the shaders compare it:
 /// quantised to 8 bits) matches level 0's. Plain averaging lets alpha fall below the cutoff, so
-/// cutouts (leaves, grass blades, fences) thin out and vanish with distance. Colour is untouched;
-/// deterministic (integer counts, `f32` basic operations). Opaque cutoffs (`<= 0`) and other
-/// formats are left alone.
+/// cutouts (leaves, grass blades, fences) thin out and vanish with distance; and soft edges
+/// widen when averaged, so a level can also cover more than the image does. Colour is
+/// untouched; deterministic (integer counts, `f32` basic operations). Opaque cutoffs (`<= 0`)
+/// and other formats are left alone.
+///
+/// **Solid stays solid.** A level that covers exactly level 0's share is left as it is, and a
+/// level is never lowered so far that its most opaque texels lose more than half their margin
+/// above the cutoff. Without that, matching an opaque (or mostly opaque) mask's coverage set
+/// every covered texel of its mips to exactly the cutoff, where the shader's test turns on
+/// rounding and on foliage's edge fade, and surfaces that were solid got holes or vanished with
+/// distance (review R1 of m5-export: an opaque `MASK` plane lost 15-50% of its pixels on one
+/// GPU and all of them on another at a cutoff of 0.9).
+///
+/// A level is lowered only when that changes its coverage. A small level that is the same
+/// alpha everywhere, just above the cutoff, can't be thinned (it covers all or nothing): it is
+/// left as plain averaging made it, solid. Neither that nor nothing matches a half-covered
+/// image, and a card a few pixels across reads better solid than gone (review R2, N1).
 pub fn preserve_alpha_coverage(levels: &mut [Vec<u8>], cutoff: f32) {
     if cutoff.is_nan() || cutoff <= 0.0 || levels.is_empty() || levels.iter().any(|l| l.len() % 4 != 0 || l.is_empty()) {
         return;
@@ -95,9 +109,20 @@ pub fn preserve_alpha_coverage(levels: &mut [Vec<u8>], cutoff: f32) {
     let target = covered(base, 1.0) as f64 / (base.len() / 4) as f64;
     for level in levels.iter_mut().skip(1) {
         let n = (level.len() / 4) as f64;
-        // Coverage grows with the scale: bisect for the smallest scale that reaches the target.
-        // (Unreachable even at the largest scale: every texel with any alpha is kept.)
-        let (mut lo, mut hi) = (0.0f32, 255.0f32);
+        let as_it_is = covered(level, 1.0) as f64 / n;
+        // Coverage grows with the scale: bisect for the smallest scale that reaches the target,
+        // upwards when the level covers too little, downwards (to the floor that keeps its solid
+        // texels solid) when it covers too much. (Unreachable even at the largest scale: every
+        // texel with any alpha is kept.)
+        let (mut lo, mut hi) = if as_it_is < target {
+            (1.0f32, 255.0f32)
+        } else if as_it_is > target {
+            let most = level.chunks_exact(4).map(|p| p[3]).max().unwrap_or(0) as f32;
+            let floor = if most > c8 as f32 { (c8 as f32 + 0.5 * (most - c8 as f32)) / most } else { 1.0 };
+            (floor.min(1.0), 1.0f32)
+        } else {
+            continue;
+        };
         if (covered(level, hi) as f64 / n) >= target {
             for _ in 0..24 {
                 let mid = 0.5 * (lo + hi);
@@ -111,6 +136,10 @@ pub fn preserve_alpha_coverage(levels: &mut [Vec<u8>], cutoff: f32) {
         // The nearer of the two sides (a level of equal averages can only cover none or all).
         let err = |s: f32| (covered(level, s) as f64 / n - target).abs();
         let s = if err(lo) < err(hi) { lo } else { hi };
+        // (Lowering that uncovers nothing only moves alphas towards the cutoff: not done.)
+        if s < 1.0 && covered(level, s) == covered(level, 1.0) {
+            continue;
+        }
         for p in level.chunks_exact_mut(4) {
             p[3] = (p[3] as f32 * s).round().min(255.0) as u8;
         }
@@ -269,6 +298,51 @@ mod tests {
         assert_eq!(opaque, plain);
         preserve_alpha_coverage(&mut [], 0.5);
         preserve_alpha_coverage(&mut [vec![1, 2, 3]], 0.5);
+    }
+
+    /// Review R1 of m5-export, the blocker: a mask that is opaque (what other tools' assets
+    /// usually are), or mostly opaque, stays solid in every mip. Scaled down to match level
+    /// 0's coverage, an opaque mask's mips sat at exactly the cutoff ([255, 128, 128, ...] at
+    /// 0.5), and the surface got holes.
+    #[test]
+    fn solid_stays_solid_through_the_mips() {
+        let (w, h) = (64u32, 64u32);
+        for cutoff in [0.33f32, 0.5, 0.9] {
+            let c8 = (cutoff * 255.0).round();
+            // Fully opaque: nothing changes at all.
+            let opaque: Vec<u8> = (0..w * h).flat_map(|_| [90u8, 90, 90, 255]).collect();
+            let plain = generate_mips(w, h, TextureFormat::Rgba8Srgb, &opaque).unwrap();
+            let mut kept = plain.clone();
+            preserve_alpha_coverage(&mut kept, cutoff);
+            assert_eq!(kept, plain, "cutoff {cutoff}: an opaque mask is left as it is");
+            assert!(kept.iter().all(|l| l.chunks_exact(4).all(|p| p[3] as f32 > c8)), "cutoff {cutoff}: every mip alpha is above the cutoff");
+            // Mostly opaque, with holes of several sizes and soft rims (so the mips cover a
+            // little more or less than the image and are scaled): a texel that was opaque
+            // keeps at least half its margin above the cutoff, in every level.
+            let alpha = |x: u32, y: u32| -> u8 {
+                let hole = |cx: f32, cy: f32, r: f32| ((((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2)).sqrt() - r) / 2.5).clamp(0.0, 1.0);
+                (255.0 * hole(9.5, 9.5, 5.0).min(hole(40.5, 22.5, 2.0)).min(hole(20.5, 50.5, 8.0))).round() as u8
+            };
+            let holed: Vec<u8> = (0..w * h).flat_map(|i| [90u8, 90, 90, alpha(i % w, i / w)]).collect();
+            let plain = generate_mips(w, h, TextureFormat::Rgba8Srgb, &holed).unwrap();
+            let mut kept = plain.clone();
+            preserve_alpha_coverage(&mut kept, cutoff);
+            // (Review R2, N1: a level that can't be thinned is left exactly as averaging made it.)
+            for (i, (a, b)) in kept.iter().zip(&plain).enumerate() {
+                let cover = |l: &[u8]| l.chunks_exact(4).filter(|p| p[3] as f32 >= c8).count();
+                if a != b && a.chunks_exact(4).zip(b.chunks_exact(4)).all(|(x, y)| x[3] <= y[3]) {
+                    assert!(cover(a) < cover(b), "cutoff {cutoff}, level {i}: lowered without uncovering anything");
+                }
+            }
+            let solid_floor = c8 + 0.5 * (255.0 - c8) - 1.0;
+            for (i, (a, b)) in kept.iter().zip(&plain).enumerate() {
+                let solid = a.chunks_exact(4).zip(b.chunks_exact(4)).filter(|(_, y)| y[3] == 255);
+                assert!(solid.clone().count() > 0 || i > 4, "cutoff {cutoff}, level {i}: the level has opaque texels");
+                for (x, _) in solid {
+                    assert!(x[3] as f32 >= solid_floor, "cutoff {cutoff}, level {i}: an opaque texel fell to {} (the cutoff is {c8})", x[3]);
+                }
+            }
+        }
     }
 
     #[test]

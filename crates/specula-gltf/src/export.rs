@@ -6,6 +6,16 @@
 //! skeleton's inverse binds; one animation per clip with absolute values (`rest ∘ clip value`).
 //! Specula specifics travel in `extras.specula`: material presets, bone tails, clip loop modes,
 //! durations, distances, events and curves.
+//!
+//! A part whose material has a baked texture set (`model.extras.textures`) gets that set as
+//! PNG images in the file: base colour (its alpha is the cut-out's coverage: `alphaMode` MASK
+//! with the set's cutoff), normal, metallic-roughness and, when the preset emits, emissive.
+//! Such a part's vertices are written white: the engine draws textured parts from the texture
+//! alone, and glTF multiplies `COLOR_0` into the base colour.
+//!
+//! A vertex colour's alpha is the wind's weight in Specula, never opacity. glTF reads
+//! `COLOR_0`'s alpha as opacity, so it is written as 1, and the weights (when any is below 1)
+//! go in the custom attribute `_WIND`, which other programs ignore and the importer reads back.
 
 use specula_anim::math::{qdot, qmul, qneg, qnorm, QID};
 use specula_anim::{Channel, Clip, Interp, Skeleton};
@@ -35,6 +45,18 @@ impl<'a> ExportInput<'a> {
 
 const ARRAY_BUFFER: u32 = 34962;
 const ELEMENT_ARRAY_BUFFER: u32 = 34963;
+/// The vertex attribute that carries the wind's weights (0..1), when any is below 1.
+pub const WIND_ATTRIBUTE: &str = "_WIND";
+
+/// A material's textures in the file: texture indices.
+#[derive(Clone, Copy)]
+struct TextureSlots {
+    base_color: usize,
+    normal: Option<usize>,
+    metallic_roughness: usize,
+    emissive: Option<usize>,
+    alpha_cutoff: f32,
+}
 
 #[derive(Default)]
 struct Out {
@@ -101,15 +123,33 @@ fn hex(c: [f32; 4]) -> String {
     format!("#{:02x}{:02x}{:02x}{:02x}", b(c[0]), b(c[1]), b(c[2]), b(c[3]))
 }
 
-fn material_json(name: &str, p: &MaterialPreset, ext_strength: &mut bool) -> Json {
+fn material_json(name: &str, p: &MaterialPreset, tex: Option<TextureSlots>, ext_strength: &mut bool) -> Json {
     let lin = |x: f32| srgb8_to_linear((x.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
     let glass = p.kind == MaterialKind::Glass;
-    // Vertex colours carry the colour; the factor only carries glass opacity.
-    let mut pbr = vec![("metallicFactor", Json::from(p.metallic)), ("roughnessFactor", Json::from(p.roughness))];
+    let slot = |index: usize| Json::obj([("index", Json::from(index))]);
+    // Vertex colours carry the colour; the factor only carries glass opacity. With a baked
+    // texture set the textures carry everything, as the engine draws it: factors of 1.
+    let mut pbr = match tex {
+        Some(t) => vec![("baseColorTexture", slot(t.base_color)), ("metallicFactor", Json::from(1.0f32)), ("roughnessFactor", Json::from(1.0f32)), ("metallicRoughnessTexture", slot(t.metallic_roughness))],
+        None => vec![("metallicFactor", Json::from(p.metallic)), ("roughnessFactor", Json::from(p.roughness))],
+    };
     if glass {
         pbr.insert(0, ("baseColorFactor", Json::arr([1.0f32, 1.0, 1.0, p.opacity].map(Json::from))));
     }
     let mut m = vec![("name", Json::Str(name.into())), ("pbrMetallicRoughness", Json::obj(pbr))];
+    if let Some(t) = tex {
+        if let Some(n) = t.normal {
+            m.push(("normalTexture", slot(n)));
+        }
+        if let Some(e) = t.emissive.filter(|_| p.emissive > 0.0) {
+            m.push(("emissiveTexture", slot(e)));
+        }
+        // A cut-out (foliage cards): the base colour's alpha is coverage.
+        if t.alpha_cutoff > 0.0 && !glass {
+            m.push(("alphaMode", Json::Str("MASK".into())));
+            m.push(("alphaCutoff", Json::from(t.alpha_cutoff)));
+        }
+    }
     if p.emissive > 0.0 {
         let e = [lin(p.color[0]) * p.emissive, lin(p.color[1]) * p.emissive, lin(p.color[2]) * p.emissive];
         let peak = e[0].max(e[1]).max(e[2]);
@@ -188,8 +228,21 @@ fn build(input: &ExportInput) -> Result<(Json, Vec<u8>), GltfError> {
         let t: Vec<f32> = mesh.tangents.iter().flatten().copied().collect();
         attrs.push(("TANGENT", Json::from(out.floats(&t, 4, "VEC4", Some(ARRAY_BUFFER), false))));
     }
-    let col: Vec<f32> = mesh.colors.iter().flat_map(|c| [srgb8_to_linear(c[0]), srgb8_to_linear(c[1]), srgb8_to_linear(c[2]), c[3] as f32 / 255.0]).collect();
+    // Vertices of parts drawn from a baked texture set are white (the texture is the colour).
+    let set_of = |material: &str| model.extras.textures.iter().find(|(key, _)| key == material).map(|(_, set)| set);
+    let mut textured = vec![false; n];
+    for p in mesh.parts.iter().filter(|p| set_of(&p.material).is_some()) {
+        for &i in &mesh.indices[p.first_index as usize..(p.first_index + p.index_count) as usize] {
+            textured[i as usize] = true;
+        }
+    }
+    // Alpha is the wind's weight, never opacity: 1 in COLOR_0, the weights in their own attribute.
+    let col: Vec<f32> = mesh.colors.iter().zip(&textured).flat_map(|(c, white)| if *white { [1.0; 4] } else { [srgb8_to_linear(c[0]), srgb8_to_linear(c[1]), srgb8_to_linear(c[2]), 1.0] }).collect();
     attrs.push(("COLOR_0", Json::from(out.floats(&col, 4, "VEC4", Some(ARRAY_BUFFER), false))));
+    if mesh.colors.iter().any(|c| c[3] != 255) {
+        let wind: Vec<f32> = mesh.colors.iter().map(|c| c[3] as f32 / 255.0).collect();
+        attrs.push((WIND_ATTRIBUTE, Json::from(out.floats(&wind, 1, "SCALAR", Some(ARRAY_BUFFER), false))));
+    }
     if mesh.is_skinned() {
         let j: Vec<u8> = mesh.joints.iter().flatten().copied().collect();
         let v = out.view(&j, Some(ARRAY_BUFFER));
@@ -209,12 +262,43 @@ fn build(input: &ExportInput) -> Result<(Json, Vec<u8>), GltfError> {
     let mut mat_names: Vec<&str> = Vec::new();
     let mut ext_strength = false;
     let mut primitives = Vec::new();
+    // Baked texture sets as PNG images, each set once (several materials may share one).
+    let mut images: Vec<Json> = Vec::new();
+    let mut textures: Vec<Json> = Vec::new();
+    let mut sets: Vec<(u64, TextureSlots)> = Vec::new();
+    // (A set's emissive image is written only when a preset that uses the set emits: the
+    // engine draws no emission otherwise, and an image no material names is dead weight.)
+    let emits = |set: &specula_model::texgraph::TextureSet| {
+        mesh.parts.iter().any(|p| set_of(&p.material).is_some_and(|s| s.hash == set.hash) && model.materials.iter().any(|(name, preset)| name == &p.material && preset.emissive > 0.0))
+    };
+    let mut slots_of = |out: &mut Out, set: &specula_model::texgraph::TextureSet| -> TextureSlots {
+        if let Some((_, slots)) = sets.iter().find(|(hash, _)| *hash == set.hash) {
+            return *slots;
+        }
+        let mut image = |out: &mut Out, rgba: &[u8], what: &str| -> usize {
+            let png = specula_core::png::encode_rgba8(set.size, set.size, rgba, specula_core::deflate::Level::Default);
+            let view = out.view(&png, None);
+            images.push(Json::obj([("name", Json::Str(format!("{}_{what}", set.name))), ("mimeType", Json::Str("image/png".into())), ("bufferView", Json::from(view))]));
+            textures.push(Json::obj([("sampler", Json::from(0u32)), ("source", Json::from(images.len() - 1))]));
+            textures.len() - 1
+        };
+        let slots = TextureSlots {
+            base_color: image(out, &set.base_color, "base_color"),
+            normal: set.normal.as_deref().map(|n| image(out, n, "normal")),
+            metallic_roughness: image(out, &set.metallic_roughness, "metallic_roughness"),
+            emissive: set.emissive.as_deref().filter(|_| emits(set)).map(|e| image(out, e, "emissive")),
+            alpha_cutoff: set.alpha_cutoff,
+        };
+        sets.push((set.hash, slots));
+        slots
+    };
     for p in &mesh.parts {
         let mi = match mat_names.iter().position(|m| *m == p.material) {
             Some(i) => i,
             None => {
                 let preset = model.materials.iter().find(|(name, _)| name == &p.material).map(|(_, p)| p).ok_or_else(|| gerr(C::MissingField, "materials", format!("no preset for part material '{}'", p.material)))?;
-                materials.push(material_json(&p.material, preset, &mut ext_strength));
+                let tex = set_of(&p.material).map(|set| slots_of(&mut out, set));
+                materials.push(material_json(&p.material, preset, tex, &mut ext_strength));
                 mat_names.push(&p.material);
                 mat_names.len() - 1
             }
@@ -276,8 +360,21 @@ fn build(input: &ExportInput) -> Result<(Json, Vec<u8>), GltfError> {
     root.push(("scene", Json::from(0u32)));
     root.push(("scenes", Json::arr([Json::obj([("name", Json::Str(model.name.clone())), ("nodes", Json::Arr(scene_nodes))])])));
     root.push(("nodes", Json::Arr(nodes)));
-    root.push(("meshes", Json::arr([Json::obj([("name", Json::Str(model.name.clone())), ("primitives", Json::Arr(primitives))])])));
+    let mut mesh_json = vec![("name", Json::Str(model.name.clone())), ("primitives", Json::Arr(primitives))];
+    // The wind term (foliage): this engine's own, kept for the way back (other programs
+    // ignore extras).
+    if let Some(w) = model.wind {
+        let wind = Json::obj([("amount", Json::from(w.amount)), ("height", Json::from(w.height)), ("painted", Json::Bool(w.painted))]);
+        mesh_json.push(("extras", Json::obj([("specula", Json::obj([("wind", wind)]))])));
+    }
+    root.push(("meshes", Json::arr([Json::obj(mesh_json)])));
     root.push(("materials", Json::Arr(materials)));
+    if !images.is_empty() {
+        // (Trilinear, repeating: how the engine samples a baked set.)
+        root.push(("samplers", Json::arr([Json::obj([("magFilter", Json::from(9729u32)), ("minFilter", Json::from(9987u32)), ("wrapS", Json::from(10497u32)), ("wrapT", Json::from(10497u32))])])));
+        root.push(("images", Json::Arr(images)));
+        root.push(("textures", Json::Arr(textures)));
+    }
     if !skins.is_empty() {
         root.push(("skins", Json::Arr(skins)));
     }

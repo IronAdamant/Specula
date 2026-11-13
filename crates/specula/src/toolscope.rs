@@ -219,6 +219,7 @@ pub(crate) const BRIEFS: &[(&str, &str)] = &[
     ("model_collider", "fit a collider to a model"),
     ("model_paint", "paint a model recipe's vertex colours"),
     ("model_path", "redraw a sweep part's path in a model recipe"),
+    ("model_export", "write a model recipe as a .glb for other engines"),
     ("procgen_texture", "bake a procedural texture graph"),
     ("procgen_terrain", "build a heightfield terrain"),
     ("procgen_scatter", "Poisson-disc placements in an area"),

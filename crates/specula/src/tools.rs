@@ -225,6 +225,9 @@ pub enum Command {
     ClaimList { owner: Option<String>, mine: bool, path_prefix: Option<String>, after: Option<u64>, limit: usize },
     /// model_build: build a recipe (fresh from disk) and report on it, without spawning.
     ModelBuild(world::ModelSpec),
+    /// model_export: as model_build, and the built model is lent to the caller's thread through
+    /// the slot (the export and the file's check run there).
+    ModelExport(world::ModelSpec, crate::models::BuiltSlot),
     /// model_reload: re-read every recipe and style now.
     ModelReload,
     /// Cameras, orbits, compares and queries (see [`crate::sight_tools`]).
@@ -675,7 +678,7 @@ impl CallerThread {
             "logic_reload" => CallerThread::LogicReload,
             "merge_suggest" => CallerThread::MergeSuggest,
             "style_check" => CallerThread::Studio,
-            "terrain_edit" | "model_paint" | "model_path" => CallerThread::Terrain,
+            "terrain_edit" | "model_paint" | "model_path" | "model_export" => CallerThread::Terrain,
             "timeline_set" => CallerThread::Timeline,
             "text_edit" => CallerThread::Text,
             "security_incidents" => CallerThread::Security,
@@ -2937,6 +2940,7 @@ pub(crate) fn definitions() -> Vec<ToolDef> {
     .chain(crate::gi_tools::definitions())
     .chain(crate::terrain_tools::definitions())
     .chain(crate::paint_tools::definitions())
+    .chain(crate::model_export::definitions())
     .chain(crate::path_tools::definitions())
     .chain(crate::ui_tools::definitions())
     .chain(crate::l10n_tools::definitions())

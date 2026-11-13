@@ -13,10 +13,11 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     resumes it or opens another from the start screen or by asking an agent, and is found and called from a
     terminal: `specula projects`, `open`, `new`, `list`, `tools`, `call`, `stop`; one engine a project;
     Windows first, the macOS and Linux variants with those ports: [docs/design/LAUNCH.md](docs/design/LAUNCH.md),
-    `scripts/launch_check.py`).
-  - **Left, in this order:** asset export for other engines (`model_export`: the glTF exporter in
-    `specula-gltf` round-trips in tests but no tool exposes it; the owner asked on 2026-11-13 that assets be
-    easy to carry elsewhere); the performance pass on a quiet machine (the editor's panels still read one
+    `scripts/launch_check.py`), and asset export for other engines (owner, 2026-11-13: assets are data that
+    is reused, copied and modified, and easy to carry elsewhere: `model_export` writes any recipe as a `.glb`
+    with its baked textures, rig and clips, and says what it does not carry;
+    [docs/design/EXPORT.md](docs/design/EXPORT.md), `scripts/export_check.py`).
+  - **Left, in this order:** the performance pass on a quiet machine (the editor's panels still read one
     pointer for the human and an agent: docs/design/EDITOR.md, "Known limits"); the measured comparison (ROADMAP M5, "Measured leverage": tell the
     owner the token total before the runs); the M5 exit proof; the final audit; the docs pass (ROADMAP's M5
     ticks and CHANGELOG's M5 section are behind).
@@ -287,7 +288,8 @@ In practice that means six **foundations** that apply to every change from M1 on
     overlays), `sight_orbit` (turntable), `sight_compare` (before/after), `sight_query`, named persistent cameras
     (`camera_set` / `camera_list` / `camera_delete`), `window_view` (point the human's window).
   - Assets: `model_build` / `model_reload` (procedural recipes and glTF/GLB), `model_paint` (vertex colours as
-    strokes in the recipe), `model_path` (a sweep part's path), 2D tilemaps (`tilemap_get` / `tilemap_set`).
+    strokes in the recipe), `model_path` (a sweep part's path), `model_export` (a recipe written as a `.glb` for
+    other engines: [docs/design/EXPORT.md](docs/design/EXPORT.md)), 2D tilemaps (`tilemap_get` / `tilemap_set`).
   - Coordination: `task_*` (the task board), `intent_*`, `note_*`, `world_rollup`, `lease_*` (ports, GPU time,
     scratch folders), `swarm_settings` (the frame floor; lead only), `desync_trace` / `desync_compare`.
   - Gameplay as data (Lex): `lex_schema`, `lex_list`, `lex_get`, `lex_edit`, `lex_validate`, `lex_simulate`,

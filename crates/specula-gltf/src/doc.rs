@@ -181,6 +181,8 @@ pub struct Primitive {
 pub struct Mesh {
     pub name: Option<String>,
     pub primitives: Vec<Primitive>,
+    /// `extras.specula` (a Specula export's wind term).
+    pub specula: Option<Json>,
 }
 
 /// A node's local transform as written.
@@ -883,7 +885,7 @@ pub fn parse(json: &Json, limits: &Limits, warnings: &mut Vec<Warning>) -> Resul
                 has_targets: pr.get("targets").and_then(Json::as_array).is_some_and(|t| !t.is_empty()),
             });
         }
-        d.meshes.push(Mesh { name: name(m, &p)?, primitives });
+        d.meshes.push(Mesh { name: name(m, &p)?, primitives, specula: specula_extras(m) });
     }
     let nodes = arr(json, "nodes", "", max)?;
     for (i, s) in arr(json, "skins", "", max)?.iter().enumerate() {

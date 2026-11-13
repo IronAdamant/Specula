@@ -302,6 +302,13 @@ fn texref(t: Option<TexRef>) -> Option<TextureRef> {
     t.map(|t| TextureRef { texture: t.texture, tex_coord: t.tex_coord, scale: t.scale })
 }
 
+/// A wind term from a mesh's `extras.specula.wind`, if it is complete and within a recipe's
+/// own bounds (`specula_model`'s `wind`: amount 0.005..=1 m, height 0.03..=8 m).
+fn wind_of(x: &Json) -> Option<specula_model::Wind> {
+    let num = |k: &str, lo: f32, hi: f32| x.get(k).and_then(Json::as_f64).map(|v| v as f32).filter(|v| (lo..=hi).contains(v));
+    Some(specula_model::Wind { amount: num("amount", 0.005, 1.0)?, height: num("height", 0.03, 8.0)?, painted: x.get("painted")?.as_bool()? })
+}
+
 /// A preset from `extras.specula`, if it is complete and valid.
 fn specula_preset(x: &Json) -> Option<(String, MaterialPreset)> {
     let num = |k: &str, hi: f32| x.get(k).and_then(Json::as_f64).map(|v| v as f32).filter(|v| (0.0..=hi).contains(v));
@@ -603,6 +610,15 @@ fn read_mesh(g: &GeoCtx, mats: &mut Materials, node: usize, mi: usize, skin: Opt
             }
             None => (None, 0),
         };
+        // A Specula export's wind weights (a vertex colour's alpha is the wind's weight here,
+        // which glTF's COLOR_0 alpha, opacity, can't carry): read back into the alpha.
+        let wind = match attr(crate::export::WIND_ATTRIBUTE) {
+            Some(a) => {
+                expect_type(doc, a, &ap(crate::export::WIND_ATTRIBUTE), &[ElemType::Scalar])?;
+                Some(floats(doc, g.bufs, a, &ap(crate::export::WIND_ATTRIBUTE))?)
+            }
+            None => None,
+        };
         // Skinning attributes (only meaningful on a node with a skin).
         let mut infl: Option<Vec<[(u32, f32); 4]>> = None;
         let joints0 = attr("JOINTS_0");
@@ -686,12 +702,15 @@ fn read_mesh(g: &GeoCtx, mats: &mut Materials, node: usize, mi: usize, skin: Opt
                     c[k] *= t[k];
                 }
             }
+            if let Some(weights) = &wind {
+                c[3] = weights[i].clamp(0.0, 1.0);
+            }
             [linear_to_srgb8(c[0]), linear_to_srgb8(c[1]), linear_to_srgb8(c[2]), unorm8(c[3])]
         };
         // Append the vertices (shared when another primitive used the same accessors).
         let first_index = indices.len() as u32;
         if let Some(nv) = &normals {
-            let mut key: Vec<u64> = ["POSITION", "NORMAL", "TEXCOORD_0", "COLOR_0", "JOINTS_0", "WEIGHTS_0", "JOINTS_1", "WEIGHTS_1", "TANGENT"].iter().map(|k| attr(k).map_or(u64::MAX, |a| a as u64)).collect();
+            let mut key: Vec<u64> = ["POSITION", "NORMAL", "TEXCOORD_0", "COLOR_0", "JOINTS_0", "WEIGHTS_0", "JOINTS_1", "WEIGHTS_1", "TANGENT", crate::export::WIND_ATTRIBUTE].iter().map(|k| attr(k).map_or(u64::MAX, |a| a as u64)).collect();
             key.extend(mult.iter().map(|m| m.to_bits() as u64));
             key.push(tex.as_ref().map_or(u64::MAX, |t| t.0 as u64));
             let base = match cache.get(&key) {
@@ -1633,7 +1652,8 @@ pub(crate) fn convert(l: &Loaded, opts: &ImportOptions, mut warnings: Vec<Warnin
         notes,
         rig,
         extras: Default::default(),
-        wind: None,
+        // A Specula export's wind term, when it is one a recipe could hold.
+        wind: doc.meshes.iter().find_map(|m| m.specula.as_ref()?.get("wind")).and_then(wind_of),
     };
     Ok(Import { model, skeleton, clips, materials, textures, images, warnings, stats, generator: doc.generator.clone() })
 }

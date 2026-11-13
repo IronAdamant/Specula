@@ -235,6 +235,10 @@ pub fn call(tools: &Tools, session: &SessionInfo, name: &str, args: &Json) -> To
     if name == "model_path" {
         return crate::path_tools::call(tools, session, args);
     }
+    // (And a model written as a .glb: built by the engine, exported and checked on this thread.)
+    if name == "model_export" {
+        return crate::model_export::call(tools, session, args);
+    }
     if name != "terrain_edit" {
         return err("unknown_tool", format!("unknown terrain tool '{name}'"), vec![]);
     }

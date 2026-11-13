@@ -47,6 +47,11 @@ The previous Bevy-based tooling (formerly *Grok-Bevy*) is preserved at tag
 A project is a folder: copy it to another machine and open it there. Details:
 [docs/design/LAUNCH.md](docs/design/LAUNCH.md).
 
+**Your assets are yours.** Models, terrain, creatures and their clips are recipes: plain text in the project,
+which you or any agent can read, copy and change with a text editor. `model_export` writes any of them as a glTF
+binary (`.glb`) for Blender, Godot, Unity or Unreal, and says what the file holds and what it does not. Images
+are PNG and sounds are WAV or Ogg already. Details: [docs/design/EXPORT.md](docs/design/EXPORT.md).
+
 ## Network and firewall
 
 Specula talks only to agents on the same machine.

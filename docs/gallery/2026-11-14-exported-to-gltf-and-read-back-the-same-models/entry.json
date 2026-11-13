@@ -1,0 +1,48 @@
+{
+  "date": "2026-11-14",
+  "time": "11:40",
+  "date_source": "run id",
+  "approximate": false,
+  "milestone": "M5",
+  "commit": "0256ceca",
+  "subject": "assets",
+  "topic": "3D asset",
+  "title": "Exported to glTF and read back: the same models",
+  "note": "model_export writes a recipe as a .glb for other engines. Each pair is the model built from its recipe beside the same model after export and import: a statue, a rigged creature and a patch of grass match in size and colour, and the terrain matches its re-import exactly. The first run showed the exported grass as solid dark cards (its blades are a baked cut-out texture the exporter did not write); textures now travel in the file. New in M5 (the export lane).",
+  "source": "scripts/export_check.py",
+  "adapter": "integrated",
+  "images": [
+    {
+      "file": "01-original-and-exported.jpg",
+      "caption": "Each pair: the exported copy (left) and the original (right): grass, creature, statue",
+      "original": "original_and_exported.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 4680
+    },
+    {
+      "file": "02-original-and-exported.jpg",
+      "caption": "Before textures travelled in the file: the exported grass (far left) as solid dark cards",
+      "original": "original_and_exported.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 4446
+    },
+    {
+      "file": "03-terrain-original.jpg",
+      "caption": "The terrain, from its recipe",
+      "original": "terrain_original.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 3991
+    },
+    {
+      "file": "04-terrain-exported.jpg",
+      "caption": "The terrain, exported and read back",
+      "original": "terrain_exported.png",
+      "width": 640,
+      "height": 360,
+      "bytes": 3991
+    }
+  ]
+}

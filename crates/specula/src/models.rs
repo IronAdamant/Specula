@@ -161,6 +161,11 @@ const HEAVY_WORKERS: usize = 1;
 /// Lists in a reload report stop here (the rest is counted).
 const MAX_LISTED: usize = 20;
 
+/// Where the engine thread puts a built model for the caller's thread that asked for it
+/// (`model_export`: the export, its encoding and the file's check run on that thread; the
+/// engine thread's part is the build request `model_build` makes, and one commit).
+pub type BuiltSlot = Arc<Mutex<Option<Arc<Built>>>>;
+
 /// One built model, shared by every spec with the same content, parameters and seed.
 pub struct Built {
     /// Unique per build: the GPU cache's key.
@@ -714,6 +719,17 @@ fn procgen_textures(model: &Model, x: &mut Extras) {
     }
 }
 
+/// The cutoff texture `t` is alpha-tested at, when every material that uses it as its base
+/// colour is a `MASK` material with that one cutoff: then its mips keep the cut-out's coverage.
+/// A texture that materials test differently (two cutoffs, or one of them opaque or blended) is
+/// left with plain mips: one chain can't be right for both.
+fn mask_cutoff(materials: &[specula_gltf::ImportedMaterial], t: usize) -> Option<f32> {
+    let mut users = materials.iter().filter(|m| m.base_color_texture.is_some_and(|b| b.texture == t && b.tex_coord == 0));
+    let first = users.next().filter(|m| m.alpha_mode == specula_gltf::AlphaMode::Mask)?;
+    let cutoff = first.alpha_cutoff.clamp(0.0, 1.0);
+    (cutoff > 0.0 && users.all(|m| m.alpha_mode == specula_gltf::AlphaMode::Mask && m.alpha_cutoff.clamp(0.0, 1.0) == cutoff)).then_some(cutoff)
+}
+
 /// A glTF sampler as the GPU's.
 fn gltf_sampler(s: &specula_gltf::Sampler) -> TextureSampler {
     let nearest = |f: Option<u32>| f.is_some_and(|f| f == 9728 || f == 9984 || f == 9986);
@@ -791,7 +807,12 @@ fn import_gltf(path: &Path) -> Result<(Model, Extras), RecipeError> {
         let (width, height) = (images[i].width, images[i].height);
         let rgba = if *left == 0 { std::mem::take(&mut images[i].rgba) } else { images[i].rgba.clone() };
         let format = if srgb { TextureFormat::Rgba8Srgb } else { TextureFormat::Rgba8Unorm };
-        let Ok(levels) = specula_gpu::generate_mips_owned(width, height, format, rgba) else { continue };
+        let Ok(mut levels) = specula_gpu::generate_mips_owned(width, height, format, rgba) else { continue };
+        // A cut-out's base colour keeps its coverage with distance, as a baked set's does
+        // (cards don't thin out and vanish): an imported cut-out is drawn like one made here.
+        if let Some(cutoff) = srgb.then(|| mask_cutoff(&import.materials, t)).flatten() {
+            specula_gpu::preserve_alpha_coverage(&mut levels, cutoff);
+        }
         x.textures.push(TextureData { width, height, format, mips: levels.len(), levels: Mutex::new(levels), sampler });
         index.insert((t, srgb), x.textures.len() - 1);
     }
@@ -4063,6 +4084,85 @@ mod tests {
             w.overlays.insert((k, 0), Cached { used, set: Err("small".into()), bytes: 1 });
         }
         assert!(w.bases.len() + w.overlays.len() <= MAX_WRITE_SETS);
+    }
+
+    /// Review R1 of m5-export, the blocker, on the import path: an imported `MASK` material
+    /// whose texture is opaque (what other tools' assets usually are) keeps every mip opaque,
+    /// and a real cut-out keeps its coverage with distance.
+    #[test]
+    fn an_imported_mask_keeps_solid_surfaces_solid_and_cut_outs_covered() {
+        let root = scratch("maskmips", &[]);
+        let style = Style::parse(&std::fs::read_to_string(sepulcra().join(STYLE_FILE)).unwrap()).unwrap();
+        let mut lib_files = BTreeMap::new();
+        for e in std::fs::read_dir(sepulcra().join("recipes")).unwrap() {
+            let p = e.unwrap().path();
+            lib_files.insert(p.file_stem().unwrap().to_string_lossy().to_string(), std::fs::read_to_string(&p).unwrap());
+        }
+        let grass = build(&lib_files["grass_patch"], &BuildParams { library: Some(&lib_files), ..BuildParams::new(&style) }).unwrap();
+        assert!(grass.extras.textures[0].1.alpha_cutoff > 0.0, "the grass is a cut-out");
+        let cutoff8 = (grass.extras.textures[0].1.alpha_cutoff * 255.0).round() as u8;
+        std::fs::create_dir_all(root.join("assets")).unwrap();
+        let levels_of = |model: &Model, file: &str| -> Vec<Vec<u8>> {
+            let glb = specula_gltf::export_glb(&specula_gltf::ExportInput::new(model)).unwrap();
+            std::fs::write(root.join("assets").join(file), &glb).unwrap();
+            let (_, x) = import_gltf(&root.join("assets").join(file)).unwrap();
+            let base = x.materials.values().find_map(|m| m.base.filter(|_| m.alpha_cutoff > 0.0)).expect("a masked material with a base colour texture");
+            let levels = x.textures[base].levels.lock().unwrap().clone();
+            levels
+        };
+        // As it is: thin blades. Every level covers at least half of level 0's share (plain
+        // averaging loses them: `alpha_coverage_is_kept_through_the_mips`).
+        let cover = |l: &[u8]| l.chunks_exact(4).filter(|p| p[3] >= cutoff8).count() as f64 / (l.len() / 4) as f64;
+        let blades = levels_of(&grass, "blades.glb");
+        assert!(cover(&blades[0]) > 0.02 && blades.len() > 4);
+        for (i, l) in blades.iter().enumerate().take(4) {
+            assert!(cover(l) >= cover(&blades[0]) * 0.5, "level {i}: {} of {}", cover(l), cover(&blades[0]));
+        }
+        // The same model with its texture made opaque: a solid surface under a MASK material,
+        // as an asset from another tool. Every mip stays opaque.
+        let mut solid = grass.clone();
+        for (_, set) in &mut solid.extras.textures {
+            let mut opaque = (**set).clone();
+            opaque.base_color.chunks_exact_mut(4).for_each(|p| p[3] = 255);
+            opaque.hash ^= 1;
+            *set = Arc::new(opaque);
+        }
+        let levels = levels_of(&solid, "solid.glb");
+        assert!(levels.iter().all(|l| l.chunks_exact(4).all(|p| p[3] == 255)), "an opaque mask's mips are opaque: nothing is cut out of a solid surface");
+        // One texture, tested two ways: left with plain mips.
+        let m = |mode, cutoff| specula_gltf::ImportedMaterial { alpha_mode: mode, alpha_cutoff: cutoff, base_color_texture: Some(specula_gltf::TextureRef { texture: 0, tex_coord: 0, scale: 1.0 }), ..plain_material() };
+        use specula_gltf::AlphaMode::{Blend, Mask, Opaque};
+        assert_eq!(mask_cutoff(&[m(Mask, 0.5)], 0), Some(0.5));
+        assert_eq!(mask_cutoff(&[m(Mask, 0.5), m(Mask, 0.5)], 0), Some(0.5));
+        assert_eq!(mask_cutoff(&[m(Mask, 0.5), m(Mask, 0.9)], 0), None);
+        assert_eq!(mask_cutoff(&[m(Mask, 0.5), m(Blend, 0.5)], 0), None);
+        assert_eq!(mask_cutoff(&[m(Opaque, 0.5), m(Mask, 0.5)], 0), None);
+        assert_eq!(mask_cutoff(&[m(Opaque, 0.5)], 0), None);
+        assert_eq!(mask_cutoff(&[m(Mask, 0.5)], 1), None, "another texture");
+        assert_eq!(mask_cutoff(&[m(Mask, 0.0)], 0), None);
+    }
+
+    /// An imported material with nothing set.
+    fn plain_material() -> specula_gltf::ImportedMaterial {
+        specula_gltf::ImportedMaterial {
+            name: "m".into(),
+            preset: MaterialPreset { kind: MaterialKind::Standard, color: [1.0; 4], roughness: 1.0, metallic: 0.0, emissive: 0.0, specular: 0.25, opacity: 1.0 },
+            base_color: [1.0; 4],
+            base_color_texture: None,
+            metallic: 1.0,
+            roughness: 1.0,
+            metallic_roughness_texture: None,
+            normal_texture: None,
+            occlusion_texture: None,
+            emissive: [0.0; 3],
+            emissive_strength: 1.0,
+            emissive_texture: None,
+            alpha_mode: specula_gltf::AlphaMode::Opaque,
+            alpha_cutoff: 0.5,
+            double_sided: false,
+            from_specula: false,
+            texture_baked: false,
+        }
     }
 
     /// Review round 3, finding 4: a glTF changed on disk since the library last looked at it is

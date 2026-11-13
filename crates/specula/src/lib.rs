@@ -141,6 +141,7 @@ pub mod timeline_audio;
 mod gi;
 mod gi_tools;
 pub mod terrain;
+mod model_export;
 mod paint_tools;
 mod path_tools;
 mod terrain_tools;
@@ -1176,11 +1177,22 @@ struct BuildWaiter {
     jobs: BTreeSet<u64>,
     /// model_build: the spec reported on (`None`: a reload).
     spec: Option<world::ModelSpec>,
+    /// model_export: where the built model goes for the caller's thread.
+    lend: Option<models::BuiltSlot>,
     /// model_reload: the report so far.
     reload: models::Reload,
     reply: jobs::Reply,
     deadline: Instant,
     answer: Option<ToolOutput>,
+}
+
+impl BuildWaiter {
+    /// model_export: the built model for the caller's thread (a model_build lends nothing).
+    fn lend_built(&self, built: &Arc<models::Built>) {
+        if let Some(slot) = &self.lend {
+            *slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(built));
+        }
+    }
 }
 
 struct AutosaveJob {
@@ -2025,6 +2037,7 @@ impl Engine {
                     match (&f.result, &w.spec) {
                         (Ok(b), Some(spec)) => {
                             self.library.lock().remember_build(b);
+                            w.lend_built(b);
                             w.answer = Some(ToolOutput::text(models::report(spec, b, false).to_pretty()));
                         }
                         (Err(e), Some(_)) => w.answer = Some(world_error(e)),
@@ -2211,13 +2224,22 @@ impl Engine {
     /// model_build and model_reload: answered when their builds finish (other calls go on).
     fn handle_model_call(&mut self, request: Request) {
         let Request { command, reply, deadline, .. } = request;
-        let mut waiter = BuildWaiter { jobs: BTreeSet::new(), spec: None, reload: models::Reload::default(), reply, deadline, answer: None };
+        let mut waiter = BuildWaiter { jobs: BTreeSet::new(), spec: None, lend: None, reload: models::Reload::default(), reply, deadline, answer: None };
+        // (model_export is model_build, with the built model lent to the caller's thread.)
+        let command = match command {
+            Command::ModelExport(spec, slot) => {
+                waiter.lend = Some(slot);
+                Command::ModelBuild(spec)
+            }
+            other => other,
+        };
         match command {
             Command::ModelBuild(spec) => {
                 let requested = self.library.lock().request(&spec);
                 match requested {
                     Err(e) => waiter.answer = Some(world_error(&e)),
                     Ok(models::BuildRequest::Ready(b, cached)) => {
+                        waiter.lend_built(&b);
                         waiter.answer = Some(ToolOutput::text(models::report(&spec, &b, cached).to_pretty()))
                     }
                     Ok(models::BuildRequest::Pending(job)) => {
@@ -2723,7 +2745,7 @@ impl Engine {
             }
             command => Request { command, ..request },
         };
-        if matches!(request.command, Command::ModelBuild(_) | Command::ModelReload) {
+        if matches!(request.command, Command::ModelBuild(_) | Command::ModelExport(..) | Command::ModelReload) {
             self.handle_model_call(request);
             return;
         }
@@ -3120,7 +3142,7 @@ impl Engine {
             Command::Terrain(call) => self.terrain_call(call),
             Command::Ui(call) => self.ui_call(call, w, tick, &request.session),
             Command::SaveGame(call) => self.handle_save(call, w, &by, authority::authority(&self.swarm, &request.session.id)),
-            Command::ModelBuild(_) | Command::ModelReload => unreachable!("answered by handle_model_call"),
+            Command::ModelBuild(_) | Command::ModelExport(..) | Command::ModelReload => unreachable!("answered by handle_model_call"),
             // An agent's hold on an action the human is using takes their input over: judged by
             // the input monitor first (docs/design/SECURITY.md).
             Command::Logic(call) => match self.security_logic_input(&call, &request.session) {
@@ -3580,7 +3602,7 @@ fn call_class(command: &Command) -> Class {
         Command::Vfx(call) => vfx_tools::call_class(call),
         Command::Timeline(call) => timeline_tools::call_class(call),
         Command::Gi(call) => gi_tools::call_class(call),
-        Command::Save { .. } | Command::Load { .. } | Command::ModelBuild(_) | Command::ModelReload => Class::Disk,
+        Command::Save { .. } | Command::Load { .. } | Command::ModelBuild(_) | Command::ModelExport(..) | Command::ModelReload => Class::Disk,
         Command::Hash { verify: true, .. } => Class::Big,
         Command::Swarm(call) => call.class(),
         Command::Review(call) => call.class(),
