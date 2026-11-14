@@ -206,7 +206,9 @@ not checked yet.
 ### Animation sight
 
 `anim_filmstrip` renders contact sheets (rows of clips, states or transitions on a neutral stage, or an entity's own
-play in the world) with each row's checks attached, saved like captures with a packet. Sheets stay within 2048 px a
+play in the world) with each row's checks attached, saved like captures with a packet. The checks run on a worker while the sheet
+is laid out; `checks_failed` counts their failures, and if they could not run it is `null`, `checks_error` says why
+and every row of the sheet reads CHECKS DID NOT RUN (never a pass). Sheets stay within 2048 px a
 side (tiles shrink) and 128 tiles a call; a stage sheet frames each row on its own and labels a row framed wider
 than the closest one with its scale; graph-state rows put the root's rise back (root motion is taken out of their
 poses), so a leap leaves the ground. Entity sheets add a front view of the feet from above knee-high clutter, light

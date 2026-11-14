@@ -81,6 +81,17 @@ on the engine thread.
 there (`Library::resolve`), and so does an `anim_*` tool on a model the library does not know (no entity
 uses it and nothing asked for it since the last collection) (ROADMAP M5).
 
+**A slow frame says what it did** (2026-11-15). An `engine.stall` of a window frame carries `top`: the
+frame's zones that took the most time themselves, largest first (it is raised when the next pass has
+collected the frame's zones). A step job's slice is a zone named for its kind. The first frame it named:
+`anim_filmstrip/film.check_row 30.6`: a filmstrip with checks ran each row's motion checks as one step on
+the engine thread (31 ms for one state of a Sepulcra creature, in every run of
+`scripts/anim_graph_check.py`), past the render budget, and the window frame it ran in came late.
+`anim_check`'s own checks had moved to a worker earlier; the filmstrips' run there too now (a recipe's
+rows in one job, an entity's check in one), and the filmstrip waits for their reports without taking
+another slice (`Step::Wait`: it waits at the back of the queue, so the jobs behind it go on). A check
+job that fails is said in the answer and on the sheet, never shown as a pass.
+
 **Take baselines on an idle machine.** The script records whole-machine CPU use before and after and
 warns above 20%: with parallel builds running, single calls show 15–25 ms scheduler delays instead of
 under 1 ms, and build timings double.

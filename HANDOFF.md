@@ -28,6 +28,8 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       installed, the validation layer's shader checks are about 3 s of every start.
     - **Scripts try once.** The retries that made live checks pass by luck are gone (`edswarm_check`,
       `gallery_check`, `m3_exit`, the first `agent_hello` everywhere): a miss is a finding.
+    - **A slow window frame says what it did:** its `engine.stall` carries `top`, the frame's zones that
+      took the most time themselves.
     - **`models.lock_held`** (a trace event) names who held the model library's lock for 2 ms or more, and
       where it was taken. It found the cause of the frames that waited beside a busy machine: a build
       request read the disk under the lock. A request reads without it now (`Library::request_plan`), and

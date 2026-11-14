@@ -924,6 +924,11 @@ impl Profiler {
         )
     }
 
+    /// How many frames have been collected ([`Profiler::end_frame`]).
+    pub fn frames_collected(&self) -> u64 {
+        self.frame
+    }
+
     pub fn latest(&self) -> Option<&FrameProfile> {
         self.collector.latest()
     }

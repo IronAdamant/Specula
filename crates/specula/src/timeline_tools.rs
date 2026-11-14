@@ -1324,7 +1324,7 @@ mod tests {
             }
             for (job, reply, _, done) in jobs.iter_mut().filter(|j| j.3.is_none()) {
                 match job.step(&mut e, reply) {
-                    Step::More => {}
+                    Step::More | Step::Wait => {}
                     Step::Handed => *done = Some(true),
                     Step::Done(out) => {
                         assert!(!out.is_error, "a preview failed: {:?}", out.content);

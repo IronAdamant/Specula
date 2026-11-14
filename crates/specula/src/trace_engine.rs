@@ -78,6 +78,10 @@ pub(crate) struct Watch {
     /// The thread's waits for the locks it shares with workers ([`crate::lockwait`]), read at
     /// the same moments: a stall's `lock_ms`.
     lock_marks: VecDeque<(Instant, f64)>,
+    /// A window frame past its budget, waiting for its zones: they are collected when the next
+    /// pass begins (`Profiler::end_frame`), and the stall is raised then, saying which of them
+    /// took the time ([`Engine::frame_stall_named`]).
+    frame_stall: Option<FrameStall>,
     last_request: Instant,
     stalls: VecDeque<Json>,
     gpu_sampled: Option<Instant>,
@@ -103,6 +107,7 @@ impl Default for Watch {
             cpu: None,
             cpu_marks: VecDeque::new(),
             lock_marks: VecDeque::new(),
+            frame_stall: None,
             last_request: Instant::now(),
             stalls: VecDeque::new(),
             gpu_sampled: None,
@@ -144,6 +149,46 @@ impl Watch {
 
 /// Readings of the thread's processor time kept (one a piece of work reported, one a frame).
 const CPU_MARKS: usize = 64;
+
+/// A slow frame, held until its zones are in.
+struct FrameStall {
+    ms: f64,
+    budget: f64,
+    cpu_ms: Option<f64>,
+    lock_ms: Option<f64>,
+    /// How many frames the profiler had collected when the frame ended: this frame's zones
+    /// are the next collection.
+    collected: u64,
+    /// Zones were being recorded when the frame ran (without them it is reported bare).
+    profiled: bool,
+}
+
+/// How many of a slow frame's zones are named, and the least time one must have taken itself.
+const TOP_ZONES: usize = 3;
+const TOP_ZONE_MS: f64 = 0.5;
+
+/// The zones of the engine thread's frame that took the most time themselves (not in their
+/// children), largest first: `"draw_list/sync_meshes 12.3, game_frame 6.1"`. Presenting is
+/// left out (a frame's budget is its work outside serving and present). `None`: no frame zone
+/// on that thread, or none of its zones took [`TOP_ZONE_MS`].
+fn top_zones(profile: &specula_core::profile::FrameProfile, thread: &str) -> Option<String> {
+    let t = profile.thread(thread)?;
+    top_of((0..t.zones().len()).map(|i| (t.path(i), t.zones()[i].self_ms())))
+}
+
+/// [`top_zones`] of a thread's zones as (path, own ms): those inside `frame`, largest first.
+fn top_of(zones: impl Iterator<Item = (String, f64)>) -> Option<String> {
+    let mut own: Vec<(f64, String)> = zones
+        .filter_map(|(path, self_ms)| {
+            // (The frame's own time is work with no zone of its own: said as such.)
+            let inside = if path == "frame" { "(no zone)" } else { path.strip_prefix("frame/")? };
+            (inside != "present" && !inside.starts_with("present/") && self_ms >= TOP_ZONE_MS).then(|| (self_ms, inside.to_owned()))
+        })
+        .collect();
+    own.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    own.truncate(TOP_ZONES);
+    (!own.is_empty()).then(|| own.iter().map(|(ms, path)| format!("{path} {:.1}", ms)).collect::<Vec<_>>().join(", "))
+}
 
 /// The engine thread's own counts at one moment: its processor time (ms; `None` where it
 /// can't be read) and what it has waited for locks shared with workers (ms).
@@ -294,6 +339,31 @@ impl Engine {
         if ms <= budget {
             return;
         }
+        // A window frame: its zones are not collected yet (the next pass collects them). Its
+        // stall is raised then, with the zones that took the time.
+        // (Always at the next pass, whether or not zones are being recorded: when a stall is
+        // reported never depends on a switch.)
+        if zone == "frame" {
+            self.watch.frame_stall = Some(FrameStall { ms, budget, cpu_ms, lock_ms, collected: self.profiler.frames_collected(), profiled: specula_core::profile::enabled() });
+            return;
+        }
+        self.raise_stall(call, class, zone, ms, budget, cpu_ms, lock_ms, None);
+    }
+
+    /// After the profiler collected a frame (`Profiler::end_frame`): a slow frame that was
+    /// waiting for its zones is reported, with those that took the most time. A frame whose
+    /// zones are not the ones just collected (the engine is stopping) is reported without.
+    pub(crate) fn frame_stall_named(&mut self) {
+        let Some(f) = self.watch.frame_stall.take() else { return };
+        let top = (f.profiled && self.profiler.frames_collected() == f.collected + 1).then(|| self.profiler.latest().and_then(|p| top_zones(p, crate::perf::ENGINE_THREAD))).flatten();
+        self.raise_stall(0, None, "frame", f.ms, f.budget, f.cpu_ms, f.lock_ms, top);
+    }
+
+    /// One piece of engine-thread work past its budget: the trace event, the incident, the
+    /// recent list. `top`: a frame's zones that took the time.
+    #[allow(clippy::too_many_arguments)]
+    fn raise_stall(&mut self, call: u64, class: Option<Class>, zone: &'static str, ms: f64, budget: f64, cpu_ms: Option<f64>, lock_ms: Option<f64>, top: Option<String>) {
+        let rec = trace_sink::call(call);
         // Work no agent asked for (a frame step) is named by its zone.
         let tool_name: String = rec.as_ref().map_or_else(|| zone.to_owned(), |r| r.tool.to_string());
         let args = rec.as_ref().map_or_else(String::new, |r| r.args.to_string());
@@ -316,6 +386,7 @@ impl Engine {
             ("frame", Json::from(trace::now().1)),
             ("cpu_ms", cpu_ms.map_or(Json::Null, Json::from)),
             ("lock_ms", lock_ms.map_or(Json::Null, Json::from)),
+            ("top", top.as_deref().map_or(Json::Null, Json::from)),
         ]);
         if self.watch.stalls.len() >= RECENT_STALLS {
             self.watch.stalls.pop_front();
@@ -326,7 +397,10 @@ impl Engine {
             level,
             code: "engine.stall",
             key: &tool_name,
-            summary: stall_summary(&tool_name, ms_r, class_str, budget, cpu_ms, lock_ms),
+            summary: match &top {
+                Some(top) => format!("{}; most of it in {top} (ms each, the zone itself)", stall_summary(&tool_name, ms_r, class_str, budget, cpu_ms, lock_ms)),
+                None => stall_summary(&tool_name, ms_r, class_str, budget, cpu_ms, lock_ms),
+            },
             fields: {
                 let mut fields = vec![
                     ("tool", Value::from(tool_name.as_str())),
@@ -341,6 +415,9 @@ impl Engine {
                 }
                 if let Some(lock) = lock_ms {
                     fields.push(("lock_ms", Value::F64(lock)));
+                }
+                if let Some(top) = &top {
+                    fields.push(("top", Value::from(top.as_str())));
                 }
                 fields
             },
@@ -951,6 +1028,61 @@ mod tests {
         assert_eq!(stall_summary("world_save", 55.0, "disk", 30.0, None, None), "world_save held the engine thread 55 ms (its disk budget is 30 ms)");
     }
 
+    /// A slow frame says which of its zones took the time (performance pass, 2026-11-15: one
+    /// start of Sepulcra in ten had a first frame of 30 ms of the engine's own work, and
+    /// nothing said what it did). The zones are those of the frame's own thread, by their own
+    /// time, largest first; presenting and what is outside the frame are not in it.
+    #[test]
+    fn a_slow_frames_zones_are_named_largest_first() {
+        // (Values, not a recording: the profiler's switch is process-wide and other tests
+        // turn it. Paths are as `ThreadProfile::path` gives them; times are a zone's own.)
+        let z = |path: &str, ms: f64| (path.to_owned(), ms);
+        let zones = [
+            z("requests", 8.0),
+            z("frame", 4.0),
+            z("frame/draw_list", 2.0),
+            z("frame/draw_list/sync_meshes", 12.0),
+            z("frame/game_frame", 6.0),
+            z("frame/present", 9.0),
+            z("frame/present/gpu.frame_fence", 9.0),
+            z("frame/stream", 0.01),
+        ];
+        let top = top_of(zones.iter().cloned()).expect("the frame has zones that took time");
+        assert_eq!(top, "draw_list/sync_meshes 12.0, game_frame 6.0, (no zone) 4.0");
+        // Under the least time worth naming, a zone is left out; a frame with none says nothing.
+        assert_eq!(top_of([z("frame/draw_list", TOP_ZONE_MS), z("frame/stream", TOP_ZONE_MS - 0.01)].into_iter()).as_deref(), Some("draw_list 0.5"));
+        assert!(top_of([z("requests", 8.0), z("frame/present", 9.0), z("frame/stream", 0.01)].into_iter()).is_none());
+        // Equal times are in name order: the same frame always reads the same.
+        assert_eq!(top_of([z("frame/b", 2.0), z("frame/a", 2.0)].into_iter()).as_deref(), Some("a 2.0, b 2.0"));
+        // A thread the profile does not have has no zones to name.
+        assert!(top_zones(&specula_core::profile::FrameProfile::default(), "no-such-thread").is_none());
+    }
+
+    /// A slow frame is reported when its zones are in (after the next collection), once, with
+    /// them; one that never gets its collection (the engine is stopping) is reported without.
+    #[test]
+    fn a_slow_frame_is_reported_once_its_zones_are_collected() {
+        let Some(mut engine) = crate::workers::charge_tests::engine() else { return };
+        // (Whether zones are being recorded is a process-wide switch other tests turn: when a
+        // frame's stall is reported does not depend on it, and nothing here reads it.)
+        let stalls = |e: &Engine| e.watch.stalls.iter().filter(|s| s.get("zone").and_then(Json::as_str) == Some("frame")).count();
+        engine.trace_frame(3, Duration::from_millis(45), None);
+        assert_eq!(stalls(&engine), 0, "held until its zones are collected");
+        engine.profiler.end_frame(&engine.gpu);
+        engine.frame_stall_named();
+        assert_eq!(stalls(&engine), 1);
+        engine.frame_stall_named();
+        assert_eq!(stalls(&engine), 1, "once");
+        // Other work is reported at once, as before.
+        engine.engine_work_done(0, None, "window_resize", Duration::from_millis(45));
+        assert_eq!(engine.watch.stalls.back().and_then(|s| s.get("zone")).and_then(Json::as_str), Some("window_resize"));
+        // A frame whose collection never comes is not dropped.
+        engine.trace_frame(4, Duration::from_millis(45), None);
+        engine.frame_stall_named();
+        assert_eq!(stalls(&engine), 2);
+        assert_eq!(engine.watch.stalls.back().and_then(|s| s.get("top")), Some(&Json::Null), "no zones were collected for it");
+    }
+
     /// A stall carries `cpu_ms` once the engine thread's clock is calibrated, and a piece of
     /// work that slept reads as waiting.
     #[test]
@@ -997,6 +1129,8 @@ mod tests {
         engine.engine_work_done(0, None, "capture_read", Duration::from_millis(1));
         let ran = engine.watch_ran_since(from);
         engine.trace_frame(7, started.elapsed(), Some(ran));
+        // (A frame's stall is raised once its zones are collected, or at once without a profiler.)
+        engine.frame_stall_named();
         let stall = engine.watch.stalls.back().unwrap().clone();
         assert_eq!(stall.get("zone").and_then(Json::as_str), Some("frame"));
         let (ms, cpu) = (stall.get("ms").and_then(Json::as_f64).unwrap(), stall.get("cpu_ms").and_then(Json::as_f64).expect("cpu_ms is there"));

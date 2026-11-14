@@ -105,8 +105,9 @@ def main():
             failed = packet["checks_failed"]
             sheets[recipe] = {"png": packet["image"]["path"], "packet": packet["image"]["packet_path"], "checks_failed": failed}
             print(f"  filmstrip {recipe}: {packet['image']['path']} ({packet['image']['width']}x{packet['image']['height']}), checks failed {failed}")
-            if failed:
-                fail(f"{recipe} filmstrip checks failed")
+            # (No count: the checks did not run. That is a failure here, never a pass.)
+            if failed is None or failed:
+                fail(f"{recipe} filmstrip checks failed: {packet.get('checks_error') or failed}")
         clips = mcp.call("anim_filmstrip", recipe="recipes/shambler.json", frames=8, tile=112)
         packet = json.loads(next(c["text"] for c in clips["content"] if c["type"] == "text"))
         sheets["shambler_clips"] = {"png": packet["image"]["path"], "rows": len(packet["rows"])}

@@ -129,7 +129,10 @@ trait StepJob {
   studio's: earned at a share of wall time (`WINDOW_SHARE` 0.25 with a window, `HEADLESS_SHARE`
   0.8 headless), spent by each step's measured time. In debt nothing runs, so a slow step on a
   busy iGPU is followed by frames without step work.
-- A step returns `Step::Done(answer)`, `Step::More`, or `Step::Handed` (it offloaded its finish,
+- A step returns `Step::Done(answer)`, `Step::More`, `Step::Wait` (nothing to do until a worker's job
+  returns: the job goes to the back, the jobs behind it get their slices, and the pass ends once every
+  queued job has waited; the filmstrips' motion checks), or
+  `Step::Handed` (it offloaded its finish,
   an encode, with a clone of the reply).
 - Past its caller's deadline a job answers `timed_out`; when its session closes it is dropped
   (answered `session_closed`).

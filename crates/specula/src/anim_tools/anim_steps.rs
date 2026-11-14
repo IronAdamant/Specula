@@ -205,6 +205,13 @@ impl Sheet {
     }
 }
 
+/// Where a worker's reports of a filmstrip's rows land (by row): filled on the engine thread
+/// when the worker's job returns, taken by the step that waits for them.
+type RowReports = std::rc::Rc<std::cell::RefCell<Option<Result<Vec<(usize, Report)>, String>>>>;
+
+/// Where a worker's answer of an entity's motion check lands, the same way.
+type CheckAnswer = std::rc::Rc<std::cell::RefCell<Option<ToolOutput>>>;
+
 /// A recipe filmstrip: rows of clips, states and transitions on the neutral stage.
 pub(super) struct FilmJob {
     source: String,
@@ -218,8 +225,15 @@ pub(super) struct FilmJob {
     with_checks: bool,
     rows_in: VecDeque<Row>,
     film: Vec<FilmRow>,
-    /// Rows posed whose checks are still to run (a step each: a check can take tens of ms).
+    /// Rows posed whose checks are still to run. They run on a worker, all of them in one job
+    /// (a row's check takes tens of ms: it was a step of its own on the engine thread, 31 ms
+    /// for one state of a Sepulcra creature, past the render budget and a late window frame).
     checks_todo: VecDeque<(usize, Row)>,
+    /// The worker's reports (by row), once its job returned; `Some` while they are awaited.
+    checks: Option<RowReports>,
+    /// The checks were asked for and did not run (their worker job failed): said in the
+    /// answer and on the sheet, never shown as a pass.
+    checks_error: Option<String>,
     sheet: Option<Sheet>,
     /// Each row's framing (centre, radius) and the closest one's radius.
     fits: Vec<([f32; 3], f32)>,
@@ -264,6 +278,8 @@ impl FilmJob {
             rows_in: rows.into(),
             film: Vec::new(),
             checks_todo: VecDeque::new(),
+            checks: None,
+            checks_error: None,
             sheet: None,
             fits: Vec::new(),
             closest: f32::MAX,
@@ -280,26 +296,55 @@ impl FilmJob {
         })
     }
 
-    /// A row's motion checks (a step of their own: [`FilmJob::pose_row`] validated the row).
-    fn check_row(&self, row: &Row) -> Report {
-        let (set, graph_name, rig, rules) = (&self.src.set, &self.graph, &self.rig, &self.rules);
-        let mesh = self.src.built.model.lods.first();
+    /// Sends the posed rows' motion checks to a worker ([`row_report`], every row in one job).
+    /// Its return, on the engine thread at a later pass, leaves the reports for the step that
+    /// waits for them.
+    fn start_checks(&mut self, e: &mut Engine) {
+        let rows = std::mem::take(&mut self.checks_todo);
+        let (built, set) = (Arc::clone(&self.src.built), Arc::clone(&self.src.set));
+        let (graph, rig, rules, scale) = (self.graph.clone(), self.rig.clone(), self.rules.clone(), self.scale);
+        let slot: RowReports = std::rc::Rc::default();
+        let landed = std::rc::Rc::clone(&slot);
+        let job = crate::workers::Offload::engine(crate::workers::JobKind::AnimCheck).class(schedule::Class::Big);
+        let work = move |_: &crate::workers::Cancel| rows.iter().map(|(i, row)| (*i, row_report(&set, &built, &graph, &rig, &rules, scale, row))).collect::<Vec<_>>();
+        // (A job that failed leaves no reports, and says so: the sheet then says the checks
+        // did not run. It never reads as a pass.)
+        let then = move |_: &mut Engine, r: Result<Vec<(usize, Report)>, crate::workers::Failed>| *landed.borrow_mut() = Some(r.map_err(|f| format!("their job failed on its worker: {f:?}")));
+        if e.offload(job, work, then).is_err() {
+            *slot.borrow_mut() = Some(Err("no worker took their job".to_owned()));
+        }
+        self.checks = Some(slot);
+    }
+}
+
+/// A filmstrip row's motion checks ([`FilmJob::pose_row`] validated the row): no engine state,
+/// so it runs on a worker.
+fn row_report(set: &AnimSet, built: &models::Built, graph_name: &str, rig: &str, rules: &MotionRules, scale: f32, row: &Row) -> Report {
+    #[cfg(test)]
+    tests::CHECKED_ON.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(std::thread::current().name().unwrap_or("unnamed").to_owned());
+    #[cfg(test)]
+    assert!(!tests::FAIL_CHECKS.load(std::sync::atomic::Ordering::SeqCst), "this test's check job fails on its worker");
+    let mesh = built.model.lods.first();
+    {
         match row {
             Row::Clip(name) => set.id(name).map(|id| checks::check_clip(set, rig, id, rules, mesh)).unwrap_or_default(),
             Row::State(st) => {
                 let Some(graph) = set.graph(graph_name) else { return Report::default() };
                 let Ok(params) = params_for(graph, st.params.as_ref(), Some(&st.state)) else { return Report::default() };
-                let g = Graphed { set, graph, scale: self.scale };
+                let g = Graphed { set, graph, scale };
                 checks::check_state(g, rig, graph_name, &st.state, &params, 3.0, rules, mesh).unwrap_or_default()
             }
             Row::Transition(tr) => {
                 let Some(graph) = set.graph(graph_name) else { return Report::default() };
                 let (Ok(from), Ok(to)) = (params_for(graph, Some(&tr.from), None), params_for(graph, Some(&tr.to), None)) else { return Report::default() };
-                let g = Graphed { set, graph, scale: self.scale };
+                let g = Graphed { set, graph, scale };
                 checks::check_transition(g, rig, graph_name, &from, &to, tr.settle_s, rules, mesh)
             }
         }
     }
+}
+
+impl FilmJob {
 
     /// A row's poses (CPU), so a bad row fails before any rendering (its checks come later).
     fn pose_row(&self, row: &Row) -> Result<FilmRow, ToolOutput> {
@@ -450,8 +495,17 @@ impl FilmJob {
             label.push_str(&format!("  ROOT RISE {rise:.2}M SHOWN"));
         }
         film::draw_text(&mut sheet.pixels, sw, 4, y0 + tile + 2, &label, [230, 226, 214]);
-        let verdict = row.report.as_ref().map(verdict_of).unwrap_or_default();
-        let colour = if row.report.as_ref().is_some_and(|r| !r.passed()) { [255, 120, 100] } else { [140, 220, 160] };
+        // (Checks that were asked for and did not run are said on the sheet, in amber: an
+        // empty verdict in green would read as a pass.)
+        let unchecked = self.checks_error.is_some();
+        let verdict = if unchecked { "CHECKS DID NOT RUN".to_owned() } else { row.report.as_ref().map(verdict_of).unwrap_or_default() };
+        let colour = if unchecked {
+            [240, 200, 90]
+        } else if row.report.as_ref().is_some_and(|r| !r.passed()) {
+            [255, 120, 100]
+        } else {
+            [140, 220, 160]
+        };
         film::draw_text(&mut sheet.pixels, sw, 4, y0 + tile + 4 + film::CHAR_H, &verdict, colour);
         let mut j = Json::obj([
             ("subject", Json::from(row.subject.as_str())),
@@ -488,6 +542,11 @@ impl FilmJob {
             ("checks_failed", Json::from(failed)),
             ("rules", self.rules.to_json()),
         ]);
+        if let Some(why) = &self.checks_error {
+            // No result to give: not 0 failures.
+            packet.set("checks_failed", Json::Null);
+            packet.set("checks_error", Json::obj([("error", Json::from("worker_failed")), ("message", Json::from(format!("the motion checks did not run ({why}); the sheet is made without them: call again")))]));
+        }
         if !self.dark.is_empty() {
             packet.set("warnings", Json::arr([Json::from(format!("too dark to judge (mean luma under {DARK_LUMA}): {}", self.dark.iter().take(8).cloned().collect::<Vec<_>>().join(", ")))]));
         }
@@ -503,6 +562,7 @@ impl StepJob for FilmJob {
 
     fn step(&mut self, e: &mut Engine, reply: &jobs::Reply) -> Step {
         if let Some(row) = self.rows_in.pop_front() {
+            let _z = specula_core::profile::zone("film.pose_row");
             return match self.pose_row(&row) {
                 Ok(r) => {
                     self.film.push(r);
@@ -517,16 +577,32 @@ impl StepJob for FilmJob {
                 }
             };
         }
-        if let Some((i, row)) = self.checks_todo.pop_front() {
-            let report = self.check_row(&row);
-            self.film[i].report = Some(report);
+        if !self.checks_todo.is_empty() {
+            // Every row is posed (a bad row has failed by now): their checks go to a worker.
+            self.start_checks(e);
             return Step::More;
         }
         if self.sheet.is_none() {
+            let _z = specula_core::profile::zone("film.lay_out");
             self.lay_out();
             return Step::More;
         }
+        if let Some(slot) = &self.checks {
+            // A row's verdict is drawn with its tiles: the reports come first.
+            let Some(reports) = slot.borrow_mut().take() else { return Step::Wait };
+            match reports {
+                Ok(reports) => {
+                    for (i, report) in reports {
+                        self.film[i].report = Some(report);
+                    }
+                }
+                Err(why) => self.checks_error = Some(why),
+            }
+            self.checks = None;
+            return Step::More;
+        }
         if self.at.0 < self.film.len() {
+            let _z = specula_core::profile::zone("film.render_tile");
             return match self.render_tile(e) {
                 Ok(()) => Step::More,
                 Err(out) => {
@@ -535,6 +611,7 @@ impl StepJob for FilmJob {
                 }
             };
         }
+        let _z = specula_core::profile::zone("film.finish");
         self.finish(e, reply)
     }
 }
@@ -550,6 +627,9 @@ pub(super) struct EntityFilmJob {
     t0: f64,
     window_s: f32,
     with_checks: bool,
+    /// The entity's motion check, run on a worker: its answer, once it returned (`Some` from
+    /// the moment it was started).
+    check: Option<CheckAnswer>,
     views: [(f32, f32, &'static str, Vec3, f32); 3],
     yaw: f32,
     radius: f32,
@@ -604,6 +684,7 @@ impl EntityFilmJob {
             t0,
             window_s,
             with_checks,
+            check: None,
             views,
             yaw,
             radius,
@@ -680,6 +761,25 @@ impl EntityFilmJob {
         Ok(())
     }
 
+    /// The entity's motion check, set up here (what it plays now is read from the world) and
+    /// run on a worker; its answer lands for [`EntityFilmJob::finish`].
+    fn start_check(&mut self, e: &mut Engine) {
+        let slot: CheckAnswer = std::rc::Rc::default();
+        let landed = std::rc::Rc::clone(&slot);
+        match CheckJob::new(e, None, Some(EntityKey::Id(self.id)), "creature", None, None, Vec::new(), None, 12) {
+            Err(out) => *slot.borrow_mut() = Some(out),
+            Ok(job) => {
+                let kind = crate::workers::JobKind::AnimCheck;
+                let o = crate::workers::Offload::engine(kind).class(schedule::Class::Big);
+                let then = move |_: &mut Engine, r: Result<ToolOutput, crate::workers::Failed>| *landed.borrow_mut() = Some(r.unwrap_or_else(|f| f.to_output(kind)));
+                if e.offload(o, move |_| job.run(), then).is_err() {
+                    *slot.borrow_mut() = Some(error("worker_failed", "no worker took the motion check; call again"));
+                }
+            }
+        }
+        self.check = Some(slot);
+    }
+
     fn finish(&mut self, e: &mut Engine, reply: &jobs::Reply) -> Step {
         if let Err(out) = self.same_entity(e) {
             return Step::Done(out);
@@ -710,10 +810,8 @@ impl EntityFilmJob {
         let mut verdict: Vec<String> = Vec::new();
         let mut failed = false;
         if self.with_checks {
-            let check = match CheckJob::new(e, None, Some(EntityKey::Id(id)), "creature", None, None, Vec::new(), None, 12) {
-                Ok(job) => job.run(),
-                Err(out) => out,
-            };
+            // (Run on a worker while the last step waited: `start_check`.)
+            let check = self.check.take().and_then(|slot| slot.borrow_mut().take()).unwrap_or_else(|| error("worker_failed", "the motion check did not run; call again"));
             if let Some(Content::Text(t)) = check.content.first() {
                 if let Ok(mut j) = Json::parse(t) {
                     if j.get("passed").and_then(Json::as_bool) == Some(true) {
@@ -776,6 +874,21 @@ impl StepJob for EntityFilmJob {
                 Ok(()) => Step::More,
                 Err(out) => Step::Done(out),
             };
+        }
+        if self.with_checks {
+            // The entity's motion check runs on a worker (it ran here, in the slice that
+            // finishes the sheet: the same tens of milliseconds as a recipe filmstrip's rows).
+            match &self.check {
+                None => {
+                    if let Err(out) = self.same_entity(e) {
+                        return Step::Done(out);
+                    }
+                    self.start_check(e);
+                    return Step::More;
+                }
+                Some(slot) if slot.borrow().is_none() => return Step::Wait,
+                Some(_) => {}
+            }
         }
         self.finish(e, reply)
     }
@@ -884,6 +997,119 @@ fn clip_to_tile(b: [u32; 4], tile: u32) -> Option<[u32; 4]> {
 #[cfg(test)]
 mod tests {
     use super::clip_to_tile;
+    use super::*;
+
+    /// The threads a filmstrip row's checks ran on (tests only).
+    pub(super) static CHECKED_ON: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    /// Tests that film run one at a time (they share [`CHECKED_ON`] and [`FAIL_CHECKS`]).
+    static FILMING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// Tests only: a row's check panics on its worker (a check job that fails).
+    pub(super) static FAIL_CHECKS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    /// Films two states of the shambler with checks, slice by slice as the engine does, taking
+    /// workers' returns between slices. Returns the packet and how often the job waited.
+    fn film_the_shambler(e: &mut Engine) -> (Json, usize) {
+        // (As the engine does at its start: the pipelines a skinned model is drawn with.)
+        e.gpu.prepare_variants(true, true).expect("pipelines");
+        e.models.ready = e.gpu.pipeline_variants();
+        let params = |act: &str| Some(Json::obj([("act", Json::from(act)), ("speed", Json::from(1.0))]));
+        let rows = || {
+            vec![
+                Row::State(crate::anim_tools::StateSubject { state: "idle".into(), params: params("idle") }),
+                Row::State(crate::anim_tools::StateSubject { state: "move".into(), params: params("move") }),
+            ]
+        };
+        let session = crate::editor_engine::window_session();
+        let (reply, answer) = crate::jobs::channel();
+        let give_up = Instant::now() + std::time::Duration::from_secs(120);
+        // (No entity uses the shambler here: its model is built first, as the tool says to.)
+        let mut job = loop {
+            match FilmJob::new(e, "recipes/shambler.json", "creature", rows(), 4, 64, None, true, &session, 0) {
+                Ok(job) => break job,
+                Err(out) => {
+                    let building = out.content.iter().any(|c| matches!(c, Content::Text(t) if t.contains("model_building")));
+                    assert!(building && Instant::now() < give_up, "the shambler films: {out:?}");
+                    e.pump_builds(Some(std::time::Duration::from_millis(50)));
+                }
+            }
+        };
+        let mut waits = 0;
+        let out = 'film: loop {
+            assert!(Instant::now() < give_up, "the filmstrip never finished");
+            match job.step(e, &reply) {
+                Step::More => {}
+                // Nothing to do until the worker's reports are in: its return is taken here,
+                // between slices, as the engine's loop takes it between passes.
+                Step::Wait => {
+                    waits += 1;
+                    e.pump_workers(None);
+                    std::thread::yield_now();
+                }
+                Step::Done(out) => break 'film out,
+                // The sheet is encoded on a worker, which answers.
+                Step::Handed => loop {
+                    assert!(Instant::now() < give_up, "the sheet was never answered");
+                    e.pump_workers(None);
+                    if let Ok(out) = answer.recv_timeout(std::time::Duration::from_millis(5)) {
+                        break 'film out;
+                    }
+                },
+            }
+        };
+        let text = out.content.iter().find_map(|c| match c {
+            Content::Text(t) => Some(t.clone()),
+            Content::Image { .. } => None,
+        });
+        let packet = Json::parse(&text.expect("a packet")).unwrap();
+        assert!(!out.is_error, "{packet}");
+        (packet, waits)
+    }
+
+    /// Performance pass, 2026-11-15: a filmstrip with checks ran each row's motion checks as a
+    /// step on the engine thread (31 ms for one state of a Sepulcra creature: past the render
+    /// budget, and the window frame it ran in came late). They run on a worker; the job waits
+    /// for their reports without taking another slice, and the sheet has every row's verdict.
+    #[test]
+    fn a_filmstrips_checks_run_on_a_worker_and_the_job_waits_for_them() {
+        let Some(mut e) = crate::workers::charge_tests::engine() else { return };
+        let _one = FILMING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        CHECKED_ON.lock().unwrap().clear();
+        let (packet, waits) = film_the_shambler(&mut e);
+        // The job waited for the worker at least once (its return is only taken between
+        // slices), and the checks ran on worker threads, never on this one.
+        assert!(waits >= 1, "the reports were there before any worker could have returned them");
+        let threads = CHECKED_ON.lock().unwrap().clone();
+        assert!(threads.len() == 2 && threads.iter().all(|t| t.starts_with("specula-worker")), "the rows were checked on: {threads:?}");
+        // Every row has its checks and its verdict on the sheet.
+        let rows = packet.get("rows").and_then(Json::as_array).expect("rows");
+        assert_eq!(rows.len(), 2);
+        for row in rows {
+            assert!(row.get("checks").is_some(), "{row}");
+            assert!(row.get("verdict").and_then(Json::as_str).is_some_and(|v| !v.is_empty() && v != "CHECKS DID NOT RUN"), "{row}");
+        }
+        assert!(packet.get("checks_failed").and_then(Json::as_u64).is_some() && packet.get("checks_error").is_none(), "{packet}");
+    }
+
+    /// Review of m5-framezones: a check job that fails on its worker left every row without a
+    /// report, and the sheet then read as a clean pass (no checks, 0 failed, a green verdict).
+    /// It says the checks did not run, in the packet and on every row, and gives no count.
+    #[test]
+    fn checks_that_did_not_run_are_said_and_never_read_as_a_pass() {
+        let Some(mut e) = crate::workers::charge_tests::engine() else { return };
+        let _one = FILMING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        FAIL_CHECKS.store(true, std::sync::atomic::Ordering::SeqCst);
+        let filmed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| film_the_shambler(&mut e)));
+        FAIL_CHECKS.store(false, std::sync::atomic::Ordering::SeqCst);
+        let (packet, _) = filmed.unwrap_or_else(|p| std::panic::resume_unwind(p));
+        assert_eq!(packet.get("checks_failed"), Some(&Json::Null), "no count is given: {packet}");
+        let error = packet.get("checks_error").expect("the packet says the checks did not run");
+        assert_eq!(error.get("error").and_then(Json::as_str), Some("worker_failed"));
+        for row in packet.get("rows").and_then(Json::as_array).expect("rows") {
+            assert!(row.get("checks").is_none(), "{row}");
+            assert_eq!(row.get("verdict").and_then(Json::as_str), Some("CHECKS DID NOT RUN"), "{row}");
+        }
+    }
 
     /// The M4 final audit: the subject's box is measured inside its own tile, never spilling
     /// into the next one (a box at x 200 of a 256 px tile is 56 px wide at most).

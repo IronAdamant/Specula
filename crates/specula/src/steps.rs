@@ -42,6 +42,10 @@ pub(crate) enum Step {
     Done(ToolOutput),
     /// The job handed its answer on (an offloaded encode owns a clone of the reply).
     Handed,
+    /// Nothing to do until a worker's job returns (its continuation runs on the engine thread,
+    /// between passes): the job goes to the back like any other, the jobs behind it get their
+    /// slices, and the pass ends once every queued job has said this in turn.
+    Wait,
 }
 
 /// Work in slices. A slice should stay within about a millisecond of CPU or one GPU render and
@@ -115,7 +119,7 @@ impl Engine {
                 }
                 Step::Handed => return,
                 Step::More if started.elapsed().as_secs_f64() * 1000.0 < INLINE_MS => {}
-                Step::More => break,
+                Step::More | Step::Wait => break,
             }
         }
         let agents = self.steps.queue.iter().filter(|e| e.cancel_on_close).count();
@@ -157,6 +161,14 @@ impl Engine {
             }
         }
         self.steps.credit_ms = (self.steps.credit_ms + earned).min(MAX_CREDIT_MS);
+        self.run_steps();
+    }
+
+    /// The queued jobs' slices for this pass, within the credit earned.
+    pub(crate) fn run_steps(&mut self) {
+        // Jobs in a row that had nothing to do until a worker returns: when that is all of
+        // them, going round again would only spin.
+        let mut waited = 0;
         while self.steps.credit_ms > 0.0 {
             let Some(mut e) = self.steps.queue.pop_front() else { break };
             if Instant::now() > e.deadline {
@@ -165,16 +177,34 @@ impl Engine {
             }
             let _c = e.trace.enter();
             let t = Instant::now();
-            let step = e.job.step(self, &e.reply);
+            let step = {
+                // (A zone of its own, named for the job's kind: a slow frame says which job's
+                // step it was, where its time counted as the frame's own.)
+                let _z = specula_core::profile::zone(e.job.kind());
+                e.job.step(self, &e.reply)
+            };
             let took = t.elapsed();
             self.steps.credit_ms -= took.as_secs_f64() * 1000.0;
             self.engine_work_done(e.trace.call, Some(e.class), "step_job", took);
             match step {
-                Step::More => self.steps.queue.push_back(e),
+                Step::More => {
+                    waited = 0;
+                    self.steps.queue.push_back(e)
+                }
                 Step::Done(out) => {
+                    waited = 0;
                     let _ = e.reply.send(out);
                 }
-                Step::Handed => {}
+                Step::Handed => waited = 0,
+                // It waits at the back: the jobs behind it are not held up by it (they were:
+                // review of m5-framezones), and their order among themselves is kept.
+                Step::Wait => {
+                    self.steps.queue.push_back(e);
+                    waited += 1;
+                    if waited >= self.steps.queue.len() {
+                        break;
+                    }
+                }
             }
         }
     }
@@ -196,6 +226,90 @@ fn stopped(code: &str, message: &str) -> ToolOutput {
 
 #[cfg(test)]
 mod tests {
+    /// A job that waits `waits` times for something a worker owes it, then is done; and one
+    /// that counts its slices.
+    struct Waits {
+        left: usize,
+    }
+
+    impl StepJob for Waits {
+        fn kind(&self) -> &'static str {
+            "waits"
+        }
+
+        fn step(&mut self, _: &mut Engine, _: &Reply) -> Step {
+            if self.left == 0 {
+                return Step::Done(ToolOutput::text("{}"));
+            }
+            self.left -= 1;
+            Step::Wait
+        }
+    }
+
+    struct Counts {
+        slices: std::rc::Rc<std::cell::Cell<usize>>,
+        upto: usize,
+    }
+
+    impl StepJob for Counts {
+        fn kind(&self) -> &'static str {
+            "counts"
+        }
+
+        fn step(&mut self, _: &mut Engine, _: &Reply) -> Step {
+            self.slices.set(self.slices.get() + 1);
+            // (Past the slices a call runs inline, so that it queues.)
+            std::thread::sleep(Duration::from_millis(1));
+            if self.slices.get() >= self.upto {
+                Step::Done(ToolOutput::text("{}"))
+            } else {
+                Step::More
+            }
+        }
+    }
+
+    /// Review of m5-framezones: a job waiting for a worker (a filmstrip for its checks) went
+    /// back to the FRONT of the queue and ended the pass, so every job behind it stood still
+    /// until the worker returned. It waits at the back; the others get their slices; and a
+    /// pass in which every queued job waits ends without spinning.
+    #[test]
+    fn a_waiting_job_does_not_hold_up_the_jobs_behind_it() {
+        let Some(mut e) = crate::workers::charge_tests::engine() else { return };
+        let start = |name: &'static str| {
+            let (reply, answer) = crate::jobs::channel();
+            let owner = crate::jobs::JobOwner { name: name.into(), key: name.into() };
+            (StepStart { owner, session: name.into(), call: 0, reply, deadline: Instant::now() + Duration::from_secs(120), class: crate::schedule::Class::Render }, answer)
+        };
+        // The waiting job first, then a job with work to do.
+        let (s, waiting_answer) = start("film");
+        e.step_job(s, Box::new(Waits { left: 1_000_000 }));
+        let slices = std::rc::Rc::new(std::cell::Cell::new(0));
+        let (s, counted_answer) = start("other");
+        e.step_job(s, Box::new(Counts { slices: std::rc::Rc::clone(&slices), upto: 40 }));
+        assert_eq!(e.steps.queue.len(), 2, "both are queued");
+        let inline = slices.get();
+        // Passes while the first job waits: the second job runs to its end.
+        let give_up = Instant::now() + Duration::from_secs(60);
+        while counted_answer.recv_timeout(Duration::from_millis(1)).is_err() {
+            assert!(Instant::now() < give_up, "the job behind a waiting one never finished ({} slices, {inline} of them in its own call)", slices.get());
+            e.steps.credit_ms = MAX_CREDIT_MS;
+            e.run_steps();
+        }
+        assert_eq!(slices.get(), 40);
+        // Only the waiting job is left: a pass asks it once and ends (it would spin until its
+        // credit ran out otherwise).
+        assert_eq!(e.steps.queue.len(), 1);
+        let Some(Entry { job, .. }) = e.steps.queue.front() else { unreachable!() };
+        assert_eq!(job.kind(), "waits");
+        e.steps.credit_ms = MAX_CREDIT_MS;
+        let before = e.steps.credit_ms;
+        let asked = Instant::now();
+        e.run_steps();
+        assert_eq!(e.steps.queue.len(), 1, "still waiting, still queued");
+        assert!(e.steps.credit_ms > before - 1.0 && asked.elapsed() < Duration::from_secs(5), "the pass spun on a job that only waits");
+        drop(waiting_answer);
+    }
+
     use super::*;
 
     /// Review of 998af3d (major 1): twenty agents looping world_hash {verify} filled the slots and

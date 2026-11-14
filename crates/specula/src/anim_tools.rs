@@ -390,7 +390,8 @@ pub fn definitions() -> Vec<ToolDef> {
         ToolDef {
             name: "anim_filmstrip".into(),
             description: "Animation sight: a contact sheet of poses over time, returned like sight captures (PNG plus a \
-                          packet saved in the captures folder) with the motion checks of every row attached. With \
+                          packet saved in the captures folder) with the motion checks of every row attached \
+                          (checks_failed counts them; if they could not run it is null and checks_error says why). With \
                           'recipe': one row per clip, state ({state, params}) or transition ({transition: {from, to}}), \
                           'frames' poses across its cycle (default: every clip), side view on a neutral stage with a \
                           ground plane. With an entity: one row of its own play in the world over window_s seconds from \

@@ -905,6 +905,8 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         Some(ui) => engine.run_windowed(ui, &requests, &server),
         None => engine.run_headless(&requests, &server),
     };
+    // (A slow last frame is still reported: its zones were never collected.)
+    engine.frame_stall_named();
     if let Err(e) = &result {
         // A fatal engine error (device loss among them) leaves a crash report for after a restart.
         if e.contains("DEVICE_LOST") {
@@ -2509,6 +2511,8 @@ impl Engine {
         loop {
             // Everything recorded during the previous iteration is that frame's profile.
             self.profiler.end_frame(&self.gpu);
+            // (A slow frame that waited for its zones is reported now, with them.)
+            self.frame_stall_named();
             self.pump_perf_writes();
             // Serve agents in the time the old loop spent waiting for vsync, until this frame is
             // due. Not frame work, so outside the frame zone; each call is its own "requests" zone.
@@ -2793,6 +2797,8 @@ impl Engine {
             }
             let received = requests.recv_timeout(wait);
             self.profiler.end_frame(&self.gpu);
+            // (A slow frame that waited for its zones is reported now, with them.)
+            self.frame_stall_named();
             self.pump_perf_writes();
             let _frame = profile::zone("frame");
             match received {

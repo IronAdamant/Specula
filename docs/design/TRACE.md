@@ -160,7 +160,7 @@ separate lane's (a standard worker API, bounded arguments).
 | Monitor | Code | Budget | Key |
 |---|---|---|---|
 | A call on the engine thread past its class budget | `engine.stall` (warn; error with `--strict-budget`) | one comparison per call | the tool |
-| A window frame's CPU work past the frame budget | `engine.stall` (warn) | one comparison per frame | `frame` |
+| A window frame's CPU work past the frame budget | `engine.stall` (warn), with `top`: the frame's zones that took the most time themselves | one comparison per frame; raised when the next pass has collected the frame's zones | `frame` |
 | A change of the window's size (the swapchain's rebuild) past the frame budget | `engine.stall` (warn), and always `window.resized` (info) with its `ms` | one comparison per resize | `window_resize` |
 | The window's GPU time past `perf.toml`'s `gpu_ms` (sampled twice a second), with the top passes | `frame.over_budget` (warn) | one stats read per 500 ms | the cause: `pass:<name>` when one pass alone takes more than the whole budget, else `spread` (load or contention: one incident, not one per pass) |
 | A refused write: routine conflicts (`claimed`, `claims_overlap`, `stale_version`) only past 20 in 10 s; anything else (`reserved`, `transient`, ...) at once | `write.refused` / `swarm.refusal_spike` (info) | per refusal | code and rule |
