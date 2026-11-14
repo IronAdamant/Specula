@@ -152,6 +152,9 @@ pub const LOD_BUCKETS: usize = 4;
 pub const SPARE_HANDLES: usize = 256;
 /// Builds kept for `model_build` results no entity uses (so building then spawning reuses them).
 const RECENT_BUILDS: usize = 16;
+/// How often a request reads again when what it planned from went while it read (a collection
+/// dropped its folder); past this it reads under the lock, where nothing lands in between.
+const READ_AGAIN: usize = 3;
 /// Worker threads that build models.
 const WORKERS: usize = 2;
 /// Worker threads that take procedural builds (booleans, sculpts, generators, textures) first.
@@ -929,6 +932,18 @@ pub struct Library {
     scan_seq: u64,
     scan_floor: u64,
     notes: BTreeMap<PathBuf, u64>,
+    /// Per folder, the plan number of the read of it that was applied last: an older read of
+    /// the same folder is never put over a newer one, whoever made it (a poll's scan, a build
+    /// request's check). Reads are made without the lock and land in any order.
+    folder_seq: BTreeMap<PathBuf, u64>,
+    /// Jobs whose result a request made on a worker will ask for when it reaches the engine
+    /// thread ([`Library::expect_claim`]: how many such requests each), and the results of
+    /// those that finished before it got there. A result is kept only while a request is on
+    /// its way, and goes when the last one has claimed it ([`Library::claim`]): a build no
+    /// entity uses is never held here longer than that (it kept the last 64 requested builds
+    /// alive, textures and all: review R3).
+    claims: BTreeMap<u64, usize>,
+    kept_results: Vec<(u64, Result<Arc<Built>, WorldError>)>,
     /// How long a re-key may run before the rest waits for [`Library::rekey_more`] (`None`: all
     /// at once, as tools and tests that answer with the reload need).
     rekey_slice: Option<Duration>,
@@ -1099,6 +1114,9 @@ impl Library {
             scan_seq: 0,
             scan_floor: 0,
             notes: BTreeMap::new(),
+            folder_seq: BTreeMap::new(),
+            claims: BTreeMap::new(),
+            kept_results: Vec::new(),
             rekey_slice: None,
             rekey_left: BTreeMap::new(),
             workers: Workers::start(workers, if workers > 0 { HEAVY_WORKERS } else { 0 }),
@@ -1160,7 +1178,7 @@ impl Library {
     /// rig, or when the rig or anim set fails to load (the write then only merges parameters).
     pub fn write_set(&mut self, handle: u32, assets: &crate::anim::Assets) -> Option<Arc<AnimSet>> {
         let spec = self.handles.get(handle as usize)?.as_ref()?.spec.clone();
-        let key = self.key_for(&spec, false).ok()?;
+        let key = self.key_for(&spec, false, true).ok()?;
         let used = self.writes.tick();
         // The base: by alias when this build key was seen, else from its source's key.
         let mut source = None;
@@ -1316,7 +1334,7 @@ impl Library {
                 // Unused for a while: its recipe may have been edited (or broken, or fixed)
                 // meanwhile, when nothing rebuilt it. Same key: the build stands.
                 slot.verify = false;
-                match self.key_for(spec, true) {
+                match self.key_for(spec, true, true) {
                     Ok(key) => {
                         let slot = self.handles[h as usize].as_ref().expect("live handle");
                         if slot.built_key.as_ref() != Some(&key) && slot.want.as_ref() != Some(&key) {
@@ -1336,7 +1354,7 @@ impl Library {
             }
             return Ok(self.handles[h as usize].as_ref().expect("indexed handles exist").resolved(h));
         }
-        let key = self.key_for(spec, true)?;
+        let key = self.key_for(spec, true, true)?;
         let h = match self.free_handles.pop() {
             Some(h) => h,
             None => {
@@ -1353,36 +1371,196 @@ impl Library {
 
     /// `model_build`: the spec built fresh from disk (its folder re-read now), from the cache or
     /// queued.
+    ///
+    /// The disk is read here, under whatever lock the caller holds (a `stat` of every file of
+    /// the folder, and reads of what changed): for tests and code with a library of its own.
+    /// Around the shared library use [`SharedLibrary::request`] (a caller's own thread) or
+    /// [`SharedLibrary::learn`] and [`Library::request_known`] (the engine thread).
     pub fn request(&mut self, spec: &ModelSpec) -> Result<BuildRequest, WorldError> {
         spec.check()?;
         let folder = Path::new(&spec.recipe).parent().unwrap_or(Path::new("")).to_owned();
         self.refresh_folder(&folder);
         // A glTF source is looked at afresh (its size and time).
-        self.gltfs.remove(&spec.recipe);
+        self.forget_gltf(&spec.recipe);
         // retry: a recipe new on disk is found even when its folder's time didn't move.
-        let key = self.key_for(spec, true)?;
+        let key = self.key_for(spec, true, true)?;
+        Ok(self.request_key(spec, key))
+    }
+
+    /// The build for a key: from the cache, or queued.
+    fn request_key(&mut self, spec: &ModelSpec, key: BuildKey) -> BuildRequest {
         if let Some(b) = self.builds.get(&key) {
             self.cache_hits += 1;
             let b = Arc::clone(b);
             self.remember(b.id);
-            return Ok(BuildRequest::Ready(b, true));
+            return BuildRequest::Ready(b, true);
         }
-        Ok(BuildRequest::Pending(self.submit(&spec.recipe, &key, spec, true)))
+        BuildRequest::Pending(self.submit(&spec.recipe, &key, spec, true))
+    }
+
+    /// What a build request for `spec` reads from the disk, planned from the caches (no disk;
+    /// under the lock for a moment): [`RequestPlan::run`] reads without the lock and
+    /// [`Library::request_read`] applies it and answers. Its folder is checked if it is cached,
+    /// read whole if it is not, and read again whatever its times say when it is cached without
+    /// the recipe (a file renamed into a folder does not always move the folder's time); a glTF
+    /// source's size and time are read.
+    ///
+    /// A request did all of that under the lock (a `stat` of every file of the folder, on
+    /// every `studio_check`, `style_check` and `model_build`): 847 holds of 2 ms and more a run
+    /// of `scripts/recipe_stall_check.py` by agents' connections beside 32 busy processes, and
+    /// the engine thread waited for the lock 30 to 50 ms a frame (performance pass, 2026-11-14).
+    pub fn request_plan(&mut self, spec: &ModelSpec) -> RequestPlan {
+        self.scan_seq += 1;
+        let mut scan = ScanPlan {
+            seq: self.scan_seq,
+            root: self.root.clone(),
+            canonical_root: self.canonical_root.clone(),
+            folders: Vec::new(),
+            anims: Vec::new(),
+            gltfs: Vec::new(),
+            styles: Vec::new(),
+            missing: Vec::new(),
+        };
+        let rel = Path::new(&spec.recipe);
+        let folder = rel.parent().unwrap_or(Path::new("")).to_owned();
+        let gltf = is_gltf_path(&spec.recipe);
+        if !gltf {
+            let stem = rel.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+            match self.folders.get(&folder) {
+                None => scan.missing.push(folder),
+                Some(cached) => {
+                    let mut old = cached.clone();
+                    if !old.files.contains_key(stem) {
+                        // (No time matches: the folder is read again.)
+                        old.mtime = None;
+                    }
+                    scan.folders.push((folder, old));
+                }
+            }
+        }
+        let from_cache = !scan.folders.is_empty();
+        RequestPlan { scan, gltf: gltf.then(|| spec.recipe.clone()), from_cache }
+    }
+
+    /// Applies what a request's plan read: its folder (never over a newer read of it, and
+    /// files the store wrote since the plan keep the cache's text), a glTF source's size and
+    /// time. An error when the source leads outside the assets root.
+    ///
+    /// `Err(Stale)`: the read was planned from a cached folder that is no longer cached (a
+    /// collection dropped it while the disk was read), so it found only what changed, and
+    /// nothing here knows the folder now. The request reads again, whole
+    /// ([`SharedLibrary::request`]); answering "not found" from it would say of a recipe that is
+    /// on the disk that it is not, when a collection ran at the wrong moment (review R2).
+    fn apply_request_read(&mut self, spec: &ModelSpec, read: RequestRead) -> Result<(), ReadError> {
+        let RequestRead { scanned, gltf, from_cache } = read;
+        let folder = Path::new(&spec.recipe).parent().unwrap_or(Path::new(""));
+        let outside = scanned.outside.iter().any(|f| f == folder);
+        self.apply_folder_scan(scanned);
+        if from_cache && !self.folders.contains_key(folder) && !self.recipes.contains_key(&spec.recipe) {
+            return Err(ReadError::Stale);
+        }
+        match gltf {
+            Some(Ok(info)) => {
+                if self.gltfs.get(&spec.recipe).is_none_or(|g| g.content != info.content) {
+                    self.forget_gltf(&spec.recipe);
+                }
+                self.gltfs.insert(spec.recipe.clone(), info);
+            }
+            Some(Err(GltfMiss::Outside)) => return Err(ReadError::Is(outside_assets(spec))),
+            Some(Err(GltfMiss::NotFound)) => self.forget_gltf(&spec.recipe),
+            None => {}
+        }
+        if outside {
+            return Err(ReadError::Is(outside_assets(spec)));
+        }
+        Ok(())
+    }
+
+    /// [`Library::request`] with what its plan read from the disk, applied and answered in one
+    /// hold of the lock (no other read lands in between). The folder is not looked at on disk
+    /// here; working out a recipe this library has not seen may look for its style and anim
+    /// set (a few files): for a caller's own thread or a worker, never the engine's.
+    /// `Err(Stale)`: read again (see [`Library::apply_request_read`]).
+    pub fn request_read(&mut self, spec: &ModelSpec, read: RequestRead) -> Result<BuildRequest, ReadError> {
+        spec.check()?;
+        self.apply_request_read(spec, read)?;
+        let key = self.key_for(spec, false, false)?;
+        Ok(self.request_key(spec, key))
+    }
+
+    /// A build request of a source the library **knows** (an entity uses it, or a request
+    /// worked it out), without the disk: for the engine thread. `None`: not known; the caller
+    /// asks the old way ([`Library::request`]), which reads the disk.
+    pub fn request_known(&mut self, spec: &ModelSpec) -> Option<Result<BuildRequest, WorldError>> {
+        if let Err(e) = spec.check() {
+            return Some(Err(e));
+        }
+        if !self.known(&spec.recipe) {
+            return None;
+        }
+        Some(self.key_for(spec, false, false).map(|key| self.request_key(spec, key)))
     }
 
     /// The texts `spec` would build from now: its recipe, the recipes it includes and its style
     /// file's path, its folder re-read as [`Library::request`] does; what a recorded check of it
-    /// is compared with (`crate::records`). Reads the disk: caller threads only, never the
-    /// engine's. A glTF asset has no texts (`not_a_recipe`).
+    /// is compared with (`crate::records`). Reads the disk under the caller's lock: tests and
+    /// private libraries ([`SharedLibrary::current_texts`] reads without the lock). A glTF asset
+    /// has no texts (`not_a_recipe`).
     pub fn current_texts(&mut self, spec: &ModelSpec) -> Result<RecipeTexts, WorldError> {
         spec.check()?;
+        let folder = Path::new(&spec.recipe).parent().unwrap_or(Path::new("")).to_owned();
+        self.refresh_folder(&folder);
+        self.texts_for(spec, true)
+    }
+
+    /// [`Library::current_texts`] with what its plan read from the disk ([`Library::request_plan`]).
+    pub fn current_texts_read(&mut self, spec: &ModelSpec, read: RequestRead) -> Result<RecipeTexts, ReadError> {
+        spec.check()?;
+        self.apply_request_read(spec, read)?;
+        Ok(self.texts_for(spec, false)?)
+    }
+
+    fn texts_for(&mut self, spec: &ModelSpec, disk: bool) -> Result<RecipeTexts, WorldError> {
         if is_gltf_path(&spec.recipe) {
             return Err(WorldError::new("not_a_recipe", format!("{} is a glTF asset, not a recipe", spec.recipe)).with("recipe", spec.recipe.as_str()));
         }
-        let folder = Path::new(&spec.recipe).parent().unwrap_or(Path::new("")).to_owned();
-        self.refresh_folder(&folder);
-        let key = self.key_for(spec, true)?;
+        let key = self.key_for(spec, disk, disk)?;
         self.cached_texts(spec, key.0).ok_or_else(|| WorldError::new("recipe_unreadable", format!("{} wasn't kept after reading", spec.recipe)).with("recipe", spec.recipe.as_str()))
+    }
+
+    /// Caches a folder read just now, under the lock: it is newer than every read planned so
+    /// far, and no older read is put over it ([`Library::folder_seq`]).
+    fn cache_folder_read_now(&mut self, rel: &Path, folder: Folder) {
+        self.scan_seq += 1;
+        self.folder_seq.insert(rel.to_owned(), self.scan_seq);
+        self.folders.insert(rel.to_owned(), folder);
+    }
+
+    /// Forgets the cached recipes `gone` picks: their keys are worked out again when asked for.
+    /// Those a handle uses are left for the engine's next re-key ([`Library::rekey_more`]), with
+    /// their contents as they were: a request that found a change on disk makes the recipe
+    /// known again at once, and nothing else would ever re-key the entities that use it (they
+    /// kept their old build for good: review R1 of m5-liblock, there before it).
+    fn forget(&mut self, gone: impl Fn(&str, &RecipeInfo) -> bool) {
+        let keys: Vec<String> = self.recipes.iter().filter(|(k, r)| gone(k, r)).map(|(k, _)| k.clone()).collect();
+        for key in keys {
+            self.leave_for_rekey(&key);
+            self.recipes.remove(&key);
+        }
+    }
+
+    /// A glTF source's size and time are forgotten (its key is worked out again), its handles
+    /// left for the next re-key as [`Library::forget`] leaves a recipe's.
+    fn forget_gltf(&mut self, recipe: &str) {
+        self.leave_for_rekey(recipe);
+        self.gltfs.remove(recipe);
+    }
+
+    fn leave_for_rekey(&mut self, recipe: &str) {
+        if self.known(recipe) && self.handles.iter().flatten().any(|s| s.spec.recipe == recipe) {
+            let was = self.source_content(recipe);
+            self.rekey_left.entry(recipe.to_owned()).or_insert(was);
+        }
     }
 
     /// The texts the build with content hash `content` was made from, as the library last read
@@ -1485,20 +1663,29 @@ impl Library {
 
     /// The build key for `spec`: everything checkable without building is checked here.
     /// `retry`: a recipe missing from its cached folder is looked for again (it may be new).
-    fn key_for(&mut self, spec: &ModelSpec, retry: bool) -> Result<BuildKey, WorldError> {
+    ///
+    /// `disk`: the folder may be read here (one not cached is read whole; with `retry`, one
+    /// cached without the recipe is read again). Without it the caches are all there is: what
+    /// they lack is not found, as after a request's own read ([`Library::request_plan`]).
+    fn key_for(&mut self, spec: &ModelSpec, retry: bool, disk: bool) -> Result<BuildKey, WorldError> {
         spec.check()?;
         if is_gltf_path(&spec.recipe) {
-            return self.gltf_key(spec);
+            return self.gltf_key(spec, disk);
         }
         let rel = Path::new(&spec.recipe);
         let folder = rel.parent().unwrap_or(Path::new("")).to_owned();
         let stem = rel.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_owned();
-        if !self.folders.contains_key(&folder) {
+        if !disk {
+            // A known recipe needs nothing of its folder; an unknown one needs it cached.
+            if !self.recipes.contains_key(&spec.recipe) && !self.folders.contains_key(&folder) {
+                return Err(not_found(spec, &self.root));
+            }
+        } else if !self.folders.contains_key(&folder) {
             // Cached folders were checked when read (and are checked again when re-read).
             self.check_inside(&folder, spec)?;
             // Folders that don't exist are never cached (agents could make the cache grow).
             let f = self.read_folder(&folder).ok_or_else(|| not_found(spec, &self.root))?;
-            self.folders.insert(folder.clone(), f);
+            self.cache_folder_read_now(&folder, f);
         } else if retry && !self.folders[&folder].files.contains_key(&stem) {
             self.refresh_folder(&folder);
             // A folder's time doesn't always move when a file is renamed into it (project_write
@@ -1507,7 +1694,7 @@ impl Library {
             // disk but missing from the cached folder is read afresh.
             if !self.folders[&folder].files.contains_key(&stem) && is_regular(&self.root.join(rel)) {
                 if let Some(f) = self.read_folder_from(&folder, self.folders.get(&folder)) {
-                    self.folders.insert(folder.clone(), f);
+                    self.cache_folder_read_now(&folder, f);
                 }
             }
         }
@@ -1536,7 +1723,7 @@ impl Library {
     }
 
     /// A glTF source's key: its path, size and modification time (no reading: spawns stay cheap).
-    fn gltf_key(&mut self, spec: &ModelSpec) -> Result<BuildKey, WorldError> {
+    fn gltf_key(&mut self, spec: &ModelSpec, disk: bool) -> Result<BuildKey, WorldError> {
         if !spec.params.is_empty() || spec.seed.is_some() {
             let field = if spec.params.is_empty() { "seed" } else { "params" };
             return Err(WorldError::new("invalid_value", format!("{} is a glTF asset: it takes no params and no seed", spec.recipe))
@@ -1546,18 +1733,15 @@ impl Library {
         if let Some(g) = self.gltfs.get(&spec.recipe) {
             return Ok((g.content, String::new(), None));
         }
+        if !disk {
+            return Err(not_found(spec, &self.root));
+        }
         let rel = Path::new(&spec.recipe);
         let folder = rel.parent().unwrap_or(Path::new("")).to_owned();
         self.check_inside(&folder, spec)?;
-        let path = self.root.join(rel);
-        let meta = std::fs::symlink_metadata(&path).ok().filter(|m| m.file_type().is_file()).ok_or_else(|| not_found(spec, &self.root))?;
-        let mtime = meta.modified().ok();
-        let mut h = StableHasher::with_seed(0x6d6f_6465_6c00_0002);
-        h.write_str(&spec.recipe);
-        h.write_u64(meta.len());
-        h.write_u64(mtime.and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos() as u64));
-        let content = h.finish();
-        self.gltfs.insert(spec.recipe.clone(), GltfInfo { path, mtime, len: meta.len(), content });
+        let info = gltf_info(&self.root, &spec.recipe).ok_or_else(|| not_found(spec, &self.root))?;
+        let content = info.content;
+        self.gltfs.insert(spec.recipe.clone(), info);
         Ok((content, String::new(), None))
     }
 
@@ -1714,9 +1898,12 @@ impl Library {
         if let Some(n) = new {
             self.folders.insert(rel.to_owned(), n);
         }
+        // (Read now, under the lock: newer than every read planned so far.)
+        self.scan_seq += 1;
+        self.folder_seq.insert(rel.to_owned(), self.scan_seq);
         if changed > 0 {
             // Any recipe there may include a changed file: work them out again (cheap: no builds).
-            self.recipes.retain(|_, r| r.folder != rel);
+            self.forget(|_, r| r.folder == rel);
             self.failed.retain(|r, _| Path::new(r).parent().unwrap_or(Path::new("")) != rel);
         }
         changed
@@ -1826,6 +2013,37 @@ impl Library {
         }
     }
 
+    /// Applies the folders of a request's read ([`Library::request_plan`]): one it re-read
+    /// replaces the cached one as [`Library::apply_scan`] does it, one that was not cached is
+    /// cached. Returns how many files changed. Handles are not re-keyed here: those whose
+    /// recipe changed are left for the engine's next pass ([`Library::rekey_more`]).
+    fn apply_folder_scan(&mut self, scanned: Scanned) -> usize {
+        // (No look at `scan_floor`: a whole scan applied meanwhile did not read a folder no
+        // handle uses, so dropping this read for it left such a folder unread and its recipe
+        // "not found". Reads of one folder are ordered by `folder_seq`.)
+        if self.canonical_root.is_none() {
+            self.canonical_root = scanned.canonical_root.clone();
+        }
+        let plan = scanned.seq;
+        let mut changed: usize = scanned.folders.into_iter().map(|(rel, new)| self.replace_folder(&rel, new, plan)).sum();
+        for (f, folder) in scanned.missing {
+            if self.folders.contains_key(&f) {
+                // Someone cached it meanwhile: this read replaces theirs if it is the newer.
+                changed += self.replace_folder(&f, Some(folder), plan);
+                continue;
+            }
+            if self.folder_seq.get(&f).is_some_and(|&applied| plan < applied) {
+                continue;
+            }
+            changed += folder.files.len().max(1);
+            self.folder_seq.insert(f.clone(), plan);
+            self.folders.insert(f.clone(), folder);
+            self.forget(|_, r| r.folder == f);
+            self.failed.retain(|r, _| Path::new(r).parent().unwrap_or(Path::new("")) != f);
+        }
+        changed
+    }
+
     /// Applies a scan ([`ScanPlan::run`]): changed folders, anim sets, glTF files and styles are
     /// forgotten and their handles' keys worked out again (from the cached texts: no disk but a
     /// changed recipe's anims file). `force` reports even when nothing changed.
@@ -1863,10 +2081,11 @@ impl Library {
         }
         let _zm = specula_core::profile::zone("models.apply_missing");
         for (f, folder) in scanned.missing {
-            if self.folders.contains_key(&f) {
+            if self.folders.contains_key(&f) || self.folder_seq.get(&f).is_some_and(|&applied| plan < applied) {
                 continue;
             }
             files_changed += folder.files.len().max(1);
+            self.folder_seq.insert(f.clone(), plan);
             self.folders.insert(f.clone(), folder);
             self.recipes.retain(|_, r| r.folder != f);
             self.failed.retain(|r, _| Path::new(r).parent().unwrap_or(Path::new("")) != f);
@@ -1881,10 +2100,16 @@ impl Library {
     /// outside the root), forgetting the recipes there when any text changed. Returns how many
     /// files changed.
     fn replace_folder(&mut self, rel: &Path, new: Option<Folder>, plan: u64) -> usize {
+        // A read of this folder planned later was applied already: this one is the older
+        // (reads are made without the lock, by polls and by requests, and land in any order).
+        if self.folder_seq.get(rel).is_some_and(|&applied| plan < applied) {
+            return 0;
+        }
         let Some(old) = self.folders.remove(rel) else {
             // Forgotten meanwhile: a resolve reads it again when it needs it.
             return 0;
         };
+        self.folder_seq.insert(rel.to_owned(), plan);
         // Files the store wrote or deleted after the scan was planned keep the cache's version
         // (the disk the scan read was older).
         let noted_after = |stem: &str| self.notes.get(&rel.join(format!("{stem}.json"))).is_some_and(|&n| n > plan);
@@ -1904,7 +2129,7 @@ impl Library {
         });
         let Some(n) = new else {
             // The folder went: everything there is worked out again.
-            self.recipes.retain(|_, r| r.folder != rel);
+            self.forget(|_, r| r.folder == rel);
             self.failed.retain(|r, _| Path::new(r).parent().unwrap_or(Path::new("")) != rel);
             return old.files.len().max(1);
         };
@@ -1922,10 +2147,7 @@ impl Library {
             // The changed recipes and those including one of them are worked out again (every
             // recipe of the folder was, 20 ms a scan in the M4 exit's write load). Failures there
             // are retried.
-            self.recipes.retain(|key, r| {
-                r.folder != rel
-                    || (!Path::new(key).file_stem().and_then(|s| s.to_str()).is_some_and(|s| changed.contains(s)) && !r.includes.iter().any(|i| changed.contains(i)))
-            });
+            self.forget(|key, r| r.folder == rel && (Path::new(key).file_stem().and_then(|s| s.to_str()).is_some_and(|s| changed.contains(s)) || r.includes.iter().any(|i| changed.contains(i))));
             self.failed.retain(|r, _| Path::new(r).parent().unwrap_or(Path::new("")) != rel);
         }
         changed.len()
@@ -2050,7 +2272,7 @@ impl Library {
             let spec = slot.spec.clone();
             let current = self.handles[h].as_ref().and_then(|s| s.built.as_ref().map(|b| b.id));
             report.handles.insert(h as u32);
-            match self.key_for(&spec, false) {
+            match self.key_for(&spec, false, true) {
                 Ok(key) => {
                     let unchanged = self.builds.get(&key).is_some_and(|b| Some(b.id) == current);
                     if unchanged {
@@ -2177,9 +2399,45 @@ impl Library {
             if !changed.is_empty() {
                 self.generation += 1;
             }
+            // A request on its way to the engine thread will ask for it: kept until it does.
+            if self.claims.contains_key(&done.id) {
+                self.kept_results.push((done.id, result.clone()));
+            }
             finished.push(Finished { job: done.id, result });
         }
         (finished, changed)
+    }
+
+    /// Tests: how many results are kept for requests that have not landed, and how many jobs
+    /// such requests wait for.
+    #[cfg(test)]
+    pub(crate) fn finished_job_count(&self) -> (usize, usize) {
+        (self.kept_results.len(), self.claims.len())
+    }
+
+    /// A request made away from the engine thread will [`Library::claim`] this job's result
+    /// when it gets there: if the job finishes first, its result is kept for it. In the same
+    /// hold as the request that returned the job.
+    pub fn expect_claim(&mut self, job: u64) {
+        *self.claims.entry(job).or_insert(0) += 1;
+    }
+
+    /// The result of `job` if it finished already ([`Library::finish`] took it before the
+    /// request reached the engine thread); `None`: still running, wait for it as usual. One
+    /// call for each [`Library::expect_claim`]: the last one releases what was kept.
+    pub fn claim(&mut self, job: u64) -> Option<Result<Arc<Built>, WorldError>> {
+        let last = match self.claims.get_mut(&job) {
+            Some(n) if *n > 1 => {
+                *n -= 1;
+                false
+            }
+            _ => {
+                self.claims.remove(&job);
+                true
+            }
+        };
+        let at = self.kept_results.iter().position(|(j, _)| *j == job)?;
+        Some(if last { self.kept_results.swap_remove(at).1 } else { self.kept_results[at].1.clone() })
     }
 
     /// Builds `id` again (its texture pixels were released by an earlier upload): it leaves the
@@ -2372,6 +2630,95 @@ pub struct Scanned {
     styles: Vec<(PathBuf, StyleFile)>,
     /// Folders that weren't cached and exist now (inside the root).
     missing: Vec<(PathBuf, Folder)>,
+    /// Folders that weren't cached, exist, and lead outside the root (never cached).
+    outside: Vec<PathBuf>,
+}
+
+/// What a build request reads from the disk ([`Library::request_plan`]).
+pub struct RequestPlan {
+    scan: ScanPlan,
+    /// A glTF source (its recipe path): its size and time.
+    gltf: Option<String>,
+    /// The folder was cached when this was planned: the read brings only what changed.
+    from_cache: bool,
+}
+
+/// What a request's plan read ([`RequestPlan::run`]).
+pub struct RequestRead {
+    scanned: Scanned,
+    gltf: Option<Result<GltfInfo, GltfMiss>>,
+    from_cache: bool,
+}
+
+enum GltfMiss {
+    /// Its folder leads outside the assets root.
+    Outside,
+    NotFound,
+}
+
+impl RequestPlan {
+    /// Reads the disk: never under the library's lock, never on the engine thread.
+    pub fn run(self) -> RequestRead {
+        let gltf = self.gltf.as_deref().map(|recipe| {
+            let root = &self.scan.root;
+            let folder = Path::new(recipe).parent().unwrap_or(Path::new(""));
+            let canonical = self.scan.canonical_root.clone().or_else(|| root.canonicalize().ok());
+            match (canonical, root.join(folder).canonicalize()) {
+                (Some(c), Ok(full)) if !full.starts_with(&c) => Err(GltfMiss::Outside),
+                (Some(_), Ok(_)) => gltf_info(root, recipe).ok_or(GltfMiss::NotFound),
+                _ => Err(GltfMiss::NotFound),
+            }
+        });
+        RequestRead { scanned: self.scan.run(), gltf, from_cache: self.from_cache }
+    }
+}
+
+/// A glTF file's size and time under `root`, as its key is made of them (`None`: no such file).
+fn gltf_info(root: &Path, recipe: &str) -> Option<GltfInfo> {
+    let path = root.join(recipe);
+    let meta = std::fs::symlink_metadata(&path).ok().filter(|m| m.file_type().is_file())?;
+    let mtime = meta.modified().ok();
+    let mut h = StableHasher::with_seed(0x6d6f_6465_6c00_0002);
+    h.write_str(recipe);
+    h.write_u64(meta.len());
+    h.write_u64(mtime.and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos() as u64));
+    Some(GltfInfo { path, mtime, len: meta.len(), content: h.finish() })
+}
+
+fn outside_assets(spec: &ModelSpec) -> WorldError {
+    WorldError::new("recipe_outside_assets", format!("{} leads outside the assets root", spec.recipe)).with("field", "recipe").with("recipe", spec.recipe.as_str())
+}
+
+/// Tests only: called by every scan of a root some test watches, on the thread that scans
+/// (`ScanPlan::run`), before it reads anything.
+#[cfg(test)]
+type ScanHook = Arc<dyn Fn() + Send + Sync>;
+#[cfg(test)]
+static SCAN_HOOKS: Mutex<Vec<(PathBuf, ScanHook)>> = Mutex::new(Vec::new());
+
+#[cfg(test)]
+fn scan_hook(root: &Path) {
+    let hooks: Vec<ScanHook> = SCAN_HOOKS.lock().unwrap_or_else(PoisonError::into_inner).iter().filter(|(r, _)| r == root).map(|(_, f)| Arc::clone(f)).collect();
+    for f in hooks {
+        f();
+    }
+}
+
+/// Tests only: watches the scans of `root` until the returned value is dropped.
+#[cfg(test)]
+pub(crate) fn watch_scans(root: &Path, hook: impl Fn() + Send + Sync + 'static) -> ScanWatch {
+    SCAN_HOOKS.lock().unwrap_or_else(PoisonError::into_inner).push((root.to_owned(), Arc::new(hook)));
+    ScanWatch(root.to_owned())
+}
+
+#[cfg(test)]
+pub(crate) struct ScanWatch(PathBuf);
+
+#[cfg(test)]
+impl Drop for ScanWatch {
+    fn drop(&mut self) {
+        SCAN_HOOKS.lock().unwrap_or_else(PoisonError::into_inner).retain(|(r, _)| *r != self.0);
+    }
 }
 
 impl ScanPlan {
@@ -2379,6 +2726,8 @@ impl ScanPlan {
     /// unchanged texts reused). Holds no lock; meant for a worker thread.
     pub fn run(self) -> Scanned {
         let _z = specula_core::profile::zone("models.scan");
+        #[cfg(test)]
+        scan_hook(&self.root);
         let canonical_root = self.canonical_root.clone().or_else(|| self.root.canonicalize().ok());
         let inside = |rel: &Path| canonical_root.as_ref().is_some_and(|root| self.root.join(rel).canonicalize().is_ok_and(|full| full.starts_with(root)));
         let mut out = Scanned { seq: self.seq, canonical_root: canonical_root.clone(), ..Scanned::default() };
@@ -2408,6 +2757,9 @@ impl ScanPlan {
         }
         for f in self.missing {
             if !inside(&f) {
+                if self.root.join(&f).canonicalize().is_ok() {
+                    out.outside.push(f);
+                }
                 continue;
             }
             if let Some(folder) = read_folder_at(&self.root, &f, None) {
@@ -2516,11 +2868,145 @@ impl SharedLibrary {
     /// The time it takes to get is counted for the calling thread ([`crate::lockwait`]): the
     /// engine thread shares this lock with the build workers, and a stall says how much of it
     /// was a wait for this.
-    pub fn lock(&self) -> std::sync::MutexGuard<'_, Library> {
+    ///
+    /// A hold of [`LOCK_HELD_LONG`] or more is traced when it ends (`models.lock_held`: where
+    /// the lock was taken, for how long, on which thread): whoever else wants the library waits
+    /// that long, the engine thread among them.
+    #[track_caller]
+    pub fn lock(&self) -> LibraryGuard<'_> {
+        let site = std::panic::Location::caller();
         let asked = Instant::now();
         let library = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        crate::lockwait::waited(asked.elapsed());
-        library
+        let since = Instant::now();
+        crate::lockwait::waited(since.duration_since(asked));
+        LibraryGuard { library: Some(library), site, since }
+    }
+}
+
+impl SharedLibrary {
+    /// The disk part of a request for `spec`, on the calling thread and **without the lock**
+    /// (taken for a moment to plan it from the caches).
+    #[track_caller]
+    fn read_for(&self, spec: &ModelSpec) -> RequestRead {
+        let plan = self.lock().request_plan(spec);
+        plan.run()
+    }
+
+    /// [`Library::request`] for a caller's own thread or a worker: the disk is read without the
+    /// lock, then the read is applied and the request answered in one hold of it. A read that
+    /// went stale while it was made (a collection dropped the folder it was planned from) is
+    /// made again, whole; after [`READ_AGAIN`] of those the request reads under the lock, as
+    /// [`Library::request`] does, where nothing lands in between. Its answer never depends on
+    /// what other threads did meanwhile.
+    #[track_caller]
+    pub fn request(&self, spec: &ModelSpec) -> Result<BuildRequest, WorldError> {
+        self.request_as(spec, false)
+    }
+
+    /// [`SharedLibrary::request`] made on a worker for a call the engine thread answers: a
+    /// job it has to wait for is marked ([`Library::expect_claim`], in the hold that returned
+    /// it), so its result is there for [`Library::claim`] even if it finishes first.
+    #[track_caller]
+    pub fn request_to_claim(&self, spec: &ModelSpec) -> Result<BuildRequest, WorldError> {
+        self.request_as(spec, true)
+    }
+
+    #[track_caller]
+    fn request_as(&self, spec: &ModelSpec, claim: bool) -> Result<BuildRequest, WorldError> {
+        spec.check()?;
+        let expect = |library: &mut Library, requested: &BuildRequest| {
+            if let (true, BuildRequest::Pending(job)) = (claim, requested) {
+                library.expect_claim(*job);
+            }
+        };
+        for _ in 0..READ_AGAIN {
+            let read = self.read_for(spec);
+            let mut library = self.lock();
+            match library.request_read(spec, read) {
+                Err(ReadError::Stale) => continue,
+                Err(ReadError::Is(e)) => return Err(e),
+                Ok(requested) => {
+                    expect(&mut library, &requested);
+                    return Ok(requested);
+                }
+            }
+        }
+        let mut library = self.lock();
+        let requested = library.request(spec)?;
+        expect(&mut library, &requested);
+        Ok(requested)
+    }
+
+    /// [`Library::current_texts`] for a caller's own thread, as [`SharedLibrary::request`].
+    #[track_caller]
+    pub fn current_texts(&self, spec: &ModelSpec) -> Result<RecipeTexts, WorldError> {
+        spec.check()?;
+        for _ in 0..READ_AGAIN {
+            let read = self.read_for(spec);
+            match self.lock().current_texts_read(spec, read) {
+                Err(ReadError::Stale) => continue,
+                Err(ReadError::Is(e)) => return Err(e),
+                Ok(texts) => return Ok(texts),
+            }
+        }
+        self.lock().current_texts(spec)
+    }
+}
+
+/// Why a request's read gave no answer.
+pub enum ReadError {
+    /// What it was planned from went while the disk was read: read again.
+    Stale,
+    /// The request's own error (not found, outside the assets root, a recipe that does not parse).
+    Is(WorldError),
+}
+
+impl From<WorldError> for ReadError {
+    fn from(e: WorldError) -> ReadError {
+        ReadError::Is(e)
+    }
+}
+
+/// A hold of the library's lock this long is traced (`models.lock_held`).
+pub const LOCK_HELD_LONG: Duration = Duration::from_millis(2);
+
+/// The library, locked (see [`SharedLibrary::lock`]).
+pub struct LibraryGuard<'a> {
+    /// (Always there until the guard is dropped, which releases it first and reports after.)
+    library: Option<std::sync::MutexGuard<'a, Library>>,
+    site: &'static std::panic::Location<'static>,
+    since: Instant,
+}
+
+impl std::ops::Deref for LibraryGuard<'_> {
+    type Target = Library;
+    fn deref(&self) -> &Library {
+        self.library.as_ref().expect("held until dropped")
+    }
+}
+
+impl std::ops::DerefMut for LibraryGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Library {
+        self.library.as_mut().expect("held until dropped")
+    }
+}
+
+impl Drop for LibraryGuard<'_> {
+    fn drop(&mut self) {
+        // Released first: the report is not part of the hold (review R1 of m5-liblock).
+        self.library = None;
+        let held = self.since.elapsed();
+        if held >= LOCK_HELD_LONG {
+            let thread = std::thread::current();
+            specula_core::trace_event!(
+                &crate::trace_sink::ENGINE,
+                Info,
+                "models.lock_held",
+                site = format!("{}:{}", self.site.file().replace('\\', "/"), self.site.line()),
+                ms = held.as_secs_f64() * 1e3,
+                thread = thread.name().unwrap_or("unnamed").to_owned(),
+            );
+        }
     }
 }
 
@@ -4313,6 +4799,333 @@ mod tests {
             BuildRequest::Ready(_, cached) => assert!(cached),
             BuildRequest::Pending(_) => panic!("should be cached"),
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Performance pass, 2026-11-14 (the model library's lock). A build request read the disk
+    /// under the lock (a `stat` of every file of its folder; a whole folder not cached yet), on
+    /// every studio check and model_build, and the engine thread waited for the lock while
+    /// agents' connections did that. A request through the shared library reads the disk
+    /// **without the lock**, on each of its paths: a scan of this test's folder stops where it
+    /// is about to read, and the lock is free then.
+    #[test]
+    fn a_request_reads_the_disk_without_holding_the_lock() {
+        let root = scratch("lock_free", &[("block", &block(1.0))]);
+        let shared = Arc::new(SharedLibrary::new(Library::new(&root, None)));
+        // Every scan of this root says it is about to read, then waits to be let go.
+        let (at_disk_tx, at_disk) = mpsc::channel::<()>();
+        let (go_tx, go) = mpsc::channel::<()>();
+        let (at_disk_tx, go) = (Mutex::new(at_disk_tx), Mutex::new(go));
+        let here = std::thread::current().id();
+        let _watch = watch_scans(&root, move || {
+            // (This test's own thread scans freely: a poll it makes while a request is stopped.)
+            if std::thread::current().id() == here {
+                return;
+            }
+            at_disk_tx.lock().unwrap().send(()).unwrap();
+            go.lock().unwrap().recv_timeout(Duration::from_secs(60)).expect("the test lets the scan go");
+        });
+        let ask = |recipe: &str, what: &str| -> Result<(), &'static str> {
+            let (shared_there, spec) = (Arc::clone(&shared), ModelSpec::new(recipe));
+            let asking = std::thread::spawn(move || shared_there.request(&spec).map(|_| ()).map_err(|e| e.code));
+            at_disk.recv_timeout(Duration::from_secs(60)).unwrap_or_else(|_| panic!("{what}: the request reads the disk"));
+            // The request is at the disk now. Whoever wants the library has it.
+            assert!(shared.0.try_lock().is_ok(), "{what}: the lock is held while the disk is read");
+            go_tx.send(()).unwrap();
+            asking.join().unwrap()
+        };
+        // A folder that is not cached yet (read whole).
+        assert_eq!(ask("recipes/block.json", "a folder not cached"), Ok(()));
+        // A cached folder (its files' times checked).
+        assert_eq!(ask("recipes/block.json", "a cached folder"), Ok(()));
+        // A recipe the cached folder lacks (the folder read again, whatever its times say): a
+        // typo is not found, and a file written since is.
+        assert_eq!(ask("recipes/nope.json", "a recipe that is not there"), Err("recipe_not_found"));
+        std::fs::write(root.join("recipes").join("late.json"), block(2.0)).unwrap();
+        assert_eq!(ask("recipes/late.json", "a recipe new on disk"), Ok(()));
+        // A folder that does not exist.
+        assert_eq!(ask("nowhere/block.json", "a folder that is not there"), Err("recipe_not_found"));
+        // A folder the garbage collection dropped (no handle uses it) is read again, off the lock.
+        shared.lock().collect_garbage(&BTreeSet::new());
+        assert!(!shared.lock().folders.contains_key(Path::new("recipes")), "nothing uses the folder: it went");
+        assert_eq!(ask("recipes/block.json", "a folder the collection dropped"), Ok(()));
+        // The texts a recorded check is compared with are read the same way.
+        let (shared_there, spec) = (Arc::clone(&shared), ModelSpec::new("recipes/block.json"));
+        let asking = std::thread::spawn(move || shared_there.current_texts(&spec).is_ok());
+        at_disk.recv_timeout(Duration::from_secs(60)).unwrap();
+        assert!(shared.0.try_lock().is_ok(), "current_texts: the lock is held while the disk is read");
+        go_tx.send(()).unwrap();
+        assert!(asking.join().unwrap());
+        // The engine thread's request of a source the library knows reads nothing; one it does
+        // not know is not answered that way at all.
+        assert!(shared.lock().request_known(&ModelSpec::new("recipes/unasked.json")).is_none());
+        assert!(matches!(shared.lock().request_known(&ModelSpec::new("recipes/block.json")), Some(Ok(_))), "a known source is requested without the disk");
+        assert!(at_disk.recv_timeout(Duration::from_millis(50)).is_err(), "request_known made a scan");
+        // Review R2: a collection that lands while a request reads (it drops the folder the
+        // read was planned from, and a read of a cached folder brings only what changed) does
+        // not make the recipe "not found": the request reads again, whole. Every project
+        // write forces a collection.
+        let (shared_there, spec) = (Arc::clone(&shared), ModelSpec::new("recipes/block.json"));
+        let asking = std::thread::spawn(move || shared_there.request(&spec).map(|_| ()).map_err(|e| e.code));
+        at_disk.recv_timeout(Duration::from_secs(60)).expect("the request reads the disk");
+        shared.lock().collect_garbage(&BTreeSet::new());
+        assert!(!shared.lock().folders.contains_key(Path::new("recipes")));
+        go_tx.send(()).unwrap();
+        at_disk.recv_timeout(Duration::from_secs(60)).expect("what it planned from went: it reads again");
+        assert!(shared.0.try_lock().is_ok(), "the second read: the lock is held while the disk is read");
+        go_tx.send(()).unwrap();
+        assert_eq!(asking.join().unwrap(), Ok(()), "a collection landed while the request read");
+        // And a poll that lands while a request reads a folder that is not cached (the poll
+        // does not read folders no handle uses) does not make its read dropped.
+        shared.lock().collect_garbage(&BTreeSet::new());
+        let (shared_there, spec) = (Arc::clone(&shared), ModelSpec::new("recipes/block.json"));
+        let asking = std::thread::spawn(move || shared_there.request(&spec).map(|_| ()).map_err(|e| e.code));
+        at_disk.recv_timeout(Duration::from_secs(60)).expect("the request reads the disk");
+        let poll = shared.lock().scan_plan().run();
+        let _ = shared.lock().apply_scan(poll, true);
+        go_tx.send(()).unwrap();
+        assert_eq!(asking.join().unwrap(), Ok(()), "a poll landed while the request read");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Review R1 of m5-liblock: reads made without the lock land in any order, and an older
+    /// read of a folder must never be put over a newer one, nor a request build from a read
+    /// older than its own. Each interleaving the review found, by hand.
+    #[test]
+    fn reads_of_a_folder_are_applied_in_the_order_they_were_planned() {
+        let root = scratch("ordered", &[("block", &block(1.0))]);
+        let mut lib = Library::new(&root, None);
+        let spec = ModelSpec::new("recipes/block.json");
+        let text = |lib: &Library| lib.folders[Path::new("recipes")].files["block"].text.as_deref().ok().map(str::to_owned);
+        let edit = |height: f32| {
+            std::thread::sleep(Duration::from_millis(20));
+            std::fs::write(root.join("recipes").join("block.json"), block(height)).unwrap();
+        };
+        assert!(lib.request(&spec).is_ok());
+        // Two requests' reads, applied in reverse: A read 1.5, B (planned and read later) read
+        // 2.0 and is applied first. A's read is not put over it, and A's request builds 2.0.
+        edit(1.5);
+        let a = lib.request_plan(&spec).run();
+        edit(2.0);
+        let b = lib.request_plan(&spec).run();
+        assert!(lib.request_read(&spec, b).is_ok());
+        assert_eq!(text(&lib), Some(block(2.0)));
+        assert!(lib.request_read(&spec, a).is_ok());
+        assert_eq!(text(&lib), Some(block(2.0)), "an older read of the folder was put over a newer one");
+        // A poll planned and read before an edit, applied before a later request's read: the
+        // request's own read is applied over it (it is the newer), in the same hold as the request.
+        let poll = lib.scan_plan().run();
+        edit(2.5);
+        let b = lib.request_plan(&spec).run();
+        let _ = lib.apply_scan(poll, false);
+        assert!(lib.request_read(&spec, b).is_ok());
+        assert_eq!(text(&lib), Some(block(2.5)));
+        // And applied after it: the poll's older read of the folder is dropped.
+        let poll = lib.scan_plan().run();
+        edit(3.0);
+        let b = lib.request_plan(&spec).run();
+        assert!(lib.request_read(&spec, b).is_ok());
+        let _ = lib.apply_scan(poll, false);
+        assert_eq!(text(&lib), Some(block(3.0)), "a poll's older read of the folder was put over a request's");
+        // A text the project store wrote after a request's read was planned stands over it.
+        edit(3.5);
+        let stale = lib.request_plan(&spec).run();
+        let noted: Arc<str> = Arc::from(block(4.0).as_str());
+        assert!(lib.note_written(&[("recipes/block.json".to_owned(), Some(Arc::clone(&noted)))]));
+        assert!(lib.request_read(&spec, stale).is_ok());
+        assert_eq!(text(&lib).as_deref(), Some(&*noted), "the noted text stands");
+        // The old way (read under the caller's lock) counts as a read too.
+        let poll = lib.scan_plan().run();
+        edit(4.5);
+        assert!(lib.request(&spec).is_ok());
+        let _ = lib.apply_scan(poll, false);
+        assert_eq!(text(&lib), Some(block(4.5)));
+        // A poll applied while a request's read of a folder that is not cached is in flight
+        // raises the floor of whole scans; the request's read is applied all the same (the
+        // poll did not read that folder), and the recipe is found (review R2).
+        lib.collect_garbage(&BTreeSet::new());
+        assert!(!lib.folders.contains_key(Path::new("recipes")), "no handle uses the folder: it went");
+        let uncached = lib.request_plan(&spec).run();
+        let poll = lib.scan_plan().run();
+        let _ = lib.apply_scan(poll, true);
+        assert!(lib.request_read(&spec, uncached).is_ok(), "a poll landed first: the request's own read of the folder was dropped");
+        // A read planned from the cache that finds its folder gone says so (the request reads
+        // again), and never "not found".
+        let cached = lib.request_plan(&spec).run();
+        lib.collect_garbage(&BTreeSet::new());
+        assert!(matches!(lib.request_read(&spec, cached), Err(ReadError::Stale)));
+        // So does a whole read under the lock (a spawn's first use of a folder, after a
+        // collection dropped it): an older request read is not put over it (review R2).
+        edit(5.0);
+        let older = lib.request_plan(&spec).run();
+        edit(5.5);
+        lib.collect_garbage(&BTreeSet::new());
+        assert!(lib.resolve(&spec).is_ok());
+        assert_eq!(text(&lib), Some(block(5.5)));
+        assert!(lib.request_read(&spec, older).is_ok());
+        assert_eq!(text(&lib), Some(block(5.5)), "an older request read was put over a spawn's read");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Review R3 of m5-liblock: a finished build is kept for a request on its way to the
+    /// engine thread, for every such request of the job, and no longer.
+    #[test]
+    fn a_finished_build_is_kept_only_for_requests_on_their_way() {
+        let root = scratch("claims", &[("block", &block(1.0))]);
+        let shared = SharedLibrary::new(Library::new(&root, None));
+        let spec = ModelSpec::new("recipes/block.json");
+        // A request nobody will claim (an agent's connection asks, then waits another way):
+        // its build's result is not kept.
+        let BuildRequest::Pending(_) = shared.request(&spec).unwrap() else { panic!("not built yet") };
+        settle(&mut shared.lock());
+        assert_eq!(shared.lock().finished_job_count(), (0, 0));
+        // Two requests on their way for one job (a recipe changed, both asked before it was built).
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(root.join("recipes").join("block.json"), block(2.0)).unwrap();
+        let BuildRequest::Pending(job) = shared.request_to_claim(&spec).unwrap() else { panic!("the new text is not built yet") };
+        let BuildRequest::Pending(again) = shared.request_to_claim(&spec).unwrap() else { panic!("still building") };
+        assert_eq!(job, again, "one job for both");
+        // Still running: nothing to claim yet... (asked a third time, on its way too).
+        shared.lock().expect_claim(job);
+        assert!(shared.lock().claim(job).is_none(), "still running: wait for it as usual");
+        // ...then it finishes and is taken before the two requests land.
+        settle(&mut shared.lock());
+        assert_eq!(shared.lock().finished_job_count(), (1, 1));
+        let first = shared.lock().claim(job).expect("kept for the first request").expect("built");
+        assert_eq!(shared.lock().finished_job_count(), (1, 1), "the second request has not landed yet");
+        let second = shared.lock().claim(job).expect("and for the second").expect("built");
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(shared.lock().finished_job_count(), (0, 0), "released when the last one landed");
+        assert!(shared.lock().claim(job).is_none(), "nobody else was expected");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Review R1 of m5-liblock (there before the lane): after an outside edit, a request that
+    /// found the change made the recipe known again at once, the next poll saw an unchanged
+    /// folder, and the entities using the recipe kept their old build for good. Their handles
+    /// are left for the engine's next re-key, whichever way the request read the disk.
+    #[test]
+    fn a_request_that_finds_a_change_leaves_the_handles_for_a_rekey() {
+        for way in ["shared", "locked"] {
+            let root = scratch(&format!("rekey_{way}"), &[("block", &block(1.0))]);
+            let shared = SharedLibrary::new(Library::new(&root, None));
+            let spec = ModelSpec::new("recipes/block.json");
+            let entity = shared.lock().resolve(&spec).unwrap();
+            settle(&mut shared.lock());
+            let before = shared.lock().built(entity.handle).unwrap().id;
+            assert!(shared.lock().rekey_more().is_none(), "nothing to re-key yet");
+            std::thread::sleep(Duration::from_millis(20));
+            std::fs::write(root.join("recipes").join("block.json"), block(2.0)).unwrap();
+            let requested = if way == "shared" { shared.request(&spec) } else { shared.lock().request(&spec) };
+            assert!(requested.is_ok(), "{way}: {:?}", requested.err().map(|e| e.code));
+            // A poll now finds nothing changed (the request already read the folder)...
+            let poll = shared.lock().scan_plan().run();
+            let _ = shared.lock().apply_scan(poll, false);
+            // ...and the engine's next pass re-keys the entity's handle all the same.
+            let reload = shared.lock().rekey_more().unwrap_or_else(|| panic!("{way}: the handle was left for a re-key"));
+            assert!(reload.handles.contains(&entity.handle), "{way}: {:?}", reload.handles);
+            settle(&mut shared.lock());
+            assert_ne!(shared.lock().built(entity.handle).unwrap().id, before, "{way}: the entity kept its old build");
+            assert!(shared.lock().rekey_more().is_none(), "{way}: once");
+            let _ = std::fs::remove_dir_all(&root);
+        }
+    }
+
+    /// The engine's side (review R1 of m5-liblock: the blocker, and the test it asked for).
+    /// `model_build` through the engine's own handler builds what is on the disk now, after an
+    /// outside edit of a folder that is cached; its source is read on a worker, never on the
+    /// thread that handles the call; a source that is not there is an error; and a call whose
+    /// source is still being read is answered by a shutdown, not dropped.
+    #[test]
+    fn model_build_reads_its_source_on_a_worker_and_builds_what_is_on_disk() {
+        let root = scratch("engine_build", &[("block", &block(1.0))]);
+        let Some(mut e) = crate::workers::charge_tests::engine_at(&root) else { return };
+        let scanned_on: Arc<Mutex<Vec<String>>> = Arc::default();
+        let names = Arc::clone(&scanned_on);
+        let _watch = watch_scans(&root, move || names.lock().unwrap().push(std::thread::current().name().unwrap_or("unnamed").to_owned()));
+        let send = |e: &mut crate::Engine, recipe: &str| {
+            let (reply, rx) = crate::jobs::channel();
+            let command = crate::tools::Command::ModelBuild(ModelSpec::new(recipe));
+            let request = crate::tools::Request { session: crate::editor_engine::window_session(), call: 0, command, reply, deadline: Instant::now() + Duration::from_secs(120), trace: specula_core::trace::Ctx::default(), via: None };
+            e.handle_model_call(request);
+            rx
+        };
+        let ask = |e: &mut crate::Engine, recipe: &str| -> Json {
+            let rx = send(e, recipe);
+            let give_up = Instant::now() + Duration::from_secs(120);
+            loop {
+                if let Ok(out) = rx.recv_timeout(Duration::from_millis(2)) {
+                    let specula_protocol::Content::Text(t) = &out.content[0] else { panic!("text") };
+                    return Json::parse(t).unwrap();
+                }
+                assert!(Instant::now() < give_up, "model_build never answered");
+                e.pump_workers(None);
+                e.pump_builds(Some(Duration::from_millis(20)));
+            }
+        };
+        let height = |j: &Json| j.get("bounds").and_then(|b| b.get("max")).and_then(Json::as_array).and_then(|m| m[1].as_f64()).unwrap_or_else(|| panic!("{j}"));
+        let first = ask(&mut e, "recipes/block.json");
+        assert!((height(&first) - 1.9).abs() < 1e-3, "{first}");
+        // An entity uses it (its handle is what an outside edit must reach).
+        let entity = e.library.lock().resolve(&ModelSpec::new("recipes/block.json")).unwrap();
+        let before = e.library.lock().built(entity.handle).expect("built").id;
+        // Someone edits the recipe on disk; the folder is cached.
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(root.join("recipes").join("block.json"), block(2.0)).unwrap();
+        let second = ask(&mut e, "recipes/block.json");
+        assert!((height(&second) - 2.9).abs() < 1e-3, "built from the disk as it is now: {second}");
+        assert_eq!(second.get("cached").and_then(Json::as_bool), Some(false));
+        // The entity's handle follows at the engine's next passes.
+        let give_up = Instant::now() + Duration::from_secs(60);
+        while e.library.lock().built(entity.handle).is_none_or(|b| b.id == before) {
+            assert!(Instant::now() < give_up, "the entity kept its old build");
+            e.poll_assets_async(false);
+            e.pump_workers(None);
+            e.pump_builds(Some(Duration::from_millis(20)));
+        }
+        // A recipe that is not there, and a folder that is not there.
+        assert_eq!(ask(&mut e, "recipes/nope.json").get("error").and_then(Json::as_str), Some("recipe_not_found"));
+        assert_eq!(ask(&mut e, "nowhere/block.json").get("error").and_then(Json::as_str), Some("recipe_not_found"));
+        // Every read of the folder ran on a worker.
+        let threads = scanned_on.lock().unwrap().clone();
+        assert!(threads.len() >= 4 && threads.iter().all(|t| t.starts_with("specula-worker")), "the folder was read on: {threads:?}");
+        // Review R2: a build that finishes, and is taken by a pass of the engine, before its
+        // request lands from the worker, and a collection in between (every project write
+        // forces one): the call is answered with the build, not with an error and not never.
+        std::fs::write(root.join("recipes").join("tall.json"), block(3.0)).unwrap();
+        let rx = send(&mut e, "recipes/tall.json");
+        let give_up = Instant::now() + Duration::from_secs(120);
+        // (The worker has made the request: a job is in flight. Then the build finishes and
+        // this thread takes it, while the request's return still waits to be taken.)
+        while e.library.lock().in_flight() == 0 && e.library.lock().finished_job_count().0 == 0 {
+            assert!(Instant::now() < give_up, "the worker never made the request");
+            std::thread::yield_now();
+        }
+        while e.library.lock().in_flight() > 0 {
+            assert!(Instant::now() < give_up, "the build never finished");
+            e.pump_builds(Some(Duration::from_millis(20)));
+        }
+        e.library.lock().collect_garbage(&BTreeSet::new());
+        let out = loop {
+            if let Ok(out) = rx.recv_timeout(Duration::from_millis(2)) {
+                break out;
+            }
+            assert!(Instant::now() < give_up, "model_build never answered");
+            e.pump_workers(None);
+            e.pump_builds(Some(Duration::from_millis(20)));
+        };
+        let specula_protocol::Content::Text(t) = &out.content[0] else { panic!("text") };
+        let tall = Json::parse(t).unwrap();
+        assert!(!out.is_error && (height(&tall) - 3.9).abs() < 1e-3, "{tall}");
+        // The result was kept for that one request and is released now it has landed: a
+        // build no entity uses is not held on (review R3: the last 64 were, for good).
+        assert_eq!(e.library.lock().finished_job_count(), (0, 0));
+        // A call whose source is still being read is answered when the engine shuts down.
+        let waiting = send(&mut e, "recipes/block.json");
+        e.answer_waiters_shutting_down();
+        let out = waiting.recv_timeout(Duration::from_secs(60)).expect("answered, not dropped");
+        assert!(out.is_error, "{out:?}");
+        drop(e);
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -59,6 +59,28 @@ to read as a nameless slow frame now and then.
 - A landing view waited up to 250 ms of engine-thread time for a worker in the middle of projecting its
   subjects: 20 ms now, under the render budget.
 
+**The model library's lock** (2026-11-14, after `lock_ms` showed it). Beside 32 busy processes, 7 to 11 of
+some 20 stalls a run of `recipe_stall_check` were waits for the model library's lock: frames of 31 to 55 ms
+of which 30 to 50 were that wait. `models.lock_held` (a hold of 2 ms or more, with the place the lock was
+taken and the thread) named the holder: a build request read the disk under the lock, a `stat` of every
+file of its folder, on every `studio_check`, `style_check` and `model_build`: 847 such holds a run by
+agents' connections, 5.5 s in all, up to 30 ms each, and `model_build` did the same on the engine thread.
+A request's disk work is a plan, a read and an application now (`Library::request_plan`,
+`RequestPlan::run`, `request_read`): planned from the caches, read without the lock (on the caller's own
+thread, or on a worker for `model_build`), applied and answered in one hold. That covers a cached folder,
+one not cached yet (read whole) and one cached without the recipe (read again). Reads land in any order,
+so each folder remembers the plan number of the read applied to it and an older one is never put over it;
+a read planned from a folder that a collection dropped meanwhile is made again; and a `model_build` whose
+job finished before its request reached the engine thread is answered from the results the library keeps
+for such requests. No answer depends on which thread got there first.
+What is left under the lock on these paths: a recipe the library has not seen is worked out there (it and
+the recipes it includes are parsed, and its style and anim set looked for: a few files; 13.6 ms for a
+328 KB recipe), on the caller's thread or the worker, never the engine's. Before, `model_build` did that
+on the engine thread.
+**Still on the engine thread:** a spawn that is the first use of a recipe's folder reads that folder
+there (`Library::resolve`), and so does an `anim_*` tool on a model the library does not know (no entity
+uses it and nothing asked for it since the last collection) (ROADMAP M5).
+
 **Take baselines on an idle machine.** The script records whole-machine CPU use before and after and
 warns above 20%: with parallel builds running, single calls show 15–25 ms scheduler delays instead of
 under 1 ms, and build timings double.

@@ -358,10 +358,8 @@ impl Shared {
     /// library and the style files its bible comes from ([`bible_files`]). Reads the disk: the
     /// caller's thread only (`crate::records::prepare`).
     pub(crate) fn current_inputs(&self, spec: &ModelSpec) -> Result<crate::records::CheckInputs, WorldError> {
-        let (texts, root) = {
-            let mut lib = self.library.lock();
-            (lib.current_texts(spec)?, lib.root().to_path_buf())
-        };
+        let texts = self.library.current_texts(spec)?;
+        let root = self.library.lock().root().to_path_buf();
         let (style_json, style_toml) = bible_files(&root, &texts.style_path, &spec.recipe);
         let read = |p: Option<PathBuf>| -> Result<Option<String>, WorldError> {
             match p {
@@ -1425,7 +1423,8 @@ impl Ctx<'_> {
                 if Instant::now() > self.deadline {
                     return Err(error("timed_out", "the subjects' builds didn't finish in time; call again"));
                 }
-                let requested = self.shared.library.lock().request(&s.spec);
+                // (Its folder's check on disk runs without the library's lock.)
+                let requested = self.shared.library.request(&s.spec);
                 match requested {
                     Err(e) => {
                         let mut j = e.to_json();

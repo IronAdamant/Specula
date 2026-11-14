@@ -28,9 +28,11 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       installed, the validation layer's shader checks are about 3 s of every start.
     - **Scripts try once.** The retries that made live checks pass by luck are gone (`edswarm_check`,
       `gallery_check`, `m3_exit`, the first `agent_hello` everywhere): a miss is a finding.
-  - **Left, in this order:** the model library's lock (a short lane: under a full CPU load the engine thread
-    waits 30 to 40 ms a frame for it, which is why `recipe_stall_check` fails on a busy machine: find the
-    holders, shorten or split what they do under it); the measured comparison (ROADMAP M5, "Measured
+    - **`models.lock_held`** (a trace event) names who held the model library's lock for 2 ms or more, and
+      where it was taken. It found the cause of the frames that waited beside a busy machine: a build
+      request read the disk under the lock. A request reads without it now (`Library::request_plan`), and
+      `model_build` makes its whole request on a worker.
+  - **Left, in this order:** the measured comparison (ROADMAP M5, "Measured
     leverage": approved by the owner on 2026-11-14 at two runs a cell and about 15M tokens, below); the M5
     exit proof; the final audit; the docs pass (ROADMAP's M5 ticks and CHANGELOG's M5 section are behind).
     The editor's panels still read one pointer for the human and an agent (docs/design/EDITOR.md, "Known

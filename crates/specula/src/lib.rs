@@ -1262,7 +1262,13 @@ struct BuildWaiter {
     reply: jobs::Reply,
     deadline: Instant,
     answer: Option<ToolOutput>,
+    /// model_build: its source is still being read on a worker (the number of that read). The
+    /// call waits here with the others meanwhile, where its deadline and a shutdown find it.
+    checking: Option<u64>,
 }
+
+/// Counts model_build's reads on workers (a waiter is found again by its read's number).
+static BUILD_CHECKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl BuildWaiter {
     /// model_export: the built model for the caller's thread (a model_build lends nothing).
@@ -2139,7 +2145,7 @@ impl Engine {
                     }
                 }
             }
-            if w.jobs.is_empty() && w.answer.is_none() {
+            if w.jobs.is_empty() && w.answer.is_none() && w.checking.is_none() {
                 // A reload: every build it queued is done.
                 let mut out = w.reload.to_json();
                 out.set("library", self.library.lock().stats_json());
@@ -2151,10 +2157,11 @@ impl Engine {
                         ("error", Json::from("still_building")),
                         (
                             "message",
-                            Json::from(format!(
-                                "{} build(s) still running; they finish in the background (engine_info models.library)",
-                                w.jobs.len()
-                            )),
+                            Json::from(if w.checking.is_some() {
+                                "the model's source is still being read from the disk; call again".to_owned()
+                            } else {
+                                format!("{} build(s) still running; they finish in the background (engine_info models.library)", w.jobs.len())
+                            }),
                         ),
                     ])
                     .to_pretty(),
@@ -2310,10 +2317,43 @@ impl Engine {
         self.profiler.abort_capture();
     }
 
+    /// model_build once a worker has made its request: built already, or a job to wait for like
+    /// every model call. A job that finished before this ran (its result was taken by an
+    /// earlier pass) is answered from the library's kept results: nothing depends on which of
+    /// the two got there first.
+    fn model_build_requested(&mut self, token: u64, spec: &world::ModelSpec, requested: Result<models::BuildRequest, WorldError>) {
+        // (Claimed first, whoever is still waiting: what the library kept for this request is
+        // released.)
+        let requested = match requested {
+            Ok(models::BuildRequest::Pending(job)) => match self.library.lock().claim(job) {
+                Some(Ok(b)) => Ok(models::BuildRequest::Ready(b, false)),
+                Some(Err(e)) => Err(e),
+                None => Ok(models::BuildRequest::Pending(job)),
+            },
+            other => other,
+        };
+        // (Answered meanwhile, by its deadline or a shutdown: nothing more to do.)
+        let Some(i) = self.build_waiters.iter().position(|w| w.checking == Some(token)) else { return };
+        let waiter = &mut self.build_waiters[i];
+        waiter.checking = None;
+        match requested {
+            Err(e) => waiter.answer = Some(world_error(&e)),
+            Ok(models::BuildRequest::Ready(b, cached)) => {
+                waiter.lend_built(&b);
+                waiter.answer = Some(ToolOutput::text(models::report(spec, &b, cached).to_pretty()));
+                self.library.lock().remember_build(&b);
+            }
+            Ok(models::BuildRequest::Pending(job)) => {
+                waiter.jobs.insert(job);
+            }
+        }
+        self.pump_builds(None);
+    }
+
     /// model_build and model_reload: answered when their builds finish (other calls go on).
     fn handle_model_call(&mut self, request: Request) {
         let Request { command, reply, deadline, .. } = request;
-        let mut waiter = BuildWaiter { jobs: BTreeSet::new(), spec: None, lend: None, reload: models::Reload::default(), reply, deadline, answer: None };
+        let mut waiter = BuildWaiter { jobs: BTreeSet::new(), spec: None, lend: None, reload: models::Reload::default(), reply, deadline, answer: None, checking: None };
         // (model_export is model_build, with the built model lent to the caller's thread.)
         let command = match command {
             Command::ModelExport(spec, slot) => {
@@ -2324,18 +2364,29 @@ impl Engine {
         };
         match command {
             Command::ModelBuild(spec) => {
-                let requested = self.library.lock().request(&spec);
-                match requested {
-                    Err(e) => waiter.answer = Some(world_error(&e)),
-                    Ok(models::BuildRequest::Ready(b, cached)) => {
-                        waiter.lend_built(&b);
-                        waiter.answer = Some(ToolOutput::text(models::report(&spec, &b, cached).to_pretty()))
-                    }
-                    Ok(models::BuildRequest::Pending(job)) => {
-                        waiter.jobs.insert(job);
-                        waiter.spec = Some(spec);
-                    }
+                // model_build builds from the disk as it is now. The whole request (reading
+                // the recipe's folder or a glTF file's size and time, working out the key,
+                // finding the build or queueing it) is made on a worker, as an agent's
+                // connection makes a studio check's: it ran here, on the engine thread and
+                // under the library's lock, up to 18 ms a call beside a busy machine. The
+                // waiter is with the others meanwhile, so its deadline and a shutdown answer it.
+                let token = BUILD_CHECKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                waiter.checking = Some(token);
+                waiter.spec = Some(spec.clone());
+                self.build_waiters.push(waiter);
+                let (library, asked) = (Arc::clone(&self.library), spec.clone());
+                let job = workers::Offload::engine(workers::JobKind::AssetScan).class(Class::Disk);
+                let unasked = |spec: &world::ModelSpec, why: String| WorldError::new("build_failed", format!("{} could not be requested ({why})", spec.recipe)).with("recipe", spec.recipe.as_str());
+                let landed = spec.clone();
+                let then = move |e: &mut Engine, r: Result<Result<models::BuildRequest, WorldError>, workers::Failed>| {
+                    let requested = r.unwrap_or_else(|f| Err(unasked(&landed, format!("{f:?}"))));
+                    e.model_build_requested(token, &landed, requested);
+                };
+                if self.offload(job, move |_| library.request_to_claim(&asked), then).is_err() {
+                    // (The engine's own jobs are never refused; answered all the same.)
+                    self.model_build_requested(token, &spec, Err(unasked(&spec, "no worker took the job".to_owned())));
                 }
+                return;
             }
             Command::ModelReload => {
                 // Pipeline variants a background build failed to make are built again too.

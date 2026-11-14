@@ -598,7 +598,17 @@ impl Engine {
             return Ok(Source { built, set, problems });
         }
         drop(lib);
-        let requested = self.library.lock().request(&world::ModelSpec::new(source));
+        // On the engine thread. A source the library knows (an entity uses it, or a request
+        // worked it out) is requested without the disk. One it does not know is requested the
+        // old way, which reads its folder here: the answer never depends on a worker.
+        let spec = world::ModelSpec::new(source);
+        let requested = {
+            let mut library = self.library.lock();
+            match library.request_known(&spec) {
+                Some(requested) => requested,
+                None => library.request(&spec),
+            }
+        };
         let built = match requested {
             Err(e) => return Err(world_error(&e)),
             Ok(models::BuildRequest::Pending(_)) => {

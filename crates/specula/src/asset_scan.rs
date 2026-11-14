@@ -22,6 +22,16 @@
 //! sets, glTF and PNG files, folders not cached yet): those reach models a moment after the
 //! write answers.
 
+//!
+//! **Build requests** (`model_build`, the studio's checks) read the disk too, before they work
+//! out a key: their folder's times, a folder not cached yet, a glTF file's size and time. That
+//! ran under the library's lock on the caller's thread, and for `model_build` on the engine
+//! thread. It is a plan, a read and an application as well
+//! ([`crate::models::Library::request_plan`], `RequestPlan::run`, `Library::request_read`): on
+//! the caller's own thread without the lock ([`crate::models::SharedLibrary::request`]), and on
+//! a worker for `model_build` (the same call; the engine thread takes its answer, and a job that
+//! finished first from `Library::finished_job`).
+
 use crate::models;
 use crate::Engine;
 use std::sync::Arc;

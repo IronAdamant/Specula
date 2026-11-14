@@ -619,6 +619,11 @@ pub(crate) mod charge_tests {
 
     /// A headless engine over Sepulcra's assets (`None`, after a skip line, without Vulkan).
     pub(crate) fn engine() -> Option<Engine> {
+        engine_at(&std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../games/sepulcra/assets"))
+    }
+
+    /// A headless engine whose model library reads `assets` (a test's own folder).
+    pub(crate) fn engine_at(assets: &std::path::Path) -> Option<Engine> {
         if !specula_gpu::is_available() {
             crate::skip_test("charge_tests", "Vulkan is not available");
             return None;
@@ -630,9 +635,8 @@ pub(crate) mod charge_tests {
                 return None;
             }
         };
-        let assets = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../games/sepulcra/assets");
         let captures = std::env::temp_dir().join(format!("specula-charge-tests-{}", std::process::id()));
-        Some(Engine::new(gpu, &captures, crate::models::Library::new(&assets, None)).expect("engine"))
+        Some(Engine::new(gpu, &captures, crate::models::Library::new(assets, None)).expect("engine"))
     }
 
     /// Offloads a job as tool call `call` whose continuation spawns `n` boxes as `who`.

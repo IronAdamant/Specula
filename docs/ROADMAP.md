@@ -847,11 +847,22 @@ readback and the remaining engine-thread stalls.
   is data in the recipe's file, one journaled command, undone with Ctrl+Z.
 
   *Why:* devs who want to edit by hand can; human edits are journaled like agent edits.
-- [ ] ➕ **The model library's lock** (performance pass, 2026-11-14). Beside a full CPU load the engine thread
-  waits 30 to 40 ms a frame for the lock it shares with the build workers and with the checks that run on
-  agents' connections (`lock_ms` on `engine.stall`; `recipe_stall_check` fails on a busy machine for this,
-  and passes on a quiet one). Find who holds it and for how long, then shorten or split what is done under
-  it, until no frame waits for it under that load.
+- [x] ➕ **The model library's lock** (performance pass, 2026-11-14). Beside a full CPU load the engine thread
+  waited 30 to 50 ms a frame for the lock it shares with the checks that run on agents' connections
+  (`lock_ms` on `engine.stall`).
+  *Done 2026-11-14:* `models.lock_held` names who held it and where; the holder was a build request reading
+  the disk under the lock (a `stat` of every file of its folder, on every `studio_check`, `style_check` and
+  `model_build`). A request's disk work is planned from the caches, read without the lock and applied in
+  order now (on the caller's thread; on a worker for `model_build`), and a request that finds a change
+  leaves the entities' handles for the engine's next re-key (they kept their old build for good before)
+  ([perf/README.md](../perf/README.md)).
+- [ ] ➕ **A spawn's first use of a folder reads it on the engine thread** (`Library::resolve`, found with the
+  lock, 2026-11-14): `world_spawn` of a model whose recipe folder is not cached reads every recipe text of
+  that folder on the engine thread and under the library's lock, and an `anim_*` tool on a model the
+  library does not know reads its folder there too (`anim_source`). Also left under the lock, though off
+  the engine thread: a recipe the library has not seen is parsed in the hold that requests it (13.6 ms for
+  a 328 KB recipe); parse it before the hold, as the folder is read. It needs an answer at once (the handle), so
+  the read has to go ahead of the spawn: on the caller's thread before the command is sent, as a request's.
 - [ ] ➕ **A decision's files are checked off the engine thread** (performance pass, 2026-11-14).
   `review_decide` and `gallery_apply` check and commit every project file their decision names on the engine
   thread (`project_put_all`): 5 to 8 ms on the iGPU laptop, most of it an interface theme checked against

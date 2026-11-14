@@ -596,8 +596,15 @@ pub mod thread {
         fn a_threads_own_time_counts_running_and_not_waiting() {
             std::thread::spawn(|| {
                 let Some(clock) = CpuClock::calibrate() else {
-                    eprintln!("skipped: threads' processor cycles are not counted on this platform");
-                    return;
+                    // (Windows counts them: there the clock must be there. A call that answered
+                    // "no" by mistake took this branch and the test passed: mutation testing.)
+                    #[cfg(windows)]
+                    panic!("Windows counts a thread's cycles: the clock must be there");
+                    #[cfg(not(windows))]
+                    {
+                        eprintln!("skipped: threads' processor cycles are not counted on this platform");
+                        return;
+                    }
                 };
                 let at = |c: &CpuClock| c.now_ms().expect("counted a moment ago");
                 let before = at(&clock);

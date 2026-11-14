@@ -672,6 +672,8 @@ mod tests {
                     return out;
                 }
                 assert!(Instant::now() < give_up, "the build never answered");
+                // (The source is read on a worker first: its return is taken here.)
+                e.pump_workers(None);
                 e.pump_builds(Some(Duration::from_millis(20)));
             }
         };
