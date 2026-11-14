@@ -14,6 +14,7 @@ use std::path::Path;
 
 /// Scripts that start a process which isn't the engine, and what it is.
 const NOT_AN_ENGINE: &[(&str, &str)] = &[("m3_exit.py", "the PowerShell GPU-load sampler"), ("gate.py", "cargo (tests, clippy and builds): it starts no game"),
+    ("leverage.py", "an agent's own command line (settings.json's runner: a builder or a judge of the measured comparison), never a game; its engines are started by `specula open` with the run's --settings folder and --headless"),
     ("launch_check.py", "the executable's own commands (specula projects, open, call...), each given --settings; the engines `specula open` starts are headless or open with --no-activate"),
 ];
 

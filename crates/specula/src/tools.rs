@@ -146,12 +146,29 @@ pub(crate) fn check_keys(args: &Json, what: &str, allowed: &[&[&str]]) -> Result
             if key.chars().count() > crate::bounds::MAX_KEY_CHARS {
                 return Err(format!("'{}' is not an argument of {what} (argument names are at most {} characters)", crate::bounds::echo(key), crate::bounds::MAX_KEY_CHARS));
             }
-            let hint = closest(key, known()).map(|c| format!("; did you mean '{c}'?")).unwrap_or_default();
+            // A near miss gets the name it was near. Anything else gets the names there are
+            // (the measured comparison, 2026-11-14: a builder asked tools_catalog for one tool
+            // six ways, {tool}, {name}..., and each refusal told it only that it was wrong).
+            let hint = closest(key, known()).map(|c| format!("; did you mean '{c}'?")).unwrap_or_else(|| takes(known()));
             return Err(format!("'{key}' is not an argument of {what}{hint}"));
         }
     }
     Ok(())
 }
+
+/// "; it takes: a, b, c" for an argument name that is near none of a tool's own: the first
+/// [`TAKES_LISTED`] of them (a tool with more says how many more), or that it takes none.
+fn takes<'a>(known: impl Iterator<Item = &'a str>) -> String {
+    let all: Vec<&str> = known.collect();
+    if all.is_empty() {
+        return "; it takes no arguments".to_owned();
+    }
+    let more = all.len().saturating_sub(TAKES_LISTED);
+    format!("; it takes: {}{}", all[..all.len().min(TAKES_LISTED)].join(", "), if more > 0 { format!(" and {more} more (its schema lists them)") } else { String::new() })
+}
+
+/// How many of a tool's argument names a refusal lists.
+const TAKES_LISTED: usize = 16;
 
 /// The valid name `key` was most likely meant to be: a prefix match (`rotation` → `rotation_deg`)
 /// or the nearest by edit distance, if near enough.
@@ -3246,6 +3263,23 @@ mod tests {
         assert!(matches!(parse("agent_hello", &args(r#"{"name":"mason"}"#)), Ok(Command::Hello { role, .. }) if role == "builder"));
         assert!(parse("agent_hello", &args(r#"{"name":"mason","role":"chief builder"}"#)).is_err());
         assert!(parse("agent_hello", &args("{}")).is_err());
+    }
+
+    /// The measured comparison (2026-11-14): a builder asked `tools_catalog` for one tool six
+    /// ways and was told six times only that the name was wrong. A name near none of a tool's
+    /// arguments is answered with the ones it takes; a long list is cut and says so.
+    #[test]
+    fn an_argument_near_none_is_answered_with_the_ones_the_tool_takes() {
+        let e = check_keys(&args(r#"{"tool":"logic_build"}"#), "tools_catalog", &[&["filter", "family", "kit"]]).unwrap_err();
+        assert_eq!(e, "'tool' is not an argument of tools_catalog; it takes: filter, family, kit");
+        // (A near miss still gets the one name it was near, alone.)
+        let e = check_keys(&args(r#"{"filtre":"x"}"#), "tools_catalog", &[&["filter", "family", "kit"]]).unwrap_err();
+        assert!(e.ends_with("did you mean 'filter'?") && !e.contains("it takes"), "{e}");
+        assert_eq!(check_keys(&args(r#"{"zzzz":1}"#), "engine_info", &[]).unwrap_err(), "'zzzz' is not an argument of engine_info; it takes no arguments");
+        let names: Vec<String> = (0..TAKES_LISTED + 5).map(|i| format!("argument_number_{i:02}")).collect();
+        let many: Vec<&str> = names.iter().map(String::as_str).collect();
+        let e = check_keys(&args(r#"{"zzzz":1}"#), "big_tool", &[&many]).unwrap_err();
+        assert!(e.contains("argument_number_15") && !e.contains("argument_number_16") && e.ends_with("and 5 more (its schema lists them)"), "{e}");
     }
 
     /// Reviewer finding: unknown arguments were silently ignored.

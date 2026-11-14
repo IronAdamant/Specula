@@ -1066,7 +1066,7 @@ mod tests {
         (packet, waits)
     }
 
-    /// Performance pass, 2026-11-15: a filmstrip with checks ran each row's motion checks as a
+    /// Performance pass, 2026-11-14: a filmstrip with checks ran each row's motion checks as a
     /// step on the engine thread (31 ms for one state of a Sepulcra creature: past the render
     /// budget, and the window frame it ran in came late). They run on a worker; the job waits
     /// for their reports without taking another slice, and the sheet has every row's verdict.

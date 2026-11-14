@@ -150,7 +150,9 @@ pub enum Actor {
     /// An agent: its identity key (what claims, undo and a resume token carry; never shown), its
     /// protocol session when known, the name it said, and the authority the operator's grants
     /// give it ([`crate::authority::trust`]: a lead nobody granted is a plain agent here).
-    Agent { session: Option<String>, key: String, name: String, authority: Authority },
+    /// `lead_grant`: its name holds the operator's lead (or owner) grant, whatever role its
+    /// hello said. It gives no authority; it means a refused try never freezes it.
+    Agent { session: Option<String>, key: String, name: String, authority: Authority, lead_grant: bool },
 }
 
 impl Actor {
@@ -165,7 +167,7 @@ impl Actor {
         if name == WINDOW_OWNER {
             return Actor::Human;
         }
-        Actor::Agent { session: Some(session.to_owned()), key: key.to_owned(), name: name.to_owned(), authority }
+        Actor::Agent { session: Some(session.to_owned()), key: key.to_owned(), name: name.to_owned(), authority, lead_grant: false }
     }
 
     /// An identity with no session at hand (a module lane's refusal names the key only): a
@@ -174,7 +176,15 @@ impl Actor {
         if name == WINDOW_OWNER {
             return Actor::Human;
         }
-        Actor::Agent { session: None, key: key.to_owned(), name: name.to_owned(), authority }
+        Actor::Agent { session: None, key: key.to_owned(), name: name.to_owned(), authority, lead_grant: false }
+    }
+
+    /// This actor, whose name holds the operator's lead (or owner) grant if `yes`.
+    pub fn granted_lead(self, yes: bool) -> Actor {
+        match self {
+            Actor::Agent { session, key, name, authority, .. } => Actor::Agent { session, key, name, authority, lead_grant: yes },
+            other => other,
+        }
     }
 
     /// The caller of a tool on its own connection thread: named as `agent_hello` named it (or the
@@ -183,12 +193,14 @@ impl Actor {
     pub fn caller(session: &specula_protocol::SessionInfo) -> Actor {
         let name = crate::trace_sink::name_of(&session.id).map_or_else(|| crate::swarm::default_name(session), |(n, _)| n);
         let key = key_of(&session.id).unwrap_or_else(|| session.id.clone());
-        Actor::keyed(&session.id, &key, &name, crate::authority::trusted_of_session(&session.id))
+        Actor::keyed(&session.id, &key, &name, crate::authority::trusted_of_session(&session.id)).granted_lead(crate::authority::lead_grant_of_session(&session.id))
     }
 
     /// The caller of a request on the engine thread.
     pub fn of(swarm: &crate::swarm::Swarm, session: &specula_protocol::SessionInfo) -> Actor {
-        Actor::keyed(&session.id, &swarm.key(session), &swarm.agent_name(session), crate::authority::trusted(swarm, &session.id))
+        let key = swarm.key(session);
+        let granted = swarm.holds_lead_grant(&key);
+        Actor::keyed(&session.id, &key, &swarm.agent_name(session), crate::authority::trusted(swarm, &session.id)).granted_lead(granted)
     }
 
     pub fn name(&self) -> &str {
@@ -599,6 +611,13 @@ fn classify(s: &State, channel: Channel, actor: &Actor, outcome: Outcome<'_>) ->
                 Class::Alert
             }
         }
+        // The operator named this identity lead and its hello said a job, not the role: what
+        // it is refused is an alert, as a lead's is, and it is not frozen. Frozen, it could
+        // never say the role (review R1 of m5-leverage: a granted lead that forgot `--role`
+        // once was locked out, and a run whose only grants are leads has nobody to clear it).
+        // What it may DO is unchanged: an action of its own that got past a check is still an
+        // incident below.
+        Actor::Agent { lead_grant: true, .. } if matches!(outcome, Outcome::Refused(_)) => Class::Alert,
         // Reviewers keep putting screens on the window (R4, until the owner answers): an alert.
         Actor::Agent { authority: Authority::Reviewer, .. } if channel == Channel::Screen && outcome == Outcome::Done => Class::Alert,
         Actor::Agent { .. } => Class::Incident,
@@ -625,10 +644,11 @@ pub fn declined(channel: Channel, what: &str, actor: &Actor, code: &str, detail:
     record(channel, what, actor, Outcome::Declined(code), detail)
 }
 
-/// The module lane's seam: a refused try at loading native code by the identity `key` (named
-/// `name`, with the authority its grant gives). Classed as [`refused`] is.
-pub fn refused_identity(channel: Channel, what: &str, name: &str, key: &str, authority: Authority, code: &str, detail: &str) -> u64 {
-    refused(channel, what, &Actor::identity(key, name, authority), code, detail)
+/// The module lane's seam: a refused try at loading native code by an identity with no session
+/// at hand ([`Actor::identity`], with [`Actor::granted_lead`] when its name holds the operator's
+/// lead grant). Classed as [`refused`] is.
+pub fn refused_identity(channel: Channel, what: &str, who: &Actor, code: &str, detail: &str) -> u64 {
+    refused(channel, what, who, code, detail)
 }
 
 /// Records something that needs no proof (a focus that dropped): the owner's side of things.
@@ -773,7 +793,7 @@ pub fn refusal(session: &str, key: Option<&str>, authority: Authority, tool: Opt
             crate::world::WorldError::new(
                 "swarm_paused",
                 format!(
-                    "the swarm is paused by security incident {id} (a second agent took the window's input): every call is refused until the owner or the lead clears it \
+                    "the swarm is paused by security incident {id} (a second agent was stopped by the security monitor; security_incidents says for what): every call is refused until the owner or the lead clears it \
                      (security_clear); the lead and the owner may still read and use the security_* tools. docs/design/SECURITY.md"
                 ),
             )

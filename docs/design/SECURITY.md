@@ -96,6 +96,13 @@ Neither is a refusal caused by state the agent didn't choose. Those are **noted*
 
 **A granted lead is never frozen.** Its refused tries are alerts. A swarm with a lead and no `--owner` agent can
 therefore never lock itself out, and the owner's and the lead's `security_*` tools always answer.
+**That holds for the identity the operator named, whatever role its hello said** (2026-11-14, found by a review
+with a live engine): an agent started under `--lead NAME` that says hello with a job and not the role is a plain
+agent in what it may do, and it was a plain agent to the monitor too, so its first refused lead-only call froze
+it, saying the role afterwards answered `session_frozen`, and with no owner agent nobody could clear it. A refused
+try by an identity that holds the operator's lead (or owner) grant is an alert on every channel and freezes
+nothing. The grant excuses a refusal only: an action below the authority its hello was admitted with that got past
+a check is still an incident.
 
 **Holds never take the human's input over.** `lex_live` holds are kept apart from the window's input per action.
 A `logic_input` hold records who placed it. Placing one on an action the human is using is refused (`human_input`,

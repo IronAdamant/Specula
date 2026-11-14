@@ -1,0 +1,234 @@
+{
+ "run": {
+  "leverage": 1,
+  "job": "small",
+  "arm": "plain",
+  "n": 2,
+  "phase": "judge",
+  "prepared": "2026-11-14T19:10:28",
+  "settings": {
+   "runs_per_cell": 2,
+   "builder_model": "claude-sonnet-5-5",
+   "judge_model": "claude-opus-5-5",
+   "limits": {
+    "token_cap": 600000,
+    "wall_s": 3600
+   },
+   "judge": {
+    "token_cap": 150000,
+    "wall_s": 1800
+   },
+   "token_weights": {
+    "input": 1.0,
+    "cache_write": 1.25,
+    "cache_read": 0.1,
+    "output": 5.0
+   }
+  }
+ },
+ "costs": {
+  "builder": {
+   "tokens": 22913,
+   "tool_uses": 8,
+   "duration_s": 87.3,
+   "by_kind": {
+    "input": 16,
+    "cache_write": 17626,
+    "cache_read": 116420,
+    "output": 12859,
+    "requests": 8,
+    "context_at_end": 22913
+   },
+   "weighted": 97986,
+   "cost_usd": 0.21076799999999998,
+   "turns": 9,
+   "exit": 0,
+   "model": "claude-sonnet-5-5",
+   "ended": "done",
+   "over_token_cap": false,
+   "over_wall": false,
+   "note": ""
+  },
+  "left": {
+   "files": 5,
+   "bytes": 16506,
+   "text_lines": 256,
+   "lines_by_kind": {
+    ".md": 27,
+    ".py": 229
+   }
+  },
+  "finished": "2026-11-14T19:17:58",
+  "judge": {
+   "tokens": 32579,
+   "tool_uses": 11,
+   "duration_s": 110.3,
+   "by_kind": {
+    "input": 20,
+    "cache_write": 27292,
+    "cache_read": 174182,
+    "output": 9690,
+    "requests": 10,
+    "context_at_end": 32579
+   },
+   "weighted": 100003,
+   "cost_usd": 0.4470524,
+   "turns": 12,
+   "exit": 0,
+   "model": "claude-opus-5-5",
+   "ended": "done"
+  },
+  "verdict": {
+   "items": [
+    {
+     "id": "s01",
+     "kind": "checkable",
+     "pass": true,
+     "evidence": "In work/: python catch.py --headless --seed 1 --ticks 600 --script \"0:right,100:left,300:none\" printed {\"tick\": 600, \"score\": 0, \"misses\": 3, \"over\": true, \"paddle_x\": 0.0, \"fall_speed\": 4.0, \"pieces\": []}. It has every key the brief asks for, and pieces show as [{x,y}] in other runs."
+    },
+    {
+     "id": "s02",
+     "kind": "checkable",
+     "pass": true,
+     "evidence": "Running with --frame <abs path> after --ticks 600 --script 0:right wrote a valid PNG. Its signature is correct and IHDR gives 480x640. Other frames I made (play.png, play2.png, over.png) also open at 480x640."
+    },
+    {
+     "id": "s03",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Seed 1, 200 ticks, script 0:left gives paddle_x 0.0. Script 0:right gives paddle_x 9.0 (12-3). Long runs holding right stay at 9.0."
+    },
+    {
+     "id": "s04",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Script 0:right for 30 ticks moves paddle_x from 4.5 to 8.5 (+4). Script 0:left,10:right for 40 ticks goes 4.5 -> 3.166667 -> 7.166667, which is +4 over the 30 right ticks."
+    },
+    {
+     "id": "s05",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Seed 1 with script 0:left, piece count by tick: 1 at tick 1, 1 at 72, 2 at 73, 2 at 144, 3 at 145, 4 at 217. That is a spawn on ticks 1, 73, 145, 217, every 72. After over (tick 445), pieces stay [] at 446, 545 and 5000."
+    },
+    {
+     "id": "s06",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Two runs of seed 1, 500 ticks, script 0:right,50:left,200:none gave identical JSON. At 300 ticks the piece columns were: seed 1 [5.5,2.5,1.5], seed 2 [8.5,10.5,5.5], seed 7 [4.5,0.5,11.5], seed 12345 [10.5,2.5,5.5]."
+    },
+    {
+     "id": "s07",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Seed 1, script 0:right. Tick 218: score 0, 4 pieces, the lowest at (9.5,1.033), paddle at 9. Tick 219: score 10, misses 0, 3 pieces, and the caught piece is gone."
+    },
+    {
+     "id": "s08",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Seed 1, no input, paddle at 4.5. Tick 226 has a piece at (9.5,0.5). Tick 227: misses 1, score 0, and that piece is removed."
+    },
+    {
+     "id": "s09",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Seed 1, no input: over first true at tick 444 (score 10, misses 3, pieces []). At ticks 445, 446, 545 and 5000 (script 447:right added) it still reads score 10, misses 3, pieces [], and paddle_x stays at 4.5."
+    },
+    {
+     "id": "s10",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "I built a chasing script from repeated CLI runs (seed 1). Tick 506: score 40, fall_speed 4.0. Tick 507: score 50 (5th catch), fall_speed 4.2. From tick 508 to 509 every piece's y drops by 0.07 per tick (=4.2/60); before that it was 0.066667."
+    },
+    {
+     "id": "s11",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Seed 1, script 495:restart (after over at 444). Tick 495+k against a fresh run of k ticks for k = 1, 73, 145, 300: the JSON matches except for tick, with score 0, misses 0 and the same piece columns, e.g. [9.5], [9.5,9.5], [9.5,9.5,5.5]."
+    },
+    {
+     "id": "s12",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "I looked at play.png (seed 1, tick 470) and play2.png (seed 3, tick 100). The paddle is at x 0-120 px. Pieces are at the pixel places the state gives, e.g. (1.5,3.43) -> px 42-78, y~485-521 and (11.5,13.7) -> px 442-478, y~74. Both frames show 'SCORE 40'/'SCORE 0' and 'MISSES LEFT 3'."
+    },
+    {
+     "id": "s13",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "I looked at over.png (seed 1, tick 455). It shows a box with 'GAME OVER', 'FINAL SCORE 10' and 'ENTER TO RESTART', plus 'MISSES LEFT 0'."
+    },
+    {
+     "id": "s14",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "README gives the play controls (Left/Right or A/D, Enter restarts, --seed). Its headless and frame commands ran exactly as written from work/ and printed JSON / wrote a PNG."
+    }
+   ],
+   "totals": {
+    "behaviour": {
+     "passed": 12,
+     "of": 12
+    },
+    "checkable": {
+     "passed": 2,
+     "of": 2
+    },
+    "all": {
+     "passed": 14,
+     "of": 14
+    }
+   },
+   "defects": [
+    "The 5x3 pixel-font 'M' (rows 101/111/111/101/101) reads more like 'N'/'H', so the frame's 'MISSES LEFT' looks like 'NISSES LEFT'.",
+    "A piece can show at y=0.5 (bottom edge exactly at 0) for one tick before the miss counts on the next tick. This is probably float accumulation; it is harmless but off by a tick.",
+    "The interactive tkinter window is untested by the builder (README says so). I did not open it either, under this machine's rules."
+   ],
+   "could_not_check": []
+  },
+  "where": {
+   "run": "small-plain-2",
+   "requests": 8,
+   "steps": 8,
+   "steps_before_the_first_code": 1,
+   "weighted": 97986,
+   "weighted_by_kind": {
+    "read_again": 11642,
+    "written_out": 64295,
+    "new_in_context": 22048
+   },
+   "builds": {
+    "steps": 0,
+    "failed": 0
+   },
+   "how": "weighted_by_kind is exact (the run's own token counts times the weights); a step's kind is a reading of its command's text, and answered_tokens / written_tokens are characters / 4",
+   "by_step": {
+    "write code": {
+     "steps": 4,
+     "answered_tokens": 187,
+     "written_tokens": 5307
+    },
+    "read its own files": {
+     "steps": 2,
+     "answered_tokens": 854,
+     "written_tokens": 80
+    },
+    "words between steps": {
+     "steps": 0,
+     "answered_tokens": 0,
+     "written_tokens": 433
+    },
+    "run its own checks": {
+     "steps": 1,
+     "answered_tokens": 185,
+     "written_tokens": 110
+    },
+    "look at a frame": {
+     "steps": 1,
+     "answered_tokens": 0,
+     "written_tokens": 39
+    }
+   }
+  }
+ }
+}

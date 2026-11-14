@@ -1,0 +1,235 @@
+{
+ "run": {
+  "leverage": 1,
+  "job": "small",
+  "arm": "plain",
+  "n": 1,
+  "phase": "judge",
+  "prepared": "2026-11-14T19:10:28",
+  "settings": {
+   "runs_per_cell": 2,
+   "builder_model": "claude-sonnet-5-5",
+   "judge_model": "claude-opus-5-5",
+   "limits": {
+    "token_cap": 600000,
+    "wall_s": 3600
+   },
+   "judge": {
+    "token_cap": 150000,
+    "wall_s": 1800
+   },
+   "token_weights": {
+    "input": 1.0,
+    "cache_write": 1.25,
+    "cache_read": 0.1,
+    "output": 5.0
+   }
+  }
+ },
+ "costs": {
+  "builder": {
+   "tokens": 22737,
+   "tool_uses": 8,
+   "duration_s": 87.1,
+   "by_kind": {
+    "input": 16,
+    "cache_write": 17450,
+    "cache_read": 114555,
+    "output": 12542,
+    "requests": 8,
+    "context_at_end": 22737
+   },
+   "weighted": 95994,
+   "cost_usd": 0.20670750000000002,
+   "turns": 9,
+   "exit": 0,
+   "model": "claude-sonnet-5-5",
+   "ended": "done",
+   "over_token_cap": false,
+   "over_wall": false,
+   "note": ""
+  },
+  "left": {
+   "files": 3,
+   "bytes": 15839,
+   "text_lines": 241,
+   "lines_by_kind": {
+    ".md": 31,
+    ".py": 210
+   }
+  },
+  "finished": "2026-11-14T19:12:13",
+  "judge": {
+   "tokens": 31887,
+   "tool_uses": 13,
+   "duration_s": 114.5,
+   "by_kind": {
+    "input": 26,
+    "cache_write": 26600,
+    "cache_read": 247114,
+    "output": 10553,
+    "requests": 13,
+    "context_at_end": 31887
+   },
+   "weighted": 110752,
+   "cost_usd": 0.4733868,
+   "turns": 14,
+   "exit": 0,
+   "model": "claude-opus-5-5",
+   "ended": "done"
+  },
+  "verdict": {
+   "items": [
+    {
+     "id": "s01",
+     "kind": "checkable",
+     "pass": true,
+     "evidence": "`python catch.py headless --seed 1 --ticks 600 --script \"0:right,100:left,200:none,300:restart\"` printed {\"tick\": 600, \"score\": 30, \"misses\": 3, \"over\": true, \"paddle_x\": 0.0, \"fall_speed\": 4.0, \"pieces\": []}. Seed, ticks and script all change the output, and --ticks 0 prints tick 0."
+    },
+    {
+     "id": "s02",
+     "kind": "checkable",
+     "pass": true,
+     "evidence": "The README frame command (`--frame out.png`) wrote valid PNGs. I read the IHDR of three of them (ticks 1, 250, 602) and each was 480x640."
+    },
+    {
+     "id": "s03",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "seed 1, 200 ticks: '0:left' gave paddle_x 0.0 and '0:right' gave paddle_x 9.0."
+    },
+    {
+     "id": "s04",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "30 ticks of '0:right' from the start position 4.5 gave 8.5. '0:left,100:right' at 130 ticks went from 0.0 to 4.0. 60 ticks of right stopped at 9.0."
+    },
+    {
+     "id": "s05",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Tracked a bot-held run over 4000 ticks: spawns came at ticks 1, 73, 145, ..., always 72 ticks apart, 56 spawns in total. After game over at tick 370 (no input) the pieces stayed [] at ticks 371, 470 and 1370. After a restart at tick 420 a new piece appeared at tick 422."
+    },
+    {
+     "id": "s06",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Two runs with seed 1, 500 ticks, script '0:right,50:left,120:none' printed identical JSON. The first column was 2.5 for seed 1, 0.5 for seed 2, 3.5 for seed 3 and 10.5 for seed 42, and the columns at tick 300 differ by seed."
+    },
+    {
+     "id": "s07",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "seed 1, '0:left,24:none' (paddle at 1.3): at tick 217 the piece was at x2.5 y1.033 with score 0. At tick 218 score was 10, misses 0 and that piece was gone. At tick 219 score was still 10 and misses 0."
+    },
+    {
+     "id": "s08",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "seed 1, no input (paddle 4.5-7.5): at tick 225 the piece was at x2.5 y0.5 with misses 0. At tick 226 misses was 1, score 0 and the piece was removed."
+    },
+    {
+     "id": "s09",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "seed 1, no input: at tick 369 misses was 2. At tick 370 misses was 3, over true and pieces []. At ticks 371, 470 and 1370 score, misses and pieces were unchanged (0, 3, [])."
+    },
+    {
+     "id": "s10",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Bot script (judge-scratch/bot1.txt), seed 1: the 5th catch came at tick 506 with fall_speed 4.2. Piece y went 5.7667, 5.6967, 5.6267 over ticks 506-508 (0.07 per tick = 4.2/60). Before that it fell 0.0667 per tick. At tick 4000 fall_speed was 6.5156 = 4*1.05^10 (score 540)."
+    },
+    {
+     "id": "s11",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "'0:right' ended at score 10 with 3 misses. Adding '600:restart' gave, at tick 602: score 0, misses 0, over false, paddle 4.5, one new piece at x2.5. The first five spawn columns after the restart were [2.5, 9.5, 1.5, 4.5, 1.5], the same as the first run's."
+    },
+    {
+     "id": "s12",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Viewed the frame at tick 250 (seed 1, '0:left,24:none'). Its state had pieces (9.5,3.63), (1.5,8.43), (4.5,13.23) and the squares are drawn at pixel x 360/40/160 and y about 475/283/91, which match. The paddle is drawn at x 52-172 on the bottom edge. The text reads 'SCORE 10' and 'MISSES LEFT 3'."
+    },
+    {
+     "id": "s13",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Viewed the frame at tick 602 for '0:right' (over). A black box shows 'GAME OVER', 'SCORE 10' (the final score) and 'PRESS ENTER'. The HUD also shows 'MISSES LEFT 0'."
+    },
+    {
+     "id": "s14",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "README gives the play controls (Left/Right, A/D, Enter restarts) and the exact headless and --frame commands. Both commands ran as written from work/ and printed and wrote what the README says."
+    }
+   ],
+   "totals": {
+    "behaviour": {
+     "passed": 12,
+     "of": 12
+    },
+    "checkable": {
+     "passed": 2,
+     "of": 2
+    },
+    "all": {
+     "passed": 14,
+     "of": 14
+    }
+   },
+   "defects": [
+    "The game-over frame's restart hint says only 'PRESS ENTER', without the word restart. The tkinter window says 'Press Enter to restart'.",
+    "At game over the pieces still falling are wiped off the field, so the end frame shows no pieces.",
+    "The README's first example command uses '300:restart' while the run is still in play, so that restart does nothing. This is documented, but it is a confusing example.",
+    "The interactive tkinter window is untested by the builder and by me, because I may not open a window here."
+   ],
+   "could_not_check": []
+  },
+  "where": {
+   "run": "small-plain-1",
+   "requests": 8,
+   "steps": 8,
+   "steps_before_the_first_code": 1,
+   "weighted": 95994,
+   "weighted_by_kind": {
+    "read_again": 11456,
+    "written_out": 62710,
+    "new_in_context": 21828
+   },
+   "builds": {
+    "steps": 0,
+    "failed": 0
+   },
+   "how": "weighted_by_kind is exact (the run's own token counts times the weights); a step's kind is a reading of its command's text, and answered_tokens / written_tokens are characters / 4",
+   "by_step": {
+    "write code": {
+     "steps": 4,
+     "answered_tokens": 284,
+     "written_tokens": 5384
+    },
+    "read its own files": {
+     "steps": 2,
+     "answered_tokens": 879,
+     "written_tokens": 82
+    },
+    "words between steps": {
+     "steps": 0,
+     "answered_tokens": 0,
+     "written_tokens": 520
+    },
+    "run its own checks": {
+     "steps": 1,
+     "answered_tokens": 165,
+     "written_tokens": 138
+    },
+    "look at a frame": {
+     "steps": 1,
+     "answered_tokens": 0,
+     "written_tokens": 41
+    }
+   }
+  }
+ }
+}

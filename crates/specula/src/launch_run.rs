@@ -5,7 +5,7 @@
 //! This runs in the command's own short process, never in an engine: it may read the user's
 //! per-user folder, wait, and start an engine process.
 
-use crate::launch_cli::{Cli, Target, Which};
+use crate::launch_cli::{CallArgs, Cli, Target, Which, MAX_ARGS_BYTES};
 use crate::launch_client::{Client, ClientError};
 use crate::launch_instances::{self as instances, Instance};
 use crate::launch_list::{same_path, Found, Project, ProjectList};
@@ -239,38 +239,96 @@ pub fn run(cli: Cli, ctx: &Ctx) -> (i32, Json) {
             client.close();
             match listed {
                 Err(e) => unreachable_engine(&e),
-                Ok(tools) => {
-                    let wanted = filter.map(|f| f.to_lowercase());
-                    let rows: Vec<Json> = tools
-                        .iter()
-                        .filter_map(|t| {
-                            let name = t.get("name").and_then(Json::as_str)?;
-                            let description = t.get("description").and_then(Json::as_str).unwrap_or("");
-                            let hit = wanted.as_ref().is_none_or(|w| name.to_lowercase().contains(w) || description.to_lowercase().contains(w));
-                            hit.then(|| Json::obj([("name", Json::from(name)), ("description", Json::from(description.chars().take(DESCRIPTION_CHARS).collect::<String>()))]))
-                        })
-                        .take(MAX_TOOLS_LISTED)
-                        .collect();
-                    (0, Json::obj([("port", Json::from(u32::from(engine.port))), ("count", Json::from(rows.len())), ("tools", Json::Arr(rows))]))
-                }
+                Ok(tools) => (0, tools_answer(engine.port, &tools, filter.as_deref())),
             }
         }
-        Cli::Call { target, tool, args, as_name } => {
+        Cli::Call { target, tool, args, as_name, role } => {
+            // (A file's arguments are read before any engine is looked for: a bad file is the
+            // command's own mistake, whatever is running.)
+            let args = match args {
+                CallArgs::Given(j) => j,
+                CallArgs::File(file) => match args_file(&file) {
+                    Ok(j) => j,
+                    Err(message) => return refusal("usage", message),
+                },
+            };
             let (list, _) = ctx.store.load();
             let engine = match pick_engine(&target, &ctx.engines(), &list) {
                 Ok(e) => e,
                 Err(no) => return no,
             };
-            call(ctx, &engine, &tool, args, as_name.as_deref())
+            call(ctx, &engine, &tool, args, as_name.as_deref(), role.as_deref())
         }
     }
+}
+
+/// `specula tools [FILTER]`'s answer. With a filter: the tools whose name or description has
+/// it, each with the start of its description. With none: every tool's name, by family (the
+/// name up to its first `_`), and how to see more. The measured comparison's pilot
+/// (2026-11-14): the whole list with descriptions was 46,000 bytes, a builder asked for it
+/// twice, and that was most of what its engine calls put in its context; the names alone are
+/// a tenth of it, and a family's descriptions are one more command away.
+fn tools_answer(port: u16, tools: &[Json], filter: Option<&str>) -> Json {
+    let named = tools.iter().filter_map(|t| Some((t.get("name").and_then(Json::as_str)?, t.get("description").and_then(Json::as_str).unwrap_or(""))));
+    let port = ("port", Json::from(u32::from(port)));
+    let Some(wanted) = filter.map(str::to_lowercase) else {
+        let mut families: std::collections::BTreeMap<&str, Vec<&str>> = std::collections::BTreeMap::new();
+        let mut count = 0;
+        for (name, _) in named.take(MAX_TOOLS_LISTED) {
+            families.entry(name.split('_').next().unwrap_or(name)).or_default().push(name);
+            count += 1;
+        }
+        let families = Json::Obj(families.into_iter().map(|(f, names)| (f.to_owned(), Json::from(names.join(" ").as_str()))).collect());
+        let next = "names only. 'specula tools NAME' shows one tool: what it does and the arguments it takes. 'specula tools WORD' lists the tools whose name or description has WORD, with what each does (a family: 'specula tools world_'); the tools_catalog tool lists them by job";
+        return Json::obj([port, ("count", Json::from(count)), ("families", families), ("next", Json::from(next))]);
+    };
+    // A tool's own name: that tool, whole. What an agent with only a shell needs before its
+    // first call is the arguments, and nothing else gave them for one tool (the comparison's
+    // builders asked tools_catalog for them, and activated whole families to read schemas).
+    if let Some(t) = tools.iter().find(|t| t.get("name").and_then(Json::as_str).is_some_and(|n| n.eq_ignore_ascii_case(&wanted))) {
+        let also: Vec<Json> = tools
+            .iter()
+            .filter_map(|o| o.get("name").and_then(Json::as_str))
+            .filter(|n| !n.eq_ignore_ascii_case(&wanted) && n.to_lowercase().contains(&wanted))
+            .take(MAX_TOOLS_LISTED)
+            .map(Json::from)
+            .collect();
+        let mut out = vec![port, ("tool", t.get("name").cloned().unwrap_or(Json::Null)), ("description", t.get("description").cloned().unwrap_or(Json::Null)), ("arguments", t.get("inputSchema").cloned().unwrap_or(Json::Null))];
+        if !also.is_empty() {
+            out.push(("also", Json::Arr(also)));
+        }
+        return Json::obj(out);
+    }
+    let rows: Vec<Json> = named
+        .filter(|(name, description)| name.to_lowercase().contains(&wanted) || description.to_lowercase().contains(&wanted))
+        .map(|(name, description)| Json::obj([("name", Json::from(name)), ("description", Json::from(description.chars().take(DESCRIPTION_CHARS).collect::<String>()))]))
+        .take(MAX_TOOLS_LISTED)
+        .collect();
+    Json::obj([port, ("count", Json::from(rows.len())), ("tools", Json::Arr(rows))])
+}
+
+/// A call's arguments from `@FILE` (read against the folder the command was run in): one JSON
+/// object, at most [`MAX_ARGS_BYTES`] (no more than that is read, whatever the file is).
+fn args_file(file: &Path) -> Result<Json, String> {
+    use std::io::Read;
+    let opened = std::fs::File::open(file).map_err(|e| format!("@{}: {e}", file.display()))?;
+    let mut bytes = Vec::new();
+    opened.take(MAX_ARGS_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|e| format!("@{}: {e}", file.display()))?;
+    if bytes.len() > MAX_ARGS_BYTES {
+        return Err(format!("@{}: the file is more than {MAX_ARGS_BYTES} bytes, the most a call's arguments may be", file.display()));
+    }
+    // (A byte order mark is what some editors and shells put first: not part of the JSON.)
+    let text = std::str::from_utf8(&bytes).map_err(|_| format!("@{}: the file is not UTF-8 text", file.display()))?;
+    crate::launch_cli::call_args(text.strip_prefix('\u{feff}').unwrap_or(text)).map_err(|e| format!("@{}: {e}", file.display()))
 }
 
 /// `specula call`: one tool call in a session of its own. With `--as NAME` the session says who
 /// it is first (`agent_hello`), resuming the identity an earlier call under that name left (its
 /// resume token is kept beside the engine's instance file), so claims and undo carry over from
-/// one command to the next.
-fn call(ctx: &Ctx, engine: &Instance, tool: &str, args: Json, as_name: Option<&str>) -> (i32, Json) {
+/// one command to the next. `--role ROLE` is the role it says: an identity's authority is what
+/// its latest hello was admitted with, so a lead the operator granted (`--lead NAME`) says
+/// `--role lead` on the commands that need it (a role nobody granted the name is refused).
+fn call(ctx: &Ctx, engine: &Instance, tool: &str, args: Json, as_name: Option<&str>, role: Option<&str>) -> (i32, Json) {
     let mut client = Client::new(engine.port, true, CALL_WAIT);
     if let Err(e) = client.connect("specula-cli") {
         return unreachable_engine(&e);
@@ -280,6 +338,9 @@ fn call(ctx: &Ctx, engine: &Instance, tool: &str, args: Json, as_name: Option<&s
         let token = std::fs::read_to_string(&token_file).ok().map(|t| t.trim().to_owned()).filter(|t| !t.is_empty() && t.len() <= 256);
         let hello = |client: &mut Client, token: Option<&str>| {
             let mut f = vec![("name", Json::from(name))];
+            if let Some(role) = role {
+                f.push(("role", Json::from(role)));
+            }
             if let Some(t) = token {
                 f.push(("resume_token", Json::from(t)));
             }
@@ -570,6 +631,87 @@ mod tests {
 
     fn engine(pid: u32, port: u16, project: Option<(&str, &str)>) -> Instance {
         Instance { launcher: false, pid, port, project: project.map(|(p, n)| (PathBuf::from(p), n.to_owned())), world: None, window: true, started: u64::from(pid), version: "0.3.0".into(), game: None }
+    }
+
+    /// `specula tools` with no filter answers with names by family, never every description
+    /// (46,000 bytes in the comparison's pilot, asked for twice by one builder); a filter
+    /// lists what matches with what each does.
+    #[test]
+    fn an_unfiltered_tools_listing_is_names_by_family() {
+        let tool = |name: &str, about: &str| Json::obj([("name", Json::from(name)), ("description", Json::from(about))]);
+        let long = "x".repeat(400);
+        let tools = [tool("world_spawn", "Adds an entity."), tool("sight_frame", &long), tool("world_set", "Changes an entity's components."), tool("engine_info", "What is running.")];
+        let all = tools_answer(7500, &tools, None);
+        assert_eq!(all.get("count").and_then(Json::as_u64), Some(4));
+        assert_eq!(all.get("families").map(Json::to_string).as_deref(), Some(r#"{"engine":"engine_info","sight":"sight_frame","world":"world_spawn world_set"}"#));
+        assert!(all.get("tools").is_none() && !all.to_string().contains("Adds an entity"), "no descriptions without a filter: {all}");
+        assert!(all.get("next").and_then(Json::as_str).is_some_and(|n| n.contains("specula tools WORD") && n.contains("tools_catalog")));
+        // The engine's real list, names only, stays small: about 20 bytes a tool.
+        let many: Vec<Json> = (0..300).map(|i| tool(&format!("family{}_tool_number_{i}", i % 30), &long)).collect();
+        assert!(tools_answer(7500, &many, None).to_string().len() < 300 * 30, "names only");
+        // A filter matches names and descriptions, whatever the case, and cuts long descriptions.
+        let world = tools_answer(7500, &tools, Some("WORLD_"));
+        let names: Vec<&str> = world.get("tools").and_then(Json::as_array).unwrap().iter().filter_map(|t| t.get("name").and_then(Json::as_str)).collect();
+        assert_eq!(names, ["world_spawn", "world_set"]);
+        let by_text = tools_answer(7500, &tools, Some("components"));
+        assert_eq!(by_text.get("count").and_then(Json::as_u64), Some(1));
+        let frame = tools_answer(7500, &tools, Some("sight"));
+        let about = frame.get("tools").and_then(Json::as_array).unwrap()[0].get("description").and_then(Json::as_str).unwrap().len();
+        assert_eq!(about, DESCRIPTION_CHARS);
+        assert_eq!(tools_answer(7500, &tools, Some("nothing-has-this")).get("count").and_then(Json::as_u64), Some(0));
+        // A tool's own name shows that tool whole: its description uncut and its arguments,
+        // and the names of the others the word is in.
+        let schema = Json::parse(r#"{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}"#).unwrap();
+        let mut with_schema = tools.to_vec();
+        with_schema.push(Json::obj([("name", Json::from("sight_frame_wide")), ("description", Json::from("A wide one."))]));
+        with_schema[1] = Json::obj([("name", Json::from("sight_frame")), ("description", Json::from(long.as_str())), ("inputSchema", schema.clone())]);
+        let one = tools_answer(7500, &with_schema, Some("Sight_Frame"));
+        assert_eq!(one.get("tool").and_then(Json::as_str), Some("sight_frame"));
+        assert_eq!(one.get("description").and_then(Json::as_str).map(str::len), Some(400), "the whole description");
+        assert_eq!(one.get("arguments"), Some(&schema));
+        assert_eq!(one.get("also").map(Json::to_string).as_deref(), Some(r#"["sight_frame_wide"]"#));
+        assert!(one.get("tools").is_none());
+        assert!(all.get("next").and_then(Json::as_str).is_some_and(|n| n.contains("specula tools NAME")));
+    }
+
+    /// `specula call TOOL @FILE` (the measured comparison, 2026-11-14: a JSON object quoted for
+    /// a shell is the hard part of calling a tool from a terminal): the file's one object is
+    /// the call's arguments; a file that is missing, too large, not text or not one object is
+    /// the command's own mistake, said before any engine is looked for.
+    #[test]
+    fn a_calls_arguments_are_read_from_a_file() {
+        let dir = scratch("args-file");
+        let file = |name: &str, bytes: &[u8]| {
+            let f = dir.join(name);
+            std::fs::write(&f, bytes).unwrap();
+            f
+        };
+        let good = file("good.json", b"{\n  \"path\": \"/a b\",\n  \"limit\": 5\n}\n");
+        assert_eq!(args_file(&good).map(|j| j.to_string()), Ok(r#"{"path":"/a b","limit":5}"#.to_owned()));
+        // (What an editor or a shell's redirection may put first.)
+        let marked = file("marked.json", b"\xef\xbb\xbf{\"limit\": 5}");
+        assert_eq!(args_file(&marked).map(|j| j.to_string()), Ok(r#"{"limit":5}"#.to_owned()));
+        assert!(args_file(&dir.join("none.json")).unwrap_err().starts_with(&format!("@{}", dir.join("none.json").display())));
+        assert!(args_file(&file("list.json", b"[1]")).unwrap_err().contains("one JSON object"));
+        assert!(args_file(&file("bad.json", b"{not json")).unwrap_err().contains("not JSON"));
+        assert!(args_file(&file("bytes.json", b"{\"a\": \"\xff\"}")).unwrap_err().contains("not UTF-8"));
+        // One byte past the most a call may carry: refused by its size, and no more is read.
+        let mut big = b"{\"t\": \"".to_vec();
+        big.resize(crate::launch_cli::MAX_ARGS_BYTES - 1, b'x');
+        big.extend_from_slice(b"\"}");
+        assert_eq!(big.len(), crate::launch_cli::MAX_ARGS_BYTES + 1);
+        assert!(args_file(&file("big.json", &big)).unwrap_err().contains("more than"));
+        big.remove(10);
+        assert!(args_file(&file("fits.json", &big)).is_ok(), "exactly the most is taken");
+        // Through the command: a bad file is `usage` (exit 1) with no engine running, where a
+        // good one gets as far as finding none (exit 2).
+        let c = ctx(&dir);
+        let call = |f: PathBuf| run(Cli::Call { target: Target::Any, tool: "world_list".into(), args: CallArgs::File(f), as_name: None, role: None }, &c);
+        let (code, j) = call(dir.join("none.json"));
+        assert!(code == 1 && j.get("error").and_then(Json::as_str) == Some("usage"), "{j}");
+        let (code, j) = call(good);
+        assert_eq!(code, 2, "{j}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The owner's words, 2026-11-13: no project before, an empty list; a project worked on is

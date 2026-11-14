@@ -1,0 +1,298 @@
+{
+ "run": {
+  "leverage": 1,
+  "job": "small",
+  "arm": "engine",
+  "n": 2,
+  "phase": "judge",
+  "prepared": "2026-11-14T19:10:28",
+  "settings": {
+   "runs_per_cell": 2,
+   "builder_model": "claude-sonnet-5-5",
+   "judge_model": "claude-opus-5-5",
+   "limits": {
+    "token_cap": 600000,
+    "wall_s": 3600
+   },
+   "judge": {
+    "token_cap": 150000,
+    "wall_s": 1800
+   },
+   "token_weights": {
+    "input": 1.0,
+    "cache_write": 1.25,
+    "cache_read": 0.1,
+    "output": 5.0
+   }
+  },
+  "port": 7701,
+  "engine_build": "b0794cc2 (round 1)"
+ },
+ "costs": {
+  "builder": {
+   "tokens": 101943,
+   "tool_uses": 39,
+   "duration_s": 330.3,
+   "by_kind": {
+    "input": 76,
+    "cache_write": 96656,
+    "cache_read": 2292480,
+    "output": 35027,
+    "requests": 38,
+    "context_at_end": 101943
+   },
+   "weighted": 525279,
+   "cost_usd": 0.966294,
+   "turns": 40,
+   "exit": 0,
+   "model": "claude-sonnet-5-5",
+   "ended": "done",
+   "over_token_cap": false,
+   "over_wall": false,
+   "note": ""
+  },
+  "engine": {
+   "calls": 51,
+   "refused": 10,
+   "args_bytes": 2338,
+   "answer_bytes": 63632,
+   "by_tool": {
+    "engine.stop": 11,
+    "logic_build": 11,
+    "logic_hook": 11,
+    "engine.start": 10,
+    "time_control": 10,
+    "(tools)": 6,
+    "tools_catalog": 6,
+    "sight_frame": 4,
+    "camera_set": 1,
+    "engine_info": 1,
+    "world_spawn": 1
+   }
+  },
+  "left": {
+   "files": 12,
+   "bytes": 71007,
+   "text_lines": 785,
+   "lines_by_kind": {
+    ".json": 9,
+    ".md": 75,
+    ".py": 86,
+    ".rs": 479,
+    ".toml": 136
+   }
+  },
+  "finished": "2026-11-14T19:22:01",
+  "judge": {
+   "tokens": 44497,
+   "tool_uses": 18,
+   "duration_s": 328.6,
+   "by_kind": {
+    "input": 36,
+    "cache_write": 39210,
+    "cache_read": 524059,
+    "output": 13066,
+    "requests": 18,
+    "context_at_end": 44497
+   },
+   "weighted": 166784,
+   "cost_usd": 0.6799558000000001,
+   "turns": 19,
+   "exit": 0,
+   "model": "claude-opus-5-5",
+   "ended": "done",
+   "engine": {
+    "calls": 114,
+    "refused": 0,
+    "args_bytes": 9423,
+    "answer_bytes": 91905,
+    "by_tool": {
+     "engine.stop": 39,
+     "engine.start": 37,
+     "logic_build": 37,
+     "logic_hook": 37,
+     "time_control": 37,
+     "sight_frame": 3
+    }
+   }
+  },
+  "verdict": {
+   "items": [
+    {
+     "id": "s01",
+     "kind": "checkable",
+     "pass": true,
+     "evidence": "From a stopped engine, in work/: `python catch.py headless --seed 1 --ticks 1` printed {\"fall_speed\": 4, \"misses\": 0, \"over\": false, \"paddle_x\": 4.5, \"pieces\": [{\"x\": 3.5, \"y\": 15.5}], \"score\": 0, \"tick\": 1}. Seed, ticks and --script (file or inline JSON) were all taken; tick = N in every run."
+    },
+    {
+     "id": "s02",
+     "kind": "checkable",
+     "pass": true,
+     "evidence": "`python catch.py frame --seed 2 --ticks 330 --script s5.json --out ../judge-scratch/mid.png` (and two more) wrote PNGs; the header reads 480 x 640 and I looked at each one."
+    },
+    {
+     "id": "s03",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Seed 1, 200 ticks with left from tick 0 gave paddle_x 0; 200 ticks with right gave paddle_x 9."
+    },
+    {
+     "id": "s04",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Right for 30 ticks from the start (4.5) gave 8.5. Left for 15 ticks (to 2.5), then right for 30 ticks gave 6.5. Both are +4 units."
+    },
+    {
+     "id": "s05",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Seed 1, no input: 1 piece at tick 1, still 1 at 72, a new one at y 15.5 at ticks 73, 145, 217, 289 and 361. In a catching run, pieces kept arriving every 72 ticks up to tick 506 (newest at y 15.43). After over (tick 371) the pieces were identical at 600, 900 and 3000."
+    },
+    {
+     "id": "s06",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Two runs with seed 1, 500 ticks and the same script printed identical JSON. Seed 2 at 361 ticks gave columns 0.5, 2.5, 4.5, 10.5 against 0.5, 7.5, 6.5, 8.5 for seed 1."
+    },
+    {
+     "id": "s07",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Seed 1 with the catching script: at tick 218 score 0 and piece (3.5, 1.03) present; at tick 219 score 10, that piece gone, misses still 0."
+    },
+    {
+     "id": "s08",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Seed 1, no input, paddle at 4.5: at tick 226 misses 0 and piece (3.5, 0.5) present; at tick 227 misses 1, score 0, piece gone."
+    },
+    {
+     "id": "s09",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Seed 1, no input: tick 370 misses 2; tick 371 misses 3, over true. Ticks 600, 900 and 3000 printed the same score 0, misses 3 and pieces [(7.5,5.233333),(6.5,10.033333),(8.5,14.833333)]."
+    },
+    {
+     "id": "s10",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Seed 1 with the catching script: tick 506 score 40, fall_speed 4; tick 507 score 50, fall_speed 4.2. Piece 8.5 went from y 5.766667 to 5.696667 to 5.626667 over ticks 507-509 (0.07 per tick = 4.2/60), against 0.0667 per tick before."
+    },
+    {
+     "id": "s11",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Seed 1: the run was over by tick 371; restart at tick 400. At tick 401: score 0, misses 0, over false, one piece at 3.5, the same as a fresh run. At tick 761 (361 ticks into the new run), the state matched a fresh 361-tick run exactly (pieces 0.5/7.5/6.5/8.5, misses 2)."
+    },
+    {
+     "id": "s12",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "mid.png (seed 2, 330 ticks, state: paddle_x 0, pieces (0.5,3.17), (2.5,7.97), (4.5,12.77), score 10, misses 1). At 40 px a unit, the paddle covers x 0-120 at the bottom; the pieces' pixel centres are (20,513), (100,321) and (180,129), where the state puts them. 'Score 10' and 'Misses left 2' are shown."
+    },
+    {
+     "id": "s13",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "over.png (seed 1, 600 ticks) and over2.png (seed 2, 1500 ticks, score 20) show 'Game over', 'Final score 0' and 'Final score 20' respectively, and 'Press Enter to restart'."
+    },
+    {
+     "id": "s14",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "README.md describes play (Left/Right or A/D, catching, misses, Enter restarts) and gives `python catch.py headless ...` and `python catch.py frame ... --out frame.png`. Both worked as written from a stopped engine."
+    }
+   ],
+   "totals": {
+    "behaviour": {
+     "passed": 12,
+     "of": 12
+    },
+    "checkable": {
+     "passed": 2,
+     "of": 2
+    },
+    "all": {
+     "passed": 14,
+     "of": 14
+    }
+   },
+   "defects": [
+    "In the game-over frame the frozen pieces stay drawn and overlap the text: a piece covers part of 'Game over' and another covers 'Misses left 0' in over.png. The README admits this.",
+    "A miss lands one tick late because of floating-point build-up: at tick 226 the state prints y 0.5 (bottom exactly on the bottom edge) but the miss counts only at tick 227.",
+    "The frame check leaves a new work/captures folder (written by the engine's sight_frame) and uses work/.catch-tmp during the run.",
+    "Live play with a window and keys is untested by the builder, and I did not check it either (no window allowed)."
+   ],
+   "could_not_check": []
+  },
+  "where": {
+   "run": "small-engine-2",
+   "requests": 38,
+   "steps": 39,
+   "steps_before_the_first_code": 27,
+   "weighted": 525279,
+   "weighted_by_kind": {
+    "read_again": 229248,
+    "written_out": 175135,
+    "new_in_context": 120896
+   },
+   "builds": {
+    "steps": 9,
+    "failed": 0
+   },
+   "how": "weighted_by_kind is exact (the run's own token counts times the weights); a step's kind is a reading of its command's text, and answered_tokens / written_tokens are characters / 4",
+   "by_step": {
+    "read the engine's documents and source": {
+     "steps": 12,
+     "answered_tokens": 21925,
+     "written_tokens": 682
+    },
+    "build the module": {
+     "steps": 9,
+     "answered_tokens": 5972,
+     "written_tokens": 5831
+    },
+    "write code": {
+     "steps": 3,
+     "answered_tokens": 180,
+     "written_tokens": 5430
+    },
+    "read its own files": {
+     "steps": 5,
+     "answered_tokens": 3906,
+     "written_tokens": 306
+    },
+    "find tools and their arguments": {
+     "steps": 3,
+     "answered_tokens": 3315,
+     "written_tokens": 292
+    },
+    "words between steps": {
+     "steps": 0,
+     "answered_tokens": 0,
+     "written_tokens": 892
+    },
+    "call the engine": {
+     "steps": 2,
+     "answered_tokens": 436,
+     "written_tokens": 204
+    },
+    "start or stop the engine": {
+     "steps": 2,
+     "answered_tokens": 348,
+     "written_tokens": 261
+    },
+    "run its own checks": {
+     "steps": 1,
+     "answered_tokens": 214,
+     "written_tokens": 129
+    },
+    "look at a frame": {
+     "steps": 2,
+     "answered_tokens": 0,
+     "written_tokens": 96
+    }
+   }
+  }
+ }
+}

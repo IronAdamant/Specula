@@ -2,7 +2,7 @@
 
 These are notes from Claude (Opus 5.5 through M5's first wave; Fable 5.2 from 2026-11-12) to whoever picks up Specula
 next, most likely a new Claude conversation with no memory of the earlier ones. This page is **current state and
-what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2026-11-14**.
+what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2026-11-14** (evening).
 
 - **M5 as of 2026-11-14** (all on `main`, not pushed: the owner pushes at 100%):
   - **Merged:** map 1, audio, timelines, the render follow-ups, the UI sight tools, the editor's core, text,
@@ -34,13 +34,59 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       where it was taken. It found the cause of the frames that waited beside a busy machine: a build
       request read the disk under the lock. A request reads without it now (`Library::request_plan`), and
       `model_build` makes its whole request on a worker.
-  - **Left, in this order:** the measured comparison (ROADMAP M5, "Measured
-    leverage": approved by the owner on 2026-11-14 at two runs a cell and about 15M tokens, below); the M5
-    exit proof; the final audit; the docs pass (ROADMAP's M5 ticks and CHANGELOG's M5 section are behind).
+  - **The measured comparison is in** (2026-11-14; [docs/design/LEVERAGE.md](docs/design/LEVERAGE.md),
+    `scripts/leverage.py`, [perf/leverage/2026-11-14](perf/leverage/2026-11-14/report.md)): the same three
+    game jobs built through the engine and without it, fourteen builds, each judged against one list by a
+    model that built neither. **At these sizes the engine costs more for the same result**: about 5 times
+    the tokens on a one-screen game (5.2 over four engine runs on two builds), 3.1 times on a medium one,
+    1.7 times on a change to it. It is M5's baseline, to be moved in M6 (the owner's words below), not
+    something to tune away in M5.
+    - **Why it costs more is measured too** (`leverage.py where RUN`): three to five times the requests,
+      each reading the whole context again, nine or more before the first line of code; and about twice to
+      four times the words written (a Rust module and its glue against one Python file). Failed builds are
+      not the cause. In the change round, where the game's own documents say how it is built, the two arms
+      take about as many requests.
+    - **Judges disagree, and a first judging of the change games had to be done again** (the judge was not
+      told what the game passed before the change; one item was unclear in the brief). Both judgings are in
+      the report. Treat a difference of one check between two cells as nothing.
+    - Builders and judges run as **processes of their own** (`leverage.py run`): a subagent of a session
+      with this repository open is shown AGENTS.md and HANDOFF.md, in both arms.
+    - **Tokens are counted by kind** (new in the context, read again from the cache, written out) with one
+      weighted figure; the single number Claude Code reports for a subagent is its context's size at the
+      end, not what the run used.
+    - From a terminal an agent now has: `specula tools` (names by family), `specula tools NAME` (one tool's
+      description and arguments), `specula call TOOL @args.json`, and `--as NAME --role lead` for a lead the
+      operator granted. A refusal for an unknown argument lists the ones the tool takes. **A lead the
+      operator named is never frozen for a refused try**, whatever role its hello said (it was: one call
+      without `--role` locked it out, and a run whose only grants are leads had nobody to clear it).
+    - A game project outside this repository keeps its SDK in `crates/specula-sdk` and `crates/specula-core`
+      (the only place the build service trusts it); the harness copies it there (ROADMAP M6).
+  - **Left, in this order:** the M5 exit proof; the final audit; the docs pass (ROADMAP's M5 ticks and
+    CHANGELOG's M5 section are behind).
     The editor's panels still read one pointer for the human and an agent (docs/design/EDITOR.md, "Known
     limits").
   - **The lead's running notes** are in `.swarmnotes/m5/lead/m5tracker.md` (gitignored, this machine): every
     lane's state, review reports (`reviews/`), and the list of items carried to the performance pass.
+
+- **Owner, 2026-11-14 evening (on remote, on the comparison's first numbers):**
+  - **M5 is foundations; M6 is where it is made to pay.** "That's where we'll be looking at scalability in
+    M6. Right now, what matters is we're building in foundations and reliability, as well as saving the
+    assets, similar to Unity and Unreal Engine and also having 2D/3D assets in M5. In M6, we'll need to work
+    things out that they actually make sense for small games, medium games and large games and it should
+    make it easier for you to actually make one."
+  - **M6** "is finalising and making it well tuned as best as we can for initial phase": "not just entire
+    tuning phase but also testing and adversarial check phase. UX experience will matter but not just for
+    humans, it's also for agents." Its scope is talked through when it starts, not before.
+  - **The numbers are wanted as they are:** "It'll be good to have those numbers in M5 so we both know how
+    to tune to improve against them in M6, especially in Windows, MacOS and Linux." And on being told
+    plainly that the engine cost more: "I need that clear eyed honesty to really achieve my goal on this
+    project."
+  - **The first release is Windows and macOS** ("Linux is already at a later plan. But I'll release both
+    windows and MacOS. If I have someone willing to help me in Linux space, that will make it much easier"),
+    hoped for before December. This replaces the order of 2026-10-22 below (Windows through M6, then macOS
+    and Linux). macOS is native work that does not exist yet (a Metal renderer, its window, input and audio,
+    module loading): Claude sizes it at the start of M6. The owner expects to run several Claude instances
+    at once across their systems.
 
 - **Owner, 2026-11-14 (on remote, during the performance pass):**
   - **The measured comparison goes ahead at Claude's recommendation:** two runs a cell, about 15M tokens in

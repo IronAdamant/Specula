@@ -242,15 +242,20 @@ pub fn may_force(have: Authority, own: bool, what: &str) -> Result<(), WorldErro
 
 /// Native module code (`logic_build`, `logic_reload`, `logic_unload`): a module is a library
 /// the engine loads into its own process, running with the owner's user rights, so it needs the
-/// owner or a lead **the operator granted** (`--lead NAME`, `--owner NAME`). `granted` is whether
-/// the caller's identity holds an operator grant: asked for apart from `have`, so that no other
+/// owner or a lead **the operator granted** (`--lead NAME`, `--owner NAME`). `grant` is what the
+/// operator granted the caller's identity: asked for apart from `have`, so that no other
 /// way to lead authority (there is none today) would ever load native code.
-pub fn may_load_native(have: Authority, granted: bool, what: &str) -> Result<(), WorldError> {
+pub fn may_load_native(have: Authority, grant: Option<Authority>, what: &str) -> Result<(), WorldError> {
+    let granted = grant.is_some();
     if have == Authority::Owner || (have >= Authority::Lead && granted) {
         return Ok(());
     }
     let why = if have >= Authority::Lead {
         "your lead authority isn't an operator grant: start the engine with --lead NAME to load native code"
+    } else if grant.is_some_and(|g| g >= Authority::Lead) {
+        // (The operator named this agent lead, and its hello said a job, not the role: the fix is
+        // the caller's own, at once. Found by the measured comparison's first engine call.)
+        "the operator granted your name a role, and this session has not said it: say agent_hello {name, role: \"lead\"} first (from a shell: specula call ... --as NAME --role lead)"
     } else {
         "a module is native code that runs with the owner's user rights"
     };
@@ -406,6 +411,11 @@ impl Grants {
         self.bound.values().any(|k| k == key)
     }
 
+    /// What the operator granted the name the identity `key` holds (none: no grant).
+    pub fn grant_of_key(&self, key: &str) -> Option<Authority> {
+        self.bound.iter().find(|(_, k)| *k == key).and_then(|(sk, _)| self.operator.get(sk)).map(|g| g.1)
+    }
+
     /// Whether `name` (or a look-alike) is a role word the operator didn't grant as a name.
     pub fn role_word(&self, name: &str) -> bool {
         let sk = skeleton(name);
@@ -471,7 +481,11 @@ pub fn authority(swarm: &crate::swarm::Swarm, session_id: &str) -> Authority {
 /// caller's connection thread (no `&Swarm` there: `trace_*`, `taste_*`, the procgen and studio
 /// tools): the same answer as [`authority`], published by the swarm on every hello, resume and
 /// prune. At most [`MAX_PUBLISHED`] sessions (the oldest go first).
-static PUBLISHED: std::sync::Mutex<BTreeMap<String, (u64, Authority, bool)>> = std::sync::Mutex::new(BTreeMap::new());
+static PUBLISHED: std::sync::Mutex<BTreeMap<String, Published>> = std::sync::Mutex::new(BTreeMap::new());
+
+/// What is published of a session: when (the oldest go first), the authority its hello was
+/// admitted with, and what the operator granted its identity's name (none: no grant).
+type Published = (u64, Authority, Option<Authority>);
 static PUBLISH_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Sessions [`of_session`] remembers.
@@ -507,21 +521,29 @@ pub fn trusted(swarm: &crate::swarm::Swarm, session_id: &str) -> Authority {
 
 /// [`of_session`] as the operator's grants alone give it ([`trust`]), on a caller thread.
 pub fn trusted_of_session(session_id: &str) -> Authority {
-    PUBLISHED.lock().unwrap_or_else(|p| p.into_inner()).get(session_id).map_or(Authority::Agent, |(_, a, g)| trust(*a, *g))
+    PUBLISHED.lock().unwrap_or_else(|p| p.into_inner()).get(session_id).map_or(Authority::Agent, |(_, a, g)| trust(*a, g.is_some()))
+}
+
+/// Whether the session's identity holds the operator's lead (or owner) grant, whatever role
+/// its hello said: the security monitor never freezes such an identity for a refused try
+/// ([`crate::inputguard`]). It gives no authority: what the session may do is [`of_session`].
+pub fn lead_grant_of_session(session_id: &str) -> bool {
+    PUBLISHED.lock().unwrap_or_else(|p| p.into_inner()).get(session_id).is_some_and(|(_, _, g)| g.is_some_and(|g| g >= Authority::Lead))
 }
 
 /// Tests publish a session's authority as an operator grant gives it.
 #[cfg(test)]
 pub(crate) fn publish(session_id: &str, a: Authority) {
-    publish_as(session_id, a, true);
+    publish_as(session_id, a, Some(a));
 }
 
-/// The swarm publishes a session's admitted authority (hello, resume), and whether its identity
-/// holds an operator grant (`granted`).
-pub(crate) fn publish_as(session_id: &str, a: Authority, granted: bool) {
+/// The swarm publishes a session's admitted authority (hello, resume), and the operator's grant
+/// its identity holds (`grant`: what the operator gave the name, which may be more than its
+/// hello asked for).
+pub(crate) fn publish_as(session_id: &str, a: Authority, grant: Option<Authority>) {
     let seq = PUBLISH_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut m = PUBLISHED.lock().unwrap_or_else(|p| p.into_inner());
-    m.insert(session_id.to_owned(), (seq, a, granted));
+    m.insert(session_id.to_owned(), (seq, a, grant));
     while m.len() > MAX_PUBLISHED {
         let Some(oldest) = m.iter().min_by_key(|(_, (s, _, _))| *s).map(|(k, _)| k.clone()) else { break };
         m.remove(&oldest);
@@ -869,6 +891,34 @@ mod tests {
         g.grant("lee", Authority::Lead).unwrap();
         assert!(g.lead_granted());
         assert_eq!(g.admit("lee", "k4", ROLE_LEAD).unwrap(), Authority::Lead, "the operator's grant");
+    }
+
+    /// The measured comparison's first engine call (2026-11-14): an agent the operator named
+    /// lead said hello with a job, not the role, and `logic_build` answered that it needs an
+    /// operator-granted lead, to an agent that was one. The refusal says what the caller has
+    /// not done; who may load native code is unchanged.
+    #[test]
+    fn a_granted_agent_that_has_not_said_its_role_is_told_to() {
+        let said = may_load_native(Authority::Agent, Some(Authority::Lead), "logic_build").unwrap_err();
+        assert!(said.message.contains("role: \"lead\"") && said.message.contains("--role lead"), "{}", said.message);
+        // Nobody granted this one, and a reviewer's grant is not a lead's: nothing either can
+        // say would help, and the refusal doesn't suggest it (review R1 of m5-leverage: a
+        // granted reviewer was told to say lead, and was refused when it did).
+        for grant in [None, Some(Authority::Reviewer)] {
+            for have in [Authority::Agent, Authority::Reviewer] {
+                let plain = may_load_native(have, grant, "logic_build").unwrap_err();
+                assert!(!plain.message.contains("--role") && plain.message.contains("--lead NAME"), "{grant:?} {have:?}: {}", plain.message);
+            }
+        }
+        assert!(may_load_native(Authority::Lead, Some(Authority::Lead), "logic_build").is_ok() && may_load_native(Authority::Owner, None, "logic_build").is_ok());
+        assert!(may_load_native(Authority::Lead, None, "logic_build").is_err());
+        // What the operator granted an identity is its name's grant, whatever its hello asked.
+        let mut g = Grants::default();
+        g.grant("lee", Authority::Lead).unwrap();
+        g.grant("rev", Authority::Reviewer).unwrap();
+        assert_eq!(g.admit("lee", "lee-key", "builder").unwrap(), Authority::Agent);
+        assert_eq!(g.admit("rev", "rev-key", "builder").unwrap(), Authority::Agent);
+        assert_eq!((g.grant_of_key("lee-key"), g.grant_of_key("rev-key"), g.grant_of_key("other")), (Some(Authority::Lead), Some(Authority::Reviewer), None));
     }
 
     #[test]

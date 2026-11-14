@@ -1,0 +1,367 @@
+{
+ "run": {
+  "leverage": 1,
+  "job": "change",
+  "arm": "engine",
+  "n": 1,
+  "phase": "judge",
+  "prepared": "2026-11-14T20:11:42",
+  "settings": {
+   "runs_per_cell": 2,
+   "builder_model": "claude-sonnet-5-5",
+   "judge_model": "claude-opus-5-5",
+   "limits": {
+    "token_cap": 500000,
+    "wall_s": 3600
+   },
+   "judge": {
+    "token_cap": 150000,
+    "wall_s": 1800
+   },
+   "token_weights": {
+    "input": 1.0,
+    "cache_write": 1.25,
+    "cache_read": 0.1,
+    "output": 5.0
+   }
+  },
+  "from": "medium-engine-1",
+  "engine_build": "706837ff (round 2: tools NAME, refusals list arguments)",
+  "port": 7705
+ },
+ "costs": {
+  "builder": {
+   "tokens": 52055,
+   "tool_uses": 13,
+   "duration_s": 603.5,
+   "by_kind": {
+    "input": 22,
+    "cache_write": 46768,
+    "cache_read": 311328,
+    "output": 13814,
+    "requests": 11,
+    "context_at_end": 52055
+   },
+   "weighted": 158685,
+   "cost_usd": 0.35638880000000006,
+   "turns": 14,
+   "exit": 0,
+   "model": "claude-sonnet-5-5",
+   "ended": "done",
+   "over_token_cap": false,
+   "over_wall": false,
+   "note": ""
+  },
+  "engine": {
+   "calls": 3478,
+   "refused": 0,
+   "args_bytes": 273766,
+   "answer_bytes": 1665389,
+   "by_tool": {
+    "logic_hook": 3294,
+    "engine.start": 92,
+    "logic_build": 92,
+    "time_control": 92,
+    "engine.stop": 6
+   }
+  },
+  "left": {
+   "files": 23,
+   "bytes": 94889,
+   "text_lines": 1366,
+   "lines_by_kind": {
+    ".json": 111,
+    ".md": 97,
+    ".py": 489,
+    ".rs": 616,
+    ".toml": 53
+   }
+  },
+  "finished": "2026-11-14T20:37:39",
+  "judged_before": [
+   {
+    "why": "The first judging held c08 without the game's own verdict from before the change and read c02 three ways (review R1 of the comparison's lane): judged again with the list of what passed before the change, and with c02 saying what the brief left open.",
+    "verdict": {
+     "items": [
+      {
+       "id": "c01",
+       "kind": "behaviour",
+       "pass": true,
+       "evidence": "Bot (planned via the game's hooks, replayed through tools/headless.py seed 1, 6479 ticks) reached wave 6 at score 450; wave-6 states show only kind runner, health 1 at Normal, x falling 1.0 per 20 ticks (3 u/s); 15 distinct runners inferred with spawn ticks exactly 90 apart; headless at tick 5400 printed a runner (19.4,10,1,runner) under 'Wave 6 of 6'."
+      },
+      {
+       "id": "c02",
+       "kind": "behaviour",
+       "pass": false,
+       "evidence": "'of 6' shown in en/es/fr ('Wave 1 of 6', 'Oleada 1 de 6', 'Vague 1 sur 6', 'Wave 6 of 6'); full clear at Normal ends won with 675 (450 after wave 5 + 15x15). But the run is NOT won only by destroying the last runner: replaying the win script with shooting stopped at tick 6400 gave screen 'won', score 660, gate 4 at tick 7000 after the last runner reached the gate (cut at 6200: 'won', 630, gate 2)."
+      },
+      {
+       "id": "c03",
+       "kind": "behaviour",
+       "pass": true,
+       "evidence": "Settings>Language Right x1/x2/x3 gave es, fr, en (Left from en gives fr). French texts: title ['Tiens la porte','Commencer','Param\u00e8tres','Quitter'], settings ['Param\u00e8tres','Volume : 5','Langue : Fran\u00e7ais','Difficult\u00e9 : Difficile','Retour'], play ['Score : 0','Vague 1 sur 6','Porte : 5'], paused +['Pause','Reprendre','Titre'], lost ['Vous avez perdu','Score final : 0','Entr\u00e9e : titre'], won ['Vous avez gagn\u00e9','Score final : 675','Entr\u00e9e : titre']; frames show the same."
+      },
+      {
+       "id": "c04",
+       "kind": "behaviour",
+       "pass": true,
+       "evidence": "Settings texts ['Settings','Volume: 5','Language: English','Difficulty: Normal','Back']; on row 2 Right -> Hard (Right x3 stays Hard), Left -> Easy (Left x3 stays Easy); default normal; row 3 Enter is Back; shown as 'Dificultad: F\u00e1cil' (es) and 'Difficult\u00e9 : Difficile' (fr), also in the frames."
+      },
+      {
+       "id": "c05",
+       "kind": "behaviour",
+       "pass": true,
+       "evidence": "Headless 400 ticks after Start: walkers health 1 (easy), 2 (normal), 3 (hard). Wave 6 via bot runs and headless replays: runner health 1 at easy (headless tick 5005), 1 at normal (tick 5400), 2 at hard (tick 5595: {x 19.45, health 2, kind runner})."
+      },
+      {
+       "id": "c06",
+       "kind": "behaviour",
+       "pass": true,
+       "evidence": "One run set volume 3, French, Hard; file written {\"volume\": 3, \"language\": \"fr\", \"difficulty\": \"hard\"}; next run started fr/3/hard. Old file {\"volume\": 3, \"language\": \"es\"} loaded as es/3/normal and play spawned 2-health walkers."
+      },
+      {
+       "id": "c07",
+       "kind": "checkable",
+       "pass": true,
+       "evidence": "Every printed state has \"difficulty\" and each walker has \"kind\" (walker/runner); --frame wrote PNGs whose IHDR reads 800 x 480, and they show the state."
+      },
+      {
+       "id": "c08",
+       "kind": "behaviour",
+       "pass": true,
+       "evidence": "Rechecked m01-m19 on the changed game: title texts and Down/Enter/Start; volume clamps 0/10; Spanish everywhere; persistence and fresh defaults; guard 3 units in 30 ticks, clamps 0/12; bolts 24 ticks apart, 14 u/s, gone past 20; wave 1 five walkers 90 ticks apart in lanes 2-10 at 1.5 u/s; hit 2->1, second hit +10, other-lane bolt passes; gate drops, lost with final score, Enter->title; wave 2 (7 walkers, 'Wave 2 of 6') ~181 ticks after last walker gone; full clear won 675 and Enter->title; pause freezes, Resume continues, Title works; same seed identical, seed 6 other lanes; frames match states; string tables per language and README add-a-language and commands present and working."
+      },
+      {
+       "id": "c09",
+       "kind": "behaviour",
+       "pass": true,
+       "evidence": "CHANGES.md lists each change with files (lib.rs, strings/fr.json, languages.json, tables.rs, headless.py, frame.py, check.py), what was checked and how, and what was found wrong before."
+      }
+     ],
+     "totals": {
+      "behaviour": {
+       "passed": 7,
+       "of": 8
+      },
+      "checkable": {
+       "passed": 1,
+       "of": 1
+      },
+      "all": {
+       "passed": 8,
+       "of": 9
+      }
+     },
+     "defects": [
+      "Wave 6 (the final wave) is won when its last runner leaves the field by reaching the gate, not only when it is destroyed (observed won at 660 and 630 points with gate 4 and 2).",
+      "The frame colours a Hard-difficulty 3-health walker the same as a 2-health one, and runners the same at any health (builder notes the first).",
+      "Without --settings the headless command writes settings.json into the game folder (default work/settings.json)."
+     ],
+     "could_not_check": []
+    },
+    "judge": {
+     "tokens": 86201,
+     "tool_uses": 35,
+     "duration_s": 1684.9,
+     "by_kind": {
+      "input": 52,
+      "cache_write": 80914,
+      "cache_read": 1227871,
+      "output": 26439,
+      "requests": 26,
+      "context_at_end": 86201
+     },
+     "weighted": 356177,
+     "cost_usd": 1.4218742000000002,
+     "turns": 36,
+     "exit": 0,
+     "runner": "claude",
+     "model": "claude-opus-5-5",
+     "ended": "done",
+     "engine": {
+      "calls": 11952,
+      "refused": 0,
+      "args_bytes": 856194,
+      "answer_bytes": 5211953,
+      "by_tool": {
+       "logic_hook": 11777,
+       "time_control": 89,
+       "engine.start": 86,
+       "logic_build": 86,
+       "engine.stop": 3
+      }
+     }
+    }
+   }
+  ],
+  "judge": {
+   "tokens": 102538,
+   "tool_uses": 45,
+   "duration_s": 1539.1,
+   "by_kind": {
+    "input": 76,
+    "cache_write": 95435,
+    "cache_read": 2367614,
+    "output": 33800,
+    "requests": 38,
+    "context_at_end": 102538
+   },
+   "weighted": 525131,
+   "cost_usd": 1.9133068000000002,
+   "turns": 46,
+   "exit": 0,
+   "model": "claude-opus-5-5",
+   "models": [
+    "claude-opus-5-5"
+   ],
+   "tokens_complete": true,
+   "engine_stopped": true,
+   "ended": "done",
+   "engine": {
+    "calls": 21178,
+    "refused": 0,
+    "args_bytes": 1592560,
+    "answer_bytes": 9670564,
+    "by_tool": {
+     "logic_hook": 20775,
+     "time_control": 203,
+     "engine.start": 200,
+     "logic_build": 200,
+     "engine.stop": 4
+    }
+   }
+  },
+  "verdict": {
+   "items": [
+    {
+     "id": "c01",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "My bot won at Normal (seed 1), and I traced its script 1 step at a time from tick 4900. Wave 6 began at tick 5122. It spawned exactly 15 walkers, all kind runner with health 1, at ticks 5122, 5212 ... 6382 (every gap 90 steps = 1.5 s). x went 20 -> 19.95 after 1 step and -> 17.0 after 60 steps (3 units/s)."
+    },
+    {
+     "id": "c02",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "headless --ticks 4943/5000 with the bot script: wave 5 cleared, screen still play, 450 points, 'Wave 5 of 6'. --ticks 6481: screen won, 'Final score: 675' (450 + 15x15). A run that let the last runner through: tick 6779 play with 1 runner and gate 5; tick 6784 won, gate 4, score 660. Texts 'Wave 1 of 6' / 'Wave 6 of 6', 'Oleada 1 de 6' / 'Oleada 6 de 6', 'Vague 1 sur 6'."
+    },
+    {
+     "id": "c03",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Settings > Language > Right: en -> es -> fr -> en; Left from en gives fr. With settings language fr: title ['Tiens la porte','Commencer','Param\u00e8tres','Quitter']; settings ['Param\u00e8tres','Volume : 5','Langue : Fran\u00e7ais','Difficult\u00e9 : Normal','Retour']; play ['Score : 0','Vague 1 sur 6','Porte : 5']; paused adds 'Pause','Reprendre','Titre'; won/lost 'Vous avez gagn\u00e9'/'Vous avez perdu','Score final : N','Entr\u00e9e : titre'. Frames draw the accents correctly. (Volume, Score, Pause and Normal are also French words.)"
+    },
+    {
+     "id": "c04",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "The settings texts are [title, Volume, Language, 'Difficulty: Normal', Back]: Difficulty is at menu_index 2, Back at 3, and Enter on Back returns to the title. Default is normal. Right gives hard, and a second Right stays hard. Left gives easy, and a second Left stays easy. Then Right gives normal. Shown as 'Dificultad: Dif\u00edcil/F\u00e1cil' in es and 'Difficult\u00e9 : Difficile/Facile' in fr. Frames fr_settings_diff and es_settings_diff show the row marked."
+    },
+    {
+     "id": "c05",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "headless --ticks 30 '0:enter' gives wave-1 walker health 1 at easy, 2 at normal and 3 at hard. Bot scripts replayed through headless at the first wave-6 tick give runner health 1 at easy (tick 5005), 1 at normal (trace) and 2 at hard (tick 5531). The bot won all three difficulties at 675."
+    },
+    {
+     "id": "c06",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "One run set volume 7, fr and hard into a fresh file, which then held {\"volume\": 7, \"language\": \"fr\", \"difficulty\": \"hard\"}. The next run started with volume 7, fr and hard, and its walkers spawned with 3 health. An old-format file {\"volume\": 3, \"language\": \"es\"} loaded as volume 3, es, normal. A missing file gave 5, en, normal."
+    },
+    {
+     "id": "c07",
+     "kind": "checkable",
+     "pass": true,
+     "evidence": "Every printed state has 'difficulty' (easy/normal/hard), and every walker has 'kind' (walker or runner). Every --frame I wrote (title, settings, play, paused, won, lost, wave 6) is a PNG with IHDR 800 x 480."
+    },
+    {
+     "id": "c08",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Every item that passed before still passes. m01: title-screen state. m02: 800x480 PNG. m03: title texts, Down+Enter opens settings, Start gives play/wave 1/0/5. m04: volume clamps 10 and 0. m05: es settings/title/play all Spanish. m06: persistence, and a fresh file gives defaults. m07: guard 6->9 in 30 steps, clamps 0 and 12. m08: bolts every 24 steps, 14 u/s, gone past 20. m09: wave 1 is 5 walkers 90 steps apart in lanes 2-10 at 1.5 u/s. m10: a hit takes 2->1 and the bolt is gone, a second hit removes the walker for +10, bolts pass walkers in other lanes. m11: a walker at x<=0 is removed and the gate goes 5->4, then lost with the final score. m13 (read as 675): won 675, Enter returns to the title. m14: the paused state equals the tick-200 state, resume equals an unpaused run, and Title works. m15: same seed gives identical states; seed 2 uses lanes [2,4,4,4,10] against [2,10,2,2,4]. m17: title and settings frames mark the chosen entry in the chosen language. m18: strings/*.json tables, and README says how to add a language. m19: README says how to play, and its commands run."
+    },
+    {
+     "id": "c09",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "CHANGES.md lists each change with its files (lib.rs: WAVES, RUNNER_SPEED, kind, health_for; fr.json/languages.json/tables.rs; headless.py and frame.py), what was checked and how (tools/check.py, frames looked at), and what was wrong before."
+    }
+   ],
+   "totals": {
+    "behaviour": {
+     "passed": 8,
+     "of": 8
+    },
+    "checkable": {
+     "passed": 1,
+     "of": 1
+    },
+    "all": {
+     "passed": 9,
+     "of": 9
+    }
+   },
+   "defects": [
+    "tools/headless.py decodes the engine's output with the Windows code page (subprocess text=True, no encoding). If PYTHONIOENCODING=utf-8 is set, accented strings come out double-encoded in the printed state and in the frame ('Param\u00c3\u00a8tres', drawn as 'PARAM\u00c3?TRES'). It works in a plain environment.",
+    "The wave gap is still 181 steps, not 180, the bug already reported under m12. It also applies to wave 6: wave 5's last walker was gone at tick 4941 and wave 6 began at tick 5122.",
+    "README.md is partly stale: 'a bot plays all 5 waves to a win (450 points)', 'Wave 5 is won when its last walker is gone', and '--settings where volume and language are kept' (it now keeps difficulty too)."
+   ],
+   "could_not_check": []
+  },
+  "where": {
+   "run": "change-engine-1",
+   "requests": 11,
+   "steps": 13,
+   "steps_before_the_first_code": 6,
+   "weighted": 158685,
+   "weighted_by_kind": {
+    "read_again": 31133,
+    "written_out": 69070,
+    "new_in_context": 58482
+   },
+   "builds": {
+    "steps": 1,
+    "failed": 0
+   },
+   "how": "weighted_by_kind is exact (the run's own token counts times the weights); a step's kind is a reading of its command's text, and answered_tokens / written_tokens are characters / 4",
+   "by_step": {
+    "read its own files": {
+     "steps": 5,
+     "answered_tokens": 10618,
+     "written_tokens": 241
+    },
+    "write code": {
+     "steps": 4,
+     "answered_tokens": 3512,
+     "written_tokens": 3711
+    },
+    "build the module": {
+     "steps": 1,
+     "answered_tokens": 2518,
+     "written_tokens": 91
+    },
+    "find tools and their arguments": {
+     "steps": 1,
+     "answered_tokens": 77,
+     "written_tokens": 1035
+    },
+    "words between steps": {
+     "steps": 0,
+     "answered_tokens": 0,
+     "written_tokens": 732
+    },
+    "run its own checks": {
+     "steps": 1,
+     "answered_tokens": 182,
+     "written_tokens": 147
+    },
+    "look at a frame": {
+     "steps": 1,
+     "answered_tokens": 0,
+     "written_tokens": 46
+    }
+   }
+  }
+ }
+}

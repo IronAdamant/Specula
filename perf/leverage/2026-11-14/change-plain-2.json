@@ -1,0 +1,309 @@
+{
+ "run": {
+  "leverage": 1,
+  "job": "change",
+  "arm": "plain",
+  "n": 2,
+  "phase": "judge",
+  "prepared": "2026-11-14T20:10:39",
+  "settings": {
+   "runs_per_cell": 2,
+   "builder_model": "claude-sonnet-5-5",
+   "judge_model": "claude-opus-5-5",
+   "limits": {
+    "token_cap": 500000,
+    "wall_s": 3600
+   },
+   "judge": {
+    "token_cap": 150000,
+    "wall_s": 1800
+   },
+   "token_weights": {
+    "input": 1.0,
+    "cache_write": 1.25,
+    "cache_read": 0.1,
+    "output": 5.0
+   }
+  },
+  "from": "medium-plain-2"
+ },
+ "costs": {
+  "builder": {
+   "tokens": 34252,
+   "tool_uses": 12,
+   "duration_s": 83.2,
+   "by_kind": {
+    "input": 20,
+    "cache_write": 28965,
+    "cache_read": 197639,
+    "output": 10561,
+    "requests": 10,
+    "context_at_end": 34252
+   },
+   "weighted": 108795,
+   "cost_usd": 0.2412739,
+   "turns": 13,
+   "exit": 0,
+   "model": "claude-sonnet-5-5",
+   "ended": "done",
+   "over_token_cap": false,
+   "over_wall": false,
+   "note": ""
+  },
+  "left": {
+   "files": 16,
+   "bytes": 58525,
+   "text_lines": 774,
+   "lines_by_kind": {
+    ".json": 70,
+    ".md": 79,
+    ".py": 625
+   }
+  },
+  "finished": "2026-11-14T20:16:07",
+  "judged_before": [
+   {
+    "why": "The first judging held c08 without the game's own verdict from before the change and read c02 three ways (review R1 of the comparison's lane): judged again with the list of what passed before the change, and with c02 saying what the brief left open.",
+    "verdict": {
+     "items": [
+      {
+       "id": "c01",
+       "kind": "behaviour",
+       "pass": false,
+       "evidence": "Normal seed 1, planned full-clear script via CLI: wave 6 starts tick 5384; CLI states sampled every 60 ticks show a new runner (kind runner, health 1, moves 0.05/tick = 3 u/s) at x=20 at ticks 5385, 5445, 5505 ... 6225 (15 runners, none at 6285). Runners spawn every 60 ticks = 1.0 s, not 1.5 s (game.py:239 spawn_cd = 60 if runners)."
+      },
+      {
+       "id": "c02",
+       "kind": "behaviour",
+       "pass": true,
+       "evidence": "HUD 'Wave 1 of 6' / 'Oleada 1 de 6' / 'Vague 1 sur 6'; tick 5383 still play 'Wave 5 of 6' with score 450 and no walkers (no win after wave 5); full clears at Normal seeds 1, 7, 2 end screen won, score 675; runner kills raise the score by 15 each. (A last runner that reaches the gate also wins; see defects.)"
+      },
+      {
+       "id": "c03",
+       "kind": "behaviour",
+       "pass": true,
+       "evidence": "Settings Left/Right on Language cycles en -> es -> fr -> en. French texts: title ['D\u00e9fendez la porte','D\u00e9marrer','Param\u00e8tres','Quitter'], settings ['Param\u00e8tres','Volume : 5','Langue : Fran\u00e7ais','Difficult\u00e9 : Normal','Retour'], play ['Score : 0','Vague 1 sur 6','Porte : 5'], paused adds 'En pause','Reprendre','Titre', won 'Vous avez gagn\u00e9 !', lost 'Vous avez perdu', 'Entr\u00e9e : titre'; frames of all six screens viewed, all French, accents drawn."
+      },
+      {
+       "id": "c04",
+       "kind": "behaviour",
+       "pass": true,
+       "evidence": "Settings texts ['Settings','Volume: 5','Language: English','Difficulty: Normal','Back']: Difficulty is between Language and Back, Normal on a fresh file; Right: Normal->Hard->Easy->Normal, Left: Normal->Easy->Hard; shown as F\u00e1cil/Normal/Dif\u00edcil in es and Facile/Normal/Difficile in fr; fr_settings.png shows the marked entry."
+      },
+      {
+       "id": "c05",
+       "kind": "behaviour",
+       "pass": true,
+       "evidence": "CLI: first walker health easy 1 / normal 2 / hard 3; first wave-6 runner health easy 1 / normal 1 / hard 2 (difficulty field matches)."
+      },
+      {
+       "id": "c06",
+       "kind": "behaviour",
+       "pass": true,
+       "evidence": "Run 1 set volume 6, language fr, difficulty easy -> file {\"volume\": 6, \"language\": \"fr\", \"difficulty\": \"easy\"}; run 2 on same file starts 6/fr/easy. Old-format file {\"volume\":3,\"language\":\"es\"} loads 3/es/normal; fresh path gives 5/en/normal."
+      },
+      {
+       "id": "c07",
+       "kind": "checkable",
+       "pass": true,
+       "evidence": "State has \"difficulty\": \"normal\" etc.; walkers have \"kind\": \"walker\"/\"runner\"; README frame command wrote out.png; all frames read 800x480 from the PNG header and opened as images."
+      },
+      {
+       "id": "c08",
+       "kind": "behaviour",
+       "pass": true,
+       "evidence": "m01-m19 rechecked on the changed game, all held: title/menus, volume clamps 0..10, Spanish on title/settings/play, settings persist, guard 6 u/s clamp 0..12, bolt every 24 ticks at 14 u/s, wave 1 = 5 walkers every 90 ticks at 1.5 u/s, 2 hits kill +10, other lane passes, gate loss -> lost with score, wave 2 = 7 walkers 180 ticks after the last kill with 'Wave 2 of 6', full clear won 675 and Enter -> title, pause freezes/resume equal/Title, same seed identical and seed 4 other lanes, frames match state, lang tables + README."
+      },
+      {
+       "id": "c09",
+       "kind": "behaviour",
+       "pass": true,
+       "evidence": "CHANGES.md lists the three changes with where (game.py constants/spawn/settings, lang/fr.json, font accents), what was checked (test/check.py bots, CLI runs, frames viewed), and bugs found before; it states the 60-tick runner spacing truthfully."
+      }
+     ],
+     "totals": {
+      "behaviour": {
+       "passed": 7,
+       "of": 8
+      },
+      "checkable": {
+       "passed": 1,
+       "of": 1
+      },
+      "all": {
+       "passed": 8,
+       "of": 9
+      }
+     },
+     "defects": [
+      "Wave 6 runners spawn every 60 ticks (1.0 s) instead of 1.5 s (game.py:239).",
+      "The run is won when wave 6 has spawned and no walker is left, even if the last runner reached the gate: letting only the last runner through gave screen won, score 660, gate 4 (normal seed 1).",
+      "Spanish 'Enter: t\u00edtulo' keeps the English key name 'Enter' (it was like this before the change)."
+     ],
+     "could_not_check": []
+    },
+    "judge": {
+     "tokens": 65058,
+     "tool_uses": 34,
+     "duration_s": 291.6,
+     "by_kind": {
+      "input": 50,
+      "cache_write": 59771,
+      "cache_read": 970009,
+      "output": 24516,
+      "requests": 25,
+      "context_at_end": 65058
+     },
+     "weighted": 294345,
+     "cost_usd": 1.1626897999999999,
+     "turns": 35,
+     "exit": 0,
+     "runner": "claude",
+     "model": "claude-opus-5-5",
+     "ended": "done"
+    }
+   }
+  ],
+  "judge": {
+   "tokens": 66310,
+   "tool_uses": 27,
+   "duration_s": 279.6,
+   "by_kind": {
+    "input": 44,
+    "cache_write": 61023,
+    "cache_read": 841262,
+    "output": 22298,
+    "requests": 22,
+    "context_at_end": 66310
+   },
+   "weighted": 271939,
+   "cost_usd": 1.1025724,
+   "turns": 28,
+   "exit": 0,
+   "model": "claude-opus-5-5",
+   "models": [
+    "claude-opus-5-5"
+   ],
+   "tokens_complete": true,
+   "engine_stopped": true,
+   "ended": "done"
+  },
+  "verdict": {
+   "items": [
+    {
+     "id": "c01",
+     "kind": "behaviour",
+     "pass": false,
+     "evidence": "Normal, seed 1, planned full-clear script run through the CLI: wave 6 starts at tick 5384; states sampled every 20 ticks give 15 runners (kind runner, health 1, x 19.8 -> 19.75 per tick = 3 u/s) spawned at ticks 5385, 5445, ..., 6225, every 60 ticks = 1.0 s, not 1.5 s (game.py:239 spawn_cd = 60 if runners)."
+    },
+    {
+     "id": "c02",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "HUD 'Wave 1 of 6' / 'Oleada 1 de 6' / 'Vague 1 sur 6'; tick 5383 still play 'Wave 5 of 6', score 450, no walkers (no win after wave 5). Full clears end won with 675 at Easy/Normal seeds 1 and 7 and at Hard seed 7; score goes up by 15 per runner. A run that lets the last 2 runners through ends won at tick 6625 with gate 3, score 645."
+    },
+    {
+     "id": "c03",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Language Right cycles en->es->fr->en, Left from en gives fr. French texts: title ['D\u00e9fendez la porte','D\u00e9marrer','Param\u00e8tres','Quitter'], settings ['Param\u00e8tres','Volume : 5','Langue : Fran\u00e7ais','Difficult\u00e9 : Normal','Retour'], play ['Score : 10','Vague 1 sur 6','Porte : 5'], paused adds 'En pause','Reprendre','Titre', won ['Vous avez gagn\u00e9 !','Score : 675','Entr\u00e9e : titre'], lost ['Vous avez perdu',...]. I opened the title, settings, paused, wave-6, won and lost frames: all French, with the accents drawn."
+    },
+    {
+     "id": "c04",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Fresh settings texts ['Settings','Volume: 5','Language: English','Difficulty: Normal','Back'] (Difficulty is menu index 2, between Language and Back). Right: Normal->Hard->Easy->Normal; Left: Normal->Easy->Hard. Spanish 'Dificultad: Normal', French 'Difficult\u00e9 : Difficile'."
+    },
+    {
+     "id": "c05",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "In CLI states, new walkers have health 1/2/3 at Easy/Normal/Hard and runners have 1/1/2 (seeds 1 and 7). At Easy no walker ever showed more than 1 health."
+    },
+    {
+     "id": "c06",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Run 1 set volume 7, language fr and difficulty hard; the file holds {\"volume\": 7, \"language\": \"fr\", \"difficulty\": \"hard\"}. Run 2 on the same file starts with 7/fr/hard and spawns walkers with 3 health. An old file {\"volume\":3,\"language\":\"es\"} loads as 3/es/normal with walkers at 2 health. A fresh path gives 5/en/normal."
+    },
+    {
+     "id": "c07",
+     "kind": "checkable",
+     "pass": true,
+     "evidence": "The state JSON has \"difficulty\" and every walker entry has \"kind\" (walker/runner). The README frame command wrote out.png with a PNG signature and an 800x480 IHDR."
+    },
+    {
+     "id": "c08",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Every m01-m19 item still passes on the changed game (see the m items below)."
+    },
+    {
+     "id": "c09",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "CHANGES.md lists each change and where it is (game.py constants/spawn/state, lang/fr.json, the font, the settings file), what was found wrong before, what was checked (test/check.py bots, CLI runs, frames viewed) and limits. It states the runners come every 60 ticks."
+    }
+   ],
+   "totals": {
+    "behaviour": {
+     "passed": 7,
+     "of": 8
+    },
+    "checkable": {
+     "passed": 1,
+     "of": 1
+    },
+    "all": {
+     "passed": 8,
+     "of": 9
+    }
+   },
+   "defects": [
+    "Wave 6 runners spawn every 1.0 s (60 ticks), not every 1.5 s.",
+    "README 'What I checked' is stale: it still says the bot 'wins all 5 waves with score 450', and the Settings section mentions only volume and language as saved (the JSON example includes difficulty).",
+    "The wave gap between the last walker leaving and the next wave is 179 ticks between states (180 counting the leaving tick), so it is at the edge of 3 s."
+   ],
+   "could_not_check": []
+  },
+  "where": {
+   "run": "change-plain-2",
+   "requests": 10,
+   "steps": 12,
+   "steps_before_the_first_code": 3,
+   "weighted": 108795,
+   "weighted_by_kind": {
+    "read_again": 19764,
+    "written_out": 52805,
+    "new_in_context": 36226
+   },
+   "builds": {
+    "steps": 0,
+    "failed": 0
+   },
+   "how": "weighted_by_kind is exact (the run's own token counts times the weights); a step's kind is a reading of its command's text, and answered_tokens / written_tokens are characters / 4",
+   "by_step": {
+    "read its own files": {
+     "steps": 3,
+     "answered_tokens": 7245,
+     "written_tokens": 127
+    },
+    "write code": {
+     "steps": 5,
+     "answered_tokens": 763,
+     "written_tokens": 3426
+    },
+    "words between steps": {
+     "steps": 0,
+     "answered_tokens": 0,
+     "written_tokens": 638
+    },
+    "look at a frame": {
+     "steps": 4,
+     "answered_tokens": 0,
+     "written_tokens": 163
+    }
+   }
+  }
+ }
+}

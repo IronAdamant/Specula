@@ -1,0 +1,367 @@
+{
+ "run": {
+  "leverage": 1,
+  "job": "change",
+  "arm": "engine",
+  "n": 2,
+  "phase": "judge",
+  "prepared": "2026-11-14T21:12:00",
+  "settings": {
+   "runs_per_cell": 2,
+   "builder_model": "claude-sonnet-5-5",
+   "judge_model": "claude-opus-5-5",
+   "limits": {
+    "token_cap": 500000,
+    "wall_s": 3600
+   },
+   "judge": {
+    "token_cap": 150000,
+    "wall_s": 1800
+   },
+   "token_weights": {
+    "input": 1.0,
+    "cache_write": 1.25,
+    "cache_read": 0.1,
+    "output": 5.0
+   }
+  },
+  "from": "medium-engine-2",
+  "engine_build": "706837ff (round 2: tools NAME, refusals list arguments)",
+  "port": 7707
+ },
+ "costs": {
+  "builder": {
+   "tokens": 56921,
+   "tool_uses": 16,
+   "duration_s": 156.9,
+   "by_kind": {
+    "input": 26,
+    "cache_write": 51634,
+    "cache_read": 418825,
+    "output": 19524,
+    "requests": 13,
+    "context_at_end": 56921
+   },
+   "weighted": 204071,
+   "cost_usd": 0.4437105,
+   "turns": 17,
+   "exit": 0,
+   "model": "claude-sonnet-5-5",
+   "ended": "done",
+   "over_token_cap": false,
+   "over_wall": false,
+   "note": ""
+  },
+  "engine": {
+   "calls": 33,
+   "refused": 1,
+   "args_bytes": 38681,
+   "answer_bytes": 91658,
+   "by_tool": {
+    "engine.start": 16,
+    "logic_hook": 16,
+    "logic_status": 16,
+    "engine.stop": 1,
+    "logic_build": 1
+   }
+  },
+  "left": {
+   "files": 15,
+   "bytes": 58718,
+   "text_lines": 1335,
+   "lines_by_kind": {
+    ".json": 83,
+    ".md": 84,
+    ".py": 123,
+    ".rs": 994,
+    ".toml": 51
+   }
+  },
+  "finished": "2026-11-14T21:18:15",
+  "judged_before": [
+   {
+    "why": "The first judging held c08 without the game's own verdict from before the change and read c02 three ways (review R1 of the comparison's lane): judged again with the list of what passed before the change, and with c02 saying what the brief left open.",
+    "verdict": {
+     "items": [
+      {
+       "id": "c01",
+       "kind": "behaviour",
+       "pass": true,
+       "evidence": "examples/win_seed1.json, seed 1: wave becomes 6 at tick 5415 (after wave 5 cleared, score 450). With the guard idle from 5400, runners spawn at ticks 5415, 5505, 5595... (90 ticks = 1.5 s apart), kind runner, health 1, x drops 0.05/tick = 3 units/s. Score went 450 -> 675 = 15 runners x 15 before 'won'."
+      },
+      {
+       "id": "c02",
+       "kind": "behaviour",
+       "pass": false,
+       "evidence": "'Wave n of 6' seen in en ('Wave 6 of 6'), es ('Oleada 6 de 6'), fr ('Vague 6 sur 6'); full clear on Normal = won, 675; runner kills add 15. But the run is not won only when the last runner is destroyed: win script cut to idle at tick 6550 -> 3 runners reach the gate (gate 5 -> 2), screen 'won' with score 630 at tick 7100, last runner never destroyed."
+      },
+      {
+       "id": "c03",
+       "kind": "behaviour",
+       "pass": true,
+       "evidence": "Settings Right on Language: en -> es -> fr -> en (Left from en gives fr). With language fr, texts on title, settings, play, paused, won, lost are all French ('D\u00e9fendez la porte', 'R\u00e9glages', 'Vague 1 sur 6', 'En pause', 'Gagn\u00e9 !', 'Perdu !', 'Entr\u00e9e : titre'...); frames show the same in French. ('Score', 'Volume', 'Normal' are also French words.)"
+      },
+      {
+       "id": "c04",
+       "kind": "behaviour",
+       "pass": true,
+       "evidence": "Settings texts: Settings, Volume, Language, Difficulty: Normal, Back (menu index 2 = Difficulty, 3 = Back). Right: normal->hard->easy->normal, Left: normal->easy. Default normal. Shown as 'Dificultad: F\u00e1cil/Normal/Dif\u00edcil' and 'Difficult\u00e9 : Facile/Normal/Difficile'; frame f_settings_fr shows it marked."
+      },
+      {
+       "id": "c05",
+       "kind": "behaviour",
+       "pass": true,
+       "evidence": "First walker health at spawn: easy 1, normal 2, hard 3 (hard walker took 3 hits to die). Runners: normal 1 and easy 1 seen; on Hard my closed-loop bot reached wave 6 and the first runner had health 2 (then won 675)."
+      },
+      {
+       "id": "c06",
+       "kind": "behaviour",
+       "pass": true,
+       "evidence": "One run set volume 7, fr, easy via the menu; file kept {volume 7, language fr, difficulty easy}; next run with the same file started at 7/fr/easy and spawned walkers with health 1. Old-format file {volume 7, language es} loads as 7/es/normal; a missing file gives 5/en/normal."
+      },
+      {
+       "id": "c07",
+       "kind": "checkable",
+       "pass": true,
+       "evidence": "State JSON has \"difficulty\" and each walker has \"kind\" (walker/runner). hold.py frame wrote PNGs whose header reads 800 x 480 for title, settings, play, paused, won, lost."
+      },
+      {
+       "id": "c08",
+       "kind": "behaviour",
+       "pass": true,
+       "evidence": "Rechecked m01-m19 on the changed game (see notes): title/start/settings, volume clamp 0..10, Spanish, persistence, guard 6 u/s clamp 0..12, bolt every 24 ticks at 14 u/s gone past 20, wave 1 = 5 walkers 90 ticks apart at 1.5 u/s in lanes 2..10, 2 hits = +10, gate drop and lost, wave 2 180 ticks after wave 1 cleared with 7 walkers, won 675 then Enter -> title, pause freezes/resume/title, same seed identical, other seeds other lanes, frames match state."
+      },
+      {
+       "id": "c09",
+       "kind": "behaviour",
+       "pass": true,
+       "evidence": "CHANGES.md lists each change with files (game.rs, lib.rs, draw.rs, strings/fr.json, strings.rs, hold.py, example script), what was checked and how (cargo tests, hold.py runs, frames), and what was found wrong before."
+      }
+     ],
+     "totals": {
+      "behaviour": {
+       "passed": 7,
+       "of": 8
+      },
+      "checkable": {
+       "passed": 1,
+       "of": 1
+      },
+      "all": {
+       "passed": 8,
+       "of": 9
+      }
+     },
+     "defects": [
+      "A run is won when wave 6 ends with runners having reached the gate (score below 675), not only when the last runner is destroyed; README/CHANGES call this a deliberate choice.",
+      "Acute accents (\u00c9) are drawn as a single dot above the letter in the frame, which reads like \u0116 rather than \u00c9.",
+      "hold.py writes settings.json into work/ by default (next to hold.py) unless --settings is given."
+     ],
+     "could_not_check": []
+    },
+    "judge": {
+     "tokens": 76534,
+     "tool_uses": 33,
+     "duration_s": 637.3,
+     "by_kind": {
+      "input": 54,
+      "cache_write": 71247,
+      "cache_read": 1214498,
+      "output": 24654,
+      "requests": 27,
+      "context_at_end": 76534
+     },
+     "weighted": 333833,
+     "cost_usd": 1.3061716,
+     "turns": 34,
+     "exit": 0,
+     "runner": "claude",
+     "model": "claude-opus-5-5",
+     "ended": "done",
+     "engine": {
+      "calls": 1755,
+      "refused": 1,
+      "args_bytes": 12773247,
+      "answer_bytes": 4256582,
+      "by_tool": {
+       "engine.start": 877,
+       "logic_hook": 877,
+       "logic_status": 877,
+       "engine.stop": 1,
+       "logic_build": 1
+      }
+     }
+    }
+   }
+  ],
+  "judge": {
+   "tokens": 98644,
+   "tool_uses": 39,
+   "duration_s": 425.6,
+   "by_kind": {
+    "input": 64,
+    "cache_write": 91541,
+    "cache_read": 1916238,
+    "output": 32158,
+    "requests": 32,
+    "context_at_end": 98644
+   },
+   "weighted": 466904,
+   "cost_usd": 1.7589916,
+   "turns": 40,
+   "exit": 0,
+   "model": "claude-opus-5-5",
+   "models": [
+    "claude-opus-5-5"
+   ],
+   "tokens_complete": true,
+   "engine_stopped": true,
+   "ended": "done",
+   "engine": {
+    "calls": 2129,
+    "refused": 3,
+    "args_bytes": 13126219,
+    "answer_bytes": 5184674,
+    "by_tool": {
+     "engine.start": 1064,
+     "logic_hook": 1063,
+     "logic_status": 1063,
+     "engine.stop": 3,
+     "logic_build": 3
+    }
+   }
+  },
+  "verdict": {
+   "items": [
+    {
+     "id": "c01",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Seed 1 Normal, own bot script via hold.py run: wave 6 begins tick 5414 (180 ticks after wave 5 cleared at score 450); a new runner at x=20 appears at 5415+90k for k=0..14 and none at k=15 (15 runners), each kind runner, health 1; an unshot runner goes 20 -> 18.5 -> 17 -> 15.5 in 30-tick steps (3 units/s)."
+    },
+    {
+     "id": "c02",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "HUD 'Wave n of 6' / 'Oleada n de 6' / 'Vague n sur 6' (seen waves 1, 2, 5, 6). After wave 5 cleared (score 450) the screen stays play and wave 6 follows. Full clear: won, 675 on Easy, Normal and Hard. Bot stopped at the last spawn: the last runner went through the gate (5 -> 4) and the screen turned won the same tick, score 660."
+    },
+    {
+     "id": "c03",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Right on Language: en -> es -> fr -> en; Left from en gives fr. French texts on title, settings (Facile/Normal/Difficile), play, paused, won and lost are all French ('D\u00e9fendez la porte', 'R\u00e9glages', 'Vague 6 sur 6', 'Sant\u00e9 de la porte', 'En pause', 'Reprendre', 'Gagn\u00e9 !', 'Perdu !', 'Entr\u00e9e : titre'). I saw no English, Spanish or missing keys, and the frames show the French with accents."
+    },
+    {
+     "id": "c04",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Settings texts: Volume, Language, Difficulty, Back (Difficulty at menu_index 2). Fresh settings give 'Difficulty: Normal'. Right gives Hard, Left gives Easy (wrapping). Shown as 'Dificultad: F\u00e1cil/Dif\u00edcil' and 'Difficult\u00e9 : Facile/Difficile'. The fr_settings frame shows the row highlighted."
+    },
+    {
+     "id": "c05",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Wave 1's first walker has health 1/2/3 on easy/normal/hard. Wave 6's first runner, reached by my bot through the engine on each difficulty, has health 1 (easy), 1 (normal) and 2 (hard). The Hard bot then won 675."
+    },
+    {
+     "id": "c06",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Run 1 set volume 7, fr and easy, and the settings file kept them. Run 2 started with volume 7, fr and easy, and its walkers had 1 health. An old-format file {volume:7,language:es} loads as 7/es/normal. A missing file gives 5/en/normal."
+    },
+    {
+     "id": "c07",
+     "kind": "checkable",
+     "pass": true,
+     "evidence": "Every run state has 'difficulty' (easy/normal/hard), and every walker has 'kind' (walker/runner). Every PNG written by hold.py frame (title, settings, play, paused, won, lost) has an 800x480 PNG header."
+    },
+    {
+     "id": "c08",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Re-ran all m01-m19 through the engine and frames (see below), reading them with 'of 6' and 675; all still pass."
+    },
+    {
+     "id": "c09",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "CHANGES.md lists each of the three changes with the files touched (game.rs, draw.rs, lib.rs, strings/*.json, strings.rs, hold.py, example script, README). It says what was checked and how (cargo tests, engine runs, frames), names what was not checked, and lists what it found wrong before."
+    }
+   ],
+   "totals": {
+    "behaviour": {
+     "passed": 8,
+     "of": 8
+    },
+    "checkable": {
+     "passed": 1,
+     "of": 1
+    },
+    "all": {
+     "passed": 9,
+     "of": 9
+    }
+   },
+   "defects": [
+    "Frame: with the guard at y=12 (top edge), the guard and its bolts are drawn mostly under the HUD bar and are hard to see. This looks inherited from before the change.",
+    "Frame font: the acute accent (\u00c9) is drawn as a single dot above the letter, so it reads like \u0116 (cosmetic).",
+    "hold.py's default --settings writes settings.json inside the game folder next to hold.py (documented, but a run without --settings leaves a file in work/)."
+   ],
+   "could_not_check": []
+  },
+  "where": {
+   "run": "change-engine-2",
+   "requests": 13,
+   "steps": 16,
+   "steps_before_the_first_code": 5,
+   "weighted": 204071,
+   "weighted_by_kind": {
+    "read_again": 41882,
+    "written_out": 97620,
+    "new_in_context": 64568
+   },
+   "builds": {
+    "steps": 3,
+    "failed": 0
+   },
+   "how": "weighted_by_kind is exact (the run's own token counts times the weights); a step's kind is a reading of its command's text, and answered_tokens / written_tokens are characters / 4",
+   "by_step": {
+    "read its own files": {
+     "steps": 5,
+     "answered_tokens": 10072,
+     "written_tokens": 260
+    },
+    "write code": {
+     "steps": 3,
+     "answered_tokens": 580,
+     "written_tokens": 5328
+    },
+    "build the module": {
+     "steps": 3,
+     "answered_tokens": 5123,
+     "written_tokens": 537
+    },
+    "start or stop the engine": {
+     "steps": 1,
+     "answered_tokens": 83,
+     "written_tokens": 1308
+    },
+    "run its own checks": {
+     "steps": 2,
+     "answered_tokens": 431,
+     "written_tokens": 353
+    },
+    "words between steps": {
+     "steps": 0,
+     "answered_tokens": 0,
+     "written_tokens": 715
+    },
+    "look at a frame": {
+     "steps": 2,
+     "answered_tokens": 0,
+     "written_tokens": 29
+    }
+   }
+  }
+ }
+}

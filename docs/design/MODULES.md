@@ -141,7 +141,9 @@ What `logic_build` lets a module build from, checked against `cargo metadata --o
   the file and line). The source check runs **after** the build, over every file rustc compiled (each crate's
   dep-info, any extension: `#[path = "imp.txt"]`, `include!`, a `[lib] path` outside `src/`) for the module and every
   other crate in the build except the engine's own SDK and core, which are trusted **by canonical path, never by
-  name**. Refused (`native_code`, naming the crate, file and line): any `extern` that isn't `extern crate`, `extern fn`
+  name**: the crates this engine was built from, and `crates/specula-sdk` and `crates/specula-core` under the
+  engine's working directory. A game project outside the engine's repository keeps its copy of the SDK there (a
+  copy anywhere else in the project is checked like any other crate, and its ABI's `unsafe` is refused). Refused (`native_code`, naming the crate, file and line): any `extern` that isn't `extern crate`, `extern fn`
   or `extern "abi" fn` (so a macro-built ABI counts), `#[link]`, `link_name`, any mention of `asm`, `global_asm` or
   `naked_asm`, any `unsafe`, `std`'s `fs`, `process`, `net`, `os` and `env` (by path, in a `use` tree, or spliced from a
   macro variable), `Command::new` and sockets; and files too many, too big or unreadable to check. This is a **lint**

@@ -410,6 +410,43 @@ fn sessions_and_identity_keys_are_never_shown() {
     clear(None, &Actor::Human, "").unwrap();
 }
 
+/// Review R1 of m5-leverage, verified on a live engine: an agent the operator named lead
+/// (`--lead NAME`) that said hello with a job, not the role, was refused a lead-only call
+/// (told to say the role) and frozen by that same refusal, so saying the role answered
+/// `session_frozen`, and in a run whose only grants are leads nobody could clear it. A refused
+/// try by an identity that holds the lead's grant is an alert, on every channel, and freezes
+/// nothing; an identity nobody granted is frozen as before; and the grant excuses nothing the
+/// identity DID below its authority.
+#[test]
+fn a_granted_lead_that_has_not_said_its_role_is_never_frozen() {
+    let _g = lock();
+    assert_eq!(hello("g-1", "granted-key"), None);
+    // The native-code seam (an identity, no session at hand): refused as a plain agent.
+    refused_identity(Channel::NativeCode, "logic_unload", &Actor::identity("granted-key", "granted", Authority::Agent).granted_lead(true), "lead_only", "m");
+    assert_eq!(classes_of("logic_unload"), ["alert"]);
+    assert!(!identity_frozen("granted-key") && gate_ok("g-1", "world_set"), "it can go on, and say its role");
+    assert!(take_pending().is_empty(), "nothing is halted");
+    // A session's own refused try on another channel, the same.
+    let roleless = Actor::keyed("g-1", "granted-key", "granted", Authority::Agent).granted_lead(true);
+    refused(Channel::Screen, "review_screen", &roleless, "lead_only", "");
+    assert_eq!(classes_of("review_screen"), ["alert"]);
+    assert!(!identity_frozen("granted-key"));
+    // Its hello with the role: a lead, as the operator said.
+    refused(Channel::Screen, "gallery_open", &Actor::keyed("g-1", "granted-key", "granted", Authority::Lead).granted_lead(true), "engine_screen_open", "");
+    assert_eq!(classes_of("gallery_open"), ["alert"]);
+    // The same refusals by a name nobody granted freeze it, as before.
+    assert_eq!(hello("p-1", "plain-key"), None);
+    refused_identity(Channel::NativeCode, "logic_reload", &Actor::identity("plain-key", "plain", Authority::Agent), "lead_only", "");
+    assert!(identity_frozen("plain-key") && !gate_ok("p-1", "world_set"));
+    // And what a roleless granted identity DID on a channel above it is still an incident:
+    // the grant excuses a refusal, never an action that got past a check.
+    assert_eq!(hello("g-2", "granted-key-2"), None);
+    let did = Actor::keyed("g-2", "granted-key-2", "granted2", Authority::Agent).granted_lead(true);
+    let _ = done(Channel::Screen, "review_screen", &did, "");
+    assert!(identity_frozen("granted-key-2"), "an action below its authority that went through is an incident");
+    clear(None, &Actor::Human, "").unwrap();
+}
+
 fn take_incident() -> u64 {
     state().open.keys().next().copied().expect("an open incident")
 }
@@ -420,11 +457,11 @@ fn take_incident() -> u64 {
 fn a_refused_module_load_freezes_the_identity() {
     let _g = lock();
     assert_eq!(hello("m-1", "mod-key"), None);
-    refused_identity(Channel::NativeCode, "logic_reload", "modder", "mod-key", Authority::Agent, "lead_only", "walker");
+    refused_identity(Channel::NativeCode, "logic_reload", &Actor::identity("mod-key", "modder", Authority::Agent), "lead_only", "walker");
     assert!(!gate_ok("m-1", "world_set"), "its session is frozen through its identity");
     assert!(matches!(take_pending().as_slice(), [Pending::Freeze { key, .. }] if key == "mod-key"));
     // A granted lead's refused load is an alert.
-    refused_identity(Channel::NativeCode, "logic_build", "lee", "lee-key", Authority::Lead, "lead_only", "");
+    refused_identity(Channel::NativeCode, "logic_build", &Actor::identity("lee-key", "lee", Authority::Lead), "lead_only", "");
     assert_eq!(classes_of("logic_build"), ["alert"]);
     assert!(identity_frozen("mod-key") && !identity_frozen("lee-key"));
     clear(None, &Actor::Human, "").unwrap();

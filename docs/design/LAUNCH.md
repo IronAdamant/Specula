@@ -118,7 +118,7 @@ specula forget NAME|FOLDER       take a project off the list (its folder stays)
 specula list                     the engines running on this machine
 specula stop [--port N | --project NAME]
 specula tools [FILTER] [--port N | --project NAME]
-specula call TOOL ['{json}'] [--port N | --project NAME] [--as NAME]
+specula call TOOL ['{json}' | @FILE] [--port N | --project NAME] [--as NAME [--role ROLE]]
 specula help
 ```
 
@@ -137,6 +137,23 @@ specula help
   the person already has open becomes that project, on its port (below).
 - **`stop`** asks the engine to shut down as Ctrl+C does (worlds saved) and answers once its
   process has ended. An engine started in the background has no console to interrupt.
+- **`tools`** with no word answers with every tool's **name, by family** (`"world": "world_spawn
+  world_set ..."`), and says how to see more: `tools NAME` shows one tool whole, its description and the
+  arguments it takes (its schema), and `tools WORD` lists the tools whose name or
+  description has the word, each with the start of what it does. The whole list with
+  descriptions is about 46,000 bytes, which an agent pays for in its context every time it
+  asks; the names are a tenth of that.
+- **`call TOOL @FILE`** reads the arguments, one JSON object, from a file (named against the
+  folder the command is run in; at most 1 MiB, as on the command line; a byte order mark is
+  skipped). Quoting JSON for a shell is the hard part of calling a tool from a terminal, and
+  a command line holds about 32,000 characters on Windows: a recipe or a module's source goes
+  in a file. A file that is missing, too large or not one JSON object is refused as `usage`
+  before any engine is looked for.
+- **`call ... --as NAME --role ROLE`** says the role with the name. An identity's authority is
+  what its latest hello was admitted with ([AUTHORITY.md](AUTHORITY.md)), and a command is a
+  session of its own, so a lead the operator granted (`--lead NAME` when the engine started)
+  says `--role lead` on the commands that need it: building a module, forcing a claim. A role
+  nobody granted that name is refused, as over MCP. Without `--role` the agent is a builder.
 - **`call`** opens an MCP session, calls one tool and closes the session, named or not.
   `--as NAME` keeps one identity across commands: an agent's identity and claims outlive its
   session, and the next command resumes them with a token kept beside the engine's instance

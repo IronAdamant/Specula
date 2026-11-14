@@ -1,0 +1,32 @@
+{
+  "leverage": 1,
+  "id": "change",
+  "title": "Three changes to Hold the gate, by someone who did not build it",
+  "change_of": "medium",
+  "brief": [
+    "The folder you are given holds a finished game, Hold the gate, built by someone else. You have no notes from them beyond what is in the folder. Make three changes to it, and break nothing that worked.",
+    "",
+    "The changes",
+    "1. A sixth wave. After wave 5 comes wave 6, with 15 walkers of a new kind, runners: 1 health, 3 units a second. The play screen says \"Wave 6 of 6\" (waves 1 to 5 now say \"of 6\"); the run is won when wave 6's last runner is gone (destroyed, or through the gate) with the gate standing. A runner destroyed gives 15 points.",
+    "2. A third language, French, beside English and Spanish: every word the game shows, on every screen.",
+    "3. A difficulty setting on the Settings screen, between Language and Back: Easy, Normal, Hard (Left / Right change it; Normal at first). It sets every walker's and runner's health: Easy 1, Normal as before, Hard one more than Normal. It is kept between runs like the other settings.",
+    "",
+    "Still checkable without hands",
+    "- The headless run and the frame work as before. The state gains \"difficulty\" (easy, normal, hard), and each walker in \"walkers\" gains \"kind\" (walker, runner).",
+    "",
+    "Hand in, in the same folder",
+    "- The changed game, ready to run.",
+    "- CHANGES.md: what you changed and where, what you checked and how, and anything you found in the game that was wrong before you touched it."
+  ],
+  "acceptance": [
+    {"id": "c01", "kind": "behaviour", "text": "After wave 5 a sixth wave sends 15 runners (kind runner, 1 health at Normal, 3 units a second), one every 1.5 seconds."},
+    {"id": "c02", "kind": "behaviour", "text": "The play screen says the wave \"of 6\" in every language, and the run is won when wave 6's last runner is gone (destroyed, or through a gate that still stands), never at the end of wave 5; a runner gives 15 points (a full clear at Normal is 675)."},
+    {"id": "c03", "kind": "behaviour", "text": "The language setting cycles English, Spanish, French; in French every string on the title, settings, play, paused, won and lost screens is French (none English or Spanish, none missing)."},
+    {"id": "c04", "kind": "behaviour", "text": "The Settings screen has Difficulty between Language and Back, with Easy, Normal, Hard changed by Left / Right, Normal by default, shown in the chosen language."},
+    {"id": "c05", "kind": "behaviour", "text": "Difficulty sets health: Easy walkers and runners have 1; Normal walkers 2 and runners 1; Hard walkers 3 and runners 2."},
+    {"id": "c06", "kind": "behaviour", "text": "Difficulty is kept between runs with volume and language; settings saved by the game before the change still load (difficulty then Normal)."},
+    {"id": "c07", "kind": "checkable", "text": "The headless state has `difficulty`, and each walker has `kind`; the frame still writes an 800 x 480 PNG."},
+    {"id": "c08", "kind": "behaviour", "text": "Nothing that passed before the change fails now: every item of the medium job's list that the game passed before the change still passes on the changed game (read with \"of 6\" and 675 points where the change says so); an item that failed before the change is not held against it."},
+    {"id": "c09", "kind": "behaviour", "text": "CHANGES.md says what was changed and where, and what was checked."}
+  ]
+}

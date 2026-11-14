@@ -870,7 +870,7 @@ readback and the remaining engine-thread stalls.
   change: check on the caller's thread against a snapshot and commit if the files are still as read, as
   `project_write` does; then they go back to the edit class. The hosted game's own reload is the same kind
   of work (Sepulcra applies a changed theme to both of its interfaces in 5.7 ms).
-- [ ] ➕ **Measured leverage** (owner, 2026-11-12: "find a way to add in measured comparison please, for M5"). Is
+- [x] ➕ **Measured leverage** (owner, 2026-11-12: "find a way to add in measured comparison please, for M5"). Is
   building through the engine cheaper and better than building without it, and from what size of game?
   - **Jobs at three sizes:** a small one-screen game; a medium one (waves, a menu, saved settings, two
     languages); and a **change round**, where an agent with no memory of the build makes three changes to the
@@ -892,7 +892,16 @@ readback and the remaining engine-thread stalls.
     are in the brief file, and every report states them. The owner approved M5's own runs at two a cell and
     about 15M tokens in all (Sonnet 5.5 builders, an Opus judge).
 
-  Part of the M5 exit proof, after the tool kits (swarm track).
+  **Done 2026-11-14: M5's baseline** ([design/LEVERAGE.md](design/LEVERAGE.md), `scripts/leverage.py`,
+  [perf/leverage/2026-11-14](../perf/leverage/2026-11-14/report.md)). Fourteen builds, all judged. At these
+  sizes the engine costs more for the same result: about 5 times the tokens on the small job (5.2 over
+  its four engine runs), 3.1 times on the medium one, 1.7 times on the change round, with checks passed
+  alike. The cost is steps (three to five times the requests, each reading the context again, nine or more
+  of them before the first line of code) and words (a module and its glue where the plain arm writes one
+  file), not failed builds (`leverage.py where`). Builders used the engine as a module host and little
+  else. Five things that tripped a cold builder were fixed on the way (a tool's arguments from a shell,
+  the tool list's size, a granted lead at a terminal and its lockout, arguments from a file, where a
+  project's SDK goes). What the numbers are for is the owner's M6 item below.
 - [x] ➕ **Cloud swarm foundations** (owner, 2026-10-22; end of M5): the design notes for remote and cloud agents,
   meaning per-agent auth tokens, scoped tools, rate limits and binding beyond loopback, ready to build in M6.
   **Encryption comes from the OS, never our own crypto** (owner, 2026-10-22): SChannel on Windows and
@@ -907,6 +916,11 @@ readback and the remaining engine-thread stalls.
 ## M6: ship
 
 - [ ] **`specula export`**: a standalone game executable plus assets, with the agent and editor layers stripped out.
+- [ ] ➕ **A project gets its SDK from the engine.** A module's crates must lie under the project, and the build
+  service trusts the SDK at `crates/specula-sdk` and `crates/specula-core` there, so a game project outside this
+  repository needs a copy of both and a workspace manifest. The measured comparison's harness makes them by
+  hand (`scripts/leverage.py`, `sdk_into`); `specula new` (or a `specula sdk` command) should, with the
+  engine's version checked at `logic_build` ([design/LEVERAGE.md](design/LEVERAGE.md)).
 - [ ] **Shipping basics**: settings menu, structured crash reports for agents to triage, `perf.toml`
   budgets checked on the reference hardware before release.
 - [ ] ➕ **Asset packing**: compressed, patch-friendly packs; licence metadata on every asset, and export refuses
@@ -922,6 +936,22 @@ readback and the remaining engine-thread stalls.
   `perf_frame`, `cpu_ms` and `lock_ms` on stalls) and chooses its own budgets, quality preset, frame floor
   and run sizes, with nothing from the development laptop to lean on. What it could not find or had to guess
   is the finding.
+- [ ] ➕ **The engine pays off by game size** (owner, 2026-11-14, on M5's measured baseline: "That's where
+  we'll be looking at scalability in M6... we'll need to work things out that they actually make sense for
+  small games, medium games and large games and it should make it easier for you to actually make one";
+  M6 "is finalising and making it well tuned as best as we can for initial phase", and "not just entire
+  tuning phase but also testing and adversarial check phase. UX experience will matter but not just for
+  humans, it's also for agents"). The same jobs, harness and judges as M5 ([design/LEVERAGE.md](design/LEVERAGE.md)),
+  run again on each system the engine ships for, with a larger job added where there is more to reuse.
+  What M5's runs say to work on first:
+  - the first hour of an agent that has never seen the engine (every engine build spent most of its tokens
+    learning the module path and writing a module);
+  - the engine's own systems for interface screens, saved settings, strings by language and rules as data
+    being what a cold agent reaches for (no medium builder called one of them);
+  - a game's own checks not paying an engine start and a module build each run, and stepping many ticks in
+    one call;
+  - the 30 Hz tick against games that ask for another step;
+  - judging, which costs more than building.
 - [ ] **Ship the owner's original game.**
 - [ ] ➕ **Cloud swarms, tested** (owner, 2026-10-22): per-agent auth tokens, then thorough tests with real cloud
   swarms from several vendors (Claude, Grok Build, OpenAI ...).

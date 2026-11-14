@@ -434,7 +434,7 @@ pub fn handle(host: &mut LogicHost, call: LogicCall, world: &mut dyn WorldWrite,
         },
         LogicCall::Unload { module, forget } => swarm
             .may_load_native(key, "logic_unload (stopping a module every agent's game runs)")
-            .inspect_err(|_| super::proposals::report_refusal(w.name, key, swarm.trusted_authority_of_key(key), &super::proposals::NativeRefusal::Unload { module: module.clone() }))
+            .inspect_err(|_| super::proposals::report_refusal(w.name, key, swarm.trusted_authority_of_key(key), swarm.holds_lead_grant(key), &super::proposals::NativeRefusal::Unload { module: module.clone() }))
             .and_then(|()| check_module_owner(swarm, &module, w, "unloading"))
             .and_then(|()| host.unload(&module, forget, world, tick, hz, &mut agent_commit(swarm, tick, w))),
         LogicCall::Status { module, detailed } => host.status(module.as_deref(), detailed).map(|mut j| {
@@ -471,13 +471,13 @@ fn gate(host: &mut LogicHost, swarm: &Swarm, w: Writer, tick: u64, doing: Doing)
     match (swarm.may_load_native(key, what), doing) {
         // Approving is the owner's or lead's: a builder's approve proposes nothing.
         (Err(e), Doing::Build { dir, approve: Some(_), .. }) => {
-            report_refusal(w.name, key, swarm.trusted_authority_of_key(key), &NativeRefusal::Build { dir });
+            report_refusal(w.name, key, swarm.trusted_authority_of_key(key), swarm.holds_lead_grant(key), &NativeRefusal::Build { dir });
             Err(e)
         }
         (Err(e), Doing::Build { dir, digest: Ok(d), .. }) => {
             let p = host.proposals.propose(&dir, w.name, key, tick, &d);
             let (id, json) = (p.id, p.to_json());
-            report_refusal(w.name, key, swarm.trusted_authority_of_key(key), &NativeRefusal::Proposed { dir, proposal: Some(id) });
+            report_refusal(w.name, key, swarm.trusted_authority_of_key(key), swarm.holds_lead_grant(key), &NativeRefusal::Proposed { dir, proposal: Some(id) });
             Err(e.with("proposal", json).with(
                 "next",
                 "nothing was built: your module is proposed. The owner or lead reviews its files (logic_status lists proposals) and builds it with logic_build {path, approve: <id>}, which loads only these exact sources",
@@ -487,11 +487,11 @@ fn gate(host: &mut LogicHost, swarm: &Swarm, w: Writer, tick: u64, doing: Doing)
         // files no proposal, and is no try at native code either: it asked for nothing but
         // what a proposal asks (review R2 of m5-inputguard, major 4: it froze the builder).
         (Err(e), Doing::Build { dir, digest: Err((code, message)), .. }) => {
-            report_refusal(w.name, key, swarm.trusted_authority_of_key(key), &NativeRefusal::Proposed { dir, proposal: None });
+            report_refusal(w.name, key, swarm.trusted_authority_of_key(key), swarm.holds_lead_grant(key), &NativeRefusal::Proposed { dir, proposal: None });
             Err(e.with("proposal_refused", Json::obj([("code", Json::from(code)), ("message", Json::from(message))])))
         }
         (Err(e), Doing::Reload) => {
-            report_refusal(w.name, key, swarm.trusted_authority_of_key(key), &NativeRefusal::Reload);
+            report_refusal(w.name, key, swarm.trusted_authority_of_key(key), swarm.holds_lead_grant(key), &NativeRefusal::Reload);
             Err(e)
         }
         (Ok(()), Doing::Build { dir, digest, approve: Some(id) }) => {

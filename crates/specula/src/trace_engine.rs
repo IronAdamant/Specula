@@ -1028,7 +1028,7 @@ mod tests {
         assert_eq!(stall_summary("world_save", 55.0, "disk", 30.0, None, None), "world_save held the engine thread 55 ms (its disk budget is 30 ms)");
     }
 
-    /// A slow frame says which of its zones took the time (performance pass, 2026-11-15: one
+    /// A slow frame says which of its zones took the time (performance pass, 2026-11-14: one
     /// start of Sepulcra in ten had a first frame of 30 ms of the engine's own work, and
     /// nothing said what it did). The zones are those of the frame's own thread, by their own
     /// time, largest first; presenting and what is outside the frame are not in it.

@@ -1,0 +1,26 @@
+{
+  "leverage": 1,
+  "note": "Sizes are data: change them for your budget and your machine. Every report states the settings its runs used. These defaults are what Specula's own M5 runs used.",
+  "runs_per_cell": 2,
+  "builder_model": "claude-sonnet-5-5",
+  "judge_model": "claude-opus-5-5",
+  "arms": ["engine", "plain"],
+  "jobs": {
+    "small":  {"token_cap": 600000,  "wall_s": 3600},
+    "medium": {"token_cap": 2000000, "wall_s": 10800},
+    "change": {"token_cap": 500000,  "wall_s": 3600}
+  },
+  "judge": {"token_cap": 150000, "wall_s": 1800},
+  "token_weights": {"input": 1.0, "cache_write": 1.25, "cache_read": 0.1, "output": 5.0},
+  "ports": [7700, 7719],
+  "runner": {
+    "note": "How 'leverage.py run' starts a builder or a judge: one process, in the run's folder, that takes a prompt, runs to its end and prints what it used. {prompt} and {model} are filled in. This one is Claude Code's, with six tools and no MCP servers; put your own agent's command line here, or start agents yourself and use 'record'.",
+    "command": ["claude", "-p", "{prompt}", "--model", "{model}", "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--tools", "Bash,Read,Write,Edit,Glob,Grep", "--allowedTools", "Bash,Read,Write,Edit,Glob,Grep", "--no-session-persistence"]
+  },
+  "rules": [
+    "Download nothing and install nothing.",
+    "Someone may be using this machine: open no window that takes the keyboard or comes to the front, and never move the pointer or press keys for them.",
+    "Anything you start that listens, listens on 127.0.0.1 only.",
+    "Stop every process you started before you finish."
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "leverage": 1,
+  "id": "small",
+  "title": "Catch: a one-screen game",
+  "brief": [
+    "Build a small game called Catch. It has one screen.",
+    "",
+    "The game",
+    "- The field is 12 units wide and 16 units tall. A paddle 3 units wide sits on the bottom edge. It moves left and right at 8 units a second (keys: Left / Right, and A / D) and never leaves the field.",
+    "- Pieces 1 unit across fall from the top edge, one every 1.2 seconds, the first at the first tick. Each starts at a column chosen by a random source that is seeded by a number given when the game starts (`seed`, default 1). The same seed always gives the same game.",
+    "- Pieces fall at 4 units a second. After every 5 catches they fall 5% faster (4, 4.2, 4.41, ...).",
+    "- A piece that touches the paddle is caught: 10 points. A piece that reaches the bottom edge is missed. The third miss ends the run.",
+    "- The screen shows the score and the misses left. After the end it shows \"Game over\", the final score and how to restart (Enter). A restart begins a fresh run with the same seed.",
+    "- The game advances in fixed steps of 1/60 second. What happens never depends on how fast frames are drawn.",
+    "",
+    "Checkable without hands",
+    "Someone who cannot play it by hand will check it, so the game must offer two things, however you build it:",
+    "1. A headless run: given a seed, a number of ticks and a script of inputs (at tick T: left, right, none or restart; an input holds until the next one), it runs that many ticks with no window and prints the state as one JSON object: {\"tick\" (the ticks run so far in this headless run: N after N ticks, whatever happened in them), \"score\", \"misses\", \"over\", \"paddle_x\" (the paddle's left edge), \"fall_speed\", \"pieces\": [{\"x\", \"y\"}]} (x from the left edge, y up from the bottom edge, both of the piece's centre).",
+    "2. A frame: after such a run, the view as it would be drawn, written as a PNG 480 pixels wide and 640 tall.",
+    "",
+    "Hand in, in your work folder",
+    "- The game, ready to run.",
+    "- README.md: how to play it, the exact commands for the headless run and the frame, and what you checked yourself and how."
+  ],
+  "acceptance": [
+    {"id": "s01", "kind": "checkable", "text": "The headless run exists, takes a seed, a tick count and an input script, and prints the state as the brief's JSON object."},
+    {"id": "s02", "kind": "checkable", "text": "The frame is written as a 480 x 640 PNG after a headless run."},
+    {"id": "s03", "kind": "behaviour", "text": "Holding left for 200 ticks from the start leaves the paddle's left edge at 0; holding right leaves it at 9 (never outside the field)."},
+    {"id": "s04", "kind": "behaviour", "text": "The paddle moves 8 units a second: after 30 ticks of right from a known position it has moved 4 units (unless the edge stops it)."},
+    {"id": "s05", "kind": "behaviour", "text": "A piece appears at the first tick and then one every 72 ticks for as long as the run goes on (none after the end, until a restart)."},
+    {"id": "s06", "kind": "behaviour", "text": "Two headless runs with the same seed, ticks and script print identical states; another seed gives other piece columns."},
+    {"id": "s07", "kind": "behaviour", "text": "A caught piece adds exactly 10 points and disappears; it is not also counted as a miss."},
+    {"id": "s08", "kind": "behaviour", "text": "A piece that reaches the bottom edge away from the paddle adds one miss and no points."},
+    {"id": "s09", "kind": "behaviour", "text": "After the third miss `over` is true, and further ticks change neither the score nor the misses nor the pieces."},
+    {"id": "s10", "kind": "behaviour", "text": "After 5 catches `fall_speed` is 4.2 (5% more), and pieces move that much faster from then on."},
+    {"id": "s11", "kind": "behaviour", "text": "A restart after the end begins a fresh run (score 0, no misses) whose pieces fall in the same columns as the first run's."},
+    {"id": "s12", "kind": "behaviour", "text": "The frame of a run in play shows the paddle, the falling pieces at the places the state gives, the score and the misses left."},
+    {"id": "s13", "kind": "behaviour", "text": "The frame after the end shows \"Game over\", the final score and how to restart."},
+    {"id": "s14", "kind": "behaviour", "text": "README.md says how to play and gives commands for the two checks that work as written."}
+  ]
+}

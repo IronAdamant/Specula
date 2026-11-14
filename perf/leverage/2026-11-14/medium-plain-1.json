@@ -1,0 +1,266 @@
+{
+ "run": {
+  "leverage": 1,
+  "job": "medium",
+  "arm": "plain",
+  "n": 1,
+  "phase": "judge",
+  "prepared": "2026-11-14T19:53:47",
+  "settings": {
+   "runs_per_cell": 2,
+   "builder_model": "claude-sonnet-5-5",
+   "judge_model": "claude-opus-5-5",
+   "limits": {
+    "token_cap": 2000000,
+    "wall_s": 10800
+   },
+   "judge": {
+    "token_cap": 150000,
+    "wall_s": 1800
+   },
+   "token_weights": {
+    "input": 1.0,
+    "cache_write": 1.25,
+    "cache_read": 0.1,
+    "output": 5.0
+   }
+  }
+ },
+ "costs": {
+  "builder": {
+   "tokens": 35791,
+   "tool_uses": 10,
+   "duration_s": 151.4,
+   "by_kind": {
+    "input": 16,
+    "cache_write": 30504,
+    "cache_read": 168008,
+    "output": 24557,
+    "requests": 8,
+    "context_at_end": 35791
+   },
+   "weighted": 177732,
+   "cost_usd": 0.38441880000000006,
+   "turns": 11,
+   "exit": 0,
+   "model": "claude-sonnet-5-5",
+   "ended": "done",
+   "over_token_cap": false,
+   "over_wall": false,
+   "note": ""
+  },
+  "left": {
+   "files": 4,
+   "bytes": 20486,
+   "text_lines": 518,
+   "lines_by_kind": {
+    ".json": 2,
+    ".md": 31,
+    ".py": 485
+   }
+  },
+  "finished": "2026-11-14T19:56:19",
+  "judge": {
+   "tokens": 59581,
+   "tool_uses": 32,
+   "duration_s": 301.4,
+   "by_kind": {
+    "input": 54,
+    "cache_write": 54294,
+    "cache_read": 967400,
+    "output": 22598,
+    "requests": 27,
+    "context_at_end": 59581
+   },
+   "weighted": 277652,
+   "cost_usd": 1.0800079999999999,
+   "turns": 33,
+   "exit": 0,
+   "model": "claude-opus-5-5",
+   "ended": "done"
+  },
+  "verdict": {
+   "items": [
+    {
+     "id": "m01",
+     "kind": "checkable",
+     "pass": true,
+     "evidence": "python game.py --headless --seed 1 --ticks 0 --settings <scratch>/s0.json printed {\"tick\":0,\"screen\":\"title\",\"menu_index\":0,\"language\":\"en\",\"volume\":5,\"texts\":[\"Hold the gate\",\"Start\",\"Settings\",\"Quit\"],\"score\":0,\"wave\":1,\"gate_health\":5,\"guard_y\":6.0,\"walkers\":[],\"bolts\":[]}, which has every key the brief lists; tick equals --ticks on every run."
+    },
+    {
+     "id": "m02",
+     "kind": "checkable",
+     "pass": true,
+     "evidence": "--frame wrote 12 PNGs (title, settings, play, paused, won, lost) after headless runs; each has a valid PNG signature and an IHDR of 800x480."
+    },
+    {
+     "id": "m03",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Title texts were ['Hold the gate','Start','Settings','Quit']. '0:down,1:enter' gave screen settings. '0:enter' gave screen play, score 0, wave 1, gate_health 5, texts ['Score: 0','Wave 1 of 5','Gate: 5']."
+    },
+    {
+     "id": "m04",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "In Settings, starting from 5: 1 left gave 4, 4 rights gave 9, 9 rights gave 10 (capped), 8 lefts gave 0, and 13 lefts still gave 0."
+    },
+    {
+     "id": "m05",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "'0:down,1:enter,2:down,3:right' changed texts to ['Ajustes','Volumen: 5','Idioma: Espa\u00f1ol','Volver']. With es saved, title showed ['Defiende la puerta','Empezar','Ajustes','Salir'], play ['Puntos: 0','Oleada 1 de 5','Puerta: 5'], paused [...,'En pausa','Continuar','T\u00edtulo'], won/lost ['\u00a1Has ganado!'/'Has perdido','Puntos finales: N','Enter: t\u00edtulo']. The PNGs show the same text."
+    },
+    {
+     "id": "m06",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Run 1 (lefts to volume 2, language right to es) wrote {\"volume\": 2, \"language\": \"es\"} to the --settings file. Run 2 with the same --settings and 0 ticks started at volume 2, language es, with Spanish title texts. A fresh path started at volume 5, en, and no file was created."
+    },
+    {
+     "id": "m07",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Holding up for 30 ticks moved guard_y from 6.0 to 9.0 (6 u/s) and 60 ticks gave 12.0; 200 ticks of up stayed at 12.0; 30 ticks of down gave 3.0; 200 ticks of down stayed at 0.0. The bolts and the frame show x = 2."
+    },
+    {
+     "id": "m08",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Holding shoot from tick 1: a single bolt for 24 ticks, a 2nd bolt at the 25th play tick and a 3rd at the 49th (24-tick spacing; bolts 5.6 units apart). A bolt moves 0.2333 per tick (14 u/s). Fired from y=12, it was at x=19.9667 at run 138 and gone at run 139."
+    },
+    {
+     "id": "m09",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Idle seed 1: walkers appeared at x=20.0 at runs 2, 92, 182, 272 and 362 (every 90 ticks), in lanes 6, 8, 2, 8, 8, moving 0.025 per tick (1.5 u/s). There were exactly 5, and no more came in wave 1."
+    },
+    {
+     "id": "m10",
+     "kind": "behaviour",
+     "pass": false,
+     "evidence": "Hits usually work: with one shot at tick 1, the lane-6 walker went 2->1 and the bolt was gone; a 2nd bolt killed it (score 10); bolts from y=5 and y=6.7 passed it at health 2. But a bolt can tunnel through a walker in its own lane. With seed 1 and '0:enter,9:shoot,10:none', at run 78 the bolt is at x=18.1 and the walker at x=18.1 (y 6), and at run 79 the bolt is at 18.333 and the walker at 18.075, still health 2. 5 of 59 single-shot timings (ticks 9, 19, 29, 40, 50) pass through. Cause: the sweep checks [old x, new x] after the walker has moved, so a walker just ahead of the bolt slips behind it."
+    },
+    {
+     "id": "m11",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Idle seed 1: the first walker reached x<=0 at run 803 and was removed, and gate_health went 5->4. At run 1163 the screen was lost with texts ['You lost','Final score: 0','Enter: title']. A run that killed one walker ended lost with 'Final score: 10' in texts and the PNG. Enter on lost returned to title."
+    },
+    {
+     "id": "m12",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "With one kill, wave 1's last walker reached the gate at run 1163 (tick 1162); wave became 2 at run 1343 (180 ticks = 3 s) and the first wave-2 walker appeared at run 1344. CLI sampling of the bot's winning run counted 7 new walkers in wave 2. Texts showed 'Wave 2 of 5' and, in Spanish, 'Oleada 2 de 5'."
+    },
+    {
+     "id": "m13",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "A scripted aiming bot's input script, replayed through the CLI, ended on screen won with score 450 and gate 5 (seed 1 at 5085 ticks, seed 7 at 5233). Walker counts per wave were 5/7/9/11/13. Adding '5085:enter' gave screen title."
+    },
+    {
+     "id": "m14",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Escape at tick 150 gave screen paused; the walkers, bolts and guard_y at run 400 were identical to run 200. Enter on Resume at tick 400 gave play with exactly the same objects. Down+Enter on 'Title' gave screen title, and Start then began a fresh run (score 0, wave 1, gate 5)."
+    },
+    {
+     "id": "m15",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Seed 42, 900 ticks, same script: two runs printed byte-identical JSON. Walker lanes were [10,2,6] for seed 42, [2,4,6] for seed 3 and [2,8,8] for seed 1. Omitting --seed gives the same result as seed 1."
+    },
+    {
+     "id": "m16",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "play.png (seed 1, 230 ticks): the state has guard (2,6), walkers (14.3,6,h1) and (18.8,2,h2), bolts (10.4,6) and (4.8,6). The frame shows a green guard at px ~(80,264), an orange walker at ~(572,264), a red walker at ~(752,408), yellow bolts at x~416 and ~192, a gold gate strip at x=0, and a HUD reading 'SCORE: 10', 'WAVE 1 OF 5', 'GATE: 5'."
+    },
+    {
+     "id": "m17",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "title.png has '> START' highlighted. title_quit/settings_en.png has '> BACK' highlighted. settings_es.png shows AJUSTES / VOLUMEN: 5 / '> IDIOMA: ESPA\u00d1OL' / VOLVER. title_es.png shows DEFIENDE LA PUERTA with '> AJUSTES' marked."
+    },
+    {
+     "id": "m18",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "The strings are in work/lang/en.json and work/lang/es.json, and game.py reads them via t(key); I found no UI words in the code except the tk window caption. The README's 'Add a language' section says to copy en.json to xx.json and translate it."
+    },
+    {
+     "id": "m19",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "The README's Play section gives the keys. Its headless command and '--frame out.png' ran as written (I used my own --settings path) and produced the JSON and the PNG."
+    }
+   ],
+   "totals": {
+    "behaviour": {
+     "passed": 16,
+     "of": 17
+    },
+    "checkable": {
+     "passed": 2,
+     "of": 2
+    },
+    "all": {
+     "passed": 18,
+     "of": 19
+    }
+   },
+   "defects": [
+    "The run is declared won when wave 5's last walker reaches the gate (gate still >0), not only when it is destroyed. My bot that let the last walker through ended on 'won' with 440 points and gate 4, but the brief says won when wave 5's last walker is destroyed.",
+    "A bolt can pass through a walker in its own lane without hitting it (about 1 shot timing in 12); this is the cause of the m10 failure.",
+    "The game name is translated on the Spanish title ('Defiende la puerta') and the Spanish 'Enter: t\u00edtulo' keeps the English key name 'Enter'. Both are arguable rather than wrong.",
+    "Without --settings the game writes to ~/.hold_the_gate/settings.json; the README example's /tmp/s.json path is POSIX-style on a Windows machine. Neither affected checking."
+   ],
+   "could_not_check": []
+  },
+  "where": {
+   "run": "medium-plain-1",
+   "requests": 8,
+   "steps": 10,
+   "steps_before_the_first_code": 1,
+   "weighted": 177732,
+   "weighted_by_kind": {
+    "read_again": 16801,
+    "written_out": 122785,
+    "new_in_context": 38146
+   },
+   "builds": {
+    "steps": 0,
+    "failed": 0
+   },
+   "how": "weighted_by_kind is exact (the run's own token counts times the weights); a step's kind is a reading of its command's text, and answered_tokens / written_tokens are characters / 4",
+   "by_step": {
+    "write code": {
+     "steps": 6,
+     "answered_tokens": 499,
+     "written_tokens": 10992
+    },
+    "read its own files": {
+     "steps": 2,
+     "answered_tokens": 1154,
+     "written_tokens": 81
+    },
+    "words between steps": {
+     "steps": 0,
+     "answered_tokens": 0,
+     "written_tokens": 472
+    },
+    "run its own checks": {
+     "steps": 1,
+     "answered_tokens": 139,
+     "written_tokens": 99
+    },
+    "look at a frame": {
+     "steps": 1,
+     "answered_tokens": 0,
+     "written_tokens": 38
+    }
+   }
+  }
+ }
+}

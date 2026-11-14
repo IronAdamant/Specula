@@ -81,7 +81,7 @@ on the engine thread.
 there (`Library::resolve`), and so does an `anim_*` tool on a model the library does not know (no entity
 uses it and nothing asked for it since the last collection) (ROADMAP M5).
 
-**A slow frame says what it did** (2026-11-15). An `engine.stall` of a window frame carries `top`: the
+**A slow frame says what it did** (2026-11-14). An `engine.stall` of a window frame carries `top`: the
 frame's zones that took the most time themselves, largest first (it is raised when the next pass has
 collected the frame's zones). A step job's slice is a zone named for its kind. The first frame it named:
 `anim_filmstrip/film.check_row 30.6`: a filmstrip with checks ran each row's motion checks as one step on

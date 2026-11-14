@@ -1,0 +1,319 @@
+{
+ "run": {
+  "leverage": 1,
+  "job": "medium",
+  "arm": "engine",
+  "n": 2,
+  "phase": "judge",
+  "prepared": "2026-11-14T21:05:44",
+  "settings": {
+   "runs_per_cell": 2,
+   "builder_model": "claude-sonnet-5-5",
+   "judge_model": "claude-opus-5-5",
+   "limits": {
+    "token_cap": 2000000,
+    "wall_s": 10800
+   },
+   "judge": {
+    "token_cap": 150000,
+    "wall_s": 1800
+   },
+   "token_weights": {
+    "input": 1.0,
+    "cache_write": 1.25,
+    "cache_read": 0.1,
+    "output": 5.0
+   }
+  },
+  "engine_build": "706837ff (round 2: tools NAME, refusals list arguments)",
+  "port": 7706
+ },
+ "costs": {
+  "builder": {
+   "tokens": 102822,
+   "tool_uses": 39,
+   "duration_s": 375.3,
+   "by_kind": {
+    "input": 62,
+    "cache_write": 97535,
+    "cache_read": 1932878,
+    "output": 46649,
+    "requests": 31,
+    "context_at_end": 102822
+   },
+   "weighted": 548514,
+   "cost_usd": 1.0500418,
+   "turns": 40,
+   "exit": 0,
+   "model": "claude-sonnet-5-5",
+   "ended": "done",
+   "over_token_cap": false,
+   "over_wall": false,
+   "note": ""
+  },
+  "engine": {
+   "calls": 63,
+   "refused": 3,
+   "args_bytes": 19184,
+   "answer_bytes": 208966,
+   "by_tool": {
+    "engine.start": 25,
+    "logic_hook": 24,
+    "logic_status": 24,
+    "(tools)": 9,
+    "logic_build": 6,
+    "engine.stop": 2
+   }
+  },
+  "left": {
+   "files": 13,
+   "bytes": 50352,
+   "text_lines": 1191,
+   "lines_by_kind": {
+    ".json": 48,
+    ".md": 66,
+    ".py": 122,
+    ".rs": 904,
+    ".toml": 51
+   }
+  },
+  "finished": "2026-11-14T21:12:00",
+  "judge": {
+   "tokens": 62577,
+   "tool_uses": 24,
+   "duration_s": 217.7,
+   "by_kind": {
+    "input": 42,
+    "cache_write": 57290,
+    "cache_read": 777719,
+    "output": 16954,
+    "requests": 21,
+    "context_at_end": 62577
+   },
+   "weighted": 234196,
+   "cost_usd": 0.9531118,
+   "turns": 25,
+   "exit": 0,
+   "model": "claude-opus-5-5",
+   "ended": "done",
+   "engine": {
+    "calls": 151,
+    "refused": 2,
+    "args_bytes": 45988,
+    "answer_bytes": 367081,
+    "by_tool": {
+     "engine.start": 75,
+     "logic_hook": 75,
+     "logic_status": 75,
+     "engine.stop": 2,
+     "logic_build": 1
+    }
+   }
+  },
+  "verdict": {
+   "items": [
+    {
+     "id": "m01",
+     "kind": "checkable",
+     "pass": true,
+     "evidence": "From a stopped engine, `python hold.py run --seed 1 --ticks 0 --settings ../judge-scratch/s0.json` started the engine and printed one JSON object: screen title, tick 0, menu_index, language, volume, texts, score, wave, gate_health, guard_y, walkers, bolts (plus an extra `quit`)."
+    },
+    {
+     "id": "m02",
+     "kind": "checkable",
+     "pass": true,
+     "evidence": "`hold.py frame ... --out X.png` wrote 6 PNGs (title, settings, play x2, won); each has a valid PNG signature and IHDR 800 x 480."
+    },
+    {
+     "id": "m03",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Title texts were [Hold the gate, Start, Settings, Quit, hint]; `1:down,2:enter` gave screen settings; `0:enter` gave screen play, wave 1, score 0, gate_health 5."
+    },
+    {
+     "id": "m04",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Pressing right 8 times from 5 gave volume 10 (it did not go past 10). From a fresh settings file, pressing left 8 times from 5 gave volume 0 (it did not go below 0)."
+    },
+    {
+     "id": "m05",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Pressing right on Language changed the settings texts to [Ajustes, Volumen: 5, Idioma: Espa\u00f1ol, Volver, Izq/Der: cambiar   Arriba/Abajo: mover]. Title then showed [Defiende la puerta, Empezar, Ajustes, Salir, ...], play [Puntos: 0, Oleada 1 de 5, Salud de la puerta: 5], pause [En pausa, Continuar, T\u00edtulo], lost [\u00a1Perdiste!, Puntuaci\u00f3n final: 0, Enter: t\u00edtulo]. The only English word left is the key name 'Enter', which I accepted."
+    },
+    {
+     "id": "m06",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Run 1 with --settings p.json set volume 3 and language es, and the file then held {volume 3, language es}. Run 2 with the same file started at title with volume 3, es and Spanish texts. A new path (fresh/new.json) started with volume 5, en."
+    },
+    {
+     "id": "m07",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "After 30 ticks holding up, guard_y went from 6 to 9 (6 units/s); after 20 ticks holding down it went from 6 to 4. Holding up for 199 ticks stopped at 12, and holding down for 299 ticks stopped at 0."
+    },
+    {
+     "id": "m08",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Holding shoot from tick 1 gave 1 bolt at ticks=25, 2 at 26, 2 at 49 and 3 at 50 (one every 24 ticks). A single bolt was at x=16 after 60 ticks (14 units/s), at 19.9667 at ticks=79, and gone at ticks=80."
+    },
+    {
+     "id": "m09",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Seed 1, idle: walkers appeared at play ticks 0, 90, 180, 270 and 360 (the x values show 1.5 s spacing), with lanes 10, 2, 10, 2, 6. Still 5 walkers at ticks 449 and 700. x drops 1.5 units per 60 ticks (20 to 15.025 in 199 ticks)."
+    },
+    {
+     "id": "m10",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Guard at y=10 fired one bolt: at ticks=106 the bolt was at 16.93 and the walker at 17.375 with health 2; at 108 the walker had health 1 and no bolts were left. With shoot held, the walker was gone at 140 with score 10. Bolts at y=8 passed a lane-10 walker and left it at health 2. A guard at 10.6 hit; one at 10.7 did not."
+    },
+    {
+     "id": "m11",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Idle seed 1: at ticks=800 the walker was at x=0.025 and gate 5; at 801 that walker was gone and gate 4. A run with 2 kills ended at ticks=3000 on screen lost, gate 0, texts [You lost!, Final score: 20, Enter: title]."
+    },
+    {
+     "id": "m12",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Wave 1's last walker was gone at step 1160 (ticks=1161, no walkers). Wave 2 was still not started at ticks=1340; at 1341 there was wave 2 with one walker at x=20 (180 ticks = 3 s), and texts said 'Wave 2 of 5'. In the full win run, the score went from 50 to 120 across wave 2 with the gate at 5, so wave 2 had 7 walkers. Spanish shows 'Oleada 1 de 5'."
+    },
+    {
+     "id": "m13",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "`hold.py run --seed 1 --ticks 5300 --script examples/win_seed1.json` ended on won, score 450, gate 5, texts [You won!, Final score: 450, Enter: title]. Adding enter at tick 5290 gave screen title."
+    },
+    {
+     "id": "m14",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Escape at tick 50 gave screen paused. The states at ticks 100 and 400 were identical: bolts at 11.1 and 5.5, walker at 18.775, guard 6.9. Enter (Resume) at 399 gave play with everything advanced one tick (bolt 11.333, walker 18.75). Escape, down, enter gave screen title."
+    },
+    {
+     "id": "m15",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Two runs with seed 7, 700 ticks and the same script printed byte-identical output (cmp). The lanes were seed 7 [10,6,8,8,10], seed 2 [2,10,6,4,6], seed 1 [10,2,10,2,6]."
+    },
+    {
+     "id": "m16",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "In the seed 3 frame at tick 400, the walkers in the state (x 10.0, 12.3, 14.5, 16.8, 19.0 in lanes 8 and 6) are red boxes at px ~401, 491, 581, 671, 761 (40 px/unit, y=8 at 160 px, y=6 at 240 px). The bolts at 15.3, 9.7 and 4.1 (y 3.1) and the guard at x=2, y=3.1 are drawn there too. The green gate bar is at the left; the HUD shows Score, Wave 1 of 5 and Gate health 5."
+    },
+    {
+     "id": "m17",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "In the English title frame, Settings is highlighted (menu_index 1). The Spanish settings frame shows AJUSTES, VOLUMEN: 5, IDIOMA: ESPA\u00d1OL highlighted, VOLVER. The Spanish title frame shows DEFIENDE LA PUERTA with AJUSTES highlighted."
+    },
+    {
+     "id": "m18",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "The strings are in games/hold_the_gate/strings/en.json and es.json, one table per language, embedded by strings.rs TABLES. The code has keys only. README's 'Add a language' section gives 3 steps."
+    },
+    {
+     "id": "m19",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "README has a 'How to play' section (keys, rules, win/lose). Its `python hold.py run|frame --seed --ticks --settings --script/--inputs` commands, run in work/ from a stopped engine, worked as written. I pointed --settings into judge-scratch."
+    }
+   ],
+   "totals": {
+    "behaviour": {
+     "passed": 17,
+     "of": 17
+    },
+    "checkable": {
+     "passed": 2,
+     "of": 2
+    },
+    "all": {
+     "passed": 19,
+     "of": 19
+    }
+   },
+   "defects": [
+    "There is no interactive play at all: the game exists only as the headless run plus a software-drawn frame. The W/S keys in the brief exist nowhere, and the headless script rejects 'w'.",
+    "Quit on the title only sets `quit: true` in the state; nothing quits.",
+    "Volume and language are kept by the driver script hold.py writing a JSON file after the run. The game module itself does not keep them.",
+    "The Spanish strings keep the English key name 'Enter' ('Enter: elegir', 'Enter: t\u00edtulo').",
+    "On won, lost and title the state still reports the leftover walkers, bolts, score and guard_y of the last play (for example, title after a win shows score 450 and 3 bolts).",
+    "The default --settings path is settings.json inside the work folder, so running the README commands as written writes into the game folder."
+   ],
+   "could_not_check": []
+  },
+  "where": {
+   "run": "medium-engine-2",
+   "requests": 31,
+   "steps": 39,
+   "steps_before_the_first_code": 11,
+   "weighted": 548514,
+   "weighted_by_kind": {
+    "read_again": 193288,
+    "written_out": 233245,
+    "new_in_context": 121981
+   },
+   "builds": {
+    "steps": 13,
+    "failed": 2
+   },
+   "how": "weighted_by_kind is exact (the run's own token counts times the weights); a step's kind is a reading of its command's text, and answered_tokens / written_tokens are characters / 4",
+   "by_step": {
+    "build the module": {
+     "steps": 13,
+     "answered_tokens": 11118,
+     "written_tokens": 4509
+    },
+    "write code": {
+     "steps": 8,
+     "answered_tokens": 628,
+     "written_tokens": 13254
+    },
+    "find tools and their arguments": {
+     "steps": 3,
+     "answered_tokens": 8395,
+     "written_tokens": 281
+    },
+    "read its own files": {
+     "steps": 4,
+     "answered_tokens": 3855,
+     "written_tokens": 340
+    },
+    "read the engine's documents and source": {
+     "steps": 1,
+     "answered_tokens": 1601,
+     "written_tokens": 79
+    },
+    "run its own checks": {
+     "steps": 4,
+     "answered_tokens": 693,
+     "written_tokens": 422
+    },
+    "words between steps": {
+     "steps": 0,
+     "answered_tokens": 0,
+     "written_tokens": 816
+    },
+    "start or stop the engine": {
+     "steps": 1,
+     "answered_tokens": 156,
+     "written_tokens": 139
+    },
+    "look at a frame": {
+     "steps": 5,
+     "answered_tokens": 0,
+     "written_tokens": 78
+    }
+   }
+  }
+ }
+}

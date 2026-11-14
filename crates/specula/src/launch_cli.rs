@@ -11,6 +11,7 @@ use std::path::PathBuf;
 /// The longest tool name, and the largest arguments, a `call` takes from the command line.
 pub const MAX_TOOL_CHARS: usize = 64;
 pub const MAX_ARGS_BYTES: usize = 1024 * 1024;
+pub const MAX_ROLE_CHARS: usize = 32;
 
 /// Which project a word means.
 #[derive(Clone, Debug, PartialEq)]
@@ -51,8 +52,28 @@ pub enum Cli {
     /// The tools a running engine lists.
     Tools { target: Target, filter: Option<String> },
     /// Calls one tool of a running engine.
-    Call { target: Target, tool: String, args: Json, as_name: Option<String> },
+    Call { target: Target, tool: String, args: CallArgs, as_name: Option<String>, role: Option<String> },
     Help,
+}
+
+/// A call's arguments: given on the command line, or in a file the command reads (`@FILE`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum CallArgs {
+    Given(Json),
+    File(PathBuf),
+}
+
+/// A call's arguments from their text: one JSON object, at most [`MAX_ARGS_BYTES`].
+pub fn call_args(text: &str) -> Result<Json, String> {
+    if text.len() > MAX_ARGS_BYTES {
+        return Err(format!("the arguments are {} bytes; at most {MAX_ARGS_BYTES}", text.len()));
+    }
+    let hint = "pass one object, quoted for your shell, like '{\"limit\": 5}', or put it in a file: specula call TOOL @args.json";
+    let j = Json::parse(text).map_err(|e| format!("the arguments are not JSON ({e}): {hint}"))?;
+    if !matches!(j, Json::Obj(_)) {
+        return Err("the arguments must be one JSON object, like '{\"limit\": 5}'".to_owned());
+    }
+    Ok(j)
 }
 
 pub const HELP: &str = "\
@@ -67,7 +88,13 @@ specula list                     the engines running on this machine (JSON)
 specula stop [--port N | --project NAME]
                                  ask a running engine to stop (it saves and shuts down cleanly)
 specula tools [FILTER] [--port N | --project NAME]
-specula call TOOL ['{json}'] [--port N | --project NAME] [--as NAME]
+                                 (no FILTER: every tool's name, by family; a tool's name:
+                                 what it does and the arguments it takes; a word: the
+                                 tools that match, and what each does)
+specula call TOOL ['{json}' | @FILE] [--port N | --project NAME] [--as NAME [--role ROLE]]
+                                 (@FILE: the arguments, one JSON object, read from that file;
+                                 --role: the role NAME says, such as lead when the engine was
+                                 started with --lead NAME)
 specula --help                   the engine's own flags";
 
 const WORDS: [&str; 9] = ["projects", "open", "new", "forget", "list", "stop", "tools", "call", "help"];
@@ -79,13 +106,14 @@ struct Flags {
     port: Option<u16>,
     project: Option<String>,
     as_name: Option<String>,
+    role: Option<String>,
     parent: Option<PathBuf>,
     last: bool,
     rest: Vec<String>,
 }
 
 fn flags(words: &[String], allowed: &[&str]) -> Result<Flags, String> {
-    let mut f = Flags { front: false, port: None, project: None, as_name: None, parent: None, last: false, rest: Vec::new() };
+    let mut f = Flags { front: false, port: None, project: None, as_name: None, role: None, parent: None, last: false, rest: Vec::new() };
     let mut i = 0;
     while i < words.len() {
         let w = words[i].as_str();
@@ -116,6 +144,13 @@ fn flags(words: &[String], allowed: &[&str]) -> Result<Flags, String> {
                     return Err(format!("'--as' is an agent's name: 1..64 of A-Z a-z 0-9 _ - . (got '{value}')"));
                 }
                 f.as_name = Some(value);
+            }
+            "--role" => {
+                // (A role, as agent_hello takes it: a short word.)
+                if value.is_empty() || value.len() > MAX_ROLE_CHARS || !value.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')) {
+                    return Err(format!("'--role' is a role's word, like lead or builder: 1..{MAX_ROLE_CHARS} of A-Z a-z 0-9 _ - (got '{value}')"));
+                }
+                f.role = Some(value);
             }
             "--in" => f.parent = Some(PathBuf::from(value)),
             _ => unreachable!("allowed lists only these"),
@@ -213,27 +248,30 @@ pub fn parse(args: &[String]) -> Result<Option<Cli>, String> {
             Cli::Tools { target: target(&f), filter: f.rest.first().cloned() }
         }
         "call" => {
-            let f = flags(rest, &["--port", "--project", "--as"])?;
+            let f = flags(rest, &["--port", "--project", "--as", "--role"])?;
+            if f.role.is_some() && f.as_name.is_none() {
+                return Err("'--role' says the role of a named agent: give its name too (--as NAME --role lead)".to_owned());
+            }
             let Some(tool) = f.rest.first() else { return Err("'specula call' needs a tool's name ('specula tools' lists them)".to_owned()) };
             if tool.is_empty() || tool.len() > MAX_TOOL_CHARS || !tool.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
                 return Err(format!("'{tool}' is not a tool's name (A-Z a-z 0-9 _ -, at most {MAX_TOOL_CHARS})"));
             }
+            // (`--as` says agent_hello for the command, with `--role` in it: calling agent_hello
+            // itself under `--as` dropped both without a word. Review R1 of m5-leverage.)
+            if tool == "agent_hello" && f.as_name.is_some() {
+                return Err("'--as NAME' says agent_hello for you (with --role ROLE in it): call another tool with it, or call agent_hello without --as and give 'name' and 'role' in its arguments".to_owned());
+            }
             let args = match f.rest.len() {
-                1 => Json::Obj(Vec::new()),
-                2 => {
-                    let text = &f.rest[1];
-                    if text.len() > MAX_ARGS_BYTES {
-                        return Err(format!("the arguments are {} bytes; at most {MAX_ARGS_BYTES}", text.len()));
-                    }
-                    let j = Json::parse(text).map_err(|e| format!("the arguments are not JSON ({e}): pass one object, quoted for your shell, like '{{\"limit\": 5}}'"))?;
-                    if !matches!(j, Json::Obj(_)) {
-                        return Err("the arguments must be one JSON object, like '{\"limit\": 5}'".to_owned());
-                    }
-                    j
-                }
-                _ => return Err("'specula call' takes a tool's name and at most one JSON object (quote it for your shell)".to_owned()),
+                1 => CallArgs::Given(Json::Obj(Vec::new())),
+                2 => match f.rest[1].strip_prefix('@') {
+                    // (No JSON begins with '@'. The file is read when the command runs.)
+                    Some("") => return Err("'@' needs a file's name: specula call TOOL @args.json".to_owned()),
+                    Some(file) => CallArgs::File(PathBuf::from(file)),
+                    None => CallArgs::Given(call_args(&f.rest[1])?),
+                },
+                _ => return Err("'specula call' takes a tool's name and at most one JSON object (quote it for your shell, or put it in a file: @args.json)".to_owned()),
             };
-            Cli::Call { target: target(&f), tool: tool.clone(), args, as_name: f.as_name }
+            Cli::Call { target: target(&f), tool: tool.clone(), args, as_name: f.as_name, role: f.role }
         }
         other => return Err(format!("'{other}' is not a command (the commands: {}; flags start the engine: specula --help)", WORDS.join(", "))),
     };
@@ -306,11 +344,26 @@ mod tests {
         assert!(p("tools a b").unwrap_err().contains("at most one word"));
         assert!(p("tools --port 0").unwrap_err().contains("1..65535"));
         assert!(p("tools --port 7471 --project crypt").unwrap_err().contains("not both"));
-        assert_eq!(p("call world_list"), Ok(Some(Cli::Call { target: Target::Any, tool: "world_list".into(), args: Json::Obj(Vec::new()), as_name: None })));
+        assert_eq!(p("call world_list"), Ok(Some(Cli::Call { target: Target::Any, tool: "world_list".into(), args: CallArgs::Given(Json::Obj(Vec::new())), as_name: None, role: None })));
+        // A named agent says its role (a lead the operator granted takes the role by saying it).
+        assert!(matches!(p("call logic_build --as mason --role lead"), Ok(Some(Cli::Call { as_name: Some(n), role: Some(r), .. })) if n == "mason" && r == "lead"));
+        assert!(p("call logic_build --role lead").unwrap_err().contains("--as NAME --role lead"));
+        assert!(p("call logic_build --as mason --role").unwrap_err().contains("needs a value"));
+        assert!(p("call logic_build --as mason --role a.b").unwrap_err().contains("a role's word"));
+        assert!(p(&format!("call logic_build --as mason --role {}", "r".repeat(MAX_ROLE_CHARS + 1))).unwrap_err().contains("a role's word"));
+        assert!(p("tools --role lead").unwrap_err().contains("not a flag of this command"));
+        assert!(p("call agent_hello --as mason --role lead").unwrap_err().contains("says agent_hello for you"));
+        assert!(matches!(p("call agent_hello"), Ok(Some(Cli::Call { as_name: None, .. }))));
+        // The arguments from a file: named here, read when the command runs.
+        assert_eq!(p("call world_spawn @args.json"), Ok(Some(Cli::Call { target: Target::Any, tool: "world_spawn".into(), args: CallArgs::File(PathBuf::from("args.json")), as_name: None, role: None })));
+        assert!(p("call world_spawn @").unwrap_err().contains("needs a file's name"));
+        assert!(p("call world_spawn @a.json @b.json").unwrap_err().contains("at most one JSON object"));
+        assert!(call_args(&format!("{{\"t\": \"{}\"}}", "x".repeat(MAX_ARGS_BYTES))).unwrap_err().contains("at most"));
+        assert!(call_args("{not json").unwrap_err().contains("@args.json"));
         let call = |args: &[&str]| parse(&args.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>());
         assert_eq!(
             call(&["call", "world_query", r#"{"limit": 5, "path_prefix": "/a b"}"#, "--as", "ann", "--port", "7500"]),
-            Ok(Some(Cli::Call { target: Target::Port(7500), tool: "world_query".into(), args: Json::parse(r#"{"limit": 5, "path_prefix": "/a b"}"#).unwrap(), as_name: Some("ann".into()) }))
+            Ok(Some(Cli::Call { target: Target::Port(7500), tool: "world_query".into(), args: CallArgs::Given(Json::parse(r#"{"limit": 5, "path_prefix": "/a b"}"#).unwrap()), as_name: Some("ann".into()), role: None }))
         );
         assert!(call(&["call"]).unwrap_err().contains("needs a tool's name"));
         assert!(call(&["call", "world.list"]).unwrap_err().contains("not a tool's name"));

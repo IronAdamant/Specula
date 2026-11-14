@@ -218,13 +218,19 @@ impl Swarm {
     /// Whether the identity `key` may load native module code ([`crate::authority::may_load_native`]):
     /// `Ok`, or the refusal naming `what`.
     pub(crate) fn may_load_native(&self, key: &str, what: &str) -> Result<(), crate::world::WorldError> {
-        crate::authority::may_load_native(self.authority_of_key(key), self.grants.granted_key(key), what)
+        crate::authority::may_load_native(self.authority_of_key(key), self.grants.grant_of_key(key), what)
     }
 
     /// The session's authority as the operator's grants alone give it (read through
     /// [`crate::authority::trusted`]): a lead nobody granted would be a plain agent here.
     pub(crate) fn trusted_authority_of(&self, session_id: &str) -> crate::authority::Authority {
         self.agents.get(session_id).map_or(crate::authority::Authority::Agent, |a| crate::authority::trust(a.authority, self.grants.granted_key(&a.key)))
+    }
+
+    /// Whether the identity `key` holds the operator's lead (or owner) grant, whatever role its
+    /// hello said (the security monitor never freezes such an identity for a refused try).
+    pub(crate) fn holds_lead_grant(&self, key: &str) -> bool {
+        self.grants.grant_of_key(key).is_some_and(|g| g >= crate::authority::Authority::Lead)
     }
 
     /// [`Swarm::authority_of_key`] as the operator's grants alone give it.
@@ -256,7 +262,7 @@ impl Swarm {
         let name = crate::authority::WINDOW_OWNER.to_owned();
         self.reserve(&name);
         let authority = crate::authority::Authority::Owner;
-        crate::authority::publish_as(session_id, authority, true);
+        crate::authority::publish_as(session_id, authority, Some(authority));
         let agent = Agent { name: name.clone(), role: crate::authority::ROLE_OWNER.to_owned(), authority, key: name, token: random_hex() };
         self.agents.insert(session_id.to_owned(), agent);
     }
@@ -350,7 +356,7 @@ impl Swarm {
             ("resume_token", Json::from(token.as_str())),
             ("note", Json::from("keep resume_token private; a later session continues as this agent (claims and undo included) with agent_hello {name, resume_token}")),
         ]);
-        crate::authority::publish_as(&session.id, authority, self.grants.granted_key(&key));
+        crate::authority::publish_as(&session.id, authority, self.grants.grant_of_key(&key));
         self.agents.insert(session.id.clone(), Agent { name, role, authority, key, token });
         Ok(reply)
     }
@@ -387,7 +393,7 @@ impl Swarm {
         agent.role = role;
         agent.authority = authority;
         crate::authority::unpublish(&old_sid);
-        crate::authority::publish_as(&session.id, authority, self.grants.granted_key(&agent.key));
+        crate::authority::publish_as(&session.id, authority, self.grants.grant_of_key(&agent.key));
         let reply = Json::obj([
             ("agent", Json::from(agent.name.as_str())),
             ("role", Json::from(agent.role.as_str())),
@@ -772,6 +778,37 @@ mod tests {
         assert!(w.version_floor(id) >= last, "the box's last version survived the prune");
         sw.undo(&mut w, 0, me, &UndoRequest { ids: Some(vec![first.unwrap()]), count: 1, force: true }).unwrap();
         assert!(w.get(id).unwrap().version > last, "restored past its last version");
+    }
+
+    /// Review R1 of m5-leverage: the security monitor has to know that a session's identity is
+    /// the lead the operator named even when its hello said a job (it froze such a lead for its
+    /// first refused call). The hello publishes the grant its name holds, apart from the
+    /// authority it was admitted with; a reviewer's grant is not a lead's, and a name nobody
+    /// granted has none.
+    #[test]
+    fn a_hello_publishes_the_grant_its_name_holds_whatever_role_it_said() {
+        use crate::authority::Authority;
+        let (lee, rev, ann) = (session("lg-lee-1", "x"), session("lg-rev-1", "x"), session("lg-ann-1", "x"));
+        let live = vec![lee.clone(), rev.clone(), ann.clone()];
+        let mut sw = Swarm::default();
+        sw.grants.grant("lee", Authority::Lead).unwrap();
+        sw.grants.grant("rev", Authority::Reviewer).unwrap();
+        for (s, name) in [(&lee, "lee"), (&rev, "rev"), (&ann, "ann")] {
+            sw.hello(s, name.into(), "builder".into(), None, &live).unwrap();
+            assert_eq!(crate::authority::authority(&sw, &s.id), Authority::Agent, "{name} said a job: a plain agent in what it may do");
+        }
+        assert!(sw.holds_lead_grant(&sw.key(&lee)) && crate::authority::lead_grant_of_session(&lee.id));
+        assert!(!sw.holds_lead_grant(&sw.key(&rev)) && !crate::authority::lead_grant_of_session(&rev.id), "a reviewer's grant is not a lead's");
+        assert!(!sw.holds_lead_grant(&sw.key(&ann)) && !crate::authority::lead_grant_of_session(&ann.id));
+        // The monitor's actor for each carries it.
+        let actor = |s: &SessionInfo| crate::inputguard::Actor::of(&sw, s);
+        assert_eq!(actor(&lee), crate::inputguard::Actor::keyed(&lee.id, &sw.key(&lee), "lee", Authority::Agent).granted_lead(true));
+        assert_eq!(actor(&ann), crate::inputguard::Actor::keyed(&ann.id, &sw.key(&ann), "ann", Authority::Agent));
+        // Saying the role: the lead's authority, and it may load native code; before, it may not.
+        assert!(sw.may_load_native(&sw.key(&lee), "logic_build").unwrap_err().message.contains("--role lead"));
+        sw.hello(&lee, "lee".into(), "lead".into(), None, &live).unwrap();
+        assert_eq!(crate::authority::authority(&sw, &lee.id), Authority::Lead);
+        assert!(sw.may_load_native(&sw.key(&lee), "logic_build").is_ok());
     }
 
     /// Reviewer finding: a third session saying hello as "ann" could act as ann; unnamed Claude

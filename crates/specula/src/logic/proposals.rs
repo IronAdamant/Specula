@@ -142,7 +142,7 @@ impl NativeRefusal {
 /// channel (docs/design/SECURITY.md): an incident that freezes the caller (a lead the operator
 /// didn't grant included: `authority` is already the trusted one). A proposal is ordinary work
 /// and isn't reported there.
-pub fn report_refusal(by: &str, key: &str, authority: crate::authority::Authority, r: &NativeRefusal) {
+pub fn report_refusal(by: &str, key: &str, authority: crate::authority::Authority, lead_grant: bool, r: &NativeRefusal) {
     specula_core::trace_event!(&crate::trace_sink::ENGINE, Warn, "logic.native_refused", by = by, kind = r.kind(), attempt = r.is_attempt());
     // The monitor's detail names the module or its folder's own name, never a path on this machine.
     let (what, detail) = match r {
@@ -151,7 +151,8 @@ pub fn report_refusal(by: &str, key: &str, authority: crate::authority::Authorit
         NativeRefusal::Reload => ("logic_reload", String::new()),
         NativeRefusal::Unload { module } => ("logic_unload", module.clone()),
     };
-    crate::inputguard::refused_identity(crate::inputguard::Channel::NativeCode, what, by, key, authority, crate::authority::Site::NativeCode.code(), &detail);
+    let who = crate::inputguard::Actor::identity(key, by, authority).granted_lead(lead_grant);
+    crate::inputguard::refused_identity(crate::inputguard::Channel::NativeCode, what, &who, crate::authority::Site::NativeCode.code(), &detail);
 }
 
 #[cfg(test)]

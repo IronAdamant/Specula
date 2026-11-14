@@ -1,0 +1,314 @@
+{
+ "run": {
+  "leverage": 1,
+  "job": "change",
+  "arm": "plain",
+  "n": 1,
+  "phase": "judge",
+  "prepared": "2026-11-14T19:56:19",
+  "settings": {
+   "runs_per_cell": 2,
+   "builder_model": "claude-sonnet-5-5",
+   "judge_model": "claude-opus-5-5",
+   "limits": {
+    "token_cap": 500000,
+    "wall_s": 3600
+   },
+   "judge": {
+    "token_cap": 150000,
+    "wall_s": 1800
+   },
+   "token_weights": {
+    "input": 1.0,
+    "cache_write": 1.25,
+    "cache_read": 0.1,
+    "output": 5.0
+   }
+  },
+  "from": "medium-plain-1"
+ },
+ "costs": {
+  "builder": {
+   "tokens": 31362,
+   "tool_uses": 12,
+   "duration_s": 91.4,
+   "by_kind": {
+    "input": 22,
+    "cache_write": 26075,
+    "cache_read": 214061,
+    "output": 11323,
+    "requests": 11,
+    "context_at_end": 31362
+   },
+   "weighted": 110637,
+   "cost_usd": 0.2389801,
+   "turns": 13,
+   "exit": 0,
+   "model": "claude-sonnet-5-5",
+   "ended": "done",
+   "over_token_cap": false,
+   "over_wall": false,
+   "note": ""
+  },
+  "left": {
+   "files": 6,
+   "bytes": 26386,
+   "text_lines": 642,
+   "lines_by_kind": {
+    ".json": 72,
+    ".md": 51,
+    ".py": 519
+   }
+  },
+  "finished": "2026-11-14T20:02:52",
+  "judged_before": [
+   {
+    "why": "The first judging held c08 without the game's own verdict from before the change and read c02 three ways (review R1 of the comparison's lane): judged again with the list of what passed before the change, and with c02 saying what the brief left open.",
+    "verdict": {
+     "items": [
+      {
+       "id": "c01",
+       "kind": "behaviour",
+       "pass": true,
+       "evidence": "Aiming bot run through all waves (seeds 1, 2; easy/normal/hard), scripts replayed through `game.py --headless`: after wave 5, wave 6 spawned 15 entries of kind runner, one every 90 ticks (1.5 s), moving 3.0 units/s; runner health 1 at Normal (1 at Easy, 2 at Hard)."
+      },
+      {
+       "id": "c02",
+       "kind": "behaviour",
+       "pass": false,
+       "evidence": "'of 6' is shown in every language ('Wave 2 of 6', 'Oleada 2 de 6', 'Vague 2 sur 6'), each runner gives 15 points and a full clear at Normal gives 675 (seeds 1, 2, 7). But the run is not won only on destroying the last runner. A seed 1 run that let wave 6's last runner reach the gate ended at tick 6858 on screen 'won' with score 660 and gate 4. One tick earlier the runner was at x 0.05 with health 1. The code wins as soon as wave 6 has no runners left, however they left."
+      },
+      {
+       "id": "c03",
+       "kind": "behaviour",
+       "pass": true,
+       "evidence": "Pressing Right on Language goes en\u2192es\u2192fr\u2192en, and Left from en goes to fr. In French the texts were: title ['D\u00e9fendez la porte','Commencer','Param\u00e8tres','Quitter']; settings ['Param\u00e8tres','Volume : 5','Langue : Fran\u00e7ais','Difficult\u00e9 : Normal','Retour']; play/paused ['Score : 0','Vague 1 sur 6','Porte : 5','Pause','Reprendre','Titre']; won/lost ['Vous avez gagn\u00e9 !'/'Vous avez perdu','Score final : N','Entr\u00e9e : titre']. The French frames I looked at draw the accents. Volume, Score, Normal and Pause are correct French words."
+      },
+      {
+       "id": "c04",
+       "kind": "behaviour",
+       "pass": true,
+       "evidence": "Settings texts are [Settings, Volume, Language, Difficulty: Normal, Back], so Difficulty sits at index 2 and defaults to Normal. Right goes to Hard and Left goes back to Easy (it stops at the ends). Enter on index 3 (Back) returns to the title. In French the values show as Facile/Normal/Difficile, and in Spanish as 'Dificultad: Normal'."
+      },
+      {
+       "id": "c05",
+       "kind": "behaviour",
+       "pass": true,
+       "evidence": "Spawn health seen in the traces: Easy gave walkers 1 and runners 1; Normal gave walkers 2 and runners 1; Hard gave walkers 3 and runners 2. Bots won at every difficulty with 675 points."
+      },
+      {
+       "id": "c06",
+       "kind": "behaviour",
+       "pass": true,
+       "evidence": "Setting Difficulty to hard (then easy) wrote {\"volume\":5,\"language\":\"en\",\"difficulty\":...} to the settings file, and the next run started with that value. An old-style file {\"volume\":7,\"language\":\"es\"} loaded as volume 7, es, difficulty normal."
+      },
+      {
+       "id": "c07",
+       "kind": "checkable",
+       "pass": true,
+       "evidence": "The state JSON has \"difficulty\", and each walker has \"kind\" ('walker'/'runner'). Every --frame PNG I wrote (18 frames) has a valid signature and an IHDR of 800x480."
+      },
+      {
+       "id": "c08",
+       "kind": "behaviour",
+       "pass": false,
+       "evidence": "I rechecked m01-m19 on the changed game and all passed except m10: a bolt in a walker's lane can pass through it without a hit. CLI run with seed 1 and script '0:enter,19:shoot,20:none': at tick 87 the bolt is at x 17.8667 and the lane-6 walker at x 17.875; at tick 88 the bolt is at x 18.1 and the walker at x 17.85, still health 2. With one bolt fired each tick from 10 to 499, 47 of 490 shots missed (about 10%). In collision the walker moves before the bolt's swept check. That probably happened before the change too, but the list as given fails on the changed game. Other items passed: guard 6 u/s with clamping at 0/12, a bolt every 24 ticks at 14 u/s and gone past 20, wave 1 = 5 walkers 90 ticks apart, a 180-tick gap and then 7 walkers, idle play lost with the final score, pause freezes and Resume matches an unpaused run, same-seed runs are identical, Enter on won returns to the title, and frames match the state."
+      },
+      {
+       "id": "c09",
+       "kind": "behaviour",
+       "pass": true,
+       "evidence": "CHANGES.md lists the three changes and where they are (WAVES/runner tables and settings in game.py, lang/fr.json, new keys in en/es/fr). It says what was checked (bot runs at all difficulties, menu scripts, frames viewed) and what was not (the tkinter window, the wave-6 frame). It also reports the defects found before the change."
+      }
+     ],
+     "totals": {
+      "behaviour": {
+       "passed": 6,
+       "of": 8
+      },
+      "checkable": {
+       "passed": 1,
+       "of": 1
+      },
+      "all": {
+       "passed": 7,
+       "of": 9
+      }
+     },
+     "defects": [
+      "Bolts tunnel through targets: walkers move before the bolt's swept hit test, so about v/(14+v) of same-lane shots miss (about 10% against walkers, about 18% against runners).",
+      "The run is won when wave 6 empties even if its last runner reached the gate instead of being destroyed (the game then shows 'won' with gate 4 and 660 points).",
+      "The README's example command writes settings to /tmp/s.json. The builder's CHANGES.md admits writing scratch files to /tmp, outside the work folder."
+     ],
+     "could_not_check": []
+    },
+    "judge": {
+     "tokens": 62908,
+     "tool_uses": 31,
+     "duration_s": 302.8,
+     "by_kind": {
+      "input": 52,
+      "cache_write": 57621,
+      "cache_read": 975704,
+      "output": 22957,
+      "requests": 26,
+      "context_at_end": 62908
+     },
+     "weighted": 284434,
+     "cost_usd": 1.1154568000000002,
+     "turns": 32,
+     "exit": 0,
+     "runner": "claude",
+     "model": "claude-opus-5-5",
+     "ended": "done"
+    }
+   }
+  ],
+  "judge": {
+   "tokens": 67009,
+   "tool_uses": 32,
+   "duration_s": 262.0,
+   "by_kind": {
+    "input": 54,
+    "cache_write": 61722,
+    "cache_read": 1122487,
+    "output": 23188,
+    "requests": 27,
+    "context_at_end": 67009
+   },
+   "weighted": 305395,
+   "cost_usd": 1.1822493999999997,
+   "turns": 33,
+   "exit": 0,
+   "model": "claude-opus-5-5",
+   "models": [
+    "claude-opus-5-5"
+   ],
+   "tokens_complete": true,
+   "engine_stopped": true,
+   "ended": "done"
+  },
+  "verdict": {
+   "items": [
+    {
+     "id": "c01",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Aiming-bot scripts (seeds 1-4 x easy/normal/hard) replayed with `game.py --headless`: after wave 5, wave 6 spawns 15 entries of kind runner, one every 90 ticks (1.5 s). Seed 1 Normal: --ticks 5266 runner at x=20.0, 5326 x=17.0 (3.0 u/s), health 1."
+    },
+    {
+     "id": "c02",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "HUD 'Wave 5 of 6' / 'Wave 6 of 6', 'Oleada 1 de 6', 'Vague 1 sur 6'. Seed 1 Normal: at 450 points with wave 5 cleared, screen stays play and wave 6 starts (ticks 5264-5265). Full clear ends 'won' with 675 at Normal (and Easy/Hard, seeds 1-4). Letting the last runners through with gate 5->4 still ends 'won' at 660 (seeds 1, 2). Idle in wave 6 ends 'lost' at 450."
+    },
+    {
+     "id": "c03",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Fresh settings, Settings>Language Right x1/x2/x3 = es, fr, en (Left from en = fr). In French, texts and PNGs of title ('D\u00e9fendez la porte', Commencer, Param\u00e8tres, Quitter), settings, play ('Score : 10', 'Vague 1 sur 6', 'Porte : 5'), paused (Pause, Reprendre, Titre), won ('Vous avez gagn\u00e9 !', 'Score final : 675', 'Entr\u00e9e : titre') and lost are all French, with accents drawn. Score/Volume/Normal/Pause are also correct French words."
+    },
+    {
+     "id": "c04",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Settings texts: Volume, Language, 'Difficulty: Normal', Back (index 2 between Language and Back; Back is index 3 and returns to the title). Right gives Hard, Left Left gives Easy, and it stays at the ends. Fresh file gives normal. Labels in Spanish: 'Dificultad: F\u00e1cil'; in French: 'Difficult\u00e9 : Facile' / 'Difficile'. Frames show the row marked with '>'."
+    },
+    {
+     "id": "c05",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "CLI state just after Start: walker health 1/2/3 at easy/normal/hard. Just after wave 6's first spawn: runner health 1/1/2. The bot traces of whole runs show every spawn of every wave with these values."
+    },
+    {
+     "id": "c06",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "One run set fr, vol 7, hard; the file held {volume 7, language fr, difficulty hard}; the next run started with fr/7/hard, and Start showed 'Vague 1 sur 6'. Old file {volume 3, language es} loaded es/3 with difficulty normal (walker health 2); a bogus difficulty also gives normal. A fresh location starts en/5/normal."
+    },
+    {
+     "id": "c07",
+     "kind": "checkable",
+     "pass": true,
+     "evidence": "State JSON has 'difficulty' and each walker has 'kind' (walker/runner). Every --frame run (18 screens x 3 languages, plus others) wrote a valid PNG with IHDR 800x480."
+    },
+    {
+     "id": "c08",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "Checked again: m01/m02 (README command starts at the title, prints the JSON, writes an 800x480 PNG); m03 (title texts, Down+Enter opens Settings, Start gives wave 1/score 0/gate 5); m04 (volume stops at 10 and 0); m05 (Spanish settings/title/play); m06 (settings kept between runs, defaults at a fresh location); m07 (+1.0 y in 10 ticks, stops at 12.0 and 0.0); m08 (bolts 24 ticks apart, 14 u/s, gone past 20); m09 (5 walkers 90 ticks apart, lanes 2-10, 1.5 u/s); m11 (leak at tick 802 gives gate 4; at 0 the screen is lost with 'Final score: 0'); m12 (wave 2 starts 180 ticks after the last wave-1 walker is gone and has 7 walkers; 'Wave 2 of 6'); m13 (full clear gives won with 675; Enter goes to the title); m14 (paused state unchanged over 600 ticks; Resume matches an unpaused run; Title works); m15 (same seed gives the same output; seeds 1/2/3/7 use different lanes); m16/m17 (frames match the state); m18/m19 (lang/*.json, README). m10 failed before and still tunnels; it is not held against the game."
+    },
+    {
+     "id": "c09",
+     "kind": "behaviour",
+     "pass": true,
+     "evidence": "CHANGES.md lists the three changes and their places (game.py constants WAVES/WALKER_HP/RUNNER_HP, settings menu, save/load, state; lang/fr.json and new keys in en/es; font accents). It says what was checked (bot on seeds 1-3 x 3 difficulties with 675, menu script, frames viewed) and what was not, and lists bugs found before the change."
+    }
+   ],
+   "totals": {
+    "behaviour": {
+     "passed": 8,
+     "of": 8
+    },
+    "checkable": {
+     "passed": 1,
+     "of": 1
+    },
+    "all": {
+     "passed": 9,
+     "of": 9
+    }
+   },
+   "defects": [
+    "The pre-existing bolt tunnelling (m10) remains and is easy to see with runners: seed 1 Hard --ticks 6400 has a bolt at x=14.83 and a runner at x=14.6 in the same lane (y=4), runner still at health 2. CHANGES.md does not list it among the bugs found before the change.",
+    "README's example uses --settings /tmp/s.json, which on Windows writes to C:\\tmp; and with no --settings the game writes ~/.hold_the_gate/settings.json (I always passed a scratch path).",
+    "By its own CHANGES.md, the builder wrote scratch files to /tmp outside the work folder, which the brief forbade."
+   ],
+   "could_not_check": []
+  },
+  "where": {
+   "run": "change-plain-1",
+   "requests": 11,
+   "steps": 12,
+   "steps_before_the_first_code": 3,
+   "weighted": 110637,
+   "weighted_by_kind": {
+    "read_again": 21406,
+    "written_out": 56615,
+    "new_in_context": 32616
+   },
+   "builds": {
+    "steps": 0,
+    "failed": 0
+   },
+   "how": "weighted_by_kind is exact (the run's own token counts times the weights); a step's kind is a reading of its command's text, and answered_tokens / written_tokens are characters / 4",
+   "by_step": {
+    "read its own files": {
+     "steps": 3,
+     "answered_tokens": 5966,
+     "written_tokens": 151
+    },
+    "write code": {
+     "steps": 4,
+     "answered_tokens": 421,
+     "written_tokens": 3195
+    },
+    "words between steps": {
+     "steps": 0,
+     "answered_tokens": 0,
+     "written_tokens": 622
+    },
+    "run its own checks": {
+     "steps": 2,
+     "answered_tokens": 214,
+     "written_tokens": 331
+    },
+    "look at a frame": {
+     "steps": 3,
+     "answered_tokens": 47,
+     "written_tokens": 93
+    }
+   }
+  }
+ }
+}
