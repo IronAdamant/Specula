@@ -78,7 +78,7 @@ def main():
             if at == INFO_AT:
                 info = mcp.json("ragdoll_info", id=found["id"])
         checks = info["checks"]
-        (out / "summary.json").write_text(json.dumps({"ragdoll": found, "tick": st["tick"], "frames": frames, "start": start, "info": info}, indent=1))
+        (out / "summary.json").write_text(json.dumps({"ragdoll": found, "tick": st["tick"], "frames": frames, "start": start, "info": info}, indent=1), encoding="utf-8")
         for c in checks.get("checks", []):
             print(f"  {'ok  ' if c['passed'] else 'FAIL'} {c['check']}: {c['value']} {c['unit']} (limit {c['limit']}, {c.get('bone', '')})")
         if not checks.get("passed"):

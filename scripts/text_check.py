@@ -107,7 +107,7 @@ def save(out, adapter, name, f):
     src = Path(f["image"]["path"])
     dst = out / f"{adapter}_{name}.png"
     dst.write_bytes(src.read_bytes())
-    (out / f"{adapter}_{name}.json").write_text(json.dumps(f, indent=1))
+    (out / f"{adapter}_{name}.json").write_text(json.dumps(f, indent=1), encoding="utf-8")
     for w in f.get("warnings", []):
         if "vulkan" in w.lower():
             problems.append(f"{name}: {w}")
@@ -215,16 +215,16 @@ def run_adapter(exe, adapter, out, port):
 
             # Budgets.
             perf = m.json("perf_frame")
-            (out / f"{adapter}_perf.json").write_text(json.dumps(perf, indent=1))
+            (out / f"{adapter}_perf.json").write_text(json.dumps(perf, indent=1), encoding="utf-8")
             mem = m.json("perf_memory")
-            (out / f"{adapter}_memory.json").write_text(json.dumps(mem, indent=1))
+            (out / f"{adapter}_memory.json").write_text(json.dumps(mem, indent=1), encoding="utf-8")
             glyph_bytes = json.dumps(mem).count('"glyphs"')
             check(glyph_bytes >= 1, "perf_memory reports the glyph store")
             # The packet monitor checks every subject's claims against the frame record: drawn
             # text must have been submitted by the colour pass.
             inc = m.json("trace_incidents")
             packet = [i for i in inc.get("incidents", []) if "packet" in json.dumps(i)]
-            (out / f"{adapter}_incidents.json").write_text(json.dumps(inc, indent=1))
+            (out / f"{adapter}_incidents.json").write_text(json.dumps(inc, indent=1), encoding="utf-8")
             check(not packet, f"the packet monitor found no subject the frame record contradicts ({len(packet)}: {json.dumps(packet)[:300]})")
     errors = engine.validation_errors()
     check(errors == 0, f"shutdown with {errors} validation errors")
@@ -272,7 +272,7 @@ def sepulcra(exe, adapter, out, port, frames):
             zones = {z["path"]: z for z in m.json("perf_zones", min_ms=0.0, limit=200).get("zones", []) if z.get("thread") == "main"}
             hud = next((z for p_, z in zones.items() if p_.endswith("game_overlay")), {})
             passes = cap.get("gpu_passes_ms") or {}
-            (out / f"sepulcra_{adapter}_perf.json").write_text(json.dumps({"capture": cap, "zones": zones}, indent=1))
+            (out / f"sepulcra_{adapter}_perf.json").write_text(json.dumps({"capture": cap, "zones": zones}, indent=1), encoding="utf-8")
             overlay = (passes.get("overlay") or {}).get("p95")
             sprites = (passes.get("sprites") or {}).get("p95")
             print(f"  frames {cap.get('frames')}, GPU p95 {(cap.get('gpu_ms') or {}).get('p95')} ms; overlay p95 {overlay} ms, sprites p95 {sprites} ms; "

@@ -35,7 +35,7 @@ from ctypes import wintypes
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from specula_mcp import detailed, reply_of  # noqa: E402
+from specula_mcp import detailed, poll, reply_of, urlopen  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 # Its own port by default, so the check can never touch an engine you are working in (7471).
@@ -75,7 +75,8 @@ class Mcp:
         if self.session:
             headers["Mcp-Session-Id"] = self.session
         req = urllib.request.Request(URL, json.dumps(msg).encode(), headers)
-        with urllib.request.urlopen(req, timeout=180) as r:  # longer than the engine may hold a call (startgate.rs: 120 s, then the call's own 30 s)
+        # longer than the engine may hold a call (startgate.rs: 120 s, then the call's own 30 s)
+        with urlopen(req, timeout=180) as r:
             self.session = self.session or r.headers.get("Mcp-Session-Id")
             body = r.read()
         return reply_of(body)
@@ -101,7 +102,7 @@ class Mcp:
 
 def server_up():
     try:
-        urllib.request.urlopen(urllib.request.Request(URL, method="GET"), timeout=1)
+        poll(urllib.request.Request(URL, method="GET"))
     except urllib.error.HTTPError:
         return True  # 405 from our server
     except OSError:
@@ -172,7 +173,7 @@ def check_adapter(exe, adapter, out, port, gpu_av=False, effects=False):
     env = dict(os.environ)
     if gpu_av:
         env["VK_LAYER_ENABLES"] = "VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT"
-    with open(log_path, "w") as log:
+    with open(log_path, "w", encoding="utf-8") as log:
         proc = subprocess.Popen(
             [str(exe), "--settings", "off", "--no-activate", "--adapter", str(adapter), "--size", "960x540", "--port", str(port), "--captures", str(out / "captures")],
             stderr=log,
@@ -181,7 +182,7 @@ def check_adapter(exe, adapter, out, port, gpu_av=False, effects=False):
     try:
         for _ in range(150):
             if proc.poll() is not None:
-                text = log_path.read_text()
+                text = log_path.read_text(encoding="utf-8")
                 if "out of range" in text:
                     return None
                 print(f"adapter {adapter}: engine exited early:\n{text}")
@@ -254,7 +255,7 @@ def check_adapter(exe, adapter, out, port, gpu_av=False, effects=False):
 
         user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
         code = proc.wait(timeout=20)
-        last = log_path.read_text().strip().splitlines()[-1]
+        last = log_path.read_text(encoding="utf-8").strip().splitlines()[-1]
         if code != 0 or "shut down (0 validation errors)" not in last:
             problems.append(f"shutdown: exit code {code}, log: {last}")
         print(f"  screenshots: {shots[0].name}, {shots[1].name}")

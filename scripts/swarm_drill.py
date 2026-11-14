@@ -34,7 +34,6 @@ import datetime
 import json
 import os
 import shutil
-import socket
 import statistics
 import sys
 import tempfile
@@ -44,7 +43,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from specula_mcp import ROOT, Engine, detailed, reply_of, url_for
+from specula_mcp import ROOT, Engine, connect, detailed, reply_of, url_for, urlopen
 
 PORT = 7488
 # --no-comms: skip the swarm communication steps (for comparing with engines that predate them).
@@ -66,7 +65,8 @@ class Agent:
         if self.session:
             headers["Mcp-Session-Id"] = self.session
         req = urllib.request.Request(self.url, json.dumps(msg).encode(), headers)
-        with urllib.request.urlopen(req, timeout=180) as r:  # longer than the engine may hold a call (startgate.rs: 120 s, then the call's own 30 s)
+        # longer than the engine may hold a call (startgate.rs: 120 s, then the call's own 30 s)
+        with urlopen(req, timeout=180) as r:
             self.session = self.session or r.headers.get("Mcp-Session-Id")
             body = r.read()
         return reply_of(body)
@@ -93,7 +93,7 @@ class Agent:
     def end(self):
         """Ends the session (HTTP DELETE), as a client that disconnects cleanly does."""
         req = urllib.request.Request(self.url, method="DELETE", headers={"Mcp-Session-Id": self.session})
-        with urllib.request.urlopen(req, timeout=30) as r:
+        with urlopen(req, timeout=30) as r:
             r.read()
 
     def ok(self, tool, **args):
@@ -167,7 +167,7 @@ class Worker(threading.Thread):
             scratch = a.ok("lease_take", kind="scratch")
             self.comms["leases"] += 2
             self.comms["port"] = port["ports"][0]
-            Path(scratch["dir"], "notes.txt").write_text(f"{self.name_} was here\n")
+            Path(scratch["dir"], "notes.txt").write_text(f"{self.name_} was here\n", encoding="utf-8")
             a.ok("note_add", on_path=home, text=f"{home} is {self.name_}'s; ask before building here")
             self.comms["notes"] += 1
         self.ready.wait()
@@ -260,14 +260,14 @@ def overload(port, extra=20):
     held = []
     try:
         for _ in range(256):
-            held.append(socket.create_connection(("127.0.0.1", port), timeout=10))
+            held.append(connect(port, timeout=10))
         time.sleep(0.3)
         statuses = {}
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}).encode()
         for _ in range(extra):
             req = urllib.request.Request(url_for(port), body, {"Content-Type": "application/json"})
             try:
-                with urllib.request.urlopen(req, timeout=10) as r:
+                with urlopen(req, timeout=10) as r:
                     key = str(r.status)
             except urllib.error.HTTPError as e:
                 key = f"{e.code}" + ("+retry-after" if e.headers.get("Retry-After") else "")
@@ -619,7 +619,7 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     path = out_dir / f"{stamp}-swarm-{args.agents}{'-' + args.label if args.label else ''}.json"
-    path.write_text(json.dumps(result, indent=2) + "\n")
+    path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 
     print(f"swarm drill: {args.agents} agents x {args.rounds} rounds x {args.batch}-spawn batches ({result['build']}, "
           f"{'windowed' if args.windowed else 'headless'})")

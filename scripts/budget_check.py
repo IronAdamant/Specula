@@ -188,7 +188,7 @@ def main():
     fat = {"schema": "specula.timeline.v1", "tracks": [
         {"kind": "vfx", "name": f"v{k}", "target": f"/c0_{k}", "keys": [{"t": round(i * 1.1, 3), "vfx": {"effect": "fire"}} for i in range(512)]} for k in range(13)]}
     (assets / "timelines").mkdir(parents=True, exist_ok=True)
-    (assets / "timelines" / "fat.json").write_text(json.dumps(fat, separators=(",", ":")))
+    (assets / "timelines" / "fat.json").write_text(json.dumps(fat, separators=(",", ":")), encoding="utf-8")
     args = ["--headless", "--strict-budget", "--lead", "budget_lead", "--captures", str(out / "captures"), "--worlds", str(out / "worlds"), "--assets", str(assets), "--saves", str(out / "saves")]
     if a.adapter:
         args += ["--adapter", a.adapter]
@@ -360,7 +360,7 @@ def main():
             print(f"  STALL NEW   x{s.get('count')}: {s.get('summary')} (peak {s.get('peak_ms')} ms; zone {s.get('evidence', {}).get('zone')})")
         check(not game_stalls, f"no engine-thread stall in the game's UI tools mid-wave ({len(game_stalls)})")
         check(summary["game_ui"].get("exit_code") == 0, f"the game's strict run exits cleanly (exit code {summary['game_ui'].get('exit_code')})")
-    (out / "summary.json").write_text(json.dumps(summary, indent=2))
+    (out / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"summary: {out / 'summary.json'}")
     print("PASS" if not FAILS else f"FAIL ({len(FAILS)})")
     return 0 if not FAILS else 1

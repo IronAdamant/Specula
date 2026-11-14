@@ -156,7 +156,7 @@ def make_assets(out):
     for name in ("shambler",):
         cmd = ["cargo", "run", "-q", "-p", "specula-gltf", "--example", "textured_creature", "--",
                str(SEPULCRA), name, str(assets / "imported" / f"{name}_tex.glb")]
-        r = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True)
+        r = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True, encoding="utf-8", errors="replace")
         if r.returncode != 0:
             sys.exit(f"exporting {name}: {r.stderr}")
         print(r.stdout.strip())
@@ -363,7 +363,7 @@ def main():
         now_t = mcp.frame(**cam)["time_s"]
         check(now_t >= resaved_t, f"world time resumes from the second save ({now_t:.2f} >= {resaved_t:.2f})")
     check(engine3.validation_errors() == 0, f"validation errors at the third shutdown: {engine3.validation_errors()}")
-    (out / "anim_check.json").write_text(json.dumps(summary, indent=1))
+    (out / "anim_check.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
     print(f"summary: {out / 'anim_check.json'}")
     if failures:
         sys.exit(f"{len(failures)} check(s) failed")

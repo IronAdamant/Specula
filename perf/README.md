@@ -96,6 +96,22 @@ job that fails is said in the answer and on the sheet, never shown as a pass.
 warns above 20%: with parallel builds running, single calls show 15–25 ms scheduler delays instead of
 under 1 ms, and build timings double.
 
+**A call's time read from a script included the script's own connect** (found 2026-11-15, by the final
+audit of M5). Python's connect with a timeout, on Windows, often takes 10 to 26 ms where a connect takes
+0.1 ms. Measured on an empty headless engine, release, 300 calls each: through `urllib.request.urlopen`
+with a timeout, a connection a call, 33 to 47 calls took over 10 ms, whichever thread answered
+(`claim_list` and `world_hash` on the engine thread, `trace_query` on the connection's); with no timeout,
+none; over a raw socket, a connection a call, none (0.4 ms a call); on one connection kept open, none
+(0.13 ms a call). A connect and close alone, with a timeout, 93 of 300; the same against a listener
+inside the Python process, at the system timer's default resolution and at 1 ms; Rust's
+`TcpStream::connect_timeout` (what `specula call` uses), none of 300. The engine's own record of a call
+that took 19 ms from the script said 0.05 ms, and no stall was raised with every budget at 3 ms. Why
+Python's connect does this was not found. The scripts' client connects first and sets its timeout after
+(`specula_mcp.Connection`, held by `script_settings_guard.rs`): none of 1,320 calls over 5 ms. What it
+changed in one check: `entity_refs_check`'s "a call right after a 1000-rename batch" read 11 to 24 ms
+with empty stores, and reads 1 to 3 ms. Latencies and throughputs taken through the old client
+(`swarm_drill.py`'s results in `perf/drills`) include the wait; `call_rate.py` kept one connection open.
+
 # Budgets: perf.toml
 
 The engine reads budgets from `--perf FILE`, else `./perf.toml` if it exists, else built-in defaults

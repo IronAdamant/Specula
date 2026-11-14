@@ -147,7 +147,7 @@ def main():
 
     rec = run("record", 5, spec=pt_spec, record="livelex.json", overwrite=True)
     check(rec.get("status") == "passed", "recorded with a live run")
-    replay = json.loads((work / "playtests" / "livelex.json").read_text())
+    replay = json.loads((work / "playtests" / "livelex.json").read_text(encoding="utf-8"))
     parts = json.dumps(replay.get("checkpoints", [])[:1])
     check("lex_live" in parts, "its checkpoints hash the live run (part lex_live)")
     same = run("replay_same", 5, replay="playtests/livelex.json")

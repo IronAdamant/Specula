@@ -107,8 +107,11 @@ Read [HANDOFF.md](HANDOFF.md) first.
 | `specula-gltf` | glTF 2.0 / GLB import and export |
 | `specula-sdk` | the one crate game-logic modules depend on: deterministic `Cx` API, versioned C ABI |
 | `specula-logic` | module host internals: library loading, the build service, diagnostics as data |
+| `specula-lingua` | localisation as data: string tables, locale chains, CLDR plural rules, number formats, a pseudo-locale, checks |
+| `specula-tempus` | timelines, sequencer tracks and camera rails as data |
 | `games/sepulcra`, `games/sepulcra-app` | the first game: headless rules, and the app hosted by the engine |
 | `games/ambulo` | example module: a walking, jumping character (the module host's proof) |
+| `games/inventarium`, `facultas`, `colloquium`, `quaestio`, `exemplum` | gameplay modules as SDK examples: inventory, abilities, dialogue, quests, and a playable demo of the four |
 
 ## Tooling on this machine
 
@@ -172,6 +175,14 @@ whose driver stopped loading would otherwise pass having tested nothing). It rea
   time too: it is measured on a queue other processes use.
 
 ## Live checks (GPU + desktop; CI can't run these)
+
+`python scripts/live_checks.py` runs every live check, one after the other, each on its own ports, after
+building the engine and the game in this checkout (debug and release). Run it at the end of a milestone and
+after anything wide; `--only NAME,NAME` runs a few. A check that fails there is a finding: find its cause
+(M5's audit found thirteen checks that had gone stale because they only ran when their own lane was
+touched, and an engine defect only a check that had not been run for two milestones could show). A script
+in `scripts/` that is not a check is named in the runner's `NOT_CHECKS` with the reason; a check that names
+its ports another way than `--port` has its flags in `RUNS`.
 
 After changing `specula-gpu`, `specula-platform` or the engine's window loop, run
 `cargo build -p specula && python scripts/window_check.py`. On every adapter it builds a scene over MCP, screenshots

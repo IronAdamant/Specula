@@ -37,7 +37,7 @@ ZONE = "gpu.shadow_rebind_wait"
 
 def zone_in_capture(path):
     """(calls, total ms, worst call ms, frames with it) of ZONE over a perf_capture file."""
-    data = json.loads(Path(path).read_text())
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
     calls, total, worst, frames = 0, 0.0, 0.0, 0
     for f in data["frames"]:
         hit = False
@@ -123,7 +123,7 @@ def main():
     if errors != 0:
         failures.append(f"validation errors at shutdown: {errors}")
     report["failures"] = failures
-    (out / "shadow_rebind_check.json").write_text(json.dumps(report, indent=1))
+    (out / "shadow_rebind_check.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
     print(f"report: {out / 'shadow_rebind_check.json'}")
     if failures:
         raise SystemExit("FAILED: " + "; ".join(failures))

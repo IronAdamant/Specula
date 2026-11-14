@@ -10,10 +10,21 @@ in real time. The agent protocol is the engine's primary interface; the human ed
 - **Sight built in:** agents get their own cameras, exact on-screen bounds and same-frame captures.
 - **2D and 3D**, hot-reloaded Rust game logic, text-first world files.
 
-**Status:** M2 complete (rendering, true sight, 2D, animation, procedural models; the first game, *Sepulcra*, is a
-playable slice). M3 is in progress (M4 comes after, on the owner's go-ahead): gameplay as data (Lex), physics, animation graphs, hot-reloaded modules
-and swarm coordination are in. See [HANDOFF.md](HANDOFF.md) for the current state, [docs/ROADMAP.md](docs/ROADMAP.md)
-and [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md).
+**Status (2026-11-15):** milestones M0 to M5 are done; M6 (tuning, testing and the first release, on Windows and
+macOS) is next. In the engine today: rendering with true sight, 2D and 3D, physics, animation, gameplay as data
+(Lex) and hot-reloaded modules, swarm coordination, an asset studio with review and galleries, audio, text, an
+interface toolkit, localisation, accessibility, a human editor built on the agents' protocol, a launcher and
+asset export. The first game, *Sepulcra*, is its dogfood. It runs on Windows only so far, and talks to agents on
+the same machine only.
+
+**What it does not do yet, measured:** the same small games built through the engine and without it, by the same
+model, pass the same checks, and through the engine they cost about three to five times the tokens
+([docs/design/LEVERAGE.md](docs/design/LEVERAGE.md)). The engine is meant for medium to very large games, where
+there is more to reuse; making it pay from the first hour, at every size, is M6's work, measured again with the
+same harness.
+
+See [HANDOFF.md](HANDOFF.md) for the current state, [docs/ROADMAP.md](docs/ROADMAP.md) and
+[docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md).
 
 **Visual history:** [docs/gallery](docs/gallery/README.md) shows the engine, its test assets and *Sepulcra* over time,
 from the first frame to today.
@@ -36,7 +47,8 @@ The previous Bevy-based tooling (formerly *Grok-Bevy*) is preserved at tag
   specula open --last         resume the last one (or find the engine that has it open)
   specula new "My Game"       make a project
   specula list                the engines running on this machine
-  specula call engine_info    call any tool, with no MCP client
+  specula tools               every tool's name, by family (specula tools NAME: one tool and its arguments)
+  specula call engine_info    call any tool, with no MCP client (arguments from a file: specula call TOOL @args.json)
   specula help
   ```
 

@@ -47,7 +47,7 @@ def save(name, result):
         elif c["type"] == "text":
             text = c["text"]
     data = json.loads(text)
-    (OUT / f"{name}.json").write_text(json.dumps(data, indent=2))
+    (OUT / f"{name}.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
     return data, png
 
 
@@ -172,7 +172,7 @@ def run(m, failures, label):
         # rock sunk into the mound (below 1.3) or floating over it (above 1.46) fails.
         {"check": "inside", "entity": "/rock", "min": [-10.6, 1.3, 9.4], "max": [-9.4, 1.46, 10.6]},
     ])
-    (OUT / f"{label}_checks.json").write_text(json.dumps(checks, indent=2))
+    (OUT / f"{label}_checks.json").write_text(json.dumps(checks, indent=2), encoding="utf-8")
     for r in checks["results"]:
         check(r["pass"], f"{label}: physics_check {r['check']} " + json.dumps({k: v for k, v in r.items() if k not in ("check", "pass", "note")})[:160], failures)
     events = m.json("physics_events", limit=256)
@@ -204,12 +204,12 @@ def run(m, failures, label):
     check(hashes["verify"]["matches"], f"{label}: the journal replays the world exactly", failures)
     check("physics" in hashes, f"{label}: world_hash reports the physics state hash", failures)
     trace = m.json("desync_trace")
-    trace_text = Path(trace["file"]).read_text() if trace.get("file") else ""
+    trace_text = Path(trace["file"]).read_text(encoding="utf-8") if trace.get("file") else ""
     check('"physics"' in trace_text, f"{label}: the desync trace carries a physics subsystem hash", failures)
     perf = m.json("perf_frame")
     check("physics" in perf and perf["physics"]["bodies"] > 0, f"{label}: perf_frame has a physics section", failures)
-    (OUT / f"{label}_info.json").write_text(json.dumps(info, indent=2))
-    (OUT / f"{label}_events.json").write_text(json.dumps(events, indent=2))
+    (OUT / f"{label}_info.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
+    (OUT / f"{label}_events.json").write_text(json.dumps(events, indent=2), encoding="utf-8")
     return {"world_hash": hashes["state_hash"], "physics_hash": hashes["physics"]["state_hash"], "events": kinds, "wall_s": elapsed,
             "tick_ms": info.get("tick"), "stages_ms": info.get("stages_ms")}
 
@@ -287,7 +287,7 @@ def main():
     check(runs[0]["world_hash"] == runs[1]["world_hash"] and runs[0]["physics_hash"] == runs[1]["physics_hash"],
           f"two runs end in the same world and physics hashes ({runs[0]['world_hash']} / {runs[0]['physics_hash']})", failures)
     regressions(a.exe, a.port + 1, a.adapter, failures)
-    (OUT / "summary.json").write_text(json.dumps({"runs": runs, "failures": failures}, indent=2))
+    (OUT / "summary.json").write_text(json.dumps({"runs": runs, "failures": failures}, indent=2), encoding="utf-8")
     print("PASS" if not failures else f"FAIL ({len(failures)})")
     return 0 if not failures else 1
 

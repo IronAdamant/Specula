@@ -166,13 +166,24 @@ def proposal_probe(engine, lead, summary):
     check(err and r.get("error") == "lead_only" and isinstance(r.get("proposal"), dict), f"a builder's logic_build is a proposal ({str(r)[:200]})")
     pid = r["proposal"]["id"]
     r2, err2 = build(b, "games/quaestio", approve=pid)
-    check(err2 and r2.get("error") == "lead_only", "the builder can't approve its own proposal")
-    rl = b.request("tools/call", {"name": "logic_reload", "arguments": {"module": "quaestio"}})
-    check(rl.get("isError") and "lead_only" in json.dumps(rl), "the builder can't load a library")
+    check(err2 and r2.get("error") == "lead_only", f"the builder can't approve its own proposal ({str(r2)[:200]})")
+    # Either try is an incident, and the monitor freezes the session that made it (SECURITY.md,
+    # "On an incident"): every later call of that session is refused whatever the tool's own
+    # gate says. So the reload's gate is tried by a builder that has done nothing else yet.
+    after = b.request("tools/call", {"name": "logic_status", "arguments": {}})
+    check(after.get("isError") and "session_frozen" in json.dumps(after), f"and the monitor froze it for the try ({json.dumps(after)[:200]})")
+    b2 = engine.mcp("gmods-builder-2")
+    b2.hello("gmods-builder-2")
+    rl = b2.request("tools/call", {"name": "logic_reload", "arguments": {"module": "quaestio"}})
+    check(rl.get("isError") and "lead_only" in json.dumps(rl), f"a builder can't load a library: lead_only ({json.dumps(rl)[:200]})")
+    b2.close()
     listed = lead.json("logic_status").get("proposals") or []
     check(any(p.get("id") == pid and p.get("by") == "gmods-builder" for p in listed), "the lead sees the proposal")
     summary["proposal"] = {"id": pid, "refused": r.get("error")}
     b.close()
+    # The lead clears what the monitor opened for the builder's tries, and goes on.
+    cleared = lead.request("tools/call", {"name": "security_clear", "arguments": {"all": True}})
+    check(not cleared.get("isError"), f"the lead clears the monitor's incident ({json.dumps(cleared)[:160]})")
 
 
 def probes(mcp, summary):
@@ -191,8 +202,8 @@ def probes(mcp, summary):
     for code, deps, src in cases:
         shutil.rmtree(PROBE, ignore_errors=True)
         (PROBE / "src").mkdir(parents=True)
-        (PROBE / "Cargo.toml").write_text(f'[package]\nname = "gmods_probe"\nversion = "0.1.0"\nedition = "2021"\npublish = false\n\n[lib]\ncrate-type = ["cdylib"]\n\n[dependencies]\n{deps}\n\n[workspace]\n')
-        (PROBE / "src" / "lib.rs").write_text(src)
+        (PROBE / "Cargo.toml").write_text(f'[package]\nname = "gmods_probe"\nversion = "0.1.0"\nedition = "2021"\npublish = false\n\n[lib]\ncrate-type = ["cdylib"]\n\n[dependencies]\n{deps}\n\n[workspace]\n', encoding="utf-8")
+        (PROBE / "src" / "lib.rs").write_text(src, encoding="utf-8")
         r, err = build(mcp, PROBE.relative_to(ROOT).as_posix())
         got = (r.get("error") or {}).get("code") if isinstance(r.get("error"), dict) else r.get("error")
         text = json.dumps(r)
@@ -239,7 +250,7 @@ def main():
             def frame(name, eye, target):
                 f = mcp.frame(width=960, height=540, eye=eye, target=target, overlays=["labels"] if name == "done" else [])
                 packet = out / f"frame_{name}.json"
-                packet.write_text(json.dumps(f, indent=1))
+                packet.write_text(json.dumps(f, indent=1), encoding="utf-8")
                 frames.append({"name": name, "image": (f.get("image") or {}).get("path"), "packet": str(packet)})
 
             mid = p.first_half(frame if a.window else None)
@@ -286,7 +297,7 @@ def main():
         check(len(summary["run_a"]) == len(summary["run_b"]), "both runs reached every checkpoint")
     finally:
         shutil.rmtree(PROBE, ignore_errors=True)
-        (out / "summary.json").write_text(json.dumps(summary, indent=2))
+        (out / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"gmods_check: passed; summary in {out / 'summary.json'}")
 
 

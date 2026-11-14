@@ -330,7 +330,7 @@ def big_world_check(a, out):
             files = sorted((bout / "captures").glob(f"*/perf-capture-*-{label}.json"))
             if not files:
                 return {}
-            fr = json.loads(files[-1].read_text()).get("frames") or []
+            fr = json.loads(files[-1].read_text(encoding="utf-8")).get("frames") or []
 
             def p95(xs):
                 xs = sorted(xs)
@@ -834,7 +834,7 @@ def main():
     if a.big > 0:
         report["big"] = big_world_check(a, out)
     report["fails"] = FAILS
-    (out / "summary.json").write_text(json.dumps(report, indent=2))
+    (out / "summary.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"\n{'PASS' if not FAILS else 'FAIL'}: {len(FAILS)} failure(s); screenshots and summary in {out}")
     return 1 if FAILS else 0
 

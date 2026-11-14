@@ -103,11 +103,11 @@ def data_checks(slab, report):
     # The lab's play styles and the built-in build orders build only where they may.
     used = set()
     for f in (ROOT / "games" / "sepulcra" / "data" / "layouts").glob("*.json"):
-        for e in json.loads(f.read_text())["commands"]:
+        for e in json.loads(f.read_text(encoding="utf-8"))["commands"]:
             if "place" in e:
                 used.add(e["at"])
     for f in (ROOT / "games" / "sepulcra" / "lex").glob("*.targets.json"):
-        doc = json.loads(f.read_text())
+        doc = json.loads(f.read_text(encoding="utf-8"))
         for pol in doc.get("policies") or [doc.get("policy") or {}]:
             for s in pol.get("steps", []):
                 site = (s.get("args") or {}).get("site")
@@ -125,7 +125,7 @@ def approved_places():
     if not f:
         return None
     out = {}
-    for e in json.loads(f.read_text())["entities"]:
+    for e in json.loads(f.read_text(encoding="utf-8"))["entities"]:
         if e["path"].startswith(PROPS_ROOT + "/"):
             out[e["path"].split("/")[-1]] = (e["position"][0], e["position"][2], e["rotation_deg"][1])
     return out
@@ -141,7 +141,7 @@ def props_drawn(mcp, out, label, props):
         shutil.copy(f["image"]["path"], out / f"{name}.png")
         shutil.copy(f["image"]["packet_path"], out / f"{name}.json")
         frames.append({"name": name, "recorded": f["image"].get("recorded")})
-        for s in json.loads(Path(f["image"]["packet_path"]).read_text()).get("subjects", []):
+        for s in json.loads(Path(f["image"]["packet_path"]).read_text(encoding="utf-8")).get("subjects", []):
             p = s.get("path", "")
             if p.startswith(PROPS_ROOT + "/"):
                 n = p.split("/")[-1]
@@ -154,14 +154,14 @@ def props_drawn(mcp, out, label, props):
         g = mcp.json("sight_frame", eye=[x + 1.5, 7, z + 8], target=[x, 0.8, z], fov_y_deg=50, width=640, height=360, max_subjects=24, response_format="detailed")
         shutil.copy(g["image"]["path"], out / f"{label}_close_{n}.png")
         shutil.copy(g["image"]["packet_path"], out / f"{label}_close_{n}.json")
-        for s in json.loads(Path(g["image"]["packet_path"]).read_text()).get("subjects", []):
+        for s in json.loads(Path(g["image"]["packet_path"]).read_text(encoding="utf-8")).get("subjects", []):
             if s.get("path") == f"{PROPS_ROOT}/{n}":
                 seen[n] = s.get("visible_px") or 0
     return seen, frames
 
 
 def subject(packet_path, path):
-    for s in json.loads(Path(packet_path).read_text()).get("subjects", []):
+    for s in json.loads(Path(packet_path).read_text(encoding="utf-8")).get("subjects", []):
         if s.get("path") == path:
             return s
     return None
@@ -184,7 +184,7 @@ def main():
         shutil.rmtree(out)
     out.mkdir(parents=True)
     report = {"started": time.strftime("%Y-%m-%d %H:%M"), "adapter": a.adapter, "seed": a.seed}
-    slab = json.loads(SLAB.read_text())
+    slab = json.loads(SLAB.read_text(encoding="utf-8"))
     props = data_checks(slab, report)
     want = {p["name"]: p for p in props}
     approved = approved_places()
@@ -334,7 +334,7 @@ def main():
         log(f"  {m['label']}: GPU p95 {p95} ms (M3 {M3_GPU_P95.get(m['label'])}, M4 {M4_GPU_P95.get(m['label'])}), frame p95 {(m.get('frame_ms') or {}).get('p95')} ms")
     report["gpu_p95_vs"] = {m["label"]: {"now": (m.get("gpu_ms") or {}).get("p95"), "m3": M3_GPU_P95.get(m["label"]), "m4": M4_GPU_P95.get(m["label"])} for m in measured}
     report["fails"] = FAILS
-    (out / "summary.json").write_text(json.dumps(report, indent=1, default=str))
+    (out / "summary.json").write_text(json.dumps(report, indent=1, default=str), encoding="utf-8")
     log(f"summary: {out / 'summary.json'}")
     if FAILS:
         log(f"\n{len(FAILS)} check(s) failed")

@@ -93,11 +93,11 @@ def disk_text(path, want=None, timeout=8.0):
     disk on the project lane a moment later. `want`: a string the text must contain."""
     def read():
         try:
-            t = Path(path).read_text()
+            t = Path(path).read_text(encoding="utf-8")
         except OSError:
             return None
         return t if want is None or want in t else None
-    return wait_for(read, timeout) or (Path(path).read_text() if Path(path).exists() else "")
+    return wait_for(read, timeout) or (Path(path).read_text(encoding="utf-8") if Path(path).exists() else "")
 
 
 def wait_for(pred, timeout=20.0, step=0.15):
@@ -586,7 +586,7 @@ def onboarding(lead, owner, win, report):
             check(bool(nxt) and win.screen(nxt).get("open"), f"the next step ({nxt}) opens on the window by itself")
     st = wait_for(lambda: (lambda j: j if j.get("state") == "proposed" else None)(call(lead, "style_onboard", action="status")), 10)
     check(bool(st) and st.get("submission"), f"after the last step the result is on the review queue ({st})")
-    before = (report["assets"] / "style.toml").read_text()
+    before = (report["assets"] / "style.toml").read_text(encoding="utf-8")
     check(not (report["assets"] / "style" / "notes.md").exists(), "nothing is written before it is approved")
     if st:
         # A review probe approved a fence model submitted under the configurator's batch: agents
@@ -651,7 +651,7 @@ def measure_round(eng, job, renders, what, pacer="pacer"):
     th.join()
     frames = []
     for p in paths:
-        j = json.loads(Path(p).read_text())
+        j = json.loads(Path(p).read_text(encoding="utf-8"))
         si = j["zone_columns"].index("self_ms")
         for fr in j["frames"]:
             zones = fr.get("zones", {}).get("main", [])
@@ -709,8 +709,8 @@ def restart(exe, a, out, assets, report):
         before = sorted((out / "captures").glob("run-*/gallery-restart-r1.json"), key=lambda p: p.stat().st_mtime)
         after = sorted((out / "captures-restart").glob("run-*/gallery-restart-r1.json"), key=lambda p: p.stat().st_mtime)
         if check(bool(before and after), "both sheets' packets are there"):
-            m0 = [t["measures"] for t in json.loads(before[-1].read_text())["tiles"]]
-            m1 = [t["measures"] for t in json.loads(after[-1].read_text())["tiles"]]
+            m0 = [t["measures"] for t in json.loads(before[-1].read_text(encoding="utf-8"))["tiles"]]
+            m1 = [t["measures"] for t in json.loads(after[-1].read_text(encoding="utf-8"))["tiles"]]
             gaps = [round(abs(a["edge_density"] - b["edge_density"]) + abs(a["contrast"] - b["contrast"]), 4) for a, b in zip(m0, m1)]
             check(len(m0) == len(m1) and max(gaps, default=1) <= 0.004, f"the sheet made again shows the same world (measure gaps {gaps})")
         win.shot("restart_round1")
@@ -815,7 +815,7 @@ def main():
     report["assets"] = "<out>/assets"
     sheets = sorted(str(p.name) for p in (out / "captures").rglob("gallery-*.png"))
     report["sheets"] = sheets
-    (out / "report.json").write_text(json.dumps(report, indent=2, default=str))
+    (out / "report.json").write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
     print(f"\n{len(FAILS)} failures" if FAILS else "\nall checks passed")
     for f in FAILS:
         print("  - " + f)

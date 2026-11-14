@@ -104,7 +104,7 @@ def main():
         # 1. Cutout.
         f1 = m.frame(time_s=1.0, **view)
         shutil.copy(f1["image"]["path"], out / "cutout_t1.png")
-        (out / "cutout_t1.json").write_text(json.dumps(f1, indent=1))
+        (out / "cutout_t1.json").write_text(json.dumps(f1, indent=1), encoding="utf-8")
         t = subject(f1, "tuft")
         check(t is not None and t.get("visible_px", 0) > 500, f"the tuft is seen ({t and t.get('visible_px')} px)")
         if t and t.get("screen"):
@@ -148,7 +148,7 @@ def main():
         # 3. Wind: two times differ where the grass is, the same time twice is identical.
         f3 = m.frame(time_s=2.3, **view)
         shutil.copy(f3["image"]["path"], out / "wind_t2_3.png")
-        (out / "wind_t2_3.json").write_text(json.dumps(f3, indent=1))
+        (out / "wind_t2_3.json").write_text(json.dumps(f3, indent=1), encoding="utf-8")
         f1b = m.frame(time_s=1.0, **view)
         w, h, a1 = pixels(f1["image"]["path"])
         _, _, a3 = pixels(f3["image"]["path"])
@@ -227,7 +227,7 @@ def main():
     errors = eng.validation_errors()
     check(errors == 0, f"no validation messages ({errors})")
     report["failures"] = FAILS
-    (out / "report.json").write_text(json.dumps(report, indent=1))
+    (out / "report.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
     print(f"report: {out / 'report.json'}")
     if FAILS:
         raise SystemExit(f"FAILED ({len(FAILS)})")

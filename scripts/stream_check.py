@@ -177,7 +177,7 @@ def analyze_frames(paths, budget_ms, upload_ms):
     time went to: a frame is a *loading* stutter when it missed while streaming ran over its own
     budget (`frame/stream` above twice upload_ms); frames that missed by less than streaming's
     in-budget time are counted too (a scene already at the edge)."""
-    frames = [f for p in paths for f in json.load(open(p))["frames"]]
+    frames = [f for p in paths for f in json.load(open(p, encoding="utf-8"))["frames"]]
     if not frames:
         return {"frames": 0}
     dts = sorted(f["dt_ms"] for f in frames)
@@ -243,9 +243,9 @@ def scripted_fly(mcp, path, speed, look_ahead=40.0, pitch=12.0):
 
 
 def perf_toml(out, streaming_lines):
-    text = (ROOT / "perf.example.toml").read_text()
+    text = (ROOT / "perf.example.toml").read_text(encoding="utf-8")
     path = out / f"perf_{abs(hash(tuple(streaming_lines))) % 10000}.toml"
-    path.write_text(text + "\n[streaming]\n" + "\n".join(streaming_lines) + "\n")
+    path.write_text(text + "\n[streaming]\n" + "\n".join(streaming_lines) + "\n", encoding="utf-8")
     return path
 
 
@@ -428,7 +428,7 @@ def run_baseline(a, out, ops, report):
         rec.join()
         # The old engine uploads in its draw list (`frame/draw_list/sync_meshes`), not a stream zone.
         report["baseline_loading"] = analyze_frames(paths, budget, a.upload_ms)
-        frames = [f for p in paths for f in json.load(open(p))["frames"]]
+        frames = [f for p in paths for f in json.load(open(p, encoding="utf-8"))["frames"]]
         report["baseline_loading"]["sync_meshes_ms_max"] = round(max((zone_ms(f, "frame/draw_list/sync_meshes") for f in frames), default=0), 2)
         print(f"baseline loading frames: {json.dumps(report['baseline_loading'])}")
         time.sleep(2)
@@ -465,7 +465,7 @@ def run_sepulcra(a, out, report, check):
         for label, port, extra in runs:
             e = Engine(exe, port, out / f"sepulcra_{label}.log", "--captures", str(out / f"sep_cap_{label}"), "--worlds",
                        str(out / f"sep_worlds_{label}"), "--saves", str(out / f"sep_saves_{label}"), "--cache", str(out / "cache"),
-                       *extra, "--", "--seed", "7", cwd=str(ROOT))
+                       *extra, "--", "--seed", "7", "--title", "off", "--intro", "off", "--mute", cwd=str(ROOT))
             engines.append(e.__enter__())
             m = Mcp(url_for(port), f"stream-check-sepulcra-{label}")
             m.json("agent_hello", name=f"sep_{label}")
@@ -550,7 +550,7 @@ def main():
     if "sepulcra" not in skip:
         run_sepulcra(a, out, report, check)
     report["failures"] = failures
-    (out / "report.json").write_text(json.dumps(report, indent=2))
+    (out / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"report: {out / 'report.json'}")
     print("PASS" if not failures else f"FAIL ({len(failures)})")
     sys.exit(1 if failures else 0)

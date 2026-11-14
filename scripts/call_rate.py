@@ -13,7 +13,6 @@ Needs a GPU and (without --headless) a desktop session. Output is ASCII.
 """
 import os
 import argparse
-import http.client
 import json
 import shutil
 import sys
@@ -21,7 +20,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from specula_mcp import ROOT, Engine, detailed, reply_of
+from specula_mcp import ROOT, Connection, Engine, detailed, reply_of
 
 PORT = 7486
 
@@ -30,7 +29,7 @@ class KeepAlive:
     """A minimal MCP client on one persistent HTTP connection."""
 
     def __init__(self, port):
-        self.conn = http.client.HTTPConnection("127.0.0.1", port, timeout=60)
+        self.conn = Connection("127.0.0.1", port, timeout=60)
         self.session, self.next_id = None, 1
         self.rpc("initialize", {"protocolVersion": "2025-11-25", "capabilities": {},
                                 "clientInfo": {"name": "call-rate", "version": "0"}})
@@ -122,7 +121,7 @@ def main():
         shutil.rmtree(work, ignore_errors=True)
     if args.json:
         args.json.parent.mkdir(parents=True, exist_ok=True)
-        args.json.write_text(json.dumps(results, indent=1) + "\n")
+        args.json.write_text(json.dumps(results, indent=1) + "\n", encoding="utf-8")
 
 
 def measure(exe, args, work, extra, results):

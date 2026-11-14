@@ -83,7 +83,7 @@ def main():
         check(info["world"]["transient_entities"] == a.count, f"{info['world']['transient_entities']} transient entities")
         journal = info["swarm"]["journal"]
         check(journal["game_entries"] <= 2, f"journal quiet: {journal['game_entries']} game entries (start only)")
-        (out / "perf.json").write_text(json.dumps(perf, indent=1))
+        (out / "perf.json").write_text(json.dumps(perf, indent=1), encoding="utf-8")
     errors = engine.validation_errors()
     check(errors == 0, f"validation errors at shutdown: {errors}")
     if failures:

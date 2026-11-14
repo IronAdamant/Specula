@@ -806,22 +806,32 @@ readback and the remaining engine-thread stalls.
 
 ---
 
-## M5: audio, text, UI and the human editor
+## M5: audio, text, UI and the human editor. Done (2026-11-15)
 
-- [ ] **Audio**: WASAPI output and a mixer; WAV, then OGG/Vorbis decode (hand-written); 3D positional sound.
-  *Progress 2026-10-13:* `specula-audio`: WASAPI, mixer, 3D, recipe synthesiser, WAV (OGG/Vorbis still to do).
-- [ ] **Text, stages T1–T4** ([design/UI.md](design/UI.md)): TrueType parser, CPU atlas for small text, Slug-style
+- [x] **Audio**: WASAPI output and a mixer; WAV, then OGG/Vorbis decode (hand-written); 3D positional sound.
+  *Done 2026-11-06* ([design/AUDIO.md](design/AUDIO.md)): a hand-written Ogg/Vorbis decoder (six fixtures within
+  1e-4 of a reference decode, sample-exact seeking), streaming music, music as data, loudness metering and the
+  `audio_*` tools; Sepulcra plays its own score (`scripts/audio_check.py`).
+- [x] **Text, stages T1–T4** ([design/UI.md](design/UI.md)): TrueType parser, CPU atlas for small text, Slug-style
   GPU text for scalable and in-world text, layout and input, then scripts.
-  *Progress 2026-10-13:* T1–T2: `specula-text` TrueType parser, rasteriser, SDF, glyph atlas, layout.
+  *Done 2026-11-07* ([design/TEXT.md](design/TEXT.md)): bundled OFL fonts, GPU text, in-world text and editing,
+  window typing with IME and clipboard, Latin, Cyrillic, Greek and CJK with fallback fonts, and a keyboard only
+  the operator can point. Complex shaping (Arabic joining, bidirectional text, Indic reordering) is designed
+  and built when a game needs those languages.
 - [x] **Immediate-mode UI with flexbox-style layout**, used for game UI and the editor. UI screens and themes are data.
   *Done 2026-10-13:* `specula-ui`: screens and themes as JSON, GPU overlay path matching the software preview.
 - [x] ➕ **Gamepad-first focus navigation**, device-correct glyphs, legibility checks (Steam Deck rules).
   *Done 2026-10-13:* gamepad/keyboard spatial focus, prompt glyphs, Deck legibility in `ui_check`.
-- [ ] ➕ **UI sight tools**: `ui_tree`, `ui_frame`, `ui_act`, `ui_check`.
-  *Progress 2026-10-13:* `ui_check` and `ui_tree` exist in the crate; MCP tools come with engine integration.
-- [ ] ➕ **Audio buses and effects** (reverb, low-pass), spatialisation, streaming music.
-  *Progress 2026-10-13:* buses, ducking, reverb and low-pass in recipes, 3D spatialisation.
-- [ ] ➕ **Timeline/sequencer and camera rails** as data, for cutscenes.
+- [x] ➕ **UI sight tools**: `ui_tree`, `ui_frame`, `ui_act`, `ui_check`.
+  *Done 2026-11-06:* agents read, see, drive and check a game's menus and HUD, at any DPI, aspect and safe
+  area; Sepulcra passes every screen at every display and interface-scale setting (`scripts/ui_check.py`).
+- [x] ➕ **Audio buses and effects** (reverb, low-pass), spatialisation, streaming music.
+  *Done 2026-11-06:* buses, ducking, reverb and low-pass in recipes, 3D spatialisation (2026-10-13), and music
+  streamed from Ogg/Vorbis with loops, crossfades and ducking under the voice bus.
+- [x] ➕ **Timeline/sequencer and camera rails** as data, for cutscenes.
+  *Done 2026-11-06* ([design/TIMELINE.md](design/TIMELINE.md)): timelines, sequencer tracks and camera rails as
+  project data, the `timeline_*` tools with rail checks and previews, and Sepulcra's intro flyover and victory
+  shot.
 - [x] ➕ **Localisation**: string tables, plural rules, per-locale fonts; agents translate and `ui_check` catches
   overflow.
   *Done 2026-11-12:* `specula-lingua` (locale chains, CLDR plural rules for 70 languages, a pseudo-locale), `@key`
@@ -870,6 +880,13 @@ readback and the remaining engine-thread stalls.
   change: check on the caller's thread against a snapshot and commit if the files are still as read, as
   `project_write` does; then they go back to the edit class. The hosted game's own reload is the same kind
   of work (Sepulcra applies a changed theme to both of its interfaces in 5.7 ms).
+- [ ] ➕ **A file read in the instant after it changed on disk is read on the engine thread** (found by the
+  M5 exit proof, 2026-11-14). An outside edit is taken in by the project's watcher on its own thread, a
+  second or so later. A `project_read` (or a write) of that file before then finds the change itself
+  (`ProjectDisk::refresh`: a stat, then the file's read) inside its request on the engine thread: 6.3 ms on
+  the iGPU laptop, 0.5 ms of it the engine's own work and the rest the wait for a file Windows had just
+  seen change, against the read class's 4 ms. The change: stat and read on the caller's thread before the
+  request, applied if the file is still as read (as a model request's disk work is planned and applied).
 - [x] ➕ **Measured leverage** (owner, 2026-11-12: "find a way to add in measured comparison please, for M5"). Is
   building through the engine cheaper and better than building without it, and from what size of game?
   - **Jobs at three sizes:** a small one-screen game; a medium one (waves, a menu, saved settings, two
@@ -911,6 +928,58 @@ readback and the remaining engine-thread stalls.
   port never opens without tokens and encryption, what a remote token may do by default, rates and fairness, the
   monitor's door channel, what remote agents may read, and M6's build order.
 
+**Exit proof** (owner, 2026-11-14: "what matters is we're building in foundations and reliability, as well as
+saving the assets, similar to Unity and Unreal Engine and also having 2D/3D assets in M5"):
+- [x] Assets are made once, saved, and are there to be used again, 2D and 3D, in a project that is not this
+  repository.
+  *Done 2026-11-15* (`scripts/m5_exit.py`, 34 checks on each adapter, the same in every run): a project made from a
+  terminal (`specula new`); agents put a prop recipe, a rigged creature with its clips, the style they
+  build under, a tile sheet and a sprite sheet (PNG), a tile map and sprites that use them, and a sound into
+  it through the tools alone, each a project file that names its maker; the world is saved and the engine
+  stopped. A second engine opens the project and finds every asset; the saved world loads to the same hash
+  and draws the same 3D and 2D pictures (a mean difference of 0.000 of 255). The assets are used again: a
+  second place is built from them; an agent with only a terminal (`specula call ... @args.json`) copies the
+  prop's recipe, changes it and builds another model; `world_undo` takes a file back, in the engine and on
+  disk; a person's edit on disk comes in journaled as theirs; the changed copy leaves as a `.glb` that the
+  engine reads back with the same triangles. Zero validation messages, no stall, on the Intel iGPU and
+  the RTX 4090. The pictures were checked by the sight-skeptic, twice: its first look could not tell from
+  the stills that the creature's pose was its clip's, so the proof now shows it from the engine's own
+  `anim_state` and a pair of pictures of one creature under two clips.
+- [x] The engine's leverage is measured (above): M5's baseline, for M6 to move.
+- [x] The game's own shell, with sound, text, an interface in two languages, and the editor shared by a
+  person and agents: Sepulcra's live checks on the final tree.
+  *Done 2026-11-15:* the final audit, `scripts/live_checks.py`: 70 runs (the scripts' own unit tests and 67
+  live checks), every one passing. Its first run, of 64, passed 47: the executables had been built in
+  another checkout (a game finds its assets where it was built), and ten checks had gone stale during M5
+  without being run again (four said the lead's role with no grant, others expected the game as it was
+  before its shell, its string tables or its fifth native hook; one read a packet in the system's code
+  page). The runner builds first now, and every script names UTF-8 for the files it reads and writes and
+  the processes it reads. The review of the audit found that it left out seven scripts that end with a
+  verdict and ran three checks on their default ports. With those seven in: three more stale checks (a
+  lead's grant, a HUD laid out for the desk's display scale, a camera that no longer held the gallery),
+  and **one defect of the engine**, there since streaming (M3): a capture that forces a level
+  (`sight_frame {lod: 0}`) from a far camera never got it. Streaming uploaded a level by its size on screen
+  only, so the capture drew the finest level on the GPU and counted the rest as coarser, and so did every
+  capture after it (58 of 67 models after 40 captures). The level a capture forces is now what its views
+  want, and the capture waits for it (`docs/design/STREAMING.md`). A later
+  run failed one check on a time: `entity_refs_check` read a `note_list` at 21.9 ms that the engine's own
+  record of the call put at 0.1 ms. The wait was in the scripts' client: Python's connect with a timeout,
+  on Windows, often takes 10 to 26 ms (about one call in seven on a connection a call; none with the
+  timeout set after the connect, on a raw socket, on a connection kept open, or from Rust). The scripts
+  connect first and set the timeout after (`specula_mcp.Connection`; a guard holds it).
+
+**What the exit proof and the comparison leave for M6** (beside the open items above):
+- A game made of modules and data has no interface screens. `specula-ui` screens, strings by language and
+  saved settings reach the player only through a hosted game's own executable (Sepulcra's); the SDK gives
+  a module the world, its state store, input actions, events and sounds. The comparison's medium builders
+  wrote their menus, string tables and settings files by hand because nothing else was in reach.
+- A new project has no style: its first `model_build` is refused until someone writes a `style.json`
+  (the refusal says so). A starting style belongs with what `specula new` makes.
+- Latencies and swarm throughputs taken through the scripts' client before 2026-11-15 include its
+  connect's wait (`scripts/swarm_drill.py`'s results in `perf/drills`; `call_rate.py` kept one connection
+  open and is not affected). Measure them again before tuning against them. The scripts still make a
+  connection a call (0.6 ms a call) where an agent's MCP client keeps one open (0.13 ms).
+
 ---
 
 ## M6: ship
@@ -946,8 +1015,9 @@ readback and the remaining engine-thread stalls.
   What M5's runs say to work on first:
   - the first hour of an agent that has never seen the engine (every engine build spent most of its tokens
     learning the module path and writing a module);
-  - the engine's own systems for interface screens, saved settings, strings by language and rules as data
-    being what a cold agent reaches for (no medium builder called one of them);
+  - interface screens, saved settings and strings by language being in a module-built game's reach at all
+    (they are not: only a hosted game's executable has them; no medium builder could have called them),
+    and rules as data being what a cold agent reaches for;
   - a game's own checks not paying an engine start and a module build each run, and stepping many ticks in
     one call;
   - the 30 Hz tick against games that ask for another step;

@@ -214,7 +214,7 @@ def main():
         gpu = (off.get("gpu") or {}).get("total_ms")
         summary["perf"] = {"capture_gpu_ms": gpu, "draws": off.get("draws"), "models": perf.get("models")}
         print(f"perf: last capture (1600x900, the scattered graveyard close-up) GPU {gpu} ms; draws {off.get('draws')}")
-        (out / "procgen.json").write_text(json.dumps(summary, indent=1))
+        (out / "procgen.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
     errors = engine.validation_errors()
     check(errors == 0, f"validation errors at shutdown: {errors}")
     print(f"summary: {out / 'procgen.json'}")

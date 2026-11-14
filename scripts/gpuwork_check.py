@@ -116,7 +116,7 @@ def covers(m, out):
         packet = json.loads(next(c["text"] for c in r["content"] if c["type"] == "text"))
         img = next(c for c in r["content"] if c["type"] == "image")
         (out / f"{label}.png").write_bytes(base64.b64decode(img["data"]))
-        (out / f"{label}.json").write_text(json.dumps(packet, indent=1))
+        (out / f"{label}.json").write_text(json.dumps(packet, indent=1), encoding="utf-8")
         return r, packet
 
     r, p = shot("field_alone")
@@ -196,7 +196,7 @@ def main():
     errors = eng.validation_errors()
     check(not errors, f"no validation errors ({errors})")
     report["failures"] = FAILS
-    (out / "report.json").write_text(json.dumps(report, indent=1))
+    (out / "report.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
     if FAILS:
         raise SystemExit(f"FAILED: {len(FAILS)} check(s)")
     print("PASSED: sight follows the paint order; world_load reads on a worker")

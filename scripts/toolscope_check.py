@@ -27,7 +27,7 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from specula_mcp import ROOT, Engine, Mcp, url_for  # noqa: E402
+from specula_mcp import ROOT, Engine, Mcp, url_for, urlopen  # noqa: E402
 
 FAILURES = []
 
@@ -45,7 +45,8 @@ def raw_post(url, body, session=None, accept="application/json, text/event-strea
         headers["Mcp-Session-Id"] = session
     req = urllib.request.Request(url, json.dumps(body).encode(), headers)
     try:
-        with urllib.request.urlopen(req, timeout=180) as r:  # longer than the engine may hold a call (startgate.rs: 120 s, then the call's own 30 s)
+        # longer than the engine may hold a call (startgate.rs: 120 s, then the call's own 30 s)
+        with urlopen(req, timeout=180) as r:
             return r.status, r.headers.get("Content-Type"), r.read().decode(), r.headers.get("Mcp-Session-Id")
     except urllib.error.HTTPError as e:
         return e.code, e.headers.get("Content-Type"), e.read().decode(), None
@@ -75,6 +76,7 @@ def main():
     ap.add_argument("--exe")
     ap.add_argument("--release", action="store_true")
     ap.add_argument("--out", default=str(ROOT / "target" / "toolscope-check"))
+    ap.add_argument("--results", default=str(ROOT / "perf" / "tools"), help="folder for the kept results file")
     a = ap.parse_args()
     target = Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target") / ("release" if a.release else "debug")
     exe = Path(a.exe) if a.exe else target / ("sepulcra.exe" if sys.platform == "win32" else "sepulcra")
@@ -280,11 +282,11 @@ def main():
         print(f"  {k:24} {v.get('tools', ''):>4} tools {v['bytes']:7} bytes  ~{v['bytes'] // 4:6} tokens")
     print("timing", timing)
     stamp = datetime.datetime.now().strftime("%Y%m%d")
-    report = ROOT / "perf" / "tools" / f"{stamp}-toolscope.json"
+    report = Path(a.results) / f"{stamp}-toolscope.json"
     report.parent.mkdir(parents=True, exist_ok=True)
     report.write_text(json.dumps({"schema": "specula.toolscope/v1", "sizes": sizes, "timing": timing,
-                                  "failures": FAILURES}, indent=1) + "\n")
-    print(f"wrote {report.relative_to(ROOT)}")
+                                  "failures": FAILURES}, indent=1) + "\n", encoding="utf-8")
+    print(f"wrote {report}")
     if FAILURES:
         print(f"{len(FAILURES)} check(s) failed")
         return 1

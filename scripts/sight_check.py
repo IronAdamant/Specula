@@ -40,7 +40,7 @@ def save(name, result):
         elif c["type"] == "text":
             text = c["text"]
     data = json.loads(text)
-    (OUT / f"{name}.json").write_text(json.dumps(data, indent=2))
+    (OUT / f"{name}.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
     return data, png
 
 
@@ -373,13 +373,13 @@ def main():
 
         for m_ in (builder, other, reviewer):
             m_.close()
-    log = (OUT / "engine.log").read_text(errors="replace")
+    log = (OUT / "engine.log").read_text(errors="replace", encoding="utf-8")
     errors = eng.validation_errors()
     check(errors == 0, f"clean shutdown, {errors} validation errors", failures)
     persistent_cameras(args, failures, summary)
     auto_framing(args, failures, summary)
     summary["failures"] = failures
-    (OUT / "summary.json").write_text(json.dumps(summary, indent=2))
+    (OUT / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"\n{len(failures)} failure(s); outputs in {OUT}")
     if "panicked" in log:
         print("engine log mentions a panic")

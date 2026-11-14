@@ -236,7 +236,7 @@ def main():
     finally:
         SRC.write_bytes(original)
     check(SRC.read_bytes() == original, "module source restored")
-    (out / "summary.json").write_text(json.dumps(summary, indent=2))
+    (out / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"module_reload: passed; summary in {out / 'summary.json'}")
 
 

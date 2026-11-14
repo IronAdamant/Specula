@@ -116,7 +116,7 @@ def main():
         "calls": calls,
     }
     path = out / f"{a.label}.json"
-    path.write_text(json.dumps(summary, indent=2))
+    path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     by_tool = {}
     for c in calls:
         by_tool.setdefault(c["tool"], []).append(c["s"])

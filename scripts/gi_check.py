@@ -170,7 +170,7 @@ def capture(m, out, label, caps, **view):
     packet = json.loads(next(c for c in r["content"] if c["type"] == "text")["text"])
     path = out / f"{label}.png"
     path.write_bytes(base64.b64decode(png))
-    (out / f"{label}.json").write_text(json.dumps(packet, indent=1))
+    (out / f"{label}.json").write_text(json.dumps(packet, indent=1), encoding="utf-8")
     caps.append({"label": label, "png": rel(path), "packet": rel(out / f"{label}.json"), "gi": packet.get("gi"), "warnings": packet.get("warnings")})
     print(f"  capture {label}: gi {json.dumps(packet.get('gi'))[:160]}")
     return packet
@@ -327,7 +327,7 @@ class Game:
 
     def __init__(self, mcp):
         self.mcp = mcp
-        self.entries = [{"wave": 0, "wall": w} for w in WALLS] + json.loads(CENTRE.read_text())["commands"]
+        self.entries = [{"wave": 0, "wall": w} for w in WALLS] + json.loads(CENTRE.read_text(encoding="utf-8"))["commands"]
         self.next = 0
 
     def state(self, **a):
@@ -414,7 +414,7 @@ def part_sepulcra(args, out):
         # leaf), lit only by its glowing windows, which shows emissive bounce and no sky leaking in
         # (light coming in through a doorway is the yard hut's check). Built first (model_build
         # waits for it), so the bake sees its walls.
-        text = (ROOT / "games" / "sepulcra" / "assets" / "recipes" / "crypt.json").read_text()
+        text = (ROOT / "games" / "sepulcra" / "assets" / "recipes" / "crypt.json").read_text(encoding="utf-8")
         text = text.replace('"op": "building",', '"op": "building", "hollow": true,', 1).replace('"max_triangles": 2500', '"max_triangles": 4000').replace('"name": "crypt"', '"name": "crypt_hollow"', 1)
         res["crypt_recipe"] = tool(m, "project_write", path="assets/recipes/crypt_hollow.json", text=text)[0] is False
         res["crypt_build"] = tool(m, "model_build", recipe="recipes/crypt_hollow.json")[0] is False
@@ -515,7 +515,7 @@ def main():
         s = summary["sepulcra"] = part_sepulcra(args, out)
         ok &= s["volume"]["status"] == "fresh" and s["validation_errors"] == 0
     summary["ok"] = bool(ok)
-    (out / "summary.json").write_text(json.dumps(summary, indent=2))
+    (out / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"summary: {rel(out / 'summary.json')}  ok={ok}")
     sys.exit(0 if ok else 1)
 

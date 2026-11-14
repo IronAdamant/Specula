@@ -73,15 +73,17 @@ def main():
     args = ap.parse_args()
     if not Path(args.exe).exists():
         sys.exit(f"{args.exe} not found: cargo build -p sepulcra-app --release (or pass --exe)")
-    # Output (engine log, the capture, summary.json) goes to target/sepulcra-lex-tools/; worlds to a temp folder.
+    # Output (engine log, the capture, summary.json) goes to target/sepulcra-lex-tools/; worlds and saves to a
+    # temp folder of this run (a save kept from an earlier run was another agent's: writing over it
+    # takes a lead's force, and this check has none).
     work = ROOT / "target" / "sepulcra-lex-tools"
     work.mkdir(parents=True, exist_ok=True)
     worlds = Path(tempfile.mkdtemp(prefix="sepulcra_lex_tools_"))
-    slab = json.loads((LEX / "slab_01.lex.json").read_text())
-    rules = json.loads((LEX / "sepulcra.lex.json").read_text())
-    proof = json.loads((LEX / "proof.json").read_text())["cases"]
+    slab = json.loads((LEX / "slab_01.lex.json").read_text(encoding="utf-8"))
+    rules = json.loads((LEX / "sepulcra.lex.json").read_text(encoding="utf-8"))
+    proof = json.loads((LEX / "proof.json").read_text(encoding="utf-8"))["cases"]
     summary = {}
-    extra = ["--headless", "--worlds", str(worlds), "--captures", str(work / "captures"), "--", "--mute"]
+    extra = ["--headless", "--worlds", str(worlds), "--saves", str(worlds / "saves"), "--captures", str(work / "captures"), "--", "--mute"]
     with Engine(args.exe, args.port, work / "engine.log", *extra, cwd=work) as eng:
         mcp = eng.mcp("sepulcra-lex-tools")
         mcp.hello("lex-rebuilder")
@@ -117,10 +119,19 @@ def main():
         v = mcp.json("lex_validate", set=SET)
         check(v["valid"] and v["errors"] == 0 and v.get("warnings", 0) == 0, f"lex_validate: valid, {v['errors']} errors, {v.get('warnings', 0)} warnings")
         natives = v.get("natives", [])
-        check(len(natives) == 4 and all(n.get("reason") for n in natives), f"4 natives, each with its reason: {[n['hook'] for n in natives]}")
+        # (Five since map 1's props: `prop_clear`, a prop that blocks building, joined the four.)
+        hooks = sorted(n["hook"] for n in natives)
+        check(hooks == ["sepulcra.air", "sepulcra.ground", "sepulcra.prop_clear", "sepulcra.spot", "sepulcra.wall_clear"] and all(n.get("reason") for n in natives),
+              f"5 natives, each with its reason: {hooks}")
         exported = json.loads(mcp.text("lex_export", set=SET))
+        if isinstance(exported.get("items"), int) and exported.get("file"):
+            # (A document past the answer's ceiling is written to a file, and the answer says
+            # where and how many items it holds.)
+            exported = json.loads(Path(exported["file"]).read_text(encoding="utf-8"))
         want = {**slab["items"], **items}
-        check(canon(exported["items"]) == canon(want), f"the export is the two documents' {len(want)} items exactly")
+        got = exported["items"]
+        differ = sorted(k for k in set(got) | set(want) if canon(got.get(k)) != canon(want.get(k)))
+        check(not differ, f"the export is the two documents' {len(want)} items exactly (items that differ: {differ[:8]})")
 
         # 4. Whole games.
         sims = []
@@ -191,8 +202,7 @@ def main():
         check(again["hash"] == j["hash"] == centre["hash"], "the live journal replays headless (lex_simulate) to the same hash")
         # A save game takes the live run with it (its own section; save_check.py proves a load
         # continues it exactly).
-        # force: the save may be a previous run's (another session's).
-        res = mcp.request("tools/call", {"name": "save_write", "arguments": {"name": "lex_tools_check", "overwrite": True, "force": True}})
+        res = mcp.request("tools/call", {"name": "save_write", "arguments": {"name": "lex_tools_check"}})
         body = json.loads(res["content"][0]["text"])
         check(not res.get("isError") and "lex_live" in body.get("sections", {}) and "lex_live" in body.get("subsystems", {}),
               f"save_write while the run is live saves it too ({body.get('sections', body)})")
@@ -200,7 +210,7 @@ def main():
         check(stop["stopped"], "stopped; its world entities are gone")
         summary["live"] = {"tick": st["tick"], "outcome": st["outcome"], "hash": st["hash"], "entities_mid_game": shot, "commands": len(cmds)}
         mcp.close()
-    (work / "summary.json").write_text(json.dumps(summary, indent=2))
+    (work / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"sepulcra_lex_tools: all passed ({work / 'summary.json'})")
 
 

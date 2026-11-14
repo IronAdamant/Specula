@@ -538,11 +538,11 @@ def recorded_results(exe, port, out):
         # (3) The packet changed after the capture.
         f2 = d.ok("ann", "sight_frame", width=160, height=120, eye=[4, 3, 4], target=[0, 0, 0], response_format="detailed")
         pk = Path(f2["image"].get("packet_path") or Path(f2["image"]["path"]).with_suffix(".json"))
-        j = json.loads(pk.read_text())
+        j = json.loads(pk.read_text(encoding="utf-8"))
         j["FORGED"] = "edited"
         for s in j.get("subjects", []):
             s["visible_px"] = 999999
-        pk.write_text(json.dumps(j))
+        pk.write_text(json.dumps(j), encoding="utf-8")
         d.expect("a capture whose packet was edited after it was written", "ann", "review_submit", {"title": "x", "paths": ["/ann_props"], "results": [f2["image"].get("recorded")]}, ["stale_result"])
         # (4) A recorded capture named only by path is evidence, never marked recorded.
         f3 = d.ok("ann", "sight_frame", width=160, height=120, eye=[4, 3, 4], target=[0, 0, 0])
@@ -959,7 +959,7 @@ def main():
     d.results.extend(window_click(exe, a.port + 5, out))
     held = sum(1 for r in d.results if r["held"])
     report = {"probes": len(d.results), "held": held, "results": d.results, "owned_tools": owned, "engine_exit": eng.exit_code}
-    (out / "report.json").write_text(json.dumps(report, indent=1))
+    (out / "report.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
     print(f"authority drill: {held}/{len(d.results)} held; engine exit {eng.exit_code}; multi_commit_calls {multi.get('multi_commit_calls')}")
     print(f"report: {out / 'report.json'}")
     return 0 if held == len(d.results) and eng.exit_code == 0 else 1

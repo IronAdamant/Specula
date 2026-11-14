@@ -40,7 +40,7 @@ SLICE_MAX_MS = 15.0
 
 def zones_in_capture(path, names):
     """Per zone name: (calls, worst call ms, every call's ms) over a perf_capture file."""
-    data = json.loads(Path(path).read_text())
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
     out = {n: [0, 0.0, []] for n in names}
     for f in data["frames"]:
         for rows in f["zones"].values():
@@ -150,7 +150,7 @@ def main():
     report["validation_errors"] = errors
     if errors:
         fails.append(f"validation errors: {errors}")
-    (out / "report.json").write_text(json.dumps(report, indent=1))
+    (out / "report.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
     print(f"report: {out / 'report.json'}")
     if fails:
         for f in fails:

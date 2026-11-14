@@ -172,6 +172,12 @@ never has its LOD 0 uploaded. An entity whose chosen level isn't resident yet dr
 (`LodStats::coarser`). Entities with nothing resident aren't drawn (`not_resident`). So a new area appears coarse
 within a frame or two and sharpens, and nothing waits.
 
+**A capture that forces a level** (`sight_frame {lod}`, an orbit's or a mark's) wants that level for what its
+views see, whatever the size on screen, and waits for it like any level its view wants (`capture_wait`). Before
+2026-11-15 the level was chosen by size alone: `lod: 0` from a far camera drew the finest level on the GPU,
+counted in `coarser_lod`, in that capture and in every one after it. Members merged in a proxy stay merged
+(`hlod`), and a build the memory budget keeps out is still drawn coarser and counted.
+
 ## Residency and eviction
 
 Uploaded builds and proxies count against `memory_mb` (`GpuModel::bytes`, proxy bytes). Before an upload that would go

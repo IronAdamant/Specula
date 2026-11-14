@@ -101,7 +101,7 @@ def scripted(mcp, out, capture, label):
             packet = json.loads(next(c for c in r["content"] if c["type"] == "text")["text"])
             raw = base64.b64decode(png)
             (out / f"{label}_{k}.png").write_bytes(raw)
-            (out / f"{label}_{k}.json").write_text(json.dumps(packet, indent=1))
+            (out / f"{label}_{k}.json").write_text(json.dumps(packet, indent=1), encoding="utf-8")
             digests.append(hashlib.sha256(raw).hexdigest())
     return hashes, digests
 
@@ -125,7 +125,7 @@ def part_cosmetic(args, out):
     res["hashes"] = runs["on"]["hashes"]
     res["capture_info"] = runs["on"]["info"]["capture"]
     res["validation_errors"] = {k: v["validation_errors"] for k, v in runs.items()}
-    pk = json.loads((out / "world_on" / "on_5.json").read_text())
+    pk = json.loads((out / "world_on" / "on_5.json").read_text(encoding="utf-8"))
     res["packet_effects"] = {"effects": len(pk.get("effects", {}).get("effects", [])), "decals": len(pk.get("effects", {}).get("decals", [])),
                              "overlay": pk.get("overlays", {}).get("effects")}
     print(f"  hash on == off: {res['hash_on_equals_off']}; captures repeat: {res['captures_repeat']}; packet {res['packet_effects']}")
@@ -136,7 +136,7 @@ def part_budgets(args, out):
     d = out / "budgets"
     d.mkdir(parents=True, exist_ok=True)
     perf = d / "perf.toml"
-    perf.write_text("[vfx]\nmax_particles = 600\nfill_cap = 0.5\nmax_decals = 4\n")
+    perf.write_text("[vfx]\nmax_particles = 600\nfill_cap = 0.5\nmax_decals = 4\n", encoding="utf-8")
     assets = d / "assets"
     (assets / "fx").mkdir(parents=True, exist_ok=True)
     late = assets / "fx" / "late.png"
@@ -265,7 +265,7 @@ class Game:
 
     def __init__(self, mcp):
         self.mcp = mcp
-        self.entries = [{"wave": 0, "wall": w} for w in WALLS] + json.loads(CENTRE.read_text())["commands"]
+        self.entries = [{"wave": 0, "wall": w} for w in WALLS] + json.loads(CENTRE.read_text(encoding="utf-8"))["commands"]
         self.next = 0
 
     def state(self, **a):
@@ -781,7 +781,7 @@ def main():
     if not args.skip_sepulcra:
         print("4. sepulcra")
         summary["sepulcra"] = part_sepulcra(args, out)
-    (out / "summary.json").write_text(json.dumps(summary, indent=2))
+    (out / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     w, b, s, bo, wa = summary["world"], summary["budgets"], summary.get("sepulcra", {}), summary["bounds"], summary["watch"]
     errors = list(w["validation_errors"].values()) + [b["validation_errors"], bo["validation_errors"]] + [v for k, v in wa.items() if k.startswith("validation_errors")] + [v for k, v in s.items() if k.startswith("validation_errors")]
     bounds_ok = all(v for k, v in bo.items() if isinstance(v, bool))

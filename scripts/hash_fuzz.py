@@ -60,7 +60,7 @@ def eval_corpus():
     """Setup and reference calls of the public eval tasks that need no game and no variables."""
     calls = []
     for f in sorted(glob.glob(str(ROOT / "evals" / "public" / "*.json"))):
-        task = json.loads(Path(f).read_text())
+        task = json.loads(Path(f).read_text(encoding="utf-8"))
         if task.get("game") or task.get("engine_cwd"):
             continue
         steps = [s for s in task.get("setup", []) + task.get("reference", []) if isinstance(s, dict) and "call" in s]
@@ -193,7 +193,7 @@ def main():
                 if ha[k] != hb[k]:
                     report["mismatches"].append({"task": task, "after": tool, "kind": k, "a": ha[k][-3:] if ha[k] else ha[k], "b": hb[k][-3:] if hb[k] else hb[k]})
     report["ok"] = not report["mismatches"] and not report["refusal_mismatches"]
-    (out / "report.json").write_text(json.dumps(report, indent=1))
+    (out / "report.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
     print(f"hash fuzz: {report['calls']} calls, {report['compared']} hash comparisons, "
           f"{len(report['mismatches'])} hash mismatches, {len(report['refusal_mismatches'])} refusal mismatches, "
           f"{len(report.get('refused', []))} calls refused on both (same code); clock at tick {report['ticks']}")

@@ -2,9 +2,11 @@
 
 Standard library only. Keep output ASCII (Python's -I flag ignores PYTHONIOENCODING).
 """
+import http.client
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -13,6 +15,56 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+class Connection(http.client.HTTPConnection):
+    """An HTTP connection to an engine that connects first and sets its timeout after.
+
+    Python's connect with a timeout, on Windows, often takes 10 to 26 ms where a connect takes
+    0.1 ms, with nothing wrong at the other end (measured 2026-11-15, Python 3.13: on an empty
+    headless engine 42 of 300 calls through urllib's own urlopen with a timeout of 180 s took
+    over 10 ms, none of 300 with no timeout, none over a raw socket, none on a connection kept
+    open; a connect and close alone, 93 of 300; the same against a listener in the Python process
+    itself, at the system timer's default resolution and at 1 ms; Rust's `connect_timeout` does
+    not show it). Why Python's does was not found. Every script made a connection a call that
+    way, so about one call in seven waited, a latency a check then read as the engine's (M5's
+    final audit: `entity_refs_check` timed a `note_list` at 21.9 ms that the engine's own record
+    of the call put at 0.1 ms). The timeout still holds for everything after the connect: the
+    send and the answer. A connect to a port of this machine with nothing listening is refused by
+    the system (about 2 s on Windows)."""
+
+    def connect(self):
+        self.sock = socket.create_connection((self.host, self.port))
+        self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        self.sock.settimeout(self.timeout)
+
+
+class _Handler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(Connection, req)
+
+
+_OPENER = urllib.request.build_opener(_Handler)
+
+
+def urlopen(req, timeout):
+    """`urllib.request.urlopen` for a request to an engine: the same answers and the same errors,
+    over a `Connection`. Scripts call this one (`script_settings_guard.rs` holds it)."""
+    return _OPENER.open(req, timeout=timeout)
+
+
+def connect(port, timeout):
+    """A socket connected to an engine's port, with `timeout` set after the connect."""
+    s = socket.create_connection(("127.0.0.1", port))
+    s.settimeout(timeout)
+    return s
+
+
+def poll(req):
+    """One short try at a port that may have nothing listening yet, for loops that wait for an
+    engine to come up. The one place a connect carries a timeout: a closed port on Windows is not
+    refused for about 2 s, and how long a poll takes is not a latency anyone reads."""
+    return urllib.request.urlopen(req, timeout=1)
 
 
 def _physical_window_pixels():
@@ -147,7 +199,7 @@ class Mcp:
         # (Longer than the engine may hold a call: up to 120 s for its start, startgate.rs, and
         # then the call's own 30 s. A shorter wait here read as a socket timeout what the
         # engine was about to answer.)
-        with urllib.request.urlopen(req, timeout=180) as r:
+        with urlopen(req, timeout=180) as r:
             self.session = self.session or r.headers.get("Mcp-Session-Id")
             body = r.read()
         return reply_of(body)
@@ -184,7 +236,7 @@ class Mcp:
         along) instead of being refused as name_taken."""
         token = None
         if token_file and os.path.exists(token_file):
-            token = open(token_file).read().strip() or None
+            token = open(token_file, encoding="utf-8").read().strip() or None
         # (No retry on engine_busy: a call sent while the engine is still starting waits for the
         # start, crates/specula/src/startgate.rs. A busy answer here is a finding.)
         try:
@@ -195,7 +247,7 @@ class Mcp:
             # A new engine run: start a new identity.
             reply = self.json("agent_hello", name=name, role=role)
         if token_file and reply.get("resume_token"):
-            with open(token_file, "w") as f:
+            with open(token_file, "w", encoding="utf-8") as f:
                 f.write(reply["resume_token"])
         return reply
 
@@ -206,7 +258,7 @@ class Mcp:
             return
         req = urllib.request.Request(self.url, method="DELETE", headers={"Mcp-Session-Id": self.session})
         try:
-            urllib.request.urlopen(req, timeout=10).read()
+            urlopen(req, timeout=10).read()
         except OSError:
             pass
         self.session = None
@@ -243,8 +295,7 @@ def url_for(port):
 
 def server_up(port):
     try:
-        urllib.request.urlopen(urllib.request.Request(url_for(port), b"{}", {"Content-Type": "application/json"}),
-                               timeout=1)
+        poll(urllib.request.Request(url_for(port), b"{}", {"Content-Type": "application/json"}))
     except urllib.error.HTTPError:
         return True  # it answered (with an error for the empty request): it's up
     except OSError:
@@ -284,7 +335,7 @@ class Engine:
         if server_up(self.port):
             raise RuntimeError(f"port {self.port} is already in use; pick another with --port")
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        self.log = open(self.log_path, "w")
+        self.log = open(self.log_path, "w", encoding="utf-8")
         flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
         start = time.perf_counter()
         self.proc = subprocess.Popen([str(self.exe), "--port", str(self.port), *self.args], stderr=self.log,
@@ -295,7 +346,7 @@ class Engine:
         while not server_up(self.port):
             if self.proc.poll() is not None:
                 self.log.close()
-                raise RuntimeError(f"engine exited early:\n{self.log_path.read_text()}")
+                raise RuntimeError(f"engine exited early:\n{self.log_path.read_text(encoding='utf-8')}")
             if time.perf_counter() - start > 60:
                 # Don't leave it running: __exit__ won't run for a failed __enter__.
                 self.proc.kill()
@@ -328,7 +379,7 @@ class Engine:
     def __exit__(self, *exc):
         self.stop()
         self.log.close()
-        self.shutdown_log = self.log_path.read_text(errors="replace")
+        self.shutdown_log = self.log_path.read_text(errors="replace", encoding="utf-8")
         return False
 
     def validation_errors(self):

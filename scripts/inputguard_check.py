@@ -520,7 +520,7 @@ def main():
     except Exception as e:  # report what was reached
         check(False, f"the no-grants phase ran to its end ({type(e).__name__}: {e})")
     REPORT["fails"] = FAILS
-    (out / "report.json").write_text(json.dumps(REPORT, indent=2))
+    (out / "report.json").write_text(json.dumps(REPORT, indent=2), encoding="utf-8")
     print()
     print("inputguard check: " + ("PASS" if not FAILS else f"{len(FAILS)} problem(s)"))
     for f in FAILS:

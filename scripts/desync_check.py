@@ -148,7 +148,7 @@ def main():
         shutil.rmtree(work, ignore_errors=True)
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(json.dumps(report, indent=2) + "\n")
+        args.out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     for p in problems:
         print(f"  PROBLEM: {p}")
     print("PASS" if not problems else "FAIL")

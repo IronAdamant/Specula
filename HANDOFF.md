@@ -2,9 +2,19 @@
 
 These are notes from Claude (Opus 5.5 through M5's first wave; Fable 5.2 from 2026-11-12) to whoever picks up Specula
 next, most likely a new Claude conversation with no memory of the earlier ones. This page is **current state and
-what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2026-11-14** (evening).
+what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2026-11-15**.
 
-- **M5 as of 2026-11-14** (all on `main`, not pushed: the owner pushes at 100%):
+- **M5 is done (2026-11-15). M6 has not started, and does not start until the owner has talked its scope
+  through** (their words, 2026-11-14, below). What a next session starts with:
+  - **The owner's list** of what only a person can judge at the window: [docs/M5_CHECKLIST.md](docs/M5_CHECKLIST.md).
+    Nothing in M5 waited on it; what fails there is M6's.
+  - **M5's measured baseline and why** ([docs/design/LEVERAGE.md](docs/design/LEVERAGE.md)): the numbers M6 is
+    to move, with the same harness.
+  - **ROADMAP M6** (the items marked with the owner's words of 2026-11-14), M5's open follow-ups, and "What
+    the exit proof and the comparison leave for M6" at the end of ROADMAP's M5.
+  - **macOS is to be sized honestly first** (the owner hopes to release for Windows and macOS before
+    December): a Metal renderer, its window, input and audio, and module loading do not exist yet.
+- **M5 as built** (2026-11-06 to 2026-11-15):
   - **Merged:** map 1, audio, timelines, the render follow-ups, the UI sight tools, the editor's core, text,
     the gameplay modules, localisation, the input monitor, accessibility with Sepulcra's shell, tool kits by job,
     GPU work off the engine thread, the editor's Swarm tab with "highlight and ask", the editor's draw tools
@@ -61,10 +71,16 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       without `--role` locked it out, and a run whose only grants are leads had nobody to clear it).
     - A game project outside this repository keeps its SDK in `crates/specula-sdk` and `crates/specula-core`
       (the only place the build service trusts it); the harness copies it there (ROADMAP M6).
-  - **Left, in this order:** the M5 exit proof; the final audit; the docs pass (ROADMAP's M5 ticks and
-    CHANGELOG's M5 section are behind).
-    The editor's panels still read one pointer for the human and an agent (docs/design/EDITOR.md, "Known
-    limits").
+  - **The exit proof** is `scripts/m5_exit.py` (ROADMAP M5, "Exit proof"): assets made once, saved, reopened
+    and reused, 2D and 3D, in a project outside this repository, on both adapters. **The final audit** is
+    `scripts/live_checks.py`: every live check, one after the other, each on its own ports (70 runs, all
+    passing on 2026-11-15, after thirteen checks that had gone stale were brought back and one engine
+    defect it found was fixed: a capture's forced level, `sight_frame {lod}`, is uploaded for it); run it after
+    anything that touches the engine's window, GPU or tools.
+  - **Known limits carried out of M5:** the editor's panels still read one pointer for the human and an agent
+    (docs/design/EDITOR.md, "Known limits"); a game made of modules and data has no interface screens (only
+    a hosted game's executable reaches `specula-ui`, the string tables and saved settings); a new project
+    has no style until someone writes one; three engine-thread disk reads are open on the roadmap.
   - **The lead's running notes** are in `.swarmnotes/m5/lead/m5tracker.md` (gitignored, this machine): every
     lane's state, review reports (`reviews/`), and the list of items carried to the performance pass.
 
@@ -416,6 +432,17 @@ In practice that means six **foundations** that apply to every change from M1 on
     [docs/design/DEBUGGER.md](docs/design/DEBUGGER.md)).
   - Game logic: `logic_build` (diagnostics as data), `logic_reload`, `logic_unload`, `logic_status`, `logic_input`,
     `logic_hook` (hot-reloaded Rust modules; see [docs/design/MODULES.md](docs/design/MODULES.md)).
+  - Sound: `audio_preview` (a sound or a piece rendered and measured without playing it), `audio_played`,
+    `audio_levels`, `audio_settings` ([docs/design/AUDIO.md](docs/design/AUDIO.md)).
+  - A game's interface: `ui_tree`, `ui_frame`, `ui_act`, `ui_check` (a hosted game's screens: read, seen,
+    driven and checked at any display); `text_edit` (in-world text).
+  - Languages: `l10n_get`, `l10n_set`, `l10n_check`, `l10n_tasks`
+    ([docs/design/LOCALISATION.md](docs/design/LOCALISATION.md)).
+  - Timelines: `timeline_get`, `timeline_set`, `timeline_validate`, `timeline_play` / `pause` / `scrub` / `stop`,
+    `timeline_preview`, `timeline_check` ([docs/design/TIMELINE.md](docs/design/TIMELINE.md)).
+  - The editor and the human's input: `editor_state`, `editor_input`; `security_incidents`, `security_clear`,
+    `security_allow_lead` (the monitor over every way an agent could reach the human's keyboard, window or
+    native code: [docs/design/SECURITY.md](docs/design/SECURITY.md)).
   - Performance and time: `perf_frame` (GPU ms per pass, render graph, draws, memory, pacing, budget errors from
     `perf.toml`), `perf_capture`, `perf_zones`, `perf_memory`, `time_control` (pause, step, scale), `engine_info`.
   - A hosted game adds `play_*` tools (Sepulcra: `play_new`, `play_command`, `play_control`, `play_state`,
@@ -425,14 +452,22 @@ In practice that means six **foundations** that apply to every change from M1 on
   vector shapes, a UI overlay. Reversed Z.
 - **Simulation:** fixed-tick clock, seeded RNG streams, deterministic maths (`dmath`), ordered containers, a
   journal-replay test that reproduces `world_hash` in CI.
-- **Game-side crates:** `specula-anim` (A1-A3: clips, graphs, IK, motion generators and checks), `specula-audio` (WASAPI, procedural 3D audio),
-  `specula-input` (keyboard, mouse, XInput gamepads), `specula-text`, `specula-ui`, `specula-model` (procedural
-  modelling, tier 1), `specula-gltf`.
-- **Size:** about 317k lines of Rust (2026-10-30): 301k in 25 engine crates and 17k in 3 game crates (Sepulcra's
-  rules and app, and the Ambulo example module); about 2,350 tests. **Zero
+- **Game-side crates:** `specula-anim` (A1-A3: clips, graphs, IK, motion generators and checks), `specula-audio`
+  (WASAPI, procedural 3D audio, Ogg/Vorbis, streamed music), `specula-input` (keyboard, mouse, XInput gamepads),
+  `specula-text` (fonts, GPU text, editing), `specula-ui`, `specula-lingua` (string tables, plural rules),
+  `specula-tempus` (timelines and camera rails), `specula-model` (procedural modelling), `specula-gltf` (import
+  and export).
+- **Size:** about 396k lines of Rust (2026-11-14): 370k in 27 engine crates and 26k in 8 game crates (Sepulcra's
+  rules and app, the Ambulo example module and five gameplay modules); about 3,030 tests. **Zero
   third-party crates.** The Rust toolchain's own linker; Vulkan, XInput and AVRT are loaded at runtime.
 
-**What it can't do yet** (most of it is M3+):
+**What it can't do yet:**
+- **Pay for itself at small sizes.** The same small and medium games, built through the engine and without it by
+  the same model, pass the same checks, and through the engine they cost three to five times the tokens (1.7
+  times for a change to an existing game): more requests, each re-reading the context, and more written
+  ([docs/design/LEVERAGE.md](docs/design/LEVERAGE.md)). M6's work.
+- **Give a module-built game an interface.** Screens, strings by language and saved settings reach a player
+  only through a hosted game's executable, as Sepulcra's does.
 - Sepulcra uses physics only for its shamblers' ragdoll deaths (gameplay is still rules, not physics). It runs on its
   Rust rules by default (`--rules lex` plays it from Lex). Modules can't load off Windows yet (no `dlopen`), and a
   module stuck in a loop that makes no requests can't be preempted.
@@ -472,6 +507,17 @@ In practice that means six **foundations** that apply to every change from M1 on
 - **MCP tool names:** no dots, because Claude Code rejects them.
 - **Disk:** drive D: is nearly full; lane worktrees each grew 8-15 GB of `target/`. Build into C: with
   `CARGO_TARGET_DIR` (lanes use one folder each), and delete a merged worktree's `target/`.
+- **An executable keeps the folder it was built from.** A game finds its assets there. A target folder moved
+  to another worktree still holds the old worktree's executables until they are built again: M5's final audit
+  ran 17 checks into failures on such a build (no recipes, no timelines, no grass) before it built its own.
+  `scripts/live_checks.py` builds first; do the same before any live check in a new worktree.
+- **Python on Windows reads text in the system's code page.** Every script names `encoding="utf-8"`, for
+  files and for processes read as text (`script_settings_guard.rs` holds it).
+- **Python's connect with a timeout, on Windows, often takes 10 to 26 ms** (a connect takes 0.1 ms). Through
+  `urllib.request.urlopen(req, timeout=...)`, a connection a call, about one call in seven waited, and a
+  check that timed a call read it as the engine's. Scripts reach an engine through `specula_mcp`'s `urlopen`,
+  `connect` and `Connection`, which set the timeout after the connect (the same guard). When a call looks
+  slow from a script, read the engine's own record of it first (`trace_call`): it said 0.1 ms.
 - **Firewall:** never bind `0.0.0.0`, even to test a port: Windows asks about every new binary that listens beyond
   loopback (leases read the OS listener table instead).
 
@@ -529,13 +575,29 @@ answer where it applies. The owner decided everything else on 2026-10-22 (see "D
   field read after it moved). Keep the final audit.
 - **Disk:** delete a lane's target folder when it merges, and build with `CARGO_INCREMENTAL=0` when space is short.
 
+**How M5 ran (2026-11-06 to 2026-11-15), and what to keep for M6:**
+- **One builder, reviewed by models that did not write the code,** held up: no lane merged on its first
+  review, and the last three reviews each found something a test suite of 3,000 could not (a lockout the
+  builder's own new error message led into, judges that disagreed, a write-up that said more than its data).
+- **Let an agent that has never seen the engine use it, early.** A pilot and fourteen runs by cold builders
+  found in a day what months of use by an agent that knew the engine had not: a tool's arguments could not
+  be read from a shell, a granted lead could not lead from a terminal, a project could not get its SDK.
+- **Measure before tuning, and keep the measurement.** `leverage.py where` says where a builder's tokens
+  went; run it again after every change meant to make the engine cheaper to use.
+- **Read exit codes, not the end of a log.** Twice a commit went in over a failing guard because the last
+  lines looked fine; commits are chained on the exit codes of the suite, the guards and clippy.
+- **A check's own figure may not mean what its name says.** The harness's token count for a subagent was its
+  context's size; a subagent's "no other context" was untrue. Look at the record.
+
 **Recommendations for the next session:**
-1. **M5 next** (after the owner's weekly reset). Run lanes with reviews, as in M3 and M4. First remind the owner
-   of the open decisions (the list above), and pilot their agent tools on one lane.
-2. **The approved exit-proof props live in the approved world,** not yet in a fresh Sepulcra's map 1. Putting them
-   in the shipped map is an M5 step, tied to the decoration question (should props block building?).
-3. **Keep Sepulcra the dogfood.** Each M5 feature (audio, text, the editor) should land in the game, measured on
-   the Intel iGPU with the game running.
+1. **Do not start M6 until the owner has talked its scope through.** They described it (2026-11-14) as
+   finalising and tuning for the first release, with testing and adversarial checks, the experience judged
+   for agents as well as people, on Windows and macOS. Bring: the baseline and why, the list of what tripped
+   cold builders, M5's open items, and an honest size for macOS.
+2. **Remind the owner** of the two open decisions below, the private held-out eval set (theirs to make at M6,
+   before any benchmark claim), the adversarial review before any marketing, and the raw recordings question.
+3. **Keep Sepulcra the dogfood, and add a second game built by a cold agent** as the measure: Sepulcra shows
+   what the engine can hold, the comparison shows what it costs to start.
 4. **Before any non-localhost bind**, build per-agent auth tokens (ROADMAP swarm track). Before CI can check
    rendering, Vulkan loading must work on Linux (Platform track).
 5. **Walk the owner through the five design docs** in `docs/design/` and the engine survey when there's a natural

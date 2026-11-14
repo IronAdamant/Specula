@@ -219,7 +219,7 @@ def fidelity(a, out):
     v = engine.validation_errors()
     check(v == 0, f"zero validation errors at shutdown ({v})", failures)
     summary["failures"] = failures
-    (out / "fidelity.json").write_text(json.dumps(summary, indent=1))
+    (out / "fidelity.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
     print(f"\nsheet copied to {FIDELITY / 'benchmark_t0_t1_studio.png'}; summary: {out / 'fidelity.json'}")
     print("FAILED: " + "; ".join(failures) if failures else "fidelity set checked")
     return 1 if failures else 0
@@ -237,7 +237,7 @@ def frames_over(capture_paths):
     """Every captured frame: (dt_ms, its heaviest main-thread zone by self time, that zone's ms)."""
     out = []
     for p in capture_paths:
-        j = json.loads(Path(p).read_text())
+        j = json.loads(Path(p).read_text(encoding="utf-8"))
         cols = j["zone_columns"]
         si = cols.index("self_ms")
         for fr in j["frames"]:
@@ -301,7 +301,7 @@ def pacing(a, out):
                         if item["type"] == "text":
                             try:
                                 body = json.loads(item["text"])
-                                packet = json.loads(Path(body["image"]["packet_path"]).read_text())
+                                packet = json.loads(Path(body["image"]["packet_path"]).read_text(encoding="utf-8"))
                                 res["renders"] = packet.get("renders")
                             except (ValueError, AttributeError, KeyError, TypeError, OSError):
                                 pass
@@ -344,7 +344,7 @@ def pacing(a, out):
     v = engine.validation_errors()
     check(v == 0, f"zero validation errors at shutdown ({v})", failures)
     summary["failures"] = failures
-    (out / "pacing.json").write_text(json.dumps(summary, indent=1))
+    (out / "pacing.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
     print(f"\nsummary: {out / 'pacing.json'}")
     print("FAILED: " + "; ".join(failures) if failures else "pacing checked")
     return 1 if failures else 0
@@ -458,7 +458,7 @@ def main():
 
         print("a violation caught and fixed: a new graveyard prop")
         recipe = assets / "recipes" / "bone_pile.json"
-        recipe.write_text(json.dumps(BONE_PILE_DRAFT, indent=1))
+        recipe.write_text(json.dumps(BONE_PILE_DRAFT, indent=1), encoding="utf-8")
         draft_style = m.json("style_check", recipe="recipes/bone_pile.json")
         caught_rules = sorted({e["check"] for f in draft_style["failing"] for e in f["errors"]})
         check(not draft_style["passed"], f"style_check catches the draft: {caught_rules}", failures)
@@ -472,7 +472,7 @@ def main():
         print("    critique, next steps:")
         for step in draft["critique"]["next"]:
             print("      - " + step[:150])
-        recipe.write_text(json.dumps(BONE_PILE_REVISED, indent=1))
+        recipe.write_text(json.dumps(BONE_PILE_REVISED, indent=1), encoding="utf-8")
         revised = m.json("studio_check", recipe="recipes/bone_pile.json", siblings=["recipes/tombstone.json", "recipes/graveyard_fence.json"])
         summary["captures"]["bone_pile_revised_check"] = revised["image"]["path"]
         summary["revised"] = {"errors": revised["errors"]}
@@ -554,7 +554,7 @@ def main():
     v = engine.validation_errors()
     check(v == 0, f"zero validation errors at shutdown ({v})", failures)
     summary["failures"] = failures
-    (out / "summary.json").write_text(json.dumps(summary, indent=1))
+    (out / "summary.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
     print(f"\nsummary: {out / 'summary.json'}")
     print("FAILED: " + "; ".join(failures) if failures else "all studio checks passed")
     return 1 if failures else 0

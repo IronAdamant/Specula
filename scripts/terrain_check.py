@@ -185,11 +185,11 @@ def main():
         shutil.rmtree(assets)
     (assets / "recipes").mkdir(parents=True)
     shutil.copy(ROOT / "games" / "sepulcra" / "assets" / "style.json", assets / "style.json")
-    (assets / "recipes" / "terrain_tile.json").write_text(json.dumps(TILE_RECIPE, indent=1))
-    (assets / "recipes" / "tex_terrain_rock.json").write_text(json.dumps(ROCK_GRAPH, indent=1))
-    (assets / "recipes" / "small_t.json").write_text(json.dumps(SMALL_RECIPE, indent=1))
-    (assets / "recipes" / "hill.json").write_text(json.dumps(HILL_RECIPE, indent=1))
-    (assets / "recipes" / "big_t.json").write_text(json.dumps(BIG_RECIPE, indent=1))
+    (assets / "recipes" / "terrain_tile.json").write_text(json.dumps(TILE_RECIPE, indent=1), encoding="utf-8")
+    (assets / "recipes" / "tex_terrain_rock.json").write_text(json.dumps(ROCK_GRAPH, indent=1), encoding="utf-8")
+    (assets / "recipes" / "small_t.json").write_text(json.dumps(SMALL_RECIPE, indent=1), encoding="utf-8")
+    (assets / "recipes" / "hill.json").write_text(json.dumps(HILL_RECIPE, indent=1), encoding="utf-8")
+    (assets / "recipes" / "big_t.json").write_text(json.dumps(BIG_RECIPE, indent=1), encoding="utf-8")
     # The operator grants the lead its name (agent_hello role lead needs the grant).
     args = ["--assets", str(assets), "--captures", str(out / "captures"), "--worlds", str(out / "worlds"), "--lead", "terrain"]
     args += ["--size", "1600x900"] if a.window else ["--headless"]
@@ -592,7 +592,7 @@ def main():
                   f"an 8 MB budget: every view drawn (full sets or coarse copies), old sets freed to make room: {budget}")
             mcp.call("stream_settings", memory_mb=512)
             mcp.call("world_delete", path="/b")
-        (out / "terrain.json").write_text(json.dumps(summary, indent=1))
+        (out / "terrain.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
     errors = engine.validation_errors()
     check(errors == 0, f"validation errors at shutdown: {errors}")
     print(f"summary: {out / 'terrain.json'}")

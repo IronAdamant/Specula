@@ -96,7 +96,7 @@ def main():
                 "ticks": 60}
             rec = mcp.json("playtest_run", spec=spec, record=REPLAY, overwrite=True, wait_s=20)
             check(rec.get("status") == "passed", f"recorded a playtest ({rec.get('status')})")
-            recorded = json.loads(replay_file.read_text())
+            recorded = json.loads(replay_file.read_text(encoding="utf-8"))
             check(recorded.get("modules") == [{"module": "ambulo", "build_hash": build1}], "the replay file names the module build")
             # Same build in a fresh engine, from the same start: the replay verifies.
             print("second engine: same build, replay")
@@ -134,7 +134,7 @@ def main():
 
             mcp.json("time_control", action="step", ticks=5)
             trace = mcp.json("desync_trace")
-            text = json.loads(Path(trace["file"]).read_text())
+            text = json.loads(Path(trace["file"]).read_text(encoding="utf-8"))
             events = text.get("modules", {}).get("events", [])
             check([e[2] for e in events] == ["load", "reload"], f"the trace carries the module history ({len(events)} events)")
             verify = mcp.json("world_hash", verify=True)
@@ -157,7 +157,7 @@ def main():
         SRC.write_bytes(original)
         if replay_file.exists():
             replay_file.unlink()
-    (out / "summary.json").write_text(json.dumps(summary, indent=2))
+    (out / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"all checks passed; summary in {out / 'summary.json'}")
 
 

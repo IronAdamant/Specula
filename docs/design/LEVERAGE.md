@@ -174,10 +174,14 @@ change jobs ran on it.
 - **The builders used the engine as a module host and little else.** Every engine game is one Rust module
   holding all its rules, with a script that calls a hook of it. The small games drew their frame with
   `sight_frame`; the medium games called no drawing, interface, save, localisation or rules-as-data tool at
-  all: their settings files, string tables and frames are the module's or the script's own. The engine
-  arm's brief names the module route first and prepares it (a workspace, the SDK, an example), and gives
-  "rules as data; screens are data" half a line: what was reached for is in part what the brief put in
-  reach.
+  all: their settings files, string tables and frames are the module's or the script's own. Two things
+  put that out of reach. The engine arm's brief names the module route first and prepares it (a
+  workspace, the SDK, an example), and gives "rules as data; screens are data" half a line. And on that
+  route the engine's interface screens, strings by language and saved settings cannot be used: they reach
+  a player only through a hosted game's own executable (as Sepulcra's does), and the SDK gives a module
+  the world, its state, input, events and sounds (found while writing M5's exit proof: `ui_tree` on an
+  engine with no hosted game answers `no_ui`). The brief's "screens are data" promised more than a
+  module-built game can use. The harness's brief says so now; the runs above had the earlier line.
 - **Judging costs more than building** (about 1 USD a medium game against 0.40 to build it without the
   engine), and through the engine it is slower: every check starts the engine and builds the module again,
   and one game's checks stepped the engine a tick a call (4,600 calls for its build, about 12,000 for one

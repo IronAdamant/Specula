@@ -53,6 +53,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from specula_mcp import ROOT, Engine  # noqa: E402
 
 FIDELITY = ROOT / "docs" / "fidelity"
+# Where the sheet and its figures are written (--sheet): the tracked ones by default; the
+# milestone audit gives its own folder, so a check never rewrites a tracked picture.
+SHEET = FIDELITY
 ASSETS = FIDELITY / "assets"
 SUBJECTS = ["runestone", "barrel", "lantern", "tree", "skeleton_warrior"]
 TIERS = ["t0", "t1", "t3"]
@@ -426,7 +429,7 @@ class Run:
             path.with_name(f"{label}_full.png").write_bytes(path.read_bytes())
             encode_png(path, size[0], size[1], crop)
             packet["t3_crop"] = {"rendered": [sw, sh], "fov_y_deg": round(fov, 4), "kept_centre": list(size)}
-        (self.caps / f"{label}.json").write_text(json.dumps(packet, indent=1))
+        (self.caps / f"{label}.json").write_text(json.dumps(packet, indent=1), encoding="utf-8")
         return path, packet
 
     def wait_bake(self, timeout=600):
@@ -490,7 +493,7 @@ def run(exe, port, adapter, out, check, failures):
     assets = out / "t3_assets"
     shutil.rmtree(assets, ignore_errors=True)
     shutil.copytree(ASSETS, assets)
-    stage = json.loads((ASSETS / "stage_t3.json").read_text())
+    stage = json.loads((ASSETS / "stage_t3.json").read_text(encoding="utf-8"))
     summary = {"adapter": adapter, "time_s": TIME_S, "subjects": {}}
     cache = out / "t3_cache"
     shutil.rmtree(cache, ignore_errors=True)
@@ -526,9 +529,9 @@ def run(exe, port, adapter, out, check, failures):
                     check(r["passed"], f"{name} T3 studio_check: {r['failed']} errors {[e['check'] for e in r['errors']]}")
         # The library effects (journaled world data, like any agent's).
         for ename, file in stage["effects"].items():
-            m.json("vfx_set", name=ename, effect=json.loads((ASSETS / file).read_text()))
+            m.json("vfx_set", name=ename, effect=json.loads((ASSETS / file).read_text(encoding="utf-8")))
             # The effect's colours against its style family (fire for the lantern, leaves for the tree).
-            pal = json.loads((ASSETS / "style.json").read_text())["palette"]
+            pal = json.loads((ASSETS / "style.json").read_text(encoding="utf-8"))["palette"]
             family = ["flame", "flame_core"] if ename.startswith("lantern") else ["leaf", "leaf_dark", "leaf_light"]
             chk = m.json("vfx_check", effect=ename, palette=[pal[k] for k in family])
             failed = chk.get("failed") or []
@@ -645,8 +648,8 @@ def run(exe, port, adapter, out, check, failures):
     summary["validation_errors"] = v
     sheet = compose(tiles, summary, cam)
     summary["sheet"] = rel(sheet)
-    (FIDELITY / "benchmark_t3_m4.json").write_text(json.dumps(scrub(summary), indent=1) + "\n")
-    (out / "t3_summary.json").write_text(json.dumps(summary, indent=1, default=str))
+    (SHEET / "benchmark_t3_m4.json").write_text(json.dumps(scrub(summary), indent=1) + "\n", encoding="utf-8")
+    (out / "t3_summary.json").write_text(json.dumps(summary, indent=1, default=str), encoding="utf-8")
     return summary
 
 
@@ -658,7 +661,7 @@ def other_engines():
     import subprocess
     n = 0
     for image in ("specula.exe", "sepulcra.exe"):
-        r = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {image}", "/FO", "CSV", "/NH"], capture_output=True, text=True)
+        r = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {image}", "/FO", "CSV", "/NH"], capture_output=True, text=True, encoding="utf-8", errors="replace")
         n += sum(1 for line in r.stdout.splitlines() if line.startswith('"'))
     return max(n - 1, 0)  # this run's own engine
 
@@ -779,7 +782,7 @@ def compose(tiles, summary, cam):
         draw_text(img, W, pad, y + TILE + 16, line2, (160, 200, 170))
         draw_text(img, W, pad, y + TILE + 27, "; ".join(parts), (170, 190, 215))
         y += TILE + label_h + pad
-    path = FIDELITY / "benchmark_t3_m4.png"
+    path = SHEET / "benchmark_t3_m4.png"
     encode_png(path, W, H, bytes(img))
     return path
 
@@ -795,7 +798,12 @@ def main():
     ap.add_argument("--port", type=int, default=7850)
     ap.add_argument("--out", default=str(ROOT / "target" / "fidelity-t3"))
     ap.add_argument("--adapter", default="integrated")
+    ap.add_argument("--sheet", default=None, help="folder for the sheet and its figures (default: docs/fidelity, the tracked ones)")
     a = ap.parse_args()
+    if a.sheet:
+        global SHEET
+        SHEET = Path(a.sheet)
+        SHEET.mkdir(parents=True, exist_ok=True)
     failures = []
 
     def check(ok, what):
@@ -804,7 +812,7 @@ def main():
             failures.append(what)
 
     run(a.exe, a.port, a.adapter, a.out, check, failures)
-    print(f"\nsheet: {FIDELITY / 'benchmark_t3_m4.png'}")
+    print(f"\nsheet: {SHEET / 'benchmark_t3_m4.png'}")
     print("FAILED: " + "; ".join(failures) if failures else "fidelity T3 checked")
     return 1 if failures else 0
 

@@ -111,9 +111,9 @@ def main():
         for z in cap["top_zones_by_self_ms"][:6]:
             print(f"    {z['thread']}:{z['path']:24s} self {z['self_mean_ms']} ms p95 {z['p95_ms']}")
         check(cap["frames"] == args.frames and cap["stopped_early"] is None, "the capture recorded every frame")
-        data = json.loads(Path(cap["path"]).read_text())
+        data = json.loads(Path(cap["path"]).read_text(encoding="utf-8"))
         check(data["schema"] == "specula.perf_capture/v1" and len(data["frames"]) == cap["frames"], "capture file")
-        trace = json.loads(Path(cap["trace_path"]).read_text())
+        trace = json.loads(Path(cap["trace_path"]).read_text(encoding="utf-8"))
         names = {e.get("name") for e in trace["traceEvents"]}
         check({"frame", "thread_name"} <= names and len(trace["traceEvents"]) == cap["trace_events"],
               "the trace file has zones and thread names")
@@ -137,7 +137,7 @@ def main():
     summary["clean_exit"] = eng.exit_code == 0
     check(eng.validation_errors() == 0, "no validation errors")
     check(eng.exit_code == 0, "clean shutdown")
-    (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     print(f"saved {out / 'summary.json'}")
     if failures:
         print(f"{len(failures)} check(s) failed")

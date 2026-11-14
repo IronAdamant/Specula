@@ -50,7 +50,7 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from specula_mcp import ROOT, Engine, Mcp, reply_of, server_up, url_for  # noqa: E402
+from specula_mcp import ROOT, Engine, Mcp, reply_of, server_up, url_for, urlopen  # noqa: E402
 
 EVAL_FORMAT = 1
 EVALS_DIR = ROOT / "evals"
@@ -651,7 +651,7 @@ class Transcript:
     def write(self):
         if self.path:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.path, "w") as f:
+            with open(self.path, "w", encoding="utf-8") as f:
                 for x in self.lines:
                     f.write(scrub(json.dumps({k: v for k, v in x.items() if not k.startswith("_")})) + "\n")
 
@@ -1385,7 +1385,7 @@ def run_task(task, mode, port, run_dir, exe_dir, log=print, cache=None, agent_po
             proxy = Proxy(agent_port, url_for(port), task["tools"], transcript, ctx, max_calls=int(limits.get("calls", MAX_CALLS_DEFAULT)))
             proxy.start()
             brief = brief_text(task, files_root, agent_port)
-            (report_dir / "brief.txt").write_text(scrub(brief))
+            (report_dir / "brief.txt").write_text(scrub(brief), encoding="utf-8")
             if on_brief:
                 on_brief(brief)
             limit = timeout_s or float(limits.get("wall_s", MAX_WALL_DEFAULT))
@@ -1415,9 +1415,9 @@ def run_task(task, mode, port, run_dir, exe_dir, log=print, cache=None, agent_po
         try:
             jc = ctx.client("verifier", "verify", False)
             err, j = jc.call("world_history", {"limit": 200, "response_format": "detailed"})
-            (report_dir / "journal.json").write_text(scrub(json.dumps(j, indent=1)))
+            (report_dir / "journal.json").write_text(scrub(json.dumps(j, indent=1)), encoding="utf-8")
         except Exception as e:  # the journal is a transcript extra; its absence isn't a failure
-            (report_dir / "journal.json").write_text(scrub(json.dumps({"error": ascii(scrub(str(e)))})))
+            (report_dir / "journal.json").write_text(scrub(json.dumps({"error": ascii(scrub(str(e)))})), encoding="utf-8")
     except (StepFailed, SpecError) as e:
         result["status"] = "error"
         result["error"] = ascii(scrub(str(e)))[:1200]
@@ -1502,7 +1502,7 @@ class Proxy:
                     headers["Mcp-Session-Id"] = sid
                 req = urllib.request.Request(proxy.upstream, body, headers, method=method)
                 try:
-                    with urllib.request.urlopen(req, timeout=300) as r:
+                    with urlopen(req, timeout=300) as r:
                         status, rbody = r.status, r.read()
                         sse = (r.headers.get("Content-Type") or "").startswith("text/event-stream")
                         hdrs = [(k, v) for k, v in r.headers.items() if k.lower() == "mcp-session-id"]
@@ -1613,14 +1613,14 @@ def cli_call(port, name, tool, args_text):
     mcp = None
     if sf.exists():
         mcp = Mcp.__new__(Mcp)
-        mcp.url, mcp.session, mcp.next_id, mcp.detailed = url, sf.read_text().strip() or None, 1, False
+        mcp.url, mcp.session, mcp.next_id, mcp.detailed = url, sf.read_text(encoding="utf-8").strip() or None, 1, False
     try:
         if mcp is None or not mcp.session:
             raise RuntimeError("no session")
         result = mcp.request("tools/call", {"name": tool, "arguments": args_text})
     except (RuntimeError, urllib.error.HTTPError, OSError):
         mcp = Mcp(url, f"evals-call-{name}", detailed=False)
-        sf.write_text(mcp.session or "")
+        sf.write_text(mcp.session or "", encoding="utf-8")
         result = mcp.request("tools/call", {"name": tool, "arguments": args_text})
     for c in result.get("content", []):
         if c.get("type") == "text":
@@ -1685,7 +1685,7 @@ def run_suite(tasks, mode, out, exe_dir, workers, lead_port, pool, log=print, wo
 
     perf = work / "lead" / "perf.toml"
     perf.parent.mkdir(parents=True, exist_ok=True)
-    perf.write_text(f"[swarm]\nlease_ports = [{pool[0]}, {pool[-1]}]\nscratch_root = \"{(work / 'lead' / 'scratch').as_posix()}\"\n")
+    perf.write_text(f"[swarm]\nlease_ports = [{pool[0]}, {pool[-1]}]\nscratch_root = \"{(work / 'lead' / 'scratch').as_posix()}\"\n", encoding="utf-8")
     swarm = EvalSwarm(Path(exe_dir) / ("specula" + EXE_SUFFIX), work, workers=workers, lead_port=lead_port,
                       engine_args=["--perf", str(perf)], verify=False, log=log, ports_per_worker=1)
     report = swarm.run(tasks)
@@ -1822,7 +1822,7 @@ def main():
     summary = summarise(results, m, {**extra, "wall_s": round(time.perf_counter() - started, 2)})
     report = {"format": "specula-evals", "version": EVAL_FORMAT, "summary": summary,
               "results": [results[i] for i in tasks if i in results]}
-    (out / "report.json").write_text(scrub(json.dumps(report, indent=1)))
+    (out / "report.json").write_text(scrub(json.dumps(report, indent=1)), encoding="utf-8")
     print(f"{summary['as_expected']}/{summary['ran']} as expected ({m}); skipped {len(summary['skipped'])}, errors {len(summary['errors'])}; "
           f"{summary['calls']} calls; report {out / 'report.json'}")
     for e in summary["errors"]:

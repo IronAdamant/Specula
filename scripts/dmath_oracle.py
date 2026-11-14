@@ -162,7 +162,7 @@ def round_f32(v):
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     print_only = "--print" in sys.argv
-    lines = open(args[0]).read().split("\n") if args else sys.stdin.read().split("\n")
+    lines = open(args[0], encoding="utf-8").read().split("\n") if args else sys.stdin.read().split("\n")
     bad = checked = 0
     for line in lines:
         parts = line.split()

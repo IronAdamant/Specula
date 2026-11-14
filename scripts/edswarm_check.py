@@ -337,7 +337,7 @@ def main():
             if not files:
                 return None
             cpu = []
-            for x in json.loads(files[-1].read_text()).get("frames") or []:
+            for x in json.loads(files[-1].read_text(encoding="utf-8")).get("frames") or []:
                 zones = {z[0]: z for z in (x.get("zones") or {}).get("main", [])}
                 if "frame" in zones:
                     cpu.append(zones["frame"][2] - (zones["frame/present"][2] if "frame/present" in zones else 0))
@@ -409,7 +409,7 @@ def main():
     report["validation_errors"] = eng.validation_errors()
     check(report["validation_errors"] == 0, f"validation errors at shutdown: {report['validation_errors']}")
     report["shots"] = [str(p) for p in ed.shots] if "ed" in dir() else []
-    (out / "report.json").write_text(json.dumps(report, indent=1))
+    (out / "report.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
     print(f"\nreport: {out / 'report.json'}")
     if ec.FAILS:
         print(f"FAIL: {len(ec.FAILS)} check(s) failed")

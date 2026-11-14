@@ -266,8 +266,8 @@ def part_security(a, out, summary):
         own = ann2.json("trace_call")
         check("args" in own.get("call", {}), "ann sees her own call's digest")
         files = list((out / "trace").glob("*.jsonl")) + list((out / "trace").glob("crash-*.json"))
-        check(all(token not in f.read_text(errors="replace") for f in files), "no trace file holds the token")
-        check(token not in eng.log_path.read_text(errors="replace"), "engine.log doesn't hold the token")
+        check(all(token not in f.read_text(errors="replace", encoding="utf-8") for f in files), "no trace file holds the token")
+        check(token not in eng.log_path.read_text(errors="replace", encoding="utf-8"), "engine.log doesn't hold the token")
     summary["security"] = {"calls_probed": 79}
 
 
@@ -276,7 +276,7 @@ def part_journal(a, out, summary):
     order, and trace_call showed an empty journal for 57 of 2,040 calls."""
     import threading
     print("every write's call names its journal entry, 16 agents at once:")
-    with Engine(a.exe, a.port + 6, out / "engine-journal.log", *engine_args(a, out, "journal"), cwd=str(ROOT)) as eng:
+    with Engine(a.exe, a.port + 6, out / "engine-journal.log", *engine_args(a, out, "journal", ["--lead", "journal-lead"]), cwd=str(ROOT)) as eng:
         lead = eng.mcp("journal-lead")
         lead.json("agent_hello", name="journal-lead", role="lead")
         lead.json("world_spawn", path="/j", shape="group")
@@ -372,7 +372,7 @@ def part_crash(a, out, summary):
 
 
 def run_seeded(a, out, sub, port, level):
-    with Engine(a.exe, port, out / f"engine-{sub}.log", *engine_args(a, out, sub, ["--paused", "--", "--seed", "7", "--title", "off"]), cwd=str(ROOT)) as eng:
+    with Engine(a.exe, port, out / f"engine-{sub}.log", *engine_args(a, out, sub, ["--paused", "--lead", "det-lead", "--", "--seed", "7", "--title", "off"]), cwd=str(ROOT)) as eng:
         m = eng.mcp("trace-det")
         m.hello("det-lead", role="lead")
         m.json("trace_settings", level=level, subsystems={"mcp": level, "write_policy": level, "jobs": level})
@@ -400,7 +400,7 @@ def compilers():
         return None
     import subprocess
     try:
-        listing = subprocess.run(["tasklist", "/FI", "IMAGENAME eq rustc.exe", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=10).stdout
+        listing = subprocess.run(["tasklist", "/FI", "IMAGENAME eq rustc.exe", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace").stdout
     except (OSError, subprocess.SubprocessError):
         return None
     return sum(1 for line in listing.splitlines() if line.startswith('"rustc.exe"'))
@@ -412,7 +412,7 @@ def part_cost(a, out, summary):
         print("  skip (needs --window)")
         return
     res = {}
-    with Engine(a.exe, a.port + 5, out / "engine-cost.log", *engine_args(a, out, "cost", ["--", "--seed", "7", "--title", "off"]), cwd=str(ROOT)) as eng:
+    with Engine(a.exe, a.port + 5, out / "engine-cost.log", *engine_args(a, out, "cost", ["--lead", "cost-lead", "--", "--seed", "7", "--title", "off"]), cwd=str(ROOT)) as eng:
         m = eng.mcp("trace-cost")
         m.hello("cost-lead", role="lead")
         m.json("play_new", seed=7)
@@ -443,7 +443,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     # --only adds to an earlier run's summary.
     old = out / "summary.json"
-    summary = json.loads(old.read_text()) if a.only and old.exists() else {}
+    summary = json.loads(old.read_text(encoding="utf-8")) if a.only and old.exists() else {}
     summary.pop("failures", None)
     parts = [("swarm", part_swarm), ("security", part_security), ("journal", part_journal), ("replay", part_replay), ("crash", part_crash), ("determinism", part_determinism)] + ([("cost", part_cost)] if a.cost else [])
     for name, part in parts:
@@ -454,7 +454,7 @@ def main():
         except Exception as e:  # noqa: BLE001 (a part's failure is reported, the others still run)
             check(False, f"{name}: {type(e).__name__}: {e}")
     summary["failures"] = FAILS
-    (out / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
+    (out / "summary.json").write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
     print(f"summary: {out / 'summary.json'}")
     if FAILS:
         raise SystemExit(f"trace_check: {len(FAILS)} check(s) failed")

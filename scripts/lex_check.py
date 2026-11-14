@@ -68,7 +68,7 @@ def main():
         idx = ann.json("lex_schema")
         check("archetype" in [k["name"] for k in idx["kinds"]], "lex_schema lists the item kinds")
 
-        doc = json.loads(SLICE.read_text())
+        doc = json.loads(SLICE.read_text(encoding="utf-8"))
         out = ann.json("lex_import", set=SET, document=doc)
         check(out["valid"] and out["items"] == len(doc["items"]), f"imported the slice: {out['items']} items, valid")
         v = ann.json("lex_validate", set=SET)
@@ -146,7 +146,7 @@ def main():
         filed = json.loads(out)
         check(len(out) < 2000 and filed.get("file") and filed["bytes"] > 64 * 1024,
               f"a big set ({filed.get('bytes')} bytes) exports to a file: {Path(filed.get('file', '')).name}")
-        check(json.loads(Path(filed["file"]).read_text())["items"].keys() == big["items"].keys(), "the file holds the whole document")
+        check(json.loads(Path(filed["file"]).read_text(encoding="utf-8"))["items"].keys() == big["items"].keys(), "the file holds the whole document")
         refused_inline = refused(ann, "lex_export", set="bigset", to="inline")
         check(refused_inline["error"] == "too_large", "to: inline past 64 KB is refused with too_large")
         again_out = json.loads(ann.text("lex_export", set="bigset"))
@@ -156,7 +156,7 @@ def main():
         # Only files under the engine's own folders, and nothing said about any other (review probe).
         secret = work / "outside" / "secret.json"
         secret.parent.mkdir(parents=True, exist_ok=True)
-        secret.write_text(json.dumps({"lex": 1, "tick_hz": 30, "items": {"password": {"kind": "param", "value": "hunter2"}}}))
+        secret.write_text(json.dumps({"lex": 1, "tick_hz": 30, "items": {"password": {"kind": "param", "value": "hunter2"}}}), encoding="utf-8")
         for bad in [str(secret), str(secret.parent / "missing.json"), filed["file"], "../outside/secret.json",
                     "\\\\localhost\\c$\\x.json", "\\\\?\\C:\\x.json", "C:x.json"]:
             e = refused(ann, "lex_import", set="probe", file=bad, dry_run=True)

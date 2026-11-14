@@ -96,7 +96,7 @@ def identity(pid):
             k32.CloseHandle(h)
     try:
         exe = os.path.normcase(os.readlink(f"/proc/{pid}/exe"))
-        start = open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[19]
+        start = open(f"/proc/{pid}/stat", encoding="utf-8").read().rsplit(")", 1)[1].split()[19]
         return exe, start
     except (OSError, IndexError):
         return None
@@ -108,7 +108,7 @@ def note_pid(out, engine):
     who = identity(engine.proc.pid)
     if who is None:
         return
-    with _pid_lock, open(out / PIDS, "a") as f:
+    with _pid_lock, open(out / PIDS, "a", encoding="utf-8") as f:
         f.write(f"{engine.proc.pid}\t{who[1]}\t{who[0]}\n")
 
 
@@ -118,15 +118,15 @@ def forget_pid(out, pid):
         f = out / PIDS
         if not f.exists():
             return
-        keep = [line for line in f.read_text().splitlines() if line.split("\t", 1)[0] != str(pid)]
-        f.write_text("".join(line + "\n" for line in keep))
+        keep = [line for line in f.read_text(encoding="utf-8").splitlines() if line.split("\t", 1)[0] != str(pid)]
+        f.write_text("".join(line + "\n" for line in keep), encoding="utf-8")
 
 
 def listed(out):
     """The engines.pid entries: (pid, start, exe path)."""
     f = out / PIDS
     rows = []
-    for line in (f.read_text().splitlines() if f.exists() else []):
+    for line in (f.read_text(encoding="utf-8").splitlines() if f.exists() else []):
         parts = line.split("\t")
         if len(parts) == 3 and parts[0].isdigit():
             rows.append((int(parts[0]), parts[1], parts[2]))
@@ -176,7 +176,7 @@ def prepare_out(out):
                              f"PIDs {sorted(set(alive)) or 'none listed'}. Stop them (by PID) or pick another --out.")
                 time.sleep(0.5)
     out.mkdir(parents=True, exist_ok=True)
-    (out / MARKER).write_text("made by scripts/balance_playtests.py; the next run empties this folder\n")
+    (out / MARKER).write_text("made by scripts/balance_playtests.py; the next run empties this folder\n", encoding="utf-8")
 
 
 class TrackedEngine(Engine):
@@ -198,9 +198,9 @@ class TrackedEngine(Engine):
 
 def game_data(point):
     """Sepulcra's game data with the point's Lex params applied: {file name: text}."""
-    enemies = json.loads((DATA / "enemies.json").read_text())
-    stones = json.loads((DATA / "stones.json").read_text())
-    waves = json.loads(SLICE_WAVES.read_text())
+    enemies = json.loads((DATA / "enemies.json").read_text(encoding="utf-8"))
+    stones = json.loads((DATA / "stones.json").read_text(encoding="utf-8"))
+    waves = json.loads(SLICE_WAVES.read_text(encoding="utf-8"))
     by_id = {e["id"]: e for e in enemies["enemies"]}
     for name, value in point.items():
         v = float(str(value).rstrip("pt%"))
@@ -218,7 +218,7 @@ def game_data(point):
             raise SystemExit(f"param '{name}' has no counterpart in Sepulcra's game data (known: <enemy>_hp, start_dust, "
                              f"start_tombstones, early_call_per_s, sell_refund)")
     return {
-        "slab_01.json": (DATA / "slab_01.json").read_text(),
+        "slab_01.json": (DATA / "slab_01.json").read_text(encoding="utf-8"),
         "stones.json": json.dumps(stones, indent=1),
         "enemies.json": json.dumps(enemies, indent=1),
         "waves.json": json.dumps(waves, indent=1),
@@ -278,7 +278,7 @@ class DataSwarm(Swarm):
         d = Path(cwd) / DATA_DIR
         d.mkdir(parents=True, exist_ok=True)
         for name, text in self.data.items():
-            (d / name).write_text(text)
+            (d / name).write_text(text, encoding="utf-8")
         e = super().engine(port, cwd, label, cache)
         e.__class__ = TrackedEngine
         return e
@@ -323,7 +323,7 @@ def main():
         sys.exit("never use 7471 (the interactive engine's port)")
     if a.lead_port in range(first, last + 1):
         sys.exit("--lead-port must be outside --pool")
-    targets = json.loads((ROOT / a.targets).read_text())
+    targets = json.loads((ROOT / a.targets).read_text(encoding="utf-8"))
     n_policies = len(targets.get("policies") or [1])
     per_seed_runs = max(1, min(a.runs, MAX_RUNS) // n_policies)
     if a.seeds in ("train", "holdout"):
@@ -337,15 +337,16 @@ def main():
     prepare_out(a.out)
     TrackedEngine.out = a.out
     perf = a.out / "perf.toml"
-    perf.write_text(f"[swarm]\nlease_ports = [{first}, {last}]\n")
+    perf.write_text(f"[swarm]\nlease_ports = [{first}, {last}]\n", encoding="utf-8")
     lead_dir = a.out / "lead"
     report = {"point": point, "game_point": game_point, "targets": a.targets, "seeds": seeds}
     started = time.perf_counter()
-    args = ["--headless", "--paused", "--captures", str(lead_dir / "captures"), "--perf", str(perf), "--", "--mute"]
+    # (The playtest swarm says hello on this engine as its lead: only the operator grants that.)
+    args = ["--headless", "--paused", "--lead", "playtest-lead", "--captures", str(lead_dir / "captures"), "--perf", str(perf), "--", "--mute"]
     with TrackedEngine(a.exe, a.lead_port, lead_dir / "lead.log", *args, cwd=str(lead_dir.parent)) as lead:
         lab = lead.mcp("balance-lab")
         lab.hello("balance-lab", role="balancer")
-        lab.json("lex_import", set=SET, document=json.loads(SLICE.read_text()))
+        lab.json("lex_import", set=SET, document=json.loads(SLICE.read_text(encoding="utf-8")))
         sweep = lab.json("balance_sweep", set=SET, targets=targets, points=[point], seeds=seeds, runs=True)
         lab.close()
         p = sweep["points"][0]
@@ -358,7 +359,7 @@ def main():
             specs[s["name"]] = s
         (a.out / "specs").mkdir()
         for name, s in specs.items():
-            (a.out / "specs" / f"{name}.json").write_text(json.dumps(s, indent=1))
+            (a.out / "specs" / f"{name}.json").write_text(json.dumps(s, indent=1), encoding="utf-8")
         swarm = DataSwarm(game_data(game_point), a.exe, a.out / "swarm", workers=a.workers, lead_port=a.lead_port, use_lead=True,
                           game_args=["--mute"], verify=False, log=lambda m: None)
         print(f"playtests: {len(specs)} on up to {a.workers} engines at once (ports {first}-{last})")
@@ -409,7 +410,7 @@ def main():
         "needs_human_playtest": True,
         "wall_s": round(time.perf_counter() - started, 2),
     })
-    (a.out / "report.json").write_text(json.dumps(report, indent=1))
+    (a.out / "report.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
     # Engines take themselves off engines.pid as they stop; anything still listed didn't.
     left = [pid for pid, start, exe in listed(a.out) if identity(pid) == (exe, start)]
     if left:

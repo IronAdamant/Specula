@@ -113,7 +113,7 @@ def main():
         for name, v in views.items():
             f = m.frame(width=1280, height=720, time_s=10.0, **v)
             shutil.copy(f["image"]["path"], out / f"{name}.png")
-            (out / f"{name}.json").write_text(json.dumps(f, indent=1))
+            (out / f"{name}.json").write_text(json.dumps(f, indent=1), encoding="utf-8")
             grass = [s for s in f.get("subjects", []) if str(s.get("path", "")).startswith("/slab/grass")]
             px = sum(s.get("visible_px", 0) for s in grass)
             report[f"{name}_grass_px"] = px
@@ -185,7 +185,7 @@ def main():
     errors = eng.validation_errors()
     check(errors == 0, f"no validation messages ({errors})")
     report["failures"] = FAILS
-    (out / "report.json").write_text(json.dumps(report, indent=1))
+    (out / "report.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
     print(f"report: {out / 'report.json'}")
     if FAILS:
         raise SystemExit(f"FAILED ({len(FAILS)})")

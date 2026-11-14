@@ -192,7 +192,7 @@ def main():
         summary["authoring"] = {"patch": patch, "clip": wave, "wave_check": r["passed"], "refused": err, "undo": undo}
     errors = eng.validation_errors()
     summary["validation_errors"] = errors
-    (out / "summary.json").write_text(json.dumps(summary, indent=1))
+    (out / "summary.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
     print(f"validation errors at shutdown: {errors}; summary in {out / 'summary.json'}")
     if errors:
         fail("validation errors")

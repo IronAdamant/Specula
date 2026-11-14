@@ -38,7 +38,7 @@ ADAPTERS = {"discrete": "discrete", "integrated": "integrated"}
 
 def run_timed(cmd, env=None, cwd=ROOT):
     start = time.perf_counter()
-    proc = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, errors="replace")
+    proc = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
     return time.perf_counter() - start, proc
 
 
@@ -49,8 +49,8 @@ def stats_ms(samples_s):
 
 
 def git_state():
-    commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
-    dirty = bool(subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, capture_output=True, text=True).stdout.strip())
+    commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
+    dirty = bool(subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip())
     return {"commit": commit, "dirty": dirty}
 
 
@@ -59,7 +59,7 @@ def machine():
     if sys.platform == "win32":
         out = subprocess.run(["powershell", "-NoProfile", "-Command",
                               "(Get-CimInstance Win32_Processor).Name; (Get-CimInstance Win32_VideoController).Name"],
-                             capture_output=True, text=True).stdout.splitlines()
+                             capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.splitlines()
         lines = [l.strip() for l in out if l.strip()]
         if lines:
             return {"cpu": lines[0], "gpus": lines[1:], "os": platform.platform()}
@@ -250,7 +250,7 @@ def main():
     stamp = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
     work = args.work or ROOT / "target" / "perf-baseline" / stamp
     work.mkdir(parents=True, exist_ok=True)
-    rustc = subprocess.run(["rustc", "-V"], capture_output=True, text=True).stdout.strip()
+    rustc = subprocess.run(["rustc", "-V"], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
     result = {"schema": "specula.baseline/v1", "when": stamp, "label": args.label, "git": git_state(),
               "machine": machine(), "rustc": rustc, "build": {}, "engine": {}}
     busy = cpu_busy_pct()
@@ -275,7 +275,7 @@ def main():
     result["machine"]["cpu_busy_pct_after"] = cpu_busy_pct()
     args.out.mkdir(parents=True, exist_ok=True)
     path = args.out / f"{stamp}-{args.label}.json"
-    path.write_text(json.dumps(result, indent=2) + "\n")
+    path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(f"\nsaved {path}")
     for key, value in flatten({"build": result["build"], "engine": result["engine"]}):
         print(f"  {key:55s} {value}")
@@ -288,7 +288,7 @@ def main():
             print(f"ERROR {name}: validation_errors={eng.get('validation_errors')} clean_exit={eng.get('clean_exit')}")
             status = 1
     if args.compare:
-        regressions = compare(json.loads(args.compare.read_text()), result, args.threshold)
+        regressions = compare(json.loads(args.compare.read_text(encoding="utf-8")), result, args.threshold)
         if regressions:
             print(f"{len(regressions)} metric(s) regressed by more than {args.threshold:.0%}")
             status = status or 2

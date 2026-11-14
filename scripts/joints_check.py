@@ -44,7 +44,7 @@ def save(name, result):
         elif c["type"] == "text":
             text = c["text"]
     data = json.loads(text)
-    (OUT / f"{name}.json").write_text(json.dumps(data, indent=2))
+    (OUT / f"{name}.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
     return data
 
 
@@ -140,7 +140,7 @@ def run(m, failures, label):
     for _ in range(10):
         m.json("time_control", action="step", ticks=30)
     listing = m.json("physics_joints", limit=64)
-    (OUT / f"{label}_joints.json").write_text(json.dumps(listing, indent=2))
+    (OUT / f"{label}_joints.json").write_text(json.dumps(listing, indent=2), encoding="utf-8")
     by_path = {j["path"]: j for j in listing["joints"]}
     check(listing["total"] == len(made) == 12, f"{label}: physics_joints lists the {listing['total']} joints made", failures)
     door = next((j for j in listing["joints"] if j["b"]["path"] == "/door"), {})
@@ -166,7 +166,7 @@ def run(m, failures, label):
         {"check": "at_rest", "entities": "/chain", "max_speed": 0.1},
         {"check": "no_penetration", "max_depth": 0.03},
     ])
-    (OUT / f"{label}_checks.json").write_text(json.dumps(checks, indent=2))
+    (OUT / f"{label}_checks.json").write_text(json.dumps(checks, indent=2), encoding="utf-8")
     for r in checks["results"]:
         check(r["pass"], f"{label}: physics_check {r['check']} " + json.dumps({k: v for k, v in r.items() if k not in ("check", "pass")})[:200], failures)
     end = save(f"{label}_joints_end", m.call("sight_frame", overlays=["joints"], **JOINT_VIEW))
@@ -234,7 +234,7 @@ def ragdolls(m, failures):
     own = m.json("physics_joints", entity="/shambler")
     check(own["total"] == len(listed), f"ragdoll: physics_joints entity=/shambler lists its ragdoll's joints ({own['total']})", failures)
     info = m.json("ragdoll_info", path="/shambler")
-    (OUT / "ragdoll_limp_info.json").write_text(json.dumps(info, indent=2))
+    (OUT / "ragdoll_limp_info.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
     check(info.get("active") and len(info.get("parts", [])) >= 12, f"ragdoll: {len(info.get('parts', []))} parts, {len(info.get('joints', []))} joints", failures)
     worst = max((j.get("linear_error_m", 0) for j in info.get("joints", [])), default=1)
     check(worst < 0.03, f"ragdoll: its joints hold ({worst} m worst gap)", failures)
@@ -264,7 +264,7 @@ def ragdolls(m, failures):
     m.json("ragdoll_set", path="/shambler", hit={"bone": "forearm_l", "impulse": [0, 18, -18]})
     frames(m, "powered", [1, 3, 6, 10, 20, 40], overlays_at=(3,))
     pinfo = m.json("ragdoll_info", path="/shambler")
-    (OUT / "ragdoll_powered_info.json").write_text(json.dumps(pinfo, indent=2))
+    (OUT / "ragdoll_powered_info.json").write_text(json.dumps(pinfo, indent=2), encoding="utf-8")
     check(pinfo.get("mode") == "powered" and pinfo.get("active"), "ragdoll: powered and active", failures)
     err, bad = tool(m, "ragdoll_set", path="/floor", mode="limp")
     check(err and "not_a_model" in json.dumps(bad), "ragdoll: a non-model is refused with why", failures)
@@ -335,7 +335,7 @@ def main():
             rag = ragdolls(m, failures)
         claims_probes(eng, failures)
     check(eng.validation_errors() in (0, None), "ragdoll: clean shutdown", failures)
-    (OUT / "summary.json").write_text(json.dumps({"runs": runs, "ragdoll": rag, "failures": failures}, indent=2))
+    (OUT / "summary.json").write_text(json.dumps({"runs": runs, "ragdoll": rag, "failures": failures}, indent=2), encoding="utf-8")
     print("PASS" if not failures else f"FAIL ({len(failures)})")
     return 0 if not failures else 1
 

@@ -231,11 +231,11 @@ def negative_control(exe, out, port):
     src = out / "replays" / "centre_s7.json"
     if not src.exists():
         return {"skipped": "no centre_s7 replay"}
-    replay = json.loads(src.read_text())
+    replay = json.loads(src.read_text(encoding="utf-8"))
     replay["spec"]["steps"][0]["args"]["seed"] = "8"
     work = out / "negative-control"
     work.mkdir(parents=True, exist_ok=True)
-    (work / "tampered.json").write_text(json.dumps(replay))
+    (work / "tampered.json").write_text(json.dumps(replay), encoding="utf-8")
     from specula_mcp import Engine
     from playtest_swarm import finish
     with Engine(exe, port, work / "engine.log", "--headless", "--paused", "--captures", str(work / "captures"), "--", "--mute", cwd=work) as eng:
@@ -322,7 +322,7 @@ def main():
         res_dir = Path(a.results)
         res_dir.mkdir(parents=True, exist_ok=True)
         path = res_dir / f"{time.strftime('%Y%m%d-%H%M%S')}-sepulcra-suite.json"
-        path.write_text(json.dumps(summary, indent=1))
+        path.write_text(json.dumps(summary, indent=1), encoding="utf-8")
         print(f"results: {path}")
     ok = p["passed"] == p["playtests"] and p["verified"] == p["playtests"] and control.get("passed", False)
     print("SUITE PASSED" if ok else "SUITE FAILED")

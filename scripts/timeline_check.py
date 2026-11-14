@@ -182,11 +182,11 @@ def scripted(args, out):
         check(abs(door["position"][1] - 2.5) < 1e-3, f"evaluated at 1.5 s without playing: the door is at y {door['position'][1]}")
         # Rail checks.
         good = alice.json("timeline_check", path="orbit", subject="/pillar")
-        (out / "check_orbit.json").write_text(json.dumps(good, indent=2))
+        (out / "check_orbit.json").write_text(json.dumps(good, indent=2), encoding="utf-8")
         check(good["ok"], "the orbit passes every rail check: " + ", ".join(f"{c['check']} {c.get('value')}" for c in good["checks"]))
         check(good["colliders_considered"] >= 2, f"colliders considered: {good['colliders_considered']}")
         badc = alice.json("timeline_check", path="bad", subject="/pillar")
-        (out / "check_bad.json").write_text(json.dumps(badc, indent=2))
+        (out / "check_bad.json").write_text(json.dumps(badc, indent=2), encoding="utf-8")
         bc = checks_of(badc)
         check(not badc["ok"], "the bad rail fails")
         check(not bc["clearance"]["ok"] and any("/pillar" in f["entity"] for f in bc["clearance"].get("failures", [])), "clearance: the camera passes through /pillar (physics raycasts)")
@@ -419,7 +419,7 @@ def sepulcra(args, out):
             for subject, lo, hi in (("/slab", 0.3, 1.5), ("/slab/graveyard", graveyard_min, 1.0)):
                 rep = mcp.json("timeline_check", path=name, subject=subject, min_size=lo, max_size=hi)
                 tag = subject.strip("/").replace("/", "_")
-                (out / f"check_{name}_{tag}.json").write_text(json.dumps(rep, indent=2))
+                (out / f"check_{name}_{tag}.json").write_text(json.dumps(rep, indent=2), encoding="utf-8")
                 failed = [f"{c['check']}: {c['message']}" for c in rep["checks"] if not c["ok"] and c.get("severity") == "error"]
                 check(rep["ok"], f"{name} with {subject}: every rail check passes (upright, no roll, on screen, size {lo}..{hi}, clearance, no jumps){'' if rep['ok'] else ': ' + '; '.join(failed)}")
                 summary[f"check_{name}_{tag}"] = {c["check"]: [c.get("ok"), c.get("value")] for c in rep["checks"]}
@@ -431,7 +431,7 @@ def sepulcra(args, out):
                 "move": [{"t": 0, "at": 0}, {"t": 4, "at": 1, "ease": "smooth"}], "look": {"ahead": 10}}]}
         mcp.json("timeline_set", path="dive", timeline=dive)
         rep = mcp.json("timeline_check", path="dive", subject="/slab")
-        (out / "check_dive.json").write_text(json.dumps(rep, indent=2))
+        (out / "check_dive.json").write_text(json.dumps(rep, indent=2), encoding="utf-8")
         cl = checks_of(rep)["clearance"]
         check(not cl["ok"], f"a rail diving through the slab fails clearance: {[f['entity'] for f in cl.get('failures', [])][:3]}")
         # Win (autoplayed, stepped), then the victory shot in the window.
@@ -635,7 +635,7 @@ def main():
         summary["sepulcra"] = sepulcra(args, out)
     summary["failures"] = FAILURES
     summary["passed"] = not FAILURES
-    (out / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
+    (out / "summary.json").write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
     print(("PASS" if not FAILURES else f"FAIL ({len(FAILURES)})") + f": summary in {rel(out / 'summary.json')}")
     sys.exit(0 if not FAILURES else 1)
 

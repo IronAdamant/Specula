@@ -147,8 +147,8 @@ def main():
     print("1. decoder fixtures, streaming and music (cargo test --release)")
     if not a.skip_tests:
         r = subprocess.run(["cargo", "test", "--release", "-j", "4", "-p", "specula-audio", "--test", "vorbis", "--test", "streaming", "--test", "sepulcra_music"],
-                           cwd=ROOT, capture_output=True, text=True)
-        (out / "cargo-test.log").write_text(r.stdout + r.stderr)
+                           cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        (out / "cargo-test.log").write_text(r.stdout + r.stderr, encoding="utf-8")
         passed = [l for l in (r.stdout + r.stderr).splitlines() if l.startswith("test result:")]
         check(r.returncode == 0 and passed and all(" 0 failed" in l for l in passed), f"cargo test: {'; '.join(passed) or 'no result'}")
 
@@ -283,7 +283,7 @@ def main():
 
 def finish(out, summary):
     summary["failures"] = failures
-    (out / "summary.json").write_text(json.dumps(summary, indent=2))
+    (out / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"summary: {out / 'summary.json'}")
     if failures:
         print(f"FAILED: {len(failures)} check(s)")

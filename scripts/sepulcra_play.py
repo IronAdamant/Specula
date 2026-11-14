@@ -49,7 +49,7 @@ def to_args(entry):
 class Run:
     def __init__(self, mcp, out):
         self.mcp, self.out = mcp, out
-        self.entries = json.loads(LAYOUT.read_text())["commands"]
+        self.entries = json.loads(LAYOUT.read_text(encoding="utf-8"))["commands"]
         self.next = 0
         self.captures = []
         self.applied, self.skipped = 0, []
@@ -101,8 +101,15 @@ class Run:
             print(f"    warnings: {packet['warnings']}")
 
 
-def check_hud(mcp):
-    """The HUD as data: its screens and widgets, and its buttons pressed as a player would."""
+def check_hud(mcp, owner):
+    """The HUD as data: its screens and widgets, and its buttons pressed as a player would.
+    `owner` is a session the operator granted owner: the window's display is the human's."""
+    # A plain 100% display first: the HUD lays itself out for the display it is on (its build
+    # bar is a radial menu below 1200 units of width), and the desk this runs at changes when a
+    # monitor is switched off (HANDOFF: "The display changes under you").
+    pinned = owner.request("tools/call", {"name": "ui_act", "arguments": {"display": {"diagonal_in": None, "touch": False, "os_scale": 1.0}, "steps": []}})
+    if pinned.get("isError"):
+        raise SystemExit(f"HUD check: the display could not be pinned: {json.dumps(pinned)[:300]}")
     ui = mcp.json("play_ui", limit=200)["ui"]
     ids = {w.get("id") for s in ui.get("screens", []) for w in s.get("widgets", []) if w.get("id")}
     want = {"wave", "dust", "tombstones", "call_wave", "build_wall", "pause_button"}
@@ -159,11 +166,13 @@ def main():
         sys.exit(f"{exe} not found: cargo build -p sepulcra-app --release")
     out = Path(args.out) if args.out else ROOT / "target" / "sepulcra-play" / (args.adapter + ("-lex" if args.rules == "lex" else ""))
     out.mkdir(parents=True, exist_ok=True)
-    extra = ["--adapter", args.adapter, "--captures", str(out / "captures"), "--size", "1280x720"]
+    extra = ["--adapter", args.adapter, "--captures", str(out / "captures"), "--size", "1280x720", "--owner", "play-owner"]
     if args.headless:
         extra.append("--headless")
-    # The game's own arguments: the seed for its first run, and no sound unless asked.
-    extra += ["--", "--seed", str(args.seed)] + ([] if args.sound else ["--mute"]) + ["--rules", args.rules]
+    # The game's own arguments: the seed for its first run, no sound unless asked, and no
+    # title or intro (with its window the game stands at its title since it has a shell, and
+    # the HUD under it is not a player's to press).
+    extra += ["--", "--seed", str(args.seed), "--title", "off", "--intro", "off"] + ([] if args.sound else ["--mute"]) + ["--rules", args.rules]
     summary = {"adapter": args.adapter, "seed": args.seed, "rules": args.rules}
     with Engine(exe, args.port, out / "engine.log", *extra, cwd=out) as eng:
         mcp = eng.mcp("sepulcra-play")
@@ -242,7 +251,10 @@ def main():
                       f"draws built {perf.get('draw_list')}; cache {perf.get('draw_cache')}")
                 run.capture("busy_wave", **overview)
                 run.capture("busy_wave_hud", eye=[14, 16, 22], target=[0, 0, 2], fov=45, ui=True)
-                summary["hud"] = check_hud(mcp)
+                owner = eng.mcp("play-owner")
+                owner.hello("play-owner", role="owner")
+                summary["hud"] = check_hud(mcp, owner)
+                owner.close()
                 summary["anim"] = check_anim(mcp)
                 busy_done = True
                 # Fast-forward a stretch with scale (the clock runs ticks faster than real time).
@@ -285,7 +297,7 @@ def main():
         summary["captures"] = run.captures
     errors = eng.validation_errors()
     summary["validation_errors"] = errors
-    (out / "summary.json").write_text(json.dumps(summary, indent=2))
+    (out / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"validation errors at shutdown: {errors}; summary in {out / 'summary.json'}")
     ok = errors == 0 and summary["replay"]["status"] == "verified" and summary.get("lex_verified", True)
     sys.exit(0 if ok else 1)

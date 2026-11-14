@@ -284,7 +284,7 @@ def make_assets(out):
                           ("export_recipe", ["warding_stone", "imported/warding_stone_t2.glb", "tier=2"])]:
         args = [str(SEPULCRA), args[0], str(assets / args[1]), *args[2:]]
         r = subprocess.run(["cargo", "run", "-q", "-p", "specula-gltf", "--example", example, "--", *args],
-                           cwd=str(ROOT), capture_output=True, text=True)
+                           cwd=str(ROOT), capture_output=True, text=True, encoding="utf-8", errors="replace")
         if r.returncode != 0:
             sys.exit(f"{example}: {r.stderr}")
         print("  " + r.stdout.strip().replace(str(assets) + "\\", "").replace(str(assets) + "/", ""))
@@ -295,7 +295,7 @@ def full_subjects(packet):
     """Every subject of a capture (the reply holds the biggest max_subjects; the packet all)."""
     path = packet["image"].get("packet_path")
     if path and Path(path).exists():
-        return json.loads(Path(path).read_text())["subjects"]
+        return json.loads(Path(path).read_text(encoding="utf-8"))["subjects"]
     return packet["subjects"]
 
 
@@ -491,7 +491,7 @@ def other_engines(own_pid):
     n = 0
     for image in ("specula.exe", "sepulcra.exe"):
         r = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {image}", "/FO", "CSV", "/NH"],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
         n += sum(1 for line in r.stdout.splitlines() if line.startswith('"') and f'"{own_pid}"' not in line)
     return n
 
@@ -661,7 +661,7 @@ def main():
         check3 = Checks()
         s["instances"] = criterion_instances(Path(a.exe), adapter, a.port + 1, out, check3)
         status[3].append(("FAIL" if check3.failures else "PASS", adapter, check3.failures))
-    (out / "m2_exit.json").write_text(json.dumps(summary, indent=1))
+    (out / "m2_exit.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
     print(f"summary: {out / 'm2_exit.json'}")
 
     names = {1: "lit, shadowed scene: imported + procedural assets, animated character",

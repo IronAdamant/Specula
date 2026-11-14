@@ -79,10 +79,10 @@ fn tick(stream: &mut Streamer, gpu: &mut Gpu, models: &mut GpuModels, shared: &A
 /// A capture's streaming step: its view becomes a source; what it still waits for.
 fn capture(stream: &mut Streamer, gpu: &mut Gpu, models: &mut GpuModels, shared: &Arc<SharedLibrary>, world: &World, cam: Camera) -> usize {
     stream.sync_models(models, gpu, shared, world, 0);
-    stream.capture_source(cam, 640, 360);
+    stream.capture_source(cam, 640, 360, None);
     stream.frame(gpu, models, shared, world, 0, false);
     gpu.flush_uploads().unwrap();
-    stream.waiting_in(&[(cam, 640, 360)], world, models)
+    stream.waiting_in(&[(cam, 640, 360, None)], world, models)
 }
 
 /// What streaming has done so far: proxy builds and uploads, model uploads, passes. A wait that

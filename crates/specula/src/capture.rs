@@ -75,6 +75,9 @@ struct ViewReq {
     width: u32,
     height: u32,
     include_ui: bool,
+    /// The level every model is drawn at, when the capture forces one (`lod`): streaming
+    /// uploads that level for the view.
+    lod: Option<usize>,
     /// How the camera was chosen, for the packet.
     source: Json,
     warning: Option<String>,
@@ -491,7 +494,7 @@ impl Engine {
         if let (None, Some(height_m)) = (&spec.camera, spec.ortho) {
             camera.projection = sight::Projection::Ortho { height_m };
         }
-        Ok(ViewReq { camera, width: spec.width, height: spec.height, include_ui: spec.include_ui, source, warning })
+        Ok(ViewReq { camera, width: spec.width, height: spec.height, include_ui: spec.include_ui, lod: spec.lod, source, warning })
     }
 
     /// The views a job renders (its first view is the main one).
@@ -499,12 +502,12 @@ impl Engine {
         match job {
             Job::Frame(spec) | Job::Mark { frame: spec, .. } => Ok(vec![self.frame_view(spec, session)?]),
             Job::Query(q) => Ok(vec![self.frame_view(&q.frame, session)?]),
-            Job::Pick(p) => Ok(vec![ViewReq { camera: p.camera, width: p.width, height: p.height, include_ui: true, source: source("editor_pick"), warning: None }]),
+            Job::Pick(p) => Ok(vec![ViewReq { camera: p.camera, width: p.width, height: p.height, include_ui: true, lod: None, source: source("editor_pick"), warning: None }]),
             Job::Diff { name, .. } => {
                 let key = self.swarm.key(session);
                 let mark = self.marks.get(&key, name).ok_or_else(|| mark_missing(name))?;
                 let v = &mark.view;
-                Ok(vec![ViewReq { camera: v.camera, width: v.width, height: v.height, include_ui: v.include_ui, source: source("mark"), warning: None }])
+                Ok(vec![ViewReq { camera: v.camera, width: v.width, height: v.height, include_ui: v.include_ui, lod: v.lod, source: source("mark"), warning: None }])
             }
             Job::Orbit(o) => {
                 let (center, radius, _) = self.orbit_target(&o.target)?;
@@ -513,7 +516,7 @@ impl Engine {
                 Ok((0..o.views)
                     .map(|i| {
                         let (camera, _) = orbit::view(center, distance, o.elevation_deg, o.start_deg, i, o.views, o.fov_y_deg);
-                        ViewReq { camera, width: tw, height: th, include_ui: o.include_ui, source: source("orbit"), warning: None }
+                        ViewReq { camera, width: tw, height: th, include_ui: o.include_ui, lod: o.lod, source: source("orbit"), warning: None }
                     })
                     .collect())
             }
@@ -1480,9 +1483,9 @@ fn fully_hidden(s: &Subject, record: Option<&sight::FrameRecord>) -> bool {
     }
 }
 
-/// The views' cameras and sizes, as streaming takes them.
-fn stream_views(views: &[ViewReq]) -> Vec<(Camera, u32, u32)> {
-    views.iter().map(|v| (v.camera, v.width, v.height)).collect()
+/// The views' cameras, sizes and forced levels, as streaming takes them.
+fn stream_views(views: &[ViewReq]) -> Vec<crate::streaming::CaptureView> {
+    views.iter().map(|v| (v.camera, v.width, v.height, v.lod)).collect()
 }
 
 fn encode_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
@@ -1773,7 +1776,7 @@ mod frame_record_engine_tests {
         let start = Instant::now();
         loop {
             e.pump_builds(Some(Duration::from_millis(20)));
-            let views: Vec<(Camera, u32, u32)> = cams.iter().map(|c| (*c, W, H)).collect();
+            let views: Vec<crate::streaming::CaptureView> = cams.iter().map(|c| (*c, W, H, None)).collect();
             e.stream_capture(&views);
             e.stream_tick(None);
             if done(e) {
@@ -1905,5 +1908,42 @@ mod frame_record_engine_tests {
         assert_eq!(j.get("drawn_as").and_then(Json::as_str), Some("not_resident"), "400 m out with a 20 m radius: left off the GPU: {j}");
         assert_eq!(j.get("drawn"), Some(&Json::Bool(false)), "{j}");
         assert!(!seen.contains(&far));
+    }
+
+    /// A capture that forces a level gets it. Streaming uploads each build down to the level
+    /// its size on screen needs, so a camera far from a model finds its coarse levels on the
+    /// GPU; a capture from there with `lod: 0` drew the finest of those, counted as coarser,
+    /// and so did every capture after it (M5's final audit, `scripts/model_gallery.py`: 58 of
+    /// 67 models after 40 captures). The level a capture forces is what its views want.
+    #[test]
+    fn a_capture_that_forces_a_level_gets_it_uploaded() {
+        let Some(mut e) = engine("forced-lod") else { return };
+        let patch = Json::parse(r#"{"settle_s": 0, "upload_ms": 50, "upload_mb": 64, "hlod": false, "radius_m": 200}"#).unwrap();
+        e.stream.set(&patch, "test", &mut e.gpu, &mut e.models).unwrap();
+        spawn(&mut e, r#"{"name": "stone", "shape": "model", "recipe": "recipes/tombstone.json", "seed": 5, "position": [0, 0, 0]}"#);
+        let cam = Camera::new(Vec3::new(0.0, 2.0, 20.0), Vec3::new(0.0, 0.5, 0.0), 60.0);
+        let none = ov::Spec::default();
+        let opts = |lod| ViewOpts { include_ui: false, lod, time_s: 0.0, overlays: &none, caption: None, ids: false, hud: true, fill: None };
+        // By size first: the stone is a dozen pixels high from here and drawn at a coarse level.
+        settle(&mut e, &[cam], "the build and its upload", |e| {
+            e.library.lock().in_flight() == 0 && e.stream_capture(&[(cam, W, H, None)]) == 0 && e.render_view(cam, W, H, &opts(None)).expect("render").stats.not_resident == 0
+        });
+        let by_size = e.render_view(cam, W, H, &opts(None)).expect("render").stats;
+        assert_eq!((by_size.histogram[0], by_size.coarser, by_size.not_resident), (0, 0, 0), "the case under test: 20 m away, a coarser level than 0 is chosen and is there");
+        // The same view with level 0 forced: the capture waits for it, then draws it.
+        let views = [(cam, W, H, Some(0))];
+        let start = Instant::now();
+        loop {
+            e.pump_builds(Some(Duration::from_millis(20)));
+            let waiting = e.stream_capture(&views);
+            e.stream_tick(None);
+            if waiting == 0 {
+                break;
+            }
+            assert!(start.elapsed() < Duration::from_secs(300), "level 0 never arrived");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let forced = e.render_view(cam, W, H, &opts(Some(0))).expect("render").stats;
+        assert_eq!((forced.histogram[0], forced.coarser), (1, 0), "lod 0 asked for and drawn: {:?}", forced.histogram);
     }
 }

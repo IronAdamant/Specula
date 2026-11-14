@@ -346,7 +346,7 @@ def run(args, work):
               f"first_divergent_tick={cmp.get('first_divergent_tick')} components={cmp.get('components')}")
         check(cmp.get("match") is True, "the loaded run matches the saving run on every tick")
         check(cmp.get("common_ticks") == args.ticks, f"over all {args.ticks} ticks")
-        rows = json.loads(Path(trace_b["file"]).read_text())["ticks"]
+        rows = json.loads(Path(trace_b["file"]).read_text(encoding="utf-8"))["ticks"]
         names = sorted(rows[-1][2].keys()) if rows else []
         report["subsystems_compared"] = names
         for name in ("sim", "economy", "enemies", "defences", "projectiles", "physics", "logic", "nav", "lex_live"):
@@ -519,7 +519,7 @@ def main():
         args.out.parent.mkdir(parents=True, exist_ok=True)
         # The work folder is a temp path under the user's home: name it <work> so committed reports stay private.
         text = json.dumps(report, indent=2).replace(json.dumps(str(work))[1:-1], "<work>")
-        args.out.write_text(text + "\n")
+        args.out.write_text(text + "\n", encoding="utf-8")
     for p in problems:
         print(f"  PROBLEM: {p}")
     print("PASS" if not problems else "FAIL")

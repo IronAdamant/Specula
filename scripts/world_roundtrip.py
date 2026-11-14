@@ -23,7 +23,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from specula_mcp import detailed, reply_of
+from specula_mcp import detailed, poll, reply_of, urlopen
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -45,7 +45,8 @@ class Mcp:
         if self.session:
             headers["Mcp-Session-Id"] = self.session
         req = urllib.request.Request(self.url, json.dumps(msg).encode(), headers)
-        with urllib.request.urlopen(req, timeout=180) as r:  # longer than the engine may hold a call (startgate.rs: 120 s, then the call's own 30 s)
+        # longer than the engine may hold a call (startgate.rs: 120 s, then the call's own 30 s)
+        with urlopen(req, timeout=180) as r:
             self.session = self.session or r.headers.get("Mcp-Session-Id")
             body = r.read()
         return reply_of(body)
@@ -97,7 +98,7 @@ class Mcp:
 
 def server_up(url):
     try:
-        urllib.request.urlopen(urllib.request.Request(url, method="GET"), timeout=1)
+        poll(urllib.request.Request(url, method="GET"))
     except urllib.error.HTTPError:
         return True  # 405 from our server
     except OSError:
@@ -107,7 +108,7 @@ def server_up(url):
 
 def start(exe, out, port, run):
     log_path = out / f"engine_run{run}.log"
-    log = open(log_path, "w")
+    log = open(log_path, "w", encoding="utf-8")
     proc = subprocess.Popen(
         [str(exe), "--settings", "off", "--headless", "--lead", "keeper", "--port", str(port), "--worlds", str(out / "worlds"), "--world", "e2e",
          "--captures", str(out / "captures")],
@@ -117,7 +118,7 @@ def start(exe, out, port, run):
     url = f"http://127.0.0.1:{port}/mcp"
     for _ in range(150):
         if proc.poll() is not None:
-            sys.exit(f"run {run}: engine exited early:\n{log_path.read_text()}")
+            sys.exit(f"run {run}: engine exited early:\n{log_path.read_text(encoding='utf-8')}")
         if server_up(url):
             return proc, log, log_path
         time.sleep(0.2)
@@ -129,7 +130,7 @@ def stop(proc, log, log_path, run):
     proc.send_signal(signal.CTRL_BREAK_EVENT)
     code = proc.wait(timeout=30)
     log.close()
-    last = log_path.read_text().strip().splitlines()[-1]
+    last = log_path.read_text(encoding="utf-8").strip().splitlines()[-1]
     if code != 0 or "shut down" not in last:
         sys.exit(f"run {run}: unclean shutdown (exit {code}): {last}")
 
@@ -256,7 +257,7 @@ def main():
             [str(args.exe), "--headless", "--port", str(args.port + 1), "--worlds", str(args.out / "worlds"),
              "--world", "e2e", "--captures", str(args.out / "captures")],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8", errors="replace")
         if rival.returncode == 0 or "world_locked" not in rival.stderr:
             problems.append(f"a second engine on the same world was not refused: {rival.returncode} {rival.stderr[-300:]}")
         png2, packet2 = m.frame()

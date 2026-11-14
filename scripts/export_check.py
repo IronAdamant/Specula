@@ -482,7 +482,7 @@ def main():
             planes[adapter] = {f"{name} {view}": px for (name, view), px in seen.items()}
     check(len(planes) >= 1, f"the solid planes were drawn on {len(planes)} adapter(s): {', '.join(planes)}")
     report["planes"] = planes
-    (out / "report.json").write_text(json.dumps(report, indent=1))
+    (out / "report.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
     print(f"\nreport: {out / 'report.json'}\npicture: {out / 'original_and_exported.png'}")
     if FAILS:
         print(f"FAIL: {len(FAILS)} check(s) failed")

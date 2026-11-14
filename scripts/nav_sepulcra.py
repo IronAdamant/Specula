@@ -130,19 +130,19 @@ def main():
                     (OUT / "slab_top.png").write_bytes(base64.b64decode(part["data"]))
                 elif part["type"] == "text":
                     text = part["text"]
-            (OUT / "slab_top.json").write_text(json.dumps(json.loads(text), indent=2))
+            (OUT / "slab_top.json").write_text(json.dumps(json.loads(text), indent=2), encoding="utf-8")
             persp = m.call("sight_frame", overlays=["navmesh", "paths"], eye=[26, 24, 34], target=[0, -2, 2], width=1280, height=720)
             for part in persp["content"]:
                 if part["type"] == "image":
                     (OUT / "slab_perspective.png").write_bytes(base64.b64decode(part["data"]))
                 elif part["type"] == "text":
-                    (OUT / "slab_perspective.json").write_text(json.dumps(json.loads(part["text"]), indent=2))
+                    (OUT / "slab_perspective.json").write_text(json.dumps(json.loads(part["text"]), indent=2), encoding="utf-8")
             state = m.json("play_state")
             check(state["outcome"] == "running", "the game kept running beside it", failures)
             summary = {"build": {k: build[k] for k in ("polygons", "tiles", "tiles_built", "ms")}, "paths": [{k: p[k] for k in ("status", "length", "corner_count", "ms")} for p in paths]}
     check(eng.validation_errors() in (0, None), "clean shutdown", failures)
     summary["failures"] = failures
-    (OUT / "summary.json").write_text(json.dumps(summary, indent=2))
+    (OUT / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print("PASS" if not failures else f"FAIL ({len(failures)})")
     return 0 if not failures else 1
 

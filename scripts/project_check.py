@@ -77,13 +77,13 @@ def module_workspace(ws):
         shutil.copytree(ROOT / "crates" / c, ws / "crates" / c, ignore=ignore)
     shutil.copytree(ROOT / "games" / "ambulo", ws / "mods" / "ambulo", ignore=ignore)
     shutil.copytree(ROOT / ".cargo", ws / ".cargo")
-    manifest = (ROOT / "Cargo.toml").read_text()
+    manifest = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
     manifest = re.sub(r"members = \[.*?\]", 'members = ["crates/specula-core", "crates/specula-sdk", "mods/*"]', manifest, flags=re.S)
     deps = re.search(r"\[workspace\.dependencies\]\n(.*?)\n\n", manifest, flags=re.S)
     if deps:
         kept = "\n".join(l for l in deps.group(1).splitlines() if l.startswith(("specula-core ", "specula-sdk ")) or not l.startswith("specula"))
         manifest = manifest.replace(deps.group(1), kept)
-    (ws / "Cargo.toml").write_text(manifest)
+    (ws / "Cargo.toml").write_text(manifest, encoding="utf-8")
     (ws / "emptyassets").mkdir()
 
 
@@ -159,7 +159,7 @@ def fix_checks(args, work, check):
             # Round 3 E: compile-time path evasions. The token scan refuses what it sees at
             # commit; macro indirection is caught after the build by rustc's dep-info.
             outside = work / "outside.txt"
-            outside.write_text("host file\n")
+            outside.write_text("host file\n", encoding="utf-8")
             o = outside.as_posix()
             evasions = {
                 "a '//' string earlier on the line": f'const S: &str = "//"; const W: &str = include_str!("{o}");\npub fn leak() -> usize {{ W.len() + S.len() }}\n',
@@ -310,8 +310,8 @@ def main():
               f"theirs {theirs_paths}, yours {yours_paths}, overlap {conflict.get('overlap')}, rebase: {conflict.get('rebase')}")
         report["conflict_example"] = e
         rebased = bob.json("project_patch", path=RECIPE, expect_version=conflict.get("theirs", {}).get("version"), ops=[{"set": "budget.max_triangles", "value": 420}])
-        on_disk = (assets / "recipes" / "tombstone.json").read_text()
-        original = (ROOT / "games" / "sepulcra" / "assets" / "recipes" / "tombstone.json").read_text()
+        on_disk = (assets / "recipes" / "tombstone.json").read_text(encoding="utf-8")
+        original = (ROOT / "games" / "sepulcra" / "assets" / "recipes" / "tombstone.json").read_text(encoding="utf-8")
         expected = original.replace('"max_triangles": 400', '"max_triangles": 420')
         check("rebase succeeds; both edits on disk, formatting kept",
               rebased["version"] == a1["version"] + 1 and '"max_triangles": 420' in on_disk and on_disk.count("rune_glow") == 1
@@ -325,18 +325,20 @@ def main():
         check("validation refuses a broken recipe", bad is not None and bad.get("error") == "invalid" and bad.get("problems"),
               (bad or {}).get("problems", [{}])[0].get("message", "")[:120])
 
-        # 2. A claim on a UI file blocks another agent.
+        # 2. A claim on a UI file blocks another agent. (The wave label's text is a key of the
+        # string tables: the edit puts a literal text in its place.)
+        WAVE_KEY = "@hud.wave_waves"
         claim = bob.json("claim_take", path="/project/" + HUD, lease_s=120, note="reworking the top bar")
-        blocked = err_of(ann, "project_patch", path=HUD, ops=[{"find": "Wave {wave}/{waves}", "replace": "Night {wave}/{waves}"}])
+        blocked = err_of(ann, "project_patch", path=HUD, ops=[{"find": WAVE_KEY, "replace": "Night {wave}/{waves}"}])
         check("a claim on a UI file blocks another agent", blocked is not None and blocked.get("error") == "claimed" and blocked.get("owner") == "bob",
               (blocked or {}).get("message", "")[:140])
         # The M4 final audit: a write of the same text answered "unchanged" past bob's claim.
         same = ann.json("project_read", path=HUD)["text"]
         noop = err_of(ann, "project_write", path=HUD, text=same)
         check("a write that changes nothing is refused under another's claim too", noop is not None and noop.get("error") == "claimed", json.dumps(noop)[:160])
-        mine = bob.json("project_patch", path=HUD, ops=[{"find": "Wave {wave}/{waves}", "replace": "Night {wave}/{waves}"}])
+        mine = bob.json("project_patch", path=HUD, ops=[{"find": WAVE_KEY, "replace": "Night {wave}/{waves}"}])
         bob.json("claim_release", id=claim["id"])
-        hud_disk = (assets / "ui" / "hud.json").read_text()
+        hud_disk = (assets / "ui" / "hud.json").read_text(encoding="utf-8")
         texts = widget_texts(ann)
         # Headless, the window's HUD is never laid out (no labels to read): the captures show it.
         shown = any(t.startswith("Night ") for t in texts) if args.window else True
@@ -349,20 +351,20 @@ def main():
 
         # 3. Undo restores the file on disk and in the engine.
         bob.json("world_undo", count=1)
-        hud_disk = (assets / "ui" / "hud.json").read_text()
+        hud_disk = (assets / "ui" / "hud.json").read_text(encoding="utf-8")
         read = ann.json("project_read", path=HUD, json_path="root", problems=False)
         texts = widget_texts(ann)
         shown = any(t.startswith("Wave ") for t in texts) if args.window else True
         check("undo restores the file on disk and in the engine",
-              "Night {" not in hud_disk and "Wave {wave}/{waves}" in hud_disk and "Night {" not in json.dumps(read["value"]) and shown,
+              "Night {" not in hud_disk and WAVE_KEY in hud_disk and "Night {" not in json.dumps(read["value"]) and shown,
               f"version {read['version']}, by {read.get('modified_by')}")
         shot("hud_after_undo")
 
         # 4. A human edit on disk is imported and attributed.
         sound = assets / "sounds" / "ui_click.json"
         before = ann.json("project_read", path=SOUND, problems=False)
-        text = sound.read_text().replace('"loudness": -26', '"loudness": -24')
-        sound.write_text(text)
+        text = sound.read_text(encoding="utf-8").replace('"loudness": -26', '"loudness": -24')
+        sound.write_text(text, encoding="utf-8")
         def imported():
             r = ann.json("project_read", path=SOUND, problems=False)
             return r if r["version"] > before["version"] else None
@@ -419,10 +421,10 @@ def main():
               bool(released) and not same.get("unchanged") and same.get("backup") and sell.read_bytes() == stored, f"replace answered version {same.get('version')}")
         # Delete and make again: an old expect_version never matches the new file.
         P = "assets/sounds/aba.json"
-        ann.json("project_write", path=P, text=(assets / "sounds" / "ui_hover.json").read_text().replace("ui_hover", "aba"), expect_version=0)
+        ann.json("project_write", path=P, text=(assets / "sounds" / "ui_hover.json").read_text(encoding="utf-8").replace("ui_hover", "aba"), expect_version=0)
         old_v = bob.json("project_read", path=P, problems=False)["version"]
         ann.json("project_delete", path=P)
-        again = ann.json("project_write", path=P, text=(assets / "sounds" / "ui_hover.json").read_text().replace("ui_hover", "aba"), expect_version=0)
+        again = ann.json("project_write", path=P, text=(assets / "sounds" / "ui_hover.json").read_text(encoding="utf-8").replace("ui_hover", "aba"), expect_version=0)
         e = err_of(bob, "project_patch", path=P, expect_version=old_v, ops=[{"set": "loudness", "value": -30}])
         check("versions never repeat across a delete (no ABA)", again["version"] > old_v and e is not None and e.get("error") == "stale_version", f"v{old_v} deleted, made again as v{again['version']}")
         # Two spellings of one Windows file.
@@ -475,7 +477,7 @@ def main():
     check("clean shutdown", eng.exit_code == 0, f"exit {eng.exit_code}")
     if not args.skip_fix:
         fix_checks(args, work, check)
-    (work / "report.json").write_text(json.dumps(report, indent=2))
+    (work / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"report: {work / 'report.json'}")
     if failures:
         print(f"FAILED: {', '.join(failures)}")

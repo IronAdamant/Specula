@@ -189,6 +189,17 @@ class Swarm:
         return f"{status}; replay {'verified' if verified else 'NOT verified'}; {res.get('wall_s', 0)} s"
 
     def worker(self, k, lead_url):
+        """One worker, start to end. What stops it (a lease the pool cannot give, an engine
+        call that fails) is kept: a worker that dies leaves the others to do its share, and the
+        run would read as whole (M5's audit: three of six workers without ports, the suite
+        "passed with 6 workers")."""
+        try:
+            self.work(k, lead_url)
+        except Exception as e:  # noqa: BLE001 (whatever it was, the run says so)
+            with self.lock:
+                self.errors.append(f"playtester-{k}: {str(e)[:400]}")
+
+    def work(self, k, lead_url):
         name = f"playtester-{k}"
         with Mcp(lead_url, name) as lead:
             lead.json("agent_hello", name=name, role="playtester")
@@ -237,7 +248,8 @@ class Swarm:
         if not self.use_lead:
             lead_dir = self.out / "lead"
             lead_dir.mkdir(parents=True, exist_ok=True)
-            args = ["--headless", "--paused", "--captures", str(lead_dir / "captures"), *self.engine_args]
+            # (The lead of the swarm is named by its operator, this script: --lead.)
+            args = ["--headless", "--paused", "--lead", "playtest-lead", "--captures", str(lead_dir / "captures"), *self.engine_args]
             if self.game_args:
                 args += ["--", *self.game_args]
             lead_engine = Engine(self.exe, self.lead_port, lead_dir / "lead.log", *args, cwd=lead_dir).__enter__()
@@ -269,6 +281,8 @@ class Swarm:
                     raise
                 board = lead.json("task_list", tag=self.task_tag, limit=200)
                 done = sum(1 for t in board.get("tasks", []) if t.get("status") == "done")
+                if self.errors:
+                    raise RuntimeError(f"{len(self.errors)} of {self.workers} workers failed: " + "; ".join(self.errors))
         finally:
             self.stop_all()
             if lead_engine is not None:
@@ -286,7 +300,7 @@ class Swarm:
             "board": {"tasks_done": done, "tasks": len(task_ids)},
             "results": results,
         }
-        (self.out / "report.json").write_text(json.dumps(report, indent=1))
+        (self.out / "report.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
         return report
 
 
@@ -304,7 +318,7 @@ def main():
     a = ap.parse_args()
     specs = {}
     for p in sorted(Path(a.specs).glob("*.json")):
-        s = json.loads(p.read_text())
+        s = json.loads(p.read_text(encoding="utf-8"))
         specs[s["name"]] = s
     swarm = Swarm(a.exe, a.out, a.workers, a.lead_port, a.use_lead, game_args=a.game_args, verify=not a.no_verify,
                   keep_scratch=a.keep_scratch)

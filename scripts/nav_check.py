@@ -55,7 +55,7 @@ def save(name, result):
         elif c["type"] == "text":
             text = c["text"]
     data = json.loads(text)
-    (OUT / f"{name}.json").write_text(json.dumps(data, indent=2))
+    (OUT / f"{name}.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
     return data
 
 
@@ -394,7 +394,7 @@ def run(m, failures, label, big):
     }
     if big:
         out["big"] = big_build(m, failures)
-    (OUT / f"{label}_info.json").write_text(json.dumps(info, indent=2))
+    (OUT / f"{label}_info.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
     return out
 
 
@@ -503,7 +503,7 @@ def main():
         check(errs in (0, None), f"run{i}: clean shutdown ({errs} validation errors)", failures)
     same = all(runs[0][k] == runs[1][k] for k in ("world_hash", "physics_hash", "nav_hash"))
     check(same, f"two runs end in the same world, physics and nav hashes ({runs[0]['world_hash']} / {runs[0]['physics_hash']} / {runs[0]['nav_hash']})", failures)
-    (OUT / "summary.json").write_text(json.dumps({"runs": runs, "failures": failures}, indent=2))
+    (OUT / "summary.json").write_text(json.dumps({"runs": runs, "failures": failures}, indent=2), encoding="utf-8")
     print(json.dumps({k: v for k, v in runs[0].items() if k not in ("world_hash", "physics_hash", "nav_hash")}, indent=1))
     print("PASS" if not failures else f"FAIL ({len(failures)})")
     return 0 if not failures else 1

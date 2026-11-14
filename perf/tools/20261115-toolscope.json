@@ -1,0 +1,175 @@
+{
+ "schema": "specula.toolscope/v1",
+ "sizes": {
+  "core": {
+   "tools": 6,
+   "bytes": 5756
+  },
+  "all": {
+   "tools": 219,
+   "bytes": 305044
+  },
+  "role lead": {
+   "tools": 219,
+   "bytes": 305044
+  },
+  "role director": {
+   "tools": 219,
+   "bytes": 305044
+  },
+  "role builder": {
+   "tools": 57,
+   "bytes": 91444
+  },
+  "role reviewer": {
+   "tools": 45,
+   "bytes": 67888
+  },
+  "role playtester": {
+   "tools": 49,
+   "bytes": 71266
+  },
+  "role art_director": {
+   "tools": 84,
+   "bytes": 125172
+  },
+  "role sight_skeptic": {
+   "tools": 17,
+   "bytes": 28943
+  },
+  "role performance": {
+   "tools": 29,
+   "bytes": 41301
+  },
+  "role designer": {
+   "tools": 43,
+   "bytes": 51680
+  },
+  "role animator": {
+   "tools": 58,
+   "bytes": 97576
+  },
+  "role coder": {
+   "tools": 55,
+   "bytes": 91068
+  },
+  "role debugger": {
+   "tools": 58,
+   "bytes": 74323
+  },
+  "tools_catalog {kits}": {
+   "bytes": 3812
+  },
+  "kit build_place": {
+   "tools": 11,
+   "bytes": 31637
+  },
+  "kit make_asset": {
+   "tools": 11,
+   "bytes": 17302
+  },
+  "kit make_menu": {
+   "tools": 12,
+   "bytes": 21580
+  },
+  "kit animate": {
+   "tools": 10,
+   "bytes": 13872
+  },
+  "kit write_rules": {
+   "tools": 11,
+   "bytes": 12491
+  },
+  "kit run_playtest": {
+   "tools": 18,
+   "bytes": 18724
+  },
+  "kit make_cutscene": {
+   "tools": 11,
+   "bytes": 12469
+  },
+  "kit translate": {
+   "tools": 10,
+   "bytes": 15521
+  },
+  "kit make_sound": {
+   "tools": 10,
+   "bytes": 12723
+  },
+  "kit make_effect": {
+   "tools": 10,
+   "bytes": 12487
+  },
+  "kit shape_terrain": {
+   "tools": 10,
+   "bytes": 16514
+  },
+  "kit find_paths": {
+   "tools": 11,
+   "bytes": 14943
+  },
+  "kit check_physics": {
+   "tools": 11,
+   "bytes": 10531
+  },
+  "kit light_scene": {
+   "tools": 10,
+   "bytes": 18093
+  },
+  "kit write_logic": {
+   "tools": 10,
+   "bytes": 12965
+  },
+  "kit find_slow_frame": {
+   "tools": 10,
+   "bytes": 10892
+  },
+  "kit find_cause": {
+   "tools": 10,
+   "bytes": 10796
+  },
+  "kit review_work": {
+   "tools": 10,
+   "bytes": 13046
+  },
+  "kit work_together": {
+   "tools": 12,
+   "bytes": 10934
+  },
+  "kit direct_swarm": {
+   "tools": 11,
+   "bytes": 11405
+  },
+  "kit ask_human": {
+   "tools": 10,
+   "bytes": 11420
+  },
+  "kits median": {
+   "bytes": 12965
+  },
+  "tools_catalog {kit}": {
+   "bytes": 1610
+  },
+  "tools_activate {kit:build_place} answer": {
+   "tools": 5,
+   "bytes": 26157
+  },
+  "world_spawn + world_set": {
+   "tools": 2,
+   "bytes": 16595
+  },
+  "world_set alone": {
+   "tools": 1,
+   "bytes": 11876
+  },
+  "tools_catalog": {
+   "bytes": 14682
+  }
+ },
+ "timing": {
+  "tools_list_all_ms": 9.49,
+  "tools_list_core_ms": 4.39,
+  "tools_catalog_ms": 1.56
+ },
+ "failures": []
+}

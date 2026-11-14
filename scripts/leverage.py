@@ -280,7 +280,7 @@ def arm_text(arm, run, r):
         f"- Start or stop that engine with `{py} engine start {rd}` and `{py} engine stop {rd}` (start it first; restart it this way if you need to). Never run the engine's executable yourself.",
         f"- Call a tool with `{py} call {rd} TOOL '{{json}}'`; arguments too long or awkward for a command line go in a file: `{py} call {rd} TOOL @args.json`. `{py} tools {rd} [FILTER]` lists tools, and the `tools_catalog` tool describes them.",
         f"- The engine's documents are in {(REPO / 'docs').as_posix()} (design notes for each area in `docs/design/`), with {(REPO / 'README.md').as_posix()}. Read what you need. An example game module is in {(REPO / 'games' / 'ambulo').as_posix()}.",
-        "- Game logic can be a Rust module the engine builds and loads (your work folder is a Cargo workspace that already holds the SDK it depends on, in `crates/specula-sdk`: add your module's crate to its members), or rules as data; screens are data. You choose.",
+        "- Game logic can be a Rust module the engine builds and loads (your work folder is a Cargo workspace that already holds the SDK it depends on, in `crates/specula-sdk`: add your module's crate to its members), or rules as data. You choose. A game built this way has none of the engine's interface screens: what it shows, it draws in the world.",
         "- The two checks the brief asks for may be small scripts of yours that call the engine as above and print or write what is asked.",
         "- Whoever checks the game starts from a stopped engine and an empty world: the commands in your README must work from there (starting the engine and loading the game included).",
     ]
@@ -337,8 +337,8 @@ def engine_build():
     """Which engine a run was made with: the repository's commit, marked when the tree has
     changes the commit does not."""
     try:
-        head = subprocess.run(["git", "rev-parse", "--short=10", "HEAD"], capture_output=True, text=True, cwd=str(REPO), timeout=30).stdout.strip()
-        dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True, cwd=str(REPO), timeout=30).stdout.strip()
+        head = subprocess.run(["git", "rev-parse", "--short=10", "HEAD"], capture_output=True, text=True, cwd=str(REPO), timeout=30, encoding="utf-8", errors="replace").stdout.strip()
+        dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True, cwd=str(REPO), timeout=30, encoding="utf-8", errors="replace").stdout.strip()
     except (OSError, subprocess.TimeoutExpired):
         return "unknown"
     return (head or "unknown") + ("+changes" if dirty else "")
@@ -1031,7 +1031,7 @@ def export(a):
     places = [(root, "<runs>"), (REPO, "<repo>"), (Path.home(), "<home>")]
     try:
         # (A worktree's main checkout is a path of the machine too.)
-        common = subprocess.run(["git", "rev-parse", "--git-common-dir"], capture_output=True, text=True, cwd=str(REPO), timeout=30).stdout.strip()
+        common = subprocess.run(["git", "rev-parse", "--git-common-dir"], capture_output=True, text=True, cwd=str(REPO), timeout=30, encoding="utf-8", errors="replace").stdout.strip()
         if common:
             main = (REPO / common).resolve().parent
             if main != REPO:

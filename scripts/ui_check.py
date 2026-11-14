@@ -402,7 +402,7 @@ def main():
     if a.perf_only:
         summary["perf"] = perf(exe, a.port + 1, a.adapter, out)
         summary["failures"] = failures
-        (out / "summary.json").write_text(json.dumps(summary, indent=2))
+        (out / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
         sys.exit(1 if failures else 0)
     args = ["--headless", "--adapter", a.adapter, "--captures", str(out / "captures"), "--", "--seed", "7", "--mute", "--title", "off"]
     with Engine(exe, a.port, out / "engine.log", *args, cwd=out) as eng:
@@ -477,7 +477,7 @@ def main():
     if a.perf:
         summary["perf"] = perf(exe, a.port + 1, a.adapter, out)
     summary["failures"] = failures
-    (out / "summary.json").write_text(json.dumps(summary, indent=2))
+    (out / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"summary: {out / 'summary.json'}")
     if failures:
         print(f"FAILED: {len(failures)} failures")
@@ -533,7 +533,7 @@ def perf(exe, port, adapter, out):
                 fail(f"perf: HUD GPU {r['gpu_mean_ms']} ms > 0.3 ms")
     res["validation_errors"] = eng.validation_errors()
     # Contention is the realistic condition (lane rules), but say what shared the machine.
-    tl = subprocess.run(["tasklist"], capture_output=True, text=True).stdout.lower() if sys.platform == "win32" else ""
+    tl = subprocess.run(["tasklist"], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.lower() if sys.platform == "win32" else ""
     res["running_after"] = {n: tl.count(n) for n in ("sepulcra.exe", "specula.exe", "rustc.exe")}
     print(f"validation errors {res['validation_errors']}; running after: {res['running_after']}")
     if res["validation_errors"]:

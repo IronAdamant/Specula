@@ -15,6 +15,7 @@ use std::path::Path;
 /// Scripts that start a process which isn't the engine, and what it is.
 const NOT_AN_ENGINE: &[(&str, &str)] = &[("m3_exit.py", "the PowerShell GPU-load sampler"), ("gate.py", "cargo (tests, clippy and builds): it starts no game"),
     ("leverage.py", "an agent's own command line (settings.json's runner: a builder or a judge of the measured comparison), never a game; its engines are started by `specula open` with the run's --settings folder and --headless"),
+    ("live_checks.py", "the check scripts themselves, each with its own ports and log: a check starts its own engines through specula_mcp.Engine"),
     ("launch_check.py", "the executable's own commands (specula projects, open, call...), each given --settings; the engines `specula open` starts are headless or open with --no-activate"),
 ];
 
@@ -147,5 +148,114 @@ fn scripts_keep_their_hands_off_the_humans_pointer_keyboard_and_focus() {
     assert!(
         helper.contains(r#"self.args[0:0] = ["--no-activate"]"#) && helper.contains(r#"if "--no-activate" not in engine_args"#),
         "scripts/specula_mcp.py: Engine must add --no-activate to a windowed engine unless the caller passes it"
+    );
+}
+
+/// Every text file a script reads or writes names its encoding. The engine writes UTF-8 and the
+/// assets are UTF-8; Python's default on Windows is the system's code page, so a script that
+/// said nothing read a capture's packet as cp1252 and stopped on one character outside it (M5's
+/// final audit: `map1_check`), and would have written a translated string as other bytes than
+/// the engine reads. `read_text`, `write_text` and the built-in `open` of a text file carry
+/// `encoding=` within the call (here: on its line or the next three), and so does a process
+/// whose output is read as text (`text=True`: here, within three lines either side).
+#[test]
+fn scripts_name_the_encoding_of_the_text_they_read_and_write() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts");
+    let mut bad = Vec::new();
+    let mut seen = 0;
+    let mut seen_processes = 0;
+    for entry in std::fs::read_dir(&dir).expect("scripts/") {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "py") {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            let code = line.split('#').next().unwrap_or("");
+            let plain_open = code.match_indices("open(").any(|(at, _)| {
+                // The built-in: not a method (`.open(`), not the end of another name (`urlopen(`, `Popen(`).
+                code[..at].chars().next_back().is_none_or(|c| !(c == '.' || c == '_' || c.is_ascii_alphanumeric()))
+            });
+            if code.contains("text=True") || code.contains("universal_newlines=True") {
+                seen_processes += 1;
+                let call = lines[i.saturating_sub(3)..(i + 4).min(lines.len())].join("\n");
+                if !call.contains("encoding=") {
+                    bad.push(format!("scripts/{name}:{}: {}", i + 1, line.trim()));
+                }
+            }
+            if !(code.contains(".read_text(") || code.contains(".write_text(") || plain_open) {
+                continue;
+            }
+            seen += 1;
+            let call = lines[i..(i + 4).min(lines.len())].join("\n");
+            let binary = ["\"rb\"", "\"wb\"", "\"ab\"", "'rb'", "'wb'", "'ab'"].iter().any(|m| call.contains(m));
+            if !call.contains("encoding=") && !binary {
+                bad.push(format!("scripts/{name}:{}: {}", i + 1, line.trim()));
+            }
+        }
+    }
+    assert!(seen >= 200, "the guard found {seen} text reads and writes: has the way scripts read files changed?");
+    assert!(seen_processes >= 20, "the guard found {seen_processes} processes read as text: has the way scripts run them changed?");
+    assert!(bad.is_empty(), "these read or write text in the system's default encoding (add encoding=\"utf-8\"):\n{}", bad.join("\n"));
+}
+
+/// Scripts reach an engine through `specula_mcp`'s `urlopen`, `connect` and `Connection`, which
+/// connect first and set the timeout after. Python's connect with a timeout, on Windows, often
+/// takes 10 to 26 ms where a connect takes 0.1 ms (about one call in seven; the measurements are
+/// in `specula_mcp.Connection`), and a check that times a call reads that wait as the engine's:
+/// M5's final audit failed on it (`entity_refs_check`: a `note_list` at 21.9 ms that the engine's
+/// record put at 0.1 ms). The one connect that keeps its timeout is `specula_mcp.poll`, for
+/// loops that wait for a port.
+#[test]
+fn scripts_connect_to_an_engine_before_they_set_a_timeout() {
+    // (Every spelling that reaches the same calls: an import of the name, an alias of the module.)
+    const OWN: [&str; 9] = [
+        "urllib.request.urlopen(",
+        "create_connection(",
+        "HTTPConnection(",
+        "HTTPSConnection(",
+        "from urllib.request import",
+        "from urllib import request",
+        "import urllib.request as",
+        "from socket import",
+        "from http.client import",
+    ];
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts");
+    let mut bad = Vec::new();
+    let mut scripts = 0;
+    for entry in std::fs::read_dir(&dir).expect("scripts/") {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "py") {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{name}: {e}"));
+        scripts += 1;
+        if name == "specula_mcp.py" {
+            // The helpers themselves: the connect takes no timeout, and one poll does.
+            let helper = text.split("class Connection(http.client.HTTPConnection):").nth(1).unwrap_or("");
+            let connect = helper.split("class _Handler").next().unwrap_or("");
+            assert!(
+                connect.contains("self.sock = socket.create_connection((self.host, self.port))\n") && connect.contains("self.sock.settimeout(self.timeout)"),
+                "specula_mcp.Connection.connect connects with no timeout and sets it after"
+            );
+            assert_eq!(text.matches("urllib.request.urlopen(").count(), 1, "specula_mcp.py: only `poll` opens a URL with a timeout on its connect");
+            assert!(text.contains("def poll(req):") && text.contains("return urllib.request.urlopen(req, timeout=1)"), "specula_mcp.poll is the one");
+            continue;
+        }
+        for (i, line) in text.lines().enumerate() {
+            let code = line.split('#').next().unwrap_or("");
+            if OWN.iter().any(|own| code.contains(own)) {
+                bad.push(format!("scripts/{name}:{}: {}", i + 1, line.trim()));
+            }
+        }
+    }
+    assert!(scripts >= 80, "the guard read {scripts} scripts: has scripts/ moved?");
+    assert!(
+        bad.is_empty(),
+        "these open their own connection to an engine (use specula_mcp's urlopen, connect, Connection or poll):\n{}",
+        bad.join("\n")
     );
 }

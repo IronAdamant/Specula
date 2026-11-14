@@ -130,7 +130,7 @@ def main():
     out = target / "capture-drill" / f"{a.mode}-{a.label}"
     out.mkdir(parents=True, exist_ok=True)
     res = thru(a, exe, out) if a.mode == "thru" else orbits(a, exe, out)
-    (out.parent / f"{a.mode}-{a.label}.json").write_text(json.dumps(res, indent=2))
+    (out.parent / f"{a.mode}-{a.label}.json").write_text(json.dumps(res, indent=2), encoding="utf-8")
     return 0
 
 

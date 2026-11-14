@@ -11,6 +11,59 @@ Specula is now a zero-dependency, agent-native game engine (Rust `std` + OS/driv
 See [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md). Item-by-item detail, with the reasoning for each, is in
 [docs/ROADMAP.md](docs/ROADMAP.md); the timeline of decisions is under [Project history](#project-history) below.
 
+### M5, done (2026-11-06 to 2026-11-15)
+
+Built by one agent, lane by lane, each lane reviewed by a model that did not write it and passed through
+`scripts/gate.py` (owner, 2026-11-12: one builder; 2026-11-12: a gate must not pass by luck).
+
+- **Exit proof** (`scripts/m5_exit.py`): assets are made once, saved, and are there to be used again, 2D and 3D,
+  in a project that is not this repository. A project is made from a terminal; agents put a prop, a rigged
+  creature, a tile map, sprites and a sound into it as project files; a second engine finds all of it, loads the
+  saved world to the same hash and the same pictures, and the assets are reused, copied and changed, undone,
+  edited by a person on disk, and written as a `.glb` that reads back. On the Intel iGPU and the RTX 4090.
+- **Measured leverage** (`scripts/leverage.py`, [docs/design/LEVERAGE.md](docs/design/LEVERAGE.md)): the same game
+  jobs built through the engine and without it by the same model, judged against one list. At the sizes tested
+  the engine costs more for the same result (about 5, 3.1 and 1.7 times the tokens for a small game, a medium one
+  and a change to it), and why is measured: more requests, each reading the context again, and more written.
+  It is the baseline M6 has to move.
+- **Audio:** a hand-written Ogg/Vorbis decoder, streaming music, music as data, loudness metering, `audio_*`
+- **Text:** bundled OFL fonts, GPU text, in-world text and editing, window typing with IME and clipboard, CJK
+  fallback (`specula-text`)
+- **UI sight tools** (`ui_tree`, `ui_frame`, `ui_act`, `ui_check`) and **timelines** with camera rails (`timeline_*`)
+- **Localisation** (`specula-lingua`, `l10n_*`): string tables as project data, CLDR plural rules, a review gate;
+  Sepulcra in English and German
+- **Accessibility and Sepulcra's shell:** a title screen, settings saved per player, rebinding, gamepad pause,
+  interface scale, colour-vision themes, reduced motion, subtitles and captions
+- **The human editor on the agents' protocol** (F7): outliner, inspector, selection, gizmos, undo; the draw tools
+  (sculpt, splat, paint, sketched paths); the Swarm tab (journal timeline, claims, board, review queue, costs)
+  and "highlight and ask"; a window a person and an agent can share
+- **Gameplay modules** as SDK examples (`inventarium`, `facultas`, `colloquium`, `quaestio`, `exemplum`)
+- **The input monitor** (`security_*`): every way an agent could reach the human's keyboard, window or native
+  code is classed, frozen by identity and shown at the window; lead authority comes only from `--lead NAME`
+- **Tool kits by job** (`tools_catalog {kits, kit, tag}`): 21 kits; a kit lists about 13 KB where a role listed 85
+- **The launcher:** a start screen with the projects worked on, and the engine found and called from a terminal
+  (`specula projects`, `open`, `new`, `list`, `tools`, `call`, `stop`; `call TOOL @FILE`, `--as NAME --role ROLE`)
+- **Asset export** (`model_export`): any recipe as a `.glb` with its textures, rig and clips
+- **Map 1 ships the 33 approved props**, with a per-prop `blocks_build` flag
+- **Rendering follow-ups:** alpha-cutout foliage and wind, real grass, render graphs prepared ahead per size
+- **Reliability and performance:** GPU work, recipe writes, studio sheets, motion checks and world loads off the
+  engine thread; a build request no longer reads the disk under the model library's lock; a call sent while the
+  engine starts waits for the start; a stall says whether the engine worked or waited (`cpu_ms`, `lock_ms`) and
+  a slow frame says what it did (`top`); the pipeline cache is the adapter's own
+- **The gate** (`scripts/gate.py`): the workspace's tests, the engine's library tests five more times, once
+  with every worker starting late, the speed budgets alone, clippy for Windows and Linux, both builds; a test
+  that fails in some runs is FLAKY and fails it
+- **Cloud swarm foundations** ([docs/design/CLOUD_SWARMS.md](docs/design/CLOUD_SWARMS.md)): the design for
+  per-agent tokens and encryption from the OS, ready to build in M6
+- **The final audit** (`scripts/live_checks.py`): every live check, one after the other, built first, each
+  told its own ports. It found thirteen checks that had gone stale since they last ran (current again), and
+  one defect of the engine that had been there since M3: **a capture that forces a level
+  (`sight_frame {lod: 0}`) from a far camera now gets it** (streaming uploaded levels by size on screen
+  only, so the capture drew what was on the GPU and counted the rest as coarser). Every script reads and
+  writes its text, and reads its processes, as UTF-8 (a guard holds it). It also found that the scripts' own
+  client waited 10 to 26 ms in about one call in seven (Python's connect with a timeout, on Windows), which
+  checks read as the engine's time: the scripts connect first and set the timeout after
+
 ### M4, done (2026-10-28 to 2026-10-30)
 
 - **Exit proof:** a swarm (a director, four builders, an art director, a sight-skeptic and a debugger) built 33

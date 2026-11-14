@@ -176,12 +176,14 @@ def remove_tree(d):
 
 def write_perf(path, disk):
     lines = ["[disk]"] + [f"{k} = {v}" for k, v in disk.items()]
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def engine_args(work, perf, adapter):
     return ["--headless", "--adapter", adapter, "--captures", str(work / "captures"), "--cache", str(work / "cache"),
-            "--assets", str(work / "assets"), "--worlds", str(work / "worlds"), "--saves", str(work / "saves"), "--perf", str(perf)]
+            "--assets", str(work / "assets"), "--worlds", str(work / "worlds"), "--saves", str(work / "saves"), "--perf", str(perf),
+            # (Lead authority comes only from the operator: the names this check leads under.)
+            "--lead", "disk-lead", "--lead", "lead2", "--lead", "ann"]
 
 
 def phase_budget(exe, port, adapter, work, out):
@@ -209,7 +211,7 @@ def phase_budget(exe, port, adapter, work, out):
         d = scratch / name
         d.mkdir(parents=True)
         (d / "out.bin").write_bytes(b"\x01" * 50_000)
-        (d / ".specula-lease").write_text(json.dumps({"lease": lease, "owner": "ann", "ends_unix": int(time.time()) - 7200, "keep": keep, "pid": 1}))
+        (d / ".specula-lease").write_text(json.dumps({"lease": lease, "owner": "ann", "ends_unix": int(time.time()) - 7200, "keep": keep, "pid": 1}), encoding="utf-8")
     perf = work / "perf_budget.toml"
     write_perf(perf, {"captures_mb": 1, "free_floor_mb": 0, "warn_percent": 50, "scratch_grace_s": 60})
     with Engine(exe, port, out / "engine_budget.log", *engine_args(work, perf, adapter), cwd=str(ROOT)) as eng:
@@ -294,7 +296,7 @@ def phase_budget(exe, port, adapter, work, out):
         st2 = lead.json("disk_status", detailed=True)
         check(st2.get("pruned", {}).get("files", 0) > 0 and st2.get("prune_log"), "disk_status records what was pruned and why")
         print("   after:", json.dumps({"state": st2.get("state"), "captures": st2["categories"]["captures"], "pruned": st2.get("pruned")}))
-        (out / "status_budget.json").write_text(json.dumps(st2, indent=2))
+        (out / "status_budget.json").write_text(json.dumps(st2, indent=2), encoding="utf-8")
         for m in (lead, a, b):
             m.close()
     return vols[0]["available_mb"] if vols else None
@@ -331,7 +333,7 @@ def phase_floor(exe, port, adapter, work, out, available_mb):
               "a sight frame still answers its image inline, unsaved, saying why")
         st = a.json("disk_status")
         check(st.get("state") == "below_floor" and st.get("refused", 0) >= 4, f"disk_status: {st.get('state')}, refused {st.get('refused')}")
-        (out / "status_floor.json").write_text(json.dumps(st, indent=2))
+        (out / "status_floor.json").write_text(json.dumps(st, indent=2), encoding="utf-8")
         a.close()
 
 
@@ -475,7 +477,7 @@ def phase_binary(exe, port, adapter, work, out):
         check(not e and not (assets / "sounds" / "bell.wav").exists(), "project_delete removes a binary file on disk")
         st = a.json("disk_status", detailed=True)
         check(st.get("content_store", {}).get("entries", 0) >= 3, f"the content store holds the versions ({st.get('content_store')})")
-        (out / "status_binary.json").write_text(json.dumps(st, indent=2))
+        (out / "status_binary.json").write_text(json.dumps(st, indent=2), encoding="utf-8")
         a.close()
 
 
@@ -591,14 +593,14 @@ def phase_evidence(exe, port, adapter, out):
     legacy.write_bytes(legacy_bytes)
     gone = old_run / "gone.png"  # named by the old queue, deleted before the load
     rj = w / "worlds" / "alpha" / "review.json"
-    doc = json.loads(rj.read_text())
+    doc = json.loads(rj.read_text(encoding="utf-8"))
     for sub_ in doc["submissions"]:
         for c in sub_["captures"]:
             c["path"] = str(legacy)
             c.pop("packet", None)
     for c in doc["critiques"]:
         c["capture"] = str(gone)
-    rj.write_text(json.dumps(doc, indent=2))
+    rj.write_text(json.dumps(doc, indent=2), encoding="utf-8")
     # Twenty newer finished runs: the start-up retention removes the legacy run.
     now = int(time.time())
     for k in range(20):
@@ -625,7 +627,7 @@ def phase_evidence(exe, port, adapter, out):
         sub = lead.json("review_list", id=s2["id"])
         ev = in_evidence(sub["captures"][0]["path"], w / "worlds" / "alpha")
         check(ev is not None and ev.exists() and not sub["captures"][0].get("missing"), "after world_load and a prune, the reviewed capture is still there (in alpha's evidence)")
-        doc2 = json.loads((w / "worlds" / "alpha" / "review.json").read_text())
+        doc2 = json.loads((w / "worlds" / "alpha" / "review.json").read_text(encoding="utf-8"))
         refs = [c["path"] for s_ in doc2["submissions"] for c in s_["captures"]]
         check(refs and all(r.startswith("evidence/") for r in refs), f"the world's queue names its evidence relative to the world, no absolute paths ({refs[:2]})")
         a.close()
@@ -660,9 +662,9 @@ def phase_robustness(exe, port, adapter, out):
     w2 = w / "worlds2"
     shutil.copytree(wd, w2 / "w1")
     # P1: the queue becomes unreadable (a newer engine's, or damaged).
-    doc = json.loads((wd / "review.json").read_text())
+    doc = json.loads((wd / "review.json").read_text(encoding="utf-8"))
     doc["format"] = doc["format"] + "2"
-    (wd / "review.json").write_text(json.dumps(doc))
+    (wd / "review.json").write_text(json.dumps(doc), encoding="utf-8")
     with Engine(exe, port + 1, out / "engine_rb2.log", *engine_args(w, p0, adapter), "--world", "w1", cwd=str(ROOT)) as eng:
         time.sleep(8)
     after = sorted(p.name for p in (wd / "evidence").iterdir())

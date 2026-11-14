@@ -381,7 +381,7 @@ def main():
         call(b2, "lex_edit", **lm["apply"]["args"])
         item = call(b2, "lex_get", set="crypt_rules", ids=["dust"])["items"][0]["item"]
         check(item.get("start") == 8 and item.get("notes") == "crypt dust", f"accepting the Lex merge keeps both: {item}")
-        recipe = json.loads((ROOT / "games" / "sepulcra" / "assets" / "recipes" / "rune_pillar.json").read_text())
+        recipe = json.loads((ROOT / "games" / "sepulcra" / "assets" / "recipes" / "rune_pillar.json").read_text(encoding="utf-8"))
         theirs, yours = json.loads(json.dumps(recipe)), json.loads(json.dumps(recipe))
         theirs["seed"] = recipe.get("seed", 0) + 1
         yours["description"] = "Rune pillar, crypt variant"
@@ -441,7 +441,7 @@ def main():
         check(ok.get("decided") == 1, "rejecting without revert still works")
         r.close()
         m.close()
-    (out / "report.json").write_text(json.dumps(report, indent=1))
+    (out / "report.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
     print(f"\ncaptures and report in {out}")
     if FAILS:
         print(f"{len(FAILS)} check(s) failed")

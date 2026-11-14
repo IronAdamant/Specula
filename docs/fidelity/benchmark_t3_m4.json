@@ -22,22 +22,22 @@
     "neutral": {
      "status": "fresh",
      "probes": 2184,
-     "hash": "1bfdf1d5218979b9",
-     "bake_wall_s": 0.65,
+     "hash": "c3cbdd0e83f49bab",
+     "bake_wall_s": 0.4,
      "tier": "low"
     },
     "game": {
      "status": "fresh",
      "probes": 2184,
-     "hash": "4bedc415a4f37f67",
-     "bake_wall_s": 0.42,
+     "hash": "0f1772a0c45c0a02",
+     "bake_wall_s": 0.4,
      "tier": "low"
     },
     "worst": {
      "status": "fresh",
      "probes": 2184,
-     "hash": "5aad9b59a523f184",
-     "bake_wall_s": 0.44,
+     "hash": "7d2b17ad920e092b",
+     "bake_wall_s": 0.4,
      "tier": "low"
     }
    },
@@ -125,64 +125,64 @@
    "gpu": {
     "gameplay_720p": {
      "with": {
-      "lowest_ms": 3.069,
-      "median_ms": 3.088,
+      "lowest_ms": 3.144,
+      "median_ms": 3.158,
       "frames": 24,
       "passes_lowest": {
-       "shadow": 0.26,
-       "scene": 1.715,
-       "decals": 0.092,
-       "particles": 0.01,
-       "post_bloom": 0.412,
-       "post_tonemap": 0.409,
-       "post_fxaa": 0.163
+       "shadow": 0.258,
+       "scene": 1.719,
+       "decals": 0.09,
+       "particles": 0.009,
+       "post_bloom": 0.464,
+       "post_tonemap": 0.42,
+       "post_fxaa": 0.173
       }
      },
      "without": {
-      "lowest_ms": 2.618,
-      "median_ms": 2.628,
+      "lowest_ms": 2.693,
+      "median_ms": 2.71,
       "frames": 24,
       "passes_lowest": {
-       "shadow": 0.252,
-       "scene": 1.378,
-       "post_bloom": 0.412,
-       "post_tonemap": 0.41,
-       "post_fxaa": 0.159
+       "shadow": 0.25,
+       "scene": 1.375,
+       "post_bloom": 0.472,
+       "post_tonemap": 0.421,
+       "post_fxaa": 0.163
       }
      },
      "added_lowest_ms": 0.451,
-     "added_median_ms": 0.46,
+     "added_median_ms": 0.448,
      "other_engines": 0
     },
     "close_up_720p": {
      "with": {
-      "lowest_ms": 6.149,
-      "median_ms": 6.174,
+      "lowest_ms": 6.247,
+      "median_ms": 6.267,
       "frames": 24,
       "passes_lowest": {
-       "shadow": 0.272,
-       "scene": 4.249,
-       "decals": 0.565,
-       "particles": 0.013,
-       "post_bloom": 0.414,
-       "post_tonemap": 0.413,
-       "post_fxaa": 0.215
+       "shadow": 0.27,
+       "scene": 4.284,
+       "decals": 0.561,
+       "particles": 0.012,
+       "post_bloom": 0.461,
+       "post_tonemap": 0.423,
+       "post_fxaa": 0.225
       }
      },
      "without": {
-      "lowest_ms": 3.156,
-      "median_ms": 3.176,
+      "lowest_ms": 3.237,
+      "median_ms": 3.251,
       "frames": 24,
       "passes_lowest": {
-       "shadow": 0.252,
-       "scene": 1.912,
-       "post_bloom": 0.413,
-       "post_tonemap": 0.413,
-       "post_fxaa": 0.159
+       "shadow": 0.25,
+       "scene": 1.917,
+       "post_bloom": 0.469,
+       "post_tonemap": 0.424,
+       "post_fxaa": 0.168
       }
      },
-     "added_lowest_ms": 2.993,
-     "added_median_ms": 2.998,
+     "added_lowest_ms": 3.01,
+     "added_median_ms": 3.016,
      "other_engines": 0
     },
     "draws": {
@@ -260,22 +260,22 @@
     "neutral": {
      "status": "fresh",
      "probes": 1152,
-     "hash": "c007aa72eda8abd9",
-     "bake_wall_s": 0.46,
+     "hash": "f9eee96d3d3ce1d1",
+     "bake_wall_s": 0.4,
      "tier": "low"
     },
     "game": {
      "status": "fresh",
      "probes": 1152,
-     "hash": "12032fcecd0fccc9",
-     "bake_wall_s": 0.64,
+     "hash": "08b98480fe460b13",
+     "bake_wall_s": 0.4,
      "tier": "low"
     },
     "worst": {
      "status": "fresh",
      "probes": 1152,
-     "hash": "b7a34b10b0347a83",
-     "bake_wall_s": 0.45,
+     "hash": "a62704db3dc1229e",
+     "bake_wall_s": 0.41,
      "tier": "low"
     }
    },
@@ -363,63 +363,63 @@
    "gpu": {
     "gameplay_720p": {
      "with": {
-      "lowest_ms": 2.899,
-      "median_ms": 2.912,
-      "frames": 24,
-      "passes_lowest": {
-       "shadow": 0.258,
-       "scene": 1.599,
-       "decals": 0.051,
-       "post_bloom": 0.412,
-       "post_tonemap": 0.411,
-       "post_fxaa": 0.162
-      }
-     },
-     "without": {
-      "lowest_ms": 2.619,
-      "median_ms": 2.637,
+      "lowest_ms": 2.963,
+      "median_ms": 2.978,
       "frames": 24,
       "passes_lowest": {
        "shadow": 0.255,
-       "scene": 1.376,
-       "post_bloom": 0.412,
-       "post_tonemap": 0.412,
-       "post_fxaa": 0.159
-      }
-     },
-     "added_lowest_ms": 0.28,
-     "added_median_ms": 0.275,
-     "other_engines": 1
-    },
-    "close_up_720p": {
-     "with": {
-      "lowest_ms": 5.812,
-      "median_ms": 5.836,
-      "frames": 24,
-      "passes_lowest": {
-       "shadow": 0.257,
-       "scene": 3.965,
-       "decals": 0.508,
-       "post_bloom": 0.414,
-       "post_tonemap": 0.418,
-       "post_fxaa": 0.238
+       "scene": 1.596,
+       "decals": 0.047,
+       "post_bloom": 0.462,
+       "post_tonemap": 0.422,
+       "post_fxaa": 0.172
       }
      },
      "without": {
-      "lowest_ms": 3.379,
-      "median_ms": 3.39,
+      "lowest_ms": 2.699,
+      "median_ms": 2.716,
       "frames": 24,
       "passes_lowest": {
-       "shadow": 0.252,
-       "scene": 2.129,
-       "post_bloom": 0.414,
-       "post_tonemap": 0.417,
-       "post_fxaa": 0.156
+       "shadow": 0.251,
+       "scene": 1.379,
+       "post_bloom": 0.471,
+       "post_tonemap": 0.423,
+       "post_fxaa": 0.168
       }
      },
-     "added_lowest_ms": 2.433,
-     "added_median_ms": 2.446,
-     "other_engines": 1
+     "added_lowest_ms": 0.264,
+     "added_median_ms": 0.262,
+     "other_engines": 0
+    },
+    "close_up_720p": {
+     "with": {
+      "lowest_ms": 5.893,
+      "median_ms": 5.924,
+      "frames": 24,
+      "passes_lowest": {
+       "shadow": 0.255,
+       "scene": 3.992,
+       "decals": 0.503,
+       "post_bloom": 0.461,
+       "post_tonemap": 0.426,
+       "post_fxaa": 0.247
+      }
+     },
+     "without": {
+      "lowest_ms": 3.458,
+      "median_ms": 3.476,
+      "frames": 24,
+      "passes_lowest": {
+       "shadow": 0.249,
+       "scene": 2.131,
+       "post_bloom": 0.474,
+       "post_tonemap": 0.424,
+       "post_fxaa": 0.17
+      }
+     },
+     "added_lowest_ms": 2.435,
+     "added_median_ms": 2.448,
+     "other_engines": 0
     },
     "draws": {
      "submitted": 5,
@@ -496,22 +496,22 @@
     "neutral": {
      "status": "fresh",
      "probes": 384,
-     "hash": "8f12b15c826b48c4",
-     "bake_wall_s": 0.45,
+     "hash": "74ce2b5179aabbec",
+     "bake_wall_s": 0.4,
      "tier": "low"
     },
     "game": {
      "status": "fresh",
      "probes": 384,
-     "hash": "590fd74f8ef676e6",
-     "bake_wall_s": 0.44,
+     "hash": "f1dc2ea209c238ae",
+     "bake_wall_s": 0.4,
      "tier": "low"
     },
     "worst": {
      "status": "fresh",
      "probes": 384,
-     "hash": "279bea9cefaf3a2f",
-     "bake_wall_s": 0.44,
+     "hash": "0450ac54a38ad838",
+     "bake_wall_s": 0.4,
      "tier": "low"
     }
    },
@@ -599,65 +599,65 @@
    "gpu": {
     "gameplay_720p": {
      "with": {
-      "lowest_ms": 2.852,
-      "median_ms": 2.987,
-      "frames": 24,
-      "passes_lowest": {
-       "shadow": 0.257,
-       "scene": 1.57,
-       "decals": 0.015,
-       "particles": 0.012,
-       "post_bloom": 0.413,
-       "post_tonemap": 0.415,
-       "post_fxaa": 0.162
-      }
-     },
-     "without": {
-      "lowest_ms": 2.706,
-      "median_ms": 2.736,
-      "frames": 24,
-      "passes_lowest": {
-       "shadow": 0.255,
-       "scene": 1.456,
-       "post_bloom": 0.414,
-       "post_tonemap": 0.412,
-       "post_fxaa": 0.162
-      }
-     },
-     "added_lowest_ms": 0.146,
-     "added_median_ms": 0.251,
-     "other_engines": 1
-    },
-    "close_up_720p": {
-     "with": {
-      "lowest_ms": 6.406,
-      "median_ms": 6.454,
+      "lowest_ms": 2.918,
+      "median_ms": 2.936,
       "frames": 24,
       "passes_lowest": {
        "shadow": 0.253,
-       "scene": 4.944,
-       "decals": 0.119,
-       "particles": 0.032,
-       "post_bloom": 0.414,
-       "post_tonemap": 0.418,
-       "post_fxaa": 0.217
+       "scene": 1.566,
+       "decals": 0.013,
+       "particles": 0.011,
+       "post_bloom": 0.468,
+       "post_tonemap": 0.422,
+       "post_fxaa": 0.172
       }
      },
      "without": {
-      "lowest_ms": 5.296,
-      "median_ms": 5.312,
+      "lowest_ms": 2.781,
+      "median_ms": 2.79,
       "frames": 24,
       "passes_lowest": {
        "shadow": 0.252,
-       "scene": 4.043,
-       "post_bloom": 0.414,
-       "post_tonemap": 0.413,
-       "post_fxaa": 0.166
+       "scene": 1.458,
+       "post_bloom": 0.471,
+       "post_tonemap": 0.42,
+       "post_fxaa": 0.171
       }
      },
-     "added_lowest_ms": 1.11,
-     "added_median_ms": 1.142,
-     "other_engines": 2
+     "added_lowest_ms": 0.137,
+     "added_median_ms": 0.146,
+     "other_engines": 0
+    },
+    "close_up_720p": {
+     "with": {
+      "lowest_ms": 6.474,
+      "median_ms": 6.495,
+      "frames": 24,
+      "passes_lowest": {
+       "shadow": 0.252,
+       "scene": 4.954,
+       "decals": 0.117,
+       "particles": 0.03,
+       "post_bloom": 0.46,
+       "post_tonemap": 0.425,
+       "post_fxaa": 0.228
+      }
+     },
+     "without": {
+      "lowest_ms": 5.381,
+      "median_ms": 5.395,
+      "frames": 24,
+      "passes_lowest": {
+       "shadow": 0.247,
+       "scene": 4.048,
+       "post_bloom": 0.477,
+       "post_tonemap": 0.423,
+       "post_fxaa": 0.177
+      }
+     },
+     "added_lowest_ms": 1.093,
+     "added_median_ms": 1.1,
+     "other_engines": 0
     },
     "draws": {
      "submitted": 8,
@@ -759,22 +759,22 @@
     "neutral": {
      "status": "fresh",
      "probes": 1320,
-     "hash": "466f48f8735e35db",
-     "bake_wall_s": 0.43,
+     "hash": "1479dcad664c7ecd",
+     "bake_wall_s": 0.4,
      "tier": "low"
     },
     "game": {
      "status": "fresh",
      "probes": 1320,
-     "hash": "d666a94085938d15",
-     "bake_wall_s": 0.45,
+     "hash": "b606552d4d9f7f7d",
+     "bake_wall_s": 0.4,
      "tier": "low"
     },
     "worst": {
      "status": "fresh",
      "probes": 1320,
-     "hash": "0879ae860e451ba4",
-     "bake_wall_s": 0.62,
+     "hash": "759f8f1dc6e9ce8a",
+     "bake_wall_s": 0.41,
      "tier": "low"
     }
    },
@@ -862,65 +862,65 @@
    "gpu": {
     "gameplay_720p": {
      "with": {
-      "lowest_ms": 3.752,
-      "median_ms": 3.768,
+      "lowest_ms": 3.832,
+      "median_ms": 3.86,
       "frames": 24,
       "passes_lowest": {
-       "shadow": 0.267,
-       "scene": 2.354,
-       "decals": 0.091,
-       "particles": 0.028,
-       "post_bloom": 0.412,
-       "post_tonemap": 0.41,
-       "post_fxaa": 0.183
+       "shadow": 0.265,
+       "scene": 2.37,
+       "decals": 0.089,
+       "particles": 0.026,
+       "post_bloom": 0.462,
+       "post_tonemap": 0.419,
+       "post_fxaa": 0.193
       }
      },
      "without": {
-      "lowest_ms": 2.653,
-      "median_ms": 2.66,
+      "lowest_ms": 2.731,
+      "median_ms": 2.746,
       "frames": 24,
       "passes_lowest": {
-       "shadow": 0.253,
-       "scene": 1.41,
-       "post_bloom": 0.413,
-       "post_tonemap": 0.41,
-       "post_fxaa": 0.16
+       "shadow": 0.25,
+       "scene": 1.412,
+       "post_bloom": 0.471,
+       "post_tonemap": 0.419,
+       "post_fxaa": 0.168
       }
      },
-     "added_lowest_ms": 1.099,
-     "added_median_ms": 1.108,
-     "other_engines": 2
+     "added_lowest_ms": 1.101,
+     "added_median_ms": 1.114,
+     "other_engines": 0
     },
     "close_up_720p": {
      "with": {
-      "lowest_ms": 4.599,
-      "median_ms": 4.627,
+      "lowest_ms": 4.689,
+      "median_ms": 4.714,
       "frames": 24,
       "passes_lowest": {
-       "shadow": 0.263,
-       "scene": 3.107,
-       "decals": 0.145,
-       "particles": 0.03,
-       "post_bloom": 0.412,
-       "post_tonemap": 0.416,
-       "post_fxaa": 0.217
+       "shadow": 0.26,
+       "scene": 3.133,
+       "decals": 0.142,
+       "particles": 0.028,
+       "post_bloom": 0.463,
+       "post_tonemap": 0.426,
+       "post_fxaa": 0.226
       }
      },
      "without": {
-      "lowest_ms": 2.824,
-      "median_ms": 2.839,
+      "lowest_ms": 2.909,
+      "median_ms": 2.924,
       "frames": 24,
       "passes_lowest": {
-       "shadow": 0.245,
-       "scene": 1.589,
-       "post_bloom": 0.412,
-       "post_tonemap": 0.412,
-       "post_fxaa": 0.159
+       "shadow": 0.244,
+       "scene": 1.592,
+       "post_bloom": 0.471,
+       "post_tonemap": 0.425,
+       "post_fxaa": 0.167
       }
      },
-     "added_lowest_ms": 1.775,
-     "added_median_ms": 1.788,
-     "other_engines": 1
+     "added_lowest_ms": 1.78,
+     "added_median_ms": 1.79,
+     "other_engines": 0
     },
     "draws": {
      "submitted": 3,
@@ -1001,21 +1001,21 @@
      "status": "fresh",
      "probes": 1320,
      "hash": "091edcb1dd6319fe",
-     "bake_wall_s": 0.42,
+     "bake_wall_s": 0.4,
      "tier": "low"
     },
     "game": {
      "status": "fresh",
      "probes": 1320,
      "hash": "79da2d624db6197f",
-     "bake_wall_s": 0.42,
+     "bake_wall_s": 0.41,
      "tier": "low"
     },
     "worst": {
      "status": "fresh",
      "probes": 1320,
      "hash": "f600770653eb8b9c",
-     "bake_wall_s": 0.44,
+     "bake_wall_s": 0.41,
      "tier": "low"
     }
    },
@@ -1103,63 +1103,63 @@
    "gpu": {
     "gameplay_720p": {
      "with": {
-      "lowest_ms": 2.811,
-      "median_ms": 2.825,
+      "lowest_ms": 2.866,
+      "median_ms": 2.893,
       "frames": 24,
       "passes_lowest": {
-       "shadow": 0.263,
-       "scene": 1.532,
-       "decals": 0.019,
-       "post_bloom": 0.414,
-       "post_tonemap": 0.412,
-       "post_fxaa": 0.162
+       "shadow": 0.26,
+       "scene": 1.524,
+       "decals": 0.017,
+       "post_bloom": 0.465,
+       "post_tonemap": 0.42,
+       "post_fxaa": 0.173
       }
      },
      "without": {
-      "lowest_ms": 2.615,
-      "median_ms": 2.627,
+      "lowest_ms": 2.688,
+      "median_ms": 2.706,
       "frames": 24,
       "passes_lowest": {
-       "shadow": 0.255,
+       "shadow": 0.252,
        "scene": 1.366,
-       "post_bloom": 0.415,
-       "post_tonemap": 0.412,
-       "post_fxaa": 0.16
+       "post_bloom": 0.471,
+       "post_tonemap": 0.421,
+       "post_fxaa": 0.17
       }
      },
-     "added_lowest_ms": 0.196,
-     "added_median_ms": 0.198,
-     "other_engines": 1
+     "added_lowest_ms": 0.178,
+     "added_median_ms": 0.187,
+     "other_engines": 0
     },
     "close_up_720p": {
      "with": {
-      "lowest_ms": 4.402,
-      "median_ms": 7.477,
+      "lowest_ms": 4.463,
+      "median_ms": 4.488,
       "frames": 24,
       "passes_lowest": {
-       "shadow": 0.288,
-       "scene": 2.983,
-       "decals": 0.081,
-       "post_bloom": 0.418,
-       "post_tonemap": 0.42,
-       "post_fxaa": 0.206
+       "shadow": 0.283,
+       "scene": 2.991,
+       "decals": 0.077,
+       "post_bloom": 0.462,
+       "post_tonemap": 0.423,
+       "post_fxaa": 0.214
       }
      },
      "without": {
-      "lowest_ms": 3.097,
-      "median_ms": 4.481,
+      "lowest_ms": 3.167,
+      "median_ms": 3.183,
       "frames": 24,
       "passes_lowest": {
-       "shadow": 0.254,
-       "scene": 1.844,
-       "post_bloom": 0.414,
-       "post_tonemap": 0.418,
-       "post_fxaa": 0.159
+       "shadow": 0.249,
+       "scene": 1.847,
+       "post_bloom": 0.47,
+       "post_tonemap": 0.423,
+       "post_fxaa": 0.169
       }
      },
-     "added_lowest_ms": 1.305,
-     "added_median_ms": 2.996,
-     "other_engines": 1
+     "added_lowest_ms": 1.296,
+     "added_median_ms": 1.305,
+     "other_engines": 0
     },
     "draws": {
      "submitted": 7,

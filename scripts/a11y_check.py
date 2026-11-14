@@ -156,7 +156,7 @@ def shot(mcp, out, name):
         tree = mcp.json("ui_tree", limit=200, fresh=True)
         packet = {k: f.get(k) for k in ("camera", "ui", "frame") if k in f}
         packet["ui_tree"] = {k: tree.get(k) for k in ("view", "display", "ui_scale", "screens", "widgets") if k in tree}
-        (out / f"{name}.json").write_text(json.dumps(packet, indent=1))
+        (out / f"{name}.json").write_text(json.dumps(packet, indent=1), encoding="utf-8")
     return out / f"{name}.png"
 
 
@@ -366,7 +366,7 @@ def main():
         check((m.json("play_state").get("shell") or {}).get("title") is False, "and shows no title")
 
     summary["failures"] = FAILURES
-    (out / "summary.json").write_text(json.dumps(summary, indent=1))
+    (out / "summary.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
     print(f"\n{len(FAILURES)} failures; captures and summary in {out}")
     return 1 if FAILURES else 0
 

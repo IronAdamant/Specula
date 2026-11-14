@@ -27,6 +27,7 @@ Screenshots of the real window go to the output folder (sight-skeptic checks the
 """
 import argparse
 import json
+import os
 import shutil
 import sys
 import time
@@ -38,7 +39,8 @@ import editor_check as ec  # noqa: E402
 from editor_check import call, raw, wait_for, find_window, park_cursor, check, Editor  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-EXE = ROOT / "target" / "release" / ("specula.exe" if sys.platform == "win32" else "specula")
+# (Under CARGO_TARGET_DIR when it is set, as every other check finds its engine.)
+EXE = Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target") / "release" / ("specula.exe" if sys.platform == "win32" else "specula")
 
 FIELD = {"recipe": 1, "name": "draw_field", "seed": 9, "parts": [{"name": "ground", "material": "slab_stone", "generate": {
     "op": "terrain", "render": "terrain", "size": [96, 96], "samples": [97, 97],
@@ -146,13 +148,13 @@ def main():
     assets = out / "assets"
     (assets / "recipes").mkdir(parents=True)
     shutil.copy(ROOT / "games" / "sepulcra" / "assets" / "style.json", assets / "style.json")
-    (assets / "recipes" / "draw_field.json").write_text(json.dumps(FIELD, indent=1))
-    (assets / "recipes" / "draw_crate.json").write_text(json.dumps(CRATE, indent=1))
-    (assets / "recipes" / "draw_fence.json").write_text(json.dumps(FENCE, indent=1))
-    (assets / "recipes" / "draw_barrel.json").write_text(json.dumps(BARREL, indent=1))
+    (assets / "recipes" / "draw_field.json").write_text(json.dumps(FIELD, indent=1), encoding="utf-8")
+    (assets / "recipes" / "draw_crate.json").write_text(json.dumps(CRATE, indent=1), encoding="utf-8")
+    (assets / "recipes" / "draw_fence.json").write_text(json.dumps(FENCE, indent=1), encoding="utf-8")
+    (assets / "recipes" / "draw_barrel.json").write_text(json.dumps(BARREL, indent=1), encoding="utf-8")
     # A second barrel, spawned three times the size; and a crate nobody spawns (512 strokes).
-    (assets / "recipes" / "draw_keg.json").write_text(json.dumps(dict(BARREL, name="draw_keg"), indent=1))
-    (assets / "recipes" / "draw_dots.json").write_text(json.dumps(dict(CRATE, name="draw_dots"), indent=1))
+    (assets / "recipes" / "draw_keg.json").write_text(json.dumps(dict(BARREL, name="draw_keg"), indent=1), encoding="utf-8")
+    (assets / "recipes" / "draw_dots.json").write_text(json.dumps(dict(CRATE, name="draw_dots"), indent=1), encoding="utf-8")
     args = ["--adapter", a.adapter, "--size", "1280x800", "--assets", str(assets), "--captures", str(out / "captures"), "--worlds", str(out / "worlds"),
             "--owner", "owner-proxy"]
     report = {"adapter": a.adapter}
@@ -540,8 +542,8 @@ def main():
         err, _ = raw(builder, "editor_input", steps=[{"drag": [cx - 40, cy], "to": [cx + 40, cy]}])
         check(err is not None, f"a builder can't drive the brush ({(err or 'it ran')[:100]})")
         report["screens"] = ed.shots
-        (out / "report.json").write_text(json.dumps(report, indent=1))
-    log = (out / "engine.log").read_text(errors="replace")
+        (out / "report.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
+    log = (out / "engine.log").read_text(errors="replace", encoding="utf-8")
     check("(0 validation errors)" in log, "validation errors at shutdown: 0")
     print(f"\nreport: {out / 'report.json'}")
     if ec.FAILS:

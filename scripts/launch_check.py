@@ -67,7 +67,7 @@ class Cli:
         words = [str(w) for w in words]
         cut = words.index("--") if "--" in words else len(words)
         argv = [self.exe, *words[:cut], "--settings", self.user, *words[cut:]]
-        p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)  # "--settings" is in argv above
+        p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")  # "--settings" is in argv above
         try:
             stdout, stderr = p.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -89,7 +89,7 @@ def running(pid):
     if not pid:
         return False
     if sys.platform == "win32":
-        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
         return str(pid) in out
     try:
         os.kill(pid, 0)
@@ -531,7 +531,7 @@ def main():
         listed = cli.run("list")[1]
         check(listed.get("count") == 1, f"and one engine has the project ({listed.get('count')})")
         # By hand: a second engine on the project is refused, and says why.
-        second = subprocess.run([str(exe), "--project", str(crypt_folder), "--settings", str(user), "--headless", "--adapter", a.adapter, "--port", str(p3)], capture_output=True, text=True, timeout=180)
+        second = subprocess.run([str(exe), "--project", str(crypt_folder), "--settings", str(user), "--headless", "--adapter", a.adapter, "--port", str(p3)], capture_output=True, text=True, timeout=180, encoding="utf-8", errors="replace")
         check(second.returncode != 0 and "is open in another engine" in second.stderr, f"an engine started by hand on a project that is open is refused ({second.returncode} {second.stderr.strip()[-160:]})")
 
         # ---- an engine that died: its file is not an engine, whoever has its port now ----
@@ -553,7 +553,7 @@ def main():
             cli.run("stop")
 
         # ---- a relative --settings is the folder the command was run in, not one in the project ----
-        rel = subprocess.Popen([str(exe), "open", str(crypt_folder), "--settings", "user_rel", "--", "--headless", "--adapter", a.adapter, "--port", str(p2)], cwd=str(out), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        rel = subprocess.Popen([str(exe), "open", str(crypt_folder), "--settings", "user_rel", "--", "--headless", "--adapter", a.adapter, "--port", str(p2)], cwd=str(out), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
         try:
             said, _ = rel.communicate(timeout=240)
         except subprocess.TimeoutExpired:
@@ -633,7 +633,7 @@ def main():
             for e in c.run("list")[1].get("engines") or []:
                 if sys.platform == "win32" and e.get("pid"):
                     subprocess.run(["taskkill", "/PID", str(e["pid"]), "/F"], capture_output=True)
-    (out / "report.json").write_text(json.dumps(report, indent=1))
+    (out / "report.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
     print(f"\nreport: {out / 'report.json'}")
     if FAILS:
         print(f"FAIL: {len(FAILS)} check(s) failed")

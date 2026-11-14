@@ -417,12 +417,12 @@ impl Engine {
     }
 
     /// Before a capture: its views become stream sources and their uploads start now.
-    pub(crate) fn stream_capture(&mut self, views: &[(Camera, u32, u32)]) -> usize {
+    pub(crate) fn stream_capture(&mut self, views: &[crate::streaming::CaptureView]) -> usize {
         if !self.stream.enabled() {
             return 0;
         }
-        for (c, w, h) in views {
-            self.stream.capture_source(*c, *w, *h);
+        for (c, w, h, lod) in views {
+            self.stream.capture_source(*c, *w, *h, *lod);
         }
         let generation = self.world_generation;
         self.stream.frame(&mut self.gpu, &mut self.models, &self.library, &self.world, generation, false);

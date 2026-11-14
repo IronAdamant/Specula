@@ -494,7 +494,7 @@ def run_adapter(exe, adapter, out, port, assets, windowed=False):
                 src = Path(f["image"]["path"])
                 dst = out / f"{adapter}_{name}.png"
                 dst.write_bytes(src.read_bytes())
-                (out / f"{adapter}_{name}.json").write_text(json.dumps(f, indent=1))
+                (out / f"{adapter}_{name}.json").write_text(json.dumps(f, indent=1), encoding="utf-8")
                 for w in f.get("warnings", []):
                     print(f"  warning: {w}")
                     if "vulkan Error" in w:
@@ -551,7 +551,7 @@ def run_adapter(exe, adapter, out, port, assets, windowed=False):
             widths = [s["screen"][2] for s in f5["subjects"] if s["name"].startswith("tree_") and s.get("screen")]
             check(widths and all(70 <= w_ <= 90 for w_ in widths), f"billboard subject rects are the drawn card: widths {sorted(set(widths))}", problems)
             perf = m.json("perf_frame")
-            (out / f"{adapter}_perf.json").write_text(json.dumps(perf, indent=1))
+            (out / f"{adapter}_perf.json").write_text(json.dumps(perf, indent=1), encoding="utf-8")
             # Persistence through the engine: the 2D scene, saved, loaded, renders the same. The
             # environment is world-wide: the 3D scene's height fog (density by world Y) would
             # shade the XY-plane map by row, so it goes off for the 2D view.
@@ -581,7 +581,7 @@ def run_adapter(exe, adapter, out, port, assets, windowed=False):
                 m.call("window_view", eye=[212, 8, 16], target=[200, 1.5, 0])
                 time.sleep(1.0)
                 perf = m.json("perf_frame")
-                (out / f"{adapter}_perf_window.json").write_text(json.dumps(perf, indent=1))
+                (out / f"{adapter}_perf_window.json").write_text(json.dumps(perf, indent=1), encoding="utf-8")
     errors = engine.validation_errors()
     check(errors == 0, f"shutdown with {errors} validation errors", problems)
     return problems

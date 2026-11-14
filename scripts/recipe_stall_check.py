@@ -41,7 +41,7 @@ def log(msg):
 
 
 def recipe_text(name, seed_bump=0):
-    text = (SEPULCRA_ASSETS / "recipes" / f"{name}.json").read_text()
+    text = (SEPULCRA_ASSETS / "recipes" / f"{name}.json").read_text(encoding="utf-8")
     if seed_bump:
         j = json.loads(text)
         j["seed"] = int(j.get("seed", 1)) + seed_bump
@@ -152,7 +152,7 @@ def main():
         cap = rec.get("out") or {}
         if cap.get("path"):
             worst = {}
-            data = json.loads(Path(cap["path"]).read_text())
+            data = json.loads(Path(cap["path"]).read_text(encoding="utf-8"))
             for f in data["frames"]:
                 for rows in f["zones"].values():
                     for row in rows:  # [path, calls, ms, self_ms, max_call_ms, ...]
@@ -178,7 +178,7 @@ def main():
     trace_files = sorted((out / "trace").glob("*.jsonl"))
     events = []
     for f in trace_files:
-        for line in f.read_text(errors="replace").splitlines():
+        for line in f.read_text(errors="replace", encoding="utf-8").splitlines():
             try:
                 e = json.loads(line)
             except json.JSONDecodeError:
@@ -204,7 +204,7 @@ def main():
     report["validation_errors"] = errors
     if errors:
         fails.append(f"validation errors: {errors}")
-    (out / "report.json").write_text(json.dumps(report, indent=1))
+    (out / "report.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
     log(f"report: {out / 'report.json'}")
     if fails:
         for f in fails:

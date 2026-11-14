@@ -47,7 +47,7 @@ def compilers_running():
     n = 0
     for image in ("cargo.exe", "rustc.exe"):
         r = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {image}", "/FO", "CSV", "/NH"],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
         n += sum(1 for line in r.stdout.splitlines() if line.startswith('"'))
     return n
 
@@ -61,7 +61,7 @@ def desktop_apps():
     """Desktop apps running, by image name with their process counts ({} off Windows)."""
     if sys.platform != "win32":
         return {}
-    r = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True)
+    r = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, encoding="utf-8", errors="replace")
     n = collections.Counter()
     for line in r.stdout.splitlines():
         image = line.split(",")[0].strip('"').lower()
@@ -93,7 +93,7 @@ class GpuUsers:
         self.pid, self.proc = str(engine_pid), None
         if sys.platform == "win32":
             self.proc = subprocess.Popen(["powershell", "-NoProfile", "-Command", GPU_SAMPLER],
-                                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+                                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace")
 
     def stop(self):
         """{process: [mean %, max %]} on the engine's GPU over the samples, the engine's own share
@@ -347,7 +347,7 @@ def main():
     deciding = [m for m in measured if m.get("gi", "off") in ("off", "low")]
     ok = len(deciding) == (8 if args.gi else 2) and all(m["passed"] for m in deciding) and errors == 0 and replay_ok
     summary["passed"] = ok
-    (out / "summary.json").write_text(json.dumps(summary, indent=2))
+    (out / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"validation errors at shutdown: {errors}; replay verified: {replay_ok}")
     print(("PASS" if ok else "FAIL") + f": summary in {out / 'summary.json'}")
     sys.exit(0 if ok else 1)

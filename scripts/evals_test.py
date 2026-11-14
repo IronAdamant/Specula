@@ -363,7 +363,7 @@ class ProxyStreams(unittest.TestCase):
             body = {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "agent_hello", "arguments": {"name": "ev", "tools": ["world"]}}}
             req = urllib.request.Request(f"http://127.0.0.1:{port}/mcp", json.dumps(body).encode(),
                                          {"Content-Type": "application/json", "Accept": "application/json, text/event-stream", "Mcp-Session-Id": "s1"})
-            with urllib.request.urlopen(req, timeout=30) as r:
+            with evals.urlopen(req, timeout=30) as r:
                 ctype, text = r.headers.get("Content-Type"), r.read().decode()
             self.assertEqual(ctype, "application/json")
             reply = json.loads(text)  # an eval agent's client parses it as JSON

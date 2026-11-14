@@ -50,7 +50,7 @@ def recipes():
     """(label, recipe path, params) for every recipe, every tier of tiered ones."""
     out = []
     for path in sorted((ASSETS / "recipes").glob("*.json")):
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         if '"texgraph"' in text:
             continue  # a texture graph that recipes use, not a recipe
         rel = f"recipes/{path.name}"
@@ -82,7 +82,7 @@ def shutdown_check(a, out, check):
     shutil.rmtree(assets, ignore_errors=True)
     (assets / "recipes").mkdir(parents=True)
     shutil.copy(ASSETS / "style.json", assets / "style.json")
-    (assets / "recipes" / "heavy.json").write_text(json.dumps(heavy_recipe()))
+    (assets / "recipes" / "heavy.json").write_text(json.dumps(heavy_recipe()), encoding="utf-8")
     args = ["--headless", "--assets", str(assets), "--captures", str(out / "captures"), "--worlds", str(out / "worlds")]
     answers = {}
 
@@ -94,8 +94,12 @@ def shutdown_check(a, out, check):
 
     with Engine(a.exe, a.port, out / "shutdown.log", *args, cwd=str(ROOT)) as engine:
         mcp = engine.mcp("shutdown-check")
-        for s in range(6):
-            mcp.call("world_spawn", shape="model", recipe="recipes/heavy.json", seed=s, position=[s * 2, 0, 0])
+        # More builds than the machine can finish before the stop, whatever its size: each is a
+        # third of a second or more of one core, the stop comes half a second on, and there
+        # are twelve for every core (six in all let a fast machine finish them first, and the
+        # capture was then answered with its picture: found by M5's audit).
+        for s in range(12 * (os.cpu_count() or 8)):
+            mcp.call("world_spawn", shape="model", recipe="recipes/heavy.json", seed=s, position=[(s % 24) * 2, 0, (s // 24) * -2])
         threads = [threading.Thread(target=call, args=("capture", "sight_frame"), kwargs={"width": 64, "height": 64}),
                    threading.Thread(target=call, args=("build", "model_build"), kwargs={"recipe": "recipes/heavy.json", "seed": 99})]
         for t in threads:
@@ -106,7 +110,10 @@ def shutdown_check(a, out, check):
         stop_s = time.perf_counter() - stopping
     for t in threads:
         t.join(timeout=60)
-    check(stop_s < 1.5, f"shutdown with a parked capture and a pending model_build took {stop_s:.2f} s")
+    # The stop lets the builds that are running finish (about a second each beside the others,
+    # on the machine this was written on) and drops the ones still queued: eleven more rounds,
+    # which is what a stop that waited for them would take. The bound sits between the two.
+    check(stop_s < 5.0, f"shutdown with a parked capture and a queue of model builds took {stop_s:.2f} s (it does not run the queue)")
     for name in ("capture", "build"):
         took, is_error, text = answers.get(name, (None, None, "no answer"))
         ok = took is not None and took < 5 and is_error and "shutting down" in text
@@ -199,13 +206,27 @@ def main():
               f"tier 9 refused: {err.get('error')} {err.get('recipe_error', {}).get('code')} at {err.get('recipe_error', {}).get('path')}")
 
         # 4. Captures: the whole gallery (LOD by size), then full detail from closer.
-        centre = [width / 2, 2.0, -depth / 2]
-        dist = max(width, depth) * 0.85
-        eye = [centre[0] + dist * 0.35, dist * 0.55, centre[2] + dist * 0.9]
+        # The camera stands back far enough for the whole layout, the twins beside it included
+        # (x from -9 to the widest row, z from the last row to 3): the sphere around that box
+        # inside the view's narrower half angle (45 degrees high at 16:9, so the vertical one).
+        lo_x, hi_x, lo_z, hi_z = -9.0, width, -depth, 3.0
+        centre = [(lo_x + hi_x) / 2, 2.0, (lo_z + hi_z) / 2]
+        radius = math.hypot(hi_x - lo_x, hi_z - lo_z) / 2 + 2.0
+        dist = radius / math.sin(math.radians(45 / 2))
+        aim = [0.35, 0.55, 0.9]
+        norm = math.sqrt(sum(c * c for c in aim))
+        eye = [centre[i] + dist * aim[i] / norm for i in range(3)]
         shots = {}
-        for tag, extra in [("overview", {}), ("overview_lod0", {"lod": 0}), ("overview_ui", {"include_ui": True})]:
-            p = mcp.frame(width=1920, height=1080, eye=eye, target=centre, fov_y_deg=45, time_s=1.0, max_subjects=500, **extra)
-            shots[tag] = p
+        view = dict(width=1920, height=1080, eye=eye, target=centre, fov_y_deg=45, time_s=1.0, max_subjects=500)
+        shots["overview"] = mcp.frame(**view)
+        # Full detail from the same place: the capture that forces a level waits for it
+        # (STREAMING.md, "A capture that forces a level"). From this far the levels on the GPU are
+        # the coarse ones: until 2026-11-15 this capture drew those, 58 of 67 models coarser than
+        # asked, and so did every capture after it.
+        shots["overview_lod0"] = mcp.frame(lod=0, **view)
+        shots["overview_ui"] = mcp.frame(include_ui=True, **view)
+        for tag in ("overview", "overview_lod0", "overview_ui"):
+            p = shots[tag]
             print(f"capture {tag}: {p['image']['path']}  models {p['models']}")
         front = entries[: len(rows[0])]
         fx = sum(e["pos"][0] for e in front) / len(front)
@@ -226,8 +247,9 @@ def main():
         check("cursor" not in subjects, "the ui marker is left out of the default capture")
         check("cursor" in {s["name"] for s in shots["overview_ui"]["subjects"]}, "include_ui brings the ui marker back")
         check(p["models"]["missing"] == 0, f"no model lacks a build ({p['models']['missing']})")
-        check(shots["overview_lod0"]["models"]["lod_histogram"][0] == len(names) + 3,
-              f"lod 0 forced: {shots['overview_lod0']['models']['lod_histogram']}")
+        forced = shots["overview_lod0"]["models"]
+        check(forced["coarser_lod"] == 0 and forced["lod_histogram"][0] == len(names) + 3,
+              f"lod 0 forced: {forced['lod_histogram']}, {forced['coarser_lod']} drawn coarser, in the one capture that asked")
         check(not p["warnings"], f"no capture warnings {p['warnings']}")
 
         perf = mcp.json("perf_frame")
@@ -241,7 +263,7 @@ def main():
                    "captures": {k: v["image"]["path"] for k, v in shots.items()},
                    "packets": {k: v["image"]["packet_path"] for k, v in shots.items()},
                    "models": perf["models"]}
-        (out / "gallery.json").write_text(json.dumps(summary, indent=1))
+        (out / "gallery.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
     errors = engine.validation_errors()
     check(errors == 0, f"validation errors at shutdown: {errors}")
     shutdown_check(a, out, check)

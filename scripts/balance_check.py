@@ -56,12 +56,12 @@ def main():
         other.hello("bystander")
         tools = lab.tools()
         check(all(t in tools for t in ("balance_targets", "balance_sweep", "balance_tune")), "the three balance tools are listed")
-        out = lab.json("lex_import", set=SET, document=json.loads(SLICE.read_text()))
+        out = lab.json("lex_import", set=SET, document=json.loads(SLICE.read_text(encoding="utf-8")))
         check(out["valid"], "the slice is imported")
 
         bound = lab.json("balance_targets", targets_file=TARGETS, set=SET)
         check(bound["valid"] and any(p["id"] == "runner_hp" for p in bound["params"]), "targets bind to the set; runner_hp is tunable")
-        doc = json.loads((ROOT / TARGETS).read_text())
+        doc = json.loads((ROOT / TARGETS).read_text(encoding="utf-8"))
         doc["targets"][2]["archetype"] = "runer"
         res = lab.request("tools/call", {"name": "balance_targets", "arguments": {"targets": doc, "set": SET}})
         err = json.loads(res["content"][0]["text"])
@@ -156,7 +156,7 @@ def main():
         other.close()
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(json.dumps(report, indent=2) + "\n")
+        args.out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     for p in problems:
         print(f"  PROBLEM: {p}")
     print("PASS" if not problems else "FAIL")

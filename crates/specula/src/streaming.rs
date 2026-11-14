@@ -60,6 +60,9 @@ pub const INSTANCED_MIN: u32 = 8;
 pub const UPDATE_IDLE: Duration = Duration::from_secs(1);
 /// A capture's camera stays a stream source this long after the capture.
 pub const CAPTURE_SOURCE_FOR: Duration = Duration::from_secs(10);
+/// A capture's view as streaming takes it: the camera, the size, and the level the capture
+/// draws every model at when it forces one (`sight_frame {lod}`).
+pub type CaptureView = (Camera, u32, u32, Option<usize>);
 /// Capture sources kept at once (the oldest goes).
 const MAX_CAPTURE_SOURCES: usize = 4;
 /// Recent budget misses kept for perf_frame.
@@ -590,6 +593,9 @@ struct Source {
     dir: Vec3,
     /// Capture sources expire.
     until: Option<Instant>,
+    /// The level a capture draws every model at (`sight_frame {lod}`): the level wanted for
+    /// what this source sees, whatever its size on screen. `None`: by size.
+    lod: Option<usize>,
 }
 
 impl Source {
@@ -599,7 +605,7 @@ impl Source {
             sight::Projection::Perspective => None,
         };
         let dir = (cam.target - cam.eye).normalize();
-        Source { kind, eye: cam.eye, target: cam.target, ortho_d, fov_y_deg: cam.fov_y_deg, viewport_h: h, view_proj: cam.view_proj(w, h), dir, until }
+        Source { kind, eye: cam.eye, target: cam.target, ortho_d, fov_y_deg: cam.fov_y_deg, viewport_h: h, view_proj: cam.view_proj(w, h), dir, until, lod: None }
     }
 
     /// The distance sizes on screen are worked out from: to the box from the eye; orthographic,
@@ -985,15 +991,18 @@ impl Streamer {
         }
     }
 
-    /// A capture through `camera` at `w × h`: a source for a while, wanted first.
-    pub fn capture_source(&mut self, camera: Camera, w: u32, h: u32) {
+    /// A capture through `camera` at `w × h`: a source for a while, wanted first. `lod`: the
+    /// level the capture draws every model at, when it forces one; that level is then what its
+    /// view wants uploaded (by size, a far camera's `lod: 0` would never get its level 0).
+    pub fn capture_source(&mut self, camera: Camera, w: u32, h: u32, lod: Option<usize>) {
         if !self.cfg.enabled {
             return;
         }
         let until = Some(Instant::now() + CAPTURE_SOURCE_FOR);
         // A capture from about where an earlier one was (an agent's repeated look) needs no
-        // update of its own at once: within UPDATE_EVERY is soon enough.
-        let known = self.sources.iter().any(|s| s.kind == SourceKind::Capture && (s.eye - camera.eye).length() < 1.0);
+        // update of its own at once: within UPDATE_EVERY is soon enough. One that forces
+        // another level than that look did wants other levels: its update runs now.
+        let known = self.sources.iter().any(|s| s.kind == SourceKind::Capture && (s.eye - camera.eye).length() < 1.0 && s.lod == lod);
         self.sources.retain(|s| !(s.kind == SourceKind::Capture && (s.eye - camera.eye).length() < 0.01));
         let mut captures: Vec<usize> = (0..self.sources.len()).filter(|&i| self.sources[i].kind == SourceKind::Capture).collect();
         while captures.len() >= MAX_CAPTURE_SOURCES {
@@ -1001,7 +1010,7 @@ impl Streamer {
             self.sources.remove(oldest);
             captures = (0..self.sources.len()).filter(|&i| self.sources[i].kind == SourceKind::Capture).collect();
         }
-        self.sources.push(Source::new(SourceKind::Capture, &camera, w, h, until));
+        self.sources.push(Source { lod, ..Source::new(SourceKind::Capture, &camera, w, h, until) });
         if known {
             self.stale = true;
         } else {
@@ -1230,6 +1239,8 @@ impl Streamer {
             let px = crate::models::screen_px(r, d.max(0.0), fov, vh) / (1.0 - crate::models::LOD_HYSTERESIS);
             crate::models::select_lod(px, built.model.lods.len(), None)
         };
+        // What source `s` wants of `b`: the level its capture forces, or the one its size picks.
+        let level_for = |s: &Source, b: u64, scale: f32, d: f32| s.lod.unwrap_or_else(|| level_at(b, scale, d, s.fov_y_deg, s.viewport_h));
         // How many pixels across `b` (world scale `scale`) is at `d`.
         let px_at = |b: u64, scale: f32, d: f32, fov: f32, vh: u32| -> f32 { live.get(&b).map_or(0.0, |built| built_px(built, scale, d, fov, vh)) };
         let want = &mut self.want;
@@ -1380,7 +1391,7 @@ impl Streamer {
                     for &(p, hard, d, si) in if in_proxy { &members_by } else { &others_by } {
                         // A soft stand-in only needs the coarsest level (the proxy's).
                         let s = &self.sources[si];
-                        let level = if hard { level_at(b, scale, d, s.fov_y_deg, s.viewport_h) } else { usize::MAX };
+                        let level = if hard { level_for(s, b, scale, d) } else { usize::MAX };
                         wish(b, p, hard, level);
                     }
                     // Beyond radius_m (or the proxies' reach): wanted where it is big enough on
@@ -1388,7 +1399,7 @@ impl Streamer {
                     for &(p, d, si) in if in_proxy { &far_members } else { &far_others } {
                         let s = &self.sources[si];
                         if px_at(b, scale, d, s.fov_y_deg, s.viewport_h) >= RESIDENT_MIN_PX {
-                            wish(b, p, true, level_at(b, scale, d, s.fov_y_deg, s.viewport_h));
+                            wish(b, p, true, level_for(s, b, scale, d));
                         }
                     }
                 }
@@ -1401,7 +1412,7 @@ impl Streamer {
                         let d = s.dist(m.lo, m.hi);
                         let scale = max_scale(&m.world);
                         if d < cfg.radius_m || px_at(b, scale, d, s.fov_y_deg, s.viewport_h) >= RESIDENT_MIN_PX {
-                            wish(b, d * s.weight(m.lo, m.hi), true, level_at(b, scale, d, s.fov_y_deg, s.viewport_h));
+                            wish(b, d * s.weight(m.lo, m.hi), true, level_for(s, b, scale, d));
                         }
                     }
                 }
@@ -1978,7 +1989,7 @@ impl Streamer {
     /// What a capture through `views` still waits for: model entities in view (within
     /// `radius_m`, not drawn by a proxy) whose build is built but not all uploaded, and cells in
     /// view whose proxy is coming. 0 when streaming is off or `capture_wait` is.
-    pub fn waiting_in(&self, views: &[(Camera, u32, u32)], world: &World, models: &GpuModels) -> usize {
+    pub fn waiting_in(&self, views: &[CaptureView], world: &World, models: &GpuModels) -> usize {
         if !self.cfg.enabled || !self.cfg.capture_wait {
             return 0;
         }
@@ -1991,7 +2002,7 @@ impl Streamer {
         };
         let mut waiting = 0;
         let resident = |h: Option<u32>| build_of(h).is_some_and(|b| models.uploaded.contains_key(&b));
-        for (cam, w, h) in views {
+        for (cam, w, h, _) in views {
             let vp = cam.view_proj(*w, *h);
             let src = Source::new(SourceKind::Capture, cam, *w, *h, None);
             let hlod_on = self.hlod_on() && src.ortho_d.is_none();
