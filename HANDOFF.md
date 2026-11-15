@@ -832,6 +832,8 @@ and the private held-out eval set.
   is built, maps 2 and 3 are not, and no milestone holds them. The large commercial game is after M6. Is
   the game M6 ships Sepulcra, and with one map or all three? Claude recommends: Sepulcra with map 1 as the
   proto-1.0's free demo, and maps 2 and 3 after M6, made with the new game systems as their proof.
+  The owner, asked (2026-11-16): "Sepulcra is a MVP game for Specula." Read as: the game M6 ships is
+  Sepulcra, as the engine's MVP. Still to be said: with map 1 alone, or with all three.
 - **Sepulcra balance (from the balance lab, 2026-10-18):** a rusher who calls every wave early still loses 2 runs in
   16 on unseen seeds. Claude recommends keeping it risky. The owner will playtest it in M6, on each OS, and decide
   then ([docs/design/BALANCE.md](docs/design/BALANCE.md)).
