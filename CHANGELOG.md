@@ -107,7 +107,10 @@ Built by one agent, lane by lane, each lane reviewed by a model that did not wri
   name only, with the logs gone with the machine: a failed gate now ends with each failed test's own
   message. The test took a hand-over file between its making and its writing, which the engine's watcher
   never does (`open_waits`); with a delay put between the two it failed every time, in the 64 s CI's run
-  took, and it now waits as the watcher does
+  took, and it now waits as the watcher does. The run that showed everything showed one more on Linux, of
+  the whole workspace: a trace test took "the second event's time selects one event" for the filter's
+  doing, and on that machine both events had one microsecond (it had passed there twice that day). It
+  says what a time range takes and leaves, of the events' own times and of times that are given
 
 ### M4, done (2026-10-28 to 2026-10-30)
 

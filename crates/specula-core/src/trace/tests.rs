@@ -180,8 +180,25 @@ fn filters_select_by_every_field() {
     assert_eq!(n(Filter { text: Some("stall".into()), ..Filter::default() }), 1);
     assert_eq!(n(Filter { subsystems: vec!["test.*".into()], ..Filter::default() }), 2);
     assert_eq!(n(Filter { subsystems: vec!["other".into()], ..Filter::default() }), 0);
-    let t = ev[1].time_us;
-    assert_eq!(n(Filter { time_us: Some((t, t)), ..Filter::default() }), 1);
+    // By time: both ends count, and what is outside is left out. Said of the events' own times,
+    // which may be one and the same microsecond (on CI's Linux machine they were, once in three
+    // runs: "the second event's time selects one event" was the clock's doing, not the filter's).
+    let (first, last) = (ev[0].time_us, ev[1].time_us);
+    assert!(first <= last);
+    let at = |t: u64| ev.iter().filter(|e| e.time_us == t).count();
+    assert_eq!(n(Filter { time_us: Some((last, last)), ..Filter::default() }), at(last));
+    assert_eq!(n(Filter { time_us: Some((first, first)), ..Filter::default() }), at(first));
+    assert_eq!(n(Filter { time_us: Some((first, last)), ..Filter::default() }), 2);
+    assert_eq!(n(Filter { time_us: Some((last + 1, u64::MAX)), ..Filter::default() }), 0);
+    if first > 0 {
+        assert_eq!(n(Filter { time_us: Some((0, first - 1)), ..Filter::default() }), 0);
+    }
+    // And of times that are given: an event one microsecond off either end is out.
+    let mut moved = ev[1].clone();
+    moved.time_us = 5_000;
+    for (range, inside) in [((5_000, 5_000), true), ((4_999, 5_001), true), ((5_001, 9_000), false), ((0, 4_999), false)] {
+        assert_eq!(Filter { time_us: Some(range), ..Filter::default() }.matches(&moved), inside, "{range:?}");
+    }
 }
 
 #[test]

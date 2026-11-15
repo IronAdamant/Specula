@@ -639,12 +639,15 @@ answer where it applies. The owner decided everything else on 2026-10-22 (see "D
 - **A check's own figure may not mean what its name says.** The harness's token count for a subagent was its
   context's size; a subagent's "no other context" was untrue. Look at the record.
 - **What only CI runs is found by CI, one push at a time, unless it shows everything at once.** M5 was
-  pushed green on this machine and was red twice on CI: first a newer Rust; then what that failure had
-  kept from running (three text tests that had never run on Linux, behind a package that failed first)
-  and a test that fails once in three runs on a busy machine, named without its message. CI now runs every
-  test binary (`--no-fail-fast`) and the gate ends with what each failed test said. No machine here runs
-  Linux: until one does, CI's Ubuntu job is the only run of the `cfg(not(windows))` side, and it has no
-  CJK font and no GPU.
+  pushed green on this machine and was red three times on CI: first a newer Rust; then what that failure
+  had kept from running (three text tests that had never run on Linux, behind a package that failed first)
+  and a test that fails once in three runs on a busy machine, named without its message; then, in the
+  first run that showed the whole workspace on Linux, one test that took two events' times to differ
+  (they were one microsecond there, in one run of three). CI now runs every test binary (`--no-fail-fast`)
+  and the gate ends with what each failed test said. No machine here runs Linux: until one does, CI's
+  Ubuntu job is the only run of the `cfg(not(windows))` side, and it has no CJK font and no GPU. **A test
+  that passes here can still depend on this machine's clock or speed:** read two times as possibly equal,
+  and a file another thread makes as possibly not yet written.
 
 **Recommendations for the next session:**
 1. **Do not start M6 until the owner has talked its scope through.** They described it (2026-11-14) as
