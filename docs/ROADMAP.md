@@ -1092,7 +1092,8 @@ saving the assets, similar to Unity and Unreal Engine and also having 2D/3D asse
       captioned and says so. Claude writes text and cannot make speech; some agents have a speech tool,
       most do not.
     - **What the engine could make itself, with zero dependencies** (the owner asked "you have a way to
-      build that in?"; Claude's answer, not decided). One: voiced babble, a speaker's voice as synthesis
+      build that in?"; Claude's answer. Decided the same day: the first, with the slot for voice packs,
+      is M6's, and the second is decided after it: "I do. If it'll make it easier."). One: voiced babble, a speaker's voice as synthesis
       (pitch, pace, timbre, mood) that sounds while the caption shows, in no language, so it needs no
       translation; small, on the synthesis the engine has. Two: spoken words from a formant
       synthesiser, intelligible and plainly a machine, never a human actor; English first, and each
@@ -1104,8 +1105,9 @@ saving the assets, similar to Unity and Unreal Engine and also having 2D/3D asse
   - **Music the same way**: a game's music is a set an agent generates (the engine's synthesis, heard
     and measured with `audio_preview`) or a pack people bring (streamed Ogg), changed without touching
     the game.
-  - **Quests and editing** ("Quests, edits.. etc etc"). Read as: quests belong to the same set, and each
-    of these is edited through tools and the editor like other project data.
+  - **Quests and editing** ("Quests, edits.. etc etc"): quests belong to the same set, and each of
+    these is edited through tools and the editor like other project data (confirmed 2026-11-16: "these
+    are editable through tools and editor. No specific editing feature").
   - **Notes on the game, for agents** ("both for memory and system"; "it will be hard to remember every
     detail"): what the game is, what was decided and why, its people, places and open threads, kept with
     the project so that an agent with no memory of earlier sessions finds them; and the harness a game is
@@ -1123,7 +1125,10 @@ saving the assets, similar to Unity and Unreal Engine and also having 2D/3D asse
     this is a large addition, but this is something that needs to be sorted out now as many devs will be
     non-tech and not really understand this", and on the first release: "If not before december, then
     before Christmas. I can wait." So it is M6's and not put off past the release; the scope talk sizes
-    it and orders it. What it asks of the design: a developer who is not technical is told in plain
+    it and orders it, and cuts none of it: asked which parts matter most if not all fit, "All of them.
+    No exceptions. Take your time." The order Claude proposed is for building, not for dropping: the
+    memory helpers and the conditions first (every game uses them), then the storyline tree with
+    captions, then reputation and the RPG set-up, then music. What it asks of the design: a developer who is not technical is told in plain
     words what their game has and has not (a story with an ending out of reach, lines with no voice),
     by the engine, from the project.
 - [ ] **Ship the owner's original game.**
@@ -1136,8 +1141,10 @@ saving the assets, similar to Unity and Unreal Engine and also having 2D/3D asse
   Windows and macOS together; Linux follows, sooner if someone helps there. macOS is native work that does
   not exist yet and is sized at the start of M6 ([HANDOFF.md](../HANDOFF.md)). The order of 2026-10-22 was:
   verify on macOS and Linux with small games, then publish the crates to crates.io (open source), then
-  market. With Linux now after the first release, whether crates.io and the marketing wait for it has not
-  been said: it is on the owner's list ([HANDOFF.md](../HANDOFF.md#open-owner-decisions)).
+  market. With Linux now after the first release, the crates and the announcement do not wait for it
+  (owner, 2026-11-16: "Linux check can come later. Windows/Mac matter here. Linux will be the next
+  target"): they go with the first release, which says plainly that Linux is not verified yet. The
+  adversarial review still comes before any marketing.
 - [ ] ➕ **Mods and outside extensions** (owner, 2026-11-12): how games built on Specula are modded, and how people
   plug in their own tooling or engine pieces. These live **on their side, never in this repository**: the engine
   stays zero-dependency and validates whatever plugs in, as it treats every agent as untrusted. Whether a game is

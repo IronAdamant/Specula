@@ -114,9 +114,18 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     human devs that they can produce it or use it to produce speech." So what speech a project has is
     read from the project and told to the developer in plain words, never taken from what an agent
     says of itself. Claude cannot make speech (it writes text). What the engine could make with zero
-    dependencies is in the ROADMAP item, as a proposal: voiced babble under the captions (small), spoken
-    words from a formant synthesiser (a machine's voice, weeks, a language at a time), and natural
-    voices only as packs made outside.
+    dependencies is in the ROADMAP item: voiced babble under the captions (small), spoken words from a
+    formant synthesiser (a machine's voice, weeks, a language at a time), and natural voices only as
+    packs made outside.
+  - **Four more answers, the same day.** Voices: babble voices and the slot for voice packs are M6's,
+    the machine voice is decided after ("I do. If it'll make it easier"). What to cut if not all of it
+    fits: nothing ("All of them. No exceptions. Take your time"); Claude's order is for building: the
+    memory helpers and the conditions first, then the storyline tree with captions, then reputation
+    and the RPG set-up, then music. Editing: "these are editable through tools and editor. No specific
+    editing feature." And the crates and the announcement do not wait for Linux: "Linux check can come
+    later. Windows/Mac matter here. Linux will be the next target." They go with the first release,
+    which says plainly that Linux is not verified yet; the adversarial review still comes before any
+    marketing.
 - **Owner, 2026-11-15 (on the Python in `scripts/`): the tooling becomes Rust in M6.** "For now, this is
   acceptable trade off but in M6, I'll want all of this in Rust." The gate, the audit's runner and every
   check are Python today (83 scripts, standard library only); nothing a player or a game's developer runs
@@ -681,12 +690,6 @@ answer where it applies. The owner decided everything else on 2026-10-22 (see "D
   them; owner authority is never given remotely unless the operator passes a flag for it; and tunnels
   (Tailscale, WireGuard, SSH) come before OS TLS, because tokens, limits and the hardened server are where the
   protection is. Agree, or change any of the three?
-- **What waits for Linux, now that it follows the first release** (2026-11-15; found by a review of the
-  roadmap's release order). On 2026-10-22 the order was: verify on macOS and Linux, then publish to
-  crates.io, then market. On 2026-11-14 the first release became Windows and macOS, with Linux later.
-  Does publishing the crates, or the marketing, wait for the Linux check, or go with the first release?
-  Claude recommends: publish and announce with the first release, and say plainly there that Linux is not
-  verified yet.
 - **Sepulcra balance (from the balance lab, 2026-10-18):** a rusher who calls every wave early still loses 2 runs in
   16 on unseen seeds. Claude recommends keeping it risky. The owner will playtest it in M6, on each OS, and decide
   then ([docs/design/BALANCE.md](docs/design/BALANCE.md)).
