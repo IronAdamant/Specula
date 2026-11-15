@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 
 /// `(file, outputs allowed)`: the files that had console output on 2026-10-29.
-const ALLOWED: [(&str, usize); 65] = [
+const ALLOWED: [(&str, usize); 66] = [
     ("crates/specula/src/capture.rs", 3),
     ("crates/specula/src/disk.rs", 4),
     ("crates/specula/src/evidence.rs", 5),
@@ -24,6 +24,9 @@ const ALLOWED: [(&str, usize); 65] = [
     ("crates/specula/src/lib.rs", 28),
     ("crates/specula/src/logic/mod.rs", 1),
     ("crates/specula/src/logic/tests.rs", 1),
+    // A test's own "skipped: no cargo to build with" (AGENTS.md rule 7: a test that can't run
+    // says why and passes); the tools themselves print nothing.
+    ("crates/specula/src/logic/tools.rs", 1),
     ("crates/specula/src/luts.rs", 2),
     ("crates/specula/src/main.rs", 1),
     ("crates/specula/src/meshes.rs", 10),

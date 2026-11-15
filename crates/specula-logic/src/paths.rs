@@ -391,43 +391,129 @@ pub fn check_dep_info(deps_file: &Path, dir: &Path, root: &Path) -> Result<(), (
     Ok(())
 }
 
-/// The rustc dep-info of the build's artifact for library target `name`, in its Cargo target
-/// folder's `deps`. The artifact's own first: `deps/<file stem>.d` (`ambulo.d` for the cdylib
-/// `ambulo.dll`, `ambulo-<hash>.d` for `libambulo-<hash>.rlib`). Otherwise the newest
-/// `<name>-<hash>.d` that a real build wrote: never a `cargo check` or `cargo clippy` metadata
-/// file sharing the folder, which lists `clippy.toml` and `Cargo.toml` among what it read (and
-/// made logic_build refuse a clean module with `source_path` after a clippy run).
-pub fn find_dep_info(artifact: &Path, name: &str) -> Option<PathBuf> {
-    let parent = artifact.parent()?;
-    let deps = if parent.file_name().is_some_and(|n| n == "deps") { parent.to_path_buf() } else { parent.join("deps") };
-    let stem = name.replace('-', "_");
-    if let Some(own) = artifact.file_stem().map(|s| s.to_string_lossy().into_owned()) {
-        let own = own.strip_prefix("lib").filter(|o| o.starts_with(&stem)).map(str::to_owned).unwrap_or(own);
-        let path = deps.join(format!("{own}.d"));
-        if (own == stem || own.starts_with(&format!("{stem}-"))) && path.is_file() {
-            return Some(path);
+/// The rustc dep-info of the build's artifact for library target `name`: the `.d` file rustc
+/// wrote beside the file it compiled, found by where that file is and never by a date. Empty
+/// when there is none; more than one only as said below, and then the caller checks each.
+///
+/// Cargo has two layouts of its target folder, and a folder two toolchains have built into holds
+/// both (Rust 1.100 moved `deps/` to `build/<package>/<hash>/out/`):
+/// - An artifact still where rustc wrote it (`deps/libx-<hash>.rlib`; from 1.100
+///   `build/x/<hash>/out/libx-<hash>.rlib`) has its dep-info in its own folder.
+/// - An artifact Cargo copied up into the profile folder (`debug/ambulo.dll`) has it beside the
+///   build's own copy, in `deps/` or in one of `build/*/*/out/`: the copy with the artifact's
+///   bytes. An older build's copy left in the folder (another toolchain's, another version of the
+///   package) has other bytes, and its dep-info lists what that build read: taking it would
+///   check files that are not the ones compiled. Should two builds have left copies with the
+///   same bytes (review R1: nobody has made one), none is preferred: the dep-info of each is
+///   returned, and the library is loaded only if every one passes.
+///
+/// Never the `.d` beside a copied-up artifact (Cargo's own: it lists every path dependency's
+/// sources), and never a `cargo check` or `cargo clippy` metadata file sharing a folder (it
+/// lists `clippy.toml` and `Cargo.toml`, and made logic_build refuse a clean module). No copy
+/// with the artifact's bytes, a copy with no dep-info beside it, or more folders than the search
+/// reads, is an empty answer: the build is refused.
+pub fn find_dep_infos(artifact: &Path, name: &str) -> Vec<PathBuf> {
+    let (Some(parent), Some(file), Some(own)) = (artifact.parent(), artifact.file_name(), library_stem(artifact, name)) else { return Vec::new() };
+    let beside = |folder: &Path| Some(folder.join(format!("{own}.d"))).filter(|d| d.is_file());
+    if parent.file_name().is_some_and(|n| n == "deps" || n == "out") {
+        return beside(parent).into_iter().collect();
+    }
+    let Some(folders) = rustc_folders(parent, RUSTC_FOLDERS) else { return Vec::new() };
+    let mut found = Vec::new();
+    for folder in folders {
+        if same_bytes(artifact, &folder.join(file)) {
+            match beside(&folder) {
+                Some(d) => found.push(d),
+                None => return Vec::new(),
+            }
         }
     }
-    let prefix = format!("{stem}-");
-    // A check or clippy run's dep-info names only `.rmeta` outputs (and clippy's records its
-    // arguments); a real build's names the library it made.
-    let metadata_only = |path: &Path| {
-        std::fs::read_to_string(path).map_or(true, |t| {
-            t.contains("env-dep:CLIPPY_ARGS")
-                || t.lines().filter_map(|l| l.split_once(": ").map(|(target, _)| target)).filter(|target| !target.ends_with(".d")).all(|target| target.ends_with(".rmeta"))
-        })
+    found
+}
+
+/// The name rustc's dep-info for `artifact` has, less `.d`, when the file is named for library
+/// target `name`: `ambulo` for `ambulo.dll` and `libambulo.rlib`, `x-<hash>` for
+/// `libx-<hash>.rlib` (a package name's dash is the library's underscore). `None` for a file
+/// named for something else (`libambulo.dll.a`, another crate's).
+fn library_stem(artifact: &Path, name: &str) -> Option<String> {
+    let stem = name.replace('-', "_");
+    let own = artifact.file_stem()?.to_string_lossy().into_owned();
+    let own = own.strip_prefix("lib").filter(|o| o.starts_with(&stem)).map(str::to_owned).unwrap_or(own);
+    (own == stem || own.starts_with(&format!("{stem}-"))).then_some(own)
+}
+
+/// The dep-info of one target's build, from every file Cargo names for it (`artifacts`): each
+/// library among them (`.dll`, `.so`, `.dylib`, `.rlib` or `.rmeta`, named for `name`) is looked
+/// up with [`find_dep_infos`] and the answers are joined. A library with no answer empties the
+/// whole: no other file of the build stands in for it (review R2: the first answer found was
+/// taken, so a module's `.rlib` could answer for the `.dll` that is loaded). Empty too when
+/// none of the files is a library.
+pub fn dep_infos_of(artifacts: &[PathBuf], name: &str) -> Vec<PathBuf> {
+    const LIBRARIES: [&str; 5] = ["dll", "so", "dylib", "rlib", "rmeta"];
+    let mut all = Vec::new();
+    for a in artifacts {
+        if !a.extension().is_some_and(|e| LIBRARIES.iter().any(|l| e == *l)) || library_stem(a, name).is_none() {
+            continue;
+        }
+        let found = find_dep_infos(a, name);
+        if found.is_empty() {
+            return Vec::new();
+        }
+        all.extend(found);
+    }
+    all.sort();
+    all.dedup();
+    all
+}
+
+/// The most folders [`find_dep_infos`] looks into for a copied-up artifact's own copy. A
+/// module's target holds a handful; a workspace's a few hundred.
+const RUSTC_FOLDERS: usize = 4096;
+
+/// The folders of a profile folder that rustc writes artifacts into: `deps` (before Rust 1.100)
+/// and every `build/<package>/<hash>/out` (from it), in name order. `None` when there are more
+/// than `most` to read: a search that stopped part-way could miss the copy it is for, so there
+/// is no answer and the build is refused.
+fn rustc_folders(profile: &Path, most: usize) -> Option<Vec<PathBuf>> {
+    let folders = |p: &Path| -> Option<Vec<PathBuf>> {
+        let entries: Vec<PathBuf> = std::fs::read_dir(p).into_iter().flatten().flatten().take(most + 1).map(|e| e.path()).collect();
+        if entries.len() > most {
+            return None;
+        }
+        let mut v: Vec<PathBuf> = entries.into_iter().filter(|p| p.is_dir()).collect();
+        v.sort();
+        Some(v)
     };
-    std::fs::read_dir(&deps)
-        .ok()?
-        .flatten()
-        .filter(|e| {
-            let n = e.file_name().to_string_lossy().into_owned();
-            // cdylibs carry no hash in their names (`ambulo.d`); rlibs and metadata do.
-            (n.starts_with(&prefix) && n.ends_with(".d")) || n == format!("{stem}.d")
-        })
-        .filter(|e| !metadata_only(&e.path()))
-        .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
-        .map(|e| e.path())
+    let mut out = vec![profile.join("deps")];
+    for package in folders(&profile.join("build"))? {
+        for hash in folders(&package)? {
+            if out.len() >= most {
+                return None;
+            }
+            out.push(hash.join("out"));
+        }
+    }
+    Some(out)
+}
+
+/// Whether two files hold the same bytes (their lengths first, then read in pieces).
+fn same_bytes(a: &Path, b: &Path) -> bool {
+    use std::io::Read;
+    let (Ok(ma), Ok(mb)) = (std::fs::metadata(a), std::fs::metadata(b)) else { return false };
+    if !ma.is_file() || !mb.is_file() || ma.len() != mb.len() {
+        return false;
+    }
+    let (Ok(mut fa), Ok(mut fb)) = (std::fs::File::open(a), std::fs::File::open(b)) else { return false };
+    let (mut ba, mut bb) = (vec![0u8; 1 << 16], vec![0u8; 1 << 16]);
+    loop {
+        let Ok(n) = fa.read(&mut ba) else { return false };
+        if n == 0 {
+            return true;
+        }
+        if fb.read_exact(&mut bb[..n]).is_err() || ba[..n] != bb[..n] {
+            return false;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -437,8 +523,9 @@ mod tests {
 
     /// Pre-existing bug found by the write-policy lane: after `cargo clippy` in the same target
     /// folder, the newest `ambulo-<hash>.d` was clippy's (listing clippy.toml and Cargo.toml),
-    /// and logic_build refused a clean module. The artifact's own dep-info is used, and metadata
-    /// dep-info never is.
+    /// and logic_build refused a clean module. The artifact's own dep-info is used: the one
+    /// beside the build's own copy of it. Never metadata's, never Cargo's beside the copied-up
+    /// file, and never another build's for being the newest.
     #[test]
     fn the_artifacts_own_dep_info_wins_never_clippys() {
         let root = std::env::temp_dir().join(format!("specula-depinfo-own-{}", std::process::id()));
@@ -447,18 +534,107 @@ mod tests {
         let own = "D:/t/debug/deps/ambulo.d: games/ambulo/src/lib.rs\nD:/t/debug/deps/ambulo.dll: games/ambulo/src/lib.rs\n";
         let clippy = "D:/t/debug/deps/ambulo-5b27.d: games/ambulo/clippy.toml games/ambulo/src/lib.rs Cargo.toml\nD:/t/debug/deps/libambulo-5b27.rmeta: games/ambulo/clippy.toml Cargo.toml\n# env-dep:CLIPPY_ARGS=-D\n";
         let rlib = "D:/t/debug/deps/ambulo-77aa.d: games/ambulo/src/lib.rs\nD:/t/debug/deps/libambulo-77aa.rlib: games/ambulo/src/lib.rs\n";
+        let cdylib = root.join("debug").join("ambulo.dll");
+        std::fs::write(&cdylib, b"the library").unwrap();
+        std::fs::write(deps.join("ambulo.dll"), b"the library").unwrap();
+        // Cargo's own, beside the copied-up library: every path dependency's sources.
+        std::fs::write(root.join("debug").join("ambulo.d"), "D:/t/debug/ambulo.dll: D:/engine/crates/specula-sdk/src/lib.rs games/ambulo/src/lib.rs\n").unwrap();
         std::fs::write(deps.join("ambulo.d"), own).unwrap();
         std::fs::write(deps.join("ambulo-77aa.d"), rlib).unwrap();
         // Written last: the newest file.
         std::fs::write(deps.join("ambulo-5b27.d"), clippy).unwrap();
-        let cdylib = root.join("debug").join("ambulo.dll");
-        assert_eq!(find_dep_info(&cdylib, "ambulo"), Some(deps.join("ambulo.d")), "the cdylib's own");
-        assert_eq!(find_dep_info(&deps.join("libambulo-77aa.rlib"), "ambulo"), Some(deps.join("ambulo-77aa.d")), "the rlib's own");
+        let none: Vec<PathBuf> = Vec::new();
+        assert_eq!(find_dep_infos(&cdylib, "ambulo"), [deps.join("ambulo.d")], "the cdylib's own");
+        assert_eq!(find_dep_infos(&deps.join("libambulo-77aa.rlib"), "ambulo"), [deps.join("ambulo-77aa.d")], "the rlib's own");
+        assert_eq!(find_dep_infos(&cdylib, "other"), none, "a library of another name is not this crate's");
         std::fs::remove_file(deps.join("ambulo.d")).unwrap();
-        std::fs::remove_file(deps.join("ambulo-77aa.d")).unwrap();
-        assert_eq!(find_dep_info(&cdylib, "ambulo"), None, "clippy's metadata is never taken");
-        std::fs::write(deps.join("ambulo-77aa.d"), rlib).unwrap();
-        assert_eq!(find_dep_info(&cdylib, "ambulo"), Some(deps.join("ambulo-77aa.d")), "else the newest real build's");
+        assert_eq!(find_dep_infos(&cdylib, "ambulo"), none, "neither clippy's metadata, nor Cargo's own, nor a real build's for being the newest");
+        // The build's copy has other bytes: what is in the profile folder is not what this
+        // dep-info describes.
+        std::fs::write(deps.join("ambulo.d"), own).unwrap();
+        std::fs::write(deps.join("ambulo.dll"), b"another one").unwrap();
+        assert_eq!(find_dep_infos(&cdylib, "ambulo"), none, "a copy with other bytes is another build's");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Rust 1.100 moved what rustc writes from `deps/` to `build/<package>/<hash>/out/` (found
+    /// by CI on the push that ended M5: this machine's Rust was one release older, and with the
+    /// new one every module build was refused for having "no dep-info"). Both layouts are read,
+    /// and in a folder that holds both, or two builds of one package, the dep-info taken is the
+    /// one beside the copy with the library's bytes.
+    #[test]
+    fn dep_info_is_found_in_both_layouts_of_a_target_folder() {
+        let root = std::env::temp_dir().join(format!("specula-depinfo-layouts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let profile = root.join("debug");
+        let one = profile.join("build/ambulo/1111111111111111/out");
+        let two = profile.join("build/ambulo/2222222222222222/out");
+        let sdk = profile.join("build/specula-sdk/aaaaaaaaaaaaaaaa/out");
+        for d in [&one, &two, &sdk] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(one.join("ambulo.dll"), b"version one").unwrap();
+        std::fs::write(one.join("ambulo.d"), "x/out/ambulo.dll: games/ambulo/src/lib.rs games/ambulo/src/one.rs\n").unwrap();
+        // Written after: the newest.
+        std::fs::write(two.join("ambulo.dll"), b"version two").unwrap();
+        std::fs::write(two.join("ambulo.d"), "x/out/ambulo.dll: games/ambulo/src/lib.rs\n").unwrap();
+        std::fs::write(profile.join("ambulo.d"), "x/debug/ambulo.dll: D:/engine/crates/specula-sdk/src/lib.rs\n").unwrap();
+        let cdylib = profile.join("ambulo.dll");
+        let none: Vec<PathBuf> = Vec::new();
+        std::fs::write(&cdylib, b"version one").unwrap();
+        assert_eq!(find_dep_infos(&cdylib, "ambulo"), [one.join("ambulo.d")], "the build whose library this is, not the newest");
+        std::fs::write(&cdylib, b"version two").unwrap();
+        assert_eq!(find_dep_infos(&cdylib, "ambulo"), [two.join("ambulo.d")]);
+        // A dependency stays where rustc wrote it, with its dep-info beside it; a package name's
+        // dash is the library's underscore.
+        std::fs::write(sdk.join("libspecula_sdk-aaaaaaaaaaaaaaaa.rlib"), b"sdk").unwrap();
+        std::fs::write(sdk.join("specula_sdk-aaaaaaaaaaaaaaaa.d"), "x: crates/specula-sdk/src/lib.rs\n").unwrap();
+        assert_eq!(find_dep_infos(&sdk.join("libspecula_sdk-aaaaaaaaaaaaaaaa.rlib"), "specula-sdk"), [sdk.join("specula_sdk-aaaaaaaaaaaaaaaa.d")]);
+        assert_eq!(find_dep_infos(&sdk.join("libspecula_sdk-aaaaaaaaaaaaaaaa.rmeta"), "specula_sdk"), [sdk.join("specula_sdk-aaaaaaaaaaaaaaaa.d")]);
+        // The folder an older toolchain built into: its library and dep-info are still in deps/.
+        let deps = profile.join("deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        std::fs::write(deps.join("ambulo.dll"), b"from the older toolchain").unwrap();
+        std::fs::write(deps.join("ambulo.d"), "x/deps/ambulo.dll: games/ambulo/src/lib.rs games/ambulo/src/old.rs\n").unwrap();
+        assert_eq!(find_dep_infos(&cdylib, "ambulo"), [two.join("ambulo.d")], "the older toolchain's dep-info describes another library");
+        std::fs::write(&cdylib, b"from the older toolchain").unwrap();
+        assert_eq!(find_dep_infos(&cdylib, "ambulo"), [deps.join("ambulo.d")], "and is taken for its own");
+        // A library no build's folder holds: nothing describes it.
+        std::fs::write(&cdylib, b"put there by hand").unwrap();
+        assert_eq!(find_dep_infos(&cdylib, "ambulo"), none);
+        // Review R1: two builds whose copies have the library's bytes. Neither is preferred
+        // (the first in name order was taken, which could be the one that did not make this
+        // library): both are returned, for the caller to check both.
+        std::fs::write(&cdylib, b"version one").unwrap();
+        std::fs::write(two.join("ambulo.dll"), b"version one").unwrap();
+        assert_eq!(find_dep_infos(&cdylib, "ambulo"), [one.join("ambulo.d"), two.join("ambulo.d")]);
+        // A copy with the library's bytes and no dep-info: that build is not described, so
+        // nothing is answered, whatever the other copy has.
+        std::fs::remove_file(one.join("ambulo.d")).unwrap();
+        assert_eq!(find_dep_infos(&cdylib, "ambulo"), none);
+        std::fs::write(two.join("ambulo.dll"), b"version two").unwrap();
+        assert_eq!(find_dep_infos(&cdylib, "ambulo"), none, "the copy is there but its dep-info is not");
+        // Review R2: a build's files together. The library and its rlib share one dep-info;
+        // an import library is no library of the crate; and when the library that is loaded
+        // has no answer, the rlib's does not stand in for it.
+        std::fs::write(one.join("ambulo.d"), "x/out/ambulo.dll: games/ambulo/src/lib.rs\n").unwrap();
+        std::fs::write(&cdylib, b"version one").unwrap();
+        let (rlib, import) = (profile.join("libambulo.rlib"), profile.join("libambulo.dll.a"));
+        for f in [&rlib, &one.join("libambulo.rlib")] {
+            std::fs::write(f, b"rlib one").unwrap();
+        }
+        std::fs::write(&import, b"import library").unwrap();
+        let built = [cdylib.clone(), import.clone(), rlib.clone()];
+        assert_eq!(dep_infos_of(&built, "ambulo"), [one.join("ambulo.d")], "once, for both libraries");
+        assert_eq!(dep_infos_of(&[import], "ambulo"), none, "no library among the files");
+        std::fs::write(&cdylib, b"put there by hand").unwrap();
+        assert_eq!(find_dep_infos(&rlib, "ambulo"), [one.join("ambulo.d")]);
+        assert_eq!(dep_infos_of(&built, "ambulo"), none, "the rlib's answer is not the library's");
+        assert_eq!(dep_infos_of(&[rlib.clone(), cdylib.clone()], "ambulo"), none, "in either order");
+        // More folders than the search reads: no answer, never the ones it happened to reach.
+        assert_eq!(rustc_folders(&profile, 4096).map(|f| f.len()), Some(4), "deps and three units' out folders");
+        assert_eq!(rustc_folders(&profile, 3), None, "four folders, a bound of three");
+        assert_eq!(rustc_folders(&profile, 1), None, "two packages, a bound of one");
         let _ = std::fs::remove_dir_all(&root);
     }
 

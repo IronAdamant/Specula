@@ -7,6 +7,7 @@ gives each its own ports and its own output folder, keeps its log, and reports e
 A check is run once: one that fails here is a finding, never retried into passing.
 
     python scripts/live_checks.py [--out DIR] [--port 7720] [--only NAME,NAME] [--skip NAME,NAME] [--list] [--no-build]
+    python scripts/live_checks.py --self-test    # what a check left behind, on made-up states (nothing is started)
 
 It builds the engine and the game first, debug and release, in this checkout: an executable
 keeps the folder it was built from (a game finds its assets there), so one left in a target
@@ -18,9 +19,23 @@ ports another way than `--port` has its flags in RUNS; one this runner has no po
 stops the run before anything starts (M5's audit ran three checks on their default ports,
 two of them in a range other sessions use, because it only knew `--port`).
 
+On Windows --out has a depth limit, said before anything is started: the checks build
+modules in projects of their own below it, rustc hands a module's linker its arguments in a
+file deep in that build, and the toolchain's linker opens a path of at most 259 characters
+(M5's last audit: project_check failed 80 minutes into a run whose --out was one character
+deeper than the run before it, which passed; the engine names that failure itself now).
+
+A check leaves the checkout as it found it: after each one this runner asks git what differs
+from the last commit, and a check that left something new there (a changed file, a file git
+does not ignore, a further change to a file that was already changed) fails, with the paths.
+(M5's last audit passed with a module's source handed back with other line endings: the check
+that edits it compared its restore as text.) Not seen: a further change to a file git does not
+track; run the audit in a clean checkout.
+
 Standard library only; ASCII output. Exit 0 = every check that ran passed.
 """
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -101,6 +116,66 @@ def runs_of(script, port, out):
         yield [sys.executable, "-u", str(HERE / script)] + args, not offline
 
 
+def tree_state():
+    """What git says differs from the last commit in this checkout: a line a path (every file
+    of a folder git does not track, not the folder alone), and one line for the changes
+    themselves, so that a second change to a file is a difference too. None when git cannot
+    say (no git, or not a checkout)."""
+    try:
+        status = subprocess.run(["git", "status", "--porcelain", "-uall"], cwd=str(ROOT), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+        diff = subprocess.run(["git", "diff", "HEAD"], cwd=str(ROOT), capture_output=True, timeout=300)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if status.returncode != 0 or diff.returncode != 0:
+        return None
+    return set(x for x in status.stdout.splitlines() if x.strip()) | {CHANGES + hashlib.sha256(diff.stdout).hexdigest()[:16]}
+
+
+# The line of a tree's state that stands for the content of its changes.
+CHANGES = "changes to tracked files: "
+
+
+def left_behind(before, after):
+    """What a check left in the checkout: the lines of `after` that `before` did not have. A
+    file changed for the first time is named by its own line; the line for the changes is
+    kept only when no path says it (a file that was already changed, changed again)."""
+    if before is None or after is None:
+        return []
+    new = sorted(after - before)
+    paths = [x for x in new if not x.startswith(CHANGES)]
+    return paths if paths else (["a file that was already changed was changed again (git diff HEAD)"] if new else [])
+
+
+# The deepest file a check makes below --out: the one rustc hands a module's linker its
+# arguments in, in project_check's project (the names' lengths are what matter; the layout is
+# Cargo's since Rust 1.100, the deeper of the two).
+DEEPEST_BELOW_OUT = r"\project_check\20261115-132118\ws\.specula-cache\modules\ambulo-8c5d3caf\debug\build\ambulo\0123456789abcdef\out\rustcXXXXXX\linker-arguments"
+# What the Rust toolchain's linker opens on Windows (specula_logic::build::LINKER_PATH_MAX).
+LINKER_PATH_MAX = 259
+
+
+def too_deep(out, windows=sys.platform == "win32"):
+    """By how many characters --out is too deep for the checks' module builds (0: it is not)."""
+    return max(0, len(str(out)) + len(DEEPEST_BELOW_OUT) - LINKER_PATH_MAX) if windows else 0
+
+
+def self_test():
+    assert len(DEEPEST_BELOW_OUT) == 141, len(DEEPEST_BELOW_OUT)
+    assert too_deep("x" * 118, windows=True) == 0, "the audits that passed"
+    assert too_deep("x" * 119, windows=True) == 1, "the audit whose project_check failed at its link"
+    assert too_deep("x" * 400, windows=False) == 0, "no such limit off Windows"
+    a = {" M x.rs", CHANGES + "aaaa"}
+    assert left_behind(a, set(a)) == [], "nothing new"
+    assert left_behind(a, {" M x.rs", " M y.rs", CHANGES + "bbbb"}) == [" M y.rs"], "a file changed for the first time is named"
+    assert left_behind({CHANGES + "0"}, {"?? new/file.txt", CHANGES + "0"}) == ["?? new/file.txt"], "a file git does not track"
+    assert left_behind(a, {" M x.rs", CHANGES + "bbbb"}) == ["a file that was already changed was changed again (git diff HEAD)"]
+    assert left_behind(None, a) == [] and left_behind(a, None) == [], "git gave no answer"
+    state = tree_state()
+    assert state is None or sum(x.startswith(CHANGES) for x in state) == 1, state
+    print("live_checks.py self-test: ok")
+    return 0
+
+
 def stop_tree(proc):
     """Ends a check that ran past its limit, with the engines it started (they are its
     children: ended by the check's own process id, nothing else on the machine is touched). An
@@ -125,7 +200,10 @@ def main():
     ap.add_argument("--skip", default="")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--no-build", action="store_true", help="the executables were built from this checkout a moment ago")
+    ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
+    if a.self_test:
+        return self_test()
     only = {x.strip() for x in a.only.split(",") if x.strip()}
     skip = {x.strip() for x in a.skip.split(",") if x.strip()}
     checks = sorted(p.name for p in HERE.glob("*.py") if p.name not in NOT_CHECKS and p.name not in UNIT)
@@ -135,6 +213,12 @@ def main():
         print("\n".join(names))
         return 0
     out = Path(a.out).resolve()
+    over = too_deep(out)
+    if over:
+        print(f"--out is {over} character(s) too deep ({len(str(out))}: {out}). The checks build modules in projects below it, and the "
+              f"linker's argument file of the deepest would be past the {LINKER_PATH_MAX} characters the Rust toolchain's linker opens on "
+              f"Windows. Name a shorter folder (one near the drive's root will do). Nothing was run.")
+        return 2
     out.mkdir(parents=True, exist_ok=True)
     # Each check's ports are its place in the whole list, so a run of a few uses the same
     # ports as the full run.
@@ -155,6 +239,9 @@ def main():
                 print("the build failed: nothing was checked")
                 return 2
     results = []
+    tree = tree_state()
+    if tree is None:
+        print("git does not answer here: what a check leaves in the checkout is not looked at", flush=True)
     for name, port, k, cmd in plan:
         if any("perf.toml" in x for x in cmd):
             (out / f"{name[:-3]}.perf.toml").write_text(f"[swarm]\nlease_ports = [{port + 1}, {port + SPAN - 1}]\n", encoding="utf-8")
@@ -171,13 +258,18 @@ def main():
         took = time.time() - t0
         lines = [x for x in log.read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()]
         last = lines[-1][:140] if lines else ""
-        print(f"{'ok  ' if code == 0 else 'FAIL'} {label:44} exit {code!s:8} {took:6.0f} s  {last}", flush=True)
-        results.append({"check": label, "exit": code, "seconds": round(took), "ports": [port, port + SPAN - 1], "log": str(log), "last": last})
-    failed = [r for r in results if r["exit"] != 0]
+        now = tree_state()
+        left = left_behind(tree, now)
+        tree = now if now is not None else tree
+        if left:
+            last = "left in the checkout: " + ", ".join(left)[:110]
+        print(f"{'ok  ' if code == 0 and not left else 'FAIL'} {label:44} exit {code!s:8} {took:6.0f} s  {last}", flush=True)
+        results.append({"check": label, "exit": code, "seconds": round(took), "ports": [port, port + SPAN - 1], "log": str(log), "last": last, "left": left})
+    failed = [r for r in results if r["exit"] != 0 or r["left"]]
     (out / "report.json").write_text(json.dumps({"results": results, "failed": [r["check"] for r in failed]}, indent=1), encoding="utf-8")
     print(f"\n{len(results) - len(failed)} of {len(results)} passed; report: {out / 'report.json'}")
     for r in failed:
-        print(f"FAILED: {r['check']} (exit {r['exit']}; {r['log']})")
+        print(f"FAILED: {r['check']} (exit {r['exit']}; {r['log']})" + (f"; left in the checkout: {', '.join(r['left'])}" if r["left"] else ""))
     return 1 if failed else 0
 
 

@@ -10,10 +10,18 @@
 //! still dropped first, waiting for the very calls the value would have released. This runs the
 //! real executable: the order of two declarations in `run_with` is what it holds.
 //!
+//! And the refusal has to reach its caller. The engine stops its server as soon as the gate has
+//! failed, and the server used to shut a connection's socket before the call on it had written
+//! its answer: the refused call's thread usually got there first, and in one gate it did not
+//! (the caller read an empty answer). The server now answers every call that is running before
+//! it closes anything (`specula-protocol`, `server.rs`), and this test makes the refused call
+//! late on purpose, so the order is held in every run and not when a thread happens to win.
+//!
 //! The engine is started headless on a port of the system's choosing with
 //! `SPECULA_TEST_FAIL_START` set (tests only: the start returns an error after the port
-//! answers, once a call is waiting at the gate). The call is the executable's own
-//! `specula call`, which finds the engine through a settings folder of this test's.
+//! answers, once a call is waiting at the gate; its value is how many milliseconds late the
+//! refused call answers). The call is the executable's own `specula call`, which finds the
+//! engine through a settings folder of this test's.
 
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -48,7 +56,7 @@ fn a_start_that_fails_after_the_port_answers_refuses_its_callers_and_ends() {
     let settings = at("settings");
     let mut engine = Command::new(exe)
         .args(["--headless", "--port", "0", "--settings", &settings, "--captures", &at("captures"), "--worlds", &at("worlds"), "--cache", &at("cache"), "--trace", &at("trace")])
-        .env("SPECULA_TEST_FAIL_START", "1")
+        .env("SPECULA_TEST_FAIL_START", "300")
         .current_dir(&dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -92,7 +100,9 @@ fn a_start_that_fails_after_the_port_answers_refuses_its_callers_and_ends() {
     let asked = Instant::now();
     let call = Command::new(exe).args(["call", "engine_info", "--settings", &settings]).current_dir(&dir).stdin(Stdio::null()).output().expect("the command runs");
     let answered = asked.elapsed();
+    // (What the command says when it reached no engine goes to its stderr: shown with a failure.)
     let said = String::from_utf8_lossy(&call.stdout).into_owned();
+    let complained = String::from_utf8_lossy(&call.stderr).into_owned();
     let ended = wait_for_exit(&mut engine, SOON);
     let rest: Vec<String> = lines.iter().collect();
     let _ = reader.join();
@@ -101,7 +111,7 @@ fn a_start_that_fails_after_the_port_answers_refuses_its_callers_and_ends() {
         let _ = engine.wait();
     }
     let _ = std::fs::remove_dir_all(Path::new(&dir));
-    assert!(said.contains("engine_start_failed"), "the waiting call is told the start failed: {said} (the engine said: {} | {})", seen.join(" | "), rest.join(" | "));
+    assert!(said.contains("engine_start_failed"), "the waiting call is told the start failed: {said} {complained} (the engine said: {} | {})", seen.join(" | "), rest.join(" | "));
     assert_eq!(call.status.code(), Some(1), "a refused call: {said}");
     assert!(answered < SOON, "and told at once, not after its two minutes at the gate: {answered:?}");
     let status = ended.unwrap_or_else(|| panic!("the failed engine is still running {SOON:?} after its start failed: its server waited for a call at the gate"));

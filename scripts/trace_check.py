@@ -112,14 +112,20 @@ class Debugger:
 
 
 def inject_panic():
-    text = AMBULO.read_text(encoding="utf-8")
+    """Ambulo's source as it is on disk, and with a panic in its tick. Both are bytes: text
+    written by Python on Windows ends its lines CRLF, so a source read and put back as text
+    came back changed in a checkout whose files are LF (and the check that compared the two
+    as text passed)."""
+    original = AMBULO.read_bytes()
+    text = original.decode("utf-8")
     anchor = "    fn tick(&self, cx: &mut Cx) -> Result<(), SdkError> {\n"
     if anchor not in text:
         anchor = anchor.replace("\n", "\r\n")
     if anchor not in text:
         raise SystemExit("trace_check: ambulo's tick not found (its source changed?)")
     nl = "\r\n" if "\r\n" in anchor else "\n"
-    return text, text.replace(anchor, anchor + f"        {PANIC_MARK}{nl}        if cx.tick() > 0 {{ panic!(\"trace_check: a deliberate module panic\"); }}{nl}", 1)
+    panicking = text.replace(anchor, anchor + f"        {PANIC_MARK}{nl}        if cx.tick() > 0 {{ panic!(\"trace_check: a deliberate module panic\"); }}{nl}", 1)
+    return original, panicking.encode("utf-8")
 
 
 def engine_args(a, out, sub, extra=()):
@@ -349,7 +355,7 @@ def part_crash(a, out, summary):
     print("a module panic leaves a crash report readable after a restart:")
     original, panicking = inject_panic()
     try:
-        AMBULO.write_text(panicking, encoding="utf-8")
+        AMBULO.write_bytes(panicking)
         with Engine(a.exe, a.port + 1, out / "engine-crash.log", *engine_args(a, out, "crash", ["--paused", "--lead", "crash-lead", "--", "--seed", "7", "--title", "off"]), cwd=str(ROOT)) as eng:
             m = eng.mcp("trace-crash")
             m.hello("crash-lead", role="lead")
@@ -359,7 +365,7 @@ def part_crash(a, out, summary):
             inc = wait_for("module.disabled", lambda: m.json("trace_incidents", code="module.disabled").get("incidents"))
             check(bool(inc), "module.disabled is an incident")
     finally:
-        AMBULO.write_text(original, encoding="utf-8")
+        AMBULO.write_bytes(original)
     with Engine(a.exe, a.port + 2, out / "engine-restart.log", *engine_args(a, out, "restart", ["--paused", "--", "--seed", "7", "--title", "off"]), cwd=str(ROOT)) as eng:
         m = eng.mcp("trace-restart")
         report = m.json("trace_crash")
@@ -368,7 +374,7 @@ def part_crash(a, out, summary):
         check(any(e.get("code") == "module.disabled" or e.get("sub", "").startswith("module:") or e.get("sub") == "logic" for e in report.get("events", [])) or report.get("events_kept", 0) > 0,
               f"the report keeps the last events ({report.get('events_kept')})")
         summary["crash_report"] = {"reason": report.get("reason"), "message": report.get("message"), "events_kept": report.get("events_kept")}
-    check(AMBULO.read_text(encoding="utf-8") == original, "ambulo's source is restored")
+    check(AMBULO.read_bytes() == original, "ambulo's source is restored, byte for byte")
 
 
 def run_seeded(a, out, sub, port, level):

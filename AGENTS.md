@@ -155,7 +155,10 @@ wikifier: disable map, status
 `python scripts/gate.py` is what a change passes before it is reported or merged: the workspace's tests once, the
 engine's library tests five more times at a high thread count, once more with every worker thread starting late
 (`SPECULA_TEST_WORKER_DELAY_MS`), the tests that hold a speed budget one at a time (`SPECULA_SPEED_TESTS`), clippy
-for Windows and Linux with warnings denied, and the debug and release builds. It first reports which GPU adapters
+for Windows and Linux with warnings denied, and the debug and release builds. It first says which Rust it runs
+with and fails when a newer stable is out, unless told `--older-rust`: CI installs the newest stable on every
+run, so a gate passed on an older one has not tested what CI builds with (`RUSTUP_TOOLCHAIN=1.100.0 python
+scripts/gate.py` runs it with a toolchain installed beside the default). It then reports which GPU adapters
 the tests will see, and fails without one unless told `--no-gpu` (GPU tests skip themselves cleanly, so a machine
 whose driver stopped loading would otherwise pass having tested nothing). It reads whole logs and keeps them
 (`<target>/gate/`); a run in which no test ran, or one past its time limit, fails.
@@ -182,7 +185,10 @@ after anything wide; `--only NAME,NAME` runs a few. A check that fails there is 
 (M5's audit found thirteen checks that had gone stale because they only ran when their own lane was
 touched, and an engine defect only a check that had not been run for two milestones could show). A script
 in `scripts/` that is not a check is named in the runner's `NOT_CHECKS` with the reason; a check that names
-its ports another way than `--port` has its flags in `RUNS`.
+its ports another way than `--port` has its flags in `RUNS`. A check leaves the checkout as it found it:
+the runner asks git after each one, and a file left changed or new fails that check. On Windows give it a
+short `--out`: the checks build modules below it, and the runner refuses a folder too deep for the linker
+before it starts (HANDOFF, "Gotchas that cost time").
 
 After changing `specula-gpu`, `specula-platform` or the engine's window loop, run
 `cargo build -p specula && python scripts/window_check.py`. On every adapter it builds a scene over MCP, screenshots

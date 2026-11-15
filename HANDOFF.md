@@ -84,6 +84,31 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
   - **The lead's running notes** are in `.swarmnotes/m5/lead/m5tracker.md` (gitignored, this machine): every
     lane's state, review reports (`reviews/`), and the list of items carried to the performance pass.
 
+- **Owner, 2026-11-15 (on the Python in `scripts/`): the tooling becomes Rust in M6.** "For now, this is
+  acceptable trade off but in M6, I'll want all of this in Rust." The gate, the audit's runner and every
+  check are Python today (83 scripts, standard library only); nothing a player or a game's developer runs
+  needs it. The plan, its order and how a port is proved are in ROADMAP M6 ("The repository's own tooling
+  in Rust"): the gate and the runner first, each check when it is next touched or needed on macOS or
+  Linux, all of it before M6 ends. Until then new checks may still be Python; don't start the port before
+  M6's scope talk.
+- **Owner, 2026-11-15: who does M6, and what comes after it.**
+  - **M6 is likely to be run by a fresh instance** with none of M5's conversation. What it can rely on is
+    what is in this repository: this page, AGENTS.md, ROADMAP and the design docs. Claude's memory notes
+    and the lead's notes (`.swarmnotes/`) are on the development laptop only; the owner's Mac and Linux
+    machines have neither.
+  - **The owner is setting up their macOS and Linux machines** for the engine's work there, with another
+    assistant. Expect to need on each: git and a fresh clone, Rust by `rustup` at the current stable (the
+    gate refuses an older one than CI's), Python 3 until the tooling is Rust, the GitHub CLI signed in; on
+    macOS the Xcode tools (whether full Xcode is needed for Metal's shader compiler is to be confirmed
+    when the Metal work is sized); on Arch the GPU's Vulkan driver, `vulkan-icd-loader`, the validation
+    layers and `shaderc`, and a note of whether it runs Wayland, X11 or both. Rule 12 first: loopback
+    only on every machine, a tunnel between them, never an open port.
+  - **After M6: a large game, the owner's first commercial one**, in a private repository of its own with
+    the engine as a dependency. Sepulcra stays the free, much smaller MVP. The measured baseline says
+    the engine does not yet pay at small and medium sizes; whether it pays on a large game is not
+    measured. Two M6 items decide much of it and belong early in the scope talk: a project gets its SDK
+    from the engine, and a module-built game reaches interface screens, strings and saved settings.
+
 - **Owner, 2026-11-14 evening (on remote, on the comparison's first numbers):**
   - **M5 is foundations; M6 is where it is made to pay.** "That's where we'll be looking at scalability in
     M6. Right now, what matters is we're building in foundations and reliability, as well as saving the
@@ -511,6 +536,31 @@ In practice that means six **foundations** that apply to every change from M1 on
   to another worktree still holds the old worktree's executables until they are built again: M5's final audit
   ran 17 checks into failures on such a build (no recipes, no timelines, no grass) before it built its own.
   `scripts/live_checks.py` builds first; do the same before any live check in a new worktree.
+- **On Windows a module's build folder can be too deep to link.** rustc hands the linker a long list of
+  arguments in a file inside the build (`<cache>/modules/<name>-<hash>/debug/build/<package>/<hash>/out/
+  rustcXXXXXX/linker-arguments`), and the Rust toolchain's linker opens a path of at most 259 characters. One
+  past that it reads none of its arguments and fails with words about something else (`liblto_plugin.dll not
+  found`). For a module named `ambulo` that is a project folder deeper than about 150 characters: rare for a
+  person's project, common for an agent's scratch folder. The engine names it (`logic_build` answers
+  `build_path_too_long` with the file, its length and the limit); `--cache DIR` in a shorter folder, or a
+  shallower project, builds. M5's last audit met it as one failed check out of 70, in an output folder
+  one character deeper than the audit before it; `scripts/live_checks.py` refuses an `--out` that deep
+  before it starts. Give an audit a short folder.
+- **CI builds with the newest stable Rust; this machine's may be older.** The push that ended M5 passed the
+  gate here on 1.99.1 and failed CI on 1.100.0, released six days before: its Cargo lays the target folder out
+  differently (`build/<package>/<hash>/out/` where `deps/` was), the module build service looked for a
+  module's dep-info in the old place, and every module build was refused. The engine reads both layouts now,
+  and the gate fails when a newer stable is out (`--older-rust` to go on knowingly). A version installed
+  beside the default (`rustup toolchain install 1.100.0`) is run with `RUSTUP_TOOLCHAIN=1.100.0`. The fix was
+  gated with both, with every live check on 1.100.0 and the fourteen that build modules on 1.99.1 as well.
+- **Text files are LF in every checkout** (`.gitattributes`, held by `crates/specula/tests/line_endings.rs`).
+  Before it, a file written on this machine kept its LF until git next touched it and was CRLF in every fresh
+  checkout: a guard that matched a line with its `\n` passed the gate in the lane's tree and failed in a
+  fresh one. A checkout made before 2026-11-15 keeps its CRLF files until git rewrites them; tests must pass
+  with either. A script that edits a tracked source and puts it back handles bytes: Python writes text as
+  CRLF here, and `trace_check.py` handed `games/ambulo/src/lib.rs` back changed while its own comparison,
+  made as text, passed. `live_checks.py` now fails a check that leaves the checkout changed (git's status
+  after each one).
 - **Python on Windows reads text in the system's code page.** Every script names `encoding="utf-8"`, for
   files and for processes read as text (`script_settings_guard.rs` holds it).
 - **Python's connect with a timeout, on Windows, often takes 10 to 26 ms** (a connect takes 0.1 ms). Through

@@ -586,6 +586,83 @@ fn shutdown_is_prompt_with_idle_connections() {
     });
 }
 
+/// A tool that says when it began and returns when the test lets it.
+struct Held {
+    began: std::sync::Mutex<std::sync::mpsc::Sender<()>>,
+    go_on: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl ToolHandler for Held {
+    fn tools(&self) -> Vec<ToolDef> {
+        vec![ToolDef { name: "hold".into(), description: String::new(), input_schema: Json::obj([("type", Json::from("object"))]) }]
+    }
+
+    fn call(&self, _: &SessionInfo, _: &str, _: &Json) -> ToolOutput {
+        self.began.lock().unwrap().send(()).unwrap();
+        let _ = self.go_on.lock().unwrap().recv_timeout(Duration::from_secs(30));
+        ToolOutput::text("held and answered")
+    }
+}
+
+/// A call that is running when the server stops gets its answer. The server waited for such
+/// a call to return and then dropped what it said: it had shut the call's socket first, so
+/// the caller read an empty answer to a call that was applied. (Found as one failure of
+/// `specula`'s tests/start_fail.rs in a gate: a call refused because the engine's start failed
+/// lost the race with the server's stop, and its refusal with it.)
+#[test]
+fn a_call_running_when_the_server_stops_gets_its_answer() {
+    let (began_tx, began) = std::sync::mpsc::channel();
+    let (go_on, go_on_rx) = std::sync::mpsc::channel();
+    let config = ServerConfig { bind: "127.0.0.1:0".into(), server_name: "specula-test".into(), server_version: "9.9.9".into(), instructions: None };
+    let server = Server::start(config, Arc::new(Held { began: std::sync::Mutex::new(began_tx), go_on: std::sync::Mutex::new(go_on_rx) })).expect("server starts");
+    let addr = server.local_addr();
+    let mut c = Client::connect(addr);
+    let s = session(&mut c);
+    // The call is sent and not yet answered: its tool is running.
+    let body = r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"hold","arguments":{}}}"#;
+    c.write(format!("POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nMcp-Session-Id: {s}\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes());
+    began.recv_timeout(Duration::from_secs(30)).expect("the call began");
+    // The server stops meanwhile. It is given the time to do everything it does before it
+    // waits for the call (the old one shut the call's socket in this time); the test passes
+    // with the new one however long that takes.
+    let stopping = std::thread::spawn(move || server.shutdown());
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!stopping.is_finished(), "the server waits for the call that is running");
+    go_on.send(()).unwrap();
+    let resp = c.read_response();
+    assert_eq!(resp.status, 200, "{:?}", String::from_utf8_lossy(&resp.body));
+    assert!(String::from_utf8_lossy(&resp.body).contains("held and answered"), "{:?}", String::from_utf8_lossy(&resp.body));
+    stopping.join().unwrap();
+    // And the server did stop: the connection is closed, and nothing new begins.
+    assert!(c.is_closed());
+}
+
+/// The stop waits for answers to be written, and not for a caller that does not read: one
+/// whose answer is too big for the socket to take and who reads none of it holds the stop for
+/// a few seconds (the server's `STOP_WRITE_TIMEOUT`), never for the half minute a reader is
+/// given while the server runs. (Where the loopback takes the whole answer unread, as on
+/// Windows, where it took these 12 MB, no write blocks and the stop is immediate: the wait
+/// this bounds exists only where a socket's buffer is smaller than the answer.)
+#[test]
+fn a_caller_that_does_not_read_its_answer_does_not_hold_the_stop() {
+    let server = start();
+    let addr = server.local_addr();
+    let mut c = Client::connect(addr);
+    let s = session(&mut c);
+    // An answer of 12 MB, never read: the server's write of it blocks.
+    let text = "x".repeat(12 * 1024 * 1024);
+    let body = format!(r#"{{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{{"name":"echo","arguments":{{"text":"{text}"}}}}}}"#);
+    c.write(format!("POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nMcp-Session-Id: {s}\r\nContent-Length: {}\r\n\r\n", body.len()).as_bytes());
+    c.write(body.as_bytes());
+    // (Long enough for the call to have returned and its write to have begun; the test
+    // holds whichever side of that the stop finds.)
+    std::thread::sleep(Duration::from_millis(500));
+    let t = Instant::now();
+    server.shutdown();
+    assert!(t.elapsed() < Duration::from_secs(15), "the stop took {:?}: it waited for a caller that was not reading", t.elapsed());
+    drop(c);
+}
+
 #[test]
 fn rejects_non_loopback_bind() {
     for bind in ["0.0.0.0:0", "[::]:0", "8.8.8.8:0"] {

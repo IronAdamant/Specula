@@ -1,0 +1,6 @@
+# Text files end their lines with LF in every checkout, on every system, whatever a machine's
+# core.autocrlf says. Tests read tracked files (the guards scan sources, scripts and docs): with
+# autocrlf a file written on Windows had LF until git next touched it and CRLF in every fresh
+# checkout, so a test could pass in the tree it was written in and fail everywhere else (M5's
+# last push: crates/specula/tests/line_endings.rs holds this file in place).
+* text=auto eol=lf

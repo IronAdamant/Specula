@@ -74,8 +74,11 @@ impl BuildRequest {
 pub struct BuildReport {
     pub ok: bool,
     /// Machine-readable failure: `cargo_missing`, `cargo_failed`, `timeout`, `not_a_module`,
-    /// `compile_errors`, `fix_failed`.
+    /// `compile_errors`, `build_path_too_long`, `fix_failed`.
     pub error: Option<(&'static str, String)>,
+    /// With `build_path_too_long`: the file the linker could not open and its length in
+    /// characters ([`unread_link_arguments`]).
+    pub link_arguments: Option<(String, usize)>,
     /// The package's library target name.
     pub package: Option<String>,
     /// The built `cdylib` (not for `check`).
@@ -447,21 +450,28 @@ pub fn check_compiled(compiled: &[Compiled], roots: &[PathBuf], workspace: &Path
             continue;
         }
         let refuse = |what: String| Err(("native_code", format!("{} ({}): {what}; the library isn't loaded (modules reach the machine only through specula-sdk's Cx)", c.name, c.manifest.display())));
-        let Some(dep) = c.files.iter().find_map(|a| crate::paths::find_dep_info(a, &c.name)) else {
+        // (Every library the build made is answered for; more than one dep-info only when two
+        // builds left the same library, and then every one is scanned.)
+        let deps = crate::paths::dep_infos_of(&c.files, &c.name);
+        if deps.is_empty() {
             return refuse("the build left no dep-info to say which files it compiled".into());
-        };
-        let Ok(text) = std::fs::read_to_string(&dep) else {
-            return refuse(format!("its dep-info {} can't be read", dep.display()));
-        };
-        let files: Vec<PathBuf> = crate::paths::dep_info_files(&text)
-            .into_iter()
-            .map(|f| {
+        }
+        let mut files: Vec<PathBuf> = Vec::new();
+        for dep in &deps {
+            let Ok(text) = std::fs::read_to_string(dep) else {
+                return refuse(format!("its dep-info {} can't be read", dep.display()));
+            };
+            let listed = crate::paths::dep_info_files(&text);
+            if listed.is_empty() {
+                return refuse(format!("its dep-info {} lists no files", dep.display()));
+            }
+            for f in listed {
                 let p = PathBuf::from(f);
-                if p.is_absolute() { p } else { workspace.join(p) }
-            })
-            .collect();
-        if files.is_empty() {
-            return refuse(format!("its dep-info {} lists no files", dep.display()));
+                let p = if p.is_absolute() { p } else { workspace.join(p) };
+                if !files.contains(&p) {
+                    files.push(p);
+                }
+            }
         }
         if let Some((file, r)) = crate::lint::first_reach(&files, &mut budget) {
             return Err((
@@ -619,6 +629,67 @@ pub fn cargo_command() -> Command {
     cmd
 }
 
+/// The longest path the Rust toolchain's own linker (a gcc) opens on Windows: the older file
+/// API's 260, less the terminator.
+pub const LINKER_PATH_MAX: usize = 259;
+
+/// A link that failed because the linker never read its arguments (found by M5's last audit:
+/// one live check failed in an output folder one character deeper than the audit before it).
+/// rustc hands a long list of linker arguments over in a file,
+/// `<the crate's output folder>/rustcXXXXXX/linker-arguments`, and the toolchain's linker
+/// cannot open a path past [`LINKER_PATH_MAX`]. It then takes `@<path>` for a file's name,
+/// sees none of its arguments, and fails with words about something else: `'-fuse-linker-plugin',
+/// but liblto_plugin.dll not found` (the argument that switches the plugin off was in the
+/// file). Since Rust 1.100 the output folder is `build/<package>/<hash>/out/` where it was
+/// `deps/`: 29 characters and the package's name nearer the limit.
+///
+/// `Some((the file, its length))` when `d` is such a failure: a link error whose notes show
+/// that the linker saw no arguments, and whose argument file is past the limit (lengths in
+/// UTF-16 units, as Windows counts). A link that failed for another reason, or in a
+/// shallower folder, is `None`: it keeps its own diagnostics and nothing is guessed.
+/// The path is read as rustc prints it, so one it prints escaped (characters outside ASCII)
+/// may be counted longer than it is and one it prints otherwise than `C:\...` is not
+/// recognised (review R4): such a build answers `compile_errors` with the linker's own
+/// words, as every such build did before.
+pub fn unread_link_arguments(d: &Diagnostic) -> Option<(String, usize)> {
+    if !d.is_error() || !d.message.starts_with("linking with") {
+        return None;
+    }
+    // The linker's own words: it did not see `-fno-use-linker-plugin`, or it names the file.
+    let unseen = d.notes.iter().any(|n| (n.contains("liblto_plugin") && n.contains("not found")) || n.contains("linker-arguments"));
+    if !unseen {
+        return None;
+    }
+    // The link's own folder, from what rustc passes for every library it links there
+    // (`symbols.o`; on windows-gnu a `.def` list as well). rustc prints each argument in
+    // quotes with its backslashes doubled.
+    let file = d.notes.iter().flat_map(|n| n.split('"')).find_map(|arg| {
+        let arg = arg.strip_prefix("-Wl,").unwrap_or(arg).replace("\\\\", "\\");
+        let folder = ["symbols.o", "list.def"].iter().find_map(|f| arg.strip_suffix(f))?;
+        let folder = folder.strip_suffix(['\\', '/'])?;
+        let name = folder.rsplit(['\\', '/']).next()?;
+        (name.len() == "rustcXXXXXX".len() && name.starts_with("rustc")).then(|| format!("{folder}\\linker-arguments"))
+    })?;
+    let chars = file.encode_utf16().count();
+    (chars > LINKER_PATH_MAX).then_some((file, chars))
+}
+
+/// Names what failed in a build whose diagnostics hold errors: the linker's unread arguments
+/// when that is what it was ([`unread_link_arguments`]), else the count of compile errors.
+fn name_errors(report: &mut BuildReport) {
+    report.link_arguments = report.diagnostics.iter().find_map(unread_link_arguments);
+    report.error = Some(match &report.link_arguments {
+        Some((file, chars)) => (
+            "build_path_too_long",
+            format!(
+                "the module compiled but was not linked: its build folder is too deep. rustc hands the linker its arguments in a file, here {file} ({chars} characters), and the Rust toolchain's linker opens a path of at most {LINKER_PATH_MAX} characters on Windows, so it read none of them (what the linker says in the diagnostics follows from that). Build in a folder at least {} character(s) less deep: move the project, or start the engine with --cache DIR in a shorter folder (module builds go under the cache)",
+                chars - LINKER_PATH_MAX
+            ),
+        ),
+        None => ("compile_errors", format!("{} compile error(s): see diagnostics", report.errors())),
+    });
+}
+
 /// Checks a build's own messages (after [`vet`] checked the manifest, which may have changed
 /// since): every artifact is a path crate under `roots`, no build script ran, no proc-macro was
 /// built. `Err((code, message))` names the package.
@@ -713,10 +784,14 @@ pub fn run_cargo(req: &BuildRequest) -> BuildReport {
     // dep-info) lies inside the module's folder. A refused build loads nothing, and its
     // diagnostics go (an include! error can echo the file it read).
     if report.ok {
-        let dep = report.package.as_deref().and_then(|name| report.artifacts.iter().find_map(|a| crate::paths::find_dep_info(a, name)));
-        let checked = match dep {
-            Some(d) => crate::paths::check_dep_info(&d, &req.dir, &workspace_root(&req.dir)),
-            None => Err(("source_path", "the build left no dep-info to check which files it read; the module isn't loaded".to_owned())),
+        // (Every library the build made is answered for; more than one dep-info only when two
+        // builds left the same library, and then every one must pass.)
+        let deps = report.package.as_deref().map(|name| crate::paths::dep_infos_of(&report.artifacts, name)).unwrap_or_default();
+        let checked = if deps.is_empty() {
+            Err(("source_path", "the build left no dep-info to check which files it read; the module isn't loaded".to_owned()))
+        } else {
+            let root = workspace_root(&req.dir);
+            deps.iter().try_for_each(|d| crate::paths::check_dep_info(d, &req.dir, &root))
         };
         if let Err((code, message)) = checked {
             report.ok = false;
@@ -889,9 +964,7 @@ fn cargo_once(req: &BuildRequest) -> BuildReport {
                 report.ok = true;
             }
         }
-        (Some(_), _) if report.errors() > 0 => {
-            report.error = Some(("compile_errors", format!("{} compile error(s): see diagnostics", report.errors())));
-        }
+        (Some(_), _) if report.errors() > 0 => name_errors(&mut report),
         (Some(s), _) => {
             let last = report.stderr_tail.last().cloned().unwrap_or_default();
             report.error = Some(("cargo_failed", format!("cargo failed ({s}): {last}")));
@@ -954,6 +1027,73 @@ mod tests {
         assert_eq!(rd.package.as_deref(), Some("mod_d"));
         assert!(svc.lock().jobs.is_empty(), "finished jobs are dropped");
         assert_eq!(svc.recent().len(), 3);
+    }
+
+    /// M5's last audit: a module's link failed with words about a plugin, because the file
+    /// rustc handed the linker its arguments in was at a path of 260 characters. The notes
+    /// below are that build's, with the folder's depth as the variable.
+    #[test]
+    fn a_link_that_never_read_its_arguments_is_named_for_its_folders_depth() {
+        let link_error = |folder: &str, said: &str| {
+            let quoted = folder.replace('\\', "\\\\");
+            Diagnostic {
+                level: "error".into(),
+                code: None,
+                message: "linking with `x86_64-w64-mingw32-gcc` failed: exit code: 1".into(),
+                file: None,
+                line: 0,
+                column: 0,
+                end_line: 0,
+                end_column: 0,
+                label: None,
+                notes: vec![
+                    format!("note: \"x86_64-w64-mingw32-gcc\" \"-Wl,{quoted}\\\\list.def\" \"-fno-use-linker-plugin\" \"-Wl,--dynamicbase\" \"{quoted}\\\\symbols.o\" \"<16 object files omitted>\" \"-shared\""),
+                    "note: some arguments are omitted. use `--verbose` to show all linker arguments".into(),
+                    format!("note: {said}"),
+                ],
+                fixes: Vec::new(),
+                rendered: None,
+                package: None,
+            }
+        };
+        let plugin = "x86_64-w64-mingw32-gcc: fatal error: '-fuse-linker-plugin', but liblto_plugin.dll not found\ncompilation terminated.\r\n";
+        // `<folder>\linker-arguments` is the folder's length and 17 more.
+        let folder = |chars: usize| {
+            let tail = "\\debug\\build\\ambulo/cead12802eafbb58\\out\\rustc50vqeF";
+            format!("C:\\{}{tail}", "p".repeat(chars - 3 - tail.len()))
+        };
+        let (file, chars) = unread_link_arguments(&link_error(&folder(243), plugin)).expect("260 characters is one past what the linker opens");
+        assert_eq!(chars, 260);
+        assert!(file.ends_with("\\out\\rustc50vqeF\\linker-arguments") && file.starts_with("C:\\ppp"), "{file}");
+        assert_eq!(unread_link_arguments(&link_error(&folder(242), plugin)), None, "259 characters is opened: whatever failed, it was not this");
+        // A deep folder alone is no reason: the linker read its arguments and said what it missed.
+        assert_eq!(unread_link_arguments(&link_error(&folder(300), "ld.exe: undefined reference to `missing'")), None);
+        // A linker that names the file it could not open.
+        let named = "gcc.exe: error: @C:\\p\\rustc50vqeF\\linker-arguments: No such file or directory";
+        assert_eq!(unread_link_arguments(&link_error(&folder(300), named)).map(|(_, n)| n), Some(317));
+        // Not a link, not an error, or a folder that is not rustc's own for a link.
+        let mut other = link_error(&folder(300), plugin);
+        other.message = "mismatched types".into();
+        assert_eq!(unread_link_arguments(&other), None);
+        let mut warning = link_error(&folder(300), plugin);
+        warning.level = "warning".into();
+        assert_eq!(unread_link_arguments(&warning), None);
+        let elsewhere = format!("C:\\{}\\out\\objects", "p".repeat(300));
+        assert_eq!(unread_link_arguments(&link_error(&elsewhere, plugin)), None);
+
+        // What the build's answer says: its own code, the numbers, and what to do.
+        let mut report = BuildReport { diagnostics: vec![link_error(&folder(243), plugin)], ..BuildReport::default() };
+        name_errors(&mut report);
+        let (code, message) = report.error.clone().unwrap();
+        assert_eq!(code, "build_path_too_long");
+        assert!(message.contains("(260 characters)") && message.contains("at most 259") && message.contains("at least 1 character(s) less deep") && message.contains("--cache DIR"), "{message}");
+        assert_eq!(report.link_arguments.as_ref().map(|l| l.1), Some(260));
+        // Any other failed build is its compile errors, as before.
+        let mut report = BuildReport { diagnostics: vec![link_error(&folder(242), plugin), other], ..BuildReport::default() };
+        name_errors(&mut report);
+        assert_eq!(report.error.as_ref().map(|e| e.0), Some("compile_errors"));
+        assert!(report.error.as_ref().unwrap().1.starts_with("2 compile error(s)"));
+        assert_eq!(report.link_arguments, None);
     }
 
     #[test]

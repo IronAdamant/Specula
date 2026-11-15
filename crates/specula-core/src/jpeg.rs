@@ -786,8 +786,8 @@ impl Decoder<'_> {
             if c.coeffs.is_empty() {
                 c.coeffs = vec![0i16; c.bw * c.bh * 64];
             }
-            for k in ss..=se {
-                c.coef_bits[k] = al as i8;
+            if ss <= se {
+                c.coef_bits[ss..=se].fill(al as i8);
             }
             c.dc_pred = 0;
         }

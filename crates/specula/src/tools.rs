@@ -474,6 +474,13 @@ impl Tools {
         if let crate::startgate::Refused::Slow(waited) = why {
             specula_core::trace_event!(&crate::trace_sink::ENGINE, Error, "engine.start_slow", waited_ms = waited.as_secs_f64() * 1e3, call = current_call());
         }
+        // Tests only (tests/start_fail.rs): a call refused for a failed start answers this many
+        // milliseconds late, while the engine stops its server: the refusal must still arrive.
+        if why == crate::startgate::Refused::Failed {
+            if let Some(late) = std::env::var("SPECULA_TEST_FAIL_START").ok().and_then(|v| v.parse::<u64>().ok()) {
+                std::thread::sleep(Duration::from_millis(late.min(2_000)));
+            }
+        }
         Some(ToolOutput::error(crate::startgate::refusal(why).to_string()))
     }
 

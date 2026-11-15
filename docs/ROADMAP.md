@@ -990,6 +990,34 @@ saving the assets, similar to Unity and Unreal Engine and also having 2D/3D asse
   repository needs a copy of both and a workspace manifest. The measured comparison's harness makes them by
   hand (`scripts/leverage.py`, `sdk_into`); `specula new` (or a `specula sdk` command) should, with the
   engine's version checked at `logic_build` ([design/LEVERAGE.md](design/LEVERAGE.md)).
+- [ ] ➕ **A module builds in a folder of any depth on Windows.** The toolchain's linker opens a path of at
+  most 259 characters, and rustc's file of linker arguments sits about 108 characters below the folder the
+  engine keeps its cache in, which is the project's unless `--cache` names another (for a module named
+  `ambulo`; 29 fewer before Rust 1.100). M5's last audit met it; the engine names
+  it now (`build_path_too_long`: [design/MODULES.md](design/MODULES.md), "Diagnostics as data and fixes") and
+  `--cache DIR` gets round it. An agent's scratch folder is often that deep, so a cold agent will meet it:
+  either the engine keeps module builds in a short folder of its own when the project's is too deep (and
+  says where), or the build's own names get shorter. Belongs with "a project gets its SDK from the engine".
+- [ ] ➕ **The repository's own tooling in Rust** (owner, 2026-11-15, on the Python in `scripts/`: "For now,
+  this is acceptable trade off but in M6, I'll want all of this in Rust"). At the end of M5 the gate, the
+  audit's runner, every live check, the measurements and the comparison's harness are 83 Python scripts
+  (about 34,500 lines, standard library only), with two test-data generators beside their tests; the engine
+  and the games are Rust. All of it becomes Rust in M6, and no `.py` file stays tracked (a guard holds that
+  at the end).
+  - **One workspace crate**: the gate, the runner and every check as modules of one program
+    (`cargo run -p <crate> -- gate`, `-- live`, `-- <check>`), on `std` and the engine's own crates (JSON,
+    PNG, the client the `specula` command already has). A check stays a process of its own that reaches
+    the engine only through the protocol, as an agent does: it never links the engine.
+  - **Order:** the gate and the runner first (they decide whether a push is safe); then each check when it
+    is next touched or first needed on macOS or Linux; the rest before M6 ends.
+  - **A port is proved before its original goes:** run beside the Python check on the same engine, and
+    shown to fail on a fault put in on purpose. A port that passes without checking anything is the risk.
+  - *Why:* one language and one toolchain to install on each machine; three of M5's late findings were
+    Python on Windows and not the engine (text read in the system's code page, a connect that waited 10 to
+    26 ms and was read as the engine's time, a source handed back with other line endings); and what this
+    project uses is built here. *Cost, said plainly:* about 40,000 lines and one and a half to two weeks
+    of one builder's work with reviews (an estimate), and a compile of a few seconds where a script ran
+    at once.
 - [ ] **Shipping basics**: settings menu, structured crash reports for agents to triage, `perf.toml`
   budgets checked on the reference hardware before release.
 - [ ] ➕ **Asset packing**: compressed, patch-friendly packs; licence metadata on every asset, and export refuses

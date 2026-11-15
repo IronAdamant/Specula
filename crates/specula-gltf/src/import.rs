@@ -66,8 +66,8 @@ fn max_abs_diff(a: &Affine, b: &Affine) -> f32 {
 fn affine_scale(a: &Affine) -> f32 {
     let mut s = 1.0f32;
     for c in 0..3 {
-        for k in 0..3 {
-            s = s.max(a.cols[c][k].abs());
+        for v in a.cols[c] {
+            s = s.max(v.abs());
         }
         s = s.max(a.t[c].abs());
     }

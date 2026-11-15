@@ -664,8 +664,8 @@ fn smooth(p: &Prepared, field: &Field, placed: &[(Vec3, f32, bool)], i: usize) -
     let scale = |s: &mut crate::sh::Sh, k: f32| {
         for ch in 0..3 {
             s.c0[ch] *= k;
-            for a in 0..3 {
-                s.c1[a][ch] *= k;
+            for axis in &mut s.c1 {
+                axis[ch] *= k;
             }
         }
     };

@@ -119,7 +119,11 @@ What `logic_build` lets a module build from, checked against `cargo metadata --o
   source spelled the path (a renamed `include_str!`, a `macro_rules!` wrapper, escapes, `cfg_attr`), and each must lie
   inside the module's folder (its `src/` and top-level files such as `actions.json`; never `target/`). A build that read
   anything else is refused (no library is loaded, and its diagnostics are dropped, since an `include!` error can echo
-  the file it read). A token scan of the sources gives the early hint before Cargo runs and at every commit of a
+  the file it read). The dep-info read is the one beside the build's own copy of the library, told by the
+  library's bytes and never by a date (`paths::dep_infos_of`: every library the build made must have one, and should two builds have left the same library, every one is checked): Cargo keeps that copy in `deps/`, and from Rust
+  1.100 in `build/<package>/<hash>/out/`, and a target folder two toolchains have built into holds both, each
+  with a dep-info that describes its own library only. A library with no such copy is refused. A token scan of
+  the sources gives the early hint before Cargo runs and at every commit of a
   mirrored `.rs` file. **What this is for:** determinism and lint coverage (no code compiled in that the lints didn't
   scan, nothing compiled from engine sources) and not embedding host files into a module. It is **not a sandbox**: a
   module is native code in the engine's process and can read any file at run time;
@@ -269,6 +273,19 @@ package (plus the errors of any other crate in the build, tagged with its `packa
 `cargo fix` does), rebuilds, and repeats up to 3 rounds; `fixes_applied` lists them. `check: true` runs `cargo check`
 only.
 
+A failed build's `error.code` is `compile_errors` (read the diagnostics), or one of the build's own:
+`cargo_missing`, `cargo_failed`, `timeout`, `not_a_module`, `fix_failed`, and **`build_path_too_long`**
+(2026-11-15). On Windows rustc hands the linker a long list of arguments in a file inside the build folder
+(`<cache>/modules/<name>-<hash>/<profile>/build/<package>/<hash>/out/rustcXXXXXX/linker-arguments`), and the
+Rust toolchain's linker opens a path of at most 259 characters. One character past that, it reads none of its
+arguments and fails with a message about something else (`'-fuse-linker-plugin', but liblto_plugin.dll not
+found`: the argument that switches the plugin off was in the file). The build service recognises exactly that
+(`build::unread_link_arguments`: a link error whose notes show the linker saw no arguments, and an argument
+file past the limit; any other link error keeps its own diagnostics) and answers with `error.file`,
+`error.chars` and `error.limit`. What builds: a shallower project folder, or the engine started with
+`--cache DIR` in a shorter folder (module builds go under the cache). `cargo check` never links, so
+`check: true` passes in a folder where the build does not.
+
 ### Build service (swarms)
 
 Cargo locks its target directory, so concurrent agents' builds would just queue inside Cargo, each paying a full run.
@@ -373,3 +390,5 @@ one agent's headless call rate (`scripts/call_rate.py`) `world_set` 1,289 → 1,
   returns `unsupported` there (linked-in modules work everywhere).
 - ~~A journal entry kind for loads~~: kind `module`, 2026-10-22.
 - Preempting a runaway module (it would need a watchdog thread and a cooperative check in the SDK).
+- Building in a folder of any depth on Windows: today a build folder too deep for the toolchain's linker is
+  refused by name (`build_path_too_long`, above), not built (ROADMAP M6).

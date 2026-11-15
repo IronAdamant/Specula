@@ -6,6 +6,13 @@
 
 Steps (each one's log is kept; the summary is <target>/gate/summary.json):
 
+0. rust     which Rust this run uses, and whether a newer stable is out. CI installs the newest
+            stable on every run, so a gate passed on an older one says nothing of what CI will
+            build with (the push that ended M5 passed here on 1.99.1 and failed there on 1.100.0,
+            whose Cargo lays its target folder out differently). A newer stable fails the gate
+            unless --older-rust says that is known; RUSTUP_TOOLCHAIN picks the toolchain, as for
+            any cargo. Where rustup can't say (offline, no stable channel installed), the gate
+            says so and goes on.
 0. gpu      which adapters the tests will see. GPU tests skip themselves cleanly without one (so
             CI stays green), which on a developer's machine would be a gate that tested nothing:
             no adapter fails the gate unless --no-gpu says that is expected.
@@ -50,6 +57,24 @@ RESULT_LINE = re.compile(r"^test result: \w+\. (\d+) passed; (\d+) failed; (\d+)
 RUNNING_LINE = re.compile(r"^test (.+?) has been running for over \d+ seconds")
 FN_LINE = re.compile(r"^\s*(?:pub(?:\([a-z]+\))? )?(?:async )?fn (\w+)\s*[(<]")
 GPU_LINE = re.compile(r"^gate-gpu: (\d+) adapter")
+RUST_VERSION = re.compile(r"\b(\d+)\.(\d+)\.(\d+)\b")
+
+
+def newest_stable(check):
+    """The newest stable Rust that `rustup check` names in its lines for the stable channel
+    (a version installed, or the one an update would bring), or None when it names none."""
+    found = [tuple(map(int, v)) for line in check.splitlines() if line.startswith("stable-") for v in RUST_VERSION.findall(line)]
+    return max(found) if found else None
+
+
+def rust_in_use():
+    """(what `rustc -V` says, `rustup check`'s output or "" when rustup can't answer)."""
+    def said(cmd, seconds):
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=seconds, cwd=str(ROOT)).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+    return said(["rustc", "-V"], 60).strip(), said(["rustup", "check"], 60)
 
 
 def parse(log):
@@ -206,6 +231,16 @@ def self_test():
     assert "a::stuck" in verdict(hung, TIMED_OUT)[0], verdict(hung, TIMED_OUT)
     assert verdict(a, 3) == ["exit 3 (see the log)"], "a non-zero exit with a clean log is not a pass"
     assert GPU_LINE.match("gate-gpu: 2 adapter(s): A, B").group(1) == "2" and not GPU_LINE.match("gate-gpu: none (Vulkan is not available)")
+    # The newest stable, from rustup's own lines (both spellings it has used), never from a
+    # pinned toolchain's line, a date or a hash.
+    check = ("stable-x86_64-pc-windows-gnu - update available: 1.99.1 (58cf8f9c3 2026-10-13) -> 1.100.0 (0ef1bc386 2026-11-09)\n"
+             "stable-x86_64-pc-windows-msvc - Update available : 1.89.0 (29483883e 2025-08-04) -> 1.100.0 (0ef1bc386 2026-11-09)\n"
+             "1.101.0-x86_64-pc-windows-gnu - up to date: 1.101.0 (aaaaaaaaa 2026-12-21)\n"
+             "rustup - update available : 1.29.1 -> 1.29.3\n")
+    assert newest_stable(check) == (1, 100, 0), newest_stable(check)
+    assert newest_stable("stable-x86_64-unknown-linux-gnu - Up to date : 1.100.0 (0ef1bc386 2026-11-09)\n") == (1, 100, 0)
+    assert newest_stable("") is None and newest_stable("error: could not download file\n") is None
+    assert (1, 99, 1) < (1, 100, 0), "versions are compared as numbers: 1.99 is older than 1.100"
     # Review R3: a doc-test's name has spaces; it is named like any other failure (so it can be
     # reported as flaky).
     doc = parse("running 1 test\ntest crates/x/src/lib.rs - speed_budget (line 12) ... FAILED\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n")
@@ -229,6 +264,7 @@ def main():
     ap.add_argument("--package", default="specula", help="the package whose library tests are repeated")
     ap.add_argument("--only", default=",".join(STEPS), help=f"steps to run, of {','.join(STEPS)}")
     ap.add_argument("--no-gpu", action="store_true", help="this machine has no Vulkan adapter (CI): GPU tests skipping themselves is expected")
+    ap.add_argument("--older-rust", action="store_true", help="a newer stable Rust than this run's is out, and that is known: CI builds with the newest")
     ap.add_argument("--out", default=None, help="where logs and the summary go (default <target>/gate)")
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
@@ -246,6 +282,25 @@ def main():
     summary = {"schema": "specula.gate/v2", "steps": {}, "failures": []}
     fail = summary["failures"].append
     lib = ["cargo", "test", *j, "-p", a.package, "--lib", "--", "--test-threads", str(a.threads)]
+
+    print("rust (the toolchain this run uses)")
+    using, check = rust_in_use()
+    mine = RUST_VERSION.search(using)
+    mine = tuple(map(int, mine.groups())) if mine else None
+    newest = newest_stable(check)
+    summary["steps"]["rust"] = {"rustc": using, "newest_stable": ".".join(map(str, newest)) if newest else None}
+    if mine is None:
+        print("  rustc -V gave no version")
+        fail("rust: rustc -V gave no version (is a toolchain installed?)")
+    elif newest is None:
+        print(f"  {using}; rustup did not say which stable is the newest (offline, or no stable channel installed), and CI builds with the newest")
+    elif mine < newest:
+        print(f"  {using}; the newest stable is {'.'.join(map(str, newest))}, and CI builds with it")
+        if not a.older_rust:
+            fail(f"rust: this run used {'.'.join(map(str, mine))} and the newest stable is {'.'.join(map(str, newest))}, which CI installs: run the gate with it "
+                 f"(rustup toolchain install {'.'.join(map(str, newest))}, then RUSTUP_TOOLCHAIN={'.'.join(map(str, newest))}; or rustup update stable), or pass --older-rust where that is known")
+    else:
+        print(f"  {using}; no newer stable is out")
 
     if any(s in only for s in TEST_STEPS):
         print("gpu (the adapters the tests will see)")

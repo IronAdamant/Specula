@@ -63,6 +63,34 @@ Built by one agent, lane by lane, each lane reviewed by a model that did not wri
   writes its text, and reads its processes, as UTF-8 (a guard holds it). It also found that the scripts' own
   client waited 10 to 26 ms in about one call in seven (Python's connect with a timeout, on Windows), which
   checks read as the engine's time: the scripts connect first and set the timeout after
+- **Module builds on Rust 1.100** (found by CI on the push that ended M5: this machine's Rust was one release
+  older). Its Cargo keeps what rustc writes in `build/<package>/<hash>/out/` where `deps/` was; the build
+  service found no dep-info there and refused every module. The dep-info it checks is now the one beside the
+  build's own copy of the library, told by the library's bytes, in either layout (every copy with those bytes
+  is checked, and a copy without dep-info refuses the build): in a target folder an older
+  toolchain also built into, the older build's dep-info is never taken for the new library's (it was found by
+  name, and before that by date). Stale build units of the new layout are dropped after a build as the old
+  layout's files are. `scripts/gate.py` says which Rust it runs with and fails when a newer stable is out
+  (`--older-rust`), since CI installs the newest
+- **A call that is running when the server stops gets its answer** (`specula-protocol`). The server shut
+  every connection's socket and then waited for the calls on them, so a call that was applied, or refused,
+  had nowhere to say so. A call refused because the engine's start failed lost its refusal whenever its
+  thread ran later than the engine's stop: one failure in one gate, of a test that had passed every run
+  before. The server now waits for running calls and the writing of their answers (a caller that does not
+  read is given 5 s), and begins nothing that arrives after the stop; the test makes the refused call late
+  on purpose
+- **A module build in a folder too deep for the linker says so** (`logic_build`: `build_path_too_long`, with
+  the file, its length and the limit). On Windows rustc hands the linker its arguments in a file inside the
+  build, and the toolchain's linker opens a path of at most 259 characters; at 260 it read none of them and
+  the build failed with `liblto_plugin.dll not found`. Rust 1.100's build folders are 29 characters and the
+  package's name deeper than the ones before. Found as one failed live check out of 70 on the final tree,
+  in an output folder one character deeper than the last audit's: the runner refuses such an `--out`
+  before it starts
+- **Text files are LF in every checkout** (`.gitattributes`): the tree a change is gated in holds the bytes
+  everyone else gets. A guard of the final audit matched a line with its line ending and passed only in the
+  tree it was written in. In an LF tree one live check (`trace_check.py`) handed a module's source back with
+  CRLF, having read and restored it as text: it handles bytes, a guard holds that form for every script
+  that edits a source, and `scripts/live_checks.py` fails a check that leaves the checkout changed
 
 ### M4, done (2026-10-28 to 2026-10-30)
 

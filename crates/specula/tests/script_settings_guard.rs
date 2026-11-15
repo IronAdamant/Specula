@@ -237,8 +237,12 @@ fn scripts_connect_to_an_engine_before_they_set_a_timeout() {
             // The helpers themselves: the connect takes no timeout, and one poll does.
             let helper = text.split("class Connection(http.client.HTTPConnection):").nth(1).unwrap_or("");
             let connect = helper.split("class _Handler").next().unwrap_or("");
+            // (Read by lines: the file ends its lines as its checkout does. The first form of
+            // this check asked for the call followed by "\n", passed in the tree it was written
+            // in and failed in every fresh checkout on Windows.)
+            let lines: Vec<&str> = connect.lines().map(str::trim).collect();
             assert!(
-                connect.contains("self.sock = socket.create_connection((self.host, self.port))\n") && connect.contains("self.sock.settimeout(self.timeout)"),
+                lines.contains(&"self.sock = socket.create_connection((self.host, self.port))") && lines.contains(&"self.sock.settimeout(self.timeout)"),
                 "specula_mcp.Connection.connect connects with no timeout and sets it after"
             );
             assert_eq!(text.matches("urllib.request.urlopen(").count(), 1, "specula_mcp.py: only `poll` opens a URL with a timeout on its connect");
@@ -257,5 +261,75 @@ fn scripts_connect_to_an_engine_before_they_set_a_timeout() {
         bad.is_empty(),
         "these open their own connection to an engine (use specula_mcp's urlopen, connect, Connection or poll):\n{}",
         bad.join("\n")
+    );
+}
+
+/// The gate and the audit's runner pass their own tests (`--self-test`: the gate's reading of
+/// logs and of rustup's answer, what the runner counts as left behind by a check; nothing is
+/// started). They were run by hand only, which is to say when someone remembered. Skipped, and
+/// said so, on a machine with no Python.
+#[test]
+fn the_gate_and_the_audits_runner_pass_their_own_tests() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts");
+    for python in ["python", "python3"] {
+        // (A machine may answer `python` with a stub that is not Python: ask it for its version.)
+        let runs = std::process::Command::new(python).arg("--version").output().is_ok_and(|v| v.status.success());
+        if !runs {
+            continue;
+        }
+        for script in ["gate.py", "live_checks.py"] {
+            let out = std::process::Command::new(python).arg(dir.join(script)).arg("--self-test").output().expect("python ran a moment ago");
+            let said = String::from_utf8_lossy(&out.stdout).into_owned();
+            assert!(out.status.success() && said.contains("self-test: ok"), "scripts/{script} --self-test failed:\n{said}\n{}", String::from_utf8_lossy(&out.stderr));
+        }
+        return;
+    }
+    println!("skipped: no python on this machine to run the scripts' own tests");
+}
+
+/// A script that edits one of the repository's own sources and puts it back handles it as
+/// bytes. Python on Windows writes text with CRLF line ends, so a source read and restored as
+/// text comes back changed in a checkout whose files are LF, and a comparison made as text
+/// says it is the same: M5's last audit passed with `games/ambulo/src/lib.rs` left that way by
+/// `trace_check.py`. The audit's runner looks too, after every check, at what git says a
+/// check left behind (`live_checks.py`, `tree_state`): this test holds the form that caused it
+/// and that the runner still looks.
+#[test]
+fn scripts_put_a_source_of_the_repository_back_byte_for_byte() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts");
+    let mut bad = Vec::new();
+    let mut sources = 0;
+    for entry in std::fs::read_dir(&dir).expect("scripts/") {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "py") {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{name}: {e}"));
+        // A name given to a Rust source under the repository's root: `SRC = ROOT / ... / "lib.rs"`.
+        let named: Vec<&str> = text
+            .lines()
+            .filter_map(|line| line.split_once(" = ROOT / "))
+            .filter(|(_, rest)| rest.trim_end().ends_with(".rs\""))
+            .map(|(name, _)| name.trim())
+            .filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+            .collect();
+        sources += named.len();
+        for (i, line) in text.lines().enumerate() {
+            let code = line.split('#').next().unwrap_or("");
+            for n in &named {
+                if code.contains(&format!("{n}.write_text(")) || code.contains(&format!("{n}.read_text(")) || code.contains(&format!("open({n}")) || code.contains(&format!("{n}.open(")) {
+                    bad.push(format!("scripts/{name}:{}: {}", i + 1, line.trim()));
+                }
+            }
+        }
+    }
+    assert!(sources >= 4, "the guard found {sources} scripts' names for a source of the repository: has their form changed?");
+    assert!(bad.is_empty(), "these handle a source of the repository as text (read_bytes and write_bytes keep its line ends):\n{}", bad.join("\n"));
+    let runner = std::fs::read_to_string(dir.join("live_checks.py")).expect("scripts/live_checks.py");
+    let lines: Vec<&str> = runner.lines().map(str::trim).collect();
+    assert!(
+        runner.contains(r#"["git", "status", "--porcelain", "-uall"]"#) && runner.contains(r#"["git", "diff", "HEAD"]"#) && lines.contains(&"left = left_behind(tree, now)") && lines.contains(&r#"failed = [r for r in results if r["exit"] != 0 or r["left"]]"#),
+        "scripts/live_checks.py fails a check that leaves the checkout changed"
     );
 }

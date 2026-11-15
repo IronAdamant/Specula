@@ -848,7 +848,8 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     startup.mark("server");
     startup.listening();
     // Tests only (`SPECULA_TEST_FAIL_START`, tests/start_fail.rs): the start fails here, after
-    // the port answers, once a call is waiting at the start gate (or after a minute).
+    // the port answers, once a call is waiting at the start gate (or after a minute). (Its
+    // value makes that call's refusal late: `Tools::await_start`.)
     if std::env::var_os("SPECULA_TEST_FAIL_START").is_some() {
         let asked = Instant::now();
         while start_gate.waiting() == 0 && asked.elapsed() < Duration::from_secs(60) {

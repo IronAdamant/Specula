@@ -1232,8 +1232,7 @@ impl GraphPlayer {
             let r = self.scratch.layers[li];
             let lg = &g.graph.layers[li];
             // The layer's stack, bottom up, each entry crossfaded over what is below.
-            for k in 0..r.layer.len {
-                let e = r.layer.stack[k];
+            for (k, &e) in r.layer.stack[..r.layer.len].iter().enumerate() {
                 self.sample_entry(&g, li, &e, tau, play.clock, around);
                 let w = if k == 0 { 1.0 } else { fade_weight(e.fade, tau) };
                 if k == 0 {

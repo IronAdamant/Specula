@@ -27,8 +27,9 @@ use std::time::{Duration, Instant};
 pub const MODULE_TARGETS: &str = "modules";
 /// Room a module build is admitted with (the disk budget refuses it below the floor).
 const BUILD_ROOM: u64 = 256 << 20;
-/// Artefacts kept per crate and kind in a target's `deps` (a check build and a full build each
-/// make their own): older ones are stale and dropped after every build.
+/// Artefacts kept per crate and kind in a target's `deps`, and units kept per package in its
+/// `build` (a check build and a full build each make their own): older ones are stale and
+/// dropped after every build.
 const KEEP_ARTEFACTS: usize = 2;
 
 static MODULE_TARGETS_DIR: OnceLock<PathBuf> = OnceLock::new();
@@ -52,9 +53,44 @@ fn split_hash(stem: &str) -> Option<(&str, &str)> {
     (hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_hexdigit())).then_some((name, hash))
 }
 
+/// The stale units of one profile folder in the layout Cargo has used since Rust 1.100: a
+/// crate's artefacts, dep-info and fingerprint are one folder, `build/<package>/<hash>/`, and a
+/// package's folders past its newest [`KEEP_ARTEFACTS`] are listed. A unit's date is that of
+/// `fingerprint/invoked.timestamp`, which Cargo writes each time it compiles the unit (a build
+/// that finds it up to date touches nothing); without that file, the newest of the folder's own,
+/// its `out`'s and its `fingerprint`'s; and a unit with no date to read counts as the newest (a
+/// unit Cargo is making this moment: review R1). Links are never followed or listed; the older
+/// layout's `build/<package>-<hash>/` (build scripts' output) holds no such folder and is left
+/// alone.
+fn stale_units(profile: &Path) -> Vec<PathBuf> {
+    let real_folders = |dir: &Path| -> Vec<PathBuf> {
+        let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+        entries.flatten().take(20_000).map(|e| dir.join(e.file_name())).filter(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir() && !crate::disk::is_link(&m))).collect()
+    };
+    let modified = |p: PathBuf| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    // (dateless, date): a unit with no date sorts above every dated one.
+    let touched = |unit: &Path| {
+        let date = modified(unit.join("fingerprint").join("invoked.timestamp")).or_else(|| [unit.to_path_buf(), unit.join("out"), unit.join("fingerprint")].into_iter().filter_map(modified).max());
+        (date.is_none(), date)
+    };
+    let mut stale = Vec::new();
+    for package in real_folders(&profile.join("build")) {
+        let mut units: Vec<((bool, Option<std::time::SystemTime>), PathBuf)> = real_folders(&package)
+            .into_iter()
+            .filter(|u| u.file_name().is_some_and(|n| n.len() == 16 && n.to_string_lossy().bytes().all(|b| b.is_ascii_hexdigit())))
+            .map(|u| (touched(&u), u))
+            .collect();
+        units.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        stale.extend(units.into_iter().skip(KEEP_ARTEFACTS).map(|(_, u)| u));
+    }
+    stale
+}
+
 /// Drops stale artefacts from a module's target: in each profile's `deps`, `.fingerprint` and
-/// `incremental`, only the newest [`KEEP_ARTEFACTS`] of each crate (and file kind) stay. Only
-/// inside the engine's own module targets, never through a link. Returns `(entries, bytes)` freed.
+/// `incremental`, only the newest [`KEEP_ARTEFACTS`] of each crate (and file kind) stay, and in
+/// its `build` each package's newest units ([`stale_units`]: Cargo's layout from Rust 1.100).
+/// Only inside the engine's own module targets, never through a link. Returns `(entries, bytes)`
+/// freed.
 pub fn drop_stale(target: &Path) -> (u64, u64) {
     let Some(root) = MODULE_TARGETS_DIR.get().map(|r| crate::disk::canonical(r)) else { return (0, 0) };
     let target = crate::disk::canonical(target);
@@ -89,6 +125,12 @@ pub fn drop_stale(target: &Path) -> (u64, u64) {
                         freed.1 += b;
                     }
                 }
+            }
+        }
+        for unit in stale_units(&target.join(profile)) {
+            if let Ok((n, b)) = crate::disk::remove_tree_inside(&root, &unit) {
+                freed.0 += n;
+                freed.1 += b;
             }
         }
     }
@@ -537,7 +579,14 @@ fn report_json(r: &BuildReport, req: &BuildRequest, detailed: bool) -> Json {
         f.push(("fixes_applied", Json::arr(applied)));
     }
     if let Some((code, message)) = &r.error {
-        f.push(("error", Json::obj([("code", Json::from(*code)), ("message", Json::from(message.as_str()))])));
+        let mut error = Json::obj([("code", Json::from(*code)), ("message", Json::from(message.as_str()))]);
+        // `build_path_too_long`: the numbers as data (the file the linker could not open).
+        if let Some((file, chars)) = &r.link_arguments {
+            error.set("file", Json::from(file.as_str()));
+            error.set("chars", Json::from(*chars));
+            error.set("limit", Json::from(specula_logic::build::LINKER_PATH_MAX));
+        }
+        f.push(("error", error));
         if r.diagnostics.is_empty() && !r.stderr_tail.is_empty() {
             f.push(("stderr_tail", Json::arr(r.stderr_tail.iter().map(|l| Json::from(l.as_str())))));
         }
@@ -886,4 +935,96 @@ pub fn builds_json() -> Json {
 /// Refused on the live world ([`crate::write_policy::drop_changes`]).
 pub fn no_journal() -> impl FnMut(&mut dyn WorldWrite, Mark, &str, Phase) -> Result<(), WorldError> {
     |w: &mut dyn WorldWrite, _: Mark, _: &str, _: Phase| crate::write_policy::drop_changes(w)
+}
+
+#[cfg(test)]
+mod stale_tests {
+    use super::*;
+
+    /// A build that failed because its folder is too deep says so with numbers an agent can
+    /// use; any other failure's error is its code and message, as before.
+    #[test]
+    fn a_build_folder_too_deep_is_answered_with_its_numbers() {
+        let req = BuildRequest::new("no-such-module");
+        let mut report = BuildReport { error: Some(("build_path_too_long", "too deep".into())), ..BuildReport::default() };
+        report.link_arguments = Some(("C:\\deep\\rustcAbCdEf\\linker-arguments".into(), 260));
+        let error = report_json(&report, &req, false).get("error").cloned().unwrap();
+        assert_eq!(error.get("code").and_then(Json::as_str), Some("build_path_too_long"));
+        assert_eq!(error.get("chars").and_then(Json::as_u64), Some(260));
+        assert_eq!(error.get("limit").and_then(Json::as_u64), Some(259));
+        assert_eq!(error.get("file").and_then(Json::as_str), Some("C:\\deep\\rustcAbCdEf\\linker-arguments"));
+        report.link_arguments = None;
+        report.error = Some(("compile_errors", "1 compile error(s): see diagnostics".into()));
+        let error = report_json(&report, &req, false).get("error").cloned().unwrap();
+        assert!(error.get("chars").is_none() && error.get("limit").is_none() && error.get("file").is_none(), "{error}");
+    }
+
+    /// Rust 1.100's layout of a target folder: a package's units are folders, and the ones
+    /// past its newest two are stale. A unit's date is when Cargo last compiled it, not when
+    /// its folder was made; nothing else in `build` is listed.
+    #[test]
+    fn a_packages_units_past_its_newest_two_are_stale() {
+        let root = std::env::temp_dir().join(format!("specula-stale-units-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let profile = root.join("debug");
+        let at = |secs: u64| std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000 + secs);
+        let unit = |package: &str, hash: &str, compiled: u64| {
+            let u = profile.join("build").join(package).join(hash);
+            std::fs::create_dir_all(u.join("out")).unwrap();
+            std::fs::create_dir_all(u.join("fingerprint")).unwrap();
+            std::fs::write(u.join("out").join("lib.d"), "x").unwrap();
+            let stamp = u.join("fingerprint").join("invoked.timestamp");
+            std::fs::write(&stamp, "").unwrap();
+            std::fs::OpenOptions::new().write(true).open(&stamp).unwrap().set_modified(at(compiled)).unwrap();
+            u
+        };
+        // Made in this order; compiled in another (the first made was compiled last).
+        let _built = unit("ambulo", "3333333333333333", 30);
+        let oldest = unit("ambulo", "1111111111111111", 10);
+        let _check = unit("ambulo", "2222222222222222", 20);
+        let _sdk = unit("specula-sdk", "aaaaaaaaaaaaaaaa", 1);
+        let _sdk2 = unit("specula-sdk", "bbbbbbbbbbbbbbbb", 2);
+        // Not units: the older layout's build-script folder, and a name that is no hash.
+        std::fs::create_dir_all(profile.join("build").join("helper-0123456789abcdef").join("out")).unwrap();
+        std::fs::create_dir_all(profile.join("build").join("ambulo").join("notes")).unwrap();
+        assert_eq!(stale_units(&profile), vec![oldest.clone()]);
+        let older = unit("specula-sdk", "cccccccccccccccc", 0);
+        let mut stale = stale_units(&profile);
+        stale.sort();
+        assert_eq!(stale, vec![oldest, older]);
+        assert!(stale_units(&root.join("release")).is_empty(), "a profile never built has nothing stale");
+        // A unit Cargo has made and not yet stamped has its folder's date, which is now: kept.
+        let fresh = profile.join("build").join("ambulo").join("4444444444444444");
+        std::fs::create_dir_all(fresh.join("out")).unwrap();
+        let stale = stale_units(&profile);
+        assert!(!stale.contains(&fresh) && stale.len() == 3, "the unit being made is the newest: {stale:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Review R1: nothing showed that a real build's live units survive. A module is checked
+    /// and built, twice over, by the build service's own Cargo: a check build and a full build
+    /// each make a unit of every package, and none of them is stale (with Cargo's older layout
+    /// there are no units and this says nothing; with Rust 1.100's it fails if a build's own
+    /// units are counted past the ones kept).
+    #[test]
+    fn a_real_builds_units_are_all_kept() {
+        if std::process::Command::new(specula_logic::build::cargo_program()).arg("--version").output().map_or(true, |o| !o.status.success()) {
+            eprintln!("skipped: no cargo to build with");
+            return;
+        }
+        let repo = specula_logic::fix::canonical(&Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(".."));
+        let target = std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| repo.join("target"), PathBuf::from);
+        let target = specula_logic::fix::canonical(&target).join("module-tests-stale-units");
+        for round in 0..2 {
+            for check in [true, false] {
+                let mut req = BuildRequest::new(repo.join("games").join("ambulo"));
+                req.roots = vec![repo.clone()];
+                req.target_dir = Some(target.clone());
+                req.check = check;
+                let built = specula_logic::build::run_cargo(&req);
+                assert!(built.ok, "round {round}, check {check}: {:?} {:?}", built.error, built.stderr_tail);
+                assert_eq!(stale_units(&target.join("debug")), Vec::<PathBuf>::new(), "round {round}, check {check}");
+            }
+        }
+    }
 }

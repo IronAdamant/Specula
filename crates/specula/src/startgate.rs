@@ -14,7 +14,10 @@
 //! A start that ends without the loop (an error, a panic) fails the gate ([`Starting`]): every
 //! waiting call is told at once, and the process ends as quickly as it did before there was a
 //! gate (the server joins its connection threads when it stops, so a call left waiting here
-//! would hold a failed engine and its port for the rest of [`START_WAIT`]: review R1).
+//! would hold a failed engine and its port for the rest of [`START_WAIT`]: review R1). The
+//! refusal reaches the caller because the server answers every call that is running before it
+//! closes a connection (`specula-protocol`'s `server.rs`; it shut the sockets first, and a
+//! refused call whose thread ran late was read as an empty answer: tests/start_fail.rs).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};

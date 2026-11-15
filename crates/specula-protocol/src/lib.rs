@@ -210,7 +210,9 @@ impl Server {
 
     /// Stop accepting, close connections, join threads.
     ///
-    /// Waits for tool calls already running to return (their responses are dropped).
+    /// Waits for tool calls already running to return, and their answers are written before
+    /// their connections close (a call that was applied says so to its caller). A request that
+    /// arrives after this began is not begun.
     pub fn shutdown(mut self) {
         self.stop();
     }
