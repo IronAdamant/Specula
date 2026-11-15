@@ -104,8 +104,10 @@ reads the same words.
 - **`Ui::set_strings(Some(Arc<Strings>))`** switches every screen's language at once; the locale's
   faces take their font slots (`FontSet` keeps the base faces; the atlas keys glyphs by face, so
   nothing stale is drawn). `Strings::load_fonts` reads the faces a table names (bundled by name,
-  `system:<locale>` from the system's fallback faces, 10-20 MB for CJK) and must run off the
-  engine thread; faces are cached per process (at most 6).
+  `system:<locale>` from the system's CJK faces for that locale, 10-20 MB each;
+  `specula_text::load_cjk_face`) and must run off the engine thread; faces are cached per
+  process (at most 6). On a machine with no such face the slot is a problem that is said
+  ("no system face for ja on this machine"), never another face in its place.
 - **`ui_check`** gains `missing_key` (error: a `@key` the table lacks), `hardcoded` (warning, with a
   table: words a screen writes itself) and `CheckOpts::strings` (check in another language; the
   player's table is put back). `pseudo: true` with a table swaps in the pseudo-locale made from

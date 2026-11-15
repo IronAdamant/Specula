@@ -246,19 +246,26 @@ fn switching_between_two_locales_faces_lays_text_out_again() {
     assert_ne!(ra, switched, "the two faces differ in width");
 }
 
-/// Japanese text with the system's Japanese face for the "ui" slot: no missing glyphs (skips
-/// without a CJK face, as on CI).
+/// Japanese text with the system's Japanese face for the "ui" slot: no missing glyphs. On a
+/// machine with no CJK face (CI's), the slot is a problem that is said, and never a face that
+/// has none of the characters.
 #[test]
 fn a_cjk_locale_uses_the_systems_face() {
-    if specula_text::system_fallback_candidates("ja").is_empty() {
-        eprintln!("skipped: no system CJK face on this machine");
-        return;
-    }
     let ja = r#"{"format": "specula.strings.v1", "locale": "ja", "name": "日本語", "fonts": {"ui": "system:ja"}, "strings": {"hud.wave": "ウェーブ {wave}", "hud.menu": "メニュー"}}"#;
     let tables: Vec<Arc<Table>> = [EN, ja].iter().map(|t| Arc::new(Table::parse(t).unwrap())).collect();
     let catalog = specula_lingua::Catalog::build(&Locale::parse("ja").unwrap(), &tables.iter().map(|t| &**t).collect::<Vec<_>>()).unwrap();
     let (fonts, problems) = Strings::load_fonts(&catalog);
+    let Some((path, face)) = specula_text::load_cjk_face("ja") else {
+        assert!(fonts.iter().all(|(slot, _)| slot != "ui"), "no face stands in for the locale's");
+        assert!(problems.iter().any(|(slot, why)| slot == "fonts.ui" && why.contains("no system face for ja")), "{problems:?}");
+        eprintln!("skipped the layout: no system CJK face on this machine (the slot said so)");
+        return;
+    };
     assert!(problems.is_empty(), "{problems:?}");
+    if !"ウェーブメニュー".chars().all(|c| face.glyph_index(c).is_some()) {
+        eprintln!("skipped the layout: {} has no kana", path.display());
+        return;
+    }
     let mut ui = hud_ui();
     ui.set_strings(Some(Arc::new(Strings::new(catalog, Some(Arc::clone(&tables[0])), fonts))));
     let f = check_with(&mut ui, &["s"], &hud_state(), None, &[Target::deck()], &CheckOpts::default()).unwrap();

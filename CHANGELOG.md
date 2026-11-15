@@ -91,6 +91,23 @@ Built by one agent, lane by lane, each lane reviewed by a model that did not wri
   tree it was written in. In an LF tree one live check (`trace_check.py`) handed a module's source back with
   CRLF, having read and restored it as text: it handles bytes, a guard holds that form for every script
   that edits a source, and `scripts/live_checks.py` fails a check that leaves the checkout changed
+- **A locale's system face is one of its own or none** (`specula_text::load_cjk_face`,
+  `system_cjk_candidates`, `CjkScript`). The fallback files for a locale end with a symbol face, and "the
+  first that loads" was taken as the locale's: on a machine with no CJK font (CI's Linux image, the first
+  to run these tests off Windows) a table's `system:ja` slot got the symbol face, with every character
+  missing and nothing said. The slot is now a problem that is said, and in-world text looks in the
+  family's own files (on such a machine it has no fallback face where it had the symbol face; its CJK
+  characters report as missing either way). Linux had no file for Traditional Chinese (it looked for the Simplified faces first):
+  two are named. The tests say the order of families, which holds on every platform, and take a face
+  that has their characters
+- **CI runs every test binary and the gate says what a failed test said.** The fix for the first red run
+  got one package further on Linux and met the next failure, which the first had kept from running
+  (`cargo test` stops at the first binary that fails): CI passes `--no-fail-fast`, and its later steps run
+  whatever the tests did. On Windows one launcher test failed once in three runs and the gate gave its
+  name only, with the logs gone with the machine: a failed gate now ends with each failed test's own
+  message. The test took a hand-over file between its making and its writing, which the engine's watcher
+  never does (`open_waits`); with a delay put between the two it failed every time, in the 64 s CI's run
+  took, and it now waits as the watcher does
 
 ### M4, done (2026-10-28 to 2026-10-30)
 

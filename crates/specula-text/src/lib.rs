@@ -71,4 +71,4 @@ pub use layout::{
 };
 pub use outline::{Outline, Point, Segment};
 pub use raster::{rasterize_sdf, Bitmap, Rasterizer, MAX_BITMAP_DIM, MAX_SDF_DIM};
-pub use system::{find_system_ui_font, load_fallbacks, load_font_file, system_fallback_candidates, system_ui_font_candidates, LoadError};
+pub use system::{find_system_ui_font, load_cjk_face, load_fallbacks, load_font_file, system_cjk_candidates, system_fallback_candidates, system_ui_font_candidates, CjkScript, LoadError};

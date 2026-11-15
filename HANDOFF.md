@@ -638,6 +638,13 @@ answer where it applies. The owner decided everything else on 2026-10-22 (see "D
   lines looked fine; commits are chained on the exit codes of the suite, the guards and clippy.
 - **A check's own figure may not mean what its name says.** The harness's token count for a subagent was its
   context's size; a subagent's "no other context" was untrue. Look at the record.
+- **What only CI runs is found by CI, one push at a time, unless it shows everything at once.** M5 was
+  pushed green on this machine and was red twice on CI: first a newer Rust; then what that failure had
+  kept from running (three text tests that had never run on Linux, behind a package that failed first)
+  and a test that fails once in three runs on a busy machine, named without its message. CI now runs every
+  test binary (`--no-fail-fast`) and the gate ends with what each failed test said. No machine here runs
+  Linux: until one does, CI's Ubuntu job is the only run of the `cfg(not(windows))` side, and it has no
+  CJK font and no GPU.
 
 **Recommendations for the next session:**
 1. **Do not start M6 until the owner has talked its scope through.** They described it (2026-11-14) as

@@ -1090,8 +1090,18 @@ source of shaders.
   and keeps consoles reachable later.
 - [ ] **Linux**: X11, then the Wayland wire protocol; Vulkan surface.
   *Why after M2:* the render-hardware interface needs to settle first.
+  - [ ] ➕ **A locale's system face, loaded for real on Linux.** The Linux font files for the CJK families
+    (`specula_text::CjkScript::files`) are names from distributions' package lists: no machine that runs
+    the tests has one (CI's image has no CJK font, so those tests skip there and say so), and whether a
+    `.ttc` such as `wqy-microhei.ttc` loads has not been seen. On the owner's Arch machine, or with a font
+    installed in CI's Linux job, run `specula-text` and `specula-ui`'s tests and read which face each
+    locale got.
 - [ ] **macOS**: Cocoa via the objc runtime, plus a native Metal backend (shaders from the shader language above,
   compiled to MSL). No MoltenVK, to stay zero-dep.
+  - [ ] ➕ **Simplified and Traditional Chinese on macOS are one file** (`PingFang.ttc`, a collection): a
+    path alone cannot say which face of it a locale wants, so `zh-TW` and `zh-Hans` get the same one
+    until a candidate names a face of a collection too. The macOS file names are unverified as well
+    (none has been opened on a Mac).
 - [ ] **Handheld-class targets** (for example Steam Deck, Linux + Vulkan) as part of F3's low-end story.
 - [ ] **Mobile (after v1.0)**: Android first (Vulkan already, so the render backend carries over), then iOS on the
   Metal backend. Prepared by F6; the zero-dep linking and signing story is researched first.

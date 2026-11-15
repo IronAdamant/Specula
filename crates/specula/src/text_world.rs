@@ -193,7 +193,8 @@ fn fallback_settled(cjk: Cjk) -> bool {
 /// another program holds) is tried again twice, so one bad moment doesn't leave the text without
 /// its face for the rest of the run; every failure is traced with its file and code.
 fn load_fallback(cjk: Cjk) -> Option<Font> {
-    let candidates: Vec<_> = specula_text::system_fallback_candidates(cjk.locale()).into_iter().filter(|p| p.is_file()).collect();
+    // (The family's own files: the fallback chain ends with a symbol face, which is no CJK face.)
+    let candidates: Vec<_> = specula_text::system_cjk_candidates(cjk.locale()).into_iter().filter(|p| p.is_file()).collect();
     for attempt in 0..3u32 {
         let mut transient = false;
         for p in &candidates {

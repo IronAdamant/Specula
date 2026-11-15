@@ -804,7 +804,10 @@ mod tests {
             std::thread::scope(|s| {
                 let call = s.spawn(|| run(open(vec![]), &c));
                 let deadline = Instant::now() + specula_core::speed_budget(Duration::from_secs(5));
-                while !instances::open_file(&c.store.dir, 901).exists() {
+                // (As the engine's watcher waits: for a hand-over that is written. The file is
+                // made, then written; taken in between it is empty and names nothing, which is
+                // what this test did once in three runs on a busy machine.)
+                while !instances::open_waits(&c.store.dir, 901) {
                     assert!(Instant::now() < deadline, "the hand-over never arrived");
                     std::thread::sleep(Duration::from_millis(10));
                 }

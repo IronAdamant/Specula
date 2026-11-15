@@ -1043,6 +1043,17 @@ mod tests {
         assert!(f.has_gpos_kerning());
     }
 
+    /// The first of the system's Japanese-first CJK faces that has every character of `text`,
+    /// when this machine has one. (Asked of the whole fallback chain, a machine with no CJK
+    /// font answered with its symbol face: CI's Linux image, 2026-11-15.)
+    fn system_face_with(text: &str) -> Option<(std::path::PathBuf, Font)> {
+        crate::system::system_cjk_candidates("ja")
+            .into_iter()
+            .filter(|p| p.is_file())
+            .filter_map(|p| crate::system::load_font_file(&p).ok().map(|f| (p, f)))
+            .find(|(_, f)| text.chars().all(|c| f.glyph_index(c).is_some()))
+    }
+
     #[test]
     fn fallback_faces_fill_what_the_first_lacks() {
         let f = ui();
@@ -1059,7 +1070,7 @@ mod tests {
         let none = layout_rich(&FontSet::single(&tiny), "AxЖ", &[], &TextStyle::new(20.0));
         assert_eq!(none.missing, vec!['x', 'Ж']);
         // A system CJK face, when there is one.
-        match crate::system::load_fallbacks("ja", 1).pop() {
+        match system_face_with("墓地") {
             Some((path, cjk)) => {
                 let fb = [&cjk];
                 let set = FontSet { regular: &f, bold: None, fallback: &fb };
@@ -1144,14 +1155,14 @@ mod tests {
 
     #[test]
     fn cjk_wraps_between_ideographs_with_fallback() {
-        let Some((_, cjk)) = crate::system::load_fallbacks("ja", 1).pop() else {
+        let text = "静かな墓地に月が昇る。風が吹く。";
+        let Some((_, cjk)) = system_face_with(text) else {
             println!("skipped: no system CJK font");
             return;
         };
         let f = ui();
         let fb = [&cjk];
         let set = FontSet { regular: &f, bold: None, fallback: &fb };
-        let text = "静かな墓地に月が昇る。風が吹く。";
         let l = layout_rich(&set, text, &[], &TextStyle::new(20.0).with_max_width(100.0));
         assert!(l.lines.len() >= 3, "{}", l.lines.len());
         for line in &l.lines {

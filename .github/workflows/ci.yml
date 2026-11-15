@@ -26,11 +26,15 @@ jobs:
         with:
           components: clippy
       - name: Build
+        id: build
         run: cargo build --workspace --all-targets
+      # Every test binary runs, whatever fails before it: M5's first push failed here on one
+      # package, its fix on the next one, which the first failure had kept from running.
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
+      # (Clippy runs whatever the tests did, for the same reason; not on a tree that didn't build.)
       - name: Clippy (Linux, the cfg(not(windows)) side)
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && runner.os == 'Linux' }}
         run: cargo clippy --workspace --all-targets -- -D warnings
 
   android-check:
@@ -65,15 +69,18 @@ jobs:
           rustup default stable-x86_64-pc-windows-gnu
           rustc -vV
       - name: Build
+        id: build
         run: cargo build --workspace --all-targets
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
       # A gate must not pass by luck (AGENTS.md, "The gate"): the engine's library tests twice
       # more and once with every worker thread starting late. A test that fails in some runs and
-      # passes in others fails the job as flaky.
+      # passes in others fails the job as flaky, and the gate ends with what it said.
       - name: Repeat, and slow workers
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: python scripts/gate.py --only repeat,slow --repeat 2 --jobs 4 --no-gpu
       - name: Clippy
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: cargo clippy --workspace --all-targets -- -D warnings
 
   commit-messages:

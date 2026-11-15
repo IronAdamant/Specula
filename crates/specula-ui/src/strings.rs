@@ -131,7 +131,9 @@ impl Strings {
                     Some(b) => b.load().map_err(|e| format!("bundled face {n}: {e}")),
                     None => Err(format!("no bundled face \"{n}\" (ui, ui-bold, display)")),
                 },
-                FontSpec::System(l) => specula_text::load_fallbacks(l.as_str(), 1).into_iter().next().map(|(_, f)| f).ok_or_else(|| format!("no system face for {l} on this machine")),
+                // (The locale's own face or a problem said: never the symbol face that ends
+                // the fallback chain, which a machine with no CJK font still has.)
+                FontSpec::System(l) => specula_text::load_cjk_face(l.as_str()).map(|(_, f)| f).ok_or_else(|| format!("no system face for {l} on this machine")),
             };
             match loaded {
                 Ok(f) => {

@@ -161,7 +161,8 @@ run, so a gate passed on an older one has not tested what CI builds with (`RUSTU
 scripts/gate.py` runs it with a toolchain installed beside the default). It then reports which GPU adapters
 the tests will see, and fails without one unless told `--no-gpu` (GPU tests skip themselves cleanly, so a machine
 whose driver stopped loading would otherwise pass having tested nothing). It reads whole logs and keeps them
-(`<target>/gate/`); a run in which no test ran, or one past its time limit, fails.
+(`<target>/gate/`); a run in which no test ran, or one past its time limit, fails. A failed gate ends with
+what each failed test said, so a failure on CI, where the logs go with the machine, can be read.
 
 - **A gate must not pass by luck** (owner, 2026-11-12). A test that fails in some runs and passes in others is
   reported as FLAKY and fails the gate. A failure seen once is a bug until its cause is found: "it passes when run

@@ -217,8 +217,13 @@ depth), so the surface is shrunk instead of the geometry made cleverer:
 ## T4: scripts
 
 - **Latin, Cyrillic, Greek:** the bundled faces, with `kern` and GPOS pair kerning.
-- **Fallback per locale:** `system_fallback_candidates(locale)` orders the system's CJK faces by
-  the locale (Han unification: Japanese text must find a Japanese face first); without a locale,
+- **Fallback per locale:** `system_cjk_candidates(locale)` orders the system's CJK faces by
+  the locale (`CjkScript::order`; Han unification: Japanese text must find a Japanese face first),
+  and `load_cjk_face(locale)` is the first of them that loads, or nothing.
+  `system_fallback_candidates(locale)` is those and then a symbol face, which is not a face for
+  the locale: a machine with no CJK font still has it (taken as "the first that loads", it stood
+  in as the Japanese face with every character missing; CI's Linux image showed that on
+  2026-11-15). Without a locale,
   the characters pick it (kana: Japanese, hangul: Korean, other Han: Simplified Chinese). Fallback
   faces load on their own thread; until one is in, its characters report as missing.
 - **CJK atlas paging:** for interface text, the CPU atlas's pages are evicted

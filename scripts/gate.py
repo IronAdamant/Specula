@@ -34,6 +34,10 @@ is a bug whose cause hasn't been found yet, never "noise" (owner, 2026-11-12: a 
 by luck). The gate reads whole logs: a pass line at the end doesn't hide a failure in the middle.
 A run in which no test ran, or one that outlives its time limit, is a failure too.
 
+A failed gate ends with what each failed test said (its panic message, from the test's own
+output), not its name alone: on CI the logs it keeps are gone with the machine, and a test that
+fails once in three runs there can't be asked again.
+
 Standard library only. ASCII output. Honours CARGO_TARGET_DIR.
 """
 import argparse
@@ -57,6 +61,9 @@ RESULT_LINE = re.compile(r"^test result: \w+\. (\d+) passed; (\d+) failed; (\d+)
 RUNNING_LINE = re.compile(r"^test (.+?) has been running for over \d+ seconds")
 FN_LINE = re.compile(r"^\s*(?:pub(?:\([a-z]+\))? )?(?:async )?fn (\w+)\s*[(<]")
 GPU_LINE = re.compile(r"^gate-gpu: (\d+) adapter")
+SAID_LINE = re.compile(r"^---- (.+) stdout ----$")
+# Cargo's line before each test binary's output (in colour on CI).
+BINARY_LINE = re.compile(r"^(?:\x1b\[[0-9;]*m|\s)*(?:Running|Doc-tests)(?:\x1b\[[0-9;]*m)* (.+?)(?: \(.*\))?$")
 RUST_VERSION = re.compile(r"\b(\d+)\.(\d+)\.(\d+)\b")
 
 
@@ -106,6 +113,26 @@ def parse(log):
         if "(exit code: 0x" in line or "process didn't exit successfully" in line:
             broken.append(line.strip()[:160])
     return {"passed": passed, "failed": failed, "failed_tests": sorted(set(names)), "broken": broken[:8], "still_running": running[:8], "drivers_not_loaded": driver_notes(log)}
+
+
+def outputs(log, lines=25):
+    """What each failed test of a cargo test log printed (its panic message): {name: text}, at
+    most `lines` lines of 300 characters each, in ASCII (a message may quote any text). A name
+    that failed in two test binaries of one log is two entries, each with its binary."""
+    found, binary, key = {}, "", None
+    for line in log.splitlines():
+        b, m = BINARY_LINE.match(line), SAID_LINE.match(line)
+        if b:
+            binary, key = b.group(1), None
+        elif m:
+            key = (binary, m.group(1))
+            found.setdefault(key, [])
+        elif line.strip() == "failures:" or line.startswith("test result:"):
+            key = None
+        elif key is not None and line.strip() and len(found[key]) < lines:
+            found[key].append(line.rstrip()[:300].encode("ascii", "backslashreplace").decode("ascii"))
+    names = [name for _, name in found]
+    return {(name if names.count(name) == 1 else f"{name} [{where}]"): "\n".join(text) for (where, name), text in found.items()}
 
 
 def driver_notes(log):
@@ -219,6 +246,22 @@ def self_test():
     assert verdict(a, 0) == [] and verdict(b, 101), "a pass is a pass; a failure in the middle is not"
     assert flaky([a, b, a]) == {"a::flaky": 1}, flaky([a, b, a])
     assert flaky([b, b]) == {}, "failing every time isn't flaky: it is plainly failing"
+    # What a failed test said is kept with its name (CI, 2026-11-15: a test failed once in three
+    # runs and the gate gave its name only; the logs went with the machine).
+    told = ("running 2 tests\ntest a::b ... ok\ntest a::flaky ... FAILED\n\nfailures:\n\n---- a::flaky stdout ----\n\n"
+            "thread 'a::flaky' (7) panicked at src/a.rs:3:5:\nassertion `left == right` failed: the folder \u5893\n  left: None\n right: Some(1)\n"
+            "note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n---- a::other stdout ----\nsecond\n\n\nfailures:\n    a::flaky\n    a::other\n\n"
+            "test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out\nnot a test's line\n")
+    o = outputs(told)
+    assert list(o) == ["a::flaky", "a::other"] and o["a::other"] == "second", o
+    assert o["a::flaky"].splitlines()[1] == "assertion `left == right` failed: the folder \\u5893" and "left: None" in o["a::flaky"], o
+    assert "not a test's line" not in "".join(o.values()) and "a::flaky\n    a::other" not in "".join(o.values()), o
+    assert len(outputs(told, lines=2)["a::flaky"].splitlines()) == 2 and outputs(ok_log) == {}
+    # Review R1 (m5-ci2): one name failing in two binaries of one log is two entries.
+    two = ("     Running unittests src/lib.rs (target/debug/deps/a-1)\n---- tests::x stdout ----\nfirst\n\nfailures:\n    tests::x\n"
+           "\x1b[1m\x1b[92m     Running\x1b[0m tests/b.rs (target/debug/deps/b-2)\n---- tests::x stdout ----\nsecond\n---- tests::y stdout ----\nthird\n\nfailures:\n"
+           "   Doc-tests a\n---- src/lib.rs - f (line 3) stdout ----\nfourth\n")
+    assert outputs(two) == {"tests::x [unittests src/lib.rs]": "first", "tests::x [tests/b.rs]": "second", "tests::y": "third", "src/lib.rs - f (line 3)": "fourth"}, outputs(two)
     c = parse("error[E0599]: no method named `x`\nerror: could not compile `specula` (lib test) due to 1 previous error\n")
     assert len(c["broken"]) == 2 and c["passed"] == 0 and verdict(c, 101), c
     d = parse("error: test failed, to rerun pass `-p specula --lib`\n")
@@ -279,8 +322,15 @@ def main():
     out = Path(a.out) if a.out else target / "gate"
     out.mkdir(parents=True, exist_ok=True)
     j = ["-j", str(a.jobs)]
-    summary = {"schema": "specula.gate/v2", "steps": {}, "failures": []}
+    summary = {"schema": "specula.gate/v2", "steps": {}, "failures": [], "said": []}
     fail = summary["failures"].append
+
+    def heard(step, log):
+        # What the step's failed tests said, each message once (a test that fails the same way
+        # in three runs is said once, with the first run it failed in).
+        for name, text in outputs(log).items():
+            if not any(s["test"] == name and s["output"] == text for s in summary["said"]):
+                summary["said"].append({"step": step, "test": name, "output": text})
     lib = ["cargo", "test", *j, "-p", a.package, "--lib", "--", "--test-threads", str(a.threads)]
 
     print("rust (the toolchain this run uses)")
@@ -318,6 +368,7 @@ def main():
         print("tests (the whole workspace, once)")
         code, log, took = run("tests", ["cargo", "test", *j, "--no-fail-fast", "--workspace"], out, minutes=150)
         r = parse(log)
+        heard("tests", log)
         summary["steps"]["tests"] = {**r, "exit": code, "seconds": round(took)}
         print(f"  {r['passed']} passed, {r['failed']} failed")
         if r["drivers_not_loaded"]:
@@ -331,6 +382,7 @@ def main():
         for i in range(a.repeat):
             code, log, took = run(f"repeat-{i + 1}", lib, out, minutes=45)
             r = parse(log)
+            heard(f"repeat run {i + 1}", log)
             r["exit"] = code
             runs.append(r)
             for why in verdict(r, code):
@@ -345,6 +397,7 @@ def main():
         env = dict(os.environ, SPECULA_TEST_WORKER_DELAY_MS=str(a.slow_workers_ms))
         code, log, took = run("slow-workers", lib, out, env=env, minutes=60)
         r = parse(log)
+        heard("slow workers", log)
         r["exit"] = code
         summary["steps"]["slow"] = {**r, "seconds": round(took)}
         for why in verdict(r, code):
@@ -369,6 +422,7 @@ def main():
         for package, names in budgets.items():
             code, log, took = run(f"speed-{package}", ["cargo", "test", *j, "-p", package, "--", "--test-threads", "1", *names], out, env=env, minutes=45)
             r = parse(log)
+            heard(f"speed ({package})", log)
             step["packages"][package] = {**r, "exit": code, "named": len(names), "seconds": round(took)}
             for why in verdict(r, code):
                 fail(f"speed ({package}): {why}: over budget running alone, with nothing else of the gate's on the machine")
@@ -402,6 +456,12 @@ def main():
         print(f"GATE FAILED ({len(summary['failures'])}):")
         for f in summary["failures"]:
             print(f"  - {f[:400]}")
+        if summary["said"]:
+            print(f"what the failed tests said ({min(len(summary['said']), 12)} of {len(summary['said'])}):")
+            for s in summary["said"][:12]:
+                print(f"  [{s['step']}] {s['test']}")
+                for line in s["output"].splitlines():
+                    print(f"      {line}")
         print(f"logs: {out}")
         return 1
     print(f"GATE PASSED (logs: {out})")
