@@ -13,7 +13,8 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
   - **ROADMAP M6** (the items marked with the owner's words of 2026-11-14), M5's open follow-ups, and "What
     the exit proof and the comparison leave for M6" at the end of ROADMAP's M5.
   - **macOS is to be sized honestly first** (the owner hopes to release for Windows and macOS before
-    December): a Metal renderer, its window, input and audio, and module loading do not exist yet.
+    December; on 2026-11-16: "If not before december, then before Christmas. I can wait"): a Metal
+    renderer, its window, input and audio, and module loading do not exist yet.
   - **The owner's additions of 2026-11-16** (game systems as optional data; memory helpers for the
     agent that builds a game): below, and in ROADMAP M6. Noted only.
 - **M5 as built** (2026-11-06 to 2026-11-15):
@@ -102,10 +103,20 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     accessibility settings, the audio crate, the project store.
   - **Claude's notes for the scope talk.** The memory helpers serve M6's first focus item directly: the
     engine cost least where a game's own documents said how it was built. Captions and a player's
-    settings need a module-built game to reach interface screens first. One thing to ask: whether "act
-    out" means captions only, or also speech made by the engine, which has no speech synthesis. And this
-    is a large addition to a milestone that already holds macOS, export and the tooling in Rust: size it
-    against the first release.
+    settings need a module-built game to reach interface screens first. And this is a large addition
+    to a milestone that already holds macOS, export and the tooling in Rust.
+  - **The owner's answers, the same day.** On its size: "I agree that this is a large addition, but
+    this is something that needs to be sorted out now as many devs will be non-tech and not really
+    understand this." So it is M6's, not put off past the release; the scope talk sizes and orders it.
+    On the release: "If not before december, then before Christmas. I can wait." On speech, asked
+    whether the engine should make it: "Engine should only produce the [speech] IF AI agents like
+    yourself CAN produce speech. Otherwise, the AI agents without those capabilities cannot tell the
+    human devs that they can produce it or use it to produce speech." So what speech a project has is
+    read from the project and told to the developer in plain words, never taken from what an agent
+    says of itself. Claude cannot make speech (it writes text). What the engine could make with zero
+    dependencies is in the ROADMAP item, as a proposal: voiced babble under the captions (small), spoken
+    words from a formant synthesiser (a machine's voice, weeks, a language at a time), and natural
+    voices only as packs made outside.
 - **Owner, 2026-11-15 (on the Python in `scripts/`): the tooling becomes Rust in M6.** "For now, this is
   acceptable trade off but in M6, I'll want all of this in Rust." The gate, the audit's runner and every
   check are Python today (83 scripts, standard library only); nothing a player or a game's developer runs

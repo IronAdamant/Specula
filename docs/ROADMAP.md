@@ -1082,8 +1082,25 @@ saving the assets, similar to Unity and Unreal Engine and also having 2D/3D asse
     choices"). Read as: every spoken line has a caption an agent wrote (speaker, words, manner); a voice
     pack, where a studio has one, is sound by line that installs over the captions; the player chooses
     whether captions show. Builds on the timeline's subtitle track, the subtitle and caption settings
-    ([design/ACCESSIBILITY.md](design/ACCESSIBILITY.md)) and the string tables. To ask at the scope talk:
-    whether "act out" means captions only, or also speech the engine makes (it has no speech synthesis).
+    ([design/ACCESSIBILITY.md](design/ACCESSIBILITY.md)) and the string tables.
+    - **The owner's rule for speech** (2026-11-16, asked whether the engine should also make speech):
+      "Engine should only produce the [speech] IF AI agents like yourself CAN produce speech. Otherwise,
+      the AI agents without those capabilities cannot tell the human devs that they can produce it or
+      use it to produce speech." So an agent's word is never the source: what speech a project has is
+      read from the project (captions only; an installed voice pack; voices the engine makes) and shown
+      to the developer in plain words, and an agent with no way to make a line's sound leaves the line
+      captioned and says so. Claude writes text and cannot make speech; some agents have a speech tool,
+      most do not.
+    - **What the engine could make itself, with zero dependencies** (the owner asked "you have a way to
+      build that in?"; Claude's answer, not decided). One: voiced babble, a speaker's voice as synthesis
+      (pitch, pace, timbre, mood) that sounds while the caption shows, in no language, so it needs no
+      translation; small, on the synthesis the engine has. Two: spoken words from a formant
+      synthesiser, intelligible and plainly a machine, never a human actor; English first, and each
+      further language needs its own pronunciation rules; weeks of work, and whether it is worth it is to
+      be decided. Three: natural-sounding speech needs a trained voice model, whose weights are someone
+      else's data under a licence; not proposed for the engine, it arrives as a voice pack made outside.
+    - **No agent can hear.** An agent can measure a line's sound (its length, its loudness, that it is
+      not silent) and cannot judge whether it sounds right: that is the developer's, by listening.
   - **Music the same way**: a game's music is a set an agent generates (the engine's synthesis, heard
     and measured with `audio_preview`) or a pack people bring (streamed Ogg), changed without touching
     the game.
@@ -1102,8 +1119,13 @@ saving the assets, similar to Unity and Unreal Engine and also having 2D/3D asse
     Memory kept with the project is the same lever. *What it needs first:* a module-built game reaching
     interface screens, strings and saved settings (above); without that, captions and a player's choice
     to hide them have nowhere to live. *Said plainly:* this is a large addition to a milestone that
-    already holds macOS, export and the tooling in Rust; size it against the first release at the scope
-    talk.
+    already holds macOS, export and the tooling in Rust. The owner, told so (2026-11-16): "I agree that
+    this is a large addition, but this is something that needs to be sorted out now as many devs will be
+    non-tech and not really understand this", and on the first release: "If not before december, then
+    before Christmas. I can wait." So it is M6's and not put off past the release; the scope talk sizes
+    it and orders it. What it asks of the design: a developer who is not technical is told in plain
+    words what their game has and has not (a story with an ending out of reach, lines with no voice),
+    by the engine, from the project.
 - [ ] **Ship the owner's original game.**
 - [ ] ➕ **Cloud swarms, tested** (owner, 2026-10-22): per-agent auth tokens, then thorough tests with real cloud
   swarms from several vendors (Claude, Grok Build, OpenAI ...).
