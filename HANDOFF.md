@@ -108,6 +108,25 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     the engine does not yet pay at small and medium sizes; whether it pays on a large game is not
     measured. Two M6 items decide much of it and belong early in the scope talk: a project gets its SDK
     from the engine, and a module-built game reaches interface screens, strings and saved settings.
+  - **Two things the owner wants talked through before M6 starts** (raised while M5's last commit took
+    four pushes to go green on CI; nothing has been changed for either):
+    - **The Rust version.** "Never thought that even a basic update can cause much changes and
+      requirements to shift. This is now something I need to discuss with you before we work on M6."
+      CI installs the newest stable on every run and nothing pins one; the engine runs Cargo and reads its
+      output folders, so a change in Cargo is a change in the engine. Claude's lean, not decided: pin a
+      version in the repository and CI, move to a newer one on purpose through the gate, and keep a
+      scheduled job on the newest that warns without blocking.
+    - **How long verifying takes.** "Someone will be very concerned when they're pressed on project
+      time. I'm already suspecting we got too many test items before we can ship games properly." Measured
+      that day: the tests themselves run in about 2 minutes; CI compiles from nothing on every run (10
+      minutes on Linux, 17 to 25 on Windows); the gate is about 25 minutes for each Rust version; the
+      full audit about an hour; and each fix, however small, took a whole round. Claude's lean, not
+      decided: keep CI's build between runs, size the gate to what changed (docs, tests, engine), gate on
+      one Rust version, bring a Linux machine into the local loop, and hold to this: changing the engine
+      needs all of it, making a game with the engine must not.
+  - **`docs/M5_CHECKLIST.md` is filled in** (2026-11-15, at the owner's request): 8 of its 15 items are
+    verified by checks and ticked; 7 have a part left that only the owner can do, each said there. The
+    short demo recording of the agent tools is no longer wanted.
 
 - **Owner, 2026-11-14 evening (on remote, on the comparison's first numbers):**
   - **M5 is foundations; M6 is where it is made to pay.** "That's where we'll be looking at scalability in
