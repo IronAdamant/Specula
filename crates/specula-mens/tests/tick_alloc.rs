@@ -45,7 +45,7 @@ struct Quiet {
 
 impl Host for Quiet {
     fn condition(&mut self, _: &str, _: &Json, _: &Blackboard) -> bool {
-        self.tick % 2 == 0
+        self.tick.is_multiple_of(2)
     }
     fn action(&mut self, _: usize, _: &str, _: &Json, phase: Phase, _: &mut Blackboard) -> Status {
         if phase == Phase::Abort {

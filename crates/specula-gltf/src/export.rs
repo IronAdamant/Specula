@@ -67,7 +67,7 @@ struct Out {
 
 impl Out {
     fn view(&mut self, bytes: &[u8], target: Option<u32>) -> usize {
-        while self.bin.len() % 4 != 0 {
+        while !self.bin.len().is_multiple_of(4) {
             self.bin.push(0);
         }
         let mut v = vec![("buffer", Json::from(0u32)), ("byteOffset", Json::from(self.bin.len())), ("byteLength", Json::from(bytes.len()))];

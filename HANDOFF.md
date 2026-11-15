@@ -48,6 +48,39 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
   - **The raw recordings of 2026-11-12:** "Keep. This will be for release discussion."
   - **The seven checklist items left for the owner:** none has failed ("No, but I'm not gonna worry
     about it. I'm focused on completing everything").
+  - **The Mac is last, and the laptop's parts go together** (later the same day): "Put Mac to last. This
+    is a separate problem and seperate development and will need to be handled by a separate instance
+    based in Mac system. Everything else to be done together." ROADMAP M6's order is renumbered for it:
+    twelve parts on the laptop, then macOS as part 13, then the release. The shader language and the
+    renderer's inner interface, which only the Mac and the end of GLSL wait for, moved to the end of the
+    laptop's list (Claude's order). *Claude's reading:* the release is still Windows and macOS together.
+  - **One more part: a library of sample assets, for any game** (the same message; "I'm actually
+    thinking on this. But add 1 more part here"): animals, fantasy creatures such as dragons, the
+    undead, robots and machines, and realistic people, each animated, all by code, shown in 2D and 3D,
+    "separate from [Sepulcra] but ... it's own thing". "The primary reason is to help you and other AI
+    agents build stuff and reuse, not just completely re-create. Think of it like a base template as
+    I'm widening the path of resistance for you and other AI agents." It is ROADMAP M6's part 5, after
+    the form tools it is built with; the item there has Claude's thoughts (body plans and not single
+    models; the look comes from the project's style; motion by plan; 2D from the same source; said
+    plainly, no fur or feathers until the renderer has them). Not designed.
+  - **Widened into the libraries, done right and not rushed** (later again): "Do your best as you can
+    in realistic. I'm very much willing to allow M6 to take a long time. But I need this done right,
+    not rushed." "The main point is, we get model library, terrain library, assets library, water
+    library, grass blades. etc. ALL written in Rust ... Like having unique trees, not copy-pasted
+    characters as humans have done. We're in agentic era." People get faces with expressions and hair
+    ("Something like Skyrim-like"), with humanoid aliens derived from them; faces are a lane for a
+    separate instance (a base male and a base female face, and hairstyles). "Renderer can come later,
+    ONCE you have data for this." The owner offered Grok for the research; the list of what to bring
+    back, and how, is [docs/research/LIBRARY_RESEARCH_BRIEF.md](docs/research/LIBRARY_RESEARCH_BRIEF.md).
+    What comes back is checked against its sources before it is used. Part 5 grows to about 40,000 to
+    60,000 lines and the laptop's list runs to February at the earliest; the owner accepts the time.
+  - **Recordings of M6's work, failures included** (the owner, the same day, before going away with
+    the 49" monitor off): "Feel free to record success and failures in videos. May publish them for X
+    and LinkedIn (At release stage. Don't hide failures). We'll be editing this video for the release
+    stage." So live runs worth showing are recorded, of the engine's window only
+    (`scripts/window_recorder.py`, never the screen), kept in the gitignored `gallery-full/` with what
+    each shows, and a run that failed is kept like one that passed. Nothing is published before the
+    release discussion.
   - **Rust only.** "Anything Python in here should be converted to Rust. The only programming language
     used here should be Rust. Zero-dependency is non-negotiable. So I'm willing for this to take
     time." This replaces "new checks may still be Python" (2026-11-15): **no new Python from this
@@ -77,11 +110,10 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       puts first; and a module-built game reaching interface screens, strings and saved settings.
     - *After M6:* Linux; the ladder of light and the rest of the research note; the owner's large
       commercial game; mobile; whatever else matching AAA tools takes.
-    - *How a change is verified until the talk decides otherwise:* engine or game code passes the gate
-      on the newest stable Rust (AGENTS.md, "The gate"), and what touches the window, the GPU or the
-      tools also passes the live checks; a change to documents only runs the three document guards
-      (`cargo test -p specula --test docs_links --test private_paths --test line_endings`), as every
-      documents commit of 2026-11-15 and 16 did.
+    - *How a change is verified* (since M6's first work, 2026-11-16): `cargo run -p specula-examen --
+      gate`, which sizes itself to what changed (AGENTS.md, "The gate": documents take seconds, the
+      engine takes everything), on the Rust the repository pins; what touches the window, the GPU or
+      the tools also passes the live checks (`cargo run -p specula-examen -- live`).
   - **The owner's list** of what only a person can judge at the window: [docs/M5_CHECKLIST.md](docs/M5_CHECKLIST.md).
     Nothing in M5 waited on it; what fails there is M6's.
   - **M5's measured baseline and why** ([docs/design/LEVERAGE.md](docs/design/LEVERAGE.md)): the numbers M6 is
@@ -116,7 +148,7 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
   - **Merged:** map 1, audio, timelines, the render follow-ups, the UI sight tools, the editor's core, text,
     the gameplay modules, localisation, the input monitor, accessibility with Sepulcra's shell, tool kits by job,
     GPU work off the engine thread, the editor's Swarm tab with "highlight and ask", the editor's draw tools
-    (sculpt, splat, vertex paint, sketched paths), the gate (`scripts/gate.py`, AGENTS.md "The gate"), and the
+    (sculpt, splat, vertex paint, sketched paths), the gate (then `scripts/gate.py`, now `tools/examen`; AGENTS.md "The gate"), and the
     launcher (owner, 2026-11-13: the engine is openable, lists the projects worked on with the last one first,
     resumes it or opens another from the start screen or by asking an agent, and is found and called from a
     terminal: `specula projects`, `open`, `new`, `list`, `tools`, `call`, `stop`; one engine a project;
@@ -171,7 +203,7 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       (the only place the build service trusts it); the harness copies it there (ROADMAP M6).
   - **The exit proof** is `scripts/m5_exit.py` (ROADMAP M5, "Exit proof"): assets made once, saved, reopened
     and reused, 2D and 3D, in a project outside this repository, on both adapters. **The final audit** is
-    `scripts/live_checks.py`: every live check, one after the other, each on its own ports (70 runs, all
+    the live checks' runner (then `scripts/live_checks.py`, now `cargo run -p specula-examen -- live`): every live check, one after the other, each on its own ports (70 runs, all
     passing on 2026-11-15, after thirteen checks that had gone stale were brought back and one engine
     defect it found was fixed: a capture's forced level, `sight_frame {lod}`, is uploaded for it); run it after
     anything that touches the engine's window, GPU or tools.
@@ -770,7 +802,8 @@ These held all through M5 and were written down nowhere in the repository until 
 - **Push only when the owner asks**, and only what that go-ahead named. A plain push of `main`; never a
   forced one.
 - **Never run `rustup update` or change the default toolchain.** It is the owner's (1.99.1 when this was
-  written). Install another version beside it and choose it with `RUSTUP_TOOLCHAIN`.
+  written). The repository's `rust-toolchain.toml` pins its own version (1.100.0), which rustup installs
+  beside the default and uses in this checkout only.
 - **Never delete** `target/m4-exit-approved/` and `target/m3-exit/` (the exit evidence the owner
   approved), `gallery-full/` (the gallery's full-size originals, and the raw recordings of 2026-11-12
   the owner has yet to decide on), or `.specula-cache/`. A `cargo clean` in the main checkout takes the
@@ -815,7 +848,7 @@ These held all through M5 and were written down nowhere in the repository until 
 - **An executable keeps the folder it was built from.** A game finds its assets there. A target folder moved
   to another worktree still holds the old worktree's executables until they are built again: M5's final audit
   ran 17 checks into failures on such a build (no recipes, no timelines, no grass) before it built its own.
-  `scripts/live_checks.py` builds first; do the same before any live check in a new worktree.
+  The live checks' runner (`examen live`) builds first; do the same before any live check in a new worktree.
 - **Two style files, two jobs.** `style.json` is what models are built under (materials and palette for
   recipes): the nearest one from a recipe's folder up to the assets root, or the file `--style` names. A
   recipe's `model_build` is refused until there is one, and a new project has none yet (ROADMAP M6).
@@ -837,15 +870,18 @@ These held all through M5 and were written down nowhere in the repository until 
   person's project, common for an agent's scratch folder. The engine names it (`logic_build` answers
   `build_path_too_long` with the file, its length and the limit); `--cache DIR` in a shorter folder, or a
   shallower project, builds. M5's last audit met it as one failed check out of 70, in an output folder
-  one character deeper than the audit before it; `scripts/live_checks.py` refuses an `--out` that deep
+  one character deeper than the audit before it; the runner (`examen live`) refuses an `--out` that deep
   before it starts. Give an audit a short folder.
-- **CI builds with the newest stable Rust; this machine's may be older.** The push that ended M5 passed the
-  gate here on 1.99.1 and failed CI on 1.100.0, released six days before: its Cargo lays the target folder out
-  differently (`build/<package>/<hash>/out/` where `deps/` was), the module build service looked for a
-  module's dep-info in the old place, and every module build was refused. The engine reads both layouts now,
-  and the gate fails when a newer stable is out (`--older-rust` to go on knowingly). A version installed
-  beside the default (`rustup toolchain install 1.100.0`) is run with `RUSTUP_TOOLCHAIN=1.100.0`. The fix was
-  gated with both, with every live check on 1.100.0 and the fourteen that build modules on 1.99.1 as well.
+- **A newer Rust is a change, so the version is pinned** (`rust-toolchain.toml`, 1.100.0 since 2026-11-16;
+  AGENTS rule 16). Why: the push that ended M5 passed the gate here on 1.99.1 and failed CI on 1.100.0,
+  released six days before: its Cargo lays the target folder out differently (`build/<package>/<hash>/out/`
+  where `deps/` was), the module build service looked for a module's dep-info in the old place, and every
+  module build was refused. The engine reads both layouts now. CI used to install whatever stable was
+  newest; it now installs the pinned version, and a weekly job tries the newest and blocks nothing.
+- **The declared minimum Rust changes what clippy asks for.** Clippy leaves out a suggestion that needs a
+  newer Rust than `rust-version` declares. Moving that from 1.85 to the pinned 1.100.0 switched two lints
+  on at 153 places (`is_multiple_of`; `as_chunks` for `chunks_exact` with a constant size), in code nobody
+  had touched: 134 fixed by `cargo clippy --fix`, 21 by hand. Expect the same at every move of the pin.
 - **Clippy 1.99 flags thread-locals that are already `const` when the standard library's sources are
   installed.** On windows-gnu, with the `rust-src` component in the toolchain (an editor's rust-analyzer
   brings it), `cargo clippy` on 1.99.1 fails `specula-core` with "initializer for `thread_local` value can
@@ -862,7 +898,7 @@ These held all through M5 and were written down nowhere in the repository until 
   fresh one. A checkout made before 2026-11-15 keeps its CRLF files until git rewrites them; tests must pass
   with either. A script that edits a tracked source and puts it back handles bytes: Python writes text as
   CRLF here, and `trace_check.py` handed `games/ambulo/src/lib.rs` back changed while its own comparison,
-  made as text, passed. `live_checks.py` now fails a check that leaves the checkout changed (git's status
+  made as text, passed. The runner now fails a check that leaves the checkout changed (git's status
   after each one).
 - **Python on Windows reads text in the system's code page.** Every script names `encoding="utf-8"`, for
   files and for processes read as text (`script_settings_guard.rs` holds it).

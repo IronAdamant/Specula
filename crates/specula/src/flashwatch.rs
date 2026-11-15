@@ -800,7 +800,7 @@ mod tests {
 
     /// A 10 Hz on/off phase (3 frames on, 3 off at 60 a second).
     fn on(i: u32) -> bool {
-        (i / 3) % 2 == 0
+        (i / 3).is_multiple_of(2)
     }
 
     #[test]

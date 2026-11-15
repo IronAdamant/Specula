@@ -48,7 +48,7 @@ fn saves_all_through_a_run_restore() {
         let before = a.save_state();
         a.step(&[]);
         t += 1;
-        if t % 150 == 0 || a.outcome().is_some() || (a.state().wave == waves && !saw_last) {
+        if t.is_multiple_of(150) || a.outcome().is_some() || (a.state().wave == waves && !saw_last) {
             saw_last |= a.state().wave == waves;
             Sim::restore(Arc::clone(&rules), &Natives::new(), &a.save_state()).unwrap_or_else(|e| panic!("tick {}: {e}", a.tick()));
             Sim::restore(Arc::clone(&rules), &Natives::new(), &before).unwrap_or_else(|e| panic!("the tick before {}: {e}", a.tick()));
@@ -77,7 +77,7 @@ fn the_whole_game_saved_anywhere_continues_identically() {
             k += 1;
         }
         a.step(&now);
-        if a.tick() % 2_500 == 0 {
+        if a.tick().is_multiple_of(2_500) {
             let bytes = a.save_state();
             let mut b = Sim::restore(Arc::clone(&rules), &sepulcra::lex::natives(), &bytes).unwrap();
             assert_eq!(b.hash(), a.hash(), "tick {}", a.tick());

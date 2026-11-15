@@ -72,11 +72,10 @@ impl StableHasher {
     /// Length-prefixed, so `("ab", "c")` and `("a", "bc")` differ.
     pub fn write_bytes(&mut self, bytes: &[u8]) {
         self.mix(bytes.len() as u64 ^ 0xb5_0000_0000_0000);
-        let mut chunks = bytes.chunks_exact(8);
-        for c in &mut chunks {
-            self.mix(u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]));
+        let (chunks, rest) = bytes.as_chunks::<8>();
+        for c in chunks {
+            self.mix(u64::from_le_bytes(*c));
         }
-        let rest = chunks.remainder();
         if !rest.is_empty() {
             let mut last = [0u8; 8];
             last[..rest.len()].copy_from_slice(rest);

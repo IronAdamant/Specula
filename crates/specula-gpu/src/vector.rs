@@ -646,7 +646,7 @@ pub fn fill(contours: &[Contour], color: [u8; 4], aa: bool, mesh: &mut ShapeMesh
     }
     reserve(mesh, pos.len() * if aa { 2 } else { 1 })?;
     let mut triangles: Vec<[u32; 3]> = Vec::new();
-    for (i, _) in rings.iter().enumerate().filter(|(i, _)| depth[*i] % 2 == 0) {
+    for (i, _) in rings.iter().enumerate().filter(|(i, _)| depth[*i].is_multiple_of(2)) {
         // Holes: odd rings whose innermost container is ring i.
         let mut holes: Vec<usize> = (0..rings.len()).filter(|&h| depth[h] == depth[i] + 1 && in_ring(&rings, &boxes, i, probe[h])).collect();
         holes.sort_by(|&a, &b| {

@@ -252,7 +252,7 @@ mod tests {
             st.push(if i % 2 == 0 { 0.5 } else { -0.5 } * 0.0);
         }
         let out = resample(&st, 2, 22_050, 48_000);
-        for f in out.chunks_exact(2).skip(10).take(out.len() / 2 - 20) {
+        for f in out.as_chunks::<2>().0.iter().skip(10).take(out.len() / 2 - 20) {
             assert!((f[0] - 1.0).abs() < 1e-3 && f[1].abs() < 1e-6);
         }
     }

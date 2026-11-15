@@ -454,7 +454,7 @@ pub fn normal_texels_apron(heights: &[f32], columns: u32, rows: u32, cell: [f32;
 /// `(columns', rows', values)`. A coarse copy whose level 0 is the full grid's level
 /// `log2(factor)`.
 pub fn subsample<T: Copy>(values: &[T], columns: u32, rows: u32, factor: u32) -> Option<(u32, u32, Vec<T>)> {
-    if factor == 0 || (columns - 1) % factor != 0 || (rows - 1) % factor != 0 || values.len() != (columns * rows) as usize {
+    if factor == 0 || !(columns - 1).is_multiple_of(factor) || !(rows - 1).is_multiple_of(factor) || values.len() != (columns * rows) as usize {
         return None;
     }
     let (c, r) = ((columns - 1) / factor + 1, (rows - 1) / factor + 1);

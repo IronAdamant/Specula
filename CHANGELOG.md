@@ -11,6 +11,30 @@ Specula is now a zero-dependency, agent-native game engine (Rust `std` + OS/driv
 See [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md). Item-by-item detail, with the reasoning for each, is in
 [docs/ROADMAP.md](docs/ROADMAP.md); the timeline of decisions is under [Project history](#project-history) below.
 
+### M6, under way (from 2026-11-16)
+
+The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the answers are at the top of
+[HANDOFF.md](HANDOFF.md); the fourteen parts, their order and their likely sizes are in
+[docs/ROADMAP.md](docs/ROADMAP.md), M6).
+
+- **Part 1, verifying faster:**
+  - **The Rust version is pinned** (`rust-toolchain.toml`, 1.100.0), is the declared minimum in place of
+    1.85, and is what CI installs, by number; a test holds the three together. A weekly job tries the newest
+    stable from nothing and blocks nothing. Declaring the pinned version as the minimum switched two clippy
+    lints on at 153 places in code nobody had touched (`is_multiple_of`; `as_chunks` for `chunks_exact`
+    with a constant size): all taken.
+  - **The gate and the live checks' runner are Rust** (`tools/examen`, `specula-examen`), the first of the
+    repository's tooling to leave Python (owner, 2026-11-16: "The only programming language used here should
+    be Rust"). Each was proved beside its Python original before that went: the same reading of every kept
+    log, the same report of a failure put in on purpose, the same plan for all 70 runs of the live checks.
+  - **The gate is sized to what changed**: documents that no test reads take seconds, tests and tooling take
+    the tests once and clippy, and the engine, a game, or any path the tool does not know takes everything.
+    `--all` runs everything.
+  - **CI** runs the document guards on every push and the builds only when something else changed, keeps
+    its build folder between runs, and builds without debug information (measured on the development
+    laptop: a workspace build from nothing in 337 s and 2.6 GB, against at least 442 s and 9.7 GB with it).
+    None of this has run on CI yet.
+
 ### M5, done (2026-11-06 to 2026-11-15)
 
 Built by one agent, lane by lane, each lane reviewed by a model that did not write it and passed through

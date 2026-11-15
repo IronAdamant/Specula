@@ -56,7 +56,7 @@ fn read(g: &Glb, ai: usize, errs: &mut Vec<String>) -> Vec<Vec<f64>> {
     let n = dims(a.get("type").and_then(Json::as_str).unwrap_or(""));
     let v = &arr(&g.doc, "bufferViews")[u(a.get("bufferView"))];
     let off = u(v.get("byteOffset")) + u(a.get("byteOffset"));
-    if cs == 0 || off % cs != 0 {
+    if cs == 0 || !off.is_multiple_of(cs) {
         errs.push(format!("accessor {ai} misaligned"));
         return Vec::new();
     }
@@ -189,7 +189,7 @@ fn check(bytes: &[u8]) -> Vec<String> {
                 if !matches!(view.get("target").map(|t| u(Some(t))), None | Some(34962)) {
                     errs.push(format!("{k} view target"));
                 }
-                if (u(view.get("byteOffset")) + u(accs[ai].get("byteOffset"))) % 4 != 0 {
+                if !(u(view.get("byteOffset")) + u(accs[ai].get("byteOffset"))).is_multiple_of(4) {
                     errs.push(format!("{k} not 4-byte aligned"));
                 }
                 if users[&u(accs[ai].get("bufferView"))] > 1 && view.get("byteStride").is_none() {
@@ -219,7 +219,7 @@ fn check(bytes: &[u8]) -> Vec<String> {
                 errs.push("index view target".into());
             }
             let idx = read(&g, ia, &mut errs);
-            if idx.iter().any(|x| x[0] as usize >= nv) || idx.len() % 3 != 0 || (u(accs[ia].get("componentType")) == 5123 && idx.iter().any(|x| x[0] == 65535.0)) {
+            if idx.iter().any(|x| x[0] as usize >= nv) || !idx.len().is_multiple_of(3) || (u(accs[ia].get("componentType")) == 5123 && idx.iter().any(|x| x[0] == 65535.0)) {
                 errs.push("bad indices".into());
             }
         }
@@ -434,7 +434,7 @@ fn the_checker_finds_defects() {
     let n = accs[1].get("count").and_then(Json::as_u64).unwrap();
     accs[1].set("count", Json::from(n + 1)); // NORMAL now overruns its view
     let mut text = doc.to_string().into_bytes();
-    while text.len() % 4 != 0 {
+    while !text.len().is_multiple_of(4) {
         text.push(b' ');
     }
     let mut out = glb[..12].to_vec();

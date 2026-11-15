@@ -644,7 +644,7 @@ fn master_fx(fx: &[Fx], cx: &Ctx, rate: f64, channels: usize, buf: &mut [f32]) {
             let mut r = ReverbChannel::new(rate, dsp::REVERB_STEREO_SPREAD);
             let wet1 = 3.0 * mix * (width / 2.0 + 0.5);
             let wet2 = 3.0 * mix * ((1.0 - width) / 2.0);
-            for fr in buf.chunks_exact_mut(2) {
+            for fr in buf.as_chunks_mut::<2>().0 {
                 let input = 0.5 * (fr[0] + fr[1]);
                 let (ol, or) = (l.process(input, p.feedback, p.damp), r.process(input, p.feedback, p.damp));
                 fr[0] = fr[0] * (1.0 - mix) + ol * wet1 + or * wet2;
@@ -654,7 +654,7 @@ fn master_fx(fx: &[Fx], cx: &Ctx, rate: f64, channels: usize, buf: &mut [f32]) {
         }
         let mut sl = FxState::new(f, cx, rate, 0);
         let mut sr = FxState::new(f, cx, rate, 0);
-        for (i, fr) in buf.chunks_exact_mut(2).enumerate() {
+        for (i, fr) in buf.as_chunks_mut::<2>().0.iter_mut().enumerate() {
             let t = i as f64 / rate;
             fr[0] = sl.process(fr[0], t);
             fr[1] = sr.process(fr[1], t);

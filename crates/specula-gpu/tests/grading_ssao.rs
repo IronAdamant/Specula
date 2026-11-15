@@ -123,7 +123,7 @@ fn luma(p: [u8; 4]) -> i32 {
 fn diff(a: &[u8], b: &[u8]) -> (usize, u8) {
     let mut n = 0;
     let mut most = 0;
-    for (p, q) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
+    for (p, q) in a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0) {
         let d = (0..4).map(|k| p[k].abs_diff(q[k])).max().unwrap();
         n += (d > 0) as usize;
         most = most.max(d);

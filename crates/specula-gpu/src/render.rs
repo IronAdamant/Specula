@@ -450,7 +450,7 @@ const INITIAL_RECORDS: u32 = 256;
 
 // Records follow the frame data at an aligned offset; push constants stay within the 128 bytes
 // every device guarantees.
-const _: () = assert!(RECORDS_OFFSET >= FRAME_DATA_SIZE && RECORDS_OFFSET % 256 == 0);
+const _: () = assert!(RECORDS_OFFSET >= FRAME_DATA_SIZE && RECORDS_OFFSET.is_multiple_of(256));
 const _: () = assert!(size_of::<PushConstants>() <= 128);
 // 2D item records start at a whole record unit after the bones, one unit reserved per item.
 const _: () = assert!(size_of::<ItemRecord>() as u64 <= RECORD_SIZE);
@@ -1758,7 +1758,7 @@ pub struct FramePipelines {
 }
 
 fn spirv_words(bytes: &[u8]) -> Vec<u32> {
-    bytes.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
+    bytes.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
 }
 
 fn create_shader(dev: &Device, spv: &[u8], what: &str) -> Result<VkShaderModule, GpuError> {

@@ -241,7 +241,7 @@ pub fn mesh_hit(origin: P3, dir: P3, positions: &[P3], indices: &[u32]) -> Optio
         return None;
     }
     let mut best: Option<f32> = None;
-    for tri in indices.chunks_exact(3) {
+    for tri in indices.as_chunks::<3>().0 {
         let (Some(a), Some(b), Some(c)) = (positions.get(tri[0] as usize), positions.get(tri[1] as usize), positions.get(tri[2] as usize)) else { continue };
         let (e1, e2) = (sub(*b, *a), sub(*c, *a));
         let p = cross(dir, e2);

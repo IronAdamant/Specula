@@ -186,7 +186,7 @@ pub fn run(sim: &mut Sim, spec: &RunSpec) -> Json {
             note(now, names[i], &e, &mut rejections);
         }
         applied += batch.len();
-        if every > 0 && !spec.watch.is_empty() && (sim.tick() - start) % every == 0 && samples.len() < MAX_SAMPLES {
+        if every > 0 && !spec.watch.is_empty() && (sim.tick() - start).is_multiple_of(every) && samples.len() < MAX_SAMPLES {
             sample(sim, &mut samples);
         }
     }

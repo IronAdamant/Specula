@@ -189,7 +189,7 @@ fn resize(img: &Image, width: u32, height: u32) -> Image {
     let mut mid = vec![0f32; dw * sh * 4];
     let mut row = vec![0f32; sw * 4];
     for y in 0..sh {
-        for (px, out) in img.rgba[y * sw * 4..(y + 1) * sw * 4].chunks_exact(4).zip(row.chunks_exact_mut(4)) {
+        for (px, out) in img.rgba[y * sw * 4..(y + 1) * sw * 4].as_chunks::<4>().0.iter().zip(row.as_chunks_mut::<4>().0) {
             let a = px[3] as f32 / 255.0;
             out[0] = lut[px[0] as usize] * a;
             out[1] = lut[px[1] as usize] * a;
@@ -217,7 +217,7 @@ fn resize(img: &Image, width: u32, height: u32) -> Image {
         }
     }
     let mut rgba = vec![0u8; dw * dh * 4];
-    for (px, out) in acc.chunks_exact(4).zip(rgba.chunks_exact_mut(4)) {
+    for (px, out) in acc.as_chunks::<4>().0.iter().zip(rgba.as_chunks_mut::<4>().0) {
         let a = px[3];
         if a > 1e-6 {
             out[0] = linear_to_srgb(px[0] / a);
@@ -232,7 +232,7 @@ fn resize(img: &Image, width: u32, height: u32) -> Image {
 /// The image composited over [`BACKGROUND`] (alpha 255 everywhere), for JPEG.
 fn flatten(img: &Image) -> Image {
     let mut rgba = img.rgba.clone();
-    for px in rgba.chunks_exact_mut(4) {
+    for px in rgba.as_chunks_mut::<4>().0 {
         let a = px[3] as u32;
         if a < 255 {
             for c in 0..3 {
@@ -258,7 +258,7 @@ fn psnr_floor(quality: u8) -> f64 {
 fn psnr(a: &Image, b: &Image) -> f64 {
     let mut sum = 0f64;
     let mut n = 0u64;
-    for (x, y) in a.rgba.chunks_exact(4).zip(b.rgba.chunks_exact(4)) {
+    for (x, y) in a.rgba.as_chunks::<4>().0.iter().zip(b.rgba.as_chunks::<4>().0) {
         for c in 0..3 {
             let d = x[c] as f64 - y[c] as f64;
             sum += d * d;
@@ -499,7 +499,7 @@ fn stats(args: &[String]) -> Result<(), Failure> {
         let n = (img.width as usize * img.height as usize).max(1);
         let luma: Vec<f64> = img
             .rgba
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .map(|p| (0.2126 * p[0] as f64 + 0.7152 * p[1] as f64 + 0.0722 * p[2] as f64) * p[3] as f64 / 255.0)
             .collect();
         let mean = luma.iter().sum::<f64>() / n as f64;

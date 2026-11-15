@@ -93,7 +93,7 @@ pub fn render_onto(base: &Image, list: &DrawList, atlas: &GlyphAtlas, textures: 
     assert_eq!((base.width as usize, base.height as usize), (w, h), "base image size must match the draw list");
     let px = base
         .rgba
-        .chunks_exact(4)
+        .as_chunks::<4>().0.iter()
         .map(|p| premul([lin8(p[0]), lin8(p[1]), lin8(p[2]), f32::from(p[3]) / 255.0], 1.0))
         .collect();
     let c = Canvas { w, px, clip: [0, 0, w as i32, h as i32] };
@@ -144,7 +144,7 @@ fn raster(mut c: Canvas, list: &DrawList, atlas: &GlyphAtlas, textures: &[Textur
                 }
             }
             DrawCmd::Mesh { start, end } => {
-                for t in list.vertices[start as usize..end as usize].chunks_exact(3) {
+                for t in list.vertices[start as usize..end as usize].as_chunks::<3>().0 {
                     triangle(&mut c, t[0], t[1], t[2]);
                 }
             }

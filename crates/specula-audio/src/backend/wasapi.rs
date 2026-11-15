@@ -216,7 +216,7 @@ unsafe fn parse_format(p: *const WaveFormatEx) -> Result<OutFormat> {
 fn write_frames(dst: &mut [u8], fmt: &OutFormat, src: &[f32]) {
     let ch = fmt.channels;
     let bytes = fmt.block_align / ch;
-    for (frame, lr) in dst.chunks_exact_mut(fmt.block_align).zip(src.chunks_exact(2)) {
+    for (frame, lr) in dst.chunks_exact_mut(fmt.block_align).zip(src.as_chunks::<2>().0) {
         for c in 0..ch {
             let v = if ch == 1 {
                 0.5 * (lr[0] + lr[1])

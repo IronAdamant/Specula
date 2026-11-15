@@ -43,7 +43,7 @@ impl Gltf {
 
     /// A buffer view over `bytes` (4-byte aligned) with an optional stride.
     pub fn view(&mut self, bytes: &[u8], stride: Option<usize>) -> usize {
-        while self.bin.len() % 4 != 0 {
+        while !self.bin.len().is_multiple_of(4) {
             self.bin.push(0);
         }
         let mut v = vec![("buffer", Json::from(0u32)), ("byteOffset", Json::from(self.bin.len())), ("byteLength", Json::from(bytes.len()))];
@@ -130,11 +130,11 @@ impl Gltf {
 
     pub fn glb(&self) -> Vec<u8> {
         let mut text = self.with_buffer(None).to_string().into_bytes();
-        while text.len() % 4 != 0 {
+        while !text.len().is_multiple_of(4) {
             text.push(b' ');
         }
         let mut bin = self.bin.clone();
-        while bin.len() % 4 != 0 {
+        while !bin.len().is_multiple_of(4) {
             bin.push(0);
         }
         let total = 12 + 8 + text.len() + if bin.is_empty() { 0 } else { 8 + bin.len() };

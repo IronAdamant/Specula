@@ -735,7 +735,7 @@ fn cofactor(m: &Mat4) -> ([Vec3; 3], f32) {
 
 fn push_mesh(out: &mut Vec<lux::Triangle>, world: &Mat4, positions: &[[f32; 3]], normals: &[[f32; 3]], albedo: &dyn Fn(usize) -> [f32; 3], emissive: &dyn Fn([f32; 3]) -> [f32; 3], indices: &[u32]) {
     let (cof, flip) = cofactor(world);
-    for t in indices.chunks_exact(3) {
+    for t in indices.as_chunks::<3>().0 {
         let (i, j, k) = (t[0] as usize, t[1] as usize, t[2] as usize);
         if i >= positions.len() || j >= positions.len() || k >= positions.len() {
             continue;

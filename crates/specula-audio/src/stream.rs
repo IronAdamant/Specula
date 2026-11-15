@@ -692,7 +692,7 @@ mod tests {
         assert!((frames as i64 - 48_000).abs() <= 8, "{frames}");
         // The tone's period scales by 48/44.1: zero crossings of sin(0.01 i) every 314.16 input
         // frames become every 341.95 output frames.
-        let crossings = out.chunks_exact(2).collect::<Vec<_>>().windows(2).filter(|w| w[0][0] <= 0.0 && w[1][0] > 0.0).count();
+        let crossings = out.as_chunks::<2>().0.iter().collect::<Vec<_>>().windows(2).filter(|w| w[0][0] <= 0.0 && w[1][0] > 0.0).count();
         let expect = 48_000.0 / (2.0 * std::f64::consts::PI / 0.01 * 48_000.0 / 44_100.0);
         assert!((crossings as f64 - expect).abs() <= 1.5, "{crossings} vs {expect}");
     }

@@ -1,0 +1,7 @@
+# The Rust this repository is built with (docs/ROADMAP.md, M6: "A Rust version policy"). One
+# version, moved on purpose through the gate (`cargo run -p specula-examen -- gate --all`).
+# rustup reads this file in this checkout and installs the version beside your default
+# toolchain, which it never changes. No host is named: every machine reads this file.
+[toolchain]
+channel = "1.100.0"
+components = ["clippy"]

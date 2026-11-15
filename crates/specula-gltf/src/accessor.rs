@@ -110,7 +110,7 @@ pub fn floats(doc: &Document, bufs: &[Vec<u8>], ai: usize, path: &str) -> Result
     let mut out = Vec::with_capacity(a.count * dims);
     match (a.ctype, a.normalized) {
         (T::F32, _) => {
-            for (k, b) in raw.chunks_exact(4).enumerate() {
+            for (k, b) in raw.as_chunks::<4>().0.iter().enumerate() {
                 let v = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
                 if !v.is_finite() {
                     return Err(gerr(C::InvalidData, &format!("{path} (accessor {ai})"), format!("element {} component {} is {v}", k / dims, k % dims)));
@@ -120,13 +120,13 @@ pub fn floats(doc: &Document, bufs: &[Vec<u8>], ai: usize, path: &str) -> Result
         }
         (T::U8, true) => out.extend(raw.iter().map(|&b| b as f32 / 255.0)),
         (T::I8, true) => out.extend(raw.iter().map(|&b| (b as i8 as f32 / 127.0).max(-1.0))),
-        (T::U16, true) => out.extend(raw.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]]) as f32 / 65535.0)),
-        (T::I16, true) => out.extend(raw.chunks_exact(2).map(|b| (i16::from_le_bytes([b[0], b[1]]) as f32 / 32767.0).max(-1.0))),
+        (T::U16, true) => out.extend(raw.as_chunks::<2>().0.iter().map(|b| u16::from_le_bytes([b[0], b[1]]) as f32 / 65535.0)),
+        (T::I16, true) => out.extend(raw.as_chunks::<2>().0.iter().map(|b| (i16::from_le_bytes([b[0], b[1]]) as f32 / 32767.0).max(-1.0))),
         (T::U8, false) => out.extend(raw.iter().map(|&b| b as f32)),
         (T::I8, false) => out.extend(raw.iter().map(|&b| b as i8 as f32)),
-        (T::U16, false) => out.extend(raw.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]]) as f32)),
-        (T::I16, false) => out.extend(raw.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32)),
-        (T::U32, _) => out.extend(raw.chunks_exact(4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32)),
+        (T::U16, false) => out.extend(raw.as_chunks::<2>().0.iter().map(|b| u16::from_le_bytes([b[0], b[1]]) as f32)),
+        (T::I16, false) => out.extend(raw.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes([b[0], b[1]]) as f32)),
+        (T::U32, _) => out.extend(raw.as_chunks::<4>().0.iter().map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32)),
     }
     Ok(out)
 }
@@ -141,7 +141,7 @@ pub fn uints(doc: &Document, bufs: &[Vec<u8>], ai: usize, path: &str) -> Result<
     let raw = gather(doc, bufs, ai, path)?;
     Ok(match a.ctype {
         T::U8 => raw.iter().map(|&b| b as u32).collect(),
-        T::U16 => raw.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]]) as u32).collect(),
-        _ => raw.chunks_exact(4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect(),
+        T::U16 => raw.as_chunks::<2>().0.iter().map(|b| u16::from_le_bytes([b[0], b[1]]) as u32).collect(),
+        _ => raw.as_chunks::<4>().0.iter().map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect(),
     })
 }

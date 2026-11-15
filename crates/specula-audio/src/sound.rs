@@ -38,7 +38,7 @@ impl Sound {
         if !(MIN_RATE..=MAX_RATE).contains(&rate) {
             return Err(AudioError::new(ErrorCode::BadSound, "sample rate out of range").with_numbers(rate as f64, MAX_RATE as f64));
         }
-        if samples.is_empty() || samples.len() % channels as usize != 0 {
+        if samples.is_empty() || !samples.len().is_multiple_of(channels as usize) {
             return Err(AudioError::new(ErrorCode::BadSound, "sample count must be a non-zero multiple of the channel count"));
         }
         if let Some(i) = samples.iter().position(|s| !s.is_finite()) {
@@ -57,7 +57,7 @@ impl Sound {
             return Sound::new(name, rate, channels, samples);
         }
         let ch = channels as usize;
-        if samples.is_empty() || samples.len() % ch != 0 {
+        if samples.is_empty() || !samples.len().is_multiple_of(ch) {
             return Err(AudioError::new(ErrorCode::BadSound, "sample count must be a non-zero multiple of the channel count"));
         }
         let mut out = Vec::with_capacity(samples.len() / ch * 2);

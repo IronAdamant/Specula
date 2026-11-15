@@ -38,7 +38,7 @@ pub fn encode(data: &[u8]) -> String {
 pub fn decode(text: &str) -> Result<Vec<u8>, Base64Error> {
     let s = text.as_bytes();
     let err = |offset: usize, message: &str| Base64Error { offset, message: message.to_string() };
-    if s.len() % 4 != 0 {
+    if !s.len().is_multiple_of(4) {
         // Report the first invalid character if there is one, otherwise the truncation.
         if let Some(i) = s.iter().position(|&c| c != b'=' && DECODE_TABLE[c as usize] == INVALID) {
             return Err(err(i, "invalid base64 character"));

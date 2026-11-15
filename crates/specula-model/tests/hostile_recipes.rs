@@ -204,7 +204,7 @@ fn mirror_and_orientation() {
     ] {
         let l = &run(&one(shape, ""), None).unwrap().lods[0];
         let mut out = 0.0f32;
-        for t in l.indices.chunks_exact(3) {
+        for t in l.indices.as_chunks::<3>().0 {
             let (a, b, c) = (l.positions[t[0] as usize], l.positions[t[1] as usize], l.positions[t[2] as usize]);
             let n = cross(sub(b, a), sub(c, a));
             let mid = [(a[0] + b[0] + c[0]) / 3.0, 0.0, (a[2] + b[2] + c[2]) / 3.0];

@@ -409,7 +409,7 @@ fn chaos_player(c: &sepulcra::Content, seed: u64, calls: bool) -> impl FnMut(&St
     let wallable: Vec<CellId> = c.map.cells().iter().filter(|x| x.kind.wallable()).map(|x| x.id).collect();
     move |s: &State| {
         let mut out = Vec::new();
-        if s.tick() % 20 != 0 {
+        if !s.tick().is_multiple_of(20) {
             return out;
         }
         for _ in 0..rng.below(3) {
@@ -705,7 +705,7 @@ fn extreme_attribute_values_never_panic_the_hooks() {
         }
         for _ in 0..6000 {
             let mut cmds = vec![];
-            if sim.tick() % 300 == 0 {
+            if sim.tick().is_multiple_of(300) {
                 if let Ok(c) = sim.parse_command("call_wave", &Json::Obj(vec![])) {
                     cmds.push(c);
                 }

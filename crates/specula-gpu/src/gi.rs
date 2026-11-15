@@ -777,7 +777,7 @@ mod tests {
         let cube = sample_cube(&v, [0.25; 3], [0.75; 3], 0.5, [0.0; 3]);
         let red = |k: usize| {
             let (a, b) = halves(cube[3 * k / 2]);
-            if (3 * k) % 2 == 0 { a } else { b }
+            if (3 * k).is_multiple_of(2) { a } else { b }
         };
         assert!((red(0) - 0.9).abs() < 2e-3 && (red(1) - 0.1).abs() < 2e-3 && (red(2) - 0.5).abs() < 2e-3, "{} {} {}", red(0), red(1), red(2));
         assert_eq!(lean_draw()[11], DRAW_LEAN);

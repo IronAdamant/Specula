@@ -1015,37 +1015,45 @@ page that say "after v1.0" were written when v1.0 meant this release: read them 
 
 ### The order, and what each part is likely to take (2026-11-16)
 
-Set at the scope talk ([HANDOFF.md](../HANDOFF.md), top). No date presses ("Christmas IS hope but I'm not
-gonna worry about strict deadline") and nothing is cut. One builder on the development laptop, and a second
-Claude instance on the owner's Mac for the native port, from a clone of its own.
+Set at the scope talk ([HANDOFF.md](../HANDOFF.md), top), and changed the same day when the owner put the
+Mac last and added a part: "Put Mac to last. This is a separate problem and seperate development and will
+need to be handled by a separate instance based in Mac system. Everything else to be done together." No
+date presses ("Christmas IS hope but I'm not gonna worry about strict deadline") and nothing is cut. One
+builder on the development laptop does parts 1 to 12; a Claude instance on the owner's Mac, from a clone
+of its own, does part 13 after them.
 
 **The sizes are estimates from the size of the code each part touches or replaces, not from designs.**
 For scale: M5 added 81,000 lines of Rust and 12,500 of Python in ten days, six of them with several lanes
 at once.
 
-| # | Part | Likely size | Where | After |
-|---|---|---|---|---|
-| 1 | **Verifying faster**: Rust pinned; CI keeps its build and skips the full run for documents; the gate and the audit's runner in Rust, sized to what changed | 4,000 lines | laptop | |
-| 2 | **The shader language**: a compiler to SPIR-V; the 55 shader stages (5,300 lines of GLSL in 79 files) ported and drawing the same pictures on both adapters; then its MSL back end, and shader tools for agents | 15,000 to 20,000 | laptop | 1 |
-| 3 | **macOS, first half**: the workspace builds and its tests pass on Apple Silicon; window, input, gamepads, sound, module loading; determinism on ARM | 6,000 to 8,000 | Mac | starts at once |
-| 4 | **The renderer's inner interface**: the engine reaches the GPU through one type, but inside `specula-gpu` about 15,000 lines speak Vulkan directly, so Metal needs an interface inside the crate (or a second renderer; decided by a design note first) | touches 15,000 | laptop | 2 |
-| 5 | **The tooling in Rust, the rest**: 81 checks and measurements, three test-data generators, the shaders' build script; no `.py`, `.sh` or `.ps1` stays tracked | 36,000 | laptop | 1; before 6's checks |
-| 6 | **macOS, second half**: the Metal renderer, then every live check on the Mac | 10,000 to 12,000 | Mac | 2, 4, 5 |
-| 7 | **The engine pays from the first hour**: a project gets its SDK from the engine; a module builds at any depth; a module-built game reaches screens, strings and saved settings; many ticks in a call and a tick other than 30 Hz; the memory helpers; conditions and scoring; then the comparison run again | 12,000 | laptop | 1 |
-| 8 | **Game systems, the rest**: the storyline tree with captions, babble voices and the slot for voice packs; reputation; the RPG set-up; music sets | 12,000 | laptop | 7 |
-| 9 | **Form within an agent's reach**: the five items, with the engine's own human figure taken to realistic (not photoreal) from proportion tables that are written first, in 2D and 3D; and the report of what light a machine can run | 15,000 | laptop | |
-| 10 | **Sepulcra's maps 2 and 3** | 4,000, and data | laptop | 8, 9 (they use both) |
-| 11 | **Ship**: `specula export`, asset packs with licences, shipping basics, Steam as an extra, soak tests, M5's four open follow-ups | 12,000 | laptop | 7 |
-| 12 | **Per-agent tokens** (tried with Claude swarms), and **mods and outside extensions** | 6,000 | laptop | |
-| 13 | **Close**: an agent sets the variables on the Mac; the comparison on both systems; the adversarial review; the release | | both | all |
+| # | Part | Likely size | After |
+|---|---|---|---|
+| 1 | **Verifying faster**: Rust pinned; CI keeps its build and skips the full run for documents; the gate and the audit's runner in Rust, sized to what changed | 4,000 lines | |
+| 2 | **The tooling in Rust, the rest**: 81 checks and measurements, three test-data generators; no `.py`, `.sh` or `.ps1` stays tracked. Beside the other parts, each check when it is next touched, all of it before the Mac's live checks | 36,000 | 1 |
+| 3 | **The engine pays from the first hour**: a project gets its SDK from the engine; a module builds at any depth; a module-built game reaches screens, strings and saved settings; many ticks in a call and a tick other than 30 Hz; the memory helpers; conditions and scoring; then the comparison run again | 12,000 | 1 |
+| 4 | **Form within an agent's reach**: the five items, with the engine's own human figure taken to realistic (not photoreal) from proportion tables that are written first, in 2D and 3D; and the report of what light a machine can run | 15,000 | |
+| 5 | **The libraries, for any game** (added 2026-11-16, and widened the same day): people with faces, expressions and hair, and what is derived from them; animals; fantasy creatures; the undead; machines; trees, grass and plants; terrain; water. Each a generator with a seed, so nothing is a copy; rigged and animated where it moves; by code; shown in 2D and 3D; apart from Sepulcra. The research comes first | 40,000 to 60,000, and data | 4 |
+| 6 | **Game systems, the rest**: the storyline tree with captions, babble voices and the slot for voice packs; reputation; the RPG set-up; music sets | 12,000 | 3 |
+| 7 | **Sepulcra's maps 2 and 3** | 4,000, and data | 4, 5, 6 (they use all three) |
+| 8 | **Ship**: `specula export`, asset packs with licences, shipping basics, Steam as an extra, soak tests, M5's four open follow-ups | 12,000 | 3 |
+| 9 | **Per-agent tokens** (tried with Claude swarms), and **mods and outside extensions** | 6,000 | |
+| 10 | **The shader language**: a compiler to SPIR-V; the 55 shader stages (5,300 lines of GLSL in 79 files) ported and drawing the same pictures on both adapters; then its MSL back end, and shader tools for agents. The GLSL and its build script go | 15,000 to 20,000 | |
+| 11 | **The renderer's inner interface**: the engine reaches the GPU through one type, but inside `specula-gpu` about 15,000 lines speak Vulkan directly, so Metal needs an interface inside the crate (or a second renderer; decided by a design note first) | touches 15,000 | 10 |
+| 12 | **Close on Windows**: the comparison run again; the adversarial review | | 1 to 11 |
+| 13 | **macOS** (the Mac's own instance): the workspace builds and its tests pass on Apple Silicon; window, input, gamepads, sound, module loading; determinism on ARM; the Metal renderer; every live check; an agent sets the variables there | 16,000 to 20,000 | 2, 10, 11 |
+| 14 | **The release** | | all |
 
-- **About 115,000 to 130,000 lines on the laptop and 16,000 to 20,000 on the Mac.** With one builder,
-  reviews and full verification rounds, **the whole list by Christmas is unlikely; January is what to
-  expect.** Said to the owner on 2026-11-16.
-- **The longest chain is 1, 2, 4, then 6**: macOS's renderer cannot start before the shader language
-  writes MSL, and the release waits for macOS (Claude's reading of "Shader first. MacOS can be waited
-  on"). That is why the shader language comes straight after the first part.
-- **Parts 7 to 12 do not wait for the chain** and fill the time the Mac needs.
+- **About 155,000 to 190,000 lines on the laptop and 16,000 to 20,000 on the Mac.** With one builder,
+  reviews, research and full verification rounds, **the laptop's list runs well into the new year: February
+  at the earliest**, and the Mac's part comes after that. Said to the owner on 2026-11-16, who accepts it
+  ("I need this done right, not rushed").
+- **Why this order** (Claude's, within "everything else to be done together"): what M6's first focus item
+  asks for comes first (3); the form tools come before the library that is built with them (4, then 5);
+  the game takes from both (7). The shader language and the renderer's inner interface serve the Mac and
+  the end of GLSL, and no game waits for them, so they come last on the laptop (10, 11). "Shader first"
+  (the same day) still holds: no Metal shader is written before the language writes MSL.
+- **The release** (Claude's reading; not asked again): still Windows and macOS together (2026-11-14), so it
+  follows the Mac's part. A Windows release before it would be the owner's to choose.
 - Not in M6 (moved at the scope talk): the Steam Deck pass on a Deck, which is native and goes with Linux;
   other vendors' swarms, which are theirs to test.
 
@@ -1054,13 +1062,13 @@ at once.
 - [x] ➕ **The scope talk, first** (owner, 2026-11-14: M6's scope "is talked through when it starts, not
   before"). Held on 2026-11-16: the answers are at the top of [HANDOFF.md](../HANDOFF.md), the order and
   the sizes above.
-- [x] ➕ **Size macOS honestly** before anything is promised for it. Sized above (parts 3, 4 and 6), from
+- [x] ➕ **Size macOS honestly** before anything is promised for it. Sized above (parts 11 and 13), from
   the code and not from a design: what is on the Platform track's macOS item.
 - [ ] ➕ **Verifying takes less time** (the owner's second focus item, 2026-11-15: "making tests and CIs
   even more efficient to save some time"). **Decided 2026-11-16, and M6's first work:** CI keeps its build
   between runs; a push that changes documents only runs the document guards and not the full build (the
   five documents commits of 2026-11-15 and 16 each took 20 to 27 minutes of CI); the gate is sized to what
-  changed (documents, tests, a game, the engine). The gate and the runner are written in Rust as part of
+  changed (documents, tests, the engine; a game counts as the engine, whose tests read its assets). The gate and the runner are written in Rust as part of
   it, since no new Python is written from that date.
 - [ ] ➕ **A Rust version policy** (owner, 2026-11-15). **Decided 2026-11-16:** one version is named in the
   repository and in CI, moved on purpose through the gate, and it is the declared minimum in place of
@@ -1247,6 +1255,80 @@ at once.
   vendor-neutral ray queries may only ever be an optional faster path. In M6 that report covers the light
   the engine has (the quality presets, the baked probes); the note's ladder of light is after M6 unless
   the scope talk moves a rung, and how the report is made is not designed.
+- [ ] ➕ **A library of sample assets, for any game** (owner, 2026-11-16, at the start of M6: "I'm actually
+  thinking on this. But add 1 more part here"): "Build up the assets of animals, fantasy creatures like
+  dragons, undead, and both tech and living assets, and tech like robots. Set up animation. Keep them as
+  sample, along side actually realistic human assets. All of them by code and can be shown as in both 2D
+  and 3D. The main logic for this one is to build the assets that you can use in any game. the primary
+  reason is to help you and other AI agents build stuff and reuse, not just completely re-create. Think of
+  it like a base template as I'm widening the path of resistance for you and other AI agents." And: "Those
+  assets must be separate from [Sepulcra] but be it's own thing." **Not designed.** Claude's thoughts,
+  given to the owner the same day:
+  - *Why it is right.* It is what M5's comparison points at: the engine cost least where there was
+    something to start from, and every cold builder made everything itself. A wolf that exists, rigged
+    and walking, is a wolf no agent pays for again.
+  - **Body plans, not single models.** A plan is a skeleton, its proportion table and the ranges its
+    numbers may take: two legs (people, the undead, humanoid robots), four legs with hooves or with paws,
+    four legs and wings (a dragon), birds, a chain (snakes, fish, tails and necks), six or eight legs,
+    and machines on wheels, tracks or nothing. A species is a plan with its numbers set, so one plan
+    gives many, and an agent that needs a creature nobody made changes numbers instead of starting over.
+  - **Form and motion are the template; the look is the project's.** A recipe is built under the
+    project's style, so the same wolf comes out in each game's own materials and palette. A fixed art
+    pack would make every game look like the pack.
+  - **Motion belongs to the plan.** Walks, runs, flight, idles, attacks, hits and deaths as generators
+    that take the creature's own leg lengths, so a clip fits every species of its plan, held by the motion
+    checks the engine has (feet that slide, balance). Machines are the easy case: rigid parts, no skin
+    to bend.
+  - **2D from the same source.** One recipe and its clips give the 3D model and its 2D form: sprite sheets
+    at the angles a game asks for (side, three-quarter, top-down, eight directions), by the studio's own
+    stage. A 2D game and a 3D game take the same creature.
+  - **Its own place.** A folder of the repository that is not a game's, shipped with the engine. A
+    project copies what it takes and changes the copy (recipes are text). Every entry carries its licence
+    (the engine's), what it is and which numbers it takes, the checks it passed, and a contact sheet; a
+    catalog an agent can search says what exists before anything is made.
+  - **Sepulcra is its first user and stays apart from it:** the mobs of maps 2 and 3 are made from the
+    library, in Sepulcra's style, in Sepulcra's folder.
+  - **What it needs first:** the form tools (roundness, bone chains, a body from a skeleton, the form
+    checks and views). Without them this is the work agents are weakest at, done many times.
+  - **Said plainly.** Realistic here means the proportions, the silhouette and the gait are right. Fur,
+    feathers and hair are a renderer's work that does not exist yet (the Fidelity track), so animals read
+    as smooth or stylised until it does; faces stay the hardest part. The numbers (limb lengths against
+    body length, where joints fall, which foot lands when in each gait) are looked up from published
+    anatomy and gait studies and written down with their sources, as the human tables are; not written
+    from an agent's memory.
+  - **How it is measured:** the comparison's harness, with a job that needs creatures, run with the
+    library and without it.
+  - **Widened by the owner, later the same day: libraries, done right and not rushed.** "Do your best as
+    you can in realistic. I'm very much willing to allow M6 to take a long time. But I need this done
+    right, not rushed." "The main point is, we get model library, terrain library, assets library, water
+    library, grass blades. etc. ALL written in Rust. And ensuring you can deploy, make stuff here and
+    there. Like having unique trees, not copy-pasted characters as humans have done. We're in agentic
+    era." "We'll need collection of the internal libraries that you can build in based on your research.
+    Something like Skyrim-like, and having facial expression for human characters will do, and then
+    derived, if we're having humanoid aliens ... Same with animals."
+    - **What it holds now:** people (bodies, faces with expressions, hair), and what is derived from them
+      (humanoid aliens, the undead); animals; fantasy creatures; machines; trees, grass and plants;
+      terrain; water. Terrain, water, scatter and grass exist in the engine as tools
+      ([design/TERRAIN.md](design/TERRAIN.md), [design/FOLIAGE.md](design/FOLIAGE.md)); the libraries
+      are what is made with them and kept.
+    - **Unique, not copied** (Claude's reading of "unique trees, not copy-pasted characters"): a library
+      entry is a generator with a seed and ranges, not one fixed model. Two oaks from the oak are two
+      different oaks, and two villagers are two different people, each within what its kind allows.
+    - **"All written in Rust"** (Claude's reading): the generators are Rust in the engine's crates, the
+      entries are recipes those generators read, and no model comes from outside.
+    - **Data before the renderer.** "Renderer can come later, ONCE you have data for this." The numbers
+      that make a body, a gait, a tree or a river believable come first; fur, hair and skin shading
+      follow them (the Fidelity track).
+    - **Faces are a lane of their own:** "You can do faces well enough I think, but this will require a
+      separate instance to set up a base face for both male and female, alongside hairstyles."
+    - **The research is asked for from outside.** "If you'd like, I can get Grok to do deep research and
+      get you the data as needed. IF yes, then list me the items." Yes: the list is
+      [research/LIBRARY_RESEARCH_BRIEF.md](research/LIBRARY_RESEARCH_BRIEF.md), with how it is to come
+      back (every number with its source and the source's licence). What comes back is checked against
+      its sources before it is used.
+    - **What this does to M6's size, said plainly:** this part grows from about 15,000 to 20,000 lines
+      to about 40,000 to 60,000, with the research before it, and a design note for each library before
+      it is built. The owner accepts the time.
 - [ ] **Ship Sepulcra, the engine's MVP game, as the demo, with its three maps** (owner, 2026-11-16:
   "Sepulcra is a MVP game for Specula"; "3 map set in October. As demo. I'll probably ask you to set up 20
   different maps, each very different from the initial 3 maps"). This is the item that read "ship the
@@ -1331,12 +1413,15 @@ source of shaders.
     text input, the timer, the sound device (`wasapi.rs` and its COM glue, 870 lines), the library loader
     and Ctrl+C in `specula-sys`, and the other side of a `cfg` in seven files of the engine. The shaders
     are 26 vertex and 29 fragment stages, no compute.
-  - **First half, which needs no shader language** (M6's part 3): the workspace builds and its tests
+  - **First half, which needs no shader language** (the start of M6's part 13): the workspace builds and its tests
     pass on the Mac; a Cocoa window with keyboard, mouse and text input; gamepads; sound through the
     system's audio; modules loaded with `dlopen` and built as `.dylib`; the system's font files, of which
     none has been opened on a Mac; the determinism tests on ARM.
-  - **Second half** (part 6): the Metal renderer on the shader language's MSL, then the live checks, run
+  - **Second half** (the rest of part 13): the Metal renderer on the shader language's MSL, then the live checks, run
     there by the Rust runner.
+  - **The brief for the instance on the Mac** is [design/MACOS.md](design/MACOS.md): what was decided,
+    what has a Windows side and nothing else, the traps that can be seen from the Windows code, and
+    how its work is verified. Written on Windows; nothing in it has been run on a Mac.
   - [ ] ➕ **Simplified and Traditional Chinese on macOS are one file** (`PingFang.ttc`, a collection): a
     path alone cannot say which face of it a locale wants, so `zh-TW` and `zh-Hans` get the same one
     until a candidate names a face of a collection too. The macOS file names are unverified as well

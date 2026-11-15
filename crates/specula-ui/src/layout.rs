@@ -196,7 +196,7 @@ fn fit(screen: &Screen, comp: &mut [Computed], ctx: &Ctx, m: &mut dyn Measure, i
                 cells[axis] = cells[axis].max(a);
                 if let Layout::Grid { .. } = node.layout {
                     row_max = row_max.max(a);
-                    if (count + 1) % columns == 0 {
+                    if (count + 1).is_multiple_of(columns) {
                         rows_sum += row_max;
                         row_max = 0.0;
                     }
@@ -307,7 +307,7 @@ fn resolve(screen: &Screen, comp: &mut [Computed], ctx: &Ctx, i: usize, axis: us
             cell
         } else {
             // Grid height: the row's tallest fit.
-            if k % columns == 0 {
+            if k.is_multiple_of(columns) {
                 row_h = 0.0;
                 for c2 in screen.children(i as u32).filter(|&c2| comp[c2 as usize].visible).skip(k).take(columns) {
                     let c2n = &screen.nodes[c2 as usize];

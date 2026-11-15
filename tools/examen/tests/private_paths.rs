@@ -122,7 +122,7 @@ fn tracked_files_hold_no_private_paths() {
             return;
         }
     };
-    let me = "crates/specula/tests/private_paths.rs";
+    let me = "tools/examen/tests/private_paths.rs";
     let mut found = Vec::new();
     for name in out.split(|&b| b == 0).filter(|n| !n.is_empty()) {
         let name = String::from_utf8_lossy(name).replace('\\', "/");

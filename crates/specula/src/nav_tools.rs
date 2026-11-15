@@ -279,7 +279,7 @@ fn fit_model_collider(model: &specula_model::Model, kind: &str, moving: bool) ->
                 )
             })?;
         let vertices: Vec<Vec3> = lod.positions.iter().map(|p| v(*p)).collect();
-        let triangles: Vec<[u32; 3]> = lod.indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]]).collect();
+        let triangles: Vec<[u32; 3]> = lod.indices.as_chunks::<3>().0.iter().map(|t| [t[0], t[1], t[2]]).collect();
         let note = (!std::ptr::eq(lod, mesh)).then(|| "the full-detail mesh is past physics' mesh limits: a lower LOD was used".to_string());
         return Ok((Collider { shape: ColliderShape::Mesh { vertices: std::sync::Arc::new(vertices), triangles: std::sync::Arc::new(triangles) }, ..Collider::default() }, note));
     }
@@ -1115,7 +1115,7 @@ fn area_color(area: u8) -> ([f32; 4], [f32; 4]) {
 }
 
 fn tile_color(tx: u32, tz: u32) -> ([f32; 4], [f32; 4]) {
-    if (tx + tz) % 2 == 0 {
+    if (tx + tz).is_multiple_of(2) {
         ([0.2, 0.75, 0.45, 0.28], [0.45, 1.0, 0.65, 0.85])
     } else {
         ([0.2, 0.55, 0.85, 0.28], [0.45, 0.8, 1.0, 0.85])

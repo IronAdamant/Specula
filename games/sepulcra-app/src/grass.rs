@@ -71,7 +71,7 @@ pub fn cells(map: &Map) -> Vec<CellId> {
             CellKind::Fragment => {
                 let (cc, rr) = (i32::from(c.col), i32::from(c.row));
                 let edge = [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|(dc, dr)| kind(cc + dc, rr + dr) != Some(CellKind::Fragment));
-                edge && hash(c.id) % 3 != 0
+                edge && !hash(c.id).is_multiple_of(3)
             }
             _ => false,
         };

@@ -1235,7 +1235,7 @@ impl IdResources {
             // SAFETY: coherent mapped memory holding at least rendered_max × STATS_STRIDE u32s,
             // written by the finished render's copy (copy → host barrier recorded).
             let stats = unsafe { std::slice::from_raw_parts(host.buffer.mapped as *const u32, len) };
-            for (c, s) in per_id.iter_mut().zip(stats.chunks_exact(STATS_STRIDE)).take(n) {
+            for (c, s) in per_id.iter_mut().zip(stats.as_chunks::<STATS_STRIDE>().0).take(n) {
                 c.add_blended(s);
             }
         }

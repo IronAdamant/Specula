@@ -105,7 +105,7 @@ fn searching_a_100k_world_allocates_nothing_per_entity_and_keeps_its_time_budget
         let t = Instant::now();
         let read = scan.step(&world, &query, 18, budget);
         longest = longest.max(t.elapsed());
-        assert!(scan.done || read % CHECK_EVERY == 0, "it stops at a clock check");
+        assert!(scan.done || read.is_multiple_of(CHECK_EVERY), "it stops at a clock check");
         slices += 1;
     }
     assert_eq!(scan.read, total);

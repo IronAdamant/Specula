@@ -581,7 +581,7 @@ fn worker(s: &Shared) {
         }
         idle += 1;
         if idle < IDLE_SPINS {
-            if idle % SPINS == 0 {
+            if idle.is_multiple_of(SPINS) {
                 std::thread::yield_now();
             } else {
                 std::hint::spin_loop();

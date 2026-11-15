@@ -1,4 +1,4 @@
-//! What `scripts/gate.py` reads before it runs any test: the adapters this machine's tests will
+//! What the gate (`tools/examen`) reads before it runs any test: the adapters this machine's tests will
 //! see. GPU tests skip themselves cleanly when Vulkan or an adapter is missing (rule 7: CI
 //! without a GPU stays green), and a passing test's output is hidden, so a gate on a machine
 //! whose driver stopped loading would pass with every GPU test skipped. The gate runs this with

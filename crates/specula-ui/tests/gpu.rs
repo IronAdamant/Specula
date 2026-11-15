@@ -108,7 +108,7 @@ fn the_gpu_overlay_matches_the_software_preview() {
         let mut big = 0usize;
         let mut worst = 0u8;
         let mut diff = vec![0u8; hardware.len()];
-        for (i, (g, s)) in hardware.chunks_exact(4).zip(software.rgba.chunks_exact(4)).enumerate() {
+        for (i, (g, s)) in hardware.as_chunks::<4>().0.iter().zip(software.rgba.as_chunks::<4>().0).enumerate() {
             let d = (0..3).map(|k| g[k].abs_diff(s[k])).max().unwrap_or(0);
             sum += (0..3).map(|k| u64::from(g[k].abs_diff(s[k]))).sum::<u64>();
             worst = worst.max(d);
@@ -138,7 +138,7 @@ fn the_gpu_overlay_matches_the_software_preview() {
         gpu.render(target, &FrameDesc { overlay: &whole, ..frame }).expect("render");
         let reference = gpu.read_rgba8(target).unwrap();
         let banded_worst = hardware.iter().zip(&reference).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
-        let banded_px = hardware.chunks_exact(4).zip(reference.chunks_exact(4)).filter(|(a, b)| a != b).count();
+        let banded_px = hardware.as_chunks::<4>().0.iter().zip(reference.as_chunks::<4>().0).filter(|(a, b)| a != b).count();
         eprintln!("{test}: bands vs whole quads: {banded_px} px differ, worst {banded_worst} levels");
         assert!(banded_worst <= 1, "{test}: the bands change a pixel by {banded_worst} levels ({banded_px} px)");
 

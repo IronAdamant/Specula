@@ -65,7 +65,7 @@ fn group_builds(builds_of: impl Iterator<Item = u64>, order: &mut Vec<(u64, usiz
 /// their stand-in mesh draws).
 fn wants(t: &Terrain, distance: f32, radius: (f32, f32)) -> (bool, bool, f32) {
     let small = t.columns <= SMALL_SIDE && t.rows <= SMALL_SIDE;
-    let coarse_ok = (t.columns - 1) % COARSE as usize == 0 && (t.rows - 1) % COARSE as usize == 0 && !small;
+    let coarse_ok = (t.columns - 1).is_multiple_of(COARSE as usize) && (t.rows - 1).is_multiple_of(COARSE as usize) && !small;
     let full_radius = if coarse_ok { radius.0 } else { radius.1 };
     (distance <= full_radius, coarse_ok && distance <= radius.1, full_radius)
 }
@@ -990,7 +990,7 @@ fn layer_means(built: &crate::models::Built, t: &Terrain) -> [[f32; 3]; 4] {
         let px = &set.base_color;
         let n = (px.len() / 4).max(1) as f32;
         let mut sum = [0.0f32; 3];
-        for p in px.chunks_exact(4) {
+        for p in px.as_chunks::<4>().0 {
             for c in 0..3 {
                 sum[c] += p[c] as f32 / 255.0;
             }

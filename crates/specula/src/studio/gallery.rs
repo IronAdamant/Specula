@@ -542,7 +542,7 @@ fn rendered_alike(tiles: &[Vec<u8>]) -> Vec<[usize; 2]> {
                 continue;
             }
             let px = a.len() / 4;
-            let differ = a.chunks_exact(4).zip(b.chunks_exact(4)).filter(|(p, q)| (0..3).any(|k| p[k].abs_diff(q[k]) > ALIKE_STEP)).count();
+            let differ = a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0).filter(|(p, q)| (0..3).any(|k| p[k].abs_diff(q[k]) > ALIKE_STEP)).count();
             if differ * ALIKE_SHARE < px {
                 out.push([i, j]);
             }

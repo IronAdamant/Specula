@@ -34,7 +34,7 @@ fn png(name: &str) -> Image {
 
 /// Luma (BT.601, as JPEG stores it) of every pixel.
 fn luma(img: &Image) -> Vec<f64> {
-    img.rgba.chunks_exact(4).map(|p| 0.299 * p[0] as f64 + 0.587 * p[1] as f64 + 0.114 * p[2] as f64).collect()
+    img.rgba.as_chunks::<4>().0.iter().map(|p| 0.299 * p[0] as f64 + 0.587 * p[1] as f64 + 0.114 * p[2] as f64).collect()
 }
 
 fn cbcr(p: &[u8]) -> (f64, f64) {
@@ -67,7 +67,7 @@ fn smooth_chroma(img: &Image, source: &Image) -> Vec<f64> {
 }
 
 fn rgb(img: &Image) -> Vec<f64> {
-    img.rgba.chunks_exact(4).flat_map(|p| [p[0] as f64, p[1] as f64, p[2] as f64]).collect()
+    img.rgba.as_chunks::<4>().0.iter().flat_map(|p| [p[0] as f64, p[1] as f64, p[2] as f64]).collect()
 }
 
 fn psnr(a: &[f64], b: &[f64]) -> f64 {

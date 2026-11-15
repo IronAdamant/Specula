@@ -134,7 +134,7 @@ fn main() {
     let rows = (entries.len() as u32).div_ceil(cols);
     let (sw, sh) = (cols * tiles_per_entry * tile + (cols - 1) * 8, rows * (tile + label_h));
     let mut sheet = vec![0u8; (sw * sh * 4) as usize];
-    for px in sheet.chunks_exact_mut(4) {
+    for px in sheet.as_chunks_mut::<4>().0 {
         px.copy_from_slice(&[14, 17, 26, 255]);
     }
     let target = gpu.create_target(tile, tile).expect("target");
@@ -296,7 +296,7 @@ fn upload_buckets(gpu: &mut Gpu, m: &MeshData, presets: &[(String, specula_model
         // by colour (5 bits per channel): a close stand-in for per-vertex colour interpolation.
         const N: u32 = 4;
         let mut groups: BTreeMap<[u8; 3], (Vec<Vertex>, [f32; 3])> = BTreeMap::new();
-        for t in idx.chunks_exact(3) {
+        for t in idx.as_chunks::<3>().0 {
             let (i0, i1, i2) = (t[0] as usize, t[1] as usize, t[2] as usize);
             let at = |u: u32, v: u32| -> (Vertex, [f32; 3]) {
                 let (b1, b2) = (u as f32 / N as f32, v as f32 / N as f32);

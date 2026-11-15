@@ -708,7 +708,7 @@ fn ground_penetration(ctx: &Ctx, s: &Sampled, mesh: Option<&specula_model::MeshD
         let (mut model, mut sk) = (Vec::new(), Vec::new());
         let (mut pos, mut nor) = (Vec::new(), Vec::new());
         let mut mesh_low = f32::MAX;
-        let frames = (0..s.poses.len()).step_by(4).chain((last % 4 != 0).then_some(last));
+        let frames = (0..s.poses.len()).step_by(4).chain((!last.is_multiple_of(4)).then_some(last));
         let mut mesh_end = f32::MAX;
         for k in frames {
             skel.model_space(&s.poses[k], &mut model);

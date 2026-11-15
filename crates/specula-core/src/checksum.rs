@@ -42,9 +42,9 @@ pub fn crc32(data: &[u8]) -> u32 {
 pub fn crc32_update(crc: u32, data: &[u8]) -> u32 {
     let t = &CRC32_TABLES;
     let mut c = !crc;
-    let mut words = data.chunks_exact(8);
-    for w in &mut words {
-        let v = u64::from_le_bytes(w.try_into().unwrap()) ^ u64::from(c);
+    let (words, rest) = data.as_chunks::<8>();
+    for w in words {
+        let v = u64::from_le_bytes(*w) ^ u64::from(c);
         let byte = |i: u32| (v >> (8 * i) & 0xFF) as usize;
         c = t[7][byte(0)]
             ^ t[6][byte(1)]
@@ -55,7 +55,7 @@ pub fn crc32_update(crc: u32, data: &[u8]) -> u32 {
             ^ t[1][byte(6)]
             ^ t[0][byte(7)];
     }
-    for &b in words.remainder() {
+    for &b in rest {
         c = t[0][((c ^ b as u32) & 0xFF) as usize] ^ (c >> 8);
     }
     !c

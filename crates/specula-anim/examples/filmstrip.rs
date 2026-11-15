@@ -127,7 +127,7 @@ fn main() {
     let cols = n + 2;
     let (sw, sh) = (cols * tile + 6, rows.len() as u32 * (tile + label_h));
     let mut sheet = vec![0u8; (sw * sh * 4) as usize];
-    for px in sheet.chunks_exact_mut(4) {
+    for px in sheet.as_chunks_mut::<4>().0 {
         px.copy_from_slice(&[14, 17, 26, 255]);
     }
     let target = gpu.create_target(tile, tile).expect("target");

@@ -1149,7 +1149,7 @@ fn watch(shared: &Shared, tx: &Sender<Event>) {
             }
         }
         round += 1;
-        if round % RESCAN_EVERY == 0 {
+        if round.is_multiple_of(RESCAN_EVERY) {
             for m in &mounts {
                 for (rel, kind) in scan(m).files {
                     let path = m.path_of(&rel);

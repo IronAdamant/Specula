@@ -114,7 +114,7 @@ pub fn decode_frames(bytes: &[u8], max_frames: usize) -> Result<Wav> {
             };
             let data = &bytes[body..body + frames * align];
             let samples = convert(data, format, channels as usize, align, total);
-            return Ok(Wav { rate, channels, samples, format, truncated: truncated || len % align != 0 });
+            return Ok(Wav { rate, channels, samples, format, truncated: truncated || !len.is_multiple_of(align) });
         }
         // Chunks are padded to even sizes.
         let next = body.checked_add(size).and_then(|n| n.checked_add(size & 1));

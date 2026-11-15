@@ -49,7 +49,7 @@ const SIMULATION: [&str; 21] = [
 
 /// Crates outside the simulation (rendering, platform, tools, presentation; or the engine, whose
 /// simulated parts are checked by review and the replay tests rather than one crate-wide config).
-const NOT_SIMULATION: [&str; 14] = [
+const NOT_SIMULATION: [&str; 15] = [
     "crates/specula-sys",
     "crates/specula-core",
     "crates/specula-gltf",
@@ -65,6 +65,8 @@ const NOT_SIMULATION: [&str; 14] = [
     "crates/specula-studio",
     "crates/specula",
     "games/sepulcra-app",
+    // The repository's own tooling (the gate, the live checks' runner): it never links the engine.
+    "tools/examen",
 ];
 
 /// Crates with FFI (or other unsafe code, each block with a SAFETY comment): the rest forbid it.

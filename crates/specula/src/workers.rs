@@ -292,7 +292,7 @@ impl Drop for Workers {
 }
 
 /// Tests only: how late a worker starts a job it took (`SPECULA_TEST_WORKER_DELAY_MS`; unset: at
-/// once). `scripts/gate.py` runs the engine's tests once with it set. Nothing may depend on when
+/// once). The gate (`tools/examen`, its `slow` step) runs the engine's tests once with it set. Nothing may depend on when
 /// a worker thread happens to run (the engine thread has a result or does the work itself): with
 /// every worker late, code that does depend on it fails every time, where on a quiet machine it
 /// failed one run in four (the orbit's pass count, review R1 of m5-gpuwork).

@@ -7,10 +7,95 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # A build that is thrown away needs no debug information and no incremental state: without
+  # them it is quicker and its folder is small enough to keep between runs.
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+
+# The Rust version is pinned (rust-toolchain.toml; docs/ROADMAP.md M6, "A Rust version policy").
+# Every job installs that version by number, and tools/examen's tests hold the numbers here to
+# the file. The newest stable is tried by newest.yml, on a schedule, and blocks nothing.
 
 jobs:
+  changes:
+    # What this push or pull request changed, as a tier (tools/examen/src/changed.rs). A change
+    # to documents only runs the document guards and not the builds below.
+    name: what changed
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.what.outputs.code }}
+      tier: ${{ steps.what.outputs.tier }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Install Rust 1.100.0
+        run: rustup toolchain install 1.100.0 --profile minimal --component clippy
+      # A push to main is measured from the last commit of main whose builds and tests all
+      # passed (the `green` job below writes it), not from the commit before the push: a push of
+      # documents on top of a push that failed would otherwise skip the builds and go green over
+      # a broken main. With no such commit known (the first run, a marker that expired), a push
+      # runs everything. A pull request is measured from the commit it is based on.
+      - uses: actions/cache/restore@v4
+        if: ${{ github.event_name == 'push' }}
+        with:
+          path: ${{ runner.temp }}/last-green
+          key: last-green-${{ github.sha }}
+          restore-keys: last-green-
+      - name: What changed
+        id: sized
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            BASE="$PR_BASE"
+          else
+            BASE="$(cat "$RUNNER_TEMP/last-green/sha" 2>/dev/null || true)"
+          fi
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+          echo "measured from: ${BASE:-no commit (everything runs)}"
+          cargo run -q -p specula-examen -- changed --base "$BASE" --github-output
+      # The one thing the tool is not asked. A change to the tool, or to these workflows, would
+      # otherwise be sized by itself: it always runs everything, whatever the tool it brings
+      # says of it.
+      - name: The tooling and the workflows are never sized by themselves
+        id: what
+        env:
+          BASE: ${{ steps.sized.outputs.base }}
+          SIZED: ${{ steps.sized.outputs.code }}
+          TIER: ${{ steps.sized.outputs.tier }}
+        run: |
+          code="$SIZED"
+          if [ "$code" != true ]; then
+            if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+              code=true
+            elif git diff --no-renames --name-only "$BASE" HEAD -- tools/examen .github | grep -q .; then
+              code=true
+            fi
+          fi
+          [ "$code" = true ] || code=false
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "tier=$TIER" >> "$GITHUB_OUTPUT"
+          echo "builds and tests run: $code (the tool said $TIER)"
+
+  docs:
+    # The document guards (links, private paths, line endings) and the tooling's own tests:
+    # every run, whatever changed. They build in seconds.
+    name: documents and tooling
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -Dwarnings
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust 1.100.0
+        run: rustup toolchain install 1.100.0 --profile minimal --component clippy
+      - name: Test
+        run: cargo test -p specula-examen --no-fail-fast
+
   test:
     name: test (${{ matrix.os }})
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ${{ matrix.os }}
     env:
       RUSTFLAGS: -Dwarnings
@@ -22,9 +107,26 @@ jobs:
         os: [windows-latest, ubuntu-latest]
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          fetch-depth: 0
+      - name: Install Rust 1.100.0
+        run: rustup toolchain install 1.100.0 --profile minimal --component clippy
+      # The last passing run's build folder, with the commit it was built at. Cargo tells a
+      # changed source by its time, and a fresh checkout gives every file the time of the
+      # checkout, so `examen kept` gives the files that have not changed since that commit an
+      # old time; the ones that changed keep theirs and are built again. When the commit is not
+      # known to git, or a manifest, a lint file or a workflow differs, nothing is kept: the
+      # folder is cleared and everything is built (tools/examen/src/kept.rs). (The tool is built
+      # in a folder of its own: built in `target` before the times are set, it would build
+      # specula-core again there, and with it everything that depends on it.) The folder is
+      # saved by pushes to main only, and read by every run.
+      - uses: actions/cache/restore@v4
+        with:
+          path: target
+          key: target-${{ matrix.os }}-test-1.100.0-${{ github.sha }}
+          restore-keys: target-${{ matrix.os }}-test-1.100.0-
+      - name: Keep what the last build still has right
+        run: cargo run -q -p specula-examen --target-dir target-tools -- kept --built-at target/built-at --clear target
       - name: Build
         id: build
         run: cargo build --workspace --all-targets
@@ -36,20 +138,30 @@ jobs:
       - name: Clippy (Linux, the cfg(not(windows)) side)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && runner.os == 'Linux' }}
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # (Reached only when every step before it passed.)
+      - name: Say which commit this build folder is of
+        if: ${{ github.event_name == 'push' }}
+        run: cargo run -q -p specula-examen --target-dir target-tools -- kept --mark target/built-at
+      - uses: actions/cache/save@v4
+        if: ${{ github.event_name == 'push' }}
+        with:
+          path: target
+          key: target-${{ matrix.os }}-test-1.100.0-${{ github.sha }}
 
   android-check:
     # F6 (portable by design): every crate must at least type-check for a mobile ARM target, so
     # nothing quietly assumes Windows, x86 or a desktop. `cargo check` needs only the target's
     # std, not the Android NDK (nothing is linked).
     name: check (aarch64-linux-android)
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: -Dwarnings
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android
+      - name: Install Rust 1.100.0
+        run: rustup toolchain install 1.100.0 --profile minimal --component clippy --target aarch64-linux-android
       - name: Check
         run: cargo check --workspace --all-targets --target aarch64-linux-android
 
@@ -58,16 +170,29 @@ jobs:
     # imports (AGENTS.md rules 2–3). An env RUSTFLAGS replaces .cargo/config.toml rustflags, so the
     # link-self-contained flag is repeated here.
     name: test (windows-gnu, self-contained linker)
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: windows-latest
     env:
       RUSTFLAGS: -Dwarnings -C link-self-contained=yes
     steps:
       - uses: actions/checkout@v5
-      - name: Install stable-x86_64-pc-windows-gnu
+        with:
+          fetch-depth: 0
+      # rust-toolchain.toml names a version and no host, so the host is this machine's default:
+      # it is set to windows-gnu before the version is installed.
+      - name: Install Rust 1.100.0 for windows-gnu
         run: |
-          rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal --component clippy
-          rustup default stable-x86_64-pc-windows-gnu
+          rustup set default-host x86_64-pc-windows-gnu
+          rustup toolchain install 1.100.0 --profile minimal --component clippy
           rustc -vV
+      - uses: actions/cache/restore@v4
+        with:
+          path: target
+          key: target-windows-gnu-1.100.0-${{ github.sha }}
+          restore-keys: target-windows-gnu-1.100.0-
+      - name: Keep what the last build still has right
+        run: cargo run -q -p specula-examen --target-dir target-tools -- kept --built-at target/built-at --clear target
       - name: Build
         id: build
         run: cargo build --workspace --all-targets
@@ -78,10 +203,35 @@ jobs:
       # passes in others fails the job as flaky, and the gate ends with what it said.
       - name: Repeat, and slow workers
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: python scripts/gate.py --only repeat,slow --repeat 2 --jobs 4 --no-gpu
+        run: cargo run -q -p specula-examen -- gate --only repeat,slow --repeat 2 --jobs 4 --no-gpu
       - name: Clippy
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Say which commit this build folder is of
+        if: ${{ github.event_name == 'push' }}
+        run: cargo run -q -p specula-examen --target-dir target-tools -- kept --mark target/built-at
+      - uses: actions/cache/save@v4
+        if: ${{ github.event_name == 'push' }}
+        with:
+          path: target
+          key: target-windows-gnu-1.100.0-${{ github.sha }}
+
+  green:
+    # The commit the next push to main is measured from: written only when a push's builds and
+    # tests ran and every job passed. A push of documents alone leaves it where it was.
+    name: last green commit
+    needs: [changes, docs, test, android-check, windows-gnu, commit-messages]
+    if: ${{ github.event_name == 'push' && needs.changes.outputs.code == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write the commit
+        run: |
+          mkdir -p "$RUNNER_TEMP/last-green"
+          echo "$GITHUB_SHA" > "$RUNNER_TEMP/last-green/sha"
+      - uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/last-green
+          key: last-green-${{ github.sha }}
 
   commit-messages:
     # This repository is public: session and share links (claude.ai or any other) don't belong in commit

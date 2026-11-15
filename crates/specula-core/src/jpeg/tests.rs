@@ -26,7 +26,7 @@ fn picture(w: u32, h: u32) -> Vec<u8> {
 /// What a decoder should give back for `color` (alpha is never stored).
 fn expected(src: &[u8], color: ColorModel) -> Vec<u8> {
     let mut out = Vec::with_capacity(src.len());
-    for p in src.chunks_exact(4) {
+    for p in src.as_chunks::<4>().0 {
         let (r, g, b, a) = (p[0] as u32, p[1] as u32, p[2] as u32, p[3] as u32);
         match color {
             ColorModel::Gray => {
@@ -46,7 +46,7 @@ fn psnr(a: &[u8], b: &[u8]) -> f64 {
     assert_eq!(a.len(), b.len());
     let mut se = 0f64;
     let mut n = 0f64;
-    for (pa, pb) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
+    for (pa, pb) in a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0) {
         for k in 0..3 {
             let d = pa[k] as f64 - pb[k] as f64;
             se += d * d;
@@ -142,7 +142,7 @@ fn flat_and_extreme_images() {
     for v in [0u8, 128, 255] {
         let src = vec![v; 16 * 16 * 4];
         let img = decode(&encode_baseline(16, 16, &src, 100)).unwrap();
-        assert!(img.rgba.chunks_exact(4).all(|p| p[0].abs_diff(v) <= 1 && p[3] == 255), "{v}");
+        assert!(img.rgba.as_chunks::<4>().0.iter().all(|p| p[0].abs_diff(v) <= 1 && p[3] == 255), "{v}");
     }
     // Checkerboard at quality 100: high-frequency content, largest coefficients.
     let src: Vec<u8> = (0..32 * 32).flat_map(|i| if (i % 32 + i / 32) % 2 == 0 { [0, 0, 0, 255] } else { [255, 255, 255, 255] }).collect();

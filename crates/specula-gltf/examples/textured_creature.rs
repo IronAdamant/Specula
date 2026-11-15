@@ -80,11 +80,11 @@ fn split(glb: &[u8]) -> Result<(Json, Vec<u8>), String> {
 
 fn join(json: &Json, bin: &[u8]) -> Vec<u8> {
     let mut j = json.to_string().into_bytes();
-    while j.len() % 4 != 0 {
+    while !j.len().is_multiple_of(4) {
         j.push(b' ');
     }
     let mut b = bin.to_vec();
-    while b.len() % 4 != 0 {
+    while !b.len().is_multiple_of(4) {
         b.push(0);
     }
     let mut out = Vec::new();

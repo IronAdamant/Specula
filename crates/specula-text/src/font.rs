@@ -637,7 +637,7 @@ fn family_name(v: View<'_>) -> Result<Option<String>, FontError> {
         let Ok(bytes) = v.bytes(storage + off, len) else { continue };
         let (plat_score, text) = match (platform, encoding) {
             (3, 1) | (3, 10) | (0, _) => {
-                let units: Vec<u16> = bytes.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+                let units: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
                 let lang = if platform == 3 && language == 0x409 { 3 } else { 2 };
                 (lang, String::from_utf16_lossy(&units))
             }
@@ -1095,7 +1095,7 @@ pub(crate) mod tests {
                 be16(glyf, (p.1 - last) as u16);
                 last = p.1;
             }
-            while glyf.len() % 4 != 0 {
+            while !glyf.len().is_multiple_of(4) {
                 glyf.push(0);
             }
         };

@@ -874,11 +874,11 @@ impl Run {
                         }
                     }
                     let every = self.spec.checkpoint_every;
-                    if self.tick > 0 && self.tick % every == 0 && self.last_tick_hash != Some(self.tick) {
+                    if self.tick > 0 && self.tick.is_multiple_of(every) && self.last_tick_hash != Some(self.tick) {
                         return Action::Hash(HashPoint::Tick);
                     }
                     if let Some(u) = &self.spec.until {
-                        if self.tick % u.every == 0 && self.until_checked != Some(self.tick) {
+                        if self.tick.is_multiple_of(u.every) && self.until_checked != Some(self.tick) {
                             self.pending = Some(Why::Until);
                             return Action::Call(Why::Until);
                         }

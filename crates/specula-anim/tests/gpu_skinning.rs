@@ -89,7 +89,7 @@ fn gpu_skinning_matches_cpu_skinning_for_every_creature() {
             a.skin(&set, &mut model, &mut skin);
             let mut flat = Vec::new();
             write_gpu_matrices(&skin, &mut flat);
-            let bones: Vec<[f32; 16]> = flat.chunks_exact(16).map(|c| c.try_into().unwrap()).collect();
+            let bones: Vec<[f32; 16]> = flat.as_chunks::<16>().0.to_vec();
             let cpu = skin_mesh(&mesh, &skin);
             (mesh, bones, cpu)
         })

@@ -186,7 +186,7 @@ impl AssetFacts {
             for (pi, part) in m.parts.iter().enumerate() {
                 let mi = materials.iter().position(|f| f.name == part.material).unwrap_or(usize::MAX);
                 let idx = m.part_indices(pi);
-                for t in idx.chunks_exact(3) {
+                for t in idx.as_chunks::<3>().0 {
                     let [a, b, c] = [t[0] as usize, t[1] as usize, t[2] as usize];
                     let (Some(pa), Some(pb), Some(pc)) = (m.positions.get(a), m.positions.get(b), m.positions.get(c)) else { continue };
                     let u = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];

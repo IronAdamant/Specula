@@ -130,7 +130,7 @@ impl Bvh {
         let mut steps = 0u32;
         while let Some((ni, start, end, depth)) = work.pop() {
             steps = steps.wrapping_add(1);
-            if steps % 256 == 0 && cancelled() {
+            if steps.is_multiple_of(256) && cancelled() {
                 return None;
             }
             let (mut lo, mut hi) = (EMPTY_LO, EMPTY_HI);

@@ -36,6 +36,7 @@ members = [
     "games/colloquium",
     "games/quaestio",
     "games/exemplum",
+    "tools/examen",
 ]
 
 # Lints every member inherits (`[lints] workspace = true` in its Cargo.toml; crates/specula/tests/
@@ -54,7 +55,7 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/IronAdamant/Specula"
 authors = ["Specula contributors"]
-rust-version = "1.85"
+rust-version = "1.100.0"
 
 # Zero third-party crates: only path dependencies on workspace members are allowed.
 # Enforced by crates/specula/tests/zero_dep.rs (runs in CI).

@@ -357,7 +357,7 @@ pub fn decode(bytes: &[u8]) -> Result<Image, PngError> {
                 header = Some(Header::parse(data)?);
             }
             b"PLTE" => {
-                if len % 3 != 0 || len == 0 || len > 256 * 3 {
+                if !len.is_multiple_of(3) || len == 0 || len > 256 * 3 {
                     return Err(PngError::new(format!("PLTE length {len} is invalid")));
                 }
                 palette = data.chunks(3).map(|c| [c[0], c[1], c[2], 255]).collect();
@@ -406,7 +406,7 @@ pub fn decode(bytes: &[u8]) -> Result<Image, PngError> {
         }
         2 => {
             let key = trns_key::<3>(&trns)?;
-            for px in pixels.chunks_exact(3) {
+            for px in pixels.as_chunks::<3>().0 {
                 let rgb = [px[0] as u16, px[1] as u16, px[2] as u16];
                 let a = if key == Some(rgb) { 0 } else { 255 };
                 rgba.extend_from_slice(&[px[0], px[1], px[2], a]);
@@ -432,7 +432,7 @@ pub fn decode(bytes: &[u8]) -> Result<Image, PngError> {
             }
         }
         4 => {
-            for px in pixels.chunks_exact(2) {
+            for px in pixels.as_chunks::<2>().0 {
                 rgba.extend_from_slice(&[px[0], px[0], px[0], px[1]]);
             }
         }

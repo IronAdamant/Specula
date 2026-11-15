@@ -208,7 +208,7 @@ impl GpuOverlay {
                     }
                 }
                 DrawCmd::Mesh { start, end } => {
-                    for t in list.vertices[start as usize..end as usize].chunks_exact(3) {
+                    for t in list.vertices[start as usize..end as usize].as_chunks::<3>().0 {
                         self.quads.push(OverlayQuad {
                             clip,
                             ..OverlayQuad::triangle([t[0].pos, t[1].pos, t[2].pos], [t[0].color, t[1].color, t[2].color])

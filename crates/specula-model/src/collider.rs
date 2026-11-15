@@ -287,7 +287,7 @@ mod tests {
     use crate::shape::Shape;
 
     fn inside_hull(p: V3, pts: &[V3], idx: &[u32], tol: f32) -> bool {
-        idx.chunks_exact(3).all(|t| {
+        idx.as_chunks::<3>().0.iter().all(|t| {
             let (a, b, c) = (pts[t[0] as usize], pts[t[1] as usize], pts[t[2] as usize]);
             let n = math3::normalize(math3::tri_normal(a, b, c));
             math3::dot(n, math3::sub(p, a)) <= tol
@@ -345,7 +345,7 @@ mod tests {
         assert!(note.is_none());
         let Collider::ConvexHull { points, indices } = c else { panic!("expected a hull") };
         assert!(points.len() <= MAX_MOVING_HULL_POINTS && points.len() >= 8, "{}", points.len());
-        let worst = s.positions.iter().map(|q| indices.chunks_exact(3).map(|t| { let (a, b, c) = (points[t[0] as usize], points[t[1] as usize], points[t[2] as usize]); math3::dot(math3::normalize(math3::tri_normal(a, b, c)), math3::sub(*q, a)) }).fold(f32::MIN, f32::max)).fold(f32::MIN, f32::max);
+        let worst = s.positions.iter().map(|q| indices.as_chunks::<3>().0.iter().map(|t| { let (a, b, c) = (points[t[0] as usize], points[t[1] as usize], points[t[2] as usize]); math3::dot(math3::normalize(math3::tri_normal(a, b, c)), math3::sub(*q, a)) }).fold(f32::MIN, f32::max)).fold(f32::MIN, f32::max);
         assert!(worst < 0.4, "the 16-point hull is spread over the whole sphere (worst gap {worst})");
         for q in s.positions.iter().step_by(7) {
             assert!(inside_hull(*q, &points, &indices, 0.45));

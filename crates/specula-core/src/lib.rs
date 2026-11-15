@@ -26,7 +26,7 @@ pub use json::{Json, JsonError};
 
 /// The bound a test puts on how long something took, when the speed is the point (a budget).
 /// It is `tight` when the test runs alone (`SPECULA_SPEED_TESTS` is set: the `speed` step of
-/// `scripts/gate.py`, one test at a time), and at least 5 s in every other run: a full test run
+/// the gate, `tools/examen`, one test at a time), and at least 5 s in every other run: a full test run
 /// has sixteen test threads and several engines on one GPU, where "under 20 ms" holds most of
 /// the time, and a gate must not pass by luck (AGENTS.md, "The gate"). A bare bound shorter
 /// than 5 s on a time fails `crates/specula/tests/clock_guard.rs`, which also keeps the copies

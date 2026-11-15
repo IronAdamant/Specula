@@ -1836,7 +1836,7 @@ fn mesh_layout(vertices: &[Vertex], indices: &[u32], streams: &MeshStreams) -> R
             indices.len()
         )));
     }
-    if indices.len() % 3 != 0 {
+    if !indices.len().is_multiple_of(3) {
         return Err(GpuError::new(format!("upload_mesh: index count {} is not a multiple of 3", indices.len())));
     }
     if let Some((at, &bad)) = indices.iter().enumerate().find(|(_, &i)| i as usize >= vertices.len()) {

@@ -165,7 +165,7 @@ impl MeshData {
     /// Checks every structural rule; the first violation is returned with its element index.
     pub fn validate(&self) -> Result<(), MeshError> {
         let n = self.positions.len();
-        if self.normals.len() != n || self.colors.len() != n || self.indices.len() % 3 != 0 {
+        if self.normals.len() != n || self.colors.len() != n || !self.indices.len().is_multiple_of(3) {
             return Err(err(
                 MeshErrorCode::LengthMismatch,
                 None,
@@ -244,7 +244,7 @@ impl MeshData {
             *tg = transform_tangent(t, *tg, mirror);
         }
         if mirror {
-            for tri in self.indices.chunks_exact_mut(3) {
+            for tri in self.indices.as_chunks_mut::<3>().0 {
                 tri.swap(1, 2);
             }
         }
@@ -351,7 +351,7 @@ impl MeshData {
             })
             .collect();
         let mut edges: HashMap<(u32, u32), i32> = HashMap::new();
-        for tri in self.indices.chunks_exact(3) {
+        for tri in self.indices.as_chunks::<3>().0 {
             for k in 0..3 {
                 let (a, b) = (weld[tri[k] as usize], weld[tri[(k + 1) % 3] as usize]);
                 *edges.entry((a, b)).or_insert(0) += 1;

@@ -480,7 +480,7 @@ fn quantize(w: [f32; 4]) -> [u8; 4] {
 fn triangles(mode: u32, idx: &[u32], path: &str) -> Result<Vec<u32>, GltfError> {
     match mode {
         4 => {
-            if idx.len() % 3 != 0 {
+            if !idx.len().is_multiple_of(3) {
                 return Err(gerr(C::InvalidData, path, format!("TRIANGLES with {} indices (not a multiple of 3)", idx.len())));
             }
             Ok(idx.to_vec())
@@ -743,7 +743,7 @@ fn read_mesh(g: &GeoCtx, mats: &mut Materials, node: usize, mi: usize, skin: Opt
                     if bad > 0 {
                         // Zero normals: the area-weighted normal of the triangles that use them.
                         let mut acc = vec![[0.0f32; 3]; n];
-                        for t in tris.chunks_exact(3) {
+                        for t in tris.as_chunks::<3>().0 {
                             let (a, b2, c) = (inst.mesh.positions[b as usize + t[0] as usize], inst.mesh.positions[b as usize + t[1] as usize], inst.mesh.positions[b as usize + t[2] as usize]);
                             let fnorm = math3::tri_normal(a, b2, c);
                             for &v in t {
@@ -764,7 +764,7 @@ fn read_mesh(g: &GeoCtx, mats: &mut Materials, node: usize, mi: usize, skin: Opt
             indices.extend(tris.iter().map(|&i| base + i));
         } else {
             // No normals: flat shading, one vertex per triangle corner (glTF requires flat normals).
-            for t in tris.chunks_exact(3) {
+            for t in tris.as_chunks::<3>().0 {
                 let p = |k: usize| [pos[3 * t[k] as usize], pos[3 * t[k] as usize + 1], pos[3 * t[k] as usize + 2]];
                 let fnorm = math3::tri_normal(p(0), p(1), p(2));
                 let nn = if math3::length(fnorm) > 1e-20 { math3::normalize(fnorm) } else { [0.0, 1.0, 0.0] };
@@ -811,7 +811,7 @@ fn drop_degenerate(m: &mut MeshData) -> usize {
     let mut dropped = 0;
     for p in &m.parts {
         let first = indices.len() as u32;
-        for t in m.indices[p.first_index as usize..(p.first_index + p.index_count) as usize].chunks_exact(3) {
+        for t in m.indices[p.first_index as usize..(p.first_index + p.index_count) as usize].as_chunks::<3>().0 {
             let ok = t[0] != t[1] && t[1] != t[2] && t[0] != t[2] && {
                 let (a, b, c) = (m.positions[t[0] as usize], m.positions[t[1] as usize], m.positions[t[2] as usize]);
                 let area = 0.5 * math3::length(math3::tri_normal(a, b, c));
@@ -1534,7 +1534,7 @@ pub(crate) fn convert(l: &Loaded, opts: &ImportOptions, mut warnings: Vec<Warnin
                     }
                 }
                 if all_det_neg && !inst.mesh.positions.is_empty() {
-                    for t in inst.mesh.indices.chunks_exact_mut(3) {
+                    for t in inst.mesh.indices.as_chunks_mut::<3>().0 {
                         t.swap(1, 2);
                     }
                 }

@@ -1,0 +1,42 @@
+name: Newest stable Rust
+
+# The repository pins its Rust (rust-toolchain.toml). This run tries the newest stable once a
+# week and says what moving the pin would meet: a failure here blocks nothing and changes
+# nothing. Moving the pin is a change of its own, made on purpose and passed through the gate
+# (docs/ROADMAP.md, M6, "A Rust version policy"). It builds from nothing, with no kept build
+# folder, so it is also the run that would show a kept folder hiding something.
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  # (Named in the environment, this is used in place of the version rust-toolchain.toml pins.)
+  RUSTUP_TOOLCHAIN: stable
+
+jobs:
+  newest:
+    name: newest stable (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install the newest stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustc -vV
+      - name: Build
+        id: build
+        run: cargo build --workspace --all-targets
+      - name: Test
+        run: cargo test --workspace --no-fail-fast
+      - name: Clippy (what the newest one would ask for)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: cargo clippy --workspace --all-targets -- -D warnings

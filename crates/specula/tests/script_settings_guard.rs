@@ -13,9 +13,8 @@
 use std::path::Path;
 
 /// Scripts that start a process which isn't the engine, and what it is.
-const NOT_AN_ENGINE: &[(&str, &str)] = &[("m3_exit.py", "the PowerShell GPU-load sampler"), ("gate.py", "cargo (tests, clippy and builds): it starts no game"),
+const NOT_AN_ENGINE: &[(&str, &str)] = &[("m3_exit.py", "the PowerShell GPU-load sampler"),
     ("leverage.py", "an agent's own command line (settings.json's runner: a builder or a judge of the measured comparison), never a game; its engines are started by `specula open` with the run's --settings folder and --headless"),
-    ("live_checks.py", "the check scripts themselves, each with its own ports and log: a check starts its own engines through specula_mcp.Engine"),
     ("launch_check.py", "the executable's own commands (specula projects, open, call...), each given --settings; the engines `specula open` starts are headless or open with --no-activate"),
 ];
 
@@ -264,36 +263,17 @@ fn scripts_connect_to_an_engine_before_they_set_a_timeout() {
     );
 }
 
-/// The gate and the audit's runner pass their own tests (`--self-test`: the gate's reading of
-/// logs and of rustup's answer, what the runner counts as left behind by a check; nothing is
-/// started). They were run by hand only, which is to say when someone remembered. Skipped, and
-/// said so, on a machine with no Python.
-#[test]
-fn the_gate_and_the_audits_runner_pass_their_own_tests() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts");
-    for python in ["python", "python3"] {
-        // (A machine may answer `python` with a stub that is not Python: ask it for its version.)
-        let runs = std::process::Command::new(python).arg("--version").output().is_ok_and(|v| v.status.success());
-        if !runs {
-            continue;
-        }
-        for script in ["gate.py", "live_checks.py"] {
-            let out = std::process::Command::new(python).arg(dir.join(script)).arg("--self-test").output().expect("python ran a moment ago");
-            let said = String::from_utf8_lossy(&out.stdout).into_owned();
-            assert!(out.status.success() && said.contains("self-test: ok"), "scripts/{script} --self-test failed:\n{said}\n{}", String::from_utf8_lossy(&out.stderr));
-        }
-        return;
-    }
-    println!("skipped: no python on this machine to run the scripts' own tests");
-}
+// (The gate and the audit's runner are Rust since 2026-11-16, `tools/examen`: their own tests
+// are that crate's unit tests and run with the workspace's. The test that ran the two Python
+// scripts' `--self-test` here went with them.)
 
 /// A script that edits one of the repository's own sources and puts it back handles it as
 /// bytes. Python on Windows writes text with CRLF line ends, so a source read and restored as
 /// text comes back changed in a checkout whose files are LF, and a comparison made as text
 /// says it is the same: M5's last audit passed with `games/ambulo/src/lib.rs` left that way by
 /// `trace_check.py`. The audit's runner looks too, after every check, at what git says a
-/// check left behind (`live_checks.py`, `tree_state`): this test holds the form that caused it
-/// and that the runner still looks.
+/// check left behind (`tools/examen/src/live.rs`, `tree_state`): this test holds the form that
+/// caused it and that the runner still looks.
 #[test]
 fn scripts_put_a_source_of_the_repository_back_byte_for_byte() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts");
@@ -326,10 +306,13 @@ fn scripts_put_a_source_of_the_repository_back_byte_for_byte() {
     }
     assert!(sources >= 4, "the guard found {sources} scripts' names for a source of the repository: has their form changed?");
     assert!(bad.is_empty(), "these handle a source of the repository as text (read_bytes and write_bytes keep its line ends):\n{}", bad.join("\n"));
-    let runner = std::fs::read_to_string(dir.join("live_checks.py")).expect("scripts/live_checks.py");
+    let runner = std::fs::read_to_string(dir.join("../tools/examen/src/live.rs")).expect("tools/examen/src/live.rs");
     let lines: Vec<&str> = runner.lines().map(str::trim).collect();
     assert!(
-        runner.contains(r#"["git", "status", "--porcelain", "-uall"]"#) && runner.contains(r#"["git", "diff", "HEAD"]"#) && lines.contains(&"left = left_behind(tree, now)") && lines.contains(&r#"failed = [r for r in results if r["exit"] != 0 or r["left"]]"#),
-        "scripts/live_checks.py fails a check that leaves the checkout changed"
+        runner.contains(r#"&["git", "status", "--porcelain", "-uall"]"#)
+            && runner.contains(r#"&["git", "diff", "HEAD"]"#)
+            && lines.contains(&"let left = left_behind(tree.as_ref(), now.as_ref());")
+            && lines.contains(&"let passed = ran.exit.ok() && left.is_empty();"),
+        "tools/examen/src/live.rs fails a check that leaves the checkout changed"
     );
 }

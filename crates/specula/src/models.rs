@@ -3870,7 +3870,7 @@ impl GpuModels {
         a.time = if time_s.is_finite() { time_s } else { 0.0 };
         a.frame += 1;
         a.bones.clear();
-        if a.frame % 64 == 0 {
+        if a.frame.is_multiple_of(64) {
             // Entities not drawn for a while (deleted, hidden, off screen) give their animators back.
             let frame = a.frame;
             let AnimFrame { entities, pool, .. } = &mut *a;
@@ -4860,7 +4860,7 @@ mod tests {
         };
         // As it is: thin blades. Every level covers at least half of level 0's share (plain
         // averaging loses them: `alpha_coverage_is_kept_through_the_mips`).
-        let cover = |l: &[u8]| l.chunks_exact(4).filter(|p| p[3] >= cutoff8).count() as f64 / (l.len() / 4) as f64;
+        let cover = |l: &[u8]| l.as_chunks::<4>().0.iter().filter(|p| p[3] >= cutoff8).count() as f64 / (l.len() / 4) as f64;
         let blades = levels_of(&grass, "blades.glb");
         assert!(cover(&blades[0]) > 0.02 && blades.len() > 4);
         for (i, l) in blades.iter().enumerate().take(4) {
@@ -4871,12 +4871,12 @@ mod tests {
         let mut solid = grass.clone();
         for (_, set) in &mut solid.extras.textures {
             let mut opaque = (**set).clone();
-            opaque.base_color.chunks_exact_mut(4).for_each(|p| p[3] = 255);
+            opaque.base_color.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255);
             opaque.hash ^= 1;
             *set = Arc::new(opaque);
         }
         let levels = levels_of(&solid, "solid.glb");
-        assert!(levels.iter().all(|l| l.chunks_exact(4).all(|p| p[3] == 255)), "an opaque mask's mips are opaque: nothing is cut out of a solid surface");
+        assert!(levels.iter().all(|l| l.as_chunks::<4>().0.iter().all(|p| p[3] == 255)), "an opaque mask's mips are opaque: nothing is cut out of a solid surface");
         // One texture, tested two ways: left with plain mips.
         let m = |mode, cutoff| specula_gltf::ImportedMaterial { alpha_mode: mode, alpha_cutoff: cutoff, base_color_texture: Some(specula_gltf::TextureRef { texture: 0, tex_coord: 0, scale: 1.0 }), ..plain_material() };
         use specula_gltf::AlphaMode::{Blend, Mask, Opaque};

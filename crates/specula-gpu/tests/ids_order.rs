@@ -49,7 +49,7 @@ fn counted(gpu: &mut Gpu, target: TargetId, s: &Scene) -> (Vec<u64>, Vec<u8>) {
 
 /// Pixels of `rgba` within 24 (per channel) of `c`.
 fn showing(rgba: &[u8], c: [u8; 3]) -> u64 {
-    rgba.chunks_exact(4).filter(|p| (0..3).all(|i| (p[i] as i32 - c[i] as i32).abs() <= 24)).count() as u64
+    rgba.as_chunks::<4>().0.iter().filter(|p| (0..3).all(|i| (p[i] as i32 - c[i] as i32).abs() <= 24)).count() as u64
 }
 
 /// The colour a subject draws in, alone (the middle of the image).

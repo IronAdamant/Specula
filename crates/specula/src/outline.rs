@@ -175,7 +175,7 @@ impl Scan {
             if n >= budget.max_steps {
                 return false;
             }
-            !(n % CHECK_EVERY == 0 && started.elapsed() >= budget.max_time)
+            !(n.is_multiple_of(CHECK_EVERY) && started.elapsed() >= budget.max_time)
         });
         if ended {
             self.done = true;

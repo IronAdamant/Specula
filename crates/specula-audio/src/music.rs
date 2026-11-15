@@ -906,7 +906,7 @@ mod tests {
         }
         // Panned left: the left channel is louder.
         a.mix(0, &mut x);
-        let (l, r) = x.chunks_exact(2).fold((0f32, 0f32), |(l, r), f| (l + f[0].abs(), r + f[1].abs()));
+        let (l, r) = x.as_chunks::<2>().0.iter().fold((0f32, 0f32), |(l, r), f| (l + f[0].abs(), r + f[1].abs()));
         assert!(l > 1.5 * r);
     }
 

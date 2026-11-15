@@ -193,7 +193,7 @@ impl Lightness {
 
 /// The Oklab lightness of every pixel of `rgba` (computed once, shared by the measures).
 pub fn lightness_map(rgba: &[u8]) -> Vec<f32> {
-    rgba.chunks_exact(4).map(|p| lightness8(p[0], p[1], p[2])).collect()
+    rgba.as_chunks::<4>().0.iter().map(|p| lightness8(p[0], p[1], p[2])).collect()
 }
 
 pub fn lightness(rgba: &[u8], mask: &Mask) -> Lightness {
@@ -300,7 +300,7 @@ pub fn edge_contrast_of(lmap: &[f32], mask: &Mask, r: u32) -> Edge {
 
 /// Lightness `rgba` greyscale (the value pass), in place.
 pub fn to_value(rgba: &mut [u8]) {
-    for p in rgba.chunks_exact_mut(4) {
+    for p in rgba.as_chunks_mut::<4>().0 {
         let l = (lightness8(p[0], p[1], p[2]) * 255.0).round().clamp(0.0, 255.0) as u8;
         p[0] = l;
         p[1] = l;

@@ -77,6 +77,16 @@ Read [HANDOFF.md](HANDOFF.md) first.
     ([docs/design/TRACE.md](docs/design/TRACE.md)). Every new tool needs a family and a one-line catalog entry
     (`toolscope.rs`). Facts about what was drawn come from the frame record, and agent-reported values never show as
     engine results.
+16. **Rust only, and one Rust version** (owner, 2026-11-16: "The only programming language used here should be
+    Rust").
+    - **No new Python, shell or PowerShell.** A new check or tool is Rust, in `tools/examen`. The scripts in
+      `scripts/` are being ported there and go when their ports are proved (ROADMAP M6, "The repository's own
+      tooling in Rust"). Data (JSON, TOML, CI's workflow files) is not a programming language.
+    - **The Rust version is pinned** in `rust-toolchain.toml`. It is the declared minimum (`rust-version`), CI
+      installs it by number, and a test holds the three together. rustup reads the file in this checkout, so
+      run cargo here with no `RUSTUP_TOOLCHAIN` and no `+toolchain`; **never change a machine's default
+      toolchain for it.** The pin moves on purpose, as a change of its own, through `gate --all`: a newer
+      Rust changes what clippy asks for and can change what Cargo does (HANDOFF, "Gotchas").
 
 ## Layout
 
@@ -111,6 +121,7 @@ Read [HANDOFF.md](HANDOFF.md) first.
 | `specula-tempus` | timelines, sequencer tracks and camera rails as data |
 | `games/sepulcra`, `games/sepulcra-app` | the first game: headless rules, and the app hosted by the engine |
 | `games/ambulo` | example module: a walking, jumping character (the module host's proof) |
+| `tools/examen` (`specula-examen`) | the repository's own tooling, in Rust: the gate, the live checks' runner, what a change needs verified, the document guards |
 | `games/inventarium`, `facultas`, `colloquium`, `quaestio`, `exemplum` | gameplay modules as SDK examples: inventory, abilities, dialogue, quests, and a playable demo of the four |
 
 ## Tooling on this machine
@@ -152,17 +163,40 @@ wikifier: disable map, status
 
 ## The gate
 
-`python scripts/gate.py` is what a change passes before it is reported or merged: the workspace's tests once, the
-engine's library tests five more times at a high thread count, once more with every worker thread starting late
-(`SPECULA_TEST_WORKER_DELAY_MS`), the tests that hold a speed budget one at a time (`SPECULA_SPEED_TESTS`), clippy
-for Windows and Linux with warnings denied, and the debug and release builds. It first says which Rust it runs
-with and fails when a newer stable is out, unless told `--older-rust`: CI installs the newest stable on every
-run, so a gate passed on an older one has not tested what CI builds with (`RUSTUP_TOOLCHAIN=1.100.0 python
-scripts/gate.py` runs it with a toolchain installed beside the default). It then reports which GPU adapters
-the tests will see, and fails without one unless told `--no-gpu` (GPU tests skip themselves cleanly, so a machine
-whose driver stopped loading would otherwise pass having tested nothing). It reads whole logs and keeps them
-(`<target>/gate/`); a run in which no test ran, or one past its time limit, fails. A failed gate ends with
-what each failed test said, so a failure on CI, where the logs go with the machine, can be read.
+`cargo run -p specula-examen -- gate` is what a change passes before it is reported or merged.
+
+**It is sized to what changed** since `origin/main` (owner, 2026-11-16; `tools/examen/src/changed.rs` puts
+every changed path in a tier, and the change's tier is the highest):
+
+| What changed | What runs |
+|---|---|
+| Markdown documents, and pictures under `docs/`, that no test reads | the document guards and the tooling's own tests (seconds) |
+| Tests and examples of a crate, the tooling, scripts, `evals/`, `perf/`, and documents or data under `docs/` that tests read | the workspace's tests once; clippy |
+| The engine, a game, the workflows, or any path `changed.rs` does not know | everything: also the engine's library tests five more times at a high thread count, once more with every worker thread starting late (`SPECULA_TEST_WORKER_DELAY_MS`), the tests that hold a speed budget one at a time, and the debug and release builds |
+
+- Its first lines say what was chosen and what was left out, and the summary keeps them: a sized pass is not
+  a full one. **`--all` runs everything**: at the end of a milestone, and when the Rust pin moves.
+- A path nobody listed is the engine's, so sizing only leaves a step out for a path known not to need it. A
+  file is known by what it is, not by its folder: `docs/` also holds assets that tests read. What a test
+  reads under `docs/`, or as a document, is listed in `changed.rs`, and a test there holds the list against
+  every quoted path in the sources (a path built another way is not seen by it: list it by hand).
+- **A game has no tier of its own**: the engine's library tests read Sepulcra's assets, so a change under
+  `games/` gets what the engine gets. What decides the size (the workflows, `changed.rs`) is never sized by
+  itself.
+- It first says which Rust it runs with, and fails when that is not the version `rust-toolchain.toml` pins
+  (rule 16).
+- It then reports which GPU adapters the tests will see, and fails without one unless told `--no-gpu` (GPU
+  tests skip themselves cleanly, so a machine whose driver stopped loading would otherwise pass having
+  tested nothing).
+- It reads whole logs and keeps them (`<target>/gate/`); a run in which no test ran, or one past its time
+  limit, fails. A failed gate ends with what each failed test said, so a failure on CI, where the logs go
+  with the machine, can be read.
+- **CI** runs the document guards on every push; the builds and tests run when anything but documents
+  changed since the last commit of `main` whose builds and tests all passed (not since the push before:
+  documents pushed over a failed push still run everything). It keeps its build folder between runs (`examen kept`: saved by pushes to `main`, and cleared
+  whenever a manifest, the lock file, a `clippy.toml`, the toolchain file or a workflow changed, since
+  cargo does not tell those by a source's time), and installs the pinned Rust by number. A weekly job
+  (`newest.yml`) tries the newest stable from nothing, and blocks nothing.
 
 - **A gate must not pass by luck** (owner, 2026-11-12). A test that fails in some runs and passes in others is
   reported as FLAKY and fails the gate. A failure seen once is a bug until its cause is found: "it passes when run
@@ -180,7 +214,7 @@ what each failed test said, so a failure on CI, where the logs go with the machi
 
 ## Live checks (GPU + desktop; CI can't run these)
 
-`python scripts/live_checks.py` runs every live check, one after the other, each on its own ports, after
+`cargo run -p specula-examen -- live` runs every live check, one after the other, each on its own ports, after
 building the engine and the game in this checkout (debug and release). Run it at the end of a milestone and
 after anything wide; `--only NAME,NAME` runs a few. A check that fails there is a finding: find its cause
 (M5's audit found thirteen checks that had gone stale because they only ran when their own lane was

@@ -236,7 +236,7 @@ fn loudness_target_is_met() {
 fn stereo_pan_places_layers() {
     let out = r(r#"{"sound": 1, "name": "st", "duration": 0.2, "channels": 2,
         "layers": [{"pan": -1, "source": {"wave": "sine", "freq": 300}}]}"#);
-    let (l, rr): (Vec<f32>, Vec<f32>) = out.samples.chunks_exact(2).map(|f| (f[0], f[1])).unzip();
+    let (l, rr): (Vec<f32>, Vec<f32>) = out.samples.as_chunks::<2>().0.iter().map(|f| (f[0], f[1])).unzip();
     assert!(rms(&l) > 0.3 && rms(&rr) < 1e-6);
 }
 

@@ -51,7 +51,7 @@ const fn zigzag() -> [usize; 64] {
     let mut i = 0;
     let mut s = 0usize;
     while s < 15 {
-        if s % 2 == 0 {
+        if s.is_multiple_of(2) {
             // Up and to the right: row decreasing.
             let mut r = if s < 8 { s } else { 7 };
             loop {
@@ -869,7 +869,7 @@ impl Decoder<'_> {
                 };
             }
             let out = &mut rgba[y * w * 4..(y + 1) * w * 4];
-            let px = out.chunks_exact_mut(4);
+            let px = out.as_chunks_mut::<4>().0.iter_mut();
             match (ncomp, transform) {
                 (1, _) => {
                     for (px, &g) in px.zip(row[0]) {

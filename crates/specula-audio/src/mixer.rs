@@ -743,7 +743,7 @@ impl Mixer {
                 let d = [(target[0] - g0[0]) / n as f32, (target[1] - g0[1]) / n as f32];
                 let (mut gl, mut gr) = (g0[0], g0[1]);
                 let out = &mut self.buses[s.bus as usize].buf[..n * 2];
-                for (o, x) in out.chunks_exact_mut(2).zip(buf.chunks_exact(2)) {
+                for (o, x) in out.as_chunks_mut::<2>().0.iter_mut().zip(buf.as_chunks::<2>().0) {
                     gl += d[0];
                     gr += d[1];
                     o[0] += x[0] * gl;
@@ -1316,7 +1316,7 @@ fn render_voice(v: &mut Voice, table: &SincTable, bus: &mut [f32], n: usize, rat
                 *x = lp.process(*x);
             }
         }
-        for (o, &x) in bus.chunks_exact_mut(2).zip(&src[..frames]) {
+        for (o, &x) in bus.as_chunks_mut::<2>().0.iter_mut().zip(&src[..frames]) {
             gl += d[0];
             gr += d[1];
             o[0] += x * gl;
@@ -1325,12 +1325,12 @@ fn render_voice(v: &mut Voice, table: &SincTable, bus: &mut [f32], n: usize, rat
     } else {
         if v.lp_on {
             let [lpl, lpr] = &mut v.lp;
-            for fr in src[..2 * frames].chunks_exact_mut(2) {
+            for fr in src[..2 * frames].as_chunks_mut::<2>().0 {
                 fr[0] = lpl.process(fr[0]);
                 fr[1] = lpr.process(fr[1]);
             }
         }
-        for (o, x) in bus.chunks_exact_mut(2).zip(src[..2 * frames].chunks_exact(2)) {
+        for (o, x) in bus.as_chunks_mut::<2>().0.iter_mut().zip(src[..2 * frames].as_chunks::<2>().0) {
             gl += d[0];
             gr += d[1];
             o[0] += x[0] * gl;

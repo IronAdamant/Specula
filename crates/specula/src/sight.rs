@@ -812,7 +812,7 @@ impl SubjectCache {
                 b.entries.push(std::sync::Arc::new(base));
             }
             n += 1;
-            if n % 64 == 0 && started.elapsed() >= budget {
+            if n.is_multiple_of(64) && started.elapsed() >= budget {
                 self.building = Some(b);
                 return false;
             }

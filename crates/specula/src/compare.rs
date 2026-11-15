@@ -448,7 +448,7 @@ pub fn side_by_side(images: &[&[u8]], w: u32, h: u32, gap: u32, max_w: u32) -> (
     let (tw, th) = (w / factor, h / factor);
     let (sw, sh) = (tw * n + gap * (n - 1), th);
     let mut out = vec![0u8; (sw * sh * 4) as usize];
-    for px in out.chunks_exact_mut(4) {
+    for px in out.as_chunks_mut::<4>().0 {
         px.copy_from_slice(&[24, 26, 30, 255]);
     }
     for (k, img) in images.iter().enumerate() {
@@ -533,7 +533,7 @@ mod tests {
         assert_eq!((same.changed, same.max, same.regions.len()), (0, 0, 0));
         // The heat image marks exactly the changed pixels in colour.
         let hm = heat(&after, &d, 8);
-        let coloured = hm.chunks_exact(4).filter(|p| p[0] != p[1] || p[1] != p[2]).count();
+        let coloured = hm.as_chunks::<4>().0.iter().filter(|p| p[0] != p[1] || p[1] != p[2]).count();
         assert_eq!(coloured, 59);
     }
 

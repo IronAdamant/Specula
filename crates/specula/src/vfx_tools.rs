@@ -656,7 +656,7 @@ impl Engine {
             let cols = (n as f64).sqrt().ceil() as u32;
             let rows = (n as u32).div_ceil(cols);
             let mut sheet = vec![0u8; (cols * tile * rows * tile * 4) as usize];
-            for px in sheet.chunks_exact_mut(4) {
+            for px in sheet.as_chunks_mut::<4>().0 {
                 px.copy_from_slice(&[24, 26, 30, 255]);
             }
             PreviewStage { camera, center, radius, cols, rows, sheet }

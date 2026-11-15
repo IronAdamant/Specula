@@ -111,7 +111,7 @@ fn split(glb: &[u8]) -> (Json, Vec<u8>) {
 
 fn join(json: &Json, bin: &[u8]) -> Vec<u8> {
     let mut text = json.to_string().into_bytes();
-    while text.len() % 4 != 0 {
+    while !text.len().is_multiple_of(4) {
         text.push(b' ');
     }
     let total = 12 + 8 + text.len() + 8 + bin.len();

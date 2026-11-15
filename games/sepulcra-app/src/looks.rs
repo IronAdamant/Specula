@@ -198,7 +198,7 @@ pub fn tombstone_spec(index: usize) -> ModelSpec {
     let tilt = ((index * 37) % 13) as f64 / 6.0 - 1.0;
     match index % 4 {
         1 => ModelSpec::new("recipes/headstone_carved.json").with_param("variant", 1.0).with_param("tilt", tilt),
-        3 => ModelSpec::new("recipes/headstone_carved.json").with_param("variant", if (index / 4) % 2 == 0 { 2.0 } else { 3.0 }).with_param("tilt", tilt),
+        3 => ModelSpec::new("recipes/headstone_carved.json").with_param("variant", if (index / 4).is_multiple_of(2) { 2.0 } else { 3.0 }).with_param("tilt", tilt),
         _ => ModelSpec::new("recipes/tombstone.json").with_seed(606 + index as u64 * 7).with_param("tilt", tilt),
     }
 }

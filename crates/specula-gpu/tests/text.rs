@@ -192,8 +192,8 @@ fn grazing_perspective_text_is_drawn_and_counted_by_sight() {
         gpu.render_with_ids(target, &frame, &[7]).unwrap();
         let rgba = gpu.read_rgba8(target).unwrap();
         write_png(&format!("text_grazing_{adapter:?}.png"), &rgba, w, h);
-        let lit = rgba.chunks_exact(4).filter(|p| p[1] > 128).count();
-        let soft = rgba.chunks_exact(4).filter(|p| p[1] > 8 && p[1] <= 128).count();
+        let lit = rgba.as_chunks::<4>().0.iter().filter(|p| p[1] > 128).count();
+        let soft = rgba.as_chunks::<4>().0.iter().filter(|p| p[1] > 8 && p[1] <= 128).count();
         assert!(lit > 150, "{test}: {lit} bright pixels");
         assert!(soft > 50 && soft < lit * 3, "{test}: anti-aliased edges, not a smear ({soft} soft, {lit} bright)");
         let counts = gpu.id_coverage(target, 7).unwrap();
@@ -221,7 +221,7 @@ fn bad_runs_are_refused_and_no_store_draws_nothing() {
     let glyphs = [GlyphInstance { word: 123_456, origin: [0.0; 2], size: 20.0, bounds: [0.0, 0.0, 1.0, 1.0], color: [1.0; 4] }; 3];
     let frame = FrameDesc { text: TextFrame { store: 9, words: &[], glyphs: &glyphs }, ..frame };
     gpu.render(target, &frame).unwrap();
-    assert!(gpu.read_rgba8(target).unwrap().chunks_exact(4).all(|p| p[1] == 0));
+    assert!(gpu.read_rgba8(target).unwrap().as_chunks::<4>().0.iter().all(|p| p[1] == 0));
     // Garbage words: every read is clamped inside the store; whatever shows, the GPU survives.
     let words = vec![0xFFFF_FFFFu32; 64];
     let frame = FrameDesc { text: TextFrame { store: 10, words: &words, glyphs: &glyphs }, ..frame };

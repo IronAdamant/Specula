@@ -104,7 +104,7 @@ pub fn preserve_alpha_coverage(levels: &mut [Vec<u8>], cutoff: f32) {
         return;
     }
     let c8 = (cutoff.min(1.0) * 255.0).round() as u32;
-    let covered = |l: &[u8], s: f32| l.chunks_exact(4).filter(|p| ((p[3] as f32 * s).round().min(255.0) as u32) >= c8).count();
+    let covered = |l: &[u8], s: f32| l.as_chunks::<4>().0.iter().filter(|p| ((p[3] as f32 * s).round().min(255.0) as u32) >= c8).count();
     let base = &levels[0];
     let target = covered(base, 1.0) as f64 / (base.len() / 4) as f64;
     for level in levels.iter_mut().skip(1) {
@@ -117,7 +117,7 @@ pub fn preserve_alpha_coverage(levels: &mut [Vec<u8>], cutoff: f32) {
         let (mut lo, mut hi) = if as_it_is < target {
             (1.0f32, 255.0f32)
         } else if as_it_is > target {
-            let most = level.chunks_exact(4).map(|p| p[3]).max().unwrap_or(0) as f32;
+            let most = level.as_chunks::<4>().0.iter().map(|p| p[3]).max().unwrap_or(0) as f32;
             let floor = if most > c8 as f32 { (c8 as f32 + 0.5 * (most - c8 as f32)) / most } else { 1.0 };
             (floor.min(1.0), 1.0f32)
         } else {
@@ -140,7 +140,7 @@ pub fn preserve_alpha_coverage(levels: &mut [Vec<u8>], cutoff: f32) {
         if s < 1.0 && covered(level, s) == covered(level, 1.0) {
             continue;
         }
-        for p in level.chunks_exact_mut(4) {
+        for p in level.as_chunks_mut::<4>().0 {
             p[3] = (p[3] as f32 * s).round().min(255.0) as u8;
         }
     }
@@ -171,7 +171,7 @@ pub fn generate_tangents(positions: &[[f32; 3]], normals: &[[f32; 3]], uvs: &[[f
     let n = positions.len().min(normals.len()).min(uvs.len());
     let mut tan = vec![[0.0f32; 3]; positions.len()];
     let mut bit = vec![[0.0f32; 3]; positions.len()];
-    for tri in indices.chunks_exact(3) {
+    for tri in indices.as_chunks::<3>().0 {
         let [a, b, c] = [tri[0] as usize, tri[1] as usize, tri[2] as usize];
         if a >= n || b >= n || c >= n {
             continue;
@@ -275,7 +275,7 @@ mod tests {
             (255.0 * (1.0 - ((x as f32 + 0.5) - centre).abs() / half).clamp(0.0, 1.0)).round() as u8
         };
         let px: Vec<u8> = (0..w * h).flat_map(|i| [60, 120, 40, alpha(i % w, i / w)]).collect();
-        let cover = |l: &[u8]| l.chunks_exact(4).filter(|p| p[3] >= 128).count() as f64 / (l.len() / 4) as f64;
+        let cover = |l: &[u8]| l.as_chunks::<4>().0.iter().filter(|p| p[3] >= 128).count() as f64 / (l.len() / 4) as f64;
         let plain = generate_mips(w, h, TextureFormat::Rgba8Srgb, &px).unwrap();
         let target = cover(&px);
         assert!((0.15..0.35).contains(&target), "{target}");
@@ -287,7 +287,7 @@ mod tests {
             let c = cover(l);
             assert!((c - target).abs() < 0.1, "level {i}: coverage {c}, level 0 {target}");
             // Colour is untouched.
-            assert!(l.chunks_exact(4).zip(plain[i].chunks_exact(4)).all(|(a, b)| a[..3] == b[..3]));
+            assert!(l.as_chunks::<4>().0.iter().zip(plain[i].as_chunks::<4>().0).all(|(a, b)| a[..3] == b[..3]));
         }
         // Deterministic, and a no-op for opaque materials.
         let mut again = plain.clone();
@@ -315,7 +315,7 @@ mod tests {
             let mut kept = plain.clone();
             preserve_alpha_coverage(&mut kept, cutoff);
             assert_eq!(kept, plain, "cutoff {cutoff}: an opaque mask is left as it is");
-            assert!(kept.iter().all(|l| l.chunks_exact(4).all(|p| p[3] as f32 > c8)), "cutoff {cutoff}: every mip alpha is above the cutoff");
+            assert!(kept.iter().all(|l| l.as_chunks::<4>().0.iter().all(|p| p[3] as f32 > c8)), "cutoff {cutoff}: every mip alpha is above the cutoff");
             // Mostly opaque, with holes of several sizes and soft rims (so the mips cover a
             // little more or less than the image and are scaled): a texel that was opaque
             // keeps at least half its margin above the cutoff, in every level.
@@ -329,14 +329,14 @@ mod tests {
             preserve_alpha_coverage(&mut kept, cutoff);
             // (Review R2, N1: a level that can't be thinned is left exactly as averaging made it.)
             for (i, (a, b)) in kept.iter().zip(&plain).enumerate() {
-                let cover = |l: &[u8]| l.chunks_exact(4).filter(|p| p[3] as f32 >= c8).count();
-                if a != b && a.chunks_exact(4).zip(b.chunks_exact(4)).all(|(x, y)| x[3] <= y[3]) {
+                let cover = |l: &[u8]| l.as_chunks::<4>().0.iter().filter(|p| p[3] as f32 >= c8).count();
+                if a != b && a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0).all(|(x, y)| x[3] <= y[3]) {
                     assert!(cover(a) < cover(b), "cutoff {cutoff}, level {i}: lowered without uncovering anything");
                 }
             }
             let solid_floor = c8 + 0.5 * (255.0 - c8) - 1.0;
             for (i, (a, b)) in kept.iter().zip(&plain).enumerate() {
-                let solid = a.chunks_exact(4).zip(b.chunks_exact(4)).filter(|(_, y)| y[3] == 255);
+                let solid = a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0).filter(|(_, y)| y[3] == 255);
                 assert!(solid.clone().count() > 0 || i > 4, "cutoff {cutoff}, level {i}: the level has opaque texels");
                 for (x, _) in solid {
                     assert!(x[3] as f32 >= solid_floor, "cutoff {cutoff}, level {i}: an opaque texel fell to {} (the cutoff is {c8})", x[3]);

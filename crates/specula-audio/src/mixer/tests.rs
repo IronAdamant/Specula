@@ -36,7 +36,7 @@ fn measure_freq(x: &[f32], rate: f64) -> f64 {
 }
 
 fn left(out: &[f32]) -> Vec<f32> {
-    out.chunks_exact(2).map(|f| f[0]).collect()
+    out.as_chunks::<2>().0.iter().map(|f| f[0]).collect()
 }
 
 #[test]
@@ -45,7 +45,7 @@ fn centre_pan_is_minus_3db_each_side() {
     h.play(&dc(0.5, 4800), PlayParams::default()).unwrap();
     let out = run(&mut m, 256);
     let g = std::f32::consts::FRAC_1_SQRT_2 * 0.5;
-    for f in out.chunks_exact(2) {
+    for f in out.as_chunks::<2>().0 {
         assert!((f[0] - g).abs() < 1e-6 && (f[1] - g).abs() < 1e-6, "{f:?}");
     }
 }
