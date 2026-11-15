@@ -123,7 +123,11 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       CI installs the newest stable on every run and nothing pins one; the engine runs Cargo and reads its
       output folders, so a change in Cargo is a change in the engine. Claude's lean, not decided: pin a
       version in the repository and CI, move to a newer one on purpose through the gate, and keep a
-      scheduled job on the newest that warns without blocking.
+      scheduled job on the newest that warns without blocking. Part of the same talk: `Cargo.toml`
+      declares Rust 1.85 as the oldest that works and nothing checks it (CI builds with the newest
+      only). An outside review built the workspace on 1.85.1 and its test targets did not compile
+      (two test lines, since changed); whether 1.85 stays the declared minimum, and what holds it,
+      is to be decided.
     - **How long verifying takes.** "Someone will be very concerned when they're pressed on project
       time. I'm already suspecting we got too many test items before we can ship games properly." Measured
       that day: the tests themselves run in about 2 minutes; CI compiles from nothing on every run (10
@@ -132,6 +136,16 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       decided: keep CI's build between runs, size the gate to what changed (docs, tests, engine), gate on
       one Rust version, bring a Linux machine into the local loop, and hold to this: changing the engine
       needs all of it, making a game with the engine must not.
+  - **An outside review before M6** (Grok, 2026-11-15, of `36c127a`, on a Linux machine with Rust 1.85 and
+    then 1.100; its report was checked point by point against the code before anything was changed).
+    Its run of the whole suite on Linux found two failures that CI's Linux image cannot show, both since
+    fixed at their cause: a model-reload test that failed in one run of two (the model library compared
+    file times alone, and two writes inside one tick of the clock carry one time: see CHANGELOG), and
+    the Japanese interface test (that machine's first CJK face has no Latin, and an interface slot's
+    face is the one face for all its text). Its documentation findings were right and are corrected:
+    the release order in ROADMAP, stale status lines, the declared Rust 1.85, the two style files
+    (below, "Gotchas"), ignored tests without a reason. What it could not show and nobody has: a
+    macOS run; a Linux run with a GPU.
   - **`docs/M5_CHECKLIST.md` is filled in** (2026-11-15, at the owner's request): 8 of its 15 items are
     verified by checks and ticked; 7 have a part left that only the owner can do, each said there. The
     short demo recording of the agent tools is no longer wanted.
@@ -207,7 +221,7 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     every window to a laptop screen at another scale. Checks that depend on a display pin their own
     (`ui_act {display}`), and scripts speak to windows in physical pixels (`scripts/specula_mcp.py`).
 
-- **Where things stand:** M0, M1, M2 and **M3 are done** (M3 on 2026-10-22, after an integration audit; `python
+- **How M3 to M5 began (history: the top of this page is where things stand):** M0, M1, M2 and **M3 are done** (M3 on 2026-10-22, after an integration audit; `python
   scripts/m3_exit.py --adapter integrated` re-checks the iGPU budget with a release `sepulcra-app`; M2's check is
   `scripts/m2_exit.py`). The first game, *Sepulcra* (tower defence), is playable and is the engine's dogfood.
   **M4 is done (2026-10-30):** the owner approved the exit proof's 33 props at the window (`scripts/m4_exit.py`), and
@@ -563,6 +577,19 @@ In practice that means six **foundations** that apply to every change from M1 on
   to another worktree still holds the old worktree's executables until they are built again: M5's final audit
   ran 17 checks into failures on such a build (no recipes, no timelines, no grass) before it built its own.
   `scripts/live_checks.py` builds first; do the same before any live check in a new worktree.
+- **Two style files, two jobs.** `style.json` is what models are built under (materials and palette for
+  recipes): the nearest one from a recipe's folder up to the assets root, or the file `--style` names. A
+  recipe's `model_build` is refused until there is one, and a new project has none yet (ROADMAP M6).
+  `style.toml` is the studio's measurable rules (budgets, scale, palette distance, naming, motion
+  thresholds) that `style_check`, `studio_check` and the galleries read. Sepulcra has both in
+  `games/sepulcra/assets/`. Writing one where the other is wanted gives an error about a file that
+  looks present.
+- **A file's time says less than it seems.** It moves in steps of the clock (1 to 16 ms on Linux and
+  Windows, a second on some file systems), and a copy carries the copying's time on Linux and its
+  source's on Windows. A cache or a test that tells two writes apart by time alone works on one system
+  and fails now and then on the other. The model library waits until a time is two seconds old before it
+  compares with it; tests give files their times (`models::tests::set_time`) and hold the clock still
+  (`NOW`) where "fresh" and "old" matter.
 - **On Windows a module's build folder can be too deep to link.** rustc hands the linker a long list of
   arguments in a file inside the build (`<cache>/modules/<name>-<hash>/debug/build/<package>/<hash>/out/
   rustcXXXXXX/linker-arguments`), and the Rust toolchain's linker opens a path of at most 259 characters. One
@@ -580,6 +607,16 @@ In practice that means six **foundations** that apply to every change from M1 on
   and the gate fails when a newer stable is out (`--older-rust` to go on knowingly). A version installed
   beside the default (`rustup toolchain install 1.100.0`) is run with `RUSTUP_TOOLCHAIN=1.100.0`. The fix was
   gated with both, with every live check on 1.100.0 and the fourteen that build modules on 1.99.1 as well.
+- **Clippy 1.99 flags thread-locals that are already `const` when the standard library's sources are
+  installed.** On windows-gnu, with the `rust-src` component in the toolchain (an editor's rust-analyzer
+  brings it), `cargo clippy` on 1.99.1 fails `specula-core` with "initializer for `thread_local` value can
+  be made `const`" on initialisers written `const { .. }`. For the Linux target, and without `rust-src`, the
+  same clippy passes. The last 1.99.1 gate after M5 met it on files nobody had changed: the component had
+  been added to this machine's default toolchain that evening, by something other than the gate. One
+  variable shows it: with a copy of the toolchain's `lib/rustlib/x86_64-pc-windows-gnu` as the sysroot
+  (`SYSROOT=<copy>`) clippy passes, and with `lib/rustlib/src` copied beside it clippy fails. Not tried:
+  1.100's clippy with `rust-src` (that toolchain has none here, and CI installs none). When clippy fails on
+  code that did not change, read `<toolchain>/lib/rustlib/components` before the code.
 - **Text files are LF in every checkout** (`.gitattributes`, held by `crates/specula/tests/line_endings.rs`).
   Before it, a file written on this machine kept its LF until git next touched it and was CRLF in every fresh
   checkout: a guard that matched a line with its `\n` passed the gate in the lane's tree and failed in a
@@ -609,6 +646,12 @@ answer where it applies. The owner decided everything else on 2026-10-22 (see "D
   them; owner authority is never given remotely unless the operator passes a flag for it; and tunnels
   (Tailscale, WireGuard, SSH) come before OS TLS, because tokens, limits and the hardened server are where the
   protection is. Agree, or change any of the three?
+- **What waits for Linux, now that it follows the first release** (2026-11-15; found by a review of the
+  roadmap's release order). On 2026-10-22 the order was: verify on macOS and Linux, then publish to
+  crates.io, then market. On 2026-11-14 the first release became Windows and macOS, with Linux later.
+  Does publishing the crates, or the marketing, wait for the Linux check, or go with the first release?
+  Claude recommends: publish and announce with the first release, and say plainly there that Linux is not
+  verified yet.
 - **Sepulcra balance (from the balance lab, 2026-10-18):** a rusher who calls every wave early still loses 2 runs in
   16 on unseen seeds. Claude recommends keeping it risky. The owner will playtest it in M6, on each OS, and decide
   then ([docs/design/BALANCE.md](docs/design/BALANCE.md)).

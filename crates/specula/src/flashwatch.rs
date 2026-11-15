@@ -800,7 +800,7 @@ mod tests {
 
     /// A 10 Hz on/off phase (3 frames on, 3 off at 60 a second).
     fn on(i: u32) -> bool {
-        (i / 3).is_multiple_of(2)
+        (i / 3) % 2 == 0
     }
 
     #[test]
@@ -809,7 +809,7 @@ mod tests {
         let (over, rep, events) = run(w, h, |x, y, i| if on(i) && x < 120 && y < 120 { [255; 3] } else { [20; 3] });
         assert!(over && rep.flashes >= 6 && events == 1, "{rep:?}");
         // Slow (2 a second): fine. Small (a 12 px square, under 2.8% of the view): fine.
-        assert!(!run(w, h, |x, y, i| if (i / 15).is_multiple_of(2) && x < 120 && y < 120 { [255; 3] } else { [20; 3] }).0);
+        assert!(!run(w, h, |x, y, i| if (i / 15) % 2 == 0 && x < 120 && y < 120 { [255; 3] } else { [20; 3] }).0);
         assert!(!run(w, h, |x, y, i| if on(i) && x < 12 && y < 12 { [255; 3] } else { [20; 3] }).0);
         // A red strobe (red flash).
         let (over, rep, _) = run(w, h, |x, y, i| if on(i) && x < 120 && y < 120 { [255, 0, 0] } else { [20; 3] });

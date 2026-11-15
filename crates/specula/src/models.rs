@@ -307,6 +307,8 @@ struct RecipeInfo {
     style_path: PathBuf,
     recipe: Recipe,
     /// Where its anim set would be, and that file's time when read (polled for changes).
+    /// `None`: there was no file, or its time was too fresh to compare with ([`stamp_of`]); a
+    /// scan then compares what the file says with `anims`.
     anims_path: PathBuf,
     anims_mtime: Option<SystemTime>,
     /// The anim-set text (rigged recipes with an anims file).
@@ -1062,6 +1064,49 @@ fn mtime(path: &Path) -> Option<SystemTime> {
     std::fs::symlink_metadata(path).and_then(|m| m.modified()).ok()
 }
 
+/// How close to now a file's time may be and still not be taken as telling this read of it from
+/// a later write. File times move in steps (the system clock's tick, 1 to 16 ms on Linux and
+/// Windows; a whole second on HFS+, two on FAT), so a file written again within the step it was
+/// read in keeps its time, and a cache that compares times alone never sees the second write.
+/// A text read that soon after its file was written is compared by what it says, by every
+/// scan, until one finds the time this old ([`stamp_of`]).
+const FRESH: Duration = Duration::from_secs(2);
+
+/// The clock [`stamp_of`] reads.
+fn now() -> SystemTime {
+    #[cfg(test)]
+    if let Some(now) = NOW.get() {
+        return now;
+    }
+    SystemTime::now()
+}
+
+/// Whether a file's `time` tells a read of it from any later write here: it was more than
+/// [`FRESH`] old `before` the file was looked at, or is still more than that ahead `after`
+/// (another clock's time: the next write here will not carry it). The clock is read on both
+/// sides of the look, so a thread that stalled between the two (a busy machine, a laptop that
+/// slept) takes a write that landed meanwhile for fresh, never for a time well ahead.
+fn old_enough(time: SystemTime, before: SystemTime, after: SystemTime) -> bool {
+    before.duration_since(time).is_ok_and(|d| d > FRESH) || time.duration_since(after).is_ok_and(|d| d > FRESH)
+}
+
+/// A file's time now, and that time as something a later scan may compare with: `None` (not
+/// known: read the file again) while it is fresh ([`old_enough`]). **Called before the file is
+/// read**, so what is read is never older than its stamp says.
+fn stamp_of(path: &Path) -> (Option<SystemTime>, Option<SystemTime>) {
+    let before = now();
+    let time = mtime(path);
+    let after = now();
+    (time, time.filter(|t| old_enough(*t, before, after)))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: what [`now`] answers on this thread, so a test says which file times
+    /// are fresh by the times it gives the files, never by how fast it ran.
+    static NOW: std::cell::Cell<Option<SystemTime>> = const { std::cell::Cell::new(None) };
+}
+
 /// A regular file (not a link, not a folder).
 fn is_regular(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file())
@@ -1804,7 +1849,7 @@ impl Library {
         h.write_u64(style_hash);
         // A rig's anim set is part of the build (generated clips depend on the skeleton).
         let anims_path = self.anims_path(folder, stem);
-        let anims_mtime = mtime(&anims_path);
+        let (_, anims_mtime) = stamp_of(&anims_path);
         let anims = is_regular(&anims_path)
             .then(|| std::fs::read_to_string(&anims_path).ok())
             .flatten()
@@ -1874,7 +1919,8 @@ impl Library {
     fn refresh_folder(&mut self, rel: &Path) -> usize {
         let Some(old) = self.folders.get(rel) else { return 0 };
         let dir = self.root.join(rel);
-        let unchanged = mtime(&dir) == old.mtime
+        let unchanged = old.mtime.is_some()
+            && mtime(&dir) == old.mtime
             && old.files.iter().all(|(stem, f)| f.mtime.is_some() && mtime(&dir.join(format!("{stem}.json"))) == f.mtime);
         if unchanged {
             return 0;
@@ -1990,7 +2036,12 @@ impl Library {
         self.last_poll = Instant::now();
         self.scan_seq += 1;
         let folders = self.folders.iter().map(|(rel, f)| (rel.clone(), f.clone())).collect();
-        let anims: BTreeSet<PathBuf> = self.recipes.values().map(|r| r.anims_path.clone()).collect();
+        // Each anim-set file, and whether some recipe has no time to compare it by (the scan
+        // then reads what it says).
+        let mut anims: BTreeMap<PathBuf, bool> = BTreeMap::new();
+        for r in self.recipes.values() {
+            *anims.entry(r.anims_path.clone()).or_default() |= r.anims_mtime.is_none();
+        }
         let gltfs: BTreeSet<PathBuf> = self.gltfs.values().map(|g| g.path.clone()).collect();
         let styles = self.styles.iter().map(|(p, s)| (p.clone(), s.mtime)).collect();
         // Folders handles need that weren't there (removed, or not made yet): back now?
@@ -2067,14 +2118,38 @@ impl Library {
         drop(zf);
         // Anim sets and glTF assets that changed (or appeared, or went): their keys are worked out again.
         let before = self.recipes.len() + self.gltfs.len();
-        self.recipes.retain(|_, r| scanned.anims.get(&r.anims_path).is_none_or(|m| *m == r.anims_mtime));
+        self.recipes.retain(|_, r| {
+            let Some(seen) = scanned.anims.get(&r.anims_path) else { return true };
+            match r.anims_mtime {
+                // A time that was old when the file was read tells any later write.
+                Some(_) => seen.mtime == r.anims_mtime,
+                // Worked out after this scan was planned, from a file it did not read: the
+                // next scan compares it.
+                None if seen.mtime.is_some() && !seen.read => true,
+                // No time to compare by (no file then, or one just written): by what it says.
+                // The same: its time is taken once the scan found it old enough.
+                None => {
+                    let same = seen.text.as_deref() == r.anims.as_deref();
+                    if same {
+                        r.anims_mtime = seen.stamp;
+                    }
+                    same
+                }
+            }
+        });
         self.gltfs.retain(|_, g| scanned.gltfs.get(&g.path).is_none_or(|m| *m == Some((g.mtime, g.len))));
         files_changed += before - self.recipes.len() - self.gltfs.len();
         for (p, file) in scanned.styles {
             if self.notes.get(&p).is_some_and(|&n| n > plan) {
                 continue; // the store wrote it after this scan was planned
             }
+            // Read again and saying what it said (a style read while its time was fresh, or
+            // one the store wrote): nothing built from it is worked out again.
+            let same = self.styles.get(&p).is_some_and(|old| old.hash == file.hash && old.parsed.is_ok() == file.parsed.is_ok());
             self.styles.insert(p.clone(), file);
+            if same {
+                continue;
+            }
             self.recipes.retain(|_, r| r.style_path != p);
             self.failed.clear();
             files_changed += 1;
@@ -2608,7 +2683,8 @@ pub struct ScanPlan {
     root: PathBuf,
     canonical_root: Option<PathBuf>,
     folders: Vec<(PathBuf, Folder)>,
-    anims: Vec<PathBuf>,
+    /// Each anim-set file, and whether its text is to be read (the cache has no time for it).
+    anims: Vec<(PathBuf, bool)>,
     gltfs: Vec<PathBuf>,
     styles: Vec<(PathBuf, Option<SystemTime>)>,
     missing: Vec<PathBuf>,
@@ -2622,8 +2698,8 @@ pub struct Scanned {
     canonical_root: Option<PathBuf>,
     /// Folders whose time or files' times changed, read again (`None`: gone, or outside the root).
     folders: Vec<(PathBuf, Option<Folder>)>,
-    /// Every anim-set file's time now.
-    anims: BTreeMap<PathBuf, Option<SystemTime>>,
+    /// Every anim-set file as it is now.
+    anims: BTreeMap<PathBuf, AnimSeen>,
     /// Every glTF file's (time, length) now (`None`: gone).
     gltfs: BTreeMap<PathBuf, Option<(Option<SystemTime>, u64)>>,
     /// Styles whose time changed, read again.
@@ -2632,6 +2708,18 @@ pub struct Scanned {
     missing: Vec<(PathBuf, Folder)>,
     /// Folders that weren't cached, exist, and lead outside the root (never cached).
     outside: Vec<PathBuf>,
+}
+
+/// An anim-set file as a scan found it.
+struct AnimSeen {
+    /// Its time (`None`: no such file).
+    mtime: Option<SystemTime>,
+    /// That time as a later scan may compare with it ([`stamp_of`], at this scan's read).
+    stamp: Option<SystemTime>,
+    /// The scan was asked for its text (the cache had no time for it).
+    read: bool,
+    /// What it says, when read and readable (as a recipe's own read of it: a regular file).
+    text: Option<Arc<str>>,
 }
 
 /// What a build request reads from the disk ([`Library::request_plan`]).
@@ -2733,7 +2821,11 @@ impl ScanPlan {
         let mut out = Scanned { seq: self.seq, canonical_root: canonical_root.clone(), ..Scanned::default() };
         for (rel, old) in &self.folders {
             let dir = self.root.join(rel);
-            let unchanged = mtime(&dir) == old.mtime && old.files.iter().all(|(stem, f)| f.mtime.is_some() && mtime(&dir.join(format!("{stem}.json"))) == f.mtime);
+            // (A time the cache does not know, the folder's or a file's, is never "the same":
+            // it was read too soon after its write to tell that write from the next, see `FRESH`.)
+            let unchanged = old.mtime.is_some()
+                && mtime(&dir) == old.mtime
+                && old.files.iter().all(|(stem, f)| f.mtime.is_some() && mtime(&dir.join(format!("{stem}.json"))) == f.mtime);
             if unchanged {
                 continue;
             }
@@ -2741,16 +2833,18 @@ impl ScanPlan {
             let new = if inside(rel) { read_folder_at(&self.root, rel, Some(old)) } else { None };
             out.folders.push((rel.clone(), new));
         }
-        for p in self.anims {
-            let m = mtime(&p);
-            out.anims.insert(p, m);
+        for (p, read) in self.anims {
+            let (m, stamp) = stamp_of(&p);
+            let text = (read && m.is_some() && is_regular(&p)).then(|| std::fs::read_to_string(&p).ok()).flatten().map(Arc::<str>::from);
+            out.anims.insert(p, AnimSeen { mtime: m, stamp, read, text });
         }
         for p in self.gltfs {
             let meta = std::fs::symlink_metadata(&p).ok().map(|m| (m.modified().ok(), m.len()));
             out.gltfs.insert(p, meta);
         }
         for (p, was) in self.styles {
-            if mtime(&p) != was {
+            // (A style whose time is not known is read every time: what it says is compared.)
+            if was.is_none() || mtime(&p) != was {
                 let file = read_style(&p);
                 out.styles.push((p, file));
             }
@@ -2774,6 +2868,9 @@ impl ScanPlan {
 /// `old` whose modification time is the same; `None` if it doesn't exist.
 fn read_folder_at(root: &Path, rel: &Path, old: Option<&Folder>) -> Option<Folder> {
     let dir = root.join(rel);
+    // (Its time before its listing: a file added while it is listed moves a time this read has
+    // not taken.)
+    let (_, dir_stamp) = stamp_of(&dir);
     let entries = std::fs::read_dir(&dir).ok()?;
     let mut files = BTreeMap::new();
     for e in entries.flatten() {
@@ -2785,20 +2882,21 @@ fn read_folder_at(root: &Path, rel: &Path, old: Option<&Folder>) -> Option<Folde
         if stem == "style" {
             continue;
         }
-        let modified = mtime(&path);
+        let (modified, stamp) = stamp_of(&path);
         let reuse = old.and_then(|o| o.files.get(stem)).filter(|f| f.mtime == modified && modified.is_some());
         let text = match reuse {
             Some(f) => f.text.clone(),
             None => std::fs::read_to_string(&path).map(Arc::from).map_err(|e| e.to_string()),
         };
-        files.insert(stem.to_owned(), SourceFile { text, mtime: modified });
+        files.insert(stem.to_owned(), SourceFile { text, mtime: stamp });
     }
-    Some(Folder { files, mtime: mtime(&dir) })
+    Some(Folder { files, mtime: dir_stamp })
 }
 
 fn read_style(path: &Path) -> StyleFile {
+    let (_, stamp) = stamp_of(path);
     let text = if is_regular(path) || path.is_file() { std::fs::read_to_string(path) } else { Err(std::io::ErrorKind::NotFound.into()) };
-    style_file(path, text, mtime(path))
+    style_file(path, text, stamp)
 }
 
 /// A style file from its text (as read, or as the project store wrote it: `mtime` unknown).
@@ -4522,6 +4620,163 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Gives a file the time `at` (a write within the clock tick of the last one keeps the time).
+    fn set_time(path: &Path, at: SystemTime) {
+        std::fs::OpenOptions::new().write(true).open(path).unwrap().set_modified(at).unwrap();
+    }
+
+    #[test]
+    fn a_time_is_compared_with_only_once_it_is_old() {
+        let now = SystemTime::now();
+        let (ago, ahead) = (|ms: u64| now - Duration::from_millis(ms), |ms: u64| now + Duration::from_millis(ms));
+        assert!(old_enough(ago(10_000), now, now) && old_enough(ago(2_001), now, now));
+        for fresh in [ago(2_000), ago(1), now, ahead(1), ahead(2_000)] {
+            assert!(!old_enough(fresh, now, now), "{:?}", now.duration_since(fresh));
+        }
+        // A time well ahead (a file from a machine whose clock is ahead, an unpacked archive)
+        // is as good as an old one: the next write by this machine's clock will not carry it.
+        // (Where another machine stamps every write, a share whose server's clock is ahead,
+        // two writes in one of its ticks are as before: ROADMAP.)
+        assert!(old_enough(ahead(60_000), now, now));
+        // The clock on both sides of the look. A thread that stalled for a minute between
+        // them: a write that landed in that minute is fresh, whenever in it; one from before
+        // it is old, and only a time past the second reading is "ahead".
+        let (before, after) = (now, ahead(60_000));
+        for landed in [ahead(1), ahead(3_000), ahead(59_999), ahead(60_000), ahead(62_000)] {
+            assert!(!old_enough(landed, before, after), "{:?}", landed.duration_since(now));
+        }
+        assert!(old_enough(ago(2_001), before, after) && old_enough(ahead(62_001), before, after));
+        // And through a file: one made a moment ago has a time and no stamp; 10 s on it has one.
+        let file = std::env::temp_dir().join(format!("specula-models-stamp-{}", std::process::id()));
+        std::fs::write(&file, "x").unwrap();
+        let made = mtime(&file).unwrap();
+        NOW.set(Some(made));
+        assert_eq!(stamp_of(&file), (Some(made), None));
+        NOW.set(Some(made + Duration::from_secs(10)));
+        assert_eq!(stamp_of(&file), (Some(made), Some(made)));
+        let _ = std::fs::remove_file(&file);
+        assert_eq!(stamp_of(&file), (None, None));
+        NOW.set(None);
+    }
+
+    /// An outside review's run on Linux (2026-11-15): `changed_anim_sets_apply_at_the_poll`
+    /// failed in one run of the suite in two, the poll naming no handle. A file's time moves in
+    /// steps of the clock; there a copy carries the time of the copying, so the test's rewrite a
+    /// moment later could carry the same one, and the library compared times alone. (On Windows
+    /// a copy keeps its source's old time, and the test never failed.) Here the rewrite is
+    /// given the time the file had: a recipe, a style and an anim set written again within the
+    /// tick they were read in are seen, by what they say; and once their times are old, the
+    /// times are what is compared.
+    #[test]
+    fn a_file_written_again_within_the_clock_tick_it_was_read_in_is_seen() {
+        use specula_anim::graph::Value;
+        use specula_anim::play::GraphPlay;
+        let root = std::env::temp_dir().join(format!("specula-models-sametick-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for d in ["recipes", "anims"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        // "Now" stands still for this thread (the library reads on it: no workers), and the
+        // files carry times beside it: 100 ms ago is fresh, 10 s ago is old.
+        let now = SystemTime::now();
+        NOW.set(Some(now));
+        let (fresh, old, older) = (now - Duration::from_millis(100), now - Duration::from_secs(10), now - Duration::from_secs(11));
+        let files = ["recipes/shambler.json", "anims/shambler.json", STYLE_FILE].map(|f| root.join(f));
+        for (f, name) in files.iter().zip(["recipes/shambler.json", "anims/shambler.json", STYLE_FILE]) {
+            std::fs::copy(sepulcra().join(name), f).unwrap();
+            set_time(f, fresh);
+        }
+        let [recipe, anims, style] = &files;
+        let shared = Arc::new(SharedLibrary::new(Library::with_workers(&root, None, 0)));
+        let mut world = World::default();
+        world.set_model_source(Some(Arc::clone(&shared) as Arc<dyn ModelSource>));
+        let mut spec = SpawnSpec::model(ModelSpec::new("recipes/shambler.json"));
+        let mut play = GraphPlay::new("creature");
+        play.set_param("act", Value::Name("move".into()));
+        spec.anim = Some(AnimSpec::graph(play));
+        let id = world.spawn(spec, "t").unwrap().id;
+        let handle = world.get(id).unwrap().resolved_model().unwrap().handle;
+        // What a poll says changed: (files, the handles whose anim set did).
+        let poll = |world: &mut World| {
+            let r = shared.lock().poll(true);
+            world.refresh_models();
+            r.map_or((0, false), |r| (r.files_changed, r.anim_handles.contains(&handle)))
+        };
+        // Written again, each with a time put back to the one it had.
+        let rewrite = |f: &Path, text: String, at: SystemTime| {
+            std::fs::write(f, text).unwrap();
+            set_time(f, at);
+        };
+        let read = |f: &Path| std::fs::read_to_string(f).unwrap();
+        assert_eq!(poll(&mut world), (0, false), "nothing was written");
+        let text = read(anims);
+        let start = text.find("\"graphs\"").unwrap();
+        let other = format!(r#"{}"graphs": {{ "creature": {{ "params": {{ "pace": "float" }}, "states": {{ "idle": "idle" }} }} }} }}"#, &text[..start]);
+        rewrite(anims, other.clone(), fresh);
+        assert!(poll(&mut world).1, "the anim set, written again with the time it had");
+        assert_eq!(poll(&mut world), (0, false), "and seen once");
+        rewrite(recipe, read(recipe) + " ", fresh);
+        assert!(poll(&mut world).0 >= 1, "the recipe");
+        rewrite(style, read(style) + "\n", fresh);
+        assert!(poll(&mut world).0 >= 1, "the style");
+        assert_eq!(poll(&mut world), (0, false), "each seen once: a file read again that says the same changes nothing");
+        // Their times grow old: the next poll reads them once more, finds them saying the same,
+        // and takes the times.
+        for f in &files {
+            set_time(f, old);
+        }
+        assert_eq!(poll(&mut world), (0, false));
+        // From here a time is what tells: a writer that puts an old time back is not seen (as
+        // ever), and one that moves it is.
+        rewrite(recipe, read(recipe) + " ", old);
+        rewrite(anims, text.clone(), old);
+        rewrite(style, read(style) + "\n", old);
+        assert_eq!(poll(&mut world), (0, false), "old times that did not move: nothing is read");
+        for f in &files {
+            set_time(f, older);
+        }
+        // (Two files counted: the recipe and the style. The recipe's own change already had its
+        // anim set worked out again.)
+        let (changed, anim) = poll(&mut world);
+        assert!(changed >= 2 && anim, "three files whose times moved ({changed}, {anim})");
+        // A style that goes while its time is fresh is seen gone (no time then, none now: read).
+        rewrite(style, read(style) + "
+", fresh);
+        assert!(poll(&mut world).0 >= 1);
+        std::fs::remove_file(style).unwrap();
+        assert!(poll(&mut world).0 >= 1, "the style went");
+        NOW.set(None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A folder with nothing in it, read a moment after it was made and then removed: with no
+    /// time for it in the cache and none on the disk, it is still seen gone, by a scan and by
+    /// a request's own look.
+    #[test]
+    fn an_empty_folder_that_went_while_its_time_was_fresh_is_seen_gone() {
+        let root = scratch("freshgone", &[("block", &block(1.0))]);
+        let mut lib = Library::new(&root, None);
+        // A folder made, read with "now" being its own time (fresh, however long this took),
+        // and removed.
+        let made_read_and_removed = |lib: &mut Library, name: &str| {
+            let rel = PathBuf::from("recipes").join(name);
+            std::fs::create_dir_all(root.join(&rel)).unwrap();
+            NOW.set(mtime(&root.join(&rel)));
+            assert_eq!(lib.request(&ModelSpec::new(format!("recipes/{name}/none.json"))).err().map(|e| e.code), Some("recipe_not_found"));
+            assert!(lib.folders.get(&rel).is_some_and(|f| f.files.is_empty() && f.mtime.is_none()), "cached, empty, its time not known");
+            std::fs::remove_dir(root.join(&rel)).unwrap();
+            rel
+        };
+        let by_scan = made_read_and_removed(&mut lib, "scan");
+        let scanned = lib.scan_plan().run();
+        assert!(scanned.folders.iter().any(|(rel, now)| *rel == by_scan && now.is_none()), "the scan says it went");
+        let by_request = made_read_and_removed(&mut lib, "request");
+        assert_eq!(lib.request(&ModelSpec::new("recipes/request/none.json")).err().map(|e| e.code), Some("recipe_not_found"));
+        assert!(!lib.folders.contains_key(&by_request), "the request's look dropped it");
+        NOW.set(None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Review round 3, finding 1: seeded variants used to each build (and evict) their own anim
     /// set; past 64 of them every write regenerated the clips (65 shamblers: 270-320 ms a round).
     /// Variants with the same rig and anims file share one base, and one overlay per revision.
@@ -5134,6 +5389,9 @@ mod tests {
     /// it. A recipe on disk that the cached folder lacks is read afresh, whatever the times say.
     #[test]
     fn a_new_recipe_is_found_when_its_folder_time_did_not_move() {
+        // (This test's files are old to it: a folder with a file just written is read again
+        // whatever its time says, and would find the new recipe before the path under test.)
+        NOW.set(Some(SystemTime::now() + Duration::from_secs(60)));
         let root = scratch("new_recipe", &[("block", &block(1.0))]);
         let mut lib = Library::new(&root, None);
         assert!(lib.request(&ModelSpec::new("recipes/block.json")).is_ok());
@@ -5145,6 +5403,7 @@ mod tests {
         assert!(lib.request(&ModelSpec::new("recipes/late.json")).is_ok(), "the new recipe is found");
         assert!(lib.resolve(&ModelSpec::new("recipes/late.json")).is_ok());
         assert_eq!(lib.request(&ModelSpec::new("recipes/gone.json")).err().map(|e| e.code), Some("recipe_not_found"));
+        NOW.set(None);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -5154,6 +5413,9 @@ mod tests {
     /// never puts the older text (or a deleted recipe) back.
     #[test]
     fn scans_run_apart_and_noted_writes_win_over_older_scans() {
+        // This test's files are old to it, as a project's are a moment after it is opened: their
+        // times are what a scan compares (`FRESH`; files just written are the test above's).
+        NOW.set(Some(SystemTime::now() + Duration::from_secs(60)));
         let root = scratch("scan_split", &[("block", &block(1.0)), ("other", &block(1.25))]);
         let mut lib = Library::new(&root, None);
         let spec = ModelSpec::new("recipes/block.json").with_param("tier", 2.0);
@@ -5214,6 +5476,7 @@ mod tests {
         let _ = lib.apply_scan(s, true);
         assert!(!lib.folders[Path::new("recipes")].files.contains_key("late"), "the deleted recipe stays gone");
         assert_eq!(lib.request(&ModelSpec::new("recipes/late.json")).err().map(|e| e.code), Some("recipe_not_found"));
+        NOW.set(None);
         let _ = std::fs::remove_dir_all(&root);
     }
 

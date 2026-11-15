@@ -2339,7 +2339,7 @@ mod tests {
 
     /// Scale check, run by hand: `cargo test -p specula -- --ignored --nocapture`.
     #[test]
-    #[ignore]
+    #[ignore = "a scale check: run by hand"]
     fn hundred_thousand_entities() {
         let t = std::time::Instant::now();
         let mut w = World::default();

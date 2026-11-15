@@ -891,7 +891,7 @@ mod tests {
     /// specula-model calibrate_sdf -- --ignored --nocapture`); the weights in `node_cost` come
     /// from it.
     #[test]
-    #[ignore]
+    #[ignore = "prints what each node costs, for node_cost's weights: run by hand, in release"]
     #[allow(clippy::disallowed_methods, reason = "a test or benchmark harness (timings, cameras for pictures), not simulation code")]
     fn calibrate_sdf() {
         let time = |name: &str, n: &SdfNode| {

@@ -256,7 +256,7 @@ fn fuzz_mutations_never_panic() {
 
 /// `cargo test -p specula-core --release jpeg_decode_speed -- --ignored --nocapture`
 #[test]
-#[ignore]
+#[ignore = "a speed measurement: run by hand, in release"]
 fn jpeg_decode_speed() {
     let (w, h) = (2048, 1536);
     // The test picture plus noise, so the entropy decoder has realistic work.

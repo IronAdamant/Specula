@@ -131,7 +131,7 @@ fn thumbnail_encoding_is_pinned() {
 /// Writes `kat_specula.jpg` with the pinned options (run on purpose: `-- --ignored regenerate_kat_specula`),
 /// then re-run `kat_gdi.ps1` so GDI+'s decode matches it.
 #[test]
-#[ignore]
+#[ignore = "rewrites a committed test file: run on purpose"]
 fn regenerate_kat_specula() {
     let source = png("kat_source.png");
     let bytes = jpeg::encode(source.width, source.height, &source.rgba, &thumbnail_options()).unwrap();

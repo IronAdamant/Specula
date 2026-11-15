@@ -51,6 +51,53 @@ impl UiEntry {
 /// once per process. At most [`MAX_CACHED_FACES`] (the oldest goes).
 static FACES: std::sync::Mutex<Vec<(String, Arc<Font>)>> = std::sync::Mutex::new(Vec::new());
 const MAX_CACHED_FACES: usize = 6;
+/// System faces looked for and not found, by spec name, with why: finding out reads every
+/// candidate file whole, so it is done once per process too (a font installed meanwhile, or a
+/// file that could not be read just then, is found at the next start). At most
+/// [`MAX_CACHED_FACES`].
+static MISSES: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+fn lock<T>(m: &'static std::sync::Mutex<T>) -> std::sync::MutexGuard<'static, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Keeps `value` under `name`, once (two callers may both have gone to look: the first one's
+/// stays), the oldest entry going when there are more than [`MAX_CACHED_FACES`].
+fn keep<T>(cache: &'static std::sync::Mutex<Vec<(String, T)>>, name: &str, value: T) {
+    let mut c = lock(cache);
+    if !c.iter().any(|(n, _)| n == name) {
+        c.push((name.to_owned(), value));
+        if c.len() > MAX_CACHED_FACES {
+            c.remove(0);
+        }
+    }
+}
+
+/// The face named `name` from the process's cache, or from `load`. A face is kept; the reason
+/// there was none is kept where `costly` says that finding out was (a system face; a bundled
+/// name that is wrong costs nothing to find wrong again, and a table full of such names must
+/// not push the costly answers out).
+fn cached_face(name: &str, costly: bool, load: impl FnOnce() -> Result<Font, String>) -> Result<Arc<Font>, String> {
+    if let Some(f) = lock(&FACES).iter().find(|(n, _)| n == name).map(|(_, f)| Arc::clone(f)) {
+        return Ok(f);
+    }
+    if let Some(why) = lock(&MISSES).iter().find(|(n, _)| n == name).map(|(_, why)| why.clone()) {
+        return Err(why);
+    }
+    match load() {
+        Ok(f) => {
+            let f = Arc::new(f);
+            keep(&FACES, name, Arc::clone(&f));
+            Ok(f)
+        }
+        Err(why) => {
+            if costly {
+                keep(&MISSES, name, why.clone());
+            }
+            Err(why)
+        }
+    }
+}
 
 /// The words a UI shows, in one locale.
 pub struct Strings {
@@ -120,31 +167,22 @@ impl Strings {
         let mut fonts: Vec<(String, Arc<Font>)> = Vec::new();
         let mut problems = Vec::new();
         for (slot, spec) in &catalog.fonts {
-            let name = spec.name();
-            let cached = FACES.lock().unwrap_or_else(|p| p.into_inner()).iter().find(|(n, _)| *n == name).map(|(_, f)| Arc::clone(f));
-            if let Some(f) = cached {
-                fonts.push((slot.clone(), f));
-                continue;
-            }
-            let loaded = match spec {
+            let loaded = cached_face(&spec.name(), matches!(spec, FontSpec::System(_)), || match spec {
                 FontSpec::Bundled(n) => match specula_text::Bundled::from_name(n) {
                     Some(b) => b.load().map_err(|e| format!("bundled face {n}: {e}")),
                     None => Err(format!("no bundled face \"{n}\" (ui, ui-bold, display)")),
                 },
                 // (The locale's own face or a problem said: never the symbol face that ends
-                // the fallback chain, which a machine with no CJK font still has.)
-                FontSpec::System(l) => specula_text::load_cjk_face(l.as_str()).map(|(_, f)| f).ok_or_else(|| format!("no system face for {l} on this machine")),
-            };
+                // the fallback chain, which a machine with no CJK font still has. And one that
+                // has the interface's digits and Latin words too: a slot's face is the one face
+                // for all its text, and a CJK fallback face with no Latin left every digit of
+                // the HUD missing.)
+                FontSpec::System(l) => specula_text::load_cjk_face_with(l.as_str(), specula_text::INTERFACE_ASCII)
+                    .map(|(_, f)| f)
+                    .ok_or_else(|| format!("no system face for {l} on this machine that also has the digits and Latin letters an interface shows")),
+            });
             match loaded {
-                Ok(f) => {
-                    let f = Arc::new(f);
-                    let mut c = FACES.lock().unwrap_or_else(|p| p.into_inner());
-                    c.push((name, Arc::clone(&f)));
-                    if c.len() > MAX_CACHED_FACES {
-                        c.remove(0);
-                    }
-                    fonts.push((slot.clone(), f));
-                }
+                Ok(f) => fonts.push((slot.clone(), f)),
                 Err(e) => problems.push((format!("fonts.{slot}"), e)),
             }
         }
@@ -218,5 +256,51 @@ impl Strings {
     pub fn format(&self, key: &str, args: &crate::StateMap, out: &mut String) {
         let scope = crate::state::Scope { state: args, item: None, env: None, strings: Some(self) };
         Template::reference(key).render(&scope, out);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A review of the interface's system face (2026-11-15): on a machine with no face that will
+    /// do, every call looked again, reading every candidate file whole each time. (Nothing else
+    /// in this crate's own tests touches these caches.)
+    #[test]
+    fn a_face_is_looked_for_once_whatever_the_answer() {
+        let pid = std::process::id();
+        let (hit, miss, cheap) = (format!("test:hit-{pid}"), format!("test:miss-{pid}"), format!("test:cheap-{pid}"));
+        let asked = std::cell::Cell::new(0);
+        let none = || {
+            asked.set(asked.get() + 1);
+            Err("no such face".to_owned())
+        };
+        assert_eq!(cached_face(&miss, true, none).err().as_deref(), Some("no such face"));
+        let again = cached_face(&miss, true, || -> Result<Font, String> { panic!("looked for a face it knew was not there") });
+        assert_eq!(again.err().as_deref(), Some("no such face"));
+        let first = cached_face(&hit, true, || {
+            asked.set(asked.get() + 1);
+            Ok(crate::testfont::box_font_parsed())
+        })
+        .unwrap();
+        let second = cached_face(&hit, false, || -> Result<Font, String> { panic!("read a face it had") }).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(asked.get(), 2);
+        // What costs nothing to find out again is asked again, and takes no place in the cache:
+        // as many wrong names as the cache holds leave the costly answer where it was.
+        for _ in 0..2 {
+            assert!(cached_face(&cheap, false, none).is_err());
+        }
+        assert_eq!(asked.get(), 4);
+        for i in 0..=MAX_CACHED_FACES {
+            assert!(cached_face(&format!("test:wrong-{pid}-{i}"), false, || Err("no bundled face".to_owned())).is_err());
+        }
+        let still = cached_face(&miss, true, || -> Result<Font, String> { panic!("the costly answer was pushed out") });
+        assert_eq!(still.err().as_deref(), Some("no such face"));
+        // Kept once: a second keeper of the same name (two callers that both went to look)
+        // adds nothing and changes nothing.
+        keep(&MISSES, &miss, "another caller's answer".to_owned());
+        let kept: Vec<String> = lock(&MISSES).iter().filter(|(n, _)| *n == miss).map(|(_, why)| why.clone()).collect();
+        assert_eq!(kept, ["no such face"]);
     }
 }

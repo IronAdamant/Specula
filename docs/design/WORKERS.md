@@ -317,6 +317,15 @@ stalls (`worker_then`, 4-66 ms, growing with the recipe folder), 37 window frame
   (`note_written`) and re-keys only the written recipe and those including it (`RecipeInfo::includes`); a scan
   planned before a note, or before a newer applied scan, is dropped (it read an older disk). `model_reload` keeps
   the synchronous poll (it answers with the result).
+  **What a scan compares.** A file's time, once that time is more than two seconds old (`models::FRESH`,
+  `stamp_of`: the time is taken before the file is read, with the clock read on both sides). File times move
+  in steps of the clock, so a file written again within the step it was read in keeps its time; a text read
+  sooner than that after its file's time has no time in the cache, every scan reads it again (on the worker;
+  `model_reload`'s own poll where it runs) and compares what it says, and a file that says the same changes
+  nothing. So a second write within a tick of the first is seen, at the cost of two or three more reads of a
+  file just written. Not seen, as before: a writer that puts a file's old time back; and on a share whose
+  server stamps the writes with a clock more than two seconds ahead of this machine's, two writes in one of
+  its ticks. (A file renamed into a folder whose time did not move is found by a request for it, not by a scan.)
 - **Model uploads waiting for the GPU.** A rebuilt model landing uploaded synchronously (`upload_mesh_with`, a fence
   wait per mesh) and freed the old build with `destroy_mesh` (waits for frames in flight). Now uploads are queued
   (`queue_mesh`, `queue_texture_levels`) and frees retired (`retire_*`), and a window frame uploads for at most 3 ms

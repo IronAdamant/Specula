@@ -1104,7 +1104,7 @@ mod tests {
     /// Cost of one zone (open + close), enabled and disabled. A measurement, not a check:
     /// `cargo test --release -p specula-core --lib zone_cost -- --ignored --nocapture`
     #[test]
-    #[ignore]
+    #[ignore = "a measurement of what a zone costs, not a check: run by hand, in release"]
     fn zone_cost() {
         let _s = serial();
         const N: u32 = 1_000_000;

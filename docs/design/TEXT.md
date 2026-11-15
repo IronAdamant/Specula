@@ -219,7 +219,9 @@ depth), so the surface is shrunk instead of the geometry made cleverer:
 - **Latin, Cyrillic, Greek:** the bundled faces, with `kern` and GPOS pair kerning.
 - **Fallback per locale:** `system_cjk_candidates(locale)` orders the system's CJK faces by
   the locale (`CjkScript::order`; Han unification: Japanese text must find a Japanese face first),
-  and `load_cjk_face(locale)` is the first of them that loads, or nothing.
+  and `load_cjk_face(locale)` is the first of them that loads, or nothing
+  (`load_cjk_face_with(locale, also)`: the first that also has every character of `also`; an interface
+  asks for `INTERFACE_ASCII`, because some CJK faces are fallback faces with no Latin at all).
   `system_fallback_candidates(locale)` is those and then a symbol face, which is not a face for
   the locale: a machine with no CJK font still has it (taken as "the first that loads", it stood
   in as the Japanese face with every character missing; CI's Linux image showed that on

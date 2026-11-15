@@ -10,6 +10,9 @@ rust-version.workspace = true
 
 [dependencies]
 specula-core = { workspace = true }
+
+# WASAPI's handles and its runtime-loaded library: Windows code only.
+[target.'cfg(windows)'.dependencies]
 specula-sys = { workspace = true }
 
 [lints]

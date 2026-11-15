@@ -7,7 +7,12 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 
-[dependencies]
+# The Win32 window, its input and the runtime-loaded libraries: Windows code only.
+[target.'cfg(windows)'.dependencies]
+specula-sys = { workspace = true }
+
+[dev-dependencies]
+# A test of how titles are encoded, run on every platform.
 specula-sys = { workspace = true }
 
 [lints]

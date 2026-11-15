@@ -880,6 +880,19 @@ readback and the remaining engine-thread stalls.
   change: check on the caller's thread against a snapshot and commit if the files are still as read, as
   `project_write` does; then they go back to the edit class. The hosted game's own reload is the same kind
   of work (Sepulcra applies a changed theme to both of its interfaces in 5.7 ms).
+- [ ] ➕ **A file written again within one tick of the clock, at the same size, is not seen where size and
+  time are all that is compared** (found after an outside review's Linux run, 2026-11-15). File times move
+  in steps (1 to 16 ms on Linux and Windows, a second on HFS+, two on FAT), so two writes can carry one
+  time. The model library's recipes, styles and anim sets no longer rest on that (a text read within two
+  seconds of its file's time is compared by what it says until the time is older:
+  [design/WORKERS.md](design/WORKERS.md)). Two places still compare size and time alone, and need the same
+  written twice within a tick at one byte count to miss a change: a glTF asset's key (made of its size and
+  time so that a request never reads the file) and the project store's watcher (which then compares
+  content). Closing those two means reading the file while its time is fresh: for the watcher that is a
+  read on the engine thread before a write (the item below), for a glTF a hash of tens of megabytes; do
+  it with that item, off the engine thread. One case is as it was everywhere, and reading does not close
+  it: a share whose server stamps the writes with a clock more than two seconds ahead of this machine's
+  (such a time reads as another clock's, which this machine's next write would not carry).
 - [ ] ➕ **A file read in the instant after it changed on disk is read on the engine thread** (found by the
   M5 exit proof, 2026-11-14). An outside edit is taken in by the project's watcher on its own thread, a
   second or so later. A `project_read` (or a write) of that file before then finds the change itself
@@ -1056,8 +1069,12 @@ saving the assets, similar to Unity and Unreal Engine and also having 2D/3D asse
 - [ ] ➕ **Adversarial review before marketing**: of the whole engine, cloud access included.
 - [ ] ➕ **A private held-out eval set**, kept outside the public repo, before any benchmark claim. Claude reminds
   the owner at M6.
-- [ ] **Release order** (owner, 2026-10-22): verify on macOS and Linux with small games, then publish the
-  crates to crates.io (open source), then market.
+- [ ] **Release order** (owner, 2026-11-14, in place of the order of 2026-10-22): the first release is
+  Windows and macOS together; Linux follows, sooner if someone helps there. macOS is native work that does
+  not exist yet and is sized at the start of M6 ([HANDOFF.md](../HANDOFF.md)). The order of 2026-10-22 was:
+  verify on macOS and Linux with small games, then publish the crates to crates.io (open source), then
+  market. With Linux now after the first release, whether crates.io and the marketing wait for it has not
+  been said: it is on the owner's list ([HANDOFF.md](../HANDOFF.md#open-owner-decisions)).
 - [ ] ➕ **Mods and outside extensions** (owner, 2026-11-12): how games built on Specula are modded, and how people
   plug in their own tooling or engine pieces. These live **on their side, never in this repository**: the engine
   stays zero-dependency and validates whatever plugs in, as it treats every agent as untrusted. Whether a game is
@@ -1068,8 +1085,9 @@ saving the assets, similar to Unity and Unreal Engine and also having 2D/3D asse
 
 ## Platform track (after M2, in parallel)
 
-**Order (owner, 2026-10-22):** Windows first, through a Windows-focused M6 and its announcement. Then macOS and
-Linux, **native**: Metal and Cocoa, X11/Wayland and Vulkan. No translation layers (MoltenVK, Wine/Proton, ...): they
+**Order (owner, 2026-11-14):** Windows and macOS for the first release, Linux after it. (Before that, from
+2026-10-22: Windows through M6 and its announcement, then macOS and Linux.) All of them
+**native**: Metal and Cocoa, X11/Wayland and Vulkan. No translation layers (MoltenVK, Wine/Proton, ...): they
 add overhead and dependencies we don't control. The shader language below comes first, so every backend shares one
 source of shaders.
 
@@ -1235,8 +1253,10 @@ These are researched designs, written before implementation so the foundations h
 - [x] [research/AGENT_GAMEMAKING.md](research/AGENT_GAMEMAKING.md): how agents build games and where they fail,
   gameplay as data (Lex), placement by relations (Locus), taste by picking and measuring, balance by simulation,
   animation metrics; proposals for M3 and M4. Written 2026-10-17. [x] Reviewed with the owner (accepted 2026-10-17).
-- [ ] Still to research when their lane starts: audio (WASAPI, mixing, Vorbis), navigation (navmesh generation),
-  global-illumination baking, particle systems, asset streaming, Linux/Wayland and macOS/Metal backends.
+- [ ] Still to research when their lane starts: the Linux/Wayland and macOS/Metal backends. (Audio, navigation,
+  global-illumination baking, particles and asset streaming were researched with their lanes and are built:
+  [design/AUDIO.md](design/AUDIO.md), [design/NAVIGATION.md](design/NAVIGATION.md), [design/GI.md](design/GI.md),
+  [design/VFX.md](design/VFX.md), [design/STREAMING.md](design/STREAMING.md).)
 
 ---
 

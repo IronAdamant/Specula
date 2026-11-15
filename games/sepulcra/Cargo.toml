@@ -13,6 +13,9 @@ publish = false
 specula-core = { workspace = true }
 # The rules as Lex data (lex/*.lex.json) and the native hooks they call (src/lex.rs).
 specula-lex = { workspace = true }
+
+[dev-dependencies]
+# tests/balance.rs: the game's targets against the balance lab.
 specula-balance = { workspace = true }
 
 [lints]

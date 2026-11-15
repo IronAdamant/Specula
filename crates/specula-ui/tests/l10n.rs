@@ -247,21 +247,25 @@ fn switching_between_two_locales_faces_lays_text_out_again() {
 }
 
 /// Japanese text with the system's Japanese face for the "ui" slot: no missing glyphs. On a
-/// machine with no CJK face (CI's), the slot is a problem that is said, and never a face that
-/// has none of the characters.
+/// machine with no CJK face (CI's), or with none that has Latin letters and digits too (an
+/// outside review's Linux machine, whose first CJK face was a fallback face without them: the
+/// HUD's digits were missing glyphs), the slot is a problem that is said, and never a face
+/// that lacks what the interface shows.
 #[test]
 fn a_cjk_locale_uses_the_systems_face() {
     let ja = r#"{"format": "specula.strings.v1", "locale": "ja", "name": "日本語", "fonts": {"ui": "system:ja"}, "strings": {"hud.wave": "ウェーブ {wave}", "hud.menu": "メニュー"}}"#;
     let tables: Vec<Arc<Table>> = [EN, ja].iter().map(|t| Arc::new(Table::parse(t).unwrap())).collect();
     let catalog = specula_lingua::Catalog::build(&Locale::parse("ja").unwrap(), &tables.iter().map(|t| &**t).collect::<Vec<_>>()).unwrap();
     let (fonts, problems) = Strings::load_fonts(&catalog);
-    let Some((path, face)) = specula_text::load_cjk_face("ja") else {
+    let Some((path, face)) = specula_text::load_cjk_face_with("ja", specula_text::INTERFACE_ASCII) else {
         assert!(fonts.iter().all(|(slot, _)| slot != "ui"), "no face stands in for the locale's");
         assert!(problems.iter().any(|(slot, why)| slot == "fonts.ui" && why.contains("no system face for ja")), "{problems:?}");
         eprintln!("skipped the layout: no system CJK face on this machine (the slot said so)");
         return;
     };
     assert!(problems.is_empty(), "{problems:?}");
+    let ui_face = &fonts.iter().find(|(slot, _)| slot == "ui").expect("the slot is filled").1;
+    assert!(specula_text::INTERFACE_ASCII.chars().all(|c| ui_face.glyph_index(c).is_some()), "{}: the interface's face has its digits and Latin letters", path.display());
     if !"ウェーブメニュー".chars().all(|c| face.glyph_index(c).is_some()) {
         eprintln!("skipped the layout: {} has no kana", path.display());
         return;

@@ -5,7 +5,7 @@ All notable changes to Specula are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — 0.3.0: native engine, M0–M2
+## [Unreleased] — 0.3.0: native engine, M0–M5
 
 Specula is now a zero-dependency, agent-native game engine (Rust `std` + OS/driver FFI only).
 See [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md). Item-by-item detail, with the reasoning for each, is in
@@ -111,6 +111,27 @@ Built by one agent, lane by lane, each lane reviewed by a model that did not wri
   the whole workspace: a trace test took "the second event's time selects one event" for the filter's
   doing, and on that machine both events had one microsecond (it had passed there twice that day). It
   says what a time range takes and leaves, of the events' own times and of times that are given
+- **A file written again within the clock tick it was read in is seen** (the model library: recipes, their
+  folder, styles, anim sets). File times move in steps, and the library compared times alone: a second
+  write inside the step of the first was never read. An outside review (Grok, on a Linux machine,
+  2026-11-15) had `changed_anim_sets_apply_at_the_poll` fail in one run of two; on Windows a copied file
+  keeps its source's old time, which is why it never failed here. Given a rewrite that keeps the file's
+  time, the test fails every time. A time is now compared with only once it is more than two seconds
+  old (`models::stamp_of`): a text read sooner than that after its file's time is read again by every scan
+  and compared by what it says, until its time is old; a file read again that says the same changes
+  nothing (a style read again used to forget every recipe under it). Still on size and time alone, and on
+  the roadmap: a glTF asset's key and the project store's watcher
+- **An interface's system face has its digits and Latin letters** (`specula_text::load_cjk_face_with`,
+  `INTERFACE_ASCII`). A table's `system:ja` slot is the one face for all of that slot's text. The same
+  review's machine had a CJK fallback face with no Latin as its first Japanese candidate: it was taken, and
+  every digit and English word of the HUD was a missing glyph. The slot now takes the first of the
+  locale's faces that has ASCII too, or says that there is none
+- **Tidied after that review:** two test lines needed Rust 1.87 where `Cargo.toml` declares 1.85 (the
+  reviewer's build on 1.85.1 failed on those two lines alone; they are rewritten, and nothing here has
+  built on 1.85 since, so that is not shown); every ignored test says why (16 gave no reason); a dependency only tests use and two that only
+  Windows code uses are declared so (Cargo 1.100 warned); the roadmap's release order and platform order
+  follow the owner's decision of 2026-11-14; stale "where things are" lines in ENGINE_PLAN, HANDOFF, this
+  file's title and AGENTS' line for `specula-text`
 
 ### M4, done (2026-10-28 to 2026-10-30)
 

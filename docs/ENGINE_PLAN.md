@@ -81,9 +81,10 @@ M0 may start with fewer crates and split as they grow.
 
 ## Milestones
 
-The checklist, with the reasoning for each step, is in **[ROADMAP.md](ROADMAP.md)**: M0 (done), M1 world and
-multi-agent (next), M2 rendering, M3 logic/physics/time, M4 asset studio, M5 audio/text/UI, M6 ship, plus platform
-and swarm tracks. This file keeps the decisions, architecture and the record of what was found along the way.
+The checklist, with the reasoning for each step, is in **[ROADMAP.md](ROADMAP.md)**: M0 to M5 are done (the
+loop end to end, world and multi-agent, rendering, logic/physics/time, the asset studio, audio/text/UI); M6,
+ship, is next and not started ([HANDOFF.md](../HANDOFF.md) says where things stand); plus the platform and swarm
+tracks. This file keeps the decisions, architecture and the record of what was found along the way.
 
 ## M0 record (2026-10-12)
 

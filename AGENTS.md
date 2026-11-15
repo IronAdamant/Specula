@@ -90,7 +90,7 @@ Read [HANDOFF.md](HANDOFF.md) first.
 | `specula` (bin) | world server: world, rendering, agent tools |
 | `specula-input` | actions, not keys: keyboard, mouse, gamepad (XInput), touch |
 | `specula-audio` | output (WASAPI), mixing, synthesis, analysis |
-| `specula-text` | TrueType fonts → glyph atlas → laid-out quads (CPU) |
+| `specula-text` | TrueType fonts → laid-out text: a glyph atlas (CPU) for interfaces, curves drawn on the GPU for text in the world; bundled faces, system CJK faces, editing |
 | `specula-ui` | HUD and menu toolkit for agents and humans |
 | `specula-anim` | skeletal animation (A1–A3): clips, graphs, IK, motion generators, motion checks |
 | `specula-lex` | Lex: gameplay rules as typed text data (validate, compile, simulate deterministically) |

@@ -179,7 +179,7 @@ fn evasions_are_caught() {
 /// `cargo test -p specula-studio --test sepulcra -- --ignored --nocapture`: every subject's facts
 /// and findings, for tuning the rules.
 #[test]
-#[ignore]
+#[ignore = "prints every subject's facts for tuning the rules: run by hand"]
 fn dump() {
     for (f, r) in all() {
         println!("{}\n  {}", f.to_json(12), r.to_json(20, None));

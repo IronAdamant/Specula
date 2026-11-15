@@ -1978,7 +1978,7 @@ mod tests {
     /// Where an engine physics tick goes with 1,000 awake boxes (review round 2, finding 6). Run
     /// with `cargo test --release -p specula --lib bridge_profile -- --ignored --nocapture`.
     #[test]
-    #[ignore]
+    #[ignore = "a profile of one physics tick: run by hand, in release"]
     fn bridge_profile() {
         let mut w = World::default();
         let f = floor(&mut w);

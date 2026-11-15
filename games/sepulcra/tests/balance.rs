@@ -94,7 +94,7 @@ fn tuning_runner_hp_hits_the_targets_on_held_out_seeds() {
 
 /// Throughput, release build: `cargo test -p sepulcra --release --test balance -- --ignored --nocapture throughput`.
 #[test]
-#[ignore]
+#[ignore = "a throughput measurement: run by hand, in release"]
 fn throughput() {
     let (d, t) = (doc(), targets());
     let points: Vec<Point> = (0..8).map(|i| vec![("runner_hp".to_owned(), Json::from(30 + 5 * i))]).collect();
@@ -109,7 +109,7 @@ fn throughput() {
 
 /// A look at the slice under the targets' policy across a few param values.
 #[test]
-#[ignore]
+#[ignore = "prints the slice across a few parameter values, to look at: not a check"]
 fn explore() {
     let d = doc();
     let t = match std::env::var("TARGETS") {
@@ -164,7 +164,7 @@ fn targets_must_hold_across_play_styles() {
 /// Tuning against all three styles at once: `cargo test -p sepulcra --release --test balance --
 /// --ignored --nocapture tune_styles`.
 #[test]
-#[ignore]
+#[ignore = "a tuning run against three styles: run by hand, in release (minutes)"]
 fn tune_styles() {
     let d = doc();
     let t = Targets::parse_text(STYLES).unwrap();

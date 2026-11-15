@@ -1987,7 +1987,7 @@ mod tests {
     /// How long a unit of live work takes on this machine (for calibrating [`LIMITS`]): run with
     /// `cargo test --release -p specula --lib measure_live_work -- --ignored --nocapture`.
     #[test]
-    #[ignore]
+    #[ignore = "a measurement for calibrating LIMITS: run by hand, in release"]
     fn measure_live_work_unit_time() {
         for count in [100u32, 300, 700] {
             let doc = format!(

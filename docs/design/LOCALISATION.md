@@ -106,8 +106,10 @@ reads the same words.
   nothing stale is drawn). `Strings::load_fonts` reads the faces a table names (bundled by name,
   `system:<locale>` from the system's CJK faces for that locale, 10-20 MB each;
   `specula_text::load_cjk_face`) and must run off the engine thread; faces are cached per
-  process (at most 6). On a machine with no such face the slot is a problem that is said
-  ("no system face for ja on this machine"), never another face in its place.
+  process (at most 6). The face must have ASCII's digits, letters and punctuation as well: a slot's
+  face is the one face for all its text, and a Japanese HUD still shows numbers and Latin words. On a
+  machine with no such face the slot is a problem that is said ("no system face for ja on this
+  machine..."), never another face in its place.
 - **`ui_check`** gains `missing_key` (error: a `@key` the table lacks), `hardcoded` (warning, with a
   table: words a screen writes itself) and `CheckOpts::strings` (check in another language; the
   player's table is put back). `pseudo: true` with a table swaps in the pseudo-locale made from

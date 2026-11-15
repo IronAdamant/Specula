@@ -577,7 +577,7 @@ fn golden_hash_f64() {
 /// Run with
 /// `cargo test -p specula-core --release dmath::tests::exhaustive -- --ignored --nocapture`.
 #[test]
-#[ignore]
+#[ignore = "an exhaustive sweep for an outside oracle: run by hand, in release (minutes)"]
 fn exhaustive() {
     type Case = (&'static str, fn(f32) -> f32, fn(f64) -> Dd, fn(f32) -> bool);
     let all = |x: f32| x.is_finite();
@@ -711,7 +711,7 @@ fn double_rounding_cases_are_correctly_rounded() {
 /// Rough speed against std. Run with
 /// `cargo test -p specula-core --release dmath::tests::bench -- --ignored --nocapture`.
 #[test]
-#[ignore]
+#[ignore = "a speed comparison with std: run by hand, in release"]
 fn bench() {
     use std::hint::black_box;
     use std::time::Instant;

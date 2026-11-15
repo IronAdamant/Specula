@@ -214,7 +214,28 @@ pub fn load_fallbacks(locale: &str, max: usize) -> Vec<(PathBuf, Font)> {
 /// machine that has none (never the symbol face). Reads a font file of 10–20 MB: off the engine
 /// thread, once.
 pub fn load_cjk_face(locale: &str) -> Option<(PathBuf, Font)> {
-    system_cjk_candidates(locale).into_iter().filter(|p| p.is_file()).find_map(|p| load_font_file(&p).ok().map(|f| (p, f)))
+    first_face_with(system_cjk_candidates(locale), "")
+}
+
+/// What an interface draws in every language beside the language's own script: the digits,
+/// Latin letters and punctuation of ASCII (every printable character but the space).
+pub const INTERFACE_ASCII: &str = "!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+
+/// [`load_cjk_face`] for a face that draws `also` as well: the first of `locale`'s CJK faces
+/// that exists, parses and has a glyph for every character of `also`. An interface's face is
+/// one face for all it shows, and its Japanese still has digits and Latin words in it
+/// ([`INTERFACE_ASCII`]); some CJK faces are fallback faces with no Latin at all (Droid Sans
+/// Fallback, the first one found on some Linux machines: an outside review's run, 2026-11-15,
+/// where every digit of the HUD was a missing glyph). Each face tried is a file of 10–20 MB
+/// read: off the engine thread.
+pub fn load_cjk_face_with(locale: &str, also: &str) -> Option<(PathBuf, Font)> {
+    first_face_with(system_cjk_candidates(locale), also)
+}
+
+/// The first of `candidates` that is a file, parses and has a glyph for every character of
+/// `also`, with its path.
+pub fn first_face_with(candidates: impl IntoIterator<Item = PathBuf>, also: &str) -> Option<(PathBuf, Font)> {
+    candidates.into_iter().filter(|p| p.is_file()).filter_map(|p| load_font_file(&p).ok().map(|f| (p, f))).find(|(_, f)| also.chars().all(|c| f.glyph_index(c).is_some()))
 }
 
 #[cfg(test)]
@@ -271,6 +292,31 @@ mod tests {
             assert_ne!(system_cjk_candidates("zh-Hans")[0], system_cjk_candidates("zh-TW")[0]);
         }
         assert_ne!(system_cjk_candidates("ja")[0], system_cjk_candidates("zh-Hans")[0], "Japanese text looks for a Japanese face first");
+    }
+
+    /// A face is taken for what it has to draw: the first in order when nothing more is asked,
+    /// and the first that has the rest when more is. (Files made here, so the answer is the
+    /// same on every machine: a font with three letters, and the bundled interface face.)
+    #[test]
+    fn a_face_that_lacks_what_else_it_draws_is_passed_over() {
+        let dir = std::env::temp_dir().join(format!("specula-text-faces-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (tiny, full, none, broken) = (dir.join("tiny.ttf"), dir.join("full.ttf"), dir.join("none.ttf"), dir.join("broken.ttf"));
+        std::fs::write(&tiny, crate::font::tests::tiny_font()).unwrap();
+        std::fs::write(&full, crate::Bundled::UiRegular.bytes()).unwrap();
+        std::fs::write(&broken, b"not a font").unwrap();
+        let first = |files: &[&PathBuf], also: &str| first_face_with(files.iter().map(|p| (*p).clone()), also).map(|(p, _)| p);
+        // In order; a file that is not there or is no font is passed over, as ever.
+        assert_eq!(first(&[&none, &broken, &tiny, &full], ""), Some(tiny.clone()));
+        assert_eq!(first(&[&tiny, &full], "A"), Some(tiny.clone()), "the tiny font has an A");
+        // It has no digit: an interface's face is the next one.
+        assert_eq!(first(&[&tiny, &full], INTERFACE_ASCII), Some(full.clone()));
+        assert_eq!(first(&[&tiny], INTERFACE_ASCII), None);
+        assert_eq!(first(&[&tiny, &full], "A\u{e000}"), None, "a character neither has");
+        assert_eq!(first(&[], ""), None);
+        assert_eq!(INTERFACE_ASCII.chars().map(u32::from).collect::<Vec<_>>(), (0x21..=0x7e).collect::<Vec<u32>>(), "every printable ASCII character but the space, once");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The locale's face is one of its CJK files or nothing: never the symbol face that ends

@@ -224,7 +224,7 @@ fn lex_slice_is_deterministic_and_seed_sensitive() {
 /// What the interpreter costs against hand-written Rust (foundation F3), on the defended run:
 /// `cargo test -p sepulcra --release --test lex_parity -- --ignored --nocapture`.
 #[test]
-#[ignore]
+#[ignore = "what the interpreter costs against Rust: run by hand, in release"]
 fn bench_lex_against_rust() {
     let c = content();
     let runs = 200u64;
@@ -539,7 +539,7 @@ fn a_rich_player_trying_everything_matches_over_whole_games() {
 /// Many seeds on every core (`LEX_SWEEP_SEEDS`, default 250 per layout, plus 100 rich chaos
 /// games): `cargo test -p sepulcra --release --test lex_parity -- --ignored sweep --nocapture`.
 #[test]
-#[ignore]
+#[ignore = "many seeds on every core: run by hand, in release (minutes)"]
 fn sweep_every_layout_and_many_seeds() {
     use sepulcra::content::{ENEMIES_JSON, SLAB_01_JSON, STONES_JSON, WAVES_JSON};
     let seeds: u64 = std::env::var("LEX_SWEEP_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(250);
@@ -583,7 +583,7 @@ fn sweep_every_layout_and_many_seeds() {
 /// What the interpreter and the hooks cost against hand-written Rust on the whole game (F3):
 /// `cargo test -p sepulcra --release --test lex_parity -- --ignored bench_full --nocapture`.
 #[test]
-#[ignore]
+#[ignore = "what the interpreter and hooks cost on the whole game: run by hand, in release"]
 fn bench_full_game_lex_against_rust() {
     let (c, rules) = (full::content(), full::rules());
     let layout = full::LAYOUTS[0].1;
