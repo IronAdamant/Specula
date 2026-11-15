@@ -122,7 +122,8 @@ that needs more than it reaches.
    semi-realistic body is within reach, because proportions and volumes can be written down and measured.
    A photoreal likeness is not: the published body models get their shapes from thousands of scanned
    people, and nothing written by hand or by an agent replaces that data. That last step, if a game needs
-   it, is what a pack is for.
+   it, is what a pack is for. The owner, told so: "right now, I'm not concerned about photoreal likeness.
+   Anyone that wants it will be waiting after M6 and likely for a long while."
 2. **A body pack**: an open parametric model installed into a project as data, as a voice pack is. The engine
    reads its mesh, its shape parameters and its rig. It lives on the project's side and never in this
    repository, so zero dependencies hold. This is the route to realism.

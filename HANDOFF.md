@@ -6,6 +6,33 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
 
 - **M5 is done (2026-11-15). M6 has not started, and does not start until the owner has talked its scope
   through** (their words, 2026-11-14, below). What a next session starts with:
+  - **M6 as it stands before the scope talk** (an index; the details are below and in ROADMAP M6).
+    The owner's tools are updated and the outside review is done, and the owner says "we're ready":
+    that means ready for the scope talk, which has not happened. **Nothing in this list is sized;
+    sizing it is the talk's first job.**
+    - *What M6 is:* the proto-1.0, "basic and good enough", released for Windows and macOS under a 0.x
+      number, before December if it can be and otherwise before Christmas ("I can wait").
+    - *Its two focus items:* what building through the engine costs (the numbers below), and verifying
+      in less time.
+    - *To talk through first:* the Rust version policy, how long verifying takes, an honest size for
+      macOS, and which game ships (the list of open owner decisions).
+    - *ROADMAP M6's own items:* `specula export`; a project gets its SDK from the engine; a module
+      builds in a folder of any depth; the repository's tooling in Rust; shipping basics; asset packing;
+      Steam as an optional extra; the Steam Deck pass; soak tests; an agent sets the variables on a
+      machine it has never seen; the engine pays off by game size; game systems as optional data and
+      memory for whoever builds the game (2026-11-16); form within an agent's reach (2026-11-16); cloud
+      swarms with per-agent tokens; an adversarial review before any marketing; a private held-out
+      eval set; the release order; mods and outside extensions.
+    - *On other tracks, and needed for M6's release:* macOS natively (ROADMAP's Platform track: a
+      Metal renderer, window, input, audio, module loading), behind the shader language that track
+      puts first; and a module-built game reaching interface screens, strings and saved settings.
+    - *After M6:* Linux; the ladder of light and the rest of the research note; the owner's large
+      commercial game; mobile; whatever else matching AAA tools takes.
+    - *How a change is verified until the talk decides otherwise:* engine or game code passes the gate
+      on the newest stable Rust (AGENTS.md, "The gate"), and what touches the window, the GPU or the
+      tools also passes the live checks; a change to documents only runs the three document guards
+      (`cargo test -p specula --test docs_links --test private_paths --test line_endings`), as every
+      documents commit of 2026-11-15 and 16 did.
   - **The owner's list** of what only a person can judge at the window: [docs/M5_CHECKLIST.md](docs/M5_CHECKLIST.md).
     Nothing in M5 waited on it; what fails there is M6's.
   - **M5's measured baseline and why** ([docs/design/LEVERAGE.md](docs/design/LEVERAGE.md)): the numbers M6 is
@@ -145,7 +172,9 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     0.3 is fine. To get to true 1.0.0 is when this tool reaches to a similar capability as AAA tools
     like unreal engine." So M6's bar is complete and dependable at a basic level on Windows and macOS,
     released under a 0.x number; matching AAA tools is the work after it (ROADMAP's Fidelity track and
-    long-term list), and 1.0.0 is kept for that.
+    long-term list), and 1.0.0 is kept for that. Older lines in this page and in ROADMAP that say "after
+    v1.0" (mobile, realism, better animation) were written when v1.0 meant this release: read them as
+    "after M6".
   - **Taste and realism, researched before M6** (the owner, the same day): "You can generate graphical
     assets but to get really close to a good one, like round stuff, more human stuff.. I think this
     engine will help you with it. What we need you to do is do your research and see if you can add as
@@ -171,12 +200,16 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     downloads, add it to handoff"); a body pack from an open model is only for a project that needs
     more. Claude's plain word on how far that goes: a believable stylised to semi-realistic body, yes;
     a photoreal likeness, no, because the published models get theirs from thousands of scanned people.
+    The owner on that: "right now, I'm not concerned about photoreal likeness. Anyone that wants it will
+    be waiting after M6 and likely for a long while." They also have "other concerns that we need to
+    address at a later time", not yet said, "for much later when the engine is more mature".
     Light: vendor-neutral only, never dependent on ray-tracing hardware ("You read right"), and the
     engine is a guide: "People will have different requirements and AI agents will need to straight up
     tell them on what's possible and what's not." It reports what a machine can run; the agent says so.
     The rest of the note (the ladder of light, creases, sculpt steps, skin) is the road to a true 1.0.0.
   - **Four more answers, the same day.** Voices: babble voices and the slot for voice packs are M6's,
-    the machine voice is decided after ("I do. If it'll make it easier"). What to cut if not all of it
+    whether to build the machine voice at all is decided after them (the owner agreed to that
+    recommendation: "I do. If it'll make it easier"). What to cut if not all of it
     fits: nothing ("All of them. No exceptions. Take your time"); Claude's order is for building: the
     memory helpers and the conditions first, then the storyline tree with captions, then reputation
     and the RPG set-up, then music. Editing: "these are editable through tools and editor. No specific
@@ -217,7 +250,9 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     verified by a separate instance; another assistant (Grok) is also running its own tests on this
     repository first. Whatever any agent reports is checked against the code before it is acted on.
     Both are done (2026-11-16): that review's findings are fixed (below), and the owner says "we're
-    ready and the tools are also updated". What is left before M6 is the scope talk.
+    ready and the tools are also updated". What is left before M6 is the scope talk. The live test of
+    the seven tools (docs/agent-tools) was written before that update: read each tool's own
+    instructions before leaning on that page.
   - **Two things the owner wants talked through before M6 starts** (raised while M5's last commit took
     four pushes to go green on CI; nothing has been changed for either):
     - **The Rust version.** "Never thought that even a basic update can cause much changes and
@@ -350,7 +385,7 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
   baked GI, VFX, terrain, then the M4 exit proof). Check `git log` and ROADMAP ticks for progress.
   **Owner, 2026-10-18: shaders get a language of our own,** compiled to SPIR-V, MSL and later the console APIs, built
   first on the Platform track (ROADMAP), so agents write a shader once for every platform.
-  **Owner, 2026-10-22, the release plan:** Windows first, all the way through a Windows-focused M6, then the
+  **Owner, 2026-10-22, the release plan (history: replaced on 2026-11-14 by Windows and macOS first):** Windows first, all the way through a Windows-focused M6, then the
   announcement. After that, macOS and Linux, tested on the owner's Windows, macOS and Arch Linux machines with
   Sepulcra and the Steam MVP. Those ports are **native** (Metal, and the Linux window systems directly), never
   translation layers such as MoltenVK or Wine/Proton, because those add overhead and dependencies. "Many people are
@@ -365,6 +400,8 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     handle them with subagents, or ask the owner up front.
   - **crates.io: after M6.** First verify on macOS and Linux with small games; if it holds up, publish to
     crates.io, then market. M6 is effectively proto-v1.0. The Specula engine is **open source**.
+    (Changed 2026-11-16: the crates and the announcement go with the Windows and macOS release and do
+    not wait for Linux.)
   - **A private held-out eval set: yes, at M6.** Claude reminds the owner at M6, before any benchmark claims.
   - **Sepulcra v1.0:**
     - Three maps of about 10 waves, using **every face of the cube, sides and bottom included** (a "cubic
@@ -626,7 +663,7 @@ In practice that means six **foundations** that apply to every change from M1 on
   `specula-tempus` (timelines and camera rails), `specula-model` (procedural modelling), `specula-gltf` (import
   and export).
 - **Size:** about 396k lines of Rust (2026-11-14): 370k in 27 engine crates and 26k in 8 game crates (Sepulcra's
-  rules and app, the Ambulo example module and five gameplay modules); about 3,030 tests. **Zero
+  rules and app, the Ambulo example module and five gameplay modules); 3,049 tests in the gate (2026-11-16). **Zero
   third-party crates.** The Rust toolchain's own linker; Vulkan, XInput and AVRT are loaded at runtime.
 
 **What it can't do yet:**
@@ -634,6 +671,10 @@ In practice that means six **foundations** that apply to every change from M1 on
   the same model, pass the same checks, and through the engine they cost three to five times the tokens (1.7
   times for a change to an existing game): more requests, each re-reading the context, and more written
   ([docs/design/LEVERAGE.md](docs/design/LEVERAGE.md)). M6's work.
+- **Tell a story or keep score for a game, or remember a game for the agent building it.** A storyline
+  tree, reputation, an RPG set-up, win conditions and scoring, captions with voices, music packs and notes
+  kept with a project are M6's, noted on 2026-11-16 and not designed. Round and human form still costs an
+  agent far more than boxes do (the five form items, also M6's).
 - **Give a module-built game an interface.** Screens, strings by language and saved settings reach a player
   only through a hosted game's executable, as Sepulcra's does.
 - Sepulcra uses physics only for its shamblers' ragdoll deaths (gameplay is still rules, not physics). It runs on its
@@ -658,6 +699,39 @@ In practice that means six **foundations** that apply to every change from M1 on
 - **Test steps:** in-game test plans as `- [ ]` checklists (they use Obsidian).
 - **Other work:** Fallout 4 mods in `D:\Coding Projects\AgentCreationKit`. A peer Claude session there once committed
   work by mistake, so check `git log` before committing.
+
+## On the development laptop: what never to do
+
+These held all through M5 and were written down nowhere in the repository until 2026-11-16.
+
+- **Push only when the owner asks**, and only what that go-ahead named. A plain push of `main`; never a
+  forced one.
+- **Never run `rustup update` or change the default toolchain.** It is the owner's (1.99.1 when this was
+  written). Install another version beside it and choose it with `RUSTUP_TOOLCHAIN`.
+- **Never delete** `target/m4-exit-approved/` and `target/m3-exit/` (the exit evidence the owner
+  approved), `gallery-full/` (the gallery's full-size originals, and the raw recordings of 2026-11-12
+  the owner has yet to decide on), or `.specula-cache/`. A `cargo clean` in the main checkout takes the
+  first two with it: build into another folder with `CARGO_TARGET_DIR` instead of cleaning.
+- **Nothing private in a tracked file or a commit message:** the owner's Windows user name, e-mail
+  address, home folder paths and where their diary is kept. The repository is public.
+  `crates/specula/tests/private_paths.rs` holds part of this; read a commit before it is pushed. No
+  session or share links (AGENTS rule 11).
+- **Hands off the person at the machine:** never move their pointer, press keys for them, take the
+  keyboard's focus, raise a window over theirs or touch their clipboard. Never record or capture the
+  screen: the engine's own window only.
+- **An engine you start for a probe** gets `--settings DIR` or `--settings off`, and with a window
+  `--no-activate`. Never start the executable with no arguments in a probe: that is the start screen,
+  with the person's own list of projects, and that list never goes into a tool's answer, a capture or a
+  trace.
+- **Loopback only.** Never bind `0.0.0.0`, even to try a port.
+- **Stop engines by their process id** (or `specula stop --settings DIR`), never by name: other sessions
+  run engines too, on ports 7460 to 7499 and 7471. Take a range of your own (the live checks start at
+  7720).
+- **A probe that writes into assets works on a copy** of them in a scratch folder.
+- **Leave the owner's other repositories alone** (their seven agent tools and the rest beside this
+  folder): read them, never change them.
+- **Never a bare `git stash`:** the stash is shared by every worktree and session. Set work aside with a
+  commit on a branch.
 
 ## Gotchas that cost time
 
@@ -741,13 +815,23 @@ In practice that means six **foundations** that apply to every change from M1 on
 
 This is the **one list** of decisions waiting for the owner (other docs link here instead of keeping their own;
 `crates/specula/tests/docs_links.rs` checks it isn't duplicated). Remove an item once it's decided and record the
-answer where it applies. The owner decided everything else on 2026-10-22 (see "Decided by the owner on 2026-10-22" above).
+answer where it applies. What was decided is recorded by date above (2026-10-22, and 2026-11-12 to 16).
+Not decisions of this kind, and also waiting on the owner: the Rust version policy and how long verifying
+takes (for the scope talk, at the top of this page), the seven items of
+[docs/M5_CHECKLIST.md](docs/M5_CHECKLIST.md) that keep a part for them, the raw recordings of 2026-11-12,
+and the private held-out eval set.
 
 - **Remote agents' defaults** (from [docs/design/CLOUD_SWARMS.md](docs/design/CLOUD_SWARMS.md), for M6). Claude
   recommends: a remote lead gets no native code, no window input and no module source unless its token names
   them; owner authority is never given remotely unless the operator passes a flag for it; and tunnels
   (Tailscale, WireGuard, SSH) come before OS TLS, because tokens, limits and the hardened server are where the
   protection is. Agree, or change any of the three?
+- **Which game ships in M6, and Sepulcra's own v1.0** (found by a cold read of this page, 2026-11-16).
+  ROADMAP M6 says "ship the owner's original game" and does not name it. Sepulcra is the free game, and
+  its v1.0 was set on 2026-10-22 as three maps on every face of the cube with a free demo on Steam; map 1
+  is built, maps 2 and 3 are not, and no milestone holds them. The large commercial game is after M6. Is
+  the game M6 ships Sepulcra, and with one map or all three? Claude recommends: Sepulcra with map 1 as the
+  proto-1.0's free demo, and maps 2 and 3 after M6, made with the new game systems as their proof.
 - **Sepulcra balance (from the balance lab, 2026-10-18):** a rusher who calls every wave early still loses 2 runs in
   16 on unseen seeds. Claude recommends keeping it risky. The owner will playtest it in M6, on each OS, and decide
   then ([docs/design/BALANCE.md](docs/design/BALANCE.md)).
@@ -818,13 +902,15 @@ answer where it applies. The owner decided everything else on 2026-10-22 (see "D
 **Recommendations for the next session:**
 1. **Do not start M6 until the owner has talked its scope through.** They described it (2026-11-14) as
    finalising and tuning for the first release, with testing and adversarial checks, the experience judged
-   for agents as well as people, on Windows and macOS. Bring: the baseline and why, the list of what tripped
-   cold builders, M5's open items, and an honest size for macOS.
+   for agents as well as people, on Windows and macOS. Bring: the index at the top of this page ("M6 as
+   it stands"), the baseline and why, the list of what tripped cold builders, M5's open items, an honest
+   size for macOS, and a size for each of the owner's additions of 2026-11-16, none of which may be cut.
 2. **Remind the owner** of the two open decisions below, the private held-out eval set (theirs to make at M6,
    before any benchmark claim), the adversarial review before any marketing, and the raw recordings question.
 3. **Keep Sepulcra the dogfood, and add a second game built by a cold agent** as the measure: Sepulcra shows
    what the engine can hold, the comparison shows what it costs to start.
 4. **Before any non-localhost bind**, build per-agent auth tokens (ROADMAP swarm track). Before CI can check
    rendering, Vulkan loading must work on Linux (Platform track).
-5. **Walk the owner through the five design docs** in `docs/design/` and the engine survey when there's a natural
-   pause; their "reviewed" boxes are still unticked.
+5. **Walk the owner through the research that is still unreviewed** when there's a natural pause: the engine
+   survey, Rust at scale, and the note on form and light (ROADMAP, "Design research"; the five design docs
+   were reviewed by delegation on 2026-10-22).

@@ -801,7 +801,8 @@ readback and the remaining engine-thread stalls.
 - [ ] Terrain and water polish: shallow-shelf hairlines, ice crack tiling, the swamp's horizon hue (design/TERRAIN.md).
 - [ ] Windowed recipe writes and studio sheets still raise frame-budget incidents on the iGPU (seen in the exit proof).
 - [ ] Review submissions carry agent-reported checks; let `review_submit` reference results the engine recorded (design/AUTHORITY.md).
-- [ ] Put the approved exit-proof props into a fresh Sepulcra's map 1 (after the owner decides whether props block building).
+- [x] Put the approved exit-proof props into a fresh Sepulcra's map 1 (after the owner decides whether props block building).
+  *Done in M5:* map 1 ships the 33 approved props, each with a `blocks_build` flag (CHANGELOG).
 - [ ] Pilot the owner's agent tools (Chisel, Stele, Wikifier, CoordinationHub) on an M5 lane, then their Rust rewrite (owner, 2026-10-30).
 
 ---
@@ -1002,9 +1003,19 @@ match AAA, that's post M6. And we'll be tuning that and fixing it." And on the n
 number you use, it'll be the proto 1.0 ... 0.3 is fine. To get to true 1.0.0 is when this tool reaches
 to a similar capability as AAA tools like unreal engine." Complete and dependable at a basic level, on
 Windows and macOS, under a 0.x number; matching an AAA studio's tools is the Fidelity track and the
-long-term list, and 1.0.0 is kept for that. The numbers M6 starts from are at the top of
-[HANDOFF.md](../HANDOFF.md).
+long-term list, and 1.0.0 is kept for that. The numbers M6 starts from, and an index of everything M6
+holds across this page's tracks, are at the top of [HANDOFF.md](../HANDOFF.md). Lines elsewhere on this
+page that say "after v1.0" were written when v1.0 meant this release: read them as "after M6".
 
+- [ ] ➕ **The scope talk, first** (owner, 2026-11-14: M6's scope "is talked through when it starts, not
+  before"). Nothing below is sized. It sizes and orders it, and settles the three items that follow.
+- [ ] ➕ **Size macOS honestly** before anything is promised for it: a Metal renderer, its window, input and
+  audio, and module loading do not exist (the Platform track, behind the shader language).
+- [ ] ➕ **Verifying takes less time** (the owner's second focus item, 2026-11-15: "making tests and CIs
+  even more efficient to save some time"). What was measured, and Claude's lean, are in
+  [HANDOFF.md](../HANDOFF.md); nothing is decided.
+- [ ] ➕ **A Rust version policy** (owner, 2026-11-15; with the declared minimum of 1.85, which nothing
+  checks). The same: measured and leaned in [HANDOFF.md](../HANDOFF.md), not decided.
 - [ ] **`specula export`**: a standalone game executable plus assets, with the agent and editor layers stripped out.
 - [ ] ➕ **A project gets its SDK from the engine.** A module's crates must lie under the project, and the build
   service trusts the SDK at `crates/specula-sdk` and `crates/specula-core` there, so a game project outside this
@@ -1101,7 +1112,8 @@ long-term list, and 1.0.0 is kept for that. The numbers M6 starts from are at th
       most do not.
     - **What the engine could make itself, with zero dependencies** (the owner asked "you have a way to
       build that in?"; Claude's answer. Decided the same day: the first, with the slot for voice packs,
-      is M6's, and the second is decided after it: "I do. If it'll make it easier."). One: voiced babble, a speaker's voice as synthesis
+      is M6's, and whether to build the second at all is decided after it; the owner agreed to that
+      recommendation: "I do. If it'll make it easier."). One: voiced babble, a speaker's voice as synthesis
       (pitch, pace, timbre, mood) that sounds while the caption shows, in no language, so it needs no
       translation; small, on the synthesis the engine has. Two: spoken words from a formant
       synthesiser, intelligible and plainly a machine, never a human actor; English first, and each
@@ -1156,8 +1168,11 @@ long-term list, and 1.0.0 is kept for that. The numbers M6 starts from are at th
   and AI agents will need to straight up tell them on what's possible and what's not. This engine will
   only act as a guide in this case"): it reports what light this machine can run, from what it measured
   there, so an agent can say so plainly; nothing depends on ray-tracing hardware or a vendor's kit, and
-  vendor-neutral ray queries may only ever be an optional faster path.
-- [ ] **Ship the owner's original game.**
+  vendor-neutral ray queries may only ever be an optional faster path. In M6 that report covers the light
+  the engine has (the quality presets, the baked probes); the note's ladder of light is after M6 unless
+  the scope talk moves a rung, and how the report is made is not designed.
+- [ ] **Ship the owner's original game.** Which game, and whether Sepulcra's own v1.0 of three maps is part
+  of M6, is on the owner's list ([HANDOFF.md](../HANDOFF.md#open-owner-decisions)).
 - [ ] ➕ **Cloud swarms, tested** (owner, 2026-10-22): per-agent auth tokens, then thorough tests with real cloud
   swarms from several vendors (Claude, Grok Build, OpenAI ...).
 - [ ] ➕ **Adversarial review before marketing**: of the whole engine, cloud access included.
@@ -1325,7 +1340,8 @@ The aim is to make Rust's costs non-issues and then strengths. Research and meas
 - [ ] Own shading language compiled to SPIR-V (removes the dev-time `glslc`).
 - [ ] Networking and multiplayer: lockstep or rollback, which F2 makes possible.
 - [ ] Animation retargeting and parametric character generation.
-- [ ] Publish crates to crates.io: after M6 and the macOS and Linux checks (decided 2026-10-22; see M6).
+- [ ] Publish crates to crates.io: with the first release, for Windows and macOS, not waiting for Linux
+  (owner, 2026-11-16, in place of "after the macOS and Linux checks" of 2026-10-22; see M6's release order).
 - [ ] ➕ **Assets from people's own work** (owner, 2026-11-12): convert a person's 3D model, 2D model or drawing
   into a code-based asset (a recipe, vector shapes) that they can adjust, or ask agents to adjust, and save.
   *Why:* code assets are small, sharp at any size and open to change; people shouldn't have to start from nothing.
@@ -1359,7 +1375,8 @@ These are researched designs, written before implementation so the foundations h
 - [x] [research/FORM_AND_LIGHT.md](research/FORM_AND_LIGHT.md): round and human forms within an agent's
   reach (handles, measures, views, open body models), scaling from basic shapes to realistic figures, and
   light that mimics ray tracing without the hardware (distance fields, probes, screen space, radiance
-  cascades). Written 2026-11-16, before M6, at the owner's request. [ ] Reviewed with the owner.
+  cascades). Written 2026-11-16, before M6, at the owner's request; its three questions were answered the
+  same day. [ ] Reviewed with the owner.
 - [ ] Still to research when their lane starts: the Linux/Wayland and macOS/Metal backends. (Audio, navigation,
   global-illumination baking, particles and asset streaming were researched with their lanes and are built:
   [design/AUDIO.md](design/AUDIO.md), [design/NAVIGATION.md](design/NAVIGATION.md), [design/GI.md](design/GI.md),
