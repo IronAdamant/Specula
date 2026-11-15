@@ -997,10 +997,13 @@ saving the assets, similar to Unity and Unreal Engine and also having 2D/3D asse
 
 ## M6: ship
 
-**M6 is v1.0** (owner, 2026-11-16): "It's now v1.0. Basic and good enough. But to get it to match AAA,
-that's post M6. And we'll be tuning that and fixing it." Complete and dependable at a basic level, on
-Windows and macOS; matching an AAA studio's tools is the Fidelity track and the long-term list. The
-numbers M6 starts from are at the top of [HANDOFF.md](../HANDOFF.md).
+**M6 is the proto-1.0** (owner, 2026-11-16): "It's now v1.0. Basic and good enough. But to get it to
+match AAA, that's post M6. And we'll be tuning that and fixing it." And on the number: "whatever version
+number you use, it'll be the proto 1.0 ... 0.3 is fine. To get to true 1.0.0 is when this tool reaches
+to a similar capability as AAA tools like unreal engine." Complete and dependable at a basic level, on
+Windows and macOS, under a 0.x number; matching an AAA studio's tools is the Fidelity track and the
+long-term list, and 1.0.0 is kept for that. The numbers M6 starts from are at the top of
+[HANDOFF.md](../HANDOFF.md).
 
 - [ ] **`specula export`**: a standalone game executable plus assets, with the agent and editor layers stripped out.
 - [ ] ➕ **A project gets its SDK from the engine.** A module's crates must lie under the project, and the build

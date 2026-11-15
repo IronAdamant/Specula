@@ -16,8 +16,9 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     December; on 2026-11-16: "If not before december, then before Christmas. I can wait"): a Metal
     renderer, its window, input and audio, and module loading do not exist yet.
   - **The owner's additions of 2026-11-16** (game systems as optional data; memory helpers for the
-    agent that builds a game): below, and in ROADMAP M6. Noted only. **M6 is v1.0**: "basic and good
-    enough"; matching an AAA studio's tools is after it.
+    agent that builds a game): below, and in ROADMAP M6. Noted only. **M6 is the proto-1.0**: "basic
+    and good enough"; the version number stays 0.x, and a true 1.0.0 is when the engine is near an AAA
+    studio's tools.
   - **The numbers M6 starts from** (measured; a later figure is compared with these, by the same harness):
     - *What building through the engine costs, against building without it* (2026-11-14,
       [docs/design/LEVERAGE.md](docs/design/LEVERAGE.md); weighted tokens, the mean of two runs a
@@ -131,12 +132,16 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     dependencies is in the ROADMAP item: voiced babble under the captions (small), spoken words from a
     formant synthesiser (a machine's voice, weeks, a language at a time), and natural voices only as
     packs made outside.
-  - **M6 is v1.0** (the owner, told plainly that after M6 the engine covers most of what an AAA studio's
+  - **M6 is the proto-1.0** (the owner, told plainly that after M6 the engine covers most of what an AAA studio's
     tools cover, at less depth: stylised rendering, an editor with a core and not Unreal's breadth,
     animation that is "good enough", no multiplayer, consoles or mobile, and one shipped game as proof):
     "It's now v1.0. Basic and good enough. But to get it to match AAA, that's post M6. And we'll be
-    tuning that and fixing it." So v1.0's bar is complete and dependable at a basic level on Windows and
-    macOS; matching AAA tools is the work after it (ROADMAP's Fidelity track and long-term list).
+    tuning that and fixing it." Asked whether that means the crates become 1.0.0: "don't worry about
+    1.0.0.0. whatever version number you use, it'll be the proto 1.0. I'm actually thinking on this, and
+    0.3 is fine. To get to true 1.0.0 is when this tool reaches to a similar capability as AAA tools
+    like unreal engine." So M6's bar is complete and dependable at a basic level on Windows and macOS,
+    released under a 0.x number; matching AAA tools is the work after it (ROADMAP's Fidelity track and
+    long-term list), and 1.0.0 is kept for that.
   - **Four more answers, the same day.** Voices: babble voices and the slot for voice packs are M6's,
     the machine voice is decided after ("I do. If it'll make it easier"). What to cut if not all of it
     fits: nothing ("All of them. No exceptions. Take your time"); Claude's order is for building: the
