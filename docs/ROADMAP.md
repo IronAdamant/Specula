@@ -1063,6 +1063,47 @@ saving the assets, similar to Unity and Unreal Engine and also having 2D/3D asse
     one call;
   - the 30 Hz tick against games that ask for another step;
   - judging, which costs more than building.
+- [ ] ➕ **Game systems as optional data, and memory for whoever builds the game** (owner, 2026-11-16: "the
+  new feature which I should have thought off earlier"; "All of these can be optional"; "Do not implement
+  anything, just add the note for handoff"). Not designed and not sized: the scope talk decides what of it
+  is M6's and in what order. Each is something a game takes or leaves, as data an agent edits and checks,
+  like the four gameplay modules ([design/GAMEPLAY_MODULES.md](design/GAMEPLAY_MODULES.md)).
+  - **A storyline tree** ("start of story, on quest init, choices that impact it"): the story's beats,
+    where a quest begins, and choices that change what follows. Builds on `colloquium` (dialogue graphs
+    with conditional choices and effects), `quaestio` (quests) and timelines. New is the tree above them
+    and checks on it (a branch nobody can reach, a choice that changes nothing, an ending out of reach).
+  - **A reputation system**: standing with people and factions, which choices move and conditions read.
+  - **An optional RPG set-up**: attributes, levels and progression beside `inventarium` and `facultas`.
+  - **Conditions in the game** ("like winning conditions for races, or scoring system"): winning, losing,
+    placing and score as data any game can declare, and that playtests and the balance lab can read.
+    Today each game writes its own (Sepulcra's are in its rules).
+  - **Captions the agents act the story through** ("for devs and studios that cannot afford human voice
+    worker or already have voice packs that can be installed", and the "ability to hide them per player
+    choices"). Read as: every spoken line has a caption an agent wrote (speaker, words, manner); a voice
+    pack, where a studio has one, is sound by line that installs over the captions; the player chooses
+    whether captions show. Builds on the timeline's subtitle track, the subtitle and caption settings
+    ([design/ACCESSIBILITY.md](design/ACCESSIBILITY.md)) and the string tables. To ask at the scope talk:
+    whether "act out" means captions only, or also speech the engine makes (it has no speech synthesis).
+  - **Music the same way**: a game's music is a set an agent generates (the engine's synthesis, heard
+    and measured with `audio_preview`) or a pack people bring (streamed Ogg), changed without touching
+    the game.
+  - **Quests and editing** ("Quests, edits.. etc etc"). Read as: quests belong to the same set, and each
+    of these is edited through tools and the editor like other project data.
+  - **Notes on the game, for agents** ("both for memory and system"; "it will be hard to remember every
+    detail"): what the game is, what was decided and why, its people, places and open threads, kept with
+    the project so that an agent with no memory of earlier sessions finds them; and the harness a game is
+    built through gets memory helpers of the same kind. The owner's seven agent tools are the model, and
+    their functions may be copied into the engine where that makes sense ("Just make sure full
+    zero-dependency remains": they are std-only Rust and the owner's own): Relatum's notes that
+    supersede, wikifier's change journal and "why this file", Trammel's plans and recipes, Stele's
+    search. The engine's `note_*` tools are handoff notes on the live world, not a project's memory.
+  - *Why it belongs with M6's first focus item:* in M5's comparison the change round, where the game's own
+    documents said how it was built, was where the engine cost least (1.7 times, against 3.1 and 5).
+    Memory kept with the project is the same lever. *What it needs first:* a module-built game reaching
+    interface screens, strings and saved settings (above); without that, captions and a player's choice
+    to hide them have nowhere to live. *Said plainly:* this is a large addition to a milestone that
+    already holds macOS, export and the tooling in Rust; size it against the first release at the scope
+    talk.
 - [ ] **Ship the owner's original game.**
 - [ ] ➕ **Cloud swarms, tested** (owner, 2026-10-22): per-agent auth tokens, then thorough tests with real cloud
   swarms from several vendors (Claude, Grok Build, OpenAI ...).
