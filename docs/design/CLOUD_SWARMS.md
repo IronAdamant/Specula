@@ -253,4 +253,8 @@ engine can run; it doesn't make an unauthenticated engine safe.
 
 ## Decisions for the owner
 
-The questions this design leaves open are in the one list, [HANDOFF.md](../../HANDOFF.md#open-owner-decisions).
+The questions this design left open were in the one list, [HANDOFF.md](../../HANDOFF.md#open-owner-decisions).
+**Answered 2026-11-16:** the owner agreed to all three defaults as recommended (what a remote lead gets
+only by its token, owner authority never remotely without the operator's flag, tunnels before OS TLS):
+"Agreed with all, for later when a team wants to work on the same game through a same engine. I'll trust
+your expertise on this."

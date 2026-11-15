@@ -147,6 +147,7 @@ fits all three (the brazier build falls behind against runners first). Tuning `r
 style on the training seeds (loss 0.91); on the held-out seeds the dust-gated and brazier builds still hit (win rate
 1.0 and 0.94) and the rusher misses its win rate (0.875: two of sixteen runs lost). That is the lab's answer: the
 rusher's risk is real, and a human playtest should decide whether calling every wave early ought to be that risky.
+**Decided by the owner on 2026-11-16:** "Please. Keep it risky."
 
 ## Checked by playtests in the game
 

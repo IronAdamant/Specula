@@ -372,8 +372,8 @@ Everything runs without a window, through `games/sepulcra/examples/headless.rs`.
 - **Free and open:** Sepulcra is a free demo on Steam and stays open source (MIT/Apache), as the engine's showcase.
 - **Controls:** a gamepad pause, a title screen, saved settings and rebinding (M5/M6).
 
-The rusher balance question is still waiting for the owner's own playtest:
-[HANDOFF.md](../../HANDOFF.md#open-owner-decisions).
+The rusher balance question was answered by the owner on 2026-11-16: "Keep it risky." Anything still
+undecided is in [HANDOFF.md](../../HANDOFF.md#open-owner-decisions).
 
 ## Camera and controls
 

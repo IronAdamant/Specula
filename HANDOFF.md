@@ -15,14 +15,15 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     - *Its two focus items:* what building through the engine costs (the numbers below), and verifying
       in less time.
     - *To talk through first:* the Rust version policy, how long verifying takes, an honest size for
-      macOS, and which game ships (the list of open owner decisions).
+      macOS, and the size of Sepulcra's maps 2 and 3.
     - *ROADMAP M6's own items:* `specula export`; a project gets its SDK from the engine; a module
       builds in a folder of any depth; the repository's tooling in Rust; shipping basics; asset packing;
       Steam as an optional extra; the Steam Deck pass; soak tests; an agent sets the variables on a
       machine it has never seen; the engine pays off by game size; game systems as optional data and
       memory for whoever builds the game (2026-11-16); form within an agent's reach (2026-11-16); cloud
       swarms with per-agent tokens; an adversarial review before any marketing; a private held-out
-      eval set; the release order; mods and outside extensions.
+      eval set; the release order; mods and outside extensions; and Sepulcra shipped as the demo
+      with its three maps (2026-11-16).
     - *On other tracks, and needed for M6's release:* macOS natively (ROADMAP's Platform track: a
       Metal renderer, window, input, audio, module loading), behind the shader language that track
       puts first; and a module-built game reaching interface screens, strings and saved settings.
@@ -207,6 +208,19 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     engine is a guide: "People will have different requirements and AI agents will need to straight up
     tell them on what's possible and what's not." It reports what a machine can run; the agent says so.
     The rest of the note (the ladder of light, creases, sculpt steps, skin) is the road to a true 1.0.0.
+  - **The last three open decisions, answered** (the same day):
+    - *Remote agents' defaults:* agreed as Claude recommended, all three (a remote lead gets no native
+      code, no window input and no module source unless its token names them; owner authority is
+      never given remotely unless the operator passes a flag for it; tunnels come before OS TLS):
+      "Agreed with all, for later when a team wants to work on the same game through a same engine.
+      I'll trust your expertise on this." ([docs/design/CLOUD_SWARMS.md](docs/design/CLOUD_SWARMS.md)).
+    - *Which game M6 ships:* Sepulcra, the engine's MVP game, with all three maps of the plan of
+      2026-10-22, as the demo: "3 map set in October. As demo. I'll probably ask you to set up 20
+      different maps, each very different from the initial 3 maps." Claude had recommended map 1
+      alone for M6; the owner chose all three. Map 1 is built; maps 2 (the frozen wasteland) and 3
+      (volcanic) are M6's (ROADMAP M6). Twenty more may follow, so a map has to be cheap to make.
+    - *Sepulcra's balance:* "Please. Keep it risky." The rusher who calls every wave early keeps its
+      risk ([docs/design/BALANCE.md](docs/design/BALANCE.md)).
   - **Four more answers, the same day.** Voices: babble voices and the slot for voice packs are M6's,
     whether to build the machine voice at all is decided after them (the owner agreed to that
     recommendation: "I do. If it'll make it easier"). What to cut if not all of it
@@ -821,22 +835,8 @@ takes (for the scope talk, at the top of this page), the seven items of
 [docs/M5_CHECKLIST.md](docs/M5_CHECKLIST.md) that keep a part for them, the raw recordings of 2026-11-12,
 and the private held-out eval set.
 
-- **Remote agents' defaults** (from [docs/design/CLOUD_SWARMS.md](docs/design/CLOUD_SWARMS.md), for M6). Claude
-  recommends: a remote lead gets no native code, no window input and no module source unless its token names
-  them; owner authority is never given remotely unless the operator passes a flag for it; and tunnels
-  (Tailscale, WireGuard, SSH) come before OS TLS, because tokens, limits and the hardened server are where the
-  protection is. Agree, or change any of the three?
-- **Which game ships in M6, and Sepulcra's own v1.0** (found by a cold read of this page, 2026-11-16).
-  ROADMAP M6 says "ship the owner's original game" and does not name it. Sepulcra is the free game, and
-  its v1.0 was set on 2026-10-22 as three maps on every face of the cube with a free demo on Steam; map 1
-  is built, maps 2 and 3 are not, and no milestone holds them. The large commercial game is after M6. Is
-  the game M6 ships Sepulcra, and with one map or all three? Claude recommends: Sepulcra with map 1 as the
-  proto-1.0's free demo, and maps 2 and 3 after M6, made with the new game systems as their proof.
-  The owner, asked (2026-11-16): "Sepulcra is a MVP game for Specula." Read as: the game M6 ships is
-  Sepulcra, as the engine's MVP. Still to be said: with map 1 alone, or with all three.
-- **Sepulcra balance (from the balance lab, 2026-10-18):** a rusher who calls every wave early still loses 2 runs in
-  16 on unseen seeds. Claude recommends keeping it risky. The owner will playtest it in M6, on each OS, and decide
-  then ([docs/design/BALANCE.md](docs/design/BALANCE.md)).
+None at present (2026-11-16: the three that were here were answered that day; the answers are at the top
+of this page, under "The last three open decisions").
 
 ## Claude's opinions and thoughts
 
@@ -907,8 +907,9 @@ and the private held-out eval set.
    for agents as well as people, on Windows and macOS. Bring: the index at the top of this page ("M6 as
    it stands"), the baseline and why, the list of what tripped cold builders, M5's open items, an honest
    size for macOS, and a size for each of the owner's additions of 2026-11-16, none of which may be cut.
-2. **Remind the owner** of the two open decisions below, the private held-out eval set (theirs to make at M6,
-   before any benchmark claim), the adversarial review before any marketing, and the raw recordings question.
+2. **Remind the owner** of the private held-out eval set (theirs to make at M6, before any benchmark
+   claim), the adversarial review before any marketing, and the raw recordings question. The list of open
+   decisions below was emptied on 2026-11-16.
 3. **Keep Sepulcra the dogfood, and add a second game built by a cold agent** as the measure: Sepulcra shows
    what the engine can hold, the comparison shows what it costs to start.
 4. **Before any non-localhost bind**, build per-agent auth tokens (ROADMAP swarm track). Before CI can check

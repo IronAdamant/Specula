@@ -1171,8 +1171,17 @@ page that say "after v1.0" were written when v1.0 meant this release: read them 
   vendor-neutral ray queries may only ever be an optional faster path. In M6 that report covers the light
   the engine has (the quality presets, the baked probes); the note's ladder of light is after M6 unless
   the scope talk moves a rung, and how the report is made is not designed.
-- [ ] **Ship the owner's original game.** Which game, and whether Sepulcra's own v1.0 of three maps is part
-  of M6, is on the owner's list ([HANDOFF.md](../HANDOFF.md#open-owner-decisions)).
+- [ ] **Ship Sepulcra, the engine's MVP game, as the demo, with its three maps** (owner, 2026-11-16:
+  "Sepulcra is a MVP game for Specula"; "3 map set in October. As demo. I'll probably ask you to set up 20
+  different maps, each very different from the initial 3 maps"). This is the item that read "ship the
+  owner's original game". Map 1 (the dark graveyard) is built. **Maps 2 and 3 are M6's:** the frozen
+  wasteland with its own mobs and frost versions of the towers, and the volcanic one, each on every face
+  of the cube with its own paths (the plan of 2026-10-22: [HANDOFF.md](../HANDOFF.md),
+  [games/sepulcra/STYLE.md](../games/sepulcra/STYLE.md), [games/sepulcra/DESIGN.md](../games/sepulcra/DESIGN.md)).
+  Claude had recommended map 1 alone for M6; the owner chose all three. *What the twenty more ask of the
+  engine:* a map is data an agent makes cheaply (layout, paths, waves, props, style), so making maps 2
+  and 3 is also the measure of that, on the engine's own game. The rusher's risk stays ("Keep it risky").
+  The owner's large commercial game is after M6.
 - [ ] ➕ **Cloud swarms, tested** (owner, 2026-10-22): per-agent auth tokens, then thorough tests with real cloud
   swarms from several vendors (Claude, Grok Build, OpenAI ...).
 - [ ] ➕ **Adversarial review before marketing**: of the whole engine, cloud access included.
