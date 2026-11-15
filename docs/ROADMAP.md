@@ -1139,6 +1139,24 @@ long-term list, and 1.0.0 is kept for that. The numbers M6 starts from are at th
     captions, then reputation and the RPG set-up, then music. What it asks of the design: a developer
     who is not technical is told in plain words what their game has and has not (a story with an ending
     out of reach, lines with no voice), by the engine, from the project.
+- [ ] ➕ **Form within an agent's reach** (owner, 2026-11-16, on the five small items of
+  [research/FORM_AND_LIGHT.md](research/FORM_AND_LIGHT.md): "Add all. This engine SHOULD help you. Not
+  leave you lacking, and dealing with people's complaints"). All five are M6's:
+  - **roundness as one number** on the primitives, and **bone chains** (a line of points with radii);
+  - **the form checks** as data beside the taste checks: loose parts, razor edges, faceting at the size
+    seen, smooth turning, big to small form;
+  - **the form views** in sight: clay, normals, curvature, stripes;
+  - **the engine's own figure from a skeleton**, rigged by construction, with proportion checks. The owner on
+    human figures from outside (body packs): "Only if needed. Zero-dependency remains. But if you can build
+    it up, without relying on external downloads, add it to handoff." So the engine's own parametric
+    body is the route, built up here from proportion tables written in this repository, stylised first
+    and more lifelike by steps (the note says how far that can go without scanned people);
+  - **shape language** in the style presets.
+  And where light is concerned the engine is a guide (the owner: "People will have different requirements
+  and AI agents will need to straight up tell them on what's possible and what's not. This engine will
+  only act as a guide in this case"): it reports what light this machine can run, from what it measured
+  there, so an agent can say so plainly; nothing depends on ray-tracing hardware or a vendor's kit, and
+  vendor-neutral ray queries may only ever be an optional faster path.
 - [ ] **Ship the owner's original game.**
 - [ ] ➕ **Cloud swarms, tested** (owner, 2026-10-22): per-agent auth tokens, then thorough tests with real cloud
   swarms from several vendors (Claude, Grok Build, OpenAI ...).
@@ -1258,7 +1276,7 @@ renderer honest, and the best rung of each asset doubles as game content.
 **Researched for this track before M6** (owner, 2026-11-16: the engine "needs to scale from very basic shapes
 to actually realistic figures and some level of raytracing", without the hardware kind):
 [research/FORM_AND_LIGHT.md](research/FORM_AND_LIGHT.md). It proposes handles and measures that put round and
-human form within an agent's reach (five small ones as candidates for M6), three routes to human figures, and
+human form within an agent's reach (the five small ones are M6's: see M6), three routes to human figures, and
 a ladder of light from the baked probes to probes refreshed through distance fields, each rung scored against
 an exact picture the engine renders itself. Nothing in it is built.
 

@@ -107,12 +107,22 @@ for later. What has changed is that open ones exist:
 | **MHR** (Meta, Nov 2025; [repository](https://github.com/facebookresearch/MHR), [arXiv 2511.15586](https://arxiv.org/abs/2511.15586)) | Apache 2.0, by its repository | a skeleton, a skinned mesh at seven levels of detail, pose correctives and face shapes | the same check |
 | SMPL and its family | research licence | | not usable here |
 
-Three routes, which do not exclude each other:
+Three routes, which do not exclude each other. **The owner chose the first as the road** (2026-11-16, on
+body packs: "Only if needed. Zero-dependency remains. But if you can build it up, without relying on
+external downloads, add it to handoff"): the engine's own body is built up here, and a pack is for a project
+that needs more than it reaches.
 
 1. **The engine's own stylised figure** (no outside data): a skeleton laid out from proportion tables (how
    many heads tall, limb ratios by archetype: child, adult, heroic, squat), given radii and built as a body
    from a skeleton (above). It is rigged by construction and fits the engine's style today. This is the one
-   that helps every game soonest.
+   that helps every game soonest. **Built up by steps toward the lifelike, with no outside data:** shape
+   parameters (height, build, age, the proportions that differ between bodies) as ranges written in this
+   repository from general anatomy; then muscle and fat as shaped volumes along the bones; then hands, feet
+   and a face as their own small skeletons. *How far that goes, said plainly:* a believable stylised to
+   semi-realistic body is within reach, because proportions and volumes can be written down and measured.
+   A photoreal likeness is not: the published body models get their shapes from thousands of scanned
+   people, and nothing written by hand or by an agent replaces that data. That last step, if a game needs
+   it, is what a pack is for.
 2. **A body pack**: an open parametric model installed into a project as data, as a voice pack is. The engine
    reads its mesh, its shape parameters and its rig. It lives on the project's side and never in this
    repository, so zero dependencies hold. This is the route to realism.
@@ -191,7 +201,12 @@ What ray tracing buys, and what stands in for each part:
 | L5 | radiance cascades in 3D, if this year's work holds on modest hardware | to be evaluated: read the paper in full, then prototype |
 
 Where the hardware exists, it could later serve as a faster tracer behind the same interface. It is never the
-only path.
+only path. **The owner agreed (2026-11-16): vendor-neutral only**, and gave the engine's part: "People will
+have different requirements and AI agents will need to straight up tell them on what's possible and what's
+not. This engine will only act as a guide in this case." So the engine reports which rungs this machine can
+run and at what cost, from what it measured there (as it already reports its start, its frame and its
+stalls), and the agent tells the person plainly. It follows the owner's rule of 2026-11-14 that an agent
+sets the variables for the machine it is on.
 
 **What cannot be mimicked cheaply, said plainly:**
 
@@ -206,9 +221,10 @@ only path.
 picture, as a number, on a fixed set of scenes, and the Fidelity track's contact sheets carry the pictures
 for a person.
 
-## 6. What to add, in order (a proposal for the scope talk)
+## 6. What to add, in order
 
-**Small, and for every game (candidates for M6):**
+**Small, and for every game. All five are M6's** (the owner, 2026-11-16: "Add all. This engine SHOULD help
+you. Not leave you lacking, and dealing with people's complaints"):
 
 1. Roundness as one number on the primitives, and bone chains.
 2. The form checks: loose parts, razor edges, faceting at the size seen, smooth turning, big to small form.
@@ -231,14 +247,15 @@ for a person.
 - Which Intel integrated generations offer ray queries, and whether the reference machine does.
 - The shape-language associations are design convention; the sources found are practitioners' guides.
 
-## Three things to ask the owner
+## Three things asked of the owner, and the answers (2026-11-16)
 
-1. **"Don't use Nvidia's one":** read here as no dependence on ray-tracing hardware or on any vendor's kit.
-   May the engine later use Vulkan's vendor-neutral ray queries as an optional faster path where a machine
-   has them, or is that out as well?
-2. **Body packs:** may a project install an open parametric human model as data, on its own side, as with
-   voice and music packs?
-3. **Which of the five small items go into M6**, beside everything already in it.
+1. **"Don't use Nvidia's one"** was read as no dependence on ray-tracing hardware or on any vendor's kit,
+   with Vulkan's vendor-neutral ray queries allowed later as an optional faster path. "You read right.
+   Vendor-neutral." And the engine is a guide: it says what is possible on a machine, and the agent tells
+   the person.
+2. **Body packs:** "Only if needed. Zero-dependency remains. But if you can build it up, without relying on
+   external downloads, add it to handoff." The engine's own body, built up here, is the road (section 3).
+3. **Which of the five small items go into M6:** "Add all."
 
 ## Sources
 

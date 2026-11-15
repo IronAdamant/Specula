@@ -161,10 +161,20 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     models (Apache 2.0 ones exist since late 2025) as packs on the project's side for realism. Light:
     distance fields, probes and screen-space traces stand in for ray-tracing hardware, as Unreal's
     default path and AMD's open one do; the engine's recipes and its baked probes make that a shorter
-    road here than elsewhere. Five small items are proposed as candidates for M6, the rest for the road
-    to a true 1.0.0. **No prototype was made and no cost on the iGPU is known.** Three questions for the
-    owner are at the note's end (whether vendor-neutral ray queries may ever be an optional faster path;
-    body packs; which small items go into M6).
+    road here than elsewhere. **No prototype was made and no cost on the iGPU is known.**
+  - **The owner's answers to that note's three questions** (the same day). The five small items
+    (roundness as one number and bone chains; the form checks; the form views; the engine's own figure
+    from a skeleton; shape language in the presets) are all M6's: "Add all. This engine SHOULD help you.
+    Not leave you lacking, and dealing with people's complaints." ROADMAP M6 has them ("Form within an
+    agent's reach"). Human figures: the engine's own body is built up here with no outside data
+    ("Only if needed. Zero-dependency remains. But if you can build it up, without relying on external
+    downloads, add it to handoff"); a body pack from an open model is only for a project that needs
+    more. Claude's plain word on how far that goes: a believable stylised to semi-realistic body, yes;
+    a photoreal likeness, no, because the published models get theirs from thousands of scanned people.
+    Light: vendor-neutral only, never dependent on ray-tracing hardware ("You read right"), and the
+    engine is a guide: "People will have different requirements and AI agents will need to straight up
+    tell them on what's possible and what's not." It reports what a machine can run; the agent says so.
+    The rest of the note (the ladder of light, creases, sculpt steps, skin) is the road to a true 1.0.0.
   - **Four more answers, the same day.** Voices: babble voices and the slot for voice packs are M6's,
     the machine voice is decided after ("I do. If it'll make it easier"). What to cut if not all of it
     fits: nothing ("All of them. No exceptions. Take your time"); Claude's order is for building: the
