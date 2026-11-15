@@ -16,7 +16,21 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     December; on 2026-11-16: "If not before december, then before Christmas. I can wait"): a Metal
     renderer, its window, input and audio, and module loading do not exist yet.
   - **The owner's additions of 2026-11-16** (game systems as optional data; memory helpers for the
-    agent that builds a game): below, and in ROADMAP M6. Noted only.
+    agent that builds a game): below, and in ROADMAP M6. Noted only. **M6 is v1.0**: "basic and good
+    enough"; matching an AAA studio's tools is after it.
+  - **The numbers M6 starts from** (measured; a later figure is compared with these, by the same harness):
+    - *What building through the engine costs, against building without it* (2026-11-14,
+      [docs/design/LEVERAGE.md](docs/design/LEVERAGE.md); weighted tokens, the mean of two runs a
+      cell): a one-screen game 476,696 and 540,002 (two engine builds) against 96,990; a medium game
+      582,586 against 187,084; a change to it 181,378 against 109,716. About 5, 3.1 and 1.7 times, for
+      the same checks passed within one. Requests to the model: 27 to 39 against 8; 31 and 32 against
+      8 and 10; 11 and 13 against 10 and 11.
+    - *What verifying costs* (2026-11-15 and 16): 3,049 tests in the gate; the tests themselves about
+      2 minutes; the gate about 25 minutes for each Rust version; the audit's 70 live checks about an
+      hour; CI from nothing 10 minutes on Linux and 17 to 25 on Windows.
+    - *Size* (2026-11-14): about 396k lines of Rust in 35 crates, none from a third party.
+    - *Frame time:* the reference is the Intel iGPU; the budgets are data (`perf.example.toml`) and
+      the measured baselines are in [perf/README.md](perf/README.md) (`scripts/perf_baseline.py`).
 - **M5 as built** (2026-11-06 to 2026-11-15):
   - **Merged:** map 1, audio, timelines, the render follow-ups, the UI sight tools, the editor's core, text,
     the gameplay modules, localisation, the input monitor, accessibility with Sepulcra's shell, tool kits by job,
@@ -117,6 +131,12 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     dependencies is in the ROADMAP item: voiced babble under the captions (small), spoken words from a
     formant synthesiser (a machine's voice, weeks, a language at a time), and natural voices only as
     packs made outside.
+  - **M6 is v1.0** (the owner, told plainly that after M6 the engine covers most of what an AAA studio's
+    tools cover, at less depth: stylised rendering, an editor with a core and not Unreal's breadth,
+    animation that is "good enough", no multiplayer, consoles or mobile, and one shipped game as proof):
+    "It's now v1.0. Basic and good enough. But to get it to match AAA, that's post M6. And we'll be
+    tuning that and fixing it." So v1.0's bar is complete and dependable at a basic level on Windows and
+    macOS; matching AAA tools is the work after it (ROADMAP's Fidelity track and long-term list).
   - **Four more answers, the same day.** Voices: babble voices and the slot for voice packs are M6's,
     the machine voice is decided after ("I do. If it'll make it easier"). What to cut if not all of it
     fits: nothing ("All of them. No exceptions. Take your time"); Claude's order is for building: the
