@@ -4,18 +4,66 @@ These are notes from Claude (Opus 5.5 through M5's first wave; Fable 5.2 from 20
 next, most likely a new Claude conversation with no memory of the earlier ones. This page is **current state and
 what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2026-11-16**.
 
-- **M5 is done (2026-11-15). M6 has not started, and does not start until the owner has talked its scope
-  through** (their words, 2026-11-14, below). What a next session starts with:
-  - **M6 as it stands before the scope talk** (an index; the details are below and in ROADMAP M6).
-    The owner's tools are updated and the outside review is done, and the owner says "we're ready":
-    that means ready for the scope talk, which has not happened. **Nothing in this list is sized;
-    sizing it is the talk's first job.**
+- **Owner, 2026-11-16: the scope talk. M6 has started.** A fresh instance reviewed these documents and
+  put nine questions; the answers are below in the owner's words, with Claude's reading marked where
+  one was needed. The sizes and the order that follow from them are in ROADMAP M6.
+  - **No deadline, and nothing cut.** "Scope and date doesn't matter. Christmas IS hope but I'm not
+    gonna worry about strict deadline." The sizes set the date.
+  - **The shader language comes before macOS.** "Shader first. MacOS can be waited on." The rule of
+    2026-10-18 holds: no Metal shaders written by hand. *Claude's reading:* the first release is still
+    Windows and macOS together (2026-11-14) and waits for macOS; that was not asked again in so many
+    words.
+  - **The Mac.** Apple Silicon only ("M2 Mac. Intel based macs will not be sufficient"). A Claude
+    instance builds there from a clone of its own, as an outside user would ("I expect people
+    externally when they use it to pull anyway. So we'll mimic that"), and its work is the native port
+    ("Mac is just native"). Apple's linker from the Xcode tools is accepted there ("Zero dependency.
+    But on MacOS, I expect it will be fine"). An Apple Developer account: "Not yet but that's for me
+    to discuss with your local instance" (the one on the Mac). Without one the app is unsigned and
+    macOS warns when it is opened.
+  - **The Steam Deck pass is native** ("Native on it"), so it goes with the Linux work, after the
+    first release. M6 keeps the parts that need no Deck: a controller-only playthrough, legibility at
+    800p and 30 fps on the iGPU. There is no Steamworks app ID yet ("that's for later. We need to
+    finish this"): Steam integration can be built, and cannot be tried against Steam until there is
+    one.
+  - **Usage is not the limit.** "I'm not gonna fuss over the weekly usage for M6. I want it done and I
+    will be using my resets to get it done ASAP."
+  - **Who builds.** "You may deploy sub agents only if necessary, and you decide WHICH models to use
+    for the tasks themselves. Either Opus or Sonnet. At your discretion. You act as a main agent, and
+    a monitor." *Claude's reading:* one builder on this laptop, as in M5; a review by a model that did
+    not write the code is one of the necessary uses.
+  - **The Rust version is pinned** (yes to: one version named in the repository and in CI, moved on
+    purpose through the gate, and declared as the minimum in place of 1.85, which nothing tested; the
+    owner's default toolchain on this laptop stays untouched).
+  - **Verifying faster is M6's first work** (yes to: CI keeps its build between runs, a documents-only
+    commit skips the full run, the gate is sized to what changed).
+  - **Other vendors' swarms are not ours to test.** "That's for the people outside of it to worry
+    about. I can only provide what's present here. Grok and OpenAI swarms are for someone else to
+    worry about. Right now, I'm focused on Claude Swar[m]." *Claude's reading:* per-agent tokens stay
+    an M6 item and are tested with Claude swarms; whether they are in the first release or follow it
+    was not said, and until they exist the engine stays on loopback (rule 12).
+  - **The eval set:** "Make M5 base numbers public." They are public already (README,
+    [docs/design/LEVERAGE.md](docs/design/LEVERAGE.md), `perf/leverage/2026-11-14`), and the release
+    says them as they are. *Claude's reading:* no private held-out set is asked for now; a benchmark
+    claim beyond the published numbers would still need one.
+  - **The raw recordings of 2026-11-12:** "Keep. This will be for release discussion."
+  - **The seven checklist items left for the owner:** none has failed ("No, but I'm not gonna worry
+    about it. I'm focused on completing everything").
+  - **Rust only.** "Anything Python in here should be converted to Rust. The only programming language
+    used here should be Rust. Zero-dependency is non-negotiable. So I'm willing for this to take
+    time." This replaces "new checks may still be Python" (2026-11-15): **no new Python from this
+    date.** What is tracked and not Rust: 83 scripts in `scripts/`, two test-data generators in
+    Python, one PowerShell generator (`kat_gdi.ps1`), the shaders' `build.sh`, and 79 GLSL shader
+    sources, which the shader language replaces.
+- **M5 is done (2026-11-15). M6 started on 2026-11-16 with the scope talk above.** What was written
+  for it before the talk:
+  - **M6 as it stood before the scope talk** (an index; the details are below and in ROADMAP M6,
+    which now has the sizes and the order).
     - *What M6 is:* the proto-1.0, "basic and good enough", released for Windows and macOS under a 0.x
       number, before December if it can be and otherwise before Christmas ("I can wait").
     - *Its two focus items:* what building through the engine costs (the numbers below), and verifying
       in less time.
-    - *To talk through first:* the Rust version policy, how long verifying takes, an honest size for
-      macOS, and the size of Sepulcra's maps 2 and 3.
+    - *Talked through on 2026-11-16 (above):* the Rust version policy and how long verifying takes.
+      Sized in ROADMAP M6: macOS, and Sepulcra's maps 2 and 3.
     - *ROADMAP M6's own items:* `specula export`; a project gets its SDK from the engine; a module
       builds in a folder of any depth; the repository's tooling in Rust; shipping basics; asset packing;
       Steam as an optional extra; the Steam Deck pass; soak tests; an agent sets the variables on a
@@ -236,8 +284,8 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
   check are Python today (83 scripts, standard library only); nothing a player or a game's developer runs
   needs it. The plan, its order and how a port is proved are in ROADMAP M6 ("The repository's own tooling
   in Rust"): the gate and the runner first, each check when it is next touched or needed on macOS or
-  Linux, all of it before M6 ends. Until then new checks may still be Python; don't start the port before
-  M6's scope talk.
+  Linux, all of it before M6 ends. (Changed at the scope talk, 2026-11-16, top of this page: no new
+  Python at all, and the only language here is Rust.)
 - **Owner, 2026-11-15: who does M6, and what comes after it.**
   - **M6 is likely to be run by a fresh instance** with none of M5's conversation. What it can rely on is
     what is in this repository: this page, AGENTS.md, ROADMAP and the design docs. Claude's memory notes
@@ -267,8 +315,9 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     ready and the tools are also updated". What is left before M6 is the scope talk. The live test of
     the seven tools (docs/agent-tools) was written before that update: read each tool's own
     instructions before leaning on that page.
-  - **Two things the owner wants talked through before M6 starts** (raised while M5's last commit took
-    four pushes to go green on CI; nothing has been changed for either):
+  - **Two things the owner wanted talked through before M6 started** (both decided on 2026-11-16 as
+    Claude leaned, top of this page; raised while M5's last commit took four pushes to go green on
+    CI). As they stood before the talk:
     - **The Rust version.** "Never thought that even a basic update can cause much changes and
       requirements to shift. This is now something I need to discuss with you before we work on M6."
       CI installs the newest stable on every run and nothing pins one; the engine runs Cargo and reads its
@@ -830,10 +879,10 @@ These held all through M5 and were written down nowhere in the repository until 
 This is the **one list** of decisions waiting for the owner (other docs link here instead of keeping their own;
 `crates/specula/tests/docs_links.rs` checks it isn't duplicated). Remove an item once it's decided and record the
 answer where it applies. What was decided is recorded by date above (2026-10-22, and 2026-11-12 to 16).
-Not decisions of this kind, and also waiting on the owner: the Rust version policy and how long verifying
-takes (for the scope talk, at the top of this page), the seven items of
-[docs/M5_CHECKLIST.md](docs/M5_CHECKLIST.md) that keep a part for them, the raw recordings of 2026-11-12,
-and the private held-out eval set.
+Not decisions of this kind, and also with the owner: the seven items of
+[docs/M5_CHECKLIST.md](docs/M5_CHECKLIST.md) that keep a part for them (none has failed), the raw
+recordings of 2026-11-12 (kept, for the release discussion), an Apple Developer account (theirs to talk
+through with the instance on the Mac), and a Steamworks app ID (later).
 
 None at present (2026-11-16: the three that were here were answered that day; the answers are at the top
 of this page, under "The last three open decisions").
@@ -902,14 +951,13 @@ of this page, under "The last three open decisions").
   and a file another thread makes as possibly not yet written.
 
 **Recommendations for the next session:**
-1. **Do not start M6 until the owner has talked its scope through.** They described it (2026-11-14) as
-   finalising and tuning for the first release, with testing and adversarial checks, the experience judged
-   for agents as well as people, on Windows and macOS. Bring: the index at the top of this page ("M6 as
-   it stands"), the baseline and why, the list of what tripped cold builders, M5's open items, an honest
-   size for macOS, and a size for each of the owner's additions of 2026-11-16, none of which may be cut.
-2. **Remind the owner** of the private held-out eval set (theirs to make at M6, before any benchmark
-   claim), the adversarial review before any marketing, and the raw recordings question. The list of open
-   decisions below was emptied on 2026-11-16.
+1. **M6 is under way** (the scope talk of 2026-11-16 is at the top of this page). Work in ROADMAP M6's
+   order; nothing in it may be cut, and no date presses. The owner described M6 (2026-11-14) as
+   finalising and tuning for the first release, with testing and adversarial checks, the experience
+   judged for agents as well as people, on Windows and macOS.
+2. **Still owed before the release:** the adversarial review before any marketing, and the release
+   discussion, where the raw recordings of 2026-11-12 are decided. The list of open decisions below was
+   emptied on 2026-11-16.
 3. **Keep Sepulcra the dogfood, and add a second game built by a cold agent** as the measure: Sepulcra shows
    what the engine can hold, the comparison shows what it costs to start.
 4. **Before any non-localhost bind**, build per-agent auth tokens (ROADMAP swarm track). Before CI can check

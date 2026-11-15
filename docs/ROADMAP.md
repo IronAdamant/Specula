@@ -68,7 +68,12 @@ What that adds:
 
 ## Path to production: how to get there fastest
 
-**Production v1.0 means:** a commercial PC game, built mostly by agent swarms on Specula, shipped on Steam for Windows
+**This section is the plan of 2026-10-13, kept as it was written.** What changed since: the first release
+(M6, the proto-1.0) is for Windows and macOS, with Linux and the Steam Deck after it (owner, 2026-11-14 and
+2026-11-16); the game it ships is Sepulcra, free, as the demo; and the lanes gave way to one builder
+(2026-11-12). [M6](#m6-ship) has the current order.
+
+**Production v1.0 meant:** a commercial PC game, built mostly by agent swarms on Specula, shipped on Steam for Windows
 and Steam Deck (Linux), passing Steam Deck Verified (full controller support, legible text, at least 30 fps at 800p).
 Consoles, mobile, web and multiplayer come after v1.0 (see the engine survey, §4).
 
@@ -106,13 +111,14 @@ Phase D  Ship                export, packaging, Steam (owner decision), Deck Ver
    files. Agents edit text far faster and more reliably than binary assets.
 
 **Owner decisions that affect speed:**
-- **Still open** (first game's art style, size and languages; Steamworks; and the rest): the one list is
-  [Open owner decisions](../HANDOFF.md#open-owner-decisions) in HANDOFF.md.
+- **None is open** (2026-11-16; the art style, size, languages and Steamworks were decided on 2026-10-22). The
+  one list is [Open owner decisions](../HANDOFF.md#open-owner-decisions) in HANDOFF.md.
 - [x] **First game's genre:** a 3D tower defence on a shattered slab, working title *Sepulcra*
   ([games/sepulcra/DESIGN.md](../games/sepulcra/DESIGN.md)), chosen 2026-10-13 with
   [GAME_SELECTION.md](GAME_SELECTION.md).
-- [x] **v1.0 platforms:** Windows + Steam Deck (owner, 2026-10-13). macOS stays on the platform track for after v1.0.
-  **Mobile (Android, iOS) comes later**, after v1.0, once the owner is ready to learn it. Foundation F6 keeps the
+- [x] **v1.0 platforms:** Windows + Steam Deck (owner, 2026-10-13), with macOS after v1.0. Replaced on
+  2026-11-14: Windows and macOS first, then Linux and the Deck, natively.
+  **Mobile (Android, iOS) comes later**, after M6, once the owner is ready to learn it. Foundation F6 keeps the
   engine portable so that port stays cheap.
 
 ---
@@ -1007,15 +1013,59 @@ long-term list, and 1.0.0 is kept for that. The numbers M6 starts from, and an i
 holds across this page's tracks, are at the top of [HANDOFF.md](../HANDOFF.md). Lines elsewhere on this
 page that say "after v1.0" were written when v1.0 meant this release: read them as "after M6".
 
-- [ ] ➕ **The scope talk, first** (owner, 2026-11-14: M6's scope "is talked through when it starts, not
-  before"). Nothing below is sized. It sizes and orders it, and settles the three items that follow.
-- [ ] ➕ **Size macOS honestly** before anything is promised for it: a Metal renderer, its window, input and
-  audio, and module loading do not exist (the Platform track, behind the shader language).
+### The order, and what each part is likely to take (2026-11-16)
+
+Set at the scope talk ([HANDOFF.md](../HANDOFF.md), top). No date presses ("Christmas IS hope but I'm not
+gonna worry about strict deadline") and nothing is cut. One builder on the development laptop, and a second
+Claude instance on the owner's Mac for the native port, from a clone of its own.
+
+**The sizes are estimates from the size of the code each part touches or replaces, not from designs.**
+For scale: M5 added 81,000 lines of Rust and 12,500 of Python in ten days, six of them with several lanes
+at once.
+
+| # | Part | Likely size | Where | After |
+|---|---|---|---|---|
+| 1 | **Verifying faster**: Rust pinned; CI keeps its build and skips the full run for documents; the gate and the audit's runner in Rust, sized to what changed | 4,000 lines | laptop | |
+| 2 | **The shader language**: a compiler to SPIR-V; the 55 shader stages (5,300 lines of GLSL in 79 files) ported and drawing the same pictures on both adapters; then its MSL back end, and shader tools for agents | 15,000 to 20,000 | laptop | 1 |
+| 3 | **macOS, first half**: the workspace builds and its tests pass on Apple Silicon; window, input, gamepads, sound, module loading; determinism on ARM | 6,000 to 8,000 | Mac | starts at once |
+| 4 | **The renderer's inner interface**: the engine reaches the GPU through one type, but inside `specula-gpu` about 15,000 lines speak Vulkan directly, so Metal needs an interface inside the crate (or a second renderer; decided by a design note first) | touches 15,000 | laptop | 2 |
+| 5 | **The tooling in Rust, the rest**: 81 checks and measurements, three test-data generators, the shaders' build script; no `.py`, `.sh` or `.ps1` stays tracked | 36,000 | laptop | 1; before 6's checks |
+| 6 | **macOS, second half**: the Metal renderer, then every live check on the Mac | 10,000 to 12,000 | Mac | 2, 4, 5 |
+| 7 | **The engine pays from the first hour**: a project gets its SDK from the engine; a module builds at any depth; a module-built game reaches screens, strings and saved settings; many ticks in a call and a tick other than 30 Hz; the memory helpers; conditions and scoring; then the comparison run again | 12,000 | laptop | 1 |
+| 8 | **Game systems, the rest**: the storyline tree with captions, babble voices and the slot for voice packs; reputation; the RPG set-up; music sets | 12,000 | laptop | 7 |
+| 9 | **Form within an agent's reach**: the five items, and the report of what light a machine can run | 10,000 | laptop | |
+| 10 | **Sepulcra's maps 2 and 3** | 4,000, and data | laptop | 8, 9 (they use both) |
+| 11 | **Ship**: `specula export`, asset packs with licences, shipping basics, Steam as an extra, soak tests, M5's four open follow-ups | 12,000 | laptop | 7 |
+| 12 | **Per-agent tokens** (tried with Claude swarms), and **mods and outside extensions** | 6,000 | laptop | |
+| 13 | **Close**: an agent sets the variables on the Mac; the comparison on both systems; the adversarial review; the release | | both | all |
+
+- **About 110,000 to 125,000 lines on the laptop and 16,000 to 20,000 on the Mac.** With one builder,
+  reviews and full verification rounds, **the whole list by Christmas is unlikely; January is what to
+  expect.** Said to the owner on 2026-11-16.
+- **The longest chain is 1, 2, 4, then 6**: macOS's renderer cannot start before the shader language
+  writes MSL, and the release waits for macOS (Claude's reading of "Shader first. MacOS can be waited
+  on"). That is why the shader language comes straight after the first part.
+- **Parts 7 to 12 do not wait for the chain** and fill the time the Mac needs.
+- Not in M6 (moved at the scope talk): the Steam Deck pass on a Deck, which is native and goes with Linux;
+  other vendors' swarms, which are theirs to test.
+
+### The items
+
+- [x] ➕ **The scope talk, first** (owner, 2026-11-14: M6's scope "is talked through when it starts, not
+  before"). Held on 2026-11-16: the answers are at the top of [HANDOFF.md](../HANDOFF.md), the order and
+  the sizes above.
+- [x] ➕ **Size macOS honestly** before anything is promised for it. Sized above (parts 3, 4 and 6), from
+  the code and not from a design: what is on the Platform track's macOS item.
 - [ ] ➕ **Verifying takes less time** (the owner's second focus item, 2026-11-15: "making tests and CIs
-  even more efficient to save some time"). What was measured, and Claude's lean, are in
-  [HANDOFF.md](../HANDOFF.md); nothing is decided.
-- [ ] ➕ **A Rust version policy** (owner, 2026-11-15; with the declared minimum of 1.85, which nothing
-  checks). The same: measured and leaned in [HANDOFF.md](../HANDOFF.md), not decided.
+  even more efficient to save some time"). **Decided 2026-11-16, and M6's first work:** CI keeps its build
+  between runs; a push that changes documents only runs the document guards and not the full build (the
+  five documents commits of 2026-11-15 and 16 each took 20 to 27 minutes of CI); the gate is sized to what
+  changed (documents, tests, a game, the engine). The gate and the runner are written in Rust as part of
+  it, since no new Python is written from that date.
+- [ ] ➕ **A Rust version policy** (owner, 2026-11-15). **Decided 2026-11-16:** one version is named in the
+  repository and in CI, moved on purpose through the gate, and it is the declared minimum in place of
+  1.85, which nothing tested; a scheduled job on the newest stable warns and blocks nothing. A developer's
+  default toolchain is never changed for it.
 - [ ] **`specula export`**: a standalone game executable plus assets, with the agent and editor layers stripped out.
 - [ ] ➕ **A project gets its SDK from the engine.** A module's crates must lie under the project, and the build
   service trusts the SDK at `crates/specula-sdk` and `crates/specula-core` there, so a game project outside this
@@ -1036,6 +1086,12 @@ page that say "after v1.0" were written when v1.0 meant this release: read them 
   (about 34,500 lines, standard library only), with two test-data generators beside their tests; the engine
   and the games are Rust. All of it becomes Rust in M6, and no `.py` file stays tracked (a guard holds that
   at the end).
+  - **Rust only, from 2026-11-16** (the owner, at the scope talk: "Anything Python in here should be
+    converted to Rust. The only programming language used here should be Rust. Zero-dependency is
+    non-negotiable. So I'm willing for this to take time"). No new Python is written; a new check is
+    written in Rust. The same holds for what else is tracked and is not Rust: a PowerShell test-data
+    generator (`kat_gdi.ps1`) and the shaders' `build.sh`. The GLSL sources go when the shader language
+    replaces them. Data (JSON, TOML, CI's workflow file) is not a programming language.
   - **One workspace crate**: the gate, the runner and every check as modules of one program
     (`cargo run -p <crate> -- gate`, `-- live`, `-- <check>`), on `std` and the engine's own crates (JSON,
     PNG, the client the `specula` command already has). A check stays a process of its own that reaches
@@ -1057,6 +1113,10 @@ page that say "after v1.0" were written when v1.0 meant this release: read them 
 - [ ] ➕ **Steam integration** (approved 2026-10-22 as an **optional extra**): runtime-loaded `steam_api64.dll` for
   achievements, cloud saves and Steam Input. Games build and run without it, and the docs tell devs and agents so.
 - [ ] ➕ **Steam Deck Verified pass**: controller-only playthrough by agents, 800p legibility, at least 30 fps.
+  The run on a Deck is native ("Native on it", owner, 2026-11-16), so it goes with the Linux work after
+  the first release. M6 keeps what needs no Deck: the controller-only playthrough, legibility at 800p and
+  30 fps on the iGPU. There is no Steamworks app ID yet ("that's for later"), so the Steam integration
+  above is built and not tried against Steam until there is one.
 - [ ] ➕ **Soak tests**: long headless runs for leaks and crashes.
 - [ ] ➕ **An agent sets the variables on a machine it has never seen** (owner, 2026-11-14: "for other people's
   system, I'm gonna trust you, when you're in their system, building a game, to work out the best variables
@@ -1183,10 +1243,17 @@ page that say "after v1.0" were written when v1.0 meant this release: read them 
   and 3 is also the measure of that, on the engine's own game. The rusher's risk stays ("Keep it risky").
   The owner's large commercial game is after M6.
 - [ ] ➕ **Cloud swarms, tested** (owner, 2026-10-22): per-agent auth tokens, then thorough tests with real cloud
-  swarms from several vendors (Claude, Grok Build, OpenAI ...).
+  swarms from several vendors (Claude, Grok Build, OpenAI ...). Narrowed on 2026-11-16: "That's for the
+  people outside of it to worry about. I can only provide what's present here. Grok and OpenAI swarms are
+  for someone else to worry about. Right now, I'm focused on Claude Swar[m]." So the tokens are built and
+  tried with Claude swarms; other vendors' swarms are their users' to test. Until the tokens exist the
+  engine stays on loopback (AGENTS rule 12).
 - [ ] ➕ **Adversarial review before marketing**: of the whole engine, cloud access included.
 - [ ] ➕ **A private held-out eval set**, kept outside the public repo, before any benchmark claim. Claude reminds
-  the owner at M6.
+  the owner at M6. Reminded on 2026-11-16; the answer: "Make M5 base numbers public." They are in this
+  repository already ([design/LEVERAGE.md](design/LEVERAGE.md), `perf/leverage/2026-11-14`, the README), and
+  the release states them as they are. No private set is asked for now (Claude's reading); a benchmark
+  claim beyond the published numbers would still need one.
 - [ ] **Release order** (owner, 2026-11-14, in place of the order of 2026-10-22): the first release is
   Windows and macOS together; Linux follows, sooner if someone helps there. macOS is native work that does
   not exist yet and is sized at the start of M6 ([HANDOFF.md](../HANDOFF.md)). The order of 2026-10-22 was:
@@ -1236,6 +1303,24 @@ source of shaders.
     locale got.
 - [ ] **macOS**: Cocoa via the objc runtime, plus a native Metal backend (shaders from the shader language above,
   compiled to MSL). No MoltenVK, to stay zero-dep.
+  - **Decided at M6's scope talk (2026-11-16):** Apple Silicon only ("M2 Mac. Intel based macs will not be
+    sufficient"). A Claude instance on the Mac does the port from a clone of its own, as an outside user
+    would ("I expect people externally when they use it to pull anyway. So we'll mimic that"). Apple's
+    linker from the Xcode tools is accepted there; everything else stays zero-dependency. An Apple
+    Developer account is the owner's to talk through with that instance; without one the app is unsigned
+    and macOS warns when it is opened.
+  - **What exists and what does not** (read from the code, 2026-11-16). The engine reaches the GPU only
+    through `specula_gpu::Gpu`; inside that crate about 15,000 of its 27,600 lines speak Vulkan directly.
+    Windows-only code is small and in few places: the window (`win32.rs`, 1,185 lines), gamepads (XInput),
+    text input, the timer, the sound device (`wasapi.rs` and its COM glue, 870 lines), the library loader
+    and Ctrl+C in `specula-sys`, and the other side of a `cfg` in seven files of the engine. The shaders
+    are 26 vertex and 29 fragment stages, no compute.
+  - **First half, which needs no shader language** (M6's part 3): the workspace builds and its tests
+    pass on the Mac; a Cocoa window with keyboard, mouse and text input; gamepads; sound through the
+    system's audio; modules loaded with `dlopen` and built as `.dylib`; the system's font files, of which
+    none has been opened on a Mac; the determinism tests on ARM.
+  - **Second half** (part 6): the Metal renderer on the shader language's MSL, then the live checks, run
+    there by the Rust runner.
   - [ ] ➕ **Simplified and Traditional Chinese on macOS are one file** (`PingFang.ttc`, a collection): a
     path alone cannot say which face of it a locale wants, so `zh-TW` and `zh-Hans` get the same one
     until a candidate names a face of a collection too. The macOS file names are unverified as well

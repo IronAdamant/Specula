@@ -10,8 +10,8 @@ in real time. The agent protocol is the engine's primary interface; the human ed
 - **Sight built in:** agents get their own cameras, exact on-screen bounds and same-frame captures.
 - **2D and 3D**, hot-reloaded Rust game logic, text-first world files.
 
-**Status (2026-11-15):** milestones M0 to M5 are done; M6 (tuning, testing and the first release, on Windows and
-macOS) is next. In the engine today: rendering with true sight, 2D and 3D, physics, animation, gameplay as data
+**Status (2026-11-16):** milestones M0 to M5 are done; M6 (tuning, testing and the first release, on Windows and
+macOS, under a 0.x number) is under way. In the engine today: rendering with true sight, 2D and 3D, physics, animation, gameplay as data
 (Lex) and hot-reloaded modules, swarm coordination, an asset studio with review and galleries, audio, text, an
 interface toolkit, localisation, accessibility, a human editor built on the agents' protocol, a launcher and
 asset export. The first game, *Sepulcra*, is its dogfood. It runs on Windows only so far, and talks to agents on

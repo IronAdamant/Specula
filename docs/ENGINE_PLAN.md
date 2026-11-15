@@ -14,7 +14,7 @@ Supersedes [SPECULA_PLAN.md](archive/bevy-era/SPECULA_PLAN.md) (Bevy-era plan). 
 |---|---|---|
 | Dependencies | **Rust `std` only — no third-party crates** | Still depends on the OS and GPU driver (Win32, `vulkan-1.dll`, …). Dev-time tools (Vulkan SDK, `glslc`) allowed; nothing third-party ships. |
 | Graphics | **Vulkan**, behind a thin render-hardware interface | Explicit state, validation layers, native headless, multithreaded command recording. Apple later via native Metal backend (not MoltenVK, to stay zero-dep). |
-| Platforms | **Cross-platform**, Windows first | Windows (Win32) → Linux (X11/Wayland) → macOS (Cocoa via objc runtime FFI + Metal). |
+| Platforms | **Cross-platform**, Windows first | Windows (Win32) → Linux (X11/Wayland) → macOS (Cocoa via objc runtime FFI + Metal). Order changed 2026-11-14: Windows and macOS first, then Linux. |
 | Game logic | **Hot-reloaded Rust modules** | Engine owns all state; modules are reloadable code behind a C ABI. Zero deps → module builds in seconds. |
 | Dimensions | **2D and 3D from the start** | One render graph; 2D = orthographic cameras + sprite/tile/vector pipelines. |
 | Repo | Specula becomes the engine | `IronAdamant/Specula`, branch `main`. |
@@ -49,6 +49,11 @@ Supersedes [SPECULA_PLAN.md](archive/bevy-era/SPECULA_PLAN.md) (Bevy-era plan). 
 ```
 
 ### Crates (all `std`-only)
+
+This table is the plan of 2026-10-12. The crates as built are in [AGENTS.md](../AGENTS.md), "Layout": rendering
+stayed inside `specula-gpu`, the world inside the `specula` binary, and assets went to `specula-model`,
+`specula-gltf`, `specula-text` and `specula-audio`; `specula-render`, `specula-world` and `specula-assets`
+were never made.
 
 | Crate | Role |
 |---|---|
