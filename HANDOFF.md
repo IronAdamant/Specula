@@ -108,6 +108,14 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     the engine does not yet pay at small and medium sizes; whether it pays on a large game is not
     measured. Two M6 items decide much of it and belong early in the scope talk: a project gets its SDK
     from the engine, and a module-built game reaches interface screens, strings and saved settings.
+  - **M6's two focus items, in the owner's words** (2026-11-15 evening, shown the baseline again: about
+    5 times the tokens on a small game, 3.1 on a medium one, 1.7 on a change): "that's going to have to
+    be one of the focus items. On top of making tests and CIs even more efficient to save some time."
+    The scope talk starts from these two; it still decides the rest. They meet in one place: a faster
+    build-and-check loop for a game project lowers what an agent's first hour costs and what each check
+    of it costs. **When M6 starts:** "likely" once the owner's seven agent tools have been updated and
+    verified by a separate instance; another assistant (Grok) is also running its own tests on this
+    repository first. Whatever any agent reports is checked against the code before it is acted on.
   - **Two things the owner wants talked through before M6 starts** (raised while M5's last commit took
     four pushes to go green on CI; nothing has been changed for either):
     - **The Rust version.** "Never thought that even a basic update can cause much changes and
