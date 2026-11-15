@@ -1033,13 +1033,13 @@ at once.
 | 6 | **macOS, second half**: the Metal renderer, then every live check on the Mac | 10,000 to 12,000 | Mac | 2, 4, 5 |
 | 7 | **The engine pays from the first hour**: a project gets its SDK from the engine; a module builds at any depth; a module-built game reaches screens, strings and saved settings; many ticks in a call and a tick other than 30 Hz; the memory helpers; conditions and scoring; then the comparison run again | 12,000 | laptop | 1 |
 | 8 | **Game systems, the rest**: the storyline tree with captions, babble voices and the slot for voice packs; reputation; the RPG set-up; music sets | 12,000 | laptop | 7 |
-| 9 | **Form within an agent's reach**: the five items, and the report of what light a machine can run | 10,000 | laptop | |
+| 9 | **Form within an agent's reach**: the five items, with the engine's own human figure taken to realistic (not photoreal) from proportion tables that are written first, in 2D and 3D; and the report of what light a machine can run | 15,000 | laptop | |
 | 10 | **Sepulcra's maps 2 and 3** | 4,000, and data | laptop | 8, 9 (they use both) |
 | 11 | **Ship**: `specula export`, asset packs with licences, shipping basics, Steam as an extra, soak tests, M5's four open follow-ups | 12,000 | laptop | 7 |
 | 12 | **Per-agent tokens** (tried with Claude swarms), and **mods and outside extensions** | 6,000 | laptop | |
 | 13 | **Close**: an agent sets the variables on the Mac; the comparison on both systems; the adversarial review; the release | | both | all |
 
-- **About 110,000 to 125,000 lines on the laptop and 16,000 to 20,000 on the Mac.** With one builder,
+- **About 115,000 to 130,000 lines on the laptop and 16,000 to 20,000 on the Mac.** With one builder,
   reviews and full verification rounds, **the whole list by Christmas is unlikely; January is what to
   expect.** Said to the owner on 2026-11-16.
 - **The longest chain is 1, 2, 4, then 6**: macOS's renderer cannot start before the shader language
@@ -1223,6 +1223,22 @@ at once.
     it up, without relying on external downloads, add it to handoff." So the engine's own parametric
     body is the route, built up here from proportion tables written in this repository, stylised first
     and more lifelike by steps (the note says how far that can go without scanned people);
+    - **Realistic, not photoreal, is M6's bar** (owner, 2026-11-16, at the start of M6: "I don't care
+      about photo real looks right now. Just enough to be realistic as your earlier instance advised
+      me that it's your current weakness even now, so this engine should [help] you with that,
+      rendering them in the code and in 2D/3D assets"). So the note's steps toward the lifelike are
+      M6's and not after it: shape parameters (height, build, age, the proportions that differ between
+      bodies), muscle and fat as volumes along the bones, and hands, feet and a face as their own small
+      skeletons.
+    - **The tables do not exist yet.** The research note has the plan and its sources and no numbers:
+      no proportion table is in this repository (checked 2026-11-16). They are written first, as data,
+      from published body measurements that are free to use, each with its source: head counts, segment
+      lengths against height, where the joints fall, and how these differ by age, sex and build.
+      Looked up, not written from an agent's memory.
+    - **Checks an agent can read:** proportions against the tables, the balance of a pose (the centre of
+      mass over the feet), and the volume a joint loses when it bends.
+    - **In 2D as well:** the same skeleton, tables and checks serve a 2D character, so a drawn figure is
+      held to the same proportions as a modelled one.
   - **shape language** in the style presets.
   And where light is concerned the engine is a guide (the owner: "People will have different requirements
   and AI agents will need to straight up tell them on what's possible and what's not. This engine will
