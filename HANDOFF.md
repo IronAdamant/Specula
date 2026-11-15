@@ -19,6 +19,10 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     agent that builds a game): below, and in ROADMAP M6. Noted only. **M6 is the proto-1.0**: "basic
     and good enough"; the version number stays 0.x, and a true 1.0.0 is when the engine is near an AAA
     studio's tools.
+  - **Research done before M6, at the owner's request** (2026-11-16):
+    [docs/research/FORM_AND_LIGHT.md](docs/research/FORM_AND_LIGHT.md), on putting round and human form
+    within an agent's reach and on light that mimics ray tracing without the hardware. It ends with a
+    proposal in order and three questions for the owner. Nothing in it is built.
   - **The numbers M6 starts from** (measured; a later figure is compared with these, by the same harness):
     - *What building through the engine costs, against building without it* (2026-11-14,
       [docs/design/LEVERAGE.md](docs/design/LEVERAGE.md); weighted tokens, the mean of two runs a
@@ -142,6 +146,25 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     like unreal engine." So M6's bar is complete and dependable at a basic level on Windows and macOS,
     released under a 0.x number; matching AAA tools is the work after it (ROADMAP's Fidelity track and
     long-term list), and 1.0.0 is kept for that.
+  - **Taste and realism, researched before M6** (the owner, the same day): "You can generate graphical
+    assets but to get really close to a good one, like round stuff, more human stuff.. I think this
+    engine will help you with it. What we need you to do is do your research and see if you can add as
+    much tastes as possible for AI agents to handle before we work on M6." And: the engine "needs to
+    scale from very basic shapes to actually realistic figures and some level of raytracing (Don't use
+    Nvidia's one. I think how it was done is too inefficient. You can come up with efficient ones that
+    mimics it". The note is [docs/research/FORM_AND_LIGHT.md](docs/research/FORM_AND_LIGHT.md). In
+    short: agents are weak at round form because they describe shapes in numbers and cannot see
+    curvature, so taste is carried by handles whose plain result is round (one number for roundness,
+    bone chains, a body from a skeleton), by measures (loose parts, razor edges, faceting, proportions)
+    and by views where flaws make patterns; this year's studies say a model's own judgement of 3D form
+    is not yet to be trusted. Human figures: the engine's own stylised one first, open parametric
+    models (Apache 2.0 ones exist since late 2025) as packs on the project's side for realism. Light:
+    distance fields, probes and screen-space traces stand in for ray-tracing hardware, as Unreal's
+    default path and AMD's open one do; the engine's recipes and its baked probes make that a shorter
+    road here than elsewhere. Five small items are proposed as candidates for M6, the rest for the road
+    to a true 1.0.0. **No prototype was made and no cost on the iGPU is known.** Three questions for the
+    owner are at the note's end (whether vendor-neutral ray queries may ever be an optional faster path;
+    body packs; which small items go into M6).
   - **Four more answers, the same day.** Voices: babble voices and the slot for voice packs are M6's,
     the machine voice is decided after ("I do. If it'll make it easier"). What to cut if not all of it
     fits: nothing ("All of them. No exceptions. Take your time"); Claude's order is for building: the

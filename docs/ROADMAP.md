@@ -1136,9 +1136,9 @@ long-term list, and 1.0.0 is kept for that. The numbers M6 starts from are at th
     it and orders it, and cuts none of it: asked which parts matter most if not all fit, "All of them.
     No exceptions. Take your time." The order Claude proposed is for building, not for dropping: the
     memory helpers and the conditions first (every game uses them), then the storyline tree with
-    captions, then reputation and the RPG set-up, then music. What it asks of the design: a developer who is not technical is told in plain
-    words what their game has and has not (a story with an ending out of reach, lines with no voice),
-    by the engine, from the project.
+    captions, then reputation and the RPG set-up, then music. What it asks of the design: a developer
+    who is not technical is told in plain words what their game has and has not (a story with an ending
+    out of reach, lines with no voice), by the engine, from the project.
 - [ ] **Ship the owner's original game.**
 - [ ] ➕ **Cloud swarms, tested** (owner, 2026-10-22): per-agent auth tokens, then thorough tests with real cloud
   swarms from several vendors (Claude, Grok Build, OpenAI ...).
@@ -1255,6 +1255,13 @@ Each tier is rendered in the M4 stage world from fixed cameras, and every milest
 *Why:* lighting carries most of Unreal's realism, so this track is mainly a renderer track. The benchmark keeps the
 renderer honest, and the best rung of each asset doubles as game content.
 
+**Researched for this track before M6** (owner, 2026-11-16: the engine "needs to scale from very basic shapes
+to actually realistic figures and some level of raytracing", without the hardware kind):
+[research/FORM_AND_LIGHT.md](research/FORM_AND_LIGHT.md). It proposes handles and measures that put round and
+human form within an agent's reach (five small ones as candidates for M6), three routes to human figures, and
+a ladder of light from the baked probes to probes refreshed through distance fields, each rung scored against
+an exact picture the engine renders itself. Nothing in it is built.
+
 ## Rust track (from M1, long-term)
 
 The aim is to make Rust's costs non-issues and then strengths. Research and measurements:
@@ -1331,6 +1338,10 @@ These are researched designs, written before implementation so the foundations h
 - [x] [research/AGENT_GAMEMAKING.md](research/AGENT_GAMEMAKING.md): how agents build games and where they fail,
   gameplay as data (Lex), placement by relations (Locus), taste by picking and measuring, balance by simulation,
   animation metrics; proposals for M3 and M4. Written 2026-10-17. [x] Reviewed with the owner (accepted 2026-10-17).
+- [x] [research/FORM_AND_LIGHT.md](research/FORM_AND_LIGHT.md): round and human forms within an agent's
+  reach (handles, measures, views, open body models), scaling from basic shapes to realistic figures, and
+  light that mimics ray tracing without the hardware (distance fields, probes, screen space, radiance
+  cascades). Written 2026-11-16, before M6, at the owner's request. [ ] Reviewed with the owner.
 - [ ] Still to research when their lane starts: the Linux/Wayland and macOS/Metal backends. (Audio, navigation,
   global-illumination baking, particles and asset streaming were researched with their lanes and are built:
   [design/AUDIO.md](design/AUDIO.md), [design/NAVIGATION.md](design/NAVIGATION.md), [design/GI.md](design/GI.md),
