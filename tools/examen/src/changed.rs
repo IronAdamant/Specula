@@ -292,6 +292,7 @@ mod tests {
             ("crates/specula/src/project.rs", "style/notes.md", "a path in a made-up project"),
             ("crates/specula/src/project.rs", "recipes/readme.md", "a path in a made-up project"),
             ("crates/specula/src/taste.rs", "assets/style/notes.md", "a project's own file"),
+            ("crates/specula-memoria/src/lib.rs", "notes/gate-lives-2.md", "a note's path in a made-up project"),
             ("crates/specula-anim/examples/filmstrip.rs", "docs/fidelity/sepulcra_anim_filmstrip.png", "a picture the example writes"),
             ("crates/specula-model/examples/preview.rs", "docs/fidelity/sepulcra_t1_contact.png", "a picture the example writes"),
         ];

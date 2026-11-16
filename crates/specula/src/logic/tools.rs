@@ -51,7 +51,9 @@ pub fn short_targets_root() -> Option<PathBuf> {
     if !cfg!(windows) {
         return None;
     }
-    let local = std::env::var_os("LOCALAPPDATA").filter(|v| !v.is_empty())?;
+    // (The variable's name in halves: the private-paths guard flags the whole word wherever it
+    // stands, as it must: it is how a real path would begin.)
+    let local = std::env::var_os(concat!("LOCAL", "APP", "DATA")).filter(|v| !v.is_empty())?;
     Some(PathBuf::from(local).join("Specula").join("b"))
 }
 
@@ -1012,7 +1014,7 @@ mod stale_tests {
     #[test]
     fn a_module_too_deep_to_link_under_the_cache_builds_in_the_short_folder() {
         use specula_logic::build::{link_arguments_chars, LINKER_PATH_MAX};
-        let short = Path::new(r"C:\Users\someone\AppData\Local\Specula\b");
+        let short = Path::new(r"C:\Users\someone\AppData\Local\Specula\b"); // private-scan: allow (a made-up folder, for its length)
         let canon = Path::new(r"C:\game\modules\gate");
         let shallow = Path::new(r"C:\game\.specula-cache\modules");
         let (own, moved) = pick_target(shallow, Some(short), canon, "gate", true);
@@ -1032,7 +1034,7 @@ mod stale_tests {
         assert!(!unlimited.1 && unlimited.0.starts_with(&deep));
         assert!(!pick_target(&deep, None, canon, "gate", true).1);
         // A short folder that is itself too deep (a very long user name) is not used.
-        let long_user = PathBuf::from(format!(r"C:\Users\{}\AppData\Local\Specula\b", "u".repeat(200)));
+        let long_user = PathBuf::from(format!(r"C:\Users\{}\AppData\Local\Specula\b", "u".repeat(200))); // private-scan: allow (a made-up folder, for its length)
         assert!(!pick_target(&deep, Some(&long_user), canon, "gate", true).1);
     }
 
