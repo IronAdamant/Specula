@@ -88,11 +88,13 @@ specula projects                 the projects worked on (JSON), most recent firs
 specula open --last              open the project last worked on (or find the engine that has it open)
 specula open NAME|FOLDER [--front] [-- engine flags]
                                  (its window opens behind the others; --front: in front)
-specula play NAME|FOLDER|--last [-- engine flags]
+specula play NAME|FOLDER|--last [--as-is] [-- engine flags]
                                  open a project to play it: its window in front, and the
-                                 modules its game file names built and loaded (--run). Say it
-                                 only for a project whose code is yours to run: a module is
-                                 native code with your user's rights
+                                 modules its game file names built and loaded as their owner
+                                 or a granted lead last built them on this machine (--run).
+                                 --as-is: whatever is on disk now, whoever wrote it
+                                 (--run-as-is): say it only for code that is yours to run. A
+                                 module is native code with your user's rights
 specula new NAME [--in FOLDER] [--bare]
                                  make a project that builds and plays (a game file, screens,
                                  words, a module, the SDK, notes) and list it; --bare: only
@@ -126,11 +128,12 @@ struct Flags {
     parent: Option<PathBuf>,
     last: bool,
     bare: bool,
+    as_is: bool,
     rest: Vec<String>,
 }
 
 fn flags(words: &[String], allowed: &[&str]) -> Result<Flags, String> {
-    let mut f = Flags { front: false, port: None, project: None, as_name: None, role: None, parent: None, last: false, bare: false, rest: Vec::new() };
+    let mut f = Flags { front: false, port: None, project: None, as_name: None, role: None, parent: None, last: false, bare: false, as_is: false, rest: Vec::new() };
     let mut i = 0;
     while i < words.len() {
         let w = words[i].as_str();
@@ -141,6 +144,11 @@ fn flags(words: &[String], allowed: &[&str]) -> Result<Flags, String> {
         }
         if !allowed.contains(&w) {
             return Err(format!("'{w}' is not a flag of this command (it takes: {})", if allowed.is_empty() { "none".to_owned() } else { allowed.join(", ") }));
+        }
+        if w == "--as-is" {
+            f.as_is = true;
+            i += 1;
+            continue;
         }
         if w == "--bare" {
             f.bare = true;
@@ -277,15 +285,18 @@ pub fn parse(args: &[String]) -> Result<Option<Cli>, String> {
             if let Some(bad) = engine_args.iter().find(|a| matches!(a.as_str(), "--project" | "--settings")) {
                 return Err(format!("'{bad}' is set by 'specula play' itself: leave it out"));
             }
-            let f = flags(&rest[..split], &["--last"])?;
+            let f = flags(&rest[..split], &["--last", "--as-is"])?;
             let which = match (f.last, f.rest.len()) {
                 (true, 0) => Which::Last,
                 (false, 1) => Which::Word(f.rest[0].clone()),
                 (false, 0) => return Err("'specula play' needs a project: its name, its folder, or --last (the one last worked on; 'specula projects' lists them)".to_owned()),
                 _ => return Err("'specula play' takes one project: a name or a folder, or --last".to_owned()),
             };
-            if !engine_args.iter().any(|a| a == "--run") {
-                engine_args.push("--run".to_owned());
+            // `--as-is`: what is on disk now, whoever built it last; otherwise only what an owner
+            // or a granted lead last built on this machine (crate::approved).
+            let flag = if f.as_is { "--run-as-is" } else { "--run" };
+            if !engine_args.iter().any(|a| a == "--run" || a == "--run-as-is") {
+                engine_args.push(flag.to_owned());
             }
             Cli::Open { which, front: true, engine_args }
         }
@@ -374,6 +385,10 @@ mod tests {
         assert_eq!(p("play crypt"), Ok(Some(Cli::Open { which: Which::Word("crypt".into()), front: true, engine_args: run(&["--run"]) })));
         assert_eq!(p("play --last -- --size 800x600"), Ok(Some(Cli::Open { which: Which::Last, front: true, engine_args: run(&["--size", "800x600", "--run"]) })));
         assert_eq!(p("play crypt -- --run"), Ok(Some(Cli::Open { which: Which::Word("crypt".into()), front: true, engine_args: run(&["--run"]) })));
+        // As it is on disk, whoever built it last, only when said.
+        assert_eq!(p("play crypt --as-is"), Ok(Some(Cli::Open { which: Which::Word("crypt".into()), front: true, engine_args: run(&["--run-as-is"]) })));
+        assert_eq!(p("play crypt --as-is -- --run-as-is"), Ok(Some(Cli::Open { which: Which::Word("crypt".into()), front: true, engine_args: run(&["--run-as-is"]) })));
+        assert!(p("open crypt --as-is").unwrap_err().contains("not a flag of this command"));
         assert!(p("play").unwrap_err().contains("needs a project"));
         assert!(p("play crypt --front").unwrap_err().contains("not a flag of this command"), "play is in front already");
         assert!(p("play crypt -- --project D:/other").unwrap_err().contains("set by 'specula play' itself"));

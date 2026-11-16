@@ -184,6 +184,12 @@ pub trait Game {
     /// follows it while it runs. Default: nothing.
     fn game_file_changed(&mut self, _ctx: &mut Ctx, _text: &str) {}
 
+    /// The project's interface files changed: the texts of every screen, the theme and every
+    /// string table under the assets root (`ui/hud.json`, `strings/en.json`), as the project
+    /// store holds them now. A game that takes its interface from these reads them here and
+    /// nothing from the disk (this runs on the engine thread). Default: nothing.
+    fn asset_texts(&mut self, _ctx: &mut Ctx, _texts: &[(String, std::sync::Arc<str>)]) {}
+
     /// An engine screen that takes the window's input (the review or the gallery screen) opened
     /// (`true`) or closed: a real-time game pauses itself through its own pause path, so the
     /// human doesn't lose while deciding (the call is journaled like any frame's). Default: nothing.
@@ -323,8 +329,14 @@ impl<'a> ModuleStates<'a> {
         ModuleStates { host }
     }
 
-    /// The value module `module` keeps under `key`.
+    /// The value module `module` keeps under `key`, while the module is running. What a
+    /// module that is not running left behind (unloaded and not forgotten, or disabled after
+    /// a failure) is nobody's to decide a run by: it reads as a key that is not there (review
+    /// R1 of M6 part 3: a new run was won at once on the last run's count).
     pub fn get(&self, module: &str, key: &str) -> Option<&'a specula_sdk::Value> {
+        if !self.host.running(module) {
+            return None;
+        }
         self.host.state_of(module)?.get(key)
     }
 
@@ -335,9 +347,10 @@ impl<'a> ModuleStates<'a> {
         self.get(module, key)
     }
 
-    /// Every module that keeps state, with what it keeps, by name.
+    /// Every running module that keeps state, with what it keeps, by name.
     pub fn each(&self) -> impl Iterator<Item = (&'a str, &'a std::collections::BTreeMap<String, specula_sdk::Value>)> {
-        self.host.states()
+        let host = self.host;
+        host.states().filter(move |(name, _)| host.running(name))
     }
 
     /// The names of the modules that are loaded and running.

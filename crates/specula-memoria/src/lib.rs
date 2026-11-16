@@ -115,10 +115,10 @@ pub fn id_ok(id: &str) -> bool {
 }
 
 /// A project path a note may be about: plain names joined by `/`, none `.` or `..`; a folder
-/// may end in `/`.
+/// may end in `/`. No comma: the front matter's `about` line separates paths with one.
 fn path_ok(path: &str) -> bool {
     let trimmed = path.strip_suffix('/').unwrap_or(path);
-    !trimmed.is_empty() && path.len() <= 200 && trimmed.split('/').all(|part| !part.is_empty() && part != "." && part != ".." && !part.contains(['\\', ':']) && !part.chars().any(char::is_control))
+    !trimmed.is_empty() && path.len() <= 200 && trimmed.split('/').all(|part| !part.is_empty() && part != "." && part != ".." && !part.contains(['\\', ':', ',']) && !part.chars().any(char::is_control))
 }
 
 /// An id made from a title: its letters and digits, lowercase, joined by `-`, at most 48.
@@ -239,10 +239,13 @@ impl Note {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Notes {
     notes: Vec<Note>,
+    /// The ids some note replaces (made once when the notes are read: whether a note is
+    /// current is asked for every note of every listing).
+    replaced: std::collections::BTreeSet<String>,
 }
 
 /// The first `max` characters of `text`, cut at a word and marked when something was cut.
-fn cut(text: &str, max: usize) -> String {
+pub fn cut(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_owned();
     }
@@ -265,7 +268,8 @@ impl Notes {
                 Err(why) => bad.push((id.to_owned(), why)),
             }
         }
-        (Notes { notes }, bad)
+        let replaced = notes.iter().filter_map(|n: &Note| n.supersedes.clone()).collect();
+        (Notes { notes, replaced }, bad)
     }
 
     /// Every note, current or not, in id order.
@@ -285,7 +289,7 @@ impl Notes {
 
     /// Whether another note replaces this one.
     pub fn superseded(&self, id: &str) -> bool {
-        self.replaced_by(id).is_some()
+        self.replaced.contains(id)
     }
 
     /// The note `id` names now: itself, or the newest in the chain of notes that replaced it.
@@ -330,38 +334,89 @@ impl Notes {
         found
     }
 
-    /// What an agent is given at its first call: what the game is, how it is built and checked,
-    /// and the titles of everything else the project remembers, in at most [`MAX_BRIEF`]
-    /// characters. Empty when the project remembers nothing.
-    pub fn brief(&self) -> String {
+    /// What an agent is given at its first call, in parts: the brief (what the game is), the
+    /// first `how` note (how it is built and checked), and every other current note, by kind
+    /// and then by id. Whoever shows them says whose words they are: a project's notes are
+    /// written by the agents and people who worked on it, never by the engine.
+    pub fn brief_parts(&self) -> Brief<'_> {
         let first = |kind: Kind| self.current().find(|n| n.kind == kind);
+        let (brief, how) = (first(Kind::Brief), first(Kind::How));
+        let is = |part: Option<&Note>, n: &Note| part.is_some_and(|p| p.id == n.id);
+        let mut rest: Vec<&Note> = self.current().filter(|n| !is(brief, n) && !is(how, n)).collect();
+        rest.sort_by(|a, b| a.kind.cmp(&b.kind).then(a.id.cmp(&b.id)));
+        Brief { brief, how, rest }
+    }
+
+    /// [`Notes::brief_parts`] as one text of at most [`MAX_BRIEF`] characters: the brief's
+    /// title and text, the how-to's text, and the titles of the rest as far as they fit.
+    /// Empty when the project remembers nothing.
+    pub fn brief(&self) -> String {
+        let parts = self.brief_parts();
         let mut out = String::new();
-        if let Some(brief) = first(Kind::Brief) {
-            out.push_str(&format!("{}\n{}\n", brief.title, cut(&brief.body, 800)));
+        if let Some(brief) = parts.brief {
+            out.push_str(&format!("{}\n{}\n", brief.title, cut(&brief.body, BRIEF_TEXT)));
         }
-        if let Some(how) = first(Kind::How) {
-            out.push_str(&format!("\nHow it is built and checked ({}):\n{}\n", how.id, cut(&how.body, 1000)));
+        if let Some(how) = parts.how {
+            out.push_str(&format!("\nHow it is built and checked ({}):\n{}\n", how.id, cut(&how.body, HOW_TEXT)));
         }
-        let rest: Vec<&Note> = self.current().filter(|n| Some(*n) != first(Kind::Brief) && Some(*n) != first(Kind::How)).collect();
-        if !rest.is_empty() {
+        if !parts.rest.is_empty() {
             out.push_str("\nAlso remembered (memory_get ID reads one):\n");
             let mut shown = 0;
-            for kind in Kind::ALL {
-                for note in rest.iter().filter(|n| n.kind == kind) {
-                    let line = format!("- {} [{}] {}\n", note.id, kind.name(), note.title);
-                    if out.chars().count() + line.chars().count() + 40 > MAX_BRIEF {
-                        break;
-                    }
-                    out.push_str(&line);
-                    shown += 1;
+            let mut used = out.chars().count();
+            for note in &parts.rest {
+                let line = format!("- {} [{}] {}\n", note.id, note.kind.name(), note.title);
+                let len = line.chars().count();
+                if used + len + 40 > MAX_BRIEF {
+                    break;
                 }
+                out.push_str(&line);
+                used += len;
+                shown += 1;
             }
-            if shown < rest.len() {
-                out.push_str(&format!("- and {} more (memory_list)\n", rest.len() - shown));
+            if shown < parts.rest.len() {
+                out.push_str(&format!("- and {} more (memory_list)\n", parts.rest.len() - shown));
             }
         }
         cut(out.trim_end(), MAX_BRIEF)
     }
+}
+
+/// Most characters of the brief's text, and of the how-to's, given at a first call.
+pub const BRIEF_TEXT: usize = 800;
+pub const HOW_TEXT: usize = 1000;
+
+/// [`Notes::brief_parts`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Brief<'n> {
+    pub brief: Option<&'n Note>,
+    pub how: Option<&'n Note>,
+    /// Every other current note, by kind and then by id.
+    pub rest: Vec<&'n Note>,
+}
+
+/// What a note's front matter says of its place among the others: its kind, and the note it
+/// replaces. Read from the first lines alone (no check of the rest), for whoever must look at
+/// every note of a project at once: `None` when the text does not start as a note does.
+pub fn front(text: &str) -> Option<(Kind, Option<String>)> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let mut lines = text.lines();
+    if lines.next()?.trim_end() != "---" {
+        return None;
+    }
+    let (mut kind, mut supersedes) = (None, None);
+    // (A front matter has four keys: a file with more lines than that before its end is no note.)
+    for line in lines.take(16) {
+        let line = line.trim_end();
+        if line == "---" {
+            return kind.map(|k| (k, supersedes));
+        }
+        match line.split_once(':').map(|(k, v)| (k.trim(), v.trim())) {
+            Some(("kind", value)) => kind = Kind::named(value),
+            Some(("supersedes", value)) if id_ok(value) => supersedes = Some(value.to_owned()),
+            _ => {}
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -409,6 +464,53 @@ mod tests {
         assert_eq!(code("Bad Id", "---\ntitle: x\nkind: fact\n---\n"), "bad_id");
         assert_eq!(code("a", &format!("---\ntitle: {}\nkind: fact\n---\n", "x".repeat(MAX_TITLE + 1))), "bad_title");
         assert_eq!(code("a", &format!("---\ntitle: x\nkind: fact\n---\n{}", "x".repeat(MAX_NOTE_BYTES))), "too_big");
+    }
+
+    /// Review R1 of M6 part 3: a path with a comma came back as two paths (the `about` line
+    /// separates paths with one), so it is not a path a note may be about.
+    #[test]
+    fn a_path_with_a_comma_is_not_one_a_note_is_about() {
+        let n = Note { id: "a".into(), title: "A fact".into(), kind: Kind::Fact, supersedes: None, about: vec!["assets/x,y.json".into()], body: String::new() };
+        assert_eq!(n.check().unwrap_err().code, "bad_about");
+        let plain = Note { about: vec!["assets/x y.json".into(), "modules/gate/".into()], ..n };
+        assert_eq!(Note::parse("a", &plain.to_text()).unwrap().about, plain.about, "what is written is what is read back");
+    }
+
+    /// The first lines alone say a note's kind and what it replaces: enough for whoever holds
+    /// every note of a project against one being written.
+    #[test]
+    fn a_notes_place_is_read_from_its_first_lines() {
+        assert_eq!(front(DECISION), Some((Kind::Decision, Some("gate-lives".to_owned()))));
+        assert_eq!(front("---\ntitle: x\nkind: brief\n---\ntext"), Some((Kind::Brief, None)));
+        assert_eq!(front("\u{feff}---\r\ntitle: x\r\nkind: how\r\n---\r\n"), Some((Kind::How, None)));
+        assert_eq!(front("just text"), None);
+        assert_eq!(front("---\ntitle: x\n---\n"), None, "no kind");
+        assert_eq!(front("---\ntitle: x\nkind: fact\n"), None, "the front matter never ends");
+        assert_eq!(front(&format!("---\nkind: fact\n{}---\n", "x: y\n".repeat(40))), None, "too long to be a front matter");
+        assert_eq!(front("---\nkind: fact\nsupersedes: Not An Id\n---\n"), Some((Kind::Fact, None)));
+    }
+
+    /// The brief is made in one pass however many notes there are, and stays within its size
+    /// (review R1 of M6 part 3: it asked "is this note current" by scanning every note for
+    /// every note for every note, 1.1 s at a project's full 1,024 notes, at every first call).
+    /// The measure is what it asks, not a time: each note is looked up in a set.
+    #[test]
+    fn the_brief_of_a_full_memory_is_one_pass_and_within_its_size() {
+        let mut files: Vec<(String, String)> = (0..MAX_NOTES - 2).map(|i| note(&format!("n{i:04}"), "fact", &format!("Fact number {i} of the game, said as one sentence"), "", "x")).collect();
+        files.push(note("brief", "brief", "The game", "", "What it is."));
+        files.push(note("how", "how", "How it is built", "", "The loop."));
+        // Half of the facts replace another: those are not current.
+        for i in (1..MAX_NOTES - 2).step_by(2) {
+            files[i] = note(&format!("n{i:04}"), "fact", &format!("Fact {i}, again"), &format!("supersedes: n{:04}\n", i - 1), "x");
+        }
+        let all = notes(&files);
+        assert_eq!(all.replaced.len(), (MAX_NOTES - 2) / 2);
+        let parts = all.brief_parts();
+        assert_eq!((parts.brief.map(|n| n.id.as_str()), parts.how.map(|n| n.id.as_str())), (Some("brief"), Some("how")));
+        assert_eq!(parts.rest.len(), all.current().count() - 2);
+        assert!(parts.rest.iter().all(|n| !all.superseded(&n.id)));
+        let text = all.brief();
+        assert!(text.chars().count() <= MAX_BRIEF && text.contains("more (memory_list)"), "{}", text.chars().count());
     }
 
     #[test]

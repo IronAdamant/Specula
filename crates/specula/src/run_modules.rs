@@ -13,6 +13,14 @@
 //! `logic_build` (what a build may use, the SDK it trusts, the digest of what it compiled), as
 //! the identity [`RUN_SESSION`], which no protocol session can be.
 //!
+//! **Only what an owner or a granted lead last built** ([`crate::approved`]; review R1 of M6
+//! part 3, the critical finding). A builder may write a module's sources and the game file
+//! through the project tools, and may only propose a build. Were `--run` to build whatever is
+//! on disk, restarting the engine would be the builder's way past the review. So each module is
+//! built at start only while its folder has the digest it had at its last authorised build;
+//! anything else is said and left for an owner or lead to build. `--run-as-is` is the operator
+//! saying that what is on disk now is theirs to run, whoever wrote it.
+//!
 //! The work is a caller's, on a thread of its own: it waits for the engine's loop like any
 //! first call, asks the engine's gate, runs Cargo, and hands the engine the library. A module
 //! that does not build or load is said in the trace (`run.module`) and to the hosted game
@@ -46,8 +54,19 @@ fn session() -> SessionInfo {
     SessionInfo { id: RUN_SESSION.into(), client_name: "specula --run".into(), client_version: env!("CARGO_PKG_VERSION").into(), protocol_version: String::new() }
 }
 
+/// What to do about a module `--run` will not load, for a person or an agent.
+const WHAT_NOW: &str = "build it as its owner or a lead the operator granted (logic_build: that is the review), or start with --run-as-is (specula play NAME --as-is) to run what is on disk as it is";
+
+/// The line for a module that has no record of an authorised build here.
+fn not_built(dir: &str) -> String {
+    format!("{dir} was not loaded: no owner or granted lead has built it on this machine, so --run does not run it. To play it, {WHAT_NOW}")
+}
+
 /// One module's build answer as a line for a person: `None` when it built and loaded.
 fn failure(dir: &str, is_error: bool, answer: &Json) -> Option<String> {
+    if answer.get("error").and_then(Json::as_str) == Some("not_approved") {
+        return Some(format!("{dir} was not loaded: its sources have changed since an owner or a granted lead last built it, so --run does not run them. To play it, {WHAT_NOW}"));
+    }
     // (`logic_build` answers an error for a refusal, a build that failed and a load that failed.)
     if !is_error {
         return None;
@@ -71,14 +90,28 @@ fn failure(dir: &str, is_error: bool, answer: &Json) -> Option<String> {
 /// Builds and loads `modules` (folders below the engine's working directory, as the game file
 /// names them) once the engine's loop has begun. Returns at once; `reports` gets a line for
 /// each module that was not loaded.
-pub(crate) fn start(to_engine: Sender<Request>, gate: Arc<StartGate>, modules: Vec<String>, reports: Reports) {
+/// `as_is`: what is on disk now, whoever built it last (`--run-as-is`); otherwise only the
+/// sources an owner or a granted lead last built here ([`crate::approved`]).
+pub(crate) fn start(to_engine: Sender<Request>, gate: Arc<StartGate>, modules: Vec<String>, reports: Reports, as_is: bool) {
     let spawned = std::thread::Builder::new().name("specula-run-modules".into()).spawn(move || {
         if gate.wait(START_WAIT).is_err() {
             return;
         }
         let session = session();
         for dir in modules.into_iter().take(MAX_MODULES) {
-            let out = crate::logic::tools::build(&to_engine, &session, &Json::obj([("path", Json::from(dir.as_str()))]));
+            // Held to what was last built by someone who may load native code: sources changed
+            // since (an agent's edit through the project tools, an undo, an editor) are not
+            // loaded because the engine was started again.
+            let root = std::env::current_dir().unwrap_or_default();
+            let approved = if as_is { None } else { Some(crate::approved::approved(&root, &root.join(&dir))) };
+            if let Some(None) = approved {
+                let why = not_built(&dir);
+                specula_core::trace_event!(&crate::trace_sink::ENGINE, Error, "run.module", module = dir.as_str(), loaded = false, why = why.as_str());
+                reports.lock().unwrap_or_else(|p| p.into_inner()).push(why);
+                continue;
+            }
+            let expect = approved.flatten();
+            let out = crate::logic::tools::build_expecting(&to_engine, &session, &Json::obj([("path", Json::from(dir.as_str()))]), expect.as_deref());
             let answer = out
                 .content
                 .iter()

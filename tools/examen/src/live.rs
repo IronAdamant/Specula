@@ -42,13 +42,11 @@ use crate::testlog::Exit;
 
 /// Scripts that are not live checks. Everything else in `scripts/` is run.
 const NOT_CHECKS: &[&str] = &[
-    // Helpers other scripts import, the visual history's tool, and the measured comparison's
-    // harness (it runs agents; its own tests are in UNIT).
+    // Helpers other scripts import, and the visual history's tool.
     "specula_mcp.py",
     "window_recorder.py",
     "playtest_swarm.py",
     "gallery.py",
-    "leverage.py",
     // Measurements: they print figures to compare between two builds and pass no verdict
     // (perf/README.md says how each is read).
     "perf_baseline.py",
@@ -91,7 +89,7 @@ const OUT_IS_A_FILE: &[&str] = &["balance_check.py", "desync_check.py", "save_ch
 /// The flags a check names its ports with.
 const PORT_FLAGS: &[&str] = &["--port", "--ports", "--lead-port"];
 /// Unit tests of the scripts themselves, run first.
-const UNIT: &[&str] = &["evals_test.py", "leverage_test.py"];
+const UNIT: &[&str] = &["evals_test.py"];
 /// What is built before anything runs (debug and release of the first; the example is a
 /// check's own engine, scripts/model_stress.py).
 const BUILDS: &[&[&str]] = &[
@@ -478,12 +476,12 @@ mod tests {
     fn every_check_of_the_folder_has_a_plan_on_its_own_ports() {
         let scripts = root().join("scripts");
         let all = everything(&scripts).expect("scripts/");
-        assert_eq!(all[..2], ["evals_test.py", "leverage_test.py"], "the scripts' own tests run first");
+        assert_eq!(all[..1], ["evals_test.py"], "the scripts' own tests run first");
         // The scripts, sorted; then the checks written in Rust, in their own order, so that a
         // script keeps the ports it had before any check was ported.
         let native = crate::native::CHECKS.len();
         let scripted = &all[..all.len() - native];
-        assert!(scripted.len() >= 60 && scripted.windows(2).skip(2).all(|w| w[0] < w[1]), "{} scripts, sorted", scripted.len());
+        assert!(scripted.len() >= 60 && scripted.windows(2).skip(1).all(|w| w[0] < w[1]), "{} scripts, sorted", scripted.len());
         assert_eq!(all[all.len() - native..], crate::native::CHECKS.iter().map(|c| c.name.to_owned()).collect::<Vec<_>>());
         let own = super::plan(&scripts, &all, &all[all.len() - native..], 7720, Path::new("/a")).unwrap();
         assert!(own.len() == native && own.iter().all(|p| p.args.is_empty() && !p.needs_ports && p.port >= 7720 + SPAN * scripted.len() as u64), "{own:?}");

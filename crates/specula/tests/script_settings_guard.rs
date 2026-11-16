@@ -14,7 +14,6 @@ use std::path::Path;
 
 /// Scripts that start a process which isn't the engine, and what it is.
 const NOT_AN_ENGINE: &[(&str, &str)] = &[("m3_exit.py", "the PowerShell GPU-load sampler"),
-    ("leverage.py", "an agent's own command line (settings.json's runner: a builder or a judge of the measured comparison), never a game; its engines are started by `specula open` with the run's --settings folder and --headless"),
     ("launch_check.py", "the executable's own commands (specula projects, open, call...), each given --settings; the engines `specula open` starts are headless or open with --no-activate"),
 ];
 
@@ -255,7 +254,9 @@ fn scripts_connect_to_an_engine_before_they_set_a_timeout() {
             }
         }
     }
-    assert!(scripts >= 80, "the guard read {scripts} scripts: has scripts/ moved?");
+    // (A floor that says the folder was found, not a count: scripts leave as each is ported to
+    // Rust, tools/examen; this guard goes with the last of them.)
+    assert!(scripts >= 40, "the guard read {scripts} scripts: has scripts/ moved?");
     assert!(
         bad.is_empty(),
         "these open their own connection to an engine (use specula_mcp's urlopen, connect, Connection or poll):\n{}",

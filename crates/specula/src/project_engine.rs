@@ -87,6 +87,48 @@ fn at_version(journal: &crate::journal::Journal, path: &str, version: u64) -> (O
     (base, later)
 }
 
+/// What a project's notes hold together, whoever writes one and however (`memory_note`,
+/// `project_write`): a note is replaced by one note at most, a note never replaces one that
+/// replaced it, and a project has one brief. Held where a note is committed, against the notes
+/// as they are then. `memory_note` checks the same on its own thread first, to say more; two
+/// calls at once both passed that and wrote a ring, and both notes dropped out of every list
+/// (review R1 of M6 part 3: 4 of 21 tries).
+///
+/// Reads each note's first lines only (`specula_memoria::front`): a filter over at most the
+/// notes a project may hold. A text that is not a note yet (a draft stored with
+/// `allow_errors`) takes no place among them, so nothing is held of it.
+fn note_guard(files: &std::collections::BTreeMap<String, ProjectFile>, path: &str, text: &str) -> Result<(), WorldError> {
+    use specula_memoria::Kind;
+    let id_of = |p: &str| p.strip_prefix("notes/").and_then(|p| p.strip_suffix(".md")).map(str::to_owned);
+    let (Some(id), Some((kind, supersedes))) = (id_of(path), specula_memoria::front(text)) else { return Ok(()) };
+    // Every other note's place: (id, kind, what it replaces).
+    let others: Vec<(String, Kind, Option<String>)> =
+        files.iter().filter(|(p, f)| f.kind == FileKind::Note && p.as_str() != path).filter_map(|(p, f)| Some((id_of(p)?, specula_memoria::front(&f.text)?))).map(|(i, (k, s))| (i, k, s)).take(specula_memoria::MAX_NOTES).collect();
+    let refuse = |code: &'static str, message: String| Err(WorldError::new(code, format!("{message}; nothing was written")).with("path", path));
+    if let Some(old) = &supersedes {
+        if let Some((by, _, _)) = others.iter().find(|(_, _, s)| s.as_deref() == Some(old.as_str())) {
+            return refuse("already_superseded", format!("{old} was already replaced by {by}: supersede that one, or rewrite it in place")).map_err(|e: WorldError| e.with("by", by.as_str()));
+        }
+        // Never a ring: following what the older note replaced must not come back to this one.
+        let mut at = Some(old.as_str());
+        for _ in 0..=others.len() {
+            match at {
+                Some(a) if a == id => return refuse("bad_supersedes", format!("{old} replaced {id} (directly or through others): a note cannot replace the note that replaced it")),
+                Some(a) => at = others.iter().find(|(i, _, _)| i == a).and_then(|(_, _, s)| s.as_deref()),
+                None => break,
+            }
+        }
+    }
+    if kind == Kind::Brief {
+        // Current briefs other than this one and the one it replaces.
+        let replaced = |i: &str| others.iter().any(|(_, _, s)| s.as_deref() == Some(i)) || supersedes.as_deref() == Some(i);
+        if let Some((other, _, _)) = others.iter().find(|(i, k, _)| *k == Kind::Brief && !replaced(i)) {
+            return refuse("brief_exists", format!("the project has a brief, {other}: rewrite it in place or replace it (supersedes)")).map_err(|e: WorldError| e.with("id", other.as_str()));
+        }
+    }
+    Ok(())
+}
+
 /// One file's new text from its current one (`None`: it doesn't exist yet), for
 /// [`Engine::project_put_all`].
 pub(crate) type PutEdit<'a> = Box<dyn FnOnce(Option<&str>) -> Result<String, WorldError> + 'a>;
@@ -287,6 +329,13 @@ impl Engine {
         if let Some(dir) = mount.disk_path(&rel).parent() {
             if let Err(e) = project::check_inside(&mount.root, dir) {
                 return Err(Committed::Refused(WorldError::new("linked_folder", format!("{path}: {e}; nothing was changed (write somewhere that isn't behind a link)")).with("path", path)));
+            }
+        }
+        // A note's place among the notes is held here, at the commit, against the notes as
+        // they are now: a check made on a caller's snapshot let two writes at once pass it.
+        if let (FileKind::Note, Some((_, text))) = (kind, &file) {
+            if let Err(e) = note_guard(self.world.files(), path, text) {
+                return Err(Committed::Refused(e));
             }
         }
         // The disk holds something that can't be mirrored: never overwritten unless asked to.
@@ -960,6 +1009,20 @@ impl Engine {
         if !assets.is_empty() && self.game_call(crate::sim_writes::GameCall::AssetsChanged(&assets)) {
             done.push("game");
         }
+        // The interface's files: the hosted game is lent their texts as the store holds them
+        // (every screen, the theme, every string table: a bounded filter of the store), so that
+        // it reads nothing from the disk on this thread.
+        if assets.iter().any(|p| p.starts_with("ui/") || p.starts_with("strings/")) && self.game.is_some() {
+            let texts: Vec<(String, Arc<str>)> = self
+                .world
+                .files()
+                .iter()
+                .filter(|(_, f)| matches!(f.kind, FileKind::UiScreen | FileKind::UiTheme | FileKind::Strings))
+                .filter_map(|(p, f)| p.strip_prefix("assets/").filter(|rel| rel.starts_with("ui/") || rel.starts_with("strings/")).map(|rel| (rel.to_owned(), Arc::clone(&f.text))))
+                .take(128)
+                .collect();
+            self.game_call(crate::sim_writes::GameCall::AssetTexts(&texts));
+        }
         // The game file: the hosted game follows it while it runs (the text is the store's:
         // nothing is read from the disk here). A deleted game file leaves the game as it was.
         if changed.iter().any(|p| p == project::GAME_FILE) {
@@ -1004,6 +1067,47 @@ impl Engine {
 mod notes_tests {
     use crate::project::FileKind;
     use crate::project_kinds::validate;
+
+    /// What the notes hold together is held at the commit, against the notes as they are then
+    /// (review R1 of M6 part 3: two `memory_note` calls at once each passed the check made on
+    /// its own snapshot, wrote a ring, and both notes dropped out of every list).
+    #[test]
+    fn a_notes_place_among_the_notes_is_held_at_the_commit() {
+        use crate::project::ProjectFile;
+        use std::sync::Arc;
+        let note = |kind: &str, supersedes: Option<&str>| format!("---\ntitle: A note\nkind: {kind}\n{}---\ntext\n", supersedes.map(|s| format!("supersedes: {s}\n")).unwrap_or_default());
+        let mut files = std::collections::BTreeMap::new();
+        let put = |files: &mut std::collections::BTreeMap<String, ProjectFile>, id: &str, text: String| {
+            files.insert(format!("notes/{id}.md"), ProjectFile::new(FileKind::Note, Arc::from(text), 1, Arc::from("ann")));
+        };
+        put(&mut files, "p", note("fact", None));
+        put(&mut files, "q", note("fact", None));
+        put(&mut files, "brief", note("brief", None));
+        let code = |files: &std::collections::BTreeMap<String, ProjectFile>, id: &str, text: &str| super::note_guard(files, &format!("notes/{id}.md"), text).err().map(|e| e.code);
+        // The two writes of the race, one after the other as the engine commits them: the first
+        // is taken, and the second, which would close the ring, is refused.
+        assert_eq!(code(&files, "p", &note("fact", Some("q"))), None);
+        put(&mut files, "p", note("fact", Some("q")));
+        assert_eq!(code(&files, "q", &note("fact", Some("p"))), Some("bad_supersedes"));
+        // A longer ring, through a third note.
+        put(&mut files, "r", note("fact", Some("p")));
+        assert_eq!(code(&files, "q", &note("fact", Some("r"))), Some("bad_supersedes"));
+        // One replacement a note: q is replaced by p already.
+        assert_eq!(code(&files, "s", &note("fact", Some("q"))), Some("already_superseded"));
+        // Rewriting the note that replaces it is not a second replacement.
+        assert_eq!(code(&files, "p", &note("decision", Some("q"))), None);
+        // One brief: a second is refused; replacing the brief, or rewriting it, is not one.
+        assert_eq!(code(&files, "pitch", &note("brief", None)), Some("brief_exists"));
+        assert_eq!(code(&files, "pitch", &note("brief", Some("brief"))), None);
+        assert_eq!(code(&files, "brief", &note("brief", None)), None);
+        put(&mut files, "pitch", note("brief", Some("brief")));
+        assert_eq!(code(&files, "third", &note("brief", None)), Some("brief_exists"), "the brief that stands now is pitch");
+        assert_eq!(code(&files, "third", &note("brief", Some("pitch"))), None);
+        // A text that is not a note yet (a stored draft) takes no place, and holds nobody up.
+        assert_eq!(code(&files, "draft", "no front matter yet"), None);
+        put(&mut files, "draft", "no front matter yet".to_owned());
+        assert_eq!(code(&files, "t", &note("fact", Some("draft"))), None);
+    }
 
     /// A project's notes folder is mirrored as `notes/<id>.md` (docs/design/FIRST_HOUR.md,
     /// slice 6): the notes a person left there are in the store at start, a file that is not
@@ -1052,6 +1156,7 @@ mod notes_tests {
         let problems = validate("notes/half-written.md", FileKind::Note, "no front matter yet", None, &[]);
         assert_eq!(problems.iter().map(|p| (p.code.as_str(), p.is_error())).collect::<Vec<_>>(), [("no_front_matter", true)]);
         assert!(!crate::project_kinds::never_allowed(FileKind::Note, "no_front_matter"), "a person's draft may be stored");
+        assert!(crate::project_kinds::never_allowed(FileKind::Game, "unknown_key"), "a game file that is not one would stop the next start: never stored");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

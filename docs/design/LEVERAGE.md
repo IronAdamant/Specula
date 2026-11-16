@@ -1,7 +1,7 @@
 # Design: measured leverage
 
 Status: built 2026-11-14 (M5). Data: `evals/leverage/` (the settings and the three jobs). Harness:
-`scripts/leverage.py` (its unit tests: `scripts/leverage_test.py`, run by `cargo test -p specula --test leverage_data`). Results: `perf/leverage/`. Roadmap item: "Measured leverage" in
+`examen leverage` (`tools/examen/src/leverage.rs`; it was `scripts/leverage.py` through M5, and the port was held against it on M5's runs: the same report, the same analysis of every builder's steps, the same export). Results: `perf/leverage/`. Roadmap item: "Measured leverage" in
 [ROADMAP.md](../ROADMAP.md). Siblings: [EVALS.md](EVALS.md) (tasks the engine verifies from its own data),
 [LAUNCH.md](LAUNCH.md) (the command line the engine arm uses).
 
@@ -42,7 +42,7 @@ result, and it says where to work next.
 |---|---|
 | Tokens by kind, requests | the builder's transcript, where its harness keeps one (`record --usage`), else the harness's own figures (`record --by-kind`) |
 | Tool uses, time | the builder's own harness, as it reports them when the builder ends (`record`) |
-| Engine calls, and the bytes sent and answered | every call through `leverage.py call` (`costs/<run>.calls.jsonl`) |
+| Engine calls, and the bytes sent and answered | every call through `examen leverage call` (`costs/<run>.calls.jsonl`) |
 | What was left: files, lines by kind | the work folder at `finish` (build output, the engine's caches and the SDK copy left out) |
 | Checks passed, defects beyond the list | the judge's `verdict.json` (`judge`) |
 
@@ -78,37 +78,39 @@ keeps the settings it was prepared with, and the report states them.
 - **The token cap is told, not enforced.** A harness cannot stop an agent at a token count. The brief
   states the budget; the report gives the tokens each run used and marks a run whose weighted figure went
   past its cap.
-- **The time limit is enforced**: `leverage.py run` stops the builder's process, and what it started, at
+- **The time limit is enforced**: `examen leverage run` stops the builder's process, and what it started, at
   `wall_s`; whoever starts agents another way stops them and records `--ended wall`. A run stopped there
   has no totals from its agent: its tokens are marked incomplete and it is left out of its cell's mean.
   The run's engine is stopped after every builder and every judge, however they ended.
 
 ## Running it (any vendor's agent)
 
-`leverage.py run` starts a builder or a judge as **a process of its own, in the run's folder**, from the
+`examen leverage run` starts a builder or a judge as **a process of its own, in the run's folder**, from the
 command line in the settings (`runner.command`: Claude Code's by default, with six tools and no MCP
 servers; any agent's command line that takes a prompt and runs to its end fits). A process started there
 sees its brief and nothing of the engine's repository unless it goes and reads it. Agents started another
 way (another vendor's harness) are handed the brief by hand and their figures given to `record`.
 
+(`examen` is `cargo run -p specula-examen --`, or the built `target/debug/examen`: a builder's brief names the built one.)
+
 ```
-python scripts/leverage.py --check                              # the data is well formed
-python scripts/leverage.py prepare small engine 1 --out ROOT --exe target/release/specula.exe
-python scripts/leverage.py prepare small plain 1 --out ROOT
-python scripts/leverage.py run ROOT/small-engine-1              # the builder; stopped at the time limit; then 'finish'
-python scripts/leverage.py run ROOT/small-engine-1 --judge      # the judge; its verdict.json is recorded
-python scripts/leverage.py prepare change engine 1 --out ROOT --exe ... --from ROOT/medium-engine-1
-python scripts/leverage.py report ROOT                          # report.md and report.json
-python scripts/leverage.py export ROOT perf/leverage/DATE       # what the repository keeps: no games, no paths
+examen leverage --check                              # the data is well formed
+examen leverage prepare small engine 1 --out ROOT --exe target/release/specula.exe
+examen leverage prepare small plain 1 --out ROOT
+examen leverage run ROOT/small-engine-1              # the builder; stopped at the time limit; then 'finish'
+examen leverage run ROOT/small-engine-1 --judge      # the judge; its verdict.json is recorded
+examen leverage prepare change engine 1 --out ROOT --exe ... --from ROOT/medium-engine-1
+examen leverage report ROOT                          # report.md and report.json
+examen leverage export ROOT perf/leverage/DATE       # what the repository keeps: no games, no paths
 
 # by hand, for an agent with no such command line:
-python scripts/leverage.py finish RUN; python scripts/leverage.py record RUN --tokens N --tool-uses N --duration-s N --by-kind I W R O
-python scripts/leverage.py judge RUN; python scripts/leverage.py judge RUN --verdict RUN/verdict.json
+examen leverage finish RUN; examen leverage record RUN --tokens N --tool-uses N --duration-s N --by-kind I,W,R,O
+examen leverage judge RUN; examen leverage judge RUN --verdict RUN/verdict.json
 ```
 
 The engine arm's builder never runs the engine's executable. It starts and stops its engine with
-`leverage.py engine start|stop RUN` (headless, on the run's own port, with the run's own settings folder,
-so it is never listed among a person's projects) and calls it with `leverage.py call RUN TOOL '{json}'`
+`examen leverage engine start|stop RUN` (headless, on the run's own port, with the run's own settings folder,
+so it is never listed among a person's projects) and calls it with `examen leverage call RUN TOOL '{json}'`
 or `TOOL @args.json`, which is the engine's own `specula call` with the run's port and identity, logged.
 
 ## What is and is not controlled
@@ -147,7 +149,7 @@ or `TOOL @args.json`, which is the engine's own `specula call` with the run's po
 
 Fourteen builds, every one judged and every one reported: [perf/leverage/2026-11-14](../../perf/leverage/2026-11-14/report.md)
 (the report, and a file a run with its settings, costs, verdict and where its tokens went). Builders were
-Claude Sonnet 5.5 and judges Claude Opus 5.5, each a process of its own (`leverage.py run`), on one Windows
+Claude Sonnet 5.5 and judges Claude Opus 5.5, each a process of its own (the harness's `run`), on one Windows
 laptop, two at a time. At list prices the builds cost 8.55 USD, the first judging of all fourteen 13.20 USD,
 and judging the four change games a second time 5.96 USD (27.71 USD in all).
 
@@ -187,7 +189,7 @@ change jobs ran on it.
   and one game's checks stepped the engine a tick a call (4,600 calls for its build, about 12,000 for one
   judging of its change, which took 28 minutes).
 
-**Where the engine arm's tokens went** (`leverage.py where RUN`; owner, 2026-11-14: "Good to have that data
+**Where the engine arm's tokens went** (the harness's `where RUN`; owner, 2026-11-14: "Good to have that data
 to compare so we know why before we fix that in M6"). Weighted tokens, lowest to highest run of a cell.
 The three columns of tokens are exact: each run's own counts by kind, times the weights. What a step was
 (the counts of steps, and the sizes quoted under the table) is a reading of each command's text, with an

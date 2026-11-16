@@ -658,6 +658,12 @@ fn report_json(r: &BuildReport, req: &BuildRequest, detailed: bool) -> Json {
 /// `logic_build`, on the calling connection's thread: build (queued behind other builds), then
 /// hand the reload to the engine thread and wait for it.
 pub fn build(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json) -> ToolOutput {
+    build_expecting(to_engine, session, args, None)
+}
+
+/// [`build`], and with `expect` only when the module's folder has that digest (the start-up
+/// build: [`crate::run_modules`]).
+pub fn build_expecting(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json, expect: Option<&str>) -> ToolOutput {
     let t0 = Instant::now();
     // (request, reload, detailed, seed, approve, the build went to the engine's short folder)
     type Parsed = (BuildRequest, bool, bool, Option<u64>, Option<u64>, bool);
@@ -700,6 +706,13 @@ pub fn build(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json) ->
     let _held = specula_logic::build::hold(&req.dir);
     let before = specula_logic::digest::module_snapshot(&req.dir);
     let digest = before.as_ref().map(|(d, _)| d.clone()).map_err(Clone::clone);
+    // The start-up build (`--run`) builds only the sources an owner or lead last built: held to
+    // their digest here, with the folder already held, so nothing can be swapped in between.
+    if let Some(want) = expect {
+        if digest.as_ref().map_or(true, |d| d.hex != want) {
+            return ToolOutput::error(WorldError::new("not_approved", "the module's sources are not the ones an owner or a granted lead last built: nothing was built").to_json().to_string());
+        }
+    }
     let (gated, refused) = engine_call(to_engine, session, LogicCall::Gate(Doing::Build { dir: req.dir.clone(), digest: digest.clone(), approve }));
     if refused {
         return ToolOutput::error(gated.to_string());
@@ -778,6 +791,15 @@ pub fn build(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json) ->
         let (loaded, is_error) = load_library(to_engine, session, library, Some(req.dir.clone()), seed);
         reload_ms = t.elapsed().as_secs_f64() * 1000.0;
         failed |= is_error;
+        // Whoever passed the gate may load native code (the owner, a lead the operator granted,
+        // the operator's own start-up build): what loaded is what `--run` may load at the next
+        // start, by the digest of the folder as it was compiled (crate::approved; a fix build
+        // wrote its fixes first, and the folder is still held).
+        if !is_error {
+            if let Ok((now, _)) = specula_logic::digest::module_snapshot(&req.dir) {
+                crate::approved::record(&engine_root(), &req.dir, &now.hex);
+            }
+        }
         out.set(if is_error { "reload_error" } else { "reload" }, loaded);
     }
     out.set(

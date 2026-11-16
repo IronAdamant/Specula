@@ -15,6 +15,10 @@ mod changed;
 mod cli;
 mod gate;
 mod kept;
+mod leverage;
+mod leverage_report;
+#[cfg(test)]
+mod leverage_tests;
 mod live;
 mod native;
 mod passed;
@@ -44,6 +48,18 @@ examen: the repository's own tooling
       For CI: keeps a build folder between two runs. --mark writes the commit a passing build
       was of; --built-at, before the next build, gives the files that have not changed since
       that commit an old time, so that cargo builds only what changed.
+
+  examen leverage --check
+  examen leverage prepare JOB ARM N --out ROOT [--exe SPECULA_EXE] [--port P] [--from RUN] [--build NAME]
+  examen leverage engine start|stop RUN | call RUN TOOL ['{json}' | @FILE] | tools RUN [FILTER]
+  examen leverage run RUN [--judge [--again WHY]] [--note TEXT] | finish RUN
+  examen leverage record RUN --tokens N --tool-uses N --duration-s N [--usage TRANSCRIPT]
+              [--by-kind I,W,R,O] [--ended done|wall|stopped] [--note TEXT] [--judge]
+  examen leverage usage TRANSCRIPT | judge RUN [--verdict FILE [--again WHY]]
+  examen leverage report ROOT | export ROOT DEST | where RUN [RUN ...] [--json]
+      The measured comparison's harness (docs/design/LEVERAGE.md): the same game jobs built
+      through the engine and without it, each run in a folder of its own, what it cost kept
+      apart from what its judge sees.
 ";
 
 /// `examen changed`: says the tier; for a workflow, writes it where the next job reads it.
@@ -87,6 +103,7 @@ fn main() {
         "live" => live::main(args),
         "changed" => changed_main(args),
         "kept" => kept::main(args),
+        "leverage" => leverage::main(args),
         "" | "help" | "--help" | "-h" => {
             print!("{HELP}");
             0

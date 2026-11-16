@@ -32,29 +32,54 @@ fn commit_in(text: &str) -> Option<&str> {
     (sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit())).then_some(sha)
 }
 
-/// The recorded commit, when it is one git has and what is checked out descends from it.
-pub fn last(root: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(file(root)).ok()?;
-    let sha = commit_in(&text)?;
+/// `text` as a commit to measure from: one git has, and that what is checked out descends from.
+fn usable(root: &Path, text: &str) -> Option<String> {
+    let sha = commit_in(text)?;
     let ancestor = said(&["git", "merge-base", "--is-ancestor", sha, "HEAD"], root, LIMIT).is_some_and(|(code, _)| code == 0);
     ancestor.then(|| sha.to_owned())
 }
 
-/// Records what is checked out as passed: the commit, or why it was not recorded.
-pub fn record(root: &Path) -> Result<String, String> {
-    // (Files git does not track count: the gate measured them, and no commit holds them.)
-    let clean = said_text(&["git", "status", "--porcelain"], root, LIMIT).ok_or("git did not answer")?;
-    if !clean.trim().is_empty() {
-        return Err("there are uncommitted changes, and a pass is recorded for a commit: commit, then run the gate, and the next one is measured from there".to_owned());
+/// The recorded commit, when it is one git has and what is checked out descends from it.
+pub fn last(root: &Path) -> Option<String> {
+    usable(root, &std::fs::read_to_string(file(root)).ok()?)
+}
+
+/// What is checked out, as the gate finds it before it measures anything: the commit, and
+/// whether nothing is uncommitted (files git does not track count: the gate measures them,
+/// and no commit holds them). `None`: git does not answer here.
+pub fn checked_out(root: &Path) -> Option<(String, bool)> {
+    let clean = said_text(&["git", "status", "--porcelain"], root, LIMIT)?.trim().is_empty();
+    let head = said_text(&["git", "rev-parse", "HEAD"], root, LIMIT)?;
+    Some((commit_in(&head)?.to_owned(), clean))
+}
+
+/// Records the commit the gate measured as passed, or says why it was not recorded.
+/// `measured`: what was checked out when the gate began ([`checked_out`]).
+///
+/// A pass is a commit's only when the gate ran on that commit from its first step to its last
+/// with nothing uncommitted: the same commit, clean, before and after. (Review R1 of M6 part
+/// 3: it read the commit at the end. A commit made in the checkout while a small gate ran was
+/// recorded as passed, and every later gate was measured from it: its change was never run at
+/// the size it needed.)
+pub fn record(root: &Path, measured: Option<&(String, bool)>) -> Result<String, String> {
+    let uncommitted = "there are uncommitted changes, and a pass is recorded for a commit: commit, then run the gate, and the next one is measured from there";
+    let Some((began_at, was_clean)) = measured else { return Err("git did not answer when the gate began".to_owned()) };
+    if !was_clean {
+        return Err(uncommitted.to_owned());
     }
-    let head = said_text(&["git", "rev-parse", "HEAD"], root, LIMIT).ok_or("git named no commit")?;
-    let sha = commit_in(&head).ok_or("git named no commit")?;
+    let (now, clean) = checked_out(root).ok_or("git did not answer")?;
+    if !clean {
+        return Err(uncommitted.to_owned());
+    }
+    if now != *began_at {
+        return Err(format!("what is checked out changed while the gate ran (it began at {}, and {} is checked out now): this pass is of neither commit. Run the gate again", &began_at[..10], &now[..10]));
+    }
     let path = file(root);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
-    std::fs::write(&path, format!("{sha}\n")).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(sha.to_owned())
+    std::fs::write(&path, format!("{now}\n")).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(now)
 }
 
 #[cfg(test)]
@@ -65,7 +90,7 @@ mod tests {
     fn a_record_is_kept_by_checkout() {
         let (a, b) = (file(Path::new("C:/one/checkout")), file(Path::new("C:/another/checkout")));
         assert_ne!(a, b);
-        assert_eq!(a, file(Path::new("c:\\One\\Checkout")), "one checkout, however its path is spelt");
+        assert_eq!(a, file(Path::new(r"c:\One\Checkout")), "one checkout, however its path is spelt");
         assert!(a.file_name().unwrap().to_string_lossy().starts_with("passed-"));
     }
 
@@ -77,12 +102,28 @@ mod tests {
     }
 
     /// A commit git does not have, or one that what is checked out does not descend from, is
-    /// not used: the gate then measures from `origin/main`.
+    /// not used: the gate then measures from `origin/main`. What is checked out itself is.
     #[test]
     fn a_record_that_is_not_an_ancestor_is_not_used() {
         let root = crate::run::root();
-        let unknown = "0123456789abcdef0123456789abcdef01234567";
-        let ancestor = said(&["git", "merge-base", "--is-ancestor", unknown, "HEAD"], &root, LIMIT);
-        assert!(ancestor.is_none_or(|(code, _)| code != 0), "git does not have that commit");
+        // (Without git, or outside a checkout, nothing can be said either way.)
+        let Some((head, _)) = checked_out(&root) else { return };
+        assert_eq!(usable(&root, &format!("{head}\n")), Some(head.clone()), "the commit that is checked out descends from itself");
+        assert_eq!(usable(&root, "0123456789abcdef0123456789abcdef01234567"), None, "git does not have that commit");
+        assert_eq!(usable(&root, "origin/main"), None, "a name is not a record");
+    }
+
+    /// A pass is recorded for the commit the gate began at, and only when that commit is still
+    /// what is checked out, with nothing uncommitted before or after.
+    #[test]
+    fn a_pass_is_of_the_commit_the_gate_began_at_or_of_none() {
+        let root = crate::run::root();
+        let Some((head, clean)) = checked_out(&root) else { return };
+        assert!(record(&root, None).unwrap_err().contains("when the gate began"));
+        assert!(record(&root, Some(&(head.clone(), false))).unwrap_err().contains("uncommitted"), "it began with changes that no commit holds");
+        // It began at another commit than the one checked out now: recorded for neither.
+        let other = "0123456789abcdef0123456789abcdef01234567".to_owned();
+        let refused = record(&root, Some(&(other, true))).unwrap_err();
+        assert!(if clean { refused.contains("changed while the gate ran") } else { refused.contains("uncommitted") }, "{refused}");
     }
 }

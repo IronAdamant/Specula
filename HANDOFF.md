@@ -84,7 +84,7 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
   - **Rust only.** "Anything Python in here should be converted to Rust. The only programming language
     used here should be Rust. Zero-dependency is non-negotiable. So I'm willing for this to take
     time." This replaces "new checks may still be Python" (2026-11-15): **no new Python from this
-    date.** What is tracked and not Rust: 83 scripts in `scripts/`, two test-data generators in
+    date.** What is tracked and not Rust: 83 scripts in `scripts/` then (81 since the comparison's harness was ported, the same day), two test-data generators in
     Python, one PowerShell generator (`kat_gdi.ps1`), the shaders' `build.sh`, and 79 GLSL shader
     sources, which the shader language replaces.
 - **Where M6 stands** (kept current; ROADMAP M6 has the fourteen parts):
@@ -188,13 +188,13 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       request read the disk under the lock. A request reads without it now (`Library::request_plan`), and
       `model_build` makes its whole request on a worker.
   - **The measured comparison is in** (2026-11-14; [docs/design/LEVERAGE.md](docs/design/LEVERAGE.md),
-    `scripts/leverage.py`, [perf/leverage/2026-11-14](perf/leverage/2026-11-14/report.md)): the same three
+    `examen leverage` (then `scripts/leverage.py`), [perf/leverage/2026-11-14](perf/leverage/2026-11-14/report.md)): the same three
     game jobs built through the engine and without it, fourteen builds, each judged against one list by a
     model that built neither. **At these sizes the engine costs more for the same result**: about 5 times
     the tokens on a one-screen game (5.2 over four engine runs on two builds), 3.1 times on a medium one,
     1.7 times on a change to it. It is M5's baseline, to be moved in M6 (the owner's words below), not
     something to tune away in M5.
-    - **Why it costs more is measured too** (`leverage.py where RUN`): three to five times the requests,
+    - **Why it costs more is measured too** (`examen leverage where RUN`): three to five times the requests,
       each reading the whole context again, nine or more before the first line of code; and about twice to
       four times the words written (a Rust module and its glue against one Python file). Failed builds are
       not the cause. In the change round, where the game's own documents say how it is built, the two arms
@@ -202,7 +202,7 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     - **Judges disagree, and a first judging of the change games had to be done again** (the judge was not
       told what the game passed before the change; one item was unclear in the brief). Both judgings are in
       the report. Treat a difference of one check between two cells as nothing.
-    - Builders and judges run as **processes of their own** (`leverage.py run`): a subagent of a session
+    - Builders and judges run as **processes of their own** (`examen leverage run`): a subagent of a session
       with this repository open is shown AGENTS.md and HANDOFF.md, in both arms.
     - **Tokens are counted by kind** (new in the context, read again from the cache, written out) with one
       weighted figure; the single number Claude Code reports for a subagent is its context's size at the
@@ -982,7 +982,7 @@ of this page, under "The last three open decisions").
 - **Let an agent that has never seen the engine use it, early.** A pilot and fourteen runs by cold builders
   found in a day what months of use by an agent that knew the engine had not: a tool's arguments could not
   be read from a shell, a granted lead could not lead from a terminal, a project could not get its SDK.
-- **Measure before tuning, and keep the measurement.** `leverage.py where` says where a builder's tokens
+- **Measure before tuning, and keep the measurement.** `examen leverage where` says where a builder's tokens
   went; run it again after every change meant to make the engine cheaper to use.
 - **Read exit codes, not the end of a log.** Twice a commit went in over a failing guard because the last
   lines looked fine; commits are chained on the exit codes of the suite, the guards and clippy.

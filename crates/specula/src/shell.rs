@@ -129,18 +129,26 @@ impl ShellFiles {
         };
         files.screens = folder("ui", MAX_SCREENS, &mut problems);
         files.tables = folder("strings", MAX_TABLES, &mut problems);
-        // What the project lacks: the default screens, and a table when it has none.
+        files.problems = problems;
+        files.with_defaults()
+    }
+
+    /// These files with the built-in ones for what a project lacks: the theme, the default
+    /// screens (by name), and the English words when it has no table at all.
+    pub fn with_defaults(mut self) -> ShellFiles {
         let own = ShellFiles::builtin("");
+        if self.theme.is_empty() {
+            self.theme = own.theme;
+        }
         for (stem, text) in own.screens {
-            if !files.screens.iter().any(|(have, _)| *have == stem) {
-                files.screens.push((stem, text));
+            if !self.screens.iter().any(|(have, _)| *have == stem) {
+                self.screens.push((stem, text));
             }
         }
-        if files.tables.is_empty() {
-            files.tables = own.tables;
+        if self.tables.is_empty() {
+            self.tables = own.tables;
         }
-        files.problems = problems;
-        files
+        self
     }
 }
 
@@ -264,8 +272,6 @@ struct Face {
 /// The project shell.
 pub struct Shell {
     name: String,
-    project: PathBuf,
-    assets: PathBuf,
     game: GameFile,
     files: ShellFiles,
     /// What did not load or was not done, newest last (at most 16): `game_state` shows it.
@@ -274,8 +280,14 @@ pub struct Shell {
     settings: Settings,
     store: SettingsStore,
     settings_dirty: bool,
-    /// The last input was the player's own (a window frame), not an agent's.
-    human: bool,
+    /// What the player's own settings file holds: the player's choices alone. An agent's change
+    /// is the session's (`settings`) and never reaches it, whoever changes a setting next
+    /// (review R1 of M6 part 3: the whole of `settings` was written at the player's next
+    /// change, the agent's values with it).
+    kept: Settings,
+    /// The state the screens bind to must be filled again, and the screens shown again: set
+    /// by whatever changes what a screen may show.
+    stale: bool,
     face: Option<Face>,
     state: StateMap,
     input: Input,
@@ -301,6 +313,20 @@ pub struct Shell {
     ui_events: UiEvents,
 }
 
+/// The value a key names, for a condition: a module's (`gate.hp`), a setting's
+/// (`setting.difficulty`), the run's own (`game.runs`, `game.phase`).
+fn value_of(shown: &[(String, Shown)], settings: &Settings, runs: u64, phase: Phase, key: &str) -> Option<Val> {
+    if let Some(name) = key.strip_prefix("setting.") {
+        return settings.get(name).cloned();
+    }
+    match key {
+        "game.runs" => return Some(Val::Num(runs as f64)),
+        "game.phase" => return Some(Val::Text(phase.name().to_owned())),
+        _ => {}
+    }
+    shown.iter().find(|(k, _)| k == key).and_then(|(_, v)| v.val())
+}
+
 fn note(problems: &mut Vec<String>, what: String) {
     // (Said once: a second interface loaded for captures finds the same broken file.)
     if problems.contains(&what) {
@@ -323,10 +349,7 @@ impl Shell {
     /// not one (the message says where and what to write); the engine does not start on a
     /// game it cannot read.
     pub fn open(name: &str, project: &Path, assets: &Path) -> Result<Shell, String> {
-        let mut shell = Shell::build(name, ShellFiles::read(project, assets))?;
-        shell.project = project.to_path_buf();
-        shell.assets = assets.to_path_buf();
-        Ok(shell)
+        Shell::build(name, ShellFiles::read(project, assets))
     }
 
     /// The shell made from `files`.
@@ -336,15 +359,14 @@ impl Shell {
         specula_ui::add_ui_actions(&mut map).map_err(|e| format!("the interface's own actions: {e}"))?;
         let mut shell = Shell {
             name: name.to_owned(),
-            project: PathBuf::new(),
-            assets: PathBuf::new(),
             run: Run::new(&game),
             settings: Settings::new(&game.settings, std::slice::from_ref(&game.locale)),
+            kept: Settings::new(&game.settings, std::slice::from_ref(&game.locale)),
             game,
             problems: Vec::new(),
             store: SettingsStore::default(),
             settings_dirty: false,
-            human: false,
+            stale: true,
             face: None,
             state: StateMap::new(),
             input: Input::new(map.clone()),
@@ -382,6 +404,7 @@ impl Shell {
         self.load_face();
         self.apply_language();
         self.laid_out = None;
+        self.stale = true;
     }
 
     fn load_tables(&mut self) {
@@ -409,13 +432,21 @@ impl Shell {
         if locales.is_empty() {
             locales.push(own);
         }
-        let chosen = self.settings.locale().to_owned();
-        let kept = self.settings.to_text();
-        self.settings = Settings::new(&self.game.settings, &locales);
-        self.settings.read_text(&kept);
-        if self.settings.locale() != chosen && locales.contains(&chosen) {
-            let _ = self.settings.set_text(&self.language_setting(), &chosen);
-        }
+        // The settings again from the game file's declarations and these languages, each layer
+        // keeping what it held (the session's values, and the player's own).
+        let language = self.language_setting();
+        let again = |old: &Settings| {
+            let (chosen, text) = (old.locale().to_owned(), old.to_text());
+            let mut new = Settings::new(&self.game.settings, &locales);
+            new.read_text(&text);
+            if new.locale() != chosen && locales.contains(&chosen) {
+                let _ = new.set_text(&language, &chosen);
+            }
+            new
+        };
+        let (settings, kept) = (again(&self.settings), again(&self.kept));
+        self.settings = settings;
+        self.kept = kept;
         self.tables = tables;
         self.strings = strings;
     }
@@ -467,6 +498,7 @@ impl Shell {
             note(&mut self.problems, format!("the text size: {e}"));
         }
         self.laid_out = None;
+        self.stale = true;
     }
 
     fn load_ui(&mut self) -> Result<(Ui, Vec<String>), String> {
@@ -515,6 +547,7 @@ impl Shell {
             }
         }
         self.laid_out = None;
+        self.stale = true;
     }
 
     /// What a setting stands for in the engine, done: the language, the volume.
@@ -562,6 +595,7 @@ impl Shell {
         }
         self.title_sent = false;
         self.laid_out = None;
+        self.stale = true;
     }
 
     fn apply_volume(&mut self) {
@@ -577,8 +611,8 @@ impl Shell {
         self.face.as_ref().is_some_and(|f| f.screens.iter().any(|s| s == name))
     }
 
-    /// Does what the run answered.
-    fn apply(&mut self, effects: Vec<Effect>) {
+    /// Does what the run answered. `player`: the press was the person's own at the window.
+    fn apply(&mut self, effects: Vec<Effect>, player: bool) {
         for effect in effects {
             match effect {
                 Effect::Clock(paused) => self.clock_wish = Some(paused),
@@ -597,9 +631,13 @@ impl Shell {
                     self.events_out.push((name.to_owned(), data));
                 }
                 Effect::Setting { name } => {
-                    // The player's own file keeps the player's own changes; an agent's are kept
-                    // only where the operator named the settings folder (scripts, tests).
-                    if self.human || self.store.agents_save {
+                    // The player's own file keeps the player's own changes, by who pressed: an
+                    // agent's change is the session's, kept only where the operator named the
+                    // settings folder (scripts, tests).
+                    if player || self.store.agents_save {
+                        if let Some(value) = self.settings.get(&name).cloned() {
+                            let _ = self.kept.set(&name, value);
+                        }
                         self.settings_dirty = true;
                     }
                     self.apply_setting(&name);
@@ -610,6 +648,7 @@ impl Shell {
             }
         }
         self.laid_out = None;
+        self.stale = true;
     }
 
     /// A button's word, done. `Err`: what was refused, and why.
@@ -634,7 +673,7 @@ impl Shell {
                         }
                     }
                 }
-                self.apply(effects);
+                self.apply(effects, player);
                 Ok(())
             }
             Err(refused) => {
@@ -646,33 +685,45 @@ impl Shell {
         }
     }
 
-    /// What the modules keep, taken as screens and conditions read it.
+    /// What the modules that are running keep, taken as screens and conditions read it. Kept
+    /// in place: an entry that has not changed costs a comparison, and nothing is marked for
+    /// the screens to be filled again.
     fn see(&mut self, modules: &ModuleStates) {
-        self.shown.clear();
+        let mut n = 0;
         'all: for (module, store) in modules.each() {
             for (key, value) in store {
-                if self.shown.len() >= MAX_SHOWN {
+                if n >= MAX_SHOWN {
                     break 'all;
                 }
-                if let Some(shown) = Shown::of(value) {
-                    self.shown.push((format!("{module}.{key}"), shown));
+                let Some(shown) = Shown::of(value) else { continue };
+                let same_key = self.shown.get(n).is_some_and(|(k, _)| k.len() == module.len() + 1 + key.len() && k.starts_with(module) && k.as_bytes()[module.len()] == b'.' && k.ends_with(key.as_str()));
+                if same_key {
+                    if self.shown[n].1 != shown {
+                        self.shown[n].1 = shown;
+                        self.stale = true;
+                    }
+                } else {
+                    let entry = (format!("{module}.{key}"), shown);
+                    if n < self.shown.len() {
+                        self.shown[n] = entry;
+                    } else {
+                        self.shown.push(entry);
+                    }
+                    self.stale = true;
                 }
+                n += 1;
             }
+        }
+        if self.shown.len() != n {
+            self.shown.truncate(n);
+            self.stale = true;
         }
     }
 
     /// The value a key names, for a condition: a module's (`gate.hp`), a setting's
     /// (`setting.difficulty`), the run's own (`game.runs`).
     fn value(&self, key: &str) -> Option<Val> {
-        if let Some(name) = key.strip_prefix("setting.") {
-            return self.settings.get(name).cloned();
-        }
-        match key {
-            "game.runs" => return Some(Val::Num(self.run.runs() as f64)),
-            "game.phase" => return Some(Val::Text(self.run.phase().name().to_owned())),
-            _ => {}
-        }
-        self.shown.iter().find(|(k, _)| k == key).and_then(|(_, v)| v.val())
+        value_of(&self.shown, &self.settings, self.run.runs(), self.run.phase(), key)
     }
 
     /// The score, when the game file names the key that holds it and it holds a number.
@@ -680,6 +731,16 @@ impl Shell {
         match self.value(self.game.outcome.score.as_deref()?)? {
             Val::Num(n) => Some(n),
             _ => None,
+        }
+    }
+
+    /// The state filled and the screens shown, when something they show has changed since the
+    /// last time (a frame of a game that stands still fills nothing).
+    fn refresh(&mut self) {
+        if self.stale {
+            self.fill();
+            self.sync_screens();
+            self.stale = false;
         }
     }
 
@@ -904,20 +965,20 @@ impl Game for Shell {
 
     fn start(&mut self, _ctx: &mut Ctx) {
         let effects = self.run.began(&self.settings);
-        self.apply(effects);
+        self.apply(effects, false);
     }
 
     fn after_modules(&mut self, ctx: &mut Ctx, modules: &ModuleStates) {
         self.see(modules);
+        // (The run is asked with what it reads lent beside it: nothing is copied a tick.)
+        let (runs, phase) = (self.run.runs(), self.run.phase());
         let effects = {
-            let look = |key: &str| self.value(key);
-            let mut run = self.run.clone();
-            let effects = run.after_tick(&look, ctx.clock.tick());
-            self.run = run;
-            effects
+            let Shell { run, shown, settings, .. } = self;
+            let look = |key: &str| value_of(shown, settings, runs, phase, key);
+            run.after_tick(&look, ctx.clock.tick())
         };
         if !effects.is_empty() {
-            self.apply(effects);
+            self.apply(effects, false);
         }
     }
 
@@ -936,6 +997,7 @@ impl Game for Shell {
     fn clock_seen(&mut self, paused: bool) {
         self.run.clock_seen(paused);
         self.laid_out = None;
+        self.stale = true;
     }
 
     fn game_state(&self) -> Option<Json> {
@@ -968,7 +1030,6 @@ impl Game for Shell {
         } else {
             self.input.update(now, frame.input, &pads);
         }
-        self.human = !frame.synthetic;
         if !frame.synthetic && !self.title_sent {
             *frame.title = Some(if self.game.title.is_empty() { self.name.clone() } else { self.game.title.clone() });
             self.title_sent = true;
@@ -978,8 +1039,7 @@ impl Game for Shell {
         if frame.size.0 == 0 || frame.size.1 == 0 {
             return;
         }
-        self.fill();
-        self.sync_screens();
+        self.refresh();
         let mut events = std::mem::take(&mut self.ui_events);
         events.events.clear();
         events.consumed = Default::default();
@@ -997,8 +1057,7 @@ impl Game for Shell {
     }
 
     fn overlay(&mut self, _ctx: &mut Ctx, out: &mut Overlay) {
-        self.fill();
-        self.sync_screens();
+        self.refresh();
         if out.capture {
             self.capture_overlay(out);
             return;
@@ -1032,8 +1091,7 @@ impl Game for Shell {
 
     fn ui(&mut self, pick: UiPick) -> Option<GameUi<'_>> {
         if pick == UiPick::Live {
-            self.fill();
-            self.sync_screens();
+            self.refresh();
         }
         let user_scale = self.scale_of("ui_scale");
         let face = self.face.as_mut()?;
@@ -1051,6 +1109,8 @@ impl Game for Shell {
             for problem in self.settings.read_text(text) {
                 note(&mut self.problems, format!("the saved settings: {problem}"));
             }
+            // (The player's own file: the layer that is written back holds it too.)
+            self.kept.read_text(text);
         }
         self.apply_language();
         self.apply_volume();
@@ -1061,7 +1121,7 @@ impl Game for Shell {
 
     fn take_settings(&mut self) -> Option<String> {
         let dirty = std::mem::take(&mut self.settings_dirty);
-        (dirty && self.store.saving()).then(|| self.settings.to_text())
+        (dirty && self.store.saving()).then(|| self.kept.to_text())
     }
 
     fn take_requests(&mut self, out: &mut Vec<GameRequest>) {
@@ -1099,14 +1159,24 @@ impl Game for Shell {
         }
     }
 
-    fn assets_changed(&mut self, _ctx: &mut Ctx, paths: &[String]) {
-        if self.assets.as_os_str().is_empty() || !paths.iter().any(|p| p.starts_with("ui/") || p.starts_with("strings/")) {
-            return;
+    fn asset_texts(&mut self, _ctx: &mut Ctx, texts: &[(String, Arc<str>)]) {
+        // The screens, the theme and the words as the project store holds them now: nothing is
+        // read from the disk here (the engine thread).
+        let mut files = ShellFiles { game: std::mem::take(&mut self.files.game), ..ShellFiles::default() };
+        for (rel, text) in texts {
+            let Some(path) = rel.strip_suffix(".json") else { continue };
+            if text.len() as u64 > MAX_FILE {
+                files.problems.push(format!("assets/{rel} is {} bytes: at most {MAX_FILE} are taken", text.len()));
+                continue;
+            }
+            match path.split_once('/') {
+                Some(("ui", "theme")) => files.theme = text.to_string(),
+                Some(("ui", stem)) if !stem.contains('/') && files.screens.len() < MAX_SCREENS => files.screens.push((stem.to_owned(), text.to_string())),
+                Some(("strings", stem)) if !stem.contains('/') && files.tables.len() < MAX_TABLES => files.tables.push((stem.to_owned(), text.to_string())),
+                _ => {}
+            }
         }
-        let mut files = ShellFiles::read(&self.project, &self.assets);
-        // (The game file comes through `game_file_changed`, from the project store.)
-        files.game = std::mem::take(&mut self.files.game);
-        self.use_files(files);
+        self.use_files(files.with_defaults());
     }
 
     fn game_file_changed(&mut self, _ctx: &mut Ctx, text: &str) {
@@ -1134,16 +1204,22 @@ impl Game for Shell {
             Some(other) => Phase::Ended(Ended::named(other).filter(|e| *e != Ended::Running).ok_or_else(|| format!("the save names a phase this game does not have: {other}"))?),
             None => return Err("the game's part of the save names no phase".to_owned()),
         };
-        Ok(Box::new((phase, j.get("ended_at").and_then(Json::as_u64))))
+        // (A save from before runs were kept has none: one run, if it was ever under way.)
+        let runs = j.get("runs").and_then(Json::as_u64).unwrap_or(u64::from(phase != Phase::Title));
+        Ok(Box::new((phase, j.get("ended_at").and_then(Json::as_u64), runs)))
     }
 
     fn apply_state(&mut self, ctx: &mut Ctx, state: Box<dyn std::any::Any>) {
-        if let Ok(saved) = state.downcast::<(Phase, Option<u64>)>() {
-            self.run.restore(saved.0, saved.1);
+        if let Ok(saved) = state.downcast::<(Phase, Option<u64>, u64)>() {
+            self.run.restore(saved.0, saved.1, saved.2);
+            // What was pressed before the load was pressed in another run: it is not told to
+            // the modules the save brought back.
+            self.events_out.clear();
             // The clock is as the phase says: only a run under way ticks.
             self.clock_wish = Some(saved.0 != Phase::Running);
             let _ = ctx;
             self.laid_out = None;
+        self.stale = true;
         }
     }
 }
@@ -1204,7 +1280,7 @@ mod tests {
     fn the_title_holds_the_clock_and_start_tells_the_modules() {
         let mut shell = shell();
         let effects = shell.run.began(&shell.settings);
-        shell.apply(effects);
+        shell.apply(effects, false);
         assert_eq!(shell.take_clock(), Some(true), "the title holds the clock");
         assert_eq!(shell.take_clock(), None, "asked once");
         shell.fill();
@@ -1254,10 +1330,14 @@ mod tests {
         assert_eq!(shell.take_settings(), None);
         assert_eq!(shell.game_state().unwrap().get("settings").and_then(|s| s.get("difficulty")).and_then(Json::as_str), Some("hard"));
         // The player's own change is saved, once.
-        shell.human = true;
         shell.press("step:volume:-1", true).unwrap();
         let text = shell.take_settings().expect("the settings file");
         assert!(text.contains("\"volume\": 7") && text.contains("specula.settings.v1"), "{text}");
+        // The agent's own change (the difficulty, set to hard above) is not in the player's file,
+        // though the player changed another setting after it: the file holds the player's
+        // choices alone (review R1 of M6 part 3).
+        assert!(text.contains("\"difficulty\": \"easy\""), "{text}");
+        assert_eq!(shell.settings.get("difficulty"), Some(&Val::Text("hard".into())), "the session still has the agent's");
         assert_eq!(shell.take_settings(), None);
         // A new shell given that file has the values back.
         let mut again = super::tests::shell();
@@ -1265,7 +1345,6 @@ mod tests {
         assert_eq!(again.settings.get("volume"), Some(&Val::Num(7.0)));
         // With settings off nothing is ever handed over.
         let mut off = super::tests::shell();
-        off.human = true;
         off.press("step:volume:-1", true).unwrap();
         assert_eq!(off.take_settings(), None);
     }
@@ -1306,7 +1385,7 @@ mod tests {
         let mut run = shell.run.clone();
         let effects = run.after_tick(&|key: &str| shell.value(key), 77);
         shell.run = run;
-        shell.apply(effects);
+        shell.apply(effects, false);
         assert_eq!(shell.take_clock(), Some(true), "the clock stops with the run");
         assert_eq!(events(&mut shell), [("outcome".to_owned(), Value::map().with("outcome", "lost").with("tick", 77i64))]);
         let state = shell.game_state().unwrap();
@@ -1316,8 +1395,8 @@ mod tests {
         // The game's part of a save, and back.
         let bytes = shell.save_state().unwrap().unwrap();
         let parsed = shell.parse_state(&bytes).unwrap();
-        let saved = parsed.downcast::<(Phase, Option<u64>)>().unwrap();
-        assert_eq!(*saved, (Phase::Ended(Ended::Lost), Some(77)));
+        let saved = parsed.downcast::<(Phase, Option<u64>, u64)>().unwrap();
+        assert_eq!(*saved, (Phase::Ended(Ended::Lost), Some(77), 1));
         assert!(shell.parse_state(b"{}").is_err() && shell.parse_state(br#"{"format": "specula.shell.save.v1", "phase": "flying"}"#).is_err());
     }
 
@@ -1353,30 +1432,47 @@ mod tests {
             specula_protocol::Content::Text(t) => Json::parse(t).unwrap(),
             specula_protocol::Content::Image { .. } => Json::Null,
         };
+        let who = specula_protocol::SessionInfo { id: "shell-test".into(), client_name: "t".into(), client_version: "1".into(), protocol_version: "x".into() };
         e.game_name = "gate".into();
         e.game = Some(Box::new(shell()));
         e.clock.set_paused(true);
         // No game's word reaches a game that takes none; ours takes them.
-        let started = e.game_act("start");
+        let started = e.game_act(&who, "start");
         assert!(!started.is_error, "{:?}", text(&started));
         assert_eq!(text(&started).get("phase").and_then(Json::as_str), Some("running"));
         assert!(!e.clock.paused(), "the run began: the clock runs");
         assert_eq!(e.clock_set_by.as_ref().map(|(by, op)| (by.as_str(), *op)), Some(("game:gate", "resume")), "time_control says the game did it");
-        let paused = e.game_act("pause");
+        let paused = e.game_act(&who, "pause");
         assert_eq!((text(&paused).get("phase").and_then(Json::as_str), e.clock.paused()), (Some("paused"), true));
-        let refused = e.game_act("quit");
+        let refused = e.game_act(&who, "quit");
         assert!(refused.is_error && text(&refused).get("error").and_then(Json::as_str) == Some("players_only"));
+        // (Taken by the engine with the call and told to the input monitor under its caller:
+        // none is left for whoever calls next.)
+        assert_eq!(e.game.as_mut().map(|g| g.take_refused_presses()), Some(0));
         // A playtest holds the clock paused and steps it: the game's wish changes nothing.
-        e.game_act("title");
+        e.game_act(&who, "title");
         e.playtest_pumping = true;
         assert!(e.playtest_owns_clock());
-        let started = e.game_act("start");
+        let started = e.game_act(&who, "start");
         assert_eq!(text(&started).get("phase").and_then(Json::as_str), Some("running"));
         assert!(e.clock.paused(), "the playtest's clock is left as it holds it");
         e.playtest_pumping = false;
+        // The wish is kept, the last one, and done when the playtest gives the clock back: the
+        // run that began in it is under way, so its clock runs (review R1 of M6 part 3: thrown
+        // away, it left a run under way with a stopped clock that no word could start).
+        e.game_clock_after_playtest();
+        assert!(!e.clock.paused(), "the run began in the playtest: its clock runs after it");
+        // A run that ended in the playtest has its clock stopped after it.
+        e.playtest_pumping = true;
+        e.game_act(&who, "title");
+        e.playtest_pumping = false;
+        e.game_clock_after_playtest();
+        assert!(e.clock.paused(), "given up in the playtest: the title holds the clock after it");
+        e.game_clock_after_playtest();
+        assert!(e.clock.paused(), "a wish is done once");
         // With no game hosted the tools say so.
         e.game = None;
-        assert_eq!(text(&e.game_act("start")).get("error").and_then(Json::as_str), Some("no_game"));
+        assert_eq!(text(&e.game_act(&who, "start")).get("error").and_then(Json::as_str), Some("no_game"));
         assert_eq!(text(&e.game_state()).get("error").and_then(Json::as_str), Some("no_game"));
     }
 
@@ -1402,7 +1498,7 @@ mod tests {
         stand(&mut shell);
         assert_eq!(shell.run.visible(), ["hud", "pause", "settings"]);
         for outcome in [Ended::Won, Ended::Lost] {
-            shell.run.restore(Phase::Ended(outcome), Some(1));
+            shell.run.restore(Phase::Ended(outcome), Some(1), 1);
             stand(&mut shell);
         }
         assert_eq!(shell.problems, Vec::<String>::new());
@@ -1487,7 +1583,7 @@ mod tests {
         let mut run = shell.run.clone();
         let effects = run.after_tick(&|key: &str| shell.value(key), 9);
         shell.run = run;
-        shell.apply(effects);
+        shell.apply(effects, false);
         assert_eq!(shell.run.phase(), Phase::Ended(Ended::Lost));
         // The same text again changes nothing (no second note).
         let before = shell.problems.len();

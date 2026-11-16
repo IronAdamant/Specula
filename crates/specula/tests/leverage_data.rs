@@ -1,4 +1,4 @@
-//! The measured comparison's data (evals/leverage/, used by scripts/leverage.py; design in
+//! The measured comparison's data (evals/leverage/, used by `examen leverage`: tools/examen; design in
 //! docs/design/LEVERAGE.md) stays well formed without an engine or an agent: the settings name
 //! every job and give each its limits, every job has a brief and an acceptance list whose ids
 //! are its own, the list says which items are the "checkable without hands" ones, and a change
@@ -112,21 +112,3 @@ fn every_job_has_one_brief_and_a_list_that_can_be_answered_item_by_item() {
     assert!(files.iter().any(|(_, j)| j.get("change_of").is_some()), "the change round is one of the jobs");
 }
 
-/// The harness's own unit tests (`scripts/leverage_test.py`: no engine, no agent, nothing
-/// started) pass: what its reviews probed by hand, kept. Skipped, and said so, on a machine
-/// with no Python.
-#[test]
-fn the_harness_passes_its_own_tests() {
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/leverage_test.py");
-    for python in ["python", "python3"] {
-        // (A machine may answer `python` with a stub that is not Python: ask it for its version.)
-        let runs = std::process::Command::new(python).arg("--version").output().is_ok_and(|v| v.status.success());
-        if !runs {
-            continue;
-        }
-        let out = std::process::Command::new(python).arg(&script).output().expect("python ran a moment ago");
-        assert!(out.status.success(), "scripts/leverage_test.py failed:\n{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-        return;
-    }
-    println!("skipped: no python on this machine to run scripts/leverage_test.py");
-}

@@ -210,7 +210,7 @@ pub fn run(cli: Cli, ctx: &Ctx) -> (i32, Json) {
             let parent = std::path::absolute(&parent).unwrap_or(parent);
             // A project that builds and plays (docs/design/FIRST_HOUR.md, slice 7); `--bare`:
             // the folder, its assets folder and its marker, as before.
-            let made = if bare { store::create(&parent, &name).map(|folder| (folder, None)) } else { crate::scaffold::create(&parent, &name).map(|(folder, made)| (folder, Some(made))) };
+            let made = if bare { store::create(&parent, &name).map(|folder| (folder, None)) } else { crate::scaffold::create(&parent, &name, Some(&ctx.store.dir.join(crate::approved::FOLDER))).map(|(folder, made)| (folder, Some(made))) };
             match made {
                 Err(why) => refusal("not_made", why),
                 Ok((folder, made)) => {
@@ -394,6 +394,9 @@ fn call(ctx: &Ctx, engine: &Instance, tool: &str, args: Json, as_name: Option<&s
         return unreachable_engine(&e);
     }
     let mut unkept = None;
+    // What the project remembers (agent_hello's `project_memory`), for an identity that has
+    // just been made: this command said the hello, so its caller never saw the answer.
+    let mut memory = None;
     if let Some(name) = as_name.filter(|_| tool != "agent_hello") {
         let token_file = ctx.store.dir.join(instances::FOLDER).join(format!("{}.{name}.token", engine.pid));
         let token = std::fs::read_to_string(&token_file).ok().map(|t| t.trim().to_owned()).filter(|t| !t.is_empty() && t.len() <= 256);
@@ -428,6 +431,9 @@ fn call(ctx: &Ctx, engine: &Instance, tool: &str, args: Json, as_name: Option<&s
                 return (1, j);
             }
             Ok(a) => {
+                if token.is_none() {
+                    memory = Json::parse(&a.text).ok().and_then(|j| j.get("project_memory").cloned());
+                }
                 if let Some(t) = Json::parse(&a.text).ok().and_then(|j| j.get("resume_token").and_then(Json::as_str).map(str::to_owned)) {
                     // Kept beside the engine's instance file, which is only there when this
                     // command reads the settings folder the engine was started with.
@@ -452,6 +458,11 @@ fn call(ctx: &Ctx, engine: &Instance, tool: &str, args: Json, as_name: Option<&s
             // refused (or be somebody new) with nothing to say why.
             if let (Some(why), Json::Obj(_)) = (unkept, &j) {
                 j.set("identity_not_kept", Json::from(why));
+            }
+            // Given once, with the first answer a new identity gets: what the game is and how it
+            // is built and checked (docs/design/FIRST_HOUR.md, slice 6).
+            if let (Some(memory), Json::Obj(_)) = (memory, &j) {
+                j.set("project_memory", memory);
             }
             (i32::from(a.is_error), j)
         }

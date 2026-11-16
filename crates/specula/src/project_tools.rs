@@ -624,6 +624,8 @@ fn edit_tool(tools: &Tools, session: &SessionInfo, args: &Json, tool: &'static s
         if errors > 0 && (!allow_errors || hard > 0) {
             let why = if hard > 0 && kind == crate::project::FileKind::Strings {
                 format!("{path}: a string table that doesn't parse is never saved, allow_errors or not (the game would show no words, and the table's reviews would be lost to the review gate); nothing was changed. Fix what the problems say")
+            } else if hard > 0 && kind == crate::project::FileKind::Game {
+                format!("{path}: a game file that is not one is never saved, allow_errors or not (the project would not open at its next start); nothing was changed. Fix what the problems say")
             } else if hard > 0 {
                 format!("{path}: {hard} problem(s) that allow_errors can't override (a module's manifest and sources must stay a module's: no crates.io dependencies, build scripts or files from outside); nothing was changed")
             } else {

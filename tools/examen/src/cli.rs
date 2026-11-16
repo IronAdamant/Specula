@@ -42,6 +42,12 @@ impl Args {
         Ok(self.value(name)?.map(|v| v.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect()).unwrap_or_default())
     }
 
+    /// The words still unread, in order: a command's own words, once its flags are taken (a
+    /// command whose words may be anything, such as a tool's arguments, takes no flags first).
+    pub fn rest(self) -> Vec<String> {
+        self.0
+    }
+
     /// Fails when something was given that no one read.
     pub fn done(self) -> Result<(), String> {
         if self.0.is_empty() {

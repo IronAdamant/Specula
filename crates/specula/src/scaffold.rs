@@ -217,38 +217,32 @@ impl Module for Rules {
     }
 
     fn tick(&self, cx: &mut Cx) -> Result<(), SdkError> {
-        // What the engine told us since the last tick, and the player's own input.
-        let mut tapped = cx.action("tap").pressed;
-        let (mut begin, mut end, mut difficulty) = (false, false, None);
-        for event in cx.events().iter().filter(|e| e.from == "engine") {
-            let word = |key: &str| event.data.get(key).and_then(Value::as_str);
-            match event.name.as_str() {
-                "run" => match word("phase") {
-                    Some("start") => begin = true,
-                    _ => end = true,
-                },
-                "outcome" => end = true,
-                "setting" if word("name") == Some("difficulty") => difficulty = word("value").map(str::to_owned),
-                "ui" if word("action") == Some("tap") => tapped = true,
-                _ => {}
-            }
-        }
-        if let Some(difficulty) = difficulty {
-            cx.set_state("seconds", seconds_for(&difficulty))?;
-        }
         let hz = u64::from(cx.tick_hz());
         let mut playing = cx.state("playing")?.as_bool().unwrap_or(false);
         let mut taps = cx.state("taps")?.as_u64().unwrap_or(0);
         let mut ticks_left = cx.state("ticks_left")?.as_u64().unwrap_or(0);
-        if begin {
-            let seconds = cx.state("seconds")?.as_u64().unwrap_or_else(|| seconds_for("normal"));
-            (playing, taps, ticks_left) = (true, 0, seconds * hz);
-            tapped = false;
-        } else if end {
-            playing = false;
+        let mut seconds = cx.state("seconds")?.as_u64().unwrap_or_else(|| seconds_for("normal"));
+        let (was, mut started) = (taps, false);
+        // What the engine told us since the last tick, in the order it happened: a setting the
+        // rules read, a run started or given up, a press of the game's own button, the run's
+        // end. In order, so that a tap that comes with the start counts, and a run started and
+        // given up in one tick is given up.
+        for event in cx.events().iter().filter(|e| e.from == "engine") {
+            let word = |key: &str| event.data.get(key).and_then(Value::as_str);
+            match event.name.as_str() {
+                "setting" if word("name") == Some("difficulty") => seconds = seconds_for(word("value").unwrap_or("normal")),
+                "run" if word("phase") == Some("start") => {
+                    (playing, taps, ticks_left) = (true, 0, seconds * hz);
+                    started = true;
+                }
+                "run" | "outcome" => playing = false,
+                "ui" if playing && word("action") == Some("tap") => taps += 1,
+                _ => {}
+            }
         }
+        // The player's own input (a key, a pad button, an agent's logic_input), and the clock.
         if playing {
-            if tapped {
+            if cx.action("tap").pressed {
                 taps += 1;
             }
             ticks_left = ticks_left.saturating_sub(1);
@@ -258,11 +252,12 @@ impl Module for Rules {
         cx.set_state("playing", playing)?;
         cx.set_state("taps", taps)?;
         cx.set_state("ticks_left", ticks_left)?;
+        cx.set_state("seconds", seconds)?;
         cx.set_state("left", left)?;
         // (How many taps win is the game file's to say, in `outcome.won`: not repeated here.)
         cx.set_state("score", taps * 10 + left)?;
         // The thing rises with every tap.
-        if begin || (playing && tapped) {
+        if started || taps != was {
             if let Some(thing) = cx.find(THING)? {
                 cx.set(thing, Patch::new().position(Vec3::new(0.0, 0.5 + 0.3 * taps as f32, 0.0)))?;
             }
@@ -344,8 +339,10 @@ about: game.json, modules/{{module}}/, assets/ui/, checks/
 - `checks/`: playtests as data. Add one for each thing the game must do.
 - `notes/`: what the project remembers (`memory_note`, `memory_list`, `memory_why`).
 
-**Playing it**: `specula play NAME` opens the window in front and loads the module (it says the
-code is yours to run). `specula open NAME` shows the screens and runs no code.
+**Playing it**: `specula play NAME` opens the window in front and loads the module as its owner
+or lead last built it (`logic_build`). Sources changed since are not loaded at start until one of
+them builds again: `game_state` says so under `problems`. `specula play NAME --as-is` runs what
+is on disk now, whoever wrote it. `specula open NAME` shows the screens and runs no code.
 "#;
 
 const GITIGNORE: &str = "# Build output and what the engine keeps beside a project.\n/target/\n/.specula-cache/\n/.specula-trace/\n/captures/\n";
@@ -411,9 +408,20 @@ pub fn write(folder: &Path, name: &str) -> Result<Made, String> {
 /// Makes a new project that builds and plays: the folder `parent/name` with its marker
 /// (`launch_store::create`: the folder must not exist, or be empty), then everything [`write`]
 /// writes. Returns the project's folder and what was made.
-pub fn create(parent: &Path, name: &str) -> Result<(std::path::PathBuf, Made), String> {
+///
+/// `records`: where the person who made it keeps which module sources may run at start
+/// ([`crate::approved`]). The module written here is the engine's own text, so it is recorded
+/// as built: a new project plays (`specula play`) before anyone has built it by hand.
+pub fn create(parent: &Path, name: &str, records: Option<&Path>) -> Result<(std::path::PathBuf, Made), String> {
     let folder = crate::launch_store::create(parent, name)?;
     let made = write(&folder, name).map_err(|why| format!("{} was made, and not all of it: {why}", folder.display()))?;
+    if let Some(records) = records {
+        let module = folder.join("modules").join(&made.module);
+        if let Ok(digest) = specula_logic::digest::module_digest(&module) {
+            // (Not recorded is not fatal: the project is whole, and its owner builds the module.)
+            let _ = crate::approved::record_in(records, &folder, &module, &digest.hex);
+        }
+    }
     Ok((folder, made))
 }
 

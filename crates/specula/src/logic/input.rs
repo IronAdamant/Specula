@@ -154,7 +154,10 @@ impl ModuleInput {
                 holds.insert(name, Hold { value, ticks_left, by: None });
             }
         }
-        let n = r.count("actions", 4096, 30)?;
+        // (An action's record is its name and two states: 4 + the name + 22 bytes. The least is
+        // a name of no letters, 26: the 30 that stood here refused every save of a module whose
+        // action has a name of three letters or fewer, such as a new project's own `tap`.)
+        let n = r.count("actions", 4096, 26)?;
         for _ in 0..n {
             let name = r.str("actions.name", 256)?;
             let (last, latch) = (state(r)?, state(r)?);
@@ -323,6 +326,29 @@ mod tests {
     fn state(v: &Value, name: &str) -> Option<(bool, bool, bool, f32, f32)> {
         let l = v.get(name)?.as_list()?;
         Some((l[0].as_bool()?, l[1].as_bool()?, l[2].as_bool()?, l[3].as_f32()?, l[4].as_f32()?))
+    }
+
+    /// A module's input comes back from a save whatever its actions are called: one action
+    /// with a one-letter name is the smallest record there is (review R1 of M6 part 3: a new
+    /// project's own module, whose one action is `tap`, could not load any save: the reader
+    /// took 30 bytes as the least an action is, and `tap` is 29).
+    #[test]
+    fn input_with_a_short_action_name_comes_back_from_a_save() {
+        for name in ["t", "tap", "jump", "a_much_longer_action_name"] {
+            let map = format!(r#"{{"format": "specula.input.v1", "actions": [{{"name": "{name}", "kind": "button", "bindings": ["Key.Space"]}}]}}"#);
+            let mut m = ModuleInput::new(&map).unwrap();
+            m.hold(&Json::parse(&format!(r#"{{"{name}": true}}"#)).unwrap(), 3, None).unwrap();
+            m.take_tick();
+            let mut w = specula_core::bytes::ByteWriter::new();
+            m.save(&mut w);
+            let bytes = w.into_bytes();
+            let mut back = ModuleInput::new(&map).unwrap();
+            let mut r = specula_core::bytes::ByteReader::new(&bytes);
+            back.restore(&mut r).unwrap_or_else(|e| panic!("an action named {name:?}: {} ({})", e.message, e.code));
+            r.finish().unwrap();
+            // The hold goes on where it was: held, no longer a fresh press.
+            assert_eq!(state(&back.take_tick(), name), Some((true, false, false, 1.0, 0.0)), "{name}");
+        }
     }
 
     #[test]

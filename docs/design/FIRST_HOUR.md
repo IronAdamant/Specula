@@ -276,6 +276,33 @@ As built, where the text above said less or something else:
   --as NAME` keeps a resume token beside the engine's instance file, which is only there when the
   command reads the settings folder the engine was started with.
 
+- **`--run` runs what an owner or a granted lead last built, and nothing else** (review R1, the
+  critical finding; [MODULES.md](MODULES.md), `crates/specula/src/approved.rs`). A build that passed
+  the gate and loaded leaves the digest of the module's folder in the operator's settings folder;
+  `--run` loads a module only while its folder still has it. `--run-as-is` (`specula play NAME
+  --as-is`) is the operator saying that what is on disk now is theirs to run.
+- **An agent's `game_act` never saves or loads** (`use_save_tools`): the save tools do, with their
+  rules. **An agent's change to a setting lasts for the session**; the player's settings file holds
+  the player's own choices alone. **A refused `quit` is told to the input monitor**, and `game_act`
+  is refused while one of the engine's own screens (the review screen, a gallery) is open.
+- **A game file that is not one is never stored**, `allow_errors` or not: the project would not open.
+- **What the notes hold together is held at the commit** (`project_engine::note_guard`): one
+  replacement a note, no rings, one brief, for `memory_note` and `project_write` alike, against the
+  notes as they are when the write is committed.
+- **`project_memory` is the project's text, and says so**: `source` (whose words these are), `brief`
+  and `how` each with `id`, `by`, `version` and `text`, and `also` (ids, kinds and titles). Nothing of
+  a note is joined to the engine's own words.
+- **The clock after a playtest is as the run stands**: the game's last wish for the clock made while a
+  playtest had it is done when the playtest gives the clock back.
+- **`time_control {step}` says how many ticks ran** (`ran`, and `not_run` with why when the game
+  stopped the clock on one of them).
+- **Only running modules' state is read** by a screen or a condition: a module that was unloaded
+  leaves nothing behind for them.
+- **The shell reads nothing from the disk after its start**: a changed screen, theme or string table
+  reaches it as the project store's text (`Game::asset_texts`).
+- **The sample module handles its events in the order they happened**: a tap that comes with the
+  start counts, and a run started and given up in one tick is given up.
+
 **Found by the first live run of a new project** (2026-11-16; each fixed, with a test that holds it):
 the game's start un-paused a clock a playtest was stepping; the settings screen opened under the title
 (its layer was lower); a playtest spec took no `notes` key; a second command as a granted lead was
@@ -288,9 +315,12 @@ refused with nothing to say why.
    playtest run, the game file changed and followed on a clock stepped by hand, the settings found over
    the title with the focus, a note written, a second language chosen, and the engine started again with
    `--run`: the module loads, the language and the difficulty were kept, the next agent is told the note,
-   and a builder's own build is still only a proposal. About 17 s (`examen live --only new_project_check`).
-2. **The comparison's harness** starts its engine arm from `specula new`, and the comparison is run
-   again (slice 8).
+   and a builder's own build is still only a proposal. Since review R1 it also holds: a save of a run
+   loads again, `game_act` refuses the save words, a game file that is not one is refused, a builder's
+   change to the module's source keeps `--run` from loading it (the game says why), and `--run-as-is`
+   loads it. About 25 s (`examen live --only new_project_check`).
+2. **Done: the comparison's harness is Rust** (`examen leverage`, `tools/examen/src/leverage.rs`) and
+   starts its engine arm from `specula new`. **To do: the comparison is run again** (slice 8).
 3. **Not built, and said:** conditions over the world (`world:/path.prop`); a condition reads what the
    modules keep, the settings and the run's own state.
 

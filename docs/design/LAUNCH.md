@@ -115,7 +115,9 @@ specula                          the start screen
 specula projects                 the projects worked on, most recent first
 specula open --last              open the project last worked on
 specula open NAME|FOLDER [--front] [-- engine flags]
-specula play NAME|FOLDER|--last  open a project in front, with its modules built and loaded (--run)
+specula play NAME|FOLDER|--last [--as-is]
+                                 open a project in front, with its modules loaded as their owner last
+                                 built them (--run); --as-is: whatever is on disk now (--run-as-is)
 specula new NAME [--in FOLDER] [--bare]
                                  make a project that builds and plays, and list it
 specula forget NAME|FOLDER       take a project off the list (its folder stays)

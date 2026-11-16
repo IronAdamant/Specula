@@ -18,6 +18,7 @@ pub mod audio_service;
 mod audio_tools;
 pub mod jobs;
 mod balance_tools;
+mod approved;
 mod bounds;
 pub mod board;
 pub mod ask;
@@ -238,7 +239,7 @@ const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|integrated|<index>] [--size WxH] \
 [--captures DIR] [--worlds DIR] [--world NAME] [--saves DIR] [--cache DIR] [--assets DIR] [--style FILE] [--perf FILE] \
 [--paused] [--max-fps N] [--audio device|null|off] [--response-format concise|detailed] [--tools-default core|all] [--physics-threads N] [--vfx on|off] [--terrain on|off] \n[--trace DIR] [--trace-file on|off] [--strict-budget] \
-[--owner NAME] [--lead NAME] [--reviewer NAME] [--settings DIR|off] [--no-activate] [--project DIR] [--run] [--launcher] [-- GAME ARGS...]\n\
+[--owner NAME] [--lead NAME] [--reviewer NAME] [--settings DIR|off] [--no-activate] [--project DIR] [--run | --run-as-is] [--launcher] [-- GAME ARGS...]\n\
 commands (specula help): projects | open --last|NAME|FOLDER | new NAME | forget NAME | list | tools [FILTER] | call TOOL ['{json}']";
 
 /// How long a capture waits (parked, the engine serving others) for models still building.
@@ -273,6 +274,8 @@ struct Args {
     /// `--run`: the operator says the project's code is theirs to run, so the game file's modules
     /// are built and loaded at start (docs/design/FIRST_HOUR.md; [`run_modules`]).
     run: bool,
+    /// `--run-as-is`: as `--run`, and whatever is on disk now, whoever built it last.
+    run_as_is: bool,
     /// `--project DIR`: the engine starts in that folder, as a project (docs/design/LAUNCH.md).
     project: Option<PathBuf>,
     /// `--launcher`: the start screen (the project list) opens over the window, as it does
@@ -341,6 +344,7 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
         headless: false,
         no_activate: false,
         run: false,
+        run_as_is: false,
         project: None,
         launcher: false,
         adapter: AdapterPreference::HighPerformance,
@@ -382,6 +386,10 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--headless" => args.headless = true,
             "--no-activate" => args.no_activate = true,
             "--run" => args.run = true,
+            "--run-as-is" => {
+                args.run = true;
+                args.run_as_is = true;
+            }
             "--project" => args.project = Some(PathBuf::from(value()?)),
             "--launcher" => args.launcher = true,
             "--paused" => args.paused = true,
@@ -815,7 +823,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
             specula_core::trace_event!(&trace_sink::ENGINE, Warn, "run.no_modules", why = "--run builds the module folders a project's game.json names: there is no game file here, or it names none");
         } else {
             engine.swarm.admit_run_operator(run_modules::RUN_SESSION);
-            run_modules::start(to_engine.clone(), Arc::clone(&start_gate), modules, Arc::clone(&engine.run_reports));
+            run_modules::start(to_engine.clone(), Arc::clone(&start_gate), modules, Arc::clone(&engine.run_reports), args.run_as_is);
         }
     }
     let server = Server::start(
@@ -856,6 +864,9 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     // instance file), unless `--settings off` (docs/design/LAUNCH.md).
     engine.opened_project = project.as_ref().map(|p| (p.path.clone(), p.name.clone()));
     let launch_store = launch_engine::store_for(args.settings.as_deref(), |k| std::env::var(k).ok());
+    // Where this engine keeps which module sources an owner or lead last built (what `--run`
+    // may load): the operator's own folder, never the project's.
+    approved::set_settings(launch_store.as_ref().map(|s| s.dir.as_path()));
     // The start screen: the executable opened with no argument at all (double-clicked), or
     // `--launcher`, when there is a window, a project list to show, no project open and no
     // hosted game (a game's executable is its own project).
@@ -1218,6 +1229,8 @@ struct Engine {
     /// A playtest is serving its own steps and ticks right now (its slot is lent to it for the
     /// span, so `playtests.running()` does not say so): see [`Engine::playtest_owns_clock`].
     playtest_pumping: bool,
+    /// The hosted game's last wish for the clock from while a playtest had it.
+    game_clock_held: Option<bool>,
     /// What the start-up build (`--run`) could not load, for the hosted game to show.
     run_reports: run_modules::Reports,
     /// World folders saved in this run, and the identity key that first saved each (its creator
@@ -1460,6 +1473,7 @@ impl Engine {
             game_module_events: Vec::new(),
             game_clock_told: None,
             playtest_pumping: false,
+            game_clock_held: None,
             run_reports: run_modules::Reports::default(),
             world_folders: std::collections::BTreeMap::new(),
             commits: authority::CallCommits::default(),
@@ -1657,6 +1671,9 @@ impl Engine {
         self.settings_to_game();
         let Some(game) = self.game.as_mut() else { return };
         sim_writes::game_start(&mut self.world, &mut self.swarm, game.as_mut(), &self.clock, &self.game_name, self.windowed);
+        // What the game wants of the clock from its first moment (a title holds it): done before
+        // any tick, so that no tick runs at a title (review R1 of M6 part 3: one did).
+        self.serve_game_clock();
         self.last_advance = Instant::now();
         // The display its interface lays out for (headless: the virtual one).
         self.ui_tell_display();
@@ -1824,10 +1841,22 @@ impl Engine {
 
     /// `game_act`: a button's word pressed by an agent, as a press on one of the game's screens
     /// would do it; answers with how the run stands after it.
-    fn game_act(&mut self, action: &str) -> ToolOutput {
+    fn game_act(&mut self, session: &SessionInfo, action: &str) -> ToolOutput {
+        // An engine screen has the window (the review or the gallery screen): a player could
+        // not reach the game now, and the game paused itself for the person who is deciding.
+        // An agent's press is held to the same (as `ui_act` on the game is).
+        if let Some(open) = [(self.review_ui.is_open(), "review"), (self.taste.screen.is_open(), "gallery")].iter().find(|(o, _)| *o).map(|(_, n)| *n) {
+            return world_error(&WorldError::new("engine_screen_open", format!("the {open} screen is open on the window and takes all its input: a player couldn't reach the game now (the owner closes it)")));
+        }
         self.game_sees();
         let mut answer = None;
         self.game_call(sim_writes::GameCall::Act(action, &mut answer));
+        // A press the game refused as the player's alone (quit): told to the input monitor
+        // under this caller, here, whatever became of the call, so that no count is left for
+        // the next caller to be blamed for (review R1 of M6 part 3: the next `ui_act` was).
+        if self.game.as_mut().map_or(0, |g| g.take_refused_presses()) > 0 {
+            inputguard::declined(inputguard::Channel::ScreenInput, "game_act", &inputguard::Actor::of(&self.swarm, session), "players_only", "the hosted game");
+        }
         match answer {
             None => {
                 let why = if self.game.is_some() {
@@ -1858,18 +1887,37 @@ impl Engine {
         // A playtest owns the clock while it runs: it holds it paused and steps it tick by
         // tick, so the same spec makes the same calls at the same ticks. The game's wish
         // changes nothing then (a run begun by a step is ticked by the playtest's steps, and
-        // its ticks go on past the run's end); `game_state` says where the run stands.
+        // its ticks go on past the run's end). It is kept, the last one, and done when the
+        // playtest gives the clock back ([`Engine::game_clock_after_playtest`]): thrown away,
+        // it left a run under way with its clock stopped, or a run that had ended with its
+        // clock running (review R1 of M6 part 3).
         if self.playtest_owns_clock() {
+            self.game_clock_held = Some(paused);
             return None;
         }
+        self.set_game_clock(paused);
+        Some(paused)
+    }
+
+    /// The clock as the hosted game wants it, set as the game's own doing.
+    fn set_game_clock(&mut self, paused: bool) {
         if self.clock.paused() != paused {
             self.clock.set_paused(paused);
-            self.clock_set_by = Some((format!("game:{}", self.game_name), if paused { "pause" } else { "resume" }));
             // Time that passed while it stood still does not become ticks when it starts.
             self.last_advance = Instant::now();
         }
+        // (Said even when the clock stood still already: a step cut short by the run's end
+        // says who ended it.)
+        self.clock_set_by = Some((format!("game:{}", self.game_name), if paused { "pause" } else { "resume" }));
         self.game_clock_told = Some(paused);
-        Some(paused)
+    }
+
+    /// A playtest gave the clock back (as it was before it): the game's last wish from while
+    /// it ran is done now, so the clock is as the run stands.
+    pub(crate) fn game_clock_after_playtest(&mut self) {
+        if let Some(paused) = self.game_clock_held.take() {
+            self.set_game_clock(paused);
+        }
     }
 
     /// Tells the hosted game when someone else started or stopped the clock since it last
@@ -3329,7 +3377,7 @@ impl Engine {
             },
             Command::Info => self.info(&server.sessions()),
             Command::GameState => self.game_state(),
-            Command::GameAct { action } => self.game_act(&action),
+            Command::GameAct { action } => self.game_act(&request.session, &action),
             Command::ScopeLookup { agent } => toolscope_tools::lookup(&self.swarm, &request.session, &agent, &server.all_sessions()),
             Command::Perf { budget_ms, graph } => self.perf(budget_ms, graph),
             Command::PerfZones(q) => {
@@ -3364,6 +3412,7 @@ impl Engine {
                 if let Some(n) = name {
                     self.clock_set_by = Some((by.clone(), n));
                 }
+                let mut stepped = None;
                 match op {
                     TimeOp::Pause => self.clock.set_paused(true),
                     TimeOp::Resume => self.clock.set_paused(false),
@@ -3373,12 +3422,25 @@ impl Engine {
                         // Holds of agents gone since the last frame end before these ticks fire them.
                         self.lex_live_end_holds(server);
                         // Run them now, so the reply shows the result.
+                        let before = self.clock.tick();
                         self.advance_clock();
+                        stepped = Some((n, before));
                     }
                     TimeOp::Scale(x) => self.clock.set_scale(x),
                     TimeOp::Info => {}
                 }
-                ToolOutput::text(self.clock_json().to_pretty())
+                let mut answer = self.clock_json();
+                // A step says how many of its ticks ran: the hosted game may stop the clock on
+                // one of them (its run ended, it paused), and the ticks left are then not run.
+                if let Some((asked, before)) = stepped {
+                    let ran = self.clock.tick() - before;
+                    answer.set("ran", Json::from(ran));
+                    if ran < asked {
+                        answer.set("not_run", Json::from(asked - ran));
+                        answer.set("why", Json::from("the clock was stopped on the last tick that ran (set_by says by whom): the ticks left were dropped, not queued"));
+                    }
+                }
+                ToolOutput::text(answer.to_pretty())
             }
             Command::Game { name, args } => match self.game.as_mut() {
                 Some(game) => {

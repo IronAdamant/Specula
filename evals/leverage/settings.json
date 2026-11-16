@@ -14,7 +14,7 @@
   "token_weights": {"input": 1.0, "cache_write": 1.25, "cache_read": 0.1, "output": 5.0},
   "ports": [7700, 7719],
   "runner": {
-    "note": "How 'leverage.py run' starts a builder or a judge: one process, in the run's folder, that takes a prompt, runs to its end and prints what it used. {prompt} and {model} are filled in. This one is Claude Code's, with six tools and no MCP servers; put your own agent's command line here, or start agents yourself and use 'record'.",
+    "note": "How 'examen leverage run' starts a builder or a judge: one process, in the run's folder, that takes a prompt, runs to its end and prints what it used. {prompt} and {model} are filled in. This one is Claude Code's, with six tools and no MCP servers; put your own agent's command line here, or start agents yourself and use 'record'.",
     "command": ["claude", "-p", "{prompt}", "--model", "{model}", "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--tools", "Bash,Read,Write,Edit,Glob,Grep", "--allowedTools", "Bash,Read,Write,Edit,Glob,Grep", "--no-session-persistence"]
   },
   "rules": [

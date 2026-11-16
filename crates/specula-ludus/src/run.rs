@@ -68,7 +68,7 @@ pub enum Effect {
 /// A press that was not done, and why.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Refused {
-    /// `players_only`, `not_now`, `no_screen`, `bad_setting`, `too_many`.
+    /// `players_only`, `use_save_tools`, `not_now`, `no_screen`, `bad_setting`, `too_many`.
     pub code: &'static str,
     pub message: String,
 }
@@ -171,6 +171,14 @@ impl Run {
     pub fn act(&mut self, action: &Action, settings: &mut Settings, player: bool, has_screen: &dyn Fn(&str) -> bool) -> Result<Vec<Effect>, Refused> {
         if action.players_alone() && !player {
             return Err(Refused::new("players_only", "only the player closes the game: an agent's press is not taken"));
+        }
+        // The game's own save and load are the player's menu: they write and replace whatever the
+        // slot and the world hold, as the person at the window may. An agent has the save tools,
+        // which hold it to its own saves and to what others have not saved (review R1 of M6
+        // part 3: through a button's word an agent overwrote another's save and loaded over
+        // unsaved work). Not a try at the player's machine, so no matter for the input monitor.
+        if !player && matches!(action, Action::Save(_) | Action::Load(_)) {
+            return Err(Refused::new("use_save_tools", "the game's own save and load are the player's: an agent saves and loads with save_write and save_read"));
         }
         let not_now = |what: &str, phase: Phase| Refused::new("not_now", format!("{what} (the game is at: {})", phase.name()));
         match action {
@@ -282,7 +290,8 @@ impl Run {
 
     /// A save game was loaded: the run is where the save was (`phase`, and the tick it ended
     /// on), with nothing open above it.
-    pub fn restore(&mut self, phase: Phase, ended_at: Option<u64>) {
+    pub fn restore(&mut self, phase: Phase, ended_at: Option<u64>, runs: u64) {
+        self.runs = runs;
         self.phase = phase;
         self.ended_at = ended_at;
         self.stack.clear();
@@ -469,7 +478,16 @@ mod tests {
         run.clock_seen(false);
         assert_eq!((run.phase(), run.visible()), (Phase::Running, vec!["hud"]));
         // A save loaded: the run is where the save was.
-        run.restore(Phase::Ended(Ended::Won), Some(90));
-        assert_eq!((run.phase(), run.ended_at(), run.visible()), (Phase::Ended(Ended::Won), Some(90), vec!["hud", "won"]));
+        run.restore(Phase::Ended(Ended::Won), Some(90), 3);
+        assert_eq!((run.phase(), run.ended_at(), run.runs(), run.visible()), (Phase::Ended(Ended::Won), Some(90), 3, vec!["hud", "won"]));
+        // The game's own save and load are the player's: an agent is sent to the save tools, and
+        // nothing is changed or asked of the engine.
+        run.restore(Phase::Running, None, 3);
+        let before = (run.clone(), s.clone());
+        for word in ["save:slot1", "load:slot1"] {
+            let action = Action::parse(word).unwrap();
+            assert_eq!(run.act(&action, &mut s, false, &|_| true).unwrap_err().code, "use_save_tools", "{word}");
+            assert_eq!((run.clone(), s.clone()), before);
+        }
     }
 }

@@ -66,14 +66,28 @@ boundary is **who may load a module**, and the checks below are lints behind it 
   with no grants at all nobody loads native code. Refused calls answer `lead_only` (`refused_at:
   logic.native_code`), and the engine thread checks again when a library loads or a module unloads, whatever the
   caller's thread checked.
-- **Opening a folder runs none of its code; `--run` is the operator saying it is theirs to run** (2026-11-16,
+- **Opening a folder runs none of its code; `--run` runs what its owner last built** (2026-11-16,
   [FIRST_HOUR.md](FIRST_HOUR.md)). A project's game file names its module folders. `--run` on the command line
-  that starts the engine (`specula play NAME` says it for a project on the list) has the engine build and load
-  them at start: through the same build service and the same checks as an owner's `logic_build`, as the identity
-  `operator:run` (a session id no connection can have, admitted only when the flag is given, its name reserved).
-  Without the flag the project's screens show and no module is loaded until an owner or a granted lead builds
-  one. A module that does not build or load is in the trace (`run.module`) and in `game_state`'s `problems`,
-  and the others still load.
+  that starts the engine (`specula play NAME`) has the engine build and load them at start: through the same
+  build service and the same checks as an owner's `logic_build`, as the identity `operator:run` (a session id
+  no connection can have, admitted only when the flag is given, its name reserved). Without the flag the
+  project's screens show and no module is loaded until an owner or a granted lead builds one.
+  - **Only the sources an owner or a granted lead last built** (`crates/specula/src/approved.rs`; review R1
+    of M6 part 3, critical). A builder may write a module's sources and the game file through the project
+    tools, and may only propose a build. Were `--run` to build what is on disk, restarting the engine would be
+    the builder's way past the review. So every build that passed the gate and loaded leaves a record: the
+    digest of the module's folder. `--run` builds a module only while its folder still has that digest (the
+    build is held to it with the folder held, so nothing is swapped in between). Sources changed since, by
+    anyone and any way (an agent's `project_write`, an undo, an editor, a pull), are not loaded at start: the
+    trace (`run.module`) and `game_state`'s `problems` say so, the other modules still load, and an owner or
+    lead builds the changed one, which is the review.
+  - **The record is the operator's, not the project's**: kept in the per-user settings folder (`--settings
+    DIR`, by default the user's own), by the project's folder. No tool writes there for an agent, and a
+    project someone sends carries none. With `--settings off` there is no record and `--run` loads nothing.
+    `specula new` records the module it writes (the engine's own text), so a new project plays at once.
+  - **`--run-as-is`** (`specula play NAME --as-is`) is the operator saying that what is on disk now is theirs
+    to run, whoever wrote it: for code they wrote by hand, or a project they have read. It is the only way a
+    module no owner has built here runs at start.
 - **A builder proposes.** Any other agent's `logic_build` builds nothing: the engine files a **proposal** (the module's
   folder, who, the tick, and the SHA-256 of every file in the folder, `specula_logic::digest`) and answers `lead_only`
   with it. `project_write {build}` by a builder proposes the same way. `logic_status` lists proposals (at most 32; one

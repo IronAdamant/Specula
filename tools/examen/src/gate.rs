@@ -462,6 +462,9 @@ pub fn main(mut args: Args) -> i32 {
         }
     };
     let root = root();
+    // What is checked out, before anything is measured: a pass is recorded for this commit, and
+    // only if it is still the one checked out, unchanged, when the last step has ended.
+    let began_at = passed::checked_out(&root);
     // What the change is measured from: the commit named, else the last commit the gate passed
     // at in this checkout (`passed.rs`), else `origin/main`.
     let (base, base_is_ours) = match base {
@@ -543,7 +546,7 @@ pub fn main(mut args: Args) -> i32 {
     if gate.failures.is_empty() {
         println!("GATE PASSED: {} (logs: {})", lines.join("; "), out.display());
         if records {
-            match passed::record(&gate.root) {
+            match passed::record(&gate.root, began_at.as_ref()) {
                 Ok(commit) => println!("recorded: the next gate in this checkout is measured from {}", commit.chars().take(8).collect::<String>()),
                 Err(why) => println!("not recorded: {why}"),
             }

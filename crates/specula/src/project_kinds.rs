@@ -77,9 +77,11 @@ fn mount_of(path: &str) -> &str {
 /// that would let a crates.io crate, a build script or files from outside into a build; and any
 /// string table that doesn't parse. A broken table shows the game no words, and it hides every
 /// review it held from the review gate: one agent's broken draft locked everyone but reviewers
-/// out of fixing the file (review R2 of m5-l10n, minor 5).
+/// out of fixing the file (review R2 of m5-l10n, minor 5). And a game file that is not one: the
+/// project would not open at its next start (review R1 of M6 part 3: any agent could store a
+/// draft that stopped it).
 pub fn never_allowed(kind: FileKind, code: &str) -> bool {
-    matches!(kind, FileKind::Strings) || (matches!(kind, FileKind::Cargo | FileKind::Rust) && matches!(code, "not_a_module" | "third_party_crate" | "build_script" | "not_allowed" | "source_path"))
+    matches!(kind, FileKind::Strings | FileKind::Game) || (matches!(kind, FileKind::Cargo | FileKind::Rust) && matches!(code, "not_a_module" | "third_party_crate" | "build_script" | "not_allowed" | "source_path"))
 }
 
 /// The nearest `style.json` from `recipe`'s folder up to its mount's root, among those `exists`
