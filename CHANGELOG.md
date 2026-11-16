@@ -136,6 +136,27 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
     is the run with seed 1, the title's name is a line of the strings, and a game's menu shows
     which button is chosen from its first frame.
 
+  - **The third pass, measured** (2026-11-17, on `6cfff79b`;
+    [docs/design/LEVERAGE.md](docs/design/LEVERAGE.md), "Results (2026-11-17: the third pass)";
+    [perf/leverage/2026-11-17-pass3](perf/leverage/2026-11-17-pass3/report.md)). Fourteen builds, all
+    judged. The medium game costs the same through the engine as without it (219,007 against 217,869
+    weighted tokens; 2.6 times the pass before), and every small and medium game of both arms passed
+    every check. The small game costs 1.5 times (1.7) and the change 1.5 times (3.9), each engine
+    change build failing the one check that all three failed the pass before. No build met a module
+    that failed; seven of eight engine builds played their game by reaction through `--follow`; the
+    change builds took minutes where they had taken half an hour.
+  - **The fourth pass: a game's own checks, every run in one command**
+    ([docs/design/FIRST_HOUR.md](docs/design/FIRST_HOUR.md), section 11). What the third pass's ledgers
+    leave is checking: once its code is written a builder runs its game one run a request, a third to
+    nearly half of a medium build. `specula check FOLDER` plays every run the project's
+    `checks/runs.json` lists (ticks, inputs, a seed, a frame, settings that checks share by name) and
+    holds each state against what the check expects (a value, or one of `ne lt lte gt gte has len`): a
+    line a check, then a count, exit code 1 when one did not hold; a check that expects nothing prints
+    its state. `specula new` writes the sample's own seven. Reviewed by a model that did not write it:
+    not to merge (a frame could be written through a link out of the project or over a file of it; a
+    player's own settings reached checks that named none; a misspelt key made a check that could not
+    fail), then merge.
+
 ### M5, done (2026-11-06 to 2026-11-15)
 
 Built by one agent, lane by lane, each lane reviewed by a model that did not write it and passed through

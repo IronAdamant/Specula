@@ -542,3 +542,95 @@ builder moved it into the tables).
 
 **One builder wrote outside its folder**: `medium-engine-3` copied its work folder beside the runs' as
 a backup, said so, and could not remove it (its shell refused the removal). Nothing read it.
+
+## Results (2026-11-17: the third pass, a run that says what went wrong and can be played by reaction)
+
+The same three jobs, harness and models, on the engine with the third pass (`6cfff79b`;
+[FIRST_HOUR.md](FIRST_HOUR.md), section 10). The engine arm's brief gained one flag in its command's
+line (`--follow`); nothing else of the briefs or the acceptance lists changed. Fourteen builds, every
+one judged and every one reported:
+[perf/leverage/2026-11-17-pass3](../../perf/leverage/2026-11-17-pass3/report.md).
+
+**Through the engine the medium game now costs what it costs without it, with every check passed.
+The small game and the change cost half as much again, and each change build still fails one check
+that the plain builds pass.**
+
+| Job | Arm | Runs | Weighted tokens (mean) | Lowest to highest | Build time | Checks passed | Engine against plain | Second pass | After part 3 | In M5 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| small (14 checks) | engine | 2 | 145,926 | 142,520 to 149,332 | 138 s, 206 s | 14, 14 | 1.5 times | 1.7 | 6.8 | 5.2 |
+| small | plain | 2 | 95,483 | 84,688 to 106,277 | 75 s, 93 s | 14, 14 | | | | |
+| medium (19 checks) | engine | 3 | 219,007 | 198,595 to 242,012 | 240 s, 272 s, 206 s | 19, 19, 19 | 1.0 times | 2.6 | 4.0 | 3.1 |
+| medium | plain | 2 | 217,869 | 207,481 to 228,257 | 182 s, 179 s | 19, 19 | | | | |
+| change (9 checks) | engine | 3 | 122,392 | 108,723 to 148,065 | 154 s, 204 s, 393 s | 8, 8, 8 | 1.5 times | 3.9 | 2.2 | 1.7 |
+| change | plain | 2 | 81,746 | 78,710 to 84,782 | 62 s, 62 s | 9, 9 | | | | |
+
+- **How sure this is.** Two or three runs a cell, as before, and the cells do not overlap what they
+  were: the dearest medium build of this pass (242,012) is below the cheapest of the pass before
+  (277,124), and the dearest change build (148,065) is under half the cheapest of the pass before
+  (305,298). The three medium builds lie within 22% of each other, where the pass before spread from
+  277,124 to 672,915: the two that had cost most then were the two whose module failed in silence.
+  The medium cell's ratio is one run's noise from 1.0 either way (the plain arm's two runs differ by
+  10%); what can be said is that the two arms now cost the same on this job, not that the engine is
+  cheaper.
+- **Checks passed.** Every small and medium game of both arms passed every check (14 of 14; 19 of
+  19: the first measurement in which no medium game missed one). **Each engine change build failed
+  the same one item**, as all three did the pass before: the new wave's runners come faster than
+  the walkers' one every 1.5 seconds (0.75 s, 0.75 s, 1 s). Six engine builds of six in two passes,
+  and none of four plain ones. The change brief names no rate for runners; why the builders that
+  work through the engine choose another and the others keep the game's own is not in their
+  transcripts (what they wrote and did not show is two thirds of what they wrote).
+- **Requests.** Small: 13 and 13 (16 and 16 the pass before; the plain arm 7 and 8). Medium: 18, 19
+  and 17 (67, 24, 39; plain 15 and 10). Change: 12, 11 and 18 (38, 45, 49; plain 8 and 11).
+- **Through the engine a medium game is less to write.** The three engine builds wrote 19,122 to
+  23,146 tokens and the two plain ones 28,045 and 28,152: the menus, the settings, the pause, the
+  languages' plumbing and the picture are the engine's. What the engine arm pays for instead is
+  reading (the guide and the sample: 53,025 to 66,364 read again, against 23,526 to 43,773).
+- **What the third pass was built for, used.** No build met a module that failed (the guide now says
+  how things that come and go are drawn, and none drew them the way that failed). Four of the five
+  small and medium builds, and all three change builds, played their game by reaction through
+  `--follow` (a player of 280 to 360 tokens, written in one request and run in one); the change
+  builds took 2.5 to 6.5 minutes where they had taken 19 to 41. Each change build showed the new
+  setting's values in three languages with the strings' own lines, in no extra request.
+- **A judging through the engine still costs more, and takes longer**: 282,764 to 353,891 against
+  208,765 and 235,753 on the medium job (10 to 12 minutes against 3), 147,950 and 160,583 against
+  136,561 and 149,955 on the small one. On the change the two arms' judgings now cost the same
+  (265,354 to 339,916 against 264,551 and 293,503), though the engine's still take 7 to 12 minutes
+  against 4.
+
+**Where the tokens went** (`where RUN`).
+
+| Job, arm | Requests | Steps before the first code | Read again | Written out | New in the context |
+|---|---|---|---|---|---|
+| small, engine | 13, 13 | 7, 5 | 28,927 to 30,530 | 74,290 to 79,620 | 39,182 to 39,304 |
+| small, plain | 7, 8 | 1 | 9,001 to 12,095 | 56,435 to 71,030 | 19,252 to 23,152 |
+| medium, engine | 18, 19, 17 | 3, 5, 3 | 53,025 to 66,364 | 95,610 to 115,730 | 49,960 to 59,918 |
+| medium, plain | 15, 10 | 1, 2 | 23,526 to 43,773 | 140,225 to 140,760 | 43,195 to 44,259 |
+| change, engine | 12, 11, 18 | | 24,492 to 47,154 | 39,170 to 59,410 | 37,531 to 41,998 |
+| change, plain | 8, 11 | 3 | 12,581 to 19,783 | 37,075 to 38,325 | 27,804 to 27,923 |
+
+**What the engine builds still spent, by their ledgers** (the fourth pass is built from the first:
+[FIRST_HOUR.md](FIRST_HOUR.md), section 11).
+
+1. **One run a request.** After its code was written a medium build ran its game in 8 to 11 requests,
+   each one run or two, each reading the whole context again: requests 7 to 17 of `medium-engine-1`
+   (99,951 of 216,414), 8 to 18 of `medium-engine-2` (108,670 of 242,012), 7 to 14 of
+   `medium-engine-3` (65,146 of 198,595). A third to nearly half of a build in which nothing went
+   wrong; in the change builds, 5 to 9 requests. The plain builds checked theirs in 2 to 4: their
+   checks are a second program, written once and run together.
+2. **The guide and the sample, read before a line is written**: two requests and 7,500 to 8,000
+   tokens that every later request carries (in `medium-engine-2`, 11,225 and 26,710 weighted to
+   carry). This is the engine arm's floor on a small game: what it has to learn, the plain arm
+   already knows.
+3. **Still looked up:** how the rules get the run's seed (`small-engine-1`, two requests: they do
+   not need it, and the guide says so only where the command is described); what turns into a
+   `Value`, and what the built-in volume is (`medium-engine-2`, two requests); and one build failed
+   once on a helper that read the state through `&Cx` where the SDK takes `&mut Cx`.
+
+**A cost that is the builders' shell's, in both arms.** Every build of this pass and the one before,
+through the engine and without it, wrote its first file twice: its first here-document was refused
+by its shell ("unexpected EOF while looking for matching `'`": the tool's shell on Windows and an
+apostrophe in the text), and the file was written again with the file tool. That is 2,200 to 2,700
+tokens written and thrown away, carried by every later request, and a request to see what happened:
+roughly 20,000 to 50,000 weighted a build (requests 4 and 5 of `medium-engine-1` are 51,224). It
+falls on both arms alike and is in every figure above; it is said here because it is a tenth to a
+quarter of what a build costs and nothing of either arm's making.

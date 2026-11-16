@@ -37,8 +37,8 @@ remembers.**
 | 7 | `specula new` makes a project that builds and plays; the guide it writes | built, reviewed (R1 to R4), gated |
 | 8 | The comparison, run again with the same harness | run on `2a0c5669`: the engine arm did not get cheaper (below, and LEVERAGE.md) |
 | 9 | A headless run: `specula run` (the second pass) | built, reviewed, gated; measured on `bbe9fa36` (LEVERAGE.md, "Results (pass 2)") |
-| 10 | A run that says what went wrong, and a player that reacts: `--follow` (the third pass) | built (section 10) |
-| 11 | The game's own checks, every run in one command: `specula check` (the fourth pass) | built (section 11) |
+| 10 | A run that says what went wrong, and a player that reacts: `--follow` (the third pass) | built, reviewed, gated; measured on `6cfff79b` (LEVERAGE.md, "Results (the third pass)": the medium game costs the same as without the engine) |
+| 11 | The game's own checks, every run in one command: `specula check` (the fourth pass) | built, reviewed (section 11) |
 
 ## 1. The SDK comes from the engine
 

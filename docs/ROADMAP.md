@@ -1197,7 +1197,17 @@ at once.
   - **The third pass (built 2026-11-17; [design/FIRST_HOUR.md](design/FIRST_HOUR.md), section 10):**
     `module_failed` in place of a state, the rules' log beside it, one line an answer,
     `specula run --follow`, a choice's words by language, the guide's additions; reviewed three times
-    by a model that did not write it. Measured next; then the fourth pass from its ledgers.
+    by a model that did not write it.
+  - **The third pass, measured (2026-11-17, `6cfff79b`; "Results (2026-11-17: the third pass)"):**
+    the medium game costs the same through the engine as without it (1.0 times; 2.6 the pass
+    before), with every check passed in both arms; the small game 1.5 times (1.7); the change 1.5
+    times (3.9), each engine build failing one check the plain ones pass (the same in six of six
+    over two passes: unexplained, and open). Left, by the ledgers: one run a request once the code
+    is written, a third to nearly half of a medium build.
+  - **The fourth pass (built 2026-11-17; [design/FIRST_HOUR.md](design/FIRST_HOUR.md), section 11):**
+    `specula check`: a project's own checks as data (`checks/runs.json`: runs and what each must
+    print), every one played by one command; reviewed twice. Its measurement closes the three
+    passes the owner asked for; what follows is theirs to say.
   - **Then measure again**, with more than two runs a cell on the medium job: two runs alike differ by
     as much as the effect being looked for.
 - [ ] ➕ **Game systems as optional data, and memory for whoever builds the game** (owner, 2026-11-16: "the
