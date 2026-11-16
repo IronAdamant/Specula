@@ -170,12 +170,30 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       written the same way and read in one request. `specula new` writes the sample's own
       seven. A model that did not write it said not to merge it once (a check's frame could be
       written through a link out of the project; `--settings` leaked a player's settings into
-      checks), then merge. Its measurement is the last of the three passes.
+      checks), then merge.
+    - **The fourth pass, measured: it made no build cheaper** (2026-11-17, on `d18e1131`;
+      LEVERAGE.md, "Results (2026-11-17: the fourth pass)";
+      [perf/leverage/2026-11-17-pass4](perf/leverage/2026-11-17-pass4/report.md)). Fourteen
+      builds, all judged. **The medium game costs 1.1 times the plain build (207,057 against
+      189,808; the three engine builds within 1.5% of each other, and all nineteen checks passed
+      where the plain builds passed 17 and 18), the change 1.5 times as before, and the small
+      game 2.2 times, up from 1.5.** Every engine build wrote a checks file and ran it, and none
+      used it in place of single runs: the checks came on top. On a one-screen game that is the
+      rise. Where they were worth something is the change (the builders ran the checks that came
+      with the game, and added theirs) and what stays in the folder. The runs also found a
+      defect: a range written as two comparisons never held; fixed in `e8097c2a` and `648cb757`
+      (reviewed: merge).
+    - **The three passes are done.** From 6.8, 4.0 and 2.2 times (small, medium, change) to
+      2.2, 1.1 and 1.5; the best of the three measurements was the third (1.5, 1.0, 1.5). What
+      is left, by the ledgers, is what a first meeting costs (the guide and the sample read
+      before a line is written), which the engine pays back on a medium game by writing less
+      and does not on a one-screen one. What comes next is the owner's to say.
   - **Part 2** (each script ported to Rust when it is next touched): the comparison's harness is
     ported; 81 scripts are left in `scripts/` (79 of them Python).
-  - **Next on the laptop: the three passes above, then the owner's word** (2026-11-16: "Advise me
-    when we get to FINISH of part 3 please. Don't start part 4 yet"). Part 4 is not started.
-    Neither branch (`m6-verify`, `m6-first-hour`) is pushed or merged.
+  - **Next on the laptop: the owner's word.** The three passes above are done (2026-11-17), and
+    part 3 with them (2026-11-16: "Advise me when we get to FINISH of part 3 please. Don't start
+    part 4 yet"). Part 4 is not started. Neither branch (`m6-verify`, `m6-first-hour`) is pushed
+    or merged.
   - **Asked for from outside:** the research behind parts 4 and 5
     ([docs/research/LIBRARY_RESEARCH_BRIEF.md](docs/research/LIBRARY_RESEARCH_BRIEF.md)), by the
     owner's Grok bots, under way.
@@ -246,6 +264,13 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       122,392 against 81,746. About 1.5, 1.0 and 1.5 times. Requests: 13 and 13 against 7 and
       8; 18, 19 and 17 against 15 and 10; 12, 11 and 18 against 8 and 11. Checks: all passed on
       the first two in both arms; 8, 8 and 8 of 9 against 9 and 9 on the change.
+    - *The same, after the fourth pass* (2026-11-17, on `d18e1131`): a one-screen game 208,860
+      against 94,670; a medium game 207,057 (205,269 to 208,160) against 189,808; a change
+      145,347 against 97,842. About 2.2, 1.1 and 1.5 times. Requests: 17 and 25 against 8 and
+      7; 15, 17 and 16 against 9 and 13; 15, 24 and 13 against 9 and 12. Checks: 14 and 13 of
+      14 against 14 and 14; 19, 19 and 19 of 19 against 17 and 18; 8, 9 and 7 of 9 against 8
+      and 9. With nothing changed for it, the plain arm moved by 1%, 13% and 20% between the
+      third pass and the fourth: read a difference smaller than that as nothing.
     - *What verifying costs* (2026-11-15 and 16): 3,049 tests in the gate; the tests themselves about
       2 minutes; the gate about 25 minutes for each Rust version; the audit's 70 live checks about an
       hour; CI from nothing 10 minutes on Linux and 17 to 25 on Windows.
@@ -878,11 +903,11 @@ In practice that means six **foundations** that apply to every change from M1 on
 
 **What it can't do yet:**
 - **Pay for itself at small sizes.** A medium game (menus, settings, two languages, waves) built through the
-  engine now costs the same tokens as the same game built without it by the same model, with the same checks
-  passed (measured 2026-11-17, after three passes at the first hour; it was 4.0 times the day before, 3.1 in
-  M5). A one-screen game still costs 1.5 times (6.8; 5.2), and a change to an existing game 1.5 times (2.2;
-  1.7) with one check fewer passed. Equal is not cheaper: the engine does not yet pay at these sizes, it has
-  stopped costing more at one of them ([docs/design/LEVERAGE.md](docs/design/LEVERAGE.md)). M6's work, still.
+  engine costs about the same tokens as the same game built without it by the same model (1.0 and 1.1 times
+  in the last two measurements of 2026-11-17, with every check passed; it was 4.0 times the day before, 3.1
+  in M5). A one-screen game costs 1.5 to 2.2 times (6.8; 5.2), and a change to an existing game 1.5 times
+  (2.2; 1.7). Equal is not cheaper: the engine does not yet pay at these sizes, it has stopped costing more
+  at one of them ([docs/design/LEVERAGE.md](docs/design/LEVERAGE.md)). M6's work, still.
 - **Tell a story for a game.** A storyline tree, reputation, an RPG set-up, captions with voices and music
   packs are M6's, noted on 2026-11-16 and not designed. (Win and loss conditions, a score, and notes kept with a
   project were built in M6 part 3.) Round and human form still costs an agent far more than boxes do (the five

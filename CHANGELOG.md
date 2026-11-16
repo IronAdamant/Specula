@@ -157,6 +157,28 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
     player's own settings reached checks that named none; a misspelt key made a check that could not
     fail), then merge.
 
+  - **The fourth pass, measured: no build cheaper** (2026-11-17, on `d18e1131`;
+    [docs/design/LEVERAGE.md](docs/design/LEVERAGE.md), "Results (2026-11-17: the fourth pass)";
+    [perf/leverage/2026-11-17-pass4](perf/leverage/2026-11-17-pass4/report.md)). Fourteen builds, all
+    judged. The medium game 207,057 weighted tokens against 189,808 (1.1 times; 19 of 19 checks in
+    each engine build, 17 and 18 in the plain ones), the change 145,347 against 97,842 (1.5 times),
+    the small game 208,860 against 94,670 (2.2 times, from 1.5). Every engine build left a checks
+    file and ran it, after playing its game a run a request as before: the checks came on top, and
+    on a one-screen game they are the rise. The change builds ran the checks that came with their
+    game and added to them. With nothing changed for it the plain arm moved by 1%, 13% and 20%
+    between the two passes.
+  - **A range in a check** (`e8097c2a`). A builder of the fourth pass wrote
+    `"paddle_x": {"gt": 8.49, "lt": 8.51}` and the check said 8.500000000000009 did not hold: an
+    object of two comparisons was read as a value to equal. Several comparisons of one key must now
+    all hold; the guide gives the range (the builder had ended by pinning the drifted number).
+    Reviewed by a model that did not write it: merge, with six small points, all taken (`648cb757`). The
+    guide said numbers are equal within a rounding where only a value and `ne` are (`lt lte gt gte`
+    take the number as it is: a range leaves a margin). An object that mixes a comparison with
+    another key (`{"gt": 8.4, "max": 8.6}`) was still read as a value to equal: it is refused when
+    the file is read, with the key. A key written twice in an expected object held against the
+    first of the two: refused. One new test line could not fail, and one branch could not be
+    reached.
+
 ### M5, done (2026-11-06 to 2026-11-15)
 
 Built by one agent, lane by lane, each lane reviewed by a model that did not write it and passed through

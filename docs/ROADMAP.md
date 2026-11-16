@@ -1206,8 +1206,14 @@ at once.
     is written, a third to nearly half of a medium build.
   - **The fourth pass (built 2026-11-17; [design/FIRST_HOUR.md](design/FIRST_HOUR.md), section 11):**
     `specula check`: a project's own checks as data (`checks/runs.json`: runs and what each must
-    print), every one played by one command; reviewed twice. Its measurement closes the three
-    passes the owner asked for; what follows is theirs to say.
+    print), every one played by one command; reviewed twice.
+  - **The fourth pass, measured (2026-11-17, `d18e1131`; "Results (2026-11-17: the fourth pass)"):**
+    no build got cheaper. Medium 1.1 times (the engine arm itself 5% down, its three builds within
+    1.5% of each other, every check passed; the plain arm cheaper this time with one and two checks
+    missed), change 1.5 times, small 2.2 times (1.5 the pass before: a rise). Every engine build
+    wrote and ran a checks file and none used it in place of single runs. A defect the runs found
+    (a range of two comparisons never held) is fixed in `e8097c2a` and `648cb757`. **This closes the three passes the
+    owner asked for; what follows is theirs to say.**
   - **Then measure again**, with more than two runs a cell on the medium job: two runs alike differ by
     as much as the effect being looked for.
 - [ ] ➕ **Game systems as optional data, and memory for whoever builds the game** (owner, 2026-11-16: "the

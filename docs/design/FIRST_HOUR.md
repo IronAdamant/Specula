@@ -38,7 +38,7 @@ remembers.**
 | 8 | The comparison, run again with the same harness | run on `2a0c5669`: the engine arm did not get cheaper (below, and LEVERAGE.md) |
 | 9 | A headless run: `specula run` (the second pass) | built, reviewed, gated; measured on `bbe9fa36` (LEVERAGE.md, "Results (pass 2)") |
 | 10 | A run that says what went wrong, and a player that reacts: `--follow` (the third pass) | built, reviewed, gated; measured on `6cfff79b` (LEVERAGE.md, "Results (the third pass)": the medium game costs the same as without the engine) |
-| 11 | The game's own checks, every run in one command: `specula check` (the fourth pass) | built, reviewed (section 11) |
+| 11 | The game's own checks, every run in one command: `specula check` (the fourth pass) | built, reviewed, gated; measured on `d18e1131` (LEVERAGE.md, "Results (the fourth pass)": no build cheaper, the small game dearer; the checks came on top of single runs) |
 
 ## 1. The SDK comes from the engine
 
@@ -417,8 +417,11 @@ So a project keeps its checks as data, and one command plays them:
   takes (`ticks`, `inputs` as the command's script or a list of such, `seed`, `frame` and `size`),
   a `name`, and `expect`: keys of the game file's report (or a path into one, `walkers.0.health`)
   with the value each must have, or comparisons that must all hold (`ne`, `lt`, `lte`, `gt`, `gte`,
-  `has`, `len`; two of them are a range).
-  Numbers are the same within a rounding (a state's numbers are sums of ticks). An unknown key of a
+  `has`, `len`; two of them are a range). An object that mixes a comparison with another key is
+  refused when the file is read, with the key (as a value to equal it would hold against nothing),
+  and so is a key written twice.
+  A value and `ne` are the same within a rounding (a state's numbers are sums of ticks); `lt`,
+  `lte`, `gt` and `gte` take the number as it is. An unknown key of a
   check is refused by name, and so is a file with no check in it. **A key the state does not have
   never holds**, whatever is expected of it: a misspelt key that "is not 5" would be a check that
   cannot fail.
@@ -456,6 +459,15 @@ a check expects), `launch_run.rs` (`check_game`; `run_in`, which a run and a che
 `launch_cli.rs` (`Cli::Check`), `scaffold.rs` (the sample's checks, the guide). The comparison's
 harness gives the engine arm `examen leverage check RUN`. The live check's sixteenth stage plays
 the sample's checks, and one that does not hold.
+
+**What its measurement said** (2026-11-17; [LEVERAGE.md](LEVERAGE.md), "Results (2026-11-17: the
+fourth pass)"). Every engine build wrote a checks file and ran it, and none in place of single
+runs: each played its game a run a request first, as before, and wrote the checks from what it had
+seen. So a first build got no cheaper, and a one-screen game got dearer by the checks it did not
+need. The change builds, which begin from a game that has checks, ran them after their edits and
+added their own. What the command is for is therefore the second visit to a game, not the first
+hour of it. One defect was found by a builder and fixed (`e8097c2a`, `648cb757`): two comparisons of one
+key (a range) were read as a value to equal and never held.
 
 ## As built
 
