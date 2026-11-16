@@ -354,6 +354,19 @@ pub fn validate(path: &str, kind: FileKind, text: &str, old: Option<&str>, conte
         FileKind::Timeline => out.extend(crate::timeline::validate_file(path, text)),
         // Notes are prose (the style configurator's): any text.
         FileKind::StyleNotes => {}
+        // The game file: its format, with where a problem is and what to write.
+        FileKind::Game => {
+            if let Err(p) = specula_ludus::GameFile::parse(text) {
+                out.push(Problem { file: path.to_owned(), severity: "error", code: p.code.into(), at: p.at, message: p.message, offset: None });
+            }
+        }
+        // A project's note: its front matter (a title and a kind) and its size.
+        FileKind::Note => {
+            let id = path.rsplit('/').next().and_then(|name| name.strip_suffix(".md")).unwrap_or("");
+            if let Err(e) = specula_memoria::Note::parse(id, text) {
+                out.push(Problem { file: path.to_owned(), severity: "error", code: e.code.into(), at: String::new(), message: e.message, offset: None });
+            }
+        }
         // Binary files' bytes are checked by project_upload (project_binary::inspect); their
         // store text must name content.
         FileKind::Png | FileKind::Glb | FileKind::Gltf | FileKind::Wav | FileKind::Ogg => {

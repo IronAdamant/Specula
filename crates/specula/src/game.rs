@@ -179,6 +179,11 @@ pub trait Game {
     /// recipes, styles and anim sets are reloaded by the engine. Default: nothing.
     fn assets_changed(&mut self, _ctx: &mut Ctx, _paths: &[String]) {}
 
+    /// The project's game file (`game.json`) changed: its new text, from the project store
+    /// (written through the project tools, undone, or edited on disk). The project shell
+    /// follows it while it runs. Default: nothing.
+    fn game_file_changed(&mut self, _ctx: &mut Ctx, _text: &str) {}
+
     /// An engine screen that takes the window's input (the review or the gallery screen) opened
     /// (`true`) or closed: a real-time game pauses itself through its own pause path, so the
     /// human doesn't lose while deciding (the call is journaled like any frame's). Default: nothing.

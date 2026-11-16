@@ -685,6 +685,8 @@ pub fn access(tool: &str) -> Option<Access> {
         // as the caller through the project store; marking entries reviewed needs reviewer
         // authority (Site::L10nReview, also when a table is written with project_*).
         "l10n_get" | "l10n_check" => ReadOnly,
+        "memory_get" | "memory_list" | "memory_why" => ReadOnly,
+        "memory_note" => World("project"),
         "l10n_set" => World("project"),
         // Posts one plan of board tasks (task_plan's store rules).
         "l10n_tasks" => Owned(Store::Board),

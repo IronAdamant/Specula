@@ -14,7 +14,7 @@
     "pause.title": "Give up",
     "settings.settings": "Settings",
     "settings.volume": "Volume: {setting.volume}",
-    "settings.language": "Language: {setting.language.name}",
+    "settings.language": "Language: {setting.language.text}",
     "settings.back": "Back",
     "won.title": "You won",
     "lost.title": "You lost",

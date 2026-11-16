@@ -292,7 +292,10 @@ mod tests {
             ("crates/specula/src/project.rs", "style/notes.md", "a path in a made-up project"),
             ("crates/specula/src/project.rs", "recipes/readme.md", "a path in a made-up project"),
             ("crates/specula/src/taste.rs", "assets/style/notes.md", "a project's own file"),
-            ("crates/specula-memoria/src/lib.rs", "notes/gate-lives-2.md", "a note's path in a made-up project"),
+            ("crates/specula/src/project.rs", "gate-lives.md", "a path in a made-up project"),
+            ("crates/specula/src/project_engine.rs", "brief.md", "a note in a test's own project"),
+            ("crates/specula/src/project_engine.rs", "half-written.md", "a note in a test's own project"),
+            ("crates/specula/src/project_engine.rs", "readme.md", "a path no mount holds, asked for in a test"),
             ("crates/specula-anim/examples/filmstrip.rs", "docs/fidelity/sepulcra_anim_filmstrip.png", "a picture the example writes"),
             ("crates/specula-model/examples/preview.rs", "docs/fidelity/sepulcra_t1_contact.png", "a picture the example writes"),
         ];
@@ -331,6 +334,12 @@ mod tests {
                         if !(under_docs || name.ends_with(".md")) || name.contains(char::is_whitespace) || name.contains('{') {
                             continue;
                         }
+                        // An extension alone names no file, and `notes/<id>.md` is a game
+                        // project's note (docs/design/FIRST_HOUR.md): this repository has no
+                        // `notes` folder, which the last line of this test holds.
+                        if name == ".md" || name.starts_with("notes/") {
+                            continue;
+                        }
                         seen += 1;
                         let folder = format!("{}/", name.trim_end_matches('/'));
                         let covered = listed(name) || listed(&folder) || READ_BY_TESTS.contains(&folder.as_str()) || tier_of(name) == Tier::Tests && READ_WHOLE.iter().any(|f| name.starts_with(f));
@@ -352,5 +361,7 @@ mod tests {
         for entry in READ_BY_TESTS {
             assert!(root.join(entry).exists(), "READ_BY_TESTS names {entry}, which is gone");
         }
+        // (What lets a quoted `notes/...` pass above: nothing of this repository is there.)
+        assert!(!root.join("notes").exists(), "this repository has a notes folder now: a quoted \"notes/...\" in a source may be a document a test reads, so the guard above must look at them again");
     }
 }

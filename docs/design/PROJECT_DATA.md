@@ -65,6 +65,11 @@ A **mount** maps a name to a folder on disk. Files are named by mount and relati
 |---|---|---|
 | `assets` | the engine's assets root (`--assets`, else the hosted game's, else the working directory) | at start |
 | `modules/<name>` | a module crate's folder (under the working directory, as `logic_build` requires) | `project_mount {module}` |
+| the project root (its name is empty) | the folder of the project the engine was opened on | at start, when there is a project |
+
+The root mount's files are named as they lie in the project folder (`game.json`, `notes/gate-lives.md`), and it
+mirrors only those two kinds: it never looks into the rest of the project, which the other mounts hold. So it
+may contain them (a module's folder is inside the project) without one file getting two paths.
 
 Only files of known kinds are mirrored; everything else on disk is left alone:
 
@@ -78,6 +83,8 @@ Only files of known kinds are mirrored; everything else on disk is left alone:
 | `sound` | `*.json` in a folder named `sounds` | `specula_audio`'s sound recipe parser | the hosted game: Sepulcra re-renders that sound |
 | `anim_set` | `*.json` in a folder named `anims` | JSON syntax (the anim lane owns its schema) | the model library, as recipes |
 | `timeline` | `*.json` in a folder named `timelines` | `specula_tempus::Timeline::parse_text`, then anim and vfx values as `world_set` takes them ([TIMELINE.md](TIMELINE.md)) | the next `timeline_play` reads the new version |
+| `game` | `game.json` at the project's root | `specula_ludus::GameFile::parse` ([FIRST_HOUR.md](FIRST_HOUR.md)) | the project shell follows it while it runs (`Game::game_file_changed`, with the store's text) |
+| `note` | `notes/<id>.md` at the project's root (the id: lowercase letters, digits, `_`, `-`) | `specula_memoria::Note::parse`: front matter with a title and a kind | none needed: the `memory_*` tools read the store |
 | `rust` | `*.rs` under a module's `src/` | **`logic_build` only** (see below) | `build: true` on the write runs `logic_build` |
 | `cargo` | a module's `Cargo.toml` | `check_module_manifest` (a module's manifest only), then `logic_build` | as `rust` |
 | `json` | other `*.json` at a module's top level (`actions.json`) | JSON syntax | as `rust` |

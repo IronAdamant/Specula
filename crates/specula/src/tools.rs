@@ -719,6 +719,9 @@ pub enum CallerThread {
     /// The `l10n_*` tools: string tables are parsed, checked and written (through
     /// `project_write`) here; the engine lends texts, commits and lays the interface out.
     L10n,
+    /// The `memory_*` tools: a project's notes are parsed and searched here; the engine lends
+    /// their texts and commits a write (through `project_write`).
+    Memory,
 }
 
 impl CallerThread {
@@ -734,6 +737,7 @@ impl CallerThread {
             "text_edit" => CallerThread::Text,
             "security_incidents" => CallerThread::Security,
             n if n.starts_with("l10n_") => CallerThread::L10n,
+            n if n.starts_with("memory_") => CallerThread::Memory,
             n if n.starts_with("lex_") => CallerThread::Lex,
             n if n.starts_with("studio_") => CallerThread::Studio,
             n if n.starts_with("project_") => CallerThread::Project,
@@ -771,6 +775,7 @@ impl CallerThread {
             CallerThread::Text => "text_edit lays text out on your connection, outside the engine thread: type before or after the playtest (a step may world_set a text component)",
             CallerThread::Security => "security_incidents waits for the input monitor on your connection: read it before or after the playtest",
             CallerThread::L10n => "l10n_* tools read and write string tables on your connection: translate and check before or after the playtest (ui_check {pseudo: true} works inside one)",
+            CallerThread::Memory => "memory_* tools read and write the project's notes on your connection: read what the project remembers before the playtest, and note what it showed after",
         }
     }
 }
@@ -871,6 +876,8 @@ impl Tools {
                 Some(CallerThread::Security) => return crate::inputguard_tools::incidents(session, arguments),
                 // String tables are parsed, checked and written on this thread.
                 Some(CallerThread::L10n) => return crate::l10n_tools::call(self, session, name, arguments),
+                // Notes are parsed and searched on this thread; a write goes through project_write.
+                Some(CallerThread::Memory) => return crate::memory_tools::call(self, session, name, arguments),
                 // (Answered above.)
                 // tools_* reach here only from a caller that skipped `ToolHandler::call` (tests).
                 Some(CallerThread::LogicBuild | CallerThread::LogicReload | CallerThread::MergeSuggest | CallerThread::Scope) | None => parse(name, arguments),
@@ -883,7 +890,7 @@ impl Tools {
                 return ToolOutput::error(argument_error(&e).to_pretty());
             }
         };
-        let out = self.send(session, command);
+        let mut out = self.send(session, command);
         if out.is_error {
             self.evidence_refused(session, made);
         }
@@ -906,6 +913,15 @@ impl Tools {
             });
             if let Some(token) = token {
                 self.formats.hello(&session.id, &token, hello_format);
+            }
+            // What the project remembers, given without being asked for (docs/design/FIRST_HOUR.md,
+            // slice 6): what the game is, how it is built and checked, and the titles of the rest,
+            // in at most about 600 tokens. Read on this thread, after the hello itself is done.
+            if !unchanged {
+                if let (Some(mut reply), Some(memory)) = (reply, crate::memory_tools::brief(self, session)) {
+                    reply.set("project_memory", memory);
+                    out = ToolOutput::text(reply.to_pretty());
+                }
             }
         }
         match shaped {
@@ -3007,6 +3023,7 @@ pub(crate) fn definitions() -> Vec<ToolDef> {
     .chain(crate::path_tools::definitions())
     .chain(crate::ui_tools::definitions())
     .chain(crate::l10n_tools::definitions())
+    .chain(crate::memory_tools::definitions())
     .chain(crate::trace_tools::definitions())
     .chain(crate::editor_tools::definitions())
     .chain(crate::inputguard_tools::definitions())

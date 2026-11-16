@@ -37,6 +37,13 @@ pub const DISK_AGENT: &str = "disk";
 pub const ASSETS: &str = "assets";
 /// Module mounts are `modules/<crate name>`.
 pub const MODULES: &str = "modules";
+/// The project-root mount (an engine opened on a project): its name is empty, so its files are
+/// named as they lie in the project folder: `game.json`, and `notes/<id>.md`
+/// (docs/design/FIRST_HOUR.md, slices 3 and 6).
+pub const ROOT_MOUNT: &str = "";
+/// The folder of a project's notes, and its game file.
+pub const NOTES: &str = "notes";
+pub const GAME_FILE: &str = "game.json";
 /// Largest file mirrored or written (UTF-8 text).
 pub const MAX_FILE_BYTES: usize = 1 << 20;
 /// Files in the store, and their text in all.
@@ -91,6 +98,12 @@ pub enum FileKind {
     /// `*.json` in a folder named `strings`: string tables, one per locale
     /// (docs/design/LOCALISATION.md).
     Strings,
+    /// `<id>.md` in a project's `notes` folder: what the project remembers (`specula_memoria`;
+    /// the `memory_*` tools read and write them, and a person any editor).
+    Note,
+    /// `game.json` at a project's root: the game file (`specula_ludus::GameFile`), which the
+    /// project shell follows while the engine runs.
+    Game,
     /// Binary files (see [`FileKind::is_binary`]).
     Png,
     Glb,
@@ -101,7 +114,7 @@ pub enum FileKind {
 }
 
 impl FileKind {
-    pub const ALL: [FileKind; 21] = [
+    pub const ALL: [FileKind; 23] = [
         FileKind::Recipe,
         FileKind::Style,
         FileKind::StyleRules,
@@ -118,6 +131,8 @@ impl FileKind {
         FileKind::StyleNotes,
         FileKind::Timeline,
         FileKind::Strings,
+        FileKind::Note,
+        FileKind::Game,
         FileKind::Png,
         FileKind::Glb,
         FileKind::Gltf,
@@ -143,6 +158,8 @@ impl FileKind {
             FileKind::StyleNotes => "style_notes",
             FileKind::Timeline => "timeline",
             FileKind::Strings => "strings",
+            FileKind::Note => "note",
+            FileKind::Game => "game",
             FileKind::Png => "png",
             FileKind::Glb => "glb",
             FileKind::Gltf => "gltf",
@@ -157,7 +174,7 @@ impl FileKind {
 
     /// JSON text: patched by JSON path, diffed by path.
     pub fn is_json(self) -> bool {
-        !matches!(self, FileKind::StyleRules | FileKind::Rust | FileKind::Cargo | FileKind::StyleNotes) && !self.is_binary()
+        !matches!(self, FileKind::StyleRules | FileKind::Rust | FileKind::Cargo | FileKind::StyleNotes | FileKind::Note) && !self.is_binary()
     }
 
     /// Bytes, not text: the store holds a pointer into the content store ([`crate::blobs`]);
@@ -350,6 +367,9 @@ pub fn check_path(path: &str) -> Result<(), WorldError> {
 pub enum MountKind {
     Assets,
     Module,
+    /// A project's own folder ([`ROOT_MOUNT`]): its game file and its notes, and nothing else
+    /// (assets and modules have mounts of their own).
+    Root,
 }
 
 /// A folder mirrored under a name.
@@ -412,6 +432,12 @@ pub fn kind_for(mount: MountKind, rel: &str) -> Option<FileKind> {
             (n, "src", Some("rs")) if n >= 2 => Some(FileKind::Rust),
             _ => None,
         },
+        // The game file, and notes named by their ids (`notes/gate-lives.md`), flat.
+        MountKind::Root => match segments.as_slice() {
+            [GAME_FILE] => Some(FileKind::Game),
+            [NOTES, file] => file.strip_suffix(".md").is_some_and(specula_memoria::id_ok).then_some(FileKind::Note),
+            _ => None,
+        },
     }
 }
 
@@ -425,9 +451,23 @@ impl Mount {
         p
     }
 
-    /// The project path of `rel`.
+    /// The project path of `rel` (the root mount's files are named as they lie).
     pub fn path_of(&self, rel: &str) -> String {
-        format!("{}/{rel}", self.name)
+        if self.name.is_empty() {
+            rel.to_owned()
+        } else {
+            format!("{}/{rel}", self.name)
+        }
+    }
+
+    /// The path inside this mount that the project path `path` names, if it is this mount's.
+    /// The root mount holds only the paths it mirrors (its game file and its notes): any
+    /// other path is some other mount's, or nobody's.
+    pub fn rel_of<'p>(&self, path: &'p str) -> Option<&'p str> {
+        if self.name.is_empty() {
+            return kind_for(self.kind, path).map(|_| path);
+        }
+        path.strip_prefix(&self.name).and_then(|r| r.strip_prefix('/')).filter(|r| !r.is_empty())
     }
 }
 
@@ -467,6 +507,11 @@ pub fn scan(mount: &Mount) -> Scanned {
             }
             let child_rel = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
             if ft.is_dir() {
+                // The root mount looks at the project folder itself and its notes, never at the
+                // rest of the project (assets, modules, build folders).
+                if mount.kind == MountKind::Root && !(depth == 0 && name == NOTES) {
+                    continue;
+                }
                 if depth + 1 < SCAN_DEPTH && !SKIP_DIRS.contains(&name.as_str()) {
                     stack.push((dir.join(&name), child_rel, depth + 1));
                 }
@@ -892,7 +937,7 @@ impl Disk {
     /// The mount holding `path`, and the path inside it.
     pub fn locate(&self, path: &str) -> Option<(Mount, String)> {
         let mounts = self.shared.mounts.lock().unwrap_or_else(|p| p.into_inner());
-        mounts.iter().find_map(|m| path.strip_prefix(&m.name).and_then(|r| r.strip_prefix('/')).filter(|r| !r.is_empty()).map(|r| (m.clone(), r.to_owned())))
+        mounts.iter().find_map(|m| m.rel_of(path).map(|r| (m.clone(), r.to_owned())))
     }
 
     /// Adds a mount and reads its files: `(project path, kind, text, stamp)` for the caller to
@@ -1139,8 +1184,15 @@ fn watch(shared: &Shared, tx: &Sender<Event>) {
             true
         };
         for m in &mounts {
-            for (path, stamp) in stamps.range(format!("{}/", m.name)..) {
-                let Some(rel) = path.strip_prefix(&m.name).and_then(|r| r.strip_prefix('/')) else { break };
+            // (The root mount's few paths have no prefix of their own: every stamp is asked.)
+            let from = if m.name.is_empty() { String::new() } else { format!("{}/", m.name) };
+            for (path, stamp) in stamps.range(from..) {
+                let Some(rel) = m.rel_of(path) else {
+                    if m.name.is_empty() {
+                        continue;
+                    }
+                    break;
+                };
                 let Some(kind) = kind_for(m.kind, rel) else { continue };
                 seen.insert(path.clone());
                 if !check(path.clone(), kind, m.disk_path(rel), Some(*stamp)) {
@@ -1207,6 +1259,23 @@ mod tests {
         assert_eq!(kind_for(m, "src/a/b.rs"), Some(FileKind::Rust));
         assert_eq!(kind_for(m, "lib.rs"), None);
         assert_eq!(kind_for(m, "target/x.json"), None);
+        let r = MountKind::Root;
+        assert_eq!(kind_for(r, "game.json"), Some(FileKind::Game));
+        assert_eq!(kind_for(r, "notes/gate-lives.md"), Some(FileKind::Note));
+        assert_eq!(kind_for(r, "notes/Gate Lives.md"), None, "a note's file is named by its id");
+        assert_eq!(kind_for(r, "notes/old/gate-lives.md"), None, "notes are flat");
+        assert_eq!(kind_for(r, "notes/gate-lives.txt"), None);
+        assert_eq!(kind_for(r, "gate-lives.md"), None);
+        assert_eq!(kind_for(r, "checks/game.json"), None, "the game file is at the root");
+        assert_eq!(kind_for(r, "assets/ui/hud.json"), None, "assets have their own mount");
+        assert_eq!(kind_for(a, "notes/gate-lives.md"), None, "a notes folder under assets is not the project's memory");
+        assert_eq!(kind_for(a, "game.json"), None);
+        // The root mount's files are named as they lie, and it holds no other path.
+        let root = Mount { name: ROOT_MOUNT.into(), root: PathBuf::from("p"), kind: r };
+        let assets = Mount { name: ASSETS.into(), root: PathBuf::from("p/assets"), kind: a };
+        assert_eq!((root.path_of("game.json"), root.rel_of("game.json"), root.rel_of("notes/a.md")), ("game.json".to_owned(), Some("game.json"), Some("notes/a.md")));
+        assert_eq!((root.rel_of("assets/ui/hud.json"), root.rel_of("notes"), root.rel_of("nowhere/x.json")), (None, None, None));
+        assert_eq!((assets.path_of("ui/hud.json"), assets.rel_of("assets/ui/hud.json"), assets.rel_of("assets"), assets.rel_of("game.json")), ("assets/ui/hud.json".to_owned(), Some("ui/hud.json"), None, None));
     }
 
     /// Taste review 2: galleries shared the project store's budget, so any agent could fill it

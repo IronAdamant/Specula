@@ -479,8 +479,12 @@ impl Engine {
             .mounts()
             .iter()
             .map(|m| {
-                let n = files.range(format!("{}/", m.name)..).take_while(|(p, _)| p.starts_with(&format!("{}/", m.name))).count();
+                // (The project-root mount has no prefix: its files are the ones it mirrors.)
+                let n = if m.name.is_empty() { files.keys().filter(|p| m.rel_of(p).is_some()).count() } else { files.range(format!("{}/", m.name)..).take_while(|(p, _)| p.starts_with(&format!("{}/", m.name))).count() };
                 let mut f = vec![("name", Json::from(m.name.as_str())), ("folder", Json::from(m.root.display().to_string())), ("files", Json::from(n))];
+                if m.kind == MountKind::Root {
+                    f.push(("holds", Json::from("the project's own files, named as they lie: game.json (the game file) and notes/<id>.md (what the project remembers: the memory_* tools)")));
+                }
                 if let Some((skipped, truncated)) = self.project.skipped.get(&m.name) {
                     if !skipped.is_empty() {
                         f.push(("skipped", Json::arr(skipped.iter().take(10).map(|(p, why)| Json::obj([("path", Json::from(p.as_str())), ("why", Json::from(why.as_str()))])))));
@@ -554,7 +558,8 @@ impl Engine {
         }
         // One disk file, one project path: a mount may not lie inside another, or hold one.
         let canon = specula_logic::fix::canonical(&dir);
-        if let Some(m) = self.project.mounts().iter().find(|m| m.name != name && {
+        // (The project-root mount holds every module's folder and mirrors none of its files.)
+        if let Some(m) = self.project.mounts().iter().find(|m| m.name != name && m.kind != MountKind::Root && {
             let r = specula_logic::fix::canonical(&m.root);
             canon.starts_with(&r) || r.starts_with(&canon)
         }) {
@@ -721,6 +726,16 @@ impl Engine {
         if n > 0 {
             eprintln!("specula: {n} project files mirrored (project_list)");
         }
+    }
+
+    /// At start, for an engine opened on a project: the project's own folder becomes the root
+    /// mount (docs/design/FIRST_HOUR.md, slices 3 and 6), which mirrors the game file
+    /// (`game.json`) and the notes (`notes/<id>.md`) and nothing else. Neither need exist yet:
+    /// the first write makes it. A project whose assets root is the project itself still has
+    /// one path a file: the assets mount mirrors neither of the two.
+    pub(crate) fn project_mount_root(&mut self, project: &std::path::Path) {
+        let root = specula_logic::fix::canonical(project);
+        self.project_mount_folder(Mount { name: project::ROOT_MOUNT.into(), root, kind: MountKind::Root });
     }
 
     /// Imports what the disk holds (edits made outside the engine, mounts, races found while
@@ -945,6 +960,15 @@ impl Engine {
         if !assets.is_empty() && self.game_call(crate::sim_writes::GameCall::AssetsChanged(&assets)) {
             done.push("game");
         }
+        // The game file: the hosted game follows it while it runs (the text is the store's:
+        // nothing is read from the disk here). A deleted game file leaves the game as it was.
+        if changed.iter().any(|p| p == project::GAME_FILE) {
+            if let Some(text) = self.world.files().get(project::GAME_FILE).map(|f| Arc::clone(&f.text)) {
+                if self.game_call(crate::sim_writes::GameCall::GameFile(&text)) && !done.contains(&"game") {
+                    done.push("game");
+                }
+            }
+        }
         done
     }
 
@@ -973,6 +997,62 @@ impl Engine {
             return;
         }
         self.project_sync_start();
+    }
+}
+
+#[cfg(test)]
+mod notes_tests {
+    use crate::project::FileKind;
+    use crate::project_kinds::validate;
+
+    /// A project's notes folder is mirrored as `notes/<id>.md` (docs/design/FIRST_HOUR.md,
+    /// slice 6): the notes a person left there are in the store at start, a file that is not
+    /// named as a note is left alone, and the folder need not exist.
+    #[test]
+    fn a_projects_notes_are_project_files() {
+        let root = std::env::temp_dir().join(format!("specula-notes-mount-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("notes").join("old")).unwrap();
+        std::fs::create_dir_all(root.join("assets")).unwrap();
+        let brief = "---\ntitle: Hold the gate against ten waves\nkind: brief\n---\nA one-screen defence game.\n";
+        std::fs::write(root.join("notes").join("brief.md"), brief).unwrap();
+        std::fs::write(root.join("notes").join("half-written.md"), "no front matter yet").unwrap();
+        std::fs::write(root.join("notes").join("Read Me.md"), "not named as a note").unwrap();
+        std::fs::write(root.join("notes").join("old").join("brief.md"), brief).unwrap();
+        std::fs::write(root.join("notes").join("list.txt"), "x").unwrap();
+        // The project's other files are not the root mount's: a game file below the root, a
+        // module's sources, a build folder.
+        let game = r#"{"format": "specula.game.v1", "title": "Hold the gate"}"#;
+        std::fs::write(root.join("game.json"), game).unwrap();
+        std::fs::create_dir_all(root.join("modules").join("gate").join("src")).unwrap();
+        std::fs::write(root.join("modules").join("gate").join("game.json"), game).unwrap();
+        std::fs::create_dir_all(root.join("target").join("notes")).unwrap();
+        std::fs::write(root.join("target").join("notes").join("brief.md"), brief).unwrap();
+        let Some(mut e) = crate::workers::charge_tests::engine_at(&root.join("assets")) else { return };
+        e.project_mount_assets(root.join("assets"));
+        e.project_mount_root(&root);
+        let own: Vec<(&str, FileKind)> = e.world.files().iter().map(|(p, f)| (p.as_str(), f.kind)).collect();
+        assert_eq!(
+            own,
+            [("game.json", FileKind::Game), ("notes/brief.md", FileKind::Note), ("notes/half-written.md", FileKind::Note)],
+            "the game file, and notes by id, flat; a half-written one is there for the memory tools to name"
+        );
+        assert_eq!(&*e.world.files()["notes/brief.md"].text, brief);
+        // Each is found again by its path, and a path the root mount does not mirror is nobody's.
+        assert_eq!(e.project.locate("game.json").map(|(m, rel)| (m.kind, rel)), Some((crate::project::MountKind::Root, "game.json".to_owned())));
+        assert_eq!(e.project.locate("notes/brief.md").map(|(m, rel)| (m.kind, rel)), Some((crate::project::MountKind::Root, "notes/brief.md".to_owned())));
+        assert!(e.project.locate("modules/gate/game.json").is_none() && e.project.locate("readme.md").is_none());
+        // The game file is checked as one: a wrong key is said by name, with what to write.
+        assert!(validate("game.json", FileKind::Game, game, None, &[]).is_empty());
+        let wrong = validate("game.json", FileKind::Game, r#"{"format": "specula.game.v1", "tick_rate": 60}"#, None, &[]);
+        assert_eq!(wrong.iter().map(|p| (p.at.as_str(), p.is_error())).collect::<Vec<_>>(), [("tick_rate", true)]);
+        assert!(wrong[0].message.contains("tick_hz"), "{}", wrong[0].message);
+        // A note is checked as a note; a write that is not one is refused unless a draft is asked for.
+        assert!(validate("notes/brief.md", FileKind::Note, brief, None, &[]).is_empty());
+        let problems = validate("notes/half-written.md", FileKind::Note, "no front matter yet", None, &[]);
+        assert_eq!(problems.iter().map(|p| (p.code.as_str(), p.is_error())).collect::<Vec<_>>(), [("no_front_matter", true)]);
+        assert!(!crate::project_kinds::never_allowed(FileKind::Note, "no_front_matter"), "a person's draft may be stored");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
 

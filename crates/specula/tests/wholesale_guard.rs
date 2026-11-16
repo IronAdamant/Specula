@@ -82,6 +82,8 @@ const FIELDS: &[(&str, Class)] = &[
     ("clock", NoIds("the tick")),
     ("game", NoIds("the hosted game's own state: save_read restores it with the world")),
     ("game_name", NoIds("a name")),
+    ("game_module_events", NoIds("the hosted game's events for the modules, waiting for the next tick: names and plain values")),
+    ("game_clock_told", NoIds("whether the clock was paused when the hosted game was last told")),
     ("pacing", NoIds("timings")),
     ("schedule", NoIds("timings")),
     ("profiler", NoIds("CPU zones")),

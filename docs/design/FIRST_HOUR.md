@@ -223,7 +223,7 @@ A fourth job that needs more to reuse is part 12's.
 
 ## Where the build stands (kept current while part 3 is built; removed when it is done)
 
-**Built, each crate's own tests passing; not yet through the gate** (2026-11-16, branch
+**Built, with its own tests, the structural guards and clippy passing; the full gate runs on each commit** (2026-11-16, branch
 `m6-first-hour`):
 
 | Piece | Where |
@@ -235,36 +235,46 @@ A fourth job that needs more to reuse is part 12's.
 | The game file, conditions, settings, actions, the run's state machine | `crates/specula-ludus` (`game`, `cond`, `settings`, `action`, `run`) |
 | Notes, superseding, finding, the brief | `crates/specula-memoria` |
 | An event from the engine to the modules; a view of what modules keep | `LogicHost::{push_engine_event, state_of, states}` |
+| The hosted game's new hooks: `after_modules`, `see_modules`, `take_module_events`, `take_clock`, `clock_seen`, `game_state`, `game_file_changed` | `crates/specula/src/game.rs`; `sim_writes::GameCall::{AfterModules, GameFile}` |
+| The project shell, hosted for a project with a `game.json` and no executable of its own | `crates/specula/src/shell.rs`; `run_with` in `lib.rs` |
+| Its built-in files, which are also what `specula new` will write | `crates/specula/src/shell/new/assets/` (a theme, six screens, the English words) |
+| `game_state` (family `game`) | `tools.rs`, `Engine::game_state` |
+| The project-root mount: `game.json` (kind `game`) and `notes/<id>.md` (kind `note`) as project files | `project.rs` (`MountKind::Root`, `ROOT_MOUNT`), `project_engine.rs` (`project_mount_root`) |
+| The shell follows a changed game file while it runs | `Shell::reload_game`; `project_reload` hands it the store's text |
+| `memory_note`, `memory_get`, `memory_list`, `memory_why` (family `memory`); the brief in `agent_hello` (`project_memory`) | `crates/specula/src/memory_tools.rs`; `tools.rs` (after the hello) |
+
+As built, where the text above said less or something else:
+
+- **`setting.<name>.text`** is the value as words: a language by its own name, a toggle as `on` or
+  `off`, anything else as it is. **`game.*`** holds `title`, `phase`, `outcome`, `screen`, `paused`,
+  `running`, `runs`, `has_score` and `score`.
+- **`ui_scale` and `text_size` are meanings, not built-in settings**: a game that wants them declares
+  an `int` setting with `"is": "ui_scale"` or `"is": "text_size"`, in per cent (100 is as designed;
+  50 to 300 is taken). `language` and `volume` are always there.
+- **The event `ui`** carries `action`, and `widget` and `screen` when the press came from a screen.
+- **A changed game file** takes effect at once for the title, the screens' parts, the outcome and the
+  settings (the player's choices are kept where a setting still exists); a new `tick_hz` is used from
+  the next start, and `game_state` says so under `problems`. A file that is not a game file changes
+  nothing and is named there too.
+- **A project has one brief**: a second is refused with the first one's id. A note is replaced by one
+  note at most, and never in a ring.
 
 **Still to build, in this order:**
 
-1. **`Game` gains four hooks with defaults** (`crates/specula/src/game.rs`): `after_modules(ctx, &ModuleStates)`
-   after every tick's modules ran; `take_module_events(&mut Vec<(String, Value)>)`, pushed with
-   `push_engine_event` right before the modules tick; `take_clock() -> Option<bool>`, applied to the
-   engine's clock as the game's own doing; `game_state() -> Option<Json>`. A new
-   `sim_writes::GameCall::AfterModules`.
-2. **The shell** (`crates/specula/src/shell.rs`, a `Game`): holds a `specula_ludus::Run` and `Settings`,
-   a `specula_ui::Ui` with a second one for captures (as `games/sepulcra-app/src/hud.rs` does), a
-   `specula_input::Input` over the interface's own actions, and the string tables
-   (`specula_lingua::{Table, Catalog}` into `specula_ui::Strings`). Each frame: input, the state map
-   filled from the modules' stores (`<module>.<key>`; a map with `msg` is a string-table line), the
-   settings and the run; `Ui::frame`; each `UiEvent::Action` parsed with `Action::parse` and given to
-   `Run::act`; the effects done (clock, events, the settings file through `take_settings`, saves through
-   `take_requests`). Its files are read at start and again in `assets_changed` (small, bounded reads).
-3. **Its built-in files**, which are also what `specula new` writes: a neutral `theme.json`, the five
-   screens, `strings/en.json`, `input.json`.
-4. **Wiring** in `run_with` (`crates/specula/src/lib.rs`, after the project is opened and before
-   `configure`): a project with a `game.json` and no hosted game gets the shell; the clock takes
-   `tick_hz` from it as from any game. `--run` builds and loads the game file's modules at start.
-5. **Tools**: `game_state` (family `game`), `memory_note`, `memory_get`, `memory_list`, `memory_why`
-   (family `memory`); each needs its parse arm and definition (`tools.rs` or a `*_tools.rs`), its access
-   (`authority.rs`), its catalog line and family (`toolscope.rs`), its argument bounds (`bounds.rs`).
-   `agent_hello` answers with the project's brief.
-6. **`specula new`** writes the whole project (`launch_store::create`), `--bare` what it wrote before.
-7. **A live check in Rust** (`tools/examen`): a new project is made, its module built, the run started
-   from the title by `ui_act`, stepped, won, and `game_state` read; the language changed and kept across a
-   restart. Then the comparison's harness starts its engine arm from `specula new`, and the comparison is
-   run again.
+1. **The game file's modules at start**: `--run` (and `specula play NAME`) builds and loads them when
+   the operator says the project's code is theirs to run. Without it the screens show and no code of
+   the project runs.
+2. **`specula new`** writes the whole project (`launch_store::create`), `--bare` what it wrote before:
+   the game file, the built-in screens and words, a plain `assets/style.json`, a module that builds,
+   the SDK and the workspace, `checks/smoke.json`, `notes/brief.md` and `notes/how.md`.
+3. **A live check in Rust** (`tools/examen`): a new project is made, its module built, the run started
+   from the title by `ui_act`, stepped, won, and `game_state` read; a note written and given back at
+   the next `agent_hello`; the game file changed and followed; the language changed and kept across a
+   restart.
+4. **The comparison's harness** starts its engine arm from `specula new`, and the comparison is run
+   again (slice 8).
+5. **Not built, and said:** conditions over the world (`world:/path.prop`); a condition reads what the
+   modules keep, the settings and the run's own state.
 
 ## What this does not do
 

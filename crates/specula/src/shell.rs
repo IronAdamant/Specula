@@ -365,13 +365,13 @@ impl Shell {
             ui_events: UiEvents::default(),
             files: ShellFiles::default(),
         };
-        shell.take_files(files);
+        shell.use_files(files);
         Ok(shell)
     }
 
     /// Takes the files as read: tables, then the interface. What does not load is noted and
     /// the rest goes on (a screen with a typo does not take the game's menus away).
-    fn take_files(&mut self, files: ShellFiles) {
+    fn use_files(&mut self, files: ShellFiles) {
         for problem in &files.problems {
             note(&mut self.problems, problem.clone());
         }
@@ -423,16 +423,54 @@ impl Shell {
         self.settings.defs().iter().find(|d| d.kind == specula_ludus::SettingKind::Locale).map_or_else(|| "language".to_owned(), |d| d.name.clone())
     }
 
+    /// The project's theme (the built-in one when the project's does not load), with the
+    /// player's text size: the theme's own `text_scale` times the setting that stands for it.
+    fn theme(&mut self) -> Result<Theme, String> {
+        let text_size = self.scale_of("text_size");
+        let sized = |text: &str| -> Result<Theme, String> {
+            if (text_size - 1.0).abs() < 1e-4 {
+                return Theme::from_json_str(text).map_err(|e| e.to_string());
+            }
+            let mut json = Json::parse(text).map_err(|e| e.to_string())?;
+            let own = json.get("text_scale").and_then(Json::as_f64).unwrap_or(1.0);
+            json.set("text_scale", Json::Num((own * f64::from(text_size)).clamp(0.5, 3.0)));
+            Theme::from_json_str(&json.to_string()).map_err(|e| e.to_string())
+        };
+        match sized(&self.files.theme) {
+            Ok(theme) => Ok(theme),
+            Err(e) => {
+                note(&mut self.problems, format!("assets/ui/theme.json: {e} (the built-in theme is used)"));
+                sized(builtin("assets/ui/theme.json")).map_err(|e| format!("the built-in theme: {e}"))
+            }
+        }
+    }
+
+    /// The player's text size, shown: the theme again, in the window's interface and a
+    /// capture's (their screens, focus and open menus stay as they are).
+    fn apply_text_size(&mut self) {
+        let theme = match self.theme() {
+            Ok(theme) => theme,
+            Err(e) => return note(&mut self.problems, format!("the text size: {e}")),
+        };
+        let mut failed = None;
+        if let Some(face) = &mut self.face {
+            if let Err(e) = face.ui.set_theme(theme.clone()) {
+                failed = Some(e.to_string());
+            }
+            if let Some((ui, _)) = &mut face.capture {
+                let _ = ui.set_theme(theme);
+            }
+        }
+        if let Some(e) = failed {
+            note(&mut self.problems, format!("the text size: {e}"));
+        }
+        self.laid_out = None;
+    }
+
     fn load_ui(&mut self) -> Result<(Ui, Vec<String>), String> {
         let face = |b: specula_text::Bundled| b.load().map_err(|e| format!("bundled font {}: {e}", b.name()));
         let fonts = FontSet::new().with("ui", face(specula_text::Bundled::UiRegular)?).with("ui_bold", face(specula_text::Bundled::UiBold)?).with("title", face(specula_text::Bundled::Display)?);
-        let theme = match Theme::from_json_str(&self.files.theme) {
-            Ok(theme) => theme,
-            Err(e) => {
-                note(&mut self.problems, format!("assets/ui/theme.json: {e} (the built-in theme is used)"));
-                Theme::from_json_str(builtin("assets/ui/theme.json")).map_err(|e| format!("the built-in theme: {e}"))?
-            }
-        };
+        let theme = self.theme()?;
         let mut ui = Ui::new(theme, fonts);
         let mut loaded = Vec::new();
         for (stem, text) in &self.files.screens {
@@ -479,9 +517,45 @@ impl Shell {
         if def.kind == specula_ludus::SettingKind::Locale {
             self.apply_language();
         }
-        if def.is.as_deref() == Some("volume") {
-            self.apply_volume();
+        match def.is.as_deref() {
+            Some("volume") => self.apply_volume(),
+            Some("text_size") => self.apply_text_size(),
+            // (The interface's scale is read at every layout.)
+            _ => {}
         }
+    }
+
+    /// The game file changed while the game runs (`text`: its new text). A file that is not a
+    /// game file changes nothing and is said; otherwise its title, its screens' parts, its
+    /// outcome and its settings are the new ones, the player's choices kept where the setting
+    /// still exists. Where the run stands is kept. The tick rate is the clock's for the run:
+    /// a new one is used from the next start.
+    fn reload_game(&mut self, text: &str) {
+        let game = match GameFile::parse(text) {
+            Ok(game) => game,
+            Err(p) => return note(&mut self.problems, format!("{}: {p} (the game goes on with the file as it was)", specula_ludus::game::FILE)),
+        };
+        if game == self.game {
+            return;
+        }
+        if game.tick_hz != self.game.tick_hz {
+            note(&mut self.problems, format!("{}: tick_hz {} is used from the next start (this run's clock ticks at {})", specula_ludus::game::FILE, game.tick_hz, self.game.tick_hz));
+        }
+        // The clock keeps this run's rate, and game_state says the rate that is ticking.
+        let tick_hz = self.game.tick_hz;
+        self.game = GameFile { tick_hz, ..game };
+        self.files.game = text.to_owned();
+        self.run.reconfigure(&self.game);
+        // The settings again from the new declarations (the string tables are as they were).
+        let text_size = self.scale_of("text_size");
+        self.load_tables();
+        self.apply_language();
+        self.apply_volume();
+        if (self.scale_of("text_size") - text_size).abs() > 1e-4 {
+            self.apply_text_size();
+        }
+        self.title_sent = false;
+        self.laid_out = None;
     }
 
     fn apply_volume(&mut self) {
@@ -534,11 +608,26 @@ impl Shell {
 
     /// A button's word, done. `Err`: what was refused, and why.
     pub fn press(&mut self, word: &str, player: bool) -> Result<(), String> {
+        self.press_from(word, None, player)
+    }
+
+    /// A button's word, done. `from`: the button's id and its screen, which a word that goes
+    /// to the game (the event `ui`) carries with it, so one module can tell two buttons that
+    /// say the same word apart.
+    fn press_from(&mut self, word: &str, from: Option<(&str, &str)>, player: bool) -> Result<(), String> {
         let action = Action::parse(word)?;
         let screens: Vec<String> = self.face.as_ref().map(|f| f.screens.clone()).unwrap_or_default();
         let has = |name: &str| screens.iter().any(|s| s == name);
         match self.run.act(&action, &mut self.settings, player, &has) {
-            Ok(effects) => {
+            Ok(mut effects) => {
+                if let Some((widget, screen)) = from {
+                    for effect in &mut effects {
+                        if let Effect::Event { name: "ui", data } = effect {
+                            data.push(("widget", Val::Text(widget.to_owned())));
+                            data.push(("screen", Val::Text(screen.to_owned())));
+                        }
+                    }
+                }
                 self.apply(effects);
                 Ok(())
             }
@@ -591,12 +680,21 @@ impl Shell {
     /// Fills the state the screens bind to: the run's own, the settings, what the modules keep.
     fn fill(&mut self) {
         let score = self.score();
-        let language_name_key = format!("setting.{}.name", self.language_setting());
+        let language = self.language_setting();
+        let screen = self.run.visible().last().map(|s| (*s).to_owned()).unwrap_or_default();
         let s = &mut self.state;
         s.reset();
         let title = if self.game.title.is_empty() { self.name.as_str() } else { self.game.title.as_str() };
         s.set_str("game.title", title);
         s.set_str("game.phase", self.run.phase().name());
+        s.set_str(
+            "game.outcome",
+            match self.run.phase() {
+                Phase::Ended(how) => how.name(),
+                _ => Ended::Running.name(),
+            },
+        );
+        s.set_str("game.screen", &screen);
         s.set_bool("game.paused", self.run.phase() == Phase::Paused);
         s.set_bool("game.running", self.run.phase() == Phase::Running);
         s.set_int("game.runs", self.run.runs() as i64);
@@ -604,25 +702,27 @@ impl Shell {
         if let Some(score) = score {
             s.set_num("game.score", score);
         }
+        // A setting's value, and the value as words (`.text`): a language by its own name
+        // ("Deutsch", as its table gives it), a toggle as on or off, anything else as it is.
         for def in self.settings.defs() {
-            let key = format!("setting.{}", def.name);
+            let (key, words) = (format!("setting.{}", def.name), format!("setting.{}.text", def.name));
             match self.settings.get(&def.name) {
                 Some(Val::Bool(b)) => {
                     s.set_bool(&key, *b);
+                    s.set_str(&words, if *b { "on" } else { "off" });
                 }
                 Some(Val::Num(n)) => {
                     s.set_int(&key, *n as i64);
+                    s.set_str(&words, &format!("{}", *n as i64));
                 }
                 Some(Val::Text(t)) => {
                     s.set_str(&key, t);
+                    let name = if def.name == language { self.tables.iter().find(|table| table.locale.as_str() == t).map_or(t.as_str(), |table| table.name.as_str()) } else { t.as_str() };
+                    s.set_str(&words, name);
                 }
                 None => {}
             }
         }
-        // The language's own name ("Deutsch"), as its table gives it.
-        let locale = self.settings.locale();
-        let name = self.tables.iter().find(|t| t.locale.as_str() == locale).map_or(locale, |t| t.name.as_str());
-        s.set_str(&language_name_key, name);
         for (key, shown) in &self.shown {
             shown.put(key, s);
         }
@@ -640,8 +740,18 @@ impl Shell {
         }
     }
 
-    fn viewport(ui: &Ui, display: &Display, size: (u32, u32)) -> specula_ui::Viewport {
-        Display { size: [size.0.max(1), size.1.max(1)], ..*display }.viewport(ui.theme(), 1.0)
+    fn viewport(ui: &Ui, display: &Display, size: (u32, u32), user_scale: f32) -> specula_ui::Viewport {
+        Display { size: [size.0.max(1), size.1.max(1)], ..*display }.viewport(ui.theme(), user_scale)
+    }
+
+    /// A setting that stands for a scale (`"is": "ui_scale"` or `"text_size"`) holds per cent:
+    /// 100 is as designed. No such setting: as designed.
+    fn scale_of(&self, meaning: &str) -> f32 {
+        let value = self.settings.defs().iter().find(|d| d.is.as_deref() == Some(meaning)).and_then(|d| self.settings.get(&d.name));
+        match value {
+            Some(Val::Num(n)) => (*n as f32 / 100.0).clamp(0.5, 3.0),
+            _ => 1.0,
+        }
     }
 
     /// The presses of one laid-out frame, done.
@@ -649,9 +759,11 @@ impl Shell {
         let mut backed = false;
         for event in &events.events {
             match event {
-                UiEvent::Action { action, .. } => {
+                UiEvent::Action { action, widget } => {
                     backed |= matches!(&**action, "back" | "resume" | "close");
-                    if let Err(why) = self.press(action, player) {
+                    let from = self.face.as_ref().map(|f| (f.ui.widget_id(*widget).unwrap_or("").to_owned(), f.ui.screen_name(widget.screen).to_owned()));
+                    let from = from.as_ref().map(|(widget, screen)| (widget.as_str(), screen.as_str()));
+                    if let Err(why) = self.press_from(action, from, player) {
                         self.say(&why, ToastKind::Warn);
                     }
                 }
@@ -688,6 +800,7 @@ impl Shell {
                 (Ok(_), None) => return,
             }
         }
+        let scale = self.scale_of("ui_scale");
         let Some(Face { ui: window, capture: Some((ui, overlay)), screens, .. }) = &mut self.face else { return };
         for name in screens.iter() {
             let open = window.is_visible(name);
@@ -695,7 +808,7 @@ impl Shell {
                 let _ = if open { ui.show(name) } else { ui.hide(name) };
             }
         }
-        let view = Shell::viewport(ui, &self.display, out.size);
+        let view = Shell::viewport(ui, &self.display, out.size, scale);
         ui.copy_interaction_from(window, view.scale);
         ui.frame(&self.idle, &self.state, &view);
         if overlay.sync_atlas(out.textures, ui.atlas_mut()).is_err() {
@@ -841,9 +954,13 @@ impl Game for Shell {
         let mut events = std::mem::take(&mut self.ui_events);
         events.events.clear();
         events.consumed = Default::default();
+        let scale = self.scale_of("ui_scale");
         if let Some(face) = &mut self.face {
-            let view = Shell::viewport(&face.ui, &self.display, frame.size);
-            events.clone_from(face.ui.frame(&self.input, &self.state, &view).events);
+            let view = Shell::viewport(&face.ui, &self.display, frame.size, scale);
+            // (Copied field by field: reusing the buffer, and no wholesale replacement by name.)
+            let got = face.ui.frame(&self.input, &self.state, &view).events;
+            events.events.extend(got.events.iter().cloned());
+            events.consumed = got.consumed;
             self.laid_out = Some(frame.size);
         }
         self.handle(&events, !frame.synthetic);
@@ -857,9 +974,10 @@ impl Game for Shell {
             self.capture_overlay(out);
             return;
         }
+        let scale = self.scale_of("ui_scale");
         let Some(face) = &mut self.face else { return };
         if self.laid_out != Some(out.size) {
-            let view = Shell::viewport(&face.ui, &self.display, out.size);
+            let view = Shell::viewport(&face.ui, &self.display, out.size, scale);
             face.ui.frame(&self.idle, &self.state, &view);
             // The window lays out again for itself on its next frame.
             self.laid_out = None;
@@ -888,15 +1006,17 @@ impl Game for Shell {
             self.fill();
             self.sync_screens();
         }
+        let user_scale = self.scale_of("ui_scale");
         let face = self.face.as_mut()?;
         let ui = match (pick, &mut face.capture) {
             (UiPick::Capture, Some((ui, _))) => ui,
             _ => &mut face.ui,
         };
-        Some(GameUi { ui, state: &self.state, user_scale: 1.0, input_map: Some(self.input.map()) })
+        Some(GameUi { ui, state: &self.state, user_scale, input_map: Some(self.input.map()) })
     }
 
     fn use_settings(&mut self, text: Option<&str>, store: &SettingsStore) {
+        let text_size = self.scale_of("text_size");
         self.store = store.clone();
         if let Some(text) = text {
             for problem in self.settings.read_text(text) {
@@ -905,6 +1025,9 @@ impl Game for Shell {
         }
         self.apply_language();
         self.apply_volume();
+        if (self.scale_of("text_size") - text_size).abs() > 1e-4 {
+            self.apply_text_size();
+        }
     }
 
     fn take_settings(&mut self) -> Option<String> {
@@ -952,10 +1075,13 @@ impl Game for Shell {
             return;
         }
         let mut files = ShellFiles::read(&self.project, &self.assets);
-        // The game file is read at start: a change to it takes a restart (said in game_state's
-        // problems if it no longer parses).
+        // (The game file comes through `game_file_changed`, from the project store.)
         files.game = std::mem::take(&mut self.files.game);
-        self.take_files(files);
+        self.use_files(files);
+    }
+
+    fn game_file_changed(&mut self, _ctx: &mut Ctx, text: &str) {
+        self.reload_game(text);
     }
 
     fn save_state(&self) -> Option<Result<Vec<u8>, String>> {
@@ -1133,7 +1259,7 @@ mod tests {
         assert!(shell.state.get("game.has_score").is_some_and(|v| v.truthy()));
         assert_eq!(shell.state.list("gate.order").map(|l| l.len()), Some(1));
         assert_eq!(shell.state.get("setting.volume").and_then(|v| v.as_f64()), Some(8.0));
-        assert!(shell.state.get("setting.language.name").is_some(), "the language's own name");
+        assert!(shell.state.get("setting.language.text").is_some(), "the language's own name");
         assert_eq!((shell.value("gate.hp"), shell.value("setting.difficulty"), shell.value("gate.wave")), (Some(Val::Num(3.0)), Some(Val::Text("easy".into())), None));
         let state = shell.game_state().unwrap();
         assert_eq!(state.get("score").and_then(Json::as_f64), Some(40.0));
@@ -1166,6 +1292,84 @@ mod tests {
         assert!(shell.parse_state(b"{}").is_err() && shell.parse_state(br#"{"format": "specula.shell.save.v1", "phase": "flying"}"#).is_err());
     }
 
+    /// A button's word that goes to the game says which button, on which screen.
+    #[test]
+    fn a_games_own_word_carries_its_button_and_screen() {
+        let mut shell = shell();
+        shell.press("start", true).unwrap();
+        events(&mut shell);
+        shell.press_from("build_wall", Some(("wall_button", "hud")), true).unwrap();
+        assert_eq!(events(&mut shell), [("ui".to_owned(), Value::map().with("action", "build_wall").with("widget", "wall_button").with("screen", "hud"))]);
+        // The shell's own words are not the game's: nothing reaches the modules.
+        shell.press_from("open:settings", Some(("settings", "pause")), true).unwrap();
+        assert_eq!(events(&mut shell), []);
+        // What a screen may show of the run itself.
+        shell.fill();
+        let text = |key: &str| shell.state.get(key).map(|v| format!("{v:?}"));
+        assert!(text("game.screen").is_some_and(|s| s.contains("settings")), "{:?}", text("game.screen"));
+        assert!(text("game.outcome").is_some_and(|s| s.contains("running")));
+        assert!(text("setting.difficulty.text").is_some_and(|s| s.contains("easy")));
+        assert!(text("setting.volume.text").is_some_and(|s| s.contains('8')));
+    }
+
+    /// The interface's scale and the text's size are settings a game may declare, in per cent.
+    #[test]
+    fn scale_and_text_size_are_settings_in_per_cent() {
+        let game = GAME.replace(
+            r#""settings": ["#,
+            r#""settings": [{ "name": "ui", "kind": "int", "min": 75, "max": 200, "default": 100, "is": "ui_scale" }, { "name": "text", "kind": "int", "min": 50, "max": 300, "default": 100, "is": "text_size" }, "#,
+        );
+        let mut shell = Shell::build("gate", ShellFiles::builtin(&game)).unwrap();
+        assert_eq!((shell.scale_of("ui_scale"), shell.scale_of("text_size")), (1.0, 1.0));
+        let as_designed = shell.face.as_ref().unwrap().ui.theme().text_scale;
+        shell.press("set:ui:150", true).unwrap();
+        shell.press("set:text:200", true).unwrap();
+        assert_eq!((shell.scale_of("ui_scale"), shell.scale_of("text_size")), (1.5, 2.0));
+        assert_eq!(shell.ui(UiPick::Live).map(|u| u.user_scale), Some(1.5));
+        assert_eq!(shell.face.as_ref().unwrap().ui.theme().text_scale, as_designed * 2.0, "the theme is the project's, at the player's size");
+        assert_eq!(shell.problems, Vec::<String>::new());
+        // A game that declares neither is as designed.
+        assert_eq!(super::tests::shell().scale_of("ui_scale"), 1.0);
+    }
+
+    /// The game file is followed while the game runs: a new outcome and new settings are the
+    /// game's at once, a file that is not a game file changes nothing, and where the run stands
+    /// and what the player chose are kept.
+    #[test]
+    fn a_changed_game_file_is_followed_and_a_broken_one_is_not() {
+        let mut shell = shell();
+        shell.press("start", true).unwrap();
+        shell.press("cycle:difficulty", true).unwrap();
+        shell.press("step:volume:-1", true).unwrap();
+        events(&mut shell);
+        shell.reload_game("{ not a game file");
+        assert_eq!(shell.problems.len(), 1, "{:?}", shell.problems);
+        assert!(shell.problems[0].starts_with("game.json:") && shell.problems[0].contains("as it was"), "{:?}", shell.problems);
+        assert_eq!(shell.game.title, "Hold the gate");
+        // A new outcome, a new setting, another title, another tick rate.
+        let next = GAME
+            .replace("Hold the gate", "Hold the bridge")
+            .replace(r#""lost": { "key": "gate.hp", "lte": 0 }"#, r#""lost": { "key": "gate.hp", "lte": 2 }"#)
+            .replace(r#""sim": true }"#, r#""sim": true }, { "name": "hints", "kind": "toggle", "default": true }"#)
+            .replace(r#""tick_hz": 60"#, r#""tick_hz": 30"#);
+        shell.reload_game(&next);
+        assert_eq!((shell.game.title.as_str(), shell.run.phase(), shell.run.runs()), ("Hold the bridge", Phase::Running, 1));
+        assert_eq!((shell.settings.get("difficulty"), shell.settings.get("volume"), shell.settings.get("hints")), (Some(&Val::Text("hard".into())), Some(&Val::Num(7.0)), Some(&Val::Bool(true))));
+        assert_eq!(shell.tick_hz(), 60, "this run's clock keeps its rate");
+        assert!(shell.problems.iter().any(|p| p.contains("tick_hz 30 is used from the next start")), "{:?}", shell.problems);
+        // The new condition ends the run where the old one would not have.
+        shell.shown = vec![("gate.hp".into(), Shown::Int(2))];
+        let mut run = shell.run.clone();
+        let effects = run.after_tick(&|key: &str| shell.value(key), 9);
+        shell.run = run;
+        shell.apply(effects);
+        assert_eq!(shell.run.phase(), Phase::Ended(Ended::Lost));
+        // The same text again changes nothing (no second note).
+        let before = shell.problems.len();
+        shell.reload_game(&next);
+        assert_eq!(shell.problems.len(), before);
+    }
+
     /// A project's own files win, a part it lacks is the built-in one, and a file that does not
     /// load is said without taking the rest away.
     #[test]
@@ -1195,7 +1399,7 @@ mod tests {
         shell.press("cycle:language", true).unwrap();
         shell.fill();
         assert_eq!(shell.settings.locale(), "es");
-        assert_eq!(shell.state.get("setting.language").map(|v| format!("{v:?}")).is_some(), true);
+        assert!(shell.state.get("setting.language").is_some() && shell.state.get("setting.language.text").is_some());
         // The project's own screen opens by its name.
         shell.press("open:shop", true).unwrap();
         shell.sync_screens();

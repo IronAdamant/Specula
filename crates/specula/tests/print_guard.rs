@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 
 /// `(file, outputs allowed)`: the files that had console output on 2026-10-29.
-const ALLOWED: [(&str, usize); 66] = [
+const ALLOWED: [(&str, usize); 67] = [
     ("crates/specula/src/capture.rs", 3),
     ("crates/specula/src/disk.rs", 4),
     ("crates/specula/src/evidence.rs", 5),
@@ -63,6 +63,8 @@ const ALLOWED: [(&str, usize); 66] = [
     ("crates/specula-locus/src/geom.rs", 1),
     ("crates/specula-logic/src/build.rs", 1),
     ("crates/specula-logic/src/loader.rs", 1),
+    // A test's skip line (no cargo to build the written SDK with), as build.rs's.
+    ("crates/specula-logic/src/sdk_source.rs", 1),
     ("crates/specula-model/src/csg/tests.rs", 1),
     ("crates/specula-model/src/sdf.rs", 1),
     ("crates/specula-platform/src/gamepad.rs", 2),

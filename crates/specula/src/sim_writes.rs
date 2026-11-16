@@ -24,6 +24,8 @@ pub(crate) enum GameCall<'c, 'f> {
     Overlay(&'c mut Overlay<'f>),
     BeforeCapture,
     AssetsChanged(&'c [String]),
+    /// The project's game file changed (its new text, from the project store).
+    GameFile(&'c str),
     ApplyState(Box<dyn Any>),
     RequestDone(&'c GameRequest, Result<Json, Json>),
     /// The repair after a refused game tool, for games without checkpoints.
@@ -43,7 +45,7 @@ impl GameCall<'_, '_> {
             GameCall::Tick | GameCall::Timeline(_) | GameCall::AfterModules(_) => Kind::GameTick,
             GameCall::ApplyState(_) => Kind::GameStart,
             GameCall::RolledBack => Kind::GameTool,
-            GameCall::Frame(_) | GameCall::Overlay(_) | GameCall::BeforeCapture | GameCall::AssetsChanged(_) | GameCall::RequestDone(..) | GameCall::ModalChanged(_) => Kind::GameFrame,
+            GameCall::Frame(_) | GameCall::Overlay(_) | GameCall::BeforeCapture | GameCall::AssetsChanged(_) | GameCall::GameFile(_) | GameCall::RequestDone(..) | GameCall::ModalChanged(_) => Kind::GameFrame,
         }
     }
 }
@@ -60,6 +62,7 @@ pub(crate) fn game(world: &mut Live, swarm: &mut Swarm, game: &mut dyn Game, clo
             GameCall::Overlay(overlay) => game.overlay(ctx, overlay),
             GameCall::BeforeCapture => game.before_capture(ctx),
             GameCall::AssetsChanged(paths) => game.assets_changed(ctx, paths),
+            GameCall::GameFile(text) => game.game_file_changed(ctx, text),
             GameCall::ApplyState(state) => game.apply_state(ctx, state),
             GameCall::RequestDone(request, result) => game.request_done(ctx, request, result),
             GameCall::RolledBack => game.world_rolled_back(ctx),

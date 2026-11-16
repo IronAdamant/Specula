@@ -130,6 +130,7 @@ mod vfx_tools;
 mod timeline;
 mod timeline_tools;
 mod l10n_tools;
+mod memory_tools;
 pub mod launch_cli;
 pub mod launch_client;
 pub mod launch_engine;
@@ -764,6 +765,11 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     // world that was clean before the mount stays clean (no false "unsaved changes" at start).
     let clean = !engine.dirty();
     engine.project_mount_assets(assets.clone());
+    // An engine opened on a project mirrors the project's own files too: its game file, which the
+    // shell follows while it runs, and its notes (the memory_* tools).
+    if let Some(p) = &project {
+        engine.project_mount_root(&p.path);
+    }
     if clean {
         engine.saved_revision = engine.world.revision();
         engine.saved_seq = engine.swarm.journal().last_seq();
