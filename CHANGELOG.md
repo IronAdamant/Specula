@@ -108,6 +108,17 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
     not hold (two runs' frames are compared byte for byte now).
     A second look: merge, with one more finding, fixed: two runs of one project begun in the same
     moment raced for its lock, and one failed (it waits for the other and starts again now).
+  - **The third pass: a run that says what went wrong, and a player that reacts**
+    ([docs/design/FIRST_HOUR.md](docs/design/FIRST_HOUR.md), section 10). From the second pass's
+    ledgers: two of three medium builds had a module whose tick failed every time, and `specula run`
+    printed the state of a game whose rules did nothing; their builders spent fifteen and thirty-four
+    requests finding one line the engine had. A run whose module failed now answers `module_failed`
+    (the first failure whole, with its tick, and how many) and never a state; what the rules log is
+    said beside the state; a run's answer is one line whatever it is. `specula run --follow` reads a
+    step a line from standard input and prints the state after each, so a small program that reads
+    the state and answers it plays a whole game in one run (one builder had started 347 engines to
+    do that). The guide says what was looked up: every source a binding can name, what the SDK's
+    calls give back, how things that come and go are drawn.
 
 ### M5, done (2026-11-06 to 2026-11-15)
 

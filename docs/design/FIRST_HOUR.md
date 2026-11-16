@@ -36,6 +36,8 @@ remembers.**
 | 6 | What a project remembers: notes kept with the project, and the brief an agent is given at its first call | built, reviewed (R1 to R4), gated |
 | 7 | `specula new` makes a project that builds and plays; the guide it writes | built, reviewed (R1 to R4), gated |
 | 8 | The comparison, run again with the same harness | run on `2a0c5669`: the engine arm did not get cheaper (below, and LEVERAGE.md) |
+| 9 | A headless run: `specula run` (the second pass) | built, reviewed, gated; measured on `bbe9fa36` (LEVERAGE.md, "Results (pass 2)") |
+| 10 | A run that says what went wrong, and a player that reacts: `--follow` (the third pass) | built (section 10) |
 
 ## 1. The SDK comes from the engine
 
@@ -303,6 +305,58 @@ So the second pass is one loop, the plain arm's: **edit, run, read.**
 - **Found while building it:** a job owned by a session that is not a connection was dropped by the
   look for closed sessions (a run's frame, one run in four). The operator's own session counts as open
   now (`Engine::open_session_ids`), for a worker's job, a stepped job and an interface's state.
+
+## 10. A run that says what went wrong, and a player that reacts (the third pass, 2026-11-17)
+
+The second pass was measured (LEVERAGE.md, "Results (pass 2)") and every request of its builds laid
+out again. Through the engine the small game cost 1.7 times the plain build (6.8 before) and the
+medium one 2.6 times (4.0). What the medium builds still spent, by their ledgers:
+
+- **A module whose tick failed, and a run that printed a state all the same.** A call that returns
+  an error is undone, the whole of it. Two of three medium builds had a tick that failed every time
+  (two things spawned under one name; a parent deleted by the module's own query), and `specula run`
+  printed the state of a game whose rules did nothing. One builder spent thirty-four requests and the
+  other fifteen putting prints of their own into the module to find one line the engine had all
+  along (`logic_status`'s last error). It was the largest single cost of the pass: about 280,000 of
+  one build's 673,000 weighted tokens, and about 115,000 of another's 389,000.
+- **A player that reacts.** Whether the medium game can be won depends on aiming at walkers whose
+  lanes come from the seed. A script of inputs written beforehand cannot aim. One builder wrote a
+  small program that read the printed state and chose the next input, and started the run again from
+  tick 0 for every decision: 347 engines, half an hour. The others worked a script out by hand from
+  logs they added. The judge wrote a planner of its own for the same question.
+- **Things looked up that the guide did not say:** how a key is spelt in a binding (three requests,
+  one of them a search that printed 64 MB); what a function of the SDK returns (every build listed
+  the SDK's `pub fn`s); why a query under a path gave the parent too.
+
+So, in the engine:
+
+- **A run whose module failed answers that, never a state.** `module_failed`: the module, how many
+  of the run's ticks failed, the first failure whole (its code, its message, its tick), and the last
+  one's tick. The module host keeps a module's first failure beside its last (`logic_status`:
+  `first_error`). Exit code 1.
+- **What the rules log is said beside the state**: the last 20 lines of `cx.log`, each with its
+  tick, on standard error.
+- **A run's answer is one line, whatever it is.** A refusal used to be printed over several lines,
+  and a reader that took the last line of a run read a brace.
+- **`specula run --follow`.** After the script (which may be none) the state is printed; then each
+  line read from standard input is a step, `TICKS` or `TICKS WORD` (`10 up+shoot`: that input, then
+  ten ticks), and the state is printed after it; the run ends when the input does. The engine reads
+  the command's own input and writes its own output, with nothing in between, so a program that
+  starts the command once, reads a state and writes a step plays a whole game in one run, by the
+  same inputs a script gives. A line that is not a step is answered as one line (`bad_step`,
+  `unknown_input`) and the run goes on, so the player always reads one line for each it wrote. At
+  most 100,000 steps and 1,000,000 ticks a run.
+- **The guide says what was looked up**: every source a binding can name (a test holds each
+  against the input map), what each call of the SDK gives back, how things that come and go are
+  drawn (a tag and no name; what a query under a path gives), what a failed tick means, and
+  `--follow`.
+
+And in the comparison's harness: its `play` takes the work folder as well as the run's, passes a
+followed run's input and output through, and its `tools` says so when no engine is running.
+
+**What it is made of**: `script_run.rs` (`Run::stand`, `Run::check_word`, `parse_step`, `say`),
+`logic/mod.rs` (`first_error`), `launch_run.rs` (`usage_line`, `log_line`), `scaffold.rs` (the
+guide). The live check's sixteenth stage holds each of them.
 
 ## As built
 

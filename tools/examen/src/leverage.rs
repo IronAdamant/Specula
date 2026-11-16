@@ -391,6 +391,17 @@ fn run_name(run: &Path) -> String {
     absolute(run).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
+/// The run a builder's command names: the run's folder, or its work folder (a builder works
+/// in `work`, and names the folder it is in: two of five in the second pass did, and each
+/// spent a request on the refusal).
+pub fn run_named(given: &Path) -> PathBuf {
+    let here = absolute(given);
+    match here.parent() {
+        Some(parent) if !here.join("run.json").is_file() && here.file_name().is_some_and(|n| n == "work") && parent.join("run.json").is_file() => parent.to_path_buf(),
+        _ => given.to_path_buf(),
+    }
+}
+
 pub fn read_run(run: &Path) -> R<Json> {
     let f = run.join("run.json");
     if !f.is_file() {
@@ -449,7 +460,7 @@ fn arm_text(arm: &str, run: &Path) -> Vec<String> {
     vec![
         "What you have".to_owned(),
         "- You build it with the Specula engine. Your work folder is a Specula project made by the engine (`specula new`): a small sample game that builds and plays, with every part in place (a game file, screens and words, a module with the rules, the SDK, a check). `notes/how.md` in it says how such a game is built, run and checked: read it first. Replace the sample's rules, screens and words with your game's.".to_owned(),
-        format!("- Run the game with no window with `{tool} play {rd} --ticks N [--inputs T:WORD,T:WORD,...] [--seed N] [--settings FOLDER] [--frame FILE.png --size WxH]`: the engine's own `specula run` on your work folder (notes/how.md says what it takes and what it prints). It builds the module first and prints the game's state as JSON; no engine need be started for it. Paths in it are taken from the folder you run it in."),
+        format!("- Run the game with no window with `{tool} play {rd} --ticks N [--inputs T:WORD,T:WORD,...] [--seed N] [--settings FOLDER] [--frame FILE.png --size WxH] [--follow]`: the engine's own `specula run` on your work folder (notes/how.md says what it takes and what it prints). It builds the module first and prints the game's state as JSON; no engine need be started for it. Paths in it are taken from the folder you run it in."),
         format!("- An engine left running serves the project's tools, should you need them: start or stop it with `{tool} engine start {rd}` and `{tool} engine stop {rd}` (start it first; restart it this way if you need to). Never run the engine's executable yourself."),
         format!("- Call a tool with `{tool} call {rd} TOOL '{{json}}'`; arguments too long or awkward for a command line go in a file: `{tool} call {rd} TOOL @args.json`. `{tool} tools {rd} [FILTER]` lists tools, and the `tools_catalog` tool describes them."),
         format!("- notes/how.md is written to be enough for a game of this size. Where it is not, the engine's documents are in {} (design notes for each area in `docs/design/`), with {}.", posix(&repo.join("docs")), posix(&repo.join("README.md"))),
@@ -756,6 +767,15 @@ pub fn play_cmd(run: &Path, flags: &[String]) -> R<i32> {
     cmd.extend(flags.iter().cloned());
     let here = std::env::current_dir().unwrap_or_else(|_| run.clone());
     let began = Instant::now();
+    if flags.iter().any(|f| f == "--follow") {
+        // A followed run talks to whoever started it, a line at a time: its input and its
+        // output are this command's own, passed straight through (so what it answered is not
+        // counted here: the row says the run was made, and how long it took).
+        let ran = std::process::Command::new(&cmd[0]).args(&cmd[1..]).current_dir(&here).status().map_err(|e| format!("{}: {e}", cmd[0]))?;
+        let code = ran.code().unwrap_or(1);
+        log_call(&run, &r, "(run --follow)", flags.iter().map(|f| f.len() + 1).sum(), 0, code, began.elapsed().as_secs_f64() * 1000.0)?;
+        return Ok(code);
+    }
     // (Its own time limit is the command's. What it says beside its answer, on its standard
     // error, is what the game says is wrong with its files: passed on as it is.)
     let ran = std::process::Command::new(&cmd[0]).args(&cmd[1..]).current_dir(&here).stdin(std::process::Stdio::null()).output().map_err(|e| format!("{}: {e}", cmd[0]))?;
@@ -776,6 +796,10 @@ pub fn tools_cmd(run: &Path, filter: Option<&str>) -> R<i32> {
     words.extend(["--port".to_owned(), port_text(&r)]);
     let Some((code, said)) = specula(&r, run, &words, Duration::from_secs(180)) else { return Err("the engine's command did not answer in 180 s".to_owned()) };
     log_call(run, &r, "(tools)", filter.map_or(0, str::len), said.len(), code, began.elapsed().as_secs_f64() * 1000.0)?;
+    if said.trim().is_empty() && code != 0 {
+        // (The engine's command says this beside its answer, where a reader of answers is not.)
+        println!("{}", Json::obj([("error", Json::from("no_engine")), ("message", Json::from("no engine is serving this run: 'examen leverage engine start RUN' starts one (the tools are an engine's). To build and play the game no engine is needed: 'examen leverage play RUN --ticks N'"))]));
+    }
     print!("{said}");
     Ok(code)
 }
@@ -1431,21 +1455,21 @@ fn dispatch(mut args: crate::cli::Args) -> R<i32> {
             if !matches!(w[0].as_str(), "start" | "stop") {
                 return Err("usage: examen leverage engine start|stop RUN".to_owned());
             }
-            engine_cmd(&w[0], Path::new(&w[1]))
+            engine_cmd(&w[0], &run_named(Path::new(&w[1])))
         }
         // (No flags: a tool's arguments may be any text.)
         "call" => {
             let w = words(args, "call RUN TOOL ['{json}' | @FILE]", 2, 3)?;
-            call_cmd(Path::new(&w[0]), &w[1], w.get(2).map(String::as_str))
+            call_cmd(&run_named(Path::new(&w[0])), &w[1], w.get(2).map(String::as_str))
         }
         "play" => {
             let rest = args.rest();
             let Some((run, flags)) = rest.split_first() else { return Err("usage: examen leverage play RUN [--ticks N --inputs ... (specula run's flags)]".to_owned()) };
-            play_cmd(Path::new(run), flags)
+            play_cmd(&run_named(Path::new(run)), flags)
         }
         "tools" => {
             let w = words(args, "tools RUN [FILTER]", 1, 2)?;
-            tools_cmd(Path::new(&w[0]), w.get(1).map(String::as_str))
+            tools_cmd(&run_named(Path::new(&w[0])), w.get(1).map(String::as_str))
         }
         "finish" => {
             let w = words(args, "finish RUN", 1, 1)?;

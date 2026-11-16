@@ -564,6 +564,9 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         let code = match launch_cli::take_settings(&argv).and_then(|(words, settings)| Ok((launch_cli::parse(&words)?, settings))) {
             Ok((Some(cli), settings)) => launch_run::answer(cli, settings),
             Ok((None, _)) => launch_run::usage(USAGE),
+            // (A run's answer is one line, a refusal as much as a state: its reader reads its
+            // last line.)
+            Err(why) if argv[0] == "run" => launch_run::usage_line(&why),
             Err(why) => launch_run::usage(&why),
         };
         std::process::exit(code);

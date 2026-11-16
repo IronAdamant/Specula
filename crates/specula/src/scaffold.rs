@@ -326,9 +326,13 @@ about: game.json, modules/{{module}}/, assets/ui/, checks/
 game from its start with no window, and prints how it stands as one JSON object:
 
     specula run . --ticks 40 --inputs "0:enter,5:tap,6:none,10:tap" [--seed 1]
-                  [--settings FOLDER] [--frame out.png --size 800x480]
+                  [--settings FOLDER] [--frame out.png --size 800x480] [--follow]
 
-- A build that fails answers the compiler's errors (file, line, message) and exit code 1.
+- The answer is one line: the state, or an error (exit code 1). A build that fails answers
+  the compiler's errors (file, line, message). A module whose call fails answers
+  `module_failed` with the code, the message and the tick, never a state: an error returned
+  from `tick` undoes the whole tick, so the game did not move. What the rules log
+  (`cx.log("text")?`) is printed beside the state, on standard error.
 - **Inputs** are words at ticks. `up down left right enter escape` press the interface, as
   keys do. A module's action (`tap` here: `modules/{{module}}/actions.json`) is held until the
   next input, as a held key is; `none` holds nothing. A word that is both does both. Words
@@ -346,6 +350,11 @@ game from its start with no window, and prints how it stands as one JSON object:
 - `--seed N` seeds `cx.random_*`: the same seed and inputs give the same run. `--settings
   FOLDER` is where the player's settings are read and kept; without it they are kept nowhere.
 - `--frame` writes what a player would see (the game file's `"view"`, with the interface).
+- `--follow` is for a player that reacts (showing that a game can be won, say): after the
+  script (`--ticks` may be left out) the state is printed, then each line read from standard
+  input is a step, `TICKS` or `TICKS WORD` (`10 up+shoot`: that input, then ten ticks), and
+  the state is printed after it. The run ends when the input does. A small program that
+  starts this command once, reads a state and writes a step, plays a whole game in one run.
 
 **game.json** (an unknown key is refused, by name)
 
@@ -376,20 +385,35 @@ game from its start with no window, and prints how it stands as one JSON object:
 
 **The rules** (`modules/{{module}}/src/lib.rs`: `tick` runs once a tick; crate `specula-sdk`)
 
-- Keep: `cx.state("k")?` (then `.as_u64()`, `.as_f64()`, `.as_bool()`, `.as_str()`,
-  `.as_list()`, `.as_map()`) and `cx.set_state("k", value)?`. A value is a number, a bool,
+- Keep: `cx.state("k")?` (a `Value`; then `.as_u64()`, `.as_i64()`, `.as_f64()`,
+  `.as_bool()`, `.as_str()`, `.as_list()` (a `&[Value]`), `.as_map()`, `.get("key")`, each an
+  `Option`) and `cx.set_state("k", value)?`. A value is a number, a bool,
   text, a `Vec<Value>` or a map (`Value::map().with("x", 1.5).with("kind", "walker")`). Keep
   everything there and nothing in the struct: what is kept is what screens show, what
   `outcome` reads and what `report` prints.
-- Input: `cx.action("name")` has `.pressed`, `.held`, `.released` and `.value`.
+- Input: `cx.action("name")` has `.pressed`, `.held`, `.released` and `.value` (`[f32; 2]`).
+  The actions are `modules/{{module}}/actions.json`: each `{"name", "kind": "button" (or
+  `"axis"`, `"axis2"`), "group", "description", "bindings": ["Key.Space", "Pad.South"]}`.
+  Sources: `Key.A` to `Key.Z`, `Key.0` to `Key.9`, `Key.Up`, `Key.Down`, `Key.Left`,
+  `Key.Right`, `Key.Space`, `Key.Enter`, `Key.Escape`, `Key.Tab`, `Key.Shift`, `Key.Ctrl`;
+  `Pad.South`, `Pad.East`, `Pad.West`, `Pad.North`, `Pad.DpadUp` (`Down`, `Left`, `Right`),
+  `Pad.Start`, `Pad.LeftStick` (an axis2); `Mouse.Left`.
 - Events from the engine, at a tick: `for e in cx.events()`, with `e.from == "engine"`,
   `e.name` and `e.data.get("key")`: `run` (`phase` is `start` when a run begins; any other
   `run`, and `outcome`, end it), `setting` (`name`, `value`), `ui` (`action`).
 - The world: `cx.spawn(Spawn::new("cube").name("n").parent("/{{module}}").position(v)
-  .scale(v).color("#rrggbb"))?`, `cx.find("/{{module}}/n")?`, `cx.set(id,
-  Patch::new().position(v))?`, `cx.delete(id)?`, `cx.query(Some("tag"), Some("/{{module}}"), 100)?`.
-- `cx.tick()`, `cx.tick_hz()`, `cx.random_below("stream", n)?`, `cx.random_f32("stream")?`,
-  `cx.sound("name", None, 1.0)?`, `cx.log("text")?`.
+  .scale(v).color("#rrggbb").tags(&["mob"]))?` (an `Id`; `v` is `Vec3::new(x, y, z)`, `f32`),
+  `cx.find("/{{module}}/n")?` (an `Option<Id>`), `cx.set(id, Patch::new().position(v)
+  .field("color", "#rrggbb"))?`, `cx.delete(id)?`, `cx.query(Some("mob"), None, 4096)?` (a
+  `Vec<Id>`).
+- Things that come and go (shots, enemies): keep them as a list in the state, and each tick
+  delete what `cx.query(Some("mob"), None, 4096)?` gives and spawn them again with that tag
+  and **no name** (the engine names them: two children of one parent with one name is the
+  error `name_taken`). A query under a path (`Some("/{{module}}/mobs")`) gives the entity at
+  that path too, with what is below it.
+- `cx.tick()` (`u64`), `cx.tick_hz()` (`u32`), `cx.random_below("stream", n)?` (a `u32`
+  below `n`), `cx.random_f32("stream")?` (0 to 1), `cx.sound("name", None, 1.0)?`,
+  `cx.log("text")?`.
 
 **Also**
 
@@ -563,6 +587,17 @@ mod tests {
         let how = text("notes/how.md");
         for key in ["title", "tick_hz", "modules", "locale", "start", "screens", "settings", "outcome", "view", "report"] {
             assert!(how.contains(&format!("`{key}`")), "notes/how.md does not name the game file's {key}");
+        }
+        // Every source the guide names for a binding is one the input map reads (a builder of
+        // the second pass searched the engine's source three times for how keys are spelt).
+        let mut sources = 0;
+        for word in how.split('`').filter(|w| ["Key.", "Pad.", "Mouse."].iter().any(|d| w.starts_with(d))) {
+            assert!(specula_input::Source::parse(word).is_some(), "notes/how.md names the source {word}, which the input map does not read");
+            sources += 1;
+        }
+        assert!(sources >= 20, "{sources} sources named");
+        for said in ["module_failed", "name_taken", "--follow", "TICKS WORD", "no name"] {
+            assert!(how.contains(said), "notes/how.md does not say {said}");
         }
         let game = specula_ludus::GameFile::parse(text("game.json")).expect("the game file");
         assert!(game.report.iter().any(|(name, key)| name == "taps" && *key == format!("{module}.taps")), "{:?}", game.report);

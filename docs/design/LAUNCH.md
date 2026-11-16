@@ -119,11 +119,14 @@ specula play NAME|FOLDER|--last [--as-is]
                                  open a project in front, with its modules loaded as their owner last
                                  built them (--run); --as-is: whatever is on disk now (--run-as-is)
 specula run [NAME|FOLDER] --ticks N [--inputs T:WORD,...|@FILE] [--seed N] [--settings FOLDER]
-            [--frame FILE.png [--size WxH]]
+            [--frame FILE.png [--size WxH]] [--follow]
                                  play a project's game with no window, from its start, by a script
                                  of inputs, and print how it stands as one JSON object; its modules
                                  are built first, as they are on disk (as play --as-is). Nothing is
-                                 left running (FIRST_HOUR.md, "A headless run")
+                                 left running (FIRST_HOUR.md, "A headless run"). Its answer is one
+                                 line, a refusal as much as a state; a module whose call failed is
+                                 a refusal. --follow: then a step a line from standard input
+                                 (TICKS, or TICKS WORD), the state printed after each
 specula new NAME [--in FOLDER] [--bare]
                                  make a project that builds and plays, and list it
 specula forget NAME|FOLDER       take a project off the list (its folder stays)

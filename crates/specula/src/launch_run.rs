@@ -726,6 +726,7 @@ fn run_game(ctx: &Ctx, args: &crate::launch_cli::RunArgs) -> (i32, Json) {
         inputs: args.inputs.clone(),
         frame: args.frame.as_ref().map(absolute),
         size: args.size.unwrap_or((960, 540)),
+        follow: args.follow,
         out: scratch.join("answer.json"),
     };
     if let Some(parent) = spec.frame.as_ref().and_then(|f| f.parent()).filter(|p| !p.as_os_str().is_empty()) {
@@ -754,6 +755,12 @@ fn run_game(ctx: &Ctx, args: &crate::launch_cli::RunArgs) -> (i32, Json) {
         }
         // What the engine says of itself is kept, its last lines: why a run that did not answer did not.
         command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
+        if spec.follow {
+            // A followed run's steps are read by the engine itself, from this command's own
+            // input, and each state is written to this command's own output (an engine prints
+            // nothing else there): whoever plays talks to the run with nothing in between.
+            command.stdin(std::process::Stdio::inherit()).stdout(std::process::Stdio::inherit());
+        }
         let mut child = match command.spawn() {
             Ok(c) => c,
             Err(e) => return done(refusal("not_started", format!("{} could not be started ({e})", ctx.exe.display()))),
@@ -809,8 +816,10 @@ fn run_game(ctx: &Ctx, args: &crate::launch_cli::RunArgs) -> (i32, Json) {
         return done((1, answer.get("error").cloned().unwrap_or_else(|| refusal("no_answer", "the run's answer could not be read").1)));
     }
     let mut out = Json::obj([(RUN_REPORT, answer.get("report").cloned().unwrap_or(Json::Null))]);
-    if let Some(problems) = answer.get("problems") {
-        out.set("problems", problems.clone());
+    for beside in ["problems", "log", RUN_FOLLOWED] {
+        if let Some(value) = answer.get(beside) {
+            out.set(beside, value.clone());
+        }
     }
     done((0, out))
 }
@@ -818,6 +827,14 @@ fn run_game(ctx: &Ctx, args: &crate::launch_cli::RunArgs) -> (i32, Json) {
 /// The key a headless run's answer has its report under ([`answer`] prints the report alone,
 /// as one line: it is the game's own state, for whoever checks it, not this command's words).
 const RUN_REPORT: &str = "run_report";
+/// The key that says a run was followed: its states were printed as it went, by the engine.
+const RUN_FOLLOWED: &str = "followed";
+
+/// What a module logged (`cx.log`), as a line beside a run's answer.
+fn log_line(line: &Json) -> String {
+    let word = |key: &str| line.get(key).map_or_else(String::new, |v| v.as_str().map_or_else(|| v.to_string(), str::to_owned));
+    format!("specula run: {} logged at tick {}: {}", word("module"), word("tick"), word("message"))
+}
 
 /// A port of this machine that is free now.
 pub fn free_port() -> Option<u16> {
@@ -828,6 +845,12 @@ pub fn free_port() -> Option<u16> {
 /// other place a command prints).
 pub fn usage(message: &str) -> i32 {
     println!("{}", refusal("usage", message).1.to_pretty());
+    1
+}
+
+/// [`usage`], as one line: a headless run's answer is a line whatever it is.
+pub fn usage_line(message: &str) -> i32 {
+    println!("{}", refusal("usage", message).1);
     1
 }
 
@@ -870,6 +893,7 @@ pub fn respawn(argv: &[String], folder: &Path, quiet: bool) -> Result<(), String
 /// The command line's whole answer: prints the JSON (stdout, or stderr for a failure to reach
 /// an engine) and returns the exit code. The one place the commands print.
 pub fn answer(cli: Cli, settings: Option<PathBuf>) -> i32 {
+    let a_run = matches!(cli, Cli::Run(_));
     let (code, json) = match Ctx::from_env(settings) {
         Ok(ctx) => run(cli, &ctx),
         Err(why) => refusal("no_per_user_folder", why),
@@ -880,7 +904,19 @@ pub fn answer(cli: Cli, settings: Option<PathBuf>) -> i32 {
         for problem in json.get("problems").and_then(Json::as_array).unwrap_or(&[]) {
             eprintln!("specula run: {}", problem.as_str().map_or_else(|| problem.to_string(), str::to_owned));
         }
-        println!("{report}");
+        for line in json.get("log").and_then(Json::as_array).unwrap_or(&[]) {
+            eprintln!("{}", log_line(line));
+        }
+        // (A followed run printed each state as it went: its last is not said twice.)
+        if json.get(RUN_FOLLOWED).is_none() {
+            println!("{report}");
+        }
+        return code;
+    }
+    // A run that could not be made, or failed: its answer is one line too, where the state
+    // would have been (whoever reads a run reads its last line).
+    if a_run && code == 1 {
+        println!("{json}");
         return code;
     }
     // (`help` is words for a person: printed as text.)

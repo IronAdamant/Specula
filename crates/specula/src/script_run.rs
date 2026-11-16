@@ -49,6 +49,12 @@ const MAX_DIAGNOSTICS: usize = 8;
 const MAX_WIDGETS: usize = 2000;
 /// A held action is held for this many ticks at a time, and held again before they run out.
 const HOLD_TICKS: u64 = 18_000;
+/// Most steps a followed run reads (each prints the state).
+pub const MAX_STEPS: u64 = 100_000;
+/// Most characters of one step's line.
+const MAX_STEP_LINE: usize = 200;
+/// Most of a module's own log lines an answer carries (the last ones).
+const MAX_LOG: usize = 20;
 
 /// What a run is asked: `specula run` writes it, the engine reads it.
 #[derive(Clone, Debug, PartialEq)]
@@ -59,6 +65,9 @@ pub struct Spec {
     pub inputs: Vec<(u64, String)>,
     pub frame: Option<PathBuf>,
     pub size: (u32, u32),
+    /// After the script: steps read from standard input, a line each, the state printed after
+    /// each (`specula run --follow`).
+    pub follow: bool,
     /// Where the answer goes.
     pub out: PathBuf,
 }
@@ -76,6 +85,9 @@ impl Spec {
         }
         if let Some(frame) = &self.frame {
             j.set("frame", Json::from(frame.to_string_lossy().as_ref()));
+        }
+        if self.follow {
+            j.set("follow", Json::Bool(true));
         }
         j
     }
@@ -105,6 +117,7 @@ impl Spec {
             inputs,
             frame: j.get("frame").and_then(Json::as_str).map(PathBuf::from),
             size,
+            follow: j.get("follow").and_then(Json::as_bool).unwrap_or(false),
             out: j.get("out").and_then(Json::as_str).map(PathBuf::from).ok_or("out: where the answer is written")?,
         })
     }
@@ -134,6 +147,25 @@ pub fn parse_inputs(text: &str) -> Result<Vec<(u64, String)>, String> {
     }
     check_inputs(&out)?;
     Ok(out)
+}
+
+/// One step of a followed run, as a line gives it: `TICKS` (that many ticks with what is held)
+/// or `TICKS WORD` (the input given first: `10 up+shoot`, `1 enter`, `30 none`).
+pub fn parse_step(line: &str) -> Result<(u64, Option<&str>), String> {
+    let shape = || format!("'{}' is not a step: TICKS, or TICKS WORD (10 up+shoot, 1 enter, 30 none)", line.chars().take(40).collect::<String>());
+    if line.len() > MAX_STEP_LINE {
+        return Err(shape());
+    }
+    let mut words = line.split_whitespace();
+    let ticks = words.next().and_then(|t| t.parse::<u64>().ok()).filter(|t| *t <= MAX_TICKS).ok_or_else(shape)?;
+    let word = words.next();
+    if words.next().is_some() {
+        return Err(shape());
+    }
+    if let Some(word) = word {
+        check_inputs(&[(0, word.to_owned())])?;
+    }
+    Ok((ticks, word))
 }
 
 /// `time_control` is refused while a script has the clock, except `info` (and the script's own
@@ -215,6 +247,15 @@ fn read(out: &ToolOutput) -> Result<Json, Json> {
     } else {
         Ok(json)
     }
+}
+
+/// How a game stands, as [`Run::stand`] read it.
+struct Stand {
+    report: Json,
+    /// `game_state`'s answer.
+    state: Json,
+    /// The last lines the modules logged (`cx.log`), each with its tick.
+    log: Vec<Json>,
 }
 
 struct Run<'t> {
@@ -327,6 +368,112 @@ impl Run<'_> {
         Ok(())
     }
 
+    /// Every part of `word` is one this game takes, with a value of its action's kind (a button
+    /// is held, an axis has a number, an axis of two has two): asked before the word is given,
+    /// so that a misspelt input is not a run that did nothing.
+    fn check_word(&self, word: &str, at: Option<u64>) -> Result<(), Json> {
+        let place = at.map_or(String::new(), |t| format!(" (at tick {t})"));
+        for (name, value) in parts(word).map_err(|why| refusal("bad_input", why))? {
+            let module = self.modules.iter().find(|(_, actions)| actions.iter().any(|a| a == name)).map(|(module, _)| module.clone());
+            let press = matches!(value, Json::Bool(true)) && press_of(name).is_some();
+            if name != "none" && !press && module.is_none() {
+                let mut e = refusal("unknown_input", format!("'{name}'{place} is not an input of this game"));
+                let mut words: Vec<Json> = ["up", "down", "left", "right", "enter", "escape", "none"].map(Json::from).to_vec();
+                words.extend(self.modules.iter().flat_map(|(_, actions)| actions.iter().map(|a| Json::from(a.as_str()))));
+                e.set("inputs", Json::Arr(words));
+                e.set("also", Json::from("words joined by + are held together (up+shoot); an action that is not a button takes a value (throttle=0.5, move=1/0); a source such as Key.Enter presses the interface only, never a module's action: name the action"));
+                return Err(e);
+            }
+            // (Asked of the engine with no ticks: nothing is held by it.)
+            if let Some(module) = module {
+                if let Err(mut e) = self.call("logic_input", Json::obj([("module", Json::from(module.as_str())), ("actions", Json::obj([(name, value)])), ("ticks", Json::from(0u64))])) {
+                    e.set("error", Json::from("bad_input"));
+                    e.set("input", Json::from(word));
+                    if let Some(at) = at {
+                        e.set("at_tick", Json::from(at));
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// How the game stands after `tick` ticks of the run: the report (as the game file shapes
+    /// it), the game's own state, and what the modules logged.
+    ///
+    /// A module that is not running, or one whose call failed, is an error and never a state:
+    /// a call that fails is undone, the whole of it, so the game did not move in that tick,
+    /// and a state printed all the same reads as a game whose rules do nothing (two of three
+    /// builders of the comparison's second pass spent fifteen and thirty-four requests finding
+    /// that out with prints of their own: docs/design/LEVERAGE.md).
+    fn stand(&self, game: &GameFile, tick: u64, seed: Option<u64>) -> Result<Stand, Json> {
+        let state = self.call("game_state", Json::obj::<&str>([]))?;
+        let ui = interface(self)?;
+        let mut states = Json::obj::<&str>([]);
+        let mut log: Vec<Json> = Vec::new();
+        for (name, _) in &self.modules {
+            let status = self.call("logic_status", Json::obj([("module", Json::from(name.as_str())), ("detailed", Json::Bool(true))]))?;
+            let module = status.get("modules").and_then(Json::as_array).and_then(|m| m.first()).cloned().unwrap_or(Json::Null);
+            let lines = status.get("log").and_then(Json::as_array).unwrap_or(&[]);
+            log.extend(lines.iter().skip(lines.len().saturating_sub(MAX_LOG)).cloned());
+            if module.get("status").and_then(Json::as_str).is_some_and(|s| s != "running") {
+                let mut e = refusal("module_stopped", format!("the module {name} is not running: the state below is as it stopped"));
+                e.set("module", module);
+                if !log.is_empty() {
+                    e.set("log", Json::Arr(log));
+                }
+                return Err(e);
+            }
+            let failures = module.get("failures").and_then(Json::as_u64).unwrap_or(0);
+            if failures > 0 {
+                let first = module.get("first_error").or_else(|| module.get("last_error")).cloned().unwrap_or(Json::Null);
+                let word = |key: &str| first.get(key).map_or_else(|| "?".to_owned(), |v| v.as_str().map_or_else(|| v.to_string(), str::to_owned));
+                let mut e = refusal(
+                    "module_failed",
+                    format!(
+                        "the module {name} failed in {failures} of this run's ticks, first at tick {} ({}: {}). A call that fails is undone, the whole of it: the game did not move in those ticks, so there is no state of it to print",
+                        word("tick"),
+                        word("code"),
+                        word("message")
+                    ),
+                );
+                e.set("module", Json::from(name.as_str()));
+                e.set("failures", Json::from(failures));
+                e.set("first", first);
+                // (The last one whole only when it is another error than the first.)
+                let last = module.get("last_error").filter(|_| failures > 1);
+                let same = |key: &str| last.and_then(|l| l.get(key)) == e.get("first").and_then(|f| f.get(key));
+                match last {
+                    Some(last) if same("code") && same("message") => drop(e.set("last_tick", last.get("tick").cloned().unwrap_or(Json::Null))),
+                    Some(last) => drop(e.set("last", last.clone())),
+                    None => {}
+                }
+                if !log.is_empty() {
+                    e.set("log", Json::Arr(log));
+                }
+                return Err(e);
+            }
+            // The status shows a bounded number of the keys a module keeps: a report that read
+            // only some of them would print `null` for the rest, and nobody would know.
+            let (kept, read) = (module.get("state_keys").and_then(Json::as_u64).unwrap_or(0), module.get("state").and_then(Json::as_object).map_or(0, |s| s.len() as u64));
+            if kept > read {
+                let mut e = refusal("state_too_wide", format!("the module {name} keeps {kept} values and a run reads {read} of them: keep what belongs together under one key (a list, a map)"));
+                e.set("module", Json::from(name.as_str()));
+                return Err(e);
+            }
+            states.set(name, module.get("state").cloned().unwrap_or(Json::Null));
+        }
+        let report = if game.report.is_empty() {
+            Json::obj([("tick", Json::from(tick)), ("game", state.clone()), ("ui", ui), ("state", states)])
+        } else {
+            Json::Obj(game.report.iter().map(|(name, key)| (name.clone(), value_of(key, tick, seed, &state, &ui, &states))).collect())
+        };
+        let over = log.len().saturating_sub(MAX_LOG);
+        log.drain(..over);
+        Ok(Stand { report, state, log })
+    }
+
     /// Plays up to `ticks` ticks of the game. Fewer were played when the game holds its clock
     /// (the title, a pause, a run that ended): the rest pass with nothing ticking.
     fn play(&mut self, ticks: u64) -> Result<(), Json> {
@@ -436,30 +583,12 @@ fn run(tools: &Tools, gate: &StartGate, spec: &Spec) -> Result<Json, Json> {
     // button is held, an axis has a number, an axis of two has two): a misspelt input is not a
     // run that did nothing, and none fails a run half way.
     check_span(&spec.inputs, spec.ticks).map_err(|why| refusal("bad_input", why))?;
-    let mut probed: Vec<String> = Vec::new();
+    let mut probed: Vec<&str> = Vec::new();
     for (tick, word) in &spec.inputs {
-        for (name, value) in parts(word).map_err(|why| refusal("bad_input", why))? {
-            let module = run.modules.iter().find(|(_, actions)| actions.iter().any(|a| a == name)).map(|(module, _)| module.clone());
-            let press = matches!(value, Json::Bool(true)) && press_of(name).is_some();
-            if name != "none" && !press && module.is_none() {
-                let mut e = refusal("unknown_input", format!("'{name}' (at tick {tick}) is not an input of this game"));
-                let mut words: Vec<Json> = ["up", "down", "left", "right", "enter", "escape", "none"].map(Json::from).to_vec();
-                words.extend(run.modules.iter().flat_map(|(_, actions)| actions.iter().map(|a| Json::from(a.as_str()))));
-                e.set("inputs", Json::Arr(words));
-                e.set("also", Json::from("words joined by + are held together (up+shoot); an action that is not a button takes a value (throttle=0.5, move=1/0); a source such as Key.Enter presses the interface only, never a module's action: name the action"));
-                return Err(e);
-            }
-            // (Asked of the engine once a part, with no ticks: nothing is held by it.)
-            if let Some(module) = module.filter(|_| !probed.iter().any(|p| p == word)) {
-                if let Err(mut e) = run.call("logic_input", Json::obj([("module", Json::from(module.as_str())), ("actions", Json::obj([(name, value)])), ("ticks", Json::from(0u64))])) {
-                    e.set("error", Json::from("bad_input"));
-                    e.set("input", Json::from(word.as_str()));
-                    e.set("at_tick", Json::from(*tick));
-                    return Err(e);
-                }
-            }
+        if !probed.contains(&word.as_str()) {
+            run.check_word(word, Some(*tick))?;
+            probed.push(word);
         }
-        probed.push(word.clone());
     }
     let mut tick = 0u64;
     let mut next = 0usize;
@@ -478,32 +607,49 @@ fn run(tools: &Tools, gate: &StartGate, spec: &Spec) -> Result<Json, Json> {
         next += 1;
     }
 
-    let state = run.call("game_state", Json::obj::<&str>([]))?;
-    let ui = interface(&run)?;
-    let mut states = Json::obj::<&str>([]);
-    for (name, _) in &run.modules {
-        let status = run.call("logic_status", Json::obj([("module", Json::from(name.as_str())), ("detailed", Json::Bool(true))]))?;
-        let module = status.get("modules").and_then(Json::as_array).and_then(|m| m.first()).cloned().unwrap_or(Json::Null);
-        if module.get("status").and_then(Json::as_str).is_some_and(|s| s != "running") {
-            let mut e = refusal("module_stopped", format!("the module {name} is not running: the state below is as it stopped"));
-            e.set("module", module);
-            return Err(e);
+    let mut stand = run.stand(&game, tick, spec.seed)?;
+    let mut followed = None;
+    if spec.follow {
+        // The state now, then a step a line: whoever plays reads the one and writes the other.
+        say(&stand.report)?;
+        let mut steps = 0u64;
+        for line in std::io::stdin().lines() {
+            let Ok(line) = line else { break };
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            steps += 1;
+            // A line that is not a step is answered on its own line, and the run goes on: the
+            // player reads one line for each it wrote.
+            let step = parse_step(line).map_err(|why| refusal("bad_step", why)).and_then(|(ticks, word)| {
+                if steps > MAX_STEPS {
+                    return Err(refusal("too_many_steps", format!("a followed run reads at most {MAX_STEPS} steps")));
+                }
+                if tick + ticks > MAX_TICKS {
+                    return Err(refusal("too_many_ticks", format!("a run plays at most {MAX_TICKS} ticks")));
+                }
+                if let Some(word) = word {
+                    run.check_word(word, None)?;
+                }
+                Ok((ticks, word))
+            });
+            match step {
+                Err(e) => say(&e)?,
+                Ok((ticks, word)) => {
+                    if let Some(word) = word {
+                        run.input(word)?;
+                    }
+                    run.play(ticks)?;
+                    tick += ticks;
+                    stand = run.stand(&game, tick, spec.seed)?;
+                    say(&stand.report)?;
+                }
+            }
         }
-        // The status shows a bounded number of the keys a module keeps: a report that read
-        // only some of them would print `null` for the rest, and nobody would know.
-        let (kept, read) = (module.get("state_keys").and_then(Json::as_u64).unwrap_or(0), module.get("state").and_then(Json::as_object).map_or(0, |s| s.len() as u64));
-        if kept > read {
-            let mut e = refusal("state_too_wide", format!("the module {name} keeps {kept} values and a run reads {read} of them: keep what belongs together under one key (a list, a map)"));
-            e.set("module", Json::from(name.as_str()));
-            return Err(e);
-        }
-        states.set(name, module.get("state").cloned().unwrap_or(Json::Null));
+        followed = Some(steps);
     }
-    let report = if game.report.is_empty() {
-        Json::obj([("tick", Json::from(tick)), ("game", state.clone()), ("ui", ui), ("state", states)])
-    } else {
-        Json::Obj(game.report.iter().map(|(name, key)| (name.clone(), value_of(key, tick, spec.seed, &state, &ui, &states))).collect())
-    };
+    let Stand { report, state, log } = stand;
     if let Some(frame) = &spec.frame {
         let mut args = Json::obj([("width", Json::from(u64::from(spec.size.0))), ("height", Json::from(u64::from(spec.size.1))), ("include_ui", Json::Bool(true))]);
         match game.view {
@@ -522,11 +668,25 @@ fn run(tools: &Tools, gate: &StartGate, spec: &Spec) -> Result<Json, Json> {
         crate::disk::book().copy(crate::disk::Category::Captures, "script", Path::new(made), frame, crate::disk::Need::Essential).map_err(|e| refusal("no_frame", format!("{}: {}", frame.display(), e.to_json())))?;
     }
     let mut answer = Json::obj([("report", report)]);
+    if let Some(steps) = followed {
+        answer.set("followed", Json::from(steps));
+    }
+    if !log.is_empty() {
+        answer.set("log", Json::Arr(log));
+    }
     // What the game says is wrong with its own files rides beside the report, never inside it.
     if let Some(problems) = state.get("problems").filter(|p| p.as_array().is_some_and(|p| !p.is_empty())) {
         answer.set("problems", problems.clone());
     }
     Ok(answer)
+}
+
+/// One line of a followed run, on the standard output the command was given: the game's state
+/// (or what was wrong with a step), for whoever plays to read before it writes its next step.
+fn say(line: &Json) -> Result<(), Json> {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    writeln!(out, "{line}").and_then(|()| out.flush()).map_err(|e| refusal("no_reader", format!("the run's output could not be written ({e}): whoever follows it has gone")))
 }
 
 /// What the run's answer file holds: `{"ok": true, "report": ..., "problems": [...]}` or
@@ -592,15 +752,28 @@ mod tests {
 
     #[test]
     fn a_spec_is_read_back_as_it_was_written() {
-        let spec = Spec { ticks: 600, seed: Some(7), inputs: vec![(0, "enter".into()), (5, "up".into())], frame: Some(PathBuf::from("out/f.png")), size: (800, 480), out: PathBuf::from("answer.json") };
+        let spec = Spec { ticks: 600, seed: Some(7), inputs: vec![(0, "enter".into()), (5, "up".into())], frame: Some(PathBuf::from("out/f.png")), size: (800, 480), follow: true, out: PathBuf::from("answer.json") };
         assert_eq!(Spec::from_json(&spec.to_json()).unwrap(), spec);
-        let bare = Spec { ticks: 0, seed: None, inputs: Vec::new(), frame: None, size: (960, 540), out: PathBuf::from("a") };
+        let bare = Spec { ticks: 0, seed: None, inputs: Vec::new(), frame: None, size: (960, 540), follow: false, out: PathBuf::from("a") };
         assert_eq!(Spec::from_json(&Json::parse(r#"{"ticks": 0, "out": "a"}"#).unwrap()).unwrap(), bare);
         let bad = |text: &str| Spec::from_json(&Json::parse(text).unwrap()).unwrap_err();
         assert!(bad(r#"{"ticks": 2000000, "out": "a"}"#).contains("ticks"));
         assert!(bad(r#"{"ticks": 1, "out": "a", "size": [10, 480]}"#).contains("size"));
         assert!(bad(r#"{"ticks": 1}"#).contains("out"));
         assert!(bad(r#"{"ticks": 1, "out": "a", "inputs": [[5, "up"], [1, "down"]]}"#).contains("order"));
+    }
+
+    #[test]
+    fn a_step_is_ticks_and_perhaps_a_word() {
+        assert_eq!(parse_step("10 up+shoot").unwrap(), (10, Some("up+shoot")));
+        assert_eq!(parse_step("  30  ").unwrap(), (30, None));
+        assert_eq!(parse_step("0 enter").unwrap(), (0, Some("enter")));
+        assert_eq!(parse_step("5 throttle=0.5").unwrap(), (5, Some("throttle=0.5")));
+        for bad in ["", "up", "up 10", "10 up shoot", "-1 up", "1.5 up", "2000000 up", "10:up"] {
+            assert!(parse_step(bad).unwrap_err().contains("TICKS WORD"), "{bad}");
+        }
+        assert!(parse_step(&format!("1 {}", "a".repeat(65))).unwrap_err().contains("1 to 64"));
+        assert!(parse_step(&"9".repeat(300)).unwrap_err().contains("not a step"));
     }
 
     #[test]

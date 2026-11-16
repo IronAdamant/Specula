@@ -291,7 +291,7 @@ All in `specula_sdk::abi`; version **1** (`ABI_VERSION`).
 | `logic_build {path, check?, fix?, release?, reload?, detailed?, seed?, approve?}` | Owner or granted lead: Cargo build of the module crate, diagnostics as data, optional fixes, then reload (`approve` builds a proposal's exact sources). Anyone else: files a proposal, builds nothing. Timings: `queued`, `build`, `reload` (`open`, `load`, `start` inside), `total`. |
 | `logic_reload {module? \| library?}` | Owner or granted lead: reload from the last library (after building it yourself) or load a prebuilt one. |
 | `logic_unload {module, forget_state?}` | Owner or granted lead: stop and unload. |
-| `logic_status {module?, detailed?}` | Modules (status, why disabled, generation, build hash, ticks, failures, last error, tick µs, actions, held input, hooks, state size / values), recent loads, log, events, hook uses, builds, proposals. |
+| `logic_status {module?, detailed?}` | Modules (status, why disabled, generation, build hash, ticks, failures, first and last error, tick µs, actions, held input, hooks, state size / values), recent loads, log, events, hook uses, builds, proposals. |
 | `logic_input {module, actions, ticks?}` | Hold actions for N ticks (buttons true/false, axes numbers, 2D axes `[x, y]`). |
 | `logic_hook {hook, args?, reason}` | Call a native hook (logged with the reason). Its world changes are checked against other agents' claims, as `play_*` tools' are; a refusal keeps nothing the hook did. |
 

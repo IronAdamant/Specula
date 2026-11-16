@@ -42,6 +42,8 @@ pub struct RunArgs {
     pub inputs: Vec<(u64, String)>,
     pub frame: Option<PathBuf>,
     pub size: Option<(u32, u32)>,
+    /// After the script, steps are read from standard input (`--follow`).
+    pub follow: bool,
 }
 
 /// One command.
@@ -111,7 +113,7 @@ specula play NAME|FOLDER|--last [--as-is] [-- engine flags]
                                  (--run-as-is): say it only for code that is yours to run. A
                                  module is native code with your user's rights
 specula run [NAME|FOLDER] --ticks N [--inputs T:WORD,T:WORD,... | --inputs @FILE] [--seed N]
-            [--settings FOLDER] [--frame FILE.png [--size WxH]]
+            [--settings FOLDER] [--frame FILE.png [--size WxH]] [--follow]
                                  play a project's game with no window, from its start, and
                                  print how it stands as one JSON object (the game file's
                                  \"report\", or everything). Its modules are built first, as
@@ -121,7 +123,15 @@ specula run [NAME|FOLDER] --ticks N [--inputs T:WORD,T:WORD,... | --inputs @FILE
                                  with its value: throttle=0.5, move=1/0), words joined by +
                                  (held together), or none. A source (Key.Enter) presses the
                                  interface only. --settings: where this run's player
-                                 settings are read and kept (none: kept nowhere)
+                                 settings are read and kept (none: kept nowhere). A module
+                                 whose call failed is an error (which, at which tick), never
+                                 a state, and what the modules logged is said beside it.
+                                 --follow: after the script (--ticks may be left out), the
+                                 state is printed and steps are read from standard input, a
+                                 line each: TICKS, or TICKS WORD (10 up+shoot: the input,
+                                 then ten ticks); the state is printed after each, and the
+                                 run ends with the input: a player that reads the state and
+                                 answers it plays a whole game in one run
 specula new NAME [--in FOLDER] [--bare]
                                  make a project that builds and plays (a game file, screens,
                                  words, a module, the SDK, notes) and list it; --bare: only
@@ -283,7 +293,7 @@ pub fn parse(args: &[String]) -> Result<Option<Cli>, String> {
         }
         // A headless run of a project's game by a script of inputs (docs/design/FIRST_HOUR.md).
         "run" => {
-            let mut run = RunArgs { which: None, ticks: None, seed: None, inputs: Vec::new(), frame: None, size: None };
+            let mut run = RunArgs { which: None, ticks: None, seed: None, inputs: Vec::new(), frame: None, size: None, follow: false };
             let mut i = 0;
             while i < rest.len() {
                 let w = rest[i].as_str();
@@ -294,9 +304,14 @@ pub fn parse(args: &[String]) -> Result<Option<Cli>, String> {
                     i += 1;
                     continue;
                 }
+                if w == "--follow" {
+                    run.follow = true;
+                    i += 1;
+                    continue;
+                }
                 const TAKES: [&str; 5] = ["--ticks", "--seed", "--inputs", "--frame", "--size"];
                 if !TAKES.contains(&w) {
-                    return Err(format!("'{w}' is not a flag of this command (it takes: {}, --settings)", TAKES.join(", ")));
+                    return Err(format!("'{w}' is not a flag of this command (it takes: {}, --follow, --settings)", TAKES.join(", ")));
                 }
                 let value = rest.get(i + 1).ok_or_else(|| format!("'{w}' needs a value"))?.as_str();
                 match w {
@@ -318,8 +333,12 @@ pub fn parse(args: &[String]) -> Result<Option<Cli>, String> {
                 }
                 i += 2;
             }
+            // (A followed run's ticks are its steps': the script before them may be none.)
+            if run.follow && run.ticks.is_none() {
+                run.ticks = Some(run.inputs.last().map_or(0, |(at, _)| *at));
+            }
             if run.ticks.is_none() {
-                return Err("'specula run' needs --ticks N: how many ticks to play (0: only the start)".to_owned());
+                return Err("'specula run' needs --ticks N: how many ticks to play (0: only the start), or --follow: steps read from standard input".to_owned());
             }
             if let Some(ticks) = run.ticks {
                 crate::script_run::check_span(&run.inputs, ticks).map_err(|e| format!("'--inputs': {e}"))?;
@@ -432,6 +451,13 @@ mod tests {
         assert_eq!((bare.which, bare.ticks, bare.inputs.len(), bare.frame), (None, Some(0), 0, None));
         let no = |line: &str| p(line).unwrap_err();
         assert!(no("run crypt").contains("--ticks"), "how many ticks is always said");
+        // A followed run's ticks are its steps': the script before them may be none, and
+        // when there is one it runs to its last input.
+        let Ok(Some(Cli::Run(followed))) = p("run crypt --follow") else { panic!("not a run") };
+        assert_eq!((followed.follow, followed.ticks), (true, Some(0)));
+        let Ok(Some(Cli::Run(followed))) = p("run --follow --inputs 0:enter,4:up crypt") else { panic!("not a run") };
+        assert_eq!((followed.follow, followed.ticks, followed.which.as_deref()), (true, Some(4), Some("crypt")));
+        assert!(!run.follow);
         assert!(no("run crypt --ticks 5 --size 800x480").contains("--frame"));
         assert!(no("run crypt --ticks 5 --frame f.png --size 10x480").contains("64 to 2048"));
         assert!(no("run crypt other --ticks 5").contains("one project"));

@@ -647,6 +647,71 @@ fn new_project(cx: &mut Cx) -> Result<String, String> {
     std::fs::write(&lib, &good).map_err(|e| format!("{}: {e}", lib.display()))?;
     let (code, failed) = failed?;
     expect(code == 1 && text(&failed, "error") == Some("build_failed") && text(&failed, "diagnostics.0.file").is_some_and(|f| f.ends_with("lib.rs")) && at(&failed, "diagnostics.0.line").and_then(Json::as_u64).is_some(), "a module that does not build was not answered with where and why", &failed)?;
+    // A module whose call fails is an error and never a state (a failed call is undone, so a
+    // state printed all the same reads as rules that do nothing): which error, at which tick,
+    // how often, as one line. Here the second tap spawns a second child of one name.
+    let tap = "if cx.action(\"tap\").pressed {";
+    expect(good.contains(tap), "the sample module no longer reads its tap as this check expects", &Json::Null)?;
+    std::fs::write(&lib, good.replacen(tap, &format!("{tap}\n                cx.spawn(Spawn::new(\"cube\").name(\"twice\").parent(ROOT))?;"), 1)).map_err(|e| format!("{}: {e}", lib.display()))?;
+    let failing = cx.cli(&["run", &runfive, "--ticks", "40", "--inputs", TAPS]);
+    // What the rules log is said beside the state, a line each with its tick.
+    std::fs::write(&lib, good.replacen(tap, &format!("{tap}\n                cx.log(\"tapped\")?;"), 1)).map_err(|e| format!("{}: {e}", lib.display()))?;
+    let exe = cx.exe.clone();
+    let raw = |args: &[&str]| std::process::Command::new(&exe).args(args).stdin(std::process::Stdio::null()).output().map_err(|e| format!("{}: {e}", exe.display()));
+    let logged = raw(&["run", &runfive, "--ticks", "8", "--inputs", "0:enter,5:tap"]);
+    std::fs::write(&lib, &good).map_err(|e| format!("{}: {e}", lib.display()))?;
+    let (code, failing) = failing?;
+    expect(code == 1 && text(&failing, "error") == Some("module_failed") && text(&failing, "first.code") == Some("name_taken") && at(&failing, "first.tick").and_then(Json::as_u64) == Some(10), "a module whose tick failed was not answered with the error and its tick", &failing)?;
+    expect(at(&failing, "failures").and_then(Json::as_u64) == Some(4) && at(&failing, "last_tick").and_then(Json::as_u64) == Some(25) && text(&failing, "message").is_some_and(|m| m.contains("name_taken") && m.contains("tick 10")), "a failing module's answer does not count its failures, or its message does not say which and when", &failing)?;
+    let logged = logged?;
+    let (said, beside) = (String::from_utf8_lossy(&logged.stdout).into_owned(), String::from_utf8_lossy(&logged.stderr).into_owned());
+    expect(logged.status.success() && beside.lines().any(|l| l == "specula run: runfive logged at tick 5: tapped") && said.lines().count() == 1 && said.starts_with("{\"tick\":8,"), "what a module logged was not said beside the run's one line of state", &Json::from(format!("{said}\n{beside}").as_str()))?;
+    // A refusal is one line too, where the state would have been.
+    let refused = raw(&["run", &runfive, "--ticks", "10", "--inputs", "0:enter,50:tap"])?;
+    let line = String::from_utf8_lossy(&refused.stdout).into_owned();
+    expect(line.lines().count() == 1 && line.starts_with("{\"error\":\"usage\""), "a run's refusal is not one line", &Json::from(line.as_str()))?;
+    // A followed run: the state, then a step a line read from its input, the state after each;
+    // a line that is not a step is answered and the run goes on; the same steps as a script
+    // give the same state. Whoever plays reads a state before it writes its next step.
+    {
+        use std::io::{BufRead, Write};
+        let mut child = std::process::Command::new(&exe)
+            .args(["run", &runfive, "--follow", "--seed", "1"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("{}: {e}", exe.display()))?;
+        let mut to = child.stdin.take().ok_or("the followed run has no input")?;
+        let mut from = std::io::BufReader::new(child.stdout.take().ok_or("the followed run has no output")?);
+        let mut read = |what: &str| -> Result<Json, String> {
+            let mut line = String::new();
+            from.read_line(&mut line).map_err(|e| format!("the followed run's output: {e}"))?;
+            Json::parse(line.trim()).map_err(|e| format!("after {what} the followed run did not answer a line of JSON ({e}): {line}"))
+        };
+        let opening = read("its start")?;
+        expect(is(&opening, "tick", 0.0) && text(&opening, "phase") == Some("title"), "a followed run did not print its state at the start", &opening)?;
+        let mut last = opening;
+        for step in ["1 enter", "4", "1 tap", "4 none", "1 tap", "4 none", "1 tap", "4 none", "1 tap", "4 none", "1 tap", "14 none"] {
+            writeln!(to, "{step}").and_then(|()| to.flush()).map_err(|e| format!("the followed run's input: {e}"))?;
+            last = read(step)?;
+        }
+        expect(is(&last, "tick", 40.0) && text(&last, "phase") == Some("won") && is(&last, "taps", 5.0), "five taps given step by step did not win the game", &last)?;
+        writeln!(to, "ten taps").and_then(|()| to.flush()).map_err(|e| format!("the followed run's input: {e}"))?;
+        let not_a_step = read("a line that is no step")?;
+        expect(text(&not_a_step, "error") == Some("bad_step"), "a line that is not a step was not answered as one", &not_a_step)?;
+        writeln!(to, "2 jump").and_then(|()| to.flush()).map_err(|e| format!("the followed run's input: {e}"))?;
+        let no_word = read("a word the game does not take")?;
+        expect(text(&no_word, "error") == Some("unknown_input"), "a step with a word the game does not take was not answered as one", &no_word)?;
+        writeln!(to, "3").and_then(|()| to.flush()).map_err(|e| format!("the followed run's input: {e}"))?;
+        let after = read("three more ticks")?;
+        expect(is(&after, "tick", 43.0) && text(&after, "phase") == Some("won"), "a followed run did not go on after two lines it refused", &after)?;
+        drop(to);
+        let ended = child.wait().map_err(|e| format!("the followed run: {e}"))?;
+        let mut rest = String::new();
+        let _ = std::io::Read::read_to_string(&mut from, &mut rest);
+        expect(ended.success() && rest.trim().is_empty(), "a followed run did not end with its input, or said more after its last state", &Json::from(rest.as_str()))?;
+    }
     // One engine has a project at a time: a run on a project an engine has open is refused
     // with that engine, at once.
     let port5 = port + 5;

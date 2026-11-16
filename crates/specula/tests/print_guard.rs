@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 
 /// `(file, outputs allowed)`: the files that had console output on 2026-10-29.
-const ALLOWED: [(&str, usize); 67] = [
+const ALLOWED: [(&str, usize); 68] = [
     ("crates/specula/src/capture.rs", 3),
     ("crates/specula/src/disk.rs", 4),
     ("crates/specula/src/evidence.rs", 5),
@@ -19,8 +19,9 @@ const ALLOWED: [(&str, usize); 67] = [
     // The command line's commands (`specula projects`, `call`...): their answer IS their
     // standard output, in a process that is never an engine; the one place they print.
     // (The command line's answers: one place prints a command's JSON; `specula run` prints the
-    // game's report alone on a line, and what the game says is wrong with its files beside it.)
-    ("crates/specula/src/launch_run.rs", 5),
+    // game's report alone on a line, what the game says is wrong with its files and what its
+    // modules logged beside it, and a refusal as one line where the state would have been.)
+    ("crates/specula/src/launch_run.rs", 8),
     ("crates/specula/src/leases.rs", 1),
     ("crates/specula/src/lex_live.rs", 5),
     ("crates/specula/src/lib.rs", 28),
@@ -42,6 +43,10 @@ const ALLOWED: [(&str, usize); 67] = [
     ("crates/specula/src/project_text.rs", 1),
     ("crates/specula/src/review_screen.rs", 1),
     ("crates/specula/src/safe_path.rs", 2),
+    // A followed run (`specula run --follow`) writes each state to the standard output the
+    // command was given, for whoever plays to read before its next step: that output IS the
+    // run's answer, a line at a time, and an engine prints nothing else there.
+    ("crates/specula/src/script_run.rs", 1),
     ("crates/specula/src/schedule.rs", 7),
     ("crates/specula/src/sight.rs", 1),
     ("crates/specula/src/swarm_engine.rs", 1),

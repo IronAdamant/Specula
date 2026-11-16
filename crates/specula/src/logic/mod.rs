@@ -275,6 +275,8 @@ struct Slot {
     ticks: u64,
     failures: u64,
     last_error: Option<Json>,
+    /// The first failure since the module was loaded: where a module that fails every tick began.
+    first_error: Option<Json>,
     tick_total: Duration,
     tick_max: Duration,
     input: ModuleInput,
@@ -832,6 +834,7 @@ impl LogicHost {
                 ticks: 0,
                 failures: 0,
                 last_error: None,
+                first_error: None,
                 tick_total: Duration::ZERO,
                 tick_max: Duration::ZERO,
                 input,
@@ -1066,6 +1069,7 @@ impl LogicHost {
                 Err(CallError::Module(f)) => {
                     slot.failures += 1;
                     slot.last_error = Some(f.json.clone());
+                    slot.first_error.get_or_insert_with(|| f.json.clone());
                     if f.disables() {
                         self.disable(&name, f.json, tick);
                     }
@@ -1074,6 +1078,7 @@ impl LogicHost {
                     // Tick commits only journal; a refusal is an engine bug, but keep going.
                     slot.failures += 1;
                     slot.last_error = Some(e.to_json());
+                    slot.first_error.get_or_insert_with(|| e.to_json());
                 }
             }
         }
@@ -1246,6 +1251,9 @@ impl LogicHost {
             }
             if let Some(d) = &s.disabled {
                 f.push(("disabled_by", d.clone()));
+            }
+            if let Some(e) = &s.first_error {
+                f.push(("first_error", e.clone()));
             }
             if let Some(e) = &s.last_error {
                 f.push(("last_error", e.clone()));
