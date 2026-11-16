@@ -61,7 +61,9 @@ pub mod outline;
 mod perf;
 pub mod persist;
 pub mod rollup;
+mod run_modules;
 mod save_tools;
+mod scaffold;
 mod safe_path;
 pub mod savegame;
 pub mod physics;
@@ -236,7 +238,7 @@ const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|integrated|<index>] [--size WxH] \
 [--captures DIR] [--worlds DIR] [--world NAME] [--saves DIR] [--cache DIR] [--assets DIR] [--style FILE] [--perf FILE] \
 [--paused] [--max-fps N] [--audio device|null|off] [--response-format concise|detailed] [--tools-default core|all] [--physics-threads N] [--vfx on|off] [--terrain on|off] \n[--trace DIR] [--trace-file on|off] [--strict-budget] \
-[--owner NAME] [--lead NAME] [--reviewer NAME] [--settings DIR|off] [--no-activate] [--project DIR] [--launcher] [-- GAME ARGS...]\n\
+[--owner NAME] [--lead NAME] [--reviewer NAME] [--settings DIR|off] [--no-activate] [--project DIR] [--run] [--launcher] [-- GAME ARGS...]\n\
 commands (specula help): projects | open --last|NAME|FOLDER | new NAME | forget NAME | list | tools [FILTER] | call TOOL ['{json}']";
 
 /// How long a capture waits (parked, the engine serving others) for models still building.
@@ -268,6 +270,9 @@ struct Args {
     /// `--no-activate`: the window opens without taking the keyboard from the window the human
     /// is in (an engine started by an agent or a script while someone uses the machine).
     no_activate: bool,
+    /// `--run`: the operator says the project's code is theirs to run, so the game file's modules
+    /// are built and loaded at start (docs/design/FIRST_HOUR.md; [`run_modules`]).
+    run: bool,
     /// `--project DIR`: the engine starts in that folder, as a project (docs/design/LAUNCH.md).
     project: Option<PathBuf>,
     /// `--launcher`: the start screen (the project list) opens over the window, as it does
@@ -335,6 +340,7 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
         port: DEFAULT_PORT,
         headless: false,
         no_activate: false,
+        run: false,
         project: None,
         launcher: false,
         adapter: AdapterPreference::HighPerformance,
@@ -375,6 +381,7 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--port" => args.port = value()?.parse().map_err(|_| format!("bad port\n{USAGE}"))?,
             "--headless" => args.headless = true,
             "--no-activate" => args.no_activate = true,
+            "--run" => args.run = true,
             "--project" => args.project = Some(PathBuf::from(value()?)),
             "--launcher" => args.launcher = true,
             "--paused" => args.paused = true,
@@ -799,6 +806,18 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     let start_gate = startgate::StartGate::closed();
     // The gallery worker sends its renders through the same channel as agents.
     engine.taste.connect(to_engine.clone(), Arc::clone(&engine.studio.shared));
+    // `--run`: the operator says this project's code is theirs to run, so the module folders
+    // its game file names are built and loaded by the engine itself, once its loop has begun
+    // (never because a folder was opened: docs/design/MODULES.md, "Who may load a module").
+    if args.run {
+        let modules = game.as_ref().map(|g| g.modules()).unwrap_or_default();
+        if modules.is_empty() {
+            specula_core::trace_event!(&trace_sink::ENGINE, Warn, "run.no_modules", why = "--run builds the module folders a project's game.json names: there is no game file here, or it names none");
+        } else {
+            engine.swarm.admit_run_operator(run_modules::RUN_SESSION);
+            run_modules::start(to_engine.clone(), Arc::clone(&start_gate), modules, Arc::clone(&engine.run_reports));
+        }
+    }
     let server = Server::start(
         ServerConfig {
             bind: format!("127.0.0.1:{}", args.port),
@@ -1196,6 +1215,11 @@ struct Engine {
     game_module_events: Vec<(String, specula_sdk::Value)>,
     /// Whether the clock was paused when the hosted game was last told ([`Game::clock_seen`]).
     game_clock_told: Option<bool>,
+    /// A playtest is serving its own steps and ticks right now (its slot is lent to it for the
+    /// span, so `playtests.running()` does not say so): see [`Engine::playtest_owns_clock`].
+    playtest_pumping: bool,
+    /// What the start-up build (`--run`) could not load, for the hosted game to show.
+    run_reports: run_modules::Reports,
     /// World folders saved in this run, and the identity key that first saved each (its creator
     /// may overwrite it; anyone else needs the lead).
     world_folders: std::collections::BTreeMap<String, String>,
@@ -1435,6 +1459,8 @@ impl Engine {
             clock_set_by: None,
             game_module_events: Vec::new(),
             game_clock_told: None,
+            playtest_pumping: false,
+            run_reports: run_modules::Reports::default(),
             world_folders: std::collections::BTreeMap::new(),
             commits: authority::CallCommits::default(),
             multi_commit_calls: 0,
@@ -1708,11 +1734,13 @@ impl Engine {
                 self.game_call(sim_writes::GameCall::Tick);
                 self.pacing.tick.push(start.elapsed());
             }
-            if self.game.is_some() {
+            if self.game.is_some() && !self.logic.is_empty() {
                 // What the game has for its modules (a press of one of its own buttons, a
                 // setting the rules read) reaches them with this tick, as events from the
                 // engine: the one way anything outside the simulation gets in, at a tick
-                // boundary. With no module loaded there is nobody to hear them.
+                // boundary. With no module loaded there is nobody to hear them, so they wait
+                // with the game (a run started while its modules are still being built is told
+                // to them when they load; the game bounds how many wait).
                 let mut events = std::mem::take(&mut self.game_module_events);
                 if let Some(game) = self.game.as_mut() {
                     game.take_module_events(&mut events);
@@ -1788,13 +1816,52 @@ impl Engine {
         };
         state.set("tick", Json::from(self.clock.tick()));
         state.set("clock_paused", Json::from(self.clock.paused()));
+        // The modules that are loaded and running now, by their own names (the game file's
+        // `modules` are their folders): none means the game's rules are not running.
+        state.set("modules_running", Json::arr(game::ModuleStates::of(&self.logic).running().into_iter().take(64).map(Json::from)));
         ToolOutput::text(state.to_string())
+    }
+
+    /// `game_act`: a button's word pressed by an agent, as a press on one of the game's screens
+    /// would do it; answers with how the run stands after it.
+    fn game_act(&mut self, action: &str) -> ToolOutput {
+        self.game_sees();
+        let mut answer = None;
+        self.game_call(sim_writes::GameCall::Act(action, &mut answer));
+        match answer {
+            None => {
+                let why = if self.game.is_some() {
+                    "the hosted game takes no words: its own tools drive it (tools_catalog {family: \"game\"})"
+                } else {
+                    "no game is hosted: a project gets a run, screens and settings from a game.json at its root (docs/design/FIRST_HOUR.md; 'specula new NAME' makes a project that has one)"
+                };
+                world_error(&WorldError::new("no_game", why))
+            }
+            Some(Err((code, message))) => world_error(&WorldError::new(code, message).with("action", bounds::echo(action))),
+            Some(Ok(())) => {
+                // What the press asked of the engine (the clock, a save, the settings file).
+                self.serve_game_requests();
+                self.game_state()
+            }
+        }
+    }
+
+    /// Whether a playtest has the clock: one is running, between its slices or inside one.
+    pub(crate) fn playtest_owns_clock(&self) -> bool {
+        self.playtest_pumping || self.playtests.running()
     }
 
     /// The hosted game's wish for the clock ([`Game::take_clock`]), done: the game stops or
     /// starts it as its own doing, and `time_control` says the game did. Returns what was done.
     pub(crate) fn serve_game_clock(&mut self) -> Option<bool> {
         let paused = self.game.as_mut()?.take_clock()?;
+        // A playtest owns the clock while it runs: it holds it paused and steps it tick by
+        // tick, so the same spec makes the same calls at the same ticks. The game's wish
+        // changes nothing then (a run begun by a step is ticked by the playtest's steps, and
+        // its ticks go on past the run's end); `game_state` says where the run stands.
+        if self.playtest_owns_clock() {
+            return None;
+        }
         if self.clock.paused() != paused {
             self.clock.set_paused(paused);
             self.clock_set_by = Some((format!("game:{}", self.game_name), if paused { "pause" } else { "resume" }));
@@ -1814,6 +1881,13 @@ impl Engine {
         if self.game_clock_told != Some(paused) {
             self.game_clock_told = Some(paused);
             game.clock_seen(paused);
+        }
+        // What the start-up build (`--run`) could not load (never waited for: its thread
+        // holds the lock for one push).
+        if let Ok(mut reports) = self.run_reports.try_lock() {
+            for problem in reports.drain(..) {
+                game.told(&problem);
+            }
         }
         game.see_modules(&game::ModuleStates::of(&self.logic));
     }
@@ -3255,6 +3329,7 @@ impl Engine {
             },
             Command::Info => self.info(&server.sessions()),
             Command::GameState => self.game_state(),
+            Command::GameAct { action } => self.game_act(&action),
             Command::ScopeLookup { agent } => toolscope_tools::lookup(&self.swarm, &request.session, &agent, &server.all_sessions()),
             Command::Perf { budget_ms, graph } => self.perf(budget_ms, graph),
             Command::PerfZones(q) => {
@@ -3876,7 +3951,7 @@ fn call_class(command: &Command) -> Class {
         Command::Review(call) => call.class(),
         Command::Batch(ops) if ops.len() > HEAVY_BATCH_OPS => Class::Big,
         Command::Time(TimeOp::Step(_)) => Class::Sim,
-        Command::Game { .. } => Class::Game,
+        Command::Game { .. } | Command::GameAct { .. } => Class::Game,
         Command::Logic(_) => Class::Disk,
         Command::Physics(call) => call.class(),
         Command::Nav(call) => call.class(),

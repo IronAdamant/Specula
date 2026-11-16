@@ -202,6 +202,14 @@ pub const KITS: &[Kit] = &[
         done: "review_list shows nothing you took still waiting: each has a decision, or a critique_add that says what to change",
     },
     Kit {
+        name: "keep_memory",
+        about: "what the project remembers: read before you change, write before you stop",
+        tools: &["memory_list", "memory_get", "memory_why", "memory_note"],
+        more: &[],
+        steps: "memory_list; memory_get what bears on your work; memory_why PATH before you change a file you did not write; when you decide or learn what the next agent needs, memory_note it (supersedes: the note it replaces)",
+        done: "memory_list shows your note, and memory_get of a note you replaced answers with yours",
+    },
+    Kit {
         name: "work_together",
         about: "build beside other agents without colliding",
         tools: &["claim_take", "claim_release", "task_list", "task_take", "task_done", "note_add"],

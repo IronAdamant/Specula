@@ -32,7 +32,9 @@ marker.
 - The marker is `specula.project.json` in the folder: `{"schema": "specula.project.v1", "name":
   "...", "assets": "assets"}` (`assets` optional: without it the folder itself, as an engine
   started there has always read it).
-- `specula new NAME [--in FOLDER]` makes `FOLDER/NAME` with its marker and an `assets` folder.
+- `specula new NAME [--in FOLDER]` makes `FOLDER/NAME` as a project that builds and plays: its marker, a
+  game file, screens and words, a module, this engine's SDK, a check and two notes
+  ([FIRST_HOUR.md](FIRST_HOUR.md), slice 7). `--bare` makes only the folder, its marker and an `assets` folder.
   Without `--in` it is made in `Specula Projects` in the person's home folder. A folder that is
   not empty is never taken.
 - Any folder can be opened as a project (`specula open FOLDER`, `--project FOLDER`, the start
@@ -113,7 +115,9 @@ specula                          the start screen
 specula projects                 the projects worked on, most recent first
 specula open --last              open the project last worked on
 specula open NAME|FOLDER [--front] [-- engine flags]
-specula new NAME [--in FOLDER]   make a project and list it
+specula play NAME|FOLDER|--last  open a project in front, with its modules built and loaded (--run)
+specula new NAME [--in FOLDER] [--bare]
+                                 make a project that builds and plays, and list it
 specula forget NAME|FOLDER       take a project off the list (its folder stays)
 specula list                     the engines running on this machine
 specula stop [--port N | --project NAME]

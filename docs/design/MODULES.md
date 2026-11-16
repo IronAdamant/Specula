@@ -66,6 +66,14 @@ boundary is **who may load a module**, and the checks below are lints behind it 
   with no grants at all nobody loads native code. Refused calls answer `lead_only` (`refused_at:
   logic.native_code`), and the engine thread checks again when a library loads or a module unloads, whatever the
   caller's thread checked.
+- **Opening a folder runs none of its code; `--run` is the operator saying it is theirs to run** (2026-11-16,
+  [FIRST_HOUR.md](FIRST_HOUR.md)). A project's game file names its module folders. `--run` on the command line
+  that starts the engine (`specula play NAME` says it for a project on the list) has the engine build and load
+  them at start: through the same build service and the same checks as an owner's `logic_build`, as the identity
+  `operator:run` (a session id no connection can have, admitted only when the flag is given, its name reserved).
+  Without the flag the project's screens show and no module is loaded until an owner or a granted lead builds
+  one. A module that does not build or load is in the trace (`run.module`) and in `game_state`'s `problems`,
+  and the others still load.
 - **A builder proposes.** Any other agent's `logic_build` builds nothing: the engine files a **proposal** (the module's
   folder, who, the tick, and the SHA-256 of every file in the folder, `specula_logic::digest`) and answers `lead_only`
   with it. `project_write {build}` by a builder proposes the same way. `logic_status` lists proposals (at most 32; one

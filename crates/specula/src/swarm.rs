@@ -267,6 +267,21 @@ impl Swarm {
         self.agents.insert(session_id.to_owned(), agent);
     }
 
+    /// Admits the operator's own start-up build as an identity (`--run`: the operator said on
+    /// the command line that the project's code is theirs to run; [`crate::run_modules`]):
+    /// session `session_id` (never a protocol session id) is `operator:run`, keyed by that
+    /// name, with the owner's authority, so its builds and loads pass the same gates as an
+    /// owner's `logic_build` and are journaled under that name. Admitted only by `--run`. The
+    /// name stays reserved (no agent may say hello as it).
+    pub(crate) fn admit_run_operator(&mut self, session_id: &str) {
+        let name = crate::authority::RUN_OPERATOR.to_owned();
+        self.reserve(&name);
+        let authority = crate::authority::Authority::Owner;
+        crate::authority::publish_as(session_id, authority, Some(authority));
+        let agent = Agent { name: name.clone(), role: crate::authority::ROLE_OWNER.to_owned(), authority, key: name, token: random_hex() };
+        self.agents.insert(session_id.to_owned(), agent);
+    }
+
     /// Keeps agents from calling themselves `name` (the hosted game's name, say).
     pub fn reserve(&mut self, name: &str) {
         self.reserved.insert(name.to_owned());
@@ -334,7 +349,7 @@ impl Swarm {
             // (they come back with their resume tokens).
             let grants = &self.grants;
             self.agents.retain(|id, a| {
-                let keep = ids.contains(id.as_str()) || grants.holds(&a.key) || a.key == crate::authority::WINDOW_OWNER;
+                let keep = ids.contains(id.as_str()) || grants.holds(&a.key) || a.key == crate::authority::WINDOW_OWNER || a.key == crate::authority::RUN_OPERATOR;
                 if !keep {
                     crate::authority::unpublish(id);
                 }

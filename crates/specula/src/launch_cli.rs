@@ -42,7 +42,9 @@ pub enum Cli {
     /// Asks a running engine to stop (it shuts down cleanly, as on Ctrl+C).
     Stop { target: Target },
     /// Makes a project folder and lists it.
-    New { name: String, parent: Option<PathBuf> },
+    /// `bare`: only the folder, its assets folder and its marker (what a new project was before
+    /// it built and played: docs/design/FIRST_HOUR.md, slice 7).
+    New { name: String, parent: Option<PathBuf>, bare: bool },
     /// Opens a project in an engine (or finds the engine that has it open). `front`: its
     /// window opens in front and takes the keyboard (a person asked to see it); else behind
     /// the other windows, taking nothing from whoever is using the machine.
@@ -86,7 +88,15 @@ specula projects                 the projects worked on (JSON), most recent firs
 specula open --last              open the project last worked on (or find the engine that has it open)
 specula open NAME|FOLDER [--front] [-- engine flags]
                                  (its window opens behind the others; --front: in front)
-specula new NAME [--in FOLDER]   make a project and list it
+specula play NAME|FOLDER|--last [-- engine flags]
+                                 open a project to play it: its window in front, and the
+                                 modules its game file names built and loaded (--run). Say it
+                                 only for a project whose code is yours to run: a module is
+                                 native code with your user's rights
+specula new NAME [--in FOLDER] [--bare]
+                                 make a project that builds and plays (a game file, screens,
+                                 words, a module, the SDK, notes) and list it; --bare: only
+                                 the folder, its assets folder and its marker
 specula forget NAME|FOLDER       take a project off the list (its folder stays)
 specula sdk [NAME|FOLDER]        write this engine's SDK into a project (no word: the folder
                                  you are in), so its modules build against this engine
@@ -103,7 +113,7 @@ specula call TOOL ['{json}' | @FILE] [--port N | --project NAME] [--as NAME [--r
                                  started with --lead NAME)
 specula --help                   the engine's own flags";
 
-const WORDS: [&str; 10] = ["projects", "open", "new", "forget", "sdk", "list", "stop", "tools", "call", "help"];
+const WORDS: [&str; 11] = ["projects", "open", "play", "new", "forget", "sdk", "list", "stop", "tools", "call", "help"];
 
 /// The flags a command takes after its own words: `--port N`, `--project NAME`, `--as NAME`,
 /// `--in FOLDER`, `--last`. Returns what is left (the command's own words, in order).
@@ -115,11 +125,12 @@ struct Flags {
     role: Option<String>,
     parent: Option<PathBuf>,
     last: bool,
+    bare: bool,
     rest: Vec<String>,
 }
 
 fn flags(words: &[String], allowed: &[&str]) -> Result<Flags, String> {
-    let mut f = Flags { front: false, port: None, project: None, as_name: None, role: None, parent: None, last: false, rest: Vec::new() };
+    let mut f = Flags { front: false, port: None, project: None, as_name: None, role: None, parent: None, last: false, bare: false, rest: Vec::new() };
     let mut i = 0;
     while i < words.len() {
         let w = words[i].as_str();
@@ -130,6 +141,11 @@ fn flags(words: &[String], allowed: &[&str]) -> Result<Flags, String> {
         }
         if !allowed.contains(&w) {
             return Err(format!("'{w}' is not a flag of this command (it takes: {})", if allowed.is_empty() { "none".to_owned() } else { allowed.join(", ") }));
+        }
+        if w == "--bare" {
+            f.bare = true;
+            i += 1;
+            continue;
         }
         if w == "--last" || w == "--front" {
             if w == "--last" {
@@ -218,12 +234,12 @@ pub fn parse(args: &[String]) -> Result<Option<Cli>, String> {
             Cli::Stop { target: target(&f) }
         }
         "new" => {
-            let f = flags(rest, &["--in"])?;
+            let f = flags(rest, &["--in", "--bare"])?;
             exactly(&f, 1, "one word: the new project's name")?;
             if !crate::launch_list::valid_name(&f.rest[0]) {
                 return Err(format!("'{}' is not a project name: 1..{} characters, none of / \\ : * ? \" < > |", f.rest[0], crate::launch_list::MAX_NAME_CHARS));
             }
-            Cli::New { name: f.rest[0].clone(), parent: f.parent }
+            Cli::New { name: f.rest[0].clone(), parent: f.parent, bare: f.bare }
         }
         "forget" => {
             let f = flags(rest, &[])?;
@@ -252,6 +268,26 @@ pub fn parse(args: &[String]) -> Result<Option<Cli>, String> {
                 _ => return Err("'specula open' takes one project: a name or a folder, or --last".to_owned()),
             };
             Cli::Open { which, front: f.front, engine_args }
+        }
+        // `open`, in front, with the project's code run: the operator's word that the modules
+        // its game file names are theirs to run (docs/design/MODULES.md).
+        "play" => {
+            let split = rest.iter().position(|w| w == "--").unwrap_or(rest.len());
+            let mut engine_args: Vec<String> = rest.get(split + 1..).unwrap_or(&[]).to_vec();
+            if let Some(bad) = engine_args.iter().find(|a| matches!(a.as_str(), "--project" | "--settings")) {
+                return Err(format!("'{bad}' is set by 'specula play' itself: leave it out"));
+            }
+            let f = flags(&rest[..split], &["--last"])?;
+            let which = match (f.last, f.rest.len()) {
+                (true, 0) => Which::Last,
+                (false, 1) => Which::Word(f.rest[0].clone()),
+                (false, 0) => return Err("'specula play' needs a project: its name, its folder, or --last (the one last worked on; 'specula projects' lists them)".to_owned()),
+                _ => return Err("'specula play' takes one project: a name or a folder, or --last".to_owned()),
+            };
+            if !engine_args.iter().any(|a| a == "--run") {
+                engine_args.push("--run".to_owned());
+            }
+            Cli::Open { which, front: true, engine_args }
         }
         "tools" => {
             let f = flags(rest, &["--port", "--project"])?;
@@ -306,7 +342,7 @@ mod tests {
         assert_eq!(p("-h"), Ok(None));
         // A word that is no command is said, with the commands: never run as an engine.
         let e = p("opne crypt").unwrap_err();
-        assert!(e.contains("'opne' is not a command") && e.contains("projects, open, new"), "{e}");
+        assert!(e.contains("'opne' is not a command") && e.contains("projects, open, play, new"), "{e}");
     }
 
     #[test]
@@ -330,8 +366,18 @@ mod tests {
         assert_eq!(p("stop --port 7500"), Ok(Some(Cli::Stop { target: Target::Port(7500) })));
         assert!(p("stop crypt").unwrap_err().contains("no words"));
         assert!(p("list --port 1").unwrap_err().contains("not a flag of this command"));
-        assert_eq!(p("new crypt"), Ok(Some(Cli::New { name: "crypt".into(), parent: None })));
-        assert_eq!(p("new crypt --in D:/games"), Ok(Some(Cli::New { name: "crypt".into(), parent: Some(PathBuf::from("D:/games")) })));
+        assert_eq!(p("new crypt"), Ok(Some(Cli::New { name: "crypt".into(), parent: None, bare: false })));
+        assert_eq!(p("new crypt --in D:/games"), Ok(Some(Cli::New { name: "crypt".into(), parent: Some(PathBuf::from("D:/games")), bare: false })));
+        assert_eq!(p("new crypt --bare"), Ok(Some(Cli::New { name: "crypt".into(), parent: None, bare: true })));
+        // Play is open, in front, with the project's code run: said once, however it is written.
+        let run = |words: &[&str]| words.iter().map(|w| (*w).to_owned()).collect::<Vec<_>>();
+        assert_eq!(p("play crypt"), Ok(Some(Cli::Open { which: Which::Word("crypt".into()), front: true, engine_args: run(&["--run"]) })));
+        assert_eq!(p("play --last -- --size 800x600"), Ok(Some(Cli::Open { which: Which::Last, front: true, engine_args: run(&["--size", "800x600", "--run"]) })));
+        assert_eq!(p("play crypt -- --run"), Ok(Some(Cli::Open { which: Which::Word("crypt".into()), front: true, engine_args: run(&["--run"]) })));
+        assert!(p("play").unwrap_err().contains("needs a project"));
+        assert!(p("play crypt --front").unwrap_err().contains("not a flag of this command"), "play is in front already");
+        assert!(p("play crypt -- --project D:/other").unwrap_err().contains("set by 'specula play' itself"));
+        assert!(p("open crypt --bare").unwrap_err().contains("not a flag of this command"));
         assert!(p("new").unwrap_err().contains("one word"));
         assert!(p("new a/b").unwrap_err().contains("not a project name"));
         assert!(p("new crypt --in").unwrap_err().contains("needs a value"));

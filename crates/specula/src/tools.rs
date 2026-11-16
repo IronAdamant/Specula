@@ -219,6 +219,8 @@ pub enum Command {
     Info,
     /// game_state: how the hosted game's run stands (docs/design/FIRST_HOUR.md).
     GameState,
+    /// game_act: a button's word, pressed by an agent.
+    GameAct { action: String },
     /// perf_frame; `None` = the frame budget from perf.toml.
     /// `graph`: include the last frame's render graph pass by pass (else only its summary).
     Perf { budget_ms: Option<f64>, graph: bool },
@@ -974,6 +976,11 @@ pub(crate) fn parse(name: &str, args: &Json) -> Result<Command, String> {
         }
         "engine_info" => check_keys(args, name, &[]).map(|()| Command::Info),
         "game_state" => check_keys(args, name, &[]).map(|()| Command::GameState),
+        "game_act" => {
+            check_keys(args, name, &[&["action"]])?;
+            let action = string_arg(args, "action")?.ok_or("'action' is required: a word a button of the game says (start, pause, resume, title, open:NAME, back, set:NAME:VALUE, step:NAME:+1, cycle:NAME, save:SLOT, load:SLOT, or a word of the game's own)")?;
+            Ok(Command::GameAct { action: action.to_owned() })
+        }
         "perf_frame" => {
             check_keys(args, name, &[&["budget_ms", "graph"]])?;
             let budget_ms = match args.get("budget_ms") {
@@ -2990,6 +2997,20 @@ pub(crate) fn definitions() -> Vec<ToolDef> {
                           with a game.json (docs/design/FIRST_HOUR.md); `no_game` otherwise."
                 .into(),
             input_schema: schema(vec![], &[]),
+        },
+        ToolDef {
+            name: "game_act".into(),
+            description: "Presses a button of the game by the word it says, as a press on one of its screens would: start, \
+                          pause, resume, title (gives the run up), open:NAME / goto:NAME / close / back (the screens), \
+                          set:NAME:VALUE / step:NAME:+1 / step:NAME:-1 / cycle:NAME (a setting; an agent's change is the \
+                          session's and never written to the player's file), save:SLOT / load:SLOT, or a word of the \
+                          game's own, which reaches its modules as the event `ui` {action} at the next tick. Answers \
+                          with game_state after the press. Refused, with a code: quit (players_only: only the person \
+                          at the window closes the game), a word said wrongly (bad_action, with what it takes), a \
+                          press that does not fit where the run stands (not_now), a screen the project lacks \
+                          (no_screen), a setting or value it does not have (bad_setting). A playtest step may call it."
+                .into(),
+            input_schema: schema(vec![("action", string("The word: start, pause, set:difficulty:hard, or one of the game's own (at most 128 characters)"))], &["action"]),
         },
     ]
     .into_iter()

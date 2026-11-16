@@ -28,6 +28,10 @@ pub const ROLE_DIRECTOR: &str = "director";
 pub const ROLE_REVIEWER: &str = "reviewer";
 /// The window's human, in attribution (the review screen's decisions, critiques).
 pub const WINDOW_OWNER: &str = "window:owner";
+/// The operator's own start-up build (`--run`), in attribution: the engine building and loading
+/// the game file's modules because the command line that started it said to
+/// ([`crate::run_modules`]). Reserved: no agent may take the name.
+pub const RUN_OPERATOR: &str = "operator:run";
 
 /// What a caller may do, lowest first: each level includes the ones below it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -355,7 +359,7 @@ pub const ROLE_WORDS: [&str; 4] = [ROLE_OWNER, ROLE_LEAD, ROLE_DIRECTOR, ROLE_RE
 pub fn reserved_writer(name: &str) -> bool {
     const NAMES: [&str; 6] = [crate::physics::AGENT, crate::nav::AGENT, crate::anim::RELOAD_AGENT, crate::project::DISK_AGENT, crate::write_policy::STRAY_AGENT, TASTE_AGENT];
     let sk = skeleton(name.trim());
-    NAMES.iter().chain([&WINDOW_OWNER]).any(|n| skeleton(n) == sk) || RESERVED_PREFIXES.iter().any(|p| sk.starts_with(p))
+    NAMES.iter().chain([&WINDOW_OWNER, &RUN_OPERATOR]).any(|n| skeleton(n) == sk) || RESERVED_PREFIXES.iter().any(|p| sk.starts_with(p))
 }
 
 /// The authority roles the operator granted, and who holds them. Names are keyed by their
@@ -779,6 +783,7 @@ pub fn access(tool: &str) -> Option<Access> {
         "model_reload" => Open("re-reads recipes and anim sets from disk (the files are the truth); animation graphs that use a changed set resettle as the exempt writer anim_reload, journaled; nothing an agent made is replaced"),
         "world_save" => Open("a checkpoint of the shared world under its current name; another name (it renames the live world: autosave, evidence and board files), or overwrite over a world folder the caller didn't save this run, needs the lead (lead_only)"),
         "perf_zones" => Open("reads the profiler; switching it is refused while another agent's capture records (capture_in_progress)"),
+        "game_act" => Open("a press of the game's own buttons, as a player's would be: what only the player may do (quit) is refused and counted by the input monitor, and what the game does for it is journaled as the game's"),
         "logic_input" => Open("input to a running module, as a player's would be; the module's writes are checked as the caller's"),
         "lex_simulate" | "balance_sweep" | "balance_tune" => Open("simulates on its own copy of the rules; nothing shared changes (saved runs are the caller's)"),
         "procgen_texture" => Open("writes a new image file in the captures folder; nothing shared changes"),

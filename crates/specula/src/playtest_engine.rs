@@ -865,7 +865,10 @@ impl Engine {
             return;
         }
         let mut p = std::mem::take(&mut self.playtests);
+        // (For the span the slot is lent out, the engine still knows a playtest has the clock.)
+        self.playtest_pumping = true;
         p.pump(&mut EngineHost { e: self, server }, budget);
+        self.playtest_pumping = false;
         self.playtests = p;
     }
 }

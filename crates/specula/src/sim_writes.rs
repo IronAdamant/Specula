@@ -24,6 +24,8 @@ pub(crate) enum GameCall<'c, 'f> {
     Overlay(&'c mut Overlay<'f>),
     BeforeCapture,
     AssetsChanged(&'c [String]),
+    /// `game_act`: a button's word, and where the game's answer goes.
+    Act(&'c str, &'c mut Option<Result<(), (&'static str, String)>>),
     /// The project's game file changed (its new text, from the project store).
     GameFile(&'c str),
     ApplyState(Box<dyn Any>),
@@ -44,7 +46,7 @@ impl GameCall<'_, '_> {
         match self {
             GameCall::Tick | GameCall::Timeline(_) | GameCall::AfterModules(_) => Kind::GameTick,
             GameCall::ApplyState(_) => Kind::GameStart,
-            GameCall::RolledBack => Kind::GameTool,
+            GameCall::RolledBack | GameCall::Act(..) => Kind::GameTool,
             GameCall::Frame(_) | GameCall::Overlay(_) | GameCall::BeforeCapture | GameCall::AssetsChanged(_) | GameCall::GameFile(_) | GameCall::RequestDone(..) | GameCall::ModalChanged(_) => Kind::GameFrame,
         }
     }
@@ -63,6 +65,7 @@ pub(crate) fn game(world: &mut Live, swarm: &mut Swarm, game: &mut dyn Game, clo
             GameCall::BeforeCapture => game.before_capture(ctx),
             GameCall::AssetsChanged(paths) => game.assets_changed(ctx, paths),
             GameCall::GameFile(text) => game.game_file_changed(ctx, text),
+            GameCall::Act(word, answer) => *answer = game.act(ctx, word),
             GameCall::ApplyState(state) => game.apply_state(ctx, state),
             GameCall::RequestDone(request, result) => game.request_done(ctx, request, result),
             GameCall::RolledBack => game.world_rolled_back(ctx),

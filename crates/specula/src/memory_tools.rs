@@ -355,7 +355,12 @@ fn why_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<ToolOut
             return Ok(no);
         }
     }
-    let about = memory.notes.about(&path);
+    // What was decided about this very path first; the brief and the how-to last, by their
+    // titles alone: every agent was given their text at its agent_hello (found in the first
+    // live use: they name the project's main files, and crowded every answer).
+    let mut about = memory.notes.about(&path);
+    let general = |n: &Note| matches!(n.kind, Kind::Brief | Kind::How);
+    about.sort_by_key(|n| general(n));
     let cut = |text: &str| -> String {
         if text.chars().count() <= WHY_TEXT {
             return text.to_owned();
@@ -367,7 +372,9 @@ fn why_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<ToolOut
         .take(WHY_NOTES)
         .map(|n| {
             let mut j = head(n);
-            j.push(("text", Json::from(cut(&n.body))));
+            if !general(n) {
+                j.push(("text", Json::from(cut(&n.body))));
+            }
             Json::obj(j)
         })
         .collect();
@@ -473,9 +480,10 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "memory_why".into(),
-            description: "Why a file is as it is: the notes about a project path (the ones that name it exactly first; each with up \
-                          to 600 characters of its text), and for a project file who changed it last (its version, modified_by and \
-                          its last three changes from the journal: entry, by, tick). Read it before changing a file you did not write."
+            description: "Why a file is as it is: the notes about a project path (what was decided about it first, each with up \
+                          to 600 characters of its text; the brief and the how-to last, by title: agent_hello gave their text), and \
+                          for a project file who changed it last (its version, modified_by and its last three changes from the \
+                          journal: entry, by, tick). Read it before changing a file you did not write."
                 .into(),
             input_schema: schema(vec![("path", s(MAX_PATH, "A project path: modules/gate/src/lib.rs, assets/ui/hud.json, game.json, or a folder ending in /"))], &["path"]),
         },

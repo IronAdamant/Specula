@@ -242,6 +242,9 @@ A fourth job that needs more to reuse is part 12's.
 | The project-root mount: `game.json` (kind `game`) and `notes/<id>.md` (kind `note`) as project files | `project.rs` (`MountKind::Root`, `ROOT_MOUNT`), `project_engine.rs` (`project_mount_root`) |
 | The shell follows a changed game file while it runs | `Shell::reload_game`; `project_reload` hands it the store's text |
 | `memory_note`, `memory_get`, `memory_list`, `memory_why` (family `memory`); the brief in `agent_hello` (`project_memory`) | `crates/specula/src/memory_tools.rs`; `tools.rs` (after the hello) |
+| `game_act` (family `game`): a button's word pressed by an agent, answered with `game_state` | `tools.rs`, `Engine::game_act`, `Game::act` |
+| `--run` and `specula play NAME`: the game file's modules built and loaded at start | `crates/specula/src/run_modules.rs`; `Swarm::admit_run_operator`; `launch_cli.rs` |
+| `specula new` writes a project that builds and plays; `--bare` what it wrote before | `crates/specula/src/scaffold.rs`; `launch_run.rs`; the start screen's new project |
 
 As built, where the text above said less or something else:
 
@@ -257,23 +260,36 @@ As built, where the text above said less or something else:
   the next start, and `game_state` says so under `problems`. A file that is not a game file changes
   nothing and is named there too.
 - **A project has one brief**: a second is refused with the first one's id. A note is replaced by one
-  note at most, and never in a ring.
+  note at most, and never in a ring. `memory_why` puts what was decided about a path first, and the
+  brief and the how-to last, by title.
+- **`game_act`** was not in the design: an agent starts, pauses and plays a run by word, in one call,
+  where it would otherwise drive the interface step by step. `quit` stays the player's alone.
+- **A playtest owns the clock.** While one runs, the game's own wish for the clock (a run begins, a run
+  ends) changes nothing: the playtest's steps tick the run, and its ticks go on past the run's end.
+- **Events wait for a module.** What the game has for its modules stays with the game until a module is
+  loaded (at most 256): a run started while `--run` is still building is told to the module when it loads.
+- **A screen opened over another must have a higher `layer`**; one that has not is drawn underneath, and
+  `game_state` says which under `problems`.
+- **A new project has no `assets/input.json`**: the menus' actions are the interface's own, and a game's
+  input is its module's `actions.json`. Its module is named from the project (`modules/<name>`).
+- **A shell command that cannot keep its agent's identity says so** (`identity_not_kept`): `specula call
+  --as NAME` keeps a resume token beside the engine's instance file, which is only there when the
+  command reads the settings folder the engine was started with.
+
+**Found by the first live run of a new project** (2026-11-16; each fixed, with a test that holds it):
+the game's start un-paused a clock a playtest was stepping; the settings screen opened under the title
+(its layer was lower); a playtest spec took no `notes` key; a second command as a granted lead was
+refused with nothing to say why.
 
 **Still to build, in this order:**
 
-1. **The game file's modules at start**: `--run` (and `specula play NAME`) builds and loads them when
-   the operator says the project's code is theirs to run. Without it the screens show and no code of
-   the project runs.
-2. **`specula new`** writes the whole project (`launch_store::create`), `--bare` what it wrote before:
-   the game file, the built-in screens and words, a plain `assets/style.json`, a module that builds,
-   the SDK and the workspace, `checks/smoke.json`, `notes/brief.md` and `notes/how.md`.
-3. **A live check in Rust** (`tools/examen`): a new project is made, its module built, the run started
-   from the title by `ui_act`, stepped, won, and `game_state` read; a note written and given back at
-   the next `agent_hello`; the game file changed and followed; the language changed and kept across a
-   restart.
-4. **The comparison's harness** starts its engine arm from `specula new`, and the comparison is run
+1. **A live check in Rust** (`tools/examen`): a new project is made, its module built, the run started,
+   stepped, won, and `game_state` read; the project's own playtest; a note written and given back at the
+   next `agent_hello`; the game file changed and followed; `--run`; the language changed and kept across
+   a restart. Done by hand once (the list above came from it); not yet a check.
+2. **The comparison's harness** starts its engine arm from `specula new`, and the comparison is run
    again (slice 8).
-5. **Not built, and said:** conditions over the world (`world:/path.prop`); a condition reads what the
+3. **Not built, and said:** conditions over the world (`world:/path.prop`); a condition reads what the
    modules keep, the settings and the run's own state.
 
 ## What this does not do

@@ -284,6 +284,24 @@ pub trait Game {
         None
     }
 
+    /// The module folders the game is made of, below the project (with `/`), as its game file
+    /// names them: what `--run` builds and loads at start. Default: none.
+    fn modules(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Something the engine could not do for the game, in words for a person (a module the
+    /// start-up build could not load): the game shows it. Default: nothing.
+    fn told(&mut self, _problem: &str) {}
+
+    /// `game_act`: a button's word pressed by an agent (`start`, `pause`, `set:volume:3`, a word
+    /// of the game's own), as a press on a screen would do it; what only the player may do is
+    /// refused. `Err`: a code to branch on, and why. `None` (the default): the game takes no
+    /// words (its own tools drive it).
+    fn act(&mut self, _ctx: &mut Ctx, _word: &str) -> Option<Result<(), (&'static str, String)>> {
+        None
+    }
+
     /// How many presses the game refused since this was last taken because only the player may
     /// make them (an agent pressing Quit, or a button that would listen for the player's next
     /// key). The engine takes it after an agent's `ui_act` or game tool call and tells the input

@@ -257,6 +257,8 @@ struct Face {
     capture: Option<(Ui, GpuOverlay)>,
     /// The names of the screens that loaded.
     screens: Vec<String>,
+    /// Each one's layer, as its file says it (0 when it says none).
+    layers: BTreeMap<String, f64>,
 }
 
 /// The project shell.
@@ -490,7 +492,11 @@ impl Shell {
 
     fn load_face(&mut self) {
         match self.load_ui() {
-            Ok((ui, screens)) => self.face = Some(Face { ui, overlay: GpuOverlay::new(), capture: None, screens }),
+            Ok((ui, screens)) => {
+                let layer = |text: &str| Json::parse(text).ok().and_then(|j| j.get("layer").and_then(Json::as_f64)).unwrap_or(0.0);
+                let layers = self.files.screens.iter().filter(|(stem, _)| screens.contains(stem)).map(|(stem, text)| (stem.clone(), layer(text))).collect();
+                self.face = Some(Face { ui, overlay: GpuOverlay::new(), capture: None, screens, layers });
+            }
             Err(e) => {
                 note(&mut self.problems, format!("no interface: {e}"));
                 self.face = None;
@@ -608,14 +614,14 @@ impl Shell {
 
     /// A button's word, done. `Err`: what was refused, and why.
     pub fn press(&mut self, word: &str, player: bool) -> Result<(), String> {
-        self.press_from(word, None, player)
+        self.press_from(word, None, player).map_err(|(code, message)| format!("{message} ({code})"))
     }
 
     /// A button's word, done. `from`: the button's id and its screen, which a word that goes
     /// to the game (the event `ui`) carries with it, so one module can tell two buttons that
-    /// say the same word apart.
-    fn press_from(&mut self, word: &str, from: Option<(&str, &str)>, player: bool) -> Result<(), String> {
-        let action = Action::parse(word)?;
+    /// say the same word apart. `Err`: a code to branch on, and why.
+    fn press_from(&mut self, word: &str, from: Option<(&str, &str)>, player: bool) -> Result<(), (&'static str, String)> {
+        let action = Action::parse(word).map_err(|why| ("bad_action", why))?;
         let screens: Vec<String> = self.face.as_ref().map(|f| f.screens.clone()).unwrap_or_default();
         let has = |name: &str| screens.iter().any(|s| s == name);
         match self.run.act(&action, &mut self.settings, player, &has) {
@@ -635,7 +641,7 @@ impl Shell {
                 if refused.code == "players_only" {
                     self.refused += 1;
                 }
-                Err(format!("{} ({})", refused.message, refused.code))
+                Err((refused.code, refused.message))
             }
         }
     }
@@ -738,6 +744,15 @@ impl Shell {
                 let _ = if want { face.ui.show(name) } else { face.ui.hide(name) };
             }
         }
+        // A screen opened over another is drawn by its layer, not by the order it was opened
+        // in: one whose layer is not above the screen under it is drawn underneath and never
+        // gets the focus. Said, with what to change (found in the first captures of a new
+        // project: its settings opened under its title).
+        let layered: Vec<(&String, f64)> = up.iter().filter_map(|name| face.layers.get(name).map(|layer| (name, *layer))).collect();
+        let under = layered.windows(2).find(|pair| pair[1].1 <= pair[0].1).map(|pair| (pair[0].0.clone(), pair[0].1, pair[1].0.clone(), pair[1].1));
+        if let Some((below, below_layer, above, above_layer)) = under {
+            note(&mut self.problems, format!("assets/ui/{above}.json opens over {below} with \"layer\": {above_layer}, which is not above {below}'s {below_layer}: it is drawn underneath. Give it a higher layer"));
+        }
     }
 
     fn viewport(ui: &Ui, display: &Display, size: (u32, u32), user_scale: f32) -> specula_ui::Viewport {
@@ -763,7 +778,7 @@ impl Shell {
                     backed |= matches!(&**action, "back" | "resume" | "close");
                     let from = self.face.as_ref().map(|f| (f.ui.widget_id(*widget).unwrap_or("").to_owned(), f.ui.screen_name(widget.screen).to_owned()));
                     let from = from.as_ref().map(|(widget, screen)| (widget.as_str(), screen.as_str()));
-                    if let Err(why) = self.press_from(action, from, player) {
+                    if let Err((_, why)) = self.press_from(action, from, player) {
                         self.say(&why, ToastKind::Warn);
                     }
                 }
@@ -925,6 +940,20 @@ impl Game for Shell {
 
     fn game_state(&self) -> Option<Json> {
         Some(self.state_json())
+    }
+
+    fn modules(&self) -> Vec<String> {
+        self.game.modules.clone()
+    }
+
+    fn told(&mut self, problem: &str) {
+        note(&mut self.problems, problem.to_owned());
+        self.say(problem, ToastKind::Warn);
+    }
+
+    fn act(&mut self, _ctx: &mut Ctx, word: &str) -> Option<Result<(), (&'static str, String)>> {
+        // An agent's press: what only the player may do is refused (and counted).
+        Some(self.press_from(word, None, false))
     }
 
     fn frame(&mut self, _ctx: &mut Ctx, frame: &mut Frame) {
@@ -1310,6 +1339,102 @@ mod tests {
         assert!(text("game.outcome").is_some_and(|s| s.contains("running")));
         assert!(text("setting.difficulty.text").is_some_and(|s| s.contains("easy")));
         assert!(text("setting.volume.text").is_some_and(|s| s.contains('8')));
+    }
+
+    /// The engine does what a press asks of the clock, except while a playtest has the clock:
+    /// then the playtest's own steps tick the run, and the clock stays as the playtest holds it
+    /// (found by the first live run of a new project's own check: the game's start un-paused
+    /// the clock the playtest was stepping, and the playtest ended with "the clock didn't
+    /// advance").
+    #[test]
+    fn a_press_moves_the_clock_unless_a_playtest_has_it() {
+        let Some(mut e) = crate::workers::charge_tests::engine() else { return };
+        let text = |out: &specula_protocol::ToolOutput| match &out.content[0] {
+            specula_protocol::Content::Text(t) => Json::parse(t).unwrap(),
+            specula_protocol::Content::Image { .. } => Json::Null,
+        };
+        e.game_name = "gate".into();
+        e.game = Some(Box::new(shell()));
+        e.clock.set_paused(true);
+        // No game's word reaches a game that takes none; ours takes them.
+        let started = e.game_act("start");
+        assert!(!started.is_error, "{:?}", text(&started));
+        assert_eq!(text(&started).get("phase").and_then(Json::as_str), Some("running"));
+        assert!(!e.clock.paused(), "the run began: the clock runs");
+        assert_eq!(e.clock_set_by.as_ref().map(|(by, op)| (by.as_str(), *op)), Some(("game:gate", "resume")), "time_control says the game did it");
+        let paused = e.game_act("pause");
+        assert_eq!((text(&paused).get("phase").and_then(Json::as_str), e.clock.paused()), (Some("paused"), true));
+        let refused = e.game_act("quit");
+        assert!(refused.is_error && text(&refused).get("error").and_then(Json::as_str) == Some("players_only"));
+        // A playtest holds the clock paused and steps it: the game's wish changes nothing.
+        e.game_act("title");
+        e.playtest_pumping = true;
+        assert!(e.playtest_owns_clock());
+        let started = e.game_act("start");
+        assert_eq!(text(&started).get("phase").and_then(Json::as_str), Some("running"));
+        assert!(e.clock.paused(), "the playtest's clock is left as it holds it");
+        e.playtest_pumping = false;
+        // With no game hosted the tools say so.
+        e.game = None;
+        assert_eq!(text(&e.game_act("start")).get("error").and_then(Json::as_str), Some("no_game"));
+        assert_eq!(text(&e.game_state()).get("error").and_then(Json::as_str), Some("no_game"));
+    }
+
+    /// Every screen the shell can open over another is drawn above it: the built-in screens'
+    /// layers are in the order they stack, and a project's screen that is not is named.
+    #[test]
+    fn a_screen_opened_over_another_is_above_it_or_is_said() {
+        let mut shell = shell();
+        // Each place the run can stand, with the settings opened over it.
+        let stand = |shell: &mut Shell| {
+            shell.fill();
+            shell.sync_screens();
+        };
+        stand(&mut shell);
+        shell.press("open:settings", true).unwrap();
+        stand(&mut shell);
+        shell.press("back", true).unwrap();
+        shell.press("start", true).unwrap();
+        stand(&mut shell);
+        shell.press("pause", true).unwrap();
+        stand(&mut shell);
+        shell.press("open:settings", true).unwrap();
+        stand(&mut shell);
+        assert_eq!(shell.run.visible(), ["hud", "pause", "settings"]);
+        for outcome in [Ended::Won, Ended::Lost] {
+            shell.run.restore(Phase::Ended(outcome), Some(1));
+            stand(&mut shell);
+        }
+        assert_eq!(shell.problems, Vec::<String>::new());
+        // A project's own screen with a layer below the one it opens over.
+        let mut files = ShellFiles::builtin(GAME);
+        files.screens.push(("shop".into(), builtin("assets/ui/pause.json").replace("\"name\": \"pause\"", "\"name\": \"shop\"").replace("\"layer\": 20", "\"layer\": 5")));
+        let mut shell = Shell::build("gate", files).unwrap();
+        shell.press("open:shop", true).unwrap();
+        stand(&mut shell);
+        assert_eq!(shell.problems.len(), 1, "{:?}", shell.problems);
+        assert!(shell.problems[0].contains("shop.json opens over title") && shell.problems[0].contains("higher layer"), "{:?}", shell.problems);
+    }
+
+    /// `game_act`: an agent's press by word answers with a code to branch on when it is refused.
+    #[test]
+    fn an_agents_press_by_word_is_done_or_refused_with_a_code() {
+        let mut shell = shell();
+        let code = |shell: &mut Shell, word: &str| shell.press_from(word, None, false).map_err(|(code, _)| code);
+        assert_eq!(code(&mut shell, "pause"), Err("not_now"), "nothing to pause at the title");
+        assert_eq!(code(&mut shell, "start"), Ok(()));
+        assert_eq!(shell.run.phase(), Phase::Running);
+        assert_eq!(code(&mut shell, "start"), Err("not_now"));
+        assert_eq!(code(&mut shell, "quit"), Err("players_only"));
+        assert_eq!(code(&mut shell, "open:"), Err("bad_action"));
+        assert_eq!(code(&mut shell, "open:shop"), Err("no_screen"));
+        assert_eq!(code(&mut shell, "set:difficulty:impossible"), Err("bad_setting"));
+        assert_eq!(code(&mut shell, "set:difficulty:hard"), Ok(()));
+        assert_eq!(code(&mut shell, "pause"), Ok(()));
+        assert_eq!((shell.run.phase(), shell.take_clock()), (Phase::Paused, Some(true)));
+        // The setting the rules read reached the modules, with the run's start before it.
+        let heard: Vec<String> = events(&mut shell).into_iter().map(|(name, _)| name).collect();
+        assert_eq!(heard, ["setting", "run", "setting"]);
     }
 
     /// The interface's scale and the text's size are settings a game may declare, in per cent.

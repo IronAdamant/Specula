@@ -203,17 +203,31 @@ pub fn run(cli: Cli, ctx: &Ctx) -> (i32, Json) {
             let engines = ctx.engines();
             (0, Json::obj([("engines", Json::arr(engines.iter().map(Instance::to_json))), ("count", Json::from(engines.len()))]))
         }
-        Cli::New { name, parent } => {
+        Cli::New { name, parent, bare } => {
             let Some(parent) = parent.or_else(|| ctx.home.as_ref().map(|h| h.join(PROJECTS_FOLDER))) else {
                 return refusal("no_home", "this machine's environment names no home folder to make projects in: say where with --in FOLDER");
             };
             let parent = std::path::absolute(&parent).unwrap_or(parent);
-            match store::create(&parent, &name) {
+            // A project that builds and plays (docs/design/FIRST_HOUR.md, slice 7); `--bare`:
+            // the folder, its assets folder and its marker, as before.
+            let made = if bare { store::create(&parent, &name).map(|folder| (folder, None)) } else { crate::scaffold::create(&parent, &name).map(|(folder, made)| (folder, Some(made))) };
+            match made {
                 Err(why) => refusal("not_made", why),
-                Ok(folder) => {
+                Ok((folder, made)) => {
                     let project = Project { path: folder, name, exe: None, last_world: None, last_opened: ctx.now, version: env!("CARGO_PKG_VERSION").to_owned() };
                     let listed = ctx.store.opened(project.clone());
                     let mut j = Json::obj([("project", project.to_json()), ("next", Json::from(format!("specula open \"{}\"", project.path.display())))]);
+                    if let Some(made) = made {
+                        j.set(
+                            "made",
+                            Json::obj([
+                                ("files", Json::from(made.files)),
+                                ("module", Json::from(format!("modules/{}", made.module))),
+                                ("read_first", Json::from("notes/how.md: how this game is built and checked (an agent is given it at its agent_hello)")),
+                            ]),
+                        );
+                        j.set("next", Json::from(format!("specula open \"{0}\" -- --lead NAME  (to build its module with logic_build), or: specula play \"{0}\"", project.path.display())));
+                    }
                     if let Err(e) = listed {
                         j.set("warning", Json::from(format!("the project was made but could not be listed ({e})")));
                     }
@@ -379,6 +393,7 @@ fn call(ctx: &Ctx, engine: &Instance, tool: &str, args: Json, as_name: Option<&s
     if let Err(e) = client.connect("specula-cli") {
         return unreachable_engine(&e);
     }
+    let mut unkept = None;
     if let Some(name) = as_name.filter(|_| tool != "agent_hello") {
         let token_file = ctx.store.dir.join(instances::FOLDER).join(format!("{}.{name}.token", engine.pid));
         let token = std::fs::read_to_string(&token_file).ok().map(|t| t.trim().to_owned()).filter(|t| !t.is_empty() && t.len() <= 256);
@@ -404,11 +419,21 @@ fn call(ctx: &Ctx, engine: &Instance, tool: &str, args: Json, as_name: Option<&s
             }
             Ok(a) if a.is_error => {
                 client.close();
-                return (1, Json::parse(&a.text).unwrap_or_else(|_| Json::from(a.text.as_str())));
+                let mut j = Json::parse(&a.text).unwrap_or_else(|_| Json::from(a.text.as_str()));
+                // The name is held by an identity this command has no token for: most often an
+                // earlier command's, whose token could not be kept where this one looks.
+                if token.is_none() && j.get("error").and_then(Json::as_str) == Some("grant_bound") {
+                    j.set("hint", Json::from(not_kept(ctx, engine, name)));
+                }
+                return (1, j);
             }
             Ok(a) => {
                 if let Some(t) = Json::parse(&a.text).ok().and_then(|j| j.get("resume_token").and_then(Json::as_str).map(str::to_owned)) {
-                    let _ = store::write_small(&token_file, &t);
+                    // Kept beside the engine's instance file, which is only there when this
+                    // command reads the settings folder the engine was started with.
+                    if engine.pid == 0 || store::write_small(&token_file, &t).is_err() {
+                        unkept = Some(not_kept(ctx, engine, name));
+                    }
                 }
             }
         }
@@ -421,7 +446,28 @@ fn call(ctx: &Ctx, engine: &Instance, tool: &str, args: Json, as_name: Option<&s
     client.close();
     match answer {
         Err(e) => unreachable_engine(&e),
-        Ok(a) => (i32::from(a.is_error), Json::parse(&a.text).unwrap_or_else(|_| Json::from(a.text.as_str()))),
+        Ok(a) => {
+            let mut j = Json::parse(&a.text).unwrap_or_else(|_| Json::from(a.text.as_str()));
+            // Said with the answer, where the caller reads: the next command would otherwise be
+            // refused (or be somebody new) with nothing to say why.
+            if let (Some(why), Json::Obj(_)) = (unkept, &j) {
+                j.set("identity_not_kept", Json::from(why));
+            }
+            (i32::from(a.is_error), j)
+        }
+    }
+}
+
+/// Why a command could not keep `name`'s identity for the next command, and what to do.
+fn not_kept(ctx: &Ctx, engine: &Instance, name: &str) -> String {
+    let folder = ctx.store.dir.display();
+    if engine.pid == 0 {
+        format!(
+            "the engine on port {} is not listed in {folder} (it was started with another --settings folder, or with --settings off), so {name}'s resume token is not kept between commands: the next command as {name} is a new identity, or is refused when the operator granted the name. Give every command the engine's own folder (specula call ... --settings DIR), or say agent_hello yourself and pass its resume_token",
+            engine.port
+        )
+    } else {
+        format!("{name}'s resume token could not be written under {folder}: the next command as {name} is a new identity, or is refused when the operator granted the name")
     }
 }
 
@@ -769,18 +815,18 @@ mod tests {
         let (code, j) = run(Cli::Projects, &c);
         assert_eq!((code, j.to_string()), (0, r#"{"projects":[],"count":0}"#.to_owned()));
         // `new` makes the folder under the home's projects folder and lists it.
-        let (code, j) = run(Cli::New { name: "crypt".into(), parent: None }, &c);
+        let (code, j) = run(Cli::New { name: "crypt".into(), parent: None, bare: true }, &c);
         assert_eq!(code, 0, "{j}");
         let crypt = dir.join("home").join(PROJECTS_FOLDER).join("crypt");
         assert!(crypt.join("assets").is_dir() && crypt.join(crate::launch_list::MARKER).is_file());
-        let (_, j) = run(Cli::New { name: "frost".into(), parent: Some(dir.join("elsewhere")) }, &c);
+        let (_, j) = run(Cli::New { name: "frost".into(), parent: Some(dir.join("elsewhere")), bare: true }, &c);
         assert!(dir.join("elsewhere").join("frost").is_dir(), "{j}");
         let names = |j: &Json| j.get("projects").and_then(Json::as_array).unwrap().iter().map(|p| p.get("name").and_then(Json::as_str).unwrap().to_owned()).collect::<Vec<_>>();
         let (_, j) = run(Cli::Projects, &c);
         assert_eq!(names(&j), ["frost", "crypt"]);
         assert_eq!(j.get("last").and_then(Json::as_str), Some("frost"));
         // A name in use is refused; a folder that is gone is still listed, as missing.
-        let (code, j) = run(Cli::New { name: "crypt".into(), parent: None }, &c);
+        let (code, j) = run(Cli::New { name: "crypt".into(), parent: None, bare: true }, &c);
         assert!(code == 1 && j.to_string().contains("not empty"), "{j}");
         std::fs::remove_dir_all(dir.join("elsewhere")).unwrap();
         let (_, j) = run(Cli::Projects, &c);
@@ -850,7 +896,7 @@ mod tests {
     fn open_hands_the_project_to_a_waiting_start_screen_and_starts_an_engine_when_refused() {
         let dir = scratch("handover");
         let c = ctx(&dir);
-        let (_, j) = run(Cli::New { name: "crypt".into(), parent: None }, &c);
+        let (_, j) = run(Cli::New { name: "crypt".into(), parent: None, bare: true }, &c);
         let crypt = PathBuf::from(j.get("project").and_then(|p| p.get("path")).and_then(Json::as_str).unwrap());
         // A start screen and, later, the engine it became: "serving" is a port of this test's.
         let (screen, after) = (std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap(), std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap());
@@ -908,7 +954,7 @@ mod tests {
     fn a_project_an_engine_holds_is_found_never_opened_twice() {
         let dir = scratch("held");
         let c = ctx(&dir);
-        let (_, j) = run(Cli::New { name: "crypt".into(), parent: None }, &c);
+        let (_, j) = run(Cli::New { name: "crypt".into(), parent: None, bare: true }, &c);
         let crypt = PathBuf::from(j.get("project").and_then(|p| p.get("path")).and_then(Json::as_str).unwrap());
         let open = || Cli::Open { which: Which::Word("crypt".into()), front: false, engine_args: vec!["--headless".into()] };
         let error = |j: &Json| j.get("error").and_then(Json::as_str).map(str::to_owned);

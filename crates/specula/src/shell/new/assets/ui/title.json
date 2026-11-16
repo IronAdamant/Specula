@@ -2,7 +2,7 @@
   "format": "specula.ui.screen.v1",
   "name": "title",
   "input": "menu",
-  "layer": 40,
+  "layer": 10,
   "modal": true,
   "focus": "start",
   "notes": "Shown when the game opens; it holds the clock until Start. Actions the engine knows (docs/design/FIRST_HOUR.md): start, open:NAME, quit. Words: assets/strings/<locale>.json. State: game.title.",

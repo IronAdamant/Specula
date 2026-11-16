@@ -354,9 +354,9 @@ A kit ([`KITS`](../../crates/specula/src/toolkits.rs)) is data:
 - **`done`**: what says the job is done. It always names a tool of the kit whose answer says so (`ui_check`
   reports 0 errors, a replay ends on the same `world_hash`), never "it looks right".
 
-There are 21: `build_place`, `make_asset`, `make_menu`, `animate`, `write_rules`, `run_playtest`,
+There are 22: `build_place`, `make_asset`, `make_menu`, `animate`, `write_rules`, `run_playtest`,
 `make_cutscene`, `translate`, `make_sound`, `make_effect`, `shape_terrain`, `find_paths`, `check_physics`,
-`light_scene`, `write_logic`, `find_slow_frame`, `find_cause`, `review_work`, `work_together`, `direct_swarm`
+`light_scene`, `write_logic`, `find_slow_frame`, `find_cause`, `review_work`, `keep_memory`, `work_together`, `direct_swarm`
 and `ask_human`. Names are jobs, verb first, so they read apart from the families (`ui`, `physics`).
 
 ### Using one

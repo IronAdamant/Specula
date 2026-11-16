@@ -203,7 +203,8 @@ impl Engine {
                 };
                 self.offload(
                     job,
-                    move |_| store::create(&parent, &name),
+                    // (A project that builds and plays, as `specula new` makes it.)
+                    move |_| crate::scaffold::create(&parent, &name).map(|(folder, _)| folder),
                     |e: &mut Engine, r: Result<Result<PathBuf, String>, Failed>| match r {
                         Ok(Ok(folder)) => e.launch_go(folder),
                         Ok(Err(why)) => e.start.screen.answered(Err(why)),
