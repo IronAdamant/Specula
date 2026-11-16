@@ -158,13 +158,14 @@ fn call(e: &mut Engine, s: &SessionInfo, who: &'static str, tool: &str, args: &s
 /// until nothing is left. One call has a budget of engine-thread time
 /// ([`crate::ui_tools::BUDGET_MS`]) and stops before a step that would end past it; how many
 /// of several steps fit in one call is how fast the machine was, which no test may assert
-/// (AGENTS.md, "The gate"). What the design guarantees is that every call runs at least its
-/// first step, so this ends. Found when a two-step call, asserted whole, failed once beside
-/// three compilers (review R2 of M6 part 3) and passed in every other run.
+/// (AGENTS.md, "The gate"). What the design guarantees is that every call runs at least the
+/// first unit of what it was given (a step, or one frame of a wait: a wait handed back is the
+/// frames it has left), so this ends. Found when a two-step call, asserted whole, failed once
+/// beside three compilers (review R2 of M6 part 3) and passed in every other run.
 fn act_through(e: &mut Engine, s: &SessionInfo, who: &'static str, args: &str) -> (Json, bool) {
     let mut args = Json::parse(args).unwrap();
-    let asked = args.get("steps").and_then(Json::as_array).map_or(0, <[Json]>::len);
-    for _ in 0..=asked {
+    // (As many calls as there could be units: each call runs one at least.)
+    for _ in 0..CALLS_AT_MOST {
         let (answer, err) = call(e, s, who, "ui_act", &args.to_string());
         match answer.get("rest").and_then(Json::as_array).filter(|rest| !rest.is_empty() && !err) {
             Some(rest) => {
@@ -173,8 +174,12 @@ fn act_through(e: &mut Engine, s: &SessionInfo, who: &'static str, args: &str) -
             None => return (answer, err),
         }
     }
-    panic!("a ui_act of {asked} steps handed back a rest {} times: a call made no progress", asked + 1);
+    panic!("a ui_act handed back a rest {CALLS_AT_MOST} times: its calls made no progress");
 }
+
+/// More calls than any test's steps have units (frames and presses): a `ui_act` that hands
+/// back a rest this many times is not getting anywhere.
+const CALLS_AT_MOST: usize = 4096;
 
 fn display_of(e: &mut Engine, s: &SessionInfo, who: &'static str) -> Json {
     let (t, err) = call(e, s, who, "ui_tree", r#"{"limit": 1, "fresh": true}"#);
@@ -291,9 +296,10 @@ fn ui_act_stops_at_its_time_budget_and_hands_back_the_rest() {
     assert!(left > 0 && frames + left == 121, "the first settle frame and the wait's: {frames} + {left}: {r}");
     let rest: Vec<Json> = r.get("rest").and_then(Json::as_array).unwrap().to_vec();
     assert_eq!(Json::Arr(rest.clone()).to_string(), format!(r#"[{{"wait":{left}}},{{"press":"open","device":"gamepad"}},{{"wait":40}}]"#));
-    // Send the rest back until done.
+    // Send the rest back until done. (As many calls as it takes: how many frames fit one
+    // call is the machine's speed; that every call runs one at least is the design's.)
     let mut rest = rest;
-    for _ in 0..10 {
+    for _ in 0..CALLS_AT_MOST {
         let (r, err) = call(&mut e, &m, "mallory", "ui_act", &format!(r#"{{"steps": {}, "settle": 0}}"#, Json::Arr(rest.clone())));
         assert!(!err, "{r}");
         match r.get("rest").and_then(Json::as_array) {

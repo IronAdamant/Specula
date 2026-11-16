@@ -143,8 +143,19 @@ pub fn id_from(title: &str) -> String {
 }
 
 impl Note {
-    /// Checks a note's parts, as [`Note::parse`] does for a file's.
+    /// Checks a note's parts and its size: what a note that is about to be written is held to.
     pub fn check(&self) -> Result<(), NoteError> {
+        self.check_fields()?;
+        if self.to_text().len() > MAX_NOTE_BYTES {
+            return Err(NoteError::new("too_big", format!("a note is at most {} KB: a longer one is two notes", MAX_NOTE_BYTES / 1024)));
+        }
+        Ok(())
+    }
+
+    /// Checks a note's parts (its id, title, what it replaces, what it is about): everything
+    /// its front matter says. Its size is not a part: a file's is its own length
+    /// ([`Note::parse`]), a new note's that of its text ([`Note::check`]).
+    fn check_fields(&self) -> Result<(), NoteError> {
         if !id_ok(&self.id) {
             return Err(NoteError::new("bad_id", "a note's id is a lowercase letter or digit, then lowercase letters, digits, _ and - (at most 64)"));
         }
@@ -163,25 +174,33 @@ impl Note {
         if let Some(bad) = self.about.iter().find(|p| !path_ok(p)) {
             return Err(NoteError::new("bad_about", format!("\"{bad}\" is not a project path (folders and files with /, such as modules/gate/src/lib.rs; a folder may end in /)")));
         }
-        if self.to_text().len() > MAX_NOTE_BYTES {
-            return Err(NoteError::new("too_big", format!("a note is at most {} KB: a longer one is two notes", MAX_NOTE_BYTES / 1024)));
-        }
         Ok(())
     }
 
     /// Reads a note from its file's text. `id`: the file's name without `.md`.
+    ///
+    /// A text is a note when it is no longer than a note may be, starts with a front matter
+    /// ([`split`]), and that front matter is one ([`Note::of_front`]). Nothing else decides
+    /// it, so that whoever reads only the first lines ([`front`]) decides the same.
     pub fn parse(id: &str, text: &str) -> Result<Note, NoteError> {
         if text.len() > MAX_NOTE_BYTES {
             return Err(NoteError::new("too_big", format!("a note is at most {} KB", MAX_NOTE_BYTES / 1024)));
         }
         let text = text.replace("\r\n", "\n");
         let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
-        let no_front = || NoteError::new("no_front_matter", "a note starts with front matter between two lines of ---: title, kind, and optionally supersedes and about");
         let (front, body) = split(text).ok_or_else(no_front)?;
+        let mut note = Note::of_front(id, front)?;
+        note.body = body.trim_matches('\n').to_owned();
+        Ok(note)
+    }
+
+    /// The note a front matter describes, with no text yet: its lines read and its parts
+    /// checked. One reading, for a note's whole text and for its first lines alone.
+    fn of_front(id: &str, front: &str) -> Result<Note, NoteError> {
         if front.lines().count() > FRONT_LINES {
             return Err(NoteError::new("bad_front_matter", format!("a note's front matter is at most {FRONT_LINES} lines (it has four keys: title, kind, supersedes, about)")));
         }
-        let mut note = Note { id: id.to_owned(), title: String::new(), kind: Kind::Fact, supersedes: None, about: Vec::new(), body: body.trim_matches('\n').to_owned() };
+        let mut note = Note { id: id.to_owned(), title: String::new(), kind: Kind::Fact, supersedes: None, about: Vec::new(), body: String::new() };
         let (mut has_title, mut has_kind) = (false, false);
         for line in front.lines().filter(|l| !l.trim().is_empty()) {
             let (key, value) = line.split_once(':').map(|(k, v)| (k.trim(), v.trim())).ok_or_else(|| NoteError::new("bad_front_matter", format!("a front matter line is `key: value` (got \"{line}\")")))?;
@@ -202,7 +221,7 @@ impl Note {
         if !has_title || !has_kind {
             return Err(NoteError::new("bad_front_matter", "a note's front matter has a title and a kind"));
         }
-        note.check()?;
+        note.check_fields()?;
         Ok(note)
     }
 
@@ -510,13 +529,24 @@ fn split(text: &str) -> Option<(&str, &str)> {
     }
 }
 
-/// What a note's front matter says of its place among the others: its kind, and the note it
-/// replaces. Read from the first lines alone, for whoever must look at every note of a project
-/// at once (the check made where a note is committed). For every text [`Note::parse`] takes it
-/// answers what the parsed note says (one way of splitting, [`split`], and one bound,
-/// [`FRONT_LINES`]); it does not check the rest, so it may also answer for a text that is not
-/// a note yet (a draft). `None`: the text does not start as a note does.
-pub fn front(text: &str) -> Option<(Kind, Option<String>)> {
+fn no_front() -> NoteError {
+    NoteError::new("no_front_matter", "a note starts with front matter between two lines of ---: title, kind, and optionally supersedes and about")
+}
+
+/// What a note says of its place among the others: its kind, and the note it replaces. Read
+/// from the first lines alone, for whoever must look at every note of a project at once (the
+/// check made where a note is committed). `id`: the file's name without `.md`.
+///
+/// `Some` exactly for the texts [`Note::parse`] takes, with what the parsed note says: the
+/// same size rule, the same way of splitting ([`split`]) and the same reading of the front
+/// matter ([`Note::of_front`]). A file in the notes folder that is not a note (a draft, a
+/// front matter with no title) is `None` here as it is no note to the reader (review R4 of M6
+/// part 3: it answered for such drafts, a thousand of them filled the check's view, and the
+/// check then accepted what the reader reported).
+pub fn front(id: &str, text: &str) -> Option<(Kind, Option<String>)> {
+    if text.len() > MAX_NOTE_BYTES {
+        return None;
+    }
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     // The lines a front matter can be in: its opening line, its lines, its closing line.
     let mut head = text;
@@ -532,18 +562,8 @@ pub fn front(text: &str) -> Option<(Kind, Option<String>)> {
     }
     let head = head.replace("\r\n", "\n");
     let (front, _) = split(&head)?;
-    if front.lines().count() > FRONT_LINES {
-        return None;
-    }
-    let (mut kind, mut supersedes) = (None, None);
-    for line in front.lines().filter(|l| !l.trim().is_empty()) {
-        match line.split_once(':').map(|(k, v)| (k.trim(), v.trim())) {
-            Some(("kind", value)) => kind = Kind::named(value),
-            Some(("supersedes", value)) => supersedes = id_ok(value).then(|| value.to_owned()),
-            _ => {}
-        }
-    }
-    kind.map(|k| (k, supersedes))
+    let note = Note::of_front(id, front).ok()?;
+    Some((note.kind, note.supersedes))
 }
 
 #[cfg(test)]
@@ -607,14 +627,20 @@ mod tests {
     /// every note of a project against one being written.
     #[test]
     fn a_notes_place_is_read_from_its_first_lines() {
-        assert_eq!(front(DECISION), Some((Kind::Decision, Some("gate-lives".to_owned()))));
-        assert_eq!(front("---\ntitle: x\nkind: brief\n---\ntext"), Some((Kind::Brief, None)));
-        assert_eq!(front("\u{feff}---\r\ntitle: x\r\nkind: how\r\n---\r\n"), Some((Kind::How, None)));
-        assert_eq!(front("just text"), None);
-        assert_eq!(front("---\ntitle: x\n---\n"), None, "no kind");
-        assert_eq!(front("---\ntitle: x\nkind: fact\n"), None, "the front matter never ends");
-        assert_eq!(front(&format!("---\nkind: fact\n{}---\n", "x: y\n".repeat(40))), None, "too long to be a front matter");
-        assert_eq!(front("---\nkind: fact\nsupersedes: Not An Id\n---\n"), Some((Kind::Fact, None)));
+        assert_eq!(front("x", DECISION), Some((Kind::Decision, Some("gate-lives".to_owned()))));
+        assert_eq!(front("x", "---\ntitle: x\nkind: brief\n---\ntext"), Some((Kind::Brief, None)));
+        assert_eq!(front("x", "\u{feff}---\r\ntitle: x\r\nkind: how\r\n---\r\n"), Some((Kind::How, None)));
+        assert_eq!(front("x", "just text"), None);
+        assert_eq!(front("x", "---\ntitle: x\n---\n"), None, "no kind");
+        assert_eq!(front("x", "---\ntitle: x\nkind: fact\n"), None, "the front matter never ends");
+        assert_eq!(front("x", &format!("---\nkind: fact\n{}---\n", "x: y\n".repeat(40))), None, "too long to be a front matter");
+        // What is no note to the reader has no place here either: no title, an id that is not
+        // one, a note that names itself, a text longer than a note may be.
+        assert_eq!(front("x", "---\nkind: fact\n---\n"), None, "no title");
+        assert_eq!(front("x", "---\ntitle: x\nkind: fact\nsupersedes: Not An Id\n---\n"), None);
+        assert_eq!(front("x", "---\ntitle: x\nkind: fact\nsupersedes: x\n---\n"), None);
+        assert_eq!(front("Not An Id", "---\ntitle: x\nkind: fact\n---\n"), None);
+        assert_eq!(front("x", &format!("---\ntitle: x\nkind: fact\n---\n{}", "y".repeat(MAX_NOTE_BYTES))), None);
     }
 
     /// The brief is made in one pass however many notes there are, and stays within its size
@@ -728,7 +754,7 @@ mod tests {
         let blank = "\n".repeat(20);
         let padded = format!("---\ntitle: T\nkind: fact\n{blank}supersedes: other\n---\ntext\n");
         assert_eq!(Note::parse("x", &padded).unwrap_err().code, "bad_front_matter");
-        assert_eq!(front(&padded), None);
+        assert_eq!(front("x", &padded), None);
         let fits = format!("---\ntitle: T\n{}kind: brief\nsupersedes: other\n---\ntext\n", "\n".repeat(FRONT_LINES - 3));
         let one_more = format!("---\ntitle: T\n{}kind: brief\nsupersedes: other\n---\ntext\n", "\n".repeat(FRONT_LINES - 2));
         assert!(Note::parse("x", &fits).is_ok() && Note::parse("x", &one_more).is_err());
@@ -745,18 +771,34 @@ mod tests {
             "---\ntitle: T\nkind: fact\n--- \nsupersedes: a\n---\n".to_owned(),
             "no front matter".to_owned(),
             String::new(),
+            // Not notes, each for one reason: no title, a key that is not one, a line that is
+            // not `key: value`, a kind that is not one, a title too long, an `about` that is
+            // no path, what it replaces is itself, and a text past a note's size.
+            "---\nkind: brief\n---\n".to_owned(),
+            "---\ntitle: T\nkind: fact\nauthor: me\n---\n".to_owned(),
+            "---\ntitle: T\nkind: fact\njust words\n---\n".to_owned(),
+            "---\ntitle: T\nkind: opinion\n---\n".to_owned(),
+            format!("---\ntitle: {}\nkind: fact\n---\n", "T".repeat(MAX_TITLE + 1)),
+            "---\ntitle: T\nkind: fact\nabout: ../outside\n---\n".to_owned(),
+            "---\ntitle: T\nkind: fact\nsupersedes: x\n---\n".to_owned(),
+            format!("---\ntitle: T\nkind: fact\n---\n{}", "y".repeat(MAX_NOTE_BYTES)),
+            // A note at exactly a note's size, and a note whose line ends are all `\r\n`.
+            {
+                let head = "---\ntitle: T\nkind: fact\n---\n";
+                format!("{head}{}", "y".repeat(MAX_NOTE_BYTES - head.len()))
+            },
+            format!("---\r\ntitle: T\r\nkind: fact\r\n---\r\n{}", "line\r\n".repeat(40)),
         ];
+        // The two say the same of every text: a note to one is a note to the other, with the
+        // same kind and the same note replaced; what is not a note is one to neither (review
+        // R4: the first-lines reader answered for drafts the parser refused).
         let mut notes = 0;
         for text in &texts {
-            if let Ok(note) = Note::parse("x", text) {
-                notes += 1;
-                assert_eq!(front(text), Some((note.kind, note.supersedes.clone())), "{text:?}");
-            }
+            let parsed = Note::parse("x", text).ok();
+            notes += usize::from(parsed.is_some());
+            assert_eq!(front("x", text), parsed.map(|note| (note.kind, note.supersedes)), "{:?}", text.chars().take(80).collect::<String>());
         }
-        assert!(notes >= 7, "{notes} of the texts are notes");
-        // A text that is not a note may still have a front: the check at the write is the
-        // stricter of the two, never the looser.
-        assert_eq!(front("---\nkind: brief\n---\n"), Some((Kind::Brief, None)));
+        assert_eq!(notes, 9, "of the texts, the notes");
     }
 
     #[test]

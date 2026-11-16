@@ -211,18 +211,20 @@ fn resolve(base: &[String], target: &str) -> Option<String> {
     }
     Some(parts.join("/"))
 }
-
-/// Inside the module, and not its build output, nor a folder whose name starts with a dot.
+/// Inside the module, and not its build output, nor a folder whose name starts with a dot, nor
+/// the module's own top-level `Cargo.lock`.
 ///
-/// The module folder's digest ([`crate::digest::files`]) leaves out `target/` and every folder
-/// whose name starts with a dot, at any depth: what a build may compile or include is held to
-/// the same, so nothing that is compiled goes undigested (review R3 of M6 part 3:
-/// `#[path = ".v/imp.rs"]` compiled a file no proposal's digest and no record covered).
+/// The module folder's digest ([`crate::digest::files`]) leaves out `target/`, every folder
+/// whose name starts with a dot, at any depth, and the top-level `Cargo.lock` (Cargo writes
+/// it during a build): what a build may compile or include is held to the same, so nothing
+/// that is compiled goes undigested (reviews R3 and R4 of M6 part 3: `#[path = ".v/imp.rs"]`
+/// compiled a file no proposal's digest and no record covered, and
+/// `include_str!("../Cargo.lock")` took in one that could change under an unchanged digest).
 fn allowed(rel: &str) -> bool {
     let mut folders: Vec<&str> = rel.split('/').collect();
     let _file = folders.pop();
     let first = rel.split('/').next().unwrap_or("").to_ascii_lowercase();
-    !rel.is_empty() && first != "target" && first != ".cargo" && !folders.iter().any(|f| f.starts_with('.'))
+    !rel.is_empty() && first != "target" && first != ".cargo" && first != "cargo.lock" && !folders.iter().any(|f| f.starts_with('.'))
 }
 
 const MACROS: [&str; 3] = ["include_str", "include_bytes", "include"];
@@ -531,10 +533,11 @@ mod tests {
     /// and never a folder whose name starts with a dot, at any depth.
     #[test]
     fn a_compiled_path_is_one_the_digest_covers() {
-        for ok in ["src/lib.rs", "src/data/table.txt", "inner/src/lib.rs", ".gitignore", "src/.keep"] {
+        // (A `Cargo.lock` below the top is digested like any file: a nested crate's.)
+        for ok in ["src/lib.rs", "src/data/table.txt", "inner/src/lib.rs", ".gitignore", "src/.keep", "inner/Cargo.lock"] {
             assert!(allowed(ok), "{ok}");
         }
-        for refused in ["", "target/debug/x.rs", "Target/x.rs", ".cargo/config.toml", ".v/imp.rs", "src/.hidden/imp.rs", "src/a/.b/c.rs"] {
+        for refused in ["", "target/debug/x.rs", "Target/x.rs", ".cargo/config.toml", ".v/imp.rs", "src/.hidden/imp.rs", "src/a/.b/c.rs", "Cargo.lock", "cargo.lock"] {
             assert!(!allowed(refused), "{refused}");
         }
         let hidden = check_source("src/lib.rs", "#[path = \".v/imp.rs\"]

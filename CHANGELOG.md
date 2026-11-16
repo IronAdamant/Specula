@@ -71,6 +71,10 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
     SECURITY.md and on the roadmap); a thousand files that are not notes pushed every note out of the list
     (only notes count now); a second test with the two-steps-in-20-ms flaw; a compiled file in a dot-folder
     that no digest covered.
+  - **A fourth pass: both reviewers say merge.** Its last findings were small and of this branch: a module's
+    own `Cargo.lock` could be included without being digested; the check at a note's write could be blinded
+    by a thousand files that only began like notes (it reads notes exactly as their reader does now: one
+    reading of the front matter for both); and my helper for the two timing tests gave a wait too few calls.
 
 ### M5, done (2026-11-06 to 2026-11-15)
 

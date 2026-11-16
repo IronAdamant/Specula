@@ -696,7 +696,13 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     let run_builds = logic::tools::run_targets_root(launch_engine::store_for(args.settings.as_deref(), |k| std::env::var(k).ok()).as_ref().map(|s| s.dir.as_path()), args.settings.is_some());
     disk::book().configure(
         engine.perf_cfg.disk.clone(),
-        settings_root.into_iter().chain(short_modules.clone().map(|dir| (disk::Category::Modules, dir))).chain(run_builds.clone().map(|dir| (disk::Category::Modules, dir))).chain([
+        settings_root
+            .into_iter()
+            .chain(short_modules.clone().map(|dir| (disk::Category::Modules, dir)))
+            .chain(run_builds.clone().map(|dir| (disk::Category::Modules, dir)))
+            // (The start-up build's own short folder, when it is not its usual one already.)
+            .chain(logic::tools::run_short_root(short_modules.as_deref()).filter(|dir| Some(dir) != run_builds.as_ref()).map(|dir| (disk::Category::Modules, dir)))
+            .chain([
             (disk::Category::Captures, captures_root.clone()),
             (disk::Category::Cache, cache_dir.clone()),
             // The trace folder: self-bounded (its JSONL files and crash reports are capped by

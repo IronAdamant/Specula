@@ -430,10 +430,17 @@ fn new_project(cx: &mut Cx) -> Result<String, String> {
     let drafts = 1030;
     for i in 0..drafts {
         let path = project.join("notes").join(format!("0000-draft-{i:04}.md"));
-        std::fs::write(&path, "draft\n").map_err(|e| format!("{}: {e}", path.display()))?;
+        // (Each begins as a note does and is none: it has no title.)
+        std::fs::write(&path, "---\nkind: brief\n---\ndraft\n").map_err(|e| format!("{}: {e}", path.display()))?;
     }
     let flooded = cx.wait_for(port, lead, "memory_list", "the drafts written on disk are imported", Duration::from_secs(60), |l| at(l, "not_notes_total").and_then(Json::as_u64) == Some(drafts))?;
     expect(current(&flooded) == current(&before) && at(&flooded, "total").and_then(Json::as_u64) == at(&before, "total").and_then(Json::as_u64), "files that are not notes pushed notes out of the list", &flooded)?;
+    // And they do not blind the check at the write: a second brief is still refused there
+    // (review R4: among a thousand such files it was accepted, and the reader then said so).
+    let second = Json::obj([("path", Json::Str("notes/pitch.md".to_owned())), ("text", Json::Str("---\ntitle: Another brief\nkind: brief\n---\ntext\n".to_owned()))]);
+    let args = cx.out.join("pitch-args.json");
+    std::fs::write(&args, second.to_string()).map_err(|e| format!("{}: {e}", args.display()))?;
+    cx.refused(port, lead, "project_write", &format!("@{}", args.to_string_lossy()), "brief_exists")?;
     let hello = cx.call(port, None, "agent_hello", r#"{"name": "among-drafts"}"#)?;
     expect(text(&hello, "project_memory.brief.id") == Some("brief"), "among a thousand drafts the next agent is not told the brief", &hello)?;
     for i in 0..drafts {

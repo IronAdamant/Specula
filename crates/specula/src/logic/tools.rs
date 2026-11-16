@@ -59,7 +59,7 @@ static RUN_TARGETS_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
 pub fn run_targets_root(settings: Option<&Path>, named: bool) -> Option<PathBuf> {
     let settings = settings?;
     match short_targets_root().filter(|_| !named) {
-        Some(short) => Some(short.with_file_name("r")),
+        Some(short) => run_short_root(Some(&short)),
         None => Some(settings.join("run-builds")),
     }
 }
@@ -69,13 +69,22 @@ pub fn set_run_targets(dir: Option<PathBuf>) {
     let _ = RUN_TARGETS_DIR.set(dir);
 }
 
+/// The short folder of the start-up build's own: `Specula\r`, beside the one ordinary builds
+/// use when they are too deep to link (`Specula\b`). Never the same folder: a start-up build
+/// too deep for its usual place would otherwise share a target with the lead's, the owner's
+/// and `--run-as-is` builds of the same module (review R4 of M6 part 3).
+pub fn run_short_root(short: Option<&Path>) -> Option<PathBuf> {
+    short.map(|s| s.with_file_name("r"))
+}
+
 /// The Cargo target of `dir`'s start-up build: under [`run_targets_root`], or under the
-/// engine's short folder when that would be too deep to link (both are the operator's).
+/// start-up build's own short folder when that would be too deep to link ([`run_short_root`]).
+/// Both are the operator's, and only start-up builds write there.
 fn run_target(dir: &Path) -> Option<(PathBuf, bool)> {
     let root = RUN_TARGETS_DIR.get()?.as_deref()?;
     let canon = specula_logic::fix::canonical(dir);
-    let short = SHORT_TARGETS_DIR.get().and_then(|s| s.as_deref());
-    Some(pick_target(root, short, &canon, &package_name(dir), cfg!(windows)))
+    let short = run_short_root(SHORT_TARGETS_DIR.get().and_then(|s| s.as_deref()));
+    Some(pick_target(root, short.as_deref(), &canon, &package_name(dir), cfg!(windows)))
 }
 
 /// Where module builds' targets go (set once at start; tests leave Cargo's default): the
@@ -189,7 +198,8 @@ fn stale_units(profile: &Path) -> Vec<PathBuf> {
 /// freed.
 pub fn drop_stale(target: &Path) -> (u64, u64) {
     // (The cache's folder for module builds, or the engine's short one: nowhere else.)
-    let roots = [MODULE_TARGETS_DIR.get().cloned(), SHORT_TARGETS_DIR.get().cloned().flatten(), RUN_TARGETS_DIR.get().cloned().flatten()];
+    let run_short = run_short_root(SHORT_TARGETS_DIR.get().and_then(|s| s.as_deref()));
+    let roots = [MODULE_TARGETS_DIR.get().cloned(), SHORT_TARGETS_DIR.get().cloned().flatten(), RUN_TARGETS_DIR.get().cloned().flatten(), run_short];
     let target = crate::disk::canonical(target);
     let Some(root) = roots.iter().flatten().map(|r| crate::disk::canonical(r)).find(|root| target.starts_with(root) && target != *root) else {
         return (0, 0);
@@ -1145,6 +1155,11 @@ mod stale_tests {
         assert_eq!(run_targets_root(None, false), None);
         assert_eq!(run_targets_root(None, true), None);
         assert_eq!(run_targets_root(Some(&settings), true), Some(settings.join("run-builds")));
+        // Too deep to link there, it goes to a short folder of its own: never the one ordinary
+        // builds use (the same module's target would be shared with them).
+        let b = Path::new("local").join("Specula").join("b");
+        assert_eq!(run_short_root(Some(&b)), Some(Path::new("local").join("Specula").join("r")));
+        assert_eq!(run_short_root(None), None);
         let own = run_targets_root(Some(&settings), false).expect("a folder");
         match short_targets_root() {
             Some(short) => assert!(own.parent() == short.parent() && own != short && own.file_name().is_some_and(|n| n == "r"), "{}", own.display()),

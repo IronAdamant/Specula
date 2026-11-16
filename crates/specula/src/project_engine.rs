@@ -94,50 +94,70 @@ fn at_version(journal: &crate::journal::Journal, path: &str, version: u64) -> (O
 /// calls at once both passed that and wrote a ring, and both notes dropped out of every list
 /// (review R1 of M6 part 3: 4 of 21 tries).
 ///
-/// Reads each note's first lines only (`specula_memoria::front`, which answers for every note
-/// what its parsed text says): a filter over at most the notes a project may hold. A text that
-/// is not a note yet (a draft stored with `allow_errors`) may still have a front: the check is
-/// the stricter of the two, never the looser.
+/// **It sees the notes as their reader does** (`specula_memoria::Notes::read`): the texts
+/// that are notes and no others (`specula_memoria::front` answers exactly for those), the
+/// first `MAX_NOTES` of them by id, and the replacements that are followed
+/// (`specula_memoria::follow`). So what it accepts the reader does not then report: a write
+/// is refused when it would leave a line unfollowed that was followed before, or a second
+/// brief standing. (Review R4: it took its view from every file that began like a note, in
+/// path order; a thousand drafts filled that view, and it accepted a ring and a second brief.)
+/// Each file's first lines are read: a filter over the store's files, which are bounded.
 ///
 /// **This is the refusal at the write, not what keeps the notes whole.** An undo puts a file
 /// back as it was and an edit on disk is imported as it is: neither is refused here, and each
-/// can leave what this refuses. What holds whatever the files say is the reader
-/// (`specula_memoria::Notes::read`): a replacement that would close a ring is not followed,
-/// so no note is hidden, and `memory_list` says what it found (`problems`). Review R2 of M6
-/// part 3 got past this check three ways; none of them hides a note now.
+/// can leave what this refuses. What holds whatever the files say is the reader: a
+/// replacement that would close a ring is not followed, so no note is hidden, and
+/// `memory_list` says what it found (`problems`). A note of a ring that is there already can
+/// still be written, and taking its line out ends the ring.
 fn note_guard(files: &std::collections::BTreeMap<String, ProjectFile>, path: &str, text: &str) -> Result<(), WorldError> {
     use specula_memoria::Kind;
     let id_of = |p: &str| p.strip_prefix("notes/").and_then(|p| p.strip_suffix(".md")).map(str::to_owned);
-    let (Some(id), Some((kind, supersedes))) = (id_of(path), specula_memoria::front(text)) else { return Ok(()) };
-    // Every other note's place: (id, kind, what it replaces).
-    let others: Vec<(String, Kind, Option<String>)> =
-        files.iter().filter(|(p, f)| f.kind == FileKind::Note && p.as_str() != path).filter_map(|(p, f)| Some((id_of(p)?, specula_memoria::front(&f.text)?))).map(|(i, (k, s))| (i, k, s)).take(specula_memoria::MAX_NOTES).collect();
+    let Some(id) = id_of(path) else { return Ok(()) };
+    // (A text that is not a note takes no place among the notes: there is nothing to hold.)
+    let Some((kind, supersedes)) = specula_memoria::front(&id, text) else { return Ok(()) };
+    // Every other note: (id, kind, what its file says it replaces).
+    let others: Vec<(String, Kind, Option<String>)> = files
+        .iter()
+        .filter(|(p, f)| f.kind == FileKind::Note && p.as_str() != path)
+        .filter_map(|(p, f)| {
+            let other = id_of(p)?;
+            let (kind, supersedes) = specula_memoria::front(&other, &f.text)?;
+            Some((other, kind, supersedes))
+        })
+        .collect();
+    // The notes that are read with this one as `this` (`None`: it is not there, or no note).
+    type Place<'n> = (&'n str, Kind, Option<&'n str>);
+    fn read<'n>(others: &'n [(String, Kind, Option<String>)], id: &'n str, this: Option<(Kind, Option<&'n str>)>) -> Vec<Place<'n>> {
+        let mut all: Vec<Place<'n>> = others.iter().map(|(i, k, s)| (i.as_str(), *k, s.as_deref())).collect();
+        all.extend(this.map(|(k, s)| (id, k, s)));
+        all.sort_by_key(|(note, _, _)| *note);
+        all.truncate(specula_memoria::MAX_NOTES);
+        all
+    }
+    let was = files.get(path).filter(|f| f.kind == FileKind::Note).and_then(|f| specula_memoria::front(&id, &f.text));
+    let (before, after) = (read(&others, &id, was.as_ref().map(|(k, s)| (*k, s.as_deref()))), read(&others, &id, Some((kind, supersedes.as_deref()))));
+    if !after.iter().any(|(note, _, _)| *note == id) {
+        // Past the notes that are read: it takes no place (the reader says how many are not read).
+        return Ok(());
+    }
+    let lines = |notes: &[(&str, Kind, Option<&str>)]| specula_memoria::follow(notes.iter().map(|(note, _, s)| (*note, *s)));
+    let (_, rings_before) = lines(&before);
+    let (follows, rings) = lines(&after);
     let refuse = |code: &'static str, message: String| Err(WorldError::new(code, format!("{message}; nothing was written")).with("path", path));
     if let Some(old) = &supersedes {
-        if let Some((by, _, _)) = others.iter().find(|(_, _, s)| s.as_deref() == Some(old.as_str())) {
-            return refuse("already_superseded", format!("{old} was already replaced by {by}: supersede that one, or rewrite it in place")).map_err(|e: WorldError| e.with("by", by.as_str()));
+        if let Some((by, _, _)) = after.iter().find(|(note, _, s)| *note != id && *s == Some(old.as_str())) {
+            return refuse("already_superseded", format!("{old} was already replaced by {by}: supersede that one, or rewrite it in place")).map_err(|e: WorldError| e.with("by", *by));
         }
-        // Never a ring: with this note written, no line is left unfollowed that was followed
-        // before, by the rule the notes are read by (`specula_memoria::follow`). A note of a
-        // ring that is there already (an undo, an edit on disk) can still be written, and
-        // taking its line out ends the ring.
-        let was = files.get(path).filter(|f| f.kind == FileKind::Note).and_then(|f| specula_memoria::front(&f.text)).and_then(|(_, s)| s);
-        let with = |this: Option<&str>| {
-            let mut all: Vec<(&str, Option<&str>)> = others.iter().map(|(i, _, s)| (i.as_str(), s.as_deref())).collect();
-            all.push((id.as_str(), this));
-            all.sort_by_key(|(note, _)| *note);
-            specula_memoria::follow(all.into_iter()).1
-        };
-        let before = with(was.as_deref());
-        if with(Some(old.as_str())).iter().any(|ring| !before.contains(ring)) {
+        // Never a ring: no line is left unfollowed that was followed before.
+        if rings.iter().any(|ring| !rings_before.contains(ring)) {
             return refuse("bad_supersedes", format!("{old} already replaces {id}, directly or through other notes: a note cannot replace the note that replaced it"));
         }
     }
     if kind == Kind::Brief {
-        // Current briefs other than this one and the one it replaces.
-        let replaced = |i: &str| others.iter().any(|(_, _, s)| s.as_deref() == Some(i)) || supersedes.as_deref() == Some(i);
-        if let Some((other, _, _)) = others.iter().find(|(i, k, _)| *k == Kind::Brief && !replaced(i)) {
-            return refuse("brief_exists", format!("the project has a brief, {other}: rewrite it in place or replace it (supersedes)")).map_err(|e: WorldError| e.with("id", other.as_str()));
+        // The briefs that stand with this note written: the ones no followed line replaces.
+        let replaced: std::collections::BTreeSet<&str> = follows.values().map(String::as_str).collect();
+        if let Some((other, _, _)) = after.iter().find(|(note, k, _)| *note != id && *k == Kind::Brief && !replaced.contains(note)) {
+            return refuse("brief_exists", format!("the project has a brief, {other}: rewrite it in place or replace it (supersedes)")).map_err(|e: WorldError| e.with("id", *other));
         }
     }
     Ok(())
@@ -1132,6 +1152,26 @@ mod notes_tests {
         assert_eq!(code(&ringed, "o", &note("fact", Some("o2"))), None);
         put(&mut ringed, "o2", note("fact", Some("o")));
         assert_eq!(code(&ringed, "o", &note("fact", Some("o2"))), Some("bad_supersedes"), "a second ring is still refused");
+        // A brief in a ring that is there already still stands (its line is the one followed):
+        // a second brief is refused, though a raw line says the first was replaced.
+        let mut brief_ring = std::collections::BTreeMap::new();
+        put(&mut brief_ring, "b1", note("brief", Some("x")));
+        put(&mut brief_ring, "x", note("fact", Some("b1")));
+        assert_eq!(code(&brief_ring, "pitch", &note("brief", None)), Some("brief_exists"));
+        // Files that only begin like notes fill no part of the view, however many (review R4:
+        // a thousand of them, with ids that sort first, and the check let a ring and a second
+        // brief through).
+        let mut crowded = std::collections::BTreeMap::new();
+        for i in 0..specula_memoria::MAX_NOTES + 6 {
+            put(&mut crowded, &format!("{i:04}"), "---\nkind: fact\n---\ndraft\n".to_owned());
+        }
+        put(&mut crowded, "brief", note("brief", None));
+        put(&mut crowded, "p", note("fact", None));
+        put(&mut crowded, "q", note("fact", Some("p")));
+        assert_eq!(code(&crowded, "p", &note("fact", Some("q"))), Some("bad_supersedes"));
+        assert_eq!(code(&crowded, "pitch", &note("brief", None)), Some("brief_exists"));
+        assert_eq!(code(&crowded, "r", &note("fact", Some("p"))), Some("already_superseded"));
+        assert_eq!(code(&crowded, "r", &note("fact", Some("q"))), None);
         // A text that is not a note yet (a stored draft) takes no place, and holds nobody up.
         assert_eq!(code(&files, "draft", "no front matter yet"), None);
         put(&mut files, "draft", "no front matter yet".to_owned());
