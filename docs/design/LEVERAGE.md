@@ -120,10 +120,12 @@ or `TOOL @args.json`, which is the engine's own `specula call` with the run's po
 - **The engine arm reads documents; the plain arm has none to read.** Reading the engine's documents
   costs tokens, and those tokens are in the engine arm's count. That is the honest price of a tool one
   has to learn, and what tool descriptions and catalogs exist to make small.
-- **The SDK is put in the project.** A module's crates must lie under the engine's working directory
-  ([MODULES.md](MODULES.md)), so `prepare` copies `specula-core` and `specula-sdk` into the engine arm's
-  work folder (under `crates/`, where the build service trusts them) as a Cargo workspace. A game project getting its SDK from the engine is M6's export work;
-  here the harness does it by hand, and it counts as installation, as the plain arm's toolchain does.
+- **The engine arm starts from what the engine gives a new project.** In M5's runs (2026-11-14) `prepare`
+  copied `specula-core` and `specula-sdk` into the work folder by hand, as a Cargo workspace, and the builder
+  began with nothing else. Since M6 part 3 `prepare` runs `specula new` there: the project has its SDK from
+  the engine, a sample game that builds and plays, its screens and words, a check, and notes that say how it
+  is built and checked. That start is the engine's, as the plain arm's toolchain is the machine's; a run's
+  record says how much its work folder held before the builder began (`started_with`: files, bytes, lines).
 - **Not controlled:** what the builder's harness puts in front of it besides the brief (its own system
   prompt and tool list: about 8,000 tokens for the default runner), how it counts tokens, and how many runs
   share the machine. Two builders run at

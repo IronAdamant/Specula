@@ -291,18 +291,18 @@ fn the_report_counts_what_was_run_and_every_judging() {
 
 #[test]
 fn a_place_of_the_machine_is_found_however_a_tool_wrote_it() {
-    let places = [rep::Place::new(Path::new("C:/Users/someone"), "<home>"), rep::Place::new(Path::new("D:/Coding Projects/Repo"), "<repo>")];
+    let places = [rep::Place::new(Path::new("C:/Users/someone"), "<home>"), rep::Place::new(Path::new("D:/Coding Projects/Repo"), "<repo>")]; // private-scan: allow
     let clean = |t: &str| rep::scrub(t, &places, Some("someone"));
-    assert_eq!(clean("at C:/Users/someone/x.txt"), "at <home>/x.txt");
-    assert_eq!(clean(r"at C:\Users\someone\x.txt"), r"at <home>\x.txt");
-    assert_eq!(clean(r"in JSON: C:\\Users\\someone\\x"), r"in JSON: <home>\\x");
-    assert_eq!(clean(r"twice quoted: C:\\\\Users\\\\someone"), "twice quoted: <home>");
-    assert_eq!(clean("lower: c:/users/SOMEONE/bin"), "lower: <home>/bin");
+    assert_eq!(clean("at C:/Users/someone/x.txt"), "at <home>/x.txt"); // private-scan: allow
+    assert_eq!(clean(r"at C:\Users\someone\x.txt"), r"at <home>\x.txt"); // private-scan: allow
+    assert_eq!(clean(r"in JSON: C:\\Users\\someone\\x"), r"in JSON: <home>\\x"); // private-scan: allow
+    assert_eq!(clean(r"twice quoted: C:\\\\Users\\\\someone"), "twice quoted: <home>"); // private-scan: allow
+    assert_eq!(clean("lower: c:/users/SOMEONE/bin"), "lower: <home>/bin"); // private-scan: allow
     assert_eq!(clean("a shell's: /c/Users/someone/bin"), "a shell's: <home>/bin");
-    assert_eq!(clean("a longer name: C:/Users/someonex/y"), "a longer name: <home>/y", "the tail of a longer name does not leak");
+    assert_eq!(clean("a longer name: C:/Users/someonex/y"), "a longer name: <home>/y", "the tail of a longer name does not leak"); // private-scan: allow
     assert_eq!(clean("d:/coding projects/repo/docs"), "<repo>/docs");
     // The name alone, wherever it stands as a word; never inside another word.
-    assert_eq!(clean("file:///X:/home/someone and Users%5Csomeone%5Cx"), "file:///X:/home/<user> and Users%5C<user>%5Cx");
+    assert_eq!(clean("file:///X:/home/someone and Users%5Csomeone%5Cx"), "file:///X:/home/<user> and Users%5C<user>%5Cx"); // private-scan: allow
     assert_eq!(clean("Someone's run; someones; asomeone; some one"), "<user>'s run; someones; asomeone; some one");
     // A name too short to be told from a word is left.
     assert_eq!(rep::scrub("al said so", &[], Some("al")), "al said so");

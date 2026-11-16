@@ -105,6 +105,8 @@ Read [HANDOFF.md](HANDOFF.md) first.
 | `specula-anim` | skeletal animation (A1–A3): clips, graphs, IK, motion generators, motion checks |
 | `specula-lex` | Lex: gameplay rules as typed text data (validate, compile, simulate deterministically) |
 | `specula-balance` | balance lab: targets as data, deterministic sweeps and tuning over Lex parameters |
+| `specula-ludus` | the game file as data: phases, win and loss conditions, score, settings, a button's words, and the run's state machine the project shell follows |
+| `specula-memoria` | what a project remembers: notes with a kind and paths, superseding, finding, the brief an agent is given at its first call |
 | `specula-physics` | collision queries, triggers, character controller, rigid bodies (stages P1–P3) |
 | `specula-via` | navigation: tiled navmeshes, paths, off-mesh links, crowds |
 | `specula-mens` | AI as data: behaviour trees and utility AI, validated, with a deterministic runner |

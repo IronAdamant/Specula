@@ -255,6 +255,17 @@ The project list, the files that say which engines are running, and the two requ
   in the engine's process. It could read keys or the clipboard through the OS itself, and nothing here can stop it.
   The monitor sees what goes through the engine, not what a module's own code does. Only build and load modules
   whose source you trust (docs/design/MODULES.md).
+- **`--run` loads at start what an owner or a granted lead last built, and only that** (2026-11-16,
+  [MODULES.md](MODULES.md)). The record of what was built is the operator's: the digest of each module's folder,
+  kept in the per-user settings folder, which no tool writes for an agent. A module whose sources changed since
+  (by an agent's `project_write`, an undo, an editor, a pull) is not loaded at start, and the game says so.
+  `--run-as-is` loads whatever is on disk and is for the operator's own code: with it, anything an agent wrote
+  into a module's folder runs at the next start, unreviewed. The start-up build runs as `operator:run`, an
+  identity no connection can have.
+- **A project's notes reach every agent's first call** (`project_memory` at `agent_hello`). They are text that
+  anyone who worked on the project wrote, or that came with a project someone sent. The engine says whose words
+  they are, gives each note in a field of its own with who wrote it last, and joins none of it to its own words;
+  what an agent does with a note that claims to be an instruction is the agent's to get right.
 - **Names until M6.** Grants bind a name to the first identity that takes it. Until per-agent auth tokens exist, an
   agent that learns a granted lead's resume token *is* that lead, and an agent that says hello under a granted
   name before its holder connects *is* that lead too. A frozen session can't do it (its hello changes nothing), but

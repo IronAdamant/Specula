@@ -87,6 +87,15 @@ Who needs what:
 | `world_load {force}`, `save_read {force}` over another agent's unsaved work (journal entries since the last write to the world's files or a save, by another identity or on its behalf) | Lead (`force_needs_lead`, naming `unsaved_by`); the simulation's own changes and the caller's are anyone's to discard; the game's own Load menu is the player's |
 | `tools_scope`, `disk_prune {free_mb}` | Lead (`lead_only`) |
 
+**The operator's own start-up build** (2026-11-16, [FIRST_HOUR.md](FIRST_HOUR.md)). `--run` on the engine's
+command line builds and loads the game file's modules as `operator:run`: a session id no connection can have,
+admitted with owner authority only when the flag is given, its name reserved and kept through pruning. It is
+the operator's word and not an agent's role, so it widens nobody's authority: the build goes through the same
+build service and checks as an owner's `logic_build`, and it is held to the sources an owner or a granted lead
+last built (`approved.rs`; `--run-as-is` lifts that for what is on disk now). `game_act`, the memory tools and
+`game_state` are open to every agent (`authority::access`): what an agent's `game_act` may not do is the
+player's alone (quit, the player's saves and settings file).
+
 ### Refusals: one function, stable codes, a call site
 
 Every authority and ownership refusal is made by `authority::refusal(Site, message)`: the code comes from the

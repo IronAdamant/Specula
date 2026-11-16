@@ -143,7 +143,12 @@ pub fn report(root: &Path) -> R<String> {
             fmt(kind("output")),
             fmt(kind("requests")),
             fmt(num(&b, "tool_uses")),
-            fmt(num(&left, "text_lines")),
+            // (What the engine's new project held before the builder began is said beside it:
+            // those lines were left, not written.)
+            match r.get("started_with").and_then(|s| num(s, "text_lines")) {
+                Some(start) => format!("{} ({} at the start)", fmt(num(&left, "text_lines")), fmt(Some(start))),
+                None => fmt(num(&left, "text_lines")),
+            },
         ));
         let failed = v.as_ref().map(|v| {
             Json::Arr(
@@ -167,6 +172,7 @@ pub fn report(root: &Path) -> R<String> {
             ("builder", b.clone()),
             ("engine", or_null(e)),
             ("left", left),
+            ("started_with", or_null(r.get("started_with").cloned())),
             ("verdict", or_null(v.as_ref().and_then(|v| v.get("totals").cloned()))),
             ("defects", or_null(v.as_ref().and_then(|v| v.get("defects").cloned()))),
             ("judge", or_null(c.get("judge").cloned())),
