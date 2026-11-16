@@ -35,6 +35,8 @@ specula-gustus = { workspace = true }
 specula-lux = { workspace = true }
 specula-tempus = { workspace = true }
 specula-lingua = { workspace = true }
+specula-ludus = { workspace = true }
+specula-memoria = { workspace = true }
 
 [lints]
 workspace = true

@@ -1233,8 +1233,10 @@ impl Engine {
     /// Serves the hosted game's player-facing requests (its menu's Save, Load, List and Delete).
     /// Saves and loads run in the background like agents' and are answered when done.
     pub(crate) fn serve_game_requests(&mut self) {
-        // Its settings and a quit ride along (the same places a request is taken).
+        // Its settings, its wish for the clock and a quit ride along (the same places a
+        // request is taken).
         self.serve_game_settings();
+        self.serve_game_clock();
         if self.windowed && self.game.as_mut().is_some_and(|g| g.take_quit()) {
             specula_core::trace_event!(&crate::trace_sink::ENGINE, Info, "game.quit", game = self.game_name.as_str());
             self.game_quit = true;

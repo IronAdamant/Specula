@@ -217,6 +217,8 @@ pub enum Command {
     /// `None` returns the window to auto-framing.
     View(ViewSpec),
     Info,
+    /// game_state: how the hosted game's run stands (docs/design/FIRST_HOUR.md).
+    GameState,
     /// perf_frame; `None` = the frame budget from perf.toml.
     /// `graph`: include the last frame's render graph pass by pass (else only its summary).
     Perf { budget_ms: Option<f64>, graph: bool },
@@ -955,6 +957,7 @@ pub(crate) fn parse(name: &str, args: &Json) -> Result<Command, String> {
             parse_view(args).map(Command::View)
         }
         "engine_info" => check_keys(args, name, &[]).map(|()| Command::Info),
+        "game_state" => check_keys(args, name, &[]).map(|()| Command::GameState),
         "perf_frame" => {
             check_keys(args, name, &[&["budget_ms", "graph"]])?;
             let budget_ms = match args.get("budget_ms") {
@@ -2958,6 +2961,17 @@ pub(crate) fn definitions() -> Vec<ToolDef> {
             description: "Engine status: GPU, validation layer state, the current world (name, entities, unsaved \
                           changes, state hash, shape_budgets: {shape2d_vertices, transient_shape2d_vertices} each \
                           {used, limit, shapes}, as in perf_frame) and the connected agents with their roles."
+                .into(),
+            input_schema: schema(vec![], &[]),
+        },
+        ToolDef {
+            name: "game_state".into(),
+            description: "How the hosted game's run stands, as one bounded object: phase (title, running, paused, won, \
+                          lost), outcome, the tick it ended on, score and standings when the game file names them, the \
+                          screens that are up, the locale, the player's settings, `reads` (each key the game's outcome \
+                          reads, with its value now: why the run is where it is), the game file's modules, and problems \
+                          (files that did not load). A playtest's `expect` reads it (`{\"outcome\": \"won\"}`). For a project \
+                          with a game.json (docs/design/FIRST_HOUR.md); `no_game` otherwise."
                 .into(),
             input_schema: schema(vec![], &[]),
         },

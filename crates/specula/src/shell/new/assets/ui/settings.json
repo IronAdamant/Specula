@@ -1,0 +1,24 @@
+{
+  "format": "specula.ui.screen.v1",
+  "name": "settings",
+  "input": "menu",
+  "layer": 30,
+  "modal": true,
+  "focus": "volume",
+  "back": "back",
+  "notes": "Each button moves a setting to its next value (cycle:NAME; step:NAME:+1 and step:NAME:-1 stop at the ends; set:NAME:VALUE). The game file (game.json) declares the game's own settings; language and volume are always there. Settings are kept for the player between runs. State: setting.NAME (its value), setting.language.name (the language's own name).",
+  "root": {
+    "type": "box",
+    "children": [
+      {
+        "type": "panel", "style": "menu", "anchor": "center", "width": "22em", "max_width": "96%", "layout": "column", "align": "stretch", "gap": 10,
+        "children": [
+          { "type": "label", "text": "@settings.settings", "role": "title", "text_align": "center" },
+          { "type": "button", "id": "volume", "text": "@settings.volume", "action": "cycle:volume" },
+          { "type": "button", "id": "language", "text": "@settings.language", "action": "cycle:language" },
+          { "type": "button", "id": "settings_back", "style": "primary", "text": "@settings.back", "action": "back" }
+        ]
+      }
+    ]
+  }
+}

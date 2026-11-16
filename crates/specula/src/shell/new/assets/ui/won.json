@@ -1,0 +1,23 @@
+{
+  "format": "specula.ui.screen.v1",
+  "name": "won",
+  "input": "menu",
+  "layer": 25,
+  "modal": true,
+  "focus": "again",
+  "notes": "Shown when the run is won (the game file's outcome says when). Actions the engine knows: start (a new run), title. State: game.score (when the game file names a score), game.has_score.",
+  "root": {
+    "type": "box",
+    "children": [
+      {
+        "type": "panel", "style": "menu", "anchor": "center", "width": "20em", "max_width": "96%", "layout": "column", "align": "stretch", "gap": 10,
+        "children": [
+          { "type": "label", "text": "@won.title", "role": "title", "text_align": "center", "wrap": true },
+          { "type": "label", "text": "@end.score", "role": "subtitle", "text_align": "center", "visible": "game.has_score" },
+          { "type": "button", "id": "again", "style": "primary", "text": "@end.again", "action": "start" },
+          { "type": "button", "id": "to_title", "text": "@end.title", "action": "title" }
+        ]
+      }
+    ]
+  }
+}

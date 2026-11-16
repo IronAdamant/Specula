@@ -672,7 +672,7 @@ pub fn access(tool: &str) -> Option<Access> {
         | "anim_get" | "anim_state" | "anim_check" | "anim_filmstrip" | "physics_joints" | "ragdoll_info" | "physics_raycast" | "physics_cast" | "physics_overlap"
         | "physics_contacts" | "physics_events" | "physics_info" | "physics_explain" | "physics_check" | "stream_state" | "save_list" | "project_list"
         | "project_read" | "studio_stage" | "studio_sheet" | "studio_lineup" | "studio_compare" | "studio_check" | "style_check" | "review_list" | "critique_list"
-        | "merge_suggest" | "vfx_get" | "vfx_check" | "vfx_info" | "logic_status" | "perf_frame" | "perf_memory" | "engine_info" | "balance_targets"
+        | "merge_suggest" | "vfx_get" | "vfx_check" | "vfx_info" | "logic_status" | "perf_frame" | "perf_memory" | "engine_info" | "game_state" | "balance_targets"
         | "disk_status" | "tools_catalog" | "trace_query" | "trace_follow" | "trace_call" | "trace_crash" | "trace_incidents" | "terrain_info" | "gi_info"
         | "gi_check" | "editor_state" => ReadOnly,
         // The interface's sight tools: they lay it out (and put the player's interface back) and read it.

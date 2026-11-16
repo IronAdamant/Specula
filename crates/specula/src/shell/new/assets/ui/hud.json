@@ -1,0 +1,19 @@
+{
+  "format": "specula.ui.screen.v1",
+  "name": "hud",
+  "input": "hud",
+  "layer": 0,
+  "notes": "Shown while a run is under way. A screen shows what the game keeps: {MODULE.KEY} is a value a module set with Cx::set_state (a map with msg and args is a line of the string tables); {game.score} the score the game file names; {setting.NAME} a setting. A button's action that the engine does not know (anything but start, pause, resume, title, open:, close, back, goto:, set:, step:, cycle:, save:, load:, quit) reaches the modules as the event ui with that action.",
+  "root": {
+    "type": "box",
+    "children": [
+      {
+        "type": "panel", "style": "panel", "anchor": "top_left", "margin": [12, 12, 12, 12], "layout": "row", "align": "center", "gap": 14,
+        "children": [
+          { "type": "label", "text": "@hud.score", "role": "value", "visible": "game.has_score" },
+          { "type": "button", "id": "pause", "style": "compact", "text": "@hud.pause", "action": "pause" }
+        ]
+      }
+    ]
+  }
+}

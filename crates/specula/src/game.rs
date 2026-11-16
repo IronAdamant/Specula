@@ -246,12 +246,80 @@ pub trait Game {
         false
     }
 
+    /// After every tick's modules ran (the game's own tick came first): what the modules keep
+    /// now, to read. A game whose rules are modules decides here how the run stands; it may
+    /// write the world as in [`Game::tick`]. Default: nothing.
+    fn after_modules(&mut self, _ctx: &mut Ctx, _modules: &ModuleStates) {}
+
+    /// What the modules keep, outside a tick: before a frame is laid out and before the game's
+    /// interface is read, so a screen shows a module's state as of now. Read only. Default:
+    /// nothing.
+    fn see_modules(&mut self, _modules: &ModuleStates) {}
+
+    /// Events for the game's modules, taken right before they tick: each reaches every module
+    /// with that tick as an event from `engine` (a press of one of the game's own buttons, a
+    /// setting the rules read, the run's end). The only way anything outside the simulation
+    /// reaches it, and only at a tick boundary. Default: none.
+    fn take_module_events(&mut self, _out: &mut Vec<(String, specula_sdk::Value)>) {}
+
+    /// The game stops (`Some(true)`) or starts the engine's clock, as its own doing: a paused
+    /// game does not tick, so nothing counted in ticks runs out behind a menu. Taken after
+    /// every frame, tick and call into the game. Default: `None`.
+    fn take_clock(&mut self) -> Option<bool> {
+        None
+    }
+
+    /// The clock was started or stopped by someone else since the game last heard
+    /// (`time_control`): told before the next frame or call. Default: nothing.
+    fn clock_seen(&mut self, _paused: bool) {}
+
+    /// How the run stands, for `game_state`: its outcome, score, the screen that is up, the
+    /// player's settings. One bounded object. `None` (the default): the game does not say.
+    fn game_state(&self) -> Option<Json> {
+        None
+    }
+
     /// How many presses the game refused since this was last taken because only the player may
     /// make them (an agent pressing Quit, or a button that would listen for the player's next
     /// key). The engine takes it after an agent's `ui_act` or game tool call and tells the input
     /// monitor (seen, never counted: an agent walking a menu presses every button). Default: 0.
     fn take_refused_presses(&mut self) -> u32 {
         0
+    }
+}
+
+/// What the game's modules keep in their state stores, lent to the hosted game to read
+/// ([`Game::after_modules`], [`Game::see_modules`]): the interface shows it and the run's end
+/// is decided from it. Never a way to change it: a module's state is its own.
+pub struct ModuleStates<'a> {
+    host: &'a crate::logic::LogicHost,
+}
+
+impl<'a> ModuleStates<'a> {
+    pub(crate) fn of(host: &'a crate::logic::LogicHost) -> ModuleStates<'a> {
+        ModuleStates { host }
+    }
+
+    /// The value module `module` keeps under `key`.
+    pub fn get(&self, module: &str, key: &str) -> Option<&'a specula_sdk::Value> {
+        self.host.state_of(module)?.get(key)
+    }
+
+    /// The value a dotted key names: `gate.hp` is module `gate`'s `hp` (the key may itself hold
+    /// dots: the module is what stands before the first).
+    pub fn dotted(&self, key: &str) -> Option<&'a specula_sdk::Value> {
+        let (module, key) = key.split_once('.')?;
+        self.get(module, key)
+    }
+
+    /// Every module that keeps state, with what it keeps, by name.
+    pub fn each(&self) -> impl Iterator<Item = (&'a str, &'a std::collections::BTreeMap<String, specula_sdk::Value>)> {
+        self.host.states()
+    }
+
+    /// The names of the modules that are loaded and running.
+    pub fn running(&self) -> Vec<String> {
+        self.host.modules().into_iter().filter(|m| self.host.running(m)).collect()
     }
 }
 

@@ -32,13 +32,15 @@ pub(crate) enum GameCall<'c, 'f> {
     ModalChanged(bool),
     /// A playing timeline's start, end, event, cue or subtitle line (docs/design/TIMELINE.md).
     Timeline(&'c crate::game::TimelineEvent),
+    /// After a tick's modules ran: what they keep now (docs/design/FIRST_HOUR.md).
+    AfterModules(&'c crate::game::ModuleStates<'f>),
 }
 
 impl GameCall<'_, '_> {
     /// The journal kind of its entry.
     fn kind(&self) -> Kind {
         match self {
-            GameCall::Tick | GameCall::Timeline(_) => Kind::GameTick,
+            GameCall::Tick | GameCall::Timeline(_) | GameCall::AfterModules(_) => Kind::GameTick,
             GameCall::ApplyState(_) => Kind::GameStart,
             GameCall::RolledBack => Kind::GameTool,
             GameCall::Frame(_) | GameCall::Overlay(_) | GameCall::BeforeCapture | GameCall::AssetsChanged(_) | GameCall::RequestDone(..) | GameCall::ModalChanged(_) => Kind::GameFrame,
@@ -63,6 +65,7 @@ pub(crate) fn game(world: &mut Live, swarm: &mut Swarm, game: &mut dyn Game, clo
             GameCall::RolledBack => game.world_rolled_back(ctx),
             GameCall::ModalChanged(open) => game.modal_changed(ctx, open),
             GameCall::Timeline(event) => game.timeline_event(ctx, event),
+            GameCall::AfterModules(modules) => game.after_modules(ctx, modules),
         }
     });
 }

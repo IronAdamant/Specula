@@ -1036,8 +1036,10 @@ impl Engine {
     fn with_ui<R>(&mut self, s: Surface, display: Display, f: impl FnOnce(&mut Ui, &StateMap, f32, Option<&ActionMap>, Display) -> R) -> Result<R, WorldError> {
         match s {
             Surface::Game => {
+                // (A module-built game's screens show what its modules keep: as of now.)
+                self.game_sees();
                 let Some(game) = self.game.as_mut() else {
-                    return Err(WorldError::new("no_ui", "no game is running: the engine's own screens are surface review (F9), gallery (F8) and editor (F7)"));
+                    return Err(WorldError::new("no_ui", "no game is running: the engine's own screens are surface review (F9), gallery (F8) and editor (F7). A project gets screens of its own from a game.json at its root (docs/design/FIRST_HOUR.md)"));
                 };
                 let Some(GameUi { ui, state, user_scale, input_map }) = game.ui(UiPick::Live) else {
                     return Err(WorldError::new("no_ui", "the hosted game has no specula-ui interface (or it is off: no font?)"));

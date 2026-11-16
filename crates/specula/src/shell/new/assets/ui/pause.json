@@ -1,0 +1,24 @@
+{
+  "format": "specula.ui.screen.v1",
+  "name": "pause",
+  "input": "menu",
+  "layer": 20,
+  "modal": true,
+  "focus": "resume",
+  "back": "resume",
+  "notes": "Shown while the game is paused (the clock is stopped: nothing counted in ticks runs out behind it). Actions the engine knows: resume, open:NAME, title.",
+  "root": {
+    "type": "box",
+    "children": [
+      {
+        "type": "panel", "style": "menu", "anchor": "center", "width": "18em", "max_width": "96%", "layout": "column", "align": "stretch", "gap": 10,
+        "children": [
+          { "type": "label", "text": "@pause.paused", "role": "title", "text_align": "center" },
+          { "type": "button", "id": "resume", "style": "primary", "text": "@pause.resume", "action": "resume" },
+          { "type": "button", "id": "settings", "text": "@pause.settings", "action": "open:settings" },
+          { "type": "button", "id": "to_title", "text": "@pause.title", "action": "title" }
+        ]
+      }
+    ]
+  }
+}

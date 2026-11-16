@@ -98,6 +98,7 @@ mod taste;
 mod taste_tools;
 mod review_tools;
 mod schedule;
+pub mod shell;
 pub mod sight;
 pub mod sight_overlay;
 mod sight_tools;
@@ -582,6 +583,16 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     };
     for note in project.as_ref().and_then(|p| p.note.clone()).into_iter().chain(unlocked) {
         eprintln!("specula: {note}");
+    }
+    // A project with a game file and no executable of its own is hosted by the engine's own
+    // shell: its screens, its words, its settings and its pause (docs/design/FIRST_HOUR.md). A
+    // game file that is not one stops the start, with where and what to write.
+    if game.is_none() {
+        if let Some(p) = project.as_ref().filter(|p| shell::Shell::wanted(&p.path)) {
+            let assets = args.assets.clone().or_else(|| p.assets.clone()).unwrap_or_else(|| p.path.clone());
+            let hosted = shell::Shell::open(&p.name, &p.path, &assets).map_err(|e| format!("{} ({}): {e}", p.name, p.path.display()))?;
+            game = Some(Box::new(hosted));
+        }
     }
     match game.as_mut() {
         Some(g) => g.configure(&args.game_args).map_err(|e| format!("{}: {e}", g.name()))?,
@@ -1174,6 +1185,11 @@ struct Engine {
     /// Who last paused, resumed, stepped or scaled the clock, and how (time_control is open to
     /// every agent on purpose; its answer says who moved it last: provenance, not a lock).
     clock_set_by: Option<(String, &'static str)>,
+    /// Events the hosted game has for its modules, between taking them and pushing them (kept
+    /// for its storage: no allocation a tick once warm).
+    game_module_events: Vec<(String, specula_sdk::Value)>,
+    /// Whether the clock was paused when the hosted game was last told ([`Game::clock_seen`]).
+    game_clock_told: Option<bool>,
     /// World folders saved in this run, and the identity key that first saved each (its creator
     /// may overwrite it; anyone else needs the lead).
     world_folders: std::collections::BTreeMap<String, String>,
@@ -1411,6 +1427,8 @@ impl Engine {
             terrain: terrain::Terrains::default(),
             fly: jobs::Slot::new(jobs::Kind::StreamFly),
             clock_set_by: None,
+            game_module_events: Vec::new(),
+            game_clock_told: None,
             world_folders: std::collections::BTreeMap::new(),
             commits: authority::CallCommits::default(),
             multi_commit_calls: 0,
@@ -1684,6 +1702,20 @@ impl Engine {
                 self.game_call(sim_writes::GameCall::Tick);
                 self.pacing.tick.push(start.elapsed());
             }
+            if self.game.is_some() {
+                // What the game has for its modules (a press of one of its own buttons, a
+                // setting the rules read) reaches them with this tick, as events from the
+                // engine: the one way anything outside the simulation gets in, at a tick
+                // boundary. With no module loaded there is nobody to hear them.
+                let mut events = std::mem::take(&mut self.game_module_events);
+                if let Some(game) = self.game.as_mut() {
+                    game.take_module_events(&mut events);
+                }
+                for (name, data) in events.drain(..) {
+                    self.logic.push_engine_event(&name, data, self.clock.tick());
+                }
+                self.game_module_events = events;
+            }
             if !self.logic.is_empty() {
                 let _l = profile::zone("modules");
                 self.lend_physics();
@@ -1692,6 +1724,11 @@ impl Engine {
                 self.return_physics();
                 // Holds the window's human took back this tick, on the monitor's record.
                 self.security_holds();
+            }
+            // The game reads what its modules keep now (and may decide the run has ended).
+            if let Some(game) = self.game.as_mut() {
+                let modules = game::ModuleStates::of(&self.logic);
+                sim_writes::game(&mut self.world, &mut self.swarm, game.as_mut(), &self.clock, &self.game_name, self.windowed, sim_writes::GameCall::AfterModules(&modules));
             }
             // Live Lex rule sets step on the same tick, after the modules (whose hooks they call).
             if !self.lex_live.is_empty() {
@@ -1709,8 +1746,17 @@ impl Engine {
             self.vfx.tick(&self.world, self.world_generation, tick_end);
             self.check_world_replaced();
             self.clock.finish_tick();
-            let _h = profile::zone("tick_hash");
-            self.record_tick_hash();
+            {
+                let _h = profile::zone("tick_hash");
+                self.record_tick_hash();
+            }
+            // A game that stopped the clock on this tick (its run ended, it paused) has no
+            // further tick: the ones still due in this advance, and any still queued by a step,
+            // do not run behind it.
+            if self.serve_game_clock() == Some(true) {
+                self.clock.cancel_steps();
+                break;
+            }
         }
         self.world.set_clock_s(self.clock.seconds());
         if ticks > 0 {
@@ -1720,6 +1766,50 @@ impl Engine {
         }
         // Sounds the ticks' (and agents' hook calls') module calls asked for: presentation only.
         self.play_module_sounds();
+    }
+
+    /// `game_state`: how the hosted game's run stands, as the game says it, with the tick and
+    /// whether the clock runs.
+    fn game_state(&mut self) -> ToolOutput {
+        self.game_sees();
+        let Some(mut state) = self.game.as_ref().and_then(|g| g.game_state()) else {
+            let why = if self.game.is_some() {
+                "the hosted game does not say how its run stands (its own play_* tools do)"
+            } else {
+                "no game is hosted: a project gets a run, screens and settings from a game.json at its root (docs/design/FIRST_HOUR.md; 'specula new NAME' makes a project that has one)"
+            };
+            return world_error(&WorldError::new("no_game", why));
+        };
+        state.set("tick", Json::from(self.clock.tick()));
+        state.set("clock_paused", Json::from(self.clock.paused()));
+        ToolOutput::text(state.to_string())
+    }
+
+    /// The hosted game's wish for the clock ([`Game::take_clock`]), done: the game stops or
+    /// starts it as its own doing, and `time_control` says the game did. Returns what was done.
+    pub(crate) fn serve_game_clock(&mut self) -> Option<bool> {
+        let paused = self.game.as_mut()?.take_clock()?;
+        if self.clock.paused() != paused {
+            self.clock.set_paused(paused);
+            self.clock_set_by = Some((format!("game:{}", self.game_name), if paused { "pause" } else { "resume" }));
+            // Time that passed while it stood still does not become ticks when it starts.
+            self.last_advance = Instant::now();
+        }
+        self.game_clock_told = Some(paused);
+        Some(paused)
+    }
+
+    /// Tells the hosted game when someone else started or stopped the clock since it last
+    /// heard (an agent's `time_control`), and lends it what its modules keep now, to show:
+    /// before a frame, a capture's interface and the `ui_*` tools read it.
+    pub(crate) fn game_sees(&mut self) {
+        let paused = self.clock.paused();
+        let Some(game) = self.game.as_mut() else { return };
+        if self.game_clock_told != Some(paused) {
+            self.game_clock_told = Some(paused);
+            game.clock_seen(paused);
+        }
+        game.see_modules(&game::ModuleStates::of(&self.logic));
     }
 
     /// The game's per-frame update: input, camera, title.
@@ -1790,6 +1880,7 @@ impl Engine {
         pads.clear();
         pads.extend_from_slice(self.logic.pad_states(poll));
         self.pad_gate.apply(modal || took, &mut pads);
+        self.game_sees();
         let Some(game) = self.game.as_mut() else { return };
         let _z = profile::zone("game_frame");
         let start = Instant::now();
@@ -1820,10 +1911,14 @@ impl Engine {
     /// The hosted game's interface for one image ([`Game::overlay`]) into `out` (cleared first).
     fn game_overlay(&mut self, size: (u32, u32), camera: Camera, capture: bool, out: &mut Vec<OverlayQuad>) {
         out.clear();
-        let Some(game) = self.game.as_mut() else { return };
-        if size.0 == 0 || size.1 == 0 {
+        if self.game.is_none() || size.0 == 0 || size.1 == 0 {
             return;
         }
+        // (A capture's interface shows what the modules keep now, as a frame's does.)
+        if capture {
+            self.game_sees();
+        }
+        let Some(game) = self.game.as_mut() else { return };
         let _z = profile::zone("game_overlay");
         let mut overlay = game::Overlay { size, camera, capture, quads: out, textures: &mut self.gpu };
         sim_writes::game(&mut self.world, &mut self.swarm, game.as_mut(), &self.clock, &self.game_name, self.windowed, sim_writes::GameCall::Overlay(&mut overlay));
@@ -3153,6 +3248,7 @@ impl Engine {
                 }
             },
             Command::Info => self.info(&server.sessions()),
+            Command::GameState => self.game_state(),
             Command::ScopeLookup { agent } => toolscope_tools::lookup(&self.swarm, &request.session, &agent, &server.all_sessions()),
             Command::Perf { budget_ms, graph } => self.perf(budget_ms, graph),
             Command::PerfZones(q) => {
@@ -3810,6 +3906,7 @@ fn call_class(command: &Command) -> Class {
         | Command::TileGet { .. }
         | Command::TextGet { .. }
         | Command::Info
+        | Command::GameState
         | Command::Perf { .. }
         | Command::PerfZones(_)
         | Command::PerfMemory { .. }
