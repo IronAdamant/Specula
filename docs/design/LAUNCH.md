@@ -4,7 +4,7 @@ Status: built 2026-11-13 (lane m5-launch). Code: `crates/specula/src/launch_*.rs
 (`launch_list` the list, `launch_store` its files, `launch_instances` running engines,
 `launch_cli` and `launch_run` the commands, `launch_client` the commands' MCP client,
 `launch_engine` the engine's side, `launch_screen` and `launch_window` the start screen).
-Live check: `scripts/launch_check.py`.
+Live check: `launcher_check` (`tools/examen/src/native/launch.rs`; `examen live --only launcher_check`).
 
 ## Why
 

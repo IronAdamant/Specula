@@ -21,6 +21,8 @@ use specula_core::Json;
 
 use crate::run::{said, stop_tree};
 
+mod launch;
+
 /// One native check.
 pub struct Check {
     pub name: &'static str,
@@ -31,11 +33,18 @@ pub struct Check {
 }
 
 /// The native checks, in the order they run (after the scripts).
-pub const CHECKS: &[Check] = &[Check {
-    name: "new_project_check",
-    about: "a project made by `specula new` builds, plays, remembers and follows its game file (docs/design/FIRST_HOUR.md)",
-    run: new_project,
-}];
+pub const CHECKS: &[Check] = &[
+    Check {
+        name: "new_project_check",
+        about: "a project made by `specula new` builds, plays, remembers and follows its game file (docs/design/FIRST_HOUR.md)",
+        run: new_project,
+    },
+    Check {
+        name: "launcher_check",
+        about: "the launcher: projects listed and resumed, engines found, called and stopped from a terminal, the start screen in its window (docs/design/LAUNCH.md)",
+        run: launch::launch,
+    },
+];
 
 pub fn find(name: &str) -> Option<&'static Check> {
     CHECKS.iter().find(|c| c.name == name)

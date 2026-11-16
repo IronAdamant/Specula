@@ -198,6 +198,21 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
     them the game's. Also: the `setting` event comes at a run's start and on a change during one
     (not on any change), and the large job's brief said too little in six places.
 
+  - **The launcher's live check is Rust** (2026-11-17; `launcher_check`,
+    `tools/examen/src/native/launch.rs`). The live audit after the passes passed 69 of 70: the
+    launcher's check failed on an expectation that had gone stale in part 3 (a project made from the
+    start screen now opens on its own title screen; the check expected a window with no text). Its
+    script was Python, and the owner's word on changing one line of it was "I prefer all to be Rust
+    rather than having Python": a script that needs any change is ported first. The port tries every
+    expectation the script tried (84 with the three it adds), runs on to its end when one does not
+    hold, and ends every engine listed in its own per-user folders whatever happens. For the engine's
+    own window it has `specula_platform::probe`: a window found by its process, pictured as the
+    window rendered itself (never the screen), and sent keys as posted messages, with nothing that
+    moves the pointer or takes the keyboard; `gdi32` gets its one owner (AGENTS rule 2). Proved by a
+    seeded fault (an opened project put last in the list: 8 of 84 fail) and its pictures checked by
+    a model that did not take them. `launch_check.py` stays, unchanged and not run, because
+    `m5_exit.py` takes a class from it.
+
 ### M5, done (2026-11-06 to 2026-11-15)
 
 Built by one agent, lane by lane, each lane reviewed by a model that did not write it and passed through

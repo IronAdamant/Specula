@@ -1,7 +1,8 @@
 //! Specula platform layer: native windows and input events (keyboard, mouse, touch/pen pointers),
 //! gamepads ([`gamepad`], XInput loaded at runtime), key names ([`keys`]) and the system timer's
-//! resolution ([`timer`]; the only crate that declares `winmm`). Mapping input onto game actions
-//! is `specula-input`'s job.
+//! resolution ([`timer`]; the only crate that declares `winmm`), and another process's window as
+//! a live check meets it ([`probe`]; the only crate that declares `gdi32`). Mapping input onto
+//! game actions is `specula-input`'s job.
 //!
 //! Windows first (raw Win32 via `#[link(kind = "raw-dylib")]`, no import libraries); Linux and
 //! macOS backends come later behind this same API. On other platforms `Window::new` returns
@@ -13,6 +14,7 @@ use std::fmt;
 mod decode;
 pub mod gamepad;
 pub mod keys;
+pub mod probe;
 pub mod textinput;
 pub mod timer;
 #[cfg(windows)]

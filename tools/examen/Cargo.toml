@@ -18,6 +18,8 @@ specula-core = { workspace = true }
 # (For one thing: keeping this tool's own output handles from being inherited by an engine a
 # command of it starts. Not the engine: the crate that declares kernel32.)
 specula-sys = { workspace = true }
+# (For the launcher's check: another process's window found, pictured and sent keys.)
+specula-platform = { workspace = true }
 
 [lints]
 workspace = true

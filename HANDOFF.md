@@ -205,9 +205,16 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       opens on its own title screen, and the check expects a window with no text). Its script is
       Python, and the owner's word on changing one line of it was: "I prefer all to be Rust
       rather than having Python". So a script that needs any change is ported first, never
-      edited; `launch_check` is being ported, and nothing is pushed until the audit is green.
-  - **Part 2** (each script ported to Rust when it is next touched): the comparison's harness is
-    ported; 81 scripts are left in `scripts/` (79 of them Python).
+      edited. **Ported the same day**: `launcher_check` (`tools/examen/src/native/launch.rs`), with
+      a `probe` module in `specula-platform` for another process's window (found, pictured, sent
+      keys; the one place `gdi32` is declared). Every expectation of the script has its line in
+      the port, the stale one brought up to date; a seeded fault (an opened project put last in
+      the list) fails 8 of its 84; its pictures were checked by a model that did not take them.
+      The script's file stays, unchanged and no longer run, only because `m5_exit.py` takes a
+      class from it.
+  - **Part 2** (a script is ported to Rust before it is changed, never edited): the comparison's
+    harness and the launcher's check are ported; 81 scripts are left in `scripts/` (79 of them
+    Python), of which `launch_check.py` is no longer run (its port is `launcher_check`).
   - **Next on the laptop: the owner's word.** The three passes above are done (2026-11-17), and
     part 3 with them (2026-11-16: "Advise me when we get to FINISH of part 3 please. Don't start
     part 4 yet"). Part 4 is not started. Neither branch (`m6-verify`, `m6-first-hour`) is pushed
@@ -304,7 +311,7 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     resumes it or opens another from the start screen or by asking an agent, and is found and called from a
     terminal: `specula projects`, `open`, `new`, `list`, `tools`, `call`, `stop`; one engine a project;
     Windows first, the macOS and Linux variants with those ports: [docs/design/LAUNCH.md](docs/design/LAUNCH.md),
-    `scripts/launch_check.py`), and asset export for other engines (owner, 2026-11-13: assets are data that
+    then `scripts/launch_check.py`, now `launcher_check` in `tools/examen`), and asset export for other engines (owner, 2026-11-13: assets are data that
     is reused, copied and modified, and easy to carry elsewhere: `model_export` writes any recipe as a `.glb`
     with its baked textures, rig and clips, and says what it does not carry;
     [docs/design/EXPORT.md](docs/design/EXPORT.md), `scripts/export_check.py`).

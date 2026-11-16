@@ -15,7 +15,7 @@ Read [HANDOFF.md](HANDOFF.md) first.
    never loaded. A DLL that ships with the game (`steam_api64.dll`) uses `open_beside_exe`, and a file the engine wrote
    itself (a module copy) uses `open_path`. No crate declares `LoadLibraryW` (docs/design/SECURITY.md).
    **Each DLL is declared in exactly one crate** — on windows-gnu a second crate's raw-dylib imports from the same
-   DLL are silently dropped (crash at call time). `kernel32` → `specula-sys`; `user32`, `winmm` and `imm32` →
+   DLL are silently dropped (crash at call time). `kernel32` → `specula-sys`; `user32`, `gdi32`, `winmm` and `imm32` →
    `specula-platform`; `ole32` → `specula-audio` (`crates/specula/tests/dll_owners.rs` checks this list against the
    code). Runtime-loaded through `dynlib` (any crate may load them): `vulkan-1`,
    `xinput1_4`/`xinput9_1_0` and `shcore` (specula-platform: gamepads; a monitor's physical size), `avrt` (specula-audio),
@@ -94,7 +94,7 @@ Read [HANDOFF.md](HANDOFF.md) first.
 |---|---|
 | `specula-sys` | the only `kernel32` imports; runtime library loader (`dynlib`); Ctrl+C / console-close handling (`interrupt`) |
 | `specula-core` | JSON, math, base64, checksums, DEFLATE/zlib, PNG; structured tracing (`trace`) |
-| `specula-platform` | native windows + input (Win32 first) |
+| `specula-platform` | native windows + input (Win32 first); another process's window as a live check meets it (`probe`) |
 | `specula-gpu` | Vulkan (runtime-loaded) + render-hardware interface |
 | `specula-protocol` | HTTP/1.1 + MCP server for agents |
 | `specula` (bin) | world server: world, rendering, agent tools |
@@ -234,8 +234,12 @@ before it starts (HANDOFF, "Gotchas that cost time").
 which the runner runs after the scripts, on ports of its own. It drives the engine as an agent with a shell
 does (`specula new`, an engine on a project, `specula call TOOL '{json}'`, `specula stop`), keeps everything
 it makes below its own output folder, and stops every engine it started by its own process id. The first is
-`new_project_check` (a project made by `specula new` builds, plays, remembers and follows its game file).
-A script is ported there when it is next touched.
+`new_project_check` (a project made by `specula new` builds, plays, remembers and follows its game file);
+`launcher_check` is the launcher's (`native/launch.rs`: it also meets the engine's own window, through
+`specula_platform::probe`: found by its process, pictured as it rendered itself, sent keys as posted
+messages). **A script that needs any change is ported there first, never edited** (owner, 2026-11-17:
+"I prefer all to be Rust rather than having Python"); its port is run beside it, shown to fail on a
+seeded fault, and then the script goes.
 
 After changing `specula-gpu`, `specula-platform` or the engine's window loop, run
 `cargo build -p specula && python scripts/window_check.py`. On every adapter it builds a scene over MCP, screenshots

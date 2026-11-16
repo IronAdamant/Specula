@@ -62,6 +62,9 @@ const NOT_CHECKS: &[&str] = &[
     // a map that had none, and the map has shipped them since M5 (its run is refused at the
     // first spawn; the approved world is in target/m4-exit-approved).
     "m4_exit.py",
+    // Ported: the launcher's check is `launcher_check` in native.rs since 2026-11-17. The file
+    // stays, unchanged, only because m5_exit.py takes its `Cli` class from it, and goes with it.
+    "launch_check.py",
 ];
 
 /// What a check needs beyond its defaults (each list is one run of the script). `{port}` is the
