@@ -259,16 +259,23 @@ So the second pass is one loop, the plain arm's: **edit, run, read.**
   short run of the sample.
   - **An input is a word at a tick**: a press on the interface (`up down left right enter escape`, or
     a source such as `Key.Space`), an action of a module (held until the next input, as a held key
-    is), or `none`. A word that is both does both, as one key does. A word the game does not take is
-    refused before a tick is played, with the words it takes.
+    is), or `none`. A word that is both does both, as one key does. Words joined by `+` are held
+    together, and an action that is not a button takes its value (`throttle=0.5`, `move=1/0`). A
+    source presses the interface only. A word the game does not take, a value of the wrong kind
+    and an input after the last tick are refused before a tick is played, with the words it takes.
   - **The game's clock is the game's.** The script counts every tick; a tick of the game runs only
     while the game has its run's clock running. The title and a pause hold it and an ended run has no
     further tick, as for a player. The engine is started with the clock standing still
     (`Engine::script_clock`; `TimeOp::Play`), so no time of the machine becomes a tick: the same seed
     and inputs print the same state, to the letter, and the same frame, byte for byte.
+    Nobody else's word moves that clock: `time_control` answers `info` and refuses the rest while
+    the run lasts, and a run that was asked for ticks with the game's clock running and did not
+    get them fails (`ticks_lost`) instead of printing a state its script did not play.
   - **`--seed`** seeds the modules' random streams. **`--settings FOLDER`** is where the run's player
     settings are read and kept: a later run with the folder comes up with them. Without it they are
     kept nowhere, and the run's engine is listed nowhere.
+  - **One engine has a project at a time**: a run on a project that an engine has open is refused
+    with that engine (`project_open`); another run of the same project is waited for.
   - **It is the operator's command**, as `specula play --as-is` is: what is on disk is built and
     loaded with the user's rights, by whoever runs the command ([MODULES.md](MODULES.md)). It records
     no approval: `--run` still loads only what an owner or a granted lead built.

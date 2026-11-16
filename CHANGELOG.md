@@ -98,6 +98,14 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
     player settings. Left and Right step a setting on its button. `notes/how.md` in a new project is
     one page that answers what the builders looked up. Found on the way: a job owned by the
     operator's in-process session was dropped as a closed session's, one run in four (a run's frame).
+  - **Reviewed by a model that did not write it: not to merge, and why.** An agent that reached a
+    run's port could resume the clock, and the run printed a state its script had not played, with
+    no word of it; an action that is not a button failed a run half way. Both fixed (`time_control`
+    refuses all but `info` under a script, and a run that loses ticks fails; an action takes a
+    value, `move=1/0`, and words joined by `+` are held together), with the seven smaller findings:
+    a seed too large for a JSON number, an input after the last tick, the scratch folder's name,
+    a project open in another engine, a wrong example in the guide, and what the live check did
+    not hold (two runs' frames are compared byte for byte now).
 
 ### M5, done (2026-11-06 to 2026-11-15)
 

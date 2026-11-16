@@ -50,7 +50,7 @@ pub struct Agent {
 }
 
 /// 32 hex characters from randomly keyed SipHash (std only), like protocol session ids.
-fn random_hex() -> String {
+pub(crate) fn random_hex() -> String {
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hasher};
     use std::sync::atomic::{AtomicU64, Ordering};

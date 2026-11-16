@@ -117,8 +117,10 @@ specula run [NAME|FOLDER] --ticks N [--inputs T:WORD,T:WORD,... | --inputs @FILE
                                  \"report\", or everything). Its modules are built first, as
                                  they are on disk (as play --as-is: your code to run). An
                                  input is a word at a tick: up down left right enter escape,
-                                 an action of a module (held until the next input), a key
-                                 (Key.Space), or none. --settings: where this run's player
+                                 an action of a module (held until the next input; an axis
+                                 with its value: throttle=0.5, move=1/0), words joined by +
+                                 (held together), or none. A source (Key.Enter) presses the
+                                 interface only. --settings: where this run's player
                                  settings are read and kept (none: kept nowhere)
 specula new NAME [--in FOLDER] [--bare]
                                  make a project that builds and plays (a game file, screens,
@@ -299,7 +301,7 @@ pub fn parse(args: &[String]) -> Result<Option<Cli>, String> {
                 let value = rest.get(i + 1).ok_or_else(|| format!("'{w}' needs a value"))?.as_str();
                 match w {
                     "--ticks" => run.ticks = Some(value.parse::<u64>().ok().filter(|t| *t <= crate::script_run::MAX_TICKS).ok_or_else(|| format!("'--ticks' is a whole number up to {} (got '{value}')", crate::script_run::MAX_TICKS))?),
-                    "--seed" => run.seed = Some(value.parse::<u64>().map_err(|_| format!("'--seed' is a whole number (got '{value}')"))?),
+                    "--seed" => run.seed = Some(value.parse::<u64>().ok().filter(|s| *s <= crate::script_run::MAX_SEED).ok_or_else(|| format!("'--seed' is a whole number up to {} (got '{value}')", crate::script_run::MAX_SEED))?),
                     "--inputs" => {
                         // (`@FILE`: the script in a file, an input a line or with commas.)
                         let text = match value.strip_prefix('@') {
@@ -318,6 +320,9 @@ pub fn parse(args: &[String]) -> Result<Option<Cli>, String> {
             }
             if run.ticks.is_none() {
                 return Err("'specula run' needs --ticks N: how many ticks to play (0: only the start)".to_owned());
+            }
+            if let Some(ticks) = run.ticks {
+                crate::script_run::check_span(&run.inputs, ticks).map_err(|e| format!("'--inputs': {e}"))?;
             }
             if run.size.is_some() && run.frame.is_none() {
                 return Err("'--size' is a frame's: give --frame FILE.png with it".to_owned());

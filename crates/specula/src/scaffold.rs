@@ -331,8 +331,10 @@ game from its start with no window, and prints how it stands as one JSON object:
 - A build that fails answers the compiler's errors (file, line, message) and exit code 1.
 - **Inputs** are words at ticks. `up down left right enter escape` press the interface, as
   keys do. A module's action (`tap` here: `modules/{{module}}/actions.json`) is held until the
-  next input, as a held key is; `none` holds nothing. A word that is both does both. In the
-  rules read `cx.action("tap").pressed` for "once" and `.held` for "while held".
+  next input, as a held key is; `none` holds nothing. A word that is both does both. Words
+  joined by `+` are held together (`up+shoot`). An action that is not a button takes its
+  value (`throttle=0.5`, `move=1/0`). In the rules read `cx.action("tap").pressed` for
+  "once" and `.held` for "while held".
 - **Ticks.** The script counts every tick. The game's own clock ticks only while a run is
   under way: the title, a pause and an ended run hold it, as they do for a player.
 - **What is printed** is the game file's `"report"`: each line a name and the key whose value
@@ -385,7 +387,7 @@ game from its start with no window, and prints how it stands as one JSON object:
   `run`, and `outcome`, end it), `setting` (`name`, `value`), `ui` (`action`).
 - The world: `cx.spawn(Spawn::new("cube").name("n").parent("/{{module}}").position(v)
   .scale(v).color("#rrggbb"))?`, `cx.find("/{{module}}/n")?`, `cx.set(id,
-  Patch::new().position(v))?`, `cx.delete(id)?`, `cx.query(tag, path_prefix, limit)?`.
+  Patch::new().position(v))?`, `cx.delete(id)?`, `cx.query(Some("tag"), Some("/{{module}}"), 100)?`.
 - `cx.tick()`, `cx.tick_hz()`, `cx.random_below("stream", n)?`, `cx.random_f32("stream")?`,
   `cx.sound("name", None, 1.0)?`, `cx.log("text")?`.
 

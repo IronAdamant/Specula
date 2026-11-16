@@ -452,7 +452,7 @@ fn arm_text(arm: &str, run: &Path) -> Vec<String> {
         format!("- Run the game with no window with `{tool} play {rd} --ticks N [--inputs T:WORD,T:WORD,...] [--seed N] [--settings FOLDER] [--frame FILE.png --size WxH]`: the engine's own `specula run` on your work folder (notes/how.md says what it takes and what it prints). It builds the module first and prints the game's state as JSON; no engine need be started for it. Paths in it are taken from the folder you run it in."),
         format!("- An engine left running serves the project's tools, should you need them: start or stop it with `{tool} engine start {rd}` and `{tool} engine stop {rd}` (start it first; restart it this way if you need to). Never run the engine's executable yourself."),
         format!("- Call a tool with `{tool} call {rd} TOOL '{{json}}'`; arguments too long or awkward for a command line go in a file: `{tool} call {rd} TOOL @args.json`. `{tool} tools {rd} [FILTER]` lists tools, and the `tools_catalog` tool describes them."),
-        format!("- The engine's documents are in {} (design notes for each area in `docs/design/`), with {}. Read what you need.", posix(&repo.join("docs")), posix(&repo.join("README.md"))),
+        format!("- notes/how.md is written to be enough for a game of this size. Where it is not, the engine's documents are in {} (design notes for each area in `docs/design/`), with {}.", posix(&repo.join("docs")), posix(&repo.join("README.md"))),
         "- The two checks the brief asks for can be that one command, with the game file's `report` saying what it prints; or small scripts of yours.".to_owned(),
         "- Whoever checks the game starts with no engine running: the commands in your README must work from there.".to_owned(),
     ]

@@ -603,9 +603,12 @@ fn new_project(cx: &mut Cx) -> Result<String, String> {
     let png = std::fs::read(&frame).map_err(|e| format!("the run's frame {frame}: {e}"))?;
     let side = |at: usize| png.get(at..at + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]));
     expect(png.starts_with(b"\x89PNG\r\n\x1a\n") && (side(16), side(20)) == (Some(800), Some(480)), "the run's frame is not a PNG of 800 by 480", &Json::from(png.len() as u64))?;
-    // The same seed and inputs: the same answer, to the letter.
-    let (_, again) = cx.cli(&["run", &runfive, "--ticks", "40", "--seed", "1", "--inputs", TAPS])?;
+    // The same seed and inputs: the same answer, to the letter, and the same frame, byte for byte.
+    let frame2 = own("won-again.png");
+    let (_, again) = cx.cli(&["run", &runfive, "--ticks", "40", "--seed", "1", "--inputs", TAPS, "--frame", &frame2, "--size", "800x480"])?;
     expect(again.to_string() == won.to_string(), "the same seed and inputs printed another state", &again)?;
+    let png2 = std::fs::read(&frame2).map_err(|e| format!("the second run's frame {frame2}: {e}"))?;
+    expect(png2 == png, "the same seed and inputs drew another frame", &Json::from(png2.len() as u64))?;
     // The script counts every tick; the game's clock ticks only while a run is under way. At
     // the title nothing is kept yet, and a pause holds the run where it was.
     let (_, title) = cx.cli(&["run", &runfive, "--ticks", "30"])?;
@@ -624,6 +627,15 @@ fn new_project(cx: &mut Cx) -> Result<String, String> {
     let (_, came_back) = cx.cli(&["run", &runfive, "--ticks", "0", "--settings", &kept])?;
     let (_, fresh) = cx.cli(&["run", &runfive, "--ticks", "0"])?;
     expect(is(&came_back, "volume", 6.0) && is(&fresh, "volume", 8.0), "a later run did not come up with the kept settings (or one without the folder did)", &came_back)?;
+    // What a run cannot do as asked is refused before a tick is played: an input after its last
+    // tick (it would never be given), and a value that is not of its action's kind.
+    let (code, late) = cx.cli(&["run", &runfive, "--ticks", "10", "--inputs", "0:enter,50:tap"])?;
+    expect(code == 1 && text(&late, "message").is_some_and(|m| m.contains("after the run's last tick")), "an input after the last tick was not refused", &late)?;
+    let (code, wrong) = cx.cli(&["run", &runfive, "--ticks", "10", "--inputs", "0:enter,5:tap=0.5"])?;
+    expect(code == 1 && text(&wrong, "error") == Some("bad_input") && text(&wrong, "input") == Some("tap=0.5"), "a button given a number was not refused with the input and why", &wrong)?;
+    // Two words at once are held together: a tap with the interface's down is still a tap.
+    let (_, both) = cx.cli(&["run", &runfive, "--ticks", "8", "--inputs", "0:enter,5:tap+down"])?;
+    expect(is(&both, "taps", 1.0), "two words joined by + were not both done", &both)?;
     // A word the game does not take is refused before a tick is played, with the words it takes.
     let (code, unknown) = cx.cli(&["run", &runfive, "--ticks", "5", "--inputs", "0:jump"])?;
     expect(code == 1 && text(&unknown, "error") == Some("unknown_input") && at(&unknown, "inputs").and_then(Json::as_array).is_some_and(|w| w.iter().any(|x| x.as_str() == Some("tap"))), "an unknown input was not refused with the game's own inputs", &unknown)?;
@@ -635,6 +647,15 @@ fn new_project(cx: &mut Cx) -> Result<String, String> {
     std::fs::write(&lib, &good).map_err(|e| format!("{}: {e}", lib.display()))?;
     let (code, failed) = failed?;
     expect(code == 1 && text(&failed, "error") == Some("build_failed") && text(&failed, "diagnostics.0.file").is_some_and(|f| f.ends_with("lib.rs")) && at(&failed, "diagnostics.0.line").and_then(Json::as_u64).is_some(), "a module that does not build was not answered with where and why", &failed)?;
+    // One engine has a project at a time: a run on a project an engine has open is refused
+    // with that engine, at once.
+    let port5 = port + 5;
+    cx.start(&projects.join("runfive"), port5, &[])?;
+    let (code, open) = cx.cli(&["run", &runfive, "--ticks", "1", "--settings", &settings])?;
+    expect(code == 1 && text(&open, "error") == Some("project_open") && at(&open, "engine.port").and_then(Json::as_u64) == Some(port5), "a run on a project that an engine has open was not refused with that engine", &open)?;
+    // And nobody else's word moves a run's clock: asked of an engine that is not a run's, it
+    // is done (so the refusal under a script is the script's, held by a test of its own).
+    cx.stop(port5)?;
     // Each run's engine ended with it: none is listed, and none was left listening.
     let (_, listed) = cx.cli(&["list", "--settings", &kept])?;
     expect(is(&listed, "count", 0.0), "a headless run left an engine behind", &listed)?;

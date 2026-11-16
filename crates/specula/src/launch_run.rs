@@ -658,6 +658,9 @@ pub fn default_parent(var: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
 const RUN_WALL: Duration = Duration::from_secs(1800);
 /// Most characters of what a run's engine said that a refusal carries.
 const RUN_SAID: usize = 600;
+/// How long a headless run waits for a project that an unlisted engine has open (another run
+/// of the same project ends within seconds; its first build of a module takes longer).
+const RUN_LOCK_WAIT: Duration = Duration::from_secs(90);
 
 /// `specula run`: an engine of this run's own plays the script with no window and ends; its
 /// answer is read from a file in a folder of this run's own, which goes when it is read.
@@ -677,9 +680,37 @@ fn run_game(ctx: &Ctx, args: &crate::launch_cli::RunArgs) -> (i32, Json) {
     if !folder.join(specula_ludus::game::FILE).is_file() {
         return refusal("no_game", format!("{} has no {}: a headless run plays a project's game ('specula new NAME' makes a project that has one)", folder.display(), specula_ludus::game::FILE));
     }
+    // One engine has a project at a time. An engine that is listed has it: said at once, with
+    // where it is. One that is not listed may be another run of this command, which ends by
+    // itself: waited for, a while.
+    let holder = |ctx: &Ctx| ctx.engines().into_iter().find(|i| i.project.as_ref().is_some_and(|(path, _)| store::same_folder(path, &folder)));
+    let open_in = |i: &Instance| {
+        let (code, mut j) = refusal("project_open", format!("{} is open in an engine (port {}, process {}): a headless run needs the project to itself. 'specula stop --port {}' stops that engine", folder.display(), i.port, i.pid, i.port));
+        j.set("engine", i.to_json());
+        (code, j)
+    };
+    if let Some(i) = holder(ctx) {
+        return open_in(&i);
+    }
+    let waited = Instant::now();
+    while crate::launch_engine::project_locked(&folder) {
+        if let Some(i) = holder(ctx) {
+            return open_in(&i);
+        }
+        if waited.elapsed() > RUN_LOCK_WAIT {
+            return refusal("project_open", format!("{} has been open in an engine for {} s, one that is not listed here (started with --settings off or with another --settings folder: it is stopped where it was started; another 'specula run' of this project ends by itself). A headless run needs the project to itself", folder.display(), RUN_LOCK_WAIT.as_secs()));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
     // (As the disk book names folders: the one spelling its removal takes.)
     let temp = crate::disk::canonical(&std::env::temp_dir());
-    let scratch = temp.join(format!("specula-run-{}-{}", std::process::id(), ctx.now));
+    // A folder of this run's own, under a name nobody could have made first (the temporary
+    // folder is shared on some systems: what the engine is asked, and its answer, are read
+    // from here).
+    let scratch = temp.join(format!("specula-run-{}", crate::swarm::random_hex()));
+    if scratch.exists() {
+        return refusal("no_scratch", format!("{} is there already", scratch.display()));
+    }
     if let Err(e) = crate::disk::book().make_dir(crate::disk::Category::Scratch, &scratch, crate::disk::Need::Essential) {
         return refusal("no_scratch", format!("{}: {e}", scratch.display()));
     }

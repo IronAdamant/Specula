@@ -1982,6 +1982,11 @@ impl Engine {
         // A press since the last tick may have started, paused or ended the run.
         self.serve_game_clock();
         let before = self.clock.tick();
+        // (The clock stands still under a script, whatever was done to it: its ticks are the
+        // ones asked for here, each once.)
+        if self.script_clock.is_some() && !self.clock.paused() {
+            self.clock.set_paused(true);
+        }
         if self.script_clock == Some(true) {
             self.clock.step(n.min(game::STEPS_AT_MOST));
             self.advance_clock();
@@ -3498,6 +3503,10 @@ impl Engine {
             }
             Command::PerfCapture(_) | Command::Playtest(_) | Command::Editor(_) => unreachable!("answered above"),
             Command::Time(op) if playtest_engine::clock_refused(op, self.playtests.running()) => playtest_engine::clock_busy(),
+            // A script has the clock (`--script`): nobody else's word moves it. An agent that
+            // reached the run's port and resumed it turned the machine's time into ticks, and
+            // the run printed a state its script had not played (review of ab61d3b3).
+            Command::Time(op) if script_run::clock_refused(op, self.script_clock.is_some()) => world_error(&WorldError::new("script_has_the_clock", "a headless run (specula run) has this engine's clock until it ends: time_control info still answers")),
             // Steps wait for a load to finish (bounded); they are never queued behind it.
             Command::Time(TimeOp::Step(_) | TimeOp::Play(_)) if self.nav.loading() && !self.build_nav_load(nav::LOAD_CALL_WAIT) => self.nav_loading_error(),
             Command::Time(op) => {
