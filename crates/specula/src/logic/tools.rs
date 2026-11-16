@@ -37,6 +37,47 @@ static MODULE_TARGETS_DIR: OnceLock<PathBuf> = OnceLock::new();
 /// for the linker under the cache (`None`: this system has no such limit, or names no folder).
 static SHORT_TARGETS_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
 
+/// Where the start-up build (`--run`) builds: a folder of the operator's that no project can
+/// bring with it (`None`: the engine keeps no record of approved builds, so `--run` builds
+/// nothing). See [`run_targets_root`].
+static RUN_TARGETS_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+/// The folder the start-up build's targets go to.
+///
+/// A build's cache decides what is loaded: Cargo takes a library it finds there as built from
+/// the sources when its file times say so. A module's usual target lies under the cache, which
+/// by default is in the project's folder: it comes with a project someone sends, or puts where
+/// another was. `--run` holds a module to the record of what an owner or lead built, and that
+/// promise is worth nothing if the library can come from elsewhere (review R3 of M6 part 3: a
+/// library built from other sources, in the project's own cache with the sources put back and
+/// their times kept, was loaded under a matching record). So what `--run` loads is built in
+/// the operator's own folder, where only this engine's start-up builds have written:
+/// - `<settings>/run-builds` when the operator named the settings folder (`--settings DIR`);
+/// - otherwise, on Windows, `Specula\r` under the user's local application data (beside
+///   [`short_targets_root`]; the per-user settings folder itself roams with the profile);
+/// - otherwise `<settings>/run-builds`.
+pub fn run_targets_root(settings: Option<&Path>, named: bool) -> Option<PathBuf> {
+    let settings = settings?;
+    match short_targets_root().filter(|_| !named) {
+        Some(short) => Some(short.with_file_name("r")),
+        None => Some(settings.join("run-builds")),
+    }
+}
+
+/// Sets where the start-up build builds (once, at start).
+pub fn set_run_targets(dir: Option<PathBuf>) {
+    let _ = RUN_TARGETS_DIR.set(dir);
+}
+
+/// The Cargo target of `dir`'s start-up build: under [`run_targets_root`], or under the
+/// engine's short folder when that would be too deep to link (both are the operator's).
+fn run_target(dir: &Path) -> Option<(PathBuf, bool)> {
+    let root = RUN_TARGETS_DIR.get()?.as_deref()?;
+    let canon = specula_logic::fix::canonical(dir);
+    let short = SHORT_TARGETS_DIR.get().and_then(|s| s.as_deref());
+    Some(pick_target(root, short, &canon, &package_name(dir), cfg!(windows)))
+}
+
 /// Where module builds' targets go (set once at start; tests leave Cargo's default): the
 /// cache's folder, and the short one ([`short_targets_root`]).
 pub fn set_module_targets(dir: PathBuf, short: Option<PathBuf>) {
@@ -148,7 +189,7 @@ fn stale_units(profile: &Path) -> Vec<PathBuf> {
 /// freed.
 pub fn drop_stale(target: &Path) -> (u64, u64) {
     // (The cache's folder for module builds, or the engine's short one: nowhere else.)
-    let roots = [MODULE_TARGETS_DIR.get().cloned(), SHORT_TARGETS_DIR.get().cloned().flatten()];
+    let roots = [MODULE_TARGETS_DIR.get().cloned(), SHORT_TARGETS_DIR.get().cloned().flatten(), RUN_TARGETS_DIR.get().cloned().flatten()];
     let target = crate::disk::canonical(target);
     let Some(root) = roots.iter().flatten().map(|r| crate::disk::canonical(r)).find(|root| target.starts_with(root) && target != *root) else {
         return (0, 0);
@@ -655,6 +696,14 @@ fn report_json(r: &BuildReport, req: &BuildRequest, detailed: bool) -> Json {
     Json::obj(f)
 }
 
+/// The crate a build compiled from outside the module's folder, when that keeps its library
+/// from being loaded: under an approval (the proposal's digest does not cover it) and at
+/// start (`--run`: the record of what was built does not cover it). An owner's or a lead's own
+/// build loads it: they are who reviews it.
+fn outside_refused(outside: Option<&specula_logic::build::Compiled>, approving: bool, at_start: bool) -> Option<&specula_logic::build::Compiled> {
+    outside.filter(|_| approving || at_start)
+}
+
 /// `logic_build`, on the calling connection's thread: build (queued behind other builds), then
 /// hand the reload to the engine thread and wait for it.
 pub fn build(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json) -> ToolOutput {
@@ -682,7 +731,15 @@ pub fn build_expecting(to_engine: &Sender<Request>, session: &SessionInfo, args:
         let mut req = BuildRequest::new(dir);
         req.roots = vec![engine_root()];
         // One Cargo target per module, shared by every agent's builds of it (under the cache).
-        let (target, moved) = module_target(&req.dir).unzip();
+        // The start-up build has its own, in the operator's folder: what it loads is never
+        // built in a folder that could have come with the project ([`run_targets_root`]).
+        let (target, moved) = match expect {
+            Some(_) => match run_target(&req.dir) {
+                Some((target, _)) => (Some(target), Some(false)),
+                None => return Err("the engine has no folder of its own to build in (it keeps no settings folder), so nothing is built at start".to_owned()),
+            },
+            None => module_target(&req.dir).unzip(),
+        };
         req.target_dir = target;
         let moved = moved.unwrap_or(false);
         req.check = bool_arg(args, "check")?.unwrap_or(false);
@@ -788,7 +845,7 @@ pub fn build_expecting(to_engine: &Sender<Request>, session: &SessionInfo, args:
     // digest and no more (review R2 of M6 part 3: a builder wrote a helper crate's source, and
     // `--run` built and loaded it under a record that named the module's folder alone).
     let outside = if report.ok && reload { specula_logic::build::unpinned(&report.compiled, &req.roots, &req.dir) } else { None };
-    let unpinned = outside.filter(|_| approve.is_some() || expect.is_some());
+    let unpinned = outside_refused(outside, approve.is_some(), expect.is_some());
     // (The root's configuration again, after Cargo read it: the start-up build loads nothing
     // that was built while it was being changed.)
     let config_changed = expect.is_some_and(|want| report.ok && reload && specula_logic::digest::root_config_digest(&engine_root()).map_or(true, |d| d.hex != want.root));
@@ -1070,6 +1127,30 @@ pub fn no_journal() -> impl FnMut(&mut dyn WorldWrite, Mark, &str, Phase) -> Res
 #[cfg(test)]
 mod stale_tests {
     use super::*;
+
+    /// What the start-up build loads never comes from outside the module's folder, and is never
+    /// built in the project's own folder (reviews R2 and R3 of M6 part 3: the live check cannot
+    /// reach the first with a record that matches, so it is held here).
+    #[test]
+    fn the_start_up_build_keeps_to_the_modules_folder_and_the_operators() {
+        let helper = specula_logic::build::Compiled { manifest: PathBuf::from("modules/helper/Cargo.toml"), name: "helper".into(), files: Vec::new() };
+        assert!(outside_refused(Some(&helper), false, true).is_some(), "at start: refused");
+        assert!(outside_refused(Some(&helper), true, false).is_some(), "under an approval: refused");
+        assert!(outside_refused(Some(&helper), false, false).is_none(), "an owner's or a lead's own build loads it");
+        assert!(outside_refused(None, true, true).is_none());
+        // Where it builds: nowhere without a settings folder; under a settings folder the
+        // operator named; otherwise in the engine's own folder for this user, never the
+        // project's.
+        let settings = Path::new("somewhere").join("settings");
+        assert_eq!(run_targets_root(None, false), None);
+        assert_eq!(run_targets_root(None, true), None);
+        assert_eq!(run_targets_root(Some(&settings), true), Some(settings.join("run-builds")));
+        let own = run_targets_root(Some(&settings), false).expect("a folder");
+        match short_targets_root() {
+            Some(short) => assert!(own.parent() == short.parent() && own != short && own.file_name().is_some_and(|n| n == "r"), "{}", own.display()),
+            None => assert_eq!(own, settings.join("run-builds")),
+        }
+    }
 
     /// docs/design/FIRST_HOUR.md, slice 2: a build that would be too deep to link under the
     /// project's cache goes to the engine's short folder, and only then.

@@ -282,7 +282,8 @@ As built, where the text above said less or something else:
   root's build configuration (`Cargo.toml`, a toolchain file, `.cargo/`); `--run` loads a module only
   while both hold, and loads nothing of a module that compiles a crate from outside its own folder.
   `--run-as-is` (`specula play NAME --as-is`) is the operator saying that what is on disk now is
-  theirs to run; it approves nothing for later starts.
+  theirs to run; it approves nothing for later starts. What `--run` loads is built in a folder of the
+  operator's own, never in a build folder that could have come with the project (review R3).
 - **An agent's `game_act` never saves or loads** (`use_save_tools`): the save tools do, with their
   rules. **An agent's change to a setting lasts for the session.** The player's settings file holds
   the choices the player made and nothing else: not a default, and not a value a changed game file
@@ -295,7 +296,9 @@ As built, where the text above said less or something else:
   brief, of which the first by id is given). The check at the write (`project_engine::note_guard`:
   one replacement a note, no rings, one brief, for `memory_note` and `project_write` alike) refuses
   early; an undo and an edit on disk pass it by design, and the reader holds. A note's front matter
-  is at most 16 lines.
+  is at most 16 lines. Only notes count toward the 1,024 that are read: files in the folder that are
+  not notes take no note's place, however many (review R3), and `memory_note {id, supersedes: ""}`
+  takes a line out.
 - **`project_memory` is the project's text, and says so**: `source` (whose words these are), `brief`
   and `how` each with `id`, `by`, `version` and `text`, and `also` (ids, kinds and titles). Nothing of
   a note is joined to the engine's own words, and no agent takes a name that reads as the engine's

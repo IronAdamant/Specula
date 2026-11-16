@@ -255,6 +255,45 @@ pub struct Notes {
     /// The replacements not followed, because they would close a ring: (the note, what its
     /// file says it replaces).
     rings: Vec<(String, String)>,
+    /// Notes past the [`MAX_NOTES`] that are read.
+    unread: usize,
+    /// Files of the notes folder that are not notes.
+    not_notes: usize,
+}
+
+/// Most files that are not notes that a reading names (the rest are counted).
+pub const MAX_NOT_NOTES: usize = 64;
+
+/// The replacements that are followed among notes given in id order as (id, what its file
+/// says it replaces), and the ones that are not because they would close a ring: each note's
+/// line is followed unless the note it names already leads back to it through the lines
+/// followed so far. One rule, for the reader and for whoever checks a write against it.
+pub fn follow<'a>(notes: impl Iterator<Item = (&'a str, Option<&'a str>)>) -> (std::collections::BTreeMap<String, String>, Vec<(String, String)>) {
+    let notes: Vec<(&str, Option<&str>)> = notes.collect();
+    let mut follows: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let mut rings = Vec::new();
+    for (id, old) in &notes {
+        let Some(old) = old else { continue };
+        let mut at = Some(*old);
+        let mut ring = false;
+        // (A chain is at most as long as there are notes.)
+        for _ in 0..=notes.len() {
+            match at {
+                Some(a) if a == *id => {
+                    ring = true;
+                    break;
+                }
+                Some(a) => at = follows.get(a).map(String::as_str),
+                None => break,
+            }
+        }
+        if ring {
+            rings.push(((*id).to_owned(), (*old).to_owned()));
+        } else {
+            follows.insert((*id).to_owned(), (*old).to_owned());
+        }
+    }
+    (follows, rings)
 }
 
 /// The first `max` characters of `text`, cut at a word and marked when something was cut.
@@ -269,59 +308,63 @@ pub fn cut(text: &str, max: usize) -> String {
 
 impl Notes {
     /// The notes of a project, from each note file's id and text, with the files that are not
-    /// notes (id, why): a file a person left half written does not hide the rest. At most
-    /// [`MAX_NOTES`] are read, in id order.
+    /// notes (id, why): a file a person left half written does not hide the rest.
+    ///
+    /// **Only notes count.** The first [`MAX_NOTES`] notes by id are read; a file that is not
+    /// a note takes no note's place (review R3 of M6 part 3: the first 1,024 *files* were
+    /// read, so that many drafts with ids that sort first left a project with no notes for
+    /// anyone, and any agent can write a draft). Notes past the limit are counted
+    /// ([`Notes::unread`]), and at most [`MAX_NOT_NOTES`] files that are not notes are named,
+    /// the rest counted ([`Notes::not_notes`]).
     pub fn read<'a>(files: impl IntoIterator<Item = (&'a str, &'a str)>) -> (Notes, Vec<(String, NoteError)>) {
         let mut files: Vec<(&str, &str)> = files.into_iter().collect();
         files.sort_by_key(|(id, _)| *id);
         let (mut notes, mut bad) = (Vec::new(), Vec::new());
-        for (id, text) in files.into_iter().take(MAX_NOTES) {
+        let (mut unread, mut not_notes) = (0, 0);
+        for (id, text) in files {
             match Note::parse(id, text) {
-                Ok(note) => notes.push(note),
-                Err(why) => bad.push((id.to_owned(), why)),
-            }
-        }
-        // Which replacements are followed: each note's, in id order, unless the note it names
-        // already leads back to it through the ones followed so far (a ring, or itself).
-        let mut follows: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
-        let mut rings = Vec::new();
-        for note in &notes {
-            let Some(old) = &note.supersedes else { continue };
-            let mut at = Some(old.as_str());
-            let mut ring = false;
-            // (A chain is at most as long as there are notes.)
-            for _ in 0..=notes.len() {
-                match at {
-                    Some(a) if a == note.id => {
-                        ring = true;
-                        break;
+                Ok(note) if notes.len() < MAX_NOTES => notes.push(note),
+                Ok(_) => unread += 1,
+                Err(why) => {
+                    not_notes += 1;
+                    if bad.len() < MAX_NOT_NOTES {
+                        bad.push((id.to_owned(), why));
                     }
-                    Some(a) => at = follows.get(a).map(String::as_str),
-                    None => break,
                 }
             }
-            if ring {
-                rings.push((note.id.clone(), old.clone()));
-            } else {
-                follows.insert(note.id.clone(), old.clone());
-            }
         }
+        let (follows, rings) = follow(notes.iter().map(|n: &Note| (n.id.as_str(), n.supersedes.as_deref())));
         let replaced = follows.values().cloned().collect();
-        (Notes { notes, follows, replaced, rings }, bad)
+        (Notes { notes, follows, replaced, rings, unread, not_notes }, bad)
+    }
+
+    /// Notes the project holds past the [`MAX_NOTES`] that are read (by id).
+    pub fn unread(&self) -> usize {
+        self.unread
+    }
+
+    /// How many files of the notes folder are not notes (every one, named or not).
+    pub fn not_notes(&self) -> usize {
+        self.not_notes
     }
 
     /// What the files say that the notes are not read as, in words for whoever keeps them: a
-    /// replacement that would close a ring (not followed), and a second current brief (the
-    /// first by id is the brief). Empty for notes written through the tools.
+    /// replacement that would close a ring (not followed), a second current brief (the first
+    /// by id is the brief), and notes past the limit. Empty for notes written through the tools.
     pub fn problems(&self) -> Vec<String> {
         let mut out: Vec<String> = self
             .rings
             .iter()
-            .map(|(id, old)| format!("{id} says it supersedes {old}, and {old} replaced {id} (directly or through others): that line is not followed, so both stay listed; take it out of {FOLDER}/{id}.md"))
+            .map(|(id, old)| {
+                format!("{id} says it supersedes {old}, and {old} already replaces {id}, directly or through other notes (a ring): that line of {id} is not followed (the other lines of the ring are); take it out of {FOLDER}/{id}.md")
+            })
             .collect();
         let mut briefs = self.current().filter(|n| n.kind == Kind::Brief);
         if let (Some(first), Some(second)) = (briefs.next(), briefs.next()) {
             out.push(format!("there are two briefs, {} and {}: {} is given as the brief; make the other a fact, or have one supersede the other", first.id, second.id, first.id));
+        }
+        if self.unread > 0 {
+            out.push(format!("the project holds {} more notes than the {MAX_NOTES} that are read (the first by id): delete notes that are no longer needed (project_delete)", self.unread));
         }
         out
     }
@@ -636,6 +679,44 @@ mod tests {
         let all = notes(&briefs);
         assert_eq!(all.brief_parts().brief.map(|n| n.id.as_str()), Some("brief"));
         assert!(all.problems().iter().any(|p| p.contains("two briefs, brief and pitch")));
+    }
+
+    /// Files that are not notes take no note's place, however many there are (review R3 of M6
+    /// part 3: 1,030 drafts with ids that sort first left a project with no notes for anyone).
+    #[test]
+    fn drafts_never_crowd_the_notes_out() {
+        let mut files: Vec<(String, String)> = (0..MAX_NOTES + 6).map(|i| (format!("{i:04}"), "draft".to_owned())).collect();
+        files.push(note("brief", "brief", "The game", "", "what it is"));
+        files.push(note("how", "how", "How it is built", "", "logic_build"));
+        let (all, bad) = Notes::read(files.iter().map(|(id, text)| (id.as_str(), text.as_str())));
+        assert_eq!(all.current().map(|n| n.id.as_str()).collect::<Vec<_>>(), ["brief", "how"]);
+        assert_eq!(all.brief_parts().brief.map(|n| n.id.as_str()), Some("brief"));
+        assert_eq!((all.not_notes(), bad.len(), all.unread()), (MAX_NOTES + 6, MAX_NOT_NOTES, 0));
+        assert!(all.problems().is_empty());
+        // More notes than are read: the first by id are, and it is said how many are not.
+        let many: Vec<(String, String)> = (0..MAX_NOTES + 5).map(|i| note(&format!("n{i:04}"), "fact", &format!("Note {i}"), "", "")).collect();
+        let (all, bad) = Notes::read(many.iter().map(|(id, text)| (id.as_str(), text.as_str())));
+        assert!(bad.is_empty());
+        assert_eq!((all.all().len(), all.unread()), (MAX_NOTES, 5));
+        assert!(all.problems().iter().any(|p| p.contains("5 more notes than the 1024 that are read")), "{:?}", all.problems());
+    }
+
+    /// One rule says which replacements are followed, for the reader and for a check of a
+    /// write: adding a line that closes a ring adds a line that is not followed.
+    #[test]
+    fn a_write_that_closes_a_ring_adds_a_line_that_is_not_followed() {
+        let rings = |edges: &[(&str, Option<&str>)]| follow(edges.iter().copied()).1;
+        assert!(rings(&[("p", Some("q")), ("q", None)]).is_empty());
+        assert_eq!(rings(&[("p", Some("q")), ("q", Some("p"))]), [("q".to_owned(), "p".to_owned())]);
+        // Rewriting p (which keeps its line) in a ring that is already there adds none: the
+        // same line is the one not followed before and after.
+        assert_eq!(rings(&[("p", Some("q")), ("q", Some("p"))]), rings(&[("p", Some("q")), ("q", Some("p"))]));
+        // Taking the line out of either ends it.
+        assert!(rings(&[("p", None), ("q", Some("p"))]).is_empty());
+        assert!(rings(&[("p", Some("q")), ("q", None)]).is_empty());
+        // A note that names itself, and one that names a note that is not there.
+        assert_eq!(rings(&[("s", Some("s"))]), [("s".to_owned(), "s".to_owned())]);
+        assert!(rings(&[("t", Some("gone"))]).is_empty());
     }
 
     /// The first-lines reader and the parser agree about every text that is a note, and a

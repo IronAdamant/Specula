@@ -691,9 +691,12 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     // Module builds too deep for the linker under the cache go to a short folder of the
     // engine's own (docs/design/FIRST_HOUR.md, slice 2): counted and pruned like the cache's.
     let short_modules = logic::tools::short_targets_root();
+    // The start-up build (`--run`) builds what it loads in a folder of the operator's own, which no
+    // project can bring with it (logic::tools::run_targets_root): counted with the other builds.
+    let run_builds = logic::tools::run_targets_root(launch_engine::store_for(args.settings.as_deref(), |k| std::env::var(k).ok()).as_ref().map(|s| s.dir.as_path()), args.settings.is_some());
     disk::book().configure(
         engine.perf_cfg.disk.clone(),
-        settings_root.into_iter().chain(short_modules.clone().map(|dir| (disk::Category::Modules, dir))).chain([
+        settings_root.into_iter().chain(short_modules.clone().map(|dir| (disk::Category::Modules, dir))).chain(run_builds.clone().map(|dir| (disk::Category::Modules, dir))).chain([
             (disk::Category::Captures, captures_root.clone()),
             (disk::Category::Cache, cache_dir.clone()),
             // The trace folder: self-bounded (its JSONL files and crash reports are capped by
@@ -716,6 +719,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     // Finished runs' unsaved review queues died with their engines: their evidence goes.
     evidence::clean_unsaved(&engine.worlds_dir, &engine.capture_dir);
     logic::tools::set_module_targets(cache_dir.join(logic::tools::MODULE_TARGETS), short_modules);
+    logic::tools::set_run_targets(run_builds);
     // The module host's own writes (library copies, fixes, a restored Cargo.lock) go through the book too.
     specula_logic::disk::set_hook(disk::logic_admit, disk::logic_wrote);
     let content = Arc::new(blobs::ContentStore::open(&cache_dir.join(blobs::CONTENT_DIR)).map_err(|e| format!("content store: {e}"))?);
@@ -3446,7 +3450,7 @@ impl Engine {
                 if let Some((due, before)) = stepped {
                     let ran = self.clock.tick() - before;
                     let queued = self.clock.queued();
-                    let dropped = due.saturating_sub(ran).saturating_sub(queued);
+                    let dropped = stepped_dropped(due, ran, queued);
                     answer.set("ran", Json::from(ran));
                     if queued > 0 {
                         answer.set("queued", Json::from(queued));
@@ -4122,6 +4126,13 @@ fn batch_summary(results: &[world::OpResult]) -> Json {
         }
     }
     Json::obj(out)
+}
+
+/// Of the `due` ticks of a step (its own, and any an earlier step left queued), how many were
+/// dropped: the ones that neither `ran` in the call nor are still `queued` (the hosted game
+/// stopped the clock on a tick). A tick still queued is not dropped: it runs in a frame after.
+fn stepped_dropped(due: u64, ran: u64, queued: u64) -> u64 {
+    due.saturating_sub(ran).saturating_sub(queued)
 }
 
 fn world_error(e: &WorldError) -> ToolOutput {

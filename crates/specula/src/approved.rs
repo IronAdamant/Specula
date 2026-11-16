@@ -28,6 +28,9 @@
 //! - The operator's own start-up build records nothing. With `--run` it loads what was
 //!   recorded; with `--run-as-is` it loads what nobody reviewed, and one such start must not
 //!   approve that for every start after it.
+//! - What `--run` loads is also built in the operator's own folder, never in a build folder
+//!   that could have come with the project (`logic::tools::run_targets_root`; review R3: a
+//!   library found there counts as built from the sources when the file times say so).
 //!
 //! **The record is the operator's, not the project's.** It is kept in the per-user settings
 //! folder (`--settings DIR`, by default the user's own), by the project's folder. No tool of

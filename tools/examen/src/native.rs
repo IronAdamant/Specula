@@ -60,6 +60,9 @@ pub struct Cx {
     engines: Vec<(u64, Child)>,
     /// Engines started so far.
     started: usize,
+    /// The settings folder (below the check's own) its engines and commands use: whose
+    /// machine this is. A check that needs a second operator names another for a while.
+    operator: &'static str,
 }
 
 impl Drop for Cx {
@@ -103,7 +106,7 @@ fn expect(ok: bool, what: &str, answer: &Json) -> Result<(), String> {
 impl Cx {
     pub fn new(out: &Path, port: u64) -> Cx {
         let exe = crate::run::target_dir().join("debug").join(if cfg!(windows) { "specula.exe" } else { "specula" });
-        Cx { out: out.to_path_buf(), port, exe, log: Vec::new(), engines: Vec::new(), started: 0 }
+        Cx { out: out.to_path_buf(), port, exe, log: Vec::new(), engines: Vec::new(), started: 0, operator: "settings" }
     }
 
     pub fn say(&mut self, line: impl Into<String>) {
@@ -117,8 +120,14 @@ impl Cx {
         text
     }
 
+    /// From here on the check's engines and commands are another operator's: another settings
+    /// folder below the check's own (`settings` is the first).
+    pub fn as_operator(&mut self, settings: &'static str) {
+        self.operator = settings;
+    }
+
     fn settings(&self) -> String {
-        self.out.join("settings").to_string_lossy().into_owned()
+        self.out.join(self.operator).to_string_lossy().into_owned()
     }
 
     /// One command of the engine's executable: its exit code and its answer (its standard
@@ -176,7 +185,7 @@ impl Cx {
         let own = |name: &str| self.out.join(name).to_string_lossy().into_owned();
         let mut cmd = Command::new(&self.exe);
         cmd.arg("--project").arg(project).args(["--headless", "--port", &port.to_string()]);
-        cmd.args(["--settings", &own("settings"), "--captures", &own("captures"), "--cache", &own("cache"), "--trace", &own("trace")]);
+        cmd.args(["--settings", &own(self.operator), "--captures", &own("captures"), "--cache", &own("cache"), "--trace", &own("trace")]);
         cmd.args(flags).current_dir(project).stdin(Stdio::null()).stdout(file.0).stderr(file.1);
         let mut child = cmd.spawn().map_err(|e| format!("the engine could not be started ({}): {e}", self.exe.display()))?;
         self.say(format!("engine {n} on port {port}: --project {} {} (log: {})", project.display(), flags.join(" "), log.display()));
@@ -340,6 +349,7 @@ fn new_project(cx: &mut Cx) -> Result<String, String> {
     expect(text(&left, "phase") == Some("title"), "the run was not given up", &left)?;
     cx.call(port, lead, "save_read", r#"{"name": "check1", "force": true}"#)?;
     let state = cx.call(port, lead, "game_state", "{}")?;
+    // (The phase is what says the run is back: giving a run up does not change how many there were.)
     expect(text(&state, "phase") == Some("running") && at(&state, "runs").and_then(Json::as_u64) == runs && at(&state, "modules_running.0").and_then(Json::as_str) == Some("tapfive"), "a save of a run, read at the title, did not bring the run back", &state)?;
     // A game file that is not one is never stored, draft or not: the project would not open.
     cx.refused(port, lead, "project_write", r#"{"path": "game.json", "text": "{\"format\": \"specula.game.v1\", \"tick_hz\": 0}", "allow_errors": true}"#, "invalid")?;
@@ -413,6 +423,24 @@ fn new_project(cx: &mut Cx) -> Result<String, String> {
         std::fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     }
     cx.wait_for(port, lead, "memory_list", "notes removed on disk are gone", Duration::from_secs(30), |l| at(l, "problems").is_none() && current(l) == current(&before))?;
+    // Files that are not notes take no note's place, however many (review R3: a thousand
+    // drafts with ids that sort first left the project with no notes for anyone). More of
+    // them than the notes that are read, written on disk; the notes are all still there,
+    // and the next agent is still told the brief.
+    let drafts = 1030;
+    for i in 0..drafts {
+        let path = project.join("notes").join(format!("0000-draft-{i:04}.md"));
+        std::fs::write(&path, "draft\n").map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    let flooded = cx.wait_for(port, lead, "memory_list", "the drafts written on disk are imported", Duration::from_secs(60), |l| at(l, "not_notes_total").and_then(Json::as_u64) == Some(drafts))?;
+    expect(current(&flooded) == current(&before) && at(&flooded, "total").and_then(Json::as_u64) == at(&before, "total").and_then(Json::as_u64), "files that are not notes pushed notes out of the list", &flooded)?;
+    let hello = cx.call(port, None, "agent_hello", r#"{"name": "among-drafts"}"#)?;
+    expect(text(&hello, "project_memory.brief.id") == Some("brief"), "among a thousand drafts the next agent is not told the brief", &hello)?;
+    for i in 0..drafts {
+        let path = project.join("notes").join(format!("0000-draft-{i:04}.md"));
+        std::fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    cx.wait_for(port, lead, "memory_list", "the drafts removed on disk are gone", Duration::from_secs(60), |l| at(l, "not_notes").is_none())?;
 
     // 7. A second language, chosen, and a setting the rules read: kept for the next start
     // (the operator named the settings folder, so an agent's change is kept there).
@@ -504,7 +532,33 @@ fn new_project(cx: &mut Cx) -> Result<String, String> {
     held_back(cx, port2, "--run built under a build configuration nobody with authority built with", "build configuration")?;
     std::fs::remove_dir_all(&config).map_err(|e| format!("{}: {e}", config.display()))?;
 
-    // 14. A module that compiles a crate from outside its own folder is not for `--run`: the
+    // 14. What `--run` loads is built in a folder of the operator's own, never taken from a
+    // build folder a project could bring with it (review R3: Cargo takes a library it finds
+    // as built from the sources when the file times say so). Replayed here: another operator
+    // (another settings folder) builds changed sources into the same build cache; the sources
+    // are put back as they were recorded, with their file time; `--run`, held to the first
+    // operator's record, must load the library of the recorded sources and not the other.
+    let source = project.join("modules").join("tapfive").join("src").join("lib.rs");
+    let recorded = std::fs::read_to_string(&source).map_err(|e| format!("{}: {e}", source.display()))?;
+    let written = std::fs::metadata(&source).and_then(|m| m.modified()).map_err(|e| format!("{}: {e}", source.display()))?;
+    let other = recorded.replace("cx.set_state(\"score\", taps * 10 + left)?;", "cx.set_state(\"score\", 777u64)?;");
+    expect(other != recorded, "the sample module does not set its score as the check expects", &Json::Null)?;
+    std::fs::write(&source, &other).map_err(|e| format!("{}: {e}", source.display()))?;
+    cx.as_operator("settings-other");
+    let built = builds(cx, port3);
+    cx.as_operator("settings");
+    built?;
+    std::fs::write(&source, &recorded).and_then(|()| std::fs::File::options().write(true).open(&source)?.set_modified(written)).map_err(|e| format!("{}: {e}", source.display()))?;
+    cx.start(&project, port4, &["--run"])?;
+    let state = cx.wait_for(port4, None, "game_state", "--run loads the recorded module", Duration::from_secs(180), done)?;
+    expect(at(&state, "problems").is_none() && at(&state, "modules_running.0").and_then(Json::as_str) == Some("tapfive"), "--run did not load the module whose sources are the recorded ones", &state)?;
+    cx.call(port4, None, "game_act", r#"{"action": "start"}"#)?;
+    let scored = |s: &Json| at(s, "score").and_then(Json::as_f64).is_some_and(|score| score > 0.0);
+    let state = cx.wait_for(port4, None, "game_state", "the run's first ticks", Duration::from_secs(60), scored)?;
+    expect(at(&state, "score").and_then(Json::as_f64) != Some(777.0), "--run loaded a library built from other sources than the recorded ones (it was in the build cache)", &state)?;
+    cx.stop(port4)?;
+
+    // 15. A module that compiles a crate from outside its own folder is not for `--run`: the
     // record covers the module's folder, and a helper crate elsewhere could change unseen
     // (review R2, the blocker: a builder wrote a helper's source and `--run` loaded it). The
     // lead's own build loads it and says so, and `--run` loads nothing of it. (A crate beside

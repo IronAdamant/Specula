@@ -212,10 +212,17 @@ fn resolve(base: &[String], target: &str) -> Option<String> {
     Some(parts.join("/"))
 }
 
-/// Inside the module, and not its build output.
+/// Inside the module, and not its build output, nor a folder whose name starts with a dot.
+///
+/// The module folder's digest ([`crate::digest::files`]) leaves out `target/` and every folder
+/// whose name starts with a dot, at any depth: what a build may compile or include is held to
+/// the same, so nothing that is compiled goes undigested (review R3 of M6 part 3:
+/// `#[path = ".v/imp.rs"]` compiled a file no proposal's digest and no record covered).
 fn allowed(rel: &str) -> bool {
+    let mut folders: Vec<&str> = rel.split('/').collect();
+    let _file = folders.pop();
     let first = rel.split('/').next().unwrap_or("").to_ascii_lowercase();
-    !rel.is_empty() && first != "target" && first != ".cargo"
+    !rel.is_empty() && first != "target" && first != ".cargo" && !folders.iter().any(|f| f.starts_with('.'))
 }
 
 const MACROS: [&str; 3] = ["include_str", "include_bytes", "include"];
@@ -519,6 +526,22 @@ fn same_bytes(a: &Path, b: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a build may compile is what the folder's digest covers: never the build output,
+    /// and never a folder whose name starts with a dot, at any depth.
+    #[test]
+    fn a_compiled_path_is_one_the_digest_covers() {
+        for ok in ["src/lib.rs", "src/data/table.txt", "inner/src/lib.rs", ".gitignore", "src/.keep"] {
+            assert!(allowed(ok), "{ok}");
+        }
+        for refused in ["", "target/debug/x.rs", "Target/x.rs", ".cargo/config.toml", ".v/imp.rs", "src/.hidden/imp.rs", "src/a/.b/c.rs"] {
+            assert!(!allowed(refused), "{refused}");
+        }
+        let hidden = check_source("src/lib.rs", "#[path = \".v/imp.rs\"]
+mod imp;
+");
+        assert!(!hidden.is_empty(), "a module file in a dot-folder is refused where it is named");
+    }
 
 
     /// Pre-existing bug found by the write-policy lane: after `cargo clippy` in the same target

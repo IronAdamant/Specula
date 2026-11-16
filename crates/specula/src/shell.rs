@@ -365,6 +365,8 @@ pub struct Shell {
     files: ShellFiles,
     /// What did not load or was not done, newest last (at most 16): `game_state` shows it.
     problems: Vec<String>,
+    /// The problems among them that the last reading of the files said ([`Shell::use_files`]).
+    file_problems: Vec<String>,
     run: Run,
     settings: Settings,
     store: SettingsStore,
@@ -455,6 +457,7 @@ impl Shell {
             kept: Kept::default(),
             game,
             problems: Vec::new(),
+            file_problems: Vec::new(),
             store: SettingsStore::default(),
             settings_dirty: false,
             stale: true,
@@ -487,6 +490,13 @@ impl Shell {
     /// Takes the files as read: tables, then the interface. What does not load is noted and
     /// the rest goes on (a screen with a typo does not take the game's menus away).
     fn use_files(&mut self, files: ShellFiles) {
+        // What the files' last reading said is said again only if it is still so: a problem
+        // of a file that was put right goes, and "N files" is said once, as it stands now
+        // (review R3 of M6 part 3: every write of a table added its own count, and sixteen of
+        // them pushed every other problem out).
+        let before = std::mem::take(&mut self.file_problems);
+        self.problems.retain(|p| !before.contains(p));
+        let others = self.problems.clone();
         for problem in &files.problems {
             note(&mut self.problems, problem.clone());
         }
@@ -496,6 +506,7 @@ impl Shell {
         self.apply_language();
         self.laid_out = None;
         self.stale = true;
+        self.file_problems = self.problems.iter().filter(|p| !others.contains(p)).cloned().collect();
     }
 
     fn load_tables(&mut self) {
@@ -1463,6 +1474,32 @@ mod tests {
         // What a project lacks is the built-in one.
         let bare = ShellFiles::of_texts(String::new(), &[]);
         assert!(bare.screens.iter().any(|(stem, _)| stem == "title") && !bare.tables.is_empty() && !bare.theme.is_empty() && bare.problems.is_empty());
+    }
+
+    /// The files' problems are of the files as they are now: said once, and gone when the file
+    /// is put right; what was noted of anything else stays (review R3 of M6 part 3).
+    #[test]
+    fn a_files_problem_is_said_as_it_stands_now() {
+        let mut shell = shell();
+        note(&mut shell.problems, "something else".to_owned());
+        let game = shell.files.game.clone();
+        let tables = |n: usize| -> Vec<(String, Arc<str>)> {
+            // (Each a table of a locale of its own: the English one for a numbered region.)
+            let other = |i: usize| builtin("assets/strings/en.json").replace("\"locale\": \"en\"", &format!("\"locale\": \"en-{:03}\"", 100 + i)).replace("\"source\": true,", "");
+            let mut texts: Vec<(String, Arc<str>)> = (0..n).map(|i| (format!("strings/x-{i:03}.json"), Arc::from(other(i)))).collect();
+            texts.push(("strings/en.json".into(), Arc::from(builtin("assets/strings/en.json"))));
+            texts
+        };
+        let counts = |shell: &Shell| shell.problems.iter().filter(|p| p.contains("assets/strings holds")).cloned().collect::<Vec<_>>();
+        for n in [MAX_TABLES + 3, MAX_TABLES + 4, MAX_TABLES + 5] {
+            shell.use_files(ShellFiles::of_texts(game.clone(), &tables(n)));
+            assert_eq!(counts(&shell), [format!("assets/strings holds {} files: the first {MAX_TABLES} are read", n + 1)], "after {n} tables: {:?}", shell.problems);
+        }
+        assert!(shell.problems.iter().any(|p| p == "something else"), "{:?}", shell.problems);
+        // Fewer tables than the limit: the count is no longer said; the other problem is.
+        shell.use_files(ShellFiles::of_texts(game, &tables(0)));
+        assert!(counts(&shell).is_empty(), "{:?}", shell.problems);
+        assert!(shell.problems.iter().any(|p| p == "something else"));
     }
 
     /// The player's file holds the player's choices however the game file changes (review R2

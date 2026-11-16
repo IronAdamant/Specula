@@ -1070,6 +1070,15 @@ fn run_agent(a: &RunArgs) -> R<i32> {
             }
         },
     };
+    // An agent that ended on the interrupt itself (most command-line agents do) was stopped
+    // all the same, not done. What such an agent had started and left running is not found:
+    // a tree is stopped through its root while the root lives (review R3 of M6 part 3; a job
+    // object would hold it, and the tooling has none). Where interrupts are not caught (off
+    // Windows, for now) an interrupt ends this command at once, as it always did, and the
+    // run's engine is stopped by hand: `examen leverage engine stop RUN`.
+    if specula_sys::interrupt::requested() && ended == "done" {
+        ended = "stopped";
+    }
     // Whatever the agent did or did not do, no engine of this run is left behind: an engine is
     // started by `specula open`, which exits, so it is not among the agent's children.
     let engine_gone = stop_engine(&r, &run);

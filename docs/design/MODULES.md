@@ -88,6 +88,18 @@ boundary is **who may load a module**, and the checks below are lints behind it 
     after the review with the module's digest unchanged: such a module is not recorded, the lead's build says
     so (`at_start`), and `--run` loads nothing of it. It is the rule a proposed module already keeps
     (`unpinned_sources`). Not built: a record that also pins such crates, for modules that share one.
+  - **What `--run` loads is built in the operator's own folder** (review R3). Cargo takes a library it finds
+    in a build folder as built from the sources when the file times say so, and a module's usual build folder
+    is under the cache, which by default lies in the project's folder: it can come with a project. So the
+    start-up build has a folder of its own that no project brings: `<settings>/run-builds` when the operator
+    named the settings folder, otherwise (Windows) `Specula\r` under the user's local application data; the
+    engine's short folder when that would be too deep to link. Counted with the other module builds
+    (`disk_status`).
+    - **Not covered, said plainly:** an owner's or a lead's own `logic_build` still builds under the cache. A
+      project someone sends should come without its `.specula-cache` (`specula new`'s `.gitignore` leaves it
+      out); delete one that came with a project before building it. Moving every module build out of the
+      project's folder needs whole build folders pruned by age first (ROADMAP M6, with the remote agents'
+      security work).
   - **The record is the operator's, not the project's**: kept in the per-user settings folder (`--settings
     DIR`, by default the user's own), by the project's folder. No tool writes there for an agent, and a
     project someone sends carries none. With `--settings off` there is no record and `--run` loads nothing.

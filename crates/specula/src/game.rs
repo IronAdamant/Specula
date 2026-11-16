@@ -862,6 +862,11 @@ mod tests {
         assert_eq!(ran, 1000);
         // Cancelled, nothing is left to run.
         clock.step(5);
+        // What a step's answer says of them (review R3: no test held this, and "every tick
+        // that did not run was dropped" passed them all).
+        assert_eq!(crate::stepped_dropped(1000, first, 1000 - first), 0, "queued ticks are not dropped");
+        assert_eq!(crate::stepped_dropped(1000, 297, 0), 703, "the game stopped the clock: the rest were");
+        assert_eq!(crate::stepped_dropped(5, 5, 0), 0);
         clock.cancel_steps();
         assert_eq!((clock.queued(), clock.advance(std::time::Duration::ZERO)), (0, 0));
     }

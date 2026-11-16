@@ -264,16 +264,28 @@ The project list, the files that say which engines are running, and the two requ
   `--run-as-is` loads whatever is on disk and is for the operator's own code: with it, anything an agent wrote
   into a module's folder runs at that start, unreviewed (and at no later `--run`: it approves nothing). The
   start-up build runs as `operator:run`, an identity no connection can have.
+  - **What it loads is built in the operator's own folder**, never in a build folder that could have come
+    with the project (a library found there counts as built from the sources when the file times say so):
+    [MODULES.md](MODULES.md).
   - **Not covered, said plainly:** Cargo configuration above the project's folder (a `.cargo/` in a parent
     folder, the user's own Cargo home) is the machine's and is read by every build on it; a module that was
     loaded is native code with the user's rights (above) and could write the record itself; and an agent
     with a shell has the user's rights already.
+- **An owner's or a lead's own build trusts the project's build cache.** `logic_build` builds under the cache
+  (by default `.specula-cache` in the project's folder), and Cargo takes a library it finds there as built
+  from the sources when the file times say so: a project that arrives with a prepared `.specula-cache` could
+  have a library loaded that its sources do not make, past the check of what a module's source may do. Delete
+  a `.specula-cache` that came with a project before building it (a project from `specula new` leaves it out
+  of version control). The start-up build (`--run`) does not have this limit. Closing it for every build is on
+  the roadmap (M6).
 - **A project's notes reach every agent's first call** (`project_memory` at `agent_hello`). They are text that
   anyone who worked on the project wrote, or that came with a project someone sent. The engine says whose words
   they are, gives each note in a field of its own with who wrote it last, and joins none of it to its own words.
-  No agent may take a name that reads as the engine's or its operator's (`operator`, `engine`, `specula`,
-  `system`, `admin`), so a note cannot be signed as either. What an agent does with a note that claims to be an
-  instruction is the agent's to get right.
+  The names that read as the engine's or its operator's (`operator`, `engine`, `specula`, `system`, `admin`) are
+  reserved, which is a courtesy and not a wall: `Operator.` and `the operator` are names too. So the engine says,
+  with the notes every time, that `by` is the name its writer chose and that a name carries no authority. What an
+  agent does with a note that claims to be an instruction is the agent's to get right. (Not built: the writer's
+  granted authority kept with each note; it comes with per-agent tokens.)
 - **Names until M6.** Grants bind a name to the first identity that takes it. Until per-agent auth tokens exist, an
   agent that learns a granted lead's resume token *is* that lead, and an agent that says hello under a granted
   name before its holder connects *is* that lead too. A frozen session can't do it (its hello changes nothing), but

@@ -40,7 +40,7 @@ library copies, fixes written into a module's sources, a restored `Cargo.lock`) 
 | `captures` | `--captures` (every run's `run-<secs>-<pid>`) | sight frames and packets, orbit and compare sheets, studio sheets, VFX previews, anim filmstrips, procgen images, perf captures, desync traces, Lex exports | yes: oldest first |
 | `cache` | `--cache` (minus the two below) | the pipeline cache | yes (via pruners) |
 | `content` | `<cache>/content` | the content store: binary project files' versions and uploads in progress | yes: what nothing needs |
-| `modules` | `<cache>/modules` | module builds' Cargo targets and loaded library copies | `logic_build` drops stale artefacts |
+| `modules` | `<cache>/modules`; the start-up build's own folder (`<settings>/run-builds`, or the folder `r` beside the short one, under `Specula` in the user's local application data: docs/design/MODULES.md); the short folder for builds too deep to link | module builds' Cargo targets and loaded library copies | `logic_build` drops stale artefacts |
 | `scratch` | `[swarm] scratch_root` (default `<captures>/scratch`) | scratch-folder leases | expired leases, after a grace period |
 | `saves` | `--saves` | save games | never |
 | `worlds` | `--worlds` | world files, the task board, the review queue | never |

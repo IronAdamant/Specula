@@ -65,6 +65,12 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
     so no way of writing hides a note. `time_control`'s step said queued ticks were dropped. And a test of
     M5's that failed once beside three compilers asserted how many of two steps fit `ui_act`'s 20 ms: it
     runs them by as many calls as that takes now.
+  - **A third round, narrower.** The earlier fixes held against the reviewers' own attacks. Found: `--run`
+    took a library from the build folder inside the project, which a project can bring with it (it builds
+    in the operator's own folder now; an owner's own build still trusts the project's cache, said in
+    SECURITY.md and on the roadmap); a thousand files that are not notes pushed every note out of the list
+    (only notes count now); a second test with the two-steps-in-20-ms flaw; a compiled file in a dot-folder
+    that no digest covered.
 
 ### M5, done (2026-11-06 to 2026-11-15)
 

@@ -117,14 +117,20 @@ fn note_guard(files: &std::collections::BTreeMap<String, ProjectFile>, path: &st
         if let Some((by, _, _)) = others.iter().find(|(_, _, s)| s.as_deref() == Some(old.as_str())) {
             return refuse("already_superseded", format!("{old} was already replaced by {by}: supersede that one, or rewrite it in place")).map_err(|e: WorldError| e.with("by", by.as_str()));
         }
-        // Never a ring: following what the older note replaced must not come back to this one.
-        let mut at = Some(old.as_str());
-        for _ in 0..=others.len() {
-            match at {
-                Some(a) if a == id => return refuse("bad_supersedes", format!("{old} replaced {id} (directly or through others): a note cannot replace the note that replaced it")),
-                Some(a) => at = others.iter().find(|(i, _, _)| i == a).and_then(|(_, _, s)| s.as_deref()),
-                None => break,
-            }
+        // Never a ring: with this note written, no line is left unfollowed that was followed
+        // before, by the rule the notes are read by (`specula_memoria::follow`). A note of a
+        // ring that is there already (an undo, an edit on disk) can still be written, and
+        // taking its line out ends the ring.
+        let was = files.get(path).filter(|f| f.kind == FileKind::Note).and_then(|f| specula_memoria::front(&f.text)).and_then(|(_, s)| s);
+        let with = |this: Option<&str>| {
+            let mut all: Vec<(&str, Option<&str>)> = others.iter().map(|(i, _, s)| (i.as_str(), s.as_deref())).collect();
+            all.push((id.as_str(), this));
+            all.sort_by_key(|(note, _)| *note);
+            specula_memoria::follow(all.into_iter()).1
+        };
+        let before = with(was.as_deref());
+        if with(Some(old.as_str())).iter().any(|ring| !before.contains(ring)) {
+            return refuse("bad_supersedes", format!("{old} already replaces {id}, directly or through other notes: a note cannot replace the note that replaced it"));
         }
     }
     if kind == Kind::Brief {
@@ -1112,6 +1118,20 @@ mod notes_tests {
         put(&mut files, "pitch", note("brief", Some("brief")));
         assert_eq!(code(&files, "third", &note("brief", None)), Some("brief_exists"), "the brief that stands now is pitch");
         assert_eq!(code(&files, "third", &note("brief", Some("pitch"))), None);
+        // A ring that is in the files already (an undo or an edit on disk put it there) does
+        // not lock its notes: either can be written again as it is, and taking a line out of
+        // either ends it. Only a write that would leave one more line unfollowed is refused.
+        let mut ringed = std::collections::BTreeMap::new();
+        put(&mut ringed, "p", note("fact", Some("q")));
+        put(&mut ringed, "q", note("fact", Some("p")));
+        put(&mut ringed, "o", note("fact", None));
+        assert_eq!(code(&ringed, "p", &note("decision", Some("q"))), None);
+        assert_eq!(code(&ringed, "q", &note("decision", Some("p"))), None);
+        assert_eq!(code(&ringed, "q", &note("fact", None)), None);
+        assert_eq!(code(&ringed, "p", &note("fact", None)), None);
+        assert_eq!(code(&ringed, "o", &note("fact", Some("o2"))), None);
+        put(&mut ringed, "o2", note("fact", Some("o")));
+        assert_eq!(code(&ringed, "o", &note("fact", Some("o2"))), Some("bad_supersedes"), "a second ring is still refused");
         // A text that is not a note yet (a stored draft) takes no place, and holds nobody up.
         assert_eq!(code(&files, "draft", "no front matter yet"), None);
         put(&mut files, "draft", "no front matter yet".to_owned());

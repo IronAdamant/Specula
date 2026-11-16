@@ -1340,6 +1340,15 @@ at once.
   engine:* a map is data an agent makes cheaply (layout, paths, waves, props, style), so making maps 2
   and 3 is also the measure of that, on the engine's own game. The rusher's risk stays ("Keep it risky").
   The owner's large commercial game is after M6.
+- [ ] ➕ **Every module build outside the project's folder** (found by review R3 of M6 part 3, 2026-11-16). Cargo
+  takes a library it finds in a build folder as built from the sources when the file times say so, and a
+  module's build folder is under the cache, by default in the project's folder: a project that arrives with a
+  prepared `.specula-cache` could have a library loaded that its sources do not make. The start-up build
+  (`--run`) already builds in the operator's own folder (docs/design/MODULES.md). An owner's or a lead's own
+  build does not yet (docs/design/SECURITY.md says so): moving it needs whole build folders pruned by age in a
+  per-user place, or the 8 GB cap fills with the builds of projects long gone. With it: the writer's granted
+  authority kept with each project note (a name is not one), and a job object for the processes the tooling
+  starts.
 - [ ] ➕ **Cloud swarms, tested** (owner, 2026-10-22): per-agent auth tokens, then thorough tests with real cloud
   swarms from several vendors (Claude, Grok Build, OpenAI ...). Narrowed on 2026-11-16: "That's for the
   people outside of it to worry about. I can only provide what's present here. Grok and OpenAI swarms are

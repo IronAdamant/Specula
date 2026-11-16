@@ -251,7 +251,9 @@ fn claims_check_what_the_callers_input_causes_and_only_that() {
     e.swarm.take_claim(&e.world, &a, ClaimSpec { scope: region, lease: DEFAULT_LEASE, note: String::new() }).unwrap();
     let (mover, cmd) = (mover_x(&e, "/mover"), mover_x(&e, "/cmd"));
     for steps in [r#"[{"wait": 5}]"#, r#"[{"press": "open"}, {"press": "back"}]"#] {
-        let (r, err) = call(&mut e, &m, "mallory", "ui_act", &format!(r#"{{"steps": {steps}}}"#));
+        // (All its steps, by as many calls as the time budget makes of them: the menu must
+        // be closed again before Go is pressed.)
+        let (r, err) = act_through(&mut e, &m, "mallory", &format!(r#"{{"steps": {steps}}}"#));
         assert!(!err, "{steps}: {r}");
     }
     assert_eq!(mover_x(&e, "/mover"), mover, "synthetic frames don't present");
