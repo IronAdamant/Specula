@@ -134,9 +134,10 @@ pub fn write_into(project: &Path) -> Result<Vec<&'static str>, WriteRefused> {
     for file in FILES {
         let path = project.join(file.path);
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(WriteRefused::Io)?;
+            crate::disk::make_dir(crate::disk::Kind::Project, dir).map_err(WriteRefused::Io)?;
         }
-        std::fs::write(&path, lines_of(file.text)).map_err(WriteRefused::Io)?;
+        // Through the engine's disk budget, like every file this crate writes (the project's own).
+        crate::disk::write(crate::disk::Kind::Project, &path, lines_of(file.text).as_bytes(), false).map_err(WriteRefused::Io)?;
     }
     Ok(FILES.iter().map(|f| f.path).collect())
 }
