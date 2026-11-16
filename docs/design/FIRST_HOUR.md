@@ -38,8 +38,8 @@ remembers.**
 | 8 | The comparison, run again with the same harness | run on `2a0c5669`: the engine arm did not get cheaper (below, and LEVERAGE.md) |
 | 9 | A headless run: `specula run` (the second pass) | built, reviewed, gated; measured on `bbe9fa36` (LEVERAGE.md, "Results (pass 2)") |
 | 10 | A run that says what went wrong, and a player that reacts: `--follow` (the third pass) | built, reviewed, gated; measured on `6cfff79b` (LEVERAGE.md, "Results (the third pass)": the medium game costs the same as without the engine) |
-| 12 | What a first build is not asked for: the guide and the brief, cut (the fifth pass) | built (section 12) |
 | 11 | The game's own checks, every run in one command: `specula check` (the fourth pass) | built, reviewed, gated; measured on `d18e1131` (LEVERAGE.md, "Results (the fourth pass)": no build cheaper, the small game dearer; the checks came on top of single runs) |
+| 12 | What a first build is not asked for: the guide and the brief, cut (the fifth pass) | built, reviewed (section 12) |
 
 ## 1. The SDK comes from the engine
 
@@ -483,8 +483,9 @@ nothing to the engine. It takes away what made requests.
   and "write the checks as you write the game" is gone: every engine build of the fourth pass
   wrote and corrected a checks file on top of its single runs (26,464 and 27,126 weighted tokens
   in the two small builds). `--follow` is said as what it does, without proposing a player to
-  write. The sample's own checks say they are the sample's (they said "replace these with your
-  game's").
+  write. **The sample's checks go with the sample**: the guide's first lines and the brief say
+  to delete them or make them the game's (a game that never touched `checks/` would hand on
+  seven checks of a tap game, and the next builder would run them: the review's finding).
 - **First contact is one read.** The guide's first lines name what is read with it (`game.json`
   and the module's `src/lib.rs`), and `specula new` answers the same three in `read_first`. Every
   engine build had read the guide in one request and the sample in the next.

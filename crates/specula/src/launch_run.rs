@@ -223,7 +223,7 @@ pub fn run(cli: Cli, ctx: &Ctx) -> (i32, Json) {
                             Json::obj([
                                 ("files", Json::from(made.files)),
                                 ("module", Json::from(format!("modules/{}", made.module))),
-                                ("read_first", Json::from(format!("notes/how.md, game.json and modules/{}/src/lib.rs, in one go: how this game is built and run, the game file, the rules (an agent is given the first at its agent_hello)", made.module))),
+                                ("read_first", Json::from(format!("notes/how.md, game.json and modules/{}/src/lib.rs, in one go: how this game is built and run, the game file, the rules (an agent is given the start of the first at its agent_hello)", made.module))),
                             ]),
                         );
                         j.set("next", Json::from(format!("specula run \"{0}\" --ticks 40 --inputs 0:enter,5:tap  (builds it and plays it with no window; notes/how.md says the rest), or: specula play \"{0}\" --as-is  (its window)", project.path.display())));

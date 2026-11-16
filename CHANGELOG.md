@@ -192,6 +192,11 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
     file twice, which cost the plain arm more than the engine arm and flattered every ratio so far.
     A `large` job is written as data and not run: a game made of modules cannot yet keep a best
     score or a saved run for its player.
+    Reviewed by a model that did not write it: not to merge. A game that never touched `checks/`
+    would hand on the sample's seven checks of a tap game, and the guide's new line sent the next
+    builder to run them first: the guide's first lines and the brief now say to delete them or make
+    them the game's. Also: the `setting` event comes at a run's start and on a change during one
+    (not on any change), and the large job's brief said too little in six places.
 
 ### M5, done (2026-11-06 to 2026-11-15)
 

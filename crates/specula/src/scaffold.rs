@@ -321,7 +321,7 @@ given it at its first call.
 /// The sample game's own checks: runs, and what each must print (`specula check`).
 const RUNS: &str = r#"{
   "format": "specula.checks.v1",
-  "notes": "This game's own checks: `specula check .` plays each run as `specula run` would (ticks, inputs, seed) and holds its state against \"expect\" (keys of game.json's \"report\"). Checks that name the same \"settings\" share a player's settings, in this order. A check with no \"expect\" prints its state. These are the sample's: a game that replaces the sample removes this file, or keeps checks of its own in it (notes/how.md).",
+  "notes": "This game's own checks: `specula check .` plays each run as `specula run` would (ticks, inputs, seed) and holds its state against \"expect\" (keys of game.json's \"report\"). Checks that name the same \"settings\" share a player's settings, in this order. A check with no \"expect\" prints its state. These are the sample's, the tap game's: a game that replaces the sample deletes this file, or keeps checks of its own in it (notes/how.md).",
   "checks": [
     { "name": "the title", "ticks": 0, "expect": { "screen": "title", "phase": "title", "texts": { "has": "Start" } } },
     { "name": "five taps win", "ticks": 40, "inputs": "0:enter,5:tap,6:none,10:tap,11:none,15:tap,16:none,20:tap,21:none,25:tap", "expect": { "phase": "won", "taps": 5, "score": 60, "texts": { "has": "You won" } } },
@@ -340,8 +340,9 @@ kind: how
 about: game.json, modules/{{module}}/, assets/ui/, checks/
 ---
 **Read with this page, in one go:** `game.json` and `modules/{{module}}/src/lib.rs` (the game
-file and the rules: in a new project they are a sample's, a tap game, there to be replaced).
-The screens and the words are `assets/ui/*.json` and `assets/strings/*.json`.
+file and the rules). In a new project they are a sample's, a tap game: replace them, its
+screens and words (`assets/ui/*.json`, `assets/strings/*.json`), and delete its checks
+(`checks/runs.json`, `checks/smoke.json`: they check the tap game) or make them your game's.
 
 **The loop: edit, run, read.** One command builds the modules as they are on disk, plays the
 game from its start with no window, and prints how it stands as one JSON object:
@@ -391,7 +392,7 @@ game from its start with no window, and prints how it stands as one JSON object:
   button on a screen with the action `cycle:NAME` (or `step:NAME:+1`), its text
   `{setting.NAME.text}`; for a choice, a line `setting.NAME.VALUE` for each value in every
   language's strings; and in the rules the event `setting` (`name`, `value`), which the
-  engine sends at the start of every run and when the player changes it.
+  engine sends at the start of every run, and when it is changed during one.
 - `outcome`: `"won"` and `"lost"` are conditions over keys: `{"key": "{{module}}.taps",
   "gte": 5}` (also `eq ne lt lte gt in`), `{"all": [..]}`, `{"any": [..]}`, `{"not": ..}`.
   `"score"` names the key that holds the score.
@@ -466,7 +467,7 @@ that is handed on. Building a game does not need them: `specula run` is the loop
 - Each check is a run as `specula run` takes one, with what its state must be. The command
   plays them all and prints a line a check (`ok`, or what `differs` and the state) and a line
   that counts them; exit code 1 when one did not hold. A check with no `"expect"` prints its
-  state. A game that came with checks: run them after a change, before anything else.
+  state. A game that came with checks of its own: run them after a change.
 - `"expect"`: a key of the report (or a path into it: `walkers.0.health`) with its value, or
   with comparisons that must all hold: `{"ne": v}`, `{"lt": n}`, `{"lte": n}`, `{"gt": n}`,
   `{"gte": n}`, `{"has": v}` (a list holds it; a text holds it), `{"len": n}`; a range is
