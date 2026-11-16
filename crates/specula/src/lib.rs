@@ -611,6 +611,11 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         Some(p) => match launch_engine::lock(&p.path) {
             Ok(lock) => (Some(lock), None),
             Err(launch_engine::LockRefused::Held) => {
+                // (A headless run's command reads this, waits for the other engine and starts
+                // again: two runs of one project begun in the same moment.)
+                if let Some(spec) = &script {
+                    script_run::write_answer(&spec.out, &script_run::project_open(&p.name));
+                }
                 return Err(format!("{} ({}) is open in another engine: 'specula list' finds it, and 'specula open' answers with it", p.name, p.path.display()));
             }
             Err(launch_engine::LockRefused::Unavailable(why)) => (None, Some(format!("{} could not be locked ({why}): nothing stops a second engine from opening it", p.name))),

@@ -557,6 +557,14 @@ pub(crate) fn start(tools: Arc<Tools>, gate: Arc<StartGate>, spec: Spec) {
     }
 }
 
+/// The code of the answer of an engine that was refused its project's lock.
+pub const PROJECT_OPEN: &str = "project_open";
+
+/// The answer of an engine started for a run whose project another engine has open.
+pub(crate) fn project_open(name: &str) -> Json {
+    answer_of(Err(refusal(PROJECT_OPEN, format!("{name} is open in another engine: a headless run needs the project to itself"))))
+}
+
 /// The answer, for the command that started this engine to read when the engine has ended.
 pub(crate) fn write_answer(out: &Path, answer: &Json) {
     let done = crate::disk::book().write_synced(crate::disk::Category::Scratch, "script", out, answer.to_string().as_bytes(), crate::disk::Need::Essential);

@@ -737,48 +737,63 @@ fn run_game(ctx: &Ctx, args: &crate::launch_cli::RunArgs) -> (i32, Json) {
     if let Err(e) = crate::disk::book().write(crate::disk::Category::Scratch, "run", &spec_file, spec.to_json().to_string().as_bytes(), crate::disk::Need::Essential) {
         return done(refusal("no_scratch", format!("{}: {e}", spec_file.display())));
     }
-    let Some(port) = free_port() else { return done(refusal("no_port", "no free port for the run's engine")) };
-    let mut command = std::process::Command::new(&ctx.exe);
-    command.arg("--project").arg(&folder).arg("--script").arg(&spec_file).arg("--port").arg(port.to_string());
-    command.arg("--captures").arg(scratch.join("captures")).args(["--trace-file", "off"]);
-    // Where this run's player settings are read and kept: the folder the command named, or
-    // nowhere (and then the engine is not listed either: it is this command's own).
-    if ctx.settings_given {
-        command.arg("--settings").arg(&ctx.store.dir);
-    } else {
-        command.args(["--settings", "off"]);
-    }
-    // What the engine says of itself is kept, its last lines: why a run that did not answer did not.
-    command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
-    let mut child = match command.spawn() {
-        Ok(c) => c,
-        Err(e) => return done(refusal("not_started", format!("{} could not be started ({e})", ctx.exe.display()))),
-    };
-    let said = child.stderr.take().map(|mut pipe| {
-        std::thread::spawn(move || {
-            use std::io::Read;
-            let (mut tail, mut part) = (Vec::new(), [0u8; 4096]);
-            while let Ok(n @ 1..) = pipe.read(&mut part) {
-                tail.extend_from_slice(&part[..n]);
-                let over = tail.len().saturating_sub(4 * RUN_SAID);
-                tail.drain(..over);
+    // The engine takes the project's lock itself, after it has started: two runs of one project
+    // begun in the same moment both find it free here, and one engine is refused it. That one
+    // says so in its answer, and its run waits for the other and starts again.
+    let (ended, said, answer) = loop {
+        let Some(port) = free_port() else { return done(refusal("no_port", "no free port for the run's engine")) };
+        let mut command = std::process::Command::new(&ctx.exe);
+        command.arg("--project").arg(&folder).arg("--script").arg(&spec_file).arg("--port").arg(port.to_string());
+        command.arg("--captures").arg(scratch.join("captures")).args(["--trace-file", "off"]);
+        // Where this run's player settings are read and kept: the folder the command named, or
+        // nowhere (and then the engine is not listed either: it is this command's own).
+        if ctx.settings_given {
+            command.arg("--settings").arg(&ctx.store.dir);
+        } else {
+            command.args(["--settings", "off"]);
+        }
+        // What the engine says of itself is kept, its last lines: why a run that did not answer did not.
+        command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
+        let mut child = match command.spawn() {
+            Ok(c) => c,
+            Err(e) => return done(refusal("not_started", format!("{} could not be started ({e})", ctx.exe.display()))),
+        };
+        let said = child.stderr.take().map(|mut pipe| {
+            std::thread::spawn(move || {
+                use std::io::Read;
+                let (mut tail, mut part) = (Vec::new(), [0u8; 4096]);
+                while let Ok(n @ 1..) = pipe.read(&mut part) {
+                    tail.extend_from_slice(&part[..n]);
+                    let over = tail.len().saturating_sub(4 * RUN_SAID);
+                    tail.drain(..over);
+                }
+                String::from_utf8_lossy(&tail).into_owned()
+            })
+        });
+        let began = std::time::Instant::now();
+        let ended = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) if began.elapsed() < RUN_WALL => std::thread::sleep(Duration::from_millis(20)),
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
             }
-            String::from_utf8_lossy(&tail).into_owned()
-        })
-    });
-    let began = std::time::Instant::now();
-    let ended = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
-            Ok(None) if began.elapsed() < RUN_WALL => std::thread::sleep(Duration::from_millis(20)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break None;
-            }
+        };
+        let answer = std::fs::read_to_string(&spec.out).ok().and_then(|t| Json::parse(&t).ok());
+        let refused_the_lock = answer.as_ref().and_then(|a| a.get("error")).and_then(|e| e.get("error")).and_then(Json::as_str) == Some(crate::script_run::PROJECT_OPEN);
+        if !refused_the_lock || waited.elapsed() > RUN_LOCK_WAIT {
+            break (ended, said, answer);
+        }
+        // (The refused engine's answer goes before the next one is started: a stale answer is
+        // never read as the next engine's.)
+        let _ = crate::disk::remove_file_inside(&temp, &spec.out);
+        while crate::launch_engine::project_locked(&folder) && waited.elapsed() <= RUN_LOCK_WAIT {
+            std::thread::sleep(Duration::from_millis(100));
         }
     };
-    let answer = std::fs::read_to_string(&spec.out).ok().and_then(|t| Json::parse(&t).ok());
     let Some(answer) = answer else {
         // No answer: the engine did not get as far as the run (its own words say why).
         let said: String = said.and_then(|s| s.join().ok()).unwrap_or_default().trim().chars().rev().take(RUN_SAID).collect::<Vec<_>>().into_iter().rev().collect();

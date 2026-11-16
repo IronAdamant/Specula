@@ -106,6 +106,8 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
     a seed too large for a JSON number, an input after the last tick, the scratch folder's name,
     a project open in another engine, a wrong example in the guide, and what the live check did
     not hold (two runs' frames are compared byte for byte now).
+    A second look: merge, with one more finding, fixed: two runs of one project begun in the same
+    moment raced for its lock, and one failed (it waits for the other and starts again now).
 
 ### M5, done (2026-11-06 to 2026-11-15)
 

@@ -275,7 +275,9 @@ So the second pass is one loop, the plain arm's: **edit, run, read.**
     settings are read and kept: a later run with the folder comes up with them. Without it they are
     kept nowhere, and the run's engine is listed nowhere.
   - **One engine has a project at a time**: a run on a project that an engine has open is refused
-    with that engine (`project_open`); another run of the same project is waited for.
+    with that engine (`project_open`); another run of the same project is waited for, also when the
+    two began in the same moment (the engine that was refused the lock says so, and its command
+    starts it again).
   - **It is the operator's command**, as `specula play --as-is` is: what is on disk is built and
     loaded with the user's rights, by whoever runs the command ([MODULES.md](MODULES.md)). It records
     no approval: `--run` still loads only what an owner or a granted lead built.
