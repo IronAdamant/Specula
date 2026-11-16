@@ -37,11 +37,21 @@
 //! screen, and its window shows that: the expectation is now that the window no longer shows
 //! the start screen and that the engine says the project's game stands at its title.
 //!
-//! **Where it differs from the script otherwise.** A picture is waited for (bounded) where the
-//! script slept a fixed time: the window shows what the expectation is about, or the wait ends
-//! and the expectation fails on the last picture. A folder the check has run in before is
-//! refused (the script cleared its folder; a check here deletes nothing it did not make this
-//! run). It still runs the release executable, as the script did.
+//! **Where it differs from the script otherwise.**
+//!
+//! - A picture is waited for (bounded) where the script slept a fixed time: the window shows
+//!   what the expectation is about, or the wait ends and the expectation fails on the last
+//!   picture.
+//! - A folder the check has run in before is refused (the script cleared its folder; a check
+//!   here deletes nothing it did not make this run).
+//! - The engines the script reached through MCP sessions of its own (a capture, the UI tools,
+//!   a spawn) are reached with `specula call`, as every native check reaches an engine: the
+//!   same tools, by the command line's client.
+//! - Three expectations are added: what the new project's window shows is asked of the engine
+//!   (`game_state`), a capture taken while the start screen is open has a picture, and the
+//!   engine ended by an interrupt ends with exit code 0.
+//!
+//! It still runs the release executable, as the script did.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -245,6 +255,15 @@ impl Hand {
     /// settings unless the flags name a folder, and a window that takes no keyboard. Waits
     /// until it listens.
     fn start(cli: &Cli, port: u64, log: &str, flags: &[&str], env: &[(&str, String)]) -> Result<Hand, String> {
+        Hand::start_as(cli, port, log, flags, env, false)
+    }
+
+    /// As [`Hand::start`]; `own_group`: the engine is the first of a process group of its own,
+    /// so that it can be asked to stop as a person's Ctrl+Break asks ([`Hand::interrupt`])
+    /// without this process hearing it. Only the engine that is to be interrupted is started
+    /// so: such a process no longer hears a Ctrl+C in this check's console, and an engine with
+    /// a window must go when the person interrupts the check.
+    fn start_as(cli: &Cli, port: u64, log: &str, flags: &[&str], env: &[(&str, String)], own_group: bool) -> Result<Hand, String> {
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port as u16));
         // (Something else on the port would answer for this engine, and be sent its calls.)
         if std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok() {
@@ -253,10 +272,12 @@ impl Hand {
         let log = cli.cwd.join(log);
         let file = std::fs::File::create(&log).map_err(|e| format!("{}: {e}", log.display()))?;
         let mut cmd = Command::new(&cli.exe);
-        // The first of a process group of its own, so that it can be asked to stop as a
-        // person's Ctrl+Break asks (`Hand::interrupt`) without this process hearing it.
         #[cfg(windows)]
-        std::os::windows::process::CommandExt::creation_flags(&mut cmd, specula_sys::interrupt::NEW_GROUP);
+        if own_group {
+            std::os::windows::process::CommandExt::creation_flags(&mut cmd, specula_sys::interrupt::NEW_GROUP);
+        }
+        #[cfg(not(windows))]
+        let _ = own_group;
         cmd.args(["--port", &port.to_string()]);
         if !flags.contains(&"--headless") && !flags.contains(&"--no-activate") {
             cmd.arg("--no-activate");
@@ -303,7 +324,8 @@ impl Hand {
     /// Asks it to stop as a person's Ctrl+Break does, and waits for it: whether it was asked,
     /// and its exit code if it ended within half a minute.
     fn interrupt(&mut self) -> (bool, Option<i32>) {
-        let asked = specula_sys::interrupt::ask(self.pid());
+        // (Asked only while it runs: an id that names no process is not asked anything.)
+        let asked = self.running() && specula_sys::interrupt::ask(self.pid());
         (asked, self.ended(Duration::from_secs(30)))
     }
 }
@@ -793,7 +815,7 @@ fn all(t: &mut Tally<'_>, exe: &Path, out: &Path, port: u64) -> Result<(), Strin
     std::fs::create_dir_all(&plain).map_err(|e| format!("{}: {e}", plain.display()))?;
     let (plain_text, user_text) = (plain.to_string_lossy().into_owned(), user.to_string_lossy().into_owned());
     {
-        let mut eng = Hand::start(&cli, port + 2, "engine_hand.log", &["--headless", "--adapter", ADAPTER, "--project", &plain_text, "--settings", &user_text], &[])?;
+        let mut eng = Hand::start_as(&cli, port + 2, "engine_hand.log", &["--headless", "--adapter", ADAPTER, "--project", &plain_text, "--settings", &user_text], &[], true)?;
         let (_, info) = cli.run(&["call", "engine_info", "--port", &p3]);
         t.check(word(&info, "project.name") == Some("plain") && plain.join("specula.project.json").is_file(), format!("--project opens a plain folder as a project and gives it its marker ({})", info.get("project").map(|p| brief(p, 160)).unwrap_or_default()));
         let (_, j) = cli.run(&["list"]);

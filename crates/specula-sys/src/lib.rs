@@ -695,23 +695,27 @@ pub mod interrupt {
     /// (`CREATE_NEW_PROCESS_GROUP`): what [`ask`] can then name. Windows only.
     pub const NEW_GROUP: u32 = 0x0000_0200;
 
-    /// Asks the process `pid` to stop as a person's Ctrl+Break in its console does (its
-    /// [`install`]ed handler sees it and the process shuts down cleanly). Whether the request
-    /// was sent, not whether it was heeded.
+    /// Asks the process `pid` to stop as a person's Ctrl+Break in its console does. Whether
+    /// the request was sent, not whether it was heeded. Ask a process that is running: what an
+    /// id that names nothing gets is the system's to say.
     ///
     /// Windows: `pid` must have been started with [`NEW_GROUP`] and share this process's
     /// console (a child that was given none of its own does): the event goes to that group
-    /// alone, never to this process. Elsewhere: an interrupt signal, through `kill`.
+    /// alone, never to this process, and a process that [`install`]ed its handler shuts down
+    /// cleanly. (A process started with [`NEW_GROUP`] does not hear Ctrl+C: start one so only
+    /// when it is to be asked this way.) Elsewhere: an interrupt signal, through `kill`; there
+    /// [`install`] is not implemented, so the process ends by the signal's default.
     pub fn ask(pid: u32) -> bool {
         #[cfg(windows)]
         {
-            // SAFETY: no pointers; an id that names no process group of this console is
-            // refused (0), which is the answer.
+            // SAFETY: the call takes two numbers and no pointer, and has no precondition on
+            // them: whatever `pid` names, it answers whether it sent the event.
             unsafe { crate::kernel32::GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) != 0 }
         }
         #[cfg(not(windows))]
         {
-            std::process::Command::new("kill").args(["-INT", &pid.to_string()]).status().is_ok_and(|s| s.success())
+            use std::process::{Command, Stdio};
+            Command::new("kill").args(["-INT", &pid.to_string()]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
         }
     }
 

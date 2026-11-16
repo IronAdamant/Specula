@@ -137,13 +137,23 @@ fn the_tooling_and_the_window_probe_keep_their_hands_off_too() {
         "EnumWindows", "GetWindowThreadProcessId", "IsWindowVisible", "GetForegroundWindow", "PostMessageW", "GetClientRect", "GetDC", "ReleaseDC", "PrintWindow", "SetProcessDpiAwarenessContext",
         "CreateCompatibleDC", "CreateCompatibleBitmap", "SelectObject", "GetDIBits", "DeleteObject", "DeleteDC",
     ];
+    // (Every line inside an `extern` block is read: a declaration is one line, `fn NAME(..);`,
+    // so that none is written in a form this does not see.)
     let text = std::fs::read_to_string(root.join("crates/specula-platform/src/probe.rs")).unwrap();
-    let mut declared = 0;
-    for line in text.lines().map(str::trim).filter(|l| l.starts_with("fn ") && l.ends_with(';')) {
-        let name = line["fn ".len()..].split('(').next().unwrap_or("");
-        assert!(allowed.contains(&name), "probe.rs declares {name}: is it one a check may call on a machine someone is using? (add it here with the answer)");
-        declared += 1;
+    let (mut declared, mut blocks, mut inside) = (0, 0, false);
+    for line in text.lines().map(str::trim) {
+        if line.starts_with("extern ") && line.ends_with('{') {
+            (inside, blocks) = (true, blocks + 1);
+        } else if inside && line == "}" {
+            inside = false;
+        } else if inside && !line.is_empty() && !line.starts_with("//") {
+            assert!(line.starts_with("fn ") && line.ends_with(';'), "probe.rs: a system call is declared on one line, `fn NAME(..);` (so that this guard reads every one): {line}");
+            let name = line["fn ".len()..].split('(').next().unwrap_or("");
+            assert!(allowed.contains(&name), "probe.rs declares {name}: is it one a check may call on a machine someone is using? (add it here with the answer)");
+            declared += 1;
+        }
     }
+    assert!(!inside && blocks == 2, "probe.rs has {blocks} extern blocks (user32 and gdi32 were the two), and the last one closed: {}", !inside);
     assert_eq!(declared, allowed.len(), "probe.rs declares {declared} system calls and the guard lists {}", allowed.len());
 }
 
