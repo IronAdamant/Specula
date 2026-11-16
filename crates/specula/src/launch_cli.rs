@@ -122,7 +122,8 @@ specula run [NAME|FOLDER] --ticks N [--inputs T:WORD,T:WORD,... | --inputs @FILE
                                  an action of a module (held until the next input; an axis
                                  with its value: throttle=0.5, move=1/0), words joined by +
                                  (held together), or none. A source (Key.Enter) presses the
-                                 interface only. --settings: where this run's player
+                                 interface only. --seed: 1 when left out (a run is the same
+                                 run every time). --settings: where this run's player
                                  settings are read and kept (none: kept nowhere). A module
                                  whose call failed is an error (which, at which tick), never
                                  a state, and what the modules logged is said beside it.

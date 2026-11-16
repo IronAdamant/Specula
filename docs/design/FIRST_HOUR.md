@@ -357,6 +357,8 @@ So, in the engine:
     as its output. Not on the engine's standard output: a module is code in the engine's process,
     and what it prints would land between the states (the review's finding; a module's own prints
     go nowhere, as in every headless run).
+    A mark is a state's start wherever it comes in a line: a module that writes to standard error
+    and does not end its line leaves words in front of a state, and they are kept as the engine's.
   - *A reader that goes away* ends the run: the command stops the engine and exits with 1.
 - **The guide says what was looked up**: the sources most games bind (a test holds each
   against the input map), what each call of the SDK gives back, how things that come and go are
@@ -371,8 +373,22 @@ So, in the engine:
   game's own difficulty has its button on the settings screen and its three lines, so the pattern
   is in what every builder reads first; and the guide says what a `"visible"` condition takes.
 
+- **From the judges of the second pass, the engine's own:**
+  - *A run that names no seed is the run with seed 1* (four of five engine games were marked for a
+    run with no seed that was not the brief's default). A headless run is the same run every time.
+  - *The game's name on the title is a line of the strings* (`title.name`, which says the game
+    file's title until a language writes its own): one game failed "every word changes with the
+    language" on a title that no table could translate.
+  - *A game's menus show which button is chosen from their first frame* (`Ui::show_focus`; the
+    toolkit's own default is to wait for a key, which suits a pointer). Three judges saw a title
+    whose chosen Start looked like any other button.
+- **A module that did not load says why as data**: a binding the input map does not read came back
+  as a kilobyte of quoted JSON inside a refusal, and is now `load_failed` with its `why`.
+
 And in the comparison's harness: its `play` takes the work folder as well as the run's, passes a
-followed run's input and output through, and its `tools` says so when no engine is running.
+followed run's input and output through, its `tools` says so when no engine is running, and
+`trace RUN --said A-B` prints what was done at those requests (each step whole and the start of its
+answer), which until now took a script outside the repository.
 
 **What it is made of**: `script_run.rs` (`Run::stand`, `Run::check_word`, `parse_step`, `say`),
 `logic/mod.rs` (`first_error`), `launch_run.rs` (`usage_line`, `log_line`), `scaffold.rs` (the

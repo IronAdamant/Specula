@@ -183,6 +183,10 @@ pub fn clock_refused(op: TimeOp, scripted: bool) -> bool {
 
 /// The seeds a run takes: whole numbers a JSON number holds exactly.
 pub const MAX_SEED: u64 = (1 << 53) - 1;
+/// The seed of a run that names none (`specula run` with no `--seed`): a headless run is the
+/// same run every time. (Four of five judges of the second pass's engine games noted that a
+/// run with no seed was not the run with seed 1 that their brief called the default.)
+pub const DEFAULT_SEED: u64 = 1;
 
 /// No input of a script is later than its last tick: one that is would never be given.
 pub fn check_span(inputs: &[(u64, String)], ticks: u64) -> Result<(), String> {
@@ -239,16 +243,20 @@ fn refusal(code: &str, message: impl Into<String>) -> Json {
     Json::obj([("error", Json::from(code)), ("message", Json::from(message.into().as_str()))])
 }
 
-/// A tool's answer as JSON: `Err` when the tool answered an error.
-fn read(out: &ToolOutput) -> Result<Json, Json> {
-    let json = out
-        .content
+/// What a tool answered, as JSON.
+fn said(out: &ToolOutput) -> Json {
+    out.content
         .iter()
         .find_map(|c| match c {
             Content::Text(t) => Json::parse(t).ok(),
             Content::Image { .. } => None,
         })
-        .unwrap_or(Json::Null);
+        .unwrap_or(Json::Null)
+}
+
+/// A tool's answer as JSON: `Err` when the tool answered an error.
+fn read(out: &ToolOutput) -> Result<Json, Json> {
+    let json = said(out);
     if out.is_error {
         Err(if json.get("error").is_some() { json } else { refusal("refused", json.to_string()) })
     } else {
@@ -309,10 +317,9 @@ impl Run<'_> {
             args.set("seed", Json::from(seed));
         }
         let out = self.tools.call(&self.session, "logic_build", &args);
-        let answer = match read(&out) {
-            Ok(a) => a,
-            Err(a) => a,
-        };
+        // (The tool's own answer, whether it is an error or not: a build that loaded nothing
+        // answers what went wrong as data, with no `error` of its own at the top.)
+        let answer = said(&out);
         let name = answer.get("reload").and_then(|r| r.get("module")).and_then(Json::as_str);
         if let (false, Some(name)) = (out.is_error, name) {
             return Ok(name.to_owned());
@@ -447,12 +454,16 @@ impl Run<'_> {
             if failures > 0 || stopped {
                 // What went wrong first (a module that was stopped: what stopped it), with the
                 // script's tick it happened at beside the game's own.
-                let first = module.get("first_error").or_else(|| module.get("disabled_by")).or_else(|| module.get("last_error")).map_or(Json::Null, |e| self.in_run_ticks(e));
-                let word = |key: &str| first.get(key).map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_owned));
+                let first = module.get("first_error").or_else(|| module.get("last_error")).map_or(Json::Null, |e| self.in_run_ticks(e));
+                // (What the message is about: what stopped a stopped module, which may come
+                // after failures that did not; else the first failure.)
+                let ended = module.get("disabled_by").filter(|_| stopped).map(|e| self.in_run_ticks(e));
+                let told = ended.as_ref().unwrap_or(&first);
+                let word = |key: &str| told.get(key).map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_owned));
                 let what = format!("{}: {}{}", word("code").unwrap_or_else(|| "?".to_owned()), word("message").unwrap_or_default(), word("location").map_or_else(String::new, |at| format!(", at {at}")));
                 let when = match (word(RUN_TICK), word("tick")) {
                     (Some(run), _) => format!("at tick {run}"),
-                    (None, Some(game)) => format!("at the game's tick {game}, which no tick of this run was"),
+                    (None, Some(game)) => format!("at the game's own tick {game} (its place among this run's ticks is not known)"),
                     (None, None) => "before a tick was played".to_owned(),
                 };
                 let mut e = refusal(
@@ -467,6 +478,10 @@ impl Run<'_> {
                 e.set("failures", Json::from(failures));
                 if stopped {
                     e.set("stopped", Json::Bool(true));
+                }
+                // (What stopped it, when that is another failure than the first.)
+                if let Some(ended) = ended.filter(|ended| ended.get("tick") != first.get("tick") || ended.get("code") != first.get("code")) {
+                    e.set("stopped_by", ended);
                 }
                 // (The last one whole only when it is another error than the first.)
                 let last = module.get("last_error").filter(|_| failures > 1).map(|l| self.in_run_ticks(l));

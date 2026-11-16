@@ -5,6 +5,7 @@
   "source": true,
   "notes": "The game's words. Screens show them with \"@key\"; a {name} inside a line is filled from what the screen is bound to. Another language is another file beside this one (assets/strings/<locale>.json) with the same keys; l10n_check says what is missing.",
   "strings": {
+    "title.name": "{game.title}",
     "title.start": "Start",
     "title.settings": "Settings",
     "title.quit": "Quit",

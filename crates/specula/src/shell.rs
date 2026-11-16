@@ -615,6 +615,9 @@ impl Shell {
         let fonts = FontSet::new().with("ui", face(specula_text::Bundled::UiRegular)?).with("ui_bold", face(specula_text::Bundled::UiBold)?).with("title", face(specula_text::Bundled::Display)?);
         let theme = self.theme()?;
         let mut ui = Ui::new(theme, fonts);
+        // A game's menus say which button is chosen from their first frame (three judges of the
+        // comparison's second pass saw a title whose chosen Start looked like any other button).
+        ui.show_focus();
         let mut loaded = Vec::new();
         for (stem, text) in &self.files.screens {
             // A screen is known by its file's name: its own `name` must say the same.
@@ -888,7 +891,9 @@ impl Shell {
         // `setting.NAME.VALUE` of the player's language when the tables have one (a choice's
         // values are words too: "easy" is "Facile" to a player who reads French), anything
         // else as it is.
-        let strings = self.strings.iter().find(|(locale, _)| locale == self.settings.locale()).map(|(_, strings)| strings.clone());
+        // (The player's language's lines; where it has no table of its own, the first's, as
+        // the screens' own words are.)
+        let strings = self.strings.iter().find(|(locale, _)| locale == self.settings.locale()).or_else(|| self.strings.first()).map(|(_, strings)| strings.clone());
         for def in self.settings.defs() {
             let (key, words) = (format!("setting.{}", def.name), format!("setting.{}.text", def.name));
             match self.settings.get(&def.name) {

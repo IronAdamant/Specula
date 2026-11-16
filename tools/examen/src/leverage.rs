@@ -24,7 +24,7 @@
 //! examen leverage report ROOT
 //! examen leverage export ROOT DEST
 //! examen leverage where RUN [RUN ...] [--json]
-//! examen leverage trace RUN [RUN ...] [--judge] [--json]
+//! examen leverage trace RUN [RUN ...] [--judge] [--json] [--said A-B [--cut N]]
 //! ```
 //!
 //! A run's folder (`ROOT/<job>-<arm>-<n>/`) holds what the builder and the judge see:
@@ -1537,7 +1537,18 @@ fn dispatch(mut args: crate::cli::Args) -> R<i32> {
         }
         "trace" => {
             let (json, judge) = (args.flag("--json"), args.flag("--judge"));
-            let w = words(args, "trace RUN [RUN ...] [--judge] [--json]", 1, 64)?;
+            // (`--said A-B [--cut N]`: what was done at those requests, in place of the ledger.)
+            let said = args.value("--said")?;
+            let cut = args.number("--cut", 600)? as usize;
+            let w = words(args, "trace RUN [RUN ...] [--judge] [--json] [--said A-B [--cut N]]", 1, 64)?;
+            if let Some(range) = said {
+                let (from, to) = range.split_once('-').unwrap_or((range.as_str(), range.as_str()));
+                let whole = |n: &str| n.trim().parse::<usize>().map_err(|_| format!("--said takes requests as A-B or N (got '{range}')"));
+                for run in &w {
+                    println!("{}", crate::leverage_trace::said_text(Path::new(run), judge, whole(from)?, whole(to)?, cut)?);
+                }
+                return Ok(0);
+            }
             let found: Vec<Json> = w.iter().map(|run| crate::leverage_trace::trace_of(Path::new(run), judge)).collect::<R<_>>()?;
             if json {
                 println!("{}", Json::Arr(found).to_pretty());

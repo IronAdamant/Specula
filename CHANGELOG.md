@@ -120,7 +120,13 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
     do that). The guide says what was looked up: the sources most games bind, what the SDK's
     calls give back, how things that come and go are drawn. And a choice setting's value is shown
     in the player's language (`setting.NAME.text` reads the line `setting.NAME.VALUE`): the sample
-    game's difficulty has its button and its words.
+    game's difficulty has its button and its words. Reviewed twice by a model that did not write
+    it, not to merge both times: a refused step let go of a held input, a module's own prints
+    landed among a followed run's states (they travel on a channel of their own now), a failure's
+    tick was the game's clock and not the script's, a line of any length was read whole; each
+    fixed and held by a test or the live check. From the second pass's judges: a run with no seed
+    is the run with seed 1, the title's name is a line of the strings, and a game's menu shows
+    which button is chosen from its first frame.
 
 ### M5, done (2026-11-06 to 2026-11-15)
 

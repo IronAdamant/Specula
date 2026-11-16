@@ -457,6 +457,12 @@ fn trace_gives_every_request_its_cost_and_what_it_left_to_carry() {
     assert!(files.iter().any(|f| text(f, "file") == Some("work/notes/how.md") && f.get("reads").and_then(Json::as_f64) == Some(1.0) && f.get("answered").and_then(Json::as_f64) == Some(300.0)));
     let said = tr::trace_text(&t);
     assert!(said.contains("3 requests; weighted 3,840 (in the ledger 3,840 = reading 2,240 + writing 1,600)"), "{said}");
+    // What was done at a request, by its number in the ledger: the step whole, its answer's
+    // start, and the model's own words; cut where asked, and only the requests asked for.
+    let done = tr::said_text(&d, false, 1, 1, 50).unwrap();
+    assert!(done.contains("[1] Read: {\"file_path\":\"work/notes/how.md\"}") && done.contains(&format!("      -> {} ... (1200 characters)", "x".repeat(50))) && !done.contains("[2]"), "{done}");
+    let last = tr::said_text(&d, false, 2, 3, 600).unwrap();
+    assert!(last.contains("[2] Write: ") && last.contains("      -> ok") && last.contains(&format!("[3] said: {}", "z".repeat(80))) && !last.contains("[1]"), "{last}");
     // A run stopped at its time limit has no total of what it wrote: nothing is scaled to one.
     lev::write_cost(&d, &Json::obj([("builder", builder(0.0, false, &[("output", 3.0)]))])).unwrap();
     let cut = tr::trace_of(&d, false).unwrap();

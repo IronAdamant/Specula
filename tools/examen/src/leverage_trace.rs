@@ -183,6 +183,75 @@ fn carried(reqs: &[Request], grew: &[f64], w: [f64; 3]) -> Vec<f64> {
     cost
 }
 
+/// `trace RUN --said A-B`: what was said at requests `from` to `to` (numbered as the ledger
+/// numbers them): the model's own words, each step's command or target whole, and the start
+/// of what it was answered, each cut to `cut` characters, with no path of this machine. The
+/// ledger says what a request cost; this says what was done in it.
+pub fn said_text(run: &Path, judge: bool, from: usize, to: usize, cut: usize) -> R<String> {
+    let run = absolute(run);
+    let name = run.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let who = if judge { "judge" } else { "builder" };
+    let path = costs_dir(&run)?.join(format!("{name}.{who}.stream.jsonl"));
+    let all = std::fs::read(&path).map_err(|e| format!("{}: {e}", posix(&path)))?;
+    let stream = String::from_utf8_lossy(&all);
+    let (places, user) = places_of(&stream, &run);
+    let clean = |said: &str| {
+        let said = scrub(said, &places, user.as_deref());
+        match said.char_indices().nth(cut) {
+            Some((at, _)) => format!("{} ... ({} characters)", &said[..at], said.chars().count()),
+            None => said,
+        }
+    };
+    let (mut n, mut last, mut out) = (0usize, String::new(), format!("{name} ({who}), requests {from} to {to}
+"));
+    for line in stream.lines() {
+        let Ok(j) = Json::parse(line) else { continue };
+        let Some(m) = j.get("message").filter(|m| m.as_object().is_some()) else { continue };
+        let Some(content) = m.get("content").and_then(Json::as_array) else { continue };
+        match text(&j, "type") {
+            Some("assistant") => {
+                let id = m.get("id").map(Json::to_string).unwrap_or_default();
+                if id != last {
+                    n += 1;
+                    last = id;
+                }
+                if !(from..=to).contains(&n) {
+                    continue;
+                }
+                for c in content.iter().filter(|c| c.as_object().is_some()) {
+                    match text(c, "type") {
+                        Some("text") => out.push_str(&format!("[{n}] said: {}
+", clean(text(c, "text").unwrap_or("")))),
+                        Some("tool_use") => {
+                            let input = c.get("input").cloned().unwrap_or(Json::Null);
+                            let what = text(&input, "command").map_or_else(|| input.to_string(), str::to_owned);
+                            out.push_str(&format!("[{n}] {}: {}
+", text(c, "name").unwrap_or("?"), clean(&what)));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Some("user") if (from..=to).contains(&n) => {
+                for c in content.iter().filter(|c| text(c, "type") == Some("tool_result")) {
+                    let said = match c.get("content") {
+                        Some(Json::Str(s)) => s.clone(),
+                        Some(Json::Arr(parts)) => parts.iter().filter_map(|x| text(x, "text")).collect::<Vec<_>>().join(" "),
+                        _ => String::new(),
+                    };
+                    out.push_str(&format!("      -> {}
+", clean(&said)));
+                }
+            }
+            _ => {}
+        }
+    }
+    if n == 0 {
+        return Err(format!("{name}: its {who}'s stream has no request"));
+    }
+    Ok(out)
+}
+
 /// `trace RUN`: the ledger of a builder's requests (`judge`: of its judge's).
 pub fn trace_of(run: &Path, judge: bool) -> R<Json> {
     let run = absolute(run);

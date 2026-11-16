@@ -348,7 +348,7 @@ game from its start with no window, and prints how it stands as one JSON object:
   `run.seed`, `ui.screen` (the top screen's name), `ui.focus` and `ui.focus_index` (the
   focused button, and its place among its screen's buttons), `ui.texts` (every text on
   screen, in order) and `ui.top_texts` (the top screen's). No `"report"`: all of it.
-- `--seed N` seeds `cx.random_*`: the same seed and inputs give the same run. `--settings
+- `--seed N` (1 when left out) seeds `cx.random_*`: the same seed and inputs give the same run. `--settings
   FOLDER` is where the player's settings are read and kept; without it they are kept nowhere.
 - `--frame` writes what a player would see (the game file's `"view"`, with the interface).
 - `--follow` is for a player that reacts (showing that a game can be won, say): after the
@@ -385,7 +385,9 @@ game from its start with no window, and prints how it stands as one JSON object:
   `open:SCREEN`, `back`, `quit`, `set:NAME:VALUE`, `step:NAME:+1`, `step:NAME:-1`,
   `cycle:NAME`, `save:SLOT`, `load:SLOT`; any other word reaches the rules as the event `ui`.
 - On a button that moves a setting, Left and Right step it down and up; Enter does its action.
-- Another language is another file in `assets/strings`: the language setting finds it.
+- Another language is another file in `assets/strings`: the language setting finds it. The
+  game's name on the title screen is the line `title.name` (the game file's `title` until a
+  language writes its own).
 
 **The rules** (`modules/{{module}}/src/lib.rs`: `tick` runs once a tick; crate `specula-sdk`)
 

@@ -608,6 +608,13 @@ impl Ui {
         c.visible.then_some(c.rect)
     }
 
+    /// Shows the focus mark from the first frame on, before any key or pad has been used: for
+    /// menus that are chosen from by keys (a game's title: the picture says which button Enter
+    /// would press). A pointer that moves onto a widget still hides it, as always.
+    pub fn show_focus(&mut self) {
+        self.focus_visible = true;
+    }
+
     /// Focus a widget (agents, tests, or game logic), applied at the next frame. Refused with a
     /// structured error (`unknown_widget`, `not_visible`, `modal_blocks` naming the modal) when
     /// input couldn't reach it, so agents can't do what a player couldn't.

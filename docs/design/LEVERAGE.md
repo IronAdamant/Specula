@@ -104,6 +104,7 @@ examen leverage prepare change engine 1 --out ROOT --exe ... --from ROOT/medium-
 examen leverage report ROOT                          # report.md and report.json
 examen leverage where RUN [RUN ...]                  # a builder's steps by kind
 examen leverage trace RUN [RUN ...] [--judge]        # every request: what it read, wrote and cost
+examen leverage trace RUN --said 14-20 [--cut N]     # what was done at those requests: each step and its answer
 examen leverage export ROOT perf/leverage/DATE       # what the repository keeps: no games, no paths
 
 # by hand, for an agent with no such command line:

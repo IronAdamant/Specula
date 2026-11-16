@@ -658,8 +658,9 @@ fn new_project(cx: &mut Cx) -> Result<String, String> {
     const LATE_TAPS: &str = "4:enter,9:tap,10:none,14:tap,15:none,19:tap,20:none,24:tap,25:none,29:tap";
     let failing = cx.cli(&["run", &runfive, "--ticks", "44", "--inputs", LATE_TAPS]);
     // What the rules log is said beside the state, a line each with the script's tick; and
-    // what a module prints for itself is in nobody's way.
-    std::fs::write(&lib, good.replacen(tap, &format!("{tap}\n                cx.log(\"tapped\")?;\n                println!(\"a module's own print\");"), 1)).map_err(|e| format!("{}: {e}", lib.display()))?;
+    // what a module prints for itself is in nobody's way, on either of its outputs, with a
+    // line end or without (the states of a followed run come by the engine's standard error).
+    std::fs::write(&lib, good.replacen(tap, &format!("{tap}\n                cx.log(\"tapped\")?;\n                println!(\"a module's own print\");\n                eprint!(\"and words of its own with no line end\");"), 1)).map_err(|e| format!("{}: {e}", lib.display()))?;
     let exe = cx.exe.clone();
     let raw = |args: &[&str], steps: &[u8]| -> Result<std::process::Output, String> {
         use std::io::Write;

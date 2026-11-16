@@ -722,7 +722,8 @@ fn run_game(ctx: &Ctx, args: &crate::launch_cli::RunArgs) -> (i32, Json) {
     let absolute = |p: &PathBuf| std::path::absolute(p).unwrap_or_else(|_| p.clone());
     let spec = crate::script_run::Spec {
         ticks: args.ticks.unwrap_or(0),
-        seed: args.seed,
+        // (A run is the same run every time it is made, unless it is told to be another.)
+        seed: Some(args.seed.unwrap_or(crate::script_run::DEFAULT_SEED)),
         inputs: args.inputs.clone(),
         frame: args.frame.as_ref().map(absolute),
         size: args.size.unwrap_or((960, 540)),
@@ -778,23 +779,38 @@ fn run_game(ctx: &Ctx, args: &crate::launch_cli::RunArgs) -> (i32, Json) {
                     tail.drain(..over);
                 };
                 let (mut tail, mut line, mut part) = (Vec::new(), Vec::new(), [0u8; 4096]);
+                // (Whether `line` is a state's: begun by the mark, wherever in a line of the
+                // engine's own words the mark came. A module that writes to standard error
+                // and does not end its line leaves words in front of the next state: they
+                // are the engine's, and the state is still a state. The review's finding:
+                // read by its first byte alone, such a state was lost, and whoever played
+                // waited for it.)
+                let mut state = false;
                 while let Ok(n @ 1..) = pipe.read(&mut part) {
                     if !follow {
                         keep(&mut tail, &part[..n]);
                         continue;
                     }
                     for &byte in &part[..n] {
+                        if byte == crate::script_run::STATE_MARK && !state {
+                            keep(&mut tail, &line);
+                            line.clear();
+                            state = true;
+                            continue;
+                        }
                         line.push(byte);
-                        if byte == b'\n' && line.first() == Some(&crate::script_run::STATE_MARK) {
+                        if byte == b'\n' && state {
                             let mut out = std::io::stdout().lock();
-                            if out.write_all(&line[1..]).and_then(|()| out.flush()).is_err() {
+                            if out.write_all(&line).and_then(|()| out.flush()).is_err() {
                                 gone.store(true, std::sync::atomic::Ordering::Relaxed);
                             }
                             line.clear();
+                            state = false;
                         } else if byte == b'\n' || line.len() > RUN_STATE_LINE {
                             // (The engine's own words; or a line longer than any state is.)
                             keep(&mut tail, &line);
                             line.clear();
+                            state = false;
                         }
                     }
                 }
