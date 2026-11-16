@@ -33,18 +33,71 @@ const BUILD_ROOM: u64 = 256 << 20;
 const KEEP_ARTEFACTS: usize = 2;
 
 static MODULE_TARGETS_DIR: OnceLock<PathBuf> = OnceLock::new();
+/// A short folder of the engine's own, per user, for the module builds that would be too deep
+/// for the linker under the cache (`None`: this system has no such limit, or names no folder).
+static SHORT_TARGETS_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
 
-/// Where module builds' targets go (set once at start; tests leave Cargo's default).
-pub fn set_module_targets(dir: PathBuf) {
+/// Where module builds' targets go (set once at start; tests leave Cargo's default): the
+/// cache's folder, and the short one ([`short_targets_root`]).
+pub fn set_module_targets(dir: PathBuf, short: Option<PathBuf>) {
     let _ = MODULE_TARGETS_DIR.set(dir);
+    let _ = SHORT_TARGETS_DIR.set(short);
 }
 
-/// The one Cargo target a module shares across agents and builds: `<cache>/modules/<folder>-<hash>`.
-pub fn module_target(dir: &Path) -> Option<PathBuf> {
+/// The short folder module builds go to when the project's own cache is too deep for the Rust
+/// toolchain's linker (docs/design/FIRST_HOUR.md, slice 2): `Specula\b` under the user's local
+/// application data. Windows only: the limit is that linker's, on that system.
+pub fn short_targets_root() -> Option<PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let local = std::env::var_os("LOCALAPPDATA").filter(|v| !v.is_empty())?;
+    Some(PathBuf::from(local).join("Specula").join("b"))
+}
+
+/// The package a module's manifest names (`name = "..."` in `[package]`), or its folder's name.
+fn package_name(dir: &Path) -> String {
+    let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap_or_default();
+    let mut in_package = false;
+    for line in manifest.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+        } else if let (true, Some(rest)) = (in_package, line.strip_prefix("name")) {
+            if let Some(name) = rest.trim_start().strip_prefix('=').map(|v| v.trim().trim_matches('"')) {
+                if !name.is_empty() {
+                    return name.to_owned();
+                }
+            }
+        }
+    }
+    dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "module".to_owned())
+}
+
+/// Which folder a module's builds go to: `<root>/<folder>-<hash>` under the cache, unless the
+/// link's argument file would be past what the linker opens there and a `short` folder is
+/// known in which it is not. `(target, moved)`.
+fn pick_target(root: &Path, short: Option<&Path>, canon: &Path, package: &str, limited: bool) -> (PathBuf, bool) {
+    let folder = |chars: usize| -> String { canon.file_name().map(|n| n.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).take(chars).collect()).unwrap_or_else(|| "module".into()) };
+    let hash = specula_core::hash::hash_str(&canon.to_string_lossy()) >> 32;
+    let own = root.join(format!("{}-{hash:08x}", folder(40)));
+    let fits = |target: &Path| specula_logic::build::link_arguments_chars(target, package) <= specula_logic::build::LINKER_PATH_MAX;
+    if !limited || fits(&own) {
+        return (own, false);
+    }
+    match short.map(|s| s.join(format!("{}-{hash:08x}", folder(16)))) {
+        Some(moved) if fits(&moved) => (moved, true),
+        _ => (own, false),
+    }
+}
+
+/// The one Cargo target a module shares across agents and builds: `<cache>/modules/<folder>-<hash>`,
+/// or the same name under the engine's short folder when a build under the cache would be too
+/// deep to link. `(target, moved there)`.
+pub fn module_target(dir: &Path) -> Option<(PathBuf, bool)> {
     let root = MODULE_TARGETS_DIR.get()?;
     let canon = specula_logic::fix::canonical(dir);
-    let name: String = canon.file_name().map(|n| n.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).take(40).collect()).unwrap_or_else(|| "module".into());
-    Some(root.join(format!("{name}-{:08x}", specula_core::hash::hash_str(&canon.to_string_lossy()) >> 32)))
+    let short = SHORT_TARGETS_DIR.get().and_then(|s| s.as_deref());
+    Some(pick_target(root, short, &canon, &package_name(dir), cfg!(windows)))
 }
 
 /// `name-<16 hex>` (a Cargo artefact or fingerprint name with its metadata hash), split.
@@ -92,11 +145,12 @@ fn stale_units(profile: &Path) -> Vec<PathBuf> {
 /// Only inside the engine's own module targets, never through a link. Returns `(entries, bytes)`
 /// freed.
 pub fn drop_stale(target: &Path) -> (u64, u64) {
-    let Some(root) = MODULE_TARGETS_DIR.get().map(|r| crate::disk::canonical(r)) else { return (0, 0) };
+    // (The cache's folder for module builds, or the engine's short one: nowhere else.)
+    let roots = [MODULE_TARGETS_DIR.get().cloned(), SHORT_TARGETS_DIR.get().cloned().flatten()];
     let target = crate::disk::canonical(target);
-    if !target.starts_with(&root) || target == root {
+    let Some(root) = roots.iter().flatten().map(|r| crate::disk::canonical(r)).find(|root| target.starts_with(root) && target != *root) else {
         return (0, 0);
-    }
+    };
     let mut freed = (0u64, 0u64);
     for profile in ["debug", "release"] {
         for sub in ["deps", ".fingerprint", "incremental"] {
@@ -603,8 +657,8 @@ fn report_json(r: &BuildReport, req: &BuildRequest, detailed: bool) -> Json {
 /// hand the reload to the engine thread and wait for it.
 pub fn build(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json) -> ToolOutput {
     let t0 = Instant::now();
-    // (request, reload, detailed, seed, approve)
-    type Parsed = (BuildRequest, bool, bool, Option<u64>, Option<u64>);
+    // (request, reload, detailed, seed, approve, the build went to the engine's short folder)
+    type Parsed = (BuildRequest, bool, bool, Option<u64>, Option<u64>, bool);
     let parsed = (|| -> Result<Parsed, String> {
         check_keys(args, "logic_build", &[&["path", "check", "fix", "release", "reload", "detailed", "seed", "approve"]])?;
         let path = string_arg(args, "path")?.ok_or("'path' is required: the module crate's folder, e.g. games/ambulo")?;
@@ -618,7 +672,9 @@ pub fn build(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json) ->
         let mut req = BuildRequest::new(dir);
         req.roots = vec![engine_root()];
         // One Cargo target per module, shared by every agent's builds of it (under the cache).
-        req.target_dir = module_target(&req.dir);
+        let (target, moved) = module_target(&req.dir).unzip();
+        req.target_dir = target;
+        let moved = moved.unwrap_or(false);
         req.check = bool_arg(args, "check")?.unwrap_or(false);
         req.fix = bool_arg(args, "fix")?.unwrap_or(false);
         req.release = bool_arg(args, "release")?.unwrap_or(false);
@@ -627,9 +683,9 @@ pub fn build(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json) ->
         if approve.is_some() && req.fix {
             return Err("'approve' builds the proposed sources exactly as they are; 'fix' would change them (approve first, then fix)".to_owned());
         }
-        Ok((req, reload, bool_arg(args, "detailed")?.unwrap_or(false), seed_arg(args)?, approve))
+        Ok((req, reload, bool_arg(args, "detailed")?.unwrap_or(false), seed_arg(args)?, approve, moved))
     })();
-    let (req, reload, detailed, seed, approve) = match parsed {
+    let (req, reload, detailed, seed, approve, moved) = match parsed {
         Ok(p) => p,
         Err(e) => return ToolOutput::error(argument_error(&e).to_pretty()),
     };
@@ -664,6 +720,16 @@ pub fn build(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json) ->
     }
     let (report, fixes) = if mounted { fix_mounted(to_engine, session, &req) } else { ((*build_service().build(req.clone())).clone(), None) };
     let mut out = report_json(&report, &req, detailed);
+    // Said, not hidden: where the build went when it could not go under the project's cache.
+    if let (true, Some(t)) = (moved, &req.target_dir) {
+        out.set(
+            "build_dir",
+            Json::obj([
+                ("path", Json::from(t.display().to_string())),
+                ("why", Json::from("under this project's cache the linker's argument file would be past the 259 characters the Rust toolchain's linker opens on Windows, so the build is kept in the engine's short folder for this user (counted by disk_status, cleared by disk_prune); --cache DIR in a short folder keeps it with the project")),
+            ]),
+        );
+    }
     if let (true, Some(t)) = (report.ok, &req.target_dir) {
         let (n, b) = drop_stale(t);
         if n > 0 {
@@ -940,6 +1006,46 @@ pub fn no_journal() -> impl FnMut(&mut dyn WorldWrite, Mark, &str, Phase) -> Res
 #[cfg(test)]
 mod stale_tests {
     use super::*;
+
+    /// docs/design/FIRST_HOUR.md, slice 2: a build that would be too deep to link under the
+    /// project's cache goes to the engine's short folder, and only then.
+    #[test]
+    fn a_module_too_deep_to_link_under_the_cache_builds_in_the_short_folder() {
+        use specula_logic::build::{link_arguments_chars, LINKER_PATH_MAX};
+        let short = Path::new(r"C:\Users\someone\AppData\Local\Specula\b");
+        let canon = Path::new(r"C:\game\modules\gate");
+        let shallow = Path::new(r"C:\game\.specula-cache\modules");
+        let (own, moved) = pick_target(shallow, Some(short), canon, "gate", true);
+        assert!(!moved && own.starts_with(shallow) && own.file_name().unwrap().to_string_lossy().starts_with("gate-"), "{}", own.display());
+        // The same project's cache a hundred and seventy characters deeper.
+        let deep = PathBuf::from(format!(r"C:\{}\.specula-cache\modules", "d".repeat(170)));
+        assert!(link_arguments_chars(&deep.join("gate-00000000"), "gate") > LINKER_PATH_MAX, "the case this is for");
+        let (target, moved) = pick_target(&deep, Some(short), canon, "gate", true);
+        assert!(moved && target.starts_with(short), "{}", target.display());
+        assert!(link_arguments_chars(&target, "gate") <= LINKER_PATH_MAX);
+        // The folder is the module's own: the same each time, another for another module.
+        assert_eq!(pick_target(&deep, Some(short), canon, "gate", true).0, target);
+        assert_ne!(pick_target(&deep, Some(short), Path::new(r"C:\other\modules\gate"), "gate", true).0, target);
+        // Where the linker has no such limit, and where no short folder is known, as before:
+        // the build goes under the cache (and, too deep, is refused by name after it compiled).
+        let unlimited = pick_target(&deep, Some(short), canon, "gate", false);
+        assert!(!unlimited.1 && unlimited.0.starts_with(&deep));
+        assert!(!pick_target(&deep, None, canon, "gate", true).1);
+        // A short folder that is itself too deep (a very long user name) is not used.
+        let long_user = PathBuf::from(format!(r"C:\Users\{}\AppData\Local\Specula\b", "u".repeat(200)));
+        assert!(!pick_target(&deep, Some(&long_user), canon, "gate", true).1);
+    }
+
+    #[test]
+    fn a_modules_package_is_named_by_its_manifest() {
+        let dir = std::env::temp_dir().join(format!("specula-package-name-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[workspace]\n\n[package]\nname = \"hold-the-gate\"\nversion = \"0.1.0\"\n\n[lib]\nname = \"gate\"\n").unwrap();
+        assert_eq!(package_name(&dir), "hold-the-gate");
+        std::fs::write(dir.join("Cargo.toml"), "not a manifest").unwrap();
+        assert_eq!(package_name(&dir), dir.file_name().unwrap().to_string_lossy());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     /// A build that failed because its folder is too deep says so with numbers an agent can
     /// use; any other failure's error is its code and message, as before.

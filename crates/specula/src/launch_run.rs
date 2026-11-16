@@ -102,6 +102,36 @@ fn project_json(p: &Project, engines: &[Instance], exists: impl Fn(&Path) -> boo
 }
 
 /// The project a word means, or why none: not listed, or a name several folders share.
+/// `specula sdk`: writes this engine's SDK into `folder` and says what it did. A folder whose
+/// SDK folders hold anything else is refused, and nothing is written (the engine's own
+/// repository holds its whole crates at those paths).
+pub fn write_sdk(folder: &Path) -> (i32, Json) {
+    use specula_logic::sdk_source;
+    if !folder.is_dir() {
+        return refusal("missing", format!("{} is not a folder", folder.display()));
+    }
+    let was = sdk_source::differs(folder);
+    if was.is_empty() {
+        let sdk = Json::obj([("folder", Json::from(folder.join("crates").to_string_lossy().as_ref())), ("version", Json::from(sdk_source::VERSION)), ("written", Json::from(0u64))]);
+        return (0, Json::obj([("sdk", sdk), ("note", Json::from("the project has this engine's SDK already: nothing to write"))]));
+    }
+    match sdk_source::write_into(folder) {
+        Ok(written) => {
+            let sdk = Json::obj([("folder", Json::from(folder.join("crates").to_string_lossy().as_ref())), ("version", Json::from(sdk_source::VERSION)), ("written", Json::from(written.len()))]);
+            let mut j = Json::obj([("sdk", sdk)]);
+            // What was there before and was not this engine's (missing files are not news in a new project).
+            let replaced: Vec<&String> = was.iter().filter(|w| w.ends_with("not the engine's text")).collect();
+            if !replaced.is_empty() {
+                j.set("replaced", Json::arr(replaced.iter().take(12).map(|w| Json::from(w.split(':').next().unwrap_or(w)))));
+            }
+            j.set("next", Json::from("a module depends on it with: specula-sdk = { path = \"../../crates/specula-sdk\" } (from modules/NAME), and builds with logic_build"));
+            (0, j)
+        }
+        Err(why @ sdk_source::WriteRefused::OtherFiles(_)) => refusal("other_files", why.to_string()),
+        Err(why) => refusal("not_written", why.to_string()),
+    }
+}
+
 fn pick_project<'a>(list: &'a ProjectList, which: &Which) -> Result<&'a Project, (i32, Json)> {
     match which {
         Which::Last => list.last().ok_or_else(|| refusal("no_projects", "no project has been worked on yet: 'specula new NAME' makes one, 'specula open FOLDER' opens a folder as one")),
@@ -201,6 +231,22 @@ pub fn run(cli: Cli, ctx: &Ctx) -> (i32, Json) {
                 Ok(_) => (0, Json::obj([("forgotten", Json::from(folder.to_string_lossy().as_ref())), ("note", Json::from("its folder was not touched"))])),
                 Err(e) => refusal("not_saved", format!("the list could not be written ({e})")),
             }
+        }
+        Cli::Sdk { which } => {
+            // The folder: the one named (a folder that is there, else a listed project's name),
+            // or the one the command is run in.
+            let folder = match which {
+                None => match std::env::current_dir() {
+                    Ok(here) => here,
+                    Err(e) => return refusal("no_folder", format!("the folder this was run in can't be read ({e}): name the project")),
+                },
+                Some(word) if Path::new(&word).is_dir() => PathBuf::from(word),
+                Some(word) => match pick_project(&ctx.store.load().0, &Which::Word(word)) {
+                    Ok(p) => p.path.clone(),
+                    Err(no) => return no,
+                },
+            };
+            write_sdk(&std::path::absolute(&folder).unwrap_or(folder))
         }
         Cli::Open { which, front, engine_args } => open(ctx, &which, front, &engine_args),
         Cli::Stop { target } => {
@@ -747,6 +793,19 @@ mod tests {
         let (_, j) = run(Cli::Projects, &c);
         assert_eq!((names(&j), j.get("last").and_then(Json::as_str)), (vec!["crypt".to_owned()], Some("crypt")));
         assert_eq!(run(Cli::Forget { which: "frost".into() }, &c).1.get("error").and_then(Json::as_str), Some("not_listed"));
+        // `sdk` writes this engine's SDK into a project named by its name or its folder; a
+        // second time there is nothing to write; a folder whose SDK folders hold anything else
+        // is refused whole.
+        let (code, j) = run(Cli::Sdk { which: Some("crypt".into()) }, &c);
+        assert_eq!(code, 0, "{j}");
+        assert_eq!(j.get("sdk").and_then(|s| s.get("written")).and_then(Json::as_u64), Some(specula_logic::sdk_source::FILES.len() as u64), "{j}");
+        assert!(specula_logic::sdk_source::is_the_engines(&crypt));
+        let (code, j) = run(Cli::Sdk { which: Some(crypt.to_string_lossy().into_owned()) }, &c);
+        assert!(code == 0 && j.get("note").is_some() && j.get("sdk").and_then(|s| s.get("written")).and_then(Json::as_u64) == Some(0), "{j}");
+        std::fs::write(crypt.join("crates/specula-sdk/src/mine.rs"), "// someone's").unwrap();
+        let (code, j) = run(Cli::Sdk { which: Some("crypt".into()) }, &c);
+        assert!(code == 1 && j.get("error").and_then(Json::as_str) == Some("other_files") && crypt.join("crates/specula-sdk/src/mine.rs").exists(), "{j}");
+        assert_eq!(run(Cli::Sdk { which: Some("no-such-project".into()) }, &c).1.get("error").and_then(Json::as_str), Some("not_listed"));
         // Nothing to resume on a machine that has no project: said, with what to do.
         let empty = ctx(&dir.join("fresh"));
         let (code, j) = run(Cli::Open { which: Which::Last, front: false, engine_args: vec![] }, &empty);

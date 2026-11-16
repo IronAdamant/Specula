@@ -1,0 +1,15 @@
+[package]
+name = "specula-ludus"
+description = "Specula Ludus: what a game is besides its rules, as data: the game file, outcome and score, the player's settings, what a menu's buttons do"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+specula-core = { workspace = true }
+
+[lints]
+workspace = true

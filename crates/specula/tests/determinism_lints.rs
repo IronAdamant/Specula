@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 /// Crates whose code runs in (or decides) the simulation: they carry the determinism clippy.toml.
-const SIMULATION: [&str; 21] = [
+const SIMULATION: [&str; 22] = [
     "crates/specula-physics",
     // Cosmetic, but reproducible: captures repeat bit for bit on every platform (docs/design/VFX.md).
     "crates/specula-scintilla",
@@ -27,6 +27,9 @@ const SIMULATION: [&str; 21] = [
     // Text game logic may show (dialogue lines in modules, save names): plural and number rules
     // pick the same words on every machine (docs/design/LOCALISATION.md).
     "crates/specula-lingua",
+    // When a run is won or lost is decided here, after a tick: the same tick on every machine
+    // (docs/design/FIRST_HOUR.md).
+    "crates/specula-ludus",
     "crates/specula-anim",
     "crates/specula-lex",
     "crates/specula-balance",
@@ -49,7 +52,7 @@ const SIMULATION: [&str; 21] = [
 
 /// Crates outside the simulation (rendering, platform, tools, presentation; or the engine, whose
 /// simulated parts are checked by review and the replay tests rather than one crate-wide config).
-const NOT_SIMULATION: [&str; 15] = [
+const NOT_SIMULATION: [&str; 16] = [
     "crates/specula-sys",
     "crates/specula-core",
     "crates/specula-gltf",
@@ -67,6 +70,8 @@ const NOT_SIMULATION: [&str; 15] = [
     "games/sepulcra-app",
     // The repository's own tooling (the gate, the live checks' runner): it never links the engine.
     "tools/examen",
+    // A project's notes: read by agents, never by the simulation.
+    "crates/specula-memoria",
 ];
 
 /// Crates with FFI (or other unsafe code, each block with a SAFETY comment): the rest forbid it.

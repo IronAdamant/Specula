@@ -9,6 +9,8 @@
 //! - [`fix`]: apply rustc's machine-applicable suggestions inside a module's folder.
 //! - [`digest`]: the digest of a module folder, which a proposal names and an approval pins.
 //! - [`paths`]: compile-time paths (`#[path]`, `include_str!`...) must stay in a module's own folder.
+//! - [`sdk_source`]: the SDK as a game project is given it, carried by the engine, and what makes
+//!   a copy of it the engine's own.
 //!
 //! The engine (`specula::logic`) owns the world, the modules' state and the tick; this crate
 //! knows nothing about either. All of the module host's `unsafe` lives in [`loader`].
@@ -20,6 +22,7 @@ pub mod disk;
 pub mod fix;
 pub mod lint;
 pub mod paths;
+pub mod sdk_source;
 #[doc(hidden)]
 pub mod fixtures;
 pub mod loader;

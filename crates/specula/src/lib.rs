@@ -661,9 +661,12 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         engine.user_settings = user_settings::UserSettings::resolve(args.settings.as_deref(), !args.headless, g.name());
     }
     let settings_root: Vec<(disk::Category, PathBuf)> = engine.user_settings.dir().map(|d| (disk::Category::Settings, d.to_path_buf())).into_iter().collect();
+    // Module builds too deep for the linker under the cache go to a short folder of the
+    // engine's own (docs/design/FIRST_HOUR.md, slice 2): counted and pruned like the cache's.
+    let short_modules = logic::tools::short_targets_root();
     disk::book().configure(
         engine.perf_cfg.disk.clone(),
-        settings_root.into_iter().chain([
+        settings_root.into_iter().chain(short_modules.clone().map(|dir| (disk::Category::Modules, dir))).chain([
             (disk::Category::Captures, captures_root.clone()),
             (disk::Category::Cache, cache_dir.clone()),
             // The trace folder: self-bounded (its JSONL files and crash reports are capped by
@@ -685,7 +688,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     );
     // Finished runs' unsaved review queues died with their engines: their evidence goes.
     evidence::clean_unsaved(&engine.worlds_dir, &engine.capture_dir);
-    logic::tools::set_module_targets(cache_dir.join(logic::tools::MODULE_TARGETS));
+    logic::tools::set_module_targets(cache_dir.join(logic::tools::MODULE_TARGETS), short_modules);
     // The module host's own writes (library copies, fixes, a restored Cargo.lock) go through the book too.
     specula_logic::disk::set_hook(disk::logic_admit, disk::logic_wrote);
     let content = Arc::new(blobs::ContentStore::open(&cache_dir.join(blobs::CONTENT_DIR)).map_err(|e| format!("content store: {e}"))?);

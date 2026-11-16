@@ -580,6 +580,33 @@ impl LogicHost {
         CallParts { shared: shared.entry(name.to_owned()).or_default(), mover: &mut **mover, log, pending_events: pending, fp }
     }
 
+    /// An event from the engine itself (`from: "engine"`), delivered to every module with the
+    /// next tick like one a module emitted, in the order pushed, and saved with the run like
+    /// any waiting event. It is how what happens outside the simulation reaches it at a tick
+    /// boundary, and only there: a press of one of the game's own buttons (`ui`), a setting the
+    /// rules read (`setting`), the run's end (`outcome`); docs/design/FIRST_HOUR.md. `false`:
+    /// not taken (no module is loaded to hear it, the name is not an event's, or
+    /// [`MAX_PENDING_EVENTS`] are already waiting).
+    pub fn push_engine_event(&mut self, name: &str, data: Value, tick: u64) -> bool {
+        if self.slots.is_empty() || !specula_sdk::valid_name(name, 64) || self.pending_events.len() >= MAX_PENDING_EVENTS {
+            return false;
+        }
+        self.pending_events.push(EventRec { name: name.to_owned(), data, from: "engine".to_owned(), tick });
+        true
+    }
+
+    /// What a module keeps in its state store (`Cx::set_state`), to read: the interface shows
+    /// it and the game's outcome is decided from it. `None`: no module of that name has kept
+    /// anything.
+    pub fn state_of(&self, module: &str) -> Option<&BTreeMap<String, Value>> {
+        self.shared.get(module).map(|s| &s.store)
+    }
+
+    /// Every module that keeps state, with what it keeps, by name.
+    pub fn states(&self) -> impl Iterator<Item = (&str, &BTreeMap<String, Value>)> {
+        self.shared.iter().map(|(name, s)| (name.as_str(), &s.store))
+    }
+
     /// Module loads, reloads, unloads and disables since the last call, oldest first, for the
     /// journal (kind `module`) and the desync detector's trace.
     pub fn take_module_events(&mut self) -> Vec<ModuleEvent> {

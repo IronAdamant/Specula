@@ -13,6 +13,11 @@
 //! keeps them: a sized pass is never mistaken for a full one. `--all` runs everything (the end
 //! of a milestone, a move of the Rust pin); `--tier` and `--only` choose by hand.
 //!
+//! **Commit, then gate.** With no `--base`, a change is measured from the last commit the gate
+//! passed at in this checkout (`passed.rs`), and from `origin/main` when there is none. A pass is
+//! recorded only when nothing is uncommitted, so the order is: commit, run the gate, and fix on
+//! top if it fails.
+//!
 //! Steps (each one's log is kept; the summary is `<target>/gate/summary.json`):
 //!
 //! - `rust`: always. The Rust this run uses is the one `rust-toolchain.toml` pins (`pin.rs`).
@@ -44,6 +49,7 @@ use specula_core::Json;
 
 use crate::changed::{self, Change, Tier};
 use crate::cli::Args;
+use crate::passed;
 use crate::pin;
 use crate::run::{root, run, target_dir, Ran};
 use crate::testlog::{flaky, outputs, parse, verdict, Exit, Parsed};
@@ -444,7 +450,7 @@ pub fn main(mut args: Args) -> i32 {
         let only = args.list("--only")?;
         let all = args.flag("--all");
         let tier = args.value("--tier")?;
-        let base = args.value("--base")?.unwrap_or_else(|| "origin/main".to_owned());
+        let base = args.value("--base")?;
         args.done()?;
         Ok((opts, only, all, tier, base))
     })();
@@ -456,6 +462,12 @@ pub fn main(mut args: Args) -> i32 {
         }
     };
     let root = root();
+    // What the change is measured from: the commit named, else the last commit the gate passed
+    // at in this checkout (`passed.rs`), else `origin/main`.
+    let (base, base_is_ours) = match base {
+        Some(named) => (named, false),
+        None => (passed::last(&root).unwrap_or_else(|| "origin/main".to_owned()), true),
+    };
     let (steps, lines, sizing) = match chosen(only, all, tier, &base, &root) {
         Ok(c) => c,
         Err(e) => {
@@ -463,6 +475,10 @@ pub fn main(mut args: Args) -> i32 {
             return 2;
         }
     };
+    // A pass is recorded for a run that chose its own steps from a base nobody named: a base
+    // given by hand may leave commits out, and they would then count as passed.
+    let by = sizing.get("by").and_then(Json::as_str).unwrap_or("").to_owned();
+    let records = by == "all" || (by == "change" && base_is_ours);
     if let Err(e) = std::fs::create_dir_all(&opts.out) {
         println!("cannot make {}: {e}", opts.out.display());
         return 2;
@@ -526,6 +542,12 @@ pub fn main(mut args: Args) -> i32 {
     }
     if gate.failures.is_empty() {
         println!("GATE PASSED: {} (logs: {})", lines.join("; "), out.display());
+        if records {
+            match passed::record(&gate.root) {
+                Ok(commit) => println!("recorded: the next gate in this checkout is measured from {}", commit.chars().take(8).collect::<String>()),
+                Err(why) => println!("not recorded: {why}"),
+            }
+        }
         return 0;
     }
     println!("GATE FAILED ({}):", gate.failures.len());

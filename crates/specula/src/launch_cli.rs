@@ -49,6 +49,10 @@ pub enum Cli {
     Open { which: Which, front: bool, engine_args: Vec<String> },
     /// Takes a project off the list (its folder is not touched).
     Forget { which: String },
+    /// Writes this engine's SDK into a project (`which`: its name or folder; `None`: the
+    /// folder the command is run in), so that its modules build against the engine that runs
+    /// them (docs/design/FIRST_HOUR.md).
+    Sdk { which: Option<String> },
     /// The tools a running engine lists.
     Tools { target: Target, filter: Option<String> },
     /// Calls one tool of a running engine.
@@ -84,6 +88,8 @@ specula open NAME|FOLDER [--front] [-- engine flags]
                                  (its window opens behind the others; --front: in front)
 specula new NAME [--in FOLDER]   make a project and list it
 specula forget NAME|FOLDER       take a project off the list (its folder stays)
+specula sdk [NAME|FOLDER]        write this engine's SDK into a project (no word: the folder
+                                 you are in), so its modules build against this engine
 specula list                     the engines running on this machine (JSON)
 specula stop [--port N | --project NAME]
                                  ask a running engine to stop (it saves and shuts down cleanly)
@@ -97,7 +103,7 @@ specula call TOOL ['{json}' | @FILE] [--port N | --project NAME] [--as NAME [--r
                                  started with --lead NAME)
 specula --help                   the engine's own flags";
 
-const WORDS: [&str; 9] = ["projects", "open", "new", "forget", "list", "stop", "tools", "call", "help"];
+const WORDS: [&str; 10] = ["projects", "open", "new", "forget", "sdk", "list", "stop", "tools", "call", "help"];
 
 /// The flags a command takes after its own words: `--port N`, `--project NAME`, `--as NAME`,
 /// `--in FOLDER`, `--last`. Returns what is left (the command's own words, in order).
@@ -224,6 +230,13 @@ pub fn parse(args: &[String]) -> Result<Option<Cli>, String> {
             exactly(&f, 1, "one word: the project's name or folder")?;
             Cli::Forget { which: f.rest[0].clone() }
         }
+        "sdk" => {
+            let f = flags(rest, &[])?;
+            if f.rest.len() > 1 {
+                return Err("'specula sdk' takes at most one word: the project's name or folder (none: the folder you are in)".to_owned());
+            }
+            Cli::Sdk { which: f.rest.first().cloned() }
+        }
         "open" => {
             // Everything after `--` is the engine's (`specula open crypt -- --headless`).
             let split = rest.iter().position(|w| w == "--").unwrap_or(rest.len());
@@ -323,6 +336,9 @@ mod tests {
         assert!(p("new a/b").unwrap_err().contains("not a project name"));
         assert!(p("new crypt --in").unwrap_err().contains("needs a value"));
         assert_eq!(p("forget crypt"), Ok(Some(Cli::Forget { which: "crypt".into() })));
+        assert_eq!(p("sdk"), Ok(Some(Cli::Sdk { which: None })));
+        assert_eq!(p("sdk crypt"), Ok(Some(Cli::Sdk { which: Some("crypt".into()) })));
+        assert!(p("sdk a b").unwrap_err().contains("at most one word"));
         assert_eq!(p("open --last"), Ok(Some(Cli::Open { which: Which::Last, front: false, engine_args: vec![] })));
         assert_eq!(p("open crypt --front"), Ok(Some(Cli::Open { which: Which::Word("crypt".into()), front: true, engine_args: vec![] })));
         assert_eq!(

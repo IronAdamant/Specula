@@ -315,6 +315,11 @@ pub fn vet(req: &BuildRequest) -> Result<(), (&'static str, String)> {
         }
         at = d.parent();
     }
+    // The project's SDK is the engine's own, or the build is refused before Cargo runs, with
+    // what differs and the command that puts it right (docs/design/FIRST_HOUR.md, slice 1).
+    if let Some(why) = sdk_differs(&root) {
+        return Err(("sdk_differs", why));
+    }
     // Compile-time paths (`#[path]`, `include_str!`...) stay inside the module's src/.
     crate::paths::check_module(&dir)?;
     let lock = workspace_root(&dir).join("Cargo.lock");
@@ -416,16 +421,58 @@ pub fn check_reach(meta: &specula_core::Json, manifest: &Path) -> Result<(), (&'
     Ok(())
 }
 
+/// Whether every file of the crate folder `copy` (build output apart) is, byte for byte, the file
+/// of the same name in `original`: a copy of a crate, or of part of it, with nothing added and
+/// nothing changed. A copy that changed `lib.rs` to leave a module out is not one.
+fn same_files(copy: &Path, original: &Path) -> bool {
+    if fix::canonical(copy) == fix::canonical(original) {
+        return true;
+    }
+    let text = |p: &Path| std::fs::read(p).ok().map(|b| String::from_utf8_lossy(&b).replace("\r\n", "\n"));
+    let mut stack = vec![PathBuf::new()];
+    let mut seen = 0;
+    while let Some(below) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(copy.join(&below)) else { return false };
+        for entry in entries.flatten() {
+            let rel = below.join(entry.file_name());
+            if entry.path().is_dir() {
+                if entry.file_name() != "target" {
+                    stack.push(rel);
+                }
+                continue;
+            }
+            seen += 1;
+            // (More files than either crate has: not a copy of one.)
+            if seen > 256 || text(&copy.join(&rel)).is_none_or(|t| Some(t) != text(&original.join(&rel))) {
+                return false;
+            }
+        }
+    }
+    seen > 0
+}
+
 /// The manifests of the crates a module may use without a source check: the engine's own
-/// `specula-sdk` and `specula-core`, by canonical path (never by name: any package may call itself
-/// `specula-core`). The ones this engine was built from, and the ones under each build root.
+/// `specula-sdk` and `specula-core`. **Trusted by what they say**, never by name (any package
+/// may call itself `specula-core`) and no longer by where they lie (anything written to
+/// `crates/specula-sdk` under a project used to be compiled unchecked): the crates this engine
+/// was built from; and under each build root, a copy that is the SDK the engine itself writes
+/// ([`crate::sdk_source::is_the_engines`]) or a copy of the crates it was built from, file for
+/// file.
 pub fn trusted_manifests(roots: &[PathBuf]) -> Vec<PathBuf> {
     let built_from = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut out = Vec::new();
-    for base in std::iter::once(built_from).chain(roots.iter().map(|r| r.join("crates"))) {
+    for c in SDK_CRATES {
+        let m = built_from.join(c).join("Cargo.toml");
+        if m.is_file() {
+            out.push(fix::canonical(&m));
+        }
+    }
+    for root in roots {
+        let engines = crate::sdk_source::is_the_engines(root);
         for c in SDK_CRATES {
-            let m = base.join(c).join("Cargo.toml");
-            if m.is_file() {
+            let dir = root.join("crates").join(c);
+            let m = dir.join("Cargo.toml");
+            if m.is_file() && (engines || same_files(&dir, &built_from.join(c))) {
                 out.push(fix::canonical(&m));
             }
         }
@@ -433,6 +480,26 @@ pub fn trusted_manifests(roots: &[PathBuf]) -> Vec<PathBuf> {
     out.sort();
     out.dedup();
     out
+}
+
+/// Why the SDK under a build root is not one the engine trusts, when it has one that is not: the
+/// first differences, and the command that puts it right. `None` when the root has no SDK of its
+/// own (a module in the engine's own repository) or has the engine's.
+pub fn sdk_differs(root: &Path) -> Option<String> {
+    let manifests: Vec<PathBuf> = SDK_CRATES.iter().map(|c| root.join("crates").join(c).join("Cargo.toml")).filter(|m| m.is_file()).collect();
+    let trusted = trusted_manifests(&[root.to_path_buf()]);
+    if manifests.iter().all(|m| trusted.contains(&fix::canonical(m))) {
+        return None;
+    }
+    let differences = crate::sdk_source::differs(root);
+    let shown: Vec<&str> = differences.iter().take(6).map(String::as_str).collect();
+    let more = if differences.len() > shown.len() { format!(" and {} more", differences.len() - shown.len()) } else { String::new() };
+    Some(format!(
+        "the SDK under {} is not this engine's ({}{more}). A module is built against the engine's own SDK, version {}: `specula sdk` writes it into the project (it replaces crates/specula-sdk and crates/specula-core, and touches nothing else)",
+        root.join("crates").display(),
+        shown.join("; "),
+        crate::sdk_source::VERSION
+    ))
 }
 
 /// After a build: every file rustc read (its dep-info) for the module and for every other crate
@@ -632,6 +699,17 @@ pub fn cargo_command() -> Command {
 /// The longest path the Rust toolchain's own linker (a gcc) opens on Windows: the older file
 /// API's 260, less the terminator.
 pub const LINKER_PATH_MAX: usize = 259;
+
+/// How long the path of rustc's file of linker arguments will be for a build of `package` into
+/// the Cargo target `target`, as Windows counts it: `<target>\release\build\<package>\<16
+/// hex>\out\rustcXXXXXX\linker-arguments`. The layout is Cargo's since Rust 1.100, the deeper
+/// of the two it has used, and the profile's name the longer of the two: a build that fits by
+/// this fits. Known before Cargo runs, so the engine can choose a folder the link will fit in
+/// instead of refusing the build after it compiled (`build_path_too_long`).
+pub fn link_arguments_chars(target: &Path, package: &str) -> usize {
+    let below = [r"\release\build\", package, r"\0123456789abcdef\out\rustcXXXXXX\linker-arguments"];
+    target.to_string_lossy().encode_utf16().count() + below.iter().map(|part| part.encode_utf16().count()).sum::<usize>()
+}
 
 /// A link that failed because the linker never read its arguments (found by M5's last audit:
 /// one live check failed in an output folder one character deeper than the audit before it).
@@ -1033,6 +1111,15 @@ mod tests {
     /// rustc handed the linker its arguments in was at a path of 260 characters. The notes
     /// below are that build's, with the folder's depth as the variable.
     #[test]
+    fn the_links_argument_file_is_as_long_as_cargo_makes_it() {
+        // (The path M5's last audit met, with its real names' lengths.)
+        let target = Path::new(r"D:\x\.specula-cache\modules\ambulo-8c5d3caf");
+        let real = r"D:\x\.specula-cache\modules\ambulo-8c5d3caf\release\build\ambulo\0123456789abcdef\out\rustcXXXXXX\linker-arguments";
+        assert_eq!(link_arguments_chars(target, "ambulo"), real.len());
+        assert_eq!(link_arguments_chars(Path::new("X"), "ambulo"), 72);
+    }
+
+    #[test]
     fn a_link_that_never_read_its_arguments_is_named_for_its_folders_depth() {
         let link_error = |folder: &str, said: &str| {
             let quoted = folder.replace('\\', "\\\\");
@@ -1340,6 +1427,57 @@ extern \"system\" { fn GetAsyncKeyState(k: i32) -> i16; }
         assert!(building(&base.join("m/src/lib.rs")), "held twice: still held");
         drop(again);
         assert!(!building(&base.join("m/src/lib.rs")), "released");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The SDK is trusted by what it says (docs/design/FIRST_HOUR.md, slice 1): the copy the
+    /// engine writes, and a copy of the crates this engine was built from; a copy that says
+    /// anything else is checked like any other crate, and the build is refused before Cargo
+    /// runs with what differs.
+    #[test]
+    fn the_sdk_under_a_project_is_trusted_by_what_it_says() {
+        let base = std::env::temp_dir().join(format!("specula-sdk-trust-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let manifests = |root: &Path| SDK_CRATES.iter().map(|c| fix::canonical(&root.join("crates").join(c).join("Cargo.toml"))).collect::<Vec<_>>();
+        let trusted = |root: &Path| trusted_manifests(&[root.to_path_buf()]);
+
+        // No SDK of its own: nothing to refuse (a module in the engine's own repository).
+        let none = base.join("none");
+        std::fs::create_dir_all(&none).unwrap();
+        assert_eq!(sdk_differs(&none), None);
+
+        // The SDK the engine writes.
+        let written = base.join("written");
+        crate::sdk_source::write_into(&written).unwrap();
+        assert!(manifests(&written).iter().all(|m| trusted(&written).contains(m)));
+        assert_eq!(sdk_differs(&written), None);
+
+        // One line added to it: neither crate is trusted, and the refusal names the file.
+        let abi = written.join("crates/specula-sdk/src/abi.rs");
+        let text = std::fs::read_to_string(&abi).unwrap();
+        std::fs::write(&abi, format!("{text}\nextern \"C\" {{ fn system(c: *const u8) -> i32; }}\n")).unwrap();
+        assert!(manifests(&written).iter().all(|m| !trusted(&written).contains(m)), "a changed SDK is checked like any crate");
+        let why = sdk_differs(&written).expect("refused");
+        assert!(why.contains("crates/specula-sdk/src/abi.rs: not the engine's text") && why.contains("specula sdk"), "{why}");
+
+        // A copy of the crates this engine was built from (what the engine's own tests make).
+        let built_from = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let copied = base.join("copied");
+        for c in SDK_CRATES {
+            let (from, to) = (built_from.join(c), copied.join("crates").join(c));
+            std::fs::create_dir_all(to.join("src")).unwrap();
+            std::fs::copy(from.join("Cargo.toml"), to.join("Cargo.toml")).unwrap();
+            for entry in std::fs::read_dir(from.join("src")).unwrap().flatten().filter(|e| e.path().is_file()) {
+                std::fs::copy(entry.path(), to.join("src").join(entry.file_name())).unwrap();
+            }
+        }
+        assert!(manifests(&copied).iter().all(|m| trusted(&copied).contains(m)), "{:?}", sdk_differs(&copied));
+        assert_eq!(sdk_differs(&copied), None);
+        // ...until a file is added to it, or one is changed.
+        std::fs::write(copied.join("crates/specula-core/src/extra.rs"), "pub fn x() {}").unwrap();
+        assert!(!trusted(&copied).contains(&manifests(&copied)[1]), "a file the engine's crate does not have");
+        assert!(trusted(&copied).contains(&manifests(&copied)[0]), "the other crate is still a copy");
+        assert!(sdk_differs(&copied).is_some());
         let _ = std::fs::remove_dir_all(&base);
     }
 }

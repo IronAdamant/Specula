@@ -165,8 +165,11 @@ wikifier: disable map, status
 
 `cargo run -p specula-examen -- gate` is what a change passes before it is reported or merged.
 
-**It is sized to what changed** since `origin/main` (owner, 2026-11-16; `tools/examen/src/changed.rs` puts
-every changed path in a tier, and the change's tier is the highest):
+**It is sized to what changed** (owner, 2026-11-16; `tools/examen/src/changed.rs` puts every changed path
+in a tier, and the change's tier is the highest). The change is measured from the last commit the gate
+passed at in this checkout, and from `origin/main` when there is none. **Commit, then gate:** a pass is
+recorded only when nothing is uncommitted, so that while work is not pushed a note added to a document
+does not run everything again; fix on top if it fails.
 
 | What changed | What runs |
 |---|---|
