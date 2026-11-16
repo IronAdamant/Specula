@@ -437,7 +437,8 @@ game, each as `specula run` takes one, with what its state must be:
   `.as_bool()`, `.as_str()`, `.as_list()` (a `&[Value]`), `.as_map()`, `.get("key")`, each an
   `Option`) and `cx.set_state("k", value)?`. A value is a number, a bool,
   text, a `Vec<Value>` or a map (`Value::map().with("x", 1.5).with("kind", "walker")`); `bool`,
-  `i32`, `i64`, `u32`, `u64`, `usize`, `f32`, `f64`, `&str` and `String` turn into one. Keep
+  `i32`, `i64`, `u32`, `u64`, `usize`, `f32`, `f64`, `&str` and `String` turn into one.
+  Reading asks the engine, as writing does: a helper of yours that reads takes `cx: &mut Cx`. Keep
   everything there and nothing in the struct: what is kept is what screens show, what
   `outcome` reads and what `report` prints.
 - Input: `cx.action("name")` has `.pressed`, `.held`, `.released` and `.value` (`[f32; 2]`).

@@ -687,11 +687,14 @@ enum Kept<'a> {
 const CHECK_WALL: Duration = Duration::from_secs(3600);
 
 /// Where a check's frame is written: `frame` (a path below the project's checks folder, as the
-/// checks file's reading holds) under `project`, with no step of it a link and nothing there
-/// but a picture written before. The file is the project's data and may be someone else's: a
-/// junction named `checks/out` would lead a frame anywhere this user can write.
+/// checks file's reading holds) under `project`, with no step of it a link and no file there
+/// when the run writes it. The file is the project's data and may be someone else's: a
+/// junction named `checks/out` would lead a frame anywhere this user can write, and a file
+/// that is there already may be a second name of a file elsewhere (a hard link, which nothing
+/// tells from a file): a frame written before is removed, never written into.
 fn frame_place(project: &Path, frame: &Path) -> Result<PathBuf, String> {
-    let mut at = project.to_path_buf();
+    let root = crate::disk::canonical(project);
+    let mut at = root.clone();
     let steps: Vec<_> = frame.components().collect();
     for (i, step) in steps.iter().enumerate() {
         at.push(step);
@@ -699,6 +702,9 @@ fn frame_place(project: &Path, frame: &Path) -> Result<PathBuf, String> {
             Ok(m) if crate::disk::is_link(&m) => return Err(format!("{} is a link: a check's frame is written below the project's own checks folder and nowhere a link leads", at.display())),
             Ok(m) if i + 1 < steps.len() && !m.is_dir() => return Err(format!("{} is not a folder", at.display())),
             Ok(m) if i + 1 == steps.len() && !m.is_file() => return Err(format!("{} is there and is not a file", at.display())),
+            Ok(_) if i + 1 == steps.len() => {
+                crate::disk::remove_file_inside(&root, &at).map_err(|e| format!("{}: the frame written before could not be removed ({e})", at.display()))?;
+            }
             // (What is not there yet is made by the run, as a folder or a file of its own.)
             Ok(_) | Err(_) => {}
         }
@@ -1213,9 +1219,16 @@ mod tests {
         std::fs::write(project.join("checks").join("runs.json"), "{}").unwrap();
         std::fs::write(project.join("checks").join("out").join("old.png"), "png").unwrap();
         let place = |frame: &str| frame_place(&project, Path::new(frame));
-        // What is not there yet is the run's to make; a picture written before is written again.
-        assert_eq!(place("checks/out/new/title.png"), Ok(project.join("checks").join("out").join("new").join("title.png")));
-        assert!(place("checks/out/old.png").is_ok());
+        // What is not there yet is the run's to make. A picture written before is removed, to
+        // be written anew: never written into (it may be a second name of a file elsewhere).
+        assert_eq!(place("checks/out/new/title.png"), Ok(crate::disk::canonical(&project).join("checks").join("out").join("new").join("title.png")));
+        assert!(place("checks/out/old.png").is_ok() && !project.join("checks").join("out").join("old.png").exists());
+        // (A hard link: the frame's name goes, and the file it was a second name of is as it was.)
+        std::fs::write(outside.join("kept.txt"), "precious").unwrap();
+        if std::fs::hard_link(outside.join("kept.txt"), project.join("checks").join("out").join("hard.png")).is_ok() {
+            assert!(place("checks/out/hard.png").is_ok() && !project.join("checks").join("out").join("hard.png").exists());
+            assert_eq!(std::fs::read_to_string(outside.join("kept.txt")).unwrap(), "precious");
+        }
         // A folder where the file would be, and a file where a folder would be.
         assert!(place("checks/out").unwrap_err().contains("is not a file"));
         assert!(place("checks/runs.json/title.png").unwrap_err().contains("is not a folder"));

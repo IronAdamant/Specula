@@ -437,8 +437,9 @@ So a project keeps its checks as data, and one command plays them:
   expectations, never a command. The one file it has written is a frame: a PNG below the project's
   `checks` folder (no way up, no root, no drive, no second stream, no other kind of file, so no
   file of the game is written over), and where it is written no step of the path may be a link (a
-  junction named `checks/out` would lead anywhere). The review's finding: the first version held
-  only the path's spelling.
+  junction named `checks/out` would lead anywhere) and a frame written before is removed first,
+  never written into (it may be a second name of a file elsewhere). The review's findings: the
+  first version held only the path's spelling.
 - **Bounds**: 200 checks and 1 MiB a file; what a line shows of a value that did not hold is its
   first 400 characters, and of a state its first 4,000; the command starts no new run after an
   hour, and stops at a run whose engine did not answer.
