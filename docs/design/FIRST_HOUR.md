@@ -418,7 +418,9 @@ So a project keeps its checks as data, and one command plays them:
   a `name`, and `expect`: keys of the game file's report (or a path into one, `walkers.0.health`)
   with the value each must have, or one comparison (`ne`, `lt`, `lte`, `gt`, `gte`, `has`, `len`).
   Numbers are the same within a rounding (a state's numbers are sums of ticks). An unknown key of a
-  check is refused by name.
+  check is refused by name, and so is a file with no check in it. **A key the state does not have
+  never holds**, whatever is expected of it: a misspelt key that "is not 5" would be a check that
+  cannot fail.
 - **A line a check**: `{"check", "ok": true}`, or `"ok": false` with `differs` (for each key that
   did not hold, what it is and what was expected), the state, and what the rules logged; a run that
   could not be made (an input the game does not take, a module that failed) is that check's `error`.
@@ -427,7 +429,19 @@ So a project keeps its checks as data, and one command plays them:
 - **A check with no `expect` prints its state.** Runs to look at are written the same way as runs
   to hold: several at once, read in one request, and what each must be is written after.
 - **Checks that name the same `settings` share one player's settings**, in the file's order, in a
-  folder that is the command's own and goes with it. "Kept between runs" is two checks.
+  folder that is the command's own and goes with it. "Kept between runs" is two checks. A check
+  that names none has a new player's settings, whatever folder the command itself was given
+  (`--settings` says only where the list of projects is: a check never reads or writes a player's
+  own settings). `--only NAME` plays that check alone, with nothing an earlier check set.
+- **The file is a project's data, and may be someone else's.** It names ticks, inputs and
+  expectations, never a command. The one file it has written is a frame: a PNG below the project's
+  `checks` folder (no way up, no root, no drive, no second stream, no other kind of file, so no
+  file of the game is written over), and where it is written no step of the path may be a link (a
+  junction named `checks/out` would lead anywhere). The review's finding: the first version held
+  only the path's spelling.
+- **Bounds**: 200 checks and 1 MiB a file; what a line shows of a value that did not hold is its
+  first 400 characters, and of a state its first 4,000; the command starts no new run after an
+  hour, and stops at a run whose engine did not answer.
 - Each check is a run with an engine of its own, as `specula run` is (about four seconds each once
   the module is built): a check starts from the game's start, with nothing of the check before it
   but the settings it names.

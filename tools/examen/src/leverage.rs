@@ -1263,7 +1263,7 @@ pub fn judge_text(run: &Path, r: &Json) -> R<String> {
     ];
     if text(r, "arm") == Some("engine") {
         lines.push(format!(
-            "- This game runs on the Specula engine. `{tool} play {rd} ...` is the engine's own headless run of it (it needs no engine started), and `{tool} check {rd} --file FILE` plays every run a checks file of your own lists in one command (the game's `notes/how.md` says how one is written; keep yours in your scratch folder); if its documents use an engine left running, start it with `{tool} engine start {rd}` and stop it with `{tool} engine stop {rd}` when you are done, and calls go through `{tool} call {rd} TOOL '{{json}}'`. Never run the engine's executable yourself."
+            "- This game runs on the Specula engine. `{tool} play {rd} ...` is the engine's own headless run of it (it needs no engine started), and `{tool} check {rd} --file FILE` plays every run a checks file of your own lists in one command (the game's `notes/how.md` says how one is written; keep yours in your scratch folder, and take frames with `play`: a check's frame is written into the game's own folder); if its documents use an engine left running, start it with `{tool} engine start {rd}` and stop it with `{tool} engine stop {rd}` when you are done, and calls go through `{tool} call {rd} TOOL '{{json}}'`. Never run the engine's executable yourself."
         ));
     }
     lines.push(String::new());

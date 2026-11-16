@@ -667,9 +667,43 @@ const RUN_LOCK_WAIT: Duration = Duration::from_secs(90);
 /// answer is read from a file in a folder of this run's own, which goes when it is read.
 fn run_game(ctx: &Ctx, args: &crate::launch_cli::RunArgs) -> (i32, Json) {
     match game_folder(ctx, &args.which) {
-        Ok(folder) => run_in(ctx, &folder, args, None),
+        Ok(folder) => run_in(ctx, &folder, args, Kept::AsAsked),
         Err(no) => no,
     }
+}
+
+/// Where a headless run's player settings are read and kept.
+#[derive(Clone, Copy)]
+enum Kept<'a> {
+    /// Where the command itself named (`--settings DIR`), or nowhere: `specula run`.
+    AsAsked,
+    /// Nowhere, whatever the command was told: a check that names no settings.
+    Nowhere,
+    /// This folder: checks that name the same settings.
+    At(&'a Path),
+}
+
+/// How long `specula check` goes on starting runs (each run has its own limit besides).
+const CHECK_WALL: Duration = Duration::from_secs(3600);
+
+/// Where a check's frame is written: `frame` (a path below the project's checks folder, as the
+/// checks file's reading holds) under `project`, with no step of it a link and nothing there
+/// but a picture written before. The file is the project's data and may be someone else's: a
+/// junction named `checks/out` would lead a frame anywhere this user can write.
+fn frame_place(project: &Path, frame: &Path) -> Result<PathBuf, String> {
+    let mut at = project.to_path_buf();
+    let steps: Vec<_> = frame.components().collect();
+    for (i, step) in steps.iter().enumerate() {
+        at.push(step);
+        match std::fs::symlink_metadata(&at) {
+            Ok(m) if crate::disk::is_link(&m) => return Err(format!("{} is a link: a check's frame is written below the project's own checks folder and nowhere a link leads", at.display())),
+            Ok(m) if i + 1 < steps.len() && !m.is_dir() => return Err(format!("{} is not a folder", at.display())),
+            Ok(m) if i + 1 == steps.len() && !m.is_file() => return Err(format!("{} is there and is not a file", at.display())),
+            // (What is not there yet is made by the run, as a folder or a file of its own.)
+            Ok(_) | Err(_) => {}
+        }
+    }
+    Ok(at)
 }
 
 /// The folder of the project a headless command names (by name, by folder, or the folder it
@@ -736,19 +770,31 @@ fn check_game(ctx: &Ctx, args: &crate::launch_cli::CheckArgs) -> (i32, Json) {
     }
     let (mut lines, mut failed): (Vec<Json>, Vec<Json>) = (Vec::new(), Vec::new());
     let mut problems: Option<Json> = None;
+    let began = Instant::now();
     for check in &checks {
-        let run = crate::launch_cli::RunArgs {
-            which: None,
-            ticks: Some(check.ticks),
-            seed: check.seed,
-            inputs: check.inputs.clone(),
-            // (A frame's place is the project's, wherever the command is run.)
-            frame: check.frame.as_ref().map(|f| folder.join(f)),
-            size: check.size,
-            follow: false,
+        // (The whole command has a limit too: what is left when it is reached is not played,
+        // and the count says how many.)
+        if began.elapsed() > CHECK_WALL {
+            break;
+        }
+        // A frame's place is the project's, wherever the command is run: held again here,
+        // against what is on the disk now (no link on the way, nothing but a file at its end).
+        let frame = match check.frame.as_ref().map(|f| frame_place(&folder, f)) {
+            None => None,
+            Some(Ok(place)) => Some(place),
+            Some(Err(why)) => {
+                let (_, error) = refusal("bad_frame", why);
+                lines.push(Json::obj([("check", Json::from(check.name.as_str())), ("ok", Json::Bool(false)), ("error", error)]));
+                failed.push(Json::from(check.name.as_str()));
+                continue;
+            }
         };
-        let kept = check.settings.as_ref().map(|name| scratch.join(name));
-        let (code, answer) = run_in(ctx, &folder, &run, kept.as_deref());
+        let run = crate::launch_cli::RunArgs { which: None, ticks: Some(check.ticks), seed: check.seed, inputs: check.inputs.clone(), frame, size: check.size, follow: false };
+        // A check's settings are the folder it names, or none: never the folder the command
+        // itself was given, which is some player's own.
+        let named = check.settings.as_ref().map(|name| scratch.join(name));
+        let kept = named.as_deref().map_or(Kept::Nowhere, Kept::At);
+        let (code, answer) = run_in(ctx, &folder, &run, kept);
         let mut line = Json::obj([("check", Json::from(check.name.as_str()))]);
         let state = answer.get(RUN_REPORT);
         let off = match state {
@@ -778,8 +824,9 @@ fn check_game(ctx: &Ctx, args: &crate::launch_cli::CheckArgs) -> (i32, Json) {
         }
         if !ok {
             failed.push(Json::from(check.name.as_str()));
-            // (What the rules logged in a run that did not hold is beside it.)
-            if let Some(log) = answer.get("log") {
+            // (What the rules logged in a run that did not hold is beside it: once. A run
+            // that could not be made has it in its error.)
+            if let Some(log) = answer.get("log").filter(|_| line.get("error").is_none()) {
                 line.set("log", log.clone());
             }
         }
@@ -790,7 +837,8 @@ fn check_game(ctx: &Ctx, args: &crate::launch_cli::CheckArgs) -> (i32, Json) {
         lines.push(line);
         // A game that does not build, or a game file that does not load, fails every check
         // the same way: said once.
-        let fatal = ["build_failed", "load_failed", "bad_game_file", "no_game", "project_open"];
+        // (And an engine that did not answer: the next would wait as long.)
+        let fatal = ["build_failed", "load_failed", "bad_game_file", "no_game", "project_open", "no_answer"];
         if answer.get("error").and_then(Json::as_str).is_some_and(|e| fatal.contains(&e)) {
             break;
         }
@@ -815,7 +863,7 @@ fn check_game(ctx: &Ctx, args: &crate::launch_cli::CheckArgs) -> (i32, Json) {
 
 /// One headless run of the game in `folder`. `kept`: where this run's player settings are
 /// read and kept (`None`: where the command itself named, or nowhere).
-fn run_in(ctx: &Ctx, folder: &Path, args: &crate::launch_cli::RunArgs, kept: Option<&Path>) -> (i32, Json) {
+fn run_in(ctx: &Ctx, folder: &Path, args: &crate::launch_cli::RunArgs, kept: Kept) -> (i32, Json) {
     let folder = folder.to_path_buf();
     // One engine has a project at a time. An engine that is listed has it: said at once, with
     // where it is. One that is not listed may be another run of this command, which ends by
@@ -887,13 +935,13 @@ fn run_in(ctx: &Ctx, folder: &Path, args: &crate::launch_cli::RunArgs, kept: Opt
         // Where this run's player settings are read and kept: the folder the command named, or
         // nowhere (and then the engine is not listed either: it is this command's own).
         match kept {
-            Some(dir) => {
+            Kept::At(dir) => {
                 command.arg("--settings").arg(dir);
             }
-            None if ctx.settings_given => {
+            Kept::AsAsked if ctx.settings_given => {
                 command.arg("--settings").arg(&ctx.store.dir);
             }
-            None => {
+            Kept::AsAsked | Kept::Nowhere => {
                 command.args(["--settings", "off"]);
             }
         }
@@ -1151,6 +1199,39 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// A check's frame is written below the project's own checks folder: where a step of its
+    /// path is a link, or something other than a folder on the way or a file at the end, it
+    /// is refused before a run writes there.
+    #[test]
+    fn a_checks_frame_is_written_nowhere_a_link_leads() {
+        let dir = scratch("frame-place");
+        let (project, outside) = (dir.join("game"), dir.join("outside"));
+        std::fs::create_dir_all(project.join("checks").join("out")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(project.join("checks").join("runs.json"), "{}").unwrap();
+        std::fs::write(project.join("checks").join("out").join("old.png"), "png").unwrap();
+        let place = |frame: &str| frame_place(&project, Path::new(frame));
+        // What is not there yet is the run's to make; a picture written before is written again.
+        assert_eq!(place("checks/out/new/title.png"), Ok(project.join("checks").join("out").join("new").join("title.png")));
+        assert!(place("checks/out/old.png").is_ok());
+        // A folder where the file would be, and a file where a folder would be.
+        assert!(place("checks/out").unwrap_err().contains("is not a file"));
+        assert!(place("checks/runs.json/title.png").unwrap_err().contains("is not a folder"));
+        // A link on the way (made where this user may make one: said and passed over where not).
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_dir(&outside, project.join("checks").join("evil"));
+        #[cfg(not(windows))]
+        let linked = std::os::unix::fs::symlink(&outside, project.join("checks").join("evil"));
+        match linked {
+            Ok(()) => {
+                assert!(place("checks/evil/title.png").unwrap_err().contains("is a link"));
+                assert!(place("checks/evil").unwrap_err().contains("is a link"));
+            }
+            Err(e) => eprintln!("skipped the link's part: this user can't make a link here ({e})"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn ctx(dir: &Path) -> Ctx {

@@ -270,8 +270,10 @@ The project list, the files that say which engines are running, and the two requ
   protocol cannot start one. `specula check` is such runs, one after another, as the project's
   `checks/runs.json` lists them. That file is a project's data, which may be someone else's: it names
   ticks, inputs and expectations, never a command, and the only places it has anything written are a
-  frame below the project's own folder (a path that leaves it is refused when the file is read) and
-  settings folders that are the command's own and go with it.
+  frame, which is a PNG below the project's own `checks` folder (a path that leaves it, or names
+  another kind of file, is refused when the file is read; a step of it that is a link is refused
+  where the frame is written), and settings folders that are the command's own and go with it. A
+  check never reads or writes the settings folder the command was given.
   - **What it loads is built in the operator's own folder**, never in a build folder that could have come
     with the project (a library found there counts as built from the sources when the file times say so):
     [MODULES.md](MODULES.md).

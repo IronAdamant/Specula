@@ -24,6 +24,10 @@ pub const MAX_CHECKS: usize = 200;
 const MAX_NAME: usize = 80;
 /// Most keys one check expects.
 const MAX_EXPECT: usize = 64;
+/// The folder below the project that a check's frame is written under.
+pub const FRAMES: &str = "checks";
+/// Most characters of one value in a check's line (what a key is, or was expected to be).
+pub const MAX_SHOWN: usize = 400;
 /// The largest checks file read.
 pub const MAX_FILE: u64 = 1 << 20;
 
@@ -35,9 +39,11 @@ pub struct Check {
     pub seed: Option<u64>,
     pub inputs: Vec<(u64, String)>,
     /// A settings folder by name: checks that name the same one share the player's settings,
-    /// in the order they are written (`None`: this run's settings are kept nowhere).
+    /// in the order they are written (`None`: this run's settings are kept nowhere, whatever
+    /// the command itself was told).
     pub settings: Option<String>,
-    /// Where a frame of the run's end is written, from the project's folder.
+    /// Where a frame of the run's end is written, from the project's folder: a PNG below its
+    /// `checks` folder.
     pub frame: Option<PathBuf>,
     pub size: Option<(u32, u32)>,
     /// A key of the state (or a path into it: `walkers.0.health`) and what it must be.
@@ -61,6 +67,10 @@ pub fn parse(text: &str) -> Result<Vec<Check>, String> {
     let list = j.get("checks").and_then(Json::as_array).ok_or("\"checks\": a list of checks")?;
     if list.len() > MAX_CHECKS {
         return Err(format!("at most {MAX_CHECKS} checks a file (it has {})", list.len()));
+    }
+    // (A file that checks nothing would read as a game that passed its checks.)
+    if list.is_empty() {
+        return Err("\"checks\" is empty: a checks file has at least one run".to_owned());
     }
     const KNOWN: [&str; 9] = ["name", "ticks", "inputs", "seed", "settings", "frame", "size", "expect", "notes"];
     let mut out: Vec<Check> = Vec::new();
@@ -91,14 +101,29 @@ pub fn parse(text: &str) -> Result<Vec<Check>, String> {
         };
         let settings = match c.get("settings") {
             None | Some(Json::Null) => None,
-            Some(s) => Some(s.as_str().filter(|s| (1..=40).contains(&s.len()) && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')).ok_or_else(|| format!("{at}: \"settings\": a name for the settings folder these checks share (letters, digits, _ and -, at most 40)"))?.to_owned()),
+            // (Small letters only: two names that differ by their capitals would be one
+            // folder on one system and two on another.)
+            Some(s) => Some(s.as_str().filter(|s| (1..=40).contains(&s.len()) && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')).ok_or_else(|| format!("{at}: \"settings\": a name for the settings folder these checks share (small letters, digits, _ and -, at most 40)"))?.to_owned()),
         };
-        // A frame is written below the project and nowhere else: the file is the project's
-        // data, and whoever plays its checks did not write it.
-        let below = |f: &&str| !f.is_empty() && f.len() <= 200 && std::path::Path::new(f).components().all(|c| matches!(c, std::path::Component::Normal(_)));
+        // A frame is a PNG below the project's `checks` folder and nowhere else: the file is
+        // the project's data, and whoever plays its checks did not write it. No way up, no
+        // root, no drive, no second stream of a file; and nothing but a picture's name, so
+        // that no file of the game is written over. (That no step of the path is a link is
+        // held where the frame is written: `launch_run.rs`.)
+        let below = |f: &&str| {
+            let path = std::path::Path::new(f);
+            let mut parts = path.components();
+            !f.is_empty()
+                && f.len() <= 200
+                && !f.contains(':')
+                && path.components().all(|c| matches!(c, std::path::Component::Normal(_)))
+                && parts.next().is_some_and(|first| first.as_os_str() == FRAMES)
+                && parts.next().is_some()
+                && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("png"))
+        };
         let frame = match c.get("frame") {
             None | Some(Json::Null) => None,
-            Some(f) => Some(PathBuf::from(f.as_str().filter(below).ok_or_else(|| format!("{at}: \"frame\": a PNG's path below the project's folder (checks/out/title.png)"))?)),
+            Some(f) => Some(PathBuf::from(f.as_str().filter(below).ok_or_else(|| format!("{at}: \"frame\": a PNG's path below the project's {FRAMES} folder ({FRAMES}/out/title.png)"))?)),
         };
         let size = match c.get("size") {
             None | Some(Json::Null) => None,
@@ -164,25 +189,41 @@ fn same(a: &Json, b: &Json) -> bool {
 }
 
 /// The value at `key` of a state: a key of its own, or a path into it by dots
-/// (`walkers.0.health`). `Null` where there is none.
-fn at<'j>(state: &'j Json, key: &str) -> &'j Json {
-    const NULL: &Json = &Json::Null;
+/// (`walkers.0.health`). `None` where the state has no such key.
+fn at<'j>(state: &'j Json, key: &str) -> Option<&'j Json> {
     if let Some(found) = state.get(key) {
-        return found;
+        return Some(found);
     }
     key.split('.').try_fold(state, |v, part| match v {
         Json::Arr(items) => part.parse::<usize>().ok().and_then(|i| items.get(i)),
         _ => v.get(part),
     })
-    .unwrap_or(NULL)
+}
+
+/// What a check's line says a key is when the state has no such key: a key that is not there
+/// holds against nothing, whatever was expected of it (a misspelt key that "is not 5" would
+/// be a check that cannot fail).
+pub const NOT_THERE: &str = "<not in the state>";
+
+/// A value as a check's line shows it: itself, or its beginning when it is long (a module's
+/// list can be any length, and a line that does not hold is read by an agent).
+fn shown(value: &Json) -> Json {
+    let text = value.to_string();
+    match text.char_indices().nth(MAX_SHOWN) {
+        Some((at, _)) => Json::from(format!("{} ... ({} characters)", &text[..at], text.chars().count()).as_str()),
+        None => value.clone(),
+    }
 }
 
 /// Where a state is not what a check expects: for each such key, what it is and what was
-/// expected (as written). Empty: the check holds.
+/// expected (as written; each cut to [`MAX_SHOWN`]). Empty: the check holds.
 pub fn differs(expect: &[(String, Json)], state: &Json) -> Vec<(String, Json, Json)> {
     let mut out = Vec::new();
     for (key, want) in expect {
-        let is = at(state, key);
+        let Some(is) = at(state, key) else {
+            out.push((key.clone(), Json::from(NOT_THERE), shown(want)));
+            continue;
+        };
         let holds = match matcher(want) {
             Ok(Matcher::Is(v)) => same(is, v),
             Ok(Matcher::Not(v)) => !same(is, v),
@@ -205,7 +246,7 @@ pub fn differs(expect: &[(String, Json)], state: &Json) -> Vec<(String, Json, Js
             Err(_) => false,
         };
         if !holds {
-            out.push((key.clone(), is.clone(), want.clone()));
+            out.push((key.clone(), shown(is), shown(want)));
         }
     }
     out
@@ -238,12 +279,16 @@ mod tests {
         assert!(no(r#"{"name": "a", "ticks": 4, "input": "0:up"}"#).contains("'input' is not a key of a check"));
         assert!(no(r#"{"name": "a", "ticks": 4, "inputs": "9:up"}"#).contains("after the run's last tick"));
         assert!(no(r#"{"name": "a", "ticks": 4, "settings": "../x"}"#).contains("\"settings\""));
+        assert!(no(r#"{"name": "a", "ticks": 4, "settings": "Kept"}"#).contains("small letters"));
+        assert!(parse(r#"{"format": "specula.checks.v1", "checks": []}"#).unwrap_err().contains("at least one run"));
         assert!(no(r#"{"name": "a", "ticks": 4, "size": [800, 480]}"#).contains("give \"frame\""));
-        // A frame's place is below the project: no way up, no root, no drive.
-        for out in ["../out.png", "checks/../../out.png", "/out.png", "C:/out.png", "C:out.png", "\\\\server\\share\\out.png", ""] {
+        // A frame's place is a PNG below the project's checks folder: no way up, no root, no
+        // drive, no other folder of the project, no second stream, no file that is not a picture.
+        for out in ["../out.png", "checks/../../out.png", "/out.png", "C:/out.png", "C:out.png", "\\\\server\\share\\out.png", "", "out.png", "assets/out.png", "game.json", "notes/how.md", "checks", "checks/runs.json", "checks/out.png:x", "checks/a.png:b.png"] {
             let text = format!(r#"{{"name": "a", "ticks": 4, "frame": {}}}"#, Json::from(out));
-            assert!(no(&text).contains("below the project's folder"), "{out}");
+            assert!(no(&text).contains("below the project's checks folder"), "{out}");
         }
+        assert!(parse(&file(r#"{"name": "a", "ticks": 4, "frame": "checks/out/deep/Title.PNG"}"#)).is_ok());
         assert!(no(r#"{"name": "a", "ticks": 4, "expect": {"score": {"gte": "many"}}}"#).contains("takes a number"));
         assert!(parse(r#"{"checks": []}"#).unwrap_err().contains("format"));
         assert!(parse("[").unwrap_err().contains("not JSON"));
@@ -259,15 +304,22 @@ mod tests {
             _ => unreachable!(),
         };
         let holds = |text: &str| differs(&expect(text), &state).is_empty();
-        assert!(holds(r#"{"phase": "won", "taps": 5, "guard_y": 8.5, "texts": ["You won", "Score: 60"], "none": null}"#));
+        assert!(holds(r#"{"phase": "won", "taps": 5, "guard_y": 8.5, "texts": ["You won", "Score: 60"], "none": null, "title": {"ne": null}}"#));
         assert!(holds(r#"{"taps": {"gte": 5}, "guard_y": {"lt": 9}, "phase": {"ne": "lost"}, "texts": {"has": "You won"}, "title": {"has": "gate"}, "walkers": {"len": 1}}"#));
-        assert!(holds(r#"{"walkers.0.health": 2, "walkers.0": {"x": 3, "health": 2}, "dotted.key": 1, "walkers.4.health": null, "missing": null}"#));
+        assert!(holds(r#"{"walkers.0.health": 2, "walkers.0": {"x": 3, "health": 2}, "dotted.key": 1}"#));
         // What does not hold is said with what it is and what was expected.
         let off = differs(&expect(r#"{"phase": "lost", "taps": {"gt": 5}, "texts": {"has": "You lost"}, "walkers": {"len": 2}, "missing": 1, "taps.deeper": 1}"#), &state);
         let keys: Vec<&str> = off.iter().map(|(key, _, _)| key.as_str()).collect();
         assert_eq!(keys, ["phase", "taps", "texts", "walkers", "missing", "taps.deeper"]);
         assert_eq!((off[0].1.as_str(), off[0].2.as_str()), (Some("won"), Some("lost")));
-        assert_eq!(off[4].1, Json::Null);
+        // A key the state does not have holds against nothing: not "is null", not "is not 5"
+        // (a misspelt key must not make a check that cannot fail).
+        let misspelt = differs(&expect(r#"{"phsae": {"ne": "title"}, "scoer": null, "walkers.4.health": null, "taps": {"ne": 4}}"#), &state);
+        assert_eq!(misspelt.iter().map(|(key, is, _)| (key.as_str(), is.as_str())).collect::<Vec<_>>(), [("phsae", Some(NOT_THERE)), ("scoer", Some(NOT_THERE)), ("walkers.4.health", Some(NOT_THERE))]);
+        // A long value is shown by its beginning.
+        let long = Json::obj([("walkers", Json::arr((0..400).map(|i| Json::from(i as u64))))]);
+        let cut = differs(&expect(r#"{"walkers": {"len": 0}}"#), &long);
+        assert!(cut[0].1.as_str().is_some_and(|s| s.chars().count() < MAX_SHOWN + 40 && s.ends_with("characters)")), "{:?}", cut[0].1);
         // A comparison of numbers never holds for what is not a number.
         assert!(!holds(r#"{"phase": {"gte": 1}}"#));
         // An object that is not one comparison is a value to equal.

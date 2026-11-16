@@ -21,8 +21,9 @@ const ALLOWED: [(&str, usize); 68] = [
     // (The command line's answers: one place prints a command's JSON; `specula run` prints the
     // game's report alone on a line, what the game says is wrong with its files and what its
     // modules logged beside it, and a refusal as one line where the state would have been;
-    // a followed run's states are passed on as they come.)
-    ("crates/specula/src/launch_run.rs", 5),
+    // a followed run's states are passed on as they come. And one test's own "skipped: this
+    // user can't make a link here" (AGENTS.md rule 7: a test that can't run says why and passes).)
+    ("crates/specula/src/launch_run.rs", 6),
     ("crates/specula/src/leases.rs", 1),
     ("crates/specula/src/lex_live.rs", 5),
     ("crates/specula/src/lib.rs", 28),

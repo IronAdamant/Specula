@@ -389,9 +389,13 @@ game, each as `specula run` takes one, with what its state must be:
   the runs you want to see, read them all in one go, then write what each must be.
 - `"expect"`: a key of the report (or a path into it: `walkers.0.health`) with its value, or
   with one of `{"ne": v}`, `{"lt": n}`, `{"lte": n}`, `{"gt": n}`, `{"gte": n}`, `{"has": v}`
-  (a list holds it; a text holds it), `{"len": n}`.
-- Checks that name the same `"settings"` share one player's settings, in the file's order:
-  set in one check and found in the next is "kept between runs", shown.
+  (a list holds it; a text holds it), `{"len": n}`. A key the state does not have never
+  holds, whatever is expected of it.
+- Checks that name the same `"settings"` (small letters) share one player's settings, in the
+  file's order: set in one check and found in the next is "kept between runs", shown. A check
+  that names none has a new player's. `--only NAME` plays that check alone, with nothing an
+  earlier check set.
+- A `"frame"` is a PNG below the project's `checks` folder.
 - Write the checks as you write the game, and leave them: they are what you checked, for
   whoever comes after (the sample's `checks/runs.json` checks the sample).
 

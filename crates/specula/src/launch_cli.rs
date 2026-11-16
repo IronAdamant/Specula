@@ -153,7 +153,11 @@ specula check [NAME|FOLDER] [--only NAME] [--file FILE]
                                  against the check's \"expect\": a line a check, ok or what
                                  differs with the state, then a line that counts them. Exit
                                  code 1 when one did not hold. A check with no \"expect\"
-                                 prints its state: many runs read in one command
+                                 prints its state: many runs read in one command. A check's
+                                 settings are the folder it names (the command's own, gone
+                                 with it) or none, never --settings' (which only says where
+                                 the list of projects is); its frame is a PNG below the
+                                 project's checks folder. --only: that check alone
 specula new NAME [--in FOLDER] [--bare]
                                  make a project that builds and plays (a game file, screens,
                                  words, a module, the SDK, notes) and list it; --bare: only
