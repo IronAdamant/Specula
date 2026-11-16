@@ -223,7 +223,9 @@ fn python() -> Option<&'static str> {
     ["python", "python3"].into_iter().find(|p| Command::new(p).arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success()))
 }
 
-/// The scripts of `scripts/`, sorted: the unit tests first, then every check.
+/// Every check, in the order they run: the scripts of `scripts/` (the unit tests of the scripts
+/// first, then every check, sorted), then the checks written in Rust ([`crate::native::CHECKS`]).
+/// The native ones come last so that a script keeps the ports it had before any was ported.
 fn everything(scripts: &Path) -> Result<Vec<String>, String> {
     let mut checks: Vec<String> = std::fs::read_dir(scripts)
         .map_err(|e| format!("{}: {e}", scripts.display()))?
@@ -232,7 +234,7 @@ fn everything(scripts: &Path) -> Result<Vec<String>, String> {
         .filter(|n| n.ends_with(".py") && !NOT_CHECKS.contains(&n.as_str()) && !UNIT.contains(&n.as_str()))
         .collect();
     checks.sort();
-    Ok(UNIT.iter().map(|u| (*u).to_owned()).chain(checks).collect())
+    Ok(UNIT.iter().map(|u| (*u).to_owned()).chain(checks).chain(crate::native::CHECKS.iter().map(|c| c.name.to_owned())).collect())
 }
 
 /// The plan: every run of every chosen check, each check on the ports of its place in the whole
@@ -241,6 +243,11 @@ fn plan(scripts: &Path, all: &[String], names: &[String], first_port: u64, out: 
     let mut plan = Vec::new();
     for name in names {
         let place = all.iter().position(|n| n == name).expect("a chosen check is one of the checks") as u64;
+        // A check written in Rust runs in this process, on its own ports: it is told them.
+        if crate::native::find(name).is_some() {
+            plan.push(Planned { script: name.clone(), port: first_port + SPAN * place, k: 0, args: Vec::new(), needs_ports: false, several: false });
+            continue;
+        }
         let source = String::from_utf8_lossy(&std::fs::read(scripts.join(name)).map_err(|e| format!("scripts/{name}: {e}"))?).into_owned();
         for run in runs_of(name, &source, first_port + SPAN * place, &out.join(stem(name))) {
             if run.needs_ports && !run.args.iter().any(|a| PORT_FLAGS.contains(&a.as_str())) {
@@ -307,8 +314,11 @@ pub fn main(mut args: Args) -> i32 {
         }
         return 0;
     }
-    let Some(python) = python() else {
-        println!("no Python on this machine: the checks are still scripts until each is ported. Nothing was run.");
+    // (Asked for only when a check that is still a script is to run.)
+    let scripted = plan.iter().any(|run| crate::native::find(&run.script).is_none());
+    let python = if scripted { python() } else { Some("") };
+    let Some(python) = python else {
+        println!("no Python on this machine: the checks that are still scripts cannot run (--only with the checks written in Rust runs those: --list names them all). Nothing was run.");
         return 2;
     };
     if let Err(e) = std::fs::create_dir_all(&out) {
@@ -344,9 +354,20 @@ pub fn main(mut args: Args) -> i32 {
         }
         let label = run_.label();
         let log = out.join(run_.log_name());
-        let mut cmd = vec![python.to_owned(), "-u".to_owned(), scripts.join(&run_.script).to_string_lossy().into_owned()];
-        cmd.extend(run_.args.iter().cloned());
-        let ran = run(&cmd, &root, &log, &[], LIMIT);
+        let ran = match crate::native::find(&run_.script) {
+            // A check written in Rust: in this process, in its own folder, on its own ports.
+            Some(check) => {
+                let started = std::time::Instant::now();
+                let (passed, _) = crate::native::run(check, &out.join(&run_.script), run_.port, &log);
+                let text = std::fs::read(&log).map(|bytes| String::from_utf8_lossy(&bytes).into_owned()).unwrap_or_default();
+                crate::run::Ran { exit: Exit::Code(i32::from(!passed)), log: text, seconds: started.elapsed().as_secs_f64() }
+            }
+            None => {
+                let mut cmd = vec![python.to_owned(), "-u".to_owned(), scripts.join(&run_.script).to_string_lossy().into_owned()];
+                cmd.extend(run_.args.iter().cloned());
+                run(&cmd, &root, &log, &[], LIMIT)
+            }
+        };
         let mut last: String = ran.log.lines().rfind(|l| !l.trim().is_empty()).unwrap_or("").chars().take(140).collect();
         let now = tree_state(&root);
         let left = left_behind(tree.as_ref(), now.as_ref());
@@ -458,7 +479,14 @@ mod tests {
         let scripts = root().join("scripts");
         let all = everything(&scripts).expect("scripts/");
         assert_eq!(all[..2], ["evals_test.py", "leverage_test.py"], "the scripts' own tests run first");
-        assert!(all.len() >= 60 && all.windows(2).skip(2).all(|w| w[0] < w[1]), "{} scripts, sorted", all.len());
+        // The scripts, sorted; then the checks written in Rust, in their own order, so that a
+        // script keeps the ports it had before any check was ported.
+        let native = crate::native::CHECKS.len();
+        let scripted = &all[..all.len() - native];
+        assert!(scripted.len() >= 60 && scripted.windows(2).skip(2).all(|w| w[0] < w[1]), "{} scripts, sorted", scripted.len());
+        assert_eq!(all[all.len() - native..], crate::native::CHECKS.iter().map(|c| c.name.to_owned()).collect::<Vec<_>>());
+        let own = super::plan(&scripts, &all, &all[all.len() - native..], 7720, Path::new("/a")).unwrap();
+        assert!(own.len() == native && own.iter().all(|p| p.args.is_empty() && !p.needs_ports && p.port >= 7720 + SPAN * scripted.len() as u64), "{own:?}");
         let plan = plan(&scripts, &all, &all, 7720, Path::new("/a")).expect("every check names its ports");
         assert!(plan.len() >= all.len());
         // No two checks share a port, and a run of one check uses the full run's ports.

@@ -283,10 +283,12 @@ refused with nothing to say why.
 
 **Still to build, in this order:**
 
-1. **A live check in Rust** (`tools/examen`): a new project is made, its module built, the run started,
-   stepped, won, and `game_state` read; the project's own playtest; a note written and given back at the
-   next `agent_hello`; the game file changed and followed; `--run`; the language changed and kept across
-   a restart. Done by hand once (the list above came from it); not yet a check.
+1. **Done: a live check in Rust**, `new_project_check` (`tools/examen/src/native.rs`), the first check
+   written in Rust: a new project is made, the brief read at `agent_hello`, its module built, its own
+   playtest run, the game file changed and followed on a clock stepped by hand, the settings found over
+   the title with the focus, a note written, a second language chosen, and the engine started again with
+   `--run`: the module loads, the language and the difficulty were kept, the next agent is told the note,
+   and a builder's own build is still only a proposal. About 17 s (`examen live --only new_project_check`).
 2. **The comparison's harness** starts its engine arm from `specula new`, and the comparison is run
    again (slice 8).
 3. **Not built, and said:** conditions over the world (`world:/path.prop`); a condition reads what the

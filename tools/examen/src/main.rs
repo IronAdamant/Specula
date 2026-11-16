@@ -16,6 +16,7 @@ mod cli;
 mod gate;
 mod kept;
 mod live;
+mod native;
 mod passed;
 mod pin;
 mod run;

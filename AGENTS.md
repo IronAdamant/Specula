@@ -228,6 +228,13 @@ the runner asks git after each one, and a file left changed or new fails that ch
 short `--out`: the checks build modules below it, and the runner refuses a folder too deep for the linker
 before it starts (HANDOFF, "Gotchas that cost time").
 
+**A new check is written in Rust** (rule 16), in `tools/examen/src/native.rs`: a function listed in `CHECKS`,
+which the runner runs after the scripts, on ports of its own. It drives the engine as an agent with a shell
+does (`specula new`, an engine on a project, `specula call TOOL '{json}'`, `specula stop`), keeps everything
+it makes below its own output folder, and stops every engine it started by its own process id. The first is
+`new_project_check` (a project made by `specula new` builds, plays, remembers and follows its game file).
+A script is ported there when it is next touched.
+
 After changing `specula-gpu`, `specula-platform` or the engine's window loop, run
 `cargo build -p specula && python scripts/window_check.py`. On every adapter it builds a scene over MCP, screenshots
 the real window, resizes / minimizes / restores it, and requires zero validation messages and a clean shutdown.
