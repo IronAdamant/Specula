@@ -87,6 +87,19 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     date.** What is tracked and not Rust: 83 scripts in `scripts/`, two test-data generators in
     Python, one PowerShell generator (`kat_gdi.ps1`), the shaders' `build.sh`, and 79 GLSL shader
     sources, which the shader language replaces.
+- **Where M6 stands** (kept current; ROADMAP M6 has the fourteen parts):
+  - **Part 1, verifying faster: built, reviewed twice, gated, committed** (2026-11-16, branch
+    `m6-verify`). The Rust pin, the gate and the live checks' runner in Rust (`tools/examen`), the
+    sizing, CI's skip and its kept build folder. **Not shown yet:** anything in the workflows, which
+    run on GitHub at the first push and not before; and the full live audit through the new runner
+    (20 of its 70 runs had passed when a pause cut it short; it is run again from the start).
+  - **Next on the laptop:** part 3, the engine paying from the first hour, with part 2 (each script
+    ported to Rust when it is next touched) beside it. **The owner is told when part 3 is finished, and
+    part 4 does not start before they say** (2026-11-16: "Advise me when we get to FINISH of part 3
+    please. Don't start part 4 yet").
+  - **Asked for from outside:** the research behind parts 4 and 5
+    ([docs/research/LIBRARY_RESEARCH_BRIEF.md](docs/research/LIBRARY_RESEARCH_BRIEF.md)), by the
+    owner's Grok bots, under way.
 - **M5 is done (2026-11-15). M6 started on 2026-11-16 with the scope talk above.** What was written
   for it before the talk:
   - **M6 as it stood before the scope talk** (an index; the details are below and in ROADMAP M6,
