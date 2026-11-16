@@ -18,7 +18,9 @@ const ALLOWED: [(&str, usize); 67] = [
     ("crates/specula/src/fpguard.rs", 1),
     // The command line's commands (`specula projects`, `call`...): their answer IS their
     // standard output, in a process that is never an engine; the one place they print.
-    ("crates/specula/src/launch_run.rs", 3),
+    // (The command line's answers: one place prints a command's JSON; `specula run` prints the
+    // game's report alone on a line, and what the game says is wrong with its files beside it.)
+    ("crates/specula/src/launch_run.rs", 5),
     ("crates/specula/src/leases.rs", 1),
     ("crates/specula/src/lex_live.rs", 5),
     ("crates/specula/src/lib.rs", 28),

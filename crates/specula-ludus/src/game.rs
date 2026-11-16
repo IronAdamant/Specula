@@ -127,6 +127,51 @@ impl Outcome {
     }
 }
 
+/// Most lines of a game's report (what a headless run prints).
+pub const MAX_REPORT: usize = 64;
+
+/// How the game is looked at: by its window with no camera of an agent's, and by a headless
+/// run's frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum View {
+    /// Straight on, as a 2D game is seen: the point of the world at the middle of the picture
+    /// and how many metres of the world its height shows.
+    Flat { center: [f64; 2], height: f64 },
+    /// From a point, at a point.
+    Eye { eye: [f64; 3], target: [f64; 3], fov_y_deg: f64 },
+}
+
+impl View {
+    fn parse(json: &Json) -> Result<View, Problem> {
+        let bad = || Problem::new("view", "bad_view", "the view is {\"center\": [x, y], \"height\": metres} (straight on, as a 2D game is seen) or {\"eye\": [x, y, z], \"target\": [x, y, z], \"fov_y_deg\": degrees}");
+        let numbers = |key: &str, n: usize| json.get(key).and_then(Json::as_array).filter(|a| a.len() == n).and_then(|a| a.iter().map(|x| x.as_f64().filter(|x| x.is_finite() && x.abs() <= 1.0e6)).collect::<Option<Vec<f64>>>());
+        if json.get("center").is_some() {
+            unknown_keys(json, &["center", "height"], "view")?;
+            let center = numbers("center", 2).ok_or_else(bad)?;
+            let height = json.get("height").and_then(Json::as_f64).filter(|h| h.is_finite() && (0.001..=1.0e6).contains(h)).ok_or_else(bad)?;
+            return Ok(View::Flat { center: [center[0], center[1]], height });
+        }
+        unknown_keys(json, &["eye", "target", "fov_y_deg"], "view")?;
+        let (eye, target) = (numbers("eye", 3).ok_or_else(bad)?, numbers("target", 3).ok_or_else(bad)?);
+        let fov_y_deg = match json.get("fov_y_deg") {
+            None => 50.0,
+            Some(f) => f.as_f64().filter(|f| (1.0..=170.0).contains(f)).ok_or_else(bad)?,
+        };
+        if eye == target {
+            return Err(bad());
+        }
+        Ok(View::Eye { eye: [eye[0], eye[1], eye[2]], target: [target[0], target[1], target[2]], fov_y_deg })
+    }
+
+    pub fn to_json(&self) -> Json {
+        let list = |xs: &[f64]| Json::arr(xs.iter().map(|x| Json::Num(*x)));
+        match self {
+            View::Flat { center, height } => Json::obj([("center", list(center)), ("height", Json::Num(*height))]),
+            View::Eye { eye, target, fov_y_deg } => Json::obj([("eye", list(eye)), ("target", list(target)), ("fov_y_deg", Json::Num(*fov_y_deg))]),
+        }
+    }
+}
+
 /// A game file.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GameFile {
@@ -142,6 +187,11 @@ pub struct GameFile {
     /// The settings it declares (the two every game has are added by [`crate::Settings::new`]).
     pub settings: Vec<Setting>,
     pub outcome: Outcome,
+    /// How the game is looked at when nobody says otherwise.
+    pub view: Option<View>,
+    /// What a headless run prints (`specula run`): each line a name and the key whose value
+    /// it shows, in this order. Empty: the run prints everything it can see.
+    pub report: Vec<(String, String)>,
 }
 
 impl Default for GameFile {
@@ -155,6 +205,8 @@ impl Default for GameFile {
             locale: "en".to_owned(),
             settings: Vec::new(),
             outcome: Outcome::default(),
+            view: None,
+            report: Vec::new(),
         }
     }
 }
@@ -180,7 +232,7 @@ impl GameFile {
     }
 
     pub fn from_json(json: &Json) -> Result<GameFile, Problem> {
-        unknown_keys(json, &["format", "title", "tick_hz", "modules", "start", "screens", "locale", "settings", "outcome"], "")?;
+        unknown_keys(json, &["format", "title", "tick_hz", "modules", "start", "screens", "locale", "settings", "outcome", "view", "report"], "")?;
         if json.get("format").and_then(Json::as_str) != Some(FORMAT) {
             return Err(Problem::new("format", "bad_format", format!("a game file says \"format\": \"{FORMAT}\"")));
         }
@@ -250,6 +302,20 @@ impl GameFile {
             };
             game.outcome = Outcome { won: cond("won")?, lost: cond("lost")?, score: key("score")?, standings: key("standings")? };
         }
+        if let Some(view) = json.get("view") {
+            game.view = Some(View::parse(view)?);
+        }
+        if let Some(report) = json.get("report") {
+            let lines = report.as_object().filter(|r| r.len() <= MAX_REPORT).ok_or_else(|| Problem::new("report", "bad_report", format!("\"report\" is an object of at most {MAX_REPORT} lines: a name, and the key whose value a headless run prints under it")))?;
+            for (name, key) in lines {
+                let here = format!("report.{name}");
+                if !key_ok(name) {
+                    return Err(Problem::new(&here, "bad_name", "a report's name is 1 to 64 characters with no blank"));
+                }
+                let key = key.as_str().filter(|k| key_ok(k)).ok_or_else(|| Problem::new(&here, "bad_key", "a report's line names the key whose value it shows: \"gate.score\" (what a module keeps), \"setting.volume\", \"game.phase\", \"ui.texts\", \"run.ticks\""))?;
+                game.report.push((name.clone(), key.to_owned()));
+            }
+        }
         Ok(game)
     }
 
@@ -297,7 +363,7 @@ impl GameFile {
                 outcome.set(part, Json::Str(k.clone()));
             }
         }
-        Json::obj([
+        let file = Json::obj([
             ("format", Json::Str(FORMAT.to_owned())),
             ("title", Json::Str(self.title.clone())),
             ("tick_hz", Json::Num(f64::from(self.tick_hz))),
@@ -307,7 +373,15 @@ impl GameFile {
             ("locale", Json::Str(self.locale.clone())),
             ("settings", Json::arr(self.settings.iter().map(setting))),
             ("outcome", outcome),
-        ])
+        ]);
+        let mut file = file;
+        if let Some(view) = &self.view {
+            file.set("view", view.to_json());
+        }
+        if !self.report.is_empty() {
+            file.set("report", Json::Obj(self.report.iter().map(|(name, key)| (name.clone(), Json::Str(key.clone()))).collect()));
+        }
+        file
     }
 }
 
@@ -342,6 +416,25 @@ mod tests {
         assert_eq!(g, GameFile::default());
         assert_eq!((g.tick_hz, g.start, g.locale.as_str()), (30, Start::Title, "en"));
         assert_eq!(g.screens.parts().map(|(_, name)| name), ["title", "pause", "won", "lost", "hud"]);
+    }
+
+    #[test]
+    fn a_view_and_a_report_are_read_and_written_back() {
+        let g = GameFile::parse(r#"{"format": "specula.game.v1", "title": "Hold", "view": {"center": [10, 6], "height": 12}, "report": {"tick": "run.ticks", "walkers": "gate.walkers"}}"#).unwrap();
+        assert_eq!(g.view, Some(View::Flat { center: [10.0, 6.0], height: 12.0 }));
+        assert_eq!(g.report, vec![("tick".to_owned(), "run.ticks".to_owned()), ("walkers".to_owned(), "gate.walkers".to_owned())], "in the file's order");
+        assert_eq!(GameFile::from_json(&g.to_json()).unwrap(), g);
+        let eye = GameFile::parse(r#"{"format": "specula.game.v1", "title": "Hold", "view": {"eye": [0, 5, 10], "target": [0, 0, 0]}}"#).unwrap();
+        assert_eq!(eye.view, Some(View::Eye { eye: [0.0, 5.0, 10.0], target: [0.0; 3], fov_y_deg: 50.0 }));
+        assert_eq!(GameFile::from_json(&eye.to_json()).unwrap(), eye);
+        let bad = |body: &str| GameFile::parse(&format!(r#"{{"format": "specula.game.v1", {body}}}"#)).unwrap_err().code;
+        assert_eq!(bad(r#""view": {"center": [1], "height": 2}"#), "bad_view");
+        assert_eq!(bad(r#""view": {"center": [1, 2], "height": 0}"#), "bad_view");
+        assert_eq!(bad(r#""view": {"center": [1, 2], "height": 3, "zoom": 2}"#), "unknown_key");
+        assert_eq!(bad(r#""view": {"eye": [1, 2, 3], "target": [1, 2, 3]}"#), "bad_view");
+        assert_eq!(bad(r#""report": ["tick"]"#), "bad_report");
+        assert_eq!(bad(r#""report": {"tick": 5}"#), "bad_key");
+        assert_eq!(bad(r#""report": {"a b": "run.ticks"}"#), "bad_name");
     }
 
     #[test]

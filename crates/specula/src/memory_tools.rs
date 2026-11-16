@@ -473,7 +473,12 @@ pub fn brief(tools: &Tools, session: &SessionInfo) -> Option<Json> {
         }
         let text = memoria::cut(&note.body, most);
         used += note.title.chars().count() + text.chars().count();
+        // (A note longer than a first call carries: said, with where the whole of it is.)
+        let whole_note = note.body.chars().count() > most;
         j.push(("text", Json::from(text)));
+        if whole_note {
+            j.push(("rest", Json::from(format!("this is its beginning: notes/{}.md is the whole note (memory_get reads it)", note.id))));
+        }
         Json::obj(j)
     };
     let mut out = vec![("source", Json::from(MEMORY_SOURCE)), ("notes", Json::from(memory.notes.current().count()))];

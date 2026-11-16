@@ -32,6 +32,18 @@ pub enum Target {
     Project(String),
 }
 
+/// What `specula run` was asked.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RunArgs {
+    /// The project's name or folder (`None`: the folder the command is run in).
+    pub which: Option<String>,
+    pub ticks: Option<u64>,
+    pub seed: Option<u64>,
+    pub inputs: Vec<(u64, String)>,
+    pub frame: Option<PathBuf>,
+    pub size: Option<(u32, u32)>,
+}
+
 /// One command.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cli {
@@ -55,6 +67,9 @@ pub enum Cli {
     /// folder the command is run in), so that its modules build against the engine that runs
     /// them (docs/design/FIRST_HOUR.md).
     Sdk { which: Option<String> },
+    /// Plays a project's game with no window, by a script of inputs, and prints how it stands
+    /// (docs/design/FIRST_HOUR.md, "A headless run").
+    Run(RunArgs),
     /// The tools a running engine lists.
     Tools { target: Target, filter: Option<String> },
     /// Calls one tool of a running engine.
@@ -95,6 +110,16 @@ specula play NAME|FOLDER|--last [--as-is] [-- engine flags]
                                  --as-is: whatever is on disk now, whoever wrote it
                                  (--run-as-is): say it only for code that is yours to run. A
                                  module is native code with your user's rights
+specula run [NAME|FOLDER] --ticks N [--inputs T:WORD,T:WORD,... | --inputs @FILE] [--seed N]
+            [--settings FOLDER] [--frame FILE.png [--size WxH]]
+                                 play a project's game with no window, from its start, and
+                                 print how it stands as one JSON object (the game file's
+                                 \"report\", or everything). Its modules are built first, as
+                                 they are on disk (as play --as-is: your code to run). An
+                                 input is a word at a tick: up down left right enter escape,
+                                 an action of a module (held until the next input), a key
+                                 (Key.Space), or none. --settings: where this run's player
+                                 settings are read and kept (none: kept nowhere)
 specula new NAME [--in FOLDER] [--bare]
                                  make a project that builds and plays (a game file, screens,
                                  words, a module, the SDK, notes) and list it; --bare: only
@@ -115,7 +140,7 @@ specula call TOOL ['{json}' | @FILE] [--port N | --project NAME] [--as NAME [--r
                                  started with --lead NAME)
 specula --help                   the engine's own flags";
 
-const WORDS: [&str; 11] = ["projects", "open", "play", "new", "forget", "sdk", "list", "stop", "tools", "call", "help"];
+const WORDS: [&str; 12] = ["projects", "open", "play", "run", "new", "forget", "sdk", "list", "stop", "tools", "call", "help"];
 
 /// The flags a command takes after its own words: `--port N`, `--project NAME`, `--as NAME`,
 /// `--in FOLDER`, `--last`. Returns what is left (the command's own words, in order).
@@ -254,6 +279,51 @@ pub fn parse(args: &[String]) -> Result<Option<Cli>, String> {
             exactly(&f, 1, "one word: the project's name or folder")?;
             Cli::Forget { which: f.rest[0].clone() }
         }
+        // A headless run of a project's game by a script of inputs (docs/design/FIRST_HOUR.md).
+        "run" => {
+            let mut run = RunArgs { which: None, ticks: None, seed: None, inputs: Vec::new(), frame: None, size: None };
+            let mut i = 0;
+            while i < rest.len() {
+                let w = rest[i].as_str();
+                if !w.starts_with("--") {
+                    if run.which.replace(w.to_owned()).is_some() {
+                        return Err("'specula run' takes one project: its name or its folder (none: the folder you are in)".to_owned());
+                    }
+                    i += 1;
+                    continue;
+                }
+                const TAKES: [&str; 5] = ["--ticks", "--seed", "--inputs", "--frame", "--size"];
+                if !TAKES.contains(&w) {
+                    return Err(format!("'{w}' is not a flag of this command (it takes: {}, --settings)", TAKES.join(", ")));
+                }
+                let value = rest.get(i + 1).ok_or_else(|| format!("'{w}' needs a value"))?.as_str();
+                match w {
+                    "--ticks" => run.ticks = Some(value.parse::<u64>().ok().filter(|t| *t <= crate::script_run::MAX_TICKS).ok_or_else(|| format!("'--ticks' is a whole number up to {} (got '{value}')", crate::script_run::MAX_TICKS))?),
+                    "--seed" => run.seed = Some(value.parse::<u64>().map_err(|_| format!("'--seed' is a whole number (got '{value}')"))?),
+                    "--inputs" => {
+                        // (`@FILE`: the script in a file, an input a line or with commas.)
+                        let text = match value.strip_prefix('@') {
+                            Some(file) => std::fs::read_to_string(file).map_err(|e| format!("'--inputs @{file}': {e}"))?,
+                            None => value.to_owned(),
+                        };
+                        run.inputs = crate::script_run::parse_inputs(&text).map_err(|e| format!("'--inputs': {e}"))?;
+                    }
+                    "--frame" => run.frame = Some(PathBuf::from(value)),
+                    _ => {
+                        let side = |s: &str| s.parse::<u32>().ok().filter(|n| crate::script_run::FRAME_SIDE.contains(n));
+                        run.size = Some(value.split_once(['x', 'X']).and_then(|(w, h)| Some((side(w)?, side(h)?))).ok_or_else(|| format!("'--size' is WIDTHxHEIGHT, each 64 to 2048 (got '{value}')"))?);
+                    }
+                }
+                i += 2;
+            }
+            if run.ticks.is_none() {
+                return Err("'specula run' needs --ticks N: how many ticks to play (0: only the start)".to_owned());
+            }
+            if run.size.is_some() && run.frame.is_none() {
+                return Err("'--size' is a frame's: give --frame FILE.png with it".to_owned());
+            }
+            Cli::Run(run)
+        }
         "sdk" => {
             let f = flags(rest, &[])?;
             if f.rest.len() > 1 {
@@ -347,13 +417,33 @@ mod tests {
     }
 
     #[test]
+    fn run_takes_ticks_a_script_and_a_frame() {
+        let Ok(Some(Cli::Run(run))) = p("run crypt --ticks 600 --seed 3 --inputs 0:enter,5:up,90:none --frame out/f.png --size 800x480") else { panic!("not a run") };
+        assert_eq!((run.which.as_deref(), run.ticks, run.seed), (Some("crypt"), Some(600), Some(3)));
+        assert_eq!(run.inputs, vec![(0, "enter".to_owned()), (5, "up".to_owned()), (90, "none".to_owned())]);
+        assert_eq!((run.frame, run.size), (Some(PathBuf::from("out/f.png")), Some((800, 480))));
+        // No project: the folder the command is run in. No script: the game from its start.
+        let Ok(Some(Cli::Run(bare))) = p("run --ticks 0") else { panic!("not a run") };
+        assert_eq!((bare.which, bare.ticks, bare.inputs.len(), bare.frame), (None, Some(0), 0, None));
+        let no = |line: &str| p(line).unwrap_err();
+        assert!(no("run crypt").contains("--ticks"), "how many ticks is always said");
+        assert!(no("run crypt --ticks 5 --size 800x480").contains("--frame"));
+        assert!(no("run crypt --ticks 5 --frame f.png --size 10x480").contains("64 to 2048"));
+        assert!(no("run crypt other --ticks 5").contains("one project"));
+        assert!(no("run crypt --ticks 5 --port 7000").contains("not a flag"));
+        assert!(no("run crypt --ticks 2000000").contains("whole number up to"));
+        assert!(no("run crypt --ticks 5 --inputs 9:up,3:down").contains("order"));
+        assert!(no("run crypt --ticks").contains("needs a value"));
+    }
+
+    #[test]
     fn no_arguments_and_flags_are_the_engines_own() {
         assert_eq!(p(""), Ok(None));
         assert_eq!(p("--port 7471 --headless"), Ok(None));
         assert_eq!(p("-h"), Ok(None));
         // A word that is no command is said, with the commands: never run as an engine.
         let e = p("opne crypt").unwrap_err();
-        assert!(e.contains("'opne' is not a command") && e.contains("projects, open, play, new"), "{e}");
+        assert!(e.contains("'opne' is not a command") && e.contains("projects, open, play, run, new"), "{e}");
     }
 
     #[test]

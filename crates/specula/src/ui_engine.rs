@@ -957,7 +957,7 @@ impl Engine {
             return;
         }
         self.ui_state.last_sweep = Some(now);
-        let alive: BTreeSet<String> = server.all_sessions().into_iter().map(|s| s.id).collect();
+        let alive = self.open_session_ids(server.all_sessions());
         self.ui_forget_sessions(&alive);
     }
 

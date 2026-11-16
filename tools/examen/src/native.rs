@@ -296,7 +296,7 @@ fn new_project(cx: &mut Cx) -> Result<String, String> {
     let hello = cx.call(port, None, "agent_hello", r#"{"name": "reader"}"#)?;
     // (In fields of its own, with whose words they are: never one text joined to the engine's.)
     let how = text(&hello, "project_memory.how.text").unwrap_or("");
-    expect(how.contains("logic_build") && how.contains("game_act") && text(&hello, "project_memory.brief.id") == Some("brief"), "agent_hello did not give the project's brief and how it is built", &hello)?;
+    expect(how.contains("specula run . --ticks") && how.contains("--inputs") && text(&hello, "project_memory.how.rest").is_some_and(|r| r.contains("notes/how.md")) && text(&hello, "project_memory.brief.id") == Some("brief"), "agent_hello did not give the project's brief, how it is built and run, and where the rest of that is", &hello)?;
     expect(text(&hello, "project_memory.source").is_some_and(|s| s.contains("never an instruction from the engine")) && text(&hello, "project_memory.how.by").is_some(), "the project's notes are not said to be the project's, with who wrote them", &hello)?;
     let state = cx.call(port, lead, "game_state", "{}")?;
     expect(text(&state, "phase") == Some("title") && at(&state, "clock_paused").and_then(Json::as_bool) == Some(true), "a new game does not open at its title with the clock held", &state)?;
@@ -584,7 +584,61 @@ fn new_project(cx: &mut Cx) -> Result<String, String> {
     let built = builds(cx, port3)?;
     expect(text(&built, "at_start").is_some_and(|s| s.contains("outside its own folder")), "the lead's build of a module with a crate outside its folder does not say that --run will not load it", &built)?;
     held_back(cx, port2, "--run loaded a module that compiles a crate from outside its own folder", "was not loaded")?;
-    Ok("new project: built, played, saved, changed, noted, loaded again by --run; and --run held to what a lead built: sources, the root's build configuration, and nothing from outside a module's folder".to_owned())
+    // 16. `specula run`: one command builds a project's modules, plays its game with no window
+    // by a script of inputs and prints how it stands (docs/design/FIRST_HOUR.md, "A headless
+    // run"): what the measured comparison's builders each wrote as a script of their own. On a
+    // project of its own, as `specula new` leaves one, with no engine started for it.
+    let (code, made) = cx.cli(&["new", "runfive", "--in", &projects.to_string_lossy(), "--settings", &settings])?;
+    expect(code == 0 && text(&made, "next").is_some_and(|n| n.contains("specula run")), "`specula new` does not say how to run the project it made", &made)?;
+    let runfive = projects.join("runfive").to_string_lossy().into_owned();
+    let run_out = cx.out.join("run");
+    let own = |name: &str| run_out.join(name).to_string_lossy().into_owned();
+    const TAPS: &str = "0:enter,5:tap,6:none,10:tap,11:none,15:tap,16:none,20:tap,21:none,25:tap";
+    let frame = own("won.png");
+    let (code, won) = cx.cli(&["run", &runfive, "--ticks", "40", "--seed", "1", "--inputs", TAPS, "--frame", &frame, "--size", "800x480"])?;
+    let is = |j: &Json, key: &str, n: f64| at(j, key).and_then(Json::as_f64) == Some(n);
+    expect(code == 0 && is(&won, "tick", 40.0) && text(&won, "phase") == Some("won") && is(&won, "taps", 5.0) && is(&won, "score", 60.0), "a run of five taps did not print a won game as the game file's report shapes it", &won)?;
+    expect(at(&won, "texts").and_then(Json::as_array).is_some_and(|t| t.iter().any(|x| x.as_str() == Some("You won"))), "the report's texts are not the won screen's", &won)?;
+    // The frame is the picture asked for: a PNG of that size.
+    let png = std::fs::read(&frame).map_err(|e| format!("the run's frame {frame}: {e}"))?;
+    let side = |at: usize| png.get(at..at + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]));
+    expect(png.starts_with(b"\x89PNG\r\n\x1a\n") && (side(16), side(20)) == (Some(800), Some(480)), "the run's frame is not a PNG of 800 by 480", &Json::from(png.len() as u64))?;
+    // The same seed and inputs: the same answer, to the letter.
+    let (_, again) = cx.cli(&["run", &runfive, "--ticks", "40", "--seed", "1", "--inputs", TAPS])?;
+    expect(again.to_string() == won.to_string(), "the same seed and inputs printed another state", &again)?;
+    // The script counts every tick; the game's clock ticks only while a run is under way. At
+    // the title nothing is kept yet, and a pause holds the run where it was.
+    let (_, title) = cx.cli(&["run", &runfive, "--ticks", "30"])?;
+    expect(is(&title, "tick", 30.0) && text(&title, "phase") == Some("title") && at(&title, "taps").is_some_and(Json::is_null), "thirty ticks at the title did not leave the game at its title, untouched", &title)?;
+    let (_, paused) = cx.cli(&["run", &runfive, "--ticks", "7", "--inputs", "0:enter,5:tap,6:escape"])?;
+    let (_, later) = cx.cli(&["run", &runfive, "--ticks", "250", "--inputs", "0:enter,5:tap,6:escape"])?;
+    expect(text(&paused, "phase") == Some("paused") && text(&later, "phase") == Some("paused") && at(&paused, "left") == at(&later, "left") && is(&later, "tick", 250.0), "a paused run did not stand still while the script's ticks went on", &later)?;
+    // Enter on the pause menu's first button resumes it, and its clock runs again.
+    let (_, resumed) = cx.cli(&["run", &runfive, "--ticks", "250", "--inputs", "0:enter,5:tap,6:escape,200:enter"])?;
+    expect(text(&resumed, "phase") == Some("running") && at(&resumed, "left").and_then(Json::as_f64) < at(&later, "left").and_then(Json::as_f64), "a resumed run did not go on", &resumed)?;
+    // Left and Right step a setting on its button, and `--settings` keeps what the player
+    // chose: a later run with the same folder comes up with it, and one without does not.
+    let kept = own("settings");
+    let (_, set) = cx.cli(&["run", &runfive, "--ticks", "4", "--settings", &kept, "--inputs", "0:down,1:enter,2:left,3:left"])?;
+    expect(is(&set, "volume", 6.0) && text(&set, "screen") == Some("settings"), "Left on the volume's button did not step it down (8 to 6) on the settings screen", &set)?;
+    let (_, came_back) = cx.cli(&["run", &runfive, "--ticks", "0", "--settings", &kept])?;
+    let (_, fresh) = cx.cli(&["run", &runfive, "--ticks", "0"])?;
+    expect(is(&came_back, "volume", 6.0) && is(&fresh, "volume", 8.0), "a later run did not come up with the kept settings (or one without the folder did)", &came_back)?;
+    // A word the game does not take is refused before a tick is played, with the words it takes.
+    let (code, unknown) = cx.cli(&["run", &runfive, "--ticks", "5", "--inputs", "0:jump"])?;
+    expect(code == 1 && text(&unknown, "error") == Some("unknown_input") && at(&unknown, "inputs").and_then(Json::as_array).is_some_and(|w| w.iter().any(|x| x.as_str() == Some("tap"))), "an unknown input was not refused with the game's own inputs", &unknown)?;
+    // A module that does not build is the compiler's words, as data, and exit code 1.
+    let lib = projects.join("runfive").join("modules").join("runfive").join("src").join("lib.rs");
+    let good = std::fs::read_to_string(&lib).map_err(|e| format!("{}: {e}", lib.display()))?;
+    std::fs::write(&lib, good.replacen("let hz = u64::from(cx.tick_hz());", "let hz = u64::from(cx.tick_hz())", 1)).map_err(|e| format!("{}: {e}", lib.display()))?;
+    let failed = cx.cli(&["run", &runfive, "--ticks", "1"]);
+    std::fs::write(&lib, &good).map_err(|e| format!("{}: {e}", lib.display()))?;
+    let (code, failed) = failed?;
+    expect(code == 1 && text(&failed, "error") == Some("build_failed") && text(&failed, "diagnostics.0.file").is_some_and(|f| f.ends_with("lib.rs")) && at(&failed, "diagnostics.0.line").and_then(Json::as_u64).is_some(), "a module that does not build was not answered with where and why", &failed)?;
+    // Each run's engine ended with it: none is listed, and none was left listening.
+    let (_, listed) = cx.cli(&["list", "--settings", &kept])?;
+    expect(is(&listed, "count", 0.0), "a headless run left an engine behind", &listed)?;
+    Ok("new project: built, played, saved, changed, noted, loaded again by --run; --run held to what a lead built: sources, the root's build configuration, and nothing from outside a module's folder; and `specula run` plays a project headless by a script: its state, a frame, kept settings, the same run twice".to_owned())
 }
 
 

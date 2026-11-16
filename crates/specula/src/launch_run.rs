@@ -226,7 +226,7 @@ pub fn run(cli: Cli, ctx: &Ctx) -> (i32, Json) {
                                 ("read_first", Json::from("notes/how.md: how this game is built and checked (an agent is given it at its agent_hello)")),
                             ]),
                         );
-                        j.set("next", Json::from(format!("specula open \"{0}\" -- --lead NAME  (to build its module with logic_build), or: specula play \"{0}\"", project.path.display())));
+                        j.set("next", Json::from(format!("specula run \"{0}\" --ticks 40 --inputs 0:enter,5:tap  (builds it and plays it with no window; notes/how.md says the rest), or: specula play \"{0}\" --as-is  (its window)", project.path.display())));
                     }
                     if let Err(e) = listed {
                         j.set("warning", Json::from(format!("the project was made but could not be listed ({e})")));
@@ -263,6 +263,7 @@ pub fn run(cli: Cli, ctx: &Ctx) -> (i32, Json) {
             write_sdk(&std::path::absolute(&folder).unwrap_or(folder))
         }
         Cli::Open { which, front, engine_args } => open(ctx, &which, front, &engine_args),
+        Cli::Run(args) => run_game(ctx, &args),
         Cli::Stop { target } => {
             let (list, _) = ctx.store.load();
             let engine = match pick_engine(&target, &ctx.engines(), &list) {
@@ -652,6 +653,127 @@ pub fn default_parent(var: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
 }
 
 /// A port the system has free now (loopback).
+/// How long a headless run may take before its engine is ended (its first build of a module
+/// compiles the SDK).
+const RUN_WALL: Duration = Duration::from_secs(1800);
+/// Most characters of what a run's engine said that a refusal carries.
+const RUN_SAID: usize = 600;
+
+/// `specula run`: an engine of this run's own plays the script with no window and ends; its
+/// answer is read from a file in a folder of this run's own, which goes when it is read.
+fn run_game(ctx: &Ctx, args: &crate::launch_cli::RunArgs) -> (i32, Json) {
+    let folder = match &args.which {
+        None => match std::env::current_dir() {
+            Ok(here) => here,
+            Err(e) => return refusal("no_folder", format!("the folder this was run in can't be read ({e}): name the project")),
+        },
+        Some(word) if Path::new(word).is_dir() => PathBuf::from(word),
+        Some(word) => match pick_project(&ctx.store.load().0, &Which::Word(word.clone())) {
+            Ok(p) => p.path.clone(),
+            Err(no) => return no,
+        },
+    };
+    let folder = std::path::absolute(&folder).unwrap_or(folder);
+    if !folder.join(specula_ludus::game::FILE).is_file() {
+        return refusal("no_game", format!("{} has no {}: a headless run plays a project's game ('specula new NAME' makes a project that has one)", folder.display(), specula_ludus::game::FILE));
+    }
+    // (As the disk book names folders: the one spelling its removal takes.)
+    let temp = crate::disk::canonical(&std::env::temp_dir());
+    let scratch = temp.join(format!("specula-run-{}-{}", std::process::id(), ctx.now));
+    if let Err(e) = crate::disk::book().make_dir(crate::disk::Category::Scratch, &scratch, crate::disk::Need::Essential) {
+        return refusal("no_scratch", format!("{}: {e}", scratch.display()));
+    }
+    let done = |answer: (i32, Json)| {
+        // (This run's own folder, inside the temporary folder, never through a link.)
+        let _ = crate::disk::remove_tree_inside(&temp, &scratch);
+        answer
+    };
+    let absolute = |p: &PathBuf| std::path::absolute(p).unwrap_or_else(|_| p.clone());
+    let spec = crate::script_run::Spec {
+        ticks: args.ticks.unwrap_or(0),
+        seed: args.seed,
+        inputs: args.inputs.clone(),
+        frame: args.frame.as_ref().map(absolute),
+        size: args.size.unwrap_or((960, 540)),
+        out: scratch.join("answer.json"),
+    };
+    if let Some(parent) = spec.frame.as_ref().and_then(|f| f.parent()).filter(|p| !p.as_os_str().is_empty()) {
+        if let Err(e) = crate::disk::book().make_dir(crate::disk::Category::Captures, parent, crate::disk::Need::Essential) {
+            return done(refusal("no_frame", format!("{}: {e}", parent.display())));
+        }
+    }
+    let spec_file = scratch.join("spec.json");
+    if let Err(e) = crate::disk::book().write(crate::disk::Category::Scratch, "run", &spec_file, spec.to_json().to_string().as_bytes(), crate::disk::Need::Essential) {
+        return done(refusal("no_scratch", format!("{}: {e}", spec_file.display())));
+    }
+    let Some(port) = free_port() else { return done(refusal("no_port", "no free port for the run's engine")) };
+    let mut command = std::process::Command::new(&ctx.exe);
+    command.arg("--project").arg(&folder).arg("--script").arg(&spec_file).arg("--port").arg(port.to_string());
+    command.arg("--captures").arg(scratch.join("captures")).args(["--trace-file", "off"]);
+    // Where this run's player settings are read and kept: the folder the command named, or
+    // nowhere (and then the engine is not listed either: it is this command's own).
+    if ctx.settings_given {
+        command.arg("--settings").arg(&ctx.store.dir);
+    } else {
+        command.args(["--settings", "off"]);
+    }
+    // What the engine says of itself is kept, its last lines: why a run that did not answer did not.
+    command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
+    let mut child = match command.spawn() {
+        Ok(c) => c,
+        Err(e) => return done(refusal("not_started", format!("{} could not be started ({e})", ctx.exe.display()))),
+    };
+    let said = child.stderr.take().map(|mut pipe| {
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let (mut tail, mut part) = (Vec::new(), [0u8; 4096]);
+            while let Ok(n @ 1..) = pipe.read(&mut part) {
+                tail.extend_from_slice(&part[..n]);
+                let over = tail.len().saturating_sub(4 * RUN_SAID);
+                tail.drain(..over);
+            }
+            String::from_utf8_lossy(&tail).into_owned()
+        })
+    });
+    let began = std::time::Instant::now();
+    let ended = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if began.elapsed() < RUN_WALL => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    let answer = std::fs::read_to_string(&spec.out).ok().and_then(|t| Json::parse(&t).ok());
+    let Some(answer) = answer else {
+        // No answer: the engine did not get as far as the run (its own words say why).
+        let said: String = said.and_then(|s| s.join().ok()).unwrap_or_default().trim().chars().rev().take(RUN_SAID).collect::<Vec<_>>().into_iter().rev().collect();
+        let why = match ended {
+            None => format!("the run did not end within {} minutes and was stopped", RUN_WALL.as_secs() / 60),
+            Some(status) => format!("the run's engine ended ({status}) before it answered"),
+        };
+        let (code, mut j) = refusal("no_answer", why);
+        j.set("engine_said", Json::from(said.as_str()));
+        return done((code, j));
+    };
+    if answer.get("ok").and_then(Json::as_bool) != Some(true) {
+        return done((1, answer.get("error").cloned().unwrap_or_else(|| refusal("no_answer", "the run's answer could not be read").1)));
+    }
+    let mut out = Json::obj([(RUN_REPORT, answer.get("report").cloned().unwrap_or(Json::Null))]);
+    if let Some(problems) = answer.get("problems") {
+        out.set("problems", problems.clone());
+    }
+    done((0, out))
+}
+
+/// The key a headless run's answer has its report under ([`answer`] prints the report alone,
+/// as one line: it is the game's own state, for whoever checks it, not this command's words).
+const RUN_REPORT: &str = "run_report";
+
+/// A port of this machine that is free now.
 pub fn free_port() -> Option<u16> {
     std::net::TcpListener::bind(("127.0.0.1", 0)).and_then(|l| l.local_addr()).ok().map(|a| a.port())
 }
@@ -706,6 +828,15 @@ pub fn answer(cli: Cli, settings: Option<PathBuf>) -> i32 {
         Ok(ctx) => run(cli, &ctx),
         Err(why) => refusal("no_per_user_folder", why),
     };
+    // A headless run's report is the game's state: one line, alone on the output, and what the
+    // game says is wrong with its own files beside it, where a reader of the state is not.
+    if let Some(report) = json.get(RUN_REPORT) {
+        for problem in json.get("problems").and_then(Json::as_array).unwrap_or(&[]) {
+            eprintln!("specula run: {}", problem.as_str().map_or_else(|| problem.to_string(), str::to_owned));
+        }
+        println!("{report}");
+        return code;
+    }
     // (`help` is words for a person: printed as text.)
     let text = json.get("help").and_then(Json::as_str).map_or_else(|| json.to_pretty(), str::to_owned);
     if code == 2 {

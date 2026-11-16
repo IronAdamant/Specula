@@ -238,6 +238,63 @@ is beyond what two runs alike have shown; no cell got cheaper.
 - **What follows** is in ROADMAP M6 ("The first hour, measured again"): fewer steps to a running game,
   not more that the engine can do.
 
+## 9. A headless run (the second pass, 2026-11-16)
+
+Slice 8 measured the first seven and the engine arm had not got cheaper. Every request of those twelve
+runs was then laid out (`examen leverage trace RUN`; [LEVERAGE.md](LEVERAGE.md), "Where every token
+went"). What it showed:
+
+| Found in the ledgers | Share of an engine build |
+|---|---|
+| The headless check was a script each builder wrote and debugged (180 to 530 lines, then 6 to 10 patches at the largest context of the run) | 33% to 42% |
+| Discovery before any code: the sample, tool lists, the SDK's sources, and this design document for the game file's format, each carried by every later request | 17% to 25% |
+| Waiting for its own slow check, starting and stopping engines, finding leftover processes | 7% to 23% |
+
+So the second pass is one loop, the plain arm's: **edit, run, read.**
+
+- **`specula run [NAME|FOLDER] --ticks N [--inputs T:WORD,...] [--seed N] [--settings FOLDER]
+  [--frame FILE.png --size WxH]`** builds the game file's modules as they are on disk, plays the game
+  from its start with no window, prints how it stands as one JSON object, and ends. Nothing is left
+  running. A build that fails is the compiler's diagnostics as data and exit code 1. About 4 s for a
+  short run of the sample.
+  - **An input is a word at a tick**: a press on the interface (`up down left right enter escape`, or
+    a source such as `Key.Space`), an action of a module (held until the next input, as a held key
+    is), or `none`. A word that is both does both, as one key does. A word the game does not take is
+    refused before a tick is played, with the words it takes.
+  - **The game's clock is the game's.** The script counts every tick; a tick of the game runs only
+    while the game has its run's clock running. The title and a pause hold it and an ended run has no
+    further tick, as for a player. The engine is started with the clock standing still
+    (`Engine::script_clock`; `TimeOp::Play`), so no time of the machine becomes a tick: the same seed
+    and inputs print the same state, to the letter, and the same frame, byte for byte.
+  - **`--seed`** seeds the modules' random streams. **`--settings FOLDER`** is where the run's player
+    settings are read and kept: a later run with the folder comes up with them. Without it they are
+    kept nowhere, and the run's engine is listed nowhere.
+  - **It is the operator's command**, as `specula play --as-is` is: what is on disk is built and
+    loaded with the user's rights, by whoever runs the command ([MODULES.md](MODULES.md)). It records
+    no approval: `--run` still loads only what an owner or a granted lead built.
+- **The game file says what is printed and how the game is looked at.**
+  - `"report"`: each line a name and the key whose value it shows, in order: what a module keeps
+    (`gate.walkers`), `setting.NAME`, `game.phase`, `game.score`, `game.outcome`, `game.tick`,
+    `run.ticks`, `run.seed`, `ui.screen`, `ui.focus`, `ui.focus_index`, `ui.texts` (every text on
+    screen) and `ui.top_texts` (the top screen's). No report: everything.
+  - `"view"`: `{"center": [x, y], "height": metres}` (straight on, as a 2D game is seen) or
+    `{"eye", "target", "fov_y_deg"}`. A run's frame uses it, and so does the window while nobody has
+    pointed it elsewhere: a 2D game is no longer seen by the camera that fits whatever is in the world.
+- **Left and Right step a setting** on the button that moves it, and stop at its ends; Enter does the
+  button's own action. Only while the press moved the focus nowhere.
+- **`notes/how.md` is one page that answers what the builders looked up**: the loop and its command,
+  every key of the game file, what a screen's text can show and a button's action can be, the SDK's
+  calls a game's rules use. A test holds that it names every key the game file takes. The sample's game
+  file has a report. `specula new` says the run command as what to do next, and a first call's
+  `project_memory.how` says where the rest of a long note is.
+- **What it is made of**: `crates/specula/src/script_run.rs` (a caller's thread, as the operator who
+  started the engine, through the tools an agent would use), `launch_cli.rs` / `launch_run.rs`
+  (`Cli::Run`), `specula-ludus` (`GameFile::view`, `report`), `shell.rs` (`step_focused_setting`, the
+  view given to the window). The live check `new_project_check` has it as its sixteenth stage.
+- **Found while building it:** a job owned by a session that is not a connection was dropped by the
+  look for closed sessions (a run's frame, one run in four). The operator's own session counts as open
+  now (`Engine::open_session_ids`), for a worker's job, a stepped job and an interface's state.
+
 ## As built
 
 **Built, with its own tests, the structural guards and clippy passing; the full gate passed on its last commit** (2026-11-16, branch

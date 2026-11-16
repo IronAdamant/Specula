@@ -109,6 +109,9 @@ boundary is **who may load a module**, and the checks below are lints behind it 
     to run, whoever wrote it: for code they wrote by hand, or a project they have read. It is the only way a
     module no owner has built here runs at start, and it approves nothing: the next `--run` holds to the
     record as before.
+  - **`specula run`** (a headless run of a project's game by a script of inputs: [FIRST_HOUR.md](FIRST_HOUR.md),
+    "A headless run") is the same word from the operator, for that one run: it builds and loads what is on
+    disk, as `--run-as-is` does, in an engine that ends with the run, and approves nothing.
 - **A builder proposes.** Any other agent's `logic_build` builds nothing: the engine files a **proposal** (the module's
   folder, who, the tick, and the SHA-256 of every file in the folder, `specula_logic::digest`) and answers `lead_only`
   with it. `project_write {build}` by a builder proposes the same way. `logic_status` lists proposals (at most 32; one

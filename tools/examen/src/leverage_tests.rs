@@ -410,3 +410,56 @@ fn where_reads_a_builders_steps() {
     assert!(text(&w, "how").unwrap().contains("characters / 4"));
     assert!(rep::where_text(&w).contains("4 steps (2 before the first code); weighted 335 = read again 100 + written out 100 + new in the context 135"));
 }
+
+#[test]
+fn trace_gives_every_request_its_cost_and_what_it_left_to_carry() {
+    use crate::leverage_trace as tr;
+    let s = Scratch::new("trace");
+    let d = s.run_dir("small", "engine", 1, &[]);
+    // Three requests. The context: 1,000 at the start; the first adds 400 (an answer of 1,200
+    // characters and 100 written); the second adds 200.
+    let request = |id: &str, write: f64, read: f64, content: Json| {
+        let usage = Json::obj([("input_tokens", Json::Num(0.0)), ("cache_creation_input_tokens", Json::Num(write)), ("cache_read_input_tokens", Json::Num(read)), ("output_tokens", Json::Num(1.0))]);
+        Json::obj([("type", Json::Str("assistant".to_owned())), ("message", Json::obj([("id", Json::Str(id.to_owned())), ("usage", usage), ("content", Json::arr([content]))]))]).to_string()
+    };
+    let used = |id: &str, name: &str, input: Json| Json::obj([("type", Json::Str("tool_use".to_owned())), ("id", Json::Str(id.to_owned())), ("name", Json::Str(name.to_owned())), ("input", input)]);
+    let answered = |id: &str, said: &str| Json::obj([("type", Json::Str("user".to_owned())), ("message", Json::obj([("content", Json::arr([Json::obj([("type", Json::Str("tool_result".to_owned())), ("tool_use_id", Json::Str(id.to_owned())), ("content", Json::Str(said.to_owned()))])]))]))]).to_string();
+    let lines = [
+        request("a", 1000.0, 0.0, used("1", "Read", Json::obj([("file_path", Json::Str("work/notes/how.md".to_owned()))]))),
+        answered("1", &"x".repeat(1200)),
+        request("b", 400.0, 1000.0, used("2", "Write", Json::obj([("file_path", Json::Str("work/m.rs".to_owned())), ("content", Json::Str("y".repeat(400)))]))),
+        answered("2", "ok"),
+        request("c", 200.0, 1400.0, Json::obj([("type", Json::Str("text".to_owned())), ("text", Json::Str("z".repeat(80)))])),
+    ];
+    std::fs::write(lev::costs_dir(&d).unwrap().join("small-engine-1.builder.stream.jsonl"), lines.join("\n") + "\n").unwrap();
+    // Read: 1,600 new x 1.25 + 2,400 read again x 0.1 = 2,240. Written: 320 x 5 = 1,600.
+    lev::write_cost(&d, &Json::obj([("builder", builder(3840.0, true, &[("cache_write", 1600.0), ("cache_read", 2400.0), ("output", 320.0)]))])).unwrap();
+    let t = tr::trace_of(&d, false).unwrap();
+    let n = |path: &[&str]| path.iter().try_fold(&t, |v, k| v.get(k)).and_then(Json::as_f64);
+    assert_eq!((n(&["requests"]), n(&["reading"]), n(&["writing"]), n(&["in_the_ledger"])), (Some(3.0), Some(2240.0), Some(1600.0), Some(3840.0)), "the ledger is the run's weighted figure");
+    let rows = t.get("rows").and_then(Json::as_array).unwrap();
+    let row = |i: usize, k: &str| rows[i].get(k).and_then(Json::as_f64).unwrap();
+    assert_eq!((row(0, "context"), row(1, "context"), row(2, "context")), (1000.0, 1400.0, 1600.0));
+    // What a request wrote: its growth less its answer (400 - 300 = 100; 200 - 0 = 200; the
+    // last: what can be seen, 20), scaled to the run's 320.
+    assert_eq!((row(0, "written_out"), row(1, "written_out"), row(2, "written_out")), (100.0, 200.0, 20.0));
+    // What the first request added (400) was written to the cache at the second (x 1.25) and
+    // read again at the third (x 0.1); the second's 200 was written at the third.
+    assert_eq!((row(0, "carried"), row(1, "carried"), row(2, "carried")), (540.0, 250.0, 0.0));
+    // The start (1,000) was written once and read again twice. With the rows: all the reading.
+    assert_eq!(n(&["start", "carried"]), Some(1450.0));
+    assert_eq!(1450.0 + 540.0 + 250.0, 2240.0);
+    assert_eq!(row(2, "cost_so_far"), 3840.0);
+    // By the first step of each request, and by file.
+    assert_eq!(n(&["by_kind", "read its own files", "carried"]), Some(540.0));
+    assert_eq!(n(&["by_kind", "write code", "writing"]), Some(1000.0));
+    let files = t.get("files").and_then(Json::as_array).unwrap();
+    assert!(files.iter().any(|f| text(f, "file") == Some("work/notes/how.md") && f.get("reads").and_then(Json::as_f64) == Some(1.0) && f.get("answered").and_then(Json::as_f64) == Some(300.0)));
+    let said = tr::trace_text(&t);
+    assert!(said.contains("3 requests; weighted 3,840 (in the ledger 3,840 = reading 2,240 + writing 1,600)"), "{said}");
+    // A run stopped at its time limit has no total of what it wrote: nothing is scaled to one.
+    lev::write_cost(&d, &Json::obj([("builder", builder(0.0, false, &[("output", 3.0)]))])).unwrap();
+    let cut = tr::trace_of(&d, false).unwrap();
+    assert_eq!(cut.get("rows").and_then(Json::as_array).unwrap()[1].get("written_out").and_then(Json::as_f64), Some(200.0));
+    assert_eq!(cut.get("complete").and_then(Json::as_bool), Some(false));
+}

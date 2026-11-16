@@ -575,6 +575,14 @@ impl Ui {
         self.screens[s].screen.index_of(id).map(|node| WidgetRef { screen: s, node })
     }
 
+    /// The action a button fires when it is activated.
+    pub fn widget_action(&self, w: WidgetRef) -> Option<&str> {
+        match &self.screens.get(w.screen)?.screen.nodes.get(w.node as usize)?.kind {
+            Kind::Button { action, .. } => action.as_deref(),
+            _ => None,
+        }
+    }
+
     pub fn widget_id(&self, w: WidgetRef) -> Option<&str> {
         self.screens.get(w.screen)?.screen.nodes.get(w.node as usize)?.id.as_deref()
     }

@@ -481,7 +481,7 @@ impl Engine {
         }
         if let Some(server) = server.filter(|_| self.workers.last_session_check.elapsed() >= SESSION_CHECK) {
             self.workers.last_session_check = Instant::now();
-            let alive: BTreeSet<String> = server.all_sessions().into_iter().map(|s| s.id).collect();
+            let alive = self.open_session_ids(server.all_sessions());
             for p in self.workers.pending.values() {
                 if p.cancel_on_close && p.owner.as_ref().is_some_and(|(_, s)| !alive.contains(s)) {
                     p.cancel.set();

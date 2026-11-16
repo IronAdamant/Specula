@@ -311,6 +311,11 @@ impl Place {
         Place { drive, parts, name }
     }
 
+    /// How long the place's path is, for putting the longest first.
+    pub(crate) fn len(&self) -> usize {
+        self.parts.iter().map(|part| part.len() + 1).sum()
+    }
+
     /// How many characters at the start of `text` are this place (0: it does not start here).
     fn len_at(&self, text: &[char]) -> usize {
         let same = |a: char, b: char| a.to_lowercase().eq(b.to_lowercase());
@@ -382,7 +387,7 @@ pub fn scrub(text: &str, places: &[Place], user: Option<&str>) -> String {
     out
 }
 
-fn home() -> Option<PathBuf> {
+pub(crate) fn home() -> Option<PathBuf> {
     std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).filter(|h| !h.is_empty()).map(PathBuf::from)
 }
 
@@ -411,7 +416,7 @@ pub fn export(root: &Path, dest: &Path) -> R<Json> {
             }
         }
     }
-    places.sort_by_key(|p| std::cmp::Reverse(p.parts.iter().map(|part| part.len() + 1).sum::<usize>()));
+    places.sort_by_key(|p| std::cmp::Reverse(p.len()));
     let user = home.as_ref().and_then(|h| h.file_name()).map(|n| n.to_string_lossy().into_owned());
     let clean = |text: &str| scrub(text, &places, user.as_deref());
     for name in ["report.md", "report.json"] {
@@ -444,6 +449,12 @@ pub fn export(root: &Path, dest: &Path) -> R<Json> {
         }
         if let Ok(where_) = where_of(&run) {
             c.set("where", where_);
+        }
+        // (Every request of the builder and of the judge: what it read, wrote and cost.)
+        for (key, judge) in [("trace", false), ("judge_trace", true)] {
+            if let Ok(trace) = crate::leverage_trace::trace_of(&run, judge) {
+                c.set(key, trace);
+            }
         }
         let text = Json::obj([("run", r), ("costs", c)]).to_pretty() + "\n";
         std::fs::write(dest.join(format!("{}.json", name_of(&run))), clean(&text)).map_err(|e| format!("{}: {e}", name_of(&run)))?;
@@ -571,7 +582,7 @@ fn build_failed(text: &str) -> bool {
 }
 
 /// Python's `len(json.dumps(x))`: a value as JSON with a space after each comma and colon.
-fn dumps_len(j: &Json) -> usize {
+pub(crate) fn dumps_len(j: &Json) -> usize {
     match j {
         Json::Arr(items) if !items.is_empty() => 2 + items.iter().map(dumps_len).sum::<usize>() + 2 * (items.len() - 1),
         Json::Obj(pairs) if !pairs.is_empty() => 2 + pairs.iter().map(|(k, v)| python_str_len(k) + 2 + dumps_len(v)).sum::<usize>() + 2 * (pairs.len() - 1),

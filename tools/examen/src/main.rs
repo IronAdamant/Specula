@@ -17,6 +17,7 @@ mod gate;
 mod kept;
 mod leverage;
 mod leverage_report;
+mod leverage_trace;
 #[cfg(test)]
 mod leverage_tests;
 mod live;
@@ -57,6 +58,7 @@ examen: the repository's own tooling
               [--by-kind I,W,R,O] [--ended done|wall|stopped] [--note TEXT] [--judge]
   examen leverage usage TRANSCRIPT | judge RUN [--verdict FILE [--again WHY]]
   examen leverage report ROOT | export ROOT DEST | where RUN [RUN ...] [--json]
+  examen leverage trace RUN [RUN ...] [--judge] [--json]   (every request: what it read, wrote and cost)
       The measured comparison's harness (docs/design/LEVERAGE.md): the same game jobs built
       through the engine and without it, each run in a folder of its own, what it cost kept
       apart from what its judge sees.

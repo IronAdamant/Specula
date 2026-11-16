@@ -84,6 +84,20 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
     file, the shell's screens, a tick of their own) and took more requests doing it; no builder called a
     memory tool or wrote a note; the games with menus were checked by scripts that step the engine call
     by call. What follows from it is a roadmap item ("The first hour, measured again"), not built.
+  - **Every token of those runs, laid out** (`examen leverage trace RUN`; the owner, on the result:
+    "Note down every token spend. Assess"): each request's context, what it wrote, its cost and what
+    it left every later request to carry, with its steps and files; both ledgers are in each run's
+    exported file. The assessment is in LEVERAGE.md ("Where every token went"): a third to two fifths
+    of an engine build was its builder writing and debugging a headless-check script of its own.
+  - **The second pass: `specula run`.** One command builds a project's modules as they are on disk,
+    plays its game with no window by a script of inputs (a word at a tick: a press on the interface,
+    a module's action held until the next input, or `none`), prints the state as the game file's new
+    `report` shapes it, writes a frame through the game file's new `view`, and ends. The game's clock
+    ticks only while the game has it running, and no time of the machine becomes a tick: the same
+    seed and inputs print the same state and the same frame. `--settings FOLDER` keeps the run's
+    player settings. Left and Right step a setting on its button. `notes/how.md` in a new project is
+    one page that answers what the builders looked up. Found on the way: a job owned by the
+    operator's in-process session was dropped as a closed session's, one run in four (a run's frame).
 
 ### M5, done (2026-11-06 to 2026-11-15)
 

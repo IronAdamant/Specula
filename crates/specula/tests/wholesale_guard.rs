@@ -87,6 +87,7 @@ const FIELDS: &[(&str, Class)] = &[
     ("run_reports", NoIds("lines for a person: what the start-up build could not load")),
     ("playtest_pumping", NoIds("a flag: a playtest is serving its own steps now")),
     ("game_clock_held", NoIds("the hosted game's last wish for the clock from while a playtest had it")),
+    ("script_clock", NoIds("whether the hosted game has its run's clock running, under a script (--script)")),
     ("pacing", NoIds("timings")),
     ("schedule", NoIds("timings")),
     ("profiler", NoIds("CPU zones")),

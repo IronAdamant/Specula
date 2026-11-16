@@ -264,6 +264,10 @@ The project list, the files that say which engines are running, and the two requ
   `--run-as-is` loads whatever is on disk and is for the operator's own code: with it, anything an agent wrote
   into a module's folder runs at that start, unreviewed (and at no later `--run`: it approves nothing). The
   start-up build runs as `operator:run`, an identity no connection can have.
+  `specula run` (a headless run by a script) is `--run-as-is` for one run: whoever runs the command runs
+  what is on disk, with their own rights; its engine listens on loopback like any other, on a port of
+  its own, and ends with the run. It is a command of a shell, never a tool: an agent that has only the
+  protocol cannot start one.
   - **What it loads is built in the operator's own folder**, never in a build folder that could have come
     with the project (a library found there counts as built from the sources when the file times say so):
     [MODULES.md](MODULES.md).

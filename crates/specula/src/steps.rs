@@ -151,7 +151,7 @@ impl Engine {
         }
         if self.steps.last_session_check.is_none_or(|t| now - t >= SESSION_CHECK) {
             self.steps.last_session_check = Some(now);
-            let alive: BTreeSet<String> = server.all_sessions().into_iter().map(|s| s.id).collect();
+            let alive = self.open_session_ids(server.all_sessions());
             for e in std::mem::take(&mut self.steps.queue) {
                 if e.cancel_on_close && !alive.contains(&e.session) {
                     let _ = e.reply.send(stopped("session_closed", &format!("the session closed; its {} was dropped", e.job.kind())));

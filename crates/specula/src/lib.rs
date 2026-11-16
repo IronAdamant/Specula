@@ -63,6 +63,7 @@ mod perf;
 pub mod persist;
 pub mod rollup;
 mod run_modules;
+mod script_run;
 mod save_tools;
 mod scaffold;
 mod safe_path;
@@ -239,7 +240,7 @@ const MAX_BATCH_RESULT_BYTES: usize = 32 * 1024;
 const USAGE: &str = "usage: specula [--port N] [--headless] [--adapter discrete|integrated|<index>] [--size WxH] \
 [--captures DIR] [--worlds DIR] [--world NAME] [--saves DIR] [--cache DIR] [--assets DIR] [--style FILE] [--perf FILE] \
 [--paused] [--max-fps N] [--audio device|null|off] [--response-format concise|detailed] [--tools-default core|all] [--physics-threads N] [--vfx on|off] [--terrain on|off] \n[--trace DIR] [--trace-file on|off] [--strict-budget] \
-[--owner NAME] [--lead NAME] [--reviewer NAME] [--settings DIR|off] [--no-activate] [--project DIR] [--run | --run-as-is] [--launcher] [-- GAME ARGS...]\n\
+[--owner NAME] [--lead NAME] [--reviewer NAME] [--settings DIR|off] [--no-activate] [--project DIR] [--run | --run-as-is] [--script FILE] [--launcher] [-- GAME ARGS...]\n\
 commands (specula help): projects | open --last|NAME|FOLDER | new NAME | forget NAME | list | tools [FILTER] | call TOOL ['{json}']";
 
 /// How long a capture waits (parked, the engine serving others) for models still building.
@@ -276,6 +277,9 @@ struct Args {
     run: bool,
     /// `--run-as-is`: as `--run`, and whatever is on disk now, whoever built it last.
     run_as_is: bool,
+    /// `--script FILE`: a headless run of the project's game by a script of inputs, then the
+    /// engine ends (`specula run` writes the file and reads the answer: [`script_run`]).
+    script: Option<PathBuf>,
     /// `--project DIR`: the engine starts in that folder, as a project (docs/design/LAUNCH.md).
     project: Option<PathBuf>,
     /// `--launcher`: the start screen (the project list) opens over the window, as it does
@@ -345,6 +349,7 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
         no_activate: false,
         run: false,
         run_as_is: false,
+        script: None,
         project: None,
         launcher: false,
         adapter: AdapterPreference::HighPerformance,
@@ -386,6 +391,11 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--headless" => args.headless = true,
             "--no-activate" => args.no_activate = true,
             "--run" => args.run = true,
+            "--script" => {
+                args.script = Some(PathBuf::from(value()?));
+                // (A script's run has no window: nobody is there to look at one.)
+                args.headless = true;
+            }
             "--run-as-is" => {
                 args.run = true;
                 args.run_as_is = true;
@@ -559,6 +569,16 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
         std::process::exit(code);
     }
     let mut args = parse_args()?;
+    // `--script FILE`: what a headless run is asked, read before anything is started.
+    let script = match &args.script {
+        None => None,
+        Some(path) => {
+            let text = std::fs::read_to_string(path).map_err(|e| format!("--script {}: {e}", path.display()))?;
+            let json = Json::parse(&text).map_err(|e| format!("--script {}: not JSON: {}", path.display(), e.message))?;
+            Some(script_run::Spec::from_json(&json).map_err(|e| format!("--script {}: {e}", path.display()))?)
+        }
+    };
+    let scripted = script.is_some();
     let mut startup = Startup::begin();
     if args.project.is_some() {
         // `--project` makes that folder the working directory. Every other folder the command
@@ -870,6 +890,15 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     // failed engine and its port lived on for the calls' two minutes
     // (tests/start_fail.rs runs the executable and holds this order).
     let starting = startgate::Starting::new(Arc::clone(&start_gate));
+    // `--script`: the run is played by a caller of its own, as the operator who started this
+    // engine, through the tools an agent would use; it ends the engine when it has answered.
+    if let Some(spec) = script {
+        engine.swarm.admit_run_operator(run_modules::RUN_SESSION);
+        match engine.tools.as_ref().and_then(std::sync::Weak::upgrade) {
+            Some(tools) => script_run::start(tools, Arc::clone(&start_gate), spec),
+            None => return Err("--script: the engine has no tools to play the run with".to_owned()),
+        }
+    }
     // Serving: the project is first in the user's list and this engine can be found (its
     // instance file), unless `--settings off` (docs/design/LAUNCH.md).
     engine.opened_project = project.as_ref().map(|p| (p.path.clone(), p.name.clone()));
@@ -944,6 +973,13 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
     startup.mark("pipelines");
     // Loading is done: from here on, building a pipeline is a visible hitch and a budget error.
     engine.gpu.mark_warm();
+    if scripted {
+        // A script has the clock from before the game's first wish for it: no time of this
+        // machine becomes a tick, and whether the run's clock is running is the game's own
+        // state ([`Engine::serve_game_clock`]).
+        engine.clock.set_paused(true);
+        engine.script_clock = Some(false);
+    }
     engine.game = game.take();
     engine.start_game();
     startup.mark("game");
@@ -1241,6 +1277,11 @@ struct Engine {
     playtest_pumping: bool,
     /// The hosted game's last wish for the clock from while a playtest had it.
     game_clock_held: Option<bool>,
+    /// A script has the clock (`specula run`: the engine was started with `--script`): whether
+    /// the hosted game has its
+    /// run's clock running, by its own last wish. The clock itself stands still but for the
+    /// script's ticks.
+    script_clock: Option<bool>,
     /// What the start-up build (`--run`) could not load, for the hosted game to show.
     run_reports: run_modules::Reports,
     /// World folders saved in this run, and the identity key that first saved each (its creator
@@ -1484,6 +1525,7 @@ impl Engine {
             game_clock_told: None,
             playtest_pumping: false,
             game_clock_held: None,
+            script_clock: None,
             run_reports: run_modules::Reports::default(),
             world_folders: std::collections::BTreeMap::new(),
             commits: authority::CallCommits::default(),
@@ -1661,6 +1703,20 @@ impl Engine {
         self.record_trace(self.clock.tick(), h);
         // Full verbosity only (off by default): every tick's hash, checked never to change it.
         specula_core::trace_event!(&trace_sink::WORLD, Trace, "world.tick", hash = journal::hex(h));
+    }
+
+    /// The ids of the sessions that are open: the protocol's connections (`connections`), and
+    /// the operator's own session when this engine has one (`--run`, `--script`). That one is
+    /// a caller inside the engine: it has no connection, and it is there until the engine
+    /// ends. What belongs to a session that is not among these is dropped (a worker's job, a
+    /// stepped job, an interface's state): a headless run's frame was, one run in four, when
+    /// the look for closed sessions fell between its render and its encode.
+    pub(crate) fn open_session_ids(&self, connections: Vec<SessionInfo>) -> BTreeSet<String> {
+        let mut ids: BTreeSet<String> = connections.into_iter().map(|s| s.id).collect();
+        if self.swarm.introduced(run_modules::RUN_SESSION) {
+            ids.insert(run_modules::RUN_SESSION.to_owned());
+        }
+        ids
     }
 
     /// Drops claims whose session is gone (at most once per [`CLAIM_SWEEP_EVERY`]).
@@ -1905,8 +1961,34 @@ impl Engine {
             self.game_clock_held = Some(paused);
             return None;
         }
+        // A script has the clock (`specula run`): the game's wish is the run's own state, and
+        // the script runs a tick only while it says "running". The clock itself stays still, so
+        // no time of this machine becomes a tick.
+        if let Some(running) = self.script_clock.as_mut() {
+            *running = !paused;
+            self.clock_set_by = Some((format!("game:{}", self.game_name), if paused { "pause" } else { "resume" }));
+            self.game_clock_told = Some(paused);
+            return Some(paused);
+        }
         self.set_game_clock(paused);
         Some(paused)
+    }
+
+    /// A script's ticks (`specula run`; [`TimeOp::Play`]): up to `n` ticks while the hosted
+    /// game has its run's clock running, none while the game holds it (the title, a pause, a
+    /// run that ended). Returns how many ran. Only an engine started for a script plays any
+    /// (`--script`): the clock is the script's from the start, and stands still but for these.
+    pub(crate) fn play_ticks(&mut self, n: u64) -> u64 {
+        // A press since the last tick may have started, paused or ended the run.
+        self.serve_game_clock();
+        let before = self.clock.tick();
+        if self.script_clock == Some(true) {
+            self.clock.step(n.min(game::STEPS_AT_MOST));
+            self.advance_clock();
+            // (The game stopped the clock on one of them: the rest are not owed.)
+            self.clock.cancel_steps();
+        }
+        self.clock.tick() - before
     }
 
     /// The clock as the hosted game wants it, set as the game's own doing.
@@ -1941,7 +2023,9 @@ impl Engine {
     pub(crate) fn game_sees(&mut self) {
         let paused = self.clock.paused();
         let Some(game) = self.game.as_mut() else { return };
-        if self.game_clock_told != Some(paused) {
+        // (Under a script the clock stands still by the script's doing, and the game's own wish
+        // is what it is told: nobody else stopped its run.)
+        if self.script_clock.is_none() && self.game_clock_told != Some(paused) {
             self.game_clock_told = Some(paused);
             game.clock_seen(paused);
         }
@@ -3415,19 +3499,20 @@ impl Engine {
             Command::PerfCapture(_) | Command::Playtest(_) | Command::Editor(_) => unreachable!("answered above"),
             Command::Time(op) if playtest_engine::clock_refused(op, self.playtests.running()) => playtest_engine::clock_busy(),
             // Steps wait for a load to finish (bounded); they are never queued behind it.
-            Command::Time(TimeOp::Step(_)) if self.nav.loading() && !self.build_nav_load(nav::LOAD_CALL_WAIT) => self.nav_loading_error(),
+            Command::Time(TimeOp::Step(_) | TimeOp::Play(_)) if self.nav.loading() && !self.build_nav_load(nav::LOAD_CALL_WAIT) => self.nav_loading_error(),
             Command::Time(op) => {
                 let name = match op {
                     TimeOp::Pause => Some("pause"),
                     TimeOp::Resume => Some("resume"),
                     TimeOp::Step(_) => Some("step"),
                     TimeOp::Scale(_) => Some("scale"),
-                    TimeOp::Info => None,
+                    TimeOp::Info | TimeOp::Play(_) => None,
                 };
                 if let Some(n) = name {
                     self.clock_set_by = Some((by.clone(), n));
                 }
                 let mut stepped = None;
+                let mut played = None;
                 match op {
                     TimeOp::Pause => self.clock.set_paused(true),
                     TimeOp::Resume => self.clock.set_paused(false),
@@ -3445,8 +3530,18 @@ impl Engine {
                     }
                     TimeOp::Scale(x) => self.clock.set_scale(x),
                     TimeOp::Info => {}
+                    TimeOp::Play(n) => {
+                        self.lex_live_end_holds(server);
+                        played = Some(self.play_ticks(n));
+                    }
                 }
                 let mut answer = self.clock_json();
+                if let Some(ran) = played {
+                    answer.set("played", Json::from(ran));
+                }
+                if let Some(running) = self.script_clock {
+                    answer.set("game_clock", Json::from(if running { "running" } else { "held" }));
+                }
                 // A step says what became of its ticks, each one counted once: how many ran in
                 // this call, how many are still queued (a call runs a bounded number, and the
                 // frames after it run the rest), and how many were dropped because the hosted
@@ -4039,7 +4134,7 @@ fn call_class(command: &Command) -> Class {
         Command::Swarm(call) => call.class(),
         Command::Review(call) => call.class(),
         Command::Batch(ops) if ops.len() > HEAVY_BATCH_OPS => Class::Big,
-        Command::Time(TimeOp::Step(_)) => Class::Sim,
+        Command::Time(TimeOp::Step(_) | TimeOp::Play(_)) => Class::Sim,
         Command::Game { .. } | Command::GameAct { .. } => Class::Game,
         Command::Logic(_) => Class::Disk,
         Command::Physics(call) => call.class(),

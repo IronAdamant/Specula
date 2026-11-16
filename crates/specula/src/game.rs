@@ -696,6 +696,8 @@ pub struct Clock {
 /// At most this many ticks per frame: a long stall (debugger, a slow load) drops time rather than
 /// trying to catch up and stalling again.
 const MAX_TICKS_PER_ADVANCE: u64 = 8;
+/// Most stepped ticks one advance runs while the clock is paused (the rest stay queued).
+pub const STEPS_AT_MOST: u64 = MAX_TICKS_PER_ADVANCE * 64;
 
 impl Clock {
     pub fn new(hz: u32) -> Clock {
@@ -758,7 +760,7 @@ impl Clock {
     /// Adds real time; returns how many ticks to run now.
     pub fn advance(&mut self, real: Duration) -> u64 {
         if self.paused {
-            let n = self.steps.min(MAX_TICKS_PER_ADVANCE * 64);
+            let n = self.steps.min(STEPS_AT_MOST);
             self.steps -= n;
             return n;
         }

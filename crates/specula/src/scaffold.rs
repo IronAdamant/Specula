@@ -44,7 +44,7 @@ pub fn module_name(project: &str) -> String {
         }
     }
     let name = name.trim_end_matches('_').to_owned();
-    const TAKEN: [&str; 16] = ["game", "setting", "ui", "item", "engine", "world", "test", "core", "std", "self", "super", "crate", "mod", "use", "fn", "specula"];
+    const TAKEN: [&str; 17] = ["game", "setting", "ui", "run", "item", "engine", "world", "test", "core", "std", "self", "super", "crate", "mod", "use", "fn", "specula"];
     if name.is_empty() || TAKEN.contains(&name.as_str()) || name.starts_with("specula_") {
         "play".to_owned()
     } else {
@@ -70,6 +70,17 @@ const GAME: &str = r#"{
     "won": { "key": "{{module}}.taps", "gte": 5 },
     "lost": { "key": "{{module}}.left", "lte": 0 },
     "score": "{{module}}.score"
+  },
+  "report": {
+    "tick": "run.ticks",
+    "screen": "ui.screen",
+    "phase": "game.phase",
+    "taps": "{{module}}.taps",
+    "left": "{{module}}.left",
+    "score": "game.score",
+    "difficulty": "setting.difficulty",
+    "volume": "setting.volume",
+    "texts": "ui.top_texts"
   }
 }
 "#;
@@ -306,44 +317,87 @@ Replace this note with what the game is to be (memory_note {id: "brief", ...}): 
 given it at its first call.
 "#;
 
-const HOW: &str = r#"---
+const HOW: &str = r##"---
 title: How this game is built and checked
 kind: how
 about: game.json, modules/{{module}}/, assets/ui/, checks/
 ---
-**The loop** (one engine left running; from a shell a tool is `specula call TOOL '{json}'`)
+**The loop: edit, run, read.** One command builds the modules as they are on disk, plays the
+game from its start with no window, and prints how it stands as one JSON object:
 
-1. Edit `modules/{{module}}/src/lib.rs`, then `logic_build {"path": "modules/{{module}}"}`: it
-   builds, reloads into the running game, and answers the compiler's diagnostics as data (it
-   needs the owner or a lead the operator granted: `--lead NAME`, then `agent_hello {name,
-   role: "{{lead}}"}`).
-2. `game_act {"action": "start"}` starts a run; `game_state` says how it stands and why (each
-   key the outcome reads, with its value now).
-3. `time_control {"action": "step", "ticks": 30}` runs a paused clock tick by tick;
-   `logic_input` presses the module's actions as a player would.
-4. `playtest_run {"path": "checks/smoke.json"}` plays a whole run and checks how it ended.
-5. `ui_frame` shows the interface as a picture; `ui_check` finds text that does not fit.
+    specula run . --ticks 40 --inputs "0:enter,5:tap,6:none,10:tap" [--seed 1]
+                  [--settings FOLDER] [--frame out.png --size 800x480]
 
-**Where things live**
+- A build that fails answers the compiler's errors (file, line, message) and exit code 1.
+- **Inputs** are words at ticks. `up down left right enter escape` press the interface, as
+  keys do. A module's action (`tap` here: `modules/{{module}}/actions.json`) is held until the
+  next input, as a held key is; `none` holds nothing. A word that is both does both. In the
+  rules read `cx.action("tap").pressed` for "once" and `.held` for "while held".
+- **Ticks.** The script counts every tick. The game's own clock ticks only while a run is
+  under way: the title, a pause and an ended run hold it, as they do for a player.
+- **What is printed** is the game file's `"report"`: each line a name and the key whose value
+  it shows. Keys: `{{module}}.KEY` (what the module keeps), `setting.NAME`, `game.phase`
+  (title, running, paused, won, lost), `game.score`, `game.outcome`, `game.tick`, `run.ticks`,
+  `run.seed`, `ui.screen` (the top screen's name), `ui.focus` and `ui.focus_index` (the
+  focused button, and its place among its screen's buttons), `ui.texts` (every text on
+  screen, in order) and `ui.top_texts` (the top screen's). No `"report"`: all of it.
+- `--seed N` seeds `cx.random_*`: the same seed and inputs give the same run. `--settings
+  FOLDER` is where the player's settings are read and kept; without it they are kept nowhere.
+- `--frame` writes what a player would see (the game file's `"view"`, with the interface).
 
-- `game.json`: the title, the tick rate, the modules, the settings, and when a run is won or
-  lost (`outcome`, over the keys the module keeps). The engine follows it while it runs.
-- `modules/{{module}}/src/lib.rs`: the rules. They keep what matters with `cx.set_state`; that
-  is what screens show (`{{{module}}.taps}`) and what `outcome` reads. No code draws menus.
-- `assets/ui/*.json`: the screens (title, pause, settings, won, lost, hud). A button's `action`
-  is a word: the engine does `start`, `pause`, `resume`, `title`, `open:NAME`, `back`,
-  `set:NAME:VALUE`, `step:NAME:+1`, `cycle:NAME`, `save:SLOT`, `load:SLOT`; any other word
-  reaches the module as the event `ui` at the next tick.
-- `assets/strings/en.json`: the words (`@key` in a screen). Another language is another file.
-- `assets/style.json`: the palette and materials model recipes name.
-- `checks/`: playtests as data. Add one for each thing the game must do.
-- `notes/`: what the project remembers (`memory_note`, `memory_list`, `memory_why`).
+**game.json** (an unknown key is refused, by name)
 
-**Playing it**: `specula play NAME` opens the window in front and loads the module as its owner
-or lead last built it (`logic_build`). Sources changed since are not loaded at start until one of
-them builds again: `game_state` says so under `problems`. `specula play NAME --as-is` runs what
-is on disk now, whoever wrote it. `specula open NAME` shows the screens and runs no code.
-"#;
+- `title`; `tick_hz` (1 to 240; 30 when left out); `modules` (folders); `locale`; `start`:
+  `"title"` (the title screen first) or `"run"` (straight into a run).
+- `screens`: which file under `assets/ui` is the `title`, `pause`, `won`, `lost` and `hud`.
+- `settings`: each `{"name", "kind", "default"}`, the kind one of `"int"` (with `"min"`,
+  `"max"`), `"choice"` (with `"options"`), `"toggle"`, `"locale"`. `"sim": true` sends its
+  value to the rules (the event `setting`). `language` and `volume` are always there.
+- `outcome`: `"won"` and `"lost"` are conditions over keys: `{"key": "{{module}}.taps",
+  "gte": 5}` (also `eq ne lt lte gt in`), `{"all": [..]}`, `{"any": [..]}`, `{"not": ..}`.
+  `"score"` names the key that holds the score.
+- `view`: how the game is looked at, by the window and by a frame. A 2D game:
+  `{"center": [x, y], "height": metres}` (straight on, +x right, +y up: draw with flat cubes
+  at z 0). 3D: `{"eye": [x, y, z], "target": [x, y, z], "fov_y_deg": 50}`.
+- `report`: above.
+
+**Screens** (`assets/ui/*.json`; widgets: box, panel, label, button, bar, list, spacer)
+
+- A text is words, or `@key` (a line of `assets/strings/<locale>.json`). In either, `{KEY}`
+  shows a value: `{{{module}}.taps}`, `{setting.volume}`, `{setting.language.text}`,
+  `{game.score}`. `"visible": "KEY"` (or `"!KEY"`) shows a widget by a value.
+- A button's `action` is a word. The engine does `start`, `pause`, `resume`, `title`,
+  `open:SCREEN`, `back`, `quit`, `set:NAME:VALUE`, `step:NAME:+1`, `step:NAME:-1`,
+  `cycle:NAME`, `save:SLOT`, `load:SLOT`; any other word reaches the rules as the event `ui`.
+- On a button that moves a setting, Left and Right step it down and up; Enter does its action.
+- Another language is another file in `assets/strings`: the language setting finds it.
+
+**The rules** (`modules/{{module}}/src/lib.rs`: `tick` runs once a tick; crate `specula-sdk`)
+
+- Keep: `cx.state("k")?` (then `.as_u64()`, `.as_f64()`, `.as_bool()`, `.as_str()`,
+  `.as_list()`, `.as_map()`) and `cx.set_state("k", value)?`. A value is a number, a bool,
+  text, a `Vec<Value>` or a map (`Value::map().with("x", 1.5).with("kind", "walker")`). Keep
+  everything there and nothing in the struct: what is kept is what screens show, what
+  `outcome` reads and what `report` prints.
+- Input: `cx.action("name")` has `.pressed`, `.held`, `.released` and `.value`.
+- Events from the engine, at a tick: `for e in cx.events()`, with `e.from == "engine"`,
+  `e.name` and `e.data.get("key")`: `run` (`phase` is `start` when a run begins; any other
+  `run`, and `outcome`, end it), `setting` (`name`, `value`), `ui` (`action`).
+- The world: `cx.spawn(Spawn::new("cube").name("n").parent("/{{module}}").position(v)
+  .scale(v).color("#rrggbb"))?`, `cx.find("/{{module}}/n")?`, `cx.set(id,
+  Patch::new().position(v))?`, `cx.delete(id)?`, `cx.query(tag, path_prefix, limit)?`.
+- `cx.tick()`, `cx.tick_hz()`, `cx.random_below("stream", n)?`, `cx.random_f32("stream")?`,
+  `cx.sound("name", None, 1.0)?`, `cx.log("text")?`.
+
+**Also**
+
+- `specula play . --as-is` opens the window and plays what is on disk.
+- `checks/smoke.json` is a playtest (steps, and what to expect) for an engine left running:
+  `specula open . -- --headless --lead NAME`, then `specula tools` lists what an agent can
+  call there (`logic_build`, `game_state`, `game_act`, `playtest_run`, `ui_frame`).
+- `notes/` is what the project remembers. Leave a note of what you decided and why:
+  `notes/NAME.md`, with the front matter this file has (`title`, `kind: decision`, `about`).
+"##;
 
 const GITIGNORE: &str = "# Build output and what the engine keeps beside a project.\n/target/\n/.specula-cache/\n/.specula-trace/\n/captures/\n";
 
@@ -501,7 +555,15 @@ mod tests {
         let (notes, bad) = specula_memoria::Notes::read([("brief", text("notes/brief.md")), ("how", text("notes/how.md"))]);
         assert!(bad.is_empty(), "{bad:?}");
         let brief = notes.brief();
-        assert!(brief.contains("is a new Specula project") && brief.contains("How it is built and checked") && brief.contains("logic_build"), "{brief}");
+        assert!(brief.contains("is a new Specula project") && brief.contains("How it is built and checked") && brief.contains("specula run . --ticks"), "{brief}");
+        // The guide names every key a game file takes (what the comparison's builders opened
+        // the engine's design documents for), and the sample's game file shows a report.
+        let how = text("notes/how.md");
+        for key in ["title", "tick_hz", "modules", "locale", "start", "screens", "settings", "outcome", "view", "report"] {
+            assert!(how.contains(&format!("`{key}`")), "notes/how.md does not name the game file's {key}");
+        }
+        let game = specula_ludus::GameFile::parse(text("game.json")).expect("the game file");
+        assert!(game.report.iter().any(|(name, key)| name == "taps" && *key == format!("{module}.taps")), "{:?}", game.report);
         assert!(brief.chars().count() <= specula_memoria::MAX_BRIEF);
         // The workspace takes every module folder and the SDK the engine writes.
         let workspace = specula_core::toml::parse(text("Cargo.toml")).expect("the workspace");

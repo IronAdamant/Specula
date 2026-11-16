@@ -402,6 +402,9 @@ pub struct Shell {
     refused: u32,
     refused_told: u32,
     title_sent: bool,
+    /// The view the window was last given from the game file (`view`): given again when the
+    /// file's view changes, and whenever nobody else has the window's camera.
+    view_given: Option<specula_ludus::game::View>,
     audio: Option<Arc<crate::audio_service::AudioService>>,
     ui_events: UiEvents,
 }
@@ -479,6 +482,7 @@ impl Shell {
             refused: 0,
             refused_told: 0,
             title_sent: false,
+            view_given: None,
             audio: None,
             ui_events: UiEvents::default(),
             files: ShellFiles::default(),
@@ -967,6 +971,28 @@ impl Shell {
         }
     }
 
+    /// Left and Right on a button that moves a setting step it down and up, and stop at its
+    /// ends (a volume, a difficulty, a language), as Enter moves it on. Only while the press
+    /// moved the focus nowhere: in a row of buttons Left and Right are the way along the row.
+    /// (The measured comparison's builders looked for this and found Enter alone:
+    /// docs/design/LEVERAGE.md, "Results (2026-11-16)".)
+    fn step_focused_setting(&mut self, before: Option<specula_ui::WidgetRef>, player: bool) {
+        let Some(face) = &self.face else { return };
+        let Some(at) = face.ui.focused().filter(|now| Some(*now) == before) else { return };
+        let name = match face.ui.widget_action(at).map(Action::parse) {
+            Some(Ok(Action::Cycle(name) | Action::Step { name, .. } | Action::Set { name, .. })) => name,
+            _ => return,
+        };
+        let from = (face.ui.widget_id(at).unwrap_or("").to_owned(), face.ui.screen_name(at.screen).to_owned());
+        for (key, way) in [("ui_left", "-1"), ("ui_right", "+1")] {
+            if self.input.pressed(key) {
+                if let Err((_, why)) = self.press_from(&format!("step:{name}:{way}"), Some((from.0.as_str(), from.1.as_str())), player) {
+                    self.say(&why, ToastKind::Warn);
+                }
+            }
+        }
+    }
+
     /// A capture's interface, from a second instance of the toolkit (loaded at the first
     /// capture): the window's screens and the player's focus, laid out for the capture's size
     /// with no input, so a capture never touches what the player sees.
@@ -1140,6 +1166,20 @@ impl Game for Shell {
         } else {
             self.input.update(now, frame.input, &pads);
         }
+        // The window looks at the game as its file says (`view`), unless someone has pointed
+        // it elsewhere (an agent's window_view, the editor): a 2D game is seen straight on,
+        // as its headless frame is, not by the camera that fits whatever is in the world.
+        if !frame.synthetic && (frame.camera.is_none() || self.view_given != self.game.view) {
+            if let Some(view) = self.game.view {
+                use specula_core::math::Vec3;
+                use specula_ludus::game::View;
+                *frame.camera = Some(match view {
+                    View::Flat { center, height } => crate::sight::Camera::view_2d(center[0] as f32, center[1] as f32, height as f32),
+                    View::Eye { eye, target, fov_y_deg } => crate::sight::Camera::new(Vec3::new(eye[0] as f32, eye[1] as f32, eye[2] as f32), Vec3::new(target[0] as f32, target[1] as f32, target[2] as f32), fov_y_deg as f32),
+                });
+            }
+            self.view_given = self.game.view;
+        }
         if !frame.synthetic && !self.title_sent {
             *frame.title = Some(if self.game.title.is_empty() { self.name.clone() } else { self.game.title.clone() });
             self.title_sent = true;
@@ -1154,15 +1194,18 @@ impl Game for Shell {
         events.events.clear();
         events.consumed = Default::default();
         let scale = self.scale_of("ui_scale");
+        let mut focused_before = None;
         if let Some(face) = &mut self.face {
             let view = Shell::viewport(&face.ui, &self.display, frame.size, scale);
             // (Copied field by field: reusing the buffer, and no wholesale replacement by name.)
+            focused_before = face.ui.focused();
             let got = face.ui.frame(&self.input, &self.state, &view).events;
             events.events.extend(got.events.iter().cloned());
             events.consumed = got.consumed;
             self.laid_out = Some(frame.size);
         }
         self.handle(&events, !frame.synthetic);
+        self.step_focused_setting(focused_before, !frame.synthetic);
         self.ui_events = events;
     }
 
@@ -1638,6 +1681,53 @@ mod tests {
         assert!(text("game.outcome").is_some_and(|s| s.contains("running")));
         assert!(text("setting.difficulty.text").is_some_and(|s| s.contains("easy")));
         assert!(text("setting.volume.text").is_some_and(|s| s.contains('8')));
+    }
+
+    /// A script's ticks are the game's and no others (`specula run`): the clock itself stands
+    /// still, a tick runs only while the game has its run's clock running, and the game is
+    /// never told that someone else stopped it. (The measured comparison's builders stepped a
+    /// clock the game had started, and got ticks of the machine's own time: one game failed
+    /// a check on it, and two were given a hidden action to freeze them.)
+    #[test]
+    fn a_scripts_ticks_run_only_while_the_game_has_its_clock_running() {
+        let Some(mut e) = crate::workers::charge_tests::engine() else { return };
+        let phase = |out: &specula_protocol::ToolOutput| match &out.content[0] {
+            specula_protocol::Content::Text(t) => Json::parse(t).unwrap().get("phase").and_then(Json::as_str).map(str::to_owned),
+            specula_protocol::Content::Image { .. } => None,
+        };
+        let who = specula_protocol::SessionInfo { id: "script-test".into(), client_name: "t".into(), client_version: "1".into(), protocol_version: "x".into() };
+        e.game_name = "gate".into();
+        e.game = Some(Box::new(shell()));
+        // As `--script` starts an engine: the clock is the script's before the game's first wish.
+        e.clock.set_paused(true);
+        e.script_clock = Some(false);
+        e.start_game();
+        // The title holds the game's clock: no tick, however many are asked.
+        assert_eq!((e.play_ticks(10), e.clock.tick()), (0, 0));
+        assert_eq!(phase(&e.game_act(&who, "start")).as_deref(), Some("running"));
+        assert!(e.clock.paused(), "the clock itself stands still: no time of this machine becomes a tick");
+        assert_eq!(e.script_clock, Some(true), "the game has its run's clock running");
+        assert_eq!((e.play_ticks(10), e.clock.tick()), (10, 10));
+        // The game is not told that someone stopped its clock: its run is still under way.
+        e.game_sees();
+        assert_eq!(phase(&e.game_state()).as_deref(), Some("running"));
+        // A pause holds it, a resume gives it back, and the title holds it again.
+        assert_eq!(phase(&e.game_act(&who, "pause")).as_deref(), Some("paused"));
+        assert_eq!((e.play_ticks(10), e.clock.tick()), (0, 10));
+        assert_eq!(phase(&e.game_act(&who, "resume")).as_deref(), Some("running"));
+        assert_eq!((e.play_ticks(5), e.clock.tick()), (5, 15));
+        e.game_act(&who, "title");
+        assert_eq!((e.play_ticks(5), e.clock.tick()), (0, 15));
+        // The operator's own session is a caller inside the engine, not a connection: it counts
+        // as open, so that what it owns (a frame being encoded) is not dropped as a closed
+        // session's.
+        assert!(!e.open_session_ids(Vec::new()).contains(crate::run_modules::RUN_SESSION));
+        e.swarm.admit_run_operator(crate::run_modules::RUN_SESSION);
+        assert!(e.open_session_ids(Vec::new()).contains(crate::run_modules::RUN_SESSION));
+        // More than one advance runs is asked for again by the script, never queued behind it.
+        e.game_act(&who, "start");
+        let ran = e.play_ticks(100_000);
+        assert!(ran <= crate::game::STEPS_AT_MOST && e.clock.queued() == 0, "{ran}");
     }
 
     /// The engine does what a press asks of the clock, except while a playtest has the clock:

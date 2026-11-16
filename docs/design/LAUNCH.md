@@ -118,6 +118,12 @@ specula open NAME|FOLDER [--front] [-- engine flags]
 specula play NAME|FOLDER|--last [--as-is]
                                  open a project in front, with its modules loaded as their owner last
                                  built them (--run); --as-is: whatever is on disk now (--run-as-is)
+specula run [NAME|FOLDER] --ticks N [--inputs T:WORD,...|@FILE] [--seed N] [--settings FOLDER]
+            [--frame FILE.png [--size WxH]]
+                                 play a project's game with no window, from its start, by a script
+                                 of inputs, and print how it stands as one JSON object; its modules
+                                 are built first, as they are on disk (as play --as-is). Nothing is
+                                 left running (FIRST_HOUR.md, "A headless run")
 specula new NAME [--in FOLDER] [--bare]
                                  make a project that builds and plays, and list it
 specula forget NAME|FOLDER       take a project off the list (its folder stays)

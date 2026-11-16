@@ -329,6 +329,13 @@ pub enum TimeOp {
     Step(u64),
     Scale(f32),
     Info,
+    /// A headless run's ticks (`specula run`: docs/design/FIRST_HOUR.md, "A headless run";
+    /// the engine was started with `--script`, so a script has the clock from the start).
+    /// Runs up to this many ticks while the hosted game has its clock running, as the
+    /// running game would, and none while the game holds it (a title, a pause, a run that
+    /// ended). The clock itself stands still, so no time of this machine becomes a tick.
+    /// Never parsed from a tool's arguments.
+    Play(u64),
 }
 
 /// Most ticks one time_control step may run (about 10 minutes of game time at 30 Hz).

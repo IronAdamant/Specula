@@ -1179,6 +1179,15 @@ at once.
   - **Reported by builders and not reproduced:** Left and Right do nothing on a settings button of the
     shell in a window; the texts an agent is given list only the top screen; with the engine's own
     "lost" outcome a restart after game over came out one or two ticks off.
+  - **The second pass (built 2026-11-16; [design/FIRST_HOUR.md](design/FIRST_HOUR.md), section 9), after
+    every request of the twelve runs was laid out** (`examen leverage trace`; [design/LEVERAGE.md](design/LEVERAGE.md),
+    "Where every token went": a third to two fifths of an engine build was the check's own script):
+    `specula run` (the first point above, as one command of a shell: build, play a script of inputs,
+    print the state and a frame), the game's clock ticking only while the game has it running (the
+    second), `--settings FOLDER` for a run (the third), the game file's `view` and `report`, Left and
+    Right on a setting (reproduced: it was so), and a `notes/how.md` that carries the route (part of the
+    fourth). Not built: memory on a shell agent's path beyond the guide saying to leave a note. Two more
+    passes follow by the owner's word, each measured.
   - **Then measure again**, with more than two runs a cell on the medium job: two runs alike differ by
     as much as the effect being looked for.
 - [ ] ➕ **Game systems as optional data, and memory for whoever builds the game** (owner, 2026-11-16: "the

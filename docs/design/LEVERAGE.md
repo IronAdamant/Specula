@@ -102,6 +102,8 @@ examen leverage run ROOT/small-engine-1              # the builder; stopped at t
 examen leverage run ROOT/small-engine-1 --judge      # the judge; its verdict.json is recorded
 examen leverage prepare change engine 1 --out ROOT --exe ... --from ROOT/medium-engine-1
 examen leverage report ROOT                          # report.md and report.json
+examen leverage where RUN [RUN ...]                  # a builder's steps by kind
+examen leverage trace RUN [RUN ...] [--judge]        # every request: what it read, wrote and cost
 examen leverage export ROOT perf/leverage/DATE       # what the repository keeps: no games, no paths
 
 # by hand, for an agent with no such command line:
@@ -109,7 +111,10 @@ examen leverage finish RUN; examen leverage record RUN --tokens N --tool-uses N 
 examen leverage judge RUN; examen leverage judge RUN --verdict RUN/verdict.json
 ```
 
-The engine arm's builder never runs the engine's executable. It starts and stops its engine with
+The engine arm's builder runs its game with `examen leverage play RUN --ticks N [--inputs ...]`: the
+engine's own `specula run` on the run's work folder, logged as one call (since the second pass of M6
+part 3; the runs of 2026-11-14 and 2026-11-16 had no such command and wrote scripts of their own).
+It never runs the engine's executable itself. For the engine's tools it starts and stops an engine with
 `examen leverage engine start|stop RUN` (headless, on the run's own port, with the run's own settings folder,
 so it is never listed among a person's projects) and calls it with `examen leverage call RUN TOOL '{json}'`
 or `TOOL @args.json`, which is the engine's own `specula call` with the run's port and identity, logged.
@@ -369,3 +374,74 @@ it and it was not reproduced.
 | `"start": "hud"` in the game file stopped the engine at its start | not a defect: reproduced, and the engine's message names the two values `start` takes. The builder took the line out and so kept the engine's title screen in front of its own |
 | The engine ticked at 30 Hz and the briefs ask for 1/60 s (M5) | closed: `tick_hz` in the game file; all four small and medium builders set it to 60 |
 | A project had no SDK to build against (M5) | closed: `specula new` |
+
+## Where every token went (the ledgers of the 2026-11-16 runs)
+
+Owner, 2026-11-16, on the result above: "I need you to investigate the root cause of larger tokens than
+expected... Note down every token spend. Assess. Pay attention to files and how agents are using the
+engine." So every request of every run is laid out: `examen leverage trace RUN` (`--judge` for its
+judge), and each run's file under [perf/leverage/2026-11-16](../../perf/leverage/2026-11-16/) has both
+ledgers (`trace`, `judge_trace`): for each request the context it read, what was new in it, what it
+wrote, its own cost, what it left for every later request to carry, and its steps with what each wrote
+and was answered.
+
+**What is exact.** A request's tokens read, and how far the context grew between two requests, are the
+run's own records, and the ledger's total is the run's weighted figure to the token. A request's tokens
+written are not in a stream (only the run's total is): each request's share is its growth less its
+answers' size, scaled to the exact total. What was written and is not visible text (thinking) is the
+difference.
+
+**The arithmetic of a run.** Weighted cost is, for every request, the context it reads (new tokens at
+1.25, tokens read again at 0.1) plus five times what it writes. A request reads the whole context so
+far. Late in an engine build the context is 70,000 to 140,000 tokens, so a request costs 10,000 to
+20,000 before it does anything. The plain medium build made 9 requests in a context that ended at
+40,000; the engine builds made 50 and 61 in contexts that ended at 118,000 and 142,000. **Cost goes
+with requests times context, and what a step reads early is paid for at every request after it.**
+
+**Where the requests went** (the ledger's cost at each phase's last request, and its share):
+
+| Phase | medium-engine-1 | medium-engine-2 | small-engine-1 |
+|---|---|---|---|
+| Discovery before any code: notes, the sample, tool lists, the SDK's sources, the engine's design document | requests 1 to 12: 174,811 (17%) | 1 to 9: 160,303 (20%) | 1 to 11: 113,723 (25%) |
+| Writing the game, building, trying it by hand | 13 to 31: 319,538 (30%) | 10 to 20: 192,910 (24%) | 12 to 19: 115,180 (25%) |
+| The headless check's own script, and debugging it | 32 to 53: 414,038 (39%) | 21 to 38: 266,379 (33%) | 20 to 33: 190,304 (42%) |
+| README, waiting for its own check, stopping engines | 54 to 61: 147,028 (14%) | 39 to 50: 182,900 (23%) | 34 to 36: 32,692 (7%) |
+
+**Root causes, largest first.**
+
+1. **The headless check is a script the builder writes and debugs.** `headless.py` (3,165 tokens),
+   `gate.py` (2,068), `catch.py` (1,809), then 6 to 10 patches of it at 12,000 to 25,000 a request, at
+   the largest context of the run: a third to two fifths of every engine build. The plain arm's check
+   is its game's own `main`: 2 to 4 requests. The brief allowed for it ("may be small scripts of yours
+   that call the engine"), and the engine had no command that did it.
+2. **Discovery, carried.** In medium-engine-1, request 4 (the sample's files: 5,361 tokens) cost 68,262
+   to carry, request 9 (this repository's FIRST_HOUR.md: 5,683 tokens) 53,183, request 6 (eight tools'
+   descriptions: 5,309) 52,224. Both medium builders and one small one opened the engine's design
+   document for the game file's format, because `notes/how.md` did not say it.
+3. **What is written and not seen.** 61% to 69% of an engine build's written tokens are not visible
+   text (43,161 of 68,189; 34,580 of 51,461; 20,762 of 34,014), and 54% of a plain medium build's
+   (15,027 of 27,943). At five a token. It goes with the number of requests, and with not knowing.
+4. **Waiting and process care.** Sleeping and polling for its own check of 3 to 6 minutes (3 to 5
+   requests at 14,000 to 17,000), stopping engines and looking for ones left behind (medium-engine-2,
+   requests 46 to 49).
+5. **Things looked for that were not there**: Left and Right on a settings button (medium-engine-1,
+   requests 11 and 24 to 26), a camera for a 2D game's frame (28 to 31), a start screen (small-engine-1,
+   9 to 11 and 28), the module's kept values (16, 20), settings kept from a headless run (both medium
+   builders kept a file of their own).
+6. **Build cycles**: 5 to 9 builds a run, 10,000 to 30,000 each.
+7. **Judges pay the same way**: reading the game's files is 40% to 58% of a judging, and an engine
+   game's judging cost 1.4 to 2 times a plain one's.
+
+**The floor, by the same arithmetic.** About 12 to 15 requests and 25,000 written tokens for the medium
+game is about 190,000 weighted: the plain arm's figure. The engine arm goes under that only where a
+game through the engine is less to write than a plain one, which at this size it is not: a medium
+game's rules alone (3,300 to 5,100 tokens of Rust) are as much as the plain arm's whole game (5,055 of
+Python). What the engine takes off a builder is the menus, the settings, the pause, the picture and the
+check; the rules stay.
+
+**What was done about it** (M6 part 3, the second pass; [FIRST_HOUR.md](FIRST_HOUR.md), section 9): one
+command that builds, plays a script of inputs and prints the game's state and a frame (`specula run`),
+so that the loop is edit, run, read; the game file's `report` and `view`; Left and Right on a setting;
+and a `notes/how.md` that answers what all six builders looked up. The harness gives the engine arm
+that command (`examen leverage play RUN ...`, logged as one call) and its brief says so; the briefs'
+game sections and both acceptance lists are unchanged.

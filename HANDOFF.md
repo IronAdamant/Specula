@@ -115,15 +115,30 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     stepping it, settings an agent can show as kept, and memory that reaches an agent working from
     a shell (no builder called a memory tool or wrote a note). **None of that is built; whether it
     comes before part 4 is the owner's to say.**
+  - **Three more passes at the first hour, by the owner's word** (2026-11-16, night, on that
+    result): "3 passes. I need you to investigate the root cause of larger tokens than expected.
+    Second pass starts now, at first hour, but I need 2 more passes afterwards... Note down every
+    token spend. Assess. Pay attention to files and how agents are using the engine. We need to
+    trace everything within those 3 passes." Each pass: every request of every run laid out
+    (`examen leverage trace RUN`; each run's file under `perf/leverage/` has its ledgers), the
+    cause assessed, the engine changed, reviewed and gated, and the comparison run again.
+    - **The assessment** ([docs/design/LEVERAGE.md](docs/design/LEVERAGE.md), "Where every token
+      went"): cost goes with requests times context. A third to two fifths of every engine build
+      was the builder writing and debugging its own headless-check script; a fifth to a quarter
+      was discovery carried by every later request (the engine's design document read for the
+      game file's format); the rest waiting, engine care, and things looked for that were not
+      there.
+    - **The second pass, built** ([docs/design/FIRST_HOUR.md](docs/design/FIRST_HOUR.md), section
+      9): `specula run FOLDER --ticks N --inputs ...` builds a project's modules, plays its game
+      with no window by a script of inputs, prints its state as the game file's `report` shapes
+      it and writes a frame (about 4 s; the same seed and inputs print the same state); the game
+      file's `view`; Left and Right step a setting; `notes/how.md` is one page that answers what
+      the builders looked up. Its measurement follows; then passes 3 and 4.
   - **Part 2** (each script ported to Rust when it is next touched): the comparison's harness is
     ported; 81 scripts are left in `scripts/` (79 of them Python).
-  - **Next on the laptop: the owner's choice, and nothing before they say** (2026-11-16: "Advise me
-    when we get to FINISH of part 3 please. Don't start part 4 yet"). Part 3 is finished as built;
-    its measure did not move. Either a second pass at the first hour (ROADMAP M6, "The first hour,
-    measured again") or part 4. Claude's recommendation: the second pass first, small and aimed at
-    the number of requests, measured again with more runs on the medium job, because the cost of
-    building through the engine is M6's first focus item and what would lower it is now known from
-    the runs. Neither branch (`m6-verify`, `m6-first-hour`) is pushed or merged.
+  - **Next on the laptop: the three passes above, then the owner's word** (2026-11-16: "Advise me
+    when we get to FINISH of part 3 please. Don't start part 4 yet"). Part 4 is not started.
+    Neither branch (`m6-verify`, `m6-first-hour`) is pushed or merged.
   - **Asked for from outside:** the research behind parts 4 and 5
     ([docs/research/LIBRARY_RESEARCH_BRIEF.md](docs/research/LIBRARY_RESEARCH_BRIEF.md)), by the
     owner's Grok bots, under way.
@@ -718,7 +733,8 @@ In practice that means six **foundations** that apply to every change from M1 on
   `--no-activate` (the window opens behind the others without taking the keyboard from the window you are in:
   the scripts pass it), `--project DIR` (the engine starts in that folder, as a project), `--run` (a project's
   modules are loaded at start, as an owner or a granted lead last built them; `--run-as-is`: whatever is on
-  disk now), `--launcher` (the start screen, as with no argument), and `-- GAME ARGS` for a hosted game. Agent
+  disk now), `--script FILE` (a headless run by a script, then the engine ends: `specula run` writes the file
+  and reads the answer), `--launcher` (the start screen, as with no argument), and `-- GAME ARGS` for a hosted game. Agent
   names are plain ASCII.
 - **Answers are concise by default** on the heavy tools; pass `response_format: "detailed"` (per call, or once in
   `agent_hello`) for everything. Repo scripts use `scripts/specula_mcp.py` or `specula_mcp.detailed()`.
