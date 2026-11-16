@@ -188,6 +188,24 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       is left, by the ledgers, is what a first meeting costs (the guide and the sample read
       before a line is written), which the engine pays back on a medium game by writing less
       and does not on a one-screen one. What comes next is the owner's to say.
+    - **A fifth pass, by the owner's word** (2026-11-17, shown the fourth: "if Pass 4 didn't help,
+      how do we fix this?"; FIRST_HOUR.md, section 12). A subtraction: the engine arm's extra cost
+      is requests and the context each reads again, so the guide stops asking a first build for
+      a checks file and a reacting player, first contact is one read, and what was looked up is
+      where it is looked for. **Every ratio above flattered the engine a little**: each build's
+      first shell here-document was refused and its first file written twice, which cost the
+      plain arm more (its first file is the whole game); without it the third pass's medium game
+      is about 1.1 times plain and its small game about 1.7 (estimates from the ledgers). From
+      the fifth measurement both arms are told to use their file tool. A `large` job is written
+      (`evals/leverage/jobs/large.json`) and not run: **a game made of modules cannot keep
+      anything for its player between runs but settings** (a best score, a saved run), which a
+      larger game needs and the engine has yet to build.
+    - **The live audit after the passes** (2026-11-17, on `e5fbe695`): 69 of 70. `launch_check`
+      fails on an expectation that went stale in part 3 (a project made from the start screen now
+      opens on its own title screen, and the check expects a window with no text). Its script is
+      Python, and the owner's word on changing one line of it was: "I prefer all to be Rust
+      rather than having Python". So a script that needs any change is ported first, never
+      edited; `launch_check` is being ported, and nothing is pushed until the audit is green.
   - **Part 2** (each script ported to Rust when it is next touched): the comparison's harness is
     ported; 81 scripts are left in `scripts/` (79 of them Python).
   - **Next on the laptop: the owner's word.** The three passes above are done (2026-11-17), and

@@ -38,6 +38,7 @@ remembers.**
 | 8 | The comparison, run again with the same harness | run on `2a0c5669`: the engine arm did not get cheaper (below, and LEVERAGE.md) |
 | 9 | A headless run: `specula run` (the second pass) | built, reviewed, gated; measured on `bbe9fa36` (LEVERAGE.md, "Results (pass 2)") |
 | 10 | A run that says what went wrong, and a player that reacts: `--follow` (the third pass) | built, reviewed, gated; measured on `6cfff79b` (LEVERAGE.md, "Results (the third pass)": the medium game costs the same as without the engine) |
+| 12 | What a first build is not asked for: the guide and the brief, cut (the fifth pass) | built (section 12) |
 | 11 | The game's own checks, every run in one command: `specula check` (the fourth pass) | built, reviewed, gated; measured on `d18e1131` (LEVERAGE.md, "Results (the fourth pass)": no build cheaper, the small game dearer; the checks came on top of single runs) |
 
 ## 1. The SDK comes from the engine
@@ -468,6 +469,54 @@ need. The change builds, which begin from a game that has checks, ran them after
 added their own. What the command is for is therefore the second visit to a game, not the first
 hour of it. One defect was found by a builder and fixed (`e8097c2a`, `648cb757`): two comparisons of one
 key (a range) were read as a value to equal and never held.
+
+## 12. What a first build is not asked for (the fifth pass, 2026-11-17)
+
+The fourth pass's ledgers put the engine arm's extra cost in one place, at all three sizes: more
+requests, each reading a larger context again ([LEVERAGE.md](LEVERAGE.md), "Results (2026-11-17:
+the fourth pass)"). Not more code: on the medium game the engine arm writes a quarter less than
+the plain one. And not more thinking there: about 12,000 tokens in both arms. So this pass adds
+nothing to the engine. It takes away what made requests.
+
+- **The guide no longer asks for work the game was not asked for.** Checks kept with a game are
+  described after the rules, as what they are for (a game someone comes back to, or hands on),
+  and "write the checks as you write the game" is gone: every engine build of the fourth pass
+  wrote and corrected a checks file on top of its single runs (26,464 and 27,126 weighted tokens
+  in the two small builds). `--follow` is said as what it does, without proposing a player to
+  write. The sample's own checks say they are the sample's (they said "replace these with your
+  game's").
+- **First contact is one read.** The guide's first lines name what is read with it (`game.json`
+  and the module's `src/lib.rs`), and `specula new` answers the same three in `read_first`. Every
+  engine build had read the guide in one request and the sample in the next.
+- **What was still looked up is where it is looked for.** A setting the rules read, as its four
+  places (all three change builds of the fourth pass opened this document for it, though the
+  guide said it in half a sentence); where a player's settings are kept (looked up for a README);
+  that the rules never see a seed.
+
+**In the comparison's harness** (`tools/examen/src/leverage.rs`, `evals/leverage/`):
+
+- The engine arm's brief gives the one read as a command, and says `check`, an engine left
+  running and its tools in one line, as there and not needed (they were three paragraphs).
+- **A change job's brief no longer calls the game it hands over "a small sample game" whose
+  rules are to be replaced.** It had since the change job was first run: the engine arm's
+  paragraph was one text for every job.
+- **Both arms are told to write files with their file tool and never with a shell
+  here-document.** Every build of every pass, in both arms, had its first here-document refused
+  by its shell and wrote its first file twice. That falls harder on the plain arm, whose first
+  file is the whole game: by the ledgers about 47,000 to 59,000 weighted tokens of a plain medium
+  build against 31,000 to 47,000 of an engine one. So the measured ratios flattered the engine:
+  with that waste taken out the third pass's medium game is about 1.1 times the plain build (1.0
+  measured) and its small game about 1.7 (1.5); the fourth pass's, about 1.26 and 2.7. These are
+  estimates from the ledgers; the fifth measurement is the first without the fault.
+- A `large` job is written as data (`evals/leverage/jobs/large.json`: about three times the
+  medium game; three kinds of enemy, a shop, a saved run, a best score, three languages; 31
+  checks). **Not measured yet**, and it asks for something a game made of modules cannot do
+  today: keep anything for the player between runs but its settings (a best score, a saved run).
+  A save is a button's word and goes to the project's `saves` folder; the rules cannot ask for
+  one, and nothing else is kept. That is the engine's to build before the job is run.
+
+**What it is made of**: `scaffold.rs` (the guide, the sample checks' note), `launch_run.rs`
+(`read_first`), the harness's brief and its data. Nothing here changes what the engine does.
 
 ## As built
 

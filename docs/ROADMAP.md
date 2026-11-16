@@ -1214,6 +1214,15 @@ at once.
     wrote and ran a checks file and none used it in place of single runs. A defect the runs found
     (a range of two comparisons never held) is fixed in `e8097c2a` and `648cb757`. **This closes the three passes the
     owner asked for; what follows is theirs to say.**
+  - **A fifth pass, by the owner's word (2026-11-17: "if Pass 4 didn't help, how do we fix this?";
+    [design/FIRST_HOUR.md](design/FIRST_HOUR.md), section 12): a subtraction.** The engine arm's extra
+    cost is requests, each reading a larger context again, so nothing is added: the guide stops asking
+    a first build for a checks file and a reacting player, first contact is one read, and what was
+    still looked up is where it is looked for. The comparison's brief no longer tells a change builder
+    its game is a sample, and both arms are told not to write files with a shell here-document: the
+    refused first here-document of every build had cost the plain arm more, so the measured ratios
+    flattered the engine (the third pass's medium game is about 1.1 times plain without it, not 1.0).
+    A `large` job is written, and waits for the engine to keep things for a player between runs.
   - **Then measure again**, with more than two runs a cell on the medium job: two runs alike differ by
     as much as the effect being looked for.
 - [ ] ➕ **Game systems as optional data, and memory for whoever builds the game** (owner, 2026-11-16: "the

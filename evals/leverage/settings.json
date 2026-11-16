@@ -8,7 +8,8 @@
   "jobs": {
     "small":  {"token_cap": 600000,  "wall_s": 3600},
     "medium": {"token_cap": 2000000, "wall_s": 10800},
-    "change": {"token_cap": 500000,  "wall_s": 3600}
+    "change": {"token_cap": 500000,  "wall_s": 3600},
+    "large":  {"token_cap": 4000000, "wall_s": 14400}
   },
   "judge": {"token_cap": 150000, "wall_s": 1800},
   "token_weights": {"input": 1.0, "cache_write": 1.25, "cache_read": 0.1, "output": 5.0},
@@ -21,6 +22,7 @@
     "Download nothing and install nothing.",
     "Someone may be using this machine: open no window that takes the keyboard or comes to the front, and never move the pointer or press keys for them.",
     "Anything you start that listens, listens on 127.0.0.1 only.",
-    "Stop every process you started before you finish."
+    "Stop every process you started before you finish.",
+    "Write a file with your file-writing tool, never with a shell here-document: on this machine a here-document is refused when its text holds an apostrophe, and what was written into it is lost."
   ]
 }

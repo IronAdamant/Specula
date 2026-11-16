@@ -179,6 +179,20 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
     first of the two: refused. One new test line could not fail, and one branch could not be
     reached.
 
+  - **The fifth pass: a subtraction** ([docs/design/FIRST_HOUR.md](docs/design/FIRST_HOUR.md), section 12;
+    owner, 2026-11-17: "if Pass 4 didn't help, how do we fix this?"). The fourth pass's ledgers put the
+    engine arm's extra cost in requests and the context each reads again, at every size; not in code
+    (a quarter less than plain on the medium game) and not in thinking. So nothing is added. The guide
+    no longer asks a first build for a checks file or proposes a reacting player; it names what is
+    read with it, and `specula new` answers the same; a setting the rules read is said as its four
+    places, and where a player's settings are kept is said. In the comparison: the engine arm's brief
+    is shorter and gives one read; a change builder is no longer told the finished game it is handed
+    is "a small sample game" to replace; and both arms are told to write files with their file tool,
+    since every build of every pass had its first shell here-document refused and wrote its first
+    file twice, which cost the plain arm more than the engine arm and flattered every ratio so far.
+    A `large` job is written as data and not run: a game made of modules cannot yet keep a best
+    score or a saved run for its player.
+
 ### M5, done (2026-11-06 to 2026-11-15)
 
 Built by one agent, lane by lane, each lane reviewed by a model that did not write it and passed through

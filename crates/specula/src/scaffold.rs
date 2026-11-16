@@ -321,7 +321,7 @@ given it at its first call.
 /// The sample game's own checks: runs, and what each must print (`specula check`).
 const RUNS: &str = r#"{
   "format": "specula.checks.v1",
-  "notes": "This game's own checks: `specula check .` plays each run as `specula run` would (ticks, inputs, seed) and holds its state against \"expect\" (keys of game.json's \"report\"). Checks that name the same \"settings\" share a player's settings, in this order. A check with no \"expect\" prints its state. Replace these with your game's.",
+  "notes": "This game's own checks: `specula check .` plays each run as `specula run` would (ticks, inputs, seed) and holds its state against \"expect\" (keys of game.json's \"report\"). Checks that name the same \"settings\" share a player's settings, in this order. A check with no \"expect\" prints its state. These are the sample's: a game that replaces the sample removes this file, or keeps checks of its own in it (notes/how.md).",
   "checks": [
     { "name": "the title", "ticks": 0, "expect": { "screen": "title", "phase": "title", "texts": { "has": "Start" } } },
     { "name": "five taps win", "ticks": 40, "inputs": "0:enter,5:tap,6:none,10:tap,11:none,15:tap,16:none,20:tap,21:none,25:tap", "expect": { "phase": "won", "taps": 5, "score": 60, "texts": { "has": "You won" } } },
@@ -339,6 +339,10 @@ title: How this game is built and checked
 kind: how
 about: game.json, modules/{{module}}/, assets/ui/, checks/
 ---
+**Read with this page, in one go:** `game.json` and `modules/{{module}}/src/lib.rs` (the game
+file and the rules: in a new project they are a sample's, a tap game, there to be replaced).
+The screens and the words are `assets/ui/*.json` and `assets/strings/*.json`.
+
 **The loop: edit, run, read.** One command builds the modules as they are on disk, plays the
 game from its start with no window, and prints how it stands as one JSON object:
 
@@ -365,42 +369,15 @@ game from its start with no window, and prints how it stands as one JSON object:
   `run.seed`, `ui.screen` (the top screen's name), `ui.focus` and `ui.focus_index` (the
   focused button, and its place among its screen's buttons), `ui.texts` (every text on
   screen, in order) and `ui.top_texts` (the top screen's). No `"report"`: all of it.
-- `--seed N` (1 when left out) seeds `cx.random_*`: the same seed and inputs give the same run. `--settings
-  FOLDER` is where the player's settings are read and kept; without it they are kept nowhere.
+- `--seed N` (1 when left out) seeds `cx.random_*`: the same seed and inputs give the same
+  run, and the rules never see a seed. `--settings FOLDER` is where the player's settings are
+  read and kept (a file the engine writes in it: the same folder again finds them); without
+  it they are kept nowhere. A window's player has a folder of their own, per user.
 - `--frame` writes what a player would see (the game file's `"view"`, with the interface).
-- `--follow` is for a player that reacts (showing that a game can be won, say): after the
-  script (`--ticks` may be left out) the state is printed, then each line read from standard
-  input is a step, `TICKS` or `TICKS WORD` (`10 up+shoot`: that input, then ten ticks), and
-  the state is printed after it. The run ends when the input does. A small program that
-  starts this command once, reads a state and writes a step, plays a whole game in one run.
-
-**The game's own checks: every run in one command.** `checks/runs.json` lists runs of the
-game, each as `specula run` takes one, with what its state must be:
-
-    specula check . [--only NAME]
-
-    { "name": "five taps win", "ticks": 40, "inputs": "0:enter,5:tap,6:none,10:tap",
-      "seed": 1, "settings": "kept", "frame": "checks/out/won.png", "size": [800, 480],
-      "expect": { "phase": "won", "taps": 5, "score": { "gte": 50 },
-                  "texts": { "has": "You won" } } }
-
-- It prints a line a check (`ok`, or what `differs` and the state) and a line that counts
-  them; exit code 1 when one did not hold. A check with no `"expect"` prints its state: write
-  the runs you want to see, read them all in one go, then write what each must be.
-- `"expect"`: a key of the report (or a path into it: `walkers.0.health`) with its value, or
-  with comparisons that must all hold: `{"ne": v}`, `{"lt": n}`, `{"lte": n}`, `{"gt": n}`,
-  `{"gte": n}`, `{"has": v}` (a list holds it; a text holds it), `{"len": n}`; a range is
-  `{"gt": 8.4, "lt": 8.6}`. A value (and `ne`) is equal within a rounding: expect `8.5` of
-  8.500000000000009. `lt lte gt gte` take the number as it is, so a range leaves a margin.
-  An object is comparisons only, or a value to equal with none of those words in it.
-  A key the state does not have never holds, whatever is expected of it.
-- Checks that name the same `"settings"` (small letters) share one player's settings, in the
-  file's order: set in one check and found in the next is "kept between runs", shown. A check
-  that names none has a new player's. `--only NAME` plays that check alone, with nothing an
-  earlier check set.
-- A `"frame"` is a PNG below the project's `checks` folder.
-- Write the checks as you write the game, and leave them: they are what you checked, for
-  whoever comes after (the sample's `checks/runs.json` checks the sample).
+- `--follow` goes on after the script (`--ticks` may be left out): the state is printed,
+  then each line read from standard input is a step, `TICKS` or `TICKS WORD` (`10 up+shoot`:
+  that input, then ten ticks), and the state is printed after it, until the input ends. It
+  is how a program of yours plays by reaction, in one run, should a script of inputs not do.
 
 **game.json** (an unknown key is refused, by name)
 
@@ -408,8 +385,13 @@ game, each as `specula run` takes one, with what its state must be:
   `"title"` (the title screen first) or `"run"` (straight into a run).
 - `screens`: which file under `assets/ui` is the `title`, `pause`, `won`, `lost` and `hud`.
 - `settings`: each `{"name", "kind", "default"}`, the kind one of `"int"` (with `"min"`,
-  `"max"`), `"choice"` (with `"options"`), `"toggle"`, `"locale"`. `"sim": true` sends its
-  value to the rules (the event `setting`). `language` and `volume` are always there.
+  `"max"`), `"choice"` (with `"options"`), `"toggle"`, `"locale"`. `language` and `volume`
+  are always there. Every setting is kept for the player; nothing else is needed for that.
+- **A setting the rules read** (a difficulty) is four things: `"sim": true` on it here; a
+  button on a screen with the action `cycle:NAME` (or `step:NAME:+1`), its text
+  `{setting.NAME.text}`; for a choice, a line `setting.NAME.VALUE` for each value in every
+  language's strings; and in the rules the event `setting` (`name`, `value`), which the
+  engine sends at the start of every run and when the player changes it.
 - `outcome`: `"won"` and `"lost"` are conditions over keys: `{"key": "{{module}}.taps",
   "gte": 5}` (also `eq ne lt lte gt in`), `{"all": [..]}`, `{"any": [..]}`, `{"not": ..}`.
   `"score"` names the key that holds the score.
@@ -470,6 +452,33 @@ game, each as `specula run` takes one, with what its state must be:
   below `n`), `cx.random_f32("stream")?` (0 to 1), `cx.sound("name", None, 1.0)?`,
   `cx.log("text")?`. The random calls are seeded by the run (`--seed`, a check's `"seed"`):
   the rules take no seed and keep none.
+
+**Checks kept with a game** (`checks/runs.json`: for a game that someone comes back to, or
+that is handed on. Building a game does not need them: `specula run` is the loop.)
+
+    specula check . [--only NAME]
+
+    { "name": "five taps win", "ticks": 40, "inputs": "0:enter,5:tap,6:none,10:tap",
+      "seed": 1, "settings": "kept", "frame": "checks/out/won.png", "size": [800, 480],
+      "expect": { "phase": "won", "taps": 5, "score": { "gte": 50 },
+                  "texts": { "has": "You won" } } }
+
+- Each check is a run as `specula run` takes one, with what its state must be. The command
+  plays them all and prints a line a check (`ok`, or what `differs` and the state) and a line
+  that counts them; exit code 1 when one did not hold. A check with no `"expect"` prints its
+  state. A game that came with checks: run them after a change, before anything else.
+- `"expect"`: a key of the report (or a path into it: `walkers.0.health`) with its value, or
+  with comparisons that must all hold: `{"ne": v}`, `{"lt": n}`, `{"lte": n}`, `{"gt": n}`,
+  `{"gte": n}`, `{"has": v}` (a list holds it; a text holds it), `{"len": n}`; a range is
+  `{"gt": 8.4, "lt": 8.6}`. A value (and `ne`) is equal within a rounding: expect `8.5` of
+  8.500000000000009. `lt lte gt gte` take the number as it is, so a range leaves a margin.
+  An object is comparisons only, or a value to equal with none of those words in it.
+  A key the state does not have never holds, whatever is expected of it.
+- Checks that name the same `"settings"` (small letters) share one player's settings, in the
+  file's order: set in one check and found in the next is "kept between runs", shown. A check
+  that names none has a new player's. `--only NAME` plays that check alone, with nothing an
+  earlier check set.
+- A `"frame"` is a PNG below the project's `checks` folder.
 
 **Also**
 

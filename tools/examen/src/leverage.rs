@@ -447,7 +447,10 @@ fn me(run: &Path) -> (String, String) {
     (format!("\"{exe}\" leverage"), format!("\"{}\"", posix(&absolute(run))))
 }
 
-fn arm_text(arm: &str, run: &Path) -> Vec<String> {
+/// What a brief says of the arm it is for. `change`: the work folder holds someone's finished
+/// game and not the engine's sample (the brief said "a small sample game ... replace it" to
+/// change builders too, until the fifth pass).
+fn arm_text(arm: &str, run: &Path, change: bool) -> Vec<String> {
     let (tool, rd) = me(run);
     let repo = repo();
     if arm == "plain" {
@@ -459,11 +462,13 @@ fn arm_text(arm: &str, run: &Path) -> Vec<String> {
     }
     vec![
         "What you have".to_owned(),
-        "- You build it with the Specula engine. Your work folder is a Specula project made by the engine (`specula new`): a small sample game that builds and plays, with every part in place (a game file, screens and words, a module with the rules, the SDK, its own checks). `notes/how.md` in it says how such a game is built, run and checked: read it first. Replace the sample's rules, screens and words with your game's.".to_owned(),
+        if change {
+            "- The game is built with the Specula engine: your work folder is a Specula project (a game file, screens and words, a module with the rules). Start with one read, from that folder: `cat notes/how.md README.md game.json modules/*/src/lib.rs` (how such a game is built and run; what its builder says of it; the game file; the rules).".to_owned()
+        } else {
+            "- You build it with the Specula engine. Your work folder is a Specula project made by the engine (`specula new`): a small sample game that builds and plays, with every part in place. Start with one read, from that folder: `cat notes/how.md game.json modules/*/src/lib.rs` (how such a game is built and run; the sample's game file; its rules). Replace the sample's rules, screens and words with your game's.".to_owned()
+        },
         format!("- Run the game with no window with `{tool} play {rd} --ticks N [--inputs T:WORD,T:WORD,...] [--seed N] [--settings FOLDER] [--frame FILE.png --size WxH] [--follow]`: the engine's own `specula run` on your work folder (notes/how.md says what it takes and what it prints). It builds the module first and prints the game's state as JSON; no engine need be started for it. Paths in it are taken from the folder you run it in."),
-        format!("- Check many runs in one command with `{tool} check {rd} [--only NAME]`: the engine's own `specula check` on your work folder. `checks/runs.json` there lists runs of the game and what each must print (the sample's are in it; notes/how.md says how one is written), and one command plays them all."),
-        format!("- An engine left running serves the project's tools, should you need them: start or stop it with `{tool} engine start {rd}` and `{tool} engine stop {rd}` (start it first; restart it this way if you need to). Never run the engine's executable yourself."),
-        format!("- Call a tool with `{tool} call {rd} TOOL '{{json}}'`; arguments too long or awkward for a command line go in a file: `{tool} call {rd} TOOL @args.json`. `{tool} tools {rd} [FILTER]` lists tools, and the `tools_catalog` tool describes them."),
+        format!("- Also there, and not needed to build or run a game: `{tool} check {rd} [--only NAME]` (the engine's own `specula check`: it plays every run that `checks/runs.json` lists and says which did not hold; notes/how.md); and an engine left running, with its tools (`{tool} engine start {rd}`, `{tool} engine stop {rd}`, `{tool} tools {rd} [FILTER]`, `{tool} call {rd} TOOL '{{json}}'` or `TOOL @args.json`). Never run the engine's executable yourself."),
         format!("- notes/how.md is written to be enough for a game of this size. Where it is not, the engine's documents are in {} (design notes for each area in `docs/design/`), with {}.", posix(&repo.join("docs")), posix(&repo.join("README.md"))),
         "- The two checks the brief asks for can be the `play` command, with the game file's `report` saying what it prints; or small scripts of yours.".to_owned(),
         "- Whoever checks the game starts with no engine running: the commands in your README must work from there.".to_owned(),
@@ -476,7 +481,7 @@ fn brief_text(j: &Json, arm: &str, run: &Path, s: &Json) -> String {
     let mut lines = vec![format!("# {}", text(j, "title").unwrap_or("")), String::new()];
     lines.extend(j.get("brief").and_then(Json::as_array).unwrap_or(&[]).iter().filter_map(Json::as_str).map(str::to_owned));
     lines.push(String::new());
-    lines.extend(arm_text(arm, run));
+    lines.extend(arm_text(arm, run, j.get("change_of").is_some()));
     lines.push(String::new());
     lines.push("Limits and rules".to_owned());
     lines.push(format!(

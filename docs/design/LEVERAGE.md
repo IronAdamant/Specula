@@ -30,6 +30,9 @@ result, and it says where to work next.
   - `change`: a fresh builder is given a finished `medium` game and nothing else, and adds a sixth wave
     with a new kind of walker, a third language and a difficulty setting. Each `medium` game is changed
     by a builder of the arm that built it.
+  - `large` (written 2026-11-17, not measured yet): "Hold the gate: the long night", about three times
+    the medium game: three kinds of enemy, eight waves from a table of data, a shop between waves, a run
+    saved and continued, a best score kept, three languages, a difficulty.
 - **One acceptance list a job** (in its file). Every item is something the game does, phrased so that it
   is true or false of a run: "holding left for 200 ticks leaves the paddle's left edge at 0".
 - **Checkable without hands.** Both arms must hand in a headless run that prints the game's state as JSON
