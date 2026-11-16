@@ -416,7 +416,8 @@ So a project keeps its checks as data, and one command plays them:
 - **`checks/runs.json`** (`specula.checks.v1`) lists runs of the game. Each is what `specula run`
   takes (`ticks`, `inputs` as the command's script or a list of such, `seed`, `frame` and `size`),
   a `name`, and `expect`: keys of the game file's report (or a path into one, `walkers.0.health`)
-  with the value each must have, or one comparison (`ne`, `lt`, `lte`, `gt`, `gte`, `has`, `len`).
+  with the value each must have, or comparisons that must all hold (`ne`, `lt`, `lte`, `gt`, `gte`,
+  `has`, `len`; two of them are a range).
   Numbers are the same within a rounding (a state's numbers are sums of ticks). An unknown key of a
   check is refused by name, and so is a file with no check in it. **A key the state does not have
   never holds**, whatever is expected of it: a misspelt key that "is not 5" would be a check that

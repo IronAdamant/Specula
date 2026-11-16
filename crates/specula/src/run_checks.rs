@@ -141,7 +141,7 @@ pub fn parse(text: &str) -> Result<Vec<Check>, String> {
             Some(_) => return Err(format!("{at}: \"expect\": an object of at most {MAX_EXPECT} keys of the state, each with what it must be")),
         };
         for (key, want) in &expect {
-            matcher(want).map_err(|why| format!("{at}: \"expect\": '{key}': {why}"))?;
+            matchers(want).map_err(|why| format!("{at}: \"expect\": '{key}': {why}"))?;
         }
         out.push(Check { name: name.to_owned(), ticks, seed, inputs, settings, frame, size, expect });
     }
@@ -161,20 +161,34 @@ enum Matcher<'j> {
 
 const COMPARISONS: [&str; 7] = ["ne", "lt", "lte", "gt", "gte", "has", "len"];
 
-/// An expectation as written: a value (the key must equal it), or an object with one of `ne`,
-/// `lt`, `lte`, `gt`, `gte` (numbers), `has` (a list holds this value; a text holds this text)
-/// and `len` (how many a list holds, or characters a text has).
-fn matcher(want: &Json) -> Result<Matcher<'_>, String> {
-    let Json::Obj(pairs) = want else { return Ok(Matcher::Is(want)) };
-    let [(word, value)] = pairs.as_slice() else { return Ok(Matcher::Is(want)) };
-    let Some(word) = COMPARISONS.iter().find(|c| *c == word) else { return Ok(Matcher::Is(want)) };
-    let number = || value.as_f64().filter(|n| n.is_finite()).ok_or_else(|| format!("\"{word}\" takes a number"));
-    Ok(match *word {
-        "ne" => Matcher::Not(value),
-        "has" => Matcher::Has(value),
-        "len" => Matcher::Len(value.as_u64().ok_or("\"len\" takes a whole number")?),
-        _ => Matcher::Than(word, number()?),
-    })
+/// An expectation as written: a value (the key must equal it), or an object of comparisons,
+/// every one of which must hold (`{"gt": 8.4, "lt": 8.6}` is a range): `ne`, `lt`, `lte`,
+/// `gt`, `gte` (numbers), `has` (a list holds this value; a text holds this text) and `len`
+/// (how many a list holds, or characters a text has). An object with any other key in it is
+/// a value to equal.
+fn matchers(want: &Json) -> Result<Vec<Matcher<'_>>, String> {
+    let Json::Obj(pairs) = want else { return Ok(vec![Matcher::Is(want)]) };
+    let word = |w: &str| COMPARISONS.iter().find(|c| **c == w).copied();
+    if pairs.is_empty() || pairs.iter().any(|(w, _)| word(w).is_none()) {
+        return Ok(vec![Matcher::Is(want)]);
+    }
+    let mut seen: Vec<&str> = Vec::new();
+    pairs
+        .iter()
+        .map(|(w, value)| {
+            let word = word(w).ok_or("not a comparison")?;
+            if seen.contains(&word) {
+                return Err(format!("\"{word}\" is there twice"));
+            }
+            seen.push(word);
+            Ok(match word {
+                "ne" => Matcher::Not(value),
+                "has" => Matcher::Has(value),
+                "len" => Matcher::Len(value.as_u64().ok_or("\"len\" takes a whole number")?),
+                _ => Matcher::Than(word, value.as_f64().filter(|n| n.is_finite()).ok_or_else(|| format!("\"{word}\" takes a number"))?),
+            })
+        })
+        .collect()
 }
 
 /// Two values of a state are the same: numbers within a rounding of each other (a state's
@@ -224,27 +238,27 @@ pub fn differs(expect: &[(String, Json)], state: &Json) -> Vec<(String, Json, Js
             out.push((key.clone(), Json::from(NOT_THERE), shown(want)));
             continue;
         };
-        let holds = match matcher(want) {
-            Ok(Matcher::Is(v)) => same(is, v),
-            Ok(Matcher::Not(v)) => !same(is, v),
-            Ok(Matcher::Than(word, n)) => is.as_f64().is_some_and(|x| match word {
-                "lt" => x < n,
-                "lte" => x <= n,
-                "gt" => x > n,
-                _ => x >= n,
+        let one = |m: &Matcher| match m {
+            Matcher::Is(v) => same(is, v),
+            Matcher::Not(v) => !same(is, v),
+            Matcher::Than(word, n) => is.as_f64().is_some_and(|x| match *word {
+                "lt" => x < *n,
+                "lte" => x <= *n,
+                "gt" => x > *n,
+                _ => x >= *n,
             }),
-            Ok(Matcher::Has(v)) => match (is, v) {
+            Matcher::Has(v) => match (is, v) {
                 (Json::Arr(items), _) => items.iter().any(|i| same(i, v)),
                 (Json::Str(text), Json::Str(part)) => text.contains(part.as_str()),
                 _ => false,
             },
-            Ok(Matcher::Len(n)) => match is {
-                Json::Arr(items) => items.len() as u64 == n,
-                Json::Str(text) => text.chars().count() as u64 == n,
+            Matcher::Len(n) => match is {
+                Json::Arr(items) => items.len() as u64 == *n,
+                Json::Str(text) => text.chars().count() as u64 == *n,
                 _ => false,
             },
-            Err(_) => false,
         };
+        let holds = matchers(want).is_ok_and(|all| all.iter().all(one));
         if !holds {
             out.push((key.clone(), shown(is), shown(want)));
         }
@@ -290,6 +304,8 @@ mod tests {
         }
         assert!(parse(&file(r#"{"name": "a", "ticks": 4, "frame": "checks/out/deep/Title.PNG"}"#)).is_ok());
         assert!(no(r#"{"name": "a", "ticks": 4, "expect": {"score": {"gte": "many"}}}"#).contains("takes a number"));
+        assert!(no(r#"{"name": "a", "ticks": 4, "expect": {"score": {"gte": 1, "lt": "many"}}}"#).contains("\"lt\" takes a number"));
+        assert!(parse(&file(r#"{"name": "a", "ticks": 4, "expect": {"score": {"gte": 1, "lt": 9}}}"#)).is_ok());
         assert!(parse(r#"{"checks": []}"#).unwrap_err().contains("format"));
         assert!(parse("[").unwrap_err().contains("not JSON"));
         let many: Vec<String> = (0..=MAX_CHECKS).map(|i| format!(r#"{{"name": "c{i}", "ticks": 0}}"#)).collect();
@@ -322,7 +338,11 @@ mod tests {
         assert!(cut[0].1.as_str().is_some_and(|s| s.chars().count() < MAX_SHOWN + 40 && s.ends_with("characters)")), "{:?}", cut[0].1);
         // A comparison of numbers never holds for what is not a number.
         assert!(!holds(r#"{"phase": {"gte": 1}}"#));
-        // An object that is not one comparison is a value to equal.
-        assert!(holds(r#"{"walkers.0": {"health": 2, "x": 3}}"#) && !holds(r#"{"walkers.0": {"health": 2}}"#));
+        // Several comparisons of one key must all hold: a range (a builder of the fourth pass
+        // wrote one, and it held against nothing: two words were read as a value to equal).
+        assert!(holds(r#"{"guard_y": {"gt": 8.4, "lt": 8.6}, "taps": {"gte": 5, "lte": 5, "ne": 4}, "texts": {"has": "You won", "len": 2}}"#));
+        assert!(!holds(r#"{"guard_y": {"gt": 8.4, "lt": 8.45}}"#) && !holds(r#"{"guard_y": {"gt": 8.55, "lt": 8.6}}"#) && !holds(r#"{"texts": {"has": "You won", "len": 3}}"#));
+        // An object with a key that is no comparison is a value to equal.
+        assert!(holds(r#"{"walkers.0": {"health": 2, "x": 3}}"#) && !holds(r#"{"walkers.0": {"health": 2}}"#) && !holds(r#"{"walkers.0": {"len": 2, "x": 3}}"#));
     }
 }

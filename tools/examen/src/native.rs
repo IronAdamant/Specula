@@ -752,7 +752,7 @@ fn new_project(cx: &mut Cx) -> Result<String, String> {
         PathBuf::from(&own_checks),
         format!(
             r#"{{"format": "specula.checks.v1", "checks": [
-  {{"name": "holds", "ticks": 40, "inputs": "{TAPS}", "frame": "checks/out/won.png", "size": [320, 200], "expect": {{"phase": "won", "taps": {{"gte": 5}}, "texts": {{"has": "You won"}}}}}},
+  {{"name": "holds", "ticks": 40, "inputs": "{TAPS}", "frame": "checks/out/won.png", "size": [320, 200], "expect": {{"phase": "won", "taps": {{"gte": 5, "lt": 6}}, "texts": {{"has": "You won"}}}}}},
   {{"name": "does not", "ticks": 40, "inputs": ["0:enter,5:tap,6:none", "10:tap,11:none,15:tap,16:none,20:tap,21:none,25:tap"], "expect": {{"taps": 4, "phase": "won"}}}},
   {{"name": "to read", "ticks": 0}},
   {{"name": "no such word", "ticks": 2, "inputs": "0:jump"}}

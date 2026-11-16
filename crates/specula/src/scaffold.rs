@@ -388,9 +388,10 @@ game, each as `specula run` takes one, with what its state must be:
   them; exit code 1 when one did not hold. A check with no `"expect"` prints its state: write
   the runs you want to see, read them all in one go, then write what each must be.
 - `"expect"`: a key of the report (or a path into it: `walkers.0.health`) with its value, or
-  with one of `{"ne": v}`, `{"lt": n}`, `{"lte": n}`, `{"gt": n}`, `{"gte": n}`, `{"has": v}`
-  (a list holds it; a text holds it), `{"len": n}`. A key the state does not have never
-  holds, whatever is expected of it.
+  with comparisons that must all hold: `{"ne": v}`, `{"lt": n}`, `{"lte": n}`, `{"gt": n}`,
+  `{"gte": n}`, `{"has": v}` (a list holds it; a text holds it), `{"len": n}`; a range is
+  `{"gt": 8.4, "lt": 8.6}`. Numbers are equal within a rounding (8.500000000000009 is 8.5).
+  A key the state does not have never holds, whatever is expected of it.
 - Checks that name the same `"settings"` (small letters) share one player's settings, in the
   file's order: set in one check and found in the next is "kept between runs", shown. A check
   that names none has a new player's. `--only NAME` plays that check alone, with nothing an
