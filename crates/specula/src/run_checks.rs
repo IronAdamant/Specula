@@ -164,35 +164,58 @@ const COMPARISONS: [&str; 7] = ["ne", "lt", "lte", "gt", "gte", "has", "len"];
 /// An expectation as written: a value (the key must equal it), or an object of comparisons,
 /// every one of which must hold (`{"gt": 8.4, "lt": 8.6}` is a range): `ne`, `lt`, `lte`,
 /// `gt`, `gte` (numbers), `has` (a list holds this value; a text holds this text) and `len`
-/// (how many a list holds, or characters a text has). An object with any other key in it is
-/// a value to equal.
+/// (how many a list holds, or characters a text has).
+///
+/// An object with no comparison in it is a value to equal. One that mixes a comparison with
+/// another key is refused, with the key named: `{"gt": 8.4, "max": 8.6}` read as a value to
+/// equal would hold against nothing, and say so only when the check is played. (An object of
+/// the state that has such a key of its own is held a key at a time, by its path.) A key
+/// written twice in an expected object is refused too: which of the two is meant is not said.
 fn matchers(want: &Json) -> Result<Vec<Matcher<'_>>, String> {
-    let Json::Obj(pairs) = want else { return Ok(vec![Matcher::Is(want)]) };
+    let value = || twice(want).map_or(Ok(vec![Matcher::Is(want)]), |key| Err(format!("'{key}' is there twice")));
+    let Json::Obj(pairs) = want else { return value() };
     let word = |w: &str| COMPARISONS.iter().find(|c| **c == w).copied();
-    if pairs.is_empty() || pairs.iter().any(|(w, _)| word(w).is_none()) {
-        return Ok(vec![Matcher::Is(want)]);
+    let Some(first) = pairs.iter().find_map(|(w, _)| word(w)) else { return value() };
+    if let Some((stray, _)) = pairs.iter().find(|(w, _)| word(w).is_none()) {
+        return Err(format!(
+            "'{stray}' is beside \"{first}\" and is not a comparison ({}): an object is comparisons only, or a value to equal with none in it (a key of an object in the state is held by its path, `key.{stray}`)",
+            COMPARISONS.join(" ")
+        ));
     }
     let mut seen: Vec<&str> = Vec::new();
-    pairs
-        .iter()
-        .map(|(w, value)| {
-            let word = word(w).ok_or("not a comparison")?;
-            if seen.contains(&word) {
-                return Err(format!("\"{word}\" is there twice"));
-            }
-            seen.push(word);
-            Ok(match word {
-                "ne" => Matcher::Not(value),
-                "has" => Matcher::Has(value),
-                "len" => Matcher::Len(value.as_u64().ok_or("\"len\" takes a whole number")?),
-                _ => Matcher::Than(word, value.as_f64().filter(|n| n.is_finite()).ok_or_else(|| format!("\"{word}\" takes a number"))?),
-            })
-        })
-        .collect()
+    let mut all = Vec::with_capacity(pairs.len());
+    for (w, value) in pairs {
+        let Some(word) = word(w) else { continue };
+        if seen.contains(&word) {
+            return Err(format!("\"{word}\" is there twice"));
+        }
+        seen.push(word);
+        all.push(match word {
+            "ne" => Matcher::Not(value),
+            "has" => Matcher::Has(value),
+            "len" => Matcher::Len(value.as_u64().ok_or("\"len\" takes a whole number")?),
+            _ => Matcher::Than(word, value.as_f64().filter(|n| n.is_finite()).ok_or_else(|| format!("\"{word}\" takes a number"))?),
+        });
+    }
+    Ok(all)
+}
+
+/// A key written twice in an object anywhere inside `value`, if there is one.
+fn twice(value: &Json) -> Option<&str> {
+    match value {
+        Json::Arr(items) => items.iter().find_map(twice),
+        Json::Obj(pairs) => pairs
+            .iter()
+            .enumerate()
+            .find_map(|(i, (key, _))| pairs[..i].iter().any(|(k, _)| k == key).then_some(key.as_str()))
+            .or_else(|| pairs.iter().find_map(|(_, v)| twice(v))),
+        _ => None,
+    }
 }
 
 /// Two values of a state are the same: numbers within a rounding of each other (a state's
 /// numbers are sums of ticks: 8.499999999999991 is 8.5), everything else as it is written.
+/// Equality and `ne` use it; `lt`, `lte`, `gt` and `gte` compare the numbers as they are.
 fn same(a: &Json, b: &Json) -> bool {
     match (a, b) {
         (Json::Num(x), Json::Num(y)) => (x - y).abs() <= 1e-9 * x.abs().max(y.abs()).max(1.0),
@@ -306,6 +329,15 @@ mod tests {
         assert!(no(r#"{"name": "a", "ticks": 4, "expect": {"score": {"gte": "many"}}}"#).contains("takes a number"));
         assert!(no(r#"{"name": "a", "ticks": 4, "expect": {"score": {"gte": 1, "lt": "many"}}}"#).contains("\"lt\" takes a number"));
         assert!(parse(&file(r#"{"name": "a", "ticks": 4, "expect": {"score": {"gte": 1, "lt": 9}}}"#)).is_ok());
+        // A comparison beside a key that is none is refused when the file is read, with the
+        // key: read as a value to equal it would hold against nothing.
+        let mixed = no(r#"{"name": "a", "ticks": 4, "expect": {"score": {"gt": 8.4, "max": 8.6}}}"#);
+        assert!(mixed.contains("'max' is beside \"gt\"") && mixed.contains("`key.max`"), "{mixed}");
+        assert!(no(r#"{"name": "a", "ticks": 4, "expect": {"score": {"near": 2, "lte": 3}}}"#).contains("'near' is beside \"lte\""));
+        // A key twice: a comparison, or a key of a value to equal (at any depth).
+        assert!(no(r#"{"name": "a", "ticks": 4, "expect": {"score": {"gt": 1, "gt": 2}}}"#).contains("\"gt\" is there twice"));
+        assert!(no(r#"{"name": "a", "ticks": 4, "expect": {"walkers": [{"x": 3, "x": 3}]}}"#).contains("'x' is there twice"));
+        assert!(parse(&file(r#"{"name": "a", "ticks": 4, "expect": {"walkers.0": {"x": 3, "health": 2}, "list": [{"x": 1}, {"x": 1}]}}"#)).is_ok());
         assert!(parse(r#"{"checks": []}"#).unwrap_err().contains("format"));
         assert!(parse("[").unwrap_err().contains("not JSON"));
         let many: Vec<String> = (0..=MAX_CHECKS).map(|i| format!(r#"{{"name": "c{i}", "ticks": 0}}"#)).collect();
@@ -342,7 +374,10 @@ mod tests {
         // wrote one, and it held against nothing: two words were read as a value to equal).
         assert!(holds(r#"{"guard_y": {"gt": 8.4, "lt": 8.6}, "taps": {"gte": 5, "lte": 5, "ne": 4}, "texts": {"has": "You won", "len": 2}}"#));
         assert!(!holds(r#"{"guard_y": {"gt": 8.4, "lt": 8.45}}"#) && !holds(r#"{"guard_y": {"gt": 8.55, "lt": 8.6}}"#) && !holds(r#"{"texts": {"has": "You won", "len": 3}}"#));
-        // An object with a key that is no comparison is a value to equal.
-        assert!(holds(r#"{"walkers.0": {"health": 2, "x": 3}}"#) && !holds(r#"{"walkers.0": {"health": 2}}"#) && !holds(r#"{"walkers.0": {"len": 2, "x": 3}}"#));
+        // The rounding is equality's (and `ne`'s); a comparison takes the number as it is, so
+        // a range leaves a margin.
+        assert!(holds(r#"{"guard_y": 8.5}"#) && !holds(r#"{"guard_y": {"ne": 8.5}}"#) && !holds(r#"{"guard_y": {"gte": 8.5}}"#) && holds(r#"{"guard_y": {"lt": 8.5}}"#));
+        // An object with no comparison in it is a value to equal.
+        assert!(holds(r#"{"walkers.0": {"health": 2, "x": 3}}"#) && !holds(r#"{"walkers.0": {"health": 2}}"#));
     }
 }
