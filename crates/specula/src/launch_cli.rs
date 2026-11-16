@@ -131,7 +131,8 @@ specula run [NAME|FOLDER] --ticks N [--inputs T:WORD,T:WORD,... | --inputs @FILE
                                  line each: TICKS, or TICKS WORD (10 up+shoot: the input,
                                  then ten ticks); the state is printed after each, and the
                                  run ends with the input: a player that reads the state and
-                                 answers it plays a whole game in one run
+                                 answers it plays a whole game in one run. A run ends after
+                                 30 minutes at most
 specula new NAME [--in FOLDER] [--bare]
                                  make a project that builds and plays (a game file, screens,
                                  words, a module, the SDK, notes) and list it; --bare: only

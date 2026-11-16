@@ -20,8 +20,9 @@ const ALLOWED: [(&str, usize); 68] = [
     // standard output, in a process that is never an engine; the one place they print.
     // (The command line's answers: one place prints a command's JSON; `specula run` prints the
     // game's report alone on a line, what the game says is wrong with its files and what its
-    // modules logged beside it, and a refusal as one line where the state would have been.)
-    ("crates/specula/src/launch_run.rs", 8),
+    // modules logged beside it, and a refusal as one line where the state would have been;
+    // a followed run's states are passed on as they come.)
+    ("crates/specula/src/launch_run.rs", 5),
     ("crates/specula/src/leases.rs", 1),
     ("crates/specula/src/lex_live.rs", 5),
     ("crates/specula/src/lib.rs", 28),
@@ -43,9 +44,9 @@ const ALLOWED: [(&str, usize); 68] = [
     ("crates/specula/src/project_text.rs", 1),
     ("crates/specula/src/review_screen.rs", 1),
     ("crates/specula/src/safe_path.rs", 2),
-    // A followed run (`specula run --follow`) writes each state to the standard output the
-    // command was given, for whoever plays to read before its next step: that output IS the
-    // run's answer, a line at a time, and an engine prints nothing else there.
+    // A followed run (`specula run --follow`) hands each state to the command that started
+    // its engine, as one marked line on the engine's standard error (the one pipe the command
+    // reads): that line IS the run's answer, passed on by the command as its own output.
     ("crates/specula/src/script_run.rs", 1),
     ("crates/specula/src/schedule.rs", 7),
     ("crates/specula/src/sight.rs", 1),

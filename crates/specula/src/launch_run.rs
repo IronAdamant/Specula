@@ -757,23 +757,48 @@ fn run_game(ctx: &Ctx, args: &crate::launch_cli::RunArgs) -> (i32, Json) {
         command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
         if spec.follow {
             // A followed run's steps are read by the engine itself, from this command's own
-            // input, and each state is written to this command's own output (an engine prints
-            // nothing else there): whoever plays talks to the run with nothing in between.
-            command.stdin(std::process::Stdio::inherit()).stdout(std::process::Stdio::inherit());
+            // input. Its states come back on the engine's standard error, each a line that
+            // begins with a mark, and are passed on below as this command's output: never on
+            // the engine's standard output, where what a module prints would land between them.
+            command.stdin(std::process::Stdio::inherit());
         }
         let mut child = match command.spawn() {
             Ok(c) => c,
             Err(e) => return done(refusal("not_started", format!("{} could not be started ({e})", ctx.exe.display()))),
         };
+        // (Set when a state could not be passed on: whoever followed the run has gone.)
+        let gone = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let said = child.stderr.take().map(|mut pipe| {
+            let (follow, gone) = (spec.follow, gone.clone());
             std::thread::spawn(move || {
-                use std::io::Read;
-                let (mut tail, mut part) = (Vec::new(), [0u8; 4096]);
-                while let Ok(n @ 1..) = pipe.read(&mut part) {
-                    tail.extend_from_slice(&part[..n]);
+                use std::io::{Read, Write};
+                let keep = |tail: &mut Vec<u8>, bytes: &[u8]| {
+                    tail.extend_from_slice(bytes);
                     let over = tail.len().saturating_sub(4 * RUN_SAID);
                     tail.drain(..over);
+                };
+                let (mut tail, mut line, mut part) = (Vec::new(), Vec::new(), [0u8; 4096]);
+                while let Ok(n @ 1..) = pipe.read(&mut part) {
+                    if !follow {
+                        keep(&mut tail, &part[..n]);
+                        continue;
+                    }
+                    for &byte in &part[..n] {
+                        line.push(byte);
+                        if byte == b'\n' && line.first() == Some(&crate::script_run::STATE_MARK) {
+                            let mut out = std::io::stdout().lock();
+                            if out.write_all(&line[1..]).and_then(|()| out.flush()).is_err() {
+                                gone.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            line.clear();
+                        } else if byte == b'\n' || line.len() > RUN_STATE_LINE {
+                            // (The engine's own words; or a line longer than any state is.)
+                            keep(&mut tail, &line);
+                            line.clear();
+                        }
+                    }
                 }
+                keep(&mut tail, &line);
                 String::from_utf8_lossy(&tail).into_owned()
             })
         });
@@ -781,7 +806,7 @@ fn run_game(ctx: &Ctx, args: &crate::launch_cli::RunArgs) -> (i32, Json) {
         let ended = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Some(status),
-                Ok(None) if began.elapsed() < RUN_WALL => std::thread::sleep(Duration::from_millis(20)),
+                Ok(None) if began.elapsed() < RUN_WALL && !gone.load(std::sync::atomic::Ordering::Relaxed) => std::thread::sleep(Duration::from_millis(20)),
                 _ => {
                     let _ = child.kill();
                     let _ = child.wait();
@@ -789,6 +814,12 @@ fn run_game(ctx: &Ctx, args: &crate::launch_cli::RunArgs) -> (i32, Json) {
                 }
             }
         };
+        // (The engine has ended: its last words, and its last state, are read to their end
+        // before this command says anything of its own.)
+        let said = said.and_then(|s| s.join().ok()).unwrap_or_default();
+        if gone.load(std::sync::atomic::Ordering::Relaxed) {
+            return done(refusal("no_reader", "the run's output could not be written: whoever followed it has gone, and the run was ended"));
+        }
         let answer = std::fs::read_to_string(&spec.out).ok().and_then(|t| Json::parse(&t).ok());
         let refused_the_lock = answer.as_ref().and_then(|a| a.get("error")).and_then(|e| e.get("error")).and_then(Json::as_str) == Some(crate::script_run::PROJECT_OPEN);
         if !refused_the_lock || waited.elapsed() > RUN_LOCK_WAIT {
@@ -803,7 +834,7 @@ fn run_game(ctx: &Ctx, args: &crate::launch_cli::RunArgs) -> (i32, Json) {
     };
     let Some(answer) = answer else {
         // No answer: the engine did not get as far as the run (its own words say why).
-        let said: String = said.and_then(|s| s.join().ok()).unwrap_or_default().trim().chars().rev().take(RUN_SAID).collect::<Vec<_>>().into_iter().rev().collect();
+        let said: String = said.trim().chars().rev().take(RUN_SAID).collect::<Vec<_>>().into_iter().rev().collect();
         let why = match ended {
             None => format!("the run did not end within {} minutes and was stopped", RUN_WALL.as_secs() / 60),
             Some(status) => format!("the run's engine ended ({status}) before it answered"),
@@ -830,10 +861,26 @@ const RUN_REPORT: &str = "run_report";
 /// The key that says a run was followed: its states were printed as it went, by the engine.
 const RUN_FOLLOWED: &str = "followed";
 
-/// What a module logged (`cx.log`), as a line beside a run's answer.
+/// The longest line of a followed run's engine that is still read as one (a state is far
+/// shorter: a module keeps a bounded number of bounded values).
+const RUN_STATE_LINE: usize = 8 << 20;
+
+/// What a module logged (`cx.log`), as a line beside a run's answer: at the script's tick,
+/// as an input's tick is counted (the game's own clock stands at the title and in a pause).
 fn log_line(line: &Json) -> String {
     let word = |key: &str| line.get(key).map_or_else(String::new, |v| v.as_str().map_or_else(|| v.to_string(), str::to_owned));
-    format!("specula run: {} logged at tick {}: {}", word("module"), word("tick"), word("message"))
+    let when = match line.get(crate::script_run::RUN_TICK) {
+        Some(tick) => format!("tick {tick}"),
+        None => format!("the game's tick {} (before this run's first)", word("tick")),
+    };
+    format!("specula run: {} logged at {when}: {}", word("module"), word("message"))
+}
+
+/// A line of a command's answer, on its standard output. That it could not be written (its
+/// reader has gone) is nothing this command can say to anyone.
+fn put(line: &str) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stdout().lock(), "{line}");
 }
 
 /// A port of this machine that is free now.
@@ -844,13 +891,13 @@ pub fn free_port() -> Option<u16> {
 /// A command line that is not one: the answer is JSON like every other, exit code 1 (the one
 /// other place a command prints).
 pub fn usage(message: &str) -> i32 {
-    println!("{}", refusal("usage", message).1.to_pretty());
+    put(&refusal("usage", message).1.to_pretty());
     1
 }
 
 /// [`usage`], as one line: a headless run's answer is a line whatever it is.
 pub fn usage_line(message: &str) -> i32 {
-    println!("{}", refusal("usage", message).1);
+    put(&refusal("usage", message).1.to_string());
     1
 }
 
@@ -909,14 +956,14 @@ pub fn answer(cli: Cli, settings: Option<PathBuf>) -> i32 {
         }
         // (A followed run printed each state as it went: its last is not said twice.)
         if json.get(RUN_FOLLOWED).is_none() {
-            println!("{report}");
+            put(&report.to_string());
         }
         return code;
     }
     // A run that could not be made, or failed: its answer is one line too, where the state
     // would have been (whoever reads a run reads its last line).
     if a_run && code == 1 {
-        println!("{json}");
+        put(&json.to_string());
         return code;
     }
     // (`help` is words for a person: printed as text.)
@@ -924,7 +971,7 @@ pub fn answer(cli: Cli, settings: Option<PathBuf>) -> i32 {
     if code == 2 {
         eprintln!("{text}");
     } else {
-        println!("{text}");
+        put(&text);
     }
     code
 }

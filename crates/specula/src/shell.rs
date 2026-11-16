@@ -884,7 +884,11 @@ impl Shell {
             s.set_num("game.score", score);
         }
         // A setting's value, and the value as words (`.text`): a language by its own name
-        // ("Deutsch", as its table gives it), a toggle as on or off, anything else as it is.
+        // ("Deutsch", as its table gives it), a toggle as on or off, a choice by the line
+        // `setting.NAME.VALUE` of the player's language when the tables have one (a choice's
+        // values are words too: "easy" is "Facile" to a player who reads French), anything
+        // else as it is.
+        let strings = self.strings.iter().find(|(locale, _)| locale == self.settings.locale()).map(|(_, strings)| strings.clone());
         for def in self.settings.defs() {
             let (key, words) = (format!("setting.{}", def.name), format!("setting.{}.text", def.name));
             match self.settings.get(&def.name) {
@@ -898,7 +902,12 @@ impl Shell {
                 }
                 Some(Val::Text(t)) => {
                     s.set_str(&key, t);
-                    let name = if def.name == language { self.tables.iter().find(|table| table.locale.as_str() == t).map_or(t.as_str(), |table| table.name.as_str()) } else { t.as_str() };
+                    let line = format!("setting.{}.{t}", def.name);
+                    let name = if def.name == language {
+                        self.tables.iter().find(|table| table.locale.as_str() == t).map_or(t.as_str(), |table| table.name.as_str())
+                    } else {
+                        strings.as_ref().and_then(|strings| strings.catalog().text(&line, None)).unwrap_or(t.as_str())
+                    };
                     s.set_str(&words, name);
                 }
                 None => {}
@@ -1385,6 +1394,31 @@ mod tests {
         let mut out = Vec::new();
         shell.take_module_events(&mut out);
         out
+    }
+
+    /// A choice's value is words too: shown by the line `setting.NAME.VALUE` of the player's
+    /// language where the tables have one, and as it is where they do not (a builder of the
+    /// comparison's change round spent ten requests getting "hard" to read "Difficile").
+    #[test]
+    fn a_choices_value_is_shown_in_the_players_language() {
+        let mut files = ShellFiles::builtin(GAME);
+        let table = |locale: &str, name: &str, source: bool, lines: &str| (locale.to_owned(), format!(r#"{{"format": "specula.strings.v1", "locale": "{locale}", "name": "{name}", "source": {source}, "strings": {{{lines}}}}}"#));
+        files.tables = vec![table("en", "English", true, r#""setting.difficulty.easy": "Easy", "setting.difficulty.hard": "Hard""#), table("fr", "Français", false, r#""setting.difficulty.easy": "Facile""#)];
+        let mut shell = Shell::build("gate", files).expect("a shell");
+        let words = |shell: &mut Shell| {
+            shell.fill();
+            shell.state.get("setting.difficulty.text").map(|v| format!("{v:?}")).unwrap_or_default()
+        };
+        assert!(words(&mut shell).contains("Easy"), "{}", words(&mut shell));
+        shell.press("set:language:fr", true).unwrap();
+        assert!(words(&mut shell).contains("Facile"), "{}", words(&mut shell));
+        // A value the player's table has no line for: the source language's, as every line.
+        shell.press("set:difficulty:hard", true).unwrap();
+        assert!(words(&mut shell).contains("Hard"), "{}", words(&mut shell));
+        assert_eq!(shell.value("setting.difficulty"), Some(Val::Text("hard".into())), "the value itself is the game file's word");
+        // No line at all: the value as it is.
+        let mut plain = super::tests::shell();
+        assert!(words(&mut plain).contains("easy"), "{}", words(&mut plain));
     }
 
     /// The files a new project is given load, every one: the theme, the five screens under

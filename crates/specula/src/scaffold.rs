@@ -329,10 +329,11 @@ game from its start with no window, and prints how it stands as one JSON object:
                   [--settings FOLDER] [--frame out.png --size 800x480] [--follow]
 
 - The answer is one line: the state, or an error (exit code 1). A build that fails answers
-  the compiler's errors (file, line, message). A module whose call fails answers
-  `module_failed` with the code, the message and the tick, never a state: an error returned
-  from `tick` undoes the whole tick, so the game did not move. What the rules log
-  (`cx.log("text")?`) is printed beside the state, on standard error.
+  the compiler's errors (file, line, message). A module whose call fails, or that panics,
+  answers `module_failed` with the code, the message and the tick (the script's, as an
+  input's is counted), never a state: an error returned from `tick` undoes all that call
+  did, so the rules did not move. What the rules log (`cx.log("text")?`) is printed beside
+  the state, on standard error, when the run ends. A run ends after 30 minutes at most.
 - **Inputs** are words at ticks. `up down left right enter escape` press the interface, as
   keys do. A module's action (`tap` here: `modules/{{module}}/actions.json`) is held until the
   next input, as a held key is; `none` holds nothing. A word that is both does both. Words
@@ -375,8 +376,11 @@ game from its start with no window, and prints how it stands as one JSON object:
 **Screens** (`assets/ui/*.json`; widgets: box, panel, label, button, bar, list, spacer)
 
 - A text is words, or `@key` (a line of `assets/strings/<locale>.json`). In either, `{KEY}`
-  shows a value: `{{{module}}.taps}`, `{setting.volume}`, `{setting.language.text}`,
-  `{game.score}`. `"visible": "KEY"` (or `"!KEY"`) shows a widget by a value.
+  shows a value: `{{{module}}.taps}`, `{setting.volume}`, `{game.score}`, and a setting's
+  value as words, `{setting.NAME.text}`: a language's own name, and for a choice the line
+  `setting.NAME.VALUE` of the strings (`"setting.difficulty.easy": "Easy"`), in the player's
+  language. `"visible"` shows a widget by a condition: `"KEY"`, `"!KEY"`, or a comparison
+  (`"setting.difficulty == 'hard'"`, `"{{module}}.left < 3"`; `&&`, `||`).
 - A button's `action` is a word. The engine does `start`, `pause`, `resume`, `title`,
   `open:SCREEN`, `back`, `quit`, `set:NAME:VALUE`, `step:NAME:+1`, `step:NAME:-1`,
   `cycle:NAME`, `save:SLOT`, `load:SLOT`; any other word reaches the rules as the event `ui`.
@@ -394,10 +398,12 @@ game from its start with no window, and prints how it stands as one JSON object:
 - Input: `cx.action("name")` has `.pressed`, `.held`, `.released` and `.value` (`[f32; 2]`).
   The actions are `modules/{{module}}/actions.json`: each `{"name", "kind": "button" (or
   `"axis"`, `"axis2"`), "group", "description", "bindings": ["Key.Space", "Pad.South"]}`.
-  Sources: `Key.A` to `Key.Z`, `Key.0` to `Key.9`, `Key.Up`, `Key.Down`, `Key.Left`,
-  `Key.Right`, `Key.Space`, `Key.Enter`, `Key.Escape`, `Key.Tab`, `Key.Shift`, `Key.Ctrl`;
-  `Pad.South`, `Pad.East`, `Pad.West`, `Pad.North`, `Pad.DpadUp` (`Down`, `Left`, `Right`),
-  `Pad.Start`, `Pad.LeftStick` (an axis2); `Mouse.Left`.
+  Sources, the ones most games bind: `Key.A` to `Key.Z`, `Key.0` to `Key.9`, `Key.Up`,
+  `Key.Down`, `Key.Left`, `Key.Right`, `Key.Space`, `Key.Enter`, `Key.Escape`, `Key.Tab`,
+  `Key.Shift`, `Key.Ctrl`; `Pad.South`, `Pad.East`, `Pad.West`, `Pad.North`, `Pad.DpadUp`
+  (`Down`, `Left`, `Right`), `Pad.Start`, `Pad.LeftBumper`, `Pad.RightTrigger` (an axis),
+  `Pad.LeftStick` (an axis2); `Mouse.Left`, `Mouse.Right`; `Touch.Tap`. A name the input
+  map does not read is refused when the module loads, with the name.
 - Events from the engine, at a tick: `for e in cx.events()`, with `e.from == "engine"`,
   `e.name` and `e.data.get("key")`: `run` (`phase` is `start` when a run begins; any other
   `run`, and `outcome`, end it), `setting` (`name`, `value`), `ui` (`action`).
@@ -439,9 +445,20 @@ pub fn files(name: &str, module: &str) -> Vec<(String, String)> {
         let text = match *path {
             "assets/ui/hud.json" => fill(HUD),
             // (After the score's line, whatever the file's line ends are in this checkout.)
-            "assets/strings/en.json" => text.replace(
-                "\"hud.score\": \"Score: {game.score}\",",
-                &fill("\"hud.score\": \"Score: {game.score}\",\n    \"hud.taps\": \"Taps: {{{module}}.taps}\",\n    \"hud.left\": \"Time: {{{module}}.left}\",\n    \"hud.tap\": \"Tap\","),
+            "assets/strings/en.json" => text
+                .replace(
+                    "\"hud.score\": \"Score: {game.score}\",",
+                    &fill("\"hud.score\": \"Score: {game.score}\",\n    \"hud.taps\": \"Taps: {{{module}}.taps}\",\n    \"hud.left\": \"Time: {{{module}}.left}\",\n    \"hud.tap\": \"Tap\","),
+                )
+                // The game's own setting, and its values as words (`setting.NAME.VALUE`).
+                .replace(
+                    "\"settings.back\": \"Back\",",
+                    "\"settings.difficulty\": \"Difficulty: {setting.difficulty.text}\",\n    \"setting.difficulty.easy\": \"Easy\",\n    \"setting.difficulty.normal\": \"Normal\",\n    \"setting.difficulty.hard\": \"Hard\",\n    \"settings.back\": \"Back\",",
+                ),
+            // (Its button, before Back.)
+            "assets/ui/settings.json" => text.replace(
+                "{ \"type\": \"button\", \"id\": \"settings_back\",",
+                "{ \"type\": \"button\", \"id\": \"difficulty\", \"text\": \"@settings.difficulty\", \"action\": \"cycle:difficulty\" },\n          { \"type\": \"button\", \"id\": \"settings_back\",",
             ),
             _ => (*text).to_owned(),
         };
@@ -591,13 +608,19 @@ mod tests {
         // Every source the guide names for a binding is one the input map reads (a builder of
         // the second pass searched the engine's source three times for how keys are spelt).
         let mut sources = 0;
-        for word in how.split('`').filter(|w| ["Key.", "Pad.", "Mouse."].iter().any(|d| w.starts_with(d))) {
+        for word in how.split('`').filter(|w| ["Key.", "Pad.", "Mouse.", "Touch."].iter().any(|d| w.starts_with(d))) {
             assert!(specula_input::Source::parse(word).is_some(), "notes/how.md names the source {word}, which the input map does not read");
             sources += 1;
         }
         assert!(sources >= 20, "{sources} sources named");
         for said in ["module_failed", "name_taken", "--follow", "TICKS WORD", "no name"] {
             assert!(how.contains(said), "notes/how.md does not say {said}");
+        }
+        // The game's own setting has its button, and its values their words.
+        assert!(text("assets/ui/settings.json").contains("\"action\": \"cycle:difficulty\""), "the sample's settings screen has no button for its difficulty");
+        let words = specula_lingua::Table::parse(text("assets/strings/en.json")).expect("the words");
+        for line in ["settings.difficulty", "setting.difficulty.easy", "setting.difficulty.normal", "setting.difficulty.hard"] {
+            assert!(words.entries.contains_key(line), "the sample's words have no {line}");
         }
         let game = specula_ludus::GameFile::parse(text("game.json")).expect("the game file");
         assert!(game.report.iter().any(|(name, key)| name == "taps" && *key == format!("{module}.taps")), "{:?}", game.report);

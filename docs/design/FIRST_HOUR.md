@@ -332,31 +332,52 @@ So, in the engine:
 
 - **A run whose module failed answers that, never a state.** `module_failed`: the module, how many
   of the run's ticks failed, the first failure whole (its code, its message, its tick), and the last
-  one's tick. The module host keeps a module's first failure beside its last (`logic_status`:
-  `first_error`). Exit code 1.
-- **What the rules log is said beside the state**: the last 20 lines of `cx.log`, each with its
-  tick, on standard error.
+  one's tick; a module that panicked and was stopped answers the same, with `stopped` and where it
+  panicked. The module host keeps a module's first failure beside its last (`logic_status`:
+  `first_error`). Exit code 1. Only that module's call is undone: the clock, and any other module,
+  went on.
+- **Ticks are the script's.** The game's own clock stands at the title, in a pause and after a
+  run's end, and a module's failure and its log lines carry the game's tick. The run keeps where
+  the game's ticks fell among the script's and says each as the script counts it (`run_tick`,
+  beside the game's `tick`): a failure "at tick 30" is at the input written `30:`.
+- **What the rules log is said beside the state**: the last 20 lines of `cx.log` (of all the
+  modules, by tick), each with its tick, on standard error, when the run ends.
 - **A run's answer is one line, whatever it is.** A refusal used to be printed over several lines,
   and a reader that took the last line of a run read a brace.
 - **`specula run --follow`.** After the script (which may be none) the state is printed; then each
   line read from standard input is a step, `TICKS` or `TICKS WORD` (`10 up+shoot`: that input, then
-  ten ticks), and the state is printed after it; the run ends when the input does. The engine reads
-  the command's own input and writes its own output, with nothing in between, so a program that
+  ten ticks), and the state is printed after it; the run ends when the input does. A program that
   starts the command once, reads a state and writes a step plays a whole game in one run, by the
   same inputs a script gives. A line that is not a step is answered as one line (`bad_step`,
-  `unknown_input`) and the run goes on, so the player always reads one line for each it wrote. At
-  most 100,000 steps and 1,000,000 ticks a run.
-- **The guide says what was looked up**: every source a binding can name (a test holds each
+  `unknown_input`) and changes nothing, so the player always reads one line for each it wrote. At
+  most 100,000 lines and 1,000,000 ticks a run, 200 characters a line (no more of a line is ever
+  kept), and thirty minutes.
+  - *How the lines travel.* The engine reads the command's own input. Its states go back on its
+    standard error, each one write that begins with a mark byte, and the command passes them on
+    as its output. Not on the engine's standard output: a module is code in the engine's process,
+    and what it prints would land between the states (the review's finding; a module's own prints
+    go nowhere, as in every headless run).
+  - *A reader that goes away* ends the run: the command stops the engine and exits with 1.
+- **The guide says what was looked up**: the sources most games bind (a test holds each
   against the input map), what each call of the SDK gives back, how things that come and go are
   drawn (a tag and no name; what a query under a path gives), what a failed tick means, and
   `--follow`.
+
+- **A choice's value is words too.** `setting.NAME.text` showed a choice as the game file spells it
+  (`hard`), in every language. A builder of the change round, asked for a difficulty setting in
+  three languages, spent ten requests reaching "Difficile" with three labels and a condition each.
+  It is now the line `setting.NAME.VALUE` of the player's language where the tables have one (the
+  source language's where only that has it), and the value as it is where none does. The sample
+  game's own difficulty has its button on the settings screen and its three lines, so the pattern
+  is in what every builder reads first; and the guide says what a `"visible"` condition takes.
 
 And in the comparison's harness: its `play` takes the work folder as well as the run's, passes a
 followed run's input and output through, and its `tools` says so when no engine is running.
 
 **What it is made of**: `script_run.rs` (`Run::stand`, `Run::check_word`, `parse_step`, `say`),
 `logic/mod.rs` (`first_error`), `launch_run.rs` (`usage_line`, `log_line`), `scaffold.rs` (the
-guide). The live check's sixteenth stage holds each of them.
+guide, the sample's difficulty), `shell.rs` (`Shell::fill`: a choice's words). The live check's
+sixteenth stage holds the run's part of it.
 
 ## As built
 

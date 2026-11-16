@@ -55,6 +55,13 @@ pub const MAX_STEPS: u64 = 100_000;
 const MAX_STEP_LINE: usize = 200;
 /// Most of a module's own log lines an answer carries (the last ones).
 const MAX_LOG: usize = 20;
+/// Most stretches of the game's clock a run keeps the place of (one begins wherever the clock
+/// started again: at most one an input).
+const MAX_SPANS: usize = 4096;
+/// The byte a followed run's state line begins with, on the engine's standard error: the
+/// command that started the engine passes such a line on as the run's output, and keeps every
+/// other as the engine's own words.
+pub const STATE_MARK: u8 = 0x1E;
 
 /// What a run is asked: `specula run` writes it, the engine reads it.
 #[derive(Clone, Debug, PartialEq)]
@@ -249,6 +256,17 @@ fn read(out: &ToolOutput) -> Result<Json, Json> {
     }
 }
 
+/// The key a module's failure or log line carries the script's tick under.
+pub const RUN_TICK: &str = "run_tick";
+
+/// Every module's lines as one log, in the order of their ticks (a module's own lines stay in
+/// the order it wrote them), the last [`MAX_LOG`] of them.
+fn log_in_order(log: &mut Vec<Json>) {
+    log.sort_by_key(|line| line.get("tick").and_then(Json::as_u64).unwrap_or(0));
+    let over = log.len().saturating_sub(MAX_LOG);
+    log.drain(..over);
+}
+
 /// How a game stands, as [`Run::stand`] read it.
 struct Stand {
     report: Json,
@@ -267,6 +285,13 @@ struct Run<'t> {
     held: Vec<(String, String, Json)>,
     /// Ticks the holds still have.
     hold_left: u64,
+    /// The script's ticks played so far (every one, whatever screen was up).
+    at: u64,
+    /// Where the game's own ticks fell among the script's: (the game's first tick, the script's
+    /// tick it was, how many in a row). The game's clock stands at the title, in a pause and
+    /// after a run's end, so the two counts part; what a module's failure and its log lines
+    /// carry is the game's, and what the script's writer counts is the script's.
+    spans: Vec<(u64, u64, u64)>,
 }
 
 impl Run<'_> {
@@ -416,39 +441,43 @@ impl Run<'_> {
             let status = self.call("logic_status", Json::obj([("module", Json::from(name.as_str())), ("detailed", Json::Bool(true))]))?;
             let module = status.get("modules").and_then(Json::as_array).and_then(|m| m.first()).cloned().unwrap_or(Json::Null);
             let lines = status.get("log").and_then(Json::as_array).unwrap_or(&[]);
-            log.extend(lines.iter().skip(lines.len().saturating_sub(MAX_LOG)).cloned());
-            if module.get("status").and_then(Json::as_str).is_some_and(|s| s != "running") {
-                let mut e = refusal("module_stopped", format!("the module {name} is not running: the state below is as it stopped"));
-                e.set("module", module);
-                if !log.is_empty() {
-                    e.set("log", Json::Arr(log));
-                }
-                return Err(e);
-            }
+            log.extend(lines.iter().skip(lines.len().saturating_sub(MAX_LOG)).map(|line| self.in_run_ticks(line)));
             let failures = module.get("failures").and_then(Json::as_u64).unwrap_or(0);
-            if failures > 0 {
-                let first = module.get("first_error").or_else(|| module.get("last_error")).cloned().unwrap_or(Json::Null);
-                let word = |key: &str| first.get(key).map_or_else(|| "?".to_owned(), |v| v.as_str().map_or_else(|| v.to_string(), str::to_owned));
+            let stopped = module.get("status").and_then(Json::as_str).is_some_and(|s| s != "running");
+            if failures > 0 || stopped {
+                // What went wrong first (a module that was stopped: what stopped it), with the
+                // script's tick it happened at beside the game's own.
+                let first = module.get("first_error").or_else(|| module.get("disabled_by")).or_else(|| module.get("last_error")).map_or(Json::Null, |e| self.in_run_ticks(e));
+                let word = |key: &str| first.get(key).map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_owned));
+                let what = format!("{}: {}{}", word("code").unwrap_or_else(|| "?".to_owned()), word("message").unwrap_or_default(), word("location").map_or_else(String::new, |at| format!(", at {at}")));
+                let when = match (word(RUN_TICK), word("tick")) {
+                    (Some(run), _) => format!("at tick {run}"),
+                    (None, Some(game)) => format!("at the game's tick {game}, which no tick of this run was"),
+                    (None, None) => "before a tick was played".to_owned(),
+                };
                 let mut e = refusal(
                     "module_failed",
-                    format!(
-                        "the module {name} failed in {failures} of this run's ticks, first at tick {} ({}: {}). A call that fails is undone, the whole of it: the game did not move in those ticks, so there is no state of it to print",
-                        word("tick"),
-                        word("code"),
-                        word("message")
-                    ),
+                    if stopped {
+                        format!("the module {name} stopped {when} ({what}): a module that panics, or does not end its call, is stopped, and the game went on without its rules, so there is no state of it to print")
+                    } else {
+                        format!("a call of the module {name} failed in {failures} of this run's ticks, first {when} ({what}). A call that fails is undone, the whole of it: the module's part of the game did not move in those ticks, so there is no state of it to print")
+                    },
                 );
                 e.set("module", Json::from(name.as_str()));
                 e.set("failures", Json::from(failures));
-                e.set("first", first);
+                if stopped {
+                    e.set("stopped", Json::Bool(true));
+                }
                 // (The last one whole only when it is another error than the first.)
-                let last = module.get("last_error").filter(|_| failures > 1);
-                let same = |key: &str| last.and_then(|l| l.get(key)) == e.get("first").and_then(|f| f.get(key));
-                match last {
-                    Some(last) if same("code") && same("message") => drop(e.set("last_tick", last.get("tick").cloned().unwrap_or(Json::Null))),
+                let last = module.get("last_error").filter(|_| failures > 1).map(|l| self.in_run_ticks(l));
+                let same = |key: &str| last.as_ref().and_then(|l| l.get(key)) == first.get(key);
+                match &last {
+                    Some(last) if same("code") && same("message") => drop(e.set("last_tick", last.get(RUN_TICK).or_else(|| last.get("tick")).cloned().unwrap_or(Json::Null))),
                     Some(last) => drop(e.set("last", last.clone())),
                     None => {}
                 }
+                e.set("first", first);
+                log_in_order(&mut log);
                 if !log.is_empty() {
                     e.set("log", Json::Arr(log));
                 }
@@ -469,9 +498,24 @@ impl Run<'_> {
         } else {
             Json::Obj(game.report.iter().map(|(name, key)| (name.clone(), value_of(key, tick, seed, &state, &ui, &states))).collect())
         };
-        let over = log.len().saturating_sub(MAX_LOG);
-        log.drain(..over);
+        log_in_order(&mut log);
         Ok(Stand { report, state, log })
+    }
+
+    /// A failure or a log line of a module, with the script's tick it happened at
+    /// ([`RUN_TICK`]) beside the game's own (`tick`), where a tick of this run was that one.
+    fn in_run_ticks(&self, record: &Json) -> Json {
+        let mut record = record.clone();
+        if let Some(run) = record.get("tick").and_then(Json::as_u64).and_then(|game| self.run_tick(game)) {
+            record.set(RUN_TICK, Json::from(run));
+        }
+        record
+    }
+
+    /// The script's tick a tick of the game was (`None`: none this run played, such as a
+    /// module's start).
+    fn run_tick(&self, game_tick: u64) -> Option<u64> {
+        self.spans.iter().find(|(game, _, count)| (*game..*game + *count).contains(&game_tick)).map(|(game, run, _)| run + (game_tick - game))
     }
 
     /// Plays up to `ticks` ticks of the game. Fewer were played when the game holds its clock
@@ -484,8 +528,19 @@ impl Run<'_> {
                 self.hold()?;
             }
             let said = read(&self.tools.send(&self.session, Command::Time(TimeOp::Play(ask))))?;
-            let played = said.get("played").and_then(Json::as_u64).unwrap_or(0);
+            let played = said.get("played").and_then(Json::as_u64).unwrap_or(0).min(ask);
             self.hold_left = self.hold_left.saturating_sub(played);
+            // The ticks that ran were the first of the span asked for (a clock that stops,
+            // stops for the rest of it), and the clock says the tick it has reached.
+            if let Some(first) = said.get("tick").and_then(Json::as_u64).and_then(|after| after.checked_sub(played)).filter(|_| played > 0) {
+                let (at, room) = (self.at, self.spans.len() < MAX_SPANS);
+                match self.spans.last_mut() {
+                    Some((game, run, count)) if *game + *count == first && *run + *count == at => *count += played,
+                    _ if room => self.spans.push((first, at, played)),
+                    _ => {}
+                }
+            }
+            self.at += if played < ask { left } else { played };
             left -= played.min(left);
             if played < ask {
                 // Fewer than asked: the game holds its clock, and the rest of the span passes
@@ -569,7 +624,7 @@ fn run(tools: &Tools, gate: &StartGate, spec: &Spec) -> Result<Json, Json> {
     if gate.wait(START_WAIT).is_err() {
         return Err(refusal("no_engine", "the engine did not start"));
     }
-    let mut run = Run { tools, session: session(), modules: Vec::new(), held: Vec::new(), hold_left: 0 };
+    let mut run = Run { tools, session: session(), modules: Vec::new(), held: Vec::new(), hold_left: 0, at: 0, spans: Vec::new() };
     for dir in game.modules.iter().take(crate::run_modules::MAX_MODULES) {
         let name = run.build(dir, spec.seed)?;
         run.modules.push((name, Vec::new()));
@@ -613,24 +668,37 @@ fn run(tools: &Tools, gate: &StartGate, spec: &Spec) -> Result<Json, Json> {
         // The state now, then a step a line: whoever plays reads the one and writes the other.
         say(&stand.report)?;
         let mut steps = 0u64;
-        for line in std::io::stdin().lines() {
-            let Ok(line) = line else { break };
-            let line = line.trim();
-            if line.is_empty() {
+        let mut input = std::io::stdin().lock();
+        loop {
+            let line = match step_line(&mut input) {
+                Ok(Some(line)) => line,
+                Ok(None) => break,
+                Err(e) => return Err(refusal("no_input", format!("the run's steps could not be read ({e})"))),
+            };
+            // (A line that is too long, or is not text, is a line that is no step.)
+            let line = line.as_deref().map(str::trim);
+            if line == Ok("") {
                 continue;
             }
             steps += 1;
+            if steps > MAX_STEPS {
+                return Err(refusal("too_many_steps", format!("a followed run reads at most {MAX_STEPS} lines (the ones it refuses too): this one ends here, after {tick} ticks")));
+            }
             // A line that is not a step is answered on its own line, and the run goes on: the
             // player reads one line for each it wrote.
-            let step = parse_step(line).map_err(|why| refusal("bad_step", why)).and_then(|(ticks, word)| {
-                if steps > MAX_STEPS {
-                    return Err(refusal("too_many_steps", format!("a followed run reads at most {MAX_STEPS} steps")));
-                }
+            let step = line.map_err(|why| refusal("bad_step", why.to_owned())).and_then(|line| parse_step(line).map_err(|why| refusal("bad_step", why))).and_then(|(ticks, word)| {
                 if tick + ticks > MAX_TICKS {
                     return Err(refusal("too_many_ticks", format!("a run plays at most {MAX_TICKS} ticks")));
                 }
                 if let Some(word) = word {
-                    run.check_word(word, None)?;
+                    // (Asking whether a word is one this game takes lets go of what it names:
+                    // whatever the answer, what was held is held again before anything ticks,
+                    // so a word that is refused changes nothing.)
+                    let asked = run.check_word(word, None);
+                    if !run.held.is_empty() {
+                        run.hold()?;
+                    }
+                    asked?;
                 }
                 Ok((ticks, word))
             });
@@ -681,12 +749,43 @@ fn run(tools: &Tools, gate: &StartGate, spec: &Spec) -> Result<Json, Json> {
     Ok(answer)
 }
 
-/// One line of a followed run, on the standard output the command was given: the game's state
-/// (or what was wrong with a step), for whoever plays to read before it writes its next step.
+/// One line of a followed run: the game's state (or what was wrong with a step), for whoever
+/// plays to read before it writes its next step. It goes to the command that started this
+/// engine, on the engine's standard error, as one write that begins with [`STATE_MARK`]; the
+/// command passes it on as its own output. (Not on the engine's standard output: a module is
+/// code in this process, and what it prints would land between the states.)
 fn say(line: &Json) -> Result<(), Json> {
     use std::io::Write;
-    let mut out = std::io::stdout().lock();
-    writeln!(out, "{line}").and_then(|()| out.flush()).map_err(|e| refusal("no_reader", format!("the run's output could not be written ({e}): whoever follows it has gone")))
+    let mut text = vec![STATE_MARK];
+    text.extend_from_slice(line.to_string().as_bytes());
+    text.push(b'\n');
+    let mut out = std::io::stderr().lock();
+    out.write_all(&text).and_then(|()| out.flush()).map_err(|e| refusal("no_reader", format!("the run's output could not be written ({e}): the command that started it has gone")))
+}
+
+/// The next line of a followed run's steps: `Ok(None)` at the end of the input; `Ok(Some(Err))`
+/// for a line that is no step whatever it says (longer than a step is, or not text). Never
+/// more than a step's length is kept of a line, however long it is.
+fn step_line(input: &mut impl std::io::BufRead) -> std::io::Result<Option<Result<String, &'static str>>> {
+    use std::io::{BufRead, Read};
+    let mut line = Vec::new();
+    // (Two more than a step's length: its line end, and one byte that says it is too long.)
+    let limit = MAX_STEP_LINE as u64 + 2;
+    if input.by_ref().take(limit).read_until(b'\n', &mut line)? == 0 {
+        return Ok(None);
+    }
+    if line.last() != Some(&b'\n') && line.len() as u64 == limit {
+        // The rest of a line that is too long is read past, a piece at a time.
+        loop {
+            let mut rest = Vec::new();
+            let n = input.by_ref().take(8192).read_until(b'\n', &mut rest)?;
+            if n == 0 || rest.last() == Some(&b'\n') {
+                break;
+            }
+        }
+        return Ok(Some(Err("a line longer than a step is: TICKS, or TICKS WORD (10 up+shoot, 1 enter, 30 none)")));
+    }
+    Ok(Some(String::from_utf8(line).map_err(|_| "a line that is not text (UTF-8): TICKS, or TICKS WORD (10 up+shoot, 1 enter, 30 none)")))
 }
 
 /// What the run's answer file holds: `{"ok": true, "report": ..., "problems": [...]}` or
@@ -774,6 +873,39 @@ mod tests {
         }
         assert!(parse_step(&format!("1 {}", "a".repeat(65))).unwrap_err().contains("1 to 64"));
         assert!(parse_step(&"9".repeat(300)).unwrap_err().contains("not a step"));
+    }
+
+    #[test]
+    fn a_step_line_is_bounded_and_says_what_it_could_not_be() {
+        let long = "7".repeat(5000);
+        let text = format!("10 up\r\n\n{long}\n3\n\u{e9}t\u{e9}\n4");
+        let mut bytes = text.into_bytes();
+        // (One line that is not text: a lone byte of a longer character.)
+        bytes.extend_from_slice(b"\n\xE9\n5\n");
+        let mut input = std::io::Cursor::new(bytes);
+        let mut next = || step_line(&mut input).unwrap();
+        assert_eq!(next(), Some(Ok("10 up\r\n".to_owned())));
+        assert_eq!(next(), Some(Ok("\n".to_owned())));
+        assert!(next().unwrap().unwrap_err().contains("longer than a step"), "the long line is one refusal, and nothing of it is the next line");
+        assert_eq!(next(), Some(Ok("3\n".to_owned())));
+        assert_eq!(next(), Some(Ok("\u{e9}t\u{e9}\n".to_owned())));
+        assert_eq!(next(), Some(Ok("4\n".to_owned())));
+        assert!(next().unwrap().unwrap_err().contains("not text"));
+        assert_eq!(next(), Some(Ok("5\n".to_owned())));
+        assert_eq!(next(), None);
+        // A last line with no line end, at exactly the limit, is a line.
+        let mut input = std::io::Cursor::new("9".repeat(MAX_STEP_LINE).into_bytes());
+        assert_eq!(step_line(&mut input).unwrap(), Some(Ok("9".repeat(MAX_STEP_LINE))));
+    }
+
+    #[test]
+    fn modules_lines_are_one_log_by_tick() {
+        let line = |module: &str, tick: u64| Json::obj([("module", Json::from(module)), ("tick", Json::from(tick))]);
+        let mut log: Vec<Json> = (0..15).map(|t| line("a", t * 2)).chain((0..15).map(|t| line("b", t * 2 + 1))).collect();
+        log_in_order(&mut log);
+        assert_eq!(log.len(), MAX_LOG);
+        let ticks: Vec<u64> = log.iter().filter_map(|l| l.get("tick").and_then(Json::as_u64)).collect();
+        assert_eq!(ticks, (10..30).collect::<Vec<u64>>(), "the last twenty of both, not the last module's");
     }
 
     #[test]

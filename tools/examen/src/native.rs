@@ -653,21 +653,43 @@ fn new_project(cx: &mut Cx) -> Result<String, String> {
     let tap = "if cx.action(\"tap\").pressed {";
     expect(good.contains(tap), "the sample module no longer reads its tap as this check expects", &Json::Null)?;
     std::fs::write(&lib, good.replacen(tap, &format!("{tap}\n                cx.spawn(Spawn::new(\"cube\").name(\"twice\").parent(ROOT))?;"), 1)).map_err(|e| format!("{}: {e}", lib.display()))?;
-    let failing = cx.cli(&["run", &runfive, "--ticks", "40", "--inputs", TAPS]);
-    // What the rules log is said beside the state, a line each with its tick.
-    std::fs::write(&lib, good.replacen(tap, &format!("{tap}\n                cx.log(\"tapped\")?;"), 1)).map_err(|e| format!("{}: {e}", lib.display()))?;
+    // (The run starts at the script's tick 4, so the game's own ticks are four behind the
+    // script's: what is answered is the script's tick, the one an input is written at.)
+    const LATE_TAPS: &str = "4:enter,9:tap,10:none,14:tap,15:none,19:tap,20:none,24:tap,25:none,29:tap";
+    let failing = cx.cli(&["run", &runfive, "--ticks", "44", "--inputs", LATE_TAPS]);
+    // What the rules log is said beside the state, a line each with the script's tick; and
+    // what a module prints for itself is in nobody's way.
+    std::fs::write(&lib, good.replacen(tap, &format!("{tap}\n                cx.log(\"tapped\")?;\n                println!(\"a module's own print\");"), 1)).map_err(|e| format!("{}: {e}", lib.display()))?;
     let exe = cx.exe.clone();
-    let raw = |args: &[&str]| std::process::Command::new(&exe).args(args).stdin(std::process::Stdio::null()).output().map_err(|e| format!("{}: {e}", exe.display()));
-    let logged = raw(&["run", &runfive, "--ticks", "8", "--inputs", "0:enter,5:tap"]);
+    let raw = |args: &[&str], steps: &[u8]| -> Result<std::process::Output, String> {
+        use std::io::Write;
+        let mut child = std::process::Command::new(&exe).args(args).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().map_err(|e| format!("{}: {e}", exe.display()))?;
+        // (All of its input at once, and its end: what it says is read when it has ended.)
+        if let Some(mut to) = child.stdin.take() {
+            to.write_all(steps).map_err(|e| format!("the run's input: {e}"))?;
+        }
+        child.wait_with_output().map_err(|e| format!("{}: {e}", exe.display()))
+    };
+    let logged = raw(&["run", &runfive, "--ticks", "12", "--inputs", "4:enter,9:tap"], b"");
+    // A step that is refused changes nothing: a tap held through one is still the same tap
+    // (so the tap after it is no second press), each line written is answered by one line and
+    // no other (a line that is not text among them), and the log comes when the run ends.
+    let held = raw(&["run", &runfive, "--follow"], b"1 enter\n1 tap\n1 tap+nope\n2\n1 tap\n\xE9\n1\n");
     std::fs::write(&lib, &good).map_err(|e| format!("{}: {e}", lib.display()))?;
     let (code, failing) = failing?;
-    expect(code == 1 && text(&failing, "error") == Some("module_failed") && text(&failing, "first.code") == Some("name_taken") && at(&failing, "first.tick").and_then(Json::as_u64) == Some(10), "a module whose tick failed was not answered with the error and its tick", &failing)?;
-    expect(at(&failing, "failures").and_then(Json::as_u64) == Some(4) && at(&failing, "last_tick").and_then(Json::as_u64) == Some(25) && text(&failing, "message").is_some_and(|m| m.contains("name_taken") && m.contains("tick 10")), "a failing module's answer does not count its failures, or its message does not say which and when", &failing)?;
+    expect(code == 1 && text(&failing, "error") == Some("module_failed") && text(&failing, "first.code") == Some("name_taken") && at(&failing, "first.run_tick").and_then(Json::as_u64) == Some(14) && at(&failing, "first.tick").and_then(Json::as_u64) == Some(10), "a module whose tick failed was not answered with the error and the script's tick it failed at", &failing)?;
+    expect(at(&failing, "failures").and_then(Json::as_u64) == Some(4) && at(&failing, "last_tick").and_then(Json::as_u64) == Some(29) && text(&failing, "message").is_some_and(|m| m.contains("name_taken") && m.contains("at tick 14")), "a failing module's answer does not count its failures, or its message does not say which and when", &failing)?;
     let logged = logged?;
     let (said, beside) = (String::from_utf8_lossy(&logged.stdout).into_owned(), String::from_utf8_lossy(&logged.stderr).into_owned());
-    expect(logged.status.success() && beside.lines().any(|l| l == "specula run: runfive logged at tick 5: tapped") && said.lines().count() == 1 && said.starts_with("{\"tick\":8,"), "what a module logged was not said beside the run's one line of state", &Json::from(format!("{said}\n{beside}").as_str()))?;
+    expect(logged.status.success() && beside.lines().any(|l| l == "specula run: runfive logged at tick 9: tapped") && said.lines().count() == 1 && said.starts_with("{\"tick\":12,"), "what a module logged was not said beside the run's one line of state, at the script's tick", &Json::from(format!("{said}\n{beside}").as_str()))?;
+    let held = held?;
+    let (said, beside) = (String::from_utf8_lossy(&held.stdout).into_owned(), String::from_utf8_lossy(&held.stderr).into_owned());
+    let lines: Vec<Json> = said.lines().filter_map(|l| Json::parse(l).ok()).collect();
+    expect(held.status.success() && said.lines().count() == 8 && lines.len() == 8, "a followed run did not answer each line with one line of JSON and nothing else (a module's own print is not the run's)", &Json::from(said.as_str()))?;
+    expect(text(&lines[3], "error") == Some("unknown_input") && text(&lines[6], "error") == Some("bad_step") && is(&lines[2], "taps", 1.0) && is(&lines[5], "taps", 1.0) && is(&lines[7], "taps", 1.0) && is(&lines[7], "tick", 6.0), "a step that was refused changed the run (a held tap was let go, or ticks passed)", &Json::from(said.as_str()))?;
+    expect(beside.lines().any(|l| l == "specula run: runfive logged at tick 1: tapped"), "a followed run did not say what its module logged when it ended", &Json::from(beside.as_str()))?;
     // A refusal is one line too, where the state would have been.
-    let refused = raw(&["run", &runfive, "--ticks", "10", "--inputs", "0:enter,50:tap"])?;
+    let refused = raw(&["run", &runfive, "--ticks", "10", "--inputs", "0:enter,50:tap"], b"")?;
     let line = String::from_utf8_lossy(&refused.stdout).into_owned();
     expect(line.lines().count() == 1 && line.starts_with("{\"error\":\"usage\""), "a run's refusal is not one line", &Json::from(line.as_str()))?;
     // A followed run: the state, then a step a line read from its input, the state after each;

@@ -117,8 +117,10 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
     said beside the state; a run's answer is one line whatever it is. `specula run --follow` reads a
     step a line from standard input and prints the state after each, so a small program that reads
     the state and answers it plays a whole game in one run (one builder had started 347 engines to
-    do that). The guide says what was looked up: every source a binding can name, what the SDK's
-    calls give back, how things that come and go are drawn.
+    do that). The guide says what was looked up: the sources most games bind, what the SDK's
+    calls give back, how things that come and go are drawn. And a choice setting's value is shown
+    in the player's language (`setting.NAME.text` reads the line `setting.NAME.VALUE`): the sample
+    game's difficulty has its button and its words.
 
 ### M5, done (2026-11-06 to 2026-11-15)
 
