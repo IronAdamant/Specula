@@ -459,12 +459,13 @@ fn arm_text(arm: &str, run: &Path) -> Vec<String> {
     }
     vec![
         "What you have".to_owned(),
-        "- You build it with the Specula engine. Your work folder is a Specula project made by the engine (`specula new`): a small sample game that builds and plays, with every part in place (a game file, screens and words, a module with the rules, the SDK, a check). `notes/how.md` in it says how such a game is built, run and checked: read it first. Replace the sample's rules, screens and words with your game's.".to_owned(),
+        "- You build it with the Specula engine. Your work folder is a Specula project made by the engine (`specula new`): a small sample game that builds and plays, with every part in place (a game file, screens and words, a module with the rules, the SDK, its own checks). `notes/how.md` in it says how such a game is built, run and checked: read it first. Replace the sample's rules, screens and words with your game's.".to_owned(),
         format!("- Run the game with no window with `{tool} play {rd} --ticks N [--inputs T:WORD,T:WORD,...] [--seed N] [--settings FOLDER] [--frame FILE.png --size WxH] [--follow]`: the engine's own `specula run` on your work folder (notes/how.md says what it takes and what it prints). It builds the module first and prints the game's state as JSON; no engine need be started for it. Paths in it are taken from the folder you run it in."),
+        format!("- Check many runs in one command with `{tool} check {rd} [--only NAME]`: the engine's own `specula check` on your work folder. `checks/runs.json` there lists runs of the game and what each must print (the sample's are in it; notes/how.md says how one is written), and one command plays them all."),
         format!("- An engine left running serves the project's tools, should you need them: start or stop it with `{tool} engine start {rd}` and `{tool} engine stop {rd}` (start it first; restart it this way if you need to). Never run the engine's executable yourself."),
         format!("- Call a tool with `{tool} call {rd} TOOL '{{json}}'`; arguments too long or awkward for a command line go in a file: `{tool} call {rd} TOOL @args.json`. `{tool} tools {rd} [FILTER]` lists tools, and the `tools_catalog` tool describes them."),
         format!("- notes/how.md is written to be enough for a game of this size. Where it is not, the engine's documents are in {} (design notes for each area in `docs/design/`), with {}.", posix(&repo.join("docs")), posix(&repo.join("README.md"))),
-        "- The two checks the brief asks for can be that one command, with the game file's `report` saying what it prints; or small scripts of yours.".to_owned(),
+        "- The two checks the brief asks for can be the `play` command, with the game file's `report` saying what it prints; or small scripts of yours.".to_owned(),
         "- Whoever checks the game starts with no engine running: the commands in your README must work from there.".to_owned(),
     ]
 }
@@ -760,10 +761,21 @@ pub fn call_cmd(run: &Path, tool: &str, args: Option<&str>) -> R<i32> {
 /// run's work folder, logged as one call. Prints what it printed; returns its exit code. Paths
 /// among the flags are the caller's, from the folder the caller is in.
 pub fn play_cmd(run: &Path, flags: &[String]) -> R<i32> {
+    headless_cmd(run, flags, "run")
+}
+
+/// `check RUN [FLAGS]`: the game's own checks (`specula check`) on the run's work folder,
+/// logged as one call: every run its `checks/runs.json` lists, in one command.
+pub fn check_cmd(run: &Path, flags: &[String]) -> R<i32> {
+    headless_cmd(run, flags, "check")
+}
+
+/// One of the engine's headless commands (`run`, `check`) on a run's work folder.
+fn headless_cmd(run: &Path, flags: &[String], word: &str) -> R<i32> {
     let r = read_run(run)?;
     engine_arm(&r)?;
     let run = absolute(run);
-    let mut cmd = vec![text(&r, "exe").unwrap_or("specula").to_owned(), "run".to_owned(), run.join("work").to_string_lossy().into_owned()];
+    let mut cmd = vec![text(&r, "exe").unwrap_or("specula").to_owned(), word.to_owned(), run.join("work").to_string_lossy().into_owned()];
     cmd.extend(flags.iter().cloned());
     let here = std::env::current_dir().unwrap_or_else(|_| run.clone());
     let began = Instant::now();
@@ -781,7 +793,7 @@ pub fn play_cmd(run: &Path, flags: &[String]) -> R<i32> {
     let ran = std::process::Command::new(&cmd[0]).args(&cmd[1..]).current_dir(&here).stdin(std::process::Stdio::null()).output().map_err(|e| format!("{}: {e}", cmd[0]))?;
     let (code, said) = (ran.status.code().unwrap_or(1), String::from_utf8_lossy(&ran.stdout).into_owned());
     eprint!("{}", String::from_utf8_lossy(&ran.stderr));
-    log_call(&run, &r, "(run)", flags.iter().map(|f| f.len() + 1).sum(), said.len(), code, began.elapsed().as_secs_f64() * 1000.0)?;
+    log_call(&run, &r, &format!("({word})"), flags.iter().map(|f| f.len() + 1).sum(), said.len(), code, began.elapsed().as_secs_f64() * 1000.0)?;
     print!("{said}");
     Ok(code)
 }
@@ -1251,7 +1263,7 @@ pub fn judge_text(run: &Path, r: &Json) -> R<String> {
     ];
     if text(r, "arm") == Some("engine") {
         lines.push(format!(
-            "- This game runs on the Specula engine. `{tool} play {rd} ...` is the engine's own headless run of it (it needs no engine started); if its documents use an engine left running, start it with `{tool} engine start {rd}` and stop it with `{tool} engine stop {rd}` when you are done, and calls go through `{tool} call {rd} TOOL '{{json}}'`. Never run the engine's executable yourself."
+            "- This game runs on the Specula engine. `{tool} play {rd} ...` is the engine's own headless run of it (it needs no engine started), and `{tool} check {rd} --file FILE` plays every run a checks file of your own lists in one command (the game's `notes/how.md` says how one is written; keep yours in your scratch folder); if its documents use an engine left running, start it with `{tool} engine start {rd}` and stop it with `{tool} engine stop {rd}` when you are done, and calls go through `{tool} call {rd} TOOL '{{json}}'`. Never run the engine's executable yourself."
         ));
     }
     lines.push(String::new());
@@ -1467,6 +1479,11 @@ fn dispatch(mut args: crate::cli::Args) -> R<i32> {
             let Some((run, flags)) = rest.split_first() else { return Err("usage: examen leverage play RUN [--ticks N --inputs ... (specula run's flags)]".to_owned()) };
             play_cmd(&run_named(Path::new(run)), flags)
         }
+        "check" => {
+            let rest = args.rest();
+            let Some((run, flags)) = rest.split_first() else { return Err("usage: examen leverage check RUN [--only NAME (specula check's flags)]".to_owned()) };
+            check_cmd(&run_named(Path::new(run)), flags)
+        }
         "tools" => {
             let w = words(args, "tools RUN [FILTER]", 1, 2)?;
             tools_cmd(&run_named(Path::new(&w[0])), w.get(1).map(String::as_str))
@@ -1559,7 +1576,7 @@ fn dispatch(mut args: crate::cli::Args) -> R<i32> {
             }
             Ok(0)
         }
-        other => Err(format!("'{other}' is not a command of examen leverage (--check, prepare, engine, call, tools, play, run, finish, record, usage, judge, report, export, where, trace)")),
+        other => Err(format!("'{other}' is not a command of examen leverage (--check, prepare, engine, call, tools, play, check, run, finish, record, usage, judge, report, export, where, trace)")),
     }
 }
 

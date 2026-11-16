@@ -735,6 +735,42 @@ fn new_project(cx: &mut Cx) -> Result<String, String> {
         let _ = std::io::Read::read_to_string(&mut from, &mut rest);
         expect(ended.success() && rest.trim().is_empty(), "a followed run did not end with its input, or said more after its last state", &Json::from(rest.as_str()))?;
     }
+    // The game's own checks: every run the project's `checks/runs.json` lists, played by one
+    // command, each held against what it expects. The sample's own hold as `specula new` wrote
+    // them (a setting changed in one check is found in the next, and not by a new player).
+    let checked = raw(&["check", &runfive], b"")?;
+    let said = String::from_utf8_lossy(&checked.stdout).into_owned();
+    let lines: Vec<Json> = said.lines().filter_map(|l| Json::parse(l).ok()).collect();
+    let ok = |l: &Json| at(l, "ok").and_then(Json::as_bool);
+    expect(checked.status.success() && said.lines().count() == 8 && lines.len() == 8 && lines[..7].iter().all(|l| ok(l) == Some(true)) && is(&lines[7], "checks", 7.0) && is(&lines[7], "passed", 7.0), "the sample's own checks did not all hold, a line each and a count", &Json::from(said.as_str()))?;
+    // A check that does not hold says what differs, with the state; a run that cannot be made
+    // is that check's error and the others are played; a check that expects nothing prints its
+    // state; a frame is written below the project; and the command's exit code is 1.
+    std::fs::create_dir_all(&run_out).map_err(|e| format!("{}: {e}", run_out.display()))?;
+    let own_checks = own("own-checks.json");
+    write(
+        PathBuf::from(&own_checks),
+        format!(
+            r#"{{"format": "specula.checks.v1", "checks": [
+  {{"name": "holds", "ticks": 40, "inputs": "{TAPS}", "frame": "checks/out/won.png", "size": [320, 200], "expect": {{"phase": "won", "taps": {{"gte": 5}}, "texts": {{"has": "You won"}}}}}},
+  {{"name": "does not", "ticks": 40, "inputs": ["0:enter,5:tap,6:none", "10:tap,11:none,15:tap,16:none,20:tap,21:none,25:tap"], "expect": {{"taps": 4, "phase": "won"}}}},
+  {{"name": "to read", "ticks": 0}},
+  {{"name": "no such word", "ticks": 2, "inputs": "0:jump"}}
+]}}"#
+        ),
+    )?;
+    let off = raw(&["check", &runfive, "--file", &own_checks], b"")?;
+    let said = String::from_utf8_lossy(&off.stdout).into_owned();
+    let lines: Vec<Json> = said.lines().filter_map(|l| Json::parse(l).ok()).collect();
+    expect(off.status.code() == Some(1) && lines.len() == 5 && ok(&lines[0]) == Some(true) && at(&lines[0], "state").is_none(), "a check that holds is not one line that says so and no more", &Json::from(said.as_str()))?;
+    expect(ok(&lines[1]) == Some(false) && is(&lines[1], "differs.taps.is", 5.0) && is(&lines[1], "differs.taps.expected", 4.0) && at(&lines[1], "differs.phase").is_none() && text(&lines[1], "state.phase") == Some("won"), "a check that does not hold does not say what differs, with the state", &lines[1])?;
+    expect(ok(&lines[2]) == Some(true) && text(&lines[2], "state.phase") == Some("title"), "a check that expects nothing does not print its state", &lines[2])?;
+    expect(ok(&lines[3]) == Some(false) && text(&lines[3], "error.error") == Some("unknown_input"), "a run that cannot be made is not its check's error", &lines[3])?;
+    expect(is(&lines[4], "checks", 4.0) && is(&lines[4], "passed", 2.0) && text(&lines[4], "failed.0") == Some("does not") && text(&lines[4], "failed.1") == Some("no such word"), "the count of the checks is not what was played", &lines[4])?;
+    let shot = std::fs::read(projects.join("runfive").join("checks").join("out").join("won.png")).map_err(|e| format!("the check's frame: {e}"))?;
+    expect(shot.starts_with(b"\x89PNG\r\n\x1a\n") && shot.get(16..24) == Some(&[0, 0, 1, 64, 0, 0, 0, 200][..]), "a check's frame is not a PNG of 320 by 200 below the project", &Json::from(shot.len() as u64))?;
+    let only = raw(&["check", &runfive, "--file", &own_checks, "--only", "holds"], b"")?;
+    expect(only.status.success() && String::from_utf8_lossy(&only.stdout).lines().count() == 2, "--only did not play the one check named", &Json::from(String::from_utf8_lossy(&only.stdout).as_ref()))?;
     // One engine has a project at a time: a run on a project an engine has open is refused
     // with that engine, at once.
     let port5 = port + 5;

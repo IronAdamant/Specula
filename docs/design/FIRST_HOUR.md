@@ -38,6 +38,7 @@ remembers.**
 | 8 | The comparison, run again with the same harness | run on `2a0c5669`: the engine arm did not get cheaper (below, and LEVERAGE.md) |
 | 9 | A headless run: `specula run` (the second pass) | built, reviewed, gated; measured on `bbe9fa36` (LEVERAGE.md, "Results (pass 2)") |
 | 10 | A run that says what went wrong, and a player that reacts: `--follow` (the third pass) | built (section 10) |
+| 11 | The game's own checks, every run in one command: `specula check` (the fourth pass) | built (section 11) |
 
 ## 1. The SDK comes from the engine
 
@@ -210,6 +211,7 @@ A new project today is a folder, an empty `assets` and a marker. It becomes:
 | `assets/style.json` | a plain style, so a recipe builds on the first try (a new project had none, and `model_build` refused) |
 | `modules/<name>/` | a module that builds: one thing spawned, one number counted and shown, the two events read |
 | `crates/specula-sdk`, `crates/specula-core`, `Cargo.toml` | the SDK and the workspace (any folder under `modules/` is a member) |
+| `checks/runs.json` | the game's own checks, played by `specula check` (section 11) |
 | `checks/smoke.json` | a playtest that starts the run, steps it and reads `game_state` |
 | `notes/brief.md`, `notes/how.md` | what this is, and how it is built and checked |
 
@@ -394,6 +396,50 @@ answer), which until now took a script outside the repository.
 `logic/mod.rs` (`first_error`), `launch_run.rs` (`usage_line`, `log_line`), `scaffold.rs` (the
 guide, the sample's difficulty), `shell.rs` (`Shell::fill`: a choice's words). The live check's
 sixteenth stage holds the run's part of it.
+
+## 11. The game's own checks: every run in one command (the fourth pass, 2026-11-17)
+
+The second pass's ledgers again, for the builds in which nothing went wrong. After its code was
+written a small build ran its game in 5 or 6 requests, and a medium one in 15: start a run, read its
+state, think, start the next. Each request reads the whole context again, by then 40,000 to 55,000
+tokens, so each run costs 6,000 to 14,000 weighted tokens whatever it prints. That was a quarter of a
+small build (about 50,000 of 178,372) and nearly half of the cheapest medium one (requests 8 to 22 of
+`medium-engine-2`: 126,000 of 277,124). The builders without the engine checked theirs in 2 or 3
+requests: their game is a program of their own, and they wrote its checks as a second one and ran
+them together. And what a builder checked through the engine was left nowhere but in its README's
+words: the next agent, and the judge, started again.
+
+So a project keeps its checks as data, and one command plays them:
+
+    specula check [NAME|FOLDER] [--only NAME] [--file FILE]
+
+- **`checks/runs.json`** (`specula.checks.v1`) lists runs of the game. Each is what `specula run`
+  takes (`ticks`, `inputs` as the command's script or a list of such, `seed`, `frame` and `size`),
+  a `name`, and `expect`: keys of the game file's report (or a path into one, `walkers.0.health`)
+  with the value each must have, or one comparison (`ne`, `lt`, `lte`, `gt`, `gte`, `has`, `len`).
+  Numbers are the same within a rounding (a state's numbers are sums of ticks). An unknown key of a
+  check is refused by name.
+- **A line a check**: `{"check", "ok": true}`, or `"ok": false` with `differs` (for each key that
+  did not hold, what it is and what was expected), the state, and what the rules logged; a run that
+  could not be made (an input the game does not take, a module that failed) is that check's `error`.
+  Then one line that counts them. Exit code 1 when one did not hold. A game that does not build is
+  said once, and the rest are not played.
+- **A check with no `expect` prints its state.** Runs to look at are written the same way as runs
+  to hold: several at once, read in one request, and what each must be is written after.
+- **Checks that name the same `settings` share one player's settings**, in the file's order, in a
+  folder that is the command's own and goes with it. "Kept between runs" is two checks.
+- Each check is a run with an engine of its own, as `specula run` is (about four seconds each once
+  the module is built): a check starts from the game's start, with nothing of the check before it
+  but the settings it names.
+- **`specula new` writes the sample's own** (seven checks: the title, a win, a loss, a pause, a
+  setting changed, kept, and not there for a new player), and the guide says how one is written.
+  `checks/smoke.json` stays what it was: a playtest for an engine left running.
+
+**What it is made of**: `crates/specula/src/run_checks.rs` (the file, and a state held against what
+a check expects), `launch_run.rs` (`check_game`; `run_in`, which a run and a check share),
+`launch_cli.rs` (`Cli::Check`), `scaffold.rs` (the sample's checks, the guide). The comparison's
+harness gives the engine arm `examen leverage check RUN`. The live check's sixteenth stage plays
+the sample's checks, and one that does not hold.
 
 ## As built
 

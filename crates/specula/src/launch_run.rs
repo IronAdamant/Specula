@@ -264,6 +264,7 @@ pub fn run(cli: Cli, ctx: &Ctx) -> (i32, Json) {
         }
         Cli::Open { which, front, engine_args } => open(ctx, &which, front, &engine_args),
         Cli::Run(args) => run_game(ctx, &args),
+        Cli::Check(args) => check_game(ctx, &args),
         Cli::Stop { target } => {
             let (list, _) = ctx.store.load();
             let engine = match pick_engine(&target, &ctx.engines(), &list) {
@@ -665,21 +666,157 @@ const RUN_LOCK_WAIT: Duration = Duration::from_secs(90);
 /// `specula run`: an engine of this run's own plays the script with no window and ends; its
 /// answer is read from a file in a folder of this run's own, which goes when it is read.
 fn run_game(ctx: &Ctx, args: &crate::launch_cli::RunArgs) -> (i32, Json) {
-    let folder = match &args.which {
-        None => match std::env::current_dir() {
-            Ok(here) => here,
-            Err(e) => return refusal("no_folder", format!("the folder this was run in can't be read ({e}): name the project")),
-        },
+    match game_folder(ctx, &args.which) {
+        Ok(folder) => run_in(ctx, &folder, args, None),
+        Err(no) => no,
+    }
+}
+
+/// The folder of the project a headless command names (by name, by folder, or the folder it
+/// is run in): one that has a game file.
+fn game_folder(ctx: &Ctx, which: &Option<String>) -> Result<PathBuf, (i32, Json)> {
+    let folder = match which {
+        None => std::env::current_dir().map_err(|e| refusal("no_folder", format!("the folder this was run in can't be read ({e}): name the project")))?,
         Some(word) if Path::new(word).is_dir() => PathBuf::from(word),
-        Some(word) => match pick_project(&ctx.store.load().0, &Which::Word(word.clone())) {
-            Ok(p) => p.path.clone(),
-            Err(no) => return no,
-        },
+        Some(word) => pick_project(&ctx.store.load().0, &Which::Word(word.clone()))?.path.clone(),
     };
     let folder = std::path::absolute(&folder).unwrap_or(folder);
     if !folder.join(specula_ludus::game::FILE).is_file() {
-        return refusal("no_game", format!("{} has no {}: a headless run plays a project's game ('specula new NAME' makes a project that has one)", folder.display(), specula_ludus::game::FILE));
+        return Err(refusal("no_game", format!("{} has no {}: a headless run plays a project's game ('specula new NAME' makes a project that has one)", folder.display(), specula_ludus::game::FILE)));
     }
+    Ok(folder)
+}
+
+/// Most characters of a state that a check's line carries when the check did not hold.
+const CHECK_STATE: usize = 4000;
+/// The key a `specula check` answer has its lines under ([`answer`] prints them, a line each).
+const CHECK_LINES: &str = "check_lines";
+
+/// `specula check`: every run the project's checks file lists, each played as `specula run`
+/// plays one and held against what the check expects. A line a check, then a line that counts.
+fn check_game(ctx: &Ctx, args: &crate::launch_cli::CheckArgs) -> (i32, Json) {
+    let folder = match game_folder(ctx, &args.which) {
+        Ok(folder) => folder,
+        Err(no) => return no,
+    };
+    let file = args.file.clone().unwrap_or_else(|| folder.join(crate::run_checks::FILE));
+    let shown = file.display().to_string();
+    let text = match std::fs::metadata(&file) {
+        Ok(m) if m.len() > crate::run_checks::MAX_FILE => return refusal("bad_checks", format!("{shown} is larger than a checks file is ({} bytes at most)", crate::run_checks::MAX_FILE)),
+        Ok(_) => match std::fs::read_to_string(&file) {
+            Ok(text) => text,
+            Err(e) => return refusal("no_checks", format!("{shown}: {e}")),
+        },
+        Err(e) => return refusal("no_checks", format!("{shown}: {e} (a project's checks are runs of its game and what each must print: notes/how.md says how one is written)")),
+    };
+    let mut checks = match crate::run_checks::parse(&text) {
+        Ok(checks) => checks,
+        Err(why) => return refusal("bad_checks", format!("{shown}: {why}")),
+    };
+    if let Some(only) = &args.only {
+        let names: Vec<String> = checks.iter().map(|c| c.name.clone()).collect();
+        checks.retain(|c| c.name == *only);
+        if checks.is_empty() {
+            let (code, mut j) = refusal("no_check", format!("{shown} has no check named '{only}'"));
+            j.set("checks", Json::arr(names.iter().map(|n| Json::from(n.as_str()))));
+            return (code, j);
+        }
+    }
+    // The settings folders the checks name are this command's own, made new and gone with it:
+    // what one check sets a later one finds, and nothing of an earlier command's is there.
+    let temp = crate::disk::canonical(&std::env::temp_dir());
+    let scratch = temp.join(format!("specula-check-{}", crate::swarm::random_hex()));
+    if checks.iter().any(|c| c.settings.is_some()) {
+        if scratch.exists() {
+            return refusal("no_scratch", format!("{} is there already", scratch.display()));
+        }
+        if let Err(e) = crate::disk::book().make_dir(crate::disk::Category::Scratch, &scratch, crate::disk::Need::Essential) {
+            return refusal("no_scratch", format!("{}: {e}", scratch.display()));
+        }
+    }
+    let (mut lines, mut failed): (Vec<Json>, Vec<Json>) = (Vec::new(), Vec::new());
+    let mut problems: Option<Json> = None;
+    for check in &checks {
+        let run = crate::launch_cli::RunArgs {
+            which: None,
+            ticks: Some(check.ticks),
+            seed: check.seed,
+            inputs: check.inputs.clone(),
+            // (A frame's place is the project's, wherever the command is run.)
+            frame: check.frame.as_ref().map(|f| folder.join(f)),
+            size: check.size,
+            follow: false,
+        };
+        let kept = check.settings.as_ref().map(|name| scratch.join(name));
+        let (code, answer) = run_in(ctx, &folder, &run, kept.as_deref());
+        let mut line = Json::obj([("check", Json::from(check.name.as_str()))]);
+        let state = answer.get(RUN_REPORT);
+        let off = match state {
+            Some(state) if code == 0 => crate::run_checks::differs(&check.expect, state),
+            _ => Vec::new(),
+        };
+        let ok = code == 0 && state.is_some() && off.is_empty();
+        line.set("ok", Json::Bool(ok));
+        match state {
+            Some(state) if code == 0 => {
+                if !off.is_empty() {
+                    line.set("differs", Json::Obj(off.into_iter().map(|(key, is, expected)| (key, Json::obj([("is", is), ("expected", expected)]))).collect()));
+                }
+                // The state itself where it is what was asked for (a check that expects
+                // nothing is a run to read) or what explains a check that did not hold.
+                if !ok || check.expect.is_empty() {
+                    let whole = state.to_string();
+                    match whole.char_indices().nth(CHECK_STATE) {
+                        Some((at, _)) => line.set("state_begins", Json::from(&whole[..at])),
+                        None => line.set("state", state.clone()),
+                    };
+                }
+            }
+            _ => {
+                line.set("error", answer.clone());
+            }
+        }
+        if !ok {
+            failed.push(Json::from(check.name.as_str()));
+            // (What the rules logged in a run that did not hold is beside it.)
+            if let Some(log) = answer.get("log") {
+                line.set("log", log.clone());
+            }
+        }
+        // What the game says is wrong with its own files is the same in every run: said once.
+        if problems.is_none() {
+            problems = answer.get("problems").cloned();
+        }
+        lines.push(line);
+        // A game that does not build, or a game file that does not load, fails every check
+        // the same way: said once.
+        let fatal = ["build_failed", "load_failed", "bad_game_file", "no_game", "project_open"];
+        if answer.get("error").and_then(Json::as_str).is_some_and(|e| fatal.contains(&e)) {
+            break;
+        }
+    }
+    if scratch.is_dir() {
+        let _ = crate::disk::remove_tree_inside(&temp, &scratch);
+    }
+    let played = lines.len();
+    let mut summary = Json::obj([("checks", Json::from(checks.len() as u64)), ("passed", Json::from((played - failed.len()) as u64))]);
+    if !failed.is_empty() {
+        summary.set("failed", Json::Arr(failed.clone()));
+    }
+    if played < checks.len() {
+        summary.set("not_played", Json::from((checks.len() - played) as u64));
+    }
+    if let Some(problems) = problems {
+        summary.set("problems", problems);
+    }
+    lines.push(summary);
+    (i32::from(!failed.is_empty() || played < checks.len()), Json::obj([(CHECK_LINES, Json::Arr(lines))]))
+}
+
+/// One headless run of the game in `folder`. `kept`: where this run's player settings are
+/// read and kept (`None`: where the command itself named, or nowhere).
+fn run_in(ctx: &Ctx, folder: &Path, args: &crate::launch_cli::RunArgs, kept: Option<&Path>) -> (i32, Json) {
+    let folder = folder.to_path_buf();
     // One engine has a project at a time. An engine that is listed has it: said at once, with
     // where it is. One that is not listed may be another run of this command, which ends by
     // itself: waited for, a while.
@@ -749,10 +886,16 @@ fn run_game(ctx: &Ctx, args: &crate::launch_cli::RunArgs) -> (i32, Json) {
         command.arg("--captures").arg(scratch.join("captures")).args(["--trace-file", "off"]);
         // Where this run's player settings are read and kept: the folder the command named, or
         // nowhere (and then the engine is not listed either: it is this command's own).
-        if ctx.settings_given {
-            command.arg("--settings").arg(&ctx.store.dir);
-        } else {
-            command.args(["--settings", "off"]);
+        match kept {
+            Some(dir) => {
+                command.arg("--settings").arg(dir);
+            }
+            None if ctx.settings_given => {
+                command.arg("--settings").arg(&ctx.store.dir);
+            }
+            None => {
+                command.args(["--settings", "off"]);
+            }
         }
         // What the engine says of itself is kept, its last lines: why a run that did not answer did not.
         command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
@@ -956,11 +1099,18 @@ pub fn respawn(argv: &[String], folder: &Path, quiet: bool) -> Result<(), String
 /// The command line's whole answer: prints the JSON (stdout, or stderr for a failure to reach
 /// an engine) and returns the exit code. The one place the commands print.
 pub fn answer(cli: Cli, settings: Option<PathBuf>) -> i32 {
-    let a_run = matches!(cli, Cli::Run(_));
+    let a_run = matches!(cli, Cli::Run(_) | Cli::Check(_));
     let (code, json) = match Ctx::from_env(settings) {
         Ok(ctx) => run(cli, &ctx),
         Err(why) => refusal("no_per_user_folder", why),
     };
+    // A project's checks: a line a check, and the line that counts them.
+    if let Some(lines) = json.get(CHECK_LINES).and_then(Json::as_array) {
+        for line in lines {
+            put(&line.to_string());
+        }
+        return code;
+    }
     // A headless run's report is the game's state: one line, alone on the output, and what the
     // game says is wrong with its own files beside it, where a reader of the state is not.
     if let Some(report) = json.get(RUN_REPORT) {

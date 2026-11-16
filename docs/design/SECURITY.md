@@ -267,7 +267,11 @@ The project list, the files that say which engines are running, and the two requ
   `specula run` (a headless run by a script) is `--run-as-is` for one run: whoever runs the command runs
   what is on disk, with their own rights; its engine listens on loopback like any other, on a port of
   its own, and ends with the run. It is a command of a shell, never a tool: an agent that has only the
-  protocol cannot start one.
+  protocol cannot start one. `specula check` is such runs, one after another, as the project's
+  `checks/runs.json` lists them. That file is a project's data, which may be someone else's: it names
+  ticks, inputs and expectations, never a command, and the only places it has anything written are a
+  frame below the project's own folder (a path that leaves it is refused when the file is read) and
+  settings folders that are the command's own and go with it.
   - **What it loads is built in the operator's own folder**, never in a build folder that could have come
     with the project (a library found there counts as built from the sources when the file times say so):
     [MODULES.md](MODULES.md).

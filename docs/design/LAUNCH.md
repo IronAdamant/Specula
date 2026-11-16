@@ -127,6 +127,11 @@ specula run [NAME|FOLDER] --ticks N [--inputs T:WORD,...|@FILE] [--seed N] [--se
                                  line, a refusal as much as a state; a module whose call failed is
                                  a refusal. --follow: then a step a line from standard input
                                  (TICKS, or TICKS WORD), the state printed after each
+specula check [NAME|FOLDER] [--only NAME] [--file FILE]
+                                 play every run the project's checks/runs.json lists and hold
+                                 each state against what the check expects: a line a check,
+                                 then a count; exit code 1 when one did not hold
+                                 (FIRST_HOUR.md, "The game's own checks")
 specula new NAME [--in FOLDER] [--bare]
                                  make a project that builds and plays, and list it
 specula forget NAME|FOLDER       take a project off the list (its folder stays)

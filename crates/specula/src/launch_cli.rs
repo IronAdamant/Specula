@@ -46,6 +46,17 @@ pub struct RunArgs {
     pub follow: bool,
 }
 
+/// What `specula check` was asked.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CheckArgs {
+    /// The project's name or folder (`None`: the folder the command is run in).
+    pub which: Option<String>,
+    /// The checks file (`None`: the project's `checks/runs.json`).
+    pub file: Option<PathBuf>,
+    /// Only the check of this name.
+    pub only: Option<String>,
+}
+
 /// One command.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cli {
@@ -72,6 +83,7 @@ pub enum Cli {
     /// Plays a project's game with no window, by a script of inputs, and prints how it stands
     /// (docs/design/FIRST_HOUR.md, "A headless run").
     Run(RunArgs),
+    Check(CheckArgs),
     /// The tools a running engine lists.
     Tools { target: Target, filter: Option<String> },
     /// Calls one tool of a running engine.
@@ -134,6 +146,14 @@ specula run [NAME|FOLDER] --ticks N [--inputs T:WORD,T:WORD,... | --inputs @FILE
                                  run ends with the input: a player that reads the state and
                                  answers it plays a whole game in one run. A run ends after
                                  30 minutes at most
+specula check [NAME|FOLDER] [--only NAME] [--file FILE]
+                                 play every run the project's checks/runs.json lists, each as
+                                 `run` plays one (ticks, inputs, seed, a settings folder by
+                                 name that checks share, a frame), and hold each state
+                                 against the check's \"expect\": a line a check, ok or what
+                                 differs with the state, then a line that counts them. Exit
+                                 code 1 when one did not hold. A check with no \"expect\"
+                                 prints its state: many runs read in one command
 specula new NAME [--in FOLDER] [--bare]
                                  make a project that builds and plays (a game file, screens,
                                  words, a module, the SDK, notes) and list it; --bare: only
@@ -154,7 +174,7 @@ specula call TOOL ['{json}' | @FILE] [--port N | --project NAME] [--as NAME [--r
                                  started with --lead NAME)
 specula --help                   the engine's own flags";
 
-const WORDS: [&str; 12] = ["projects", "open", "play", "run", "new", "forget", "sdk", "list", "stop", "tools", "call", "help"];
+const WORDS: [&str; 13] = ["projects", "open", "play", "run", "check", "new", "forget", "sdk", "list", "stop", "tools", "call", "help"];
 
 /// The flags a command takes after its own words: `--port N`, `--project NAME`, `--as NAME`,
 /// `--in FOLDER`, `--last`. Returns what is left (the command's own words, in order).
@@ -350,6 +370,31 @@ pub fn parse(args: &[String]) -> Result<Option<Cli>, String> {
             }
             Cli::Run(run)
         }
+        // A project's own checks: runs of its game and what each must print.
+        "check" => {
+            let mut check = CheckArgs { which: None, file: None, only: None };
+            let mut i = 0;
+            while i < rest.len() {
+                let w = rest[i].as_str();
+                if !w.starts_with("--") {
+                    if check.which.replace(w.to_owned()).is_some() {
+                        return Err("'specula check' takes one project: its name or its folder (none: the folder you are in)".to_owned());
+                    }
+                    i += 1;
+                    continue;
+                }
+                let value = match w {
+                    "--only" | "--file" => rest.get(i + 1).ok_or_else(|| format!("'{w}' needs a value"))?.clone(),
+                    _ => return Err(format!("'{w}' is not a flag of this command (it takes: --only NAME, --file FILE, --settings FOLDER)")),
+                };
+                match w {
+                    "--only" => check.only = Some(value),
+                    _ => check.file = Some(PathBuf::from(value)),
+                }
+                i += 2;
+            }
+            Cli::Check(check)
+        }
         "sdk" => {
             let f = flags(rest, &[])?;
             if f.rest.len() > 1 {
@@ -443,6 +488,16 @@ mod tests {
     }
 
     #[test]
+    fn check_takes_a_project_and_which_checks() {
+        let p = |line: &str| parse(&line.split_whitespace().map(str::to_owned).collect::<Vec<_>>());
+        assert_eq!(p("check"), Ok(Some(Cli::Check(CheckArgs { which: None, file: None, only: None }))));
+        assert_eq!(p("check crypt --only won --file other.json"), Ok(Some(Cli::Check(CheckArgs { which: Some("crypt".into()), file: Some(PathBuf::from("other.json")), only: Some("won".into()) }))));
+        assert!(p("check a b").unwrap_err().contains("one project"));
+        assert!(p("check --ticks 5").unwrap_err().contains("not a flag"));
+        assert!(p("check --only").unwrap_err().contains("needs a value"));
+    }
+
+    #[test]
     fn run_takes_ticks_a_script_and_a_frame() {
         let Ok(Some(Cli::Run(run))) = p("run crypt --ticks 600 --seed 3 --inputs 0:enter,5:up,90:none --frame out/f.png --size 800x480") else { panic!("not a run") };
         assert_eq!((run.which.as_deref(), run.ticks, run.seed), (Some("crypt"), Some(600), Some(3)));
@@ -476,7 +531,7 @@ mod tests {
         assert_eq!(p("-h"), Ok(None));
         // A word that is no command is said, with the commands: never run as an engine.
         let e = p("opne crypt").unwrap_err();
-        assert!(e.contains("'opne' is not a command") && e.contains("projects, open, play, run, new"), "{e}");
+        assert!(e.contains("'opne' is not a command") && e.contains("projects, open, play, run, check, new"), "{e}");
     }
 
     #[test]

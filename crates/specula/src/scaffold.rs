@@ -13,7 +13,8 @@
 //! | `assets/style.json` | a plain style, so a model recipe builds on the first try |
 //! | `modules/<name>/` | the game's rules: a module that builds, with one action |
 //! | `Cargo.toml`, `crates/specula-sdk`, `crates/specula-core` | the workspace and this engine's SDK |
-//! | `checks/smoke.json` | a playtest that plays a run and reads how it ended |
+//! | `checks/runs.json` | the game's own checks: runs, and what each must print (`specula check`) |
+//! | `checks/smoke.json` | a playtest that plays a run and reads how it ended, for an engine left running |
 //! | `notes/brief.md`, `notes/how.md` | what this is, and how it is built and checked: given to every agent at its first call |
 //!
 //! The game is deliberately the smallest one with every part: tap five times before the time
@@ -311,10 +312,26 @@ about: game.json, modules/{{module}}/
 ---
 What is here is the smallest game with every part, made by `specula new`: tap five times before
 the time runs out. It has a title screen, a pause menu, settings (volume, language, difficulty),
-won and lost screens, one module with the rules, and one check that plays a run.
+won and lost screens, one module with the rules, and its own checks (`specula check .`).
 
 Replace this note with what the game is to be (memory_note {id: "brief", ...}): every agent is
 given it at its first call.
+"#;
+
+/// The sample game's own checks: runs, and what each must print (`specula check`).
+const RUNS: &str = r#"{
+  "format": "specula.checks.v1",
+  "notes": "This game's own checks: `specula check .` plays each run as `specula run` would (ticks, inputs, seed) and holds its state against \"expect\" (keys of game.json's \"report\"). Checks that name the same \"settings\" share a player's settings, in this order. A check with no \"expect\" prints its state. Replace these with your game's.",
+  "checks": [
+    { "name": "the title", "ticks": 0, "expect": { "screen": "title", "phase": "title", "texts": { "has": "Start" } } },
+    { "name": "five taps win", "ticks": 40, "inputs": "0:enter,5:tap,6:none,10:tap,11:none,15:tap,16:none,20:tap,21:none,25:tap", "expect": { "phase": "won", "taps": 5, "score": 60, "texts": { "has": "You won" } } },
+    { "name": "the time runs out", "ticks": 320, "inputs": "0:enter,5:tap", "expect": { "phase": "lost", "taps": 1, "left": 0 } },
+    { "name": "a pause holds the game", "ticks": 200, "inputs": "0:enter,5:tap,6:escape", "expect": { "phase": "paused", "left": 10 } },
+    { "name": "left turns the volume down", "ticks": 4, "inputs": "0:down,1:enter,2:left,3:left", "settings": "kept", "expect": { "screen": "settings", "volume": 6 } },
+    { "name": "and it is kept", "ticks": 0, "settings": "kept", "expect": { "volume": 6 } },
+    { "name": "a new player has the default", "ticks": 0, "expect": { "volume": 8 } }
+  ]
+}
 "#;
 
 const HOW: &str = r##"---
@@ -357,6 +374,27 @@ game from its start with no window, and prints how it stands as one JSON object:
   the state is printed after it. The run ends when the input does. A small program that
   starts this command once, reads a state and writes a step, plays a whole game in one run.
 
+**The game's own checks: every run in one command.** `checks/runs.json` lists runs of the
+game, each as `specula run` takes one, with what its state must be:
+
+    specula check . [--only NAME]
+
+    { "name": "five taps win", "ticks": 40, "inputs": "0:enter,5:tap,6:none,10:tap",
+      "seed": 1, "settings": "kept", "frame": "checks/out/won.png", "size": [800, 480],
+      "expect": { "phase": "won", "taps": 5, "score": { "gte": 50 },
+                  "texts": { "has": "You won" } } }
+
+- It prints a line a check (`ok`, or what `differs` and the state) and a line that counts
+  them; exit code 1 when one did not hold. A check with no `"expect"` prints its state: write
+  the runs you want to see, read them all in one go, then write what each must be.
+- `"expect"`: a key of the report (or a path into it: `walkers.0.health`) with its value, or
+  with one of `{"ne": v}`, `{"lt": n}`, `{"lte": n}`, `{"gt": n}`, `{"gte": n}`, `{"has": v}`
+  (a list holds it; a text holds it), `{"len": n}`.
+- Checks that name the same `"settings"` share one player's settings, in the file's order:
+  set in one check and found in the next is "kept between runs", shown.
+- Write the checks as you write the game, and leave them: they are what you checked, for
+  whoever comes after (the sample's `checks/runs.json` checks the sample).
+
 **game.json** (an unknown key is refused, by name)
 
 - `title`; `tick_hz` (1 to 240; 30 when left out); `modules` (folders); `locale`; `start`:
@@ -394,7 +432,8 @@ game from its start with no window, and prints how it stands as one JSON object:
 - Keep: `cx.state("k")?` (a `Value`; then `.as_u64()`, `.as_i64()`, `.as_f64()`,
   `.as_bool()`, `.as_str()`, `.as_list()` (a `&[Value]`), `.as_map()`, `.get("key")`, each an
   `Option`) and `cx.set_state("k", value)?`. A value is a number, a bool,
-  text, a `Vec<Value>` or a map (`Value::map().with("x", 1.5).with("kind", "walker")`). Keep
+  text, a `Vec<Value>` or a map (`Value::map().with("x", 1.5).with("kind", "walker")`); `bool`,
+  `i32`, `i64`, `u32`, `u64`, `usize`, `f32`, `f64`, `&str` and `String` turn into one. Keep
   everything there and nothing in the struct: what is kept is what screens show, what
   `outcome` reads and what `report` prints.
 - Input: `cx.action("name")` has `.pressed`, `.held`, `.released` and `.value` (`[f32; 2]`).
@@ -421,7 +460,8 @@ game from its start with no window, and prints how it stands as one JSON object:
   that path too, with what is below it.
 - `cx.tick()` (`u64`), `cx.tick_hz()` (`u32`), `cx.random_below("stream", n)?` (a `u32`
   below `n`), `cx.random_f32("stream")?` (0 to 1), `cx.sound("name", None, 1.0)?`,
-  `cx.log("text")?`.
+  `cx.log("text")?`. The random calls are seeded by the run (`--seed`, a check's `"seed"`):
+  the rules take no seed and keep none.
 
 **Also**
 
@@ -472,6 +512,7 @@ pub fn files(name: &str, module: &str) -> Vec<(String, String)> {
     out.push((format!("modules/{module}/actions.json"), fill(MODULE_ACTIONS)));
     out.push((format!("modules/{module}/src/lib.rs"), fill(MODULE_SOURCE)));
     out.push(("checks/smoke.json".to_owned(), fill(SMOKE)));
+    out.push((crate::run_checks::FILE.to_owned(), RUNS.to_owned()));
     out.push(("notes/brief.md".to_owned(), fill(BRIEF)));
     out.push(("notes/how.md".to_owned(), fill(HOW)));
     out.push((".gitignore".to_owned(), GITIGNORE.to_owned()));
@@ -615,8 +656,18 @@ mod tests {
             sources += 1;
         }
         assert!(sources >= 20, "{sources} sources named");
-        for said in ["module_failed", "name_taken", "--follow", "TICKS WORD", "no name"] {
+        for said in ["module_failed", "name_taken", "--follow", "TICKS WORD", "no name", "specula check .", "checks/runs.json"] {
             assert!(how.contains(said), "notes/how.md does not say {said}");
+        }
+        // The sample's own checks are read as checks, and each expects keys the sample's game
+        // file reports (what they come to when played is the live check's to hold).
+        let runs = crate::run_checks::parse(text(crate::run_checks::FILE)).expect("the sample's checks");
+        let reported = specula_ludus::GameFile::parse(text("game.json")).expect("the game file").report;
+        assert!(runs.len() >= 5, "{} checks", runs.len());
+        for check in &runs {
+            for (key, _) in &check.expect {
+                assert!(reported.iter().any(|(name, _)| name == key), "the sample's check '{}' expects '{key}', which its game file does not report", check.name);
+            }
         }
         // The game's own setting has its button, and its values their words.
         assert!(text("assets/ui/settings.json").contains("\"action\": \"cycle:difficulty\""), "the sample's settings screen has no button for its difficulty");

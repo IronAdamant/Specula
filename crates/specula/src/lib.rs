@@ -63,6 +63,7 @@ mod perf;
 pub mod persist;
 pub mod rollup;
 mod run_modules;
+mod run_checks;
 mod script_run;
 mod save_tools;
 mod scaffold;
@@ -566,7 +567,7 @@ fn run_with(mut game: Option<Box<dyn Game>>) -> Result<(), String> {
             Ok((None, _)) => launch_run::usage(USAGE),
             // (A run's answer is one line, a refusal as much as a state: its reader reads its
             // last line.)
-            Err(why) if argv[0] == "run" => launch_run::usage_line(&why),
+            Err(why) if argv[0] == "run" || argv[0] == "check" => launch_run::usage_line(&why),
             Err(why) => launch_run::usage(&why),
         };
         std::process::exit(code);
