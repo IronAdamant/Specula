@@ -276,30 +276,40 @@ As built, where the text above said less or something else:
   --as NAME` keeps a resume token beside the engine's instance file, which is only there when the
   command reads the settings folder the engine was started with.
 
-- **`--run` runs what an owner or a granted lead last built, and nothing else** (review R1, the
-  critical finding; [MODULES.md](MODULES.md), `crates/specula/src/approved.rs`). A build that passed
-  the gate and loaded leaves the digest of the module's folder in the operator's settings folder;
-  `--run` loads a module only while its folder still has it. `--run-as-is` (`specula play NAME
-  --as-is`) is the operator saying that what is on disk now is theirs to run.
+- **`--run` runs what an owner or a granted lead last built, and nothing else** (reviews R1 and R2;
+  [MODULES.md](MODULES.md), `crates/specula/src/approved.rs`). A build that passed the gate and loaded
+  leaves, in the operator's settings folder, the digest of the module's folder and of the project
+  root's build configuration (`Cargo.toml`, a toolchain file, `.cargo/`); `--run` loads a module only
+  while both hold, and loads nothing of a module that compiles a crate from outside its own folder.
+  `--run-as-is` (`specula play NAME --as-is`) is the operator saying that what is on disk now is
+  theirs to run; it approves nothing for later starts.
 - **An agent's `game_act` never saves or loads** (`use_save_tools`): the save tools do, with their
-  rules. **An agent's change to a setting lasts for the session**; the player's settings file holds
-  the player's own choices alone. **A refused `quit` is told to the input monitor**, and `game_act`
-  is refused while one of the engine's own screens (the review screen, a gallery) is open.
+  rules. **An agent's change to a setting lasts for the session.** The player's settings file holds
+  the choices the player made and nothing else: not a default, and not a value a changed game file
+  put in a choice's place (a choice the game no longer takes stays the player's, unused until it fits
+  again). **A refused `quit` is told to the input monitor**, and `game_act` is refused while one of
+  the engine's own screens (the review screen, a gallery) is open.
 - **A game file that is not one is never stored**, `allow_errors` or not: the project would not open.
-- **What the notes hold together is held at the commit** (`project_engine::note_guard`): one
-  replacement a note, no rings, one brief, for `memory_note` and `project_write` alike, against the
-  notes as they are when the write is committed.
+- **No note is hidden, whatever the files say** (`specula_memoria::Notes::read`): a replacement that
+  would close a ring is not followed, and `memory_list` says so under `problems` (with a second
+  brief, of which the first by id is given). The check at the write (`project_engine::note_guard`:
+  one replacement a note, no rings, one brief, for `memory_note` and `project_write` alike) refuses
+  early; an undo and an edit on disk pass it by design, and the reader holds. A note's front matter
+  is at most 16 lines.
 - **`project_memory` is the project's text, and says so**: `source` (whose words these are), `brief`
   and `how` each with `id`, `by`, `version` and `text`, and `also` (ids, kinds and titles). Nothing of
-  a note is joined to the engine's own words.
+  a note is joined to the engine's own words, and no agent takes a name that reads as the engine's
+  or its operator's (`operator`, `engine`, `specula`, `system`, `admin`).
 - **The clock after a playtest is as the run stands**: the game's last wish for the clock made while a
   playtest had it is done when the playtest gives the clock back.
-- **`time_control {step}` says how many ticks ran** (`ran`, and `not_run` with why when the game
-  stopped the clock on one of them).
+- **`time_control {step}` says what became of every tick**: `ran` in this call, `queued` (one call
+  runs a bounded number, the frames after it the rest), and `not_run` with why when the game stopped
+  the clock on one of them.
 - **Only running modules' state is read** by a screen or a condition: a module that was unloaded
-  leaves nothing behind for them.
+  leaves nothing behind for them. What is unchanged is compared in place, not copied, each tick.
 - **The shell reads nothing from the disk after its start**: a changed screen, theme or string table
-  reaches it as the project store's text (`Game::asset_texts`).
+  reaches it as the project store's text (`Game::asset_texts`), taken by the rule the disk is read
+  by (each folder's files by name, and it is said when there are more than are taken).
 - **The sample module handles its events in the order they happened**: a tap that comes with the
   start counts, and a run started and given up in one tick is given up.
 
@@ -318,7 +328,11 @@ refused with nothing to say why.
    and a builder's own build is still only a proposal. Since review R1 it also holds: a save of a run
    loads again, `game_act` refuses the save words, a game file that is not one is refused, a builder's
    change to the module's source keeps `--run` from loading it (the game says why), and `--run-as-is`
-   loads it. About 25 s (`examen live --only new_project_check`).
+   loads it. Since review R2: a step of 1,000 ticks is said as run and queued; a run begun in a
+   playtest goes on after it; a save read at the title brings its run back; two notes written on
+   disk to replace each other hide neither; one `--run-as-is` start approves nothing; a lead's build
+   is what `--run` then loads; a changed `.cargo/` at the root, and a crate from outside the
+   module's folder, keep `--run` from loading. About 55 s (`examen live --only new_project_check`).
 2. **Done: the comparison's harness is Rust** (`examen leverage`, `tools/examen/src/leverage.rs`) and
    starts its engine arm from `specula new`. **To do: the comparison is run again** (slice 8).
 3. **Not built, and said:** conditions over the world (`world:/path.prop`); a condition reads what the

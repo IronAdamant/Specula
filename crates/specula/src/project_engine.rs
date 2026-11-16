@@ -94,9 +94,17 @@ fn at_version(journal: &crate::journal::Journal, path: &str, version: u64) -> (O
 /// calls at once both passed that and wrote a ring, and both notes dropped out of every list
 /// (review R1 of M6 part 3: 4 of 21 tries).
 ///
-/// Reads each note's first lines only (`specula_memoria::front`): a filter over at most the
-/// notes a project may hold. A text that is not a note yet (a draft stored with
-/// `allow_errors`) takes no place among them, so nothing is held of it.
+/// Reads each note's first lines only (`specula_memoria::front`, which answers for every note
+/// what its parsed text says): a filter over at most the notes a project may hold. A text that
+/// is not a note yet (a draft stored with `allow_errors`) may still have a front: the check is
+/// the stricter of the two, never the looser.
+///
+/// **This is the refusal at the write, not what keeps the notes whole.** An undo puts a file
+/// back as it was and an edit on disk is imported as it is: neither is refused here, and each
+/// can leave what this refuses. What holds whatever the files say is the reader
+/// (`specula_memoria::Notes::read`): a replacement that would close a ring is not followed,
+/// so no note is hidden, and `memory_list` says what it found (`problems`). Review R2 of M6
+/// part 3 got past this check three ways; none of them hides a note now.
 fn note_guard(files: &std::collections::BTreeMap<String, ProjectFile>, path: &str, text: &str) -> Result<(), WorldError> {
     use specula_memoria::Kind;
     let id_of = |p: &str| p.strip_prefix("notes/").and_then(|p| p.strip_suffix(".md")).map(str::to_owned);
@@ -1009,9 +1017,11 @@ impl Engine {
         if !assets.is_empty() && self.game_call(crate::sim_writes::GameCall::AssetsChanged(&assets)) {
             done.push("game");
         }
-        // The interface's files: the hosted game is lent their texts as the store holds them
-        // (every screen, the theme, every string table: a bounded filter of the store), so that
-        // it reads nothing from the disk on this thread.
+        // The interface's files: the hosted game is lent their texts as the store holds them,
+        // all of them (every screen, the theme, every string table: a filter over the store,
+        // which holds a bounded number of files; the texts are shared, not copied), so that it
+        // reads nothing from the disk on this thread. Which of them it takes, and what it says
+        // when there are too many, is the game's (the shell: by name, as from the disk).
         if assets.iter().any(|p| p.starts_with("ui/") || p.starts_with("strings/")) && self.game.is_some() {
             let texts: Vec<(String, Arc<str>)> = self
                 .world
@@ -1019,7 +1029,6 @@ impl Engine {
                 .iter()
                 .filter(|(_, f)| matches!(f.kind, FileKind::UiScreen | FileKind::UiTheme | FileKind::Strings))
                 .filter_map(|(p, f)| p.strip_prefix("assets/").filter(|rel| rel.starts_with("ui/") || rel.starts_with("strings/")).map(|rel| (rel.to_owned(), Arc::clone(&f.text))))
-                .take(128)
                 .collect();
             self.game_call(crate::sim_writes::GameCall::AssetTexts(&texts));
         }

@@ -294,6 +294,17 @@ fn new_project(cx: &mut Cx) -> Result<String, String> {
     expect(at(&state, "modules_running").and_then(Json::as_array).is_some_and(<[Json]>::is_empty), "a module is running though nobody built one: opening a project must run none of its code", &state)?;
     expect(at(&state, "problems").is_none(), "the new project's own files have problems", &state)?;
 
+    // A stepped clock says what became of every tick: one call runs a bounded number, and the
+    // rest are queued and run in the frames after it (never said to be dropped). At the title,
+    // where nothing stops the clock on a tick.
+    let stepped = cx.call(port, lead, "time_control", r#"{"action": "step", "ticks": 1000}"#)?;
+    let (ran, queued) = (at(&stepped, "ran").and_then(Json::as_u64).unwrap_or(0), at(&stepped, "queued").and_then(Json::as_u64).unwrap_or(0));
+    expect(ran > 0 && ran + queued == 1000 && at(&stepped, "not_run").is_none(), "a step of 1000 ticks does not say them as run or queued", &stepped)?;
+    let from = at(&stepped, "tick").and_then(Json::as_u64).unwrap_or(0) - ran;
+    cx.wait_for(port, lead, "time_control", "the queued ticks of a step run", Duration::from_secs(60), |c| at(c, "tick").and_then(Json::as_u64) == Some(from + 1000))?;
+    // No agent takes a name that would read as the operator's or the engine's own.
+    cx.refused(port, Some(("operator", "builder")), "game_state", "{}", "name_reserved")?;
+
     // 3. The loop: build the module, play a run by word, read how it stands.
     let built = cx.call(port, lead, "logic_build", r#"{"path": "modules/tapfive"}"#)?;
     expect(at(&built, "ok").and_then(Json::as_bool) == Some(true) && text(&built, "reload.status") == Some("running"), "the new project's module did not build and load", &built)?;
@@ -306,17 +317,30 @@ fn new_project(cx: &mut Cx) -> Result<String, String> {
     // The run ended inside the playtest, which had the clock: after it the clock is as the
     // run stands (a run that has ended does not tick).
     expect(at(&state, "clock_paused").and_then(Json::as_bool) == Some(true), "the run ended in the playtest, and its clock runs after it", &state)?;
+    // A run that begins in a playtest and is still under way when it ends goes on after it:
+    // the playtest took a stopped clock at the title, and gives back a running one.
+    cx.call(port, lead, "game_act", r#"{"action": "title"}"#)?;
+    let begin = project.join("checks").join("begin.json");
+    std::fs::write(&begin, r#"{"name": "begin", "steps": [{"at": 0, "call": "game_act", "args": {"action": "start"}}, {"at": 2, "call": "game_act", "args": {"action": "tap"}}], "ticks": 5}"#).map_err(|e| format!("{}: {e}", begin.display()))?;
+    let played = cx.call(port, lead, "playtest_run", r#"{"path": "checks/begin.json", "wait_s": 20}"#)?;
+    expect(text(&played, "status") == Some("passed"), "a playtest that begins a run did not pass", &played)?;
+    let state = cx.call(port, lead, "game_state", "{}")?;
+    expect(text(&state, "phase") == Some("running") && at(&state, "clock_paused").and_then(Json::as_bool) == Some(false), "a run begun in a playtest stands still after it", &state)?;
     cx.refused(port, lead, "game_act", r#"{"action": "quit"}"#, "players_only")?;
     // The game's own save and load are the player's menu: an agent has the save tools, with
-    // their rules. And a save of a game whose one action is called `tap` loads again.
+    // their rules. And a save of a game whose one action is called `tap` loads again: taken
+    // in a run, and read back at the title, it brings the run back.
     cx.call(port, lead, "game_act", r#"{"action": "title"}"#)?;
-    cx.call(port, lead, "game_act", r#"{"action": "start"}"#)?;
+    let started = cx.call(port, lead, "game_act", r#"{"action": "start"}"#)?;
+    let runs = at(&started, "runs").and_then(Json::as_u64);
     cx.refused(port, lead, "game_act", r#"{"action": "save:slot1"}"#, "use_save_tools")?;
     cx.refused(port, lead, "game_act", r#"{"action": "load:slot1"}"#, "use_save_tools")?;
     cx.call(port, lead, "save_write", r#"{"name": "check1"}"#)?;
+    let left = cx.call(port, lead, "game_act", r#"{"action": "title"}"#)?;
+    expect(text(&left, "phase") == Some("title"), "the run was not given up", &left)?;
     cx.call(port, lead, "save_read", r#"{"name": "check1", "force": true}"#)?;
     let state = cx.call(port, lead, "game_state", "{}")?;
-    expect(text(&state, "phase") == Some("running") && at(&state, "modules_running.0").and_then(Json::as_str) == Some("tapfive"), "a save of a run did not bring the run back", &state)?;
+    expect(text(&state, "phase") == Some("running") && at(&state, "runs").and_then(Json::as_u64) == runs && at(&state, "modules_running.0").and_then(Json::as_str) == Some("tapfive"), "a save of a run, read at the title, did not bring the run back", &state)?;
     // A game file that is not one is never stored, draft or not: the project would not open.
     cx.refused(port, lead, "project_write", r#"{"path": "game.json", "text": "{\"format\": \"specula.game.v1\", \"tick_hz\": 0}", "allow_errors": true}"#, "invalid")?;
     cx.refused(port, lead, "game_act", r#"{"action": "open:"}"#, "bad_action")?;
@@ -367,6 +391,29 @@ fn new_project(cx: &mut Cx) -> Result<String, String> {
         return Err("the note is not a file in the project's notes folder".to_owned());
     }
 
+    // Whatever the notes' files say, no note is hidden. A front matter padded past its bound
+    // is not a note (so the check at the write reads what the notes' reader reads); and two
+    // notes written on disk to replace each other are imported as they are, one line of the
+    // two is not followed, and the list says so.
+    let padded = Json::obj([("path", Json::Str("notes/padded.md".to_owned())), ("text", Json::Str(format!("---\ntitle: Padded\nkind: brief\n{}---\ntext\n", "\n".repeat(20))))]);
+    let args = cx.out.join("padded-args.json");
+    std::fs::write(&args, padded.to_string()).map_err(|e| format!("{}: {e}", args.display()))?;
+    cx.refused(port, lead, "project_write", &format!("@{}", args.to_string_lossy()), "invalid")?;
+    let before = cx.call(port, lead, "memory_list", "{}")?;
+    for (id, other) in [("ring-a", "ring-b"), ("ring-b", "ring-a")] {
+        let path = project.join("notes").join(format!("{id}.md"));
+        std::fs::write(&path, format!("---\ntitle: Ring {id}\nkind: fact\nsupersedes: {other}\n---\nwritten on disk\n")).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    let listed = cx.wait_for(port, lead, "memory_list", "notes written on disk are imported", Duration::from_secs(30), |l| at(l, "problems").is_some())?;
+    let said = at(&listed, "problems").map(Json::to_string).unwrap_or_default();
+    let current = |l: &Json| at(l, "current").and_then(Json::as_u64).unwrap_or(0);
+    expect(said.contains("ring-b says it supersedes ring-a") && current(&listed) == current(&before) + 1, "two notes that replace each other on disk: one of them must stay listed, and it must be said", &listed)?;
+    for id in ["ring-a", "ring-b"] {
+        let path = project.join("notes").join(format!("{id}.md"));
+        std::fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    cx.wait_for(port, lead, "memory_list", "notes removed on disk are gone", Duration::from_secs(30), |l| at(l, "problems").is_none() && current(l) == current(&before))?;
+
     // 7. A second language, chosen, and a setting the rules read: kept for the next start
     // (the operator named the settings folder, so an agent's change is kept there).
     let german = std::fs::read_to_string(project.join("assets").join("strings").join("en.json")).map_err(|e| format!("assets/strings/en.json: {e}"))?;
@@ -378,8 +425,8 @@ fn new_project(cx: &mut Cx) -> Result<String, String> {
     cx.call(port, lead, "game_act", r#"{"action": "set:difficulty:hard"}"#)?;
     cx.stop(port)?;
 
-    // 8. Again with `--run` and no lead at all: the operator says the code is theirs to run,
-    // and the module is built and loaded at start. What was chosen and noted is still there.
+    // 8. Again with `--run` and no lead at all: the module is loaded at start as the lead
+    // last built it. What was chosen and noted is still there.
     let port2 = port + 1;
     cx.start(&project, port2, &["--run"])?;
     let state = cx.wait_for(port2, None, "game_state", "--run loads the game file's module at start", Duration::from_secs(180), |s| at(s, "modules_running.0").and_then(Json::as_str) == Some("tapfive") || at(s, "problems").is_some())?;
@@ -420,7 +467,63 @@ fn new_project(cx: &mut Cx) -> Result<String, String> {
     let state = cx.wait_for(port4, None, "game_state", "--run-as-is loads what is on disk", Duration::from_secs(180), done)?;
     expect(at(&state, "problems").is_none() && at(&state, "modules_running.0").and_then(Json::as_str) == Some("tapfive"), "--run-as-is did not load the module as it is on disk", &state)?;
     cx.stop(port4)?;
-    Ok("new project: built, played, saved, changed, noted, loaded again by --run, and a builder's change held back until its owner builds it".to_owned())
+
+    // 11. One start with `--run-as-is` approves nothing: `--run` after it still holds the
+    // builder's change back (review R2: the as-is start recorded what it loaded, and every
+    // later `--run` ran it).
+    let held_back = |cx: &mut Cx, port: u64, why: &str, says: &str| -> Result<(), String> {
+        cx.start(&project, port, &["--run"])?;
+        let state = cx.wait_for(port, None, "game_state", "--run decides about the module", Duration::from_secs(180), done)?;
+        let said = at(&state, "problems").map(Json::to_string).unwrap_or_default();
+        expect(at(&state, "modules_running").and_then(Json::as_array).is_some_and(<[Json]>::is_empty) && said.contains("was not loaded") && said.contains(says), why, &state)?;
+        cx.stop(port)
+    };
+    held_back(cx, port2, "--run loaded what one --run-as-is start had loaded: an as-is start must approve nothing", "changed since")?;
+
+    // 12. A granted lead builds the builder's change, which is the review: `--run` loads it.
+    let lena = Some(("lena", "lead"));
+    let builds = |cx: &mut Cx, port: u64| -> Result<Json, String> {
+        cx.start(&project, port, &["--lead", "lena"])?;
+        let built = cx.call(port, lena, "logic_build", r#"{"path": "modules/tapfive"}"#)?;
+        cx.stop(port)?;
+        expect(at(&built, "ok").and_then(Json::as_bool) == Some(true) && text(&built, "reload.status") == Some("running"), "the lead's build did not load", &built)?;
+        Ok(built)
+    };
+    let built = builds(cx, port3)?;
+    expect(at(&built, "at_start").is_none(), "a build of a module that keeps to its own folder says --run will not load it", &built)?;
+    cx.start(&project, port4, &["--run"])?;
+    let state = cx.wait_for(port4, None, "game_state", "--run loads what the lead built", Duration::from_secs(180), done)?;
+    expect(at(&state, "problems").is_none() && at(&state, "modules_running.0").and_then(Json::as_str) == Some("tapfive"), "--run did not load the module a lead built", &state)?;
+    cx.stop(port4)?;
+
+    // 13. The project root's build configuration is held too: a `.cargo/` there names what a
+    // build runs, and no module's folder covers it (review R2: a wrapper named there ran
+    // under `--run` with every module untouched). Harmless here: a setting that changes nothing.
+    let config = project.join(".cargo");
+    std::fs::create_dir_all(&config).and_then(|()| std::fs::write(config.join("config.toml"), "[term]\nquiet = true\n")).map_err(|e| format!("{}: {e}", config.display()))?;
+    held_back(cx, port2, "--run built under a build configuration nobody with authority built with", "build configuration")?;
+    std::fs::remove_dir_all(&config).map_err(|e| format!("{}: {e}", config.display()))?;
+
+    // 14. A module that compiles a crate from outside its own folder is not for `--run`: the
+    // record covers the module's folder, and a helper crate elsewhere could change unseen
+    // (review R2, the blocker: a builder wrote a helper's source and `--run` loaded it). The
+    // lead's own build loads it and says so, and `--run` loads nothing of it. (A crate beside
+    // a workspace's member, used by it, is the workspace's without being named.)
+    let helper = project.join("modules").join("helper");
+    let module = project.join("modules").join("tapfive");
+    let write = |path: PathBuf, text: String| std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()));
+    std::fs::create_dir_all(helper.join("src")).map_err(|e| format!("{}: {e}", helper.display()))?;
+    write(helper.join("Cargo.toml"), "[package]\nname = \"helper\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"rlib\"]\n".to_owned())?;
+    write(helper.join("src").join("lib.rs"), "pub fn marker() -> i64 {\n    111\n}\n".to_owned())?;
+    let manifest = std::fs::read_to_string(module.join("Cargo.toml")).map_err(|e| format!("the module's Cargo.toml: {e}"))?;
+    expect(manifest.contains("[dependencies]"), "the module's manifest has no [dependencies] to add a helper to", &Json::Str(manifest.clone()))?;
+    write(module.join("Cargo.toml"), manifest.replace("[dependencies]", "[dependencies]\nhelper = { path = \"../helper\" }"))?;
+    let lib = std::fs::read_to_string(module.join("src").join("lib.rs")).map_err(|e| format!("the module's lib.rs: {e}"))?;
+    write(module.join("src").join("lib.rs"), lib + "\n/// (The check's: the module uses a crate from outside its folder.)\npub fn helper_marker() -> i64 {\n    helper::marker()\n}\n")?;
+    let built = builds(cx, port3)?;
+    expect(text(&built, "at_start").is_some_and(|s| s.contains("outside its own folder")), "the lead's build of a module with a crate outside its folder does not say that --run will not load it", &built)?;
+    held_back(cx, port2, "--run loaded a module that compiles a crate from outside its own folder", "was not loaded")?;
+    Ok("new project: built, played, saved, changed, noted, loaded again by --run; and --run held to what a lead built: sources, the root's build configuration, and nothing from outside a module's folder".to_owned())
 }
 
 

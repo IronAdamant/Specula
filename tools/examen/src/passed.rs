@@ -41,7 +41,12 @@ fn usable(root: &Path, text: &str) -> Option<String> {
 
 /// The recorded commit, when it is one git has and what is checked out descends from it.
 pub fn last(root: &Path) -> Option<String> {
-    usable(root, &std::fs::read_to_string(file(root)).ok()?)
+    last_in(root, &file(root))
+}
+
+/// [`last`], with the record read from `record` (a test keeps one of its own).
+fn last_in(root: &Path, record: &Path) -> Option<String> {
+    usable(root, &std::fs::read_to_string(record).ok()?)
 }
 
 /// What is checked out, as the gate finds it before it measures anything: the commit, and
@@ -111,6 +116,21 @@ mod tests {
         assert_eq!(usable(&root, &format!("{head}\n")), Some(head.clone()), "the commit that is checked out descends from itself");
         assert_eq!(usable(&root, "0123456789abcdef0123456789abcdef01234567"), None, "git does not have that commit");
         assert_eq!(usable(&root, "origin/main"), None, "a name is not a record");
+        // The same through the record's file, as the gate reads it: a record of what is
+        // checked out is used; one of a commit git does not have, one that is not a commit's
+        // name, and no record at all, are not.
+        let record = std::env::temp_dir().join(format!("specula-examen-passed-{}.txt", std::process::id()));
+        assert_eq!(last_in(&root, &record), None, "no record");
+        std::fs::write(&record, format!("{head}
+")).unwrap();
+        assert_eq!(last_in(&root, &record), Some(head));
+        for not_one in ["0123456789abcdef0123456789abcdef01234567
+", "origin/main
+", ""] {
+            std::fs::write(&record, not_one).unwrap();
+            assert_eq!(last_in(&root, &record), None, "{not_one:?}");
+        }
+        let _ = std::fs::remove_file(&record);
     }
 
     /// A pass is recorded for the commit the gate began at, and only when that commit is still

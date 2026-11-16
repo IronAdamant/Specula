@@ -1888,7 +1888,7 @@ impl Engine {
         // tick, so the same spec makes the same calls at the same ticks. The game's wish
         // changes nothing then (a run begun by a step is ticked by the playtest's steps, and
         // its ticks go on past the run's end). It is kept, the last one, and done when the
-        // playtest gives the clock back ([`Engine::game_clock_after_playtest`]): thrown away,
+        // playtest gives the clock back ([`Engine::playtest_clock_back`]): thrown away,
         // it left a run under way with its clock stopped, or a run that had ended with its
         // clock running (review R1 of M6 part 3).
         if self.playtest_owns_clock() {
@@ -1912,9 +1912,14 @@ impl Engine {
         self.game_clock_told = Some(paused);
     }
 
-    /// A playtest gave the clock back (as it was before it): the game's last wish from while
-    /// it ran is done now, so the clock is as the run stands.
-    pub(crate) fn game_clock_after_playtest(&mut self) {
+    /// A playtest gives the clock back: as it was before the playtest took it, and then as the
+    /// hosted game last wished while the playtest had it (a run that began, or ended, in it),
+    /// so the clock is as the run stands.
+    pub(crate) fn playtest_clock_back(&mut self, was_paused: bool) {
+        if !was_paused {
+            self.clock.set_paused(false);
+            self.last_advance = Instant::now();
+        }
         if let Some(paused) = self.game_clock_held.take() {
             self.set_game_clock(paused);
         }
@@ -3418,25 +3423,37 @@ impl Engine {
                     TimeOp::Resume => self.clock.set_paused(false),
                     TimeOp::Step(n) => {
                         self.clock.set_paused(true);
+                        // (Ticks an earlier step queued and that have not run yet are due too.)
+                        let due = self.clock.queued().saturating_add(n);
                         self.clock.step(n);
                         // Holds of agents gone since the last frame end before these ticks fire them.
                         self.lex_live_end_holds(server);
                         // Run them now, so the reply shows the result.
                         let before = self.clock.tick();
                         self.advance_clock();
-                        stepped = Some((n, before));
+                        stepped = Some((due, before));
                     }
                     TimeOp::Scale(x) => self.clock.set_scale(x),
                     TimeOp::Info => {}
                 }
                 let mut answer = self.clock_json();
-                // A step says how many of its ticks ran: the hosted game may stop the clock on
-                // one of them (its run ended, it paused), and the ticks left are then not run.
-                if let Some((asked, before)) = stepped {
+                // A step says what became of its ticks, each one counted once: how many ran in
+                // this call, how many are still queued (a call runs a bounded number, and the
+                // frames after it run the rest), and how many were dropped because the hosted
+                // game stopped the clock on one of them (its run ended, it paused). Review R2
+                // of M6 part 3: every tick that had not run yet was said to be dropped, and a
+                // step of 1,000 answered "488 not run" for ticks that ran a moment later.
+                if let Some((due, before)) = stepped {
                     let ran = self.clock.tick() - before;
+                    let queued = self.clock.queued();
+                    let dropped = due.saturating_sub(ran).saturating_sub(queued);
                     answer.set("ran", Json::from(ran));
-                    if ran < asked {
-                        answer.set("not_run", Json::from(asked - ran));
+                    if queued > 0 {
+                        answer.set("queued", Json::from(queued));
+                        answer.set("queued_note", Json::from("still to run: one call runs a bounded number of ticks and the frames after it run the rest (time_control info shows the tick); do not step them again"));
+                    }
+                    if dropped > 0 {
+                        answer.set("not_run", Json::from(dropped));
                         answer.set("why", Json::from("the clock was stopped on the last tick that ran (set_by says by whom): the ticks left were dropped, not queued"));
                     }
                 }

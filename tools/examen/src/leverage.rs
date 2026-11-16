@@ -990,6 +990,17 @@ pub struct RunArgs {
 /// `run RUN [--judge]`: starts the run's builder (or its judge) as a process of its own in the
 /// run's folder, stops it at its time limit, and records what it used.
 pub fn run_cmd(a: &RunArgs) -> R<i32> {
+    // An interrupt (Ctrl+C, the console closing) ends the run as its time limit does: the
+    // agent's whole process tree and the run's engine are stopped, and what it used so far is
+    // recorded, with `ended: stopped`. (The script this was stopped both on any way out;
+    // review R2 of M6 part 3: the port left the engine serving when it was interrupted.)
+    let _ = specula_sys::interrupt::install();
+    let out = run_agent(a);
+    specula_sys::interrupt::finished();
+    out
+}
+
+fn run_agent(a: &RunArgs) -> R<i32> {
     let s = settings()?;
     let r = read_run(&a.run)?;
     let run = absolute(&a.run);
@@ -1046,6 +1057,11 @@ pub fn run_cmd(a: &RunArgs) -> R<i32> {
                 Ok(Some(status)) => break status.code(),
                 Ok(None) if began.elapsed() >= Duration::from_secs(wall.max(0) as u64) => {
                     ended = "wall";
+                    stop_tree(&mut child);
+                    break child.try_wait().ok().flatten().and_then(|s| s.code());
+                }
+                Ok(None) if specula_sys::interrupt::requested() => {
+                    ended = "stopped";
                     stop_tree(&mut child);
                     break child.try_wait().ok().flatten().and_then(|s| s.code());
                 }

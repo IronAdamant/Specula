@@ -298,8 +298,9 @@ fn get_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<ToolOut
     if let Some(old) = &note.supersedes {
         j.push(("supersedes", Json::from(old.as_str())));
     }
-    if let Some(by) = memory.notes.all().iter().find(|n| n.supersedes.as_deref() == Some(note.id.as_str())) {
-        j.push(("superseded_by", Json::from(by.id.as_str())));
+    // (As the notes are read: a line that would close a ring is not followed.)
+    if let Some(by) = memory.notes.superseded_by(&note.id) {
+        j.push(("superseded_by", Json::from(by)));
     }
     j.push(("text", Json::from(note.body.as_str())));
     Ok(ToolOutput::text(Json::obj(j).to_string()))
@@ -350,6 +351,12 @@ fn list_tool(tools: &Tools, session: &SessionInfo, args: &Json) -> Result<ToolOu
     j.push(("superseded", Json::from(memory.notes.all().len() - current)));
     if let Some(bad) = memory.bad_json() {
         j.push(("not_notes", bad));
+    }
+    // What the files say that the notes are not read as (a ring, a second brief): only an
+    // undo, an edit on disk or a draft can leave one, and nothing is hidden by it.
+    let problems = memory.notes.problems();
+    if !problems.is_empty() {
+        j.push(("problems", Json::arr(problems.iter().take(MAX_BAD).map(|p| Json::from(p.as_str())))));
     }
     if memory.versions.is_empty() {
         j.push(("hint", Json::from("the project remembers nothing yet: memory_note {kind: \"brief\", title, text} says what the game is, and a \"how\" note how it is built and checked; both are given to every agent at its agent_hello")));
@@ -439,13 +446,16 @@ pub fn brief(tools: &Tools, session: &SessionInfo) -> Option<Json> {
     let mut used = 0;
     let mut whole = |note: &Note, most: usize| {
         let mut j = head(note);
-        // Who wrote it last, from the store (the file's `modified_by`: `disk` for an edit made
-        // outside the engine).
-        if let Ok(snap) = crate::project_tools::snapshot(tools, session, &note.path(), None, false) {
-            if let Some(file) = &snap.current {
+        // The version the text was read at, and who wrote that version (the file's
+        // `modified_by`: `disk` for an edit made outside the engine). The writer is read a
+        // moment after the text: when the note was written again in between, it is not said
+        // (never one writer's name over another's text).
+        let version = memory.versions.get(&note.id).copied();
+        if let (Some(version), Ok(snap)) = (version, crate::project_tools::snapshot(tools, session, &note.path(), None, false)) {
+            if let Some(file) = snap.current.as_ref().filter(|f| f.version == version) {
                 j.push(("by", Json::from(&*file.modified_by)));
-                j.push(("version", Json::from(file.version)));
             }
+            j.push(("version", Json::from(version)));
         }
         let text = memoria::cut(&note.body, most);
         used += note.title.chars().count() + text.chars().count();
@@ -529,7 +539,9 @@ pub fn definitions() -> Vec<ToolDef> {
             name: "memory_list".into(),
             description: "The project's current notes {id, kind, title, about}, paged: all of them, or those of one 'kind', those \
                           holding every one of 'words' (a plain match on title, text and id; title matches first), those 'about' a \
-                          path. Superseded notes are counted, not listed; files in notes/ that are not notes are named with why."
+                          path. Superseded notes are counted, not listed; files in notes/ that are not notes are named with why; \
+                          `problems` says what the files hold that is not followed (two notes that replace each other, a \
+                          second brief: an undo or an edit on disk can leave one, and no note is hidden by it)."
                 .into(),
             input_schema: schema(
                 vec![

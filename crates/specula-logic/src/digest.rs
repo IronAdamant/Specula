@@ -112,9 +112,92 @@ pub fn module_snapshot(dir: &Path) -> Result<(Digest, Stamps), (&'static str, St
     Ok((Digest { hex: specula_sys::digest::hex(&d), files: list.len(), bytes: buf.len() as u64 }, stamps))
 }
 
+/// What configures every build in the project `root`, besides a module's own folder: the root's
+/// `Cargo.toml`, a toolchain file there, and everything under its `.cargo/` (a wrapper, a
+/// linker or a runner named there is a program the build runs).
+const ROOT_FILES: [&str; 3] = ["Cargo.toml", "rust-toolchain", "rust-toolchain.toml"];
+
+/// The digest of the build configuration at the project's root ([`ROOT_FILES`] and `.cargo/`):
+/// what the start-up build holds a project to beside each module's own digest
+/// (`specula::approved`). A module's folder digest does not cover it, and `vet` leaves the
+/// root's own configuration to the project. A file that is not there counts as not there (the
+/// digest of a root with none of them is a digest too); a link, or more than the bounds of a
+/// module folder, is refused.
+pub fn root_config_digest(root: &Path) -> Result<Digest, (&'static str, String)> {
+    let mut list: Vec<(String, PathBuf)> = Vec::new();
+    for name in ROOT_FILES {
+        let path = root.join(name);
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() || is_reparse(&meta) => return Err(("link", format!("{} is a link: what it points at could change unseen", path.display()))),
+            Ok(meta) if meta.is_file() => list.push((name.to_owned(), path)),
+            Ok(_) => return Err(("unreadable", format!("{} is not a file", path.display()))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(("unreadable", format!("can't read {}: {e}", path.display()))),
+        }
+    }
+    let config = root.join(".cargo");
+    match std::fs::symlink_metadata(&config) {
+        Ok(meta) if meta.file_type().is_symlink() || is_reparse(&meta) => return Err(("link", format!("{} is a link: what it points at could change unseen", config.display()))),
+        Ok(meta) if meta.is_dir() => list.extend(files(&config)?.into_iter().map(|(rel, path)| (format!(".cargo/{rel}"), path))),
+        // (A file named `.cargo` configures nothing; it is told apart from no `.cargo` at all.)
+        Ok(_) => list.push((".cargo".to_owned(), config)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(("unreadable", format!("can't read {}: {e}", config.display()))),
+    }
+    list.sort();
+    let mut buf = Vec::new();
+    for (rel, path) in &list {
+        let bytes = std::fs::read(path).map_err(|e| ("unreadable", format!("can't read {}: {e}", path.display())))?;
+        if buf.len() as u64 + bytes.len() as u64 > MAX_BYTES {
+            return Err(("too_big", format!("the project's build configuration is more than {} MiB: too much to digest", MAX_BYTES >> 20)));
+        }
+        buf.extend_from_slice(rel.as_bytes());
+        buf.push(0);
+        buf.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&bytes);
+    }
+    let d = specula_sys::digest::sha256(&buf).map_err(|e| ("digest_unavailable", format!("no SHA-256 here ({e}): a build's configuration can't be pinned on this platform")))?;
+    Ok(Digest { hex: specula_sys::digest::hex(&d), files: list.len(), bytes: buf.len() as u64 })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The root's build configuration has a digest of its own: a wrapper named in `.cargo/`,
+    /// a toolchain file or a changed workspace manifest changes it, a module's sources do not.
+    #[test]
+    fn the_roots_build_configuration_has_its_own_digest() {
+        if !cfg!(windows) {
+            // Skipped: the OS SHA-256 is Windows-only so far.
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("specula-digest-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("modules").join("m").join("src")).unwrap();
+        let bare = root_config_digest(&root).unwrap();
+        assert_eq!(bare.files, 0);
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = [\"modules/m\"]\n").unwrap();
+        let with_manifest = root_config_digest(&root).unwrap();
+        assert_ne!(with_manifest.hex, bare.hex);
+        // A module's own sources are not the root's configuration.
+        std::fs::write(root.join("modules").join("m").join("src").join("lib.rs"), "pub fn f() {}\n").unwrap();
+        assert_eq!(root_config_digest(&root).unwrap().hex, with_manifest.hex);
+        // A wrapper in `.cargo/` (any file there), and a toolchain file, each change it.
+        std::fs::create_dir_all(root.join(".cargo")).unwrap();
+        std::fs::write(root.join(".cargo").join("config.toml"), "[build]\nrustc-wrapper = \"wrap\"\n").unwrap();
+        let with_config = root_config_digest(&root).unwrap();
+        assert_ne!(with_config.hex, with_manifest.hex);
+        assert_eq!(with_config.files, 2);
+        std::fs::write(root.join("rust-toolchain.toml"), "[toolchain]\npath = \"evil\"\n").unwrap();
+        let with_toolchain = root_config_digest(&root).unwrap();
+        assert_ne!(with_toolchain.hex, with_config.hex);
+        // Taken away again, the digest is what it was.
+        std::fs::remove_file(root.join("rust-toolchain.toml")).unwrap();
+        std::fs::remove_dir_all(root.join(".cargo")).unwrap();
+        assert_eq!(root_config_digest(&root).unwrap().hex, with_manifest.hex);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     fn tmp(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("specula-digest-{tag}-{}", std::process::id()));

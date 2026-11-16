@@ -744,6 +744,11 @@ impl Clock {
         self.steps = self.steps.saturating_add(n);
     }
 
+    /// Ticks queued by [`Clock::step`] that have not run yet (an advance runs a bounded number).
+    pub fn queued(&self) -> u64 {
+        self.steps
+    }
+
     /// Drops ticks queued by [`Clock::step`] that haven't run yet (a playtest takes the clock
     /// over: an earlier `time_control step` must not run on into it).
     pub fn cancel_steps(&mut self) {
@@ -840,6 +845,27 @@ mod pad_gate_tests {
 
 #[cfg(test)]
 mod tests {
+    /// A step's ticks are run a bounded number a call, and the rest stay queued: they are not
+    /// lost, and `time_control` says them as queued (review R2 of M6 part 3: said as dropped).
+    #[test]
+    fn stepped_ticks_past_one_advance_stay_queued() {
+        let mut clock = super::Clock::new(60);
+        clock.set_paused(true);
+        clock.step(1000);
+        let first = clock.advance(std::time::Duration::ZERO);
+        assert!(first > 0 && first < 1000, "{first}");
+        assert_eq!(clock.queued(), 1000 - first);
+        let mut ran = first;
+        while clock.queued() > 0 {
+            ran += clock.advance(std::time::Duration::ZERO);
+        }
+        assert_eq!(ran, 1000);
+        // Cancelled, nothing is left to run.
+        clock.step(5);
+        clock.cancel_steps();
+        assert_eq!((clock.queued(), clock.advance(std::time::Duration::ZERO)), (0, 0));
+    }
+
     use super::*;
 
     #[test]

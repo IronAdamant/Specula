@@ -256,16 +256,24 @@ The project list, the files that say which engines are running, and the two requ
   The monitor sees what goes through the engine, not what a module's own code does. Only build and load modules
   whose source you trust (docs/design/MODULES.md).
 - **`--run` loads at start what an owner or a granted lead last built, and only that** (2026-11-16,
-  [MODULES.md](MODULES.md)). The record of what was built is the operator's: the digest of each module's folder,
-  kept in the per-user settings folder, which no tool writes for an agent. A module whose sources changed since
-  (by an agent's `project_write`, an undo, an editor, a pull) is not loaded at start, and the game says so.
+  [MODULES.md](MODULES.md)). The record of what was built is the operator's: the digest of each module's folder
+  and of the project root's build configuration (`Cargo.toml`, a toolchain file, `.cargo/`), kept in the
+  per-user settings folder, which no tool writes for an agent. A module whose sources changed since (by an
+  agent's `project_write`, an undo, an editor, a pull), a project whose build configuration changed, and a
+  module that compiles a crate from outside its own folder are not loaded at start, and the game says so.
   `--run-as-is` loads whatever is on disk and is for the operator's own code: with it, anything an agent wrote
-  into a module's folder runs at the next start, unreviewed. The start-up build runs as `operator:run`, an
-  identity no connection can have.
+  into a module's folder runs at that start, unreviewed (and at no later `--run`: it approves nothing). The
+  start-up build runs as `operator:run`, an identity no connection can have.
+  - **Not covered, said plainly:** Cargo configuration above the project's folder (a `.cargo/` in a parent
+    folder, the user's own Cargo home) is the machine's and is read by every build on it; a module that was
+    loaded is native code with the user's rights (above) and could write the record itself; and an agent
+    with a shell has the user's rights already.
 - **A project's notes reach every agent's first call** (`project_memory` at `agent_hello`). They are text that
   anyone who worked on the project wrote, or that came with a project someone sent. The engine says whose words
-  they are, gives each note in a field of its own with who wrote it last, and joins none of it to its own words;
-  what an agent does with a note that claims to be an instruction is the agent's to get right.
+  they are, gives each note in a field of its own with who wrote it last, and joins none of it to its own words.
+  No agent may take a name that reads as the engine's or its operator's (`operator`, `engine`, `specula`,
+  `system`, `admin`), so a note cannot be signed as either. What an agent does with a note that claims to be an
+  instruction is the agent's to get right.
 - **Names until M6.** Grants bind a name to the first identity that takes it. Until per-agent auth tokens exist, an
   agent that learns a granted lead's resume token *is* that lead, and an agent that says hello under a granted
   name before its holder connects *is* that lead too. A frozen session can't do it (its hello changes nothing), but

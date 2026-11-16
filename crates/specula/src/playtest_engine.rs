@@ -752,13 +752,7 @@ impl Host for EngineHost<'_> {
     }
 
     fn release_clock(&mut self, was_paused: bool) {
-        if !was_paused {
-            self.e.clock.set_paused(false);
-            self.e.last_advance = Instant::now();
-        }
-        // The hosted game's own wish for the clock from while the playtest had it (a run that
-        // began, or ended, in it): done now, so the clock is as the run stands.
-        self.e.game_clock_after_playtest();
+        self.e.playtest_clock_back(was_paused);
     }
 
     fn run_ticks(&mut self, n: u64) -> u64 {

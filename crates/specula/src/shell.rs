@@ -28,7 +28,7 @@ use specula_core::Json;
 use specula_input::{ActionMap, Input};
 use specula_lingua::{Catalog, Table};
 use specula_ludus::game::Ended;
-use specula_ludus::{Action, Effect, GameFile, Phase, Run, Settings, Val};
+use specula_ludus::{Action, Effect, GameFile, Kept, Phase, Run, Settings, Val};
 use specula_platform::{GamepadState, MAX_GAMEPADS};
 use specula_sdk::Value;
 use specula_ui::gpu::GpuOverlay;
@@ -133,6 +133,49 @@ impl ShellFiles {
         files.with_defaults()
     }
 
+    /// The shell's files from the texts a project's store holds under its assets (`ui/hud.json`,
+    /// `strings/en.json`), with `game` as the game file: what a changed screen, theme or table
+    /// is taken from while the engine runs. The same files as [`ShellFiles::read`] takes from
+    /// the disk, by the same rule: each folder's files by name, the first [`MAX_SCREENS`] and
+    /// [`MAX_TABLES`] of them, and it is said when there are more (review R2 of M6 part 3: the
+    /// first so many texts of both folders together were taken, in the store's order, and
+    /// past that the screens fell away with nothing said).
+    pub fn of_texts(game: String, texts: &[(String, Arc<str>)]) -> ShellFiles {
+        let mut files = ShellFiles { game, ..ShellFiles::default() };
+        // (A file's name without its ending, and its text.)
+        type Found<'t> = Vec<(&'t str, &'t Arc<str>)>;
+        let (mut screens, mut tables): (Found, Found) = (Vec::new(), Vec::new());
+        for (rel, text) in texts {
+            match rel.strip_suffix(".json").and_then(|path| path.split_once('/')) {
+                Some(("ui", "theme")) if text.len() as u64 <= MAX_FILE => files.theme = text.to_string(),
+                Some(("ui", "theme")) => files.problems.push(format!("assets/{rel} is {} bytes: at most {MAX_FILE} are read", text.len())),
+                Some(("ui", stem)) if !stem.contains('/') => screens.push((stem, text)),
+                Some(("strings", stem)) if !stem.contains('/') => tables.push((stem, text)),
+                _ => {}
+            }
+        }
+        let mut folder = |name: &str, most: usize, mut found: Found| -> Vec<(String, String)> {
+            found.sort_by_key(|(stem, _)| *stem);
+            if found.len() > most {
+                files.problems.push(format!("assets/{name} holds {} files: the first {most} are read", found.len()));
+                found.truncate(most);
+            }
+            let mut out = Vec::new();
+            for (stem, text) in found {
+                if text.len() as u64 > MAX_FILE {
+                    files.problems.push(format!("assets/{name}/{stem}.json is {} bytes: at most {MAX_FILE} are read", text.len()));
+                } else {
+                    out.push((stem.to_owned(), text.to_string()));
+                }
+            }
+            out
+        };
+        let (screens, tables) = (folder("ui", MAX_SCREENS, screens), folder("strings", MAX_TABLES, tables));
+        files.screens = screens;
+        files.tables = tables;
+        files.with_defaults()
+    }
+
     /// These files with the built-in ones for what a project lacks: the theme, the default
     /// screens (by name), and the English words when it has no table at all.
     pub fn with_defaults(mut self) -> ShellFiles {
@@ -198,6 +241,52 @@ impl Shown {
                     .collect(),
             )),
             other => scalar(other),
+        }
+    }
+
+    /// Whether `value`, shown, would be this: what [`Shown::of`] makes of it, without making
+    /// it. What the modules keep is looked at on every tick and before every frame, and nearly
+    /// all of it is as it was: an unchanged text, message or table costs a comparison here and
+    /// no copy (review R1 of M6 part 3, and R2: every text and map was still copied each time).
+    fn is(&self, value: &Value) -> bool {
+        fn shows(v: &Value) -> bool {
+            match v {
+                Value::Bool(_) | Value::Int(_) => true,
+                Value::Num(n) => n.is_finite(),
+                Value::Str(s) => s.chars().count() <= MAX_SHOWN_TEXT,
+                _ => false,
+            }
+        }
+        fn scalar(shown: &Shown, v: &Value) -> bool {
+            match (shown, v) {
+                (Shown::Bool(a), Value::Bool(b)) => a == b,
+                (Shown::Int(a), Value::Int(b)) => a == b,
+                (Shown::Num(a), Value::Num(b)) => b.is_finite() && a == b,
+                // (Equal to a text that is shown: so no longer than one.)
+                (Shown::Text(a), Value::Str(b)) => a == b,
+                _ => false,
+            }
+        }
+        fn fields(have: &[(String, Shown)], map: &BTreeMap<String, Value>) -> bool {
+            let mut want = map.iter().take(32).filter(|(_, v)| shows(v));
+            have.iter().all(|(key, shown)| want.next().is_some_and(|(k, v)| k == key && scalar(shown, v))) && want.next().is_none()
+        }
+        match (self, value) {
+            (Shown::Msg(key, args), Value::Map(map)) => {
+                matches!(map.get("msg"), Some(Value::Str(k)) if k.len() <= 128 && k == key)
+                    && match map.get("args") {
+                        Some(Value::Map(found)) => fields(args, found),
+                        _ => args.is_empty(),
+                    }
+            }
+            (Shown::Rows(rows), Value::List(list)) => {
+                let mut want = list.iter().take(MAX_ROWS).filter_map(|row| match row {
+                    Value::Map(map) => Some(map),
+                    _ => None,
+                });
+                rows.iter().all(|row| want.next().is_some_and(|map| fields(row, map))) && want.next().is_none()
+            }
+            (shown, v) => scalar(shown, v),
         }
     }
 
@@ -280,11 +369,13 @@ pub struct Shell {
     settings: Settings,
     store: SettingsStore,
     settings_dirty: bool,
-    /// What the player's own settings file holds: the player's choices alone. An agent's change
-    /// is the session's (`settings`) and never reaches it, whoever changes a setting next
-    /// (review R1 of M6 part 3: the whole of `settings` was written at the player's next
-    /// change, the agent's values with it).
-    kept: Settings,
+    /// What the player's own settings file holds: the choices the player made, and nothing
+    /// else (`specula_ludus::Kept`). An agent's change is the session's (`settings`) and never
+    /// reaches it; nor does a default: a game file an agent rewrote changes what the session
+    /// uses, and the player's choices stay as the player made them (reviews R1 and R2 of M6
+    /// part 3: first the whole of `settings` was written at the player's next change, then a
+    /// choice the changed game file no longer took was written back as its new default).
+    kept: Kept,
     /// The state the screens bind to must be filled again, and the screens shown again: set
     /// by whatever changes what a screen may show.
     stale: bool,
@@ -361,7 +452,7 @@ impl Shell {
             name: name.to_owned(),
             run: Run::new(&game),
             settings: Settings::new(&game.settings, std::slice::from_ref(&game.locale)),
-            kept: Settings::new(&game.settings, std::slice::from_ref(&game.locale)),
+            kept: Kept::default(),
             game,
             problems: Vec::new(),
             store: SettingsStore::default(),
@@ -432,21 +523,24 @@ impl Shell {
         if locales.is_empty() {
             locales.push(own);
         }
-        // The settings again from the game file's declarations and these languages, each layer
-        // keeping what it held (the session's values, and the player's own).
+        // The settings again from the game file's declarations and these languages: the
+        // player's own choices where they fit what the game takes now, then what the session
+        // held where that still fits (an agent's change this session, or the same choices).
+        // The player's choices themselves are not touched: one that does not fit now is not
+        // used, and is still theirs.
         let language = self.language_setting();
-        let again = |old: &Settings| {
-            let (chosen, text) = (old.locale().to_owned(), old.to_text());
-            let mut new = Settings::new(&self.game.settings, &locales);
-            new.read_text(&text);
-            if new.locale() != chosen && locales.contains(&chosen) {
-                let _ = new.set_text(&language, &chosen);
+        let chosen = self.settings.locale().to_owned();
+        let mut settings = Settings::new(&self.game.settings, &locales);
+        settings.read_text(&self.kept.to_text());
+        for def in self.settings.defs() {
+            if let Some(value) = self.settings.get(&def.name) {
+                let _ = settings.set(&def.name, value.clone());
             }
-            new
-        };
-        let (settings, kept) = (again(&self.settings), again(&self.kept));
+        }
+        if settings.locale() != chosen && locales.contains(&chosen) {
+            let _ = settings.set_text(&language, &chosen);
+        }
         self.settings = settings;
-        self.kept = kept;
         self.tables = tables;
         self.strings = strings;
     }
@@ -636,7 +730,7 @@ impl Shell {
                     // settings folder (scripts, tests).
                     if player || self.store.agents_save {
                         if let Some(value) = self.settings.get(&name).cloned() {
-                            let _ = self.kept.set(&name, value);
+                            self.kept.set(&name, &value);
                         }
                         self.settings_dirty = true;
                     }
@@ -695,8 +789,13 @@ impl Shell {
                 if n >= MAX_SHOWN {
                     break 'all;
                 }
-                let Some(shown) = Shown::of(value) else { continue };
                 let same_key = self.shown.get(n).is_some_and(|(k, _)| k.len() == module.len() + 1 + key.len() && k.starts_with(module) && k.as_bytes()[module.len()] == b'.' && k.ends_with(key.as_str()));
+                // As it was: no copy is made of it.
+                if same_key && self.shown[n].1.is(value) {
+                    n += 1;
+                    continue;
+                }
+                let Some(shown) = Shown::of(value) else { continue };
                 if same_key {
                     if self.shown[n].1 != shown {
                         self.shown[n].1 = shown;
@@ -1110,7 +1209,7 @@ impl Game for Shell {
                 note(&mut self.problems, format!("the saved settings: {problem}"));
             }
             // (The player's own file: the layer that is written back holds it too.)
-            self.kept.read_text(text);
+            self.kept = Kept::read_text(text);
         }
         self.apply_language();
         self.apply_volume();
@@ -1162,21 +1261,8 @@ impl Game for Shell {
     fn asset_texts(&mut self, _ctx: &mut Ctx, texts: &[(String, Arc<str>)]) {
         // The screens, the theme and the words as the project store holds them now: nothing is
         // read from the disk here (the engine thread).
-        let mut files = ShellFiles { game: std::mem::take(&mut self.files.game), ..ShellFiles::default() };
-        for (rel, text) in texts {
-            let Some(path) = rel.strip_suffix(".json") else { continue };
-            if text.len() as u64 > MAX_FILE {
-                files.problems.push(format!("assets/{rel} is {} bytes: at most {MAX_FILE} are taken", text.len()));
-                continue;
-            }
-            match path.split_once('/') {
-                Some(("ui", "theme")) => files.theme = text.to_string(),
-                Some(("ui", stem)) if !stem.contains('/') && files.screens.len() < MAX_SCREENS => files.screens.push((stem.to_owned(), text.to_string())),
-                Some(("strings", stem)) if !stem.contains('/') && files.tables.len() < MAX_TABLES => files.tables.push((stem.to_owned(), text.to_string())),
-                _ => {}
-            }
-        }
-        self.use_files(files.with_defaults());
+        let game = std::mem::take(&mut self.files.game);
+        self.use_files(ShellFiles::of_texts(game, texts));
     }
 
     fn game_file_changed(&mut self, _ctx: &mut Ctx, text: &str) {
@@ -1336,7 +1422,7 @@ mod tests {
         // The agent's own change (the difficulty, set to hard above) is not in the player's file,
         // though the player changed another setting after it: the file holds the player's
         // choices alone (review R1 of M6 part 3).
-        assert!(text.contains("\"difficulty\": \"easy\""), "{text}");
+        assert!(!text.contains("difficulty"), "{text}");
         assert_eq!(shell.settings.get("difficulty"), Some(&Val::Text("hard".into())), "the session still has the agent's");
         assert_eq!(shell.take_settings(), None);
         // A new shell given that file has the values back.
@@ -1349,6 +1435,73 @@ mod tests {
         assert_eq!(off.take_settings(), None);
     }
 
+    /// A changed screen or table is taken from the store's texts by the rule the disk is read
+    /// by: each folder's files by name, and it is said when there are more than are taken
+    /// (review R2 of M6 part 3: past 128 files of both folders together, in the store's order,
+    /// the screens and the source table fell away with nothing said).
+    #[test]
+    fn the_stores_texts_are_taken_by_name_and_what_is_left_out_is_said() {
+        let text = |s: &str| -> Arc<str> { Arc::from(s) };
+        // More tables than are taken, named so that the source table sorts after the others in
+        // the store's order (`en-XX` before `en`), then the screens: the order the store has.
+        let mut texts: Vec<(String, Arc<str>)> = (0..MAX_TABLES + 8).map(|i| (format!("strings/en-{i:03}.json"), text("{}"))).collect();
+        texts.push(("strings/en.json".into(), text(builtin("assets/strings/en.json"))));
+        texts.push(("ui/hud.json".into(), text("{\"marker\": \"PROBE\"}")));
+        texts.push(("ui/theme.json".into(), text("{\"theme\": \"mine\"}")));
+        texts.push(("ui/deep/inner.json".into(), text("{}")));
+        texts.sort();
+        let files = ShellFiles::of_texts("GAME".into(), &texts);
+        assert_eq!(files.game, "GAME");
+        // The changed screen is there however many tables there are, with the theme.
+        assert!(files.screens.iter().any(|(stem, text)| stem == "hud" && text.contains("PROBE")), "the project's screen is taken");
+        assert!(files.theme.contains("mine"));
+        assert!(!files.screens.iter().any(|(stem, _)| stem.contains("inner")), "a file in a folder below is not a screen");
+        // The tables: the first by name, as the disk is read, and it is said.
+        assert_eq!(files.tables.len(), MAX_TABLES);
+        assert!(files.tables.iter().any(|(stem, _)| stem == "en"), "the source table is the first by name");
+        assert!(files.problems.iter().any(|p| p.contains(&format!("assets/strings holds {} files: the first {MAX_TABLES} are read", MAX_TABLES + 9))), "{:?}", files.problems);
+        // What a project lacks is the built-in one.
+        let bare = ShellFiles::of_texts(String::new(), &[]);
+        assert!(bare.screens.iter().any(|(stem, _)| stem == "title") && !bare.tables.is_empty() && !bare.theme.is_empty() && bare.problems.is_empty());
+    }
+
+    /// The player's file holds the player's choices however the game file changes (review R2
+    /// of M6 part 3: an agent rewrote the game file so that the player's choice no longer fit;
+    /// the layer written back was rebuilt from the new file, and the player's next change of
+    /// anything wrote the agent's new default as the player's own).
+    #[test]
+    fn a_changed_game_file_never_rewrites_the_players_choices() {
+        let mut shell = shell();
+        let store = SettingsStore { kind: "per_user", agents_save: false, problem: None };
+        shell.use_settings(None, &store);
+        shell.press("cycle:difficulty", true).unwrap();
+        let text = shell.take_settings().expect("the settings file");
+        assert!(text.contains("\"difficulty\": \"hard\"") && !text.contains("volume"), "only what the player chose: {text}");
+        // An agent's game file: the difficulty takes other values now, with a default of its own.
+        let changed = GAME.replace(r#""options": ["easy", "hard"]"#, r#""options": ["easy", "brutal"], "default": "brutal""#);
+        assert_ne!(changed, GAME);
+        shell.reload_game(&changed);
+        assert_eq!(shell.settings.get("difficulty"), Some(&Val::Text("brutal".into())), "the session uses what the game takes now");
+        // The player changes something else: their file still says what they chose.
+        shell.press("step:volume:-1", true).unwrap();
+        let text = shell.take_settings().expect("the settings file");
+        assert!(text.contains("\"difficulty\": \"hard\"") && text.contains("\"volume\": 7"), "{text}");
+        // The game file as it was: the player's choice is used again, with no one setting it.
+        shell.reload_game(GAME);
+        assert_eq!(shell.settings.get("difficulty"), Some(&Val::Text("hard".into())));
+        assert_eq!(shell.settings.get("volume"), Some(&Val::Num(7.0)));
+        // And a choice the player makes among the new values replaces the old one.
+        shell.reload_game(&changed);
+        shell.press("set:difficulty:easy", true).unwrap();
+        assert!(shell.take_settings().expect("the settings file").contains("\"difficulty\": \"easy\""));
+        // A started shell given a file whose choice does not fit uses the default and keeps the file's.
+        let mut again = super::tests::shell();
+        again.use_settings(Some("{\"format\": \"specula.settings.v1\", \"values\": {\"difficulty\": \"brutal\"}}"), &store);
+        assert_eq!(again.settings.get("difficulty"), Some(&Val::Text("easy".into())));
+        again.press("step:volume:-1", true).unwrap();
+        assert!(again.take_settings().expect("the settings file").contains("\"difficulty\": \"brutal\""));
+    }
+
     #[test]
     fn what_a_module_keeps_is_what_a_screen_is_given() {
         assert_eq!(Shown::of(&Value::Int(3)), Some(Shown::Int(3)));
@@ -1358,6 +1511,36 @@ mod tests {
         assert_eq!(Shown::of(&msg), Some(Shown::Msg("hud.wave".into(), vec![("of".into(), Shown::Int(5)), ("wave".into(), Shown::Int(2))])));
         let rows = Value::List(vec![Value::map().with("name", "ann").with("time", 12.5), Value::Int(1)]);
         assert_eq!(Shown::of(&rows), Some(Shown::Rows(vec![vec![("name".into(), Shown::Text("ann".into())), ("time".into(), Shown::Num(12.5))]])));
+        // The comparison made in place says what making the shown value and comparing would,
+        // for every pair of these (it is what keeps an unchanged value from being copied).
+        let values = [
+            Value::Bool(true),
+            Value::Bool(false),
+            Value::Int(3),
+            Value::Int(4),
+            Value::Num(3.0),
+            Value::Num(f64::NAN),
+            Value::Str("ann".into()),
+            Value::Str("bo".into()),
+            Value::Str("x".repeat(MAX_SHOWN_TEXT + 1)),
+            Value::Null,
+            msg.clone(),
+            Value::map().with("msg", "hud.wave"),
+            Value::map().with("msg", "hud.wave").with("args", Value::map().with("wave", 3i64).with("of", 5i64)),
+            Value::map().with("msg", "hud.wave").with("args", Value::map().with("wave", 2i64).with("of", 5i64).with("skip", Value::Null)),
+            Value::map().with("other", 1i64),
+            rows.clone(),
+            Value::List(vec![Value::map().with("name", "ann").with("time", 12.5)]),
+            Value::List(vec![Value::map().with("name", "ann").with("time", 13.5)]),
+            Value::List(vec![Value::map().with("name", "ann").with("time", 12.5), Value::map().with("name", "bo")]),
+            Value::List(Vec::new()),
+        ];
+        for a in &values {
+            let Some(shown) = Shown::of(a) else { continue };
+            for b in &values {
+                assert_eq!(shown.is(b), Shown::of(b).as_ref() == Some(&shown), "{a:?} shown, against {b:?}");
+            }
+        }
         // In the state a screen binds to, and as a condition reads it.
         let mut shell = shell();
         shell.shown = vec![("gate.hp".into(), Shown::Int(3)), ("gate.score".into(), Shown::Num(40.0)), ("gate.wave".into(), Shown::of(&msg).unwrap()), ("gate.order".into(), Shown::of(&rows).unwrap())];
@@ -1457,19 +1640,28 @@ mod tests {
         assert_eq!(text(&started).get("phase").and_then(Json::as_str), Some("running"));
         assert!(e.clock.paused(), "the playtest's clock is left as it holds it");
         e.playtest_pumping = false;
-        // The wish is kept, the last one, and done when the playtest gives the clock back: the
-        // run that began in it is under way, so its clock runs (review R1 of M6 part 3: thrown
-        // away, it left a run under way with a stopped clock that no word could start).
-        e.game_clock_after_playtest();
+        // The wish is kept, the last one, and done when the playtest gives the clock back (it
+        // took a stopped clock, at the title): the run that began in it is under way, so its
+        // clock runs (review R1 of M6 part 3: thrown away, it left a run under way with a
+        // stopped clock that no word could start).
+        e.playtest_clock_back(true);
         assert!(!e.clock.paused(), "the run began in the playtest: its clock runs after it");
-        // A run that ended in the playtest has its clock stopped after it.
+        // A run that ended in a playtest (which took a running clock) has its clock stopped
+        // after it: the game's wish, not the clock as the playtest found it.
+        e.clock.set_paused(true);
         e.playtest_pumping = true;
         e.game_act(&who, "title");
         e.playtest_pumping = false;
-        e.game_clock_after_playtest();
+        e.playtest_clock_back(false);
         assert!(e.clock.paused(), "given up in the playtest: the title holds the clock after it");
-        e.game_clock_after_playtest();
-        assert!(e.clock.paused(), "a wish is done once");
+        // A wish is done once: a playtest in which the game wished nothing gives the clock
+        // back as it found it.
+        e.playtest_clock_back(true);
+        assert!(e.clock.paused());
+        e.clock.set_paused(true);
+        e.playtest_clock_back(false);
+        assert!(!e.clock.paused(), "nothing was wished: the clock is as the playtest found it");
+        e.clock.set_paused(true);
         // With no game hosted the tools say so.
         e.game = None;
         assert_eq!(text(&e.game_act(&who, "start")).get("error").and_then(Json::as_str), Some("no_game"));

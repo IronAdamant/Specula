@@ -661,9 +661,11 @@ pub fn build(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json) ->
     build_expecting(to_engine, session, args, None)
 }
 
-/// [`build`], and with `expect` only when the module's folder has that digest (the start-up
-/// build: [`crate::run_modules`]).
-pub fn build_expecting(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json, expect: Option<&str>) -> ToolOutput {
+/// [`build`], and with `expect` only when the module's folder and the project root's build
+/// configuration have the digests an owner or a granted lead last built with, and the build
+/// compiles nothing from outside the module's folder but the engine's SDK (the start-up build:
+/// [`crate::run_modules`]).
+pub fn build_expecting(to_engine: &Sender<Request>, session: &SessionInfo, args: &Json, expect: Option<&crate::approved::Approved>) -> ToolOutput {
     let t0 = Instant::now();
     // (request, reload, detailed, seed, approve, the build went to the engine's short folder)
     type Parsed = (BuildRequest, bool, bool, Option<u64>, Option<u64>, bool);
@@ -706,11 +708,22 @@ pub fn build_expecting(to_engine: &Sender<Request>, session: &SessionInfo, args:
     let _held = specula_logic::build::hold(&req.dir);
     let before = specula_logic::digest::module_snapshot(&req.dir);
     let digest = before.as_ref().map(|(d, _)| d.clone()).map_err(Clone::clone);
-    // The start-up build (`--run`) builds only the sources an owner or lead last built: held to
-    // their digest here, with the folder already held, so nothing can be swapped in between.
+    // The start-up build (`--run`) builds only what an owner or lead last built: the module's
+    // sources are held to their digest here, with the folder already held, so nothing can be
+    // swapped in between; and the project root's build configuration (its manifest, a toolchain
+    // file, `.cargo/`: a wrapper named there is a program the build runs) is held to the
+    // digest it had then, before Cargo reads any of it.
     if let Some(want) = expect {
-        if digest.as_ref().map_or(true, |d| d.hex != want) {
-            return ToolOutput::error(WorldError::new("not_approved", "the module's sources are not the ones an owner or a granted lead last built: nothing was built").to_json().to_string());
+        if digest.as_ref().map_or(true, |d| d.hex != want.module) {
+            return ToolOutput::error(WorldError::new("not_approved", "the module's sources are not the ones an owner or a granted lead last built: nothing was built").with("what", "sources").to_json().to_string());
+        }
+        if specula_logic::digest::root_config_digest(&engine_root()).map_or(true, |d| d.hex != want.root) {
+            return ToolOutput::error(
+                WorldError::new("not_approved", "the project's build configuration (Cargo.toml, a toolchain file or .cargo/ at its root) is not the one an owner or a granted lead last built with: nothing was built")
+                    .with("what", "configuration")
+                    .to_json()
+                    .to_string(),
+            );
         }
     }
     let (gated, refused) = engine_call(to_engine, session, LogicCall::Gate(Doing::Build { dir: req.dir.clone(), digest: digest.clone(), approve }));
@@ -769,35 +782,62 @@ pub fn build_expecting(to_engine: &Sender<Request>, session: &SessionInfo, args:
         (Ok(before), false) if report.ok && reload => specula_logic::digest::module_snapshot(&req.dir).ok().filter(|now| now == before).is_none(),
         _ => false,
     };
-    // An approval pins the folder's digest: what it built may come from nowhere else (but the
-    // engine's SDK and core), or a helper crate could change after the review, unseen.
-    let unpinned = if approve.is_some() && report.ok && reload { specula_logic::build::unpinned(&report.compiled, &req.roots, &req.dir) } else { None };
+    // What the build compiled from outside the module's folder (but the engine's SDK and core).
+    // The folder's digest does not cover it: a helper crate there could change after a review,
+    // unseen. An approval refuses it, and so does the start-up build, which is held to that
+    // digest and no more (review R2 of M6 part 3: a builder wrote a helper crate's source, and
+    // `--run` built and loaded it under a record that named the module's folder alone).
+    let outside = if report.ok && reload { specula_logic::build::unpinned(&report.compiled, &req.roots, &req.dir) } else { None };
+    let unpinned = outside.filter(|_| approve.is_some() || expect.is_some());
+    // (The root's configuration again, after Cargo read it: the start-up build loads nothing
+    // that was built while it was being changed.)
+    let config_changed = expect.is_some_and(|want| report.ok && reload && specula_logic::digest::root_config_digest(&engine_root()).map_or(true, |d| d.hex != want.root));
     if changed {
         failed = true;
         out.set("reload_error", WorldError::new("sources_changed", "a file in the module folder was written while it was built: nothing was loaded; build again").to_json());
+    } else if config_changed {
+        failed = true;
+        out.set("reload_error", WorldError::new("not_approved", "the project's build configuration was changed while the module was built: nothing was loaded").with("what", "configuration").to_json());
     } else if let Some(c) = unpinned {
         failed = true;
-        out.set(
-            "reload_error",
-            WorldError::new(
-                "unpinned_sources",
-                format!("the approved build compiled crate '{}' ({}) from outside the module folder, which the proposal's digest doesn't cover: nothing was loaded. A proposed module keeps its helper crates inside its own folder; the owner or lead can build it without 'approve' after reviewing that crate too", c.name, c.manifest.display()),
+        let message = if expect.is_some() {
+            format!(
+                "it compiles crate '{}' ({}) from outside its own folder, which the record of what an owner or a granted lead built here does not cover: --run loads nothing of it. Keep a module's helper crates inside the module's folder, or start with --run-as-is",
+                c.name,
+                c.manifest.display()
             )
-            .with("crate", c.name.as_str())
-            .to_json(),
-        );
+        } else {
+            format!("the approved build compiled crate '{}' ({}) from outside the module folder, which the proposal's digest doesn't cover: nothing was loaded. A proposed module keeps its helper crates inside its own folder; the owner or lead can build it without 'approve' after reviewing that crate too", c.name, c.manifest.display())
+        };
+        out.set("reload_error", WorldError::new("unpinned_sources", message).with("crate", c.name.as_str()).to_json());
     } else if let (true, Some(library)) = (report.ok && reload, report.library.clone()) {
         let t = Instant::now();
         let (loaded, is_error) = load_library(to_engine, session, library, Some(req.dir.clone()), seed);
         reload_ms = t.elapsed().as_secs_f64() * 1000.0;
         failed |= is_error;
-        // Whoever passed the gate may load native code (the owner, a lead the operator granted,
-        // the operator's own start-up build): what loaded is what `--run` may load at the next
-        // start, by the digest of the folder as it was compiled (crate::approved; a fix build
-        // wrote its fixes first, and the folder is still held).
-        if !is_error {
-            if let Ok((now, _)) = specula_logic::digest::module_snapshot(&req.dir) {
-                crate::approved::record(&engine_root(), &req.dir, &now.hex);
+        // What an owner or a granted lead built and loaded is what `--run` may load at the next
+        // start: recorded by the digest of the folder as it was compiled (crate::approved; a
+        // fix build wrote its fixes first, and the folder is still held) and of the project
+        // root's build configuration. The operator's own start-up build records nothing: it
+        // loads what was approved (the same digests), or with `--run-as-is` what nobody
+        // reviewed, and one such start must not approve that for every start after it.
+        if !is_error && session.id != crate::run_modules::RUN_SESSION {
+            match outside {
+                // Not recorded, and said: the record covers the module's folder alone.
+                Some(c) => {
+                    out.set(
+                    "at_start",
+                    Json::from(format!(
+                        "--run will not load this module: it compiles crate '{}' from outside its own folder, which the record of this build cannot cover (keep helper crates inside the module's folder, or start with --run-as-is)",
+                        c.name
+                    )),
+                    );
+                }
+                None => {
+                    if let (Ok((now, _)), Ok(root)) = (specula_logic::digest::module_snapshot(&req.dir), specula_logic::digest::root_config_digest(&engine_root())) {
+                        crate::approved::record(&engine_root(), &req.dir, &now.hex, &root.hex);
+                    }
+                }
             }
         }
         out.set(if is_error { "reload_error" } else { "reload" }, loaded);

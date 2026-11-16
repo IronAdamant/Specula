@@ -72,22 +72,31 @@ boundary is **who may load a module**, and the checks below are lints behind it 
   build service and the same checks as an owner's `logic_build`, as the identity `operator:run` (a session id
   no connection can have, admitted only when the flag is given, its name reserved). Without the flag the
   project's screens show and no module is loaded until an owner or a granted lead builds one.
-  - **Only the sources an owner or a granted lead last built** (`crates/specula/src/approved.rs`; review R1
-    of M6 part 3, critical). A builder may write a module's sources and the game file through the project
-    tools, and may only propose a build. Were `--run` to build what is on disk, restarting the engine would be
-    the builder's way past the review. So every build that passed the gate and loaded leaves a record: the
-    digest of the module's folder. `--run` builds a module only while its folder still has that digest (the
-    build is held to it with the folder held, so nothing is swapped in between). Sources changed since, by
-    anyone and any way (an agent's `project_write`, an undo, an editor, a pull), are not loaded at start: the
-    trace (`run.module`) and `game_state`'s `problems` say so, the other modules still load, and an owner or
-    lead builds the changed one, which is the review.
+  - **Only what an owner or a granted lead last built** (`crates/specula/src/approved.rs`; reviews R1 and R2
+    of M6 part 3). A builder may write a module's sources and the game file through the project tools, and may
+    only propose a build. Were `--run` to build what is on disk, restarting the engine would be the builder's
+    way past the review. So every build an owner or lead asked for, and that loaded, leaves a record: the
+    digest of the module's folder, and the digest of the project root's build configuration (its `Cargo.toml`,
+    a toolchain file, everything under `.cargo/`: a wrapper named there is a program the build runs). `--run`
+    builds a module only while both still hold (the module is held to its digest with its folder held, so
+    nothing is swapped in between; the configuration is read again after the build). What changed since, by
+    anyone and any way (an agent's `project_write`, an undo, an editor, a pull), is not loaded at start: the
+    trace (`run.module`) and `game_state`'s `problems` say which and why, the other modules still load, and an
+    owner or lead builds the changed one, which is the review.
+  - **A module `--run` loads keeps its helper crates inside its own folder.** The record covers the module's
+    folder. A crate elsewhere that the module compiles (anything but the engine's SDK and core) could change
+    after the review with the module's digest unchanged: such a module is not recorded, the lead's build says
+    so (`at_start`), and `--run` loads nothing of it. It is the rule a proposed module already keeps
+    (`unpinned_sources`). Not built: a record that also pins such crates, for modules that share one.
   - **The record is the operator's, not the project's**: kept in the per-user settings folder (`--settings
     DIR`, by default the user's own), by the project's folder. No tool writes there for an agent, and a
     project someone sends carries none. With `--settings off` there is no record and `--run` loads nothing.
-    `specula new` records the module it writes (the engine's own text), so a new project plays at once.
+    `specula new` records the module it writes and the workspace it writes (the engine's own text), so a new
+    project plays at once.
   - **`--run-as-is`** (`specula play NAME --as-is`) is the operator saying that what is on disk now is theirs
     to run, whoever wrote it: for code they wrote by hand, or a project they have read. It is the only way a
-    module no owner has built here runs at start.
+    module no owner has built here runs at start, and it approves nothing: the next `--run` holds to the
+    record as before.
 - **A builder proposes.** Any other agent's `logic_build` builds nothing: the engine files a **proposal** (the module's
   folder, who, the tick, and the SHA-256 of every file in the folder, `specula_logic::digest`) and answers `lead_only`
   with it. `project_write {build}` by a builder proposes the same way. `logic_status` lists proposals (at most 32; one

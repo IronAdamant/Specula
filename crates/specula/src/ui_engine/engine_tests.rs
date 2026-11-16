@@ -154,6 +154,28 @@ fn call(e: &mut Engine, s: &SessionInfo, who: &'static str, tool: &str, args: &s
     (crate::playtest::answer_json(&out), out.is_error)
 }
 
+/// A `ui_act` whose steps are all to run: called again with what a call handed back (`rest`)
+/// until nothing is left. One call has a budget of engine-thread time
+/// ([`crate::ui_tools::BUDGET_MS`]) and stops before a step that would end past it; how many
+/// of several steps fit in one call is how fast the machine was, which no test may assert
+/// (AGENTS.md, "The gate"). What the design guarantees is that every call runs at least its
+/// first step, so this ends. Found when a two-step call, asserted whole, failed once beside
+/// three compilers (review R2 of M6 part 3) and passed in every other run.
+fn act_through(e: &mut Engine, s: &SessionInfo, who: &'static str, args: &str) -> (Json, bool) {
+    let mut args = Json::parse(args).unwrap();
+    let asked = args.get("steps").and_then(Json::as_array).map_or(0, <[Json]>::len);
+    for _ in 0..=asked {
+        let (answer, err) = call(e, s, who, "ui_act", &args.to_string());
+        match answer.get("rest").and_then(Json::as_array).filter(|rest| !rest.is_empty() && !err) {
+            Some(rest) => {
+                args.set("steps", Json::Arr(rest.to_vec()));
+            }
+            None => return (answer, err),
+        }
+    }
+    panic!("a ui_act of {asked} steps handed back a rest {} times: a call made no progress", asked + 1);
+}
+
 fn display_of(e: &mut Engine, s: &SessionInfo, who: &'static str) -> Json {
     let (t, err) = call(e, s, who, "ui_tree", r#"{"limit": 1, "fresh": true}"#);
     assert!(!err, "{t}");
@@ -310,7 +332,8 @@ fn engine_screens_block_the_game_and_are_the_owners() {
     let b = hello(&mut e, "boss01", "boss", ROLE_OWNER);
     let m = hello(&mut e, "malo01", "mallory", "builder");
     // The menu open with its focus on Bravo.
-    let (r, err) = call(&mut e, &m, "mallory", "ui_act", r#"{"steps": [{"press": "open"}, {"focus": "b"}]}"#);
+    // (Two steps, both to run: by as many calls as the budget makes of them.)
+    let (r, err) = act_through(&mut e, &m, "mallory", r#"{"steps": [{"press": "open"}, {"focus": "b"}]}"#);
     assert!(!err && r.get("focused").and_then(Json::as_str) == Some("b"), "{r}");
     e.review_ui.open(None, &e.swarm.review, crate::inputguard::seen_for_test());
     e.review_frame((1280, 800));

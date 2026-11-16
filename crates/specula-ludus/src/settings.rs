@@ -142,6 +142,59 @@ impl Setting {
     }
 }
 
+/// The player's own choices, as their settings file holds them: each name with the value the
+/// player gave it, whatever the game declares now.
+///
+/// It is kept apart from [`Settings`] (what the game uses this session) because the two differ
+/// in whose they are. A setting the player never touched is not in the file, so a default the
+/// game file's author changes is not written back as the player's choice. A choice the game
+/// no longer takes (its options changed, its language's table is gone) stays in the file as
+/// the player made it: it is not used while it does not fit, and it is the player's again
+/// when it does. Only the player's own change replaces it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Kept {
+    values: Vec<(String, Json)>,
+}
+
+impl Kept {
+    /// The choices in a settings file's text (none, when the text is not a settings file).
+    /// At most [`MAX_SETTINGS`] and [`MAX_EXTRA`] names together, each of at most 64 characters.
+    pub fn read_text(text: &str) -> Kept {
+        let mut kept = Kept::default();
+        let Ok(json) = Json::parse(text) else { return kept };
+        if json.get("format").and_then(Json::as_str) != Some(FORMAT) {
+            return kept;
+        }
+        for (name, found) in json.get("values").and_then(Json::as_object).unwrap_or_default() {
+            if kept.values.len() < MAX_SETTINGS + MAX_EXTRA && name.chars().count() <= 64 {
+                kept.values.push((name.clone(), found.clone()));
+            }
+        }
+        kept
+    }
+
+    /// The player gave `name` this value.
+    pub fn set(&mut self, name: &str, value: &Val) {
+        if let Some(at) = self.values.iter().position(|(k, _)| k == name) {
+            self.values[at].1 = value.to_json();
+        } else if self.values.len() < MAX_SETTINGS + MAX_EXTRA && name.chars().count() <= 64 {
+            self.values.push((name.to_owned(), value.to_json()));
+        }
+    }
+
+    /// What the player chose for `name`, as the file holds it.
+    pub fn get(&self, name: &str) -> Option<&Json> {
+        self.values.iter().find(|(k, _)| k == name).map(|(_, v)| v)
+    }
+
+    /// The choices as the settings file's text.
+    pub fn to_text(&self) -> String {
+        let mut text = Json::obj([("format", Json::Str(FORMAT.to_owned())), ("values", Json::Obj(self.values.clone()))]).to_pretty();
+        text.push('\n');
+        text
+    }
+}
+
 /// A game's settings and the values they have.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {

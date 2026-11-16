@@ -309,6 +309,35 @@ fn unload_keeps_state_unless_forgotten() {
     assert_eq!(r.host.unload("walker", true, &mut r.world, r.tick, 30, &mut no_journal()).unwrap_err().code, "no_module");
 }
 
+/// What a hosted game is lent of its modules' state is the running modules' alone (review R1
+/// of M6 part 3: a module unloaded and not forgotten left its last run's count behind, and a
+/// new run was won on it at once; review R2: no test held the fix).
+#[test]
+fn a_game_is_lent_only_running_modules_state() {
+    use crate::game::ModuleStates;
+    let mut r = Run::new();
+    r.load(ModuleCode::of::<WalkerV1>()).unwrap();
+    r.ticks(3);
+    {
+        let lent = ModuleStates::of(&r.host);
+        assert_eq!(lent.get("walker", "ticks"), Some(&Value::Int(3)));
+        assert_eq!(lent.dotted("walker.ticks"), Some(&Value::Int(3)));
+        assert_eq!(lent.each().map(|(name, _)| name).collect::<Vec<_>>(), ["walker"]);
+        assert_eq!(lent.running(), ["walker"]);
+    }
+    // Unloaded, its state kept for the next load: still in the host, and lent to nobody.
+    r.host.unload("walker", false, &mut r.world, r.tick, 30, &mut no_journal()).unwrap();
+    assert_eq!(r.state("walker", "ticks"), Value::Int(3), "the state is kept");
+    let lent = ModuleStates::of(&r.host);
+    assert_eq!(lent.get("walker", "ticks"), None);
+    assert_eq!(lent.dotted("walker.ticks"), None);
+    assert_eq!(lent.each().count(), 0);
+    assert!(lent.running().is_empty());
+    // Loaded again, it is lent again (the state it kept with it).
+    r.load(ModuleCode::of::<WalkerV1>()).unwrap();
+    assert_eq!(ModuleStates::of(&r.host).get("walker", "ticks"), Some(&Value::Int(3)));
+}
+
 /// Spawns, then fails on even ticks (the reviewer's probe for ids used by failed calls).
 #[derive(Default)]
 struct SpawnThenFail;

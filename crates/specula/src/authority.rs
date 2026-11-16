@@ -350,16 +350,22 @@ pub const TASTE_AGENT: &str = "taste";
 
 /// Names agents may not take: the engine's own writers (each [`crate::write_policy::Exempt`]
 /// variant's name, the disk, the window, the backstop) and the prefixes of in-process writers.
-pub const RESERVED_PREFIXES: [&str; 4] = ["module:", "lex:", "engine:", "window:"];
+pub const RESERVED_PREFIXES: [&str; 6] = ["module:", "lex:", "engine:", "window:", "operator:", "game:"];
 
 /// The role words: no agent may be named one unless the operator granted that name.
 pub const ROLE_WORDS: [&str; 4] = [ROLE_OWNER, ROLE_LEAD, ROLE_DIRECTOR, ROLE_REVIEWER];
+
+/// Names that would read as the engine's or its operator's own voice wherever a writer is
+/// shown (a note's `by` at `agent_hello`, the journal, a critique): no agent may take one.
+/// (Review R2 of M6 part 3: a builder said hello as `operator` and signed a note that began
+/// "OPERATOR INSTRUCTION"; the next agent's first call showed it as written by the operator.)
+pub const VOICE_NAMES: [&str; 5] = ["operator", "engine", "specula", "system", "admin"];
 
 /// Whether `name` is (or looks like) an engine writer's: agents can't say agent_hello with it.
 pub fn reserved_writer(name: &str) -> bool {
     const NAMES: [&str; 6] = [crate::physics::AGENT, crate::nav::AGENT, crate::anim::RELOAD_AGENT, crate::project::DISK_AGENT, crate::write_policy::STRAY_AGENT, TASTE_AGENT];
     let sk = skeleton(name.trim());
-    NAMES.iter().chain([&WINDOW_OWNER, &RUN_OPERATOR]).any(|n| skeleton(n) == sk) || RESERVED_PREFIXES.iter().any(|p| sk.starts_with(p))
+    NAMES.iter().chain([&WINDOW_OWNER, &RUN_OPERATOR]).chain(VOICE_NAMES.iter()).any(|n| skeleton(n) == sk) || RESERVED_PREFIXES.iter().any(|p| sk.starts_with(p))
 }
 
 /// The authority roles the operator granted, and who holds them. Names are keyed by their

@@ -64,8 +64,12 @@ fn not_built(dir: &str) -> String {
 
 /// One module's build answer as a line for a person: `None` when it built and loaded.
 fn failure(dir: &str, is_error: bool, answer: &Json) -> Option<String> {
-    if answer.get("error").and_then(Json::as_str) == Some("not_approved") {
-        return Some(format!("{dir} was not loaded: its sources have changed since an owner or a granted lead last built it, so --run does not run them. To play it, {WHAT_NOW}"));
+    // Held back by the record of what was built here: the module's own sources, or the
+    // project root's build configuration (said at once, or after the build read it).
+    let held = |j: &Json| (j.get("error").and_then(Json::as_str) == Some("not_approved")).then(|| j.get("what").and_then(Json::as_str).unwrap_or("sources").to_owned());
+    if let Some(what) = held(answer).or_else(|| answer.get("reload_error").and_then(held)) {
+        let changed = if what == "configuration" { "the project's build configuration (Cargo.toml, a toolchain file or .cargo/ at its root) has changed" } else { "its sources have changed" };
+        return Some(format!("{dir} was not loaded: {changed} since an owner or a granted lead last built it, so --run does not run it. To play it, {WHAT_NOW}"));
     }
     // (`logic_build` answers an error for a refusal, a build that failed and a load that failed.)
     if !is_error {
@@ -111,7 +115,7 @@ pub(crate) fn start(to_engine: Sender<Request>, gate: Arc<StartGate>, modules: V
                 continue;
             }
             let expect = approved.flatten();
-            let out = crate::logic::tools::build_expecting(&to_engine, &session, &Json::obj([("path", Json::from(dir.as_str()))]), expect.as_deref());
+            let out = crate::logic::tools::build_expecting(&to_engine, &session, &Json::obj([("path", Json::from(dir.as_str()))]), expect.as_ref());
             let answer = out
                 .content
                 .iter()

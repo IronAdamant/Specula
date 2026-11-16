@@ -177,11 +177,10 @@ impl Note {
         let text = text.replace("\r\n", "\n");
         let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
         let no_front = || NoteError::new("no_front_matter", "a note starts with front matter between two lines of ---: title, kind, and optionally supersedes and about");
-        let rest = text.strip_prefix("---\n").ok_or_else(no_front)?;
-        let (front, body) = match rest.split_once("\n---\n") {
-            Some((front, body)) => (front, body),
-            None => (rest.strip_suffix("\n---").ok_or_else(no_front)?, ""),
-        };
+        let (front, body) = split(text).ok_or_else(no_front)?;
+        if front.lines().count() > FRONT_LINES {
+            return Err(NoteError::new("bad_front_matter", format!("a note's front matter is at most {FRONT_LINES} lines (it has four keys: title, kind, supersedes, about)")));
+        }
         let mut note = Note { id: id.to_owned(), title: String::new(), kind: Kind::Fact, supersedes: None, about: Vec::new(), body: body.trim_matches('\n').to_owned() };
         let (mut has_title, mut has_kind) = (false, false);
         for line in front.lines().filter(|l| !l.trim().is_empty()) {
@@ -236,12 +235,26 @@ impl Note {
 }
 
 /// A project's notes.
+///
+/// **Read to hold together, whatever the files say.** A note names the note it replaces, and
+/// a replaced note drops out of every list. Files are written by many hands and many ways (a
+/// tool, an undo, an editor, a pull), so the files alone may say what cannot be: two notes
+/// that replace each other, directly or through others. Taken as written, every note of such
+/// a ring would be replaced and none would be listed. So a replacement that would close a ring
+/// is not followed ([`Notes::read`], in id order: the note keeps its line, and
+/// [`Notes::problems`] says so), and no way of writing can hide notes from their readers
+/// (review R2 of M6 part 3: a check at the write was got past three ways).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Notes {
     notes: Vec<Note>,
+    /// The replacements that are followed: the newer note's id, and the id it replaces.
+    follows: std::collections::BTreeMap<String, String>,
     /// The ids some note replaces (made once when the notes are read: whether a note is
     /// current is asked for every note of every listing).
     replaced: std::collections::BTreeSet<String>,
+    /// The replacements not followed, because they would close a ring: (the note, what its
+    /// file says it replaces).
+    rings: Vec<(String, String)>,
 }
 
 /// The first `max` characters of `text`, cut at a word and marked when something was cut.
@@ -268,8 +281,49 @@ impl Notes {
                 Err(why) => bad.push((id.to_owned(), why)),
             }
         }
-        let replaced = notes.iter().filter_map(|n: &Note| n.supersedes.clone()).collect();
-        (Notes { notes, replaced }, bad)
+        // Which replacements are followed: each note's, in id order, unless the note it names
+        // already leads back to it through the ones followed so far (a ring, or itself).
+        let mut follows: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+        let mut rings = Vec::new();
+        for note in &notes {
+            let Some(old) = &note.supersedes else { continue };
+            let mut at = Some(old.as_str());
+            let mut ring = false;
+            // (A chain is at most as long as there are notes.)
+            for _ in 0..=notes.len() {
+                match at {
+                    Some(a) if a == note.id => {
+                        ring = true;
+                        break;
+                    }
+                    Some(a) => at = follows.get(a).map(String::as_str),
+                    None => break,
+                }
+            }
+            if ring {
+                rings.push((note.id.clone(), old.clone()));
+            } else {
+                follows.insert(note.id.clone(), old.clone());
+            }
+        }
+        let replaced = follows.values().cloned().collect();
+        (Notes { notes, follows, replaced, rings }, bad)
+    }
+
+    /// What the files say that the notes are not read as, in words for whoever keeps them: a
+    /// replacement that would close a ring (not followed), and a second current brief (the
+    /// first by id is the brief). Empty for notes written through the tools.
+    pub fn problems(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .rings
+            .iter()
+            .map(|(id, old)| format!("{id} says it supersedes {old}, and {old} replaced {id} (directly or through others): that line is not followed, so both stay listed; take it out of {FOLDER}/{id}.md"))
+            .collect();
+        let mut briefs = self.current().filter(|n| n.kind == Kind::Brief);
+        if let (Some(first), Some(second)) = (briefs.next(), briefs.next()) {
+            out.push(format!("there are two briefs, {} and {}: {} is given as the brief; make the other a fact, or have one supersede the other", first.id, second.id, first.id));
+        }
+        out
     }
 
     /// Every note, current or not, in id order.
@@ -282,9 +336,14 @@ impl Notes {
         self.notes.iter().find(|n| n.id == id)
     }
 
-    /// The note that replaced `id`, if one did.
+    /// The note that replaced `id`, if one did (the first by id, when the files name two).
     fn replaced_by(&self, id: &str) -> Option<&Note> {
-        self.notes.iter().find(|n| n.supersedes.as_deref() == Some(id))
+        self.notes.iter().find(|n| self.follows.get(&n.id).is_some_and(|old| old == id))
+    }
+
+    /// The id of the note that replaced `id`, if one did.
+    pub fn superseded_by(&self, id: &str) -> Option<&str> {
+        self.replaced_by(id).map(|n| n.id.as_str())
     }
 
     /// Whether another note replaces this one.
@@ -394,29 +453,54 @@ pub struct Brief<'n> {
     pub rest: Vec<&'n Note>,
 }
 
+/// Most lines of a note's front matter, blank ones counted (it has four keys). A bound, so
+/// that whoever looks at every note of a project at once ([`front`]) reads a known few lines
+/// of each; [`Note::parse`] holds a note to it, so the two never disagree about a note.
+pub const FRONT_LINES: usize = 16;
+
+/// A note's text (line ends `\n`, no byte-order mark) as its front matter and its body.
+fn split(text: &str) -> Option<(&str, &str)> {
+    let rest = text.strip_prefix("---\n")?;
+    match rest.split_once("\n---\n") {
+        Some(parts) => Some(parts),
+        None => Some((rest.strip_suffix("\n---")?, "")),
+    }
+}
+
 /// What a note's front matter says of its place among the others: its kind, and the note it
-/// replaces. Read from the first lines alone (no check of the rest), for whoever must look at
-/// every note of a project at once: `None` when the text does not start as a note does.
+/// replaces. Read from the first lines alone, for whoever must look at every note of a project
+/// at once (the check made where a note is committed). For every text [`Note::parse`] takes it
+/// answers what the parsed note says (one way of splitting, [`split`], and one bound,
+/// [`FRONT_LINES`]); it does not check the rest, so it may also answer for a text that is not
+/// a note yet (a draft). `None`: the text does not start as a note does.
 pub fn front(text: &str) -> Option<(Kind, Option<String>)> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let mut lines = text.lines();
-    if lines.next()?.trim_end() != "---" {
+    // The lines a front matter can be in: its opening line, its lines, its closing line.
+    let mut head = text;
+    let mut lines = 0;
+    for (at, byte) in text.bytes().enumerate() {
+        if byte == b'\n' {
+            lines += 1;
+            if lines == FRONT_LINES + 2 {
+                head = &text[..=at];
+                break;
+            }
+        }
+    }
+    let head = head.replace("\r\n", "\n");
+    let (front, _) = split(&head)?;
+    if front.lines().count() > FRONT_LINES {
         return None;
     }
     let (mut kind, mut supersedes) = (None, None);
-    // (A front matter has four keys: a file with more lines than that before its end is no note.)
-    for line in lines.take(16) {
-        let line = line.trim_end();
-        if line == "---" {
-            return kind.map(|k| (k, supersedes));
-        }
+    for line in front.lines().filter(|l| !l.trim().is_empty()) {
         match line.split_once(':').map(|(k, v)| (k.trim(), v.trim())) {
             Some(("kind", value)) => kind = Kind::named(value),
-            Some(("supersedes", value)) if id_ok(value) => supersedes = Some(value.to_owned()),
+            Some(("supersedes", value)) => supersedes = id_ok(value).then(|| value.to_owned()),
             _ => {}
         }
     }
-    None
+    kind.map(|k| (k, supersedes))
 }
 
 #[cfg(test)]
@@ -519,6 +603,79 @@ mod tests {
         assert_eq!(id_from("  Wave 5 -- the boss  "), "wave-5-the-boss");
         assert_eq!(id_from("???"), "note");
         assert!(id_ok(&id_from(&"long word ".repeat(20))) && id_from(&"long word ".repeat(20)).len() <= 48);
+    }
+
+    /// Whatever the files say, no note is hidden by a ring (review R2 of M6 part 3: a ring
+    /// written past the check at the write, by an undo, an edit on disk or a padded front
+    /// matter, took both its notes out of every list).
+    #[test]
+    fn a_ring_in_the_files_hides_no_note() {
+        let ring = [note("p", "fact", "P", "supersedes: q\n", "p"), note("q", "fact", "Q", "supersedes: p\n", "q"), note("z", "fact", "Z", "", "z")];
+        let (all, bad) = Notes::read(ring.iter().map(|(id, text)| (id.as_str(), text.as_str())));
+        assert!(bad.is_empty());
+        // In id order: p replaces q; q's line would close the ring and is not followed.
+        assert_eq!(all.current().map(|n| n.id.as_str()).collect::<Vec<_>>(), ["p", "z"]);
+        assert_eq!((all.superseded_by("q"), all.superseded_by("p")), (Some("p"), None));
+        assert_eq!(all.get("q").map(|n| n.id.as_str()), Some("p"));
+        let problems = all.problems();
+        assert!(problems.len() == 1 && problems[0].contains("q says it supersedes p") && problems[0].contains("notes/q.md"), "{problems:?}");
+        // A ring of three: one line is not followed. (A note that names itself is refused.)
+        let three = [note("a", "fact", "A", "supersedes: c\n", ""), note("b", "fact", "B", "supersedes: a\n", ""), note("c", "fact", "C", "supersedes: b\n", ""), note("s", "fact", "S", "supersedes: s\n", "")];
+        let (all, bad) = Notes::read(three.iter().map(|(id, text)| (id.as_str(), text.as_str())));
+        assert_eq!(bad.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["s"], "a note that names itself is not a note");
+        assert_eq!(all.current().map(|n| n.id.as_str()).collect::<Vec<_>>(), ["b"], "a replaced c, b replaced a; the line of c is not followed");
+        assert_eq!(all.problems().len(), 1);
+        // Notes with no ring have no problems, and two notes may name one older note: it is
+        // replaced, and both of them stay listed.
+        let two = [note("old", "fact", "Old", "", ""), note("n1", "fact", "N1", "supersedes: old\n", ""), note("n2", "fact", "N2", "supersedes: old\n", "")];
+        let all = notes(&two);
+        assert_eq!(all.current().map(|n| n.id.as_str()).collect::<Vec<_>>(), ["n1", "n2"]);
+        assert!(all.problems().is_empty());
+        // Two briefs: both listed, the first by id given, and it is said.
+        let briefs = [note("brief", "brief", "The game", "", ""), note("pitch", "brief", "Another", "", "")];
+        let all = notes(&briefs);
+        assert_eq!(all.brief_parts().brief.map(|n| n.id.as_str()), Some("brief"));
+        assert!(all.problems().iter().any(|p| p.contains("two briefs, brief and pitch")));
+    }
+
+    /// The first-lines reader and the parser agree about every text that is a note, and a
+    /// front matter padded past its bound is not a note for either (review R2: twenty blank
+    /// lines before `supersedes:` were a note to the parser and nothing to the first-lines
+    /// reader, so the check at the write let a ring through).
+    #[test]
+    fn the_first_lines_say_what_the_parsed_note_says() {
+        let blank = "\n".repeat(20);
+        let padded = format!("---\ntitle: T\nkind: fact\n{blank}supersedes: other\n---\ntext\n");
+        assert_eq!(Note::parse("x", &padded).unwrap_err().code, "bad_front_matter");
+        assert_eq!(front(&padded), None);
+        let fits = format!("---\ntitle: T\n{}kind: brief\nsupersedes: other\n---\ntext\n", "\n".repeat(FRONT_LINES - 3));
+        let one_more = format!("---\ntitle: T\n{}kind: brief\nsupersedes: other\n---\ntext\n", "\n".repeat(FRONT_LINES - 2));
+        assert!(Note::parse("x", &fits).is_ok() && Note::parse("x", &one_more).is_err());
+        let texts = [
+            DECISION.to_owned(),
+            fits,
+            one_more,
+            "---\ntitle: T\nkind: how\n---".to_owned(),
+            "---\r\ntitle: T\r\nkind: how\r\nsupersedes: a-b\r\n---\r\nbody\r\n".to_owned(),
+            "\u{feff}---\ntitle: T\nkind: brief\n---\n".to_owned(),
+            "---\ntitle: T\nkind: fact\nkind: brief\nsupersedes: a\nsupersedes: b\n---\n".to_owned(),
+            "---\n\n\ntitle: T\n\nkind: decision\n\n---\n---\nsupersedes: not-front\n---\n".to_owned(),
+            "--- \ntitle: T\nkind: fact\n---\n".to_owned(),
+            "---\ntitle: T\nkind: fact\n--- \nsupersedes: a\n---\n".to_owned(),
+            "no front matter".to_owned(),
+            String::new(),
+        ];
+        let mut notes = 0;
+        for text in &texts {
+            if let Ok(note) = Note::parse("x", text) {
+                notes += 1;
+                assert_eq!(front(text), Some((note.kind, note.supersedes.clone())), "{text:?}");
+            }
+        }
+        assert!(notes >= 7, "{notes} of the texts are notes");
+        // A text that is not a note may still have a front: the check at the write is the
+        // stricter of the two, never the looser.
+        assert_eq!(front("---\nkind: brief\n---\n"), Some((Kind::Brief, None)));
     }
 
     #[test]

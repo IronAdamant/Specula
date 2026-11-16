@@ -2819,9 +2819,10 @@ pub(crate) fn definitions() -> Vec<ToolDef> {
             description: "The simulation clock (fixed ticks): action pause, resume, step (run `ticks` then stay \
                           paused; default 1), scale (`scale` 0.05..64 times real time) or info. Returns the clock, \
                           with world_time_s: the world's time (animation starts, sight_frame's default time_s), \
-                          which world_load resumes from the save. A step also says `ran`, the ticks that ran: a \
-                          hosted game may stop the clock on one of them (its run ended), and the rest are then \
-                          dropped (`not_run`, with why)."
+                          which world_load resumes from the save. A step also says `ran` (ticks run in this call), \
+                          `queued` (still to run in the frames after it: one call runs a bounded number; do not step \
+                          them again) and, when a hosted game stopped the clock on a tick (its run ended), `not_run`: \
+                          the ticks dropped, with why."
                 .into(),
             input_schema: schema(
                 vec![

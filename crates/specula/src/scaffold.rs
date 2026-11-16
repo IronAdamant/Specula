@@ -417,9 +417,11 @@ pub fn create(parent: &Path, name: &str, records: Option<&Path>) -> Result<(std:
     let made = write(&folder, name).map_err(|why| format!("{} was made, and not all of it: {why}", folder.display()))?;
     if let Some(records) = records {
         let module = folder.join("modules").join(&made.module);
-        if let Ok(digest) = specula_logic::digest::module_digest(&module) {
+        // (Both are the engine's own text: the module's folder, and the project root's build
+        // configuration, which is the workspace manifest it just wrote and nothing else.)
+        if let (Ok(digest), Ok(root)) = (specula_logic::digest::module_digest(&module), specula_logic::digest::root_config_digest(&folder)) {
             // (Not recorded is not fatal: the project is whole, and its owner builds the module.)
-            let _ = crate::approved::record_in(records, &folder, &module, &digest.hex);
+            let _ = crate::approved::record_in(records, &folder, &module, &digest.hex, &root.hex);
         }
     }
     Ok((folder, made))

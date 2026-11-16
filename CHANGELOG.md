@@ -57,6 +57,14 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
     builder's unreviewed code; an agent could save, load and change the player's settings file through
     `game_act`; a save of the sample game could not be loaded; two notes written at once could replace each
     other; the gate could record a commit it had not measured). Each is fixed with a test that holds it.
+  - **Reviewed again, and again not to merge.** The fix for `--run` covered the module's folder alone: a
+    builder still got code loaded through a helper crate beside it, and a project root's `.cargo/` ran a
+    program under it. `--run` now loads nothing compiled from outside a module's folder and holds the root's
+    build configuration to what a lead built with. A ring of notes could still be written by an undo, an edit
+    on disk or a padded front matter: the notes' reader no longer follows a replacement that closes a ring,
+    so no way of writing hides a note. `time_control`'s step said queued ticks were dropped. And a test of
+    M5's that failed once beside three compilers asserted how many of two steps fit `ui_act`'s 20 ms: it
+    runs them by as many calls as that takes now.
 
 ### M5, done (2026-11-06 to 2026-11-15)
 

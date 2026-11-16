@@ -26,7 +26,7 @@ pub use action::Action;
 pub use cond::{Cond, Lookup, Val};
 pub use game::{Ended, GameFile, Outcome, Screens, Start};
 pub use run::{Effect, Phase, Refused, Run};
-pub use settings::{Setting, SettingKind, Settings};
+pub use settings::{Kept, Setting, SettingKind, Settings};
 
 /// What is wrong with a piece of data, as data: where, a code to branch on, and what to write
 /// instead (AGENTS.md rule 5).
