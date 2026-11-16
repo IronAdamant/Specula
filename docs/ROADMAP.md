@@ -1030,7 +1030,7 @@ at once.
 |---|---|---|---|
 | 1 | **Verifying faster**: Rust pinned; CI keeps its build and skips the full run for documents; the gate and the audit's runner in Rust, sized to what changed | 4,000 lines | |
 | 2 | **The tooling in Rust, the rest**: 81 checks and measurements, three test-data generators; no `.py`, `.sh` or `.ps1` stays tracked. Beside the other parts, each check when it is next touched, all of it before the Mac's live checks | 36,000 | 1 |
-| 3 | **The engine pays from the first hour**: a project gets its SDK from the engine; a module builds at any depth; a module-built game reaches screens, strings and saved settings; many ticks in a call and a tick other than 30 Hz; the memory helpers; conditions and scoring; then the comparison run again | 12,000 | 1 |
+| 3 | **The engine pays from the first hour**: a project gets its SDK from the engine; a module builds at any depth; a module-built game reaches screens, strings and saved settings; many ticks in a call and a tick other than 30 Hz; the memory helpers; conditions and scoring; then the comparison run again. **Built 2026-11-16; the comparison did not move** (the item "The first hour, measured again") | 12,000 | 1 |
 | 4 | **Form within an agent's reach**: the five items, with the engine's own human figure taken to realistic (not photoreal) from proportion tables that are written first, in 2D and 3D; and the report of what light a machine can run | 15,000 | |
 | 5 | **The libraries, for any game** (added 2026-11-16, and widened the same day): people with faces, expressions and hair, and what is derived from them; animals; fantasy creatures; the undead; machines; trees, grass and plants; terrain; water. Each a generator with a seed, so nothing is a copy; rigged and animated where it moves; by code; shown in 2D and 3D; apart from Sepulcra. The research comes first | 40,000 to 60,000, and data | 4 |
 | 6 | **Game systems, the rest**: the storyline tree with captions, babble voices and the slot for voice packs; reputation; the RPG set-up; music sets | 12,000 | 3 |
@@ -1150,6 +1150,37 @@ at once.
     one call;
   - the 30 Hz tick against games that ask for another step;
   - judging, which costs more than building.
+- [ ] ➕ **The first hour, measured again: it did not get cheaper** (2026-11-16, after part 3;
+  [design/LEVERAGE.md](design/LEVERAGE.md), "Results (2026-11-16)";
+  [perf/leverage/2026-11-16](../perf/leverage/2026-11-16/report.md)). Part 3 was built, reviewed four times
+  and gated ([design/FIRST_HOUR.md](design/FIRST_HOUR.md)), and the same twelve runs then cost more through
+  the engine, not less: 6.8 times the plain arm's tokens on the small job (M5: 5.2), 4.0 on the medium one
+  (3.1), 2.2 on the change (1.7), for the same checks passed. With two runs a cell only the medium rise is
+  beyond what two runs alike have shown. Of the list above, part 3 closed the second and fourth points and
+  half of the third (many ticks in a call); the first and the last stand. The cost is requests (50 and 61
+  on the medium job where M5 took 31 and 32), and what the runs say would lower them, none of it built:
+  - **A headless check of a whole game in one call.** The small builders ran theirs as a playtest; the
+    medium ones, whose games have menus, wrote a driver that steps the clock and holds inputs call by
+    call (3,290 to 9,074 calls a build), and a judge pays for each call again (20 and 30 minutes a game).
+    A project's own check (`specula new` writes one) should run a script of presses, held inputs and
+    ticks through menus and a run, and answer the state and a frame, without a script of the builder's.
+  - **A clock an agent steps stays that agent's.** A press of Start or Resume through `game_act` lets the
+    clock run in real time unless a playtest has it; two builders added a hidden action to freeze their
+    game so its state could be read, and one game failed a check on it.
+  - **Kept settings that an agent can show.** An agent's change to a setting is never saved, by design,
+    so "kept between runs" cannot be shown through the engine and both medium builders kept a settings
+    file of their own. A settings folder that is the run's own (as the harness gives) could take them.
+  - **Memory where a shell agent is.** No builder called a `memory_*` tool or wrote a note in six runs,
+    and four never said `agent_hello`, where the brief is given. The notes were read, as files. What
+    reaches such an agent is what `specula new` prints and what the files say: the guide has to carry
+    the route to a checked game in as few steps as it can, and say to leave a note.
+  - **Fewer steps before the first code** (10 to 16, as in M5): finding tools and their arguments still
+    takes 7 to 10 steps on the medium job.
+  - **Reported by builders and not reproduced:** Left and Right do nothing on a settings button of the
+    shell in a window; the texts an agent is given list only the top screen; with the engine's own
+    "lost" outcome a restart after game over came out one or two ticks off.
+  - **Then measure again**, with more than two runs a cell on the medium job: two runs alike differ by
+    as much as the effect being looked for.
 - [ ] ➕ **Game systems as optional data, and memory for whoever builds the game** (owner, 2026-11-16: "the
   new feature which I should have thought off earlier"; "All of these can be optional"; "Do not implement
   anything, just add the note for handoff"). Not designed and not sized: the scope talk decides what of it

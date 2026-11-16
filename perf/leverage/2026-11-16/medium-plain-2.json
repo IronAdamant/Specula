@@ -1,0 +1,278 @@
+{
+  "run": {
+    "leverage": 1,
+    "job": "medium",
+    "arm": "plain",
+    "n": 2,
+    "phase": "judge",
+    "prepared": "2026-11-16T08:20:55Z",
+    "settings": {
+      "runs_per_cell": 2,
+      "builder_model": "claude-sonnet-5-5",
+      "judge_model": "claude-opus-5-5",
+      "limits": {
+        "token_cap": 2000000,
+        "wall_s": 10800
+      },
+      "judge": {
+        "token_cap": 150000,
+        "wall_s": 1800
+      },
+      "token_weights": {
+        "input": 1,
+        "cache_write": 1.25,
+        "cache_read": 0.1,
+        "output": 5
+      }
+    }
+  },
+  "costs": {
+    "left": {
+      "files": 5,
+      "bytes": 25519,
+      "text_lines": 585,
+      "lines_by_kind": {
+        ".json": 40,
+        ".md": 43,
+        ".py": 502
+      }
+    },
+    "finished": "2026-11-16T08:35:34Z",
+    "verdict": {
+      "items": [
+        {
+          "id": "m01",
+          "kind": "checkable",
+          "pass": true,
+          "evidence": "python work/hold_the_gate.py headless --seed 1 --ticks 0 --settings s1.json printed {\"tick\":0,\"screen\":\"title\",\"menu_index\":0,\"language\":\"en\",\"volume\":5,\"texts\":[\"Hold the gate\",\"Start\",\"Settings\",\"Quit\"],\"score\":0,\"wave\":1,\"gate_health\":5,\"guard_y\":6.0,\"walkers\":[],\"bolts\":[]}; all brief keys present; tick equals ticks run."
+        },
+        {
+          "id": "m02",
+          "kind": "checkable",
+          "pass": true,
+          "evidence": "--frame f_title.png (and 10+ other frames) wrote PNGs; IHDR reads 800 x 480; images open and show the scene."
+        },
+        {
+          "id": "m03",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Title texts [Hold the gate, Start, Settings, Quit]; script 2:down,4:enter -> screen settings; 0:enter -> screen play, wave 1, score 0, gate_health 5."
+        },
+        {
+          "id": "m04",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "In Settings, 8 x right from 5 -> 10, 15 x right -> 10, 15 x left -> 0; texts show 'Volume: 10'/'Volume: 0'."
+        },
+        {
+          "id": "m05",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Settings, down, right -> language es, texts [Configuración, Volumen: 5, Idioma: Español, Volver] (all 4 changed); Back -> title [Defiende la puerta, Empezar, Configuración, Salir]; play [Puntos: 0, Oleada 1 de 5, Puerta: 5]; paused/lost also Spanish; frames show the Spanish with accents."
+        },
+        {
+          "id": "m06",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Run with --settings p1.json set volume 3 and language; next run with p1.json started volume 3 and same language (also es persisted to the next run's title); fresh.json run started volume 5, en."
+        },
+        {
+          "id": "m07",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Holding up 30 ticks: guard_y 6.0 -> 9.0 (6/s); 60 ticks -> 12.0; 300 ticks up -> 12.0, 300 ticks down -> 0.0 (clamped to field edges)."
+        },
+        {
+          "id": "m08",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Shoot held from tick 11: a new bolt appears only at ticks 12, 36, 60, 84 (every 24); bolts advance 5.6 per 24 ticks (14/s); a single bolt at x 19.9667 is gone the next tick (never reported past 20)."
+        },
+        {
+          "id": "m09",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Seed 1 after Enter: walkers spawn at x 20 on steps 1, 91, 181, 271, 361 (every 90 ticks), lanes 4,10,2,6,2, no 6th; each moves 2.25 per 90 ticks (1.5/s) leftward."
+        },
+        {
+          "id": "m10",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Guard moved to y 4, one bolt: walker health 2 -> 1 and bolt removed at tick 89, score 0; second bolt: walker removed at tick 115, score 10. Bolt at y 5 or y 6 passes walker at y 4 (health stays 2)."
+        },
+        {
+          "id": "m11",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Idle play: first walker at x 0 at tick 801, gone and gate 5 -> 4 at 802; next -> 3 at 892; gate 0 at tick 1162 -> screen lost, texts [You lost, Final score: 0, Enter: title]; with 5 kills then idle: lost, 'Final score: 50'."
+        },
+        {
+          "id": "m12",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Bot run seed 1: wave 1's last walker gone at tick 526, wave becomes 2 at 706 and first wave-2 walker at 707 (180 ticks = 3 s); 7 walkers in wave 2 (count 7 at ticks 1250 and 1340); texts 'Wave 2 of 5' / Spanish 'Oleada 2 de 5'."
+        },
+        {
+          "id": "m13",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Bot script (5605 ticks, seed 1) via CLI: screen won, score 450, gate 5, texts [You won, Final score: 450, Enter: title]; adding enter at 5700 -> screen title."
+        },
+        {
+          "id": "m14",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Escape at tick 300: states at 301 and 600 identical (walkers, bolts, guard_y, score), holding up while paused does not move guard; Enter on Resume -> play, walkers at 601 equal the unpaused run at 301; down + Enter on Title -> title screen."
+        },
+        {
+          "id": "m15",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Same seed/ticks/script (3000-tick bot script) twice -> identical JSON; seed 2 differs. Wave-1 lanes: seed1 [4,10,2,6,2], seed2 [2,2,2,6,4], seed3 [4,10,10,4,6], seed7 [6,4,8,2,2]."
+        },
+        {
+          "id": "m16",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Frame at tick 2400 of the bot run: walkers (14.075,6),(16.325,4),(18.575,10) drawn at px (563,240),(653,320),(743,80); bolts at (743,160),(332,240),(108,240); guard at x 80, y 240; gate bar on the left; HUD 'SCORE: 180  WAVE 3 OF 5  GATE: 5' (and Spanish version)."
+        },
+        {
+          "id": "m17",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Title frames show the menu with '>' and yellow on the chosen entry (Start, and Quit after down,down); settings frames mark Language in English and Idioma: Español in Spanish; Spanish title frame shows Defiende la puerta / Empezar / Configuración / Salir."
+        },
+        {
+          "id": "m18",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Strings live in work/lang/en.json and work/lang/es.json (loaded by load_languages); code uses keys only; README 'Add a language' section explains copying lang/en.json to lang/<code>.json, and notes font glyph limits."
+        },
+        {
+          "id": "m19",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "README has a Play section (keys, rules) and exact headless and --frame commands; both ran as written (paths adjusted to call the script from my scratch folder) and produced JSON and an 800x480 PNG."
+        }
+      ],
+      "totals": {
+        "behaviour": {
+          "passed": 17,
+          "of": 17
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 19,
+          "of": 19
+        }
+      },
+      "defects": [
+        "The JSON is printed in the console code page when piped on Windows (cp1252 here), not UTF-8: Spanish output (e.g. 'Configuración') fails to decode as UTF-8; a reader must use the locale encoding.",
+        "On won/lost screens the frame still draws the HUD (Score/Wave/Gate top bar), but 'texts' lists only the three overlay strings, so texts is not every string on screen.",
+        "A bolt fired exactly 0.6 units off a lane (guard_y reported 4.6 after 14 down ticks) misses because of float drift; the 'within 0.6' edge is not inclusive in practice.",
+        "Guard can sit at y = 0 or y = 12, so half of its sprite is drawn outside the field at the edges.",
+        "README's first headless example ('5:down,6:enter,...') opens Settings rather than starting play, so its shoot/escape inputs do nothing; misleading as an example.",
+        "The tkinter play window was not checked (the builder's README says it was never opened, and judge rules forbid opening it)."
+      ],
+      "could_not_check": []
+    },
+    "builder": {
+      "tokens": 48366,
+      "tool_uses": 21,
+      "duration_s": 219.9,
+      "by_kind": {
+        "input": 26,
+        "cache_write": 43079,
+        "cache_read": 396348,
+        "output": 32721,
+        "requests": 13,
+        "context_at_end": 48366
+      },
+      "weighted": 257115,
+      "cost_usd": 0.5392128,
+      "turns": 22,
+      "exit": 0,
+      "model": "claude-sonnet-5-5",
+      "models": [
+        "claude-sonnet-5-5"
+      ],
+      "tokens_complete": true,
+      "engine_stopped": true,
+      "ended": "done",
+      "over_token_cap": false,
+      "over_wall": false,
+      "note": ""
+    },
+    "judge": {
+      "tokens": 55548,
+      "tool_uses": 32,
+      "duration_s": 240.2,
+      "by_kind": {
+        "input": 52,
+        "cache_write": 50261,
+        "cache_read": 846293,
+        "output": 18682,
+        "requests": 26,
+        "context_at_end": 55548
+      },
+      "weighted": 240918,
+      "cost_usd": 0.9451946000000001,
+      "turns": 33,
+      "exit": 0,
+      "model": "claude-opus-5-5",
+      "models": [
+        "claude-opus-5-5"
+      ],
+      "tokens_complete": true,
+      "engine_stopped": true,
+      "ended": "done"
+    },
+    "where": {
+      "run": "medium-plain-2",
+      "requests": 13,
+      "steps": 21,
+      "steps_before_the_first_code": 1,
+      "weighted": 257115,
+      "weighted_by_kind": {
+        "read_again": 39635,
+        "written_out": 163605,
+        "new_in_context": 53875
+      },
+      "builds": {
+        "steps": 0,
+        "failed": 0
+      },
+      "how": "weighted_by_kind is exact (the run's own token counts times the weights); a step's kind is a reading of its command's text, and answered_tokens / written_tokens are characters / 4",
+      "by_step": {
+        "write code": {
+          "steps": 6,
+          "answered_tokens": 321,
+          "written_tokens": 12250
+        },
+        "run its own checks": {
+          "steps": 8,
+          "answered_tokens": 1013,
+          "written_tokens": 828
+        },
+        "read its own files": {
+          "steps": 2,
+          "answered_tokens": 1156,
+          "written_tokens": 81
+        },
+        "words between steps": {
+          "steps": 0,
+          "answered_tokens": 0,
+          "written_tokens": 616
+        },
+        "look at a frame": {
+          "steps": 5,
+          "answered_tokens": 0,
+          "written_tokens": 195
+        }
+      }
+    }
+  }
+}

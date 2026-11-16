@@ -1,0 +1,250 @@
+{
+  "run": {
+    "leverage": 1,
+    "job": "small",
+    "arm": "plain",
+    "n": 1,
+    "phase": "judge",
+    "prepared": "2026-11-16T08:20:38Z",
+    "settings": {
+      "runs_per_cell": 2,
+      "builder_model": "claude-sonnet-5-5",
+      "judge_model": "claude-opus-5-5",
+      "limits": {
+        "token_cap": 600000,
+        "wall_s": 3600
+      },
+      "judge": {
+        "token_cap": 150000,
+        "wall_s": 1800
+      },
+      "token_weights": {
+        "input": 1,
+        "cache_write": 1.25,
+        "cache_read": 0.1,
+        "output": 5
+      }
+    }
+  },
+  "costs": {
+    "left": {
+      "files": 4,
+      "bytes": 17413,
+      "text_lines": 274,
+      "lines_by_kind": {
+        ".md": 32,
+        ".py": 242
+      }
+    },
+    "finished": "2026-11-16T08:22:18Z",
+    "verdict": {
+      "items": [
+        {
+          "id": "s01",
+          "kind": "checkable",
+          "pass": true,
+          "evidence": "python catch.py headless --seed 1 --ticks 600 --script \"0:right,40:left,200:none,300:restart\" printed one JSON object {tick:600, score:0, misses:2, over:false, paddle_x:4.5, fall_speed:4.0, pieces:[{x,y}...]} with all brief keys."
+        },
+        {
+          "id": "s02",
+          "kind": "checkable",
+          "pass": true,
+          "evidence": "--png play.png after --ticks 120/300 runs wrote a valid PNG; IHDR reads 480x640 and the image opens and shows the field."
+        },
+        {
+          "id": "s03",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "--ticks 200 --script 0:left -> paddle_x 0.0; --script 0:right -> paddle_x 9.0 (12-3), never beyond."
+        },
+        {
+          "id": "s04",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "From the start position 4.5, 30 ticks of 0:right -> paddle_x 8.5 (+4), 30 ticks of 0:left -> 0.5 (-4)."
+        },
+        {
+          "id": "s05",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "seed 5 idle: tick 1 one piece at y=15.5; tick 72 still one; tick 73 a second at y=15.5; tick 145 a third at y=15.5 (every 72). seed 1 idle ends at tick 371 and the pieces stay the same 3 at ticks 380, 500 and 2000, so no spawns after the end."
+        },
+        {
+          "id": "s06",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "seed 3, 400 ticks, same script, run twice: outputs byte-identical (cmp). Seeds 1-4 at 300 idle ticks give different piece columns: [1.5,4.5,1.5], [1.5,5.5,2.5], [8.5,2.5,5.5], [1.5,11.5,6.5]."
+        },
+        {
+          "id": "s07",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "seed 1, script 0:left,23:none (paddle 1.43..4.43 under the piece at x=2.5): tick 218 score 0 with the piece at y=1.03; tick 219 score 10, the piece is gone, misses 0."
+        },
+        {
+          "id": "s08",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "seed 1 idle (paddle 4.5..7.5, piece at x=2.5): tick 226 piece at y=0.5, misses 0; tick 227 the piece is gone, misses 1, score 0."
+        },
+        {
+          "id": "s09",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "seed 1 idle: tick 370 misses 2; tick 371 misses 3, over true; ticks 372..380, 500 and 2000 print the same score 0, misses 3 and the same 3 pieces at identical positions."
+        },
+        {
+          "id": "s10",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "seed 1 with a tracking script I made (judge-scratch/script.txt): tick 506 score 40, fall_speed 4.0; tick 507 score 50, fall_speed 4.2; pieces then drop 0.07/tick (5.766667->5.696667->5.626667) = 4.2/60, against 0.0667 before."
+        },
+        {
+          "id": "s11",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "seed 1, 0:left,23:none,600:restart (score 40, misses 2 before): tick 601 score 0, misses 0, one piece at x=2.5. Idle with 400:restart after over: ticks 401/550/700 equal fresh ticks 1/150/300 piece for piece (columns 2.5, 9.5, 1.5, 4.5, 1.5 ...)."
+        },
+        {
+          "id": "s12",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Frame of seed 1, 300 ticks, 0:left,23:none (state: paddle 1.433, pieces (1.5,5.17),(4.5,9.97),(1.5,14.77)): the paddle is at px 57-177 on the bottom, pieces are at px centres (60,433),(180,241),(60,49) matching the state, with 'SCORE 10' and 'MISSES LEFT 2' at the top."
+        },
+        {
+          "id": "s13",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Frame of seed 1, 900 ticks, 0:left,23:none (over, score 40): a black panel reading 'GAME OVER', 'SCORE 40', 'ENTER TO RESTART'."
+        },
+        {
+          "id": "s14",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "README gives the controls (Left/Right, A/D, Enter), the rules, and the exact headless and --png commands; I ran both as written and both worked."
+        }
+      ],
+      "totals": {
+        "behaviour": {
+          "passed": 12,
+          "of": 12
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 14,
+          "of": 14
+        }
+      },
+      "defects": [
+        "Float drift delays a miss by one tick: at tick 226 (seed 1 idle) the piece centre is shown at y=0.5, so its bottom edge is at 0, but the miss is only counted at tick 227.",
+        "Pieces near the top edge are drawn over the HUD text (score / misses left); the HUD has no backing.",
+        "The game-over panel hides pieces under it in the frame (cosmetic).",
+        "The interactive 'play' window was never opened by me (machine rules) nor, per its README, by the builder; it is unverified."
+      ],
+      "could_not_check": []
+    },
+    "builder": {
+      "tokens": 23889,
+      "tool_uses": 9,
+      "duration_s": 90.4,
+      "by_kind": {
+        "input": 16,
+        "cache_write": 18602,
+        "cache_read": 118602,
+        "output": 13517,
+        "requests": 8,
+        "context_at_end": 23889
+      },
+      "weighted": 102714,
+      "cost_usd": 0.2214702,
+      "turns": 10,
+      "exit": 0,
+      "model": "claude-sonnet-5-5",
+      "models": [
+        "claude-sonnet-5-5"
+      ],
+      "tokens_complete": true,
+      "engine_stopped": true,
+      "ended": "done",
+      "over_token_cap": false,
+      "over_wall": false,
+      "note": ""
+    },
+    "judge": {
+      "tokens": 34455,
+      "tool_uses": 15,
+      "duration_s": 97.7,
+      "by_kind": {
+        "input": 26,
+        "cache_write": 29168,
+        "cache_read": 282332,
+        "output": 8838,
+        "requests": 13,
+        "context_at_end": 34455
+      },
+      "weighted": 108909,
+      "cost_usd": 0.46667440000000004,
+      "turns": 16,
+      "exit": 0,
+      "model": "claude-opus-5-5",
+      "models": [
+        "claude-opus-5-5"
+      ],
+      "tokens_complete": true,
+      "engine_stopped": true,
+      "ended": "done"
+    },
+    "where": {
+      "run": "small-plain-1",
+      "requests": 8,
+      "steps": 9,
+      "steps_before_the_first_code": 1,
+      "weighted": 102714,
+      "weighted_by_kind": {
+        "read_again": 11860,
+        "written_out": 67585,
+        "new_in_context": 23268
+      },
+      "builds": {
+        "steps": 0,
+        "failed": 0
+      },
+      "how": "weighted_by_kind is exact (the run's own token counts times the weights); a step's kind is a reading of its command's text, and answered_tokens / written_tokens are characters / 4",
+      "by_step": {
+        "write code": {
+          "steps": 3,
+          "answered_tokens": 138,
+          "written_tokens": 5710
+        },
+        "read its own files": {
+          "steps": 2,
+          "answered_tokens": 849,
+          "written_tokens": 79
+        },
+        "words between steps": {
+          "steps": 0,
+          "answered_tokens": 0,
+          "written_tokens": 439
+        },
+        "run its own checks": {
+          "steps": 1,
+          "answered_tokens": 238,
+          "written_tokens": 136
+        },
+        "other commands": {
+          "steps": 2,
+          "answered_tokens": 115,
+          "written_tokens": 236
+        },
+        "look at a frame": {
+          "steps": 1,
+          "answered_tokens": 0,
+          "written_tokens": 38
+        }
+      }
+    }
+  }
+}

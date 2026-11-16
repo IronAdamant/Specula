@@ -1,0 +1,321 @@
+{
+  "run": {
+    "leverage": 1,
+    "job": "small",
+    "arm": "engine",
+    "n": 1,
+    "phase": "judge",
+    "prepared": "2026-11-16T08:20:54Z",
+    "settings": {
+      "runs_per_cell": 2,
+      "builder_model": "claude-sonnet-5-5",
+      "judge_model": "claude-opus-5-5",
+      "limits": {
+        "token_cap": 600000,
+        "wall_s": 3600
+      },
+      "judge": {
+        "token_cap": 150000,
+        "wall_s": 1800
+      },
+      "token_weights": {
+        "input": 1,
+        "cache_write": 1.25,
+        "cache_read": 0.1,
+        "output": 5
+      }
+    },
+    "started_with": {
+      "files": 19,
+      "bytes": 24793,
+      "text_lines": 528,
+      "lines_by_kind": {
+        ".json": 340,
+        ".md": 48,
+        ".rs": 121,
+        ".toml": 19
+      }
+    },
+    "engine_build": "2a0c5669",
+    "port": 7701
+  },
+  "costs": {
+    "engine_stopped": true,
+    "engine": {
+      "calls": 62,
+      "refused": 1,
+      "args_bytes": 26561,
+      "answer_bytes": 154469,
+      "by_tool": {
+        "engine.stop": 18,
+        "engine.start": 17,
+        "logic_build": 17,
+        "game_state": 16,
+        "playtest_run": 14,
+        "(tools)": 10,
+        "game_act": 2,
+        "time_control": 2,
+        "logic_status": 1
+      }
+    },
+    "left": {
+      "files": 23,
+      "bytes": 42610,
+      "text_lines": 970,
+      "lines_by_kind": {
+        ".json": 429,
+        ".md": 106,
+        ".py": 186,
+        ".rs": 230,
+        ".toml": 19
+      }
+    },
+    "finished": "2026-11-16T08:28:58Z",
+    "verdict": {
+      "items": [
+        {
+          "id": "s01",
+          "kind": "checkable",
+          "pass": true,
+          "evidence": "From a stopped engine, `python catch.py run --seed 1 --ticks 100 --script \"0:none\"` (run in work/) printed {\"tick\": 100, \"score\": 0, \"misses\": 0, \"over\": false, \"paddle_x\": 4.5, \"fall_speed\": 4, \"pieces\": [{\"x\": 8.5, \"y\": 8.9}, {\"x\": 6.5, \"y\": 13.7}]}. Every field the brief asks for is there, and tick matched N in all ~30 runs (1 to 2000 ticks)."
+        },
+        {
+          "id": "s02",
+          "kind": "checkable",
+          "pass": true,
+          "evidence": "`--frame ../judge-scratch/f100.png` wrote a PNG whose IHDR header reads 480 x 640. The view is drawn at 40 px per unit."
+        },
+        {
+          "id": "s03",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Seed 1, 200 ticks: script 0:left gave paddle_x 0 and script 0:right gave paddle_x 9."
+        },
+        {
+          "id": "s04",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "30 ticks of right from the start went from 4.5 to 8.5000000000009. Script 0:left,100:right for 130 ticks went from 0 to 3.9999999999999996, i.e. 4 units in 30 ticks."
+        },
+        {
+          "id": "s05",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "1 tick: one piece at y 15.5. 72 ticks: one piece. 73 ticks: two pieces, the new one at 15.5. 145 ticks: three pieces. With the catching script, pieces are still spawning at tick 1100. After over (tick 443), the pieces at 444, 600, 1200 and 2000 are identical to those at 443, so nothing new spawns. After a restart, spawning starts again."
+        },
+        {
+          "id": "s06",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Seed 1, 145 ticks, run twice: identical JSON (x 8.5, 6.5, 0.5). Seed 2, 145 ticks: x 7.5, 0.5, 7.5."
+        },
+        {
+          "id": "s07",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Script 0:right,15:none, seed 1. At tick 218: score 0, piece at (8.5, 1.033). At tick 219: score 10, misses 0, that piece gone. At tick 240: still score 10, misses 0."
+        },
+        {
+          "id": "s08",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Idle paddle (4.5..7.5), seed 1. At tick 226 the piece at x 8.5 is at y 0.5, misses 0. At tick 227: misses 1, score 0, piece gone. (It is counted one tick late; see defects.)"
+        },
+        {
+          "id": "s09",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Idle, seed 1. Tick 442: misses 2. Tick 443: misses 3, over true, score 10, pieces (1.5,5.233), (4.5,10.033), (11.5,14.833). Ticks 444, 600, 1200 and 2000 print the same score, misses, pieces and paddle."
+        },
+        {
+          "id": "s10",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Catching script (from checks/bot.py 1 12), seed 1. Tick 500: score 40, fall_speed 4. Tick 510: score 50, fall_speed 4.2. Pieces drop 0.07 per tick at ticks 510->511->512 and 700->701->702, which is 4.2/60. At 13 catches (tick 1100), fall_speed is 4.41."
+        },
+        {
+          "id": "s11",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Seed 1, script 1000:restart (the run had been over since tick 443). At tick 1145: score 0, misses 0, over false, paddle 4.5, pieces (8.5,5.9), (6.5,10.7), (0.5,15.5). That is identical to the first run's state at 145 ticks."
+        },
+        {
+          "id": "s12",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Frame at 702 ticks of the catching script: HUD reads 'Score: 70  Misses left: 3'. Pieces are drawn centred at px (180,571), (220,370), (300,168), which match state (4.5,1.73), (5.5,6.75), (7.5,11.79). The paddle spans px 207-327, matching paddle_x 5.17. The 100-tick frame also matches its state."
+        },
+        {
+          "id": "s13",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Frame after 2000 idle ticks (over) shows a panel reading 'Game over', 'Final score: 10' and 'Press Enter to restart'. The HUD reads 'Score: 10  Misses left: 0'."
+        },
+        {
+          "id": "s14",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "README gives the keys (Left/Right, A/D, Enter to restart), the rules, and the play command `specula play work`, which I did not run because it opens a window. Its commands for the headless run and frame (`python catch.py run ... [--frame out.png]`) worked as written from a stopped engine."
+        }
+      ],
+      "totals": {
+        "behaviour": {
+          "passed": 12,
+          "of": 12
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 14,
+          "of": 14
+        }
+      },
+      "defects": [
+        "A piece is counted as missed one tick after it reaches the bottom edge. At tick 226 its centre is at y 0.5 (its bottom on the edge) with misses still 0, and the miss is counted at tick 227. Floating-point build-up of 4/60 makes the y <= 0.5 test miss by a hair.",
+        "README says a player opening the game sees the engine's title screen and must press Start first. The builder never played it with a window or keyboard, and I did not either.",
+        "Each headless run builds the module and starts and stops the engine, so even short runs take about 5 s."
+      ],
+      "could_not_check": []
+    },
+    "builder": {
+      "tokens": 83884,
+      "tool_uses": 42,
+      "duration_s": 376.5,
+      "by_kind": {
+        "input": 72,
+        "cache_write": 78597,
+        "cache_read": 1835104,
+        "output": 34014,
+        "requests": 36,
+        "context_at_end": 83884
+      },
+      "weighted": 451899,
+      "cost_usd": 0.8381824,
+      "turns": 43,
+      "exit": 0,
+      "model": "claude-sonnet-5-5",
+      "models": [
+        "claude-sonnet-5-5"
+      ],
+      "tokens_complete": true,
+      "engine_stopped": true,
+      "ended": "done",
+      "over_token_cap": false,
+      "over_wall": false,
+      "note": ""
+    },
+    "judge": {
+      "tokens": 43380,
+      "tool_uses": 17,
+      "duration_s": 301.5,
+      "by_kind": {
+        "input": 34,
+        "cache_write": 38093,
+        "cache_read": 463316,
+        "output": 11235,
+        "requests": 17,
+        "context_at_end": 43380
+      },
+      "weighted": 150157,
+      "cost_usd": 0.6222432000000001,
+      "turns": 18,
+      "exit": 0,
+      "model": "claude-opus-5-5",
+      "models": [
+        "claude-opus-5-5"
+      ],
+      "tokens_complete": true,
+      "engine_stopped": true,
+      "ended": "done",
+      "engine": {
+        "calls": 105,
+        "refused": 0,
+        "args_bytes": 30626,
+        "answer_bytes": 239001,
+        "by_tool": {
+          "engine.stop": 36,
+          "engine.start": 35,
+          "game_state": 35,
+          "logic_build": 35,
+          "playtest_run": 35
+        }
+      }
+    },
+    "where": {
+      "run": "small-engine-1",
+      "requests": 36,
+      "steps": 42,
+      "steps_before_the_first_code": 15,
+      "weighted": 451899,
+      "weighted_by_kind": {
+        "read_again": 183510,
+        "written_out": 170070,
+        "new_in_context": 98318
+      },
+      "builds": {
+        "steps": 5,
+        "failed": 1
+      },
+      "how": "weighted_by_kind is exact (the run's own token counts times the weights); a step's kind is a reading of its command's text, and answered_tokens / written_tokens are characters / 4",
+      "by_step": {
+        "build the module": {
+          "steps": 5,
+          "answered_tokens": 4773,
+          "written_tokens": 2984
+        },
+        "write code": {
+          "steps": 10,
+          "answered_tokens": 1713,
+          "written_tokens": 5906
+        },
+        "read the engine's documents and source": {
+          "steps": 7,
+          "answered_tokens": 5692,
+          "written_tokens": 382
+        },
+        "find tools and their arguments": {
+          "steps": 2,
+          "answered_tokens": 4856,
+          "written_tokens": 155
+        },
+        "read its own files": {
+          "steps": 4,
+          "answered_tokens": 3795,
+          "written_tokens": 215
+        },
+        "start or stop the engine": {
+          "steps": 5,
+          "answered_tokens": 641,
+          "written_tokens": 2175
+        },
+        "call the engine": {
+          "steps": 3,
+          "answered_tokens": 807,
+          "written_tokens": 539
+        },
+        "words between steps": {
+          "steps": 0,
+          "answered_tokens": 0,
+          "written_tokens": 750
+        },
+        "run its own checks": {
+          "steps": 3,
+          "answered_tokens": 409,
+          "written_tokens": 246
+        },
+        "other commands": {
+          "steps": 1,
+          "answered_tokens": 370,
+          "written_tokens": 39
+        },
+        "look at a frame": {
+          "steps": 2,
+          "answered_tokens": 0,
+          "written_tokens": 87
+        }
+      }
+    }
+  }
+}

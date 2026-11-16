@@ -1,6 +1,7 @@
 # Design: the first hour (M6, part 3)
 
-Status: **design, written 2026-11-16; built in slices, each ticked here when it is gated and reviewed.**
+Status: **built 2026-11-16** (branch `m6-first-hour`): eight slices, four review rounds, the gate, and the
+comparison run again. **What it was for did not happen: the engine arm did not get cheaper** (slice 8).
 Roadmap: M6, "The engine pays off by game size" and the items beside it ([ROADMAP.md](../ROADMAP.md)).
 Measured reason: [LEVERAGE.md](LEVERAGE.md). Siblings: [MODULES.md](MODULES.md) (the module host),
 [UI.md](UI.md), [LOCALISATION.md](LOCALISATION.md), [ACCESSIBILITY.md](ACCESSIBILITY.md) (saved settings),
@@ -27,14 +28,14 @@ remembers.**
 
 | # | Slice | State |
 |---|---|---|
-| 1 | The SDK comes from the engine, and is trusted by what it says | in progress |
-| 2 | A module builds in a folder of any depth | |
-| 3 | The game file (`game.json`): tick rate, modules, screens, settings, outcome | |
-| 4 | The project shell: screens, strings, saved settings and pause for a module-built game | |
-| 5 | Outcome and score as data; `game_state`; playtests and the balance lab read them | |
-| 6 | What a project remembers: notes kept with the project, and the brief an agent is given at its first call | |
-| 7 | `specula new` makes a project that builds and plays; the guide it writes | |
-| 8 | The comparison, run again with the same harness | |
+| 1 | The SDK comes from the engine, and is trusted by what it says | built, reviewed (R1 to R4), gated |
+| 2 | A module builds in a folder of any depth | built, reviewed (R1 to R4), gated |
+| 3 | The game file (`game.json`): tick rate, modules, screens, settings, outcome | built, reviewed (R1 to R4), gated |
+| 4 | The project shell: screens, strings, saved settings and pause for a module-built game | built, reviewed (R1 to R4), gated |
+| 5 | Outcome and score as data; `game_state`; playtests and the balance lab read them | built, reviewed (R1 to R4), gated |
+| 6 | What a project remembers: notes kept with the project, and the brief an agent is given at its first call | built, reviewed (R1 to R4), gated |
+| 7 | `specula new` makes a project that builds and plays; the guide it writes | built, reviewed (R1 to R4), gated |
+| 8 | The comparison, run again with the same harness | run on `2a0c5669`: the engine arm did not get cheaper (below, and LEVERAGE.md) |
 
 ## 1. The SDK comes from the engine
 
@@ -221,9 +222,25 @@ The same three jobs, harness, models and judges as 2026-11-14, with the engine a
 `specula new` and nothing copied by hand. Reported beside M5's numbers, every run, failures included.
 A fourth job that needs more to reuse is part 12's.
 
-## Where the build stands (kept current while part 3 is built; removed when it is done)
+**Run on 2026-11-16** ([LEVERAGE.md](LEVERAGE.md), "Results (2026-11-16)";
+[perf/leverage/2026-11-16](../../perf/leverage/2026-11-16/report.md)). Twelve builds, all judged, checks
+passed alike in both arms. Through the engine a small game cost 6.8 times the plain arm's tokens (M5:
+5.2), a medium one 4.0 times (3.1), a change 2.2 times (1.7). With two runs a cell only the medium rise
+is beyond what two runs alike have shown; no cell got cheaper.
 
-**Built, with its own tests, the structural guards and clippy passing; the full gate runs on each commit** (2026-11-16, branch
+- **What part 3 closed:** M5's findings that a project had no SDK, that a module-built game could not
+  reach screens, strings or settings, and that the tick was 30 Hz. Every builder started from `specula
+  new`, wrote a game file and drew its HUD as a screen of the shell.
+- **What it did not move:** the number of requests, which is the cost. The medium builds took 50 and 61
+  where M5's took 31 and 32. More of the engine is within reach and the builders spent requests finding
+  it; a headless check of a game with menus is still written by hand, call by call; and no builder
+  called a memory tool or wrote a note (four of six never said `agent_hello`, where the brief is given).
+- **What follows** is in ROADMAP M6 ("The first hour, measured again"): fewer steps to a running game,
+  not more that the engine can do.
+
+## As built
+
+**Built, with its own tests, the structural guards and clippy passing; the full gate passed on its last commit** (2026-11-16, branch
 `m6-first-hour`):
 
 | Piece | Where |
@@ -321,9 +338,9 @@ the game's start un-paused a clock a playtest was stepping; the settings screen 
 (its layer was lower); a playtest spec took no `notes` key; a second command as a granted lead was
 refused with nothing to say why.
 
-**Still to build, in this order:**
+**What closed the build:**
 
-1. **Done: a live check in Rust**, `new_project_check` (`tools/examen/src/native.rs`), the first check
+1. **A live check in Rust**, `new_project_check` (`tools/examen/src/native.rs`), the first check
    written in Rust: a new project is made, the brief read at `agent_hello`, its module built, its own
    playtest run, the game file changed and followed on a clock stepped by hand, the settings found over
    the title with the focus, a note written, a second language chosen, and the engine started again with
@@ -336,8 +353,8 @@ refused with nothing to say why.
    disk to replace each other hide neither; one `--run-as-is` start approves nothing; a lead's build
    is what `--run` then loads; a changed `.cargo/` at the root, and a crate from outside the
    module's folder, keep `--run` from loading. About 55 s (`examen live --only new_project_check`).
-2. **Done: the comparison's harness is Rust** (`examen leverage`, `tools/examen/src/leverage.rs`) and
-   starts its engine arm from `specula new`. **To do: the comparison is run again** (slice 8).
+2. **The comparison's harness is Rust** (`examen leverage`, `tools/examen/src/leverage.rs`) and
+   starts its engine arm from `specula new`. The comparison was run again with it (slice 8).
 3. **Not built, and said:** conditions over the world (`world:/path.prop`); a condition reads what the
    modules keep, the settings and the run's own state.
 

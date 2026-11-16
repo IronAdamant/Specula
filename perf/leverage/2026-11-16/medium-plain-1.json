@@ -1,0 +1,275 @@
+{
+  "run": {
+    "leverage": 1,
+    "job": "medium",
+    "arm": "plain",
+    "n": 1,
+    "phase": "judge",
+    "prepared": "2026-11-16T08:20:55Z",
+    "settings": {
+      "runs_per_cell": 2,
+      "builder_model": "claude-sonnet-5-5",
+      "judge_model": "claude-opus-5-5",
+      "limits": {
+        "token_cap": 2000000,
+        "wall_s": 10800
+      },
+      "judge": {
+        "token_cap": 150000,
+        "wall_s": 1800
+      },
+      "token_weights": {
+        "input": 1,
+        "cache_write": 1.25,
+        "cache_read": 0.1,
+        "output": 5
+      }
+    }
+  },
+  "costs": {
+    "left": {
+      "files": 4,
+      "bytes": 22923,
+      "text_lines": 583,
+      "lines_by_kind": {
+        ".json": 40,
+        ".md": 38,
+        ".py": 505
+      }
+    },
+    "finished": "2026-11-16T08:31:54Z",
+    "verdict": {
+      "items": [
+        {
+          "id": "m01",
+          "kind": "checkable",
+          "pass": true,
+          "evidence": "README command `python hold_the_gate.py headless --seed 1 --ticks 700 --settings settings.json --script \"0:enter,5:up,60:shoot\"` printed one JSON object with every key the brief lists; --ticks 0 and --ticks 1 with no script print screen \"title\", tick 0 / 1."
+        },
+        {
+          "id": "m02",
+          "kind": "checkable",
+          "pass": true,
+          "evidence": "Adding --frame title.png wrote a valid PNG; its signature is right and the IHDR says 800 x 480. I opened it and it shows the title screen."
+        },
+        {
+          "id": "m03",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Title texts: [\"Hold the gate\",\"Start\",\"Settings\",\"Quit\"]. Script 0:down,1:enter -> screen settings. Script 0:enter -> screen play, wave 1, score 0, gate_health 5."
+        },
+        {
+          "id": "m04",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "In Settings, 8 rights starting from 5 -> volume 10, and 14 lefts -> volume 0. It stayed at the ends and did not wrap."
+        },
+        {
+          "id": "m05",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Settings, down, right -> language es, texts [\"Ajustes\",\"Volumen: 5\",\"Idioma: Español\",\"Atrás\"] (all 4 changed). Title then shows [\"Defiende la puerta\",\"Empezar\",\"Ajustes\",\"Salir\"]. Play shows [\"Puntos: 0\",\"Oleada 1 de 5\",\"Puerta: 5\"]. Pause shows Pausa/Continuar/Título. No English left."
+        },
+        {
+          "id": "m06",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Run 1 (--settings p.json) set volume 3 and Spanish, and p.json = {\"volume\": 3, \"language\": \"es\"}. Run 2 with the same path started at volume 3, language es. A new path fresh_dir/x.json started at volume 5, en."
+        },
+        {
+          "id": "m07",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Holding up for 60 ticks: guard_y 6.0 -> 12.0. Holding down for 30 ticks: 6.0 -> 3.0 (6 units/s). Holding up or down for 400 ticks stops at 12.0 and 0.0."
+        },
+        {
+          "id": "m08",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Shoot held from tick 1: new bolts appear at ticks 1, 25, 49, 73 (24 apart), and only 3-4 are alive at once. One bolt goes 2.2333 -> 16.2333 in 60 ticks (14/s); it is at 18.8 at tick 73 and gone by tick 80 (past x=20)."
+        },
+        {
+          "id": "m09",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Seed 1 wave 1: walkers appear at ticks 1, 91, 181, 271, 361 (90 apart). Their lanes are 4,10,2,6,2 and there are exactly 5. x falls by 1.5 in 60 ticks. Other seeds also use only lanes 2-10."
+        },
+        {
+          "id": "m10",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Guard moved to y=4 and fired 1 bolt: at tick 89 the walker's health went 2->1 and bolts became []. Two bolts: the walker is destroyed and the score is 10. A bolt at y=6 (and one at y=4.7) passed the lane-4 walker, which kept health 2; one at y=4.5 hit it."
+        },
+        {
+          "id": "m11",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "No input: at tick 800 the walker is at x=0.0; at tick 801 it is gone and gate_health goes 5->4. A run where 1 walker was killed reached gate 0 at tick 2141: screen lost, texts [\"You lost\",\"Final score: 10\",\"Enter: title\"]. The frame shows this."
+        },
+        {
+          "id": "m12",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Last wave-1 walker gone at tick 1161. The first wave-2 walker appears at tick 1341 (180 ticks = 3 s; the wave field flips at 1340). Texts say \"Wave 2 of 5\". 7 walkers are on the field at tick 1882."
+        },
+        {
+          "id": "m13",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "I planned an aim-and-shoot script by using the game's class as a simulator, then ran it through the CLI. Seed 1 -> won at tick 5023, score 450, gate 5, texts [\"You won!\",\"Final score: 450\",\"Enter: title\"]. Seed 5 -> also won with 450. Enter there -> title."
+        },
+        {
+          "id": "m14",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Escape at tick 200 -> paused. The state at tick 300 equals the state at 200 (walkers, bolts, score, guard all frozen). Enter on Resume at 300 matches an unpaused run exactly, including 30 ticks later. Down + Enter (Title) -> title screen, score 0, wave 0."
+        },
+        {
+          "id": "m15",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Two runs of the 3000-tick win script with seed 1 printed identical JSON. Wave-1 lanes: seed 1 [4,10,2,6,2], seed 2 [2,2,2,6,4], seed 3 [4,10,10,4,6], seed 7 [6,4,8,2,2]."
+        },
+        {
+          "id": "m16",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Tick-330 play frame: the blue gate strip is at x=0, the guard is at px (80,320) = y 4, and walkers are at (560,80), (650,400), (740,240). These match the state (14,10), (16.25,2), (18.5,6) at 40 px/unit with y up. Bolts are at px 724/500/276 = x 18.1/12.5/6.9. The HUD shows Score 10, Wave 1 of 5, Gate 5."
+        },
+        {
+          "id": "m17",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Opened the frames. The title (English and Spanish) and settings (English, Volume selected; Spanish, Idioma selected, with accents and ñ drawn) show their menus. The chosen entry is yellow with a '>' marker."
+        },
+        {
+          "id": "m18",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "The strings are in work/lang/en.json and work/lang/es.json, one per language. The code only looks up keys. README 'Add a language' says to copy en.json to lang/<code>.json and translate it; it is then picked up automatically."
+        },
+        {
+          "id": "m19",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "README 'Play' gives the controls and goal. It gives the exact headless command and the --frame option. Both worked as written (README command run in work/ printed the state; --frame wrote an 800x480 PNG)."
+        }
+      ],
+      "totals": {
+        "behaviour": {
+          "passed": 17,
+          "of": 17
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 19,
+          "of": 19
+        }
+      },
+      "defects": [
+        "The Spanish end-screen string is \"Enter: título\", which keeps the English key name \"Enter\" (the usual Spanish is \"Intro\"). It is on the won/lost screens only, which m05 does not cover.",
+        "The guard can stand exactly on y=0 or y=12, so half its sprite is off the field (at the top it sits under the HUD).",
+        "The state's wave number changes to the next wave 179 ticks after the previous wave ends. The first walker appears at 180 ticks (one tick difference)."
+      ],
+      "could_not_check": []
+    },
+    "builder": {
+      "tokens": 40019,
+      "tool_uses": 12,
+      "duration_s": 176.6,
+      "by_kind": {
+        "input": 18,
+        "cache_write": 34732,
+        "cache_read": 218457,
+        "output": 27943,
+        "requests": 9,
+        "context_at_end": 40019
+      },
+      "weighted": 204994,
+      "cost_usd": 0.4402397000000001,
+      "turns": 13,
+      "exit": 0,
+      "model": "claude-sonnet-5-5",
+      "models": [
+        "claude-sonnet-5-5"
+      ],
+      "tokens_complete": true,
+      "engine_stopped": true,
+      "ended": "done",
+      "over_token_cap": false,
+      "over_wall": false,
+      "note": ""
+    },
+    "judge": {
+      "tokens": 51278,
+      "tool_uses": 27,
+      "duration_s": 185.6,
+      "by_kind": {
+        "input": 42,
+        "cache_write": 45991,
+        "cache_read": 652114,
+        "output": 16369,
+        "requests": 21,
+        "context_at_end": 51278
+      },
+      "weighted": 204587,
+      "cost_usd": 0.8258988,
+      "turns": 28,
+      "exit": 0,
+      "model": "claude-opus-5-5",
+      "models": [
+        "claude-opus-5-5"
+      ],
+      "tokens_complete": true,
+      "engine_stopped": true,
+      "ended": "done"
+    },
+    "where": {
+      "run": "medium-plain-1",
+      "requests": 9,
+      "steps": 12,
+      "steps_before_the_first_code": 1,
+      "weighted": 204994,
+      "weighted_by_kind": {
+        "read_again": 21846,
+        "written_out": 139715,
+        "new_in_context": 43433
+      },
+      "builds": {
+        "steps": 0,
+        "failed": 0
+      },
+      "how": "weighted_by_kind is exact (the run's own token counts times the weights); a step's kind is a reading of its command's text, and answered_tokens / written_tokens are characters / 4",
+      "by_step": {
+        "write code": {
+          "steps": 6,
+          "answered_tokens": 547,
+          "written_tokens": 12098
+        },
+        "read its own files": {
+          "steps": 2,
+          "answered_tokens": 1156,
+          "written_tokens": 81
+        },
+        "words between steps": {
+          "steps": 0,
+          "answered_tokens": 0,
+          "written_tokens": 535
+        },
+        "run its own checks": {
+          "steps": 2,
+          "answered_tokens": 255,
+          "written_tokens": 217
+        },
+        "look at a frame": {
+          "steps": 2,
+          "answered_tokens": 0,
+          "written_tokens": 28
+        }
+      }
+    }
+  }
+}

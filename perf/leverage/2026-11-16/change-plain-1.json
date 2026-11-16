@@ -1,0 +1,215 @@
+{
+  "run": {
+    "leverage": 1,
+    "job": "change",
+    "arm": "plain",
+    "n": 1,
+    "phase": "judge",
+    "prepared": "2026-11-16T09:25:06Z",
+    "settings": {
+      "runs_per_cell": 2,
+      "builder_model": "claude-sonnet-5-5",
+      "judge_model": "claude-opus-5-5",
+      "limits": {
+        "token_cap": 500000,
+        "wall_s": 3600
+      },
+      "judge": {
+        "token_cap": 150000,
+        "wall_s": 1800
+      },
+      "token_weights": {
+        "input": 1,
+        "cache_write": 1.25,
+        "cache_read": 0.1,
+        "output": 5
+      }
+    },
+    "from": "medium-plain-1"
+  },
+  "costs": {
+    "left": {
+      "files": 6,
+      "bytes": 28434,
+      "text_lines": 681,
+      "lines_by_kind": {
+        ".json": 72,
+        ".md": 59,
+        ".py": 550
+      }
+    },
+    "finished": "2026-11-16T09:26:41Z",
+    "verdict": {
+      "items": [
+        {
+          "id": "c01",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Seed 1, Normal, judge's bot script: wave changes 5->6 at tick 5202; runners (kind runner, health 1) appear at x=19.95 on ticks 5203, 5293, 5383 (90 ticks = 1.5 s apart), x 19.95->17.0 over 59 ticks (3 u/s); score went 450 -> 675 in wave 6 = 15 runners x 15."
+        },
+        {
+          "id": "c02",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Texts 'Wave 1..6 of 6' / 'Oleada 6 de 6' / 'Vague 6 sur 6'. After wave 5's last walker (tick ~5100) screen stays play, wave 6 starts. Full clear seeds 1,2,7 Normal: won, 675. Leak run (last runner let through): tick 6861 play gate 5 with one runner at x 0.05, tick 6862 won, gate 4, score 660."
+        },
+        {
+          "id": "c03",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Right on Language: en -> es -> fr -> en. French texts: title 'Défendez la porte/Commencer/Réglages/Quitter'; settings 'Réglages, Volume : 5, Langue : Français, Difficulté : Normal/Difficile, Retour'; play 'Score : 465, Vague 6 sur 6, Porte : 5'; paused 'Pause, Reprendre, Titre'; won 'Vous avez gagné !, Score final : 660, Entrée : titre'; lost 'Vous avez perdu'. Frames show the same."
+        },
+        {
+          "id": "c04",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Settings texts [Settings, Volume: 5, Language: English, Difficulty: Normal, Back]; row 2 Right -> Hard, Right Right -> Easy, Left -> Easy; default normal; Spanish 'Dificultad: Normal', French 'Difficulté : Difficile'; Enter on row 3 (Back) returns to title. Frames es_set/fr_set show the row with marker."
+        },
+        {
+          "id": "c05",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Seed 3 first walker health: easy 1, normal 2, hard 3; wave 6 first runner health: easy 1, normal 1, hard 2. Hard: 3 bolts destroyed a walker (+10); Easy: 1 bolt destroyed one. Bot won Easy and Hard with 675."
+        },
+        {
+          "id": "c06",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Run 1 set volume 3, French, Hard -> file {volume:3, language:fr, difficulty:hard}; run 2 with same --settings started at 3/fr/hard. Old-format file {volume:7, language:es} loaded as 7/es/normal. Missing file -> 5/en/normal."
+        },
+        {
+          "id": "c07",
+          "kind": "checkable",
+          "pass": true,
+          "evidence": "State JSON has 'difficulty' and each walker has 'kind' (walker/runner); --frame wrote PNGs whose IHDR is 800 x 480 (title, play, won, README example)."
+        },
+        {
+          "id": "c08",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "m01-m19 all rechecked on the changed game and pass (see those items); no previously passing item fails."
+        },
+        {
+          "id": "c09",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "CHANGES.md lists the three changes with the files/functions changed (WAVES, wave_plan, POINTS, lang/fr.json, font glyphs, settings row), what was checked and how, and what was wrong before."
+        }
+      ],
+      "totals": {
+        "behaviour": {
+          "passed": 8,
+          "of": 8
+        },
+        "checkable": {
+          "passed": 1,
+          "of": 1
+        },
+        "all": {
+          "passed": 9,
+          "of": 9
+        }
+      },
+      "defects": [
+        "French won screen frame: 'VOUS AVEZ GAGNÉ !' at scale 8 is 808 px wide, so the first V and the '!' are clipped at the 800 px edges of the PNG.",
+        "Difficulty and Language wrap around (Hard -> Easy on Right) instead of stopping at the ends; the brief does not forbid this."
+      ],
+      "could_not_check": []
+    },
+    "builder": {
+      "tokens": 32883,
+      "tool_uses": 14,
+      "duration_s": 89.8,
+      "by_kind": {
+        "input": 24,
+        "cache_write": 27596,
+        "cache_read": 253006,
+        "output": 9889,
+        "requests": 12,
+        "context_at_end": 32883
+      },
+      "weighted": 109265,
+      "cost_usd": 0.2346226,
+      "turns": 15,
+      "exit": 0,
+      "model": "claude-sonnet-5-5",
+      "models": [
+        "claude-sonnet-5-5"
+      ],
+      "tokens_complete": true,
+      "engine_stopped": true,
+      "ended": "done",
+      "over_token_cap": false,
+      "over_wall": false,
+      "note": ""
+    },
+    "judge": {
+      "tokens": 65256,
+      "tool_uses": 37,
+      "duration_s": 250.8,
+      "by_kind": {
+        "input": 60,
+        "cache_write": 59969,
+        "cache_read": 1147364,
+        "output": 22693,
+        "requests": 30,
+        "context_at_end": 65256
+      },
+      "weighted": 303223,
+      "cost_usd": 1.1633248,
+      "turns": 38,
+      "exit": 0,
+      "model": "claude-opus-5-5",
+      "models": [
+        "claude-opus-5-5"
+      ],
+      "tokens_complete": true,
+      "engine_stopped": true,
+      "ended": "done"
+    },
+    "where": {
+      "run": "change-plain-1",
+      "requests": 12,
+      "steps": 14,
+      "steps_before_the_first_code": 3,
+      "weighted": 109265,
+      "weighted_by_kind": {
+        "read_again": 25301,
+        "written_out": 49445,
+        "new_in_context": 34519
+      },
+      "builds": {
+        "steps": 0,
+        "failed": 0
+      },
+      "how": "weighted_by_kind is exact (the run's own token counts times the weights); a step's kind is a reading of its command's text, and answered_tokens / written_tokens are characters / 4",
+      "by_step": {
+        "read its own files": {
+          "steps": 3,
+          "answered_tokens": 7559,
+          "written_tokens": 126
+        },
+        "write code": {
+          "steps": 5,
+          "answered_tokens": 402,
+          "written_tokens": 2895
+        },
+        "words between steps": {
+          "steps": 0,
+          "answered_tokens": 0,
+          "written_tokens": 566
+        },
+        "run its own checks": {
+          "steps": 2,
+          "answered_tokens": 158,
+          "written_tokens": 284
+        },
+        "look at a frame": {
+          "steps": 4,
+          "answered_tokens": 94,
+          "written_tokens": 97
+        }
+      }
+    }
+  }
+}

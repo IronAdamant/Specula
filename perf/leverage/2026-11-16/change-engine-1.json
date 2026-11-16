@@ -1,0 +1,276 @@
+{
+  "run": {
+    "leverage": 1,
+    "job": "change",
+    "arm": "engine",
+    "n": 1,
+    "phase": "judge",
+    "prepared": "2026-11-16T09:25:06Z",
+    "settings": {
+      "runs_per_cell": 2,
+      "builder_model": "claude-sonnet-5-5",
+      "judge_model": "claude-opus-5-5",
+      "limits": {
+        "token_cap": 500000,
+        "wall_s": 3600
+      },
+      "judge": {
+        "token_cap": 150000,
+        "wall_s": 1800
+      },
+      "token_weights": {
+        "input": 1,
+        "cache_write": 1.25,
+        "cache_read": 0.1,
+        "output": 5
+      }
+    },
+    "from": "medium-engine-1",
+    "engine_build": "2a0c5669",
+    "port": 7705
+  },
+  "costs": {
+    "engine_stopped": true,
+    "engine": {
+      "calls": 6264,
+      "refused": 33,
+      "args_bytes": 136591,
+      "answer_bytes": 3072493,
+      "by_tool": {
+        "game_act": 2541,
+        "game_state": 1464,
+        "time_control": 1144,
+        "logic_input": 730,
+        "ui_act": 124,
+        "ui_tree": 79,
+        "logic_build": 45,
+        "camera_set": 44,
+        "engine_info": 44,
+        "logic_status": 44,
+        "sight_frame": 4,
+        "engine.start": 1,
+        "engine.stop": 1,
+        "l10n_check": 1
+      }
+    },
+    "left": {
+      "files": 26,
+      "bytes": 70770,
+      "text_lines": 1641,
+      "lines_by_kind": {
+        ".json": 559,
+        ".md": 104,
+        ".py": 566,
+        ".rs": 393,
+        ".toml": 19
+      }
+    },
+    "finished": "2026-11-16T09:41:22Z",
+    "verdict": {
+      "items": [
+        {
+          "id": "c01",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Seed 1, bot script to tick 5200 then 'none', run to 5600: wave 6, 5 walkers all kind runner, health 1, x 0.95/5.45/9.95/14.45/18.95 (4.5 apart = 3 u/s x 1.5 s; first moved 19.05 in 381 ticks = 3 u/s). Full win run: score 450 after wave 5 -> 675, i.e. 15 runners x 15 with gate 5."
+        },
+        {
+          "id": "c02",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "HUD 'Wave N of 6' / 'Oleada 1 de 6' / 'Vague 1 sur 6'. At tick 5150 all of wave 5 destroyed (score 450, no walkers) and screen still play; tick 6580 screen won, score 675, texts [You won, Score: 675, Enter: title]. Stopping fire at 6380: two runners passed the gate -> gate 3, screen won, score 645."
+        },
+        {
+          "id": "c03",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Right on Language: es -> fr -> en. French texts: title [Défends la porte, Commencer, Réglages, Quitter]; settings [Réglages, Volume : 5, Langue : Français, Difficulté : Facile/Normal/Difficile, Retour]; play [Score : 10, Vague 1 sur 6, Porte : 5]; paused [En pause, Reprendre, Titre]; won [Vous avez gagné, Score : 675, Entrée : titre]; lost [Vous avez perdu, Score : 0, Entrée : titre]. The frames show the same text."
+        },
+        {
+          "id": "c04",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Settings texts [Settings, Volume: 5, Language: English, Difficulty: Normal, Back] (fresh settings: Normal). On Difficulty (menu_index 2) Right -> Hard, Right again stays Hard, Left -> Easy, Left again stays Easy. Spanish shows Dificultad: Fácil/Difícil, French shows Difficulté : Facile/Difficile. The frame marks the focused Difficulty button."
+        },
+        {
+          "id": "c05",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Seed 3 tick 400: Easy walkers health 1, Hard walkers health 3, Normal walkers 2 (seed 1). Wave 6 samples (bot then idle): Normal runners 1, Easy runners 1 (tick 5330), Hard runners 2 (tick 5700)."
+        },
+        {
+          "id": "c06",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "After setting Hard (or Easy) a second run in the same settings folder starts with difficulty hard (or easy); the settings file is {volume, language, difficulty}. An old file {\"volume\": 7, \"language\": \"es\"} loads volume 7, es, difficulty normal, even though the engine was on Hard just before."
+        },
+        {
+          "id": "c07",
+          "kind": "checkable",
+          "pass": true,
+          "evidence": "Every printed state has 'difficulty' and walkers have 'kind' ('walker' or 'runner'). All 17 frames I wrote are PNGs with an 800x480 header."
+        },
+        {
+          "id": "c08",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "All 18 items that passed before still pass (m01-m13, m15-m19; see below). m14 failed before and was not tested again."
+        },
+        {
+          "id": "c09",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "CHANGES.md lists each change with its files (lib.rs, fr.json, game.json, settings.json, headless.py, checks), says what was checked and how (run_checks.py, 20 checks) and what was not, and lists what was wrong before."
+        }
+      ],
+      "totals": {
+        "behaviour": {
+          "passed": 8,
+          "of": 8
+        },
+        "checkable": {
+          "passed": 1,
+          "of": 1
+        },
+        "all": {
+          "passed": 9,
+          "of": 9
+        }
+      },
+      "defects": [
+        "checks/run_checks.py writes its scratch into work/.scratch, inside the game folder (I did not run it for that reason).",
+        "From reading tools/headless.py (not run): Left on Language sends the same cycle:language action as Right, so Left steps forward instead of back.",
+        "Pause/Resume still lets the engine clock run on after Resume (m14 from before), unchanged by this work.",
+        "README's 'Add a language' list starts with a step 0 that refers to things explained only later; minor.",
+        "l10n_check theme contrast error in assets/ui/theme.json (reported by the builder; not seen on any screen)."
+      ],
+      "could_not_check": []
+    },
+    "builder": {
+      "tokens": 68155,
+      "tool_uses": 33,
+      "duration_s": 970.1,
+      "by_kind": {
+        "input": 66,
+        "cache_write": 62868,
+        "cache_read": 1394709,
+        "output": 20472,
+        "requests": 33,
+        "context_at_end": 68155
+      },
+      "weighted": 320482,
+      "cost_usd": 0.5957949,
+      "turns": 34,
+      "exit": 0,
+      "model": "claude-sonnet-5-5",
+      "models": [
+        "claude-sonnet-5-5"
+      ],
+      "tokens_complete": true,
+      "engine_stopped": true,
+      "ended": "done",
+      "over_token_cap": false,
+      "over_wall": false,
+      "note": ""
+    },
+    "judge": {
+      "tokens": 82745,
+      "tool_uses": 38,
+      "duration_s": 1209.5,
+      "by_kind": {
+        "input": 64,
+        "cache_write": 77458,
+        "cache_read": 1646402,
+        "output": 22251,
+        "requests": 32,
+        "context_at_end": 82745
+      },
+      "weighted": 372782,
+      "cost_usd": 1.3942204000000002,
+      "turns": 39,
+      "exit": 0,
+      "model": "claude-opus-5-5",
+      "models": [
+        "claude-opus-5-5"
+      ],
+      "tokens_complete": true,
+      "engine_stopped": true,
+      "ended": "done",
+      "engine": {
+        "calls": 7758,
+        "refused": 53,
+        "args_bytes": 169922,
+        "answer_bytes": 3922357,
+        "by_tool": {
+          "game_act": 3139,
+          "game_state": 1809,
+          "time_control": 1399,
+          "logic_input": 900,
+          "ui_act": 155,
+          "ui_tree": 98,
+          "camera_set": 60,
+          "engine_info": 60,
+          "logic_build": 60,
+          "logic_status": 60,
+          "sight_frame": 18,
+          "engine.start": 1,
+          "engine.stop": 1
+        }
+      }
+    },
+    "where": {
+      "run": "change-engine-1",
+      "requests": 33,
+      "steps": 33,
+      "steps_before_the_first_code": 8,
+      "weighted": 320482,
+      "weighted_by_kind": {
+        "read_again": 139471,
+        "written_out": 102360,
+        "new_in_context": 78651
+      },
+      "builds": {
+        "steps": 1,
+        "failed": 1
+      },
+      "how": "weighted_by_kind is exact (the run's own token counts times the weights); a step's kind is a reading of its command's text, and answered_tokens / written_tokens are characters / 4",
+      "by_step": {
+        "read its own files": {
+          "steps": 10,
+          "answered_tokens": 13592,
+          "written_tokens": 433
+        },
+        "write code": {
+          "steps": 10,
+          "answered_tokens": 1932,
+          "written_tokens": 5222
+        },
+        "read the engine's documents and source": {
+          "steps": 9,
+          "answered_tokens": 4577,
+          "written_tokens": 369
+        },
+        "run its own checks": {
+          "steps": 2,
+          "answered_tokens": 2231,
+          "written_tokens": 110
+        },
+        "build the module": {
+          "steps": 1,
+          "answered_tokens": 570,
+          "written_tokens": 657
+        },
+        "find tools and their arguments": {
+          "steps": 1,
+          "answered_tokens": 41,
+          "written_tokens": 754
+        },
+        "words between steps": {
+          "steps": 0,
+          "answered_tokens": 0,
+          "written_tokens": 601
+        }
+      }
+    }
+  }
+}

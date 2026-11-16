@@ -75,6 +75,15 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
     own `Cargo.lock` could be included without being digested; the check at a note's write could be blinded
     by a thousand files that only began like notes (it reads notes exactly as their reader does now: one
     reading of the front matter for both); and my helper for the two timing tests gave a wait too few calls.
+  - **The comparison, run again: the engine arm did not get cheaper** (2026-11-16;
+    [docs/design/LEVERAGE.md](docs/design/LEVERAGE.md), "Results (2026-11-16)";
+    [perf/leverage/2026-11-16](perf/leverage/2026-11-16/report.md)). Twelve builds on `2a0c5669`, all
+    judged, checks passed alike. Through the engine: 6.8 times the plain arm's tokens on the small job
+    (M5: 5.2), 4.0 on the medium one (3.1), 2.2 on the change (1.7). With two runs a cell only the medium
+    rise is beyond what two runs alike have shown. The builders used what part 3 gave them (the game
+    file, the shell's screens, a tick of their own) and took more requests doing it; no builder called a
+    memory tool or wrote a note; the games with menus were checked by scripts that step the engine call
+    by call. What follows from it is a roadmap item ("The first hour, measured again"), not built.
 
 ### M5, done (2026-11-06 to 2026-11-15)
 

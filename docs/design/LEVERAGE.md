@@ -1,6 +1,7 @@
 # Design: measured leverage
 
-Status: built 2026-11-14 (M5). Data: `evals/leverage/` (the settings and the three jobs). Harness:
+Status: built 2026-11-14 (M5); run again 2026-11-16 after M6 part 3 (the second Results section: the
+engine arm did not get cheaper). Data: `evals/leverage/` (the settings and the three jobs). Harness:
 `examen leverage` (`tools/examen/src/leverage.rs`; it was `scripts/leverage.py` through M5, and the port was held against it on M5's runs: the same report, the same analysis of every builder's steps, the same export). Results: `perf/leverage/`. Roadmap item: "Measured leverage" in
 [ROADMAP.md](../ROADMAP.md). Siblings: [EVALS.md](EVALS.md) (tasks the engine verifies from its own data),
 [LAUNCH.md](LAUNCH.md) (the command line the engine arm uses).
@@ -266,3 +267,105 @@ things out that they actually make sense for small games, medium games and large
 it easier for you to actually make one." "It'll be good to have those numbers in M5 so we both know how to
 tune to improve against them in M6." They are the baseline. M6 runs the same jobs with the same harness, on
 each system the engine ships for, and a larger job where there is more to reuse.
+
+## Results (2026-11-16: after M6 part 3)
+
+The same three jobs, the same harness (now `examen leverage`), the same models, two runs a cell, on the
+engine as built by M6 part 3 (`2a0c5669`; [FIRST_HOUR.md](FIRST_HOUR.md)). Twelve builds, every one judged
+and every one reported: [perf/leverage/2026-11-16](../../perf/leverage/2026-11-16/report.md). At list
+prices the builds cost 8.32 USD and eleven of the twelve judgings 10.14 USD (the twelfth has no price:
+below).
+
+**The engine arm did not get cheaper. It got dearer.**
+
+| Job | Arm | Runs | Weighted tokens (mean) | Lowest to highest | Build time | Checks passed | Engine against plain | In M5 |
+|---|---|---|---|---|---|---|---|---|
+| small (14 checks) | engine | 2 | 678,546 | 451,899 to 905,193 | 377 s, 1,251 s | 14, 13 | 6.8 times | 5.2 |
+| small | plain | 2 | 99,776 | 96,839 to 102,714 | 90 s, 88 s | 14, 14 | | |
+| medium (19 checks) | engine | 2 | 928,953 | 802,492 to 1,055,414 | 958 s, 855 s | 18, 19 | 4.0 times | 3.1 |
+| medium | plain | 2 | 231,054 | 204,994 to 257,115 | 177 s, 220 s | 19, 19 | | |
+| change (9 checks) | engine | 2 | 246,634 | 172,787 to 320,482 | 970 s, 1,196 s | 9, 9 | 2.2 times | 1.7 |
+| change | plain | 2 | 114,280 | 109,265 to 119,295 | 90 s, 99 s | 9, 9 | | |
+
+- **How sure this is.** Two runs a cell. The medium rise is outside what two runs alike have shown: both
+  runs (802,492 and 1,055,414) are above both of M5's (548,514 and 616,657). The small cell is not: one run
+  is inside M5's range (428,114 to 667,209) and one is far above it, past its token cap. The change cell
+  is the same: one run inside M5's range, one above. The plain arm, which nothing here changed, cost 23%
+  more on the medium job than in M5 (231,054 against 187,084) and the same on the other two, so compare
+  the ratios and not the engine arm's figures alone. What can be said: **no cell got cheaper, and the
+  medium cell got dearer.**
+- **Checks passed are alike**, as in M5: one item failed in each of two engine games (a stale piece drawn
+  after a restart; a resume that let the clock run on), none in a plain game. A difference of one check
+  is nothing (M5's results, "Judges disagree").
+- **One judging ended at its time limit.** The judge of `change-engine-2` wrote its whole verdict (9 of 9)
+  three seconds before the harness stopped it at 30 minutes. The verdict is kept and counted; its tokens
+  are marked incomplete and its price is not in the total. Judging a game built on the engine is still
+  slow: 20 and 30 minutes for the change games, against 4 for the plain ones.
+
+**Where the engine arm's tokens went** (`where RUN`, read as in M5's table).
+
+| Job, arm | Requests | Steps before the first code | Read again | Written out | New in the context |
+|---|---|---|---|---|---|
+| small, engine | 36, 68 | 15, 10 | 183,510 to 500,778 | 170,070 to 265,000 | 98,318 to 139,415 |
+| small, plain | 8, 7 | 1 | 9,560 to 11,860 | 65,005 to 67,585 | 22,274 to 23,268 |
+| medium, engine | 61, 50 | 16, 12 | 404,063 to 543,635 | 257,305 to 340,945 | 141,124 to 170,834 |
+| medium, plain | 9, 13 | 1 | 21,846 to 39,635 | 139,715 to 163,605 | 43,433 to 53,875 |
+| change, engine | 33, 14 | 8, 5 | 41,722 to 139,471 | 78,190 to 102,360 | 52,874 to 78,651 |
+| change, plain | 12, 13 | 3 | 25,301 to 29,087 | 49,445 to 53,750 | 34,519 to 36,458 |
+
+- **More requests, not fewer.** The medium builds took 50 and 61 requests where M5's took 31 and 32, and
+  what they read again doubled (404,063 to 543,635 against 193,288 to 206,000). That is the whole rise.
+  Steps before the first line of code did not fall (10 to 16; M5: 9 to 27).
+- **Part 3 put more of the engine within reach, and the builders spent requests reaching it.** In M5 a
+  module-built game could not use the engine's screens, strings or settings, and no builder tried. Now
+  all four small and medium builders wrote a game file and drew their HUD as a screen of the shell; three
+  also used its strings, its settings and its outcome, and one medium builder drove its game through
+  `game_act`, `game_state`, `ui_act` and `ui_tree`. Finding
+  those tools and their arguments took 7 and 10 steps in the medium builds (about 8,000 and 11,000 tokens
+  of answers), and reading the engine's documents and source 2 and 13. The other medium builder wrote its
+  menus, string tables and settings inside its module, as M5's builders did, and was the cheaper of the
+  two.
+- **The rules got smaller; what is written did not.** A small game's module is 226 and 230 lines of Rust
+  (M5: 390 to 480). The medium builders still wrote 51,000 and 68,000 tokens against the plain arm's
+  28,000 and 33,000 (M5: 47,000 to 56,000 against 25,000 to 26,000): the driver script each game needs
+  for its headless check is 255 and 534 lines by itself.
+- **What a project remembers was read as files and never used as a tool.** Every engine builder read
+  `notes/how.md` and `notes/brief.md` (2 to 6 times). No builder called a `memory_*` tool, in any of the
+  six runs, and neither medium builder wrote a note: the two change builders were handed a project whose
+  notes were the ones `specula new` wrote. Four of the six never said `agent_hello`, which is where the
+  brief is given: an agent that works from a shell goes straight to the tool it wants.
+- **The small builders ran their headless check as one playtest** (`playtest_run`, 14 and 40 calls). **The
+  medium builders did not**: each stepped the clock and held inputs call by call from its own script
+  (`time_control`, `logic_input`, `game_act`: 3,290 and 3,464 calls a build, and 6,264 and 9,074 in the
+  change builds), each call a process started from the shell at about 105 ms. That is where the build
+  minutes and the judges' minutes went. Why they chose it is not in their transcripts.
+- **Failed builds are still not the cause:** one or two a run (of 1 to 9 build steps).
+- **One run went wrong in the old way.** `small-engine-2` spent 28 of its 70 steps reading its own files
+  again, chasing pieces of an earlier run that its restart did not remove, and ended past its cap with
+  that defect still in the game.
+
+**What this says about part 3.** It made things possible that were not: a project builds against the
+engine's own SDK with nothing copied by hand, a module-built game has screens, words, settings, an
+outcome and a score, and a game's tick is the game's. Those were M5's findings and they are closed. It did
+not make the first hour cheaper, and the measure says why: the cost is requests, and a larger surface that
+has to be found from a shell costs more requests, not fewer. What would lower it is fewer steps to a
+running game, not more that the engine can do.
+
+**What tripped a cold builder this time.** From the builders' own closing reports and the judges'
+findings. "Shown" means the runs' records or the engine's code show it; "reported" means a builder said
+it and it was not reproduced.
+
+| Found | State |
+|---|---|
+| A headless check of a game with menus is written by hand, call by call (the medium and change builds, above), and a judge then pays for every call again | open. Shown (the call logs) |
+| A press of Start or Resume by an agent lets the clock run in real time, so a script that steps the clock by hand gets ticks it did not ask for (the one failed medium item; two builders added a hidden action to freeze their game so its state could be read) | open. Shown: it is the shell's design that a press moves the clock unless a playtest has it |
+| A setting an agent changes lasts for the session and is never saved, by design, so a builder cannot show "kept between runs" through the engine: both medium builders kept a settings file of their own in their script | open. Shown (FIRST_HOUR.md, "Settings are kept") |
+| The memory tools and the brief at `agent_hello` are not on the path of an agent that works from a shell (above) | open. Shown (the call logs) |
+| A game's own check still starts the engine and builds its module on every run (about 5 s for the shortest) | open, from M5 |
+| Left and Right do nothing on a settings button of the shell in a window; Enter steps it | reported |
+| The texts an agent is given list the top screen only, so a menu over the field leaves out the HUD under it | reported |
+| With the engine's own "lost" outcome, a restart after game over came out one or two ticks off; the builder ended its runs in the module | reported |
+| Quit cannot be pressed by an agent | by design (the input monitor); it cannot be checked headless |
+| `"start": "hud"` in the game file stopped the engine at its start | not a defect: reproduced, and the engine's message names the two values `start` takes. The builder took the line out and so kept the engine's title screen in front of its own |
+| The engine ticked at 30 Hz and the briefs ask for 1/60 s (M5) | closed: `tick_hz` in the game file; all four small and medium builders set it to 60 |
+| A project had no SDK to build against (M5) | closed: `specula new` |

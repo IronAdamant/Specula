@@ -1,0 +1,216 @@
+{
+  "run": {
+    "leverage": 1,
+    "job": "change",
+    "arm": "plain",
+    "n": 2,
+    "phase": "judge",
+    "prepared": "2026-11-16T09:25:06Z",
+    "settings": {
+      "runs_per_cell": 2,
+      "builder_model": "claude-sonnet-5-5",
+      "judge_model": "claude-opus-5-5",
+      "limits": {
+        "token_cap": 500000,
+        "wall_s": 3600
+      },
+      "judge": {
+        "token_cap": 150000,
+        "wall_s": 1800
+      },
+      "token_weights": {
+        "input": 1,
+        "cache_write": 1.25,
+        "cache_read": 0.1,
+        "output": 5
+      }
+    },
+    "from": "medium-plain-2"
+  },
+  "costs": {
+    "left": {
+      "files": 7,
+      "bytes": 32292,
+      "text_lines": 693,
+      "lines_by_kind": {
+        ".json": 72,
+        ".md": 56,
+        ".py": 565
+      }
+    },
+    "finished": "2026-11-16T09:28:21Z",
+    "verdict": {
+      "items": [
+        {
+          "id": "c01",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Seed 1 Normal with a bot script, run through the CLI: wave becomes 6 at tick 5785; sampling every 90 ticks from 5786 shows one new runner at x=20 each time (15 spawns: k=0..14, none at k=15), each {kind: runner, health: 1}; one runner went from x 20.0 to 17.0 in 60 ticks (3 u/s)."
+        },
+        {
+          "id": "c02",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "HUD 'Wave 5 of 6' / 'Wave 6 of 6', 'Vague N sur 6', 'Oleada N de 6'. After wave 5's last walker: still play, wave 5, score 450, then wave 6. Full clear: ticks 7126 -> won, 675, and each runner kill adds 15. With the bot idle after runner 13: the last runner reaches the gate (gate 3->2) on that tick and the screen is won (630). Letting all of wave 6 through gives lost."
+        },
+        {
+          "id": "c03",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "From English, Right on Language gives en->es->fr->en, and Left from en gives fr. French texts: title 'Défendez la porte/Commencer/Réglages/Quitter', settings 'Réglages/Volume: 5/Langue: Français/Difficulté: Normal/Retour', play 'Score/Vague 1 sur 6/Porte', paused 'Pause/Reprendre/Titre', won 'Vous avez gagné!/Score final: 675/Entrée: titre', lost 'Vous avez perdu'. The frames render the accents (É, Ç). Volume/Score/Normal/Pause are also correct French words."
+        },
+        {
+          "id": "c04",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Settings texts: Settings, Volume, Language, 'Difficulty: Normal', Back (index 2 between Language and Back); fresh default normal. Left->easy, Left x2 stays easy, Right->hard, Right x2 stays hard, Right+Left->normal. Shown as 'Dificultad: Normal' and 'Difficulté: Normal'. The frames show the marked entry."
+        },
+        {
+          "id": "c05",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Settings file set to each difficulty: the first wave-1 walker has health 1/2/3 (easy/normal/hard) and the first wave-6 runner has health 1/1/2. The bot won on all three with 675."
+        },
+        {
+          "id": "c06",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Run 1 set volume 8, fr, hard; run 2 on the same file started with 8, fr, hard (file {volume 8, language fr, difficulty hard}). An old-format file {volume 3, language es} loads as 3, es, normal, and its walkers have health 2. A fresh file gives 5, en, normal."
+        },
+        {
+          "id": "c07",
+          "kind": "checkable",
+          "pass": true,
+          "evidence": "State has 'difficulty' and walkers carry 'kind' (walker/runner). Every --frame output (17 frames: title, settings, play, paused, won, lost; en/es/fr) is a PNG with 800x480 IHDR."
+        },
+        {
+          "id": "c08",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "All 19 medium items were rechecked through the CLI. m01: title state JSON. m02: 800x480. m03: Enter on Start gives play, wave 1, score 0, gate 5; Down+Enter gives settings. m04: volume clamps at 0 and 10. m05: Spanish everywhere. m06: settings persist; fresh file gives defaults. m07: up 30 ticks 6->9, clamps at 0 and 12. m08: one bolt per 24 ticks, +14/60 per tick, still there at 19.97 and gone after. m09: walkers spawn at ticks 1, 91, 181, ... in lanes 4, 10, 2, 6, 2 at 1.5 u/s. m10: first hit leaves health 1 and removes the bolt; second hit kills (+10); a lane-4 bolt passes a lane-10 walker. m11: walker at x 0 -> gate 5->4; at 0 the screen is lost with the final score. m12: wave 2 starts 180 ticks after wave 1 clears, with 7 walkers and 'Wave 2 of 6'. m13: 675 per the change, and Enter on won returns to title. m14: pause freezes, Resume continues identically, Title returns. m15: same seed gives identical output; seed 2 gives other lanes. m16: wave-6 frame positions match the state. m17: menu frames are marked and translated. m18: lang/*.json and README 'Add a language'. m19: README commands work."
+        },
+        {
+          "id": "c09",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "CHANGES.md lists each change with files and code points (WAVES, RUNNER_SPEED, POINTS, HEALTH, lang/fr.json, font accents, settings fields), what was checked (test_game.py, headless runs, frames viewed), and one pre-existing bug (malformed volume dropped language)."
+        }
+      ],
+      "totals": {
+        "behaviour": {
+          "passed": 8,
+          "of": 8
+        },
+        "checkable": {
+          "passed": 1,
+          "of": 1
+        },
+        "all": {
+          "passed": 9,
+          "of": 9
+        }
+      },
+      "defects": [
+        "README still says state 'language' is the code en/es; fr is not mentioned there.",
+        "When stdout is piped on this Windows machine, the headless JSON is written in the locale code page (cp1252), not UTF-8, because of print with ensure_ascii=False; a UTF-8 reader fails on accented texts. This is probably unchanged from before the change.",
+        "The tkinter play window is untested by the builder (stated in CHANGES.md), and the judge did not open it under the machine rules."
+      ],
+      "could_not_check": []
+    },
+    "builder": {
+      "tokens": 34433,
+      "tool_uses": 13,
+      "duration_s": 99.2,
+      "by_kind": {
+        "input": 26,
+        "cache_write": 29146,
+        "cache_read": 290869,
+        "output": 10750,
+        "requests": 13,
+        "context_at_end": 34433
+      },
+      "weighted": 119295,
+      "cost_usd": 0.2532229000000001,
+      "turns": 14,
+      "exit": 0,
+      "model": "claude-sonnet-5-5",
+      "models": [
+        "claude-sonnet-5-5"
+      ],
+      "tokens_complete": true,
+      "engine_stopped": true,
+      "ended": "done",
+      "over_token_cap": false,
+      "over_wall": false,
+      "note": ""
+    },
+    "judge": {
+      "tokens": 62404,
+      "tool_uses": 34,
+      "duration_s": 246.9,
+      "by_kind": {
+        "input": 52,
+        "cache_write": 57117,
+        "cache_read": 965203,
+        "output": 21640,
+        "requests": 26,
+        "context_at_end": 62404
+      },
+      "weighted": 276169,
+      "cost_usd": 1.0829846,
+      "turns": 35,
+      "exit": 0,
+      "model": "claude-opus-5-5",
+      "models": [
+        "claude-opus-5-5"
+      ],
+      "tokens_complete": true,
+      "engine_stopped": true,
+      "ended": "done"
+    },
+    "where": {
+      "run": "change-plain-2",
+      "requests": 13,
+      "steps": 13,
+      "steps_before_the_first_code": 3,
+      "weighted": 119295,
+      "weighted_by_kind": {
+        "read_again": 29087,
+        "written_out": 53750,
+        "new_in_context": 36458
+      },
+      "builds": {
+        "steps": 0,
+        "failed": 0
+      },
+      "how": "weighted_by_kind is exact (the run's own token counts times the weights); a step's kind is a reading of its command's text, and answered_tokens / written_tokens are characters / 4",
+      "by_step": {
+        "read its own files": {
+          "steps": 3,
+          "answered_tokens": 7256,
+          "written_tokens": 154
+        },
+        "write code": {
+          "steps": 4,
+          "answered_tokens": 370,
+          "written_tokens": 2911
+        },
+        "run its own checks": {
+          "steps": 4,
+          "answered_tokens": 723,
+          "written_tokens": 481
+        },
+        "words between steps": {
+          "steps": 0,
+          "answered_tokens": 0,
+          "written_tokens": 494
+        },
+        "look at a frame": {
+          "steps": 2,
+          "answered_tokens": 0,
+          "written_tokens": 89
+        }
+      }
+    }
+  }
+}

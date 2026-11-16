@@ -1,0 +1,368 @@
+{
+  "run": {
+    "leverage": 1,
+    "job": "medium",
+    "arm": "engine",
+    "n": 1,
+    "phase": "judge",
+    "prepared": "2026-11-16T08:20:55Z",
+    "settings": {
+      "runs_per_cell": 2,
+      "builder_model": "claude-sonnet-5-5",
+      "judge_model": "claude-opus-5-5",
+      "limits": {
+        "token_cap": 2000000,
+        "wall_s": 10800
+      },
+      "judge": {
+        "token_cap": 150000,
+        "wall_s": 1800
+      },
+      "token_weights": {
+        "input": 1,
+        "cache_write": 1.25,
+        "cache_read": 0.1,
+        "output": 5
+      }
+    },
+    "started_with": {
+      "files": 19,
+      "bytes": 24793,
+      "text_lines": 528,
+      "lines_by_kind": {
+        ".json": 340,
+        ".md": 48,
+        ".rs": 121,
+        ".toml": 19
+      }
+    },
+    "engine_build": "2a0c5669",
+    "port": 7703
+  },
+  "costs": {
+    "engine_stopped": true,
+    "engine": {
+      "calls": 3290,
+      "refused": 19,
+      "args_bytes": 70735,
+      "answer_bytes": 1646613,
+      "by_tool": {
+        "game_act": 1289,
+        "game_state": 789,
+        "time_control": 584,
+        "logic_input": 350,
+        "ui_act": 65,
+        "ui_tree": 42,
+        "logic_build": 37,
+        "engine_info": 35,
+        "logic_status": 34,
+        "camera_set": 33,
+        "(tools)": 16,
+        "sight_frame": 10,
+        "engine.start": 4,
+        "engine.stop": 4,
+        "agent_hello": 3,
+        "ui_frame": 3
+      }
+    },
+    "left": {
+      "files": 24,
+      "bytes": 60603,
+      "text_lines": 1503,
+      "lines_by_kind": {
+        ".json": 497,
+        ".md": 84,
+        ".py": 534,
+        ".rs": 369,
+        ".toml": 19
+      }
+    },
+    "finished": "2026-11-16T08:51:32Z",
+    "verdict": {
+      "items": [
+        {
+          "id": "m01",
+          "kind": "checkable",
+          "pass": true,
+          "evidence": "From a stopped engine: python work/tools/headless.py --seed 1 --ticks 60 --settings judge-scratch/s10 --script empty.json printed one JSON object with every brief key: tick 60, screen title, menu_index 0, language en, volume 5, texts [Hold the gate, Start, Settings, Quit], score 0, wave 1, gate_health 5, guard_y 6.0, walkers [], bolts []."
+        },
+        {
+          "id": "m02",
+          "kind": "checkable",
+          "pass": true,
+          "evidence": "--frame wrote PNGs whose IHDR says 800 x 480 (title.png, and cold.png from a cold-engine run). I opened them and they show the drawn view."
+        },
+        {
+          "id": "m03",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Title texts were [Hold the gate, Start, Settings, Quit]. [[0,down],[1,enter]] gave screen settings. [[0,enter]] for 1 tick gave screen play, wave 1, score 0, gate_health 5, HUD 'Wave 1 of 5'."
+        },
+        {
+          "id": "m04",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "In Settings, 7 Rights from 5 gave volume 10 ('Volume: 10'). 7 Lefts gave 0 ('Volume: 0'). 1 Left gave 4."
+        },
+        {
+          "id": "m05",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Settings, Down, Right turned texts into [Ajustes, Volumen: 3, Idioma: Español, Atrás] in that same run. The next run's title was [Defiende la puerta, Empezar, Ajustes, Salir], play was [Puntos: 0, Oleada 1 de 5, Puerta: 5] and pause was [En pausa, Continuar, Título]. The frames show the same."
+        },
+        {
+          "id": "m06",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Run 1 set volume 3 and es; s4/settings.json held {volume 3, language es}. Run 2 with the same --settings started with language es and volume 3 and Spanish title texts. A new folder s5 started with en and 5."
+        },
+        {
+          "id": "m07",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Up held 30 ticks: guard_y 6 -> 9.0. 15 ticks: 7.5. Up held 300 ticks: 12.0. Down held 300 ticks: 0.0. x is fixed at 2 (frame: guard at pixel x=160 = 2 units)."
+        },
+        {
+          "id": "m08",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Shoot held 189 ticks (guard at y 7): bolts at 18.1, 12.5 and 6.9, spaced 5.6 = 24 ticks x 14/60, never more. Between ticks 36 and 37 a bolt moved 7.8333 -> 8.0667 (0.2333/tick = 14/s). The next bolt (23.7) was gone past x = 20."
+        },
+        {
+          "id": "m09",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "No input, tick 600: exactly 5 walkers, x 5.05/7.3/9.55/11.8/14.05 (2.25 apart = 1.5 s at 1.5 u/s), lanes 4, 10, 6, 6, 8. Tick 810: 4 walkers and gate 4, with no 6th spawned. Speed 0.025 per tick."
+        },
+        {
+          "id": "m10",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Guard at y 4, shooting: tick 95 walker (y 4) health 1 and that bolt gone. Tick 130: walker gone, score 10, lane-10 walker untouched. Guard at y 4.7 (0.7 off): bolt at x 17.87 passed the walker at 16.8, health 2. At y 4.5 it hit."
+        },
+        {
+          "id": "m11",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "No input: tick 810 gate 4 after the first walker reached x 0 and was removed. Tick 1300: screen lost, texts [You lost, Score: 0, Enter: title], gate 0. A run scoring 50 then idling ended lost with [Has perdido, Puntos: 50, Enter: título]."
+        },
+        {
+          "id": "m12",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Winning script, seed 1: tick 472 field empty, wave 1, score 50. Tick 651 wave 2, texts 'Wave 2 of 5'. Tick 652 first wave-2 walker at x 20 (180 ticks = 3 s after the field emptied). Wave 2: 5 killed plus 2 on field at 1200, score 120 and empty at 1383, nothing new by 1561 = 7 walkers."
+        },
+        {
+          "id": "m13",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "131-input script (planned with the game's replica.py bot; the outcome is the game's own), seed 1, 5100 ticks: screen won, score 450, gate 5, texts [You won, Score: 450, Enter: title]. The same run plus enter at 5060 ended on title."
+        },
+        {
+          "id": "m14",
+          "kind": "behaviour",
+          "pass": false,
+          "evidence": "Pause works: escape at 11, state at tick 200 is still walker x 19.775 and guard 7.0, texts [Paused, Resume, Title]. Title works: down+enter gives the title. Resume does not continue from the same state. Escape at 11, enter at 100, 1 tick: walker at 19.575, but pausing at 11 plus 1 step should give 19.75 (7 extra steps). With up held it was 19.375 (15 extra steps) while the guard moved only 1 step. The headless script lets the engine clock run in real time after Resume, before it steps again."
+        },
+        {
+          "id": "m15",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Same script (move, shoot, move, shoot), seed 1, 700 ticks, run twice: byte-identical output. Seed 2 gave lanes 10,6,10,6 and seed 7 gave 6,2, against seed 1's 10,6,6. (This holds for scripts without a pause; see defects.)"
+        },
+        {
+          "id": "m16",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "hit.png at tick 100 matches the state. Guard (2,4) at pixel (160,300). Walkers (17.55,4) at (626,300), orange for health 1, and (19.8,10) at (694,120). Bolts at x 3.63, 9.23, 14.83 at pixels 209, 377, 545 on y 4. Gate grey bar at x 0. HUD shows Score 0, Wave 1 of 5, Gate 5."
+        },
+        {
+          "id": "m17",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "title_down.png has the Settings button ringed (focus). settings.png has Volume ringed. settings_es.png shows Ajustes with Idioma: Español ringed. title_es.png shows Defiende la puerta with Empezar ringed."
+        },
+        {
+          "id": "m18",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Every shown string is in assets/strings/en.json and es.json; screens use @keys (assets/ui/*.json). README 'Add a language' gives the steps (copy en.json, set locale/name, translate, add the code to load_settings in the headless script)."
+        },
+        {
+          "id": "m19",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "README has a How to play key table and the exact headless/frame command (python work/tools/headless.py ... [--frame out.png]). I ran it as written from the run folder, also from a stopped engine, and it worked."
+        }
+      ],
+      "totals": {
+        "behaviour": {
+          "passed": 16,
+          "of": 17
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 18,
+          "of": 19
+        }
+      },
+      "defects": [
+        "Pause/Resume in a headless script is not deterministic: after Resume the engine clock runs in real time (7-15 uncounted walker steps, no held input) before the next scripted step. So the same seed and script with a pause can give different states depending on machine speed.",
+        "Spanish end screens say 'Enter: título' (the key name 'Enter' is left in English; Spanish keyboards usually call it 'Intro').",
+        "In a window (per README), Left/Right do nothing on Settings; volume only steps with Enter and wraps 10 -> 0. The brief asks for Left/Right.",
+        "Quit cannot be chosen in the headless run (README: the engine refuses it to agents), so I could not observe what Quit does.",
+        "Running the frame command leaves engine capture files in work/captures/ (written by the game's own sight_frame call)."
+      ],
+      "could_not_check": []
+    },
+    "builder": {
+      "tokens": 141857,
+      "tool_uses": 62,
+      "duration_s": 957.6,
+      "by_kind": {
+        "input": 122,
+        "cache_write": 136570,
+        "cache_read": 5436350,
+        "output": 68189,
+        "requests": 61,
+        "context_at_end": 141857
+      },
+      "weighted": 1055414,
+      "cost_usd": 1.7720490000000002,
+      "turns": 63,
+      "exit": 0,
+      "model": "claude-sonnet-5-5",
+      "models": [
+        "claude-sonnet-5-5"
+      ],
+      "tokens_complete": true,
+      "engine_stopped": true,
+      "ended": "done",
+      "over_token_cap": false,
+      "over_wall": false,
+      "note": ""
+    },
+    "judge": {
+      "tokens": 79117,
+      "tool_uses": 44,
+      "duration_s": 762.2,
+      "by_kind": {
+        "input": 78,
+        "cache_write": 73830,
+        "cache_read": 1950431,
+        "output": 24775,
+        "requests": 39,
+        "context_at_end": 79117
+      },
+      "weighted": 411284,
+      "cost_usd": 1.4765382,
+      "turns": 45,
+      "exit": 0,
+      "model": "claude-opus-5-5",
+      "models": [
+        "claude-opus-5-5"
+      ],
+      "tokens_complete": true,
+      "engine_stopped": true,
+      "ended": "done",
+      "engine": {
+        "calls": 3648,
+        "refused": 47,
+        "args_bytes": 81009,
+        "answer_bytes": 2122263,
+        "by_tool": {
+          "game_act": 1391,
+          "game_state": 918,
+          "time_control": 585,
+          "logic_input": 339,
+          "ui_act": 115,
+          "ui_tree": 71,
+          "engine_info": 54,
+          "camera_set": 53,
+          "logic_build": 53,
+          "logic_status": 53,
+          "sight_frame": 16,
+          "engine.start": 2,
+          "engine.stop": 2
+        }
+      }
+    },
+    "where": {
+      "run": "medium-engine-1",
+      "requests": 61,
+      "steps": 62,
+      "steps_before_the_first_code": 16,
+      "weighted": 1055414,
+      "weighted_by_kind": {
+        "read_again": 543635,
+        "written_out": 340945,
+        "new_in_context": 170834
+      },
+      "builds": {
+        "steps": 6,
+        "failed": 1
+      },
+      "how": "weighted_by_kind is exact (the run's own token counts times the weights); a step's kind is a reading of its command's text, and answered_tokens / written_tokens are characters / 4",
+      "by_step": {
+        "find tools and their arguments": {
+          "steps": 10,
+          "answered_tokens": 11097,
+          "written_tokens": 2818
+        },
+        "build the module": {
+          "steps": 6,
+          "answered_tokens": 7436,
+          "written_tokens": 5857
+        },
+        "write code": {
+          "steps": 11,
+          "answered_tokens": 1034,
+          "written_tokens": 11403
+        },
+        "read the engine's documents and source": {
+          "steps": 13,
+          "answered_tokens": 9687,
+          "written_tokens": 2189
+        },
+        "read its own files": {
+          "steps": 7,
+          "answered_tokens": 4129,
+          "written_tokens": 379
+        },
+        "call the engine": {
+          "steps": 6,
+          "answered_tokens": 2394,
+          "written_tokens": 952
+        },
+        "words between steps": {
+          "steps": 0,
+          "answered_tokens": 0,
+          "written_tokens": 913
+        },
+        "run its own checks": {
+          "steps": 2,
+          "answered_tokens": 350,
+          "written_tokens": 269
+        },
+        "start or stop the engine": {
+          "steps": 2,
+          "answered_tokens": 315,
+          "written_tokens": 186
+        },
+        "look at a frame": {
+          "steps": 4,
+          "answered_tokens": 0,
+          "written_tokens": 187
+        },
+        "other": {
+          "steps": 1,
+          "answered_tokens": 35,
+          "written_tokens": 100
+        }
+      }
+    }
+  }
+}

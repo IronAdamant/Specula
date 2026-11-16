@@ -99,13 +99,31 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     (`game.json`) that the project shell hosts with screens, words, settings, an outcome and a score;
     a project remembers (notes, and a brief at an agent's first call); `specula new` makes a project
     that builds and plays, and `specula play` runs it. Two reviewers that did not write it said not
-    to merge; what they found is fixed (CHANGELOG, part 3), and the fixes are reviewed again.
-    **The comparison of 2026-11-14 is run again with the same harness** (now `examen leverage`); its
-    figures go into [docs/design/LEVERAGE.md](docs/design/LEVERAGE.md) beside M5's.
+    to merge three times; what they found is fixed (CHANGELOG, part 3), and on the fourth round both
+    said merge. The full gate passed on `2a0c5669`.
+  - **Part 3's measure went the wrong way** (2026-11-16; [docs/design/LEVERAGE.md](docs/design/LEVERAGE.md),
+    "Results (2026-11-16)"; [perf/leverage/2026-11-16](perf/leverage/2026-11-16/report.md)). The
+    comparison of 2026-11-14 was run again with the same harness (now `examen leverage`), twelve
+    builds, all judged. **Through the engine the same games cost more than they did in M5, not
+    less:** 6.8 times the plain arm's tokens on the small job (M5: 5.2), 4.0 on the medium one (3.1),
+    2.2 on the change (1.7), for the same checks passed. Two runs a cell: only the medium rise is
+    beyond what two runs alike have shown, and no cell got cheaper. Part 3 closed what M5 found
+    missing (an SDK for a project, screens and settings for a module-built game, the tick), and the
+    builders used it; what it costs is requests, and they took more (50 and 61 on the medium job
+    against 31 and 32). What the runs say would lower them is ROADMAP M6's item "The first hour,
+    measured again": a whole game's headless check in one call, a clock that stays with the agent
+    stepping it, settings an agent can show as kept, and memory that reaches an agent working from
+    a shell (no builder called a memory tool or wrote a note). **None of that is built; whether it
+    comes before part 4 is the owner's to say.**
   - **Part 2** (each script ported to Rust when it is next touched): the comparison's harness is
     ported; 81 scripts are left in `scripts/` (79 of them Python).
-  - **Next on the laptop: part 4, and not before the owner says** (2026-11-16: "Advise me when we get
-    to FINISH of part 3 please. Don't start part 4 yet").
+  - **Next on the laptop: the owner's choice, and nothing before they say** (2026-11-16: "Advise me
+    when we get to FINISH of part 3 please. Don't start part 4 yet"). Part 3 is finished as built;
+    its measure did not move. Either a second pass at the first hour (ROADMAP M6, "The first hour,
+    measured again") or part 4. Claude's recommendation: the second pass first, small and aimed at
+    the number of requests, measured again with more runs on the medium job, because the cost of
+    building through the engine is M6's first focus item and what would lower it is now known from
+    the runs. Neither branch (`m6-verify`, `m6-first-hour`) is pushed or merged.
   - **Asked for from outside:** the research behind parts 4 and 5
     ([docs/research/LIBRARY_RESEARCH_BRIEF.md](docs/research/LIBRARY_RESEARCH_BRIEF.md)), by the
     owner's Grok bots, under way.
@@ -160,6 +178,11 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       582,586 against 187,084; a change to it 181,378 against 109,716. About 5, 3.1 and 1.7 times, for
       the same checks passed within one. Requests to the model: 27 to 39 against 8; 31 and 32 against
       8 and 10; 11 and 13 against 10 and 11.
+    - *The same, after M6 part 3* (2026-11-16, on `2a0c5669`; the figure a next attempt is compared
+      with): a one-screen game 678,546 against 99,776; a medium game 928,953 against 231,054; a
+      change 246,634 against 114,280. About 6.8, 4.0 and 2.2 times, for the same checks passed within
+      one. Requests: 36 and 68 against 8 and 7; 61 and 50 against 9 and 13; 33 and 14 against 12
+      and 13.
     - *What verifying costs* (2026-11-15 and 16): 3,049 tests in the gate; the tests themselves about
       2 minutes; the gate about 25 minutes for each Rust version; the audit's 70 live checks about an
       hour; CI from nothing 10 minutes on Linux and 17 to 25 on Windows.
@@ -791,9 +814,10 @@ In practice that means six **foundations** that apply to every change from M1 on
 
 **What it can't do yet:**
 - **Pay for itself at small sizes.** The same small and medium games, built through the engine and without it by
-  the same model, pass the same checks, and through the engine they cost three to five times the tokens (1.7
-  times for a change to an existing game): more requests, each re-reading the context, and more written
-  ([docs/design/LEVERAGE.md](docs/design/LEVERAGE.md)). M6's work.
+  the same model, pass the same checks, and through the engine they cost four to seven times the tokens (2.2
+  times for a change to an existing game; measured 2026-11-16, after M6 part 3, which did not lower it: in
+  M5 it was three to five times, and 1.7): more requests, each re-reading the context, and more written
+  ([docs/design/LEVERAGE.md](docs/design/LEVERAGE.md)). M6's work, still.
 - **Tell a story for a game.** A storyline tree, reputation, an RPG set-up, captions with voices and music
   packs are M6's, noted on 2026-11-16 and not designed. (Win and loss conditions, a score, and notes kept with a
   project were built in M6 part 3.) Round and human form still costs an agent far more than boxes do (the five

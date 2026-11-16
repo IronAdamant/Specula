@@ -1,0 +1,261 @@
+{
+  "run": {
+    "leverage": 1,
+    "job": "change",
+    "arm": "engine",
+    "n": 2,
+    "phase": "judge",
+    "prepared": "2026-11-16T09:25:06Z",
+    "settings": {
+      "runs_per_cell": 2,
+      "builder_model": "claude-sonnet-5-5",
+      "judge_model": "claude-opus-5-5",
+      "limits": {
+        "token_cap": 500000,
+        "wall_s": 3600
+      },
+      "judge": {
+        "token_cap": 150000,
+        "wall_s": 1800
+      },
+      "token_weights": {
+        "input": 1,
+        "cache_write": 1.25,
+        "cache_read": 0.1,
+        "output": 5
+      }
+    },
+    "from": "medium-engine-2",
+    "engine_build": "2a0c5669",
+    "port": 7706
+  },
+  "costs": {
+    "engine_stopped": true,
+    "engine": {
+      "calls": 9074,
+      "refused": 7,
+      "args_bytes": 311519,
+      "answer_bytes": 7319066,
+      "by_tool": {
+        "time_control": 6694,
+        "logic_status": 1401,
+        "logic_input": 947,
+        "game_act": 21,
+        "engine.stop": 8,
+        "engine.start": 7,
+        "logic_build": 7,
+        "sight_frame": 4
+      }
+    },
+    "left": {
+      "files": 20,
+      "bytes": 56567,
+      "text_lines": 1298,
+      "lines_by_kind": {
+        ".json": 264,
+        ".md": 150,
+        ".py": 259,
+        ".rs": 606,
+        ".toml": 19
+      }
+    },
+    "finished": "2026-11-16T09:48:16Z",
+    "verdict": {
+      "items": [
+        {
+          "id": "c01",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Replay of the bot's winning script (seed 1, Normal) to tick 6300: wave 6, runner {kind runner, health 1}, score 555 = 450 + 7x15. Easy replay showed two runners 4.5 units apart (90 ticks x 0.05/tick = 3 u/s, one every 1.5 s). The win at 6960 scored 675 = 450 + 15x15, so 15 runners."
+        },
+        {
+          "id": "c02",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "HUD 'Wave 1 of 6' / 'Oleada 1 de 6' / 'Vague 1 sur 6' and 'Wave 6 of 6' in the frame. After wave 5 the run stayed in play at wave 6. Full replay: won, 675, gate 5. With the last shot removed, the last runner went through the gate: won, 660, gate 4."
+        },
+        {
+          "id": "c03",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Right on Language goes en->es->fr->en, Left from en goes to fr. In French: title 'Défendez la porte/Commencer/Réglages/Quitter', settings 'Réglages/Volume : 5/Langue : Français/Difficulté : Difficile/Retour', play/paused 'Score : 0/Vague 1 sur 6/Santé de la porte : 5/Pause/Reprendre/Titre', lost 'Vous avez perdu/Score final : 0/Entrée : titre', won 'Vous avez gagné/Score final : 660'. Frames agree."
+        },
+        {
+          "id": "c04",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Settings texts are [Settings, Volume, Language, Difficulty: Normal, Back] and Difficulty is menu_index 2. Right x2 gives hard (clamped), Left x3 gives easy. In French: 'Difficulté : Difficile' / 'Facile'. The frame marks '> Difficulty: Hard <'."
+        },
+        {
+          "id": "c05",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Wave 1 walkers: easy health 1, normal 2, hard 3. Runners: easy replay 1, normal replay 1, Hard bot (autoplay --difficulty hard, stopped at tick 7000 in wave 6) 2."
+        },
+        {
+          "id": "c06",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Run 1 set volume 7, es, easy. Run 2 with the same --settings started at title with 7/es/easy. A fresh folder gave 5/en/normal. An old settings.json {volume 3, language es} loaded as 3/es/normal."
+        },
+        {
+          "id": "c07",
+          "kind": "checkable",
+          "pass": true,
+          "evidence": "State has 'difficulty' and walkers have 'kind' (walker/runner). Every --frame PNG written was 800 x 480 (header checked on 20 frames)."
+        },
+        {
+          "id": "c08",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "Every m-item was re-run and still passes (see the m-items below)."
+        },
+        {
+          "id": "c09",
+          "kind": "behaviour",
+          "pass": true,
+          "evidence": "CHANGES.md lists the three changes with files and functions (lib.rs WAVES/wave_size/health_for, fr.json, hud.json m4, gate.py, autoplay.py), what was checked and how, what was not checked, and what was wrong before."
+        }
+      ],
+      "totals": {
+        "behaviour": {
+          "passed": 8,
+          "of": 8
+        },
+        "checkable": {
+          "passed": 1,
+          "of": 1
+        },
+        "all": {
+          "passed": 9,
+          "of": 9
+        }
+      },
+      "defects": [
+        "README's 'What I checked' section is stale: it still reports a win of 45 walkers for 450 points in 5420 ticks, from before the sixth wave.",
+        "A headless run takes real time (about 60 ticks/s, about 2 min for a full run; the autoplay bot took about 6 min), as the README admits.",
+        "Settings are kept only by the headless runner, not when the game is played in the engine window (stated in README/CHANGES)."
+      ],
+      "could_not_check": []
+    },
+    "builder": {
+      "tokens": 47564,
+      "tool_uses": 17,
+      "duration_s": 1195.5,
+      "by_kind": {
+        "input": 28,
+        "cache_write": 42277,
+        "cache_read": 417225,
+        "output": 15638,
+        "requests": 14,
+        "context_at_end": 47564
+      },
+      "weighted": 172787,
+      "cost_usd": 0.36726650000000005,
+      "turns": 18,
+      "exit": 0,
+      "model": "claude-sonnet-5-5",
+      "models": [
+        "claude-sonnet-5-5"
+      ],
+      "tokens_complete": true,
+      "engine_stopped": true,
+      "ended": "done",
+      "over_token_cap": false,
+      "over_wall": false,
+      "note": ""
+    },
+    "judge": {
+      "tokens": 81061,
+      "tool_uses": 40,
+      "duration_s": 1800.4,
+      "by_kind": {
+        "input": 64,
+        "cache_write": 75774,
+        "cache_read": 1568339,
+        "output": 325,
+        "requests": 32,
+        "context_at_end": 81061
+      },
+      "weighted": 253240,
+      "cost_usd": null,
+      "turns": null,
+      "exit": 1,
+      "model": "claude-opus-5-5",
+      "models": null,
+      "tokens_complete": false,
+      "engine_stopped": true,
+      "ended": "wall",
+      "engine": {
+        "calls": 11953,
+        "refused": 54,
+        "args_bytes": 423487,
+        "answer_bytes": 8292529,
+        "by_tool": {
+          "time_control": 8865,
+          "logic_status": 1451,
+          "logic_input": 1403,
+          "game_act": 162,
+          "engine.stop": 55,
+          "engine.start": 54,
+          "logic_build": 54,
+          "sight_frame": 18
+        }
+      }
+    },
+    "where": {
+      "run": "change-engine-2",
+      "requests": 14,
+      "steps": 17,
+      "steps_before_the_first_code": 5,
+      "weighted": 172787,
+      "weighted_by_kind": {
+        "read_again": 41722,
+        "written_out": 78190,
+        "new_in_context": 52874
+      },
+      "builds": {
+        "steps": 1,
+        "failed": 0
+      },
+      "how": "weighted_by_kind is exact (the run's own token counts times the weights); a step's kind is a reading of its command's text, and answered_tokens / written_tokens are characters / 4",
+      "by_step": {
+        "read its own files": {
+          "steps": 4,
+          "answered_tokens": 10189,
+          "written_tokens": 148
+        },
+        "write code": {
+          "steps": 2,
+          "answered_tokens": 82,
+          "written_tokens": 4174
+        },
+        "build the module": {
+          "steps": 1,
+          "answered_tokens": 2652,
+          "written_tokens": 51
+        },
+        "run its own checks": {
+          "steps": 7,
+          "answered_tokens": 926,
+          "written_tokens": 709
+        },
+        "find tools and their arguments": {
+          "steps": 1,
+          "answered_tokens": 74,
+          "written_tokens": 1081
+        },
+        "words between steps": {
+          "steps": 0,
+          "answered_tokens": 0,
+          "written_tokens": 640
+        },
+        "look at a frame": {
+          "steps": 2,
+          "answered_tokens": 47,
+          "written_tokens": 50
+        }
+      }
+    }
+  }
+}

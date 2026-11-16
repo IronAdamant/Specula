@@ -18,10 +18,11 @@ asset export. The first game, *Sepulcra*, is its dogfood. It runs on Windows onl
 the same machine only.
 
 **What it does not do yet, measured:** the same small games built through the engine and without it, by the same
-model, pass the same checks, and through the engine they cost about three to five times the tokens
-([docs/design/LEVERAGE.md](docs/design/LEVERAGE.md)). The engine is meant for medium to very large games, where
-there is more to reuse; making it pay from the first hour, at every size, is M6's work, measured again with the
-same harness.
+model, pass the same checks, and through the engine they cost about four to seven times the tokens
+([docs/design/LEVERAGE.md](docs/design/LEVERAGE.md); measured 2026-11-16. M5's baseline of 2026-11-14 was
+three to five times, and M6's first attempt to lower it did not). The engine is meant for medium to very large
+games, where there is more to reuse; making it pay from the first hour, at every size, is M6's work, measured
+again with the same harness after each attempt.
 
 See [HANDOFF.md](HANDOFF.md) for the current state, [docs/ROADMAP.md](docs/ROADMAP.md) and
 [docs/ENGINE_PLAN.md](docs/ENGINE_PLAN.md).
