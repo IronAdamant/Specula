@@ -34,6 +34,29 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
     its build folder between runs, and builds without debug information (measured on the development
     laptop: a workspace build from nothing in 337 s and 2.6 GB, against at least 442 s and 9.7 GB with it).
     None of this has run on CI yet.
+  - **The live audit through the Rust runner: 70 of 70** (2026-11-16).
+- **Part 3, the engine pays from the first hour** ([docs/design/FIRST_HOUR.md](docs/design/FIRST_HOUR.md)):
+  - **A project gets its SDK from the engine** (`specula sdk`; the engine carries the sources and trusts
+    them by content), and **a module builds in a folder of any depth** (the link's path length is known
+    before the build, and a short build folder is taken when it would not fit).
+  - **A game is a file.** `game.json` (`specula-ludus`) says the title, the modules, the settings, when a
+    run is won or lost and what its score is. A project with one, and no executable of its own, is hosted
+    by **the project shell**: a title, pause, an outcome, a score, screens and words that are the project's
+    data, strings by language, settings a player keeps. `game_state` reads it and `game_act` presses a
+    button's word for an agent.
+  - **A project remembers** (`specula-memoria`): notes with a kind and the paths they are about
+    (`memory_note`, `memory_get`, `memory_list`, `memory_why`), one replacing another, and a brief that an
+    agent's first call answers with, said to be the project's words and never the engine's.
+  - **`specula new` makes a project that builds and plays**: a sample game, its module, its screens and
+    words, a check, and notes that say how it is built and checked (`--bare` for an empty one).
+    **`specula play NAME`** (`--run`) loads a project's modules at start, as an owner or a granted lead
+    last built them; sources changed since wait for a build (`--run-as-is` runs what is on disk).
+  - **The first live check written in Rust**, `new_project_check`, and **the comparison's harness in Rust**
+    (`examen leverage`; `scripts/leverage.py` is gone).
+  - **Reviewed by two models that did not write it; both said not to merge, and why** (`--run` built a
+    builder's unreviewed code; an agent could save, load and change the player's settings file through
+    `game_act`; a save of the sample game could not be loaded; two notes written at once could replace each
+    other; the gate could record a commit it had not measured). Each is fixed with a test that holds it.
 
 ### M5, done (2026-11-06 to 2026-11-15)
 

@@ -90,13 +90,22 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
 - **Where M6 stands** (kept current; ROADMAP M6 has the fourteen parts):
   - **Part 1, verifying faster: built, reviewed twice, gated, committed** (2026-11-16, branch
     `m6-verify`). The Rust pin, the gate and the live checks' runner in Rust (`tools/examen`), the
-    sizing, CI's skip and its kept build folder. **Not shown yet:** anything in the workflows, which
-    run on GitHub at the first push and not before; and the full live audit through the new runner
-    (20 of its 70 runs had passed when a pause cut it short; it is run again from the start).
-  - **Next on the laptop:** part 3, the engine paying from the first hour, with part 2 (each script
-    ported to Rust when it is next touched) beside it. **The owner is told when part 3 is finished, and
-    part 4 does not start before they say** (2026-11-16: "Advise me when we get to FINISH of part 3
-    please. Don't start part 4 yet").
+    sizing, CI's skip and its kept build folder. The full live audit through the new runner passed,
+    70 of 70. **Not shown yet:** anything in the workflows, which run on GitHub at the first push and
+    not before.
+  - **Part 3, the engine paying from the first hour: built** (2026-11-16, branch `m6-first-hour`, on
+    top of `m6-verify`; [docs/design/FIRST_HOUR.md](docs/design/FIRST_HOUR.md); neither branch is pushed
+    or merged). A project gets its SDK from the engine; a module builds at any depth; a game is a file
+    (`game.json`) that the project shell hosts with screens, words, settings, an outcome and a score;
+    a project remembers (notes, and a brief at an agent's first call); `specula new` makes a project
+    that builds and plays, and `specula play` runs it. Two reviewers that did not write it said not
+    to merge; what they found is fixed (CHANGELOG, part 3), and the fixes are reviewed again.
+    **The comparison of 2026-11-14 is run again with the same harness** (now `examen leverage`); its
+    figures go into [docs/design/LEVERAGE.md](docs/design/LEVERAGE.md) beside M5's.
+  - **Part 2** (each script ported to Rust when it is next touched): the comparison's harness is
+    ported; 81 scripts are left in `scripts/` (79 of them Python).
+  - **Next on the laptop: part 4, and not before the owner says** (2026-11-16: "Advise me when we get
+    to FINISH of part 3 please. Don't start part 4 yet").
   - **Asked for from outside:** the research behind parts 4 and 5
     ([docs/research/LIBRARY_RESEARCH_BRIEF.md](docs/research/LIBRARY_RESEARCH_BRIEF.md)), by the
     owner's Grok bots, under way.
@@ -684,8 +693,10 @@ In practice that means six **foundations** that apply to every change from M1 on
   `--owner NAME` / `--lead NAME` / `--reviewer NAME` (operator grants: roles are never self-declared),
   `--trace DIR`, `--trace-file on|off`, `--strict-budget` (an engine-thread stall fails the run), `--terrain on|off`,
   `--no-activate` (the window opens behind the others without taking the keyboard from the window you are in:
-  the scripts pass it), `--project DIR` (the engine starts in that folder, as a project), `--launcher` (the
-  start screen, as with no argument), and `-- GAME ARGS` for a hosted game. Agent names are plain ASCII.
+  the scripts pass it), `--project DIR` (the engine starts in that folder, as a project), `--run` (a project's
+  modules are loaded at start, as an owner or a granted lead last built them; `--run-as-is`: whatever is on
+  disk now), `--launcher` (the start screen, as with no argument), and `-- GAME ARGS` for a hosted game. Agent
+  names are plain ASCII.
 - **Answers are concise by default** on the heavy tools; pass `response_format: "detailed"` (per call, or once in
   `agent_hello`) for everything. Repo scripts use `scripts/specula_mcp.py` or `specula_mcp.detailed()`.
 - **Tools** (each one's schema is in `tools/list`):
@@ -758,6 +769,10 @@ In practice that means six **foundations** that apply to every change from M1 on
     native code: [docs/design/SECURITY.md](docs/design/SECURITY.md)).
   - Performance and time: `perf_frame` (GPU ms per pass, render graph, draws, memory, pacing, budget errors from
     `perf.toml`), `perf_capture`, `perf_zones`, `perf_memory`, `time_control` (pause, step, scale), `engine_info`.
+  - A project's own game (a `game.json` and modules, no executable of its own: [docs/design/FIRST_HOUR.md](docs/design/FIRST_HOUR.md)):
+    `game_state` (the phase, the outcome, the score, the screens, the settings, what is wrong), `game_act`
+    (a button's word pressed by an agent: start, pause, a setting, the game's own actions); `memory_note`,
+    `memory_get`, `memory_list`, `memory_why` (what the project remembers; `agent_hello` answers with the brief).
   - A hosted game adds `play_*` tools (Sepulcra: `play_new`, `play_command`, `play_control`, `play_state`,
     `play_map`, `play_ui`, `play_record`, `play_replay`).
 - **Rendering:** Vulkan render graph, PBR-lite and stylised materials, directional and point lights, shadow maps,
@@ -779,12 +794,14 @@ In practice that means six **foundations** that apply to every change from M1 on
   the same model, pass the same checks, and through the engine they cost three to five times the tokens (1.7
   times for a change to an existing game): more requests, each re-reading the context, and more written
   ([docs/design/LEVERAGE.md](docs/design/LEVERAGE.md)). M6's work.
-- **Tell a story or keep score for a game, or remember a game for the agent building it.** A storyline
-  tree, reputation, an RPG set-up, win conditions and scoring, captions with voices, music packs and notes
-  kept with a project are M6's, noted on 2026-11-16 and not designed. Round and human form still costs an
-  agent far more than boxes do (the five form items, also M6's).
-- **Give a module-built game an interface.** Screens, strings by language and saved settings reach a player
-  only through a hosted game's executable, as Sepulcra's does.
+- **Tell a story for a game.** A storyline tree, reputation, an RPG set-up, captions with voices and music
+  packs are M6's, noted on 2026-11-16 and not designed. (Win and loss conditions, a score, and notes kept with a
+  project were built in M6 part 3.) Round and human form still costs an agent far more than boxes do (the five
+  form items, also M6's).
+- **Give a module-built game more than the basics of an interface.** A project with a game file has screens,
+  strings by language, saved settings, a title, pause, an outcome and a score without an executable of its own
+  (the project shell). Not yet: key rebinding screens, colour-vision themes, captions, and conditions that read
+  the world (a condition reads what the modules keep, the settings and the run).
 - Sepulcra uses physics only for its shamblers' ragdoll deaths (gameplay is still rules, not physics). It runs on its
   Rust rules by default (`--rules lex` plays it from Lex). Modules can't load off Windows yet (no `dlopen`), and a
   module stuck in a loop that makes no requests can't be preempted.
