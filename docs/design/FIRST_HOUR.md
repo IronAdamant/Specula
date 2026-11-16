@@ -221,6 +221,51 @@ The same three jobs, harness, models and judges as 2026-11-14, with the engine a
 `specula new` and nothing copied by hand. Reported beside M5's numbers, every run, failures included.
 A fourth job that needs more to reuse is part 12's.
 
+## Where the build stands (kept current while part 3 is built; removed when it is done)
+
+**Built, each crate's own tests passing; not yet through the gate** (2026-11-16, branch
+`m6-first-hour`):
+
+| Piece | Where |
+|---|---|
+| The SDK's sources carried by the engine; `write_into`, `differs`, `is_the_engines` | `crates/specula-logic/src/sdk_source.rs` |
+| Trust by content; `sdk_differs` refused before Cargo runs | `specula_logic::build::{trusted_manifests, sdk_differs}`, `vet` |
+| `specula sdk [NAME|FOLDER]` | `launch_cli.rs` (`Cli::Sdk`), `launch_run.rs` (`write_sdk`) |
+| The link's path length known before a build; the short folder | `build::link_arguments_chars`; `logic/tools.rs` (`pick_target`, `short_targets_root`, `build_dir` in the answer) |
+| The game file, conditions, settings, actions, the run's state machine | `crates/specula-ludus` (`game`, `cond`, `settings`, `action`, `run`) |
+| Notes, superseding, finding, the brief | `crates/specula-memoria` |
+| An event from the engine to the modules; a view of what modules keep | `LogicHost::{push_engine_event, state_of, states}` |
+
+**Still to build, in this order:**
+
+1. **`Game` gains four hooks with defaults** (`crates/specula/src/game.rs`): `after_modules(ctx, &ModuleStates)`
+   after every tick's modules ran; `take_module_events(&mut Vec<(String, Value)>)`, pushed with
+   `push_engine_event` right before the modules tick; `take_clock() -> Option<bool>`, applied to the
+   engine's clock as the game's own doing; `game_state() -> Option<Json>`. A new
+   `sim_writes::GameCall::AfterModules`.
+2. **The shell** (`crates/specula/src/shell.rs`, a `Game`): holds a `specula_ludus::Run` and `Settings`,
+   a `specula_ui::Ui` with a second one for captures (as `games/sepulcra-app/src/hud.rs` does), a
+   `specula_input::Input` over the interface's own actions, and the string tables
+   (`specula_lingua::{Table, Catalog}` into `specula_ui::Strings`). Each frame: input, the state map
+   filled from the modules' stores (`<module>.<key>`; a map with `msg` is a string-table line), the
+   settings and the run; `Ui::frame`; each `UiEvent::Action` parsed with `Action::parse` and given to
+   `Run::act`; the effects done (clock, events, the settings file through `take_settings`, saves through
+   `take_requests`). Its files are read at start and again in `assets_changed` (small, bounded reads).
+3. **Its built-in files**, which are also what `specula new` writes: a neutral `theme.json`, the five
+   screens, `strings/en.json`, `input.json`.
+4. **Wiring** in `run_with` (`crates/specula/src/lib.rs`, after the project is opened and before
+   `configure`): a project with a `game.json` and no hosted game gets the shell; the clock takes
+   `tick_hz` from it as from any game. `--run` builds and loads the game file's modules at start.
+5. **Tools**: `game_state` (family `game`), `memory_note`, `memory_get`, `memory_list`, `memory_why`
+   (family `memory`); each needs its parse arm and definition (`tools.rs` or a `*_tools.rs`), its access
+   (`authority.rs`), its catalog line and family (`toolscope.rs`), its argument bounds (`bounds.rs`).
+   `agent_hello` answers with the project's brief.
+6. **`specula new`** writes the whole project (`launch_store::create`), `--bare` what it wrote before.
+7. **A live check in Rust** (`tools/examen`): a new project is made, its module built, the run started
+   from the title by `ui_act`, stepped, won, and `game_state` read; the language changed and kept across a
+   restart. Then the comparison's harness starts its engine arm from `specula new`, and the comparison is
+   run again.
+
 ## What this does not do
 
 - It does not make a module's first build instant: Cargo still compiles the SDK once a project.
