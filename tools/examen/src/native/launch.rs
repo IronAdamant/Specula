@@ -36,6 +36,12 @@
 //! to open on a window with no text in it. Since M6 part 3 a new project is a game with a title
 //! screen, and its window shows that: the expectation is now that the window no longer shows
 //! the start screen and that the engine says the project's game stands at its title.
+//!
+//! **Where it differs from the script otherwise.** A picture is waited for (bounded) where the
+//! script slept a fixed time: the window shows what the expectation is about, or the wait ends
+//! and the expectation fails on the last picture. A folder the check has run in before is
+//! refused (the script cleared its folder; a check here deletes nothing it did not make this
+//! run). It still runs the release executable, as the script did.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -101,8 +107,29 @@ impl Cli {
     }
 
     /// Runs `cmd` in the check's folder and reads its answer.
-    fn answer(&self, mut cmd: Command, limit: Duration) -> (Option<i32>, Json) {
-        let none = |why: String| (None, Json::obj([("error", Json::from("no_answer")), ("text", Json::from(why.as_str()))]));
+    fn answer(&self, cmd: Command, limit: Duration) -> (Option<i32>, Json) {
+        match self.said(cmd, limit) {
+            Ok((code, out, err)) => {
+                // (Exit code 2, "no engine reached", is said on standard error.)
+                let first = if code == 2 { &err } else { &out };
+                let text = if !first.is_empty() {
+                    first
+                } else if !err.is_empty() {
+                    &err
+                } else {
+                    &out
+                };
+                (Some(code), Json::parse(text).unwrap_or_else(|_| Json::obj([("text", Json::from(text.as_str()))])))
+            }
+            Err(why) => (None, Json::obj([("error", Json::from("no_answer")), ("text", Json::from(why.as_str()))])),
+        }
+    }
+
+    /// Runs `cmd` in the check's folder: its exit code, and what it wrote to its standard
+    /// output and to its standard error. `Err`: it could not be started, did not end within
+    /// `limit` (it is ended), or left its output held open.
+    fn said(&self, mut cmd: Command, limit: Duration) -> Result<(i32, String, String), String> {
+        let none = |why: String| Err(why);
         cmd.current_dir(&self.cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = match cmd.spawn() {
             Ok(child) => child,
@@ -143,17 +170,7 @@ impl Cli {
                 Err(_) => return none("the command ended and its output was still held open 20 s later".to_owned()),
             }
         }
-        let (out, err) = (String::from_utf8_lossy(&out).trim().to_owned(), String::from_utf8_lossy(&err).trim().to_owned());
-        // (Exit code 2, "no engine reached", is said on standard error.)
-        let first = if code == 2 { &err } else { &out };
-        let text = if !first.is_empty() {
-            first
-        } else if !err.is_empty() {
-            &err
-        } else {
-            &out
-        };
-        (Some(code), Json::parse(text).unwrap_or_else(|_| Json::obj([("text", Json::from(text.as_str()))])))
+        Ok((code, String::from_utf8_lossy(&out).trim().to_owned(), String::from_utf8_lossy(&err).trim().to_owned()))
     }
 
     fn engines(&self) -> Vec<Json> {
@@ -228,9 +245,18 @@ impl Hand {
     /// settings unless the flags name a folder, and a window that takes no keyboard. Waits
     /// until it listens.
     fn start(cli: &Cli, port: u64, log: &str, flags: &[&str], env: &[(&str, String)]) -> Result<Hand, String> {
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port as u16));
+        // (Something else on the port would answer for this engine, and be sent its calls.)
+        if std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok() {
+            return Err(format!("port {port} is already served by something else: the check starts no engine there"));
+        }
         let log = cli.cwd.join(log);
         let file = std::fs::File::create(&log).map_err(|e| format!("{}: {e}", log.display()))?;
         let mut cmd = Command::new(&cli.exe);
+        // The first of a process group of its own, so that it can be asked to stop as a
+        // person's Ctrl+Break asks (`Hand::interrupt`) without this process hearing it.
+        #[cfg(windows)]
+        std::os::windows::process::CommandExt::creation_flags(&mut cmd, specula_sys::interrupt::NEW_GROUP);
         cmd.args(["--port", &port.to_string()]);
         if !flags.contains(&"--headless") && !flags.contains(&"--no-activate") {
             cmd.arg("--no-activate");
@@ -243,7 +269,6 @@ impl Hand {
             cmd.env(key, value);
         }
         let mut child = cmd.spawn().map_err(|e| format!("the engine could not be started ({}): {e}", cli.exe.display()))?;
-        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port as u16));
         let began = Instant::now();
         loop {
             if std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok() {
@@ -274,6 +299,13 @@ impl Hand {
     fn running(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
     }
+
+    /// Asks it to stop as a person's Ctrl+Break does, and waits for it: whether it was asked,
+    /// and its exit code if it ended within half a minute.
+    fn interrupt(&mut self) -> (bool, Option<i32>) {
+        let asked = specula_sys::interrupt::ask(self.pid());
+        (asked, self.ended(Duration::from_secs(30)))
+    }
 }
 
 impl Drop for Hand {
@@ -303,9 +335,32 @@ fn type_text(window: Outside, text: &str) {
     std::thread::sleep(Duration::from_millis(300));
 }
 
-/// A picture of the engine's window, written as a PNG. `None`: it could not be taken.
-fn screenshot(window: Outside, path: &Path) -> Option<Shot> {
-    let shot = probe::shot(window).ok()?;
+/// A picture of the engine's window once it shows what `shows` looks for, written as a PNG:
+/// asked for every 150 ms for at most 20 s, and taken once more a moment after it first shows
+/// (a screen half drawn, a word half typed). When the wait ends without it, the last picture is
+/// what is returned and written: the expectation made of it then fails on what the window did
+/// show. `None`: the window could not be pictured at all.
+fn shot_when(window: Outside, path: &Path, shows: impl Fn(&Shot) -> bool) -> Option<Shot> {
+    let began = Instant::now();
+    let mut last = None;
+    loop {
+        if let Ok(shot) = probe::shot(window) {
+            let ready = shows(&shot);
+            last = Some(shot);
+            if ready {
+                std::thread::sleep(Duration::from_millis(300));
+                if let Ok(settled) = probe::shot(window) {
+                    last = Some(settled);
+                }
+                break;
+            }
+        }
+        if began.elapsed() > Duration::from_secs(20) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(150));
+    }
+    let shot = last?;
     let rgba: Vec<u8> = shot.bgra.as_chunks::<4>().0.iter().flat_map(|p| [p[2], p[1], p[0], 255]).collect();
     let _ = std::fs::write(path, specula_core::png::encode_rgba8(shot.width, shot.height, &rgba, specula_core::deflate::Level::Fast));
     Some(shot)
@@ -371,11 +426,9 @@ fn captures_differ(a: &Path, b: &Path) -> Result<(f64, usize), String> {
     Ok((differ as f64 / f64::from((ia.width * ia.height).max(1)), colours.len()))
 }
 
-/// The first visible window of the process `pid`, once it has drawn its first frames.
+/// The first visible window of the process `pid`, waited for (at most 30 s).
 fn window_of(pid: u32) -> Option<Outside> {
-    let window = wait_for(Duration::from_secs(30), || probe::window_of(pid));
-    std::thread::sleep(Duration::from_millis(1200));
-    window
+    wait_for(Duration::from_secs(30), || probe::window_of(pid))
 }
 
 /// The start screen in a real window (the module's first lines say what is checked).
@@ -411,13 +464,14 @@ fn start_screen(t: &mut Tally<'_>, exe: &Path, out: &Path, port: u64) -> Result<
         let window = window_of(pid).ok_or("the start screen's engine showed no window within 30 s")?;
         let listed = cli.engines();
         t.check(listed.len() == 1 && flag(&listed[0], "launcher") == Some(true) && listed[0].get("project").is_none(), format!("an engine opened with no project is found as a start screen ({})", brief(&Json::arr(listed.clone()), 160)));
-        let empty = screenshot(window, &shots.join("01_empty_list.png")).ok_or("the start screen's window could not be pictured")?;
+        let empty = shot_when(window, &shots.join("01_empty_list.png"), |s| lively(s) && has_text(s)).ok_or("the start screen's window could not be pictured")?;
         t.check(lively(&empty) && has_text(&empty), "the start screen is drawn (01_empty_list.png)");
         let shown = frame(FRAME);
+        t.check(word(&shown, "image.path").is_some_and(|p| Path::new(p).is_file()), format!("a capture is taken while the start screen is open ({})", brief(&shown, 160)));
         copy(word(&shown, "image.path"), "01_capture_while_open.png");
         press(window, probe::ENTER); // the focus is on "New project"
         type_text(window, "tomb");
-        let named = screenshot(window, &shots.join("02_new_project_name.png")).ok_or("the window could not be pictured")?;
+        let named = shot_when(window, &shots.join("02_new_project_name.png"), |s| changed(&empty, s) > 0.01).ok_or("the window could not be pictured")?;
         t.check(changed(&empty, &named) > 0.01, format!("Enter on an empty list asks for the new project's name, and typing shows ({:.3} of the window changed)", changed(&empty, &named)));
         press(window, probe::ENTER);
         let code = eng.ended(Duration::from_secs(120));
@@ -428,9 +482,10 @@ fn start_screen(t: &mut Tally<'_>, exe: &Path, out: &Path, port: u64) -> Result<
         t.check(number(&e_, "port") == Some(port) && flag(&e_, "launcher") != Some(true) && word(&e_, "project.path").map(Path::new) == Some(tomb.as_path()), format!("and the executable starts again in the new project, on the same port ({})", brief(&e_, 200)));
         t.check(tomb.join("specula.project.json").is_file() && tomb.join("assets").is_dir(), "the project is a folder in the home's Specula Projects, with its marker and an assets folder");
         if let Some(e) = &e {
-            let opened = number(e, "pid").and_then(|pid| window_of(pid as u32)).and_then(|w| screenshot(w, &shots.join("03_project_open.png")));
+            let its_own = |s: &Shot| lively(s) && changed(&empty, s) > 0.05 && changed(&named, s) > 0.05;
+            let opened = number(e, "pid").and_then(|pid| window_of(pid as u32)).and_then(|w| shot_when(w, &shots.join("03_project_open.png"), its_own));
             // (Brought up to date in the port: the project's own title screen is text too.)
-            t.check(opened.as_ref().is_some_and(|o| lively(o) && changed(&empty, o) > 0.05 && changed(&named, o) > 0.05), "its window shows the project, with no start screen over it (03_project_open.png)");
+            t.check(opened.as_ref().is_some_and(its_own), "its window shows the project, with no start screen over it (03_project_open.png)");
             let (code, state) = cli.run(&["call", "game_state", "--port", &port_text]);
             t.check(code == Some(0) && word(&state, "phase") == Some("title"), format!("what it shows is the project's own game, at its title ({code:?} {})", brief(&state, 160)));
             let (code, info) = cli.run(&["call", "engine_info", "--port", &port_text]);
@@ -449,18 +504,22 @@ fn start_screen(t: &mut Tally<'_>, exe: &Path, out: &Path, port: u64) -> Result<
         let mut eng = Hand::start(&cli, port, "start_b.log", &flags, &env)?;
         let pid = eng.pid();
         let window = window_of(pid).ok_or("the start screen's engine showed no window within 30 s")?;
-        let two = screenshot(window, &shots.join("04_two_projects.png")).ok_or("the window could not be pictured")?;
+        let two = shot_when(window, &shots.join("04_two_projects.png"), |s| lively(s) && has_text(s) && changed(&empty, s) > 0.005).ok_or("the window could not be pictured")?;
         t.check(lively(&two) && has_text(&two) && changed(&empty, &two) > 0.005, "the list shows the projects (04_two_projects.png)");
         // No tool shows a person's project list: not a capture with the interface in it, not
         // the UI tools. ("tomb" is on the screen, in the list, and nowhere else in this engine.)
         let shown = frame(FRAME);
         let mut said = shown.to_string();
-        said += &word(&shown, "image.packet_path").and_then(|p| std::fs::read(p).ok()).map(|bytes| String::from_utf8_lossy(&bytes).into_owned()).unwrap_or_default();
+        let packet = word(&shown, "image.packet_path").and_then(|p| std::fs::read(p).ok()).map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+        said += packet.as_deref().unwrap_or("");
         for tool in ["ui_tree", "ui_check", "engine_info", "world_list"] {
             // (A refusal is an answer too.)
             said += &cli.run(&["call", tool, "--port", &port_text]).1.to_string();
         }
-        t.check(word(&shown, "image.path").is_some() && !said.contains("tomb") && !said.contains("crypt"), "no capture packet and no tool answer names a listed project");
+        t.check(
+            word(&shown, "image.path").is_some() && packet.as_ref().is_some_and(|p| !p.is_empty()) && !said.contains("tomb") && !said.contains("crypt"),
+            format!("no capture packet and no tool answer names a listed project (the packet was read: {})", packet.is_some()),
+        );
         copy(word(&shown, "image.path"), "04_capture_while_open.png");
         press(window, probe::ENTER); // the focus is on the first project
         let code = eng.ended(Duration::from_secs(120));
@@ -499,13 +558,11 @@ fn start_screen(t: &mut Tally<'_>, exe: &Path, out: &Path, port: u64) -> Result<
         // Something in the world, so the captures below show a scene (a capture of an empty
         // world would prove only that the start screen is absent from it).
         let (_, made) = cli.run(&["call", "world_spawn", r##"{"shape": "cube", "path": "/a", "color": "#d08040"}"##, "--as", "builder", "--port", &port_text]);
-        std::thread::sleep(Duration::from_millis(600));
-        let before = screenshot(window, &shots.join("05_before_close.png")).ok_or("the window could not be pictured")?;
+        let before = shot_when(window, &shots.join("05_before_close.png"), |s| lively(s) && has_text(s)).ok_or("the window could not be pictured")?;
         let shown = frame(FRAME_AT_0);
         copy(word(&shown, "image.path"), "05_capture_while_open.png");
         press(window, probe::ESCAPE);
-        std::thread::sleep(Duration::from_millis(500));
-        let after = screenshot(window, &shots.join("06_closed.png")).ok_or("the window could not be pictured")?;
+        let after = shot_when(window, &shots.join("06_closed.png"), |s| !has_text(s)).ok_or("the window could not be pictured")?;
         t.check(has_text(&before) && !has_text(&after) && changed(&before, &after) > 0.05, format!("Esc closes the start screen ({:.3} of the window changed; 06_closed.png)", changed(&before, &after)));
         t.check(eng.running(), "and the engine runs on, with no project");
         // A capture never showed the start screen: the one taken while it was open is the same
@@ -536,7 +593,15 @@ pub fn launch(cx: &mut Cx) -> Result<String, String> {
     // (A command of this check starts engines that outlive it: they must not hold this
     // process's own output open.)
     specula_sys::process::keep_std_handles();
-    let (out, exe) = (cx.out.clone(), cx.exe.clone());
+    // The release executable, as the script ran (the runner builds it before any check).
+    let (out, exe) = (cx.out.clone(), crate::run::target_dir().join("release").join(if cfg!(windows) { "specula.exe" } else { "specula" }));
+    if !exe.is_file() {
+        return Err(format!("{} is not there: cargo build -p specula --release (the runner builds it unless told --no-build)", exe.display()));
+    }
+    // 7: a folder this check ran in before holds its projects and its lists.
+    if out.join("user").exists() || out.join("projects").exists() {
+        return Err(format!("{} was used by this check before: give it a folder of its own (--out)", out.display()));
+    }
     let port = cx.port;
     let folders = [out.join("user"), out.join("user_rel"), out.join("user_start")];
     let mut t = Tally { cx, fails: Vec::new(), tried: 0 };
@@ -561,7 +626,8 @@ fn all(t: &mut Tally<'_>, exe: &Path, out: &Path, port: u64) -> Result<(), Strin
     let in_projects = projects.to_string_lossy().into_owned();
     let code_is = |code: Option<i32>, want: i32| code == Some(want);
     let stopped = |j: &Json| flag(j, "stopped") == Some(true);
-    let empty_list = |j: &Json, key: &str| j.get(key).and_then(Json::as_array).is_some_and(<[Json]>::is_empty) && number(j, "count") == Some(0);
+    // (Exactly the two keys, as the script compared: an empty list says nothing more.)
+    let empty_list = |j: &Json, key: &str| j.as_object().is_some_and(|o| o.len() == 2) && j.get(key).and_then(Json::as_array).is_some_and(<[Json]>::is_empty) && number(j, "count") == Some(0);
 
     // ---- a machine that has never run a project ----
     let (code, j) = cli.run(&["projects"]);
@@ -679,8 +745,12 @@ fn all(t: &mut Tally<'_>, exe: &Path, out: &Path, port: u64) -> Result<(), Strin
     // By hand: a second engine on the project is refused, and says why.
     let mut second = Command::new(exe);
     second.arg("--project").arg(&crypt).arg("--settings").arg(&user).args(["--headless", "--adapter", ADAPTER, "--port", &p3]);
-    let (code, said) = cli.answer(second, Duration::from_secs(180));
-    t.check(code.is_some_and(|c| c != 0) && said.to_string().contains("is open in another engine"), format!("an engine started by hand on a project that is open is refused ({code:?} {})", brief(&said, 200)));
+    let refused = cli.said(second, Duration::from_secs(180));
+    let tail = |text: &str| text.chars().rev().take(160).collect::<Vec<_>>().into_iter().rev().collect::<String>();
+    t.check(
+        refused.as_ref().is_ok_and(|(code, _, err)| *code != 0 && err.contains("is open in another engine")),
+        format!("an engine started by hand on a project that is open is refused, on its standard error ({})", refused.as_ref().map_or_else(Clone::clone, |(code, _, err)| format!("{code} {}", tail(err)))),
+    );
 
     // ---- an engine that died: its file is not an engine, whoever has its port now ----
     let (dead_pid, dead_port) = (number(&listed, "engines.0.pid"), number(&listed, "engines.0.port"));
@@ -723,16 +793,17 @@ fn all(t: &mut Tally<'_>, exe: &Path, out: &Path, port: u64) -> Result<(), Strin
     std::fs::create_dir_all(&plain).map_err(|e| format!("{}: {e}", plain.display()))?;
     let (plain_text, user_text) = (plain.to_string_lossy().into_owned(), user.to_string_lossy().into_owned());
     {
-        let _eng = Hand::start(&cli, port + 2, "engine_hand.log", &["--headless", "--adapter", ADAPTER, "--project", &plain_text, "--settings", &user_text], &[])?;
+        let mut eng = Hand::start(&cli, port + 2, "engine_hand.log", &["--headless", "--adapter", ADAPTER, "--project", &plain_text, "--settings", &user_text], &[])?;
         let (_, info) = cli.run(&["call", "engine_info", "--port", &p3]);
         t.check(word(&info, "project.name") == Some("plain") && plain.join("specula.project.json").is_file(), format!("--project opens a plain folder as a project and gives it its marker ({})", info.get("project").map(|p| brief(p, 160)).unwrap_or_default()));
         let (_, j) = cli.run(&["list"]);
         t.check(number(&j, "count") == Some(1) && word(&j, "engines.0.project.name") == Some("plain"), "an engine started by hand is found the same way");
         let j = cli.projects();
         t.check(names(&j).first().map(String::as_str) == Some("plain"), format!("and its project is first in the list ({:?})", names(&j)));
-        // (Asked to stop, as a person's Ctrl+C asks: it takes its instance file with it.)
-        let (code, j) = cli.run(&["stop", "--port", &p3]);
-        t.check(code_is(code, 0) && stopped(&j), format!("it stops when asked ({code:?} {})", brief(&j, 100)));
+        // Ended as a person's Ctrl+Break in its console ends it (not by `specula stop`, which
+        // is tried above): the interrupt's path takes the instance file with it too.
+        let (asked, code) = eng.interrupt();
+        t.check(asked && code == Some(0), format!("an interrupt (Ctrl+Break) ends it cleanly (asked: {asked}; exit code {code:?})"));
     }
     let (_, j) = cli.run(&["list"]);
     t.check(number(&j, "count") == Some(0), "it takes its instance file with it when it stops");

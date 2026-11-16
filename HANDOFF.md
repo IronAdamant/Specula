@@ -209,7 +209,9 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       a `probe` module in `specula-platform` for another process's window (found, pictured, sent
       keys; the one place `gdi32` is declared). Every expectation of the script has its line in
       the port, the stale one brought up to date; a seeded fault (an opened project put last in
-      the list) fails 8 of its 84; its pictures were checked by a model that did not take them.
+      the list) fails 8 of them; its pictures were checked by a model that did not take them;
+      its reviewer found that no guard held the hands-off rule over Rust (the guard read
+      scripts only), and `script_settings_guard` now reads the tooling and the probe too.
       The script's file stays, unchanged and no longer run, only because `m5_exit.py` takes a
       class from it.
   - **Part 2** (a script is ported to Rust before it is changed, never edited): the comparison's

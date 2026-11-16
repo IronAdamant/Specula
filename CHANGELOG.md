@@ -212,6 +212,16 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
     seeded fault (an opened project put last in the list: 8 of 84 fail) and its pictures checked by
     a model that did not take them. `launch_check.py` stays, unchanged and not run, because
     `m5_exit.py` takes a class from it.
+    Reviewed by a model that did not write it: not to merge. **No guard held the hands-off rule
+    over the new code**: the guard read Python scripts only, so a call that moves the pointer or
+    takes the keyboard could have been added to the port and every test would still pass. The
+    guard now reads the tooling's Rust and the probe, and holds the probe's system calls to a
+    list. Also taken: an engine is not started on a port something else serves; the engine
+    started by hand is ended by an interrupt again (`specula_sys::interrupt::ask`: the script's
+    Ctrl+Break, which the first port had replaced by `specula stop`); a capture's packet must
+    have been read before "names no project" holds; an empty list is exactly that; the release
+    executable, as the script ran; pictures are waited for, bounded, where fixed sleeps were; a
+    folder used before is refused. 85 expectations.
 
 ### M5, done (2026-11-06 to 2026-11-15)
 

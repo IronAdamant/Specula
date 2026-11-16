@@ -44,6 +44,7 @@ pub mod kernel32 {
         pub fn GetProcAddress(module: *mut c_void, proc_name: *const u8) -> *mut c_void;
         pub fn FreeLibrary(module: *mut c_void) -> i32;
         pub fn SetConsoleCtrlHandler(handler: Option<unsafe extern "system" fn(u32) -> i32>, add: i32) -> i32;
+        pub fn GenerateConsoleCtrlEvent(event: u32, group: u32) -> i32;
         pub fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> *mut c_void;
         pub fn GetExitCodeProcess(process: *mut c_void, exit_code: *mut u32) -> i32;
         pub fn WaitForSingleObject(handle: *mut c_void, milliseconds: u32) -> u32;
@@ -689,6 +690,30 @@ pub mod interrupt {
     /// How long a close/logoff/shutdown handler waits for the main loop to finish.
     #[cfg(windows)]
     const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_millis(4500);
+
+    /// The flag a process is started with to be the first of a process group of its own
+    /// (`CREATE_NEW_PROCESS_GROUP`): what [`ask`] can then name. Windows only.
+    pub const NEW_GROUP: u32 = 0x0000_0200;
+
+    /// Asks the process `pid` to stop as a person's Ctrl+Break in its console does (its
+    /// [`install`]ed handler sees it and the process shuts down cleanly). Whether the request
+    /// was sent, not whether it was heeded.
+    ///
+    /// Windows: `pid` must have been started with [`NEW_GROUP`] and share this process's
+    /// console (a child that was given none of its own does): the event goes to that group
+    /// alone, never to this process. Elsewhere: an interrupt signal, through `kill`.
+    pub fn ask(pid: u32) -> bool {
+        #[cfg(windows)]
+        {
+            // SAFETY: no pointers; an id that names no process group of this console is
+            // refused (0), which is the answer.
+            unsafe { crate::kernel32::GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) != 0 }
+        }
+        #[cfg(not(windows))]
+        {
+            std::process::Command::new("kill").args(["-INT", &pid.to_string()]).status().is_ok_and(|s| s.success())
+        }
+    }
 
     /// Start catching interrupts. Idempotent. Errors carry the OS error code.
     pub fn install() -> Result<(), String> {

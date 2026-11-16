@@ -89,6 +89,64 @@ const HANDS_OFF: &[(&str, &str)] = &[
     ("ClipCursor", "traps the human's mouse pointer"),
 ];
 
+/// Every `.rs` file under `dir`.
+fn rust_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = e.path();
+        if path.is_dir() {
+            rust_files(&path, out);
+        } else if path.extension().is_some_and(|x| x == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// The same rule for the checks that are Rust (`tools/`: a check ported from a script keeps
+/// what the script was held to) and for the one place that reaches another process's window
+/// (`specula_platform::probe`): found there, and in no guard, by the review of the launcher
+/// check's port. A file that only names one of the calls says so on the line, as a script does.
+#[test]
+fn the_tooling_and_the_window_probe_keep_their_hands_off_too() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut files = Vec::new();
+    rust_files(&root.join("tools"), &mut files);
+    files.retain(|f| !f.components().any(|c| c.as_os_str() == "target"));
+    let probe = root.join("crates/specula-platform/src/probe.rs");
+    assert!(probe.is_file(), "crates/specula-platform/src/probe.rs is gone: where does a check reach a window now?");
+    files.push(probe);
+    let mut bad = Vec::new();
+    for path in &files {
+        let name = path.strip_prefix(&root).unwrap_or(path).to_string_lossy().replace('\\', "/");
+        let text = std::fs::read_to_string(path).unwrap();
+        for (i, line) in text.lines().enumerate() {
+            if line.contains("hands-off: prose") {
+                continue;
+            }
+            for (word, what) in HANDS_OFF {
+                if line.contains(word) {
+                    bad.push(format!("{name}:{}: {word} {what}", i + 1));
+                }
+            }
+        }
+    }
+    assert!(files.len() >= 10, "the guard read {} Rust files: has tools/ moved?", files.len());
+    assert!(bad.is_empty(), "a check never touches the human's pointer, keyboard or focus (post messages to the engine's own window; a line that only mentions one of these says `hands-off: prose`):\n{}", bad.join("\n"));
+    // What the probe may call is a list, so that a new import is a decision: every function
+    // it declares from user32 and gdi32 is one of these.
+    let allowed = [
+        "EnumWindows", "GetWindowThreadProcessId", "IsWindowVisible", "GetForegroundWindow", "PostMessageW", "GetClientRect", "GetDC", "ReleaseDC", "PrintWindow", "SetProcessDpiAwarenessContext",
+        "CreateCompatibleDC", "CreateCompatibleBitmap", "SelectObject", "GetDIBits", "DeleteObject", "DeleteDC",
+    ];
+    let text = std::fs::read_to_string(root.join("crates/specula-platform/src/probe.rs")).unwrap();
+    let mut declared = 0;
+    for line in text.lines().map(str::trim).filter(|l| l.starts_with("fn ") && l.ends_with(';')) {
+        let name = line["fn ".len()..].split('(').next().unwrap_or("");
+        assert!(allowed.contains(&name), "probe.rs declares {name}: is it one a check may call on a machine someone is using? (add it here with the answer)");
+        declared += 1;
+    }
+    assert_eq!(declared, allowed.len(), "probe.rs declares {declared} system calls and the guard lists {}", allowed.len());
+}
+
 /// Modules that drive the real mouse and keyboard.
 const MODULES: &[(&str, &str)] = &[
     ("pyautogui", "drives the human's mouse and keyboard"),
