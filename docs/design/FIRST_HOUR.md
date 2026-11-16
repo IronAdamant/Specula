@@ -376,9 +376,9 @@ So, in the engine:
 - **From the judges of the second pass, the engine's own:**
   - *A run that names no seed is the run with seed 1* (four of five engine games were marked for a
     run with no seed that was not the brief's default). A headless run is the same run every time.
-  - *The game's name on the title is a line of the strings* (`title.name`, which says the game
-    file's title until a language writes its own): one game failed "every word changes with the
-    language" on a title that no table could translate.
+  - *The game's name can be said in a language*: `game.title` is the game file's title, or the
+    line `title.name` of the strings where they have one, in the player's language. One game failed "every word
+    changes with the language" on a title that no table could translate.
   - *A game's menus show which button is chosen from their first frame* (`Ui::show_focus`; the
     toolkit's own default is to wait for a key, which suits a pointer). Three judges saw a title
     whose chosen Start looked like any other button.

@@ -1188,6 +1188,16 @@ at once.
     Right on a setting (reproduced: it was so), and a `notes/how.md` that carries the route (part of the
     fourth). Not built: memory on a shell agent's path beyond the guide saying to leave a note. Two more
     passes follow by the owner's word, each measured.
+  - **The second pass, measured (2026-11-17, `bbe9fa36`; [design/LEVERAGE.md](design/LEVERAGE.md),
+    "Results (2026-11-17: the second pass)"):** 1.7 times the plain arm's tokens on the small job (6.8
+    the day before), 2.6 on the medium one (4.0), for the same checks; 3.9 on the change (2.2), with
+    one or two checks fewer. Three runs in the engine's medium and change cells. What the ledgers say
+    still cost: a module whose tick fails while the run prints a state all the same; a win that needs
+    a player that reacts; a setting's value as words by language; things the guide did not say.
+  - **The third pass (built 2026-11-17; [design/FIRST_HOUR.md](design/FIRST_HOUR.md), section 10):**
+    `module_failed` in place of a state, the rules' log beside it, one line an answer,
+    `specula run --follow`, a choice's words by language, the guide's additions; reviewed three times
+    by a model that did not write it. Measured next; then the fourth pass from its ledgers.
   - **Then measure again**, with more than two runs a cell on the medium job: two runs alike differ by
     as much as the effect being looked for.
 - [ ] ➕ **Game systems as optional data, and memory for whoever builds the game** (owner, 2026-11-16: "the

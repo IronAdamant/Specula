@@ -2,7 +2,7 @@
 
 These are notes from Claude (Opus 5.5 through M5's first wave; Fable 5.2 from 2026-11-12) to whoever picks up Specula
 next, most likely a new Claude conversation with no memory of the earlier ones. This page is **current state and
-what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2026-11-16**.
+what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2026-11-17**.
 
 - **Owner, 2026-11-16: the scope talk. M6 has started.** A fresh instance reviewed these documents and
   put nine questions; the answers are below in the owner's words, with Claude's reading marked where
@@ -133,7 +133,27 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       with no window by a script of inputs, prints its state as the game file's `report` shapes
       it and writes a frame (about 4 s; the same seed and inputs print the same state); the game
       file's `view`; Left and Right step a setting; `notes/how.md` is one page that answers what
-      the builders looked up. Its measurement follows; then passes 3 and 4.
+      the builders looked up.
+    - **The second pass, measured** (2026-11-17, on `bbe9fa36`; LEVERAGE.md, "Results
+      (2026-11-17: the second pass)"; [perf/leverage/2026-11-17-pass2](perf/leverage/2026-11-17-pass2/report.md)).
+      Fourteen builds, all judged. **Through the engine the small game now costs 1.7 times the
+      plain build (it was 6.8) and the medium one 2.6 times (4.0), for the same checks passed.
+      The change to an existing game got dearer: 3.9 times (2.2), with one or two checks fewer
+      passed.** The small builds took 16 requests each (36 and 68 before). What still cost, by
+      the ledgers: a module whose tick failed every time while the run printed a state as if
+      nothing were wrong (fifteen and thirty-four requests in two of three medium builds, the
+      largest single cost); showing that the game can be won, which needs a player that reacts
+      (one builder started the engine 347 times); and, in the change round, a setting's value
+      as words in three languages, which the engine did not do (ten to twenty-five requests).
+    - **The third pass, built** (FIRST_HOUR.md, section 10; commits `80909a82`, `f5b3205e`,
+      `6cf79f80`): a run whose module failed answers `module_failed` (which error, at which of
+      the script's ticks) and never a state; what the rules log is said beside the state; a
+      run's answer is one line; `specula run --follow` reads a step a line and prints the
+      state after each, so a small program plays a whole game in one run; a choice setting's
+      value is shown in the player's language; the guide says what was looked up. A model
+      that did not write it said not to merge it twice, and what it found is fixed (a refused
+      step that let go of a held input; a module's prints among the states; the game's tick
+      called the run's; an unbounded line). Its measurement follows; then pass 4.
   - **Part 2** (each script ported to Rust when it is next touched): the comparison's harness is
     ported; 81 scripts are left in `scripts/` (79 of them Python).
   - **Next on the laptop: the three passes above, then the owner's word** (2026-11-16: "Advise me
@@ -198,6 +218,12 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       change 246,634 against 114,280. About 6.8, 4.0 and 2.2 times, for the same checks passed within
       one. Requests: 36 and 68 against 8 and 7; 61 and 50 against 9 and 13; 33 and 14 against 12
       and 13.
+    - *The same, after the second pass at the first hour* (2026-11-17, on `bbe9fa36`): a
+      one-screen game 169,613 against 97,184; a medium game 446,356 (three runs: 277,124 to
+      672,915) against 171,273; a change 392,016 (three runs) against 99,336. About 1.7, 2.6
+      and 3.9 times. Requests: 16 and 16 against 7 and 9; 67, 24 and 39 against 8 and 9; 38,
+      45 and 49 against 9 and 11. Checks: alike on the first two; 8, 8 and 7 of 9 against 9
+      and 9 on the change.
     - *What verifying costs* (2026-11-15 and 16): 3,049 tests in the gate; the tests themselves about
       2 minutes; the gate about 25 minutes for each Rust version; the audit's 70 live checks about an
       hour; CI from nothing 10 minutes on Linux and 17 to 25 on Windows.
@@ -830,9 +856,10 @@ In practice that means six **foundations** that apply to every change from M1 on
 
 **What it can't do yet:**
 - **Pay for itself at small sizes.** The same small and medium games, built through the engine and without it by
-  the same model, pass the same checks, and through the engine they cost four to seven times the tokens (2.2
-  times for a change to an existing game; measured 2026-11-16, after M6 part 3, which did not lower it: in
-  M5 it was three to five times, and 1.7): more requests, each re-reading the context, and more written
+  the same model, pass the same checks, and through the engine they cost 1.7 times the tokens for a one-screen
+  game and 2.6 times for a medium one (measured 2026-11-17, after `specula run`; a day earlier it was 6.8 and
+  4.0, and in M5 5.2 and 3.1). A change to an existing game cost 3.9 times (2.2, and 1.7 in M5), with fewer
+  checks passed: it got dearer, and the third pass is built from why
   ([docs/design/LEVERAGE.md](docs/design/LEVERAGE.md)). M6's work, still.
 - **Tell a story for a game.** A storyline tree, reputation, an RPG set-up, captions with voices and music
   packs are M6's, noted on 2026-11-16 and not designed. (Win and loss conditions, a score, and notes kept with a

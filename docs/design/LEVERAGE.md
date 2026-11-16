@@ -446,3 +446,99 @@ so that the loop is edit, run, read; the game file's `report` and `view`; Left a
 and a `notes/how.md` that answers what all six builders looked up. The harness gives the engine arm
 that command (`examen leverage play RUN ...`, logged as one call) and its brief says so; the briefs'
 game sections and both acceptance lists are unchanged.
+
+## Results (2026-11-17: the second pass, `specula run`)
+
+The same three jobs, harness and models, on the engine with the second pass
+(`bbe9fa36`; [FIRST_HOUR.md](FIRST_HOUR.md), section 9). The engine arm's brief names the one command
+that builds, plays and prints (`examen leverage play RUN ...`, the engine's own `specula run`); the
+briefs' game sections and both acceptance lists are as they were. Fourteen builds, every one judged and
+every one reported: [perf/leverage/2026-11-17-pass2](../../perf/leverage/2026-11-17-pass2/report.md),
+each run's file with its ledgers. The engine's medium and change cells have three runs (the roadmap's
+word after the last measurement: two runs alike differ by as much as the effect looked for).
+
+**The small and the medium game got much cheaper through the engine. The change got dearer.**
+
+| Job | Arm | Runs | Weighted tokens (mean) | Lowest to highest | Build time | Checks passed | Engine against plain | After part 3 | In M5 |
+|---|---|---|---|---|---|---|---|---|---|
+| small (14 checks) | engine | 2 | 169,613 | 160,854 to 178,372 | 169 s, 156 s | 14, 14 | 1.7 times | 6.8 | 5.2 |
+| small | plain | 2 | 97,184 | 90,971 to 103,396 | 79 s, 88 s | 14, 14 | | | |
+| medium (19 checks) | engine | 3 | 446,356 | 277,124 to 672,915 | 1,818 s, 274 s, 409 s | 18, 17, 19 | 2.6 times | 4.0 | 3.1 |
+| medium | plain | 2 | 171,273 | 163,197 to 179,349 | 149 s, 146 s | 18, 19 | | | |
+| change (9 checks) | engine | 3 | 392,016 | 305,298 to 445,466 | 1,161 s, 2,463 s, 602 s | 8, 8, 7 | 3.9 times | 2.2 | 1.7 |
+| change | plain | 2 | 99,336 | 97,497 to 101,174 | 82 s, 73 s | 9, 9 | | | |
+
+- **How sure this is.** The small cell: both runs (160,854 and 178,372) are less than half the cheapest
+  engine run this job has had in three measurements (428,114). The medium cell: all three runs are below
+  both of part 3's (802,492 and 1,055,414), and two of the three are below every earlier engine run
+  (548,514 the lowest). The change cell: all three runs are above the cheaper of part 3's two (172,787)
+  and two are above the dearer (320,482). The plain arm, which nothing here changed, cost 26% less on
+  the medium job than a day earlier (171,273 against 231,054): compare the ratios.
+- **What did it is requests.** The small builds took 16 requests each where part 3's took 36 and 68; two
+  of the medium builds took 24 and 39 where part 3's took 50 and 61. No engine builder wrote a
+  headless-check script (a third to two fifths of every build before), none opened the engine's design
+  document for the game file's format, and the engine was called 10 times in each small build and 19 and 43 times in
+  two medium ones (part 3's medium builds: 3,290 and 3,464 calls).
+- **Checks passed are alike** in the small and medium cells (a walker that comes a tick late, a bolt
+  that passes a walker in its lane: the same kind of slip in both arms, and one plain game has the
+  second too). **In the change cell they are not:** all three engine games failed the first item, and
+  one a second (8, 8 and 7 of 9 against 9 and 9). Each sent the new wave's runners faster than the
+  walkers' one every 1.5 seconds (0.75 s, 1 s, 1 s; "the brief gave no rate", one wrote), where both
+  plain builders kept the game's own rate; and one left its README naming the folder the game was
+  copied from.
+- **A judging through the engine still costs more**: 182,222 and 137,734 against 131,294 and 141,791
+  on the small job; 352,114 to 458,535 against 219,879 and 291,125 on the medium one; and on the
+  change, where the judge has to see a six-wave game won, 312,315 to 527,414 against 214,650 and 240,359 (twenty to twenty-seven minutes a game against four).
+
+**Where the tokens went** (`where RUN`).
+
+| Job, arm | Requests | Steps before the first code | Read again | Written out | New in the context |
+|---|---|---|---|---|---|
+| small, engine | 16, 16 | 8, 7 | 39,948 to 44,772 | 79,340 to 84,435 | 41,566 to 49,164 |
+| small, plain | 7, 9 | 1 | 9,243 to 13,908 | 61,135 to 67,315 | 20,593 to 22,173 |
+| medium, engine | 67, 24, 39 | 6, 5, 5 | 90,492 to 364,418 | 124,375 to 208,810 | 62,257 to 99,688 |
+| medium, plain | 8, 9 | 1 | 16,367 to 17,447 | 109,880 to 124,825 | 35,870 to 38,157 |
+| change, engine | 38, 45, 49 | 8, 4, 7 | 140,560 to 219,474 | 101,395 to 142,995 | 63,342 to 82,997 |
+| change, plain | 9, 11 | 3 | 16,076 to 20,580 | 46,295 to 53,535 | 30,622 to 31,563 |
+
+**What the engine builds still spent, by their ledgers** (`trace RUN`, and `trace RUN --said A-B` for what
+was done at a request; the third pass is built from this list, [FIRST_HOUR.md](FIRST_HOUR.md), section 10).
+
+1. **A module whose tick failed, and a run that printed a state all the same.** A call that returns an
+   error is undone. In `medium-engine-1` the module's own query deleted the parent it spawned under, and
+   every tick after failed; in `medium-engine-3` two walkers were spawned under one name. `specula run`
+   printed the state of a game whose rules did nothing, with no word of it. The first builder spent
+   requests 14 to 47 on it (290,027 of the build's 672,915 weighted tokens, by the ledger), the second
+   requests 12 to 27 (123,869 of 389,029), each putting prints of its own
+   into the module to find one line the engine had (`logic_status`'s last error). Without it the first
+   build would have cost about what the third did.
+2. **Showing that the game can be won needs a player that reacts**, and a script of inputs written
+   beforehand does not. `medium-engine-1`'s builder wrote a small program that read the printed state
+   and chose the next input, starting the run again from tick 0 for every decision: 347 runs, thirty
+   minutes, requests 51 to 66 (177,191). The other two worked a script out by hand from logs they
+   added (85,597 and 39,213). The judges wrote planners of their own for the same question. All
+   three change builders then ran the first builder's way again (602 to 2,463 seconds a build).
+3. **In the change round, a setting's value as words.** The change asks for a difficulty setting in
+   three languages. `setting.NAME.text` shows a choice as the game file spells it (`hard`), and each
+   builder went looking for how to show "Difficile": 10 to 25 requests in the engine's design documents
+   and the interface crate's source (in `change-engine-3`, requests 5 to 30 hold it, with the changes' own code: 211,071 of 445,466),
+   ending at three labels with a condition each. This, with the second point, is why the change cell
+   went the other way; neither was in the games part 3's change builders were handed, whose own scripts
+   did both.
+4. **Looked up, because the guide did not say:** how a key is spelt in a binding (`medium-engine-1`,
+   three requests, one of them a search that printed 64 MB); what the SDK's functions return (every
+   build listed its `pub fn`s, two requests each); what a `"visible"` condition takes.
+5. **One check a request.** After its code was written a small build ran the game in 5 or 6 requests
+   and `medium-engine-2` in 15, each 6,000 to 14,000 weighted at the context it had by then. The plain builds
+   checked theirs in 2 or 3.
+6. **The harness's own:** two builders named their work folder where the command wanted the run's and
+   spent a request on the refusal; its `tools` said nothing when no engine was running.
+
+**Beyond the list, from the judges** (the engine's, not a game's): a run with no `--seed` is not the run
+with seed 1, which the briefs call the default (four of five engine games); the title screen's focused
+button has no focus mark until a key is pressed (three); the sample's title shows the game file's title,
+which no string table can translate (one game failed "every word changes with the language" on it, one
+builder moved it into the tables).
+
+**One builder wrote outside its folder**: `medium-engine-3` copied its work folder beside the runs' as
+a backup, said so, and could not remove it (its shell refused the removal). Nothing read it.

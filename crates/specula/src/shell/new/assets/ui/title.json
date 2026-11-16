@@ -5,14 +5,14 @@
   "layer": 10,
   "modal": true,
   "focus": "start",
-  "notes": "Shown when the game opens; it holds the clock until Start. Actions the engine knows (docs/design/FIRST_HOUR.md): start, open:NAME, quit. Words: assets/strings/<locale>.json (title.name is the game file's title until a language writes its own). State: game.title.",
+  "notes": "Shown when the game opens; it holds the clock until Start. Actions the engine knows (docs/design/FIRST_HOUR.md): start, open:NAME, quit. Words: assets/strings/<locale>.json. State: game.title (the game file's title, or the line title.name of the strings when they have one).",
   "root": {
     "type": "box",
     "children": [
       {
         "type": "box", "anchor": "center", "layout": "column", "align": "center", "gap": 18,
         "children": [
-          { "type": "panel", "style": "veil", "children": [ { "type": "label", "text": "@title.name", "role": "title", "text_align": "center" } ] },
+          { "type": "panel", "style": "veil", "children": [ { "type": "label", "text": "{game.title}", "role": "title", "text_align": "center" } ] },
           {
             "type": "panel", "style": "menu", "width": "16em", "max_width": "96%", "layout": "column", "align": "stretch", "gap": 10,
             "children": [

@@ -108,6 +108,14 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
     not hold (two runs' frames are compared byte for byte now).
     A second look: merge, with one more finding, fixed: two runs of one project begun in the same
     moment raced for its lock, and one failed (it waits for the other and starts again now).
+  - **The second pass, measured** (2026-11-17, on `bbe9fa36`;
+    [docs/design/LEVERAGE.md](docs/design/LEVERAGE.md), "Results (2026-11-17: the second pass)";
+    [perf/leverage/2026-11-17-pass2](perf/leverage/2026-11-17-pass2/report.md)). Fourteen builds, all
+    judged. Through the engine the small game costs 1.7 times the plain build (6.8 the day before; M5:
+    5.2) and the medium one 2.6 times (4.0; 3.1), for the same checks passed: 16 requests a small build
+    where there were 36 and 68, and no builder wrote a check script of its own. The change to an
+    existing game got dearer, 3.9 times (2.2; 1.7), with 8, 8 and 7 of 9 checks against 9 and 9. Every
+    request is laid out again, and the third pass is built from what they still spent.
   - **The third pass: a run that says what went wrong, and a player that reacts**
     ([docs/design/FIRST_HOUR.md](docs/design/FIRST_HOUR.md), section 10). From the second pass's
     ledgers: two of three medium builds had a module whose tick failed every time, and `specula run`

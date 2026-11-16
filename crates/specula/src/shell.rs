@@ -868,8 +868,14 @@ impl Shell {
         let screen = self.run.visible().last().map(|s| (*s).to_owned()).unwrap_or_default();
         let s = &mut self.state;
         s.reset();
+        // The player's language's lines; where it has no table of its own, the first's, as
+        // the screens' own words are.
+        let strings = self.strings.iter().find(|(locale, _)| locale == self.settings.locale()).or_else(|| self.strings.first()).map(|(_, strings)| strings.clone());
+        // The game's name: the game file's title, or the line `title.name` of the strings
+        // where they have one, in the player's language (a name is a word too: one game of
+        // the comparison's second pass failed "every word changes with the language" on it).
         let title = if self.game.title.is_empty() { self.name.as_str() } else { self.game.title.as_str() };
-        s.set_str("game.title", title);
+        s.set_str("game.title", strings.as_ref().and_then(|strings| strings.catalog().text("title.name", None)).unwrap_or(title));
         s.set_str("game.phase", self.run.phase().name());
         s.set_str(
             "game.outcome",
@@ -891,9 +897,6 @@ impl Shell {
         // `setting.NAME.VALUE` of the player's language when the tables have one (a choice's
         // values are words too: "easy" is "Facile" to a player who reads French), anything
         // else as it is.
-        // (The player's language's lines; where it has no table of its own, the first's, as
-        // the screens' own words are.)
-        let strings = self.strings.iter().find(|(locale, _)| locale == self.settings.locale()).or_else(|| self.strings.first()).map(|(_, strings)| strings.clone());
         for def in self.settings.defs() {
             let (key, words) = (format!("setting.{}", def.name), format!("setting.{}.text", def.name));
             match self.settings.get(&def.name) {
@@ -1408,15 +1411,30 @@ mod tests {
     fn a_choices_value_is_shown_in_the_players_language() {
         let mut files = ShellFiles::builtin(GAME);
         let table = |locale: &str, name: &str, source: bool, lines: &str| (locale.to_owned(), format!(r#"{{"format": "specula.strings.v1", "locale": "{locale}", "name": "{name}", "source": {source}, "strings": {{{lines}}}}}"#));
-        files.tables = vec![table("en", "English", true, r#""setting.difficulty.easy": "Easy", "setting.difficulty.hard": "Hard""#), table("fr", "Français", false, r#""setting.difficulty.easy": "Facile""#)];
+        files.tables = vec![table("en", "English", true, r#""setting.difficulty.easy": "Easy", "setting.difficulty.hard": "Hard""#), table("fr", "Français", false, r#""setting.difficulty.easy": "Facile", "title.name": "Tenez la porte""#)];
         let mut shell = Shell::build("gate", files).expect("a shell");
         let words = |shell: &mut Shell| {
             shell.fill();
             shell.state.get("setting.difficulty.text").map(|v| format!("{v:?}")).unwrap_or_default()
         };
         assert!(words(&mut shell).contains("Easy"), "{}", words(&mut shell));
+        // The game's name is the game file's while the strings have no line for it (here the
+        // source table has none, so a translation's line is no line: a table says in another
+        // language what the source says).
+        let named = |shell: &Shell| shell.state.get("game.title").map(|v| format!("{v:?}")).unwrap_or_default();
+        assert!(named(&shell).contains("Hold the gate"), "{}", named(&shell));
         shell.press("set:language:fr", true).unwrap();
         assert!(words(&mut shell).contains("Facile"), "{}", words(&mut shell));
+        assert!(named(&shell).contains("Hold the gate"), "{}", named(&shell));
+        // With the line in the source table, each language says the name its own way.
+        let mut files = ShellFiles::builtin(GAME);
+        files.tables = vec![table("en", "English", true, r#""title.name": "Hold the gate!""#), table("fr", "Français", false, r#""title.name": "Tenez la porte""#)];
+        let mut named_game = Shell::build("gate", files).expect("a shell");
+        named_game.fill();
+        assert!(named(&named_game).contains("Hold the gate!"), "{}", named(&named_game));
+        named_game.press("set:language:fr", true).unwrap();
+        named_game.fill();
+        assert!(named(&named_game).contains("Tenez la porte"), "{}", named(&named_game));
         // A value the player's table has no line for: the source language's, as every line.
         shell.press("set:difficulty:hard", true).unwrap();
         assert!(words(&mut shell).contains("Hard"), "{}", words(&mut shell));
