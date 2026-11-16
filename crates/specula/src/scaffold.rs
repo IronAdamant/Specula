@@ -178,8 +178,6 @@ use specula_sdk::{Cx, Module, ModuleInfo, Patch, SdkError, Spawn, StopReason, Va
 
 const ROOT: &str = "/{{module}}";
 const THING: &str = "/{{module}}/thing";
-/// Taps that win a run (the game file's `outcome.won` says the same number).
-const TAPS_TO_WIN: u64 = 5;
 
 #[derive(Default)]
 pub struct Rules;
@@ -200,7 +198,7 @@ impl Module for Rules {
         ModuleInfo {
             name: "{{module}}",
             version: env!("CARGO_PKG_VERSION"),
-            description: "Tap five times before the time runs out: keeps taps, left (seconds) and score.",
+            description: "Taps before the time runs out: keeps taps, left (seconds) and score (ten a tap, and the seconds left).",
             order: 0,
             actions: include_str!("../actions.json"),
             hooks: Vec::new(),
@@ -261,7 +259,8 @@ impl Module for Rules {
         cx.set_state("taps", taps)?;
         cx.set_state("ticks_left", ticks_left)?;
         cx.set_state("left", left)?;
-        cx.set_state("score", taps * 10 + if taps >= TAPS_TO_WIN { left } else { 0 })?;
+        // (How many taps win is the game file's to say, in `outcome.won`: not repeated here.)
+        cx.set_state("score", taps * 10 + left)?;
         // The thing rises with every tap.
         if begin || (playing && tapped) {
             if let Some(thing) = cx.find(THING)? {
@@ -365,7 +364,7 @@ pub fn files(name: &str, module: &str) -> Vec<(String, String)> {
             // (After the score's line, whatever the file's line ends are in this checkout.)
             "assets/strings/en.json" => text.replace(
                 "\"hud.score\": \"Score: {game.score}\",",
-                &fill("\"hud.score\": \"Score: {game.score}\",\n    \"hud.taps\": \"Taps: {{{module}}.taps} / 5\",\n    \"hud.left\": \"Time: {{{module}}.left}\",\n    \"hud.tap\": \"Tap\","),
+                &fill("\"hud.score\": \"Score: {game.score}\",\n    \"hud.taps\": \"Taps: {{{module}}.taps}\",\n    \"hud.left\": \"Time: {{{module}}.left}\",\n    \"hud.tap\": \"Tap\","),
             ),
             _ => (*text).to_owned(),
         };

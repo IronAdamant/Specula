@@ -16,7 +16,7 @@
           { "type": "label", "text": "@settings.settings", "role": "title", "text_align": "center" },
           { "type": "button", "id": "volume", "text": "@settings.volume", "action": "cycle:volume" },
           { "type": "button", "id": "language", "text": "@settings.language", "action": "cycle:language" },
-          { "type": "button", "id": "settings_back", "style": "primary", "text": "@settings.back", "action": "back" }
+          { "type": "button", "id": "settings_back", "text": "@settings.back", "action": "back" }
         ]
       }
     ]
