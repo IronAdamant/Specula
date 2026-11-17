@@ -187,6 +187,44 @@ impl Frame {
         distance(ankle, [heel[0] + foot[0] * t, heel[1] + foot[1] * t, heel[2] + foot[2] * t])
     }
 
+    /// The same figure with its arms and legs held out to the sides: each arm turned about its
+    /// shoulder by `arms` degrees from hanging, each leg about its hip by `legs` degrees, both
+    /// in the plane the figure faces out of. The feet stay flat and pointing ahead, and the
+    /// whole figure comes down by what the turned legs no longer reach, so the soles are on
+    /// the ground still. This is the pose a figure is modelled and rigged in: limbs clear of
+    /// the trunk and of each other.
+    pub fn spread(&self, arms: f64, legs: f64) -> Frame {
+        let mut out = self.clone();
+        let turn = |about: P3, p: P3, degrees: f64| {
+            let (sin, cos) = specula_core::dmath::sin_cos_f64(degrees * std::f64::consts::PI / 180.0);
+            let (x, y) = (p[0] - about[0], p[1] - about[1]);
+            [about[0] + x * cos - y * sin, about[1] + x * sin + y * cos, p[2]]
+        };
+        let mut drop = 0.0;
+        for side in Side::BOTH {
+            // Outward is +X on the left: a hanging limb turns that way by a positive angle.
+            let (shoulder, hip) = (self.at(Joint::Shoulder(side)), self.at(Joint::Hip(side)));
+            for joint in [Joint::Elbow(side), Joint::Wrist(side), Joint::Knuckle(side), Joint::Fingertip(side)] {
+                out.set(joint, turn(shoulder, self.at(joint), arms * side.sign()));
+            }
+            for joint in [Joint::Knee(side), Joint::Ankle(side)] {
+                out.set(joint, turn(hip, self.at(joint), legs * side.sign()));
+            }
+            // The foot goes with the ankle, flat as it was.
+            let (was, is) = (self.at(Joint::Ankle(side)), out.at(Joint::Ankle(side)));
+            drop = is[1] - was[1];
+            for joint in [Joint::Heel(side), Joint::Ball(side), Joint::Toe(side)] {
+                let p = self.at(joint);
+                out.set(joint, [p[0] + is[0] - was[0], p[1] + is[1] - was[1], p[2]]);
+            }
+        }
+        for joint in Joint::all() {
+            let p = out.at(joint);
+            out.set(joint, [p[0], p[1] - drop, p[2]]);
+        }
+        out
+    }
+
     /// The figure's stature as its parts give it, whatever its pose: the ankle above the sole,
     /// the shank, the thigh (each the mean of the two sides), the trunk along the spine, and
     /// the neck to the top of the head. For a body standing straight it is the height of the
@@ -221,6 +259,8 @@ mod tests {
             frame.set(Joint::Heel(side), [x, 0.0, -0.05]);
             frame.set(Joint::Ball(side), [x, 0.0, 0.13]);
             frame.set(Joint::Toe(side), [x, 0.0, 0.2]);
+            frame.set(Joint::Shoulder(side), [x * 2.0, 1.4, 0.0]);
+            frame.set(Joint::Elbow(side), [x * 2.0, 1.1, 0.0]);
             frame.set(Joint::Wrist(side), [x * 2.0, 0.8, 0.0]);
             frame.set(Joint::Knuckle(side), [x * 2.0, 0.72, 0.0]);
             frame.set(Joint::Fingertip(side), [x * 2.0, 0.62, 0.0]);
@@ -233,6 +273,21 @@ mod tests {
         }
         assert!((frame.stature() - 1.7).abs() < 1e-12, "{}", frame.stature());
         assert!((frame.trunk() - 0.55).abs() < 1e-12 && (frame.ankle_height(Side::Left) - 0.07).abs() < 1e-12);
+        // Arms and legs held out: every part is as long, the soles are on the ground, the
+        // hands are further out and higher, and the head a little lower.
+        let out = frame.spread(30.0, 8.0);
+        assert!((out.stature() - 1.7).abs() < 1e-12 && (out.hand(Side::Left) - 0.18).abs() < 1e-12 && (out.foot(Side::Right) - 0.25).abs() < 1e-12);
+        for side in Side::BOTH {
+            assert!(out.at(Joint::Heel(side))[1].abs() < 1e-12 && out.at(Joint::Toe(side))[1].abs() < 1e-12);
+            assert!(out.at(Joint::Fingertip(side))[0] * side.sign() > frame.at(Joint::Fingertip(side))[0] * side.sign() + 0.05);
+            assert!(out.at(Joint::Fingertip(side))[1] > frame.at(Joint::Fingertip(side))[1]);
+            assert!(out.at(Joint::Ankle(side))[0] * side.sign() > frame.at(Joint::Ankle(side))[0] * side.sign() + 0.05);
+            assert_eq!(out.at(Joint::Hip(side))[0], frame.at(Joint::Hip(side))[0]);
+        }
+        let lower = frame.at(Joint::Vertex)[1] - out.at(Joint::Vertex)[1];
+        assert!(lower > 0.005 && lower < 0.012, "{lower}");
+        let same = frame.spread(0.0, 0.0);
+        assert!(Joint::all().into_iter().all(|j| (0..3).all(|k| (same.at(j)[k] - frame.at(j)[k]).abs() < 1e-12)), "held out by nothing, it is as it was");
         // Lying on its back (every point's height and depth exchanged): the parts are as long.
         let mut lying = frame.clone();
         for joint in Joint::all() {

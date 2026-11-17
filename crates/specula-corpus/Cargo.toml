@@ -8,7 +8,7 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 
-[dev-dependencies]
+[dependencies]
 specula-core = { workspace = true }
 
 [lints]

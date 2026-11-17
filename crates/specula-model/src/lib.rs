@@ -95,6 +95,7 @@ pub mod collider;
 pub mod csg;
 pub mod dmath;
 pub mod error;
+pub mod figure;
 pub mod exact;
 pub mod expr;
 pub mod lod;

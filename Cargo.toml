@@ -91,6 +91,7 @@ specula-tempus = { path = "crates/specula-tempus" }
 specula-lingua = { path = "crates/specula-lingua" }
 specula-ludus = { path = "crates/specula-ludus" }
 specula-memoria = { path = "crates/specula-memoria" }
+specula-corpus = { path = "crates/specula-corpus" }
 
 [profile.dev]
 opt-level = 1

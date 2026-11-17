@@ -32,6 +32,22 @@ pub(super) const COLOUR_OPS: &[&str] = &["color", "gradient", "bands", "noise_ti
 
 pub(super) const CSG_FIELDS: &[Field] = &[r("of", Operands), o("bevel", Num), o("bevel_segments", Int)];
 pub(super) const SDF_FIELDS: &[Field] = &[r("tree", Sdf), o("resolution", Int), o("bounds", Rows)];
+/// A human figure from a measured body ([`crate::figure`]): its sex, its stature (metres), its
+/// build (0 is the usual weight for the stature) or its weight (kilograms), its age (years),
+/// its traits by name (standard deviations), and how far its arms and legs are held out.
+pub(super) const FIGURE_FIELDS: &[Field] = &[
+    r("sex", Choice(&["female", "male"])),
+    o("part", Choice(&crate::figure::Part::NAMES)),
+    o("stature", Num),
+    o("build", Num),
+    o("weight", Num),
+    o("age", Num),
+    o("traits", Ranges),
+    o("arms", Num),
+    o("legs", Num),
+    o("smooth", Num),
+    o("resolution", Int),
+];
 
 const REPEAT: &[Field] = &[r("count", Vec3), r("spacing", Vec3)];
 const DISPLACE: &[Field] = &[r("amount", Num), o("scale", Num), o("octaves", Int)];
@@ -39,7 +55,7 @@ const MIRROR: &[&str] = &["x", "y", "z", "xy", "xz", "yz", "xyz"];
 
 macro_rules! sdf_node {
     ($($f:expr),*) => {
-        &[$($f,)* o("at", Vec3), o("rotate", Vec3), o("scale", Num), o("mirror", Choice(MIRROR)), o("repeat", Obj(REPEAT)), o("elongate", Vec3),
+        &[$($f,)* o("at", Vec3), o("rotate", Vec3), o("scale", Num), o("stretch", Vec3), o("mirror", Choice(MIRROR)), o("repeat", Obj(REPEAT)), o("elongate", Vec3),
           o("twist", Num), o("bend", Num), o("round", Num), o("shell", Num), o("displace", Obj(DISPLACE)), o("color", Color)]
     };
 }
@@ -53,6 +69,8 @@ const SDF_NODES: &[(&str, &[Field])] = &[
     ("capsule", sdf_node!(r("radius", Num), r("height", Num))),
     ("torus", sdf_node!(r("radius", Num), r("tube", Num))),
     ("ellipsoid", sdf_node!(r("radii", Vec3))),
+    ("round_cone", sdf_node!(r("from", Vec3), r("to", Vec3), r("radius", Num), o("radius_to", Num))),
+    ("chain", sdf_node!(r("points", Rows), o("smooth", Num))),
     ("halfspace", sdf_node!(o("normal", Vec3), o("offset", Num))),
     ("union", sdf_node!(r("of", Sdfs), o("smooth", Num))),
     ("difference", sdf_node!(r("of", Sdfs), o("smooth", Num))),
@@ -462,6 +480,35 @@ impl Ctx<'_> {
                 sdf::Kind::Prim(sdf::Prim::Torus { radius, tube })
             }
             "ellipsoid" => sdf::Kind::Prim(sdf::Prim::Ellipsoid { radii: size3("radii")? }),
+            "round_cone" => {
+                let (a, b) = (self.vec3(n, "from", [0.0; 3])?, self.vec3(n, "to", [0.0, 1.0, 0.0])?);
+                for (name, p) in [("from", a), ("to", b)] {
+                    if p.iter().any(|v| !fits(*v, MAX_EXTENT_M)) {
+                        return Err(e(&n.at(name), ErrorCode::OutOfRange, format!("positions must be within ±{MAX_EXTENT_M} m")));
+                    }
+                }
+                let ra = pos("radius", 0.1)?;
+                sdf::Kind::Prim(sdf::Prim::RoundCone { a, b, ra, rb: pos("radius_to", ra as f64)? })
+            }
+            // A line of points, each with a radius: a round cone between every two neighbours,
+            // joined (smoothly, by `smooth`). A limb, a tail, a branch or a horn in a few rows.
+            "chain" => {
+                let Some(points) = n.get("points") else { return Err(e(&n.at("points"), ErrorCode::MissingField, "a chain needs \"points\": rows of [x, y, z, radius]")) };
+                let rows = self.rows(points, &n.at("points"), (4, 4), sdf::MAX_CHAIN)?;
+                if rows.len() < 2 {
+                    return Err(e(&n.at("points"), ErrorCode::Geometry, "a chain needs two points at the least, each [x, y, z, radius]"));
+                }
+                for (i, row) in rows.iter().enumerate() {
+                    if row[..3].iter().any(|v| !fits(*v, MAX_EXTENT_M)) || !(row[3] >= 1e-4 && row[3] <= MAX_EXTENT_M) {
+                        return Err(e(&format!("{}[{i}]", n.at("points")), ErrorCode::OutOfRange, format!("a point is [x, y, z, radius]: positions within ±{MAX_EXTENT_M} m, the radius from 0.0001 m")));
+                    }
+                }
+                let kids = rows
+                    .windows(2)
+                    .map(|w| sdf::SdfNode { kind: sdf::Kind::Prim(sdf::Prim::RoundCone { a: [w[0][0], w[0][1], w[0][2]], b: [w[1][0], w[1][1], w[1][2]], ra: w[0][3], rb: w[1][3] }), m: sdf::Modifiers::default() })
+                    .collect();
+                sdf::Kind::Group { op: sdf::Combine::Near, kids, smooth: self.ranged(n, "smooth", 0.0, 0.0, 100.0)? }
+            }
             "halfspace" => {
                 let nrm = math3::normalize(self.vec3(n, "normal", [0.0, 1.0, 0.0])?);
                 if math3::length(nrm) < 0.5 {
@@ -504,6 +551,10 @@ impl Ctx<'_> {
             return Err(e(&n.at("rotate"), ErrorCode::OutOfRange, "rotations must be within ±36000 degrees"));
         }
         m.scale = self.ranged(n, "scale", 1.0, 1e-3, 1e3)?;
+        m.stretch = self.vec3(n, "stretch", [1.0; 3])?;
+        if m.stretch.iter().any(|v| !(*v >= 0.05 && *v <= 20.0)) {
+            return Err(e(&n.at("stretch"), ErrorCode::OutOfRange, "stretch is a scale for each axis, each from 0.05 to 20"));
+        }
         if let Some(rp) = self.sub(n, "repeat") {
             let c = self.vec3(rp, "count", [1.0; 3])?;
             let sp = self.vec3(rp, "spacing", [1.0; 3])?;
@@ -535,10 +586,61 @@ impl Ctx<'_> {
         Ok(sdf::SdfNode { kind, m })
     }
 
+    /// The body a `figure` asks for, and how it is shaped. What a body refuses (a stature
+    /// nobody measured had, traits that fold it) is the recipe's error, in the body's words.
+    fn figure_tree(&self, n: &Node) -> Result<sdf::SdfNode, RecipeError> {
+        use specula_corpus::{Body, Sex};
+        let refused = |er: specula_corpus::BodyError| e(&n.path, ErrorCode::OutOfRange, format!("{}: {er}", er.code()));
+        let sex = Sex::parse(self.str(n, "sex", "female")).unwrap_or(Sex::Female);
+        let typical = Body::typical(sex);
+        let stature = self.ranged(n, "stature", typical.stature(), 0.3, 3.0)? as f64;
+        let mut body = if n.get("weight").is_some() {
+            if n.get("build").is_some() {
+                return Err(e(&n.at("build"), ErrorCode::Geometry, "a figure has a build or a weight, not both"));
+            }
+            Body::new(sex, stature, self.ranged(n, "weight", typical.weight(), 1.0, 1000.0)? as f64)
+        } else {
+            Body::with_build(sex, stature, self.ranged(n, "build", 0.0, -20.0, 20.0)? as f64)
+        }
+        .map_err(refused)?;
+        if n.get("age").is_some() {
+            body = body.with_age(self.ranged(n, "age", 30.0, 0.0, 200.0)? as f64).map_err(refused)?;
+        }
+        if let Some(Val::Obj(traits)) = n.get("traits") {
+            let mut set = Vec::new();
+            for (name, _) in &traits.fields {
+                set.push((name.as_str(), self.ranged(traits, name, 0.0, -100.0, 100.0)? as f64));
+            }
+            body = body.with_traits(&set).map_err(|er| e(&traits.path, ErrorCode::OutOfRange, format!("{}: {er}", er.code())))?;
+        }
+        let standard = crate::figure::Shaping::default();
+        let shaping = crate::figure::Shaping {
+            arms: self.ranged(n, "arms", standard.arms, 0.0, 90.0)? as f64,
+            legs: self.ranged(n, "legs", standard.legs, 0.0, 45.0)? as f64,
+            smooth: self.ranged(n, "smooth", standard.smooth as f64, 0.0, 0.2)?,
+        };
+        let part = crate::figure::Part::parse(self.str(n, "part", "whole")).unwrap_or(crate::figure::Part::Whole);
+        Ok(crate::figure::tree(&body, &shaping, part))
+    }
+
     pub(super) fn sdf_shape(&self, n: &Node) -> Result<Shape, RecipeError> {
-        let Some(Val::Obj(root)) = n.get("tree") else { return Err(e(&n.at("tree"), ErrorCode::MissingField, "an sdf needs a \"tree\"")) };
-        let tree = self.sdf_node(root, 0)?;
-        let mut res = self.int(n, "resolution", 48, 4, sdf::MAX_RESOLUTION as i64)?;
+        let figure = n.op == "figure";
+        let tree = if figure {
+            self.figure_tree(n)?
+        } else {
+            let Some(Val::Obj(root)) = n.get("tree") else { return Err(e(&n.at("tree"), ErrorCode::MissingField, "an sdf needs a \"tree\"")) };
+            self.sdf_node(root, 0)?
+        };
+        // A figure's part is meshed as finely as it needs: a finger is a third of a trunk's cell.
+        let usual = match self.str(n, "part", if figure { "whole" } else { "" }) {
+            "body" => 80,
+            "head" => 40,
+            "hand_l" | "hand_r" => 80,
+            "foot_l" | "foot_r" => 48,
+            "whole" => 72,
+            _ => 48,
+        };
+        let mut res = self.int(n, "resolution", usual, 4, sdf::MAX_RESOLUTION as i64)?;
         if self.coarse {
             res = (res / 2).max(4);
         }
@@ -565,7 +667,7 @@ impl Ctx<'_> {
         self.stat(
             &n.path,
             Json::obj([
-                ("op", Json::from("sdf")),
+                ("op", Json::from(n.op.as_str())),
                 ("resolution", Json::from(res)),
                 ("grid", Json::arr(st.dims.map(Json::from))),
                 ("cell_m", Json::Num(dmath::round_f64(st.cell as f64 * 1e4) / 1e4)),

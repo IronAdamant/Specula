@@ -219,6 +219,11 @@ fn every_shape_and_op_builds() {
         r#"{"op":"union","of":[{"op":"box","size":[1,1,1]},{"op":"box","size":[0.5,0.5,0.5],"ops":[{"op":"move","by":[0.5,0.25,0]}]}]}"#,
         r#"{"op":"intersection","of":[{"op":"box","size":[1,1,1]},{"op":"sphere","radius":0.65,"subdivisions":2}]}"#,
         r#"{"op":"sdf","resolution":24,"tree":{"op":"union","smooth":0.1,"of":[{"op":"sphere","radius":0.4},{"op":"box","size":[0.5,0.5,0.5],"at":[0.3,0,0]}]}}"#,
+        r#"{"op":"figure","part":"head","sex":"female","stature":1.7,"build":0.5,"age":40,"traits":{"legs":1.2,"shoulders":-0.8}}"#,
+        r#"{"op":"figure","part":"foot_l","sex":"male"}"#,
+        r#"{"op":"sdf","resolution":32,"tree":{"op":"sphere","radius":0.4,"stretch":[1.5,1,0.6],"at":[0,0.5,0]}}"#,
+        r#"{"op":"sdf","resolution":32,"tree":{"op":"round_cone","from":[0,0.1,0],"to":[0.3,0.8,0.1],"radius":0.1,"radius_to":0.04}}"#,
+        r#"{"op":"sdf","resolution":40,"tree":{"op":"chain","smooth":0.03,"mirror":"x","points":[[0.2,1.4,0,0.05],[0.25,1.1,0,0.045],[0.27,0.85,0.05,0.03],[0.27,0.75,0.1,0.035]]}}"#,
     ];
     for s in shapes {
         let m = build_with(&one_part(s, ""), &[]).unwrap_or_else(|e| panic!("{s}: {e}"));
