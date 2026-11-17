@@ -772,3 +772,105 @@ The second pass (one command that builds, plays and prints) took the small game 
 game up. Level is where it stands on a medium game, and half as much again to twice on a small
 one and on a change: the engine has stopped costing more at one size, and does not yet pay at
 any of the three.
+
+## Results (2026-11-17: the fifth pass, a subtraction, and the first measurement in a clean shell)
+
+The same three jobs, harness and models, on the engine with the fifth pass (`9450e0f4`;
+[FIRST_HOUR.md](FIRST_HOUR.md), section 12). Two things changed in the briefs, and they are why
+this section is read apart from the ones before it. The engine arm's part was cut (one read as a
+command; `check`, an engine left running and its tools in one line; a change builder no longer told
+the game is a sample). And **both arms were told to write files with their file tool and never with
+a shell here-document**: in every build of every earlier pass the first here-document was refused
+by the builder's shell and the first file written twice. Fourteen builds, every one judged and
+every one reported: [perf/leverage/2026-11-17-pass5](../../perf/leverage/2026-11-17-pass5/report.md).
+
+**In a clean shell the engine costs a quarter more than the plain build on the medium game and on
+the change, and nearly twice on the one-screen game. The fifth pass took back the fourth's rise on
+the small game and brought the change near level; it did not move the medium game.**
+
+| Job | Arm | Runs | Weighted tokens (mean) | Lowest to highest | Build time | Checks passed | Engine against plain |
+|---|---|---|---|---|---|---|---|
+| small (14 checks) | engine | 2 | 132,122 | 120,842 to 143,401 | 161 s, 158 s | 14, 14 | 1.85 times |
+| small | plain | 2 | 71,322 | 63,740 to 78,903 | 60 s, 72 s | 14, 14 | |
+| medium (19 checks) | engine | 3 | 196,431 | 167,638 to 223,545 | 182 s, 256 s, 288 s | 19, 19, 19 | 1.28 times |
+| medium | plain | 2 | 153,572 | 142,408 to 164,735 | 134 s, 274 s | 19, 17 | |
+| change (9 checks) | engine | 3 | 141,703 | 115,398 to 187,215 | 586 s, 303 s, 270 s | 8, 9, 9 | 1.25 times |
+| change | plain | 2 | 113,478 | 108,170 to 118,787 | 78 s, 84 s | 9, 8 | |
+
+**The ratios of the passes before flattered the engine, and by how much.** The refused
+here-document cost the plain arm more, because its first file is the whole game. Estimated from
+each build's ledger (the text written into the refused here-document, what carrying it cost, and
+the request spent finding out what had happened):
+
+| Job | Third pass, measured | Third pass, without the fault (estimate) | Fourth pass, measured | Fourth pass, without the fault (estimate) | Fifth pass, measured (no fault) |
+|---|---|---|---|---|---|
+| small | 1.5 | 1.7 (118,110 against 68,768) | 2.2 | 2.7 (181,800 against 68,424) | 1.85 (132,122 against 71,322) |
+| medium | 1.0 | 1.1 (178,452 against 161,486) | 1.1 | 1.26 (175,042 against 138,872) | 1.28 (196,431 against 153,572) |
+| change | 1.5 | 1.5 to 1.6 | 1.5 | 1.5 to 1.6 | 1.25 (141,703 against 113,478) |
+
+"The medium game costs the same" (the third pass) was 1.1 at best, and the fifth measurement says
+1.28: with two and three runs a cell, and a plain arm that moved by 13% and 20% between two passes
+in which nothing changed for it, 1.1 and 1.28 are not told apart. What can be said: **on these three
+jobs the engine has not been cheaper than the plain build in any measurement, and in a clean shell
+it is a quarter dearer on two of them and nearly twice on the third.** The fault fell on the change
+job least (a change is patches, not one large first file), so that cell's estimates are not given
+to a figure.
+
+- **Checks passed.** Every small game passed all fourteen. Medium: every engine game all nineteen;
+  the plain games nineteen and seventeen (walkers every 91 ticks where the list says 1.5 seconds; a
+  README command that fails in a fresh folder). Change: 8, 9 and 9 through the engine, 9 and 8
+  without. The runners' rate again in one engine build (one a second), and in one plain build for
+  the 91 ticks its game came with. It is now nine engine change builds of twelve over four passes.
+- **Requests.** Small: 12 and 11 (the plain arm 6 and 10). Medium: 14, 16 and 17 (8 and 12).
+  Change: 20, 13 and 12 (12 and 14).
+- **The change is nearly level in two builds of three.** `change-engine-2` and `change-engine-3`
+  cost 122,496 and 115,398, the plain builds 108,170 and 118,787; `change-engine-1` took 20
+  requests and 187,215 (it ran the game's own checks, then tried its changes a run or a check a
+  request for a dozen more). The pass before, the three had cost 127,741 to 176,737 against 82,693
+  and 112,991.
+- **A judging through the engine still costs more**: 204,223 and 206,927 against 171,236 and
+  133,322 on the small job; 271,502 to 340,736 against 250,996 and 227,992 on the medium one (7 to
+  7.5 minutes against 3.5 and 6); 411,246 to 490,019 against 294,026 and 203,073 on the change (10
+  to 11 minutes against 3 and 4).
+
+**Where the gap is: before the first line of code.** Every engine build read for three requests
+after its brief, and wrote its first file in the fifth request. The plain builds wrote theirs in
+the second.
+
+| Build | Weighted tokens before its first file | After it | The plain builds, after theirs |
+|---|---|---|---|
+| `small-engine-1`, `-2` | 55,795; 49,032 | 87,606; 71,810 | 58,137; 73,301 |
+| `medium-engine-1`, `-2`, `-3` | 63,649; 67,716; 73,945 | 103,989; 130,394; 149,600 | 136,023; 158,419 |
+
+A plain build has spent 5,600 to 6,400 when it writes its first file. **After the first file the
+engine arm is the cheaper one on the medium game**, by the means (127,994 against 147,221; two
+builds of three are under both plain builds): it writes less (6,100 to 7,800 tokens that can be
+seen, against 7,800 and 8,100), the menus, the settings and the picture being the engine's.
+Everything it loses, and more, it loses in the first four requests: the brief, the guide with the
+game file and the rules (4,400 tokens), the rest of the sample (its six screens, the strings, the
+actions, the checks: about 5,000 more), and a fourth request of looking things up. By its first
+file an engine build's context is 23,000 to 32,000 tokens and a plain build's 9,100 to 9,600,
+which every later request then carries; and in each of the three reading requests the builder
+plans as it reads (about 2,000 tokens of thinking in each).
+
+- **What the fifth pass's cuts did there.** The one read was taken as written by every engine
+  build (its second request is that command). The second read followed in every build all the same:
+  the guide names the widgets and shows no screen, so the sample's screens were read. Every build
+  still wrote a checks file ("or make them your game's") and ran it once or twice, and every medium
+  and change build a player that reacts.
+- **Still looked up**, each for the third measurement in a row: whether a run that starts again
+  gets the same random numbers (`small-engine-1`), and what the built-in volume is and how far it
+  goes (`medium-engine-1`, `medium-engine-3`).
+- **The new rule held**: no build wrote a file twice. Builders still used here-documents for
+  small patches of an existing file, which worked.
+
+**What the five measurements come to.** The first meeting costs an engine build 45,000 to 65,000
+weighted tokens that a plain build does not pay, at every size: the builder knows Python and has
+to read the engine. On a one-screen game there is nothing for the engine to give back, and the
+game costs nearly twice. On a medium game the engine gives back about half of it after the first
+file. So at these sizes the best the engine has shown is a quarter dearer, and no change to the
+guide alone will make it cheaper than the plain build: what would is the engine doing more of the
+game's work than a title, a pause, settings and a picture (a larger game with things to keep,
+kinds of things, levels, assets), which none of these three jobs asks for and which is not
+measured. The `large` job is written for that and waits for the engine to keep things for a player
+between runs.

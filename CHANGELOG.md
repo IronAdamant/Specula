@@ -198,6 +198,17 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
     them the game's. Also: the `setting` event comes at a run's start and on a change during one
     (not on any change), and the large job's brief said too little in six places.
 
+  - **The fifth pass, measured: the first measurement in a clean shell** (2026-11-17, on `9450e0f4`;
+    [docs/design/LEVERAGE.md](docs/design/LEVERAGE.md), "Results (2026-11-17: the fifth pass)";
+    [perf/leverage/2026-11-17-pass5](perf/leverage/2026-11-17-pass5/report.md)). Fourteen builds, all
+    judged; no build wrote a file twice. The small game 132,122 weighted tokens through the engine
+    against 71,322 (1.85 times); the medium game 196,431 against 153,572 (1.28); the change 141,703
+    against 113,478 (1.25; two builds of three level with plain). Without the shell's fault the
+    third pass comes to about 1.7, 1.1 and 1.5 and the fourth to 2.7, 1.26 and 1.5, by their
+    ledgers: so the subtraction took back the fourth pass's rise on the small game, helped the
+    change, and did not move the medium game. An engine build has spent 49,000 to 74,000 before its
+    first file and a plain build about 6,000; after it the engine arm is the cheaper one on the
+    medium game, by the means.
   - **The launcher's live check is Rust** (2026-11-17; `launcher_check`,
     `tools/examen/src/native/launch.rs`). The live audit after the passes passed 69 of 70: the
     launcher's check failed on an expectation that had gone stale in part 3 (a project made from the

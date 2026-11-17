@@ -1223,6 +1223,15 @@ at once.
     refused first here-document of every build had cost the plain arm more, so the measured ratios
     flattered the engine (the third pass's medium game is about 1.1 times plain without it, not 1.0).
     A `large` job is written, and waits for the engine to keep things for a player between runs.
+  - **The fifth pass, measured (2026-11-17, `9450e0f4`; "Results (2026-11-17: the fifth pass)"): in
+    a clean shell, 1.85 times the plain build on the small game, 1.28 on the medium one, 1.25 on
+    the change.** The fourth pass's rise on the small game is taken back, the change is near level
+    (two builds of three cost what plain cost), the medium game did not move. The gap is the first
+    meeting: 49,000 to 74,000 weighted tokens before the first file against about 6,000, and after
+    it the engine arm is the cheaper one on the medium game. **At these sizes the guide alone will
+    not make the engine cheaper than the plain build.** What would: the engine doing more of a
+    game's work than these jobs ask for (things kept for a player, kinds of things, assets), and a
+    job that asks for it (`large`, written; needs things kept between runs first).
   - **Then measure again**, with more than two runs a cell on the medium job: two runs alike differ by
     as much as the effect being looked for.
 - [ ] ➕ **Game systems as optional data, and memory for whoever builds the game** (owner, 2026-11-16: "the

@@ -200,6 +200,20 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       (`evals/leverage/jobs/large.json`) and not run: **a game made of modules cannot keep
       anything for its player between runs but settings** (a best score, a saved run), which a
       larger game needs and the engine has yet to build.
+    - **The fifth pass, measured: the first measurement in a clean shell** (2026-11-17, on
+      `9450e0f4`; LEVERAGE.md, "Results (2026-11-17: the fifth pass)";
+      [perf/leverage/2026-11-17-pass5](perf/leverage/2026-11-17-pass5/report.md)). Fourteen
+      builds, all judged, no file written twice. **Through the engine the small game costs 1.85
+      times the plain build, the medium game 1.28, the change 1.25** (two change builds of three
+      cost what the plain ones cost). It took back the fourth pass's rise on the small game and
+      did not move the medium one; "the medium game costs the same" (the third pass) was the
+      shell's fault flattering the engine. **The gap is before the first line of code**: an
+      engine build has spent 49,000 to 74,000 weighted tokens when it writes its first file (the
+      guide, the sample, a look-up: four requests) and a plain build about 6,000; after the
+      first file the engine arm is the cheaper one on the medium game, by the means. At these
+      sizes that first meeting is not paid back, and no change to the guide alone will make the
+      engine cheaper than the plain build: what would is the engine doing more of a game's work,
+      which these three jobs do not ask for.
     - **The live audit after the passes** (2026-11-17, on `e5fbe695`): 69 of 70. `launch_check`
       fails on an expectation that went stale in part 3 (a project made from the start screen now
       opens on its own title screen, and the check expects a window with no text). Its script is
@@ -298,6 +312,15 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       14 against 14 and 14; 19, 19 and 19 of 19 against 17 and 18; 8, 9 and 7 of 9 against 8
       and 9. With nothing changed for it, the plain arm moved by 1%, 13% and 20% between the
       third pass and the fourth: read a difference smaller than that as nothing.
+    - *The same, after the fifth pass, in a clean shell* (2026-11-17, on `9450e0f4`; both arms
+      told to write files with their file tool: **compare later figures with these, not with
+      the ones above**, in which every build wrote its first file twice): a one-screen game
+      132,122 against 71,322; a medium game 196,431 (167,638 to 223,545) against 153,572; a
+      change 141,703 against 113,478. About 1.85, 1.28 and 1.25 times. Requests: 12 and 11
+      against 6 and 10; 14, 16 and 17 against 8 and 12; 20, 13 and 12 against 12 and 14.
+      Checks: 14 and 14 of 14 in both arms; 19, 19 and 19 of 19 against 19 and 17; 8, 9 and 9
+      of 9 against 9 and 8. Without the shell's fault the third pass comes to about 1.7, 1.1
+      and 1.5 and the fourth to 2.7, 1.26 and 1.5 (estimates from their ledgers).
     - *What verifying costs* (2026-11-15 and 16): 3,049 tests in the gate; the tests themselves about
       2 minutes; the gate about 25 minutes for each Rust version; the audit's 70 live checks about an
       hour; CI from nothing 10 minutes on Linux and 17 to 25 on Windows.
@@ -930,11 +953,12 @@ In practice that means six **foundations** that apply to every change from M1 on
 
 **What it can't do yet:**
 - **Pay for itself at small sizes.** A medium game (menus, settings, two languages, waves) built through the
-  engine costs about the same tokens as the same game built without it by the same model (1.0 and 1.1 times
-  in the last two measurements of 2026-11-17, with every check passed; it was 4.0 times the day before, 3.1
-  in M5). A one-screen game costs 1.5 to 2.2 times (6.8; 5.2), and a change to an existing game 1.5 times
-  (2.2; 1.7). Equal is not cheaper: the engine does not yet pay at these sizes, it has stopped costing more
-  at one of them ([docs/design/LEVERAGE.md](docs/design/LEVERAGE.md)). M6's work, still.
+  engine costs about a quarter more tokens than the same game built without it by the same model, with every
+  check passed; a change to an existing game about a quarter more; a one-screen game nearly twice (1.28,
+  1.25 and 1.85 times, measured 2026-11-17 after five passes at the first hour, in the first measurement
+  without a fault of the builders' shell that had flattered the engine; it was 4.0, 2.2 and 6.8 the day
+  before). What is left is the first meeting: the guide and the sample read before a line is written, which
+  these sizes do not pay back ([docs/design/LEVERAGE.md](docs/design/LEVERAGE.md)). M6's work, still.
 - **Tell a story for a game.** A storyline tree, reputation, an RPG set-up, captions with voices and music
   packs are M6's, noted on 2026-11-16 and not designed. (Win and loss conditions, a score, and notes kept with a
   project were built in M6 part 3.) Round and human form still costs an agent far more than boxes do (the five

@@ -39,7 +39,7 @@ remembers.**
 | 9 | A headless run: `specula run` (the second pass) | built, reviewed, gated; measured on `bbe9fa36` (LEVERAGE.md, "Results (pass 2)") |
 | 10 | A run that says what went wrong, and a player that reacts: `--follow` (the third pass) | built, reviewed, gated; measured on `6cfff79b` (LEVERAGE.md, "Results (the third pass)": the medium game costs the same as without the engine) |
 | 11 | The game's own checks, every run in one command: `specula check` (the fourth pass) | built, reviewed, gated; measured on `d18e1131` (LEVERAGE.md, "Results (the fourth pass)": no build cheaper, the small game dearer; the checks came on top of single runs) |
-| 12 | What a first build is not asked for: the guide and the brief, cut (the fifth pass) | built, reviewed (section 12) |
+| 12 | What a first build is not asked for: the guide and the brief, cut (the fifth pass) | built, reviewed, gated; measured on `9450e0f4` in a clean shell (LEVERAGE.md, "Results (the fifth pass)": 1.85, 1.28 and 1.25 times; the gap is before the first line of code) |
 
 ## 1. The SDK comes from the engine
 
@@ -518,6 +518,15 @@ nothing to the engine. It takes away what made requests.
 
 **What it is made of**: `scaffold.rs` (the guide, the sample checks' note), `launch_run.rs`
 (`read_first`), the harness's brief and its data. Nothing here changes what the engine does.
+
+**What its measurement said** (2026-11-17; [LEVERAGE.md](LEVERAGE.md), "Results (2026-11-17: the
+fifth pass)"). In a clean shell: 1.85 times the plain build on the small game, 1.28 on the medium
+one, 1.25 on the change. The one read was taken as written by every build, and a second followed
+all the same (the sample's screens: the guide names the widgets and shows no screen); every build
+still wrote a checks file and ran it once or twice. An engine build has spent 49,000 to 74,000
+weighted tokens when it writes its first file and a plain build about 6,000; after it the engine
+arm is the cheaper one on the medium game. Still looked up, a third measurement running: whether
+a run that starts again gets the same random numbers, and what the built-in volume is.
 
 ## As built
 
