@@ -272,6 +272,27 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       slowest measurement. A figure of six parts had sat at the build's limit.
     - **Asked of the owner's researchers:** reference pictures to hold the figures against
       ([docs/research/REFERENCE_IMAGES_BRIEF.md](docs/research/REFERENCE_IMAGES_BRIEF.md)).
+    - **They came the same evening**: 110 pictures, all from Wikimedia Commons (88 public domain,
+      3 CC0, 19 CC BY), indexed in
+      [docs/research/library/reference-images/](docs/research/library/reference-images/README.md).
+      The files are beside the repository; whether they go into it is the owner's to say.
+    - **The figure is measured against its body.** A test builds the body's mesh, cuts it with a
+      level plane at each height the survey measured people at, and compares breadth, depth and a
+      tight tape's girth with the body's own rows. It found what eight looks had not: chest and
+      waist 5 to 7% shallow, a man's hips 6% wide, a thigh up to 12% thin, the legs parting 5 to
+      8 cm low. Mended: every breadth and depth is now within 3%, and the girths of the buttocks,
+      thigh, calf and neck within 5%. Not mended, and held loosely with the reason: a tape round
+      the waist reads 6% short and round the chest a tenth to a fifth short (the trunk's sections
+      are too round).
+    - **A column's sizes follow a monotone cubic through its sections.** They eased in and out of
+      every section, which is level at each: every limb of the first figure had a ring at every
+      section. A column's weight goes from 78 to 86 (54 to 56 ns a sample, measured three times).
+    - **A thigh's top is an ellipse centred on its flesh**: two lie side by side within the hips'
+      breadth. A wider join of legs and trunk, tried first, looked better and measured worse (it
+      filled the crotch in by 10 cm) and was taken out.
+    - **A man's chest is the plain column**: a third try at a swell for the muscle read as one
+      mound to an independent check of the eleventh look, which did not pass it. What it listed
+      is in [docs/design/FIGURE.md](docs/design/FIGURE.md).
   - **Part 4, slice 1: the body as numbers** (2026-11-17; `specula-corpus`,
     [docs/design/CORPUS.md](docs/design/CORPUS.md)). The owner's rule for part 4 was tables first,
     from published measurements, "looked up, not written from an agent's memory".

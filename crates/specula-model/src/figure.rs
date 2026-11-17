@@ -112,7 +112,7 @@ fn union(kids: Vec<SdfNode>, smooth: f32) -> SdfNode {
 }
 
 /// A column from `a` to `b`: sections `(how far along, half breadth toward side, half depth)`,
-/// eased from one to the next ([`Prim::Column`]).
+/// on a curve from one to the next ([`Prim::Column`]).
 fn column(a: V3, b: V3, side: V3, sections: &[(f32, f32, f32)]) -> SdfNode {
     let mut rows = [[0.0f32; 3]; crate::sdf::MAX_SECTIONS];
     for (row, section) in rows.iter_mut().zip(sections) {
@@ -148,6 +148,23 @@ fn chain(points: &[(V3, f32)], smooth: f32) -> SdfNode {
 /// makes): the girth is twice the flat part and one circle of the thickness.
 fn half_thickness(breadth: f32, girth: f32) -> f32 {
     ((girth - 2.0 * breadth) / (std::f32::consts::PI - 2.0) / 2.0).clamp(breadth * 0.08, breadth / 2.0)
+}
+
+/// The other half-axis of an ellipse that is `girth` round and `half` across one way
+/// (Ramanujan's perimeter, solved by halving): what a limb is deep when it cannot be as wide
+/// as a circle of its girth.
+fn other_half(girth: f32, half: f32) -> f32 {
+    let round = |a: f32, b: f32| std::f32::consts::PI * (3.0 * (a + b) - ((3.0 * a + b) * (a + 3.0 * b)).sqrt());
+    let (mut low, mut high) = (half * 0.25, half * 4.0);
+    for _ in 0..28 {
+        let middle = (low + high) / 2.0;
+        if round(half, middle) < girth {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    (low + high) / 2.0
 }
 
 /// A body's sizes and its posed frame, read once.
@@ -196,14 +213,20 @@ impl Sizes<'_> {
         let top = (shoulder[1] - 0.012).max(chest + 0.02);
         let t = |y: f32| (y - hips) / (top - hips);
         let (wide, deep) = (shoulder[0] * 0.86, chest_deep * 0.74);
+        // The survey's chest depth is from the back to the chest's foremost point: on a woman
+        // the ribs are shallower than that and the breasts make up the rest. A man's chest is
+        // the column alone: three tries at a swell for the muscle (v6, v7, v11) each read as
+        // breasts or as one mound, so it waits for a shape made from the plates of the muscle.
+        let male = self.body.sex() == specula_corpus::Sex::Male;
+        let ribs = if male { 1.0 } else { 0.90 };
         let column_of_sections = column(
             [0.0, hips, 0.0],
             [0.0, top, 0.0],
             [1.0, 0.0, 0.0],
             &[
                 (0.0, hip_half * 0.97, seat_half * 0.90),
-                (t(waist), self.m("waist_breadth") / 2.0, self.m("waist_depth") / 2.0 * 0.95),
-                (t(chest), chest_half, chest_deep * 0.93),
+                (t(waist), self.m("waist_breadth") / 2.0, self.m("waist_depth") / 2.0),
+                (t(chest), chest_half, chest_deep * ribs),
                 (1.0, wide, deep),
             ],
         );
@@ -214,9 +237,9 @@ impl Sizes<'_> {
             let x = sign(side);
             // A buttock behind each hip, and the chest's swell in front of each side of it.
             parts.push(egg([x * hip_half * 0.46, hips - seat_half * 0.10, -seat_half * 0.52], [hip_half * 0.50, seat_half * 0.95, seat_half * 0.62]));
-            // (A man's is the flat of a muscle; a woman's stands out more. No survey here says by how much.)
-            let (out, forward) = if self.body.sex() == specula_corpus::Sex::Male { (0.30, 0.52) } else { (0.52, 0.42) };
-            parts.push(egg([x * chest_half * 0.46, chest, chest_deep * forward], [chest_half * 0.48, chest_deep * 0.62, chest_deep * out]));
+            if !male {
+                parts.push(egg([x * chest_half * 0.46, chest, chest_deep * 0.50], [chest_half * 0.48, chest_deep * 0.62, chest_deep * 0.60]));
+            }
         }
         // From the neck's base a muscle slopes down to each shoulder (the trunk's column ends
         // in a rounded top under it: a column's own top would be a shelf).
@@ -273,7 +296,17 @@ impl Sizes<'_> {
         let (hip, knee) = (self.at(Joint::Hip(side)), self.at(Joint::Knee(side)));
         let (thigh_r, lower_r) = (self.round("thigh_circumference"), self.round("lower_thigh_circumference"));
         let knee_r = lower_r * 0.93;
-        let thigh = column(hip, knee, [1.0, 0.0, 0.0], &[(0.0, thigh_r * 0.80, thigh_r * 0.86), (0.14, thigh_r * 0.97, thigh_r * 0.99), (0.5, (thigh_r + lower_r) / 2.0 * 1.02, (thigh_r + lower_r) / 2.0 * 1.04), (0.86, lower_r, lower_r), (1.0, knee_r, knee_r * 1.02)]);
+        // A thigh's top is not round, and its flesh is not centred on its bone. Two of them
+        // lie side by side within the hips' breadth: where its girth was measured (under the
+        // buttock) each reaches from a finger's breadth short of the body's middle line, where
+        // the legs part, out to the hips' side, and is as deep from back to front as its girth
+        // leaves. So the column starts inward of the hip joint and comes to the knee.
+        let furrow = ((hip[1] - (self.height("crotch_height") - 0.02)) / (hip[1] - knee[1]).max(0.05)).clamp(0.08, 0.4);
+        let (inner, outer) = (0.015, self.m("hip_breadth") / 2.0 * 0.985);
+        let across = ((outer - inner) / 2.0).clamp(thigh_r * 0.6, thigh_r);
+        let deep = other_half(self.m("thigh_circumference"), across);
+        let top = [sign(side) * ((inner + across) - knee[0].abs() * furrow) / (1.0 - furrow), hip[1], hip[2]];
+        let thigh = column(top, knee, [1.0, 0.0, 0.0], &[(0.0, across * 0.92, deep * 0.80), (furrow, across, deep), (0.86, lower_r, lower_r), (1.0, knee_r, knee_r * 1.02)]);
         // The kneecap, in front of the joint.
         let cap = egg([knee[0], knee[1] + knee_r * 0.10, knee[2] + knee_r * 0.62], [knee_r * 0.50, knee_r * 0.58, knee_r * 0.46]);
         union(vec![thigh, self.shank_column(side), cap], self.smooth * 0.5)
@@ -540,6 +573,201 @@ mod tests {
             let weight = body.weight() as f32;
             assert!(litres > weight * 0.8 && litres < weight * 1.25, "{}: {litres} litres for {weight} kg", sex.name());
         }
+    }
+
+    /// One closed curve of a surface cut by a level plane: where it lies across (x) and from
+    /// back to front (z), and how far round a tape drawn tight about it would be.
+    #[derive(Debug, Clone, Copy)]
+    struct Ring {
+        lo: [f32; 2],
+        hi: [f32; 2],
+        girth: f32,
+    }
+
+    impl Ring {
+        fn breadth(&self) -> f32 {
+            self.hi[0] - self.lo[0]
+        }
+        fn depth(&self) -> f32 {
+            self.hi[1] - self.lo[1]
+        }
+    }
+
+    /// The curves a surface is cut in by the level plane at `y`, from the figure's right to
+    /// its left.
+    fn cut(shape: &crate::shape::Shape, y: f32) -> Vec<Ring> {
+        fn root(parent: &mut [usize], mut i: usize) -> usize {
+            while parent[i] != i {
+                parent[i] = parent[parent[i]];
+                i = parent[i];
+            }
+            i
+        }
+        let mut crossed = std::collections::BTreeMap::new();
+        let (mut points, mut parent): (Vec<[f32; 2]>, Vec<usize>) = (Vec::new(), Vec::new());
+        for t in &shape.tris {
+            let mut met = Vec::with_capacity(2);
+            for k in 0..3 {
+                let (i, j) = (t[k], t[(k + 1) % 3]);
+                let (a, b) = (shape.positions[i as usize], shape.positions[j as usize]);
+                if (a[1] < y) != (b[1] < y) {
+                    let id = *crossed.entry((i.min(j), i.max(j))).or_insert_with(|| {
+                        let along = (y - a[1]) / (b[1] - a[1]);
+                        points.push([a[0] + along * (b[0] - a[0]), a[2] + along * (b[2] - a[2])]);
+                        parent.push(parent.len());
+                        points.len() - 1
+                    });
+                    met.push(id);
+                }
+            }
+            if let [a, b] = met[..] {
+                let (a, b) = (root(&mut parent, a), root(&mut parent, b));
+                parent[a] = b;
+            }
+        }
+        let mut curves = std::collections::BTreeMap::<usize, Vec<[f32; 2]>>::new();
+        for (i, point) in points.iter().enumerate() {
+            curves.entry(root(&mut parent, i)).or_default().push(*point);
+        }
+        let mut rings: Vec<Ring> = curves
+            .into_values()
+            .map(|mut at| {
+                // A tape drawn tight lies on the curve's hull (Andrew's chain).
+                at.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+                let turn = |o: [f32; 2], a: [f32; 2], b: [f32; 2]| (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+                let mut hull: Vec<[f32; 2]> = Vec::new();
+                for pass in 0..2 {
+                    let start = hull.len();
+                    let order: Vec<[f32; 2]> = if pass == 0 { at.clone() } else { at.iter().rev().copied().collect() };
+                    for p in order {
+                        while hull.len() >= start + 2 && turn(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0 {
+                            hull.pop();
+                        }
+                        hull.push(p);
+                    }
+                    hull.pop();
+                }
+                let girth = (0..hull.len()).map(|i| math3::length(math3::sub([hull[i][0], 0.0, hull[i][1]], [hull[(i + 1) % hull.len()][0], 0.0, hull[(i + 1) % hull.len()][1]]))).sum();
+                let lo = at.iter().fold([f32::MAX; 2], |m, p| [m[0].min(p[0]), m[1].min(p[1])]);
+                let hi = at.iter().fold([f32::MIN; 2], |m, p| [m[0].max(p[0]), m[1].max(p[1])]);
+                Ring { lo, hi, girth }
+            })
+            .collect();
+        rings.sort_by(|a, b| a.lo[0].total_cmp(&b.lo[0]));
+        rings
+    }
+
+    /// The curve across the figure's middle line, and the left leg's (left is +X).
+    fn middle(rings: &[Ring]) -> Option<Ring> {
+        rings.iter().copied().find(|r| r.lo[0] < 0.0 && r.hi[0] > 0.0)
+    }
+    fn left_leg(rings: &[Ring]) -> Option<Ring> {
+        rings.iter().copied().find(|r| r.lo[0] > -0.02 && r.lo[0] < 0.12 && r.hi[0] < 0.26)
+    }
+
+    /// What the figure's surface measures where the survey measured people, as rows of
+    /// `(what, the figure's metres, the body's metres)`.
+    fn measures(body: &Body) -> Vec<(&'static str, f32, f32)> {
+        let shape = built(body, Part::Body, 112);
+        let shaping = Shaping::default();
+        let straight = body.frame();
+        let drop = (straight.at(Joint::Pelvis)[1] - straight.spread(shaping.arms, shaping.legs).at(Joint::Pelvis)[1]) as f32;
+        let m = |name: &str| (body.dimension(name).unwrap() / 1000.0) as f32;
+        let height = |name: &str| m(name) - drop;
+        let mut rows = Vec::new();
+        let none = Ring { lo: [0.0; 2], hi: [0.0; 2], girth: 0.0 };
+        let chest = middle(&cut(&shape, height("chest_height"))).unwrap_or(none);
+        assert!((chest.lo[0] + chest.hi[0]).abs() < 0.004, "the chest is not the same on both sides: {chest:?}");
+        rows.push(("chest breadth", chest.breadth(), m("chest_breadth")));
+        rows.push(("chest depth", chest.depth(), m("chest_depth")));
+        rows.push(("chest girth", chest.girth, m("chest_circumference")));
+        let waist = middle(&cut(&shape, height("waist_height_omphalion"))).unwrap_or(none);
+        rows.push(("waist breadth", waist.breadth(), m("waist_breadth")));
+        rows.push(("waist depth", waist.depth(), m("waist_depth")));
+        rows.push(("waist girth", waist.girth, m("waist_circumference")));
+        let hips = middle(&cut(&shape, height("buttock_height"))).unwrap_or(none);
+        rows.push(("hip breadth", hips.breadth(), m("hip_breadth")));
+        rows.push(("buttock depth", hips.depth(), m("buttock_depth")));
+        rows.push(("buttock girth", hips.girth, m("buttock_circumference")));
+        // Where the legs part: the highest level at which nothing crosses the middle line.
+        let mut parts_at = height("crotch_height") - 0.2;
+        while parts_at < height("crotch_height") + 0.2 && middle(&cut(&shape, parts_at + 0.005)).is_none() {
+            parts_at += 0.005;
+        }
+        rows.push(("where the legs part", parts_at, height("crotch_height")));
+        let girth_at = |y: f32| left_leg(&cut(&shape, y)).map_or(0.0, |r| r.girth);
+        rows.push(("thigh girth", girth_at(parts_at - 0.02), m("thigh_circumference")));
+        rows.push(("lower thigh girth", girth_at(height("knee_height_midpatella") + 0.06), m("lower_thigh_circumference")));
+        let (knee, ankle) = (height("knee_height_midpatella"), height("lateral_malleolus_height"));
+        let calf = (0..40).map(|i| girth_at(ankle + 0.12 + (knee - 0.06 - ankle - 0.12) * i as f32 / 39.0)).fold(0.0, f32::max);
+        rows.push(("calf girth", calf, m("calf_circumference")));
+        // The armpit: going up from the chest, where the trunk's curve first takes an arm in.
+        let mut armpit = height("chest_height");
+        while armpit < height("acromial_height") && middle(&cut(&shape, armpit)).is_some_and(|r| r.breadth() < m("chest_breadth") * 1.3) {
+            armpit += 0.005;
+        }
+        rows.push(("armpit height", armpit, height("axilla_height")));
+        let top = shape.bounds().max[1];
+        rows.push(("neck girth", middle(&cut(&shape, top - 0.012)).unwrap_or(none).girth, m("neck_circumference")));
+        rows
+    }
+
+    /// Printed, for looking at: `cargo test -p specula-model --lib figure_measures -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "prints a table for a person to read; the test after it holds the same numbers"]
+    fn figure_measures() {
+        let mut table = String::new();
+        for (name, body) in [
+            ("typical woman", Body::typical(Sex::Female)),
+            ("typical man", Body::typical(Sex::Male)),
+            ("slight woman", Body::with_build(Sex::Female, 1.70, -1.2).unwrap()),
+            ("heavy man", Body::with_build(Sex::Male, 1.72, 2.0).unwrap()),
+        ] {
+            table += &format!("{name}
+");
+            for (what, figure, measured) in measures(&body) {
+                table += &format!("  {what:22} figure {:6.1} cm   body {:6.1} cm   {:+5.1}%
+", figure * 100.0, measured * 100.0, (figure / measured - 1.0) * 100.0);
+            }
+        }
+        println!("{table}");
+    }
+
+    /// The figure measures what its body does, where the survey measured people: cut at the
+    /// chest, the waist and the hips it is as broad and as deep as the body's rows say, and
+    /// round the hips, a thigh, a calf and the neck a tape reads what they say. Two things
+    /// are held more loosely, and one not at all, each for a reason that is the figure's:
+    /// the waist is rounder than a person's (a tape reads some 6% short); the legs part a
+    /// few centimetres under the measured crotch (the two thighs' surfaces melt into each
+    /// other there); and round the chest a tape reads a tenth to a fifth short, because a
+    /// rounded section as broad and as deep as the survey's chest cannot be as far round as
+    /// its chest girth (on a person the tape also passes over the muscles that go to the arms).
+    #[test]
+    fn the_figure_measures_what_its_body_does() {
+        for (name, body) in [("typical woman", Body::typical(Sex::Female)), ("heavy man", Body::with_build(Sex::Male, 1.72, 2.0).unwrap())] {
+            for (what, figure, measured) in measures(&body) {
+                let off = figure / measured - 1.0;
+                let (least, most) = match what {
+                    "chest girth" => (-0.23, 0.0),
+                    "waist girth" => (-0.08, 0.02),
+                    "where the legs part" => (-0.08, 0.01),
+                    "armpit height" => (-0.02, 0.02),
+                    what if what.ends_with("girth") => (-0.05, 0.05),
+                    _ => (-0.03, 0.03),
+                };
+                assert!(off >= least && off <= most, "{name}: {what} is {:.1} cm on the figure and {:.1} cm on the body ({:+.1}%)", figure * 100.0, measured * 100.0, off * 100.0);
+            }
+        }
+    }
+
+    /// A limb's other half-axis: a circle's girth gives the circle back, and a section
+    /// narrower than that circle is deeper.
+    #[test]
+    fn a_limb_too_narrow_for_its_girth_is_deeper() {
+        let round = other_half(2.0 * std::f32::consts::PI * 0.1, 0.1);
+        assert!((round - 0.1).abs() < 1e-4, "{round}");
+        let narrow = other_half(2.0 * std::f32::consts::PI * 0.1, 0.08);
+        assert!(narrow > 0.115 && narrow < 0.125, "{narrow}");
     }
 
     /// A heavier body of the same stature is a bigger figure; the same body is the same figure.

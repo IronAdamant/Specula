@@ -137,8 +137,13 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
   - `column`: `from`, `to`, `side`, and `sections`, rows of `[how far along, half breadth, half
     depth]` (up to 8). The breadth (toward `side`) and the depth pass smoothly from one section to
     the next, and a rounded end closes it. A trunk with no steps, a limb with its swell, a neck.
-    Sections ease in and out: over a short span from a wide one to a narrow one that is a shelf, and
-    a slope wants a slanted `round_cone` instead (the figure's shoulders taught this).
+    The sizes follow a curve through the sections that keeps going the way they go (a monotone
+    cubic): it is level at a section only where the sizes turn there, and never outside the two
+    sections it is between. (At first each span eased in and out, which is level at every section:
+    a limb that tapered through three sections showed a band at the middle one, and every limb of
+    the first figure had rings; over a short span from a wide section to a narrow one it was a
+    shelf, which is why the figure's shoulders are a slanted `round_cone`. Changed 2026-11-17; the
+    shoulders have not been tried again as sections.)
   A chain's links are joined by a **near-union**: only the links within the smoothing of the nearest
   take part, where a plain smooth union blends its children one after another. It is what lets a
   tree of many parts cost what is near each point.
@@ -160,7 +165,9 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
   eight spheres 251 to 309. Each weight is still at least one and a half times the slowest of those
   (the rule they were first set by, on 2026-10-22, from a sphere of about 70 ns on a shared
   machine). What moved it: a figure of six parts sat at the build's limit and was refused at its
-  levels of detail. A sculpt that built before builds now; one that was refused for work may not be. One vertex per surface cell (a QEF of the
+  levels of detail. A sculpt that built before builds now; one that was refused for work may not be. A column
+  with its curve through the sections (the same day) measured 54 to 56 ns, and its weight went from
+  78 to 86 by the same rule. One vertex per surface cell (a QEF of the
   crossings' planes regularised towards their mass point, clamped to the cell): flat faces stay flat
   and creases sharp. The outer sample layer counts as outside, so the mesh is always closed (it may
   have edges where two sheets touch: still balanced). Unbounded trees (a half-space in a union) need

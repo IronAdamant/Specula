@@ -64,9 +64,11 @@ as a ragged line: the third to the seventh looks have it).
 
 ## What it is made of
 
-The trunk is one column from the hips to the shoulders (sections eased from one to the next), with an
-egg for each buttock and each side of the chest and a round cone sloping from the neck's base to each
-shoulder. Each limb is two columns. A hand is four metacarpals side by side, three bones to each finger
+The trunk is one column from the hips to the shoulders (its sizes on a curve through the sections),
+with an egg for each buttock, one for each breast on a woman, and a round cone sloping from the neck's
+base to each shoulder. Each limb is two columns. A thigh's top is an ellipse, not a circle: two thighs
+lie side by side within the hips' breadth, so each reaches from a finger's breadth short of the middle
+line to the hips' side and is as deep as its girth leaves. A hand is four metacarpals side by side, three bones to each finger
 and a thumb; a foot a heel, an instep, a flat body and five toes; a head a skull as broad and as long
 as measured and a jaw. Everything is joined by near-unions.
 
@@ -87,6 +89,9 @@ development machine (the gallery's originals are not tracked). In short:
 | v6 | A muscle from the neck to each shoulder: they slope |
 | v7 | The ankle's ledge found by measuring pixels and removed; a man's chest flattened |
 | v8 | The body cut where the fine parts begin; a foot with an arch; kneecaps. **Eight different bodies in a row** (slender, heavy, older, athletic, long-legged, broad) |
+| v9 | Each trait as a pair of bodies alike but for it: each differs where its trait says |
+| v10 | A wider join of legs and trunk: looked better, **measured worse** (hips 4 to 6 cm wide, the crotch filled in by 10 cm); taken out |
+| v11 | Mended by measuring (below): limbs with no rings, thighs as ellipses, depths as surveyed |
 
 A model that did not take the captures checked v6 and **did not pass it as it had been described**: the
 joins still showed, and the waist is not narrower than the chest. It checked v8 too, and did not pass that
@@ -96,6 +101,31 @@ is 7 pixels in that picture); the joins are thin lines now and still seams; neig
 in the row. The same numbers showed the figure's crotch 5 cm under the measured one (the trunk's rounded
 bottom), which is now cut at the measured height.
 
+## Measured against its body
+
+The reference pictures came on 2026-11-17 ([the index](../research/library/reference-images/README.md)).
+Holding them beside the captures showed what the eye could and could not settle, and the figure is now
+**measured**: a test builds the body's mesh, cuts it with a level plane at each height the survey
+measured people at, and compares the breadth, the depth and a tight tape's girth of each closed curve
+with the body's own rows (`figure::tests::the_figure_measures_what_its_body_does`; `figure_measures`
+prints the table). Before it, the chest and the waist were 5 to 7% shallow, a man's hips 6% wide, a
+thigh up to 12% thin and the legs parted 5 to 8 cm low, and none of it had been seen.
+
+What the test holds now, on a typical woman and a heavy man: every breadth and depth (chest, waist,
+hips, buttocks) within 3%; the girths of the buttocks, a thigh, the lower thigh, a calf and the neck
+within 5%; the armpit within 2% of its height. Held loosely, each for a reason that is the figure's:
+
+- **The waist's girth is about 6% short and the chest's a tenth (women) to a fifth (men) short.** The
+  trunk's sections are ellipses; a person's are squarer, and at the chest a tape also passes over the
+  muscles that go to the arms. No rounded section as broad and as deep as the survey's chest can be as
+  far round as its chest girth. The mend is a squareness for a column's sections and those muscles:
+  not built.
+- **The legs part 2.5 to 5 cm below the measured crotch**: the two thighs' surfaces melt into each
+  other at the top.
+
+Not measured yet: the shoulders' breadth across the arms' muscles (the pose's arms are out), the arms'
+girths, the head's part and the hands and feet.
+
 Numbers (release engine, integrated adapter): 45,000 to 53,000 triangles a figure (at v7: body 18,700;
 head 6,800; hands 7,300 each; feet 4,800 each), built in about a second, 0.6e9 to 0.67e9 of the 1.5e9
 work units a build may spend (with the weights as recalibrated the same day:
@@ -104,15 +134,27 @@ screen at 1280x720.
 
 ## What is wrong, and what is not there
 
-- A hard crease where the skull sits on the neck; the head is an egg (a face is its own work, for its
-  own lane).
-- Bands at the knees and down the thighs; the hips meet the trunk as a ledge on the heavier bodies; a
-  notch at the wrist; a thin line (and a bright hairline) where each fine part is cut.
-- No elbows or collarbones; the kneecaps are a first guess.
+An independent check of v11 did not pass it either. It confirmed that the limbs' rings and the boxy
+crotch are gone and that the legs part with a gap; it failed a man's chest (a third try at a swell read
+as one mound, and is taken out: a man's chest is the plain column) and the back view (unlit, the
+capture's fault twice). Its list, and what the numbers add:
+
+- The trunk is a straight column: too round by the tape (above), ruler-flat at the back and the belly,
+  a sharp corner where the buttock starts, no curve in the lower back (the frame is flat), no ribcage,
+  navel or collarbones. (That the typical man has no waist is the survey: 28.9 cm at the chest, 32.6 at
+  the waist, 34.6 at the hips.)
+- A hard crease where the skull sits on the neck, the head a ball cut flat below with no jaw from the
+  front; the head is an egg (a face is its own work, for its own lane).
+- Cuff lines at the wrists and ankles where each fine part is cut; a faint edge across the pelvis and
+  a dimple above the crotch.
+- Legs as tubes: knees nearly as wide as the upper thigh, little calf, no fold under the buttock, no
+  ankle bones. Arms: a step at the elbow, the forearm fatter than the upper arm there, no elbow or
+  biceps; the shoulders small on a sloping line. A man's knees read as creases.
+- The back has not been seen lit.
 - Eight bodies have been looked at from afar, and only the two typical ones up close.
 - The levels of detail have not been looked at. A hand is 7,300 triangles.
 - **No rig.** The frame's joints are the bones' places; binding is not written.
-- Nothing has been held against a picture of a person
-  ([research/REFERENCE_IMAGES_BRIEF.md](../research/REFERENCE_IMAGES_BRIEF.md) asks for them).
+- Held against pictures of people only by eye so far (Richer's plates, 2026-11-17); no outline has
+  been compared at one scale.
 - The body and the hands may join two sheets along a few edges (the tops of the thighs, between
   fingers): closed, and not a clean surface there.

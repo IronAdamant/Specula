@@ -304,10 +304,20 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       `stretch` and a near-union in the distance-field modeller, a mesher that leaves out of each
       block what is too far to matter (exact, and what made a finer figure affordable), and the
       shape `figure`: six parts of a person from a measured body, each on its own grid, hands with
-      fingers, feet with toes. **Eight looks in the engine are recorded**, the bad ones kept
-      (`gallery-full/part4/figure/NOTES.md` on this machine). An independent check of the sixth
-      did not pass it as described. What is wrong and what is missing is in FIGURE.md's last
-      section: no rig, no knees or elbows, a seam at the neck, only two bodies looked at, and
+      fingers, feet with toes. **Eleven looks in the engine are recorded**, the bad ones kept
+      (`gallery-full/part4/figure/NOTES.md` on this machine). Independent checks of the sixth,
+      the eighth and the eleventh did not pass any of them as described.
+      **The figure is now measured, not only looked at** (2026-11-17, after the reference
+      pictures came): a test cuts the built mesh at each height the survey measured people at
+      and holds breadth, depth and girth against the body's own rows
+      (`the_figure_measures_what_its_body_does`; `figure_measures` prints the table). It found
+      in an hour what eight looks had not, and a change that looked better and measured worse.
+      **Measure before looking, and look before saying.** Every breadth and depth is within 3%
+      and most girths within 5%; a tape round the waist reads 6% short and round the chest a
+      tenth to a fifth short, because the trunk's sections are too round (next: a squareness
+      for a column's sections, and the muscles that go from the chest and the back to the
+      arms). What else is wrong and what is missing is in FIGURE.md's last section: no rig, a
+      trunk like a column, tubes for legs, a seam at the neck, the back never seen lit, and
       **no review yet by a model that did not write it**.
     - **Then:** the rig by construction, the review, the gate; roundness as one number; the form
       checks; the form views; shape language; the light report; the same in 2D.

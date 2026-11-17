@@ -60,7 +60,9 @@ pub enum Prim {
     /// A column of sections along the line from `a` to `b`: at each of its first `count`
     /// `sections` (`[t, breadth, depth]`: how far along, 0 to 1 and rising, and the half
     /// breadth toward `side` and the half depth across it) the surface is that ellipse, and
-    /// between two sections the breadth and the depth pass smoothly from one to the other. A
+    /// between two sections the breadth and the depth follow a curve through them that keeps
+    /// going the way the sizes go: level at a section only where they turn, never outside the
+    /// two sections it is between. A
     /// rounded end closes it past each end. A trunk, a limb with its swell, a neck, a vase.
     /// Given by its ends, in the node's frame; its field is a lower bound of the distance.
     Column { a: V3, b: V3, side: V3, sections: [[f32; 3]; MAX_SECTIONS], count: u8 },
@@ -343,18 +345,39 @@ fn column(p: V3, a: V3, b: V3, side: V3, sections: &[[f32; 3]]) -> f32 {
     let from = math3::sub(p, a);
     let (t, x, z) = (math3::dot(from, up) / length, math3::dot(from, right), math3::dot(from, across));
     let (first, last) = (sections[0], sections[sections.len() - 1]);
-    // The section at t: between its two neighbours, eased in and out.
+    // The section at t: on a curve through the sections that keeps going the way they go (a
+    // monotone cubic). It is level at a section only where the sizes turn there, so a limb
+    // that tapers through three sections tapers all the way and shows no band at the middle
+    // one; and it never goes outside the sizes of the two sections it is between.
     let at = t.clamp(first[0], last[0]);
     let (mut rx, mut rz) = (last[1], last[2]);
-    for pair in sections.windows(2) {
-        if at <= pair[1][0] {
-            let span = (pair[1][0] - pair[0][0]).max(1e-6);
-            let f = ((at - pair[0][0]) / span).clamp(0.0, 1.0);
-            let ease = f * f * (3.0 - 2.0 * f);
-            rx = pair[0][1] + (pair[1][1] - pair[0][1]) * ease;
-            rz = pair[0][2] + (pair[1][2] - pair[0][2]) * ease;
-            break;
+    if sections.len() > 1 {
+        let mut i = 0;
+        while i + 2 < sections.len() && at > sections[i + 1][0] {
+            i += 1;
         }
+        let span = (sections[i + 1][0] - sections[i][0]).max(1e-6);
+        let f = ((at - sections[i][0]) / span).clamp(0.0, 1.0);
+        let (f2, f3) = (f * f, f * f * f);
+        let size = |c: usize| {
+            let rise = |j: usize| (sections[j + 1][c] - sections[j][c]) / (sections[j + 1][0] - sections[j][0]).max(1e-6);
+            let slope = |j: usize| {
+                if j == 0 {
+                    rise(0)
+                } else if j + 1 == sections.len() {
+                    rise(j - 1)
+                } else {
+                    let (before, after) = (rise(j - 1), rise(j));
+                    if before * after <= 0.0 {
+                        0.0
+                    } else {
+                        2.0 * before * after / (before + after)
+                    }
+                }
+            };
+            (2.0 * f3 - 3.0 * f2 + 1.0) * sections[i][c] + (f3 - 2.0 * f2 + f) * span * slope(i) + (3.0 * f2 - 2.0 * f3) * sections[i + 1][c] + (f3 - f2) * span * slope(i + 1)
+        };
+        (rx, rz) = (size(1), size(2));
     }
     // Past an end: a rounded cap as high as the section there is narrow.
     let beyond = (t - at).abs() * length;
@@ -606,7 +629,7 @@ fn prim_cost(p: &Prim) -> u64 {
         Prim::HalfSpace { .. } => 0,
         Prim::Sphere { .. } | Prim::Capsule { .. } => 6,
         Prim::RoundCone { .. } => 26,
-        Prim::Column { .. } => 30,
+        Prim::Column { .. } => 38,
         Prim::Box { .. } | Prim::Torus { .. } | Prim::Ellipsoid { .. } => 12,
         Prim::Cylinder { radius, radius_top, .. } if radius == radius_top => 12,
         Prim::Cylinder { .. } => 35,
@@ -1240,6 +1263,41 @@ mod tests {
         time("chain of 24 round cones", &SdfNode { kind: Kind::Group { op: Combine::Union, kids: links(24), smooth: 0.02 }, m: Modifiers::default() });
     }
 
+    /// A column's sizes go from one section to the next without stopping at the ones between:
+    /// through three sections that taper evenly it is a straight taper (no band at the
+    /// middle one), it is level at a section where the sizes turn, and between two sections
+    /// it is never outside their sizes.
+    #[test]
+    fn a_column_tapers_through_its_sections() {
+        let radius_at = |sections: &[[f32; 3]], t: f32| {
+            // Where the field is zero going out from the axis, at this height.
+            let (mut low, mut high) = (0.0f32, 2.0f32);
+            for _ in 0..40 {
+                let middle = (low + high) / 2.0;
+                if column([middle, t, 0.0], [0.0; 3], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], sections) < 0.0 {
+                    low = middle;
+                } else {
+                    high = middle;
+                }
+            }
+            low
+        };
+        let even = [[0.0, 0.30, 0.30], [0.5, 0.20, 0.20], [1.0, 0.10, 0.10]];
+        for i in 1..20 {
+            let t = i as f32 / 20.0;
+            assert!((radius_at(&even, t) - (0.30 - 0.20 * t)).abs() < 1e-4, "at {t}: {}", radius_at(&even, t));
+        }
+        let swell = [[0.0, 0.10, 0.10], [0.4, 0.20, 0.20], [1.0, 0.12, 0.12]];
+        assert!((radius_at(&swell, 0.4) - 0.20).abs() < 1e-4);
+        assert!((radius_at(&swell, 0.39) - 0.20).abs() < 2e-4 && (radius_at(&swell, 0.41) - 0.20).abs() < 2e-4, "level where the sizes turn");
+        for i in 0..=40 {
+            let t = i as f32 / 40.0;
+            let r = radius_at(&swell, t);
+            let (least, most) = if t <= 0.4 { (0.10, 0.20) } else { (0.12, 0.20) };
+            assert!(r >= least - 1e-4 && r <= most + 1e-4, "at {t}: {r}");
+        }
+    }
+
     #[test]
     fn sphere_meshes_closed_with_the_right_volume() {
         let (s, st) = mesh(&prim(Prim::Sphere { radius: 1.0 }), &opts(32)).unwrap();
@@ -1400,6 +1458,16 @@ mod tests {
         }
         assert_eq!(compared, 9600);
         assert!(pruned_cost / balls < whole_cost / 2, "pruning leaves {} of {whole_cost} a ball on average", pruned_cost / balls);
+        // And on a tree whose saving is plain by how it is made:
+        let limb = |x: f32| {
+            let links = (0..10).map(|i| prim(Prim::RoundCone { a: [x, i as f32 * 0.1, 0.0], b: [x, (i + 1) as f32 * 0.1, 0.0], ra: 0.05, rb: 0.05 })).collect();
+            SdfNode { kind: Kind::Group { op: Combine::Near, kids: links, smooth: 0.01 }, m: Modifiers::default() }
+        };
+        let two = prepare(&SdfNode { kind: Kind::Group { op: Combine::Near, kids: vec![limb(0.0), limb(2.0)], smooth: 0.02 }, m: Modifiers::default() }, 1, &mut 0);
+        let one_link = prepared_cost(&prepare(&prim(Prim::RoundCone { a: [0.0; 3], b: [0.0, 0.1, 0.0], ra: 0.05, rb: 0.05 }), 1, &mut 0));
+        // Beside the middle of one limb, two metres from the other: three links at the most, of twenty.
+        let beside = prune(&two, [0.06, 0.55, 0.0], 0.03);
+        assert!(prepared_cost(&beside) <= 3 * one_link + 120 && prepared_cost(&two) >= 20 * one_link, "{} of {}", prepared_cost(&beside), prepared_cost(&two));
         // Through a cut: a part cut by a box is pruned inside the cut, as exactly.
         let foot = prepare(&crate::figure::tree(&body, &crate::figure::Shaping::default(), crate::figure::Part::Foot(specula_corpus::Side::Left)), 3, &mut 0);
         let mut saved = 0;
@@ -1466,7 +1534,7 @@ mod tests {
         };
         let at = 0.8 + 0.6 * 0.4;
         let (below, on, above) = (breadth(at - 0.002), breadth(at), breadth(at + 0.002));
-        assert!((below - on).abs() < 2e-4 && (above - on).abs() < 2e-4, "{below} {on} {above}: flat through the section, as an eased curve is");
+        assert!((below - on).abs() < 2e-4 && (above - on).abs() < 2e-4, "{below} {on} {above}: level through a section where the sizes turn");
         assert!(breadth(0.8 + 0.6 * 0.2) < 0.17 && breadth(0.8 + 0.6 * 0.2) > 0.13);
         // Closed past its ends: outside a little below the bottom and above the top.
         assert!(d(0.0, 0.8 - 0.12, 0.0) > 0.0 && d(0.0, 0.8 - 0.05, 0.0) < 0.0 && d(0.0, 1.4 + 0.07, 0.0) > 0.0);
