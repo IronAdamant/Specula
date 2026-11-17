@@ -225,6 +225,19 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
     a change builder's one read took in the look's 1,450 tokens; the guide described a file it
     had just said to delete, and said "every call" where it shows the ones a game of this size
     needs).
+  - **The library research is in** (2026-11-17; [docs/research/library/](docs/research/library/README.md)).
+    What the brief of 2026-11-16 asked for, researched by Grok at the owner's request over two days:
+    45 topics (the body, faces and hair, animals, machines, plants, terrain, water, motion, prior
+    art), each a file of tables with every number's source, page and link, and each with a second
+    checker's report row by row. Kept as delivered. Claude's review of it
+    ([REVIEW.md](docs/research/library/REVIEW.md), seven readers, about forty numbers fetched again
+    from their sources, none wrong): which tables to build from first, which are thin, and what the
+    licences ask (facts cited, no table copied whole from a non-commercial source, no game's list
+    of controls mirrored, several named models and datasets never used). The owner: "Feel free to
+    advance into Part 4 and onwards now." The privacy guard learned that a UUID inside a link or a
+    DOI in that folder is a citation (23 files cite a university's repository or a database so);
+    every other private pattern is refused there as everywhere, and a link to claude.ai is never a
+    citation.
   - **The first push of M6, and what only CI could show** (2026-11-17; `origin/main` = `808f54b9`, a
     fast-forward of forty commits: parts 1 and 3 with the five passes, pushed at the owner's "at your
     discretion" after the full live audit passed 70 of 70). Part 1's workflows ran for the first time

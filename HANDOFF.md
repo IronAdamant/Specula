@@ -237,13 +237,22 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
   - **Part 2** (a script is ported to Rust before it is changed, never edited): the comparison's
     harness and the launcher's check are ported; 81 scripts are left in `scripts/` (79 of them
     Python), of which `launch_check.py` is no longer run (its port is `launcher_check`).
-  - **Next on the laptop: the owner's word.** The three passes above are done (2026-11-17), and
-    part 3 with them (2026-11-16: "Advise me when we get to FINISH of part 3 please. Don't start
-    part 4 yet"). Part 4 is not started. Neither branch (`m6-verify`, `m6-first-hour`) is pushed
-    or merged.
-  - **Asked for from outside:** the research behind parts 4 and 5
-    ([docs/research/LIBRARY_RESEARCH_BRIEF.md](docs/research/LIBRARY_RESEARCH_BRIEF.md)), by the
-    owner's Grok bots, under way.
+  - **Pushed** (2026-11-17, at the owner's "at your discretion", after the full live audit
+    passed 70 of 70): `origin/main` holds parts 1 and 3 with the first five passes. CI's first run
+    of part 1's workflows held on every job but Ubuntu's, which failed one test of part 3 that
+    wrote its folders as Windows paths; fixed on the branch.
+  - **Next on the laptop: part 4, by the owner's word** (2026-11-17: "Feel free to advance into
+    Part 4 and onwards now. Grok has completed deep research"). It begins with the proportion
+    tables written into the repository as data, each number checked against its source.
+  - **The research behind parts 4 and 5 is in** ([docs/research/library/](docs/research/library/README.md):
+    45 topics, each with a second checker's report; the owner had it researched over two days,
+    "ensuring the license allowed this usage"). Claude's review of it the day it came
+    ([REVIEW.md](docs/research/library/REVIEW.md)): useful, most of it fit to build from, about
+    forty numbers re-fetched from their sources with none found wrong; the body, the face's
+    measures, four-legged proportions and gaits, a walk and idles, waves, landforms and
+    materials can be built from now; water's colour, leaves and roots, ground as render values,
+    the face's movement, hairstyles, running and vehicles are thin and are researched again
+    when their part comes. A number is still checked against its source as it is typed in.
 - **M5 is done (2026-11-15). M6 started on 2026-11-16 with the scope talk above.** What was written
   for it before the talk:
   - **M6 as it stood before the scope talk** (an index; the details are below and in ROADMAP M6,

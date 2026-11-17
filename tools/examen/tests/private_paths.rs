@@ -5,6 +5,12 @@
 //! Scans every file `git ls-files` lists (skips cleanly without git). Binary files are skipped by extension.
 //! `docs/archive/` is exempt (history from before this check, already public). A line that must show such a
 //! pattern as test data carries the marker `private-scan: allow`.
+//!
+//! **A citation may hold a UUID.** The library research (`docs/research/library/`, kept as it was delivered)
+//! cites papers and datasets by their links, and a university's repository, a DOI or a flora's database
+//! names its items by UUID. There, and only there, a UUID that is part of a link (`https://...`) or of a DOI
+//! (`10.NNNN/...`) is not an id of ours; a link to claude.ai never is a citation, and every other pattern
+//! is refused there as everywhere.
 
 use std::path::Path;
 use std::process::Command;
@@ -33,8 +39,22 @@ fn is_hex(b: u8) -> bool {
     b.is_ascii_hexdigit()
 }
 
-/// What private pattern `line` holds, if any.
-fn private_marker(line: &[u8]) -> Option<&'static str> {
+/// Whether the UUID at `at` is part of a link or of a DOI: the run of text around it, up to the white
+/// space or the Markdown that ends it, holds `://` or begins a DOI (`10.` and digits, then `/`), and
+/// is not a link to claude.ai (a session's or an artifact's link is never a citation).
+fn in_a_citation(line: &[u8], at: usize) -> bool {
+    let ends = |b: &u8| b.is_ascii_whitespace() || matches!(b, b'(' | b')' | b'|' | b'`' | b'<' | b'>' | b'[' | b']' | b'"');
+    let from = line[..at].iter().rposition(ends).map_or(0, |i| i + 1);
+    let to = line[at..].iter().position(ends).map_or(line.len(), |i| at + i);
+    let run = &line[from..to];
+    let has = |word: &[u8]| run.windows(word.len()).any(|w| w.eq_ignore_ascii_case(word));
+    let doi = run.windows(3).enumerate().any(|(i, w)| w == b"10." && run[i + 3..].iter().take_while(|b| b.is_ascii_digit()).count() >= 4 && run[i + 3..].iter().find(|b| !b.is_ascii_digit()) == Some(&b'/'));
+    (has(b"://") || doi) && !has(b"claude.ai") && !has(b"anthropic")
+}
+
+/// What private pattern `line` holds, if any. `citations`: the line is of a file that cites its
+/// sources by link ([`in_a_citation`]).
+fn private_marker(line: &[u8], citations: bool) -> Option<&'static str> {
     let n = line.len();
     for i in 0..n {
         // X:\Users\ (any run of / or \ as separators, so JSON-escaped and URL forms match too)
@@ -76,7 +96,7 @@ fn private_marker(line: &[u8]) -> Option<&'static str> {
         if i + 36 <= n && (i == 0 || !is_hex(line[i - 1])) {
             let u = &line[i..i + 36];
             let shape = u.iter().enumerate().all(|(k, &b)| if [8, 13, 18, 23].contains(&k) { b == b'-' } else { is_hex(b) });
-            if shape && (i + 36 == n || !is_hex(line[i + 36])) {
+            if shape && (i + 36 == n || !is_hex(line[i + 36])) && !(citations && in_a_citation(line, i)) {
                 return Some("a UUID");
             }
         }
@@ -97,7 +117,9 @@ fn the_marker_finds_what_it_should() {
         concat!("12345678-90ab-cdef-1234-", "567890abcdef").as_bytes(),
     ];
     for b in bad {
-        assert!(private_marker(b).is_some(), "missed: {}", String::from_utf8_lossy(b));
+        assert!(private_marker(b, false).is_some(), "missed: {}", String::from_utf8_lossy(b));
+        // (Every one of them is refused where citations are allowed too: none is a citation.)
+        assert!(private_marker(b, true).is_some(), "missed among citations: {}", String::from_utf8_lossy(b));
     }
     let good: [&[u8]; 6] = [
         br"C:\VulkanSDK\1.4.363.0\Bin\glslc.exe",
@@ -108,7 +130,29 @@ fn the_marker_finds_what_it_should() {
         br"<work>\\saves\\proof.specsave",
     ];
     for g in good {
-        assert!(private_marker(g).is_none(), "false positive: {}", String::from_utf8_lossy(g));
+        assert!(private_marker(g, false).is_none(), "false positive: {}", String::from_utf8_lossy(g));
+    }
+    // A citation's link may hold a UUID, where citations are allowed and nowhere else; a link to
+    // claude.ai is no citation, and a private path beside a citation is still found.
+    let id = concat!("7612ab40-5f7d-4d62-a65a-", "2743742a5c95");
+    let cited = [
+        format!("| the report | https://example.edu/server/api/core/bitstreams/{id}/content |"),
+        format!("[PDF](https://example.edu/bitstreams/{id}/download) (accessed 2026-11-16)"),
+        format!("NERC EIDC, doi 10.5285/{id} | Measured"),
+        format!("`https://ora.example.ac.uk/objects/uuid:{id}/files/x`"),
+    ];
+    for line in &cited {
+        assert!(private_marker(line.as_bytes(), true).is_none(), "a citation refused: {line}");
+        assert_eq!(private_marker(line.as_bytes(), false), Some("a UUID"), "allowed outside the research: {line}");
+    }
+    let not_cited = [
+        format!("the folder {id} of a session"),
+        format!("https://claude.ai/code/artifact/{id}"),
+        format!("see https://example.edu/{id} and {id}"),
+        format!("https://example.edu/{id} in /home/someone/x"),
+    ];
+    for line in &not_cited {
+        assert!(private_marker(line.as_bytes(), true).is_some(), "not a citation, and allowed: {line}");
     }
 }
 
@@ -131,11 +175,12 @@ fn tracked_files_hold_no_private_paths() {
             continue;
         }
         let Ok(bytes) = std::fs::read(root.join(&name)) else { continue };
+        let citations = name.starts_with("docs/research/library/");
         for (k, line) in bytes.split(|&b| b == b'\n').enumerate() {
             if line.windows(ALLOW.len()).any(|w| w == ALLOW.as_bytes()) {
                 continue;
             }
-            if let Some(what) = private_marker(line) {
+            if let Some(what) = private_marker(line, citations) {
                 found.push(format!("{name}:{}: {what}", k + 1));
                 break;
             }

@@ -1,6 +1,8 @@
 # Research brief: the data behind the libraries
 
-Status: **a request, written 2026-11-16. Nothing here has been researched yet.** The owner offered a deep
+Status: **answered on 2026-11-17: the research is in [library/](library/README.md)** (45 topics, each with
+a second checker's report), and [library/REVIEW.md](library/REVIEW.md) says what of it is fit to build
+from. What follows is the request as it was written on 2026-11-16, when nothing had been researched. The owner offered a deep
 research pass by another assistant (Grok) for M6's libraries ([ROADMAP.md](../ROADMAP.md), M6, parts 4 and
 5): people, faces and hair, animals, fantasy creatures and machines, trees and grass, terrain, water, and
 the motion that goes with them. This is the list of what to bring back.
