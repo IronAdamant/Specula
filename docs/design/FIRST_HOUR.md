@@ -40,7 +40,7 @@ remembers.**
 | 10 | A run that says what went wrong, and a player that reacts: `--follow` (the third pass) | built, reviewed, gated; measured on `6cfff79b` (LEVERAGE.md, "Results (the third pass)": the medium game costs the same as without the engine) |
 | 11 | The game's own checks, every run in one command: `specula check` (the fourth pass) | built, reviewed, gated; measured on `d18e1131` (LEVERAGE.md, "Results (the fourth pass)": no build cheaper, the small game dearer; the checks came on top of single runs) |
 | 12 | What a first build is not asked for: the guide and the brief, cut (the fifth pass) | built, reviewed, gated; measured on `9450e0f4` in a clean shell (LEVERAGE.md, "Results (the fifth pass)": 1.85, 1.28 and 1.25 times; the gap is before the first line of code) |
-| 13 | The first meeting: one read that is enough, and a random stream that begins again (the sixth pass) | built (section 13) |
+| 13 | The first meeting: one read that is enough, and a random stream that begins again (the sixth pass) | built, reviewed, gated; measured on `57f515d0` (LEVERAGE.md, "Results (2026-11-17: the sixth pass, the first meeting)"): 1.61, 1.22 and 1.47 times the plain build, and a quarter less spent before the first file |
 
 ## 1. The SDK comes from the engine
 

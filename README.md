@@ -19,9 +19,10 @@ the same machine only.
 
 **What it does not do yet, measured:** the same small games built through the engine and without it, by the same
 model, pass the same checks within one or two, and through the engine a medium game costs about a quarter
-more tokens than without it, a change to an existing game about a quarter more, and a one-screen game nearly
-twice (1.28, 1.25 and 1.85 times: [docs/design/LEVERAGE.md](docs/design/LEVERAGE.md); measured 2026-11-17,
-after five passes at it. M5's baseline of 2026-11-14 was 3.1, 1.7 and 5.2 times). What it costs is the
+more tokens than without it, a change to an existing game about a half more, and a one-screen game about
+three fifths more (1.22, 1.47 and 1.61 times: [docs/design/LEVERAGE.md](docs/design/LEVERAGE.md); measured
+2026-11-17, after six passes at it; the measurement before was 1.28, 1.25 and 1.85, and the plain builds
+alone move by a sixth between two measurements. M5's baseline of 2026-11-14 was 3.1, 1.7 and 5.2 times). What it costs is the
 first meeting: an agent that has never seen the engine reads its guide before it writes a line. The engine is meant for medium to very large
 games, where there is more to reuse; making it pay from the first hour, at every size, is M6's work, measured
 again with the same harness after each attempt.

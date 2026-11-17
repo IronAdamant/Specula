@@ -874,3 +874,88 @@ game's work than a title, a pause, settings and a picture (a larger game with th
 kinds of things, levels, assets), which none of these three jobs asks for and which is not
 measured. The `large` job is written for that and waits for the engine to keep things for a player
 between runs.
+
+## Results (2026-11-17: the sixth pass, the first meeting)
+
+The same three jobs, harness, models and clean shell as the fifth measurement, on the engine with
+the sixth pass (`57f515d0`; [FIRST_HOUR.md](FIRST_HOUR.md), section 13): one read of six files
+named as the reading done, `cx.random_restart`, the volume's range said, and the checks'
+description out of the first read. Fourteen builds, every one judged and every one reported:
+[perf/leverage/2026-11-17-pass6](../../perf/leverage/2026-11-17-pass6/report.md). **Compare with
+the fifth pass, not with the ones before it.**
+
+**Through the engine the one-screen game now costs 1.61 times the plain build (it was 1.85) and
+the medium game 1.22 times (1.28). The change to an existing game costs 1.47 times (1.25): the
+engine builds cost what they cost before, and the plain ones cost a sixth less.**
+
+| Job | Arm | Runs | Weighted tokens (mean) | Lowest to highest | Build time | Checks passed | Engine against plain | The same cell in the fifth pass |
+|---|---|---|---|---|---|---|---|---|
+| small (14 checks) | engine | 2 | 111,938 | 111,068 to 112,808 | 121 s, 112 s | 14, 14 | 1.61 times | 132,122 |
+| small | plain | 2 | 69,612 | 66,839 to 72,384 | 67 s, 62 s | 14, 14 | | 71,322 |
+| medium (19 checks) | engine | 3 | 180,729 | 163,128 to 206,039 | 182 s, 176 s, 776 s | 19, 19, 18 | 1.22 times | 196,431 |
+| medium | plain | 2 | 148,684 | 147,791 to 149,576 | 137 s, 139 s | 19, 18 | | 153,572 |
+| change (9 checks) | engine | 3 | 140,412 | 112,479 to 184,989 | 296 s, 223 s, 176 s | 9, 9, 9 | 1.47 times | 141,703 |
+| change | plain | 2 | 95,452 | 89,155 to 101,750 | 68 s, 63 s | 9, 9 | | 113,478 |
+
+**How much of that is the pass, read arm by arm.** The engine arm, which is what changed: 15% down
+on the small game (and its two builds within 2% of each other, where the fifth pass's were 17%
+apart), 8% down on the medium one, 1% on the change. The plain arm, for which nothing changed: 2%
+and 3% down, and 16% down on the change. A plain arm has moved by 13% to 20% between two passes
+before, so: **the small game got cheaper through the engine; the medium game's 8% is inside what
+two measurements alike differ by; and the change's ratio rose because the plain builds were
+cheap this time, not because the engine builds were dearer.**
+
+**The gap the pass was aimed at, before the first file, is a quarter narrower.** Counted the same
+way in both passes (the weighted tokens spent when the request that first writes a file begins):
+
+| Build | Before its first file, fifth pass | Sixth pass | After it, sixth pass | The plain builds, after theirs |
+|---|---|---|---|---|
+| `small-engine-1`, `-2` | 55,795; 49,032 | 40,888; 42,321 | 70,180; 70,487 | 66,835; 61,207 |
+| `medium-engine-1`, `-2`, `-3` | 63,649; 67,716; 73,945 | 56,858; 51,189; 40,038 | 116,163; 111,939; 166,001 | 141,401; 143,148 |
+
+A plain build has spent 5,500 to 6,400 at that point, as before. Three engine builds of five now
+write their first file in their fourth request (all five wrote it in the fifth before).
+
+- **The one read was taken as written by every engine build**, and a second read still followed
+  in all five: the sample's other four screens (title, pause, won, lost), which the guide says
+  "are read when they are changed", and every game changes them. It took one more request in
+  three builds and two in two, and with what those carry it is the 18,000 to 34,000 that still
+  separates the one read from the first file.
+- **`cx.random_restart` was used by all five new-game builds, and none wrote a generator of its
+  own** (seven of eight one-screen builds had, over the passes before). Nobody looked up random
+  numbers or the volume. One build looked something up at all (`medium-engine-2`: how a screen
+  is named in the state, in the engine's design note).
+- **No build wrote a checks file**, and every one deleted the sample's (in the fifth pass every
+  build wrote one and ran it).
+- **After the first file the engine arm is again the cheaper one on the medium game by the
+  means** (131,368 against 142,275; two builds of three under both plain builds), and level on the
+  small one (70,334 against 64,021).
+- **Checks passed.** Every small game all fourteen. Medium: 19, 19 and 18 through the engine, 19
+  and 18 without; the item failed is the same in both arms (the picture does not show what the
+  state says). **Change: all nine in all three engine builds, for the first time**; the runners'
+  rate, which nine engine change builds of twelve had failed over four passes, held in all three.
+  The one thing that changed for those builds is the brief's first read, which now names the
+  game's own README and strings; whether that is why is not shown.
+- **Requests.** Small: 13 and 12 (the plain arm 7 and 7). Medium: 15, 16 and 20 (8 and 9). Change:
+  23, 13 and 11 (11 and 9).
+- **Where the change builds differ from the plain ones is after the reading, not before it.**
+  Both arms read for most of a change (the plain builds had spent 62,000 and 73,000 of their
+  89,000 to 102,000 before their first edit). The engine builds then try their change a run a
+  request: 9 engine calls of 23 requests in `change-engine-1`, which is the dear one (184,989).
+- **The dearest medium build was dear in time, not tokens**: `medium-engine-3` took 13 minutes,
+  drew its pieces at the same depth as its field's background, and shipped frames in which most
+  of them cannot be seen (its judge failed that item). The same fault is in the game the change
+  round starts from. A game drawn in the engine's world has a depth to get wrong that a canvas
+  does not; the guide does not say so.
+- **A judging through the engine still costs more**: 435 to 730 seconds against 207 to 459.
+
+**What the six measurements come to.** In a clean shell the engine has been 1.85, 1.28 and 1.25
+times the plain build, and now 1.61, 1.22 and 1.47, with a plain arm that wanders by a sixth.
+The sixth pass did what it was aimed at: the first meeting costs a quarter less, and the
+one-screen game, which is nearly all first meeting, is measurably cheaper. What is left of the gap
+before the first file is 34,000 to 51,000 weighted tokens over a plain build's 6,000: the brief,
+the one read (about 22,000 for both), and the second look at the screens. The conclusion of the
+fifth measurement stands: at these sizes the first meeting is not paid back, and what would make
+the engine the cheaper arm is a game that asks for more of what the engine does. Two things the
+runs point at that are not built: the other screens folded into the one read (or a game's words
+changed without reading its screens), and a line in the guide on depth for a game drawn flat.

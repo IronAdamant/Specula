@@ -1,0 +1,1537 @@
+{
+  "leverage": 1,
+  "runs": [
+    {
+      "run": "change-engine-1",
+      "job": "change",
+      "arm": "engine",
+      "n": 1,
+      "from": "medium-engine-1",
+      "engine_build": "57f515d0",
+      "builder": {
+        "tokens": 43062,
+        "tool_uses": 25,
+        "duration_s": 295.2,
+        "by_kind": {
+          "input": 46,
+          "cache_write": 37775,
+          "cache_read": 702047,
+          "output": 13504,
+          "requests": 23,
+          "context_at_end": 43062
+        },
+        "weighted": 184989,
+        "cost_usd": 0.3564367,
+        "turns": 26,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 27,
+        "refused": 2,
+        "args_bytes": 3265,
+        "answer_bytes": 4632,
+        "by_tool": {
+          "(run)": 17,
+          "(run --follow)": 9,
+          "(check)": 1
+        }
+      },
+      "left": {
+        "files": 25,
+        "bytes": 51864,
+        "text_lines": 1132,
+        "lines_by_kind": {
+          ".json": 525,
+          ".md": 252,
+          ".py": 38,
+          ".rs": 298,
+          ".toml": 19
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 8,
+          "of": 8
+        },
+        "checkable": {
+          "passed": 1,
+          "of": 1
+        },
+        "all": {
+          "passed": 9,
+          "of": 9
+        }
+      },
+      "defects": [
+        "On the Language row, Right stops at French instead of wrapping to English (Enter does wrap); not against the brief.",
+        "During the 3 s wait between waves the HUD still shows the old wave number (noted by the builder as existing before)."
+      ],
+      "judge": {
+        "tokens": 76661,
+        "tool_uses": 41,
+        "duration_s": 701.5,
+        "by_kind": {
+          "input": 62,
+          "cache_write": 71374,
+          "cache_read": 1443391,
+          "output": 23903,
+          "requests": 31,
+          "context_at_end": 76661
+        },
+        "weighted": 353134,
+        "cost_usd": 1.3379782,
+        "turns": 42,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 37,
+          "refused": 1,
+          "args_bytes": 2644,
+          "answer_bytes": 24067,
+          "by_tool": {
+            "(run)": 24,
+            "(run --follow)": 8,
+            "(check)": 5
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "change-engine-2",
+      "job": "change",
+      "arm": "engine",
+      "n": 2,
+      "from": "medium-engine-2",
+      "engine_build": "57f515d0",
+      "builder": {
+        "tokens": 38269,
+        "tool_uses": 15,
+        "duration_s": 222.8,
+        "by_kind": {
+          "input": 26,
+          "cache_write": 32982,
+          "cache_read": 319258,
+          "output": 10118,
+          "requests": 13,
+          "context_at_end": 38269
+        },
+        "weighted": 123769,
+        "cost_usd": 0.2650857999999999,
+        "turns": 16,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 18,
+        "refused": 3,
+        "args_bytes": 1782,
+        "answer_bytes": 5437,
+        "by_tool": {
+          "(run)": 18
+        }
+      },
+      "left": {
+        "files": 26,
+        "bytes": 52767,
+        "text_lines": 1162,
+        "lines_by_kind": {
+          ".json": 522,
+          ".md": 277,
+          ".py": 66,
+          ".rs": 278,
+          ".toml": 19
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 8,
+          "of": 8
+        },
+        "checkable": {
+          "passed": 1,
+          "of": 1
+        },
+        "all": {
+          "passed": 9,
+          "of": 9
+        }
+      },
+      "defects": [
+        "README.md is partly stale: 'How to play' says each walker has 2 health (only at Normal); 'What I checked' still reports a 450-point win; 'Not done' says walkers are drawn green/red, but runners are drawn yellow.",
+        "README.md 'Settings' section says only volume and language are kept, though difficulty is kept too.",
+        "CHANGES.md says it never looked at the frame image, and that Spanish/French menus were not walked screen by screen."
+      ],
+      "judge": {
+        "tokens": 79946,
+        "tool_uses": 38,
+        "duration_s": 730.4,
+        "by_kind": {
+          "input": 64,
+          "cache_write": 74659,
+          "cache_read": 1548230,
+          "output": 25748,
+          "requests": 32,
+          "context_at_end": 79946
+        },
+        "weighted": 376951,
+        "cost_usd": 1.4221340000000002,
+        "turns": 39,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 26,
+          "refused": 0,
+          "args_bytes": 2156,
+          "answer_bytes": 23942,
+          "by_tool": {
+            "(run)": 17,
+            "(run --follow)": 7,
+            "(check)": 2
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "change-engine-3",
+      "job": "change",
+      "arm": "engine",
+      "n": 3,
+      "from": "medium-engine-3",
+      "engine_build": "57f515d0",
+      "builder": {
+        "tokens": 35094,
+        "tool_uses": 11,
+        "duration_s": 176.2,
+        "by_kind": {
+          "input": 22,
+          "cache_write": 29807,
+          "cache_read": 241779,
+          "output": 10204,
+          "requests": 11,
+          "context_at_end": 35094
+        },
+        "weighted": 112479,
+        "cost_usd": 0.24548989999999998,
+        "turns": 12,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 15,
+        "refused": 3,
+        "args_bytes": 1511,
+        "answer_bytes": 4197,
+        "by_tool": {
+          "(run)": 11,
+          "(run --follow)": 3,
+          "(check)": 1
+        }
+      },
+      "left": {
+        "files": 25,
+        "bytes": 48057,
+        "text_lines": 1017,
+        "lines_by_kind": {
+          ".json": 422,
+          ".md": 247,
+          ".py": 25,
+          ".rs": 304,
+          ".toml": 19
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 8,
+          "of": 8
+        },
+        "checkable": {
+          "passed": 1,
+          "of": 1
+        },
+        "all": {
+          "passed": 9,
+          "of": 9
+        }
+      },
+      "defects": [
+        "Play frames do not draw what the state holds (most walkers and all bolts missing): the pre-change m16 defect, not repaired.",
+        "The reported \"difficulty\" (work.difficulty) shows normal on the title and settings screens even when the setting is hard or easy; it only follows the setting once a run starts (setting_difficulty is right).",
+        "After a run ends (title, lost), the state still lists walkers and bolts from the run (README notes bolts)."
+      ],
+      "judge": {
+        "tokens": 72755,
+        "tool_uses": 35,
+        "duration_s": 605.4,
+        "by_kind": {
+          "input": 54,
+          "cache_write": 67468,
+          "cache_read": 1149061,
+          "output": 22774,
+          "requests": 27,
+          "context_at_end": 72755
+        },
+        "weighted": 313165,
+        "cost_usd": 1.2252521999999997,
+        "turns": 36,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 60,
+          "refused": 0,
+          "args_bytes": 3197,
+          "answer_bytes": 17042,
+          "by_tool": {
+            "(run)": 48,
+            "(run --follow)": 12
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "change-plain-1",
+      "job": "change",
+      "arm": "plain",
+      "n": 1,
+      "from": "medium-plain-1",
+      "engine_build": null,
+      "builder": {
+        "tokens": 32481,
+        "tool_uses": 16,
+        "duration_s": 67.5,
+        "by_kind": {
+          "input": 22,
+          "cache_write": 27194,
+          "cache_read": 228108,
+          "output": 8985,
+          "requests": 11,
+          "context_at_end": 32481
+        },
+        "weighted": 101750,
+        "cost_usd": 0.22148079999999998,
+        "turns": 17,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 8,
+        "bytes": 39721,
+        "text_lines": 838,
+        "lines_by_kind": {
+          ".json": 69,
+          ".md": 60,
+          ".py": 709
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 8,
+          "of": 8
+        },
+        "checkable": {
+          "passed": 1,
+          "of": 1
+        },
+        "all": {
+          "passed": 9,
+          "of": 9
+        }
+      },
+      "defects": [
+        "README.md headless section is stale. The state field list omits 'difficulty' and walker 'kind', and the language codes name only en and es. The default settings example lacks difficulty. 'What I checked' still says the bot wins all 5 waves with 450.",
+        "Difficulty is read only when a walker spawns. That is harmless because it can only be changed outside a run (noted in CHANGES.md).",
+        "Not judged: the tkinter window (keyboard, timing, sound). Opening a window is not allowed on this machine; the builder did not test it either."
+      ],
+      "judge": {
+        "tokens": 68711,
+        "tool_uses": 44,
+        "duration_s": 273.5,
+        "by_kind": {
+          "input": 40,
+          "cache_write": 63424,
+          "cache_read": 790510,
+          "output": 24016,
+          "requests": 20,
+          "context_at_end": 68711
+        },
+        "weighted": 278451,
+        "cost_usd": 1.145974,
+        "turns": 45,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": []
+    },
+    {
+      "run": "change-plain-2",
+      "job": "change",
+      "arm": "plain",
+      "n": 2,
+      "from": "medium-plain-2",
+      "engine_build": null,
+      "builder": {
+        "tokens": 31474,
+        "tool_uses": 17,
+        "duration_s": 63.4,
+        "by_kind": {
+          "input": 18,
+          "cache_write": 26187,
+          "cache_read": 163486,
+          "output": 8011,
+          "requests": 9,
+          "context_at_end": 31474
+        },
+        "weighted": 89155,
+        "cost_usd": 0.2012426,
+        "turns": 18,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 7,
+        "bytes": 32337,
+        "text_lines": 790,
+        "lines_by_kind": {
+          ".json": 72,
+          ".md": 76,
+          ".py": 642
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 8,
+          "of": 8
+        },
+        "checkable": {
+          "passed": 1,
+          "of": 1
+        },
+        "all": {
+          "passed": 9,
+          "of": 9
+        }
+      },
+      "defects": [
+        "README 'What I checked' still says the bot wins seed 3 'with 450 points (45 walkers + 15 runners)'. That is stale: the full clear is 675, and selfcheck.py asserts 675.",
+        "Pre-existing: the guard at y above about 11.55 is hidden under the top status bar (m16).",
+        "French settings labels use the code's fixed ': ' ('Volume: 5', 'Difficulté: Normal'), while the French tables use ' : ' elsewhere ('Score final : 675'), so the typography is inconsistent.",
+        "Accent marks are single pixels, so É/È/Ê render as a dot over E (looks like Ė). Cosmetic."
+      ],
+      "judge": {
+        "tokens": 63833,
+        "tool_uses": 40,
+        "duration_s": 312.4,
+        "by_kind": {
+          "input": 60,
+          "cache_write": 58546,
+          "cache_read": 1179044,
+          "output": 23125,
+          "requests": 30,
+          "context_at_end": 63833
+        },
+        "weighted": 306772,
+        "cost_usd": 1.1669168,
+        "turns": 41,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": []
+    },
+    {
+      "run": "medium-engine-1",
+      "job": "medium",
+      "arm": "engine",
+      "n": 1,
+      "from": null,
+      "engine_build": "57f515d0",
+      "builder": {
+        "tokens": 42052,
+        "tool_uses": 21,
+        "duration_s": 181.8,
+        "by_kind": {
+          "input": 30,
+          "cache_write": 36765,
+          "cache_read": 418846,
+          "output": 17030,
+          "requests": 15,
+          "context_at_end": 42052
+        },
+        "weighted": 173021,
+        "cost_usd": 0.3593046000000001,
+        "turns": 22,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 13,
+        "refused": 0,
+        "args_bytes": 885,
+        "answer_bytes": 2904,
+        "by_tool": {
+          "(run)": 11,
+          "(run --follow)": 2
+        }
+      },
+      "left": {
+        "files": 22,
+        "bytes": 43819,
+        "text_lines": 1000,
+        "lines_by_kind": {
+          ".json": 477,
+          ".md": 234,
+          ".rs": 270,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 21,
+        "bytes": 36472,
+        "text_lines": 683,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 186,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 17,
+          "of": 17
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 19,
+          "of": 19
+        }
+      },
+      "defects": [
+        "In frames the lane lines are drawn over walkers and bolts: each walker shows as two split boxes and most bolts as two thin hollow lines (README calls it a faint band; it is plainly visible).",
+        "texts on paused, won and lost lists only the top screen's strings, although the HUD (score, wave, gate) is still drawn beneath; the brief asks for every string on screen.",
+        "After going back to the title (from pause or after won), the printed state still carries the old run's score, wave, walkers and bolts.",
+        "Volume is only a stored setting; the game plays no sound (README says so)."
+      ],
+      "judge": {
+        "tokens": 77017,
+        "tool_uses": 40,
+        "duration_s": 554.8,
+        "by_kind": {
+          "input": 50,
+          "cache_write": 71730,
+          "cache_read": 1184589,
+          "output": 21227,
+          "requests": 25,
+          "context_at_end": 77017
+        },
+        "weighted": 314306,
+        "cost_usd": 1.2354978,
+        "turns": 41,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 80,
+          "refused": 0,
+          "args_bytes": 5085,
+          "answer_bytes": 21511,
+          "by_tool": {
+            "(run)": 78,
+            "(run --follow)": 2
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "medium-engine-2",
+      "job": "medium",
+      "arm": "engine",
+      "n": 2,
+      "from": null,
+      "engine_build": "57f515d0",
+      "builder": {
+        "tokens": 40584,
+        "tool_uses": 21,
+        "duration_s": 175.8,
+        "by_kind": {
+          "input": 32,
+          "cache_write": 35297,
+          "cache_read": 434901,
+          "output": 15097,
+          "requests": 16,
+          "context_at_end": 40584
+        },
+        "weighted": 163128,
+        "cost_usd": 0.3357121,
+        "turns": 22,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 11,
+        "refused": 1,
+        "args_bytes": 640,
+        "answer_bytes": 2487,
+        "by_tool": {
+          "(run)": 9,
+          "(run --follow)": 2
+        }
+      },
+      "left": {
+        "files": 23,
+        "bytes": 45840,
+        "text_lines": 1031,
+        "lines_by_kind": {
+          ".json": 475,
+          ".md": 256,
+          ".py": 32,
+          ".rs": 249,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 21,
+        "bytes": 36472,
+        "text_lines": 683,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 186,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 17,
+          "of": 17
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 19,
+          "of": 19
+        }
+      },
+      "defects": [
+        "On the settings screen, `texts` also lists the title screen's strings (name, Start, Settings, Quit), which are hidden behind the settings panel in the frame.",
+        "The raw engine command the README also gives reports screen 'hud' / 'pause', not the brief's 'play' / 'paused'; only the holdgate.py wrapper renames them.",
+        "holdgate.py prints in the console's encoding: when another Python program captured it without PYTHONIOENCODING set, 'Espanol'/'Atras' with accents came out as non-UTF-8 bytes.",
+        "After returning to the title, the state keeps the last run's score/wave/walkers instead of null.",
+        "Quit on the title does nothing visible in a headless run (screen stays title); its window behaviour was not checked."
+      ],
+      "judge": {
+        "tokens": 64876,
+        "tool_uses": 38,
+        "duration_s": 530.6,
+        "by_kind": {
+          "input": 52,
+          "cache_write": 59589,
+          "cache_read": 1035344,
+          "output": 20243,
+          "requests": 26,
+          "context_at_end": 64876
+        },
+        "weighted": 279288,
+        "cost_usd": 1.0888488,
+        "turns": 39,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 68,
+          "refused": 0,
+          "args_bytes": 7831,
+          "answer_bytes": 17085,
+          "by_tool": {
+            "(run)": 66,
+            "(run --follow)": 2
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "medium-engine-3",
+      "job": "medium",
+      "arm": "engine",
+      "n": 3,
+      "from": null,
+      "engine_build": "57f515d0",
+      "builder": {
+        "tokens": 46397,
+        "tool_uses": 29,
+        "duration_s": 776.1,
+        "by_kind": {
+          "input": 42,
+          "cache_write": 41108,
+          "cache_read": 642566,
+          "output": 18071,
+          "requests": 20,
+          "context_at_end": 46397
+        },
+        "weighted": 206039,
+        "cost_usd": 0.40948260000000003,
+        "turns": 1,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 14,
+        "refused": 1,
+        "args_bytes": 5758,
+        "answer_bytes": 3580,
+        "by_tool": {
+          "(run)": 12,
+          "(run --follow)": 2
+        }
+      },
+      "left": {
+        "files": 23,
+        "bytes": 41945,
+        "text_lines": 890,
+        "lines_by_kind": {
+          ".json": 349,
+          ".md": 228,
+          ".py": 24,
+          ".rs": 270,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 21,
+        "bytes": 36472,
+        "text_lines": 683,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 186,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 16,
+          "of": 17
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 18,
+          "of": 19
+        }
+      },
+      "defects": [
+        "Field shapes are all cubes at z=0, the same depth as the field background: in frames walkers, bolts and the upper lane lines vanish or show split (z-fighting), so the drawn field is unreliable.",
+        "On the settings screen, texts also lists the hidden title screen strings (Hold the gate, Start, Settings, Quit), which are not visible in the frame.",
+        "The Start button is always drawn in the blue 'primary' style, so on the title screen two buttons look highlighted when another entry is focused (the focus ring still marks the chosen one).",
+        "Guard may sit at y=0 or y=12, half off screen; bolts in flight stay in state and on screen after won/lost.",
+        "Spanish end screens say 'Enter: titulo' (key name left in English)."
+      ],
+      "judge": {
+        "tokens": 57149,
+        "tool_uses": 39,
+        "duration_s": 530.6,
+        "by_kind": {
+          "input": 62,
+          "cache_write": 51862,
+          "cache_read": 1113179,
+          "output": 18982,
+          "requests": 31,
+          "context_at_end": 57149
+        },
+        "weighted": 271117,
+        "cost_usd": 1.0174198,
+        "turns": 40,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 68,
+          "refused": 0,
+          "args_bytes": 5735,
+          "answer_bytes": 19350,
+          "by_tool": {
+            "(run)": 67,
+            "(run --follow)": 1
+          }
+        }
+      },
+      "failed": [
+        {
+          "id": "m16",
+          "evidence": "Play frames do not show what the state says: tick 200 state 3 walkers, frame shows none; tick 400 state 5 walkers + 3 bolts, frame shows 1 walker, no bolts; tick 600 seed 3 shows 2 of 3 walkers, 1 of 3 bolts. Lanes y=6,8,10 never drawn. HUD (score, wave, gate), gate and guard are shown."
+        }
+      ]
+    },
+    {
+      "run": "medium-plain-1",
+      "job": "medium",
+      "arm": "plain",
+      "n": 1,
+      "from": null,
+      "engine_build": null,
+      "builder": {
+        "tokens": 31648,
+        "tool_uses": 12,
+        "duration_s": 136.8,
+        "by_kind": {
+          "input": 16,
+          "cache_write": 26361,
+          "cache_read": 145992,
+          "output": 20045,
+          "requests": 8,
+          "context_at_end": 31648
+        },
+        "weighted": 147791,
+        "cost_usd": 0.3205252,
+        "turns": 13,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 6,
+        "bytes": 32268,
+        "text_lines": 720,
+        "lines_by_kind": {
+          ".json": 38,
+          ".md": 34,
+          ".py": 648
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 17,
+          "of": 17
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 19,
+          "of": 19
+        }
+      },
+      "defects": [
+        "On the won screen the state still lists bolts in flight (2 bolts with x values); they are frozen leftovers from play.",
+        "The first walker of a new wave appears 1 tick (1/60 s) after the wave counter changes, so it arrives 181 ticks after the previous wave ended, not 180.",
+        "The Spanish end-screen line is 'Enter: inicio', which keeps the English key name 'Enter'.",
+        "In headless mode, Quit on the title screen does nothing visible: it sets an internal flag and the screen stays title (as the README admits).",
+        "The default settings file is written next to holdthegate.py inside the game folder when --settings is not given."
+      ],
+      "judge": {
+        "tokens": 52645,
+        "tool_uses": 35,
+        "duration_s": 241.4,
+        "by_kind": {
+          "input": 38,
+          "cache_write": 47358,
+          "cache_read": 659403,
+          "output": 17473,
+          "requests": 19,
+          "context_at_end": 52645
+        },
+        "weighted": 212541,
+        "cost_usd": 0.8603566,
+        "turns": 36,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": []
+    },
+    {
+      "run": "medium-plain-2",
+      "job": "medium",
+      "arm": "plain",
+      "n": 2,
+      "from": null,
+      "engine_build": null,
+      "builder": {
+        "tokens": 31061,
+        "tool_uses": 13,
+        "duration_s": 139.2,
+        "by_kind": {
+          "input": 18,
+          "cache_write": 25774,
+          "cache_read": 174008,
+          "output": 19988,
+          "requests": 9,
+          "context_at_end": 31061
+        },
+        "weighted": 149576,
+        "cost_usd": 0.32041280000000005,
+        "turns": 14,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 5,
+        "bytes": 26668,
+        "text_lines": 692,
+        "lines_by_kind": {
+          ".json": 40,
+          ".md": 43,
+          ".py": 609
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 16,
+          "of": 17
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 18,
+          "of": 19
+        }
+      },
+      "defects": [
+        "The status bar covers the top 34 px of the field, so a guard at y 11.55 to 12 (and its bolts) is not drawn; the README says so itself.",
+        "Accents are drawn as a single dot above the letter, so 'Título' reads like 'TİTULO' in the frame.",
+        "After leaving a run (pause -> Title), the title-screen state still reports the abandoned run's score, walkers and bolts (e.g. 3 walkers and 3 bolts on screen 'title'). Start resets them.",
+        "A walker at x 0.0 is still listed for one tick and only removed on the next step (tick 800 vs 801)."
+      ],
+      "judge": {
+        "tokens": 57870,
+        "tool_uses": 39,
+        "duration_s": 207,
+        "by_kind": {
+          "input": 54,
+          "cache_write": 52583,
+          "cache_read": 1027237,
+          "output": 19297,
+          "requests": 27,
+          "context_at_end": 57870
+        },
+        "weighted": 264991,
+        "cost_usd": 1.0122674,
+        "turns": 40,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": [
+        {
+          "id": "m16",
+          "evidence": "At tick 3337 (seed 1) the frame matches the state: walkers (16.825,8) and (19.075,4), bolts at x 10.4 and 4.8 in y 8, guard at 6.9, orange gate on the left, Score 280, Wave 4 of 5, Gate 5. But the field's top (y about 11.15-12) is drawn under the 34 px status bar: holding up 100 ticks gives guard_y 12.0 and the frame (top.png) shows no guard at all. The guard is hidden from y about 11.55 up, a position it can reach."
+        }
+      ]
+    },
+    {
+      "run": "small-engine-1",
+      "job": "small",
+      "arm": "engine",
+      "n": 1,
+      "from": null,
+      "engine_build": "57f515d0",
+      "builder": {
+        "tokens": 31401,
+        "tool_uses": 16,
+        "duration_s": 120.9,
+        "by_kind": {
+          "input": 26,
+          "cache_write": 26114,
+          "cache_read": 282644,
+          "output": 10027,
+          "requests": 13,
+          "context_at_end": 31401
+        },
+        "weighted": 111068,
+        "cost_usd": 0.2330424,
+        "turns": 17,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 9,
+        "refused": 0,
+        "args_bytes": 473,
+        "answer_bytes": 1591,
+        "by_tool": {
+          "(run)": 9
+        }
+      },
+      "left": {
+        "files": 21,
+        "bytes": 37951,
+        "text_lines": 741,
+        "lines_by_kind": {
+          ".json": 338,
+          ".md": 221,
+          ".rs": 163,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 21,
+        "bytes": 36472,
+        "text_lines": 683,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 186,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 12,
+          "of": 12
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 14,
+          "of": 14
+        }
+      },
+      "defects": [
+        "The HUD panel at top-left is drawn over the field and hides part of any piece near the top of columns 0-3 (seen in over.png: piece at x 1.5, y 14.83 partly covered).",
+        "In the tick the third miss happens, the loop still handles the other pieces, so another catch or miss could still be counted after over is set. The 4.8-unit piece spacing means this cannot happen at the speeds I saw, so it is minor.",
+        "The README's window command was never tried by the builder, as the README itself says. I did not try it either, because the rules forbid opening a window."
+      ],
+      "judge": {
+        "tokens": 49546,
+        "tool_uses": 31,
+        "duration_s": 687.6,
+        "by_kind": {
+          "input": 46,
+          "cache_write": 44259,
+          "cache_read": 711526,
+          "output": 15935,
+          "requests": 23,
+          "context_at_end": 49546
+        },
+        "weighted": 206197,
+        "cost_usd": 0.8152611999999999,
+        "turns": 32,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 108,
+          "refused": 3,
+          "args_bytes": 8728,
+          "answer_bytes": 19706,
+          "by_tool": {
+            "(run)": 108
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "small-engine-2",
+      "job": "small",
+      "arm": "engine",
+      "n": 2,
+      "from": null,
+      "engine_build": "57f515d0",
+      "builder": {
+        "tokens": 31358,
+        "tool_uses": 16,
+        "duration_s": 111.1,
+        "by_kind": {
+          "input": 24,
+          "cache_write": 26071,
+          "cache_read": 262852,
+          "output": 10782,
+          "requests": 12,
+          "context_at_end": 31358
+        },
+        "weighted": 112808,
+        "cost_usd": 0.23843720000000002,
+        "turns": 17,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": {
+        "calls": 7,
+        "refused": 0,
+        "args_bytes": 400,
+        "answer_bytes": 1251,
+        "by_tool": {
+          "(run)": 7
+        }
+      },
+      "left": {
+        "files": 21,
+        "bytes": 37745,
+        "text_lines": 722,
+        "lines_by_kind": {
+          ".json": 332,
+          ".md": 222,
+          ".rs": 149,
+          ".toml": 19
+        }
+      },
+      "started_with": {
+        "files": 21,
+        "bytes": 36472,
+        "text_lines": 683,
+        "lines_by_kind": {
+          ".json": 369,
+          ".md": 186,
+          ".rs": 109,
+          ".toml": 19
+        }
+      },
+      "verdict": {
+        "behaviour": {
+          "passed": 12,
+          "of": 12
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 14,
+          "of": 14
+        }
+      },
+      "defects": [
+        "README 'Play' section gives no exact command for window play: a play line ending in '...' and 'specula play . --as-is', with the seed set 'via the engine's own option'.",
+        "Restart (Enter) is accepted at any time during a run, not only after the end. README says so, and the brief does not forbid it.",
+        "Floating-point drift leaves a piece at y 0.5000000000000349 for one tick, so a miss is counted one tick later than exact arithmetic would give (tick 227 instead of 226). The effect is minor."
+      ],
+      "judge": {
+        "tokens": 45090,
+        "tool_uses": 28,
+        "duration_s": 434.7,
+        "by_kind": {
+          "input": 46,
+          "cache_write": 39803,
+          "cache_read": 684360,
+          "output": 15424,
+          "requests": 23,
+          "context_at_end": 45090
+        },
+        "weighted": 195356,
+        "cost_usd": 0.7639600000000001,
+        "turns": 29,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "engine": {
+          "calls": 69,
+          "refused": 6,
+          "args_bytes": 5185,
+          "answer_bytes": 12189,
+          "by_tool": {
+            "(run)": 69
+          }
+        }
+      },
+      "failed": []
+    },
+    {
+      "run": "small-plain-1",
+      "job": "small",
+      "arm": "plain",
+      "n": 1,
+      "from": null,
+      "engine_build": null,
+      "builder": {
+        "tokens": 19147,
+        "tool_uses": 7,
+        "duration_s": 66.7,
+        "by_kind": {
+          "input": 14,
+          "cache_write": 13860,
+          "cache_read": 90047,
+          "output": 9208,
+          "requests": 7,
+          "context_at_end": 19147
+        },
+        "weighted": 72384,
+        "cost_usd": 0.15655270000000002,
+        "turns": 8,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 4,
+        "bytes": 20481,
+        "text_lines": 354,
+        "lines_by_kind": {
+          ".md": 41,
+          ".py": 313
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 12,
+          "of": 12
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 14,
+          "of": 14
+        }
+      },
+      "defects": [
+        "When the third miss ends the run, every piece still falling disappears from the state and the frame (the step loop breaks with an empty keep list), so the game-over view shows an empty field.",
+        "Because fall positions build up floating-point error, a piece rests at y=0.5000000000000349 (bottom edge ~3e-14 above 0) for one tick and the miss is counted one tick late (tick 226 instead of 225 for seed 1).",
+        "The tkinter play window is untested by the builder (README says so). I did not open it either, because of this machine's rules."
+      ],
+      "judge": {
+        "tokens": 45502,
+        "tool_uses": 26,
+        "duration_s": 253.6,
+        "by_kind": {
+          "input": 42,
+          "cache_write": 40215,
+          "cache_read": 596846,
+          "output": 16166,
+          "requests": 21,
+          "context_at_end": 45502
+        },
+        "weighted": 190825,
+        "cost_usd": 0.7645771999999998,
+        "turns": 27,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": []
+    },
+    {
+      "run": "small-plain-2",
+      "job": "small",
+      "arm": "plain",
+      "n": 2,
+      "from": null,
+      "engine_build": null,
+      "builder": {
+        "tokens": 17817,
+        "tool_uses": 7,
+        "duration_s": 62.1,
+        "by_kind": {
+          "input": 14,
+          "cache_write": 12530,
+          "cache_read": 86822,
+          "output": 8496,
+          "requests": 7,
+          "context_at_end": 17817
+        },
+        "weighted": 66839,
+        "cost_usd": 0.14379019999999998,
+        "turns": 8,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-sonnet-5-5",
+        "models": [
+          "claude-sonnet-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done",
+        "over_token_cap": false,
+        "over_wall": false,
+        "note": ""
+      },
+      "engine": null,
+      "left": {
+        "files": 4,
+        "bytes": 18255,
+        "text_lines": 284,
+        "lines_by_kind": {
+          ".md": 31,
+          ".py": 253
+        }
+      },
+      "started_with": null,
+      "verdict": {
+        "behaviour": {
+          "passed": 12,
+          "of": 12
+        },
+        "checkable": {
+          "passed": 2,
+          "of": 2
+        },
+        "all": {
+          "passed": 14,
+          "of": 14
+        }
+      },
+      "defects": [
+        "The score and misses-left text is drawn over the top of the field, so a newly spawned piece is partly hidden behind it (frame at seed 1, tick 220: piece at x 4.5 under MISSES LEFT).",
+        "Piece y builds up floating-point drift (e.g. 0.5000000000000349 where 0.5 is exact), so a miss can register one tick late (seed 1, no input: piece reaches the bottom at tick 369, miss counted at 370).",
+        "The interactive tkinter window was not opened by the builder or by me (the rules forbid a focus-taking window), so the key handling and window drawing are not verified."
+      ],
+      "judge": {
+        "tokens": 37576,
+        "tool_uses": 24,
+        "duration_s": 458.6,
+        "by_kind": {
+          "input": 38,
+          "cache_write": 32289,
+          "cache_read": 468437,
+          "output": 13376,
+          "requests": 19,
+          "context_at_end": 37576
+        },
+        "weighted": 154123,
+        "cost_usd": 0.6196714000000001,
+        "turns": 25,
+        "exit": 0,
+        "runner": "claude",
+        "model": "claude-opus-5-5",
+        "models": [
+          "claude-opus-5-5"
+        ],
+        "tokens_complete": true,
+        "engine_stopped": true,
+        "ended": "done"
+      },
+      "failed": []
+    }
+  ]
+}

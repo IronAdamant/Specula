@@ -1238,7 +1238,11 @@ at once.
     build read the rest in a request of its own); `cx.random_restart`, the engine's own gap behind
     the one-screen job's extra cost (a restart "with the same seed" could not be said, and seven of
     eight such builds wrote their own generator); the volume's range said; the checks' description out of
-    the first read. Measured next, in the same clean shell.
+    the first read. **Measured (2026-11-17, on `57f515d0`): 1.61, 1.22 and 1.47 times the plain build**
+    (the fifth pass: 1.85, 1.28, 1.25). The engine builds are 15% and 8% cheaper on the two new games
+    and unmoved on the change, whose ratio rose because its plain builds were 16% cheaper. Before
+    its first file an engine build spends 40,000 to 57,000 weighted tokens (49,000 to 74,000); what
+    is left of that is the brief, the one read, and a second look at the sample's other screens.
   - **Then measure again**, with more than two runs a cell on the medium job: two runs alike differ by
     as much as the effect being looked for.
 - [ ] ➕ **Game systems as optional data, and memory for whoever builds the game** (owner, 2026-11-16: "the

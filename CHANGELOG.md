@@ -209,6 +209,20 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
     change, and did not move the medium game. An engine build has spent 49,000 to 74,000 before its
     first file and a plain build about 6,000; after it the engine arm is the cheaper one on the
     medium game, by the means.
+  - **The sixth pass, measured** (2026-11-17, on `57f515d0`;
+    [docs/design/LEVERAGE.md](docs/design/LEVERAGE.md), "Results (2026-11-17: the sixth pass, the
+    first meeting)"; [perf/leverage/2026-11-17-pass6](perf/leverage/2026-11-17-pass6/report.md)).
+    Fourteen builds, all judged, in the fifth pass's clean shell. Through the engine: the small game
+    111,938 weighted tokens against 69,612 (1.61 times; it was 1.85), the medium game 180,729 against
+    148,684 (1.22; 1.28), the change 140,412 against 95,452 (1.47; 1.25). The engine builds are 15%
+    and 8% cheaper on the two new games and unmoved on the change; that ratio rose on its plain
+    builds, which cost 16% less with nothing changed for them. Before its first file an engine build
+    spends 40,000 to 57,000 (49,000 to 74,000 before), and three of five write it a request sooner.
+    All five new-game builds used `cx.random_restart`, none wrote a generator, none wrote a checks
+    file, nobody looked up the volume. All three engine change builds passed all nine checks, for
+    the first time in five measurements. Still there: a second look at the sample's other four
+    screens in every build, and one medium build that drew its pieces at its background's depth
+    and shipped frames that do not show them.
   - **The sixth pass: the first meeting** ([docs/design/FIRST_HOUR.md](docs/design/FIRST_HOUR.md),
     section 13; owner, 2026-11-17, shown where the gap is: "That gap needs to be looked at and fixed
     up"). An engine build spent 49,000 to 74,000 weighted tokens before its first file, in four

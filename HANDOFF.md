@@ -81,6 +81,16 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     (`scripts/window_recorder.py`, never the screen), kept in the gitignored `gallery-full/` with what
     each shows, and a run that failed is kept like one that passed. Nothing is published before the
     release discussion.
+  - **Every asset's making is recorded, looked at in the engine, and mended** (the owner,
+    2026-11-17, as part 4 reached what can be seen): "Record the creation of bodies, hands, faces.
+    SAme with animals, same with anything please. Review through Specula engine, if they look bad,
+    then try to fix it please. I'm going to turn off my 49" monitor for consistency so you can get
+    expected data running. Record their improved looks and also the eval/performance." *Claude's
+    reading:* for every asset of parts 4 and 5, it is built through the engine and captured as it
+    first comes out, kept even when it is bad; looked at in the engine's own pictures (and checked
+    by a model that did not take them) before anyone says it looks right; mended; captured again.
+    With each go its numbers (triangles, build time, frame time on both adapters, what the form
+    checks say), so that "improved" is a before and an after and not a claim.
   - **Rust only.** "Anything Python in here should be converted to Rust. The only programming language
     used here should be Rust. Zero-dependency is non-negotiable. So I'm willing for this to take
     time." This replaces "new checks may still be Python" (2026-11-15): **no new Python from this
@@ -220,6 +230,21 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       a restart "with the same seed" needed and the SDK lacked (seven of eight one-screen builds
       had written their own generator); the volume's range; the checks' description out of the
       first read (`notes/checks.md`).
+    - **The sixth pass, measured** (2026-11-17, on `57f515d0`; LEVERAGE.md, "Results
+      (2026-11-17: the sixth pass, the first meeting)";
+      [perf/leverage/2026-11-17-pass6](perf/leverage/2026-11-17-pass6/report.md)). Fourteen
+      builds, all judged. **Through the engine the small game costs 1.61 times the plain build
+      (1.85 before), the medium game 1.22 (1.28), the change 1.47 (1.25).** Read arm by arm: the
+      engine builds got 15% cheaper on the small game, 8% on the medium one and did not move on
+      the change; the plain builds, for which nothing changed, got 16% cheaper on the change,
+      which is all of that ratio's rise. **Before its first file an engine build now spends
+      40,000 to 57,000 weighted tokens (49,000 to 74,000 before)**; a plain build 6,000. Every
+      new-game build used `cx.random_restart` and none wrote a generator; none wrote a checks
+      file; all three engine change builds passed all nine checks for the first time. What is
+      left before the first file is the brief, the one read, and a second look at the sample's
+      other four screens, which every build still takes. Not built, and the owner's to say: the
+      other screens in the one read, and a line in the guide on depth (one medium build drew its
+      pieces at its background's depth and shipped frames that do not show them).
     - **The live audit after the passes** (2026-11-17, on `e5fbe695`): 69 of 70. `launch_check`
       fails on an expectation that went stale in part 3 (a project made from the start screen now
       opens on its own title screen, and the check expects a window with no text). Its script is
@@ -353,6 +378,13 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       Checks: 14 and 14 of 14 in both arms; 19, 19 and 19 of 19 against 19 and 17; 8, 9 and 9
       of 9 against 9 and 8. Without the shell's fault the third pass comes to about 1.7, 1.1
       and 1.5 and the fourth to 2.7, 1.26 and 1.5 (estimates from their ledgers).
+    - *The same, after the sixth pass* (2026-11-17, on `57f515d0`, the same clean shell): a
+      one-screen game 111,938 against 69,612; a medium game 180,729 (163,128 to 206,039) against
+      148,684; a change 140,412 against 95,452. About 1.61, 1.22 and 1.47 times. Requests: 13
+      and 12 against 7 and 7; 15, 16 and 20 against 8 and 9; 23, 13 and 11 against 11 and 9.
+      Checks: 14 and 14 of 14 in both arms; 19, 19 and 18 of 19 against 19 and 18; 9, 9 and 9 of
+      9 against 9 and 9. Between the fifth and the sixth the plain arm, with nothing changed for
+      it, moved by 2%, 3% and 16%.
     - *What verifying costs* (2026-11-15 and 16): 3,049 tests in the gate; the tests themselves about
       2 minutes; the gate about 25 minutes for each Rust version; the audit's 70 live checks about an
       hour; CI from nothing 10 minutes on Linux and 17 to 25 on Windows.
@@ -985,11 +1017,12 @@ In practice that means six **foundations** that apply to every change from M1 on
 
 **What it can't do yet:**
 - **Pay for itself at small sizes.** A medium game (menus, settings, two languages, waves) built through the
-  engine costs about a quarter more tokens than the same game built without it by the same model, with every
-  check passed; a change to an existing game about a quarter more; a one-screen game nearly twice (1.28,
-  1.25 and 1.85 times, measured 2026-11-17 after five passes at the first hour, in the first measurement
-  without a fault of the builders' shell that had flattered the engine; it was 4.0, 2.2 and 6.8 the day
-  before). What is left is the first meeting: the guide and the sample read before a line is written, which
+  engine costs about a quarter more tokens than the same game built without it by the same model, with the
+  same checks passed; a change to an existing game about a half more; a one-screen game about three fifths
+  more (1.22, 1.47 and 1.61 times, measured 2026-11-17 after six passes at the first hour; the measurement
+  before, the first without a fault of the builders' shell that had flattered the engine, was 1.28, 1.25
+  and 1.85, and the plain builds alone move by a sixth between two measurements; it was 4.0, 2.2 and 6.8
+  the day before). What is left is the first meeting: the guide and the sample read before a line is written, which
   these sizes do not pay back ([docs/design/LEVERAGE.md](docs/design/LEVERAGE.md)). M6's work, still.
 - **Tell a story for a game.** A storyline tree, reputation, an RPG set-up, captions with voices and music
   packs are M6's, noted on 2026-11-16 and not designed. (Win and loss conditions, a score, and notes kept with a
