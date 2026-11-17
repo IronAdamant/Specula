@@ -224,6 +224,7 @@ fn every_shape_and_op_builds() {
         r#"{"op":"sdf","resolution":32,"tree":{"op":"sphere","radius":0.4,"stretch":[1.5,1,0.6],"at":[0,0.5,0]}}"#,
         r#"{"op":"sdf","resolution":40,"tree":{"op":"column","from":[0,0.1,0],"to":[0.1,0.9,0],"sections":[[0,0.2,0.12],[0.5,0.14,0.1],[1,0.08,0.08]]}}"#,
         r#"{"op":"sdf","resolution":32,"tree":{"op":"round_cone","from":[0,0.1,0],"to":[0.3,0.8,0.1],"radius":0.1,"radius_to":0.04}}"#,
+        r#"{"op":"sdf","resolution":40,"tree":{"op":"column","from":[0,0.1,0],"to":[0,0.9,0],"square":3,"sections":[[0,0.2,0.12],[1,0.16,0.1]]}}"#,
         r#"{"op":"sdf","resolution":40,"tree":{"op":"chain","smooth":0.03,"mirror":"x","points":[[0.2,1.4,0,0.05],[0.25,1.1,0,0.045],[0.27,0.85,0.05,0.03],[0.27,0.75,0.1,0.035]]}}"#,
     ];
     for s in shapes {

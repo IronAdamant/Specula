@@ -71,7 +71,7 @@ const SDF_NODES: &[(&str, &[Field])] = &[
     ("ellipsoid", sdf_node!(r("radii", Vec3))),
     ("round_cone", sdf_node!(r("from", Vec3), r("to", Vec3), r("radius", Num), o("radius_to", Num))),
     ("chain", sdf_node!(r("points", Rows), o("smooth", Num))),
-    ("column", sdf_node!(r("from", Vec3), r("to", Vec3), o("side", Vec3), r("sections", Rows))),
+    ("column", sdf_node!(r("from", Vec3), r("to", Vec3), o("side", Vec3), r("sections", Rows), o("square", Num))),
     ("halfspace", sdf_node!(o("normal", Vec3), o("offset", Num))),
     ("union", sdf_node!(r("of", Sdfs), o("smooth", Num))),
     ("difference", sdf_node!(r("of", Sdfs), o("smooth", Num))),
@@ -516,7 +516,9 @@ impl Ctx<'_> {
                     }
                     sections[i] = [row[0], row[1], row[2]];
                 }
-                sdf::Kind::Prim(sdf::Prim::Column { a, b, side: self.vec3(n, "side", [1.0, 0.0, 0.0])?, sections, count: rows.len() as u8 })
+                // How square its sections are: 2 an ellipse, up to 8 (nearly a box).
+                let square = self.ranged(n, "square", 2.0, 2.0, 8.0)?;
+                sdf::Kind::Prim(sdf::Prim::Column { a, b, side: self.vec3(n, "side", [1.0, 0.0, 0.0])?, sections, count: rows.len() as u8, square })
             }
             // A line of points, each with a radius: a round cone between every two neighbours,
             // joined (smoothly, by `smooth`). A limb, a tail, a branch or a horn in a few rows.

@@ -65,7 +65,8 @@ as a ragged line: the third to the seventh looks have it).
 
 ## What it is made of
 
-The trunk is one column from the hips to the shoulders (its sizes on a curve through the sections),
+The trunk is one column from the hips to the shoulders (its sizes on a curve through the sections,
+its sections squarer than ellipses: flatter in front and behind, as a person's are),
 with an egg for each buttock, one for each breast on a woman, and a round cone sloping from the neck's
 base to each shoulder. Each limb is two columns. A thigh's top is an ellipse, not a circle: two thighs
 lie side by side within the hips' breadth, so each reaches from a finger's breadth short of the middle
@@ -97,6 +98,7 @@ development machine (the gallery's originals are not tracked). In short:
 | v13 | Bound by the flesh: the tear is gone; the heel went to the shin (rings at the ankles) |
 | v14 | A joint's plane divides its two bones: the heel is the foot's again |
 | v15 | Each part lists the bones of what it meets: the ankles' rings are weaker; the back seen lit for the first time |
+| v16 | After two reviews' mends, and a trunk of squarer sections: the waist measures right, a man's chest is flat |
 
 A model that did not take the captures checked v6 and **did not pass it as it had been described**: the
 joins still showed, and the waist is not narrower than the chest. It checked v8 too, and did not pass that
@@ -117,14 +119,16 @@ prints the table). Before it, the chest and the waist were 5 to 7% shallow, a ma
 thigh up to 12% thin and the legs parted 5 to 8 cm low, and none of it had been seen.
 
 What the test holds now, on a typical woman and a heavy man: every breadth and depth (chest, waist,
-hips, buttocks) within 3%; the girths of the buttocks, a thigh, the lower thigh, a calf and the neck
-within 5%; the armpit within 2% of its height. Held loosely, each for a reason that is the figure's:
+hips, buttocks) within 3%; the girths of the waist, the buttocks, a thigh, the lower thigh, a calf and
+the neck within 5% (measured: within 3.4% on four bodies; the waist within 1.6%); the armpit within 2%
+of its height. Held loosely, each for a reason that is the figure's:
 
-- **The waist's girth is about 6% short and the chest's a tenth (women) to a fifth (men) short.** The
-  trunk's sections are ellipses; a person's are squarer, and at the chest a tape also passes over the
-  muscles that go to the arms. No rounded section as broad and as deep as the survey's chest can be as
-  far round as its chest girth. The mend is a squareness for a column's sections and those muscles:
-  not built.
+- **The chest's girth is a twentieth (women) to a sixth (men) short.** With ellipses for sections the
+  waist was 6% short too and the chest a tenth to a fifth; a column's sections now have a squareness
+  (`square`: 2 an ellipse, 3 the trunk, 8 nearly a box), which brought the waist and the hips to
+  within 2% and the chest halfway. What is left at the chest is what is not there: the muscles that go
+  from the chest and the back to the arms, over which a tape passes. No section as broad and as deep
+  as the survey's chest can be as far round as its chest girth.
 - **The legs part 2.5 to 5 cm below the measured crotch**: the two thighs' surfaces melt into each
   other at the top.
 
@@ -252,7 +256,12 @@ crotch are gone and that the legs part with a gap; it failed a man's chest (a th
 as one mound, and is taken out: a man's chest is the plain column) and the back view (unlit, the
 capture's fault twice). Its list, and what the numbers add:
 
-- The trunk is a straight column: too round by the tape (above), ruler-flat at the back and the belly,
+- An independent check of v16 (after both reviews and the squarer trunk) confirmed that a man's chest
+  is flat now and found **a new fault that came with the squarer trunk: a pale band with squared
+  corners across a man's upper chest, like a plate**. It could not see the trunk's flatter front in
+  frontal light (the measure shows it; a side light is wanted), and the row from behind was again
+  taken unlit.
+- The trunk is a straight column: ruler-flat at the back and the belly,
   a sharp corner where the buttock starts, no curve in the lower back (the frame is flat), no ribcage,
   navel or collarbones. (That the typical man has no waist is the survey: 28.9 cm at the chest, 32.6 at
   the waist, 34.6 at the hips.)

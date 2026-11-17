@@ -62,10 +62,12 @@ pub enum Prim {
     /// breadth toward `side` and the half depth across it) the surface is that ellipse, and
     /// between two sections the breadth and the depth follow a curve through them that keeps
     /// going the way the sizes go: level at a section only where they turn, never outside the
-    /// two sections it is between. A
+    /// two sections it is between. `square` says how square its sections are: 2 is an ellipse,
+    /// and the higher it is the flatter the sides and the tighter the corners (a superellipse:
+    /// 3 is a body's trunk, 8 nearly a box with rounded corners). A
     /// rounded end closes it past each end. A trunk, a limb with its swell, a neck, a vase.
     /// Given by its ends, in the node's frame; its field is a lower bound of the distance.
-    Column { a: V3, b: V3, side: V3, sections: [[f32; 3]; MAX_SECTIONS], count: u8 },
+    Column { a: V3, b: V3, side: V3, sections: [[f32; 3]; MAX_SECTIONS], count: u8, square: f32 },
 }
 
 /// Most sections in one column.
@@ -397,7 +399,7 @@ fn prim_distance(p: &Prim, q: V3) -> f32 {
         }
         Prim::HalfSpace { normal, offset } => math3::dot(q, normal) - offset,
         Prim::RoundCone { a, b, ra, rb } => round_cone(q, a, b, ra, rb),
-        Prim::Column { a, b, side, sections, count } => column(q, a, b, side, &sections[..(count as usize).clamp(1, MAX_SECTIONS)]),
+        Prim::Column { a, b, side, sections, count, square } => column(q, a, b, side, &sections[..(count as usize).clamp(1, MAX_SECTIONS)], square),
     }
 }
 
@@ -496,7 +498,7 @@ fn column_lip(a: V3, b: V3, sections: &[[f32; 3]]) -> f32 {
 
 /// A column's field ([`Prim::Column`]): how many of its own radii out a point is from the
 /// axis, less one, times the smaller radius there (so it is never more than the distance).
-fn column(p: V3, a: V3, b: V3, side: V3, sections: &[[f32; 3]]) -> f32 {
+fn column(p: V3, a: V3, b: V3, side: V3, sections: &[[f32; 3]], square: f32) -> f32 {
     let axis = math3::sub(b, a);
     let length = math3::length(axis).max(1e-6);
     let up = math3::scale(axis, 1.0 / length);
@@ -512,7 +514,24 @@ fn column(p: V3, a: V3, b: V3, side: V3, sections: &[[f32; 3]]) -> f32 {
     // Past an end: a rounded cap as high as the section there is narrow.
     let beyond = (t - at).abs() * length;
     let cap = rx.min(rz);
-    let k = ((x / rx) * (x / rx) + (z / rz) * (z / rz) + (beyond / cap) * (beyond / cap)).sqrt();
+    // How many of the section's own radii out the point is, across the column: an ellipse's
+    // measure, or a squarer one (the sum of the two shares each raised to `square`, and its
+    // root). A squarer section holds the ellipse, so the field is still never more than the
+    // distance across; along the column it changes as an ellipse's does.
+    let across2 = if square == 2.0 {
+        (x / rx) * (x / rx) + (z / rz) * (z / rz)
+    } else if square == 4.0 {
+        // (No power to take: the root of the root of the fourth powers' sum, squared.)
+        let (u, w) = ((x / rx) * (x / rx), (z / rz) * (z / rz));
+        (u * u + w * w).sqrt()
+    } else {
+        let (u, w) = ((x / rx).abs(), (z / rz).abs());
+        // (A cube is two multiplications; any other squareness takes a power each.)
+        let sum = if square == 3.0 { u * u * u + w * w * w } else { crate::dmath::pow(u, square) + crate::dmath::pow(w, square) };
+        let across = if sum > 0.0 { crate::dmath::pow(sum, 1.0 / square) } else { 0.0 };
+        across * across
+    };
+    let k = (across2 + (beyond / cap) * (beyond / cap)).sqrt();
     (k - 1.0) * cap
 }
 
@@ -765,7 +784,13 @@ fn prim_cost(p: &Prim) -> u64 {
         Prim::HalfSpace { .. } => 0,
         Prim::Sphere { .. } | Prim::Capsule { .. } => 6,
         Prim::RoundCone { .. } => 26,
-        Prim::Column { .. } => 38,
+        // Measured with the rest (`calibrate_sdf`, three times in release, 2026-11-18): an
+        // ellipse's column and a squareness of 4 (roots only) 49 to 52 ns; a squareness of 3
+        // (one power) 106 to 113; any other (three powers) 207 to 212. Each weight with the
+        // primitive's 48 is at least one and a half times the slowest.
+        Prim::Column { square: 2.0 | 4.0, .. } => 38,
+        Prim::Column { square: 3.0, .. } => 122,
+        Prim::Column { .. } => 270,
         Prim::Box { .. } | Prim::Torus { .. } | Prim::Ellipsoid { .. } => 12,
         Prim::Cylinder { radius, radius_top, .. } if radius == radius_top => 12,
         Prim::Cylinder { .. } => 35,
@@ -1445,7 +1470,10 @@ mod tests {
         time("round cone", &prim(link));
         let mut sections = [[0.0f32; 3]; MAX_SECTIONS];
         sections[..4].copy_from_slice(&[[0.0, 0.17, 0.11], [0.4, 0.13, 0.09], [0.75, 0.15, 0.11], [1.0, 0.06, 0.06]]);
-        time("column of 4 sections", &prim(Prim::Column { a: [0.0, 0.0, 0.0], b: [0.1, 1.0, 0.0], side: [1.0, 0.0, 0.0], sections, count: 4 }));
+        time("column of 4 sections", &prim(Prim::Column { a: [0.0, 0.0, 0.0], b: [0.1, 1.0, 0.0], side: [1.0, 0.0, 0.0], sections, count: 4, square: 2.0 }));
+        time("column, square 3", &prim(Prim::Column { a: [0.0, 0.0, 0.0], b: [0.1, 1.0, 0.0], side: [1.0, 0.0, 0.0], sections, count: 4, square: 3.0 }));
+        time("column, square 4", &prim(Prim::Column { a: [0.0, 0.0, 0.0], b: [0.1, 1.0, 0.0], side: [1.0, 0.0, 0.0], sections, count: 4, square: 4.0 }));
+        time("column, square 2.5", &prim(Prim::Column { a: [0.0, 0.0, 0.0], b: [0.1, 1.0, 0.0], side: [1.0, 0.0, 0.0], sections, count: 4, square: 2.5 }));
         time("round cone stretched", &with(link, Modifiers { stretch: [1.0, 1.0, 0.6], ..Modifiers::default() }));
         let links = |k: usize| (0..k).map(|_| prim(link)).collect::<Vec<_>>();
         time("chain of 8 round cones", &SdfNode { kind: Kind::Group { op: Combine::Union, kids: links(8), smooth: 0.02 }, m: Modifiers::default() });
@@ -1463,7 +1491,7 @@ mod tests {
             let (mut low, mut high) = (0.0f32, 2.0f32);
             for _ in 0..40 {
                 let middle = (low + high) / 2.0;
-                if column([middle, t, 0.0], [0.0; 3], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], sections) < 0.0 {
+                if column([middle, t, 0.0], [0.0; 3], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], sections, 2.0) < 0.0 {
                     low = middle;
                 } else {
                     high = middle;
@@ -1709,7 +1737,7 @@ mod tests {
         sections[1] = [0.4, 0.13, 0.09];
         sections[2] = [0.75, 0.15, 0.11];
         sections[3] = [1.0, 0.06, 0.06];
-        let trunk = Prim::Column { a: [0.0, 0.8, 0.0], b: [0.0, 1.4, 0.0], side: [1.0, 0.0, 0.0], sections, count: 4 };
+        let trunk = Prim::Column { a: [0.0, 0.8, 0.0], b: [0.0, 1.4, 0.0], side: [1.0, 0.0, 0.0], sections, count: 4, square: 2.0 };
         let d = |x: f32, y: f32, z: f32| prim_distance(&trunk, [x, y, z]);
         // On each section, at its breadth and at its depth.
         for (t, rx, rz) in [(0.0, 0.17, 0.11), (0.4, 0.13, 0.09), (0.75, 0.15, 0.11), (1.0, 0.06, 0.06)] {
@@ -1790,7 +1818,7 @@ mod tests {
     fn a_wedge_is_pruned_with_room_for_its_wander() {
         let mut sections = [[0.0f32; 3]; MAX_SECTIONS];
         sections[..2].copy_from_slice(&[[0.0, 0.05, 0.04], [1.0, 0.2, 0.04]]);
-        let wedge = prim(Prim::Column { a: [0.0, 0.0, 0.0], b: [0.0, 0.2, 0.0], side: [1.0, 0.0, 0.0], sections, count: 2 });
+        let wedge = prim(Prim::Column { a: [0.0, 0.0, 0.0], b: [0.0, 0.2, 0.0], side: [1.0, 0.0, 0.0], sections, count: 2, square: 2.0 });
         let mut slab = prim(Prim::Box { half: [0.5, 0.5, 0.5], round: 0.0 });
         slab.m.at = [3.5, 0.1, 0.0];
         let tree = SdfNode { kind: Kind::Group { op: Combine::Near, kids: vec![wedge, slab], smooth: 1.0 }, m: Modifiers::default() };
@@ -1829,6 +1857,57 @@ mod tests {
         assert_eq!(eval(&pruned, [0.0; 3]).to_bits(), eval(&whole, [0.0; 3]).to_bits());
     }
 
+    /// A squarer column: as broad and as deep as the ellipse's, holding the ellipse within it
+    /// and held within the box, further round the higher its squareness; its field is still
+    /// never more than the distance; and the two squarenesses that take no power (3's cubes,
+    /// 4's roots) say what the general way says.
+    #[test]
+    fn a_square_column_is_broad_deep_and_further_round() {
+        let mut sections = [[0.0f32; 3]; MAX_SECTIONS];
+        sections[..2].copy_from_slice(&[[0.0, 0.2, 0.1], [1.0, 0.2, 0.1]]);
+        let column_of = |square: f32| Prim::Column { a: [0.0, 0.0, 0.0], b: [0.0, 2.0, 0.0], side: [1.0, 0.0, 0.0], sections, count: 2, square };
+        // The section's outline at mid-height, as points, for a squareness.
+        let outline = |square: f32| -> Vec<[f32; 2]> {
+            (0..2000)
+                .map(|i| {
+                    let t = i as f32 / 2000.0 * std::f32::consts::TAU;
+                    let (c, s) = (crate::dmath::cos(t), crate::dmath::sin(t));
+                    [0.2 * c.signum() * crate::dmath::pow(c.abs(), 2.0 / square), 0.1 * s.signum() * crate::dmath::pow(s.abs(), 2.0 / square)]
+                })
+                .collect()
+        };
+        let round = |points: &[[f32; 2]]| (0..points.len()).map(|i| len2(points[i][0] - points[(i + 1) % points.len()][0], points[i][1] - points[(i + 1) % points.len()][1])).sum::<f32>();
+        let mut last = round(&outline(2.0));
+        for square in [3.0f32, 4.0, 6.5] {
+            let p = column_of(square);
+            let d = |x: f32, z: f32| prim_distance(&p, [x, 1.0, z]);
+            assert!(d(0.2, 0.0).abs() < 1e-5 && d(0.0, 0.1).abs() < 1e-5, "square {square}: as broad and as deep");
+            let diagonal = std::f32::consts::FRAC_1_SQRT_2;
+            assert!(d(0.2 * diagonal, 0.1 * diagonal) < 0.0 && d(0.2, 0.1) > 0.0, "square {square}: holds the ellipse, within the box");
+            let points = outline(square);
+            assert!(points.iter().all(|q| d(q[0], q[1]).abs() < 2e-4), "square {square}: its outline is where the field is nothing");
+            let girth = round(&points);
+            assert!(girth > last * 1.01, "square {square}: {girth} round against {last}");
+            last = girth;
+            // Never more than the distance: outside, against the nearest point of the outline.
+            for probe in [[0.3f32, 0.0], [0.25, 0.12], [0.0, 0.3], [0.21, 0.11], [0.5, 0.4], [-0.3, 0.05]] {
+                let truth = points.iter().map(|q| len2(q[0] - probe[0], q[1] - probe[1])).fold(f32::MAX, f32::min);
+                assert!(d(probe[0], probe[1]) <= truth + 1e-3, "square {square} at {probe:?}: {} against {truth}", d(probe[0], probe[1]));
+            }
+            // The ways without a power agree with the general way (a hair off 3 and off 4).
+            if square != 6.5 {
+                let general = column_of(square + 1e-4);
+                for probe in [[0.3f32, 0.02], [0.11, 0.07], [0.05, 0.2], [0.19, 0.09]] {
+                    let (fast, slow) = (d(probe[0], probe[1]), prim_distance(&general, [probe[0], 1.0, probe[1]]));
+                    assert!((fast - slow).abs() < 1e-4, "square {square} at {probe:?}: {fast} against {slow}");
+                }
+            }
+        }
+        // It costs what it was measured to: an ellipse's and 4's alike, 3's more, any other most.
+        let cost = |square: f32| eval_cost(&prim(column_of(square)));
+        assert!(cost(2.0) == cost(4.0) && cost(3.0) > cost(4.0) && cost(2.5) > cost(3.0));
+    }
+
     /// A column that widens fast (a flange on a thin stem) is trusted less: its field, taken
     /// at a point's own height, says the stem is 18 cm away where the flange is 3.5 cm away,
     /// and the factor the mesher divides it by makes up the difference. With one fixed factor
@@ -1838,7 +1917,7 @@ mod tests {
     fn a_steep_columns_field_is_trusted_by_its_steepest_section() {
         let mut sections = [[0.0f32; 3]; MAX_SECTIONS];
         sections[..4].copy_from_slice(&[[0.0, 0.02, 0.02], [0.8, 0.02, 0.02], [0.82, 0.3, 0.3], [1.0, 0.3, 0.3]]);
-        let flange = Prim::Column { a: [0.0, 0.0, 0.0], b: [0.0, 1.0, 0.0], side: [1.0, 0.0, 0.0], sections, count: 4 };
+        let flange = Prim::Column { a: [0.0, 0.0, 0.0], b: [0.0, 1.0, 0.0], side: [1.0, 0.0, 0.0], sections, count: 4, square: 2.0 };
         let lip = prim_lip(&flange);
         // Under the flange, beside the stem: the flange's underside is nearer than the stem.
         for probe in [[0.2f32, 0.79, 0.0], [0.1, 0.78, 0.1], [0.25, 0.8, 0.0], [0.0, 0.7, 0.15]] {

@@ -134,8 +134,11 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
   - `round_cone`: `from`, `to`, `radius`, `radius_to`. Every ball between two balls.
   - `chain`: `points`, rows of `[x, y, z, radius]`, and `smooth`. A round cone between every two
     neighbours: a limb, a tail, a branch or a horn. Always closed, always round.
-  - `column`: `from`, `to`, `side`, and `sections`, rows of `[how far along, half breadth, half
-    depth]` (up to 8). The breadth (toward `side`) and the depth pass smoothly from one section to
+  - `column`: `from`, `to`, `side`, `square`, and `sections`, rows of `[how far along, half breadth,
+    half depth]` (up to 8). `square` (2 to 8, 2 unless given) says how square the sections are: 2 an
+    ellipse, 3 a body's trunk, 8 nearly a box with rounded corners (a superellipse: as broad and as
+    deep whatever its squareness, and further round the squarer it is). 2 and 4 cost a sample what an
+    ellipse does, 3 about twice that, any other about four times (they take powers). The breadth (toward `side`) and the depth pass smoothly from one section to
     the next, and a rounded end closes it. A trunk with no steps, a limb with its swell, a neck.
     The sizes follow a curve through the sections that keeps going the way they go (a monotone
     cubic): it is level at a section only where the sizes turn there, and never outside the two

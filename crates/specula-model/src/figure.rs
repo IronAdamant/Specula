@@ -126,11 +126,16 @@ fn union(kids: Vec<SdfNode>, smooth: f32) -> SdfNode {
 /// A column from `a` to `b`: sections `(how far along, half breadth toward side, half depth)`,
 /// on a curve from one to the next ([`Prim::Column`]).
 fn column(a: V3, b: V3, side: V3, sections: &[(f32, f32, f32)]) -> SdfNode {
+    squared(a, b, side, sections, 2.0)
+}
+
+/// A [`column`] whose sections are squarer than ellipses (`square`: [`Prim::Column`]).
+fn squared(a: V3, b: V3, side: V3, sections: &[(f32, f32, f32)], square: f32) -> SdfNode {
     let mut rows = [[0.0f32; 3]; crate::sdf::MAX_SECTIONS];
     for (row, section) in rows.iter_mut().zip(sections) {
         *row = [section.0, section.1, section.2];
     }
-    node(Kind::Prim(Prim::Column { a, b, side, sections: rows, count: sections.len().min(crate::sdf::MAX_SECTIONS) as u8 }))
+    node(Kind::Prim(Prim::Column { a, b, side, sections: rows, count: sections.len().min(crate::sdf::MAX_SECTIONS) as u8, square }))
 }
 
 /// What of `shape` lies in the box from `lo` to `hi`: a fine part is cut where it runs up
@@ -178,6 +183,13 @@ fn other_half(girth: f32, half: f32) -> f32 {
     }
     (low + high) / 2.0
 }
+
+/// How square the trunk's sections are ([`Prim::Column`]'s `square`): a person's trunk is
+/// flatter in front and behind than an ellipse as broad and as deep. With ellipses a tape round
+/// the waist read 6% short of the survey's and round the hips 2% short; at 3 both are within
+/// 2%, and at 4 the waist is 5% over. (The chest is still short, by what is not there: the
+/// muscles that go to the arms.)
+const TRUNK_SQUARE: f32 = 3.0;
 
 /// A body's sizes and its posed frame, read once.
 struct Sizes<'a> {
@@ -231,7 +243,7 @@ impl Sizes<'_> {
         // breasts or as one mound, so it waits for a shape made from the plates of the muscle.
         let male = self.body.sex() == specula_corpus::Sex::Male;
         let ribs = if male { 1.0 } else { 0.90 };
-        let column_of_sections = column(
+        let column_of_sections = squared(
             [0.0, hips, 0.0],
             [0.0, top, 0.0],
             [1.0, 0.0, 0.0],
@@ -241,6 +253,7 @@ impl Sizes<'_> {
                 (t(chest), chest_half, chest_deep * ribs),
                 (1.0, wide, deep),
             ],
+            TRUNK_SQUARE,
         );
         // The column's rounded end would hang some centimetres under the crotch: it is cut at
         // the height the survey measured the crotch at (the thighs' tops close it over).
@@ -840,21 +853,20 @@ mod tests {
 
     /// The figure measures what its body does, where the survey measured people: cut at the
     /// chest, the waist and the hips it is as broad and as deep as the body's rows say, and
-    /// round the hips, a thigh, a calf and the neck a tape reads what they say. Two things
-    /// are held more loosely, and one not at all, each for a reason that is the figure's:
-    /// the waist is rounder than a person's (a tape reads some 6% short); the legs part a
-    /// few centimetres under the measured crotch (the two thighs' surfaces melt into each
-    /// other there); and round the chest a tape reads a tenth to a fifth short, because a
-    /// rounded section as broad and as deep as the survey's chest cannot be as far round as
-    /// its chest girth (on a person the tape also passes over the muscles that go to the arms).
+    /// round the waist, the hips, a thigh, a calf and the neck a tape reads what they say.
+    /// Two things are held more loosely, each for a reason that is the figure's: the legs
+    /// part a few centimetres under the measured crotch (the two thighs' surfaces melt into
+    /// each other there); and round the chest a tape reads a twentieth (women) to a sixth
+    /// (men) short, because no section as broad and as deep as the survey's chest can be as
+    /// far round as its chest girth: on a person the tape also passes over the muscles that
+    /// go to the arms, which the figure does not have.
     #[test]
     fn the_figure_measures_what_its_body_does() {
         for (name, body) in [("typical woman", Body::typical(Sex::Female)), ("heavy man", Body::with_build(Sex::Male, 1.72, 2.0).unwrap())] {
             for (what, figure, measured) in measures(&body) {
                 let off = figure / measured - 1.0;
                 let (least, most) = match what {
-                    "chest girth" => (-0.23, 0.0),
-                    "waist girth" => (-0.08, 0.02),
+                    "chest girth" => (-0.17, 0.0),
                     "where the legs part" => (-0.08, 0.01),
                     "armpit height" => (-0.02, 0.02),
                     what if what.ends_with("girth") => (-0.05, 0.05),

@@ -326,6 +326,11 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       too: a column of changing proportions is pruned with an allowance for how far out a
       point is, a smooth union with an unsteady child keeps every child, a weight at its
       limit builds, a trait's refusal names the trait.
+    - **A column's sections can be squarer than ellipses** (`square`: 2 an ellipse, up to 8),
+      and the figure's trunk is: flatter in front and behind, as a person's is. A tape round the
+      figure's waist read 6% short of the survey's and now reads within 1.6% on four bodies;
+      round the chest it read a tenth to a fifth short and now a twentieth to a sixth (what is
+      left is the muscles to the arms, which the figure does not have).
     - **A man's chest is the plain column**: a third try at a swell for the muscle read as one
       mound to an independent check of the eleventh look, which did not pass it. What it listed
       is in [docs/design/FIGURE.md](docs/design/FIGURE.md).
