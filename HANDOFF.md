@@ -124,6 +124,29 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     pictures the first round did not find, motion as numbers, physics values a game can adjust,
     and what 2D needs. Pictures and bulky data go to repositories of their own; numbers stay in
     this one's library, where tests are held against them.
+  - **The second round came the same evening, and the owner had not looked at either** (asked
+    about plates of children: "Hold on, Children's plates? These are clothed hopefully? I don't
+    want to get in trouble, as the only purpose is to give AI agents something to reference for
+    animation, for building in character skeletons that you can use to turn into real characters
+    in the games, in different styles"; then "I hadn't even looked at those images. Grok just gave
+    me those and I extracted those, so you could reference them"). So **whoever places a delivery
+    is its only check**: every picture is looked at first; unclothed adults are kept apart; no
+    unclothed figure of a child goes in, drawn or photographed, and none whose subject cannot be
+    shown to be an adult. Of the 161 pictures 159 are published (269 in all). Two that Claude
+    had let through on its own judgement (a doll-like chart of proportions by age, and a drawing
+    of two unclothed young women whose age nothing shows) were public for about ten minutes;
+    at the owner's word ("Please take care of it. Erase them. And take them out from my
+    extracted folders and zip files if you can") they were erased from that repository's
+    history by a forced push and removed from the delivery's folders and zip files. GitHub
+    still serves the old commit to someone who has its id, until it clears unreferenced
+    objects: only deleting and re-creating the repository, or GitHub's support, makes that
+    certain, and the token here cannot delete a repository. The repository's readme says, as
+    the owner asked, that it is an agent reference repository kept for the Specula engine. The round's twelve files of
+    numbers (running by speed, recorded-motion datasets, friction, bounce, densities, drag,
+    vehicles, what people and animals can do, projectiles, water, other worlds) are in
+    [docs/research/library/](docs/research/library/README.md) as delivered and **not yet
+    checked**. H7 also says where the walking curves already are (H1): the first walk was made
+    from guessed numbers and need not have been.
   - **A skeleton with every figure, so that a character is a change and not a rebuild** (the same
     message: "At the very least, basic skeletons alongside the figures you've made for me will be
     key to set it up so you can easily mutate or change into individual characters over time

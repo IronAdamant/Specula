@@ -278,6 +278,11 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       The files are in a public repository of their own,
       [specula-imagines](https://github.com/IronAdamant/specula-imagines), with the unclothed plates kept apart there; what to gather
       next is [docs/research/REFERENCE_ROUND2_BRIEF.md](docs/research/REFERENCE_ROUND2_BRIEF.md).
+    - **The second round came too**: 161 more pictures (159 published: women's figures, builds,
+      hands and feet, faces, motion of people, animals and birds, fish, insects, a first folder
+      for 2D) and twelve files of numbers in the library (running by speed, recorded-motion
+      datasets, friction, bounce, densities, drag, vehicles, what people and animals can do,
+      projectiles, water, other worlds), as delivered and not yet checked.
     - **The figure is measured against its body.** A test builds the body's mesh, cuts it with a
       level plane at each height the survey measured people at, and compares breadth, depth and a
       tight tape's girth with the body's own rows. It found what eight looks had not: chest and
