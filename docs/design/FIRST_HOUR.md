@@ -549,8 +549,9 @@ something up. The owner, shown it: "That gap needs to be looked at and fixed up.
 - **A random stream begins again when asked**: `cx.random_restart("stream")` (the request
   `rng_restart`; [MODULES.md](MODULES.md)). The one-screen job asks that a restart begin "a fresh
   run with the same seed", the SDK had no way to say it, and seven of the eight
-  one-screen builds of the last four measurements wrote a generator of its own in their rules
-  (and looked for the call in the engine's documents first). It is the engine's own gap, found by reading what the builders looked up three
+  one-screen builds of the last four measurements wrote a generator of their own in their rules
+  (and looked for the call in the engine's documents first); the eighth kept a list of the
+  columns it had drawn and played it back. It is the engine's own gap, found by reading what the builders looked up three
   measurements running; the guide says what a stream does when a run starts again.
 - **What else was looked up three times is said**: the built-in volume is an int from 0 to 10, 8
   at first, and how a game gives it another range.

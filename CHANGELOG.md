@@ -218,7 +218,22 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
     fails), which a restart "with the same seed" needed and the SDK could not say, so that seven of
     the eight one-screen builds of four measurements had written a generator of their own; the built-in
     volume's range is said; the checks' description is a note of its own and no longer in the
-    first read; the sample's rules file lost a header that repeated the guide.
+    first read; the sample's rules file lost a header that repeated the guide. **The SDK
+    changed: a project made by an earlier engine runs `specula sdk` once** (its next build says
+    `sdk_differs` until it does). Reviewed by a model that did not write it: merge, with eight
+    small points, all taken (the judge's brief pointed at the guide for how a check is written;
+    a change builder's one read took in the look's 1,450 tokens; the guide described a file it
+    had just said to delete, and said "every call" where it shows the ones a game of this size
+    needs).
+  - **The first push of M6, and what only CI could show** (2026-11-17; `origin/main` = `808f54b9`, a
+    fast-forward of forty commits: parts 1 and 3 with the five passes, pushed at the owner's "at your
+    discretion" after the full live audit passed 70 of 70). Part 1's workflows ran for the first time
+    and held: the documents' job, the commit-message guard, the sizing, both Windows jobs and the
+    Android check passed. The Ubuntu job failed one test of part 3
+    (`a_module_too_deep_to_link_under_the_cache_builds_in_the_short_folder`): it wrote its folders as
+    Windows paths, which are one name on Linux, so the module's build folder was named after the
+    whole text. The function under test is the same on both systems; the test now makes its folders
+    of parts. (No machine here runs Linux: CI's Ubuntu job is the only run of that side.)
   - **The launcher's live check is Rust** (2026-11-17; `launcher_check`,
     `tools/examen/src/native/launch.rs`). The live audit after the passes passed 69 of 70: the
     launcher's check failed on an expectation that had gone stale in part 3 (a project made from the

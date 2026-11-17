@@ -470,8 +470,10 @@ impl<'a> Cx<'a> {
     /// Puts the stream `stream` back at its beginning: its next number is the first it ever
     /// gave. For a run that starts again and must be the same game (a level tried again, a
     /// restart "with the same seed"): call it where the run begins. Without it a stream goes
-    /// on from where it was, so a second run in one session is another game. (An engine older
-    /// than this call refuses it by name, `unknown_op`.)
+    /// on from where it was, so a second run in one session is another game. (A project whose
+    /// SDK was copied from an engine without this call is told `sdk_differs` at its next build:
+    /// `specula sdk` brings it up to date. An engine older than the call refuses the request
+    /// by name, `unknown_op`.)
     pub fn random_restart(&mut self, stream: &str) -> Result<(), SdkError> {
         self.ask(Value::map().with("op", "rng_restart").with("stream", stream)).map(drop)
     }

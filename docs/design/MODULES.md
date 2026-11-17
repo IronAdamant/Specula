@@ -268,7 +268,7 @@ All in `specula_sdk::abi`; version **1** (`ABI_VERSION`).
   `BAD_INPUT 3`, `UNKNOWN_ENTRY 4`.
 - Messages are `Value`s (null, bool, i64, f64, string, list, ordered map) in a canonical little-endian encoding.
   Requests are maps with an `op` (`find`, `get`, `query`, `spawn`, `set`, `delete`, `state_get`, `state_set`, `rng`,
-  `move_character`, `emit`, `log`, `trace`, `sound`); `sound` (2026-11-07) asks the engine to play a recipe after the
+  `rng_restart`, `move_character`, `emit`, `log`, `trace`, `sound`); `sound` (2026-11-07) asks the engine to play a recipe after the
   call commits, presentation only ([GAMEPLAY_MODULES.md](GAMEPLAY_MODULES.md), *Sound*); `spawn` and `set` take exactly the fields of the `world_spawn` and `world_set`
   tools and are validated by the same code, so modules and agents share one vocabulary and one set of error messages.
 - Neither side frees the other's memory or keeps its pointers past a call. Answers live in an engine buffer valid until

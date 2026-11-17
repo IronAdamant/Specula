@@ -1172,27 +1172,33 @@ mod stale_tests {
     #[test]
     fn a_module_too_deep_to_link_under_the_cache_builds_in_the_short_folder() {
         use specula_logic::build::{link_arguments_chars, LINKER_PATH_MAX};
-        let short = Path::new(r"C:\Users\someone\AppData\Local\Specula\b"); // private-scan: allow (a made-up folder, for its length)
-        let canon = Path::new(r"C:\game\modules\gate");
-        let shallow = Path::new(r"C:\game\.specula-cache\modules");
+        // The folders are made of parts, so that they are folders on every system: written as
+        // one Windows path each, they were a single name on Linux, and this test failed there
+        // at the first push that ran it (CI, 2026-11-17: the module's folder was named after
+        // the whole text).
+        let root = PathBuf::from(if cfg!(windows) { "C:\\" } else { "/" });
+        let at = |parts: &[&str]| parts.iter().fold(root.clone(), |path, part| path.join(part));
+        let short = &at(&["Users", "someone", "AppData", "Local", "Specula", "b"]); // private-scan: allow (a made-up folder, for its length)
+        let canon = &at(&["game", "modules", "gate"]);
+        let shallow = &at(&["game", ".specula-cache", "modules"]);
         let (own, moved) = pick_target(shallow, Some(short), canon, "gate", true);
         assert!(!moved && own.starts_with(shallow) && own.file_name().unwrap().to_string_lossy().starts_with("gate-"), "{}", own.display());
         // The same project's cache a hundred and seventy characters deeper.
-        let deep = PathBuf::from(format!(r"C:\{}\.specula-cache\modules", "d".repeat(170)));
+        let deep = at(&[&"d".repeat(170), ".specula-cache", "modules"]);
         assert!(link_arguments_chars(&deep.join("gate-00000000"), "gate") > LINKER_PATH_MAX, "the case this is for");
         let (target, moved) = pick_target(&deep, Some(short), canon, "gate", true);
         assert!(moved && target.starts_with(short), "{}", target.display());
         assert!(link_arguments_chars(&target, "gate") <= LINKER_PATH_MAX);
         // The folder is the module's own: the same each time, another for another module.
         assert_eq!(pick_target(&deep, Some(short), canon, "gate", true).0, target);
-        assert_ne!(pick_target(&deep, Some(short), Path::new(r"C:\other\modules\gate"), "gate", true).0, target);
+        assert_ne!(pick_target(&deep, Some(short), &at(&["other", "modules", "gate"]), "gate", true).0, target);
         // Where the linker has no such limit, and where no short folder is known, as before:
         // the build goes under the cache (and, too deep, is refused by name after it compiled).
         let unlimited = pick_target(&deep, Some(short), canon, "gate", false);
         assert!(!unlimited.1 && unlimited.0.starts_with(&deep));
         assert!(!pick_target(&deep, None, canon, "gate", true).1);
         // A short folder that is itself too deep (a very long user name) is not used.
-        let long_user = PathBuf::from(format!(r"C:\Users\{}\AppData\Local\Specula\b", "u".repeat(200))); // private-scan: allow (a made-up folder, for its length)
+        let long_user = at(&["Users", &"u".repeat(200), "AppData", "Local", "Specula", "b"]); // private-scan: allow (a made-up folder, for its length)
         assert!(!pick_target(&deep, Some(&long_user), canon, "gate", true).1);
     }
 

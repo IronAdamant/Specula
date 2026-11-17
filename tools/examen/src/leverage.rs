@@ -463,7 +463,7 @@ fn arm_text(arm: &str, run: &Path, change: bool) -> Vec<String> {
     vec![
         "What you have".to_owned(),
         if change {
-            "- The game is built with the Specula engine: your work folder is a Specula project (a game file, screens and words, a module with the rules). Start with one read, from that folder: `cat notes/how.md README.md game.json modules/*/src/lib.rs modules/*/actions.json assets/ui/*.json assets/strings/*.json; ls checks` (how such a game is built and run; what its builder says of it; the game file, the rules, the inputs, the screens, the words). That is the game: no other reading is needed to change it.".to_owned()
+            "- The game is built with the Specula engine: your work folder is a Specula project (a game file, screens and words, a module with the rules). Start with one read, from that folder: `cat notes/how.md README.md game.json modules/*/src/lib.rs modules/*/actions.json $(ls assets/ui/*.json | grep -v /theme.json) assets/strings/*.json; ls checks` (how such a game is built and run; what its builder says of it; the game file, the rules, the inputs, the screens, the words; `assets/ui/theme.json` is the look and needs no reading). That is the game: no other reading is needed to change it.".to_owned()
         } else {
             "- You build it with the Specula engine. Your work folder is a Specula project made by the engine (`specula new`): a small sample game that builds and plays, with every part in place. Start with one read, from that folder: `cat notes/how.md game.json modules/*/src/lib.rs modules/*/actions.json assets/ui/hud.json assets/ui/settings.json assets/strings/en.json` (how such a game is built and run; the sample's game file, rules, inputs, two of its screens and its words). That is the reading done: notes/how.md is complete for a game of this size. Replace the sample's rules, screens and words with your game's, and delete the sample's `checks` folder.".to_owned()
         },
@@ -1268,7 +1268,7 @@ pub fn judge_text(run: &Path, r: &Json) -> R<String> {
     ];
     if text(r, "arm") == Some("engine") {
         lines.push(format!(
-            "- This game runs on the Specula engine. `{tool} play {rd} ...` is the engine's own headless run of it (it needs no engine started), and `{tool} check {rd} --file FILE` plays every run a checks file of your own lists in one command (the game's `notes/how.md` says how one is written; keep yours in your scratch folder, and take frames with `play`: a check's frame is written into the game's own folder); if its documents use an engine left running, start it with `{tool} engine start {rd}` and stop it with `{tool} engine stop {rd}` when you are done, and calls go through `{tool} call {rd} TOOL '{{json}}'`. Never run the engine's executable yourself."
+            "- This game runs on the Specula engine. `{tool} play {rd} ...` is the engine's own headless run of it (it needs no engine started), and `{tool} check {rd} --file FILE` plays every run a checks file of your own lists in one command (the game's `notes/checks.md` says how one is written, or `notes/how.md` in a game made before that note was; keep yours in your scratch folder, and take frames with `play`: a check's frame is written into the game's own folder); if its documents use an engine left running, start it with `{tool} engine start {rd}` and stop it with `{tool} engine stop {rd}` when you are done, and calls go through `{tool} call {rd} TOOL '{{json}}'`. Never run the engine's executable yourself."
         ));
     }
     lines.push(String::new());

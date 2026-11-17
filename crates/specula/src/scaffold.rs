@@ -334,7 +334,7 @@ a screen, a screen that moves settings, the words). In a new project they are a 
 tap game: replace them. The other screens (`title`, `pause`, `won`, `lost`) have the same
 form and are read when they are changed; `assets/ui/theme.json` is the look, and needs no
 reading. Delete the sample's `checks/` folder: it checks the tap game. Every call of the SDK
-that a game needs is on this page.
+that a game of this size needs is on this page.
 
 **The loop: edit, run, read.** One command builds the modules as they are on disk, plays the
 game from its start with no window, and prints how it stands as one JSON object:
@@ -379,8 +379,9 @@ game from its start with no window, and prints how it stands as one JSON object:
 - `screens`: which file under `assets/ui` is the `title`, `pause`, `won`, `lost` and `hud`.
 - `settings`: each `{"name", "kind", "default"}`, the kind one of `"int"` (with `"min"`,
   `"max"`), `"choice"` (with `"options"`), `"toggle"`, `"locale"`. `language` and `volume`
-  are always there, declared or not: `volume` is an int from 0 to 10, 8 at first, and it is
-  the sound's volume (declare one with `"is": "volume"` for another range or default).
+  are there unless the game declares its own: `volume` is an int from 0 to 10, 8 at first,
+  and it is the sound's volume. A setting of the game's with `"is": "volume"` (any name, its
+  own range and default) is the volume in its place.
   Every setting is kept for the player; nothing else is needed for that.
 - **A setting the rules read** (a difficulty) is four things: `"sim": true` on it here; a
   button on a screen with the action `cycle:NAME` (or `step:NAME:+1`), its text
@@ -443,7 +444,8 @@ game from its start with no window, and prints how it stands as one JSON object:
   and **no name** (the engine names them: two children of one parent with one name is the
   error `name_taken`). A query under a path (`Some("/{{module}}/mobs")`) gives the entity at
   that path too, with what is below it.
-- `cx.tick()` (`u64`), `cx.tick_hz()` (`u32`), `cx.random_below("stream", n)?` (a `u32`
+- `cx.tick()` (`u64`), `cx.tick_hz()` (`u32`), `cx.dt()` (the seconds of a tick, `f32`),
+  `cx.entity(id)?` (an `Option`, with `.position()`), `cx.random_below("stream", n)?` (a `u32`
   below `n`), `cx.random_f32("stream")?` (0 to 1), `cx.sound("name", None, 1.0)?`,
   `cx.log("text")?`. The random calls are seeded by the run (`--seed`, a check's `"seed"`):
   the rules take no seed and keep none. A stream goes on from where it was, so a second game
@@ -457,9 +459,10 @@ game from its start with no window, and prints how it stands as one JSON object:
   checks kept with a game, for one that someone comes back to or that is handed on
   (`notes/checks.md` says how they are written). A game that came with checks of its own: run
   them after a change. Building a game does not need them.
-- `checks/smoke.json` is a playtest (steps, and what to expect) for an engine left running:
-  `specula open . -- --headless --lead NAME`, then `specula tools` lists what an agent can
-  call there (`logic_build`, `game_state`, `game_act`, `playtest_run`, `ui_frame`).
+- An engine left running serves the project's tools: `specula open . -- --headless --lead
+  NAME`, then `specula tools` lists what an agent can call there (`logic_build`,
+  `game_state`, `game_act`, `playtest_run`, `ui_frame`). A playtest is steps and what to
+  expect, as a file (the sample's was `checks/smoke.json`).
 - `notes/` is what the project remembers. Leave a note of what you decided and why:
   `notes/NAME.md`, with the front matter this file has (`title`, `kind: decision`, `about`).
 "##;
