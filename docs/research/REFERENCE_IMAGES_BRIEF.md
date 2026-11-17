@@ -1,6 +1,8 @@
 # Reference images: what is asked for
 
-Status: **a request, written 2026-11-17.** The owner offered reference pictures to hold the engine's
+Status: **answered the same day: 110 pictures, indexed in
+[library/reference-images/](library/reference-images/README.md).** What follows is the request as it was
+written. The owner offered reference pictures to hold the engine's
 figures against ("Reference images.. sure. I'll get you those. Please get me a list of what you need").
 This is the list. It goes beside the library research ([library/](library/README.md)), which gave the
 numbers; these give something to look at.

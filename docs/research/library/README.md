@@ -41,3 +41,9 @@ checker's line numbers still point at the lines they were written about.
   (the review lists them).
 - **People are not all alike, and the samples say whom they measured**: soldiers, workers, the students of one
   country, the women of another. Nothing here is universal, and the engine presents none of it so.
+
+## Reference pictures (2026-11-17)
+
+Beside the numbers, something to look at: 110 pictures gathered for
+[REFERENCE_IMAGES_BRIEF.md](../REFERENCE_IMAGES_BRIEF.md), with their index, in
+[reference-images/](reference-images/README.md).

@@ -97,8 +97,15 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     then "Reference images.. sure. I'll get you those. Please get me a list of what you need").
     The list is [docs/research/REFERENCE_IMAGES_BRIEF.md](docs/research/REFERENCE_IMAGES_BRIEF.md):
     people, hands, feet, heads, motion and creatures by body plan, each with its source and
-    licence. They are looked at and compared with captures, never traced, and never put in this
-    repository.
+    licence. They are looked at and compared with captures, never traced.
+  - **They came the same evening** ("Reference images supplied. Add them to the library"): 110
+    pictures with an index, all with licences that allow keeping them. The index is in the
+    library ([docs/research/library/reference-images/](docs/research/library/reference-images/README.md));
+    the files are on this machine in `gallery-full/reference-images/`. Whether the files go into
+    the public repository is the one open decision below. The owner on why: "it's how human
+    artists, in any profession, work. They refer to skeleton images before putting in their
+    touches... Even though they know what humans look like, they still use reference and
+    measurements, so I'm getting you digital equivalent of those".
   - **Rust only.** "Anything Python in here should be converted to Rust. The only programming language
     used here should be Rust. Zero-dependency is non-negotiable. So I'm willing for this to take
     time." This replaces "new checks may still be Python" (2026-11-15): **no new Python from this
@@ -1198,8 +1205,19 @@ Not decisions of this kind, and also with the owner: the seven items of
 recordings of 2026-11-12 (kept, for the release discussion), an Apple Developer account (theirs to talk
 through with the instance on the Mac), and a Steamworks app ID (later).
 
-None at present (2026-11-16: the three that were here were answered that day; the answers are at the top
-of this page, under "The last three open decisions").
+1. **The reference pictures themselves: in the repository, or beside it?** (2026-11-17.) The owner had
+   110 pictures gathered (211 MB, all from Wikimedia Commons: 88 public domain, 3 CC0, 19 CC BY) and
+   said "Add them to the library". Their index is in the library
+   ([docs/research/library/reference-images/](docs/research/library/reference-images/README.md)) and
+   the files are on this machine in `gallery-full/reference-images/`, in use. Not committed: the
+   files. The licences allow it, with each author listed as the index does. What is against it is the
+   size (every clone would carry 211 MB for good), and that the repository is public and some plates
+   are unclothed academic studies. Claude's recommendation: keep the index in the repository and the
+   files beside it, as the gallery keeps its full-size originals; or, if the owner wants them seen on
+   GitHub, small copies of the engraved plates only (about 5 MB). The owner's to say.
+
+(The three that were here before were answered on 2026-11-16; the answers are at the top of this page,
+under "The last three open decisions".)
 
 ## Claude's opinions and thoughts
 
