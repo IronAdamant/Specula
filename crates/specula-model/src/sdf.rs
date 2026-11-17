@@ -164,6 +164,9 @@ struct Prepared {
     /// displacement may move it, in its parent's frame ([`lip_slack`]).
     lip: f32,
     slack: f32,
+    /// Neither this node nor anything under it is repeated, elongated, twisted, bent, shelled
+    /// or displaced: its distance at a ball's middle bounds its distance through the ball.
+    steady: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -199,6 +202,8 @@ pub struct SdfStats {
     pub blocks_skipped: u64,
     pub work: u64,
     pub triangles: usize,
+    /// Pruned trees kept for the crossings' normals (one a half block that was sampled).
+    pub trees_kept: usize,
 }
 
 fn count_nodes(n: &SdfNode) -> usize {
@@ -220,13 +225,26 @@ fn prepare(n: &SdfNode, seed: u64, next: &mut u64) -> Prepared {
         Kind::Group { op, kids, smooth } => PKind::Group { op: *op, kids: kids.iter().map(|k| prepare(k, seed, next)).collect(), smooth: *smooth },
     };
     let (lip, slack) = lip_slack(n);
-    Prepared { kind, m: n.m.clone(), inv_rot, rotated: n.m.rotate != [0.0; 3], seed: my_seed, lip, slack }
+    let m = &n.m;
+    let steady = m.repeat.is_none()
+        && m.elongate == [0.0; 3]
+        && m.twist == 0.0
+        && m.bend == 0.0
+        && m.shell <= 0.0
+        && m.displace.is_none()
+        && match &kind {
+            PKind::Prim(_) => true,
+            PKind::Group { kids, .. } => kids.iter().all(|k| k.steady),
+        };
+    Prepared { kind, m: n.m.clone(), inv_rot, rotated: n.m.rotate != [0.0; 3], seed: my_seed, lip, slack, steady }
 }
 
 /// The tree as it is for every point within `reach` of `c` (both in the node's parent's
 /// frame): a union's children that are too far to touch the surface or its smoothing there
-/// are left out. **Exactly**: at every such point the pruned tree's distance and colour are
-/// the whole tree's, bit for bit.
+/// are left out. **Exactly**: at every such point the pruned tree's distance is the whole
+/// tree's, bit for bit. Its colour is too through near-unions; through a plain smooth union it
+/// may differ in the last place (a blend that reaches its end, `a + (b - a)`, is not always
+/// `b`), which nothing shows: a mesh's colours are asked of the whole tree.
 ///
 /// From a plain union a child may go when, everywhere in the ball, it is further than every child that stays by
 /// more than the smoothing reaches, with room for the children that go to have blended among
@@ -234,9 +252,10 @@ fn prepare(n: &SdfNode, seed: u64, next: &mut u64) -> Prepared {
 /// has accumulated: before the first child that stays, the ones that go cannot pull the
 /// accumulated distance to within the smoothing of it; after it, none of them is near enough.
 /// Only plain unions are pruned (a repeat, a twist, a bend, an elongation, a shell or a
-/// displacement keeps every child, as its distances no longer bound each other).
+/// displacement keeps every child, as its distances no longer bound each other), and a child
+/// with any of those anywhere under it is never dropped.
 fn prune(n: &Prepared, c: V3, reach: f32) -> Prepared {
-    let keep_all = |kind: PKind| Prepared { kind, m: n.m.clone(), inv_rot: n.inv_rot, rotated: n.rotated, seed: n.seed, lip: n.lip, slack: n.slack };
+    let keep_all = |kind: PKind| Prepared { kind, m: n.m.clone(), inv_rot: n.inv_rot, rotated: n.rotated, seed: n.seed, lip: n.lip, slack: n.slack, steady: n.steady };
     let PKind::Group { op, kids, smooth } = &n.kind else { return n.clone() };
     let m = &n.m;
     let plain = m.repeat.is_none() && m.elongate == [0.0; 3] && m.twist == 0.0 && m.bend == 0.0 && m.shell <= 0.0 && m.displace.is_none();
@@ -261,9 +280,14 @@ fn prune(n: &Prepared, c: V3, reach: f32) -> Prepared {
     if span.iter().any(|(lo, hi)| !lo.is_finite() || !hi.is_finite()) {
         return n.clone();
     }
-    let nearest = span.iter().map(|s| s.1).fold(f32::MAX, f32::min);
+    // A child that is repeated, twisted, bent, shelled or displaced somewhere under it stays,
+    // and is no reason for another to go: its field jumps (a repeat's at its cells' edges), so
+    // its distance at the middle says nothing sure of the rest of the ball. (Dropped by it, a
+    // repeated round cone set off its cell's middle left samples on the wrong side: review of
+    // part 4's slice 2.)
+    let nearest = span.iter().zip(kids).filter(|(_, k)| k.steady).map(|(s, _)| s.1).fold(f32::MAX, f32::min);
     let margin = smooth.max(0.0) * (1.0 + kids.len() as f32 / 4.0);
-    let mut keep: Vec<bool> = span.iter().map(|s| s.0 <= nearest + smooth.max(0.0)).collect();
+    let mut keep: Vec<bool> = span.iter().zip(kids).map(|(s, k)| !k.steady || s.0 <= nearest + smooth.max(0.0)).collect();
     // A near-union's children that are not within the smoothing of the nearest anywhere in
     // the ball take no part there, by its definition: nothing more to keep.
     let plain_union = *op == Combine::Union;
@@ -271,7 +295,7 @@ fn prune(n: &Prepared, c: V3, reach: f32) -> Prepared {
         if !plain_union {
             break;
         }
-        let far = keep.iter().zip(&span).filter(|(k, _)| **k).map(|(_, s)| s.1).fold(f32::MIN, f32::max);
+        let far = keep.iter().zip(&span).zip(kids).filter(|((k, _), kid)| **k && kid.steady).map(|((_, s), _)| s.1).fold(f32::MIN, f32::max);
         let mut grew = false;
         for (k, s) in keep.iter_mut().zip(&span) {
             if !*k && s.0 <= far + margin {
@@ -332,24 +356,13 @@ fn prim_distance(p: &Prim, q: V3) -> f32 {
     }
 }
 
-/// A column's field ([`Prim::Column`]): how many of its own radii out a point is from the
-/// axis, less one, times the smaller radius there (so it is never more than the distance).
-fn column(p: V3, a: V3, b: V3, side: V3, sections: &[[f32; 3]]) -> f32 {
-    let axis = math3::sub(b, a);
-    let length = math3::length(axis).max(1e-6);
-    let up = math3::scale(axis, 1.0 / length);
-    // Toward `side`, squared to the axis; and across both.
-    let lean = math3::sub(side, math3::scale(up, math3::dot(side, up)));
-    let right = if math3::length(lean) > 1e-6 { math3::normalize(lean) } else { math3::perpendicular(up) };
-    let across = math3::cross(up, right);
-    let from = math3::sub(p, a);
-    let (t, x, z) = (math3::dot(from, up) / length, math3::dot(from, right), math3::dot(from, across));
-    let (first, last) = (sections[0], sections[sections.len() - 1]);
+/// A column's half breadth and half depth at `at` along it (within its sections' range).
+fn column_sizes(sections: &[[f32; 3]], at: f32) -> (f32, f32) {
     // The section at t: on a curve through the sections that keeps going the way they go (a
     // monotone cubic). It is level at a section only where the sizes turn there, so a limb
     // that tapers through three sections tapers all the way and shows no band at the middle
     // one; and it never goes outside the sizes of the two sections it is between.
-    let at = t.clamp(first[0], last[0]);
+    let last = sections[sections.len() - 1];
     let (mut rx, mut rz) = (last[1], last[2]);
     if sections.len() > 1 {
         let mut i = 0;
@@ -379,6 +392,47 @@ fn column(p: V3, a: V3, b: V3, side: V3, sections: &[[f32; 3]]) -> f32 {
         };
         (rx, rz) = (size(1), size(2));
     }
+    (rx, rz)
+}
+
+/// How much faster than distance a column's field may change: its field is how far out of the
+/// section at its own height a point is, and where the sections grow by `s` metres a metre
+/// along the column, the nearest surface may be at another height, `sqrt(1 + s * s)` times
+/// nearer. (With one fixed factor of 2, a column that widened faster than about 1.7 metres a
+/// metre, a flange on a thin stem, was meshed with samples on the wrong side of its surface.)
+/// The steepest growth is taken from the curve itself, with a quarter to spare.
+fn column_lip(a: V3, b: V3, sections: &[[f32; 3]]) -> f32 {
+    let length = math3::length(math3::sub(b, a)).max(1e-6);
+    let mut steepest = 0.0f32;
+    for pair in sections.windows(2) {
+        let span = (pair[1][0] - pair[0][0]).max(1e-6);
+        let mut before = column_sizes(sections, pair[0][0]);
+        for k in 1..=24 {
+            let now = column_sizes(sections, pair[0][0] + span * k as f32 / 24.0);
+            let grew = (now.0 - before.0).abs().max((now.1 - before.1).abs());
+            steepest = steepest.max(grew / (span / 24.0 * length));
+            before = now;
+        }
+    }
+    let steepest = steepest * 1.25;
+    math3::length([1.0, steepest, 0.0])
+}
+
+/// A column's field ([`Prim::Column`]): how many of its own radii out a point is from the
+/// axis, less one, times the smaller radius there (so it is never more than the distance).
+fn column(p: V3, a: V3, b: V3, side: V3, sections: &[[f32; 3]]) -> f32 {
+    let axis = math3::sub(b, a);
+    let length = math3::length(axis).max(1e-6);
+    let up = math3::scale(axis, 1.0 / length);
+    // Toward `side`, squared to the axis; and across both.
+    let lean = math3::sub(side, math3::scale(up, math3::dot(side, up)));
+    let right = if math3::length(lean) > 1e-6 { math3::normalize(lean) } else { math3::perpendicular(up) };
+    let across = math3::cross(up, right);
+    let from = math3::sub(p, a);
+    let (t, x, z) = (math3::dot(from, up) / length, math3::dot(from, right), math3::dot(from, across));
+    let (first, last) = (sections[0], sections[sections.len() - 1]);
+    let at = t.clamp(first[0], last[0]);
+    let (rx, rz) = column_sizes(sections, at);
     // Past an end: a rounded cap as high as the section there is narrow.
     let beyond = (t - at).abs() * length;
     let cap = rx.min(rz);
@@ -672,10 +726,21 @@ fn modifiers_cost(m: &Modifiers) -> u64 {
 /// A node's Lipschitz factor (how much faster than distance its field may change) and slack
 /// (how far smoothing and displacement may move it), in its parent's frame. Unlike [`bounds`]
 /// this folds in every child, bounded or not: an unbounded cutter's displacement still counts.
+/// How much faster than distance a primitive's field may change (1 for an exact distance):
+/// an ellipsoid's is only a bound and is allowed twice the speed; a column's goes by its
+/// steepest section ([`column_lip`]).
+fn prim_lip(p: &Prim) -> f32 {
+    match p {
+        Prim::Ellipsoid { .. } => 2.0,
+        Prim::Column { a, b, sections, count, .. } => column_lip(*a, *b, &sections[..(*count as usize).clamp(1, MAX_SECTIONS)]),
+        _ => 1.0,
+    }
+}
+
 fn lip_slack(n: &SdfNode) -> (f32, f32) {
     let m = &n.m;
     let (mut lip, mut slack) = match &n.kind {
-        Kind::Prim(p) => (if matches!(p, Prim::Ellipsoid { .. } | Prim::Column { .. }) { 2.0 } else { 1.0 }, 0.0),
+        Kind::Prim(p) => (prim_lip(p), 0.0),
         Kind::Group { kids, smooth, .. } => kids.iter().map(lip_slack).fold((1.0f32, smooth.max(0.0)), |(l, s), (kl, ks)| (l.max(kl), s.max(ks))),
     };
     slack *= m.scale * m.stretch[0].max(m.stretch[1]).max(m.stretch[2]);
@@ -722,8 +787,7 @@ fn bounds(n: &SdfNode) -> Option<(V3, V3, f32, f32)> {
                     (math3::sub(math3::vmin(a, b), [widest; 3]), math3::add(math3::vmax(a, b), [widest; 3]))
                 }
             };
-            // The ellipsoid's and the column's fields are only bounds: allow them twice the speed.
-            let lip = if matches!(p, Prim::Ellipsoid { .. } | Prim::Column { .. }) { 2.0 } else { 1.0 };
+            let lip = prim_lip(p);
             (lo, hi, lip, 0.0)
         }
         Kind::Group { op, kids, smooth } => {
@@ -968,9 +1032,13 @@ pub fn mesh(tree: &SdfNode, opt: &MeshOptions) -> Result<(Shape, SdfStats), SdfE
                                 }
                             }
                         }
+                        // A crossing's normal is asked of the half block's tree (as exact here as
+                        // the quarter's, and kept once for the eight quarters): a tree a quarter
+                        // block was 30,000 trees and 188 MB for one body, and up to 742 MB for a
+                        // legal build (review of part 4's slice 2).
                         near_at[((lo[2] / FINE) * fine[1] + lo[1] / FINE) * fine[0] + lo[0] / FINE] = near.len() as u32;
-                        near.push((quarter, quarter_cost));
                     }
+                    near.push((half, half_cost));
                 }
             }
         }
@@ -1165,6 +1233,7 @@ pub fn mesh(tree: &SdfNode, opt: &MeshOptions) -> Result<(Shape, SdfStats), SdfE
     // Triangles collapsed by vertices clamped onto each other.
     shape.weld_exact();
     stats.work = work;
+    stats.trees_kept = near.len();
     stats.triangles = shape.tris.len();
     Ok((shape, stats))
 }
@@ -1505,6 +1574,9 @@ mod tests {
         let every_bone = stats.samples_evaluated * eval_cost(&tree);
         // (A body of columns costs a little over half of what its whole tree would at every sample.)
         assert!(stats.work < every_bone * 2 / 3, "{} work for {} samples of a tree that costs {}", stats.work, stats.samples_evaluated, eval_cost(&tree));
+        // What is kept for the normals is a tree a half block near the surface, not one a
+        // quarter block: thousands, not tens of thousands.
+        assert!(stats.trees_kept > 0 && (stats.trees_kept as u64) * 16 < stats.samples_evaluated, "{} trees kept for {} samples", stats.trees_kept, stats.samples_evaluated);
     }
 
     /// A column is its sections: at each one the surface is that ellipse, between two it
@@ -1555,7 +1627,68 @@ mod tests {
         }
         let (lo, hi, lip, _) = bounds(&node).unwrap();
         let bb = shape.bounds();
-        assert!((0..3).all(|k| lo[k] <= bb.min[k] + 1e-3 && hi[k] >= bb.max[k] - 1e-3) && lip == 2.0, "{lo:?} {hi:?} against {bb:?}");
+        assert!((0..3).all(|k| lo[k] <= bb.min[k] + 1e-3 && hi[k] >= bb.max[k] - 1e-3) && lip > 1.0 && lip < 2.0, "{lo:?} {hi:?} against {bb:?}, lip {lip}");
+    }
+
+    /// A child that is repeated is never pruned away, and is never the reason another is: its
+    /// field jumps at its cells' edges, so what it says at a ball's middle is not a bound for
+    /// the ball. (A round cone set 0.2 m off its cell's middle and repeated was dropped beside
+    /// a box, and samples came out on the wrong side: review of part 4's slice 2.)
+    #[test]
+    fn a_repeated_child_is_never_pruned_away() {
+        let base = prim(Prim::Box { half: [0.6, 0.1, 0.6], round: 0.0 });
+        let mut cones = prim(Prim::RoundCone { a: [0.2, 0.0, 0.0], b: [0.2, 0.5, 0.0], ra: 0.08, rb: 0.03 });
+        cones.m.repeat = Some(([3, 1, 3], [0.45, 0.0, 0.45]));
+        let tree = SdfNode { kind: Kind::Group { op: Combine::Union, kids: vec![base, cones], smooth: 0.0 }, m: Modifiers::default() };
+        let whole = prepare(&tree, 3, &mut 0);
+        let mut compared = 0;
+        for b in 0..400u32 {
+            let f = |k: u32, span: f32, from: f32| ((b * k) % 101) as f32 / 100.0 * span + from;
+            let c = [f(7, 1.6, -0.8), f(13, 0.9, -0.2), f(29, 1.6, -0.8)];
+            let reach = if b % 2 == 0 { 0.05 } else { 0.15 };
+            let pruned = prune(&whole, c, reach);
+            let PKind::Group { kids, .. } = &pruned.kind else { panic!("a group") };
+            assert!(kids.iter().any(|k| k.m.repeat.is_some()), "the repeated child was dropped at {c:?}");
+            for i in 0..27u32 {
+                let step = |d: u32| (d as f32 - 1.0) * reach * 0.55;
+                let p = [c[0] + step(i % 3), c[1] + step(i / 3 % 3), c[2] + step(i / 9)];
+                assert_eq!(eval(&pruned, p).to_bits(), eval(&whole, p).to_bits(), "at {p:?} in the ball at {c:?}");
+                compared += 1;
+            }
+        }
+        assert_eq!(compared, 400 * 27);
+    }
+
+    /// A column that widens fast (a flange on a thin stem) is trusted less: its field, taken
+    /// at a point's own height, says the stem is 18 cm away where the flange is 3.5 cm away,
+    /// and the factor the mesher divides it by makes up the difference. With one fixed factor
+    /// of 2 such a column was meshed with thousands of samples on the wrong side (review of
+    /// part 4's slice 2).
+    #[test]
+    fn a_steep_columns_field_is_trusted_by_its_steepest_section() {
+        let mut sections = [[0.0f32; 3]; MAX_SECTIONS];
+        sections[..4].copy_from_slice(&[[0.0, 0.02, 0.02], [0.8, 0.02, 0.02], [0.82, 0.3, 0.3], [1.0, 0.3, 0.3]]);
+        let flange = Prim::Column { a: [0.0, 0.0, 0.0], b: [0.0, 1.0, 0.0], side: [1.0, 0.0, 0.0], sections, count: 4 };
+        let lip = prim_lip(&flange);
+        // Under the flange, beside the stem: the flange's underside is nearer than the stem.
+        for probe in [[0.2f32, 0.79, 0.0], [0.1, 0.78, 0.1], [0.25, 0.8, 0.0], [0.0, 0.7, 0.15]] {
+            let said = prim_distance(&flange, probe);
+            // The true distance, by looking: the nearest of many points of the surface.
+            let mut truth = f32::MAX;
+            for i in 0..=4000 {
+                let t = i as f32 / 4000.0;
+                let (rx, _) = column_sizes(&sections[..4], t);
+                let radial = math3::length([probe[0], 0.0, probe[2]]);
+                truth = truth.min(math3::length([radial - rx, probe[1] - t, 0.0]));
+            }
+            assert!(said / lip <= truth + 1e-3, "at {probe:?}: the field {said} over {lip} is more than the {truth} the surface is away");
+        }
+        assert!(lip > 10.0, "a growth of 14 metres a metre: {lip}");
+        // And it meshes closed, with the flange where it is.
+        let (shape, _) = mesh(&prim(flange), &MeshOptions { resolution: 96, bounds: None, seed: 1, max_triangles: 400_000, max_work: MAX_WORK, color: [1.0; 4] }).unwrap();
+        assert_eq!(shape.open_edge_count(), 0);
+        let bb = shape.bounds();
+        assert!((bb.max[0] - 0.3).abs() < 0.02 && bb.min[1] < 0.0 && bb.max[1] > 1.0, "{bb:?}");
     }
 
     #[test]

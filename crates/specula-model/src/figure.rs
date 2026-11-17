@@ -79,6 +79,18 @@ impl Part {
             _ => return None,
         })
     }
+
+    /// How finely a part is meshed unless a recipe says: a finger is a third of a trunk's cell.
+    /// A test holds that every part is a closed surface at these, for bodies at the limits.
+    pub fn resolution(self) -> u32 {
+        match self {
+            Part::Body => 112,
+            Part::Head => 40,
+            Part::Hand(_) => 56,
+            Part::Foot(_) => 48,
+            Part::Whole => 72,
+        }
+    }
 }
 
 /// The lengths of a finger's bones on Buryanov and Kotiuk's adults, millimetres: the soft tip
@@ -333,24 +345,23 @@ impl Sizes<'_> {
         }
     }
 
-    /// The body with the fine parts' rooms taken out of it, each a little short of its cut.
-    fn body_without_fine_parts(&self, body: SdfNode) -> SdfNode {
+    /// A limb (or the trunk) with the room of the fine part that ends it taken out, a little
+    /// short of the cut. Each room is taken out of its own limb only: a hand's room is a box
+    /// some 14 cm wider than the hand, and taken out of the whole body it bit the hip and the
+    /// thigh of a figure whose arms hang (a quarter of the body's volume at 0 degrees).
+    fn without(&self, limb: SdfNode, part: Part) -> SdfNode {
         const OVERLAP: f32 = 0.004;
-        let mut kids = vec![body];
-        for part in [Part::Head, Part::Hand(Side::Left), Part::Hand(Side::Right), Part::Foot(Side::Left), Part::Foot(Side::Right)] {
-            let (mut lo, mut hi) = self.room(part);
-            // A hand's and a foot's cut is their room's top; the head's is its bottom.
-            if part == Part::Head {
-                lo[1] += OVERLAP;
-            } else {
-                hi[1] -= OVERLAP;
-            }
-            let half = math3::scale(math3::sub(hi, lo), 0.5);
-            let mut room = node(Kind::Prim(Prim::Box { half, round: 0.0 }));
-            room.m.at = math3::add(lo, half);
-            kids.push(room);
+        let (mut lo, mut hi) = self.room(part);
+        // A hand's and a foot's cut is their room's top; the head's is its bottom.
+        if part == Part::Head {
+            lo[1] += OVERLAP;
+        } else {
+            hi[1] -= OVERLAP;
         }
-        node(Kind::Group { op: Combine::Difference, kids, smooth: 0.0 })
+        let half = math3::scale(math3::sub(hi, lo), 0.5);
+        let mut room = node(Kind::Prim(Prim::Box { half, round: 0.0 }));
+        room.m.at = math3::add(lo, half);
+        node(Kind::Group { op: Combine::Difference, kids: vec![limb, room], smooth: 0.0 })
     }
 
     /// A hand: four metacarpals side by side for the palm, three bones to each finger, a
@@ -578,7 +589,14 @@ pub fn tree(body: &Body, shaping: &Shaping, part: Part) -> SdfNode {
         parts
     };
     match part {
-        Part::Body => sizes.body_without_fine_parts(union(limbs(), shaping.smooth)),
+        Part::Body => {
+            let mut parts = vec![sizes.without(union(sizes.trunk(), shaping.smooth), Part::Head)];
+            for side in Side::BOTH {
+                parts.push(sizes.without(sizes.arm(side), Part::Hand(side)));
+                parts.push(sizes.without(sizes.leg(side), Part::Foot(side)));
+            }
+            union(parts, shaping.smooth)
+        }
         Part::Head => sizes.head(),
         Part::Hand(side) => sizes.hand(side),
         Part::Foot(side) => sizes.foot(side),
@@ -872,6 +890,63 @@ mod tests {
             for name in ["upperarm", "forearm", "hand", "thigh", "shin", "foot"] {
                 let (l, r) = (&rig.bones[rig.find(&format!("{name}_l")).unwrap()], &rig.bones[rig.find(&format!("{name}_r")).unwrap()]);
                 assert!((l.head[0] + r.head[0]).abs() < 1e-5 && (l.head[1] - r.head[1]).abs() < 1e-5 && l.head[0] > 0.0, "{name}: {:?} {:?}", l.head, r.head);
+            }
+        }
+    }
+
+    /// At the resolution a recipe gets by default, for bodies at the limits as for the typical
+    /// ones: the body, the head and the feet are closed surfaces, and a hand is closed but for
+    /// at most one pinhole. **The pinhole is an open defect of the mesher, not of the hand**
+    /// (review of part 4's slice 2, which found it on the heaviest short woman and on a
+    /// long-legged one): where three of its vertices land within a few micrometres of each
+    /// other, between two fingers, the one tiny triangle among them is missing, which leaves
+    /// three edges without a partner. Whether a given hand has one depends on where the grid
+    /// falls (the long-legged woman's has at 56 and not at 64). Its cause is not found; the
+    /// bound here is what it is known to do, so that more than that fails.
+    #[test]
+    fn every_part_is_closed_at_its_default_resolution() {
+        let short = specula_corpus::ansur::statures(Sex::Female)[0] / 1000.0 + 0.01;
+        let bodies = [
+            ("typical woman", Body::typical(Sex::Female)),
+            ("typical man", Body::typical(Sex::Male)),
+            ("short heavy woman", Body::with_build(Sex::Female, short, 2.5).unwrap()),
+            ("long-legged woman", Body::typical(Sex::Female).with_trait("legs", 3.0).unwrap()),
+            ("tall slight man", Body::with_build(Sex::Male, 1.95, -1.5).unwrap()),
+            ("large-handed man", Body::typical(Sex::Male).with_trait("hands", 3.0).unwrap()),
+        ];
+        for (name, body) in &bodies {
+            for part in [Part::Body, Part::Head, Part::Hand(Side::Left), Part::Hand(Side::Right), Part::Foot(Side::Left), Part::Foot(Side::Right)] {
+                let shape = built(body, part, part.resolution());
+                let pinholes = if matches!(part, Part::Hand(_)) { 3 } else { 0 };
+                assert!(unbalanced(&shape) <= pinholes, "{name}: {part:?} at {} has {} edges without a partner", part.resolution(), unbalanced(&shape));
+            }
+        }
+    }
+
+    /// The body is whole however the arms are held, from hanging to the widest pose a recipe
+    /// may ask for: about the same volume, closed, and its thigh bones inside it. (With the
+    /// hands' rooms taken out of the whole body, arms hanging cut the thighs away.)
+    #[test]
+    fn the_body_is_whole_however_the_arms_hang() {
+        let body = Body::typical(Sex::Female);
+        let build = |arms: f64| {
+            let shaping = Shaping { arms, ..Shaping::default() };
+            let opts = MeshOptions { resolution: 80, bounds: None, seed: 1, max_triangles: 200_000, max_work: MAX_WORK, color: [1.0; 4] };
+            let tree = tree(&body, &shaping, Part::Body);
+            let shape = mesh(&tree, &opts).unwrap_or_else(|e| panic!("arms {arms}: {}", e.message)).0;
+            (shape, tree, bones(&body, &shaping))
+        };
+        let usual = build(Shaping::default().arms).0.signed_volume();
+        for arms in [0.0, 5.0, 12.0, 60.0] {
+            let (shape, tree, rig) = build(arms);
+            assert_eq!(unbalanced(&shape), 0, "arms {arms}: not closed");
+            let volume = shape.signed_volume();
+            assert!((volume / usual - 1.0).abs() < 0.04, "arms {arms}: {volume} against {usual} at the usual pose");
+            for name in ["thigh_l", "thigh_r"] {
+                let bone = rig.iter().find(|b| b.name == name).unwrap();
+                for t in [0.1, 0.5, 0.9] {
+                    assert!(crate::sdf::field_at(&tree, lerp(bone.head, bone.tail, t)) < 0.0, "arms {arms}: {name} at {t} is outside the body");
+                }
             }
         }
     }

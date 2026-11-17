@@ -123,11 +123,17 @@ impl Rig {
     /// line and below it along the shin's, stays with the foot. So a thick bone keeps its sides from
     /// a thin one that happens to pass near them: the hips' sides stay with the pelvis and do
     /// not swing with a thigh, and the top of a shoulder stays with the chest. With equal radii
-    /// and nothing behind a joint it is `bind`. `radii` shorter than the rig, or a radius of 0,
-    /// is plain distance for that bone.
+    /// and nothing behind a joint it is `bind`. A bone with no radius (`radii` shorter than the
+    /// rig, or 0) takes nothing while another allowed bone has one.
     pub fn bind_fleshed(&self, positions: &[V3], allowed: &[usize], blend: f32, radii: &[f32]) -> (Vec<[u8; 4]>, Vec<[u8; 4]>) {
         let root = [0usize];
         let allowed = if allowed.is_empty() { &root[..] } else { allowed };
+        // A bone with no flesh of its own (the root, a point bone) takes no vertex from the
+        // bones that have some: scored in metres against bones scored in their radii, a root on
+        // the ground took the legs from the knee down. When no allowed bone has a radius, all
+        // are compared by plain distance.
+        let fleshed = |b: usize| radii.get(b).is_some_and(|r| *r > 1e-6);
+        let some_fleshed = allowed.iter().any(|&b| fleshed(b));
         let radius = |b: usize| radii.get(b).copied().filter(|r| *r > 1e-6).unwrap_or(1.0);
         let unit = |v: V3| {
             let l = math3::length(v);
@@ -170,6 +176,10 @@ impl Rig {
         let mut d = vec![0.0f32; allowed.len()];
         for &p in positions {
             for (k, &b) in allowed.iter().enumerate() {
+                if some_fleshed && !fleshed(b) {
+                    d[k] = f32::MAX;
+                    continue;
+                }
                 let beyond = gives_up[k].iter().map(|(at, away)| math3::dot(math3::sub(p, *at), *away)).fold(0.0f32, f32::max);
                 d[k] = (self.distance(b, p) + beyond) / radius(b);
             }

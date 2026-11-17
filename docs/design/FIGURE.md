@@ -30,7 +30,7 @@ a recipe is one part of a person:
 | `build` or `weight` | the weight as standard errors from the usual one for the stature (0), or in kilograms |
 | `age` | years, 17 to 58 |
 | `traits` | `{ "legs": 1.2, "shoulders": -0.8 }`, in standard deviations ([CORPUS.md](CORPUS.md), "Traits") |
-| `arms`, `legs` | degrees each arm and each leg is held out (35 and 7): the pose it is modelled in |
+| `arms`, `legs` | degrees each arm and each leg is held out (35 and 7): the pose it is modelled in. Arms from 0 to 60: hanging, they melt into the body's sides (a pose for measuring, not for looking); past 60 a hand's cut is not built |
 | `smooth`, `resolution` | how far parts melt into each other; cells along the part's longest side (body 112, head 40, hands 56, feet 48, whole 72) |
 
 A body the survey does not cover is the recipe's error, in the body's own words (a stature nobody had,
@@ -201,6 +201,35 @@ across the forearm, the shoulder and upper back pinched), a marching step with n
 stride longer than a leg, the held-out arms, a stiff trunk, and that the motion checks said "OK" on all
 of it: they measure sliding, floating and the loop's seam, and none asks whether a walk looks like
 one.
+
+## The review of slice 2
+
+A model that did not write it reviewed everything this slice changed and said **do not merge**
+(2026-11-17), with four major findings, each shown on a concrete case. All four are mended, and each
+case is now a test:
+
+1. **A column's field overstated distance where its sections grow steeply**, so a flange on a thin
+   stem was meshed with samples on the wrong side. A column is now trusted by its steepest section.
+   (The figure's own columns are gentle; 82 bodies at the limits showed no such sample.)
+2. **The mesher kept a pruned tree for every quarter block for the whole build**: 188 MB for a body,
+   up to 742 MB for a legal build. It keeps one a half block.
+3. **Arms held closer than about 12 degrees cut the thighs out of the body** (a quarter of its volume
+   at 0), silently: a hand's room, a box wider than the hand, was taken out of the whole body. Each
+   fine part's room is now taken out of its own limb only.
+4. **The root bone took the legs if a part listed it**, as this note said a body's part should: it
+   was scored in metres against bones scored in their radii. A bone with no flesh takes nothing.
+
+Its minor findings: a repeated child could be pruned away (mended: such a child is never dropped);
+"bit for bit, colours included" was untrue for plain smooth unions by one unit in the last place
+(the notes now say so); the tallest stature the survey covers was refused when written in a recipe
+(mended, and a body's refusal now names its field with the number and the limit); and **a hand is
+not always a closed surface at its default resolution**. That last one is open: where three of the
+mesh's vertices land within a few micrometres of each other between two fingers, one tiny triangle
+is missing, leaving a pinhole. Whether a hand has one depends on where the grid falls. Its cause in
+the mesher is not found; the test holds the hands to at most one, and everything else to none.
+
+It also checked and found sound: pruning for exact shapes (no difference in 1.44 million points over
+800 random trees), the cost weights, the bones inside the surface, and the three engine fixes.
 
 ## What is wrong, and what is not there
 

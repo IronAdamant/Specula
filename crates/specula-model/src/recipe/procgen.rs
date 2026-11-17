@@ -625,10 +625,32 @@ impl Ctx<'_> {
     /// The body and the shaping a `figure`'s fields ask for (a shape's, or a rig's).
     pub(super) fn figure_body(&self, n: &Node) -> Result<(specula_corpus::Body, crate::figure::Shaping), RecipeError> {
         use specula_corpus::{Body, Sex};
-        let refused = |er: specula_corpus::BodyError| e(&n.path, ErrorCode::OutOfRange, format!("{}: {er}", er.code()));
+        // A refusal names the field it is about, with what was given and the limit it broke.
+        let refused = |er: specula_corpus::BodyError| {
+            use specula_corpus::BodyError as B;
+            let (field, numbers) = match &er {
+                B::Stature { given, least, most } => ("stature", Some((*given, if given < least { *least } else { *most }))),
+                B::Weight { given, least, most } => (if n.get("weight").is_some() { "weight" } else { "build" }, Some((*given, if given < least { *least } else { *most }))),
+                B::Age { given, least, most } => ("age", Some((*given, if given < least { *least } else { *most }))),
+                B::Trait { given, least, most, .. } => ("traits", Some((*given, if given < least { *least } else { *most }))),
+                B::UnknownTrait { .. } | B::Folded { .. } | B::NotPositive { .. } => ("traits", None),
+                B::NotANumber { .. } => ("", None),
+            };
+            let at = if field.is_empty() { n.path.clone() } else { n.at(field) };
+            let refusal = e(&at, ErrorCode::OutOfRange, format!("{}: {er}", er.code()));
+            match numbers {
+                Some((given, limit)) => refusal.with_numbers(given, limit),
+                None => refusal,
+            }
+        };
         let sex = Sex::parse(self.str(n, "sex", "female")).unwrap_or(Sex::Female);
         let typical = Body::typical(sex);
+        // (A recipe's numbers are single precision: the tallest stature the rows cover, written
+        // as a recipe writes it, comes back a hair over itself and was refused as outside them.
+        // A stature within a hundredth of a millimetre of a limit is that limit.)
+        let [shortest, tallest] = specula_corpus::ansur::statures(sex).map(|mm| mm / 1000.0);
         let stature = self.ranged(n, "stature", typical.stature(), 0.3, 3.0)? as f64;
+        let stature = [shortest, tallest].into_iter().find(|limit| (stature - limit).abs() < 1e-5).unwrap_or(stature);
         let mut body = if n.get("weight").is_some() {
             if n.get("build").is_some() {
                 return Err(e(&n.at("build"), ErrorCode::Geometry, "a figure has a build or a weight, not both"));
@@ -650,7 +672,8 @@ impl Ctx<'_> {
         }
         let standard = crate::figure::Shaping::default();
         let shaping = crate::figure::Shaping {
-            arms: self.ranged(n, "arms", standard.arms, 0.0, 90.0)? as f64,
+            // (Past 60 degrees a hand's cut is no longer its room's top: not built, and refused.)
+            arms: self.ranged(n, "arms", standard.arms, 0.0, 60.0)? as f64,
             legs: self.ranged(n, "legs", standard.legs, 0.0, 45.0)? as f64,
             smooth: self.ranged(n, "smooth", standard.smooth as f64, 0.0, 0.2)?,
         };
@@ -666,12 +689,8 @@ impl Ctx<'_> {
             self.sdf_node(root, 0)?
         };
         // A figure's part is meshed as finely as it needs: a finger is a third of a trunk's cell.
-        let usual = match self.str(n, "part", if figure { "whole" } else { "" }) {
-            "body" => 112,
-            "head" => 40,
-            "hand_l" | "hand_r" => 56,
-            "foot_l" | "foot_r" => 48,
-            "whole" => 72,
+        let usual = match crate::figure::Part::parse(self.str(n, "part", if figure { "whole" } else { "" })) {
+            Some(part) if figure => part.resolution() as i64,
             _ => 48,
         };
         let mut res = self.int(n, "resolution", usual, 4, sdf::MAX_RESOLUTION as i64)?;

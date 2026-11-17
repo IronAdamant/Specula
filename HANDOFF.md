@@ -156,6 +156,17 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     five kinds of physics, what the first two rounds did not find, and what each later part
     (faces, clothing, animals, machines, plants, terrain, water, sky, light, buildings, sound,
     fire) will want. Nothing in hand waits on it.
+  - **Round three came the same night** (91 pictures, 88 published: 357 in the pictures'
+    repository now; and 23 files of numbers in the library: fire, light, lightning, blast,
+    fracture, drag by shape, vehicles, aircraft, space, bullets, swords, sound, buildings,
+    weather, robots, extinct animals). **The 35 library files of rounds two and three have no
+    second checker's report.** The owner: "A second checker pass.. for round 2 and 3 will need
+    to be dealt with at a later date. I'll need you to log a reminder before we go onto MacOS";
+    then, before sleeping, that the pass is being run after all and its files will come with a
+    fourth round on the gaps. **Before the macOS part starts, check that those reports have
+    arrived and been applied; if not, raise it.** Until then a number from those files is
+    checked against its source as it is typed into the engine
+    ([docs/research/library/README.md](docs/research/library/README.md)).
   - **A skeleton with every figure, so that a character is a change and not a rebuild** (the same
     message: "At the very least, basic skeletons alongside the figures you've made for me will be
     key to set it up so you can easily mutate or change into individual characters over time
@@ -377,9 +388,16 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       measured body (`"rig": {"figure": {...}}`, eighteen bones under the names the motion
       tools look for), and a generated gait moves it. The first walk showed that the pelvis
       tears, because a vertex binds to the nearest bone; the body needs weights that know how
-      thick each bone's flesh is. What else is wrong and what is missing is in FIGURE.md: a
-      trunk like a column, tubes for legs, a seam at the neck, the back never seen lit, and
-      **no review yet by a model that did not write it**.
+      thick each bone's flesh is; it is bound that way now (`Rig::bind_fleshed`), and the tear
+      is gone. **Slice 2 has been reviewed by a model that did not write it, which said not to
+      merge it**: four major findings (a steep column's field overstated distance; the mesher
+      kept a tree a quarter block, up to 742 MB; arms held close cut the thighs out of the
+      body; the root bone took the legs when listed), all mended, each case now a test, and
+      its mends are to be reviewed again. One of its minor findings is open: a hand can have a
+      pinhole at its default resolution, a fault of the mesher whose cause is not found
+      (FIGURE.md, "The review of slice 2"). What else is wrong and what is missing is in
+      FIGURE.md: a trunk like a column, tubes for legs, a seam at the neck, a flat back, and a
+      walk that is a lunge (the motion library's work, from the measured curves in H1).
     - **Then:** the rig by construction, the review, the gate; roundness as one number; the form
       checks; the form views; shape language; the light report; the same in 2D.
   - **The research behind parts 4 and 5 is in** ([docs/research/library/](docs/research/library/README.md):

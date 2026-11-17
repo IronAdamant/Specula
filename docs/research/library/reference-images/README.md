@@ -15,14 +15,21 @@ like, they still use reference and measurements."
   drawn on them) and one drawing of two unclothed young women whose age nothing shows are not, and
   are kept nowhere: not their files, their rows or their links, here or there. The index has a note
   saying so, and the paths of the plates that were moved under `ADULTS-ONLY/`.
+- **A third set came the same night** (91 pictures, for
+  [REFERENCE_ROUND3_BRIEF.md](../../REFERENCE_ROUND3_BRIEF.md)): fire and smoke, lightning,
+  explosions, light and dark, a bouncing ball, things breaking, and weapons with plates from the
+  fencing treatises. **[INDEX-round-3.md](INDEX-round-3.md) is its index, as the published
+  repository has it.** 88 of the 91 are published; three photographs that show mostly people at a
+  disaster or at work, and little of the subject, are not, and the index names their pages. No
+  unclothed figure is in this set.
 - **[INDEX.md](INDEX.md) is the first delivery's own index, kept as it came.** A row a picture: what it shows,
   the view, the subject, the page it came from with its author, the licence, the date it was checked.
   It also says how well each row of the brief is covered and which pictures were found and not taken.
 - **The pictures themselves are in a public repository of their own:
   [specula-imagines](https://github.com/IronAdamant/specula-imagines)** (the owner, 2026-11-17: "a separate public repository linked to Specula
-  for future references"). 269 files of the two sets, all from Wikimedia Commons, laid out as the
-  indexes name them (`1-whole-body/`, `2-weak-areas/`, `3-head/`, `4-motion/`, `5-creatures/`,
-  `6-2d/`), except that the 56 unclothed plates, figure studies and motion studies of adults are under
+  for future references"). 357 files of the three sets, from Wikimedia Commons and, for some weapons,
+  the Metropolitan Museum's Open Access collection, laid out as the indexes name them
+  (`1-whole-body/` to `6-2d/`, then `7-fire-smoke/` to `13-weapons-fencing/`), except that the 56 unclothed plates, figure studies and motion studies of adults are under
   `ADULTS-ONLY/` there, and that repository's own copies of the indexes have their paths changed to
   match. This repository links to it and never reads it.
 - **The rule for what is published** (the owner, 2026-11-17, who had not looked at either delivery

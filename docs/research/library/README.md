@@ -44,9 +44,10 @@ checker's line numbers still point at the lines they were written about.
 
 ## Reference pictures (2026-11-17)
 
-Beside the numbers, something to look at: 269 pictures gathered in two rounds for
-[REFERENCE_IMAGES_BRIEF.md](../REFERENCE_IMAGES_BRIEF.md) and
-[REFERENCE_ROUND2_BRIEF.md](../REFERENCE_ROUND2_BRIEF.md), with their indexes, in
+Beside the numbers, something to look at: 357 pictures gathered in three rounds for
+[REFERENCE_IMAGES_BRIEF.md](../REFERENCE_IMAGES_BRIEF.md),
+[REFERENCE_ROUND2_BRIEF.md](../REFERENCE_ROUND2_BRIEF.md) and
+[REFERENCE_ROUND3_BRIEF.md](../REFERENCE_ROUND3_BRIEF.md), with their indexes, in
 [reference-images/](reference-images/README.md).
 
 ## Round two: motion and physics (2026-11-17)
@@ -77,3 +78,40 @@ holds for all of the library holds harder for them: a number is checked against 
 typed into the engine. Still missing by their own account: running joint angles as curves (the open
 file could not be fetched by the researcher), suspension and engine figures, bounce for everyday
 materials.
+
+## Round three: effects, light, breaking, and the physics the owner named (2026-11-17)
+
+Twenty-three more files, delivered the same night in answer to
+[REFERENCE_ROUND3_BRIEF.md](../REFERENCE_ROUND3_BRIEF.md), in the same form, here as delivered (the
+delivery's `H8-running-numbers.md` is `H9` here: `H8` was taken), with its list of sources that could
+only be linked ([R3-links.md](R3-links.md)).
+
+| File | What it holds |
+|---|---|
+| [A8](A8-grip-strength-across-life.md) | Grip strength across life |
+| [C10](C10-giant-extinct-animals.md) | Giant and extinct animals: sizes and masses, for creatures made from them |
+| [D3](D3-robots-and-machines.md) | Robots and machines: published dimensions, masses and joints |
+| [G4](G4-sky-and-weather.md) | Sky and weather: clouds, rain, snow, fog |
+| [H9](H9-running-numbers.md) | Running, in numbers |
+| [I4](I4-buildings-and-architecture.md) | Buildings: storey heights, doors, stairs, roofs |
+| [J11](J11-fireballs-and-flames.md) to [J13](J13-lightning-and-thunder.md) | Fireballs and flames; the colour of light by temperature; lightning and thunder |
+| [J14](J14-blast-and-explosions.md), [J15](J15-fracture-and-breakage.md), [J21](J21-destruction-physics-and-methods.md) | Blast against distance and charge; fracture and breakage; how destruction is modelled |
+| [J16](J16-light-levels-and-sky.md) to [J18](J18-fog-smoke-scattering-falloff.md) | Light levels from a moonless night to noon; the eye's adaptation; fog, smoke and falloff |
+| [J19](J19-shape-drag-inertia-tumbling.md), [J20](J20-restitution-extended.md) | Drag, inertia and tumbling by shape; more on bounce |
+| [J22](J22-ground-vehicles.md) | Ground vehicles: masses and dimensions, tyres, suspension, brakes, two wheels |
+| [J23](J23-aircraft-and-air.md) | Aircraft and the air: the standard atmosphere, an aerofoil's lift and drag, nine aircraft, helicopters, wind |
+| [J24](J24-space-and-other-worlds.md) | Space: planets and moons, orbits, engines, re-entry |
+| [J25](J25-bullets-arrows-and-thrown-things.md) | Bullets, arrows and thrown things |
+| [J26](J26-swords-and-hand-weapons.md) | Swords and hand weapons |
+| [J27](J27-sound-loudness.md) | How loud things are |
+
+Its own coverage map says what is still thin: engine curves and gear ratios, cambered and thin
+aerofoils, control figures and propeller efficiency, tyre load, tracked traction.
+
+**Rounds two and three are not yet checked** (the thirty-five files above, H7 to J27). They came
+without a second checker's report. The owner, 2026-11-17: "A second checker pass.. for round 2 and 3
+will need to be dealt with at a later date. I'll need you to log a reminder before we go onto MacOS",
+and later the same evening that the pass is being run after all and its files will follow, with a
+fourth round on the gaps. When they come, each report goes beside its file, its fixes are applied, and
+the files are reviewed as the first 45 were. Until then a number from them is checked against its
+source as it is typed into the engine.

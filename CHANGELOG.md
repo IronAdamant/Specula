@@ -313,6 +313,14 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       spawned.** It did not wait for the skinned pipelines, was drawn before they existed and
       was skipped. It waits like any other animated model, and an entity's filmstrip refuses a
       model that is still building or waiting.
+    - **Slice 2 was reviewed by a model that did not write it, which said not to merge it**, with
+      four major findings, all mended, each now a test: a column's field overstated distance
+      where its sections grow steeply (it is trusted by its steepest section); the mesher kept a
+      pruned tree a quarter block, up to 742 MB (one a half block now); arms held close cut the
+      thighs out of the body (each fine part's room is taken out of its own limb); the root bone
+      took the legs when a part listed it (a bone with no flesh takes nothing). Also mended: a
+      repeated child could be pruned away; the tallest stature was refused. Open: a hand can
+      have one pinhole at its default resolution, the mesher's fault, cause not found.
     - **A man's chest is the plain column**: a third try at a swell for the muscle read as one
       mound to an independent check of the eleventh look, which did not pass it. What it listed
       is in [docs/design/FIGURE.md](docs/design/FIGURE.md).

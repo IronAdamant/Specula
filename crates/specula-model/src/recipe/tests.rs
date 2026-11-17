@@ -406,7 +406,7 @@ fn a_figures_rig_is_its_bodys_skeleton() {
             r##"{{ "recipe": 1, "name": "person", "smooth_angle": 60,
               "rig": {{ "blend": 0.04, "figure": {{ "sex": "female", "stature": {stature} }} }},
               "parts": [
-                {{ "name": "body", "material": "stone", "bones": ["hips", "spine", "chest", "neck", "head", "upperarm_l", "upperarm_r", "forearm_l", "forearm_r", "hand_l", "hand_r", "thigh_l", "thigh_r", "shin_l", "shin_r", "foot_l", "foot_r"],
+                {{ "name": "body", "material": "stone", "bones": ["root", "hips", "spine", "chest", "neck", "head", "upperarm_l", "upperarm_r", "forearm_l", "forearm_r", "hand_l", "hand_r", "thigh_l", "thigh_r", "shin_l", "shin_r", "foot_l", "foot_r"],
                   "shape": {{ "op": "figure", "part": "body", "sex": "female", "stature": {stature}, "resolution": 56 }} }},
                 {{ "name": "hand_l", "material": "stone", "bones": ["forearm_l", "hand_l"],
                   "shape": {{ "op": "figure", "part": "hand_l", "sex": "female", "stature": {stature}, "resolution": 40 }} }},
@@ -461,10 +461,26 @@ fn a_figures_rig_is_its_bodys_skeleton() {
         }
     }
     assert!(heel > 20, "{heel} vertices on the heel");
+    // The root has no flesh: listed with the rest, it takes no vertex. (It took the legs from
+    // the knee down when it was scored in metres against bones scored in their radii.)
+    let led_by_root = l0.joints.iter().zip(&l0.weights).filter(|(j, w)| (0..4).any(|k| w[k] > 0 && j[k] == 0)).count();
+    assert_eq!(led_by_root, 0, "vertices that move with the root");
     // A taller body: the same bones, the head's higher.
     let tall = build_with(&recipe(1.80), &[]).unwrap_or_else(|e| panic!("{e}"));
     let (a, b) = (rig.bones[rig.find("head").unwrap()].head[1], tall.rig.as_ref().unwrap().bones[rig.find("head").unwrap()].head[1]);
     assert!(b > a + 0.12 && tall.rig.as_ref().unwrap().len() == rig.len(), "{a} {b}");
+    // The tallest and the shortest statures the rows cover build, written as a recipe writes
+    // them; a stature outside them is refused at its field, with what was given and the limit.
+    for sex in ["female", "male"] {
+        let limits = specula_corpus::ansur::statures(specula_corpus::Sex::parse(sex).unwrap()).map(|mm| mm / 1000.0);
+        for stature in limits {
+            let text = format!(r#"{{"op":"figure","part":"head","sex":"{sex}","stature":{stature}}}"#);
+            build_with(&one_part(&text, ""), &[]).unwrap_or_else(|e| panic!("{sex} of {stature} m: {e}"));
+        }
+        let text = format!(r#"{{"op":"figure","part":"head","sex":"{sex}","stature":{}}}"#, limits[1] + 0.05);
+        let er = build_with(&one_part(&text, ""), &[]).unwrap_err();
+        assert!(er.path.ends_with(".stature") && er.to_string().contains("stature"), "{er} at {}", er.path);
+    }
     // Bones and a figure together are refused, by name.
     let both = r##"{ "name": "x", "rig": { "figure": { "sex": "male" }, "bones": [ { "name": "root", "head": [0, 0, 0] } ] }, "parts": [] }"##;
     let er = build_with(both, &[]).unwrap_err();

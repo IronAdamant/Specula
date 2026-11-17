@@ -139,7 +139,11 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     the next, and a rounded end closes it. A trunk with no steps, a limb with its swell, a neck.
     The sizes follow a curve through the sections that keeps going the way they go (a monotone
     cubic): it is level at a section only where the sizes turn there, and never outside the two
-    sections it is between. (At first each span eased in and out, which is level at every section:
+    sections it is between. **A column's field is trusted by its steepest section**: it says how
+    far out of the section at its own height a point is, and where the sections grow fast (a flange
+    on a thin stem) the nearest surface is at another height and much nearer, so the mesher divides
+    the field by `sqrt(1 + s * s)` for the steepest growth `s` (`column_lip`). With one fixed factor
+    such a column was meshed with samples on the wrong side of its surface. (At first each span eased in and out, which is level at every section:
     a limb that tapered through three sections showed a band at the middle one, and every limb of
     the first figure had rings; over a short span from a wide section to a narrow one it was a
     shelf, which is why the figure's shoulders are a slanted `round_cone`. Changed 2026-11-17; the
@@ -153,9 +157,14 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
   every node, bounded or not: an unbounded displaced cutter (a half-space with noise) counts as
   much as a bounded one. **A block that is sampled leaves out what cannot matter in it**: for the
   block, then for each half of it, then for each quarter, the tree is pruned of the children of its
-  unions that are too far to touch the surface or its smoothing there (`sdf::prune`), exactly (a test
-  compares the pruned and the whole tree bit for bit, colours included; a plain smooth union keeps
-  more than a near-union, because its children blend in turn). Each sample costs the evaluation
+  unions that are too far to touch the surface or its smoothing there (`sdf::prune`), exactly for
+  the distance (tests compare the pruned and the whole tree bit for bit; a colour is the same through
+  near-unions and may differ in the last place through a plain smooth union, which no mesh shows; a
+  plain smooth union keeps more than a near-union, because its children blend in turn). A child with
+  a repeat, a twist, a bend, a shell or a displacement anywhere under it is never dropped and never
+  a reason to drop another: its field jumps, so what it says at a block's middle is no bound for the
+  block. One pruned tree is kept for each half block that was sampled, for the crossings' normals
+  (it was one a quarter block: 188 MB for a body, and up to 742 MB for a legal build). Each sample costs the evaluation
   weight of what is left (`sdf::eval_cost`: a noise octave about as much as a primitive), and so
   does each crossing's normal. A figure's body of columns costs a little over half of what its whole
   tree would at every sample (a body of chains, a third).
