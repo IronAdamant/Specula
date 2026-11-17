@@ -137,7 +137,26 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
   it can be turned up or down without anything else moving. 1 and 0.5 cost a sample what an ellipsoid
   does; other values take powers and cost about five times that. It is not the modifier `round`
   (a swelling by a radius in metres, on any node) nor `corner` (an edge radius in metres, which cannot
-  be given with it). A rounded cylinder has one radius.
+  be given with it). A rounded cylinder has one radius. On an outline that is not a `rect` it is
+  refused, as `segments` is where it would do nothing.
+  - **Its field is in metres** (after its review; the first was in the shape's own units, so `round`
+    swelled a thin board by its metres times the ratio of each side to the thinnest, and infinite a
+    few sizes away at a low roundness). The shape is convex, so the distance to the plane that touches
+    it where its gradient points is never more than the distance outside and exact to first order
+    at the surface; the hard shape of the same sizes holds it, so the hard shape's distance is a
+    bound too. The field is the greater of the two: finite however far, and inside the depth by the
+    nearer of a flat side and the rounded surface.
+  - **What the mesher is told of it is a slack, not a lip**: the field lies between the hard
+    shape's distance and the true one, which are never further apart than the hard shape's corner
+    is from the rounded surface. (The touching plane's own distance changes much faster than
+    distance where the plane swings from one side to the next, the faster the lower the
+    roundness: it is trusted for where the surface is, never for its slope.) That slack is next to
+    nothing for a nearly hard shape and 0.42 of the half diagonal at a roundness of 1, where less
+    is skipped and pruned near the shape: for an ellipsoid, `ellipsoid` is the cheaper way.
+  - **A known limit of the same kind, not mended:** a `column`'s field is in units of its
+    section's narrower half size, so `round`, `shell` and a blend's radius act further along its
+    broader side (by the ratio of the two: one and a half on the figure's trunk). The figure is
+    tuned and measured on that field.
 - **Round form in a few rows** (M6 part 4, 2026-11-17: "bone chains", and what a figure is made of).
   These are given by their ends, not centred on `at`:
   - `round_cone`: `from`, `to`, `radius`, `radius_to`. Every ball between two balls.
@@ -147,7 +166,9 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     half depth]` (up to 8). `square` (2 to 8, 2 unless given) says how square the sections are: 2 an
     ellipse, 3 a body's trunk, 8 nearly a box with rounded corners (a superellipse: as broad and as
     deep whatever its squareness, and further round the squarer it is). 2 and 4 cost a sample what an
-    ellipse does, 3 about twice that, any other about four times (they take powers). The breadth (toward `side`) and the depth pass smoothly from one section to
+    ellipse does, 3 about twice that, any other about four times (they take powers). A squarer
+    section reaches toward the corners of the box round it, and the column's bounds go by that (they
+    went by an ellipse's, and a square column turned an eighth of a turn was cut flat at its corners). The breadth (toward `side`) and the depth pass smoothly from one section to
     the next, and a rounded end closes it. A trunk with no steps, a limb with its swell, a neck.
     The sizes follow a curve through the sections that keeps going the way they go (a monotone
     cubic): it is level at a section only where the sizes turn there, and never outside the two

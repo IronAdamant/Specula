@@ -376,26 +376,7 @@ fn len2(x: f32, y: f32) -> f32 {
 fn prim_distance(p: &Prim, q: V3) -> f32 {
     match *p {
         Prim::Sphere { radius } => math3::length(q) - radius,
-        Prim::Rounded { half, power, disc } => {
-            // How many of its own half sizes out the point is, each way; then their measure
-            // together (the root of the sum of their powers), less one, by the least half size:
-            // the shape holds the ball of that radius, so this is never more than the distance.
-            let (u, v, w) = if disc { (len2(q[0], q[2]) / half[0], (q[1] / half[1]).abs(), 0.0) } else { ((q[0] / half[0]).abs(), (q[1] / half[1]).abs(), (q[2] / half[2]).abs()) };
-            let k = if power == 2.0 {
-                (u * u + v * v + w * w).sqrt()
-            } else if power == 4.0 {
-                let (a, b, c) = (u * u, v * v, w * w);
-                (a * a + b * b + c * c).sqrt().sqrt()
-            } else {
-                let sum = crate::dmath::pow(u, power) + crate::dmath::pow(v, power) + if disc { 0.0 } else { crate::dmath::pow(w, power) };
-                if sum > 0.0 {
-                    crate::dmath::pow(sum, 1.0 / power)
-                } else {
-                    0.0
-                }
-            };
-            (k - 1.0) * half[0].min(half[1]).min(half[2])
-        }
+        Prim::Rounded { half, power, disc } => rounded(q, half, power, disc),
         Prim::Box { half, round } => {
             let d = [q[0].abs() - half[0] + round, q[1].abs() - half[1] + round, q[2].abs() - half[2] + round];
             let outside = math3::length([d[0].max(0.0), d[1].max(0.0), d[2].max(0.0)]);
@@ -525,6 +506,76 @@ fn column_lip(a: V3, b: V3, sections: &[[f32; 3]]) -> f32 {
 /// What a rounded box or cylinder of a power other than 2 or 4 costs a sample over a plain
 /// primitive: set from the timing (`calibrate_sdf`).
 const ROUNDED_COST: u64 = 270;
+
+/// A rounded box's or cylinder's field ([`Prim::Rounded`]), in metres.
+///
+/// The shape is the unit ball of a norm, `k(p) = (sum of |p_i / half_i|^power)^(1/power)`, so it
+/// is convex, and `(k - 1) / |grad k|` is how far `p` is from the plane that touches the shape
+/// where its gradient points: never more than the distance outside, exact to first order at
+/// the surface, and never less than the depth inside. The hard shape of the same sizes holds
+/// it, so the hard shape's own distance is never more than the distance outside and never less
+/// than the depth inside either. The field is the greater of the two: outside a lower bound of
+/// the distance that far away is the hard shape's (finite however far and whatever the power),
+/// inside the depth as the nearer of a flat side and the rounded surface says it.
+///
+/// So the field lies between the hard shape's distance and the true one, and the true one is
+/// never further from the hard shape's than the hard shape's corner is from the rounded
+/// surface ([`rounded_slack`]). That is what the mesher and pruning are told: a field that
+/// changes no faster than distance, give or take that much. (The plane's own distance can
+/// change much faster than distance where the touching plane swings from one side to the next,
+/// the faster the higher the power: it is trusted for where the surface is, never for its
+/// slope.)
+///
+/// Each share is taken of the largest (`u_i / m`), so no power overflows far away or
+/// underflows near the middle.
+fn rounded(q: V3, half: V3, power: f32, disc: bool) -> f32 {
+    // A cylinder is the same in two: out from its axis, and along it.
+    let (p, h, n) = if disc { ([len2(q[0], q[2]), q[1].abs(), 0.0], [half[0], half[1], 1.0], 2) } else { ([q[0].abs(), q[1].abs(), q[2].abs()], half, 3) };
+    // The hard shape's own distance (a box's, or a cylinder's).
+    let d = [p[0] - h[0], p[1] - h[1], if n == 3 { p[2] - h[2] } else { f32::MIN }];
+    let hard = math3::length([d[0].max(0.0), d[1].max(0.0), d[2].max(0.0)]) + d[0].max(d[1]).max(d[2]).min(0.0);
+    let u = [p[0] / h[0], p[1] / h[1], p[2] / h[2]];
+    let m = u[0].max(u[1]).max(u[2]);
+    if m <= 0.0 || !m.is_finite() {
+        return hard;
+    }
+    // Each share of the largest, to the power less one (`t`), and the sum of the shares to the
+    // power (`sum`, between 1 and 3).
+    let r = [u[0] / m, u[1] / m, u[2] / m];
+    let t = if power == 2.0 {
+        r
+    } else if power == 4.0 {
+        [r[0] * r[0] * r[0], r[1] * r[1] * r[1], r[2] * r[2] * r[2]]
+    } else {
+        let e = power - 1.0;
+        // (The largest share is 1 and a share of nothing is nothing: no power to take.)
+        let pw = |x: f32| if x >= 1.0 { 1.0 } else if x <= 0.0 { 0.0 } else { crate::dmath::pow(x, e) };
+        [pw(r[0]), pw(r[1]), pw(r[2])]
+    };
+    let sum = t[0] * r[0] + t[1] * r[1] + t[2] * r[2];
+    let root = if power == 2.0 {
+        sum.sqrt()
+    } else if power == 4.0 {
+        sum.sqrt().sqrt()
+    } else {
+        crate::dmath::pow(sum, 1.0 / power)
+    };
+    // k = m * root; grad k = (root / sum) * t_i / half_i.
+    let k = m * root;
+    let slope = (root / sum) * math3::length([t[0] / h[0], t[1] / h[1], if n == 3 { t[2] / h[2] } else { 0.0 }]);
+    let plane = (k - 1.0) / slope;
+    plane.max(hard)
+}
+
+/// How far a rounded box's or cylinder's field may be from a field that changes no faster
+/// than distance ([`rounded`]): no further than the corner of its hard shape is from its
+/// rounded surface, which is no more than the corner's distance along the line to the middle,
+/// `|half| * (1 - n^(-1/power))` for a shape of `n` sides to a corner (3, or a cylinder's 2).
+/// Next to nothing for a nearly hard shape, and 0.42 of the half diagonal for an ellipsoid.
+fn rounded_slack(half: V3, power: f32, disc: bool) -> f32 {
+    let (reach, sides) = if disc { (len2(half[0], half[1]), 2.0) } else { (math3::length(half), 3.0) };
+    reach * (1.0 - crate::dmath::pow(sides, -1.0 / power))
+}
 
 /// A column's field ([`Prim::Column`]): how many of its own radii out a point is from the
 /// axis, less one, times the smaller radius there (so it is never more than the distance).
@@ -822,8 +873,10 @@ fn prim_cost(p: &Prim) -> u64 {
         Prim::Column { square: 3.0, .. } => 122,
         Prim::Column { .. } => 270,
         Prim::Box { .. } | Prim::Torus { .. } | Prim::Ellipsoid { .. } => 12,
-        // (Measured with the rest, three times in release, 2026-11-18: a power of 2 or 4 takes
-        // roots only, 24 to 30 ns; any other takes a power a side and one more, 166 to 210 ns.)
+        // (Measured with the rest, three times in release, 2026-11-18, at points in and near
+        // the shape: a power of 2 or 4 takes roots only, 23 to 27 ns; any other takes a power
+        // for each share but the largest and one more, 125 to 175 ns at powers of 6.67 and 40
+        // alike. With the primitive's 48 the weight is at least one and a half times that.)
         Prim::Rounded { power: 2.0 | 4.0, .. } => 12,
         Prim::Rounded { .. } => ROUNDED_COST,
         Prim::Cylinder { radius, radius_top, .. } if radius == radius_top => 12,
@@ -872,10 +925,19 @@ fn prim_lip(p: &Prim) -> f32 {
     }
 }
 
+/// How far a primitive's field may be from one that changes no faster than its lip says: a
+/// rounded box's or cylinder's ([`rounded_slack`]); nothing for the rest.
+fn prim_slack(p: &Prim) -> f32 {
+    match p {
+        Prim::Rounded { half, power, disc } => rounded_slack(*half, *power, *disc),
+        _ => 0.0,
+    }
+}
+
 fn lip_slack(n: &SdfNode) -> (f32, f32) {
     let m = &n.m;
     let (mut lip, mut slack) = match &n.kind {
-        Kind::Prim(p) => (prim_lip(p), 0.0),
+        Kind::Prim(p) => (prim_lip(p), prim_slack(p)),
         Kind::Group { kids, smooth, .. } => kids.iter().map(lip_slack).fold((1.0f32, smooth.max(0.0)), |(l, s), (kl, ks)| (l.max(kl), s.max(ks))),
     };
     slack *= m.scale * m.stretch[0].max(m.stretch[1]).max(m.stretch[2]);
@@ -916,15 +978,18 @@ fn bounds(n: &SdfNode) -> Option<(V3, V3, f32, f32)> {
                 // Not centred: the box around its two balls.
                 Prim::RoundCone { a, b, ra, rb } => (math3::vmin(math3::sub(a, [ra; 3]), math3::sub(b, [rb; 3])), math3::vmax(math3::add(a, [ra; 3]), math3::add(b, [rb; 3]))),
                 // The box around its ends, as wide all round as its widest section.
-                Prim::Column { a, b, sections, count, .. } => {
+                Prim::Column { a, b, sections, count, square, .. } => {
                     let used = &sections[..(count as usize).clamp(1, MAX_SECTIONS)];
-                    let widest = used.iter().map(|s| s[1].max(s[2])).fold(0.0f32, f32::max);
+                    // (An ellipse reaches as far as its longer half; a squarer section reaches
+                    // toward the corner of the box round it, which is as far as any goes.)
+                    let widest = used.iter().map(|s| if square == 2.0 { s[1].max(s[2]) } else { len2(s[1], s[2]) }).fold(0.0f32, f32::max);
                     // (Its rounded ends reach no further past its first and last sections than those are wide.)
                     (math3::sub(math3::vmin(a, b), [widest; 3]), math3::add(math3::vmax(a, b), [widest; 3]))
                 }
             };
-            let lip = prim_lip(p);
-            (lo, hi, lip, 0.0)
+            // (No slack here: a rounded shape's is how far its field may be from the distance,
+            // which moves no surface, so it pads no bounds. [`lip_slack`] counts it.)
+            (lo, hi, prim_lip(p), 0.0)
         }
         Kind::Group { op, kids, smooth } => {
             let mut lo = [f32::MAX; 3];
@@ -1507,10 +1572,13 @@ mod tests {
         sections[..4].copy_from_slice(&[[0.0, 0.17, 0.11], [0.4, 0.13, 0.09], [0.75, 0.15, 0.11], [1.0, 0.06, 0.06]]);
         time("column of 4 sections", &prim(Prim::Column { a: [0.0, 0.0, 0.0], b: [0.1, 1.0, 0.0], side: [1.0, 0.0, 0.0], sections, count: 4, square: 2.0 }));
         time("column, square 3", &prim(Prim::Column { a: [0.0, 0.0, 0.0], b: [0.1, 1.0, 0.0], side: [1.0, 0.0, 0.0], sections, count: 4, square: 3.0 }));
-        time("rounded box, power 2", &prim(Prim::Rounded { half: [0.3, 0.2, 0.1], power: 2.0, disc: false }));
-        time("rounded box, power 4", &prim(Prim::Rounded { half: [0.3, 0.2, 0.1], power: 4.0, disc: false }));
-        time("rounded box, power 6.67", &prim(Prim::Rounded { half: [0.3, 0.2, 0.1], power: 6.67, disc: false }));
-        time("rounded cylinder, power 6.67", &prim(Prim::Rounded { half: [0.3, 0.2, 0.3], power: 6.67, disc: true }));
+        // (Sized so that the points are in and near the shape, where every share takes its power.)
+        for power in [2.0f32, 4.0, 6.67, 40.0] {
+            time(&format!("rounded box, power {power}"), &prim(Prim::Rounded { half: [1.0, 0.8, 0.6], power, disc: false }));
+        }
+        for power in [6.67f32, 40.0] {
+            time(&format!("rounded cylinder, power {power}"), &prim(Prim::Rounded { half: [1.0, 0.8, 1.0], power, disc: true }));
+        }
         time("column, square 4", &prim(Prim::Column { a: [0.0, 0.0, 0.0], b: [0.1, 1.0, 0.0], side: [1.0, 0.0, 0.0], sections, count: 4, square: 4.0 }));
         time("column, square 2.5", &prim(Prim::Column { a: [0.0, 0.0, 0.0], b: [0.1, 1.0, 0.0], side: [1.0, 0.0, 0.0], sections, count: 4, square: 2.5 }));
         time("round cone stretched", &with(link, Modifiers { stretch: [1.0, 1.0, 0.6], ..Modifiers::default() }));
@@ -1949,8 +2017,8 @@ mod tests {
 
     /// Roundness as one number: a box or a cylinder rounded by a power is as wide, as tall and
     /// as deep as its hard shape whatever the power; at 2 it is the ellipsoid of its sizes; the
-    /// higher the power the more of the hard shape it fills; its field is never more than the
-    /// distance; and it meshes closed.
+    /// higher the power the more of the hard shape it fills; and it meshes closed. (Its field
+    /// against the true distance: `a_rounded_field_is_trusted_by_its_lip`.)
     #[test]
     fn a_rounded_box_runs_from_the_ellipsoid_to_the_box() {
         let half = [0.3f32, 0.2, 0.1];
@@ -1970,29 +2038,6 @@ mod tests {
                 assert!(d(&p, half) > 0.0);
                 let on_ellipsoid = if disc { [half[0] * 0.5, half[1] * std::f32::consts::FRAC_1_SQRT_2, half[2] * 0.5] } else { half.map(|h| h * third) };
                 assert!(d(&p, on_ellipsoid) <= 1e-5, "power {power} disc {disc}: holds the ellipsoid ({})", d(&p, on_ellipsoid));
-                // Never more than the distance: against the nearest of many points of the surface
-                // (found by walking out from the centre along a spread of directions).
-                let mut surface = Vec::new();
-                for i in 0..40 {
-                    for j in 0..80 {
-                        let (lat, lon) = ((i as f32 + 0.5) / 40.0 * std::f32::consts::PI, j as f32 / 80.0 * std::f32::consts::TAU);
-                        let dir = [crate::dmath::sin(lat) * crate::dmath::cos(lon), crate::dmath::cos(lat), crate::dmath::sin(lat) * crate::dmath::sin(lon)];
-                        let (mut lo, mut hi) = (0.0f32, 1.0f32);
-                        for _ in 0..30 {
-                            let mid = (lo + hi) / 2.0;
-                            if d(&p, math3::scale(dir, mid)) < 0.0 {
-                                lo = mid;
-                            } else {
-                                hi = mid;
-                            }
-                        }
-                        surface.push(math3::scale(dir, lo));
-                    }
-                }
-                for probe in [[0.5f32, 0.0, 0.0], [0.35, 0.25, 0.12], [0.0, 0.4, 0.0], [0.31, 0.21, 0.31], [-0.2, 0.3, 0.2]] {
-                    let truth = surface.iter().map(|q| math3::length(math3::sub(*q, probe))).fold(f32::MAX, f32::min);
-                    assert!(d(&p, probe) <= truth + 0.01, "power {power} disc {disc} at {probe:?}: {} against {truth}", d(&p, probe));
-                }
                 if !disc {
                     let (shape, _) = mesh(&prim(p), &opts(40)).unwrap();
                     assert_eq!(shape.open_edge_count(), 0, "power {power}");
@@ -2006,6 +2051,269 @@ mod tests {
         assert!(last > 8.0 * 0.3 * 0.2 * 0.1 * 0.93, "at a power of 40 it is nearly the box: {last}");
         let cost = |power: f32| eval_cost(&prim(Prim::Rounded { half, power, disc: false }));
         assert!(cost(2.0) == cost(4.0) && cost(3.0) > cost(4.0));
+    }
+
+    /// A rounded shape's surface in `f64`, for the tests below: how far out a point is by the
+    /// shape's own measure, and the point of the surface a direction from the middle meets.
+    #[allow(clippy::disallowed_methods, reason = "a test's own reference, in f64, apart from the code it checks")]
+    fn rounded_measure(p: [f64; 3], half: V3, power: f32, disc: bool) -> f64 {
+        let h = half.map(f64::from);
+        let u = if disc { [(p[0] * p[0] + p[2] * p[2]).sqrt() / h[0], p[1].abs() / h[1], 0.0] } else { [p[0].abs() / h[0], p[1].abs() / h[1], p[2].abs() / h[2]] };
+        let m = u[0].max(u[1]).max(u[2]);
+        if m == 0.0 {
+            return 0.0;
+        }
+        m * u.iter().map(|x| (x / m).powf(f64::from(power))).sum::<f64>().powf(1.0 / f64::from(power))
+    }
+
+    /// The nearest point of a rounded shape's surface to `probe`, and how far it is: the best
+    /// of a grid of directions over a cube's six faces (each met with the surface), then
+    /// refined about it, so that flat sides and tight corners are covered alike.
+    fn rounded_nearest(probe: [f64; 3], half: V3, power: f32, disc: bool) -> f64 {
+        let h = half.map(f64::from);
+        let on = |face: usize, a: f64, b: f64| -> [f64; 3] {
+            let (axis, sign) = (face / 2, if face.is_multiple_of(2) { 1.0 } else { -1.0 });
+            let mut d = [0.0; 3];
+            d[axis] = sign * h[axis];
+            d[(axis + 1) % 3] = a * h[(axis + 1) % 3];
+            d[(axis + 2) % 3] = b * h[(axis + 2) % 3];
+            let k = rounded_measure(d, half, power, disc);
+            d.map(|x| x / k)
+        };
+        let far = |q: [f64; 3]| {
+            let d = [q[0] - probe[0], q[1] - probe[1], q[2] - probe[2]];
+            (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+        };
+        // (Every dip of every face's grid is refined on its own: the nearest point may lie
+        // just past the edge of the face whose grid came nearest, and on a thin shape a face
+        // has more than one dip: straight out to a side, and up over the edge.)
+        const N: usize = 24;
+        let at = |i: usize| -1.0 + 2.0 * i as f64 / N as f64;
+        let mut nearest = f64::MAX;
+        for face in 0..6 {
+            let grid: Vec<f64> = (0..=N).flat_map(|i| (0..=N).map(move |j| (i, j))).map(|(i, j)| far(on(face, at(i), at(j)))).collect();
+            let g = |i: usize, j: usize| grid[i * (N + 1) + j];
+            for i in 0..=N {
+                for j in 0..=N {
+                    let dip = (i.saturating_sub(1)..=(i + 1).min(N)).all(|a| (j.saturating_sub(1)..=(j + 1).min(N)).all(|b| g(i, j) <= g(a, b)));
+                    if !dip {
+                        continue;
+                    }
+                    let mut best = (g(i, j), at(i), at(j));
+                    let mut step = 2.0 / N as f64;
+                    while step > 1e-7 {
+                        let (_, a0, b0) = best;
+                        for (da, db) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0), (-1.0, -1.0), (1.0, 1.0), (-1.0, 1.0), (1.0, -1.0)] {
+                            let (a, b) = ((a0 + da * step).clamp(-1.0, 1.0), (b0 + db * step).clamp(-1.0, 1.0));
+                            let d = far(on(face, a, b));
+                            if d < best.0 {
+                                best = (d, a, b);
+                            }
+                        }
+                        if (best.1, best.2) == (a0, b0) {
+                            step *= 0.5;
+                        }
+                    }
+                    nearest = nearest.min(best.0);
+                }
+            }
+        }
+        nearest
+    }
+
+    /// A rounded box's or cylinder's field against the true distance (review of roundness: the
+    /// first field was in the shape's own units and infinite far away). Outside it is never
+    /// more than the distance and never less than it by more than the shape's slack; inside it
+    /// is never less than the depth and never more than it by more than the slack (so between
+    /// two points it never changes by more than their distance apart and the slack, which the
+    /// mesher and pruning lean on). Just off the surface it is the distance within a few parts
+    /// in ten, and far away it is finite and nearly the distance.
+    #[test]
+    fn a_rounded_field_is_trusted_by_its_slack() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let shapes: [(V3, bool); 6] = [
+            ([0.3, 0.2, 0.1], false),
+            ([0.5, 0.025, 0.3], false),
+            ([1.0, 0.01, 1.0], false),
+            ([0.02, 0.6, 0.05], false),
+            ([0.3, 0.2, 0.3], true),
+            ([0.5, 0.01, 0.5], true),
+        ];
+        let mut worst = 0.0f64;
+        for (half, disc) in shapes {
+            for power in [2.0f32, 2.5, 4.0, 6.67, 20.0, 40.0] {
+                let p = Prim::Rounded { half, power, disc };
+                assert_eq!(prim_lip(&p), 1.0);
+                let slack = f64::from(prim_slack(&p));
+                let field = |q: [f64; 3]| f64::from(prim_distance(&p, q.map(|x| x as f32)));
+                let (least, most) = (f64::from(half[0].min(half[1]).min(half[2])), f64::from(half[0].max(half[1]).max(half[2])));
+                let leave = 2e-5 * (1.0 + most);
+                let what = format!("half {half:?} power {power} disc {disc}");
+                // Around and inside the shape.
+                for _ in 0..80 {
+                    let q = [0, 1, 2].map(|i| (next() * 3.2 - 1.6) * f64::from(half[i]));
+                    let (f, truth, k) = (field(q), rounded_nearest(q, half, power, disc), rounded_measure(q, half, power, disc));
+                    if k > 1.0 {
+                        assert!(f > -leave && f <= truth + leave && f >= truth - slack - leave, "{what} at {q:?}: {f} outside, where the surface is {truth} away (slack {slack})");
+                        worst = worst.max((truth - f) / slack);
+                    } else {
+                        assert!(f < leave && -f >= truth - leave && -f <= truth + slack + leave, "{what} at {q:?}: {f} inside, where the surface is {truth} away (slack {slack})");
+                        worst = worst.max((-f - truth) / slack);
+                    }
+                }
+                // Just off the surface, either way along a line from the middle: the field is
+                // the distance there within a few parts in ten (a metre-valued modifier acts
+                // in metres), on the right side of it.
+                for _ in 0..24 {
+                    let d = [next() - 0.5, next() - 0.5, next() - 0.5].map(|x| x * 2.0);
+                    let d = [0, 1, 2].map(|i| d[i] * f64::from(half[i]));
+                    let k = rounded_measure(d, half, power, disc);
+                    if k < 1e-6 {
+                        continue;
+                    }
+                    for out in [1.0 + 0.05 * least / most, 1.0 - 0.05 * least / most] {
+                        let q = d.map(|x| x / k * out);
+                        let (f, truth) = (field(q), rounded_nearest(q, half, power, disc));
+                        if out > 1.0 {
+                            assert!(f >= 0.6 * truth - 1e-6 && f <= truth + leave, "{what} at {q:?}: {f} just outside, the surface {truth} away");
+                        } else {
+                            assert!(-f >= truth - leave && -f <= 1.6 * truth + 1e-6, "{what} at {q:?}: {f} just inside, the surface {truth} away");
+                        }
+                    }
+                }
+                // Far away, along the axes and between them: finite, and nearly the distance.
+                for reach in [9.5f64, 60.0, 5000.0] {
+                    for dir in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 1.0, 1.0], [1.0, 0.02, 0.0], [0.03, 1.0, 0.5], [-1.0, 0.4, -0.7]] {
+                        let q = [0, 1, 2].map(|i| dir[i] * reach * most);
+                        let (f, truth) = (field(q), rounded_nearest(q, half, power, disc));
+                        assert!(f.is_finite() && f <= truth * (1.0 + 1e-5) + 1e-4 && f >= truth - slack - 1e-4 * truth, "{what} at {q:?}: {f}, the surface {truth} away");
+                    }
+                }
+            }
+        }
+        // The slack is not far more than is needed: the worst seen is over a fifth of it.
+        assert!(worst > 0.2 && worst <= 1.0, "the worst seen is {worst} of the slack");
+    }
+
+    /// The volume a rounded box of a power holds, as a share of its hard box's (in `f64`, by
+    /// the midpoint rule over a quarter of its middle section).
+    #[allow(clippy::disallowed_methods, reason = "a test's own reference, in f64, apart from the code it checks")]
+    fn rounded_share(power: f32) -> f64 {
+        let (n, p) = (600, f64::from(power));
+        let mut sum = 0.0;
+        for i in 0..n {
+            for j in 0..n {
+                let (a, b) = ((i as f64 + 0.5) / n as f64, (j as f64 + 0.5) / n as f64);
+                let left = 1.0 - a.powf(p) - b.powf(p);
+                if left > 0.0 {
+                    sum += left.powf(1.0 / p);
+                }
+            }
+        }
+        sum / (n * n) as f64
+    }
+
+    /// What the review of roundness built that came out wrong, each as it should be now:
+    /// a thin rounded board holds the volume its power gives it (it sank by a sixth); `round`
+    /// swells it by its metres on every side (it swelled by its metres times the ratio of
+    /// each half size to the least); a blend with a far ball is the same at any roundness (a
+    /// field that was infinite a few half sizes out cut it); a board thinner than a cell,
+    /// turned, builds (it was refused with a vertex at NaN); and what pruning leaves out of a
+    /// tree does not depend on a box in it being rounded (an infinite span stopped it).
+    #[test]
+    fn a_rounded_shape_is_measured_in_metres() {
+        // A thin board, at the roundness of a tenth and a twentieth.
+        let half = [0.5f32, 0.025, 0.3];
+        let hard = 8.0 * f64::from(half[0] * half[1] * half[2]);
+        for power in [20.0f32, 40.0] {
+            let (shape, _) = mesh(&prim(Prim::Rounded { half, power, disc: false }), &opts(48)).unwrap();
+            let (volume, expected) = (f64::from(shape.signed_volume()), hard * rounded_share(power));
+            assert_eq!(unbalanced(&shape), 0);
+            assert!((volume / expected - 1.0).abs() < 0.03, "power {power}: a thin board holds {volume}, and its power gives it {expected}");
+        }
+        // Swollen by a centimetre: a centimetre further on every side.
+        let swollen = SdfNode { kind: Kind::Prim(Prim::Rounded { half, power: 10.0, disc: false }), m: Modifiers { round: 0.01, ..Modifiers::default() } };
+        let (lo, hi, lip, slack) = bounds(&swollen).unwrap();
+        assert!((0..3).all(|k| (hi[k] - (half[k] + 0.01)).abs() < 1e-5 && (lo[k] + half[k] + 0.01).abs() < 1e-5) && (lip, slack) == (1.0, 0.0), "{lo:?} {hi:?}");
+        let (shape, stats) = mesh(&swollen, &opts(96)).unwrap();
+        let bb = shape.bounds();
+        for k in 0..3 {
+            let (want, slack) = (half[k] + 0.01, 0.6 * stats.cell);
+            assert!((bb.max[k] - want).abs() < slack && (bb.min[k] + want).abs() < slack, "axis {k}: {} to {}, for ±{want}", bb.min[k], bb.max[k]);
+        }
+        // A ball over a thin plate, blended: the same whatever the plate's roundness.
+        let blended = |power: Option<f32>| {
+            let plate = match power {
+                Some(power) => Prim::Rounded { half: [0.2, 0.005, 0.2], power, disc: false },
+                None => Prim::Box { half: [0.2, 0.005, 0.2], round: 0.0 },
+            };
+            let ball = SdfNode { kind: Kind::Prim(Prim::Sphere { radius: 0.1 }), m: Modifiers { at: [0.0, 0.19, 0.0], ..Modifiers::default() } };
+            let tree = SdfNode { kind: Kind::Group { op: Combine::Union, kids: vec![ball, prim(plate)], smooth: 0.2 }, m: Modifiers::default() };
+            let (shape, stats) = mesh(&tree, &opts(64)).unwrap();
+            assert_eq!(unbalanced(&shape), 0);
+            (shape.signed_volume(), stats.work)
+        };
+        let (box_volume, _) = blended(None);
+        for power in [20.0f32, 40.0] {
+            let (volume, _) = blended(Some(power));
+            assert!((volume / box_volume - 1.0).abs() < 0.03, "power {power}: {volume} blended, {box_volume} with the hard plate");
+        }
+        // Thinner than a cell, and turned.
+        let turned = SdfNode { kind: Kind::Prim(Prim::Rounded { half: [1.0, 0.004, 0.5], power: 40.0, disc: false }), m: Modifiers { rotate: [0.0, 0.0, 37.0], ..Modifiers::default() } };
+        let (shape, _) = mesh(&turned, &opts(64)).unwrap();
+        assert!(shape.positions.iter().all(|p| p.iter().all(|x| x.is_finite())));
+        // Forty round cones and a small box, near-united: pruning leaves as much out whether
+        // the box is hard or rounded.
+        let crowd = |power: Option<f32>| {
+            let mut kids: Vec<SdfNode> = (0..40)
+                .map(|i| {
+                    let x = i as f32 * 0.05;
+                    prim(Prim::RoundCone { a: [x, 0.0, 0.0], b: [x, 0.3, 0.02 * (i % 5) as f32], ra: 0.02, rb: 0.012 })
+                })
+                .collect();
+            let half = [0.02f32, 0.02, 0.02];
+            kids.push(SdfNode {
+                kind: Kind::Prim(match power {
+                    Some(power) => Prim::Rounded { half, power, disc: false },
+                    None => Prim::Box { half, round: 0.0 },
+                }),
+                m: Modifiers { at: [1.0, 0.4, 0.0], ..Modifiers::default() },
+            });
+            let tree = SdfNode { kind: Kind::Group { op: Combine::Union, kids, smooth: 0.01 }, m: Modifiers::default() };
+            mesh(&tree, &opts(96)).unwrap().1.work
+        };
+        let (hard_work, round_work) = (crowd(None), crowd(Some(40.0)));
+        assert!(round_work < hard_work * 3 / 2, "{round_work} work with a rounded box, {hard_work} with a hard one");
+    }
+
+    /// A square column reaches the corners of its sections whichever way its side points:
+    /// its bounds went by an ellipse's, and a column turned an eighth of a turn about its axis
+    /// was cut flat at its corners (review of roundness). The same column is built with its
+    /// side along x, and toward the diagonal: the same volume, and corners as far out.
+    #[test]
+    fn a_square_column_keeps_its_corners_whichever_way_it_is_turned() {
+        let column = |side: V3| {
+            let mut sections = [[0.0; 3]; MAX_SECTIONS];
+            sections[0] = [0.0, 0.2, 0.2];
+            sections[1] = [1.0, 0.2, 0.2];
+            prim(Prim::Column { a: [0.0; 3], b: [0.0, 1.0, 0.0], side, sections, count: 2, square: 8.0 })
+        };
+        let (straight, _) = mesh(&column([1.0, 0.0, 0.0]), &opts(96)).unwrap();
+        let (turned, stats) = mesh(&column([1.0, 0.0, 1.0]), &opts(96)).unwrap();
+        let (a, b) = (straight.signed_volume(), turned.signed_volume());
+        assert!((a / b - 1.0).abs() < 0.01, "{a} with its side along x, {b} turned");
+        // A section of squareness 8 and half sizes of 0.2 reaches 0.2 x 2^(1/2 - 1/8) at its corners.
+        let corner = 0.2 * crate::dmath::pow(2.0, 0.5 - 0.125);
+        let bb = turned.bounds();
+        assert!((bb.max[0] - corner).abs() < stats.cell && (bb.min[2] + corner).abs() < stats.cell, "{:?} to {:?}, corners at ±{corner}", bb.min, bb.max);
+        let (lo, hi, _, _) = bounds(&column([1.0, 0.0, 1.0])).unwrap();
+        assert!(lo[0] <= -corner && hi[0] >= corner && lo[2] <= -corner && hi[2] >= corner, "{lo:?} {hi:?}");
     }
 
     /// A column that widens fast (a flange on a thin stem) is trusted less: its field, taken

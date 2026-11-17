@@ -399,8 +399,13 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       FIGURE.md: a trunk like a column, tubes for legs, a seam at the neck, a flat back, and a
       walk that is a lunge (the motion library's work, from the measured curves in H1).
     - **Roundness as one number: built** (2026-11-18): `roundness`, 0 to 1, on the modeller's
-      box and cylinder and on a rectangular outline (PROCEDURAL_MODELLING.md, tier 3). Not yet
-      reviewed by a model that did not write it.
+      box and cylinder and on a rectangular outline (PROCEDURAL_MODELLING.md, tier 3). **Its
+      review, with the squarer trunk's, said not to merge**: three major findings (the field was
+      not in metres; it was infinite far away; a square column's bounds cut its corners) and
+      four minor, all mended, each case now a test. **The mends have not been reviewed again.**
+      One limit of the same kind is written down and not mended: a column's field is in units
+      of its narrower half size, so `round` and a blend's radius reach further along its
+      broader side.
     - **Then:** the form views (clay, normals, curvature, stripes: they need a mode in the mesh
       shader, for which the frame's uniform has a spare slot beside the baked light's debug view,
       and the GPU's live checks after; twice the independent checker could not judge the figure's

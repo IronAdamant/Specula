@@ -2050,6 +2050,16 @@ impl Ctx<'_> {
                     }
                     Ok(s)
                 };
+                // A field that would do nothing is refused, never ignored: `roundness` is a
+                // rectangle's, and `segments` an arch's or a rounded rectangle's.
+                let round = self.ranged(n, "roundness", 0.0, 0.0, 1.0)?;
+                let rounded = n.get("rect").is_some() && round > 0.0;
+                if n.get("roundness").is_some() && n.get("rect").is_none() {
+                    return Err(e(&n.at("roundness"), ErrorCode::Geometry, "\"roundness\" rounds a \"rect\" outline: this one has none"));
+                }
+                if n.get("segments").is_some() && n.get("arch").is_none() && !rounded {
+                    return Err(e(&n.at("segments"), ErrorCode::Geometry, "\"segments\" is an \"arch\" outline's, or a \"rect\" outline's with \"roundness\": it would do nothing here"));
+                }
                 let mut p: Vec<V2> = if let Some(pv) = n.get("points") {
                     self.rows(pv, &n.at("points"), (2, 2), max_points)?.iter().map(|r| [r[0], r[1]]).collect()
                 } else if n.get("rect").is_some() {
@@ -2057,7 +2067,6 @@ impl Ctx<'_> {
                     // Roundness as one number: 0 the rectangle, 1 the ellipse as wide and as
                     // deep, and between them a superellipse (flat sides, corners that tighten
                     // as the number falls), in `segments` points.
-                    let round = self.ranged(n, "roundness", 0.0, 0.0, 1.0)?;
                     if round > 0.0 {
                         let points = self.int(n, "segments", 48, 8, 256)? as usize;
                         let power = 2.0 / round.max(0.05);

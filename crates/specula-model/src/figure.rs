@@ -261,7 +261,10 @@ impl Sizes<'_> {
         for side in Side::BOTH {
             let x = sign(side);
             // A buttock behind each hip, and the chest's swell in front of each side of it.
-            parts.push(egg([x * hip_half * 0.46, hips - seat_half * 0.10, -seat_half * 0.52], [hip_half * 0.50, seat_half * 0.95, seat_half * 0.62]));
+            // (Its reach behind is a share of the seat's half depth less 6 mm: with the share
+            // alone every body measured 6 to 7 mm too deep here, whatever its size, which is
+            // what the blend with the trunk adds, and on a slight body that was 3.8%.)
+            parts.push(egg([x * hip_half * 0.46, hips - seat_half * 0.10, -seat_half * 0.52], [hip_half * 0.50, seat_half * 0.95, seat_half * 0.62 - 0.006]));
             if !male {
                 parts.push(egg([x * chest_half * 0.46, chest, chest_deep * 0.50], [chest_half * 0.48, chest_deep * 0.62, chest_deep * 0.60]));
             }
@@ -840,6 +843,10 @@ mod tests {
             ("typical man", Body::typical(Sex::Male)),
             ("slight woman", Body::with_build(Sex::Female, 1.70, -1.2).unwrap()),
             ("heavy man", Body::with_build(Sex::Male, 1.72, 2.0).unwrap()),
+            ("tall slight man", Body::with_build(Sex::Male, 1.98, -3.0).unwrap()),
+            ("short slight woman", Body::with_build(Sex::Female, 1.42, -1.5).unwrap()),
+            ("short slight man", Body::with_build(Sex::Male, 1.62, -2.5).unwrap()),
+            ("tall slight woman", Body::with_build(Sex::Female, 1.82, -3.0).unwrap()),
         ] {
             table += &format!("{name}
 ");
@@ -862,7 +869,17 @@ mod tests {
     /// go to the arms, which the figure does not have.
     #[test]
     fn the_figure_measures_what_its_body_does() {
-        for (name, body) in [("typical woman", Body::typical(Sex::Female)), ("heavy man", Body::with_build(Sex::Male, 1.72, 2.0).unwrap())] {
+        // (The four slight bodies at the limits are the review of the squarer trunk's: on them
+        // the buttocks came out 3.0 to 3.8% too deep, past this test's 3%, which then held two
+        // bodies and did not see it.)
+        for (name, body) in [
+            ("typical woman", Body::typical(Sex::Female)),
+            ("heavy man", Body::with_build(Sex::Male, 1.72, 2.0).unwrap()),
+            ("tall slight man", Body::with_build(Sex::Male, 1.98, -3.0).unwrap()),
+            ("short slight woman", Body::with_build(Sex::Female, 1.42, -1.5).unwrap()),
+            ("short slight man", Body::with_build(Sex::Male, 1.62, -2.5).unwrap()),
+            ("tall slight woman", Body::with_build(Sex::Female, 1.82, -3.0).unwrap()),
+        ] {
             for (what, figure, measured) in measures(&body) {
                 let off = figure / measured - 1.0;
                 let (least, most) = match what {

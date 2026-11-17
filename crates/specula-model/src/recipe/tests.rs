@@ -174,6 +174,12 @@ fn structural_errors_have_paths_and_codes() {
         (one_part(r#"{"op":"sdf","tree":{"op":"box","size":[1,1,1],"roundness":1.5}}"#, ""), ErrorCode::OutOfRange, "parts[0].shape.tree.roundness"),
         (one_part(r#"{"op":"sdf","tree":{"op":"cylinder","radius":0.3,"radius_top":0.2,"height":1,"roundness":0.5}}"#, ""), ErrorCode::Geometry, "parts[0].shape.tree.roundness"),
         (one_part(r#"{"op":"extrude","outline":{"rect":[1,1],"roundness":2},"height":1}"#, ""), ErrorCode::OutOfRange, "parts[0].shape.outline.roundness"),
+        // (And a field that would do nothing on an outline is refused, not ignored.)
+        (one_part(r#"{"op":"extrude","outline":{"sides":6,"radius":0.5,"roundness":0.5},"height":1}"#, ""), ErrorCode::Geometry, "parts[0].shape.outline.roundness"),
+        (one_part(r#"{"op":"extrude","outline":{"star":5,"radius":0.5,"roundness":0.5},"height":1}"#, ""), ErrorCode::Geometry, "parts[0].shape.outline.roundness"),
+        (one_part(r#"{"op":"extrude","outline":{"rect":[1,1],"segments":300},"height":1}"#, ""), ErrorCode::Geometry, "parts[0].shape.outline.segments"),
+        (one_part(r#"{"op":"extrude","outline":{"rect":[1,1],"roundness":0.5,"segments":300},"height":1}"#, ""), ErrorCode::OutOfRange, "parts[0].shape.outline.segments"),
+        (one_part(r#"{"op":"extrude","outline":{"sides":6,"radius":0.5,"segments":12},"height":1}"#, ""), ErrorCode::Geometry, "parts[0].shape.outline.segments"),
         (r#"{"name":"x","parts":[{"name":"p","material":"gold","shape":{"op":"box","size":[1,1,1]}}]}"#.into(), ErrorCode::UnknownMaterial, "parts[0].material"),
         (r#"{"name":"x","parts":[{"name":"p","material":"stone"}]}"#.into(), ErrorCode::MissingField, "parts[0]"),
         (r#"{"name":"x","lods":[0.5,0.6],"parts":[{"name":"p","material":"stone","shape":{"op":"box","size":[1,1,1]}}]}"#.into(), ErrorCode::OutOfRange, "lods[1]"),
@@ -235,6 +241,10 @@ fn every_shape_and_op_builds() {
         r#"{"op":"sdf","resolution":32,"tree":{"op":"box","size":[0.8,0.5,0.4],"roundness":0.3,"round":0.02,"at":[0,0.4,0]}}"#,
         r#"{"op":"sdf","resolution":32,"tree":{"op":"cylinder","radius":0.3,"height":0.8,"roundness":0.3,"at":[0,0.5,0]}}"#,
         r#"{"op":"extrude","outline":{"rect":[1,0.6],"roundness":0.5,"segments":32},"height":0.4}"#,
+        // What the review of roundness built that came out cut flat: a thin board swollen by a centimetre.
+        // (Its board thinner than a cell, turned, builds now and is no more watertight than the hard box is at
+        // that size: `sdf::tests::a_rounded_shape_is_measured_in_metres`.)
+        r#"{"op":"sdf","resolution":48,"tree":{"op":"box","size":[1,0.05,0.6],"roundness":0.2,"round":0.01,"at":[0,0.5,0]}}"#,
         r#"{"op":"sdf","resolution":40,"tree":{"op":"chain","smooth":0.03,"mirror":"x","points":[[0.2,1.4,0,0.05],[0.25,1.1,0,0.045],[0.27,0.85,0.05,0.03],[0.27,0.75,0.1,0.035]]}}"#,
     ];
     for s in shapes {

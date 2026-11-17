@@ -118,10 +118,14 @@ with the body's own rows (`figure::tests::the_figure_measures_what_its_body_does
 prints the table). Before it, the chest and the waist were 5 to 7% shallow, a man's hips 6% wide, a
 thigh up to 12% thin and the legs parted 5 to 8 cm low, and none of it had been seen.
 
-What the test holds now, on a typical woman and a heavy man: every breadth and depth (chest, waist,
-hips, buttocks) within 3%; the girths of the waist, the buttocks, a thigh, the lower thigh, a calf and
-the neck within 5% (measured: within 3.4% on four bodies; the waist within 1.6%); the armpit within 2%
-of its height. Held loosely, each for a reason that is the figure's:
+What the test holds now, on six bodies (a typical woman, a heavy man, and four slight ones at the
+limits of stature: 1.42 m to 1.98 m): every breadth and depth (chest, waist, hips, buttocks) within 3%;
+the girths of the waist, the buttocks, a thigh, the lower thigh, a calf and the neck within 5%
+(measured on eight bodies: within 3.4%; the waist within 2.5%; the buttocks' depth within 1.1%); the
+armpit within 2% of its height. The test held two bodies until the review of the squarer trunk
+measured the slight ones: their buttocks were 3.0 to 3.8% too deep, 6 to 7 mm on every body whatever
+its size (what the blend with the trunk adds), which is now taken off the buttocks' reach. Held
+loosely, each for a reason that is the figure's:
 
 - **The chest's girth is a twentieth (women) to a sixth (men) short.** With ellipses for sections the
   waist was 6% short too and the chest a tenth to a fifth; a column's sections now have a squareness

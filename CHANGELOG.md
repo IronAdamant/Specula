@@ -335,6 +335,20 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       and on a `rect` outline. 0 is the hard shape, 1 its fully round form, and everything
       between is valid; the shape keeps its sizes whatever its roundness. With the bone chains
       of this slice it is the first of the five items of "form within an agent's reach".
+    - **The review of the squarer trunk and of roundness said not to merge them, and what it
+      found is mended.** Three major: a rounded box's field was in the shape's own units, not
+      metres (a thin board sank by a sixth of its volume, and `round` swelled it by its metres
+      times the ratio of each side to the thinnest); it was infinite a few sizes away at a low
+      roundness (a blend cut, pruning stopped, a thin turned board refused with a vertex at
+      NaN); a square column's bounds were an ellipse's (its corners cut flat when turned). The
+      field is now the greater of the distance to the touching plane and the hard shape's own
+      distance, in metres and finite everywhere, and the mesher is told how far it may be from
+      the true distance (a slack) in place of a factor. Four minor: the cost weight is timed
+      at a low roundness too; the figure's measure test holds six bodies, the four slight ones
+      at the limits among them, and the buttocks that were 3.0 to 3.8% too deep on those are
+      within 1.1%; a field that would do nothing on an outline is refused; and tests that would
+      have seen each of these (far probes, a refined true distance, a mesh under `round`, a
+      column with its side off an axis).
     - **A man's chest is the plain column**: a third try at a swell for the muscle read as one
       mound to an independent check of the eleventh look, which did not pass it. What it listed
       is in [docs/design/FIGURE.md](docs/design/FIGURE.md).
