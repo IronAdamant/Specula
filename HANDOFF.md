@@ -91,6 +91,14 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     by a model that did not take them) before anyone says it looks right; mended; captured again.
     With each go its numbers (triangles, build time, frame time on both adapters, what the form
     checks say), so that "improved" is a before and an after and not a claim.
+  - **Reference pictures are coming** (the owner, the same day, asked whether the figures are
+    made from the research and from what a model learned in training: "Do you want me to send you
+    the images to compare? I can get Grok to build up a list of those alongside the creatures",
+    then "Reference images.. sure. I'll get you those. Please get me a list of what you need").
+    The list is [docs/research/REFERENCE_IMAGES_BRIEF.md](docs/research/REFERENCE_IMAGES_BRIEF.md):
+    people, hands, feet, heads, motion and creatures by body plan, each with its source and
+    licence. They are looked at and compared with captures, never traced, and never put in this
+    repository.
   - **Rust only.** "Anything Python in here should be converted to Rust. The only programming language
     used here should be Rust. Zero-dependency is non-negotiable. So I'm willing for this to take
     time." This replaces "new checks may still be Python" (2026-11-15): **no new Python from this

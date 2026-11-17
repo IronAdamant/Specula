@@ -57,7 +57,17 @@ pub enum Prim {
     /// `b` (a limb, a finger, a horn, one link of a chain). Unlike the other primitives it is
     /// given by its two ends, in the node's frame.
     RoundCone { a: V3, b: V3, ra: f32, rb: f32 },
+    /// A column of sections along the line from `a` to `b`: at each of its first `count`
+    /// `sections` (`[t, breadth, depth]`: how far along, 0 to 1 and rising, and the half
+    /// breadth toward `side` and the half depth across it) the surface is that ellipse, and
+    /// between two sections the breadth and the depth pass smoothly from one to the other. A
+    /// rounded end closes it past each end. A trunk, a limb with its swell, a neck, a vase.
+    /// Given by its ends, in the node's frame; its field is a lower bound of the distance.
+    Column { a: V3, b: V3, side: V3, sections: [[f32; 3]; MAX_SECTIONS], count: u8 },
 }
+
+/// Most sections in one column.
+pub const MAX_SECTIONS: usize = 8;
 
 /// How children combine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -225,7 +235,7 @@ fn prepare(n: &SdfNode, seed: u64, next: &mut u64) -> Prepared {
 /// displacement keeps every child, as its distances no longer bound each other).
 fn prune(n: &Prepared, c: V3, reach: f32) -> Prepared {
     let keep_all = |kind: PKind| Prepared { kind, m: n.m.clone(), inv_rot: n.inv_rot, rotated: n.rotated, seed: n.seed, lip: n.lip, slack: n.slack };
-    let PKind::Group { op: op @ (Combine::Union | Combine::Near), kids, smooth } = &n.kind else { return n.clone() };
+    let PKind::Group { op, kids, smooth } = &n.kind else { return n.clone() };
     let m = &n.m;
     let plain = m.repeat.is_none() && m.elongate == [0.0; 3] && m.twist == 0.0 && m.bend == 0.0 && m.shell <= 0.0 && m.displace.is_none();
     if !plain {
@@ -233,6 +243,10 @@ fn prune(n: &Prepared, c: V3, reach: f32) -> Prepared {
     }
     let q = local(n, c);
     let r = reach / (m.scale * m.stretch[0].min(m.stretch[1]).min(m.stretch[2]));
+    // A cut or an intersection keeps every child, each pruned for the same ball.
+    if !matches!(op, Combine::Union | Combine::Near) {
+        return keep_all(PKind::Group { op: *op, kids: kids.iter().map(|kid| prune(kid, q, r)).collect(), smooth: *smooth });
+    }
     // Each child's least and greatest distance anywhere in the ball.
     let span: Vec<(f32, f32)> = kids
         .iter()
@@ -312,7 +326,41 @@ fn prim_distance(p: &Prim, q: V3) -> f32 {
         }
         Prim::HalfSpace { normal, offset } => math3::dot(q, normal) - offset,
         Prim::RoundCone { a, b, ra, rb } => round_cone(q, a, b, ra, rb),
+        Prim::Column { a, b, side, sections, count } => column(q, a, b, side, &sections[..(count as usize).clamp(1, MAX_SECTIONS)]),
     }
+}
+
+/// A column's field ([`Prim::Column`]): how many of its own radii out a point is from the
+/// axis, less one, times the smaller radius there (so it is never more than the distance).
+fn column(p: V3, a: V3, b: V3, side: V3, sections: &[[f32; 3]]) -> f32 {
+    let axis = math3::sub(b, a);
+    let length = math3::length(axis).max(1e-6);
+    let up = math3::scale(axis, 1.0 / length);
+    // Toward `side`, squared to the axis; and across both.
+    let lean = math3::sub(side, math3::scale(up, math3::dot(side, up)));
+    let right = if math3::length(lean) > 1e-6 { math3::normalize(lean) } else { math3::perpendicular(up) };
+    let across = math3::cross(up, right);
+    let from = math3::sub(p, a);
+    let (t, x, z) = (math3::dot(from, up) / length, math3::dot(from, right), math3::dot(from, across));
+    let (first, last) = (sections[0], sections[sections.len() - 1]);
+    // The section at t: between its two neighbours, eased in and out.
+    let at = t.clamp(first[0], last[0]);
+    let (mut rx, mut rz) = (last[1], last[2]);
+    for pair in sections.windows(2) {
+        if at <= pair[1][0] {
+            let span = (pair[1][0] - pair[0][0]).max(1e-6);
+            let f = ((at - pair[0][0]) / span).clamp(0.0, 1.0);
+            let ease = f * f * (3.0 - 2.0 * f);
+            rx = pair[0][1] + (pair[1][1] - pair[0][1]) * ease;
+            rz = pair[0][2] + (pair[1][2] - pair[0][2]) * ease;
+            break;
+        }
+    }
+    // Past an end: a rounded cap as high as the section there is narrow.
+    let beyond = (t - at).abs() * length;
+    let cap = rx.min(rz);
+    let k = ((x / rx) * (x / rx) + (z / rz) * (z / rz) + (beyond / cap) * (beyond / cap)).sqrt();
+    (k - 1.0) * cap
 }
 
 /// Inigo Quilez's round cone between two points: the exact distance to the hull of two balls.
@@ -553,6 +601,7 @@ fn prim_cost(p: &Prim) -> u64 {
         Prim::HalfSpace { .. } => 0,
         Prim::Sphere { .. } | Prim::Capsule { .. } => 12,
         Prim::RoundCone { .. } => 40,
+        Prim::Column { .. } => 70,
         Prim::Box { .. } | Prim::Torus { .. } | Prim::Ellipsoid { .. } => 24,
         Prim::Cylinder { radius, radius_top, .. } if radius == radius_top => 24,
         Prim::Cylinder { .. } => 70,
@@ -592,7 +641,7 @@ fn modifiers_cost(m: &Modifiers) -> u64 {
 fn lip_slack(n: &SdfNode) -> (f32, f32) {
     let m = &n.m;
     let (mut lip, mut slack) = match &n.kind {
-        Kind::Prim(p) => (if matches!(p, Prim::Ellipsoid { .. }) { 2.0 } else { 1.0 }, 0.0),
+        Kind::Prim(p) => (if matches!(p, Prim::Ellipsoid { .. } | Prim::Column { .. }) { 2.0 } else { 1.0 }, 0.0),
         Kind::Group { kids, smooth, .. } => kids.iter().map(lip_slack).fold((1.0f32, smooth.max(0.0)), |(l, s), (kl, ks)| (l.max(kl), s.max(ks))),
     };
     slack *= m.scale * m.stretch[0].max(m.stretch[1]).max(m.stretch[2]);
@@ -631,9 +680,16 @@ fn bounds(n: &SdfNode) -> Option<(V3, V3, f32, f32)> {
                 Prim::HalfSpace { .. } => return None,
                 // Not centred: the box around its two balls.
                 Prim::RoundCone { a, b, ra, rb } => (math3::vmin(math3::sub(a, [ra; 3]), math3::sub(b, [rb; 3])), math3::vmax(math3::add(a, [ra; 3]), math3::add(b, [rb; 3]))),
+                // The box around its ends, as wide all round as its widest section.
+                Prim::Column { a, b, sections, count, .. } => {
+                    let used = &sections[..(count as usize).clamp(1, MAX_SECTIONS)];
+                    let widest = used.iter().map(|s| s[1].max(s[2])).fold(0.0f32, f32::max);
+                    // (Its rounded ends reach no further past its first and last sections than those are wide.)
+                    (math3::sub(math3::vmin(a, b), [widest; 3]), math3::add(math3::vmax(a, b), [widest; 3]))
+                }
             };
-            // The ellipsoid's field is only a bound: allow it twice the speed.
-            let lip = if matches!(p, Prim::Ellipsoid { .. }) { 2.0 } else { 1.0 };
+            // The ellipsoid's and the column's fields are only bounds: allow them twice the speed.
+            let lip = if matches!(p, Prim::Ellipsoid { .. } | Prim::Column { .. }) { 2.0 } else { 1.0 };
             (lo, hi, lip, 0.0)
         }
         Kind::Group { op, kids, smooth } => {
@@ -1170,6 +1226,9 @@ mod tests {
         time("smooth union of 8", &SdfNode { kind: Kind::Group { op: Combine::Union, kids: kids(8), smooth: 0.2 }, m: Modifiers::default() });
         let link = Prim::RoundCone { a: [0.1, 0.0, 0.2], b: [0.4, 1.0, -0.1], ra: 0.3, rb: 0.15 };
         time("round cone", &prim(link));
+        let mut sections = [[0.0f32; 3]; MAX_SECTIONS];
+        sections[..4].copy_from_slice(&[[0.0, 0.17, 0.11], [0.4, 0.13, 0.09], [0.75, 0.15, 0.11], [1.0, 0.06, 0.06]]);
+        time("column of 4 sections", &prim(Prim::Column { a: [0.0, 0.0, 0.0], b: [0.1, 1.0, 0.0], side: [1.0, 0.0, 0.0], sections, count: 4 }));
         time("round cone stretched", &with(link, Modifiers { stretch: [1.0, 1.0, 0.6], ..Modifiers::default() }));
         let links = |k: usize| (0..k).map(|_| prim(link)).collect::<Vec<_>>();
         time("chain of 8 round cones", &SdfNode { kind: Kind::Group { op: Combine::Union, kids: links(8), smooth: 0.02 }, m: Modifiers::default() });
@@ -1336,6 +1395,19 @@ mod tests {
         }
         assert_eq!(compared, 9600);
         assert!(pruned_cost / balls < whole_cost / 2, "pruning leaves {} of {whole_cost} a ball on average", pruned_cost / balls);
+        // Through a cut: a part cut by a box is pruned inside the cut, as exactly.
+        let foot = prepare(&crate::figure::tree(&body, &crate::figure::Shaping::default(), crate::figure::Part::Foot(specula_corpus::Side::Left)), 3, &mut 0);
+        let mut saved = 0;
+        for b in 0..60u32 {
+            let c = [0.02 + (b % 7) as f32 * 0.03, (b % 5) as f32 * 0.03, -0.08 + (b % 11) as f32 * 0.03];
+            let near = prune(&foot, c, 0.02);
+            saved += u64::from(prepared_cost(&near) < prepared_cost(&foot) / 2);
+            for i in 0..20u32 {
+                let p = [c[0] + ((i * 7) % 5) as f32 * 0.004 - 0.008, c[1] + ((i * 3) % 5) as f32 * 0.004 - 0.008, c[2] + (i % 5) as f32 * 0.004 - 0.008];
+                assert_eq!(eval(&near, p).to_bits(), eval(&foot, p).to_bits(), "ball {b}, point {p:?}");
+            }
+        }
+        assert!(saved > 30, "{saved} of 60 balls about a foot cost under half of it");
         // A node that is not a plain union is kept whole.
         let mut twisted = tree.clone();
         twisted.m.twist = 20.0;
@@ -1353,6 +1425,57 @@ mod tests {
         assert_eq!(unbalanced(&shape), 0);
         let every_bone = stats.samples_evaluated * eval_cost(&tree);
         assert!(stats.work < every_bone / 2, "{} work for {} samples of a tree that costs {}", stats.work, stats.samples_evaluated, eval_cost(&tree));
+    }
+
+    /// A column is its sections: at each one the surface is that ellipse, between two it
+    /// passes smoothly from one to the other (no step in breadth or depth at a section), it is
+    /// closed by a rounded end, and its field never says further than the truth.
+    #[test]
+    fn a_column_is_its_sections_and_smooth_between_them() {
+        let mut sections = [[0.0f32; 3]; MAX_SECTIONS];
+        sections[0] = [0.0, 0.17, 0.11];
+        sections[1] = [0.4, 0.13, 0.09];
+        sections[2] = [0.75, 0.15, 0.11];
+        sections[3] = [1.0, 0.06, 0.06];
+        let trunk = Prim::Column { a: [0.0, 0.8, 0.0], b: [0.0, 1.4, 0.0], side: [1.0, 0.0, 0.0], sections, count: 4 };
+        let d = |x: f32, y: f32, z: f32| prim_distance(&trunk, [x, y, z]);
+        // On each section, at its breadth and at its depth.
+        for (t, rx, rz) in [(0.0, 0.17, 0.11), (0.4, 0.13, 0.09), (0.75, 0.15, 0.11), (1.0, 0.06, 0.06)] {
+            let y = 0.8 + 0.6 * t;
+            assert!(d(rx, y, 0.0).abs() < 1e-5 && d(0.0, y, rz).abs() < 1e-5 && d(-rx, y, 0.0).abs() < 1e-5, "section at {t}");
+            assert!(d(0.0, y, 0.0) < 0.0);
+        }
+        // Between sections the breadth eases: no jump in it or in its slope at a section.
+        let breadth = |y: f32| {
+            let (mut lo, mut hi) = (0.0f32, 0.5f32);
+            for _ in 0..40 {
+                let mid = (lo + hi) / 2.0;
+                if d(mid, y, 0.0) < 0.0 {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            lo
+        };
+        let at = 0.8 + 0.6 * 0.4;
+        let (below, on, above) = (breadth(at - 0.002), breadth(at), breadth(at + 0.002));
+        assert!((below - on).abs() < 2e-4 && (above - on).abs() < 2e-4, "{below} {on} {above}: flat through the section, as an eased curve is");
+        assert!(breadth(0.8 + 0.6 * 0.2) < 0.17 && breadth(0.8 + 0.6 * 0.2) > 0.13);
+        // Closed past its ends: outside a little below the bottom and above the top.
+        assert!(d(0.0, 0.8 - 0.12, 0.0) > 0.0 && d(0.0, 0.8 - 0.05, 0.0) < 0.0 && d(0.0, 1.4 + 0.07, 0.0) > 0.0);
+        // Never further than the truth: against the nearest of many points of its own surface.
+        let node = prim(trunk);
+        let (shape, _) = mesh(&node, &opts(64)).unwrap();
+        assert_eq!(shape.open_edge_count(), 0);
+        for probe in [[0.4f32, 1.0, 0.0], [0.0, 1.1, 0.3], [0.25, 0.7, 0.2], [0.1, 1.6, 0.0]] {
+            let truth = shape.positions.iter().map(|q| math3::length(math3::sub(*q, probe))).fold(f32::MAX, f32::min);
+            let said = prim_distance(&trunk, probe);
+            assert!(said > 0.0 && said <= truth + 0.01, "at {probe:?} the field says {said} and the surface is {truth} away");
+        }
+        let (lo, hi, lip, _) = bounds(&node).unwrap();
+        let bb = shape.bounds();
+        assert!((0..3).all(|k| lo[k] <= bb.min[k] + 1e-3 && hi[k] >= bb.max[k] - 1e-3) && lip == 2.0, "{lo:?} {hi:?} against {bb:?}");
     }
 
     #[test]

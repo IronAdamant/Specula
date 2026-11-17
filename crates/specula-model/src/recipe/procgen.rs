@@ -71,6 +71,7 @@ const SDF_NODES: &[(&str, &[Field])] = &[
     ("ellipsoid", sdf_node!(r("radii", Vec3))),
     ("round_cone", sdf_node!(r("from", Vec3), r("to", Vec3), r("radius", Num), o("radius_to", Num))),
     ("chain", sdf_node!(r("points", Rows), o("smooth", Num))),
+    ("column", sdf_node!(r("from", Vec3), r("to", Vec3), o("side", Vec3), r("sections", Rows))),
     ("halfspace", sdf_node!(o("normal", Vec3), o("offset", Num))),
     ("union", sdf_node!(r("of", Sdfs), o("smooth", Num))),
     ("difference", sdf_node!(r("of", Sdfs), o("smooth", Num))),
@@ -490,6 +491,33 @@ impl Ctx<'_> {
                 let ra = pos("radius", 0.1)?;
                 sdf::Kind::Prim(sdf::Prim::RoundCone { a, b, ra, rb: pos("radius_to", ra as f64)? })
             }
+            // Sections along a line, each [how far along, half breadth, half depth], eased
+            // from one to the next: a trunk, a limb with its swell, a neck.
+            "column" => {
+                let (a, b) = (self.vec3(n, "from", [0.0; 3])?, self.vec3(n, "to", [0.0, 1.0, 0.0])?);
+                for (name, p) in [("from", a), ("to", b)] {
+                    if p.iter().any(|v| !fits(*v, MAX_EXTENT_M)) {
+                        return Err(e(&n.at(name), ErrorCode::OutOfRange, format!("positions must be within ±{MAX_EXTENT_M} m")));
+                    }
+                }
+                if math3::length(math3::sub(b, a)) < 1e-4 {
+                    return Err(e(&n.at("to"), ErrorCode::Geometry, "a column's two ends are in one place"));
+                }
+                let Some(given) = n.get("sections") else { return Err(e(&n.at("sections"), ErrorCode::MissingField, "a column needs \"sections\": rows of [how far along (0 to 1), half breadth, half depth]")) };
+                let rows = self.rows(given, &n.at("sections"), (3, 3), sdf::MAX_SECTIONS)?;
+                if rows.is_empty() {
+                    return Err(e(&n.at("sections"), ErrorCode::Geometry, "a column needs one section at the least"));
+                }
+                let mut sections = [[0.0f32; 3]; sdf::MAX_SECTIONS];
+                for (i, row) in rows.iter().enumerate() {
+                    let rising = i == 0 || row[0] > rows[i - 1][0];
+                    if !(row[0] >= 0.0 && row[0] <= 1.0 && rising && row[1] >= 1e-4 && row[2] >= 1e-4) {
+                        return Err(e(&format!("{}[{i}]", n.at("sections")), ErrorCode::OutOfRange, "a section is [how far along, half breadth, half depth]: along from 0 to 1 and further than the section before, the two halves from 0.0001 m"));
+                    }
+                    sections[i] = [row[0], row[1], row[2]];
+                }
+                sdf::Kind::Prim(sdf::Prim::Column { a, b, side: self.vec3(n, "side", [1.0, 0.0, 0.0])?, sections, count: rows.len() as u8 })
+            }
             // A line of points, each with a radius: a round cone between every two neighbours,
             // joined (smoothly, by `smooth`). A limb, a tail, a branch or a horn in a few rows.
             "chain" => {
@@ -633,9 +661,9 @@ impl Ctx<'_> {
         };
         // A figure's part is meshed as finely as it needs: a finger is a third of a trunk's cell.
         let usual = match self.str(n, "part", if figure { "whole" } else { "" }) {
-            "body" => 80,
+            "body" => 112,
             "head" => 40,
-            "hand_l" | "hand_r" => 80,
+            "hand_l" | "hand_r" => 56,
             "foot_l" | "foot_r" => 48,
             "whole" => 72,
             _ => 48,

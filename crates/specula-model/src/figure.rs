@@ -111,6 +111,33 @@ fn union(kids: Vec<SdfNode>, smooth: f32) -> SdfNode {
     node(Kind::Group { op: Combine::Near, kids, smooth })
 }
 
+/// A column from `a` to `b`: sections `(how far along, half breadth toward side, half depth)`,
+/// eased from one to the next ([`Prim::Column`]).
+fn column(a: V3, b: V3, side: V3, sections: &[(f32, f32, f32)]) -> SdfNode {
+    let mut rows = [[0.0f32; 3]; crate::sdf::MAX_SECTIONS];
+    for (row, section) in rows.iter_mut().zip(sections) {
+        *row = [section.0, section.1, section.2];
+    }
+    node(Kind::Prim(Prim::Column { a, b, side, sections: rows, count: sections.len().min(crate::sdf::MAX_SECTIONS) as u8 }))
+}
+
+/// What of `shape` lies in the box from `lo` to `hi`: a fine part is cut where it runs up
+/// into the body, and the cut's face is inside the body's own surface.
+fn within(shape: SdfNode, lo: V3, hi: V3) -> SdfNode {
+    let half = math3::scale(math3::sub(hi, lo), 0.5);
+    let mut room = node(Kind::Prim(Prim::Box { half, round: 0.0 }));
+    room.m.at = math3::add(lo, half);
+    node(Kind::Group { op: Combine::Intersection, kids: vec![shape, room], smooth: 0.0 })
+}
+
+/// A ball stretched to three radii, at a place.
+fn egg(at: V3, radii: V3) -> SdfNode {
+    let mut ball = node(Kind::Prim(Prim::Sphere { radius: radii[0] }));
+    ball.m.at = at;
+    ball.m.stretch = [1.0, radii[1] / radii[0], radii[2] / radii[0]];
+    ball
+}
+
 /// A chain: a round cone between every two neighbours of `points` (each a place and a radius).
 fn chain(points: &[(V3, f32)], smooth: f32) -> SdfNode {
     union(points.windows(2).map(|w| cone(w[0].0, w[1].0, w[0].1, w[1].1)).collect(), smooth)
@@ -152,82 +179,99 @@ impl Sizes<'_> {
         self.m(name) - self.drop
     }
 
-    /// One slice of the trunk between two stations, each a height, a half breadth, a half
-    /// depth and how far forward its middle is: a round cone as broad as measured, stretched
-    /// to the depth measured.
-    fn slab(&self, lower: [f32; 4], upper: [f32; 4]) -> SdfNode {
-        let depth = (lower[2] / lower[1] + upper[2] / upper[1]) / 2.0;
-        let forward = (lower[3] + upper[3]) / 2.0;
-        let mut slab = cone([0.0, lower[0], 0.0], [0.0, upper[0], 0.0], lower[1], upper[1]);
-        slab.m.at = [0.0, 0.0, forward];
-        slab.m.stretch = [1.0, 1.0, depth];
-        slab
-    }
-
-    /// The trunk from the crotch to the base of the neck, the neck, and the bulk of each
-    /// shoulder out to its joint.
+    /// The trunk from the hips to the base of the neck as one column of the sections the
+    /// survey measured (hips, waist, chest), eased from one to the next, sloping in from the
+    /// shoulders to the neck; the swell of the buttocks and of the chest on it; the neck.
     fn trunk(&self) -> Vec<SdfNode> {
-        let k = self.smooth;
         let neck = self.at(Joint::Neck);
         let shoulder = self.at(Joint::Shoulder(Side::Left));
         let neck_base = self.round("neck_circumference_base");
-        // Each station: height, half breadth, half depth, forward of the frame's plane.
-        let hips = [self.height("buttock_height"), self.m("hip_breadth") / 2.0, self.m("buttock_depth") / 2.0, -0.012];
-        let crotch = [self.height("crotch_height") + hips[1] * 0.45, hips[1] * 0.86, hips[2] * 0.86, -0.008];
-        let waist = [self.at(Joint::Waist)[1], self.m("waist_breadth") / 2.0, self.m("waist_depth") / 2.0, 0.004];
-        let chest = [self.at(Joint::Chest)[1], self.m("chest_breadth") / 2.0, self.m("chest_depth") / 2.0, 0.012];
-        let top = [shoulder[1] - 0.02, shoulder[0] * 0.80, chest[2] * 0.62, -0.004];
-        let collar = [neck[1] - neck_base * 0.2, neck_base * 1.25, neck_base, 0.0];
-        let mut parts = vec![union(vec![self.slab(crotch, hips), self.slab(hips, waist), self.slab(waist, chest), self.slab(chest, top), self.slab(top, collar)], k)];
+        let (hip_half, seat_half) = (self.m("hip_breadth") / 2.0, self.m("buttock_depth") / 2.0);
+        let (chest_half, chest_deep) = (self.m("chest_breadth") / 2.0, self.m("chest_depth") / 2.0);
+        // Heights, from the hips up (the column's rounded end closes it below them, between
+        // the tops of the thighs).
+        let hips = self.height("buttock_height");
+        let waist = self.at(Joint::Waist)[1].max(hips + 0.02);
+        let chest = self.at(Joint::Chest)[1].max(waist + 0.02);
+        let top = (shoulder[1] - 0.012).max(chest + 0.02);
+        let t = |y: f32| (y - hips) / (top - hips);
+        let (wide, deep) = (shoulder[0] * 0.86, chest_deep * 0.74);
+        let mut parts = vec![column(
+            [0.0, hips, 0.0],
+            [0.0, top, 0.0],
+            [1.0, 0.0, 0.0],
+            &[
+                (0.0, hip_half * 0.97, seat_half * 0.90),
+                (t(waist), self.m("waist_breadth") / 2.0, self.m("waist_depth") / 2.0 * 0.95),
+                (t(chest), chest_half, chest_deep * 0.93),
+                (1.0, wide, deep),
+            ],
+        )];
+        for side in Side::BOTH {
+            let x = sign(side);
+            // A buttock behind each hip, and the chest's swell in front of each side of it.
+            parts.push(egg([x * hip_half * 0.46, hips - seat_half * 0.10, -seat_half * 0.52], [hip_half * 0.50, seat_half * 0.95, seat_half * 0.62]));
+            // (A man's is the flat of a muscle; a woman's stands out more. No survey here says by how much.)
+            let (out, forward) = if self.body.sex() == specula_corpus::Sex::Male { (0.30, 0.52) } else { (0.52, 0.42) };
+            parts.push(egg([x * chest_half * 0.46, chest, chest_deep * forward], [chest_half * 0.48, chest_deep * 0.62, chest_deep * out]));
+        }
+        // From the neck's base a muscle slopes down to each shoulder (the trunk's column ends
+        // in a rounded top under it: a column's own top would be a shelf).
         let upper_r = self.round("biceps_circumference_flexed");
         for side in Side::BOTH {
             let joint = self.at(Joint::Shoulder(side));
-            parts.push(chain(&[([joint[0] * 0.55, top[0], 0.0], top[2] * 0.95), (joint, upper_r * 1.12)], k));
+            parts.push(cone([0.0, neck[1] - 0.035, neck[2] - 0.012], [joint[0] * 0.92, joint[1] + upper_r * 0.25, joint[2] - 0.005], neck_base * 0.92, upper_r * 0.82));
         }
-        parts.push(chain(&[(neck, neck_base), (self.at(Joint::Head), self.round("neck_circumference"))], k));
+        parts.push(self.neck_column());
         parts
     }
 
-    /// An arm from the shoulder to the wrist, and `past` of the way on into the hand.
-    fn arm(&self, side: Side, past: f32) -> SdfNode {
-        let (shoulder, elbow, wrist, knuckle) = (self.at(Joint::Shoulder(side)), self.at(Joint::Elbow(side)), self.at(Joint::Wrist(side)), self.at(Joint::Knuckle(side)));
-        let (upper_r, fore_r, wrist_r) = (self.round("biceps_circumference_flexed"), self.round("forearm_circumference_flexed"), self.round("wrist_circumference"));
-        chain(
-            &[
-                (shoulder, upper_r * 1.05),
-                (lerp(shoulder, elbow, 0.42), upper_r * 0.98),
-                (lerp(shoulder, elbow, 0.88), fore_r * 0.92),
-                (elbow, fore_r * 0.96),
-                (lerp(elbow, wrist, 0.22), fore_r),
-                (lerp(elbow, wrist, 0.80), wrist_r * 1.12),
-                (wrist, wrist_r),
-                (lerp(wrist, knuckle, past), wrist_r),
-            ],
-            self.smooth * 0.4,
+    /// The neck, from under the collar to the skull's base. The head's part has it too.
+    fn neck_column(&self) -> SdfNode {
+        let (neck, head) = (self.at(Joint::Neck), self.at(Joint::Head));
+        let (neck_base, neck_r) = (self.round("neck_circumference_base"), self.round("neck_circumference"));
+        let foot = neck[1] - 0.05;
+        column([0.0, foot, neck[2] - 0.004], [0.0, head[1] + 0.02, head[2] + 0.008], [1.0, 0.0, 0.0], &[(0.0, neck_base * 1.04, neck_base * 0.96), (0.45, neck_r * 1.02, neck_r), (1.0, neck_r * 0.98, neck_r * 0.98)])
+    }
+
+    /// The forearm, elbow to wrist: broader than deep at the wrist (its breadth in the palm's
+    /// plane, the thumb forward). The hand's part has it too.
+    fn fore_column(&self, side: Side) -> SdfNode {
+        let (elbow, wrist) = (self.at(Joint::Elbow(side)), self.at(Joint::Wrist(side)));
+        let (fore_r, wrist_r) = (self.round("forearm_circumference_flexed"), self.round("wrist_circumference"));
+        column(elbow, wrist, [0.0, 0.0, 1.0], &[(0.0, fore_r * 0.92, fore_r * 0.92), (0.24, fore_r * 1.02, fore_r * 0.98), (0.80, wrist_r * 1.22, wrist_r * 0.90), (1.0, wrist_r * 1.16, wrist_r * 0.84)])
+    }
+
+    /// The shank, knee to ankle, the calf set behind the shin. The foot's part has it too.
+    fn shank_column(&self, side: Side) -> SdfNode {
+        let (knee, ankle) = (self.at(Joint::Knee(side)), self.at(Joint::Ankle(side)));
+        let (lower_r, calf_r, ankle_r) = (self.round("lower_thigh_circumference"), self.round("calf_circumference"), self.round("ankle_circumference"));
+        let knee_r = lower_r * 0.93;
+        let set_back = |p: V3, by: f32| [p[0], p[1], p[2] - by];
+        column(
+            set_back(knee, 0.004),
+            set_back(ankle, 0.002),
+            [1.0, 0.0, 0.0],
+            &[(0.0, knee_r, knee_r * 1.02), (0.30, calf_r * 0.98, calf_r * 1.04), (0.66, (calf_r + ankle_r) / 2.0 * 0.90, (calf_r + ankle_r) / 2.0 * 0.94), (0.92, ankle_r * 0.98, ankle_r * 1.04), (1.0, ankle_r * 0.96, ankle_r * 1.0)],
         )
     }
 
-    /// A leg from the hip to the ankle.
+    /// An arm from the shoulder to the wrist: two columns, the upper one swelling at the
+    /// shoulder's muscle and at the arm's.
+    fn arm(&self, side: Side) -> SdfNode {
+        let (shoulder, elbow) = (self.at(Joint::Shoulder(side)), self.at(Joint::Elbow(side)));
+        let (upper_r, fore_r) = (self.round("biceps_circumference_flexed") * 0.96, self.round("forearm_circumference_flexed"));
+        let upper = column(shoulder, elbow, [0.0, 0.0, 1.0], &[(0.0, upper_r * 1.12, upper_r * 1.16), (0.20, upper_r * 1.06, upper_r * 1.08), (0.45, upper_r, upper_r), (0.85, fore_r * 0.90, fore_r * 0.90), (1.0, fore_r * 0.92, fore_r * 0.92)]);
+        union(vec![upper, self.fore_column(side)], self.smooth * 0.5)
+    }
+
+    /// A leg from the hip to the ankle: two columns.
     fn leg(&self, side: Side) -> SdfNode {
-        let (hip, knee, ankle) = (self.at(Joint::Hip(side)), self.at(Joint::Knee(side)), self.at(Joint::Ankle(side)));
-        let (thigh_r, lower_r, calf_r, ankle_r) = (self.round("thigh_circumference"), self.round("lower_thigh_circumference"), self.round("calf_circumference"), self.round("ankle_circumference"));
-        // The thigh's girth is measured at its top, where the trunk's hips already are: the
-        // chain begins a little down it.
-        let back = |p: V3, by: f32| [p[0], p[1], p[2] - by];
-        chain(
-            &[
-                (lerp(hip, knee, 0.10), thigh_r * 0.97),
-                (lerp(hip, knee, 0.45), (thigh_r + lower_r) / 2.0 * 1.02),
-                (lerp(hip, knee, 0.84), lower_r),
-                (knee, lower_r * 0.93),
-                (back(lerp(knee, ankle, 0.14), 0.004), calf_r * 0.94),
-                (back(lerp(knee, ankle, 0.32), 0.012), calf_r),
-                (back(lerp(knee, ankle, 0.62), 0.006), (calf_r + ankle_r) / 2.0 * 0.92),
-                (lerp(knee, ankle, 0.90), ankle_r),
-                (ankle, ankle_r * 1.05),
-            ],
-            self.smooth * 0.4,
-        )
+        let (hip, knee) = (self.at(Joint::Hip(side)), self.at(Joint::Knee(side)));
+        let (thigh_r, lower_r) = (self.round("thigh_circumference"), self.round("lower_thigh_circumference"));
+        let knee_r = lower_r * 0.93;
+        let thigh = column(hip, knee, [1.0, 0.0, 0.0], &[(0.06, thigh_r * 0.97, thigh_r * 0.99), (0.5, (thigh_r + lower_r) / 2.0 * 1.02, (thigh_r + lower_r) / 2.0 * 1.04), (0.86, lower_r, lower_r), (1.0, knee_r, knee_r * 1.02)]);
+        union(vec![thigh, self.shank_column(side)], self.smooth * 0.5)
     }
 
     /// A hand: four metacarpals side by side for the palm, three bones to each finger, a
@@ -243,8 +287,9 @@ impl Sizes<'_> {
         // The paper's bones at this hand's size: its middle finger is what the frame's is.
         let size = math3::length(math3::sub(tip, knuckle)) / (FINGERS[2][0] + FINGERS[2][1] + FINGERS[2][2] + FINGERS[2][3]);
         let place = |from: V3, far: f32, side_by: f32| math3::add(math3::add(from, math3::scale(along, far)), math3::scale(across, side_by));
-        let wrist_r = self.round("wrist_circumference");
-        let mut parts = vec![cone(lerp(wrist, knuckle, -0.25), lerp(wrist, knuckle, 0.12), wrist_r, wrist_r * 0.98)];
+        // The forearm itself, as the body has it: where the two parts overlap they are one
+        // surface, and the hand's is cut off inside the body's.
+        let mut parts = vec![self.fore_column(side)];
         let finger_r = (breadth / 4.0) * 0.42;
         // Index (ray 1) to little (ray 4): the index on the thumb's side.
         for (ray, bones) in FINGERS.iter().copied().enumerate().skip(1) {
@@ -284,7 +329,8 @@ impl Sizes<'_> {
         let thumb_r = finger_r * 1.22;
         let end = math3::add(second, math3::scale(further, (bones[1] + bones[0]) * size - thumb_r * 0.86));
         parts.push(chain(&[(base, half * 0.95), (first, thumb_r * 1.05), (second, thumb_r * 0.95), (end, thumb_r * 0.86)], 0.004));
-        union(parts, 0.006)
+        let (low, high) = (math3::vmin(wrist, tip), math3::vmax(wrist, tip));
+        within(union(parts, 0.006), [low[0] - 0.14, low[1] - 0.14, low[2] - 0.2], [high[0] + 0.14, wrist[1] + 0.05, high[2] + 0.2])
     }
 
     /// A foot: a heel, an instep from the ankle, the body of the foot lower toward the ball,
@@ -301,8 +347,13 @@ impl Sizes<'_> {
         sole.m.stretch = [1.0, flat, 1.0];
         let mut parts = vec![sole];
         // The heel under the ankle, and the instep from the ankle forward and down.
-        parts.push(chain(&[(lerp(self.at(Joint::Knee(side)), ankle, 0.86), ankle_r), (ankle, ankle_r * 1.05), ([x, heel_r * 0.95, heel[2] + heel_r * 1.02], heel_r * 0.95)], 0.01));
-        parts.push(chain(&[(ankle, ankle_r * 0.98), ([x, ball_half * 0.92 * flat * 1.25, lerp(ankle, ball, 0.55)[2]], ball_half * 0.60)], 0.012));
+        // The shank itself, as the body has it: where the two parts overlap they are one
+        // surface, and the foot's is cut off inside the body's.
+        parts.push(self.shank_column(side));
+        // The heel and the instep begin inside the shank (narrower than it at the ankle): begun
+        // as wide as it, they make a ledge there that the body's coarser grid cuts into a sawtooth.
+        parts.push(chain(&[(ankle, ankle_r * 0.78), ([x, heel_r * 0.95, heel[2] + heel_r * 1.02], heel_r * 0.95)], 0.01));
+        parts.push(chain(&[(ankle, ankle_r * 0.76), ([x, ball_half * 0.92 * flat * 1.25, lerp(ankle, ball, 0.55)[2]], ball_half * 0.60)], 0.012));
         // Five toes from the ball's line, the great toe on the inside and as long as the foot
         // is measured; the others each shorter (no survey here measures them).
         let inward = -sign(side);
@@ -318,7 +369,7 @@ impl Sizes<'_> {
             let reach = from + (toes + 0.004) * shares[i] - r;
             parts.push(chain(&[([across, r * 1.25, from], r * 1.2), ([across, r * 1.02, (from + reach) / 2.0], r), ([across, r, reach], r * 0.95)], 0.002));
         }
-        union(parts, 0.008)
+        within(union(parts, 0.008), [x - 0.2, -0.1, heel[2] - 0.1], [x + 0.2, ankle[1] + 0.07, toe[2] + 0.1])
     }
 
     /// A head: the skull as broad and as long as measured, a face and a jaw under it, and
@@ -338,9 +389,8 @@ impl Sizes<'_> {
         let chin_y = head[1] + top * 0.10 - face * 0.92;
         let mut jaw = chain(&[([0.0, head[1] + top * 0.05, length * 0.20], cheeks * 0.86), ([0.0, chin_y + cheeks * 0.42, length * 0.27], cheeks * 0.50)], 0.0);
         jaw.m.stretch = [1.0, 1.0, 0.86];
-        let neck_r = self.round("neck_circumference");
-        let stem = chain(&[(lerp(neck, head, -0.25), self.round("neck_circumference_base")), (lerp(neck, head, 0.5), neck_r), ([0.0, head[1] + top * 0.1, 0.0], neck_r * 0.98)], 0.01);
-        union(vec![skull, jaw, stem], 0.02)
+        // The neck itself, as the body has it, cut at its middle.
+        within(union(vec![skull, jaw, self.neck_column()], 0.02), [-0.3, lerp(neck, head, 0.35)[1], -0.3], [0.3, vertex[1] + 0.1, 0.3])
     }
 }
 
@@ -350,22 +400,22 @@ pub fn tree(body: &Body, shaping: &Shaping, part: Part) -> SdfNode {
     let frame = straight.spread(shaping.arms, shaping.legs);
     let drop = (straight.at(Joint::Pelvis)[1] - frame.at(Joint::Pelvis)[1]) as f32;
     let sizes = Sizes { body, frame, drop, smooth: shaping.smooth };
-    let limbs = |past: f32| {
+    let limbs = || {
         let mut parts = sizes.trunk();
         for side in Side::BOTH {
-            parts.push(sizes.arm(side, past));
+            parts.push(sizes.arm(side));
             parts.push(sizes.leg(side));
         }
         parts
     };
     match part {
-        Part::Body => union(limbs(0.10), shaping.smooth),
+        Part::Body => union(limbs(), shaping.smooth),
         Part::Head => sizes.head(),
         Part::Hand(side) => sizes.hand(side),
         Part::Foot(side) => sizes.foot(side),
         // One coarse grid cannot hold a finger or a toe: a mitten and a shoe.
         Part::Whole => {
-            let mut parts = limbs(0.0);
+            let mut parts = limbs();
             parts.push(sizes.head());
             for side in Side::BOTH {
                 let (wrist, knuckle, tip) = (sizes.at(Joint::Wrist(side)), sizes.at(Joint::Knuckle(side)), sizes.at(Joint::Fingertip(side)));
