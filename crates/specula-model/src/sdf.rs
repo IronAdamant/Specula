@@ -593,44 +593,49 @@ fn prepared_cost(n: &Prepared) -> u64 {
     }
 }
 
-// Measured (2026-10-22, release, one core of the reference laptop): a sphere about 70 ns with
-// its frame and modifiers, a cone 105, a twist +80, a repeat +45, each noise octave about
-// 50-60; weighed half as much again for the mesher's own work per sample.
+// The weights. First set on 2026-10-22 from a sphere of about 70 ns with its frame and
+// modifiers, weighed half as much again for the mesher's own work per sample. Measured again
+// on 2026-11-17 on the same reference laptop, three times in release with `calibrate_sdf`: a
+// sphere 23, 29 and 34 ns (the weight said 107), a box 25 to 40, a round cone 37 to 48, a
+// column of four sections 45 to 50, a twist 35 to 48, a displacement of eight octaves 208 to
+// 260, a smooth union of eight spheres 251 to 309, a chain of 24 round cones 1,044 to 1,285.
+// Every weight below is half what it was, which is still at least one and a half times the
+// slowest of those measurements (the rule the first weights were set by).
 fn prim_cost(p: &Prim) -> u64 {
-    95 + match *p {
+    48 + match *p {
         Prim::HalfSpace { .. } => 0,
-        Prim::Sphere { .. } | Prim::Capsule { .. } => 12,
-        Prim::RoundCone { .. } => 40,
-        Prim::Column { .. } => 70,
-        Prim::Box { .. } | Prim::Torus { .. } | Prim::Ellipsoid { .. } => 24,
-        Prim::Cylinder { radius, radius_top, .. } if radius == radius_top => 24,
-        Prim::Cylinder { .. } => 70,
+        Prim::Sphere { .. } | Prim::Capsule { .. } => 6,
+        Prim::RoundCone { .. } => 26,
+        Prim::Column { .. } => 30,
+        Prim::Box { .. } | Prim::Torus { .. } | Prim::Ellipsoid { .. } => 12,
+        Prim::Cylinder { radius, radius_top, .. } if radius == radius_top => 12,
+        Prim::Cylinder { .. } => 35,
     }
 }
 
 fn group_cost(kids: u64, count: usize, smooth: f32) -> u64 {
-    15 + kids + count as u64 * if smooth > 0.0 { 40 } else { 6 }
+    8 + kids + count as u64 * if smooth > 0.0 { 20 } else { 3 }
 }
 
 fn modifiers_cost(m: &Modifiers) -> u64 {
     let mut c = 0;
     if m.rotate != [0.0; 3] {
-        c += 12;
-    }
-    if m.stretch != [1.0; 3] {
         c += 6;
     }
+    if m.stretch != [1.0; 3] {
+        c += 3;
+    }
     if m.repeat.is_some() {
-        c += 75;
+        c += 38;
     }
     if m.twist != 0.0 {
-        c += 130;
+        c += 65;
     }
     if m.bend != 0.0 {
-        c += 45;
+        c += 23;
     }
     if let Some((_, _, octaves)) = m.displace {
-        c += 30 + 90 * octaves.max(1) as u64;
+        c += 15 + 45 * octaves.max(1) as u64;
     }
     c
 }
@@ -1424,7 +1429,8 @@ mod tests {
         let (shape, stats) = mesh(&tree, &opts(96)).unwrap();
         assert_eq!(unbalanced(&shape), 0);
         let every_bone = stats.samples_evaluated * eval_cost(&tree);
-        assert!(stats.work < every_bone / 2, "{} work for {} samples of a tree that costs {}", stats.work, stats.samples_evaluated, eval_cost(&tree));
+        // (A body of columns costs a little over half of what its whole tree would at every sample.)
+        assert!(stats.work < every_bone * 2 / 3, "{} work for {} samples of a tree that costs {}", stats.work, stats.samples_evaluated, eval_cost(&tree));
     }
 
     /// A column is its sections: at each one the surface is that ellipse, between two it

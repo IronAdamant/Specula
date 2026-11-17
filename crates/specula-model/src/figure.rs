@@ -196,7 +196,7 @@ impl Sizes<'_> {
         let top = (shoulder[1] - 0.012).max(chest + 0.02);
         let t = |y: f32| (y - hips) / (top - hips);
         let (wide, deep) = (shoulder[0] * 0.86, chest_deep * 0.74);
-        let mut parts = vec![column(
+        let column_of_sections = column(
             [0.0, hips, 0.0],
             [0.0, top, 0.0],
             [1.0, 0.0, 0.0],
@@ -206,7 +206,10 @@ impl Sizes<'_> {
                 (t(chest), chest_half, chest_deep * 0.93),
                 (1.0, wide, deep),
             ],
-        )];
+        );
+        // The column's rounded end would hang some centimetres under the crotch: it is cut at
+        // the height the survey measured the crotch at (the thighs' tops close it over).
+        let mut parts = vec![within(column_of_sections, [-2.0, self.height("crotch_height"), -2.0], [2.0, top + 2.0, 2.0])];
         for side in Side::BOTH {
             let x = sign(side);
             // A buttock behind each hip, and the chest's swell in front of each side of it.
@@ -270,8 +273,51 @@ impl Sizes<'_> {
         let (hip, knee) = (self.at(Joint::Hip(side)), self.at(Joint::Knee(side)));
         let (thigh_r, lower_r) = (self.round("thigh_circumference"), self.round("lower_thigh_circumference"));
         let knee_r = lower_r * 0.93;
-        let thigh = column(hip, knee, [1.0, 0.0, 0.0], &[(0.06, thigh_r * 0.97, thigh_r * 0.99), (0.5, (thigh_r + lower_r) / 2.0 * 1.02, (thigh_r + lower_r) / 2.0 * 1.04), (0.86, lower_r, lower_r), (1.0, knee_r, knee_r * 1.02)]);
-        union(vec![thigh, self.shank_column(side)], self.smooth * 0.5)
+        let thigh = column(hip, knee, [1.0, 0.0, 0.0], &[(0.0, thigh_r * 0.80, thigh_r * 0.86), (0.14, thigh_r * 0.97, thigh_r * 0.99), (0.5, (thigh_r + lower_r) / 2.0 * 1.02, (thigh_r + lower_r) / 2.0 * 1.04), (0.86, lower_r, lower_r), (1.0, knee_r, knee_r * 1.02)]);
+        // The kneecap, in front of the joint.
+        let cap = egg([knee[0], knee[1] + knee_r * 0.10, knee[2] + knee_r * 0.62], [knee_r * 0.50, knee_r * 0.58, knee_r * 0.46]);
+        union(vec![thigh, self.shank_column(side), cap], self.smooth * 0.5)
+    }
+
+    /// The box a fine part is cut by (`lo`, `hi`): the part is what of it lies inside, and the
+    /// body is what of it lies outside, less a few millimetres' overlap, so that no surface
+    /// is made twice (two copies of one surface on two grids show as a ragged line).
+    fn room(&self, part: Part) -> (V3, V3) {
+        match part {
+            Part::Hand(side) => {
+                let (wrist, tip) = (self.at(Joint::Wrist(side)), self.at(Joint::Fingertip(side)));
+                let (low, high) = (math3::vmin(wrist, tip), math3::vmax(wrist, tip));
+                ([low[0] - 0.14, low[1] - 0.14, low[2] - 0.2], [high[0] + 0.14, wrist[1] + 0.05, high[2] + 0.2])
+            }
+            Part::Foot(side) => {
+                let (ankle, heel, toe) = (self.at(Joint::Ankle(side)), self.at(Joint::Heel(side)), self.at(Joint::Toe(side)));
+                ([ankle[0] - 0.2, -0.1, heel[2] - 0.1], [ankle[0] + 0.2, ankle[1] + 0.07, toe[2] + 0.1])
+            }
+            _ => {
+                let (neck, head, vertex) = (self.at(Joint::Neck), self.at(Joint::Head), self.at(Joint::Vertex));
+                ([-0.3, lerp(neck, head, 0.35)[1], -0.3], [0.3, vertex[1] + 0.1, 0.3])
+            }
+        }
+    }
+
+    /// The body with the fine parts' rooms taken out of it, each a little short of its cut.
+    fn body_without_fine_parts(&self, body: SdfNode) -> SdfNode {
+        const OVERLAP: f32 = 0.004;
+        let mut kids = vec![body];
+        for part in [Part::Head, Part::Hand(Side::Left), Part::Hand(Side::Right), Part::Foot(Side::Left), Part::Foot(Side::Right)] {
+            let (mut lo, mut hi) = self.room(part);
+            // A hand's and a foot's cut is their room's top; the head's is its bottom.
+            if part == Part::Head {
+                lo[1] += OVERLAP;
+            } else {
+                hi[1] -= OVERLAP;
+            }
+            let half = math3::scale(math3::sub(hi, lo), 0.5);
+            let mut room = node(Kind::Prim(Prim::Box { half, round: 0.0 }));
+            room.m.at = math3::add(lo, half);
+            kids.push(room);
+        }
+        node(Kind::Group { op: Combine::Difference, kids, smooth: 0.0 })
     }
 
     /// A hand: four metacarpals side by side for the palm, three bones to each finger, a
@@ -329,8 +375,8 @@ impl Sizes<'_> {
         let thumb_r = finger_r * 1.22;
         let end = math3::add(second, math3::scale(further, (bones[1] + bones[0]) * size - thumb_r * 0.86));
         parts.push(chain(&[(base, half * 0.95), (first, thumb_r * 1.05), (second, thumb_r * 0.95), (end, thumb_r * 0.86)], 0.004));
-        let (low, high) = (math3::vmin(wrist, tip), math3::vmax(wrist, tip));
-        within(union(parts, 0.006), [low[0] - 0.14, low[1] - 0.14, low[2] - 0.2], [high[0] + 0.14, wrist[1] + 0.05, high[2] + 0.2])
+        let (lo, hi) = self.room(Part::Hand(side));
+        within(union(parts, 0.006), lo, hi)
     }
 
     /// A foot: a heel, an instep from the ankle, the body of the foot lower toward the ball,
@@ -340,11 +386,12 @@ impl Sizes<'_> {
         let ankle_r = self.round("ankle_circumference");
         let (heel_r, ball_half) = (self.m("heel_breadth") / 2.0, self.m("foot_breadth_horizontal") / 2.0);
         let x = ankle[0];
-        // The body of the foot, as broad as measured at the heel and at the ball, and flatter
-        // than it is broad: stretched down about the ground it stands on.
-        let flat = 0.62;
-        let mut sole = cone([x, heel_r, heel[2] + heel_r], [x, ball_half * 0.92, ball[2] - ball_half * 0.25], heel_r, ball_half * 0.92);
-        sole.m.stretch = [1.0, flat, 1.0];
+        // The body of the foot: a column from the heel to the ball, as broad as measured at
+        // each, as high as the heel there and a third as high at the ball; its line comes down
+        // from the heel's middle to the ball's, so that both rest on the ground and the middle
+        // of the foot is off it (an arch).
+        let (heel_high, ball_high) = (heel_r * 0.95, ball_half * 0.36);
+        let sole = column([x, heel_high, heel[2] + heel_r], [x, ball_high, ball[2]], [1.0, 0.0, 0.0], &[(0.0, heel_r, heel_high), (0.5, ball_half * 0.84, heel_high * 0.70), (1.0, ball_half * 0.96, ball_high)]);
         let mut parts = vec![sole];
         // The heel under the ankle, and the instep from the ankle forward and down.
         // The shank itself, as the body has it: where the two parts overlap they are one
@@ -353,7 +400,7 @@ impl Sizes<'_> {
         // The heel and the instep begin inside the shank (narrower than it at the ankle): begun
         // as wide as it, they make a ledge there that the body's coarser grid cuts into a sawtooth.
         parts.push(chain(&[(ankle, ankle_r * 0.78), ([x, heel_r * 0.95, heel[2] + heel_r * 1.02], heel_r * 0.95)], 0.01));
-        parts.push(chain(&[(ankle, ankle_r * 0.76), ([x, ball_half * 0.92 * flat * 1.25, lerp(ankle, ball, 0.55)[2]], ball_half * 0.60)], 0.012));
+        parts.push(chain(&[(ankle, ankle_r * 0.76), ([x, heel_high * 0.80, lerp(ankle, ball, 0.55)[2]], ball_half * 0.52)], 0.012));
         // Five toes from the ball's line, the great toe on the inside and as long as the foot
         // is measured; the others each shorter (no survey here measures them).
         let inward = -sign(side);
@@ -367,15 +414,16 @@ impl Sizes<'_> {
             let from = ball[2] - toes * 0.20 * i as f32 / 4.0 - 0.004;
             let r = radii[i] * (ball_half / 0.047);
             let reach = from + (toes + 0.004) * shares[i] - r;
-            parts.push(chain(&[([across, r * 1.25, from], r * 1.2), ([across, r * 1.02, (from + reach) / 2.0], r), ([across, r, reach], r * 0.95)], 0.002));
+            parts.push(chain(&[([across, r * 1.1, from], r * 1.08), ([across, r * 1.02, (from + reach) / 2.0], r), ([across, r, reach], r * 0.95)], 0.002));
         }
-        within(union(parts, 0.008), [x - 0.2, -0.1, heel[2] - 0.1], [x + 0.2, ankle[1] + 0.07, toe[2] + 0.1])
+        let (lo, hi) = self.room(Part::Foot(side));
+        within(union(parts, 0.008), lo, hi)
     }
 
     /// A head: the skull as broad and as long as measured, a face and a jaw under it, and
     /// the neck it sits on. (A face's features are their own work.)
     fn head(&self) -> SdfNode {
-        let (neck, head, vertex) = (self.at(Joint::Neck), self.at(Joint::Head), self.at(Joint::Vertex));
+        let (head, vertex) = (self.at(Joint::Head), self.at(Joint::Vertex));
         let (breadth, length) = (self.m("head_breadth"), self.m("head_length"));
         // The skull's height: from the top of the head to the ear's opening, and as much again
         // less a fifth below it.
@@ -390,7 +438,8 @@ impl Sizes<'_> {
         let mut jaw = chain(&[([0.0, head[1] + top * 0.05, length * 0.20], cheeks * 0.86), ([0.0, chin_y + cheeks * 0.42, length * 0.27], cheeks * 0.50)], 0.0);
         jaw.m.stretch = [1.0, 1.0, 0.86];
         // The neck itself, as the body has it, cut at its middle.
-        within(union(vec![skull, jaw, self.neck_column()], 0.02), [-0.3, lerp(neck, head, 0.35)[1], -0.3], [0.3, vertex[1] + 0.1, 0.3])
+        let (lo, hi) = self.room(Part::Head);
+        within(union(vec![skull, jaw, self.neck_column()], 0.02), lo, hi)
     }
 }
 
@@ -409,7 +458,7 @@ pub fn tree(body: &Body, shaping: &Shaping, part: Part) -> SdfNode {
         parts
     };
     match part {
-        Part::Body => union(limbs(), shaping.smooth),
+        Part::Body => sizes.body_without_fine_parts(union(limbs(), shaping.smooth)),
         Part::Head => sizes.head(),
         Part::Hand(side) => sizes.hand(side),
         Part::Foot(side) => sizes.foot(side),

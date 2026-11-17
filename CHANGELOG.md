@@ -264,6 +264,12 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       pipe on it; a muscle from the neck to each shoulder; the ankle's ledge, found by measuring
       pixels after blaming the light. A model that did not take the captures did not pass the
       sixth as it had been described, and the record says so.
+    - **Eight bodies in a row** (the eighth look): slender, heavy, older, athletic, long-legged,
+      broad, beside the two typical ones, each from the same shape with other numbers, and each a
+      different person. The body is now cut where a fine part begins, so no surface is made twice.
+    - **The distance-field weights are halved**, after three measurements on the reference laptop
+      (a sphere 23 to 34 ns where its weight said 107); each is still one and a half times the
+      slowest measurement. A figure of six parts had sat at the build's limit.
     - **Asked of the owner's researchers:** reference pictures to hold the figures against
       ([docs/research/REFERENCE_IMAGES_BRIEF.md](docs/research/REFERENCE_IMAGES_BRIEF.md)).
   - **Part 4, slice 1: the body as numbers** (2026-11-17; `specula-corpus`,

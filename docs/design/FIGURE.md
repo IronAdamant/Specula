@@ -39,8 +39,10 @@ traits that fold it).
 
 One grid cannot hold a finger beside a trunk: a finger is 9 mm and a trunk's cell 15 mm. Each part is
 meshed on a grid as fine as it needs. A fine part holds **the body's own limb** (the same column: the
-forearm in a hand, the shank in a foot, the neck in a head) and is cut by a box a little way up it, so
-that where two parts overlap they are one surface and the cut's face is inside the body.
+forearm in a hand, the shank in a foot, the neck in a head) and is cut by a box a little way up it; the
+body is cut by the same box, four millimetres short of it. So the two meet along one thin line, each
+cut's face inside the other, and no surface is made twice (two copies of one surface on two grids show
+as a ragged line: the third to the seventh looks have it).
 
 ## Where each size comes from
 
@@ -84,21 +86,30 @@ development machine (the gallery's originals are not tracked). In short:
 | v5 | More sections for the slope: still a shelf |
 | v6 | A muscle from the neck to each shoulder: they slope |
 | v7 | The ankle's ledge found by measuring pixels and removed; a man's chest flattened |
+| v8 | The body cut where the fine parts begin; a foot with an arch; kneecaps. **Eight different bodies in a row** (slender, heavy, older, athletic, long-legged, broad) |
 
 A model that did not take the captures checked v6 and **did not pass it as it had been described**: the
-joins still showed, and the waist is not narrower than the chest.
+joins still showed, and the waist is not narrower than the chest. It checked v8 too, and did not pass that
+as described either: the eight differ in height, girth and shoulders as their numbers say, but where the
+legs begin could not be told apart (the long-legged body's hip joints are 46 mm higher by its rows, which
+is 7 pixels in that picture); the joins are thin lines now and still seams; neighbours' hands overlapped
+in the row. The same numbers showed the figure's crotch 5 cm under the measured one (the trunk's rounded
+bottom), which is now cut at the measured height.
 
-Numbers at v7 (release engine, integrated adapter): about 50,000 triangles a figure (body 18,700; head
-6,800; hands 7,300 each; feet 4,800 each), built in 0.8 s, 0.9e9 of the 1.5e9 work units a build may
-spend; 0.35 ms of GPU time a frame with two on screen at 1280x720.
+Numbers (release engine, integrated adapter): 45,000 to 53,000 triangles a figure (at v7: body 18,700;
+head 6,800; hands 7,300 each; feet 4,800 each), built in about a second, 0.6e9 to 0.67e9 of the 1.5e9
+work units a build may spend (with the weights as recalibrated the same day:
+[PROCEDURAL_MODELLING.md](PROCEDURAL_MODELLING.md), tier 3); 0.35 ms of GPU time a frame with two on
+screen at 1280x720.
 
 ## What is wrong, and what is not there
 
-- A seam where the head meets the neck; the head is an egg (a face is its own work, for its own lane).
-- A mound on each forefoot, lumpy toes; a notch at the wrist; the hips meet the trunk as a ledge.
-- No knees, elbows or collarbones. A soft ragged line where the instep leaves the shank, and a faint
-  line where each fine part is cut.
-- Only the two typical bodies have been looked at: no slender, heavy or old one, none with traits.
+- A hard crease where the skull sits on the neck; the head is an egg (a face is its own work, for its
+  own lane).
+- Bands at the knees and down the thighs; the hips meet the trunk as a ledge on the heavier bodies; a
+  notch at the wrist; a thin line (and a bright hairline) where each fine part is cut.
+- No elbows or collarbones; the kneecaps are a first guess.
+- Eight bodies have been looked at from afar, and only the two typical ones up close.
 - The levels of detail have not been looked at. A hand is 7,300 triangles.
 - **No rig.** The frame's joints are the bones' places; binding is not written.
 - Nothing has been held against a picture of a person

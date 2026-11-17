@@ -152,10 +152,15 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
   compares the pruned and the whole tree bit for bit, colours included; a plain smooth union keeps
   more than a near-union, because its children blend in turn). Each sample costs the evaluation
   weight of what is left (`sdf::eval_cost`: a noise octave about as much as a primitive), and so
-  does each crossing's normal. A figure's body costs 2,197 units a sample where every bone at every
-  sample is 7,135. (Measured the same day in release, `calibrate_sdf`: an evaluation takes about a
-  quarter of its weight in nanoseconds on this machine, a sphere 23 ns against 107. The weights are
-  every sculpt's budget and were left as they are.) One vertex per surface cell (a QEF of the
+  does each crossing's normal. A figure's body of columns costs a little over half of what its whole
+  tree would at every sample (a body of chains, a third).
+- **The weights were halved on 2026-11-17**, after three measurements in release on the reference
+  laptop (`calibrate_sdf`): a sphere 23, 29 and 34 ns where its weight said 107; a box 25 to 40; a
+  round cone 37 to 48; a twist 35 to 48; eight octaves of displacement 208 to 260; a smooth union of
+  eight spheres 251 to 309. Each weight is still at least one and a half times the slowest of those
+  (the rule they were first set by, on 2026-10-22, from a sphere of about 70 ns on a shared
+  machine). What moved it: a figure of six parts sat at the build's limit and was refused at its
+  levels of detail. A sculpt that built before builds now; one that was refused for work may not be. One vertex per surface cell (a QEF of the
   crossings' planes regularised towards their mass point, clamped to the cell): flat faces stay flat
   and creases sharp. The outer sample layer counts as outside, so the mesh is always closed (it may
   have edges where two sheets touch: still balanced). Unbounded trees (a half-space in a union) need
