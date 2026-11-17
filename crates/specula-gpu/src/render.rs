@@ -426,7 +426,8 @@ pub struct FrameData {
     pub sky_horizon: [f32; 4],
     /// Linear RGB × intensity; w glow strength.
     pub sky_ground: [f32; 4],
-    /// Horizon sharpness, the sky is drawn (1), unused ×2.
+    /// Horizon sharpness, the sky is drawn (1), the form view ([`crate::FormView`] as a number:
+    /// 0 the world), the curvature view's scale (m).
     pub sky_params: [f32; 4],
     /// The wind ([`crate::WindSettings`]): horizontal direction × strength (world x, z),
     /// frequency (Hz), gust.
@@ -540,7 +541,12 @@ pub fn frame_data(frame: &FrameDesc, extent: VkExtent2D, shadow: &ShadowData) ->
             c
         },
         // y: the sky is drawn (water mirrors its gradient).
-        sky_params: [sky_s.horizon_sharpness.clamp(0.1, 64.0), if sky_s.enabled { 1.0 } else { 0.0 }, 0.0, 0.0],
+        sky_params: [
+            sky_s.horizon_sharpness.clamp(0.1, 64.0),
+            if sky_s.enabled { 1.0 } else { 0.0 },
+            frame.form as u8 as f32,
+            if frame.form_scale.is_finite() { frame.form_scale.clamp(1e-4, 1e4) } else { 0.05 },
+        ],
         wind: wind_data(&env.wind),
         foliage: foliage_data(&env.wind),
         gi_params: [0.0; 4],

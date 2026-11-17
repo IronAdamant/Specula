@@ -335,6 +335,16 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       and on a `rect` outline. 0 is the hard shape, 1 its fully round form, and everything
       between is valid; the shape keeps its sizes whatever its roundness. With the bone chains
       of this slice it is the first of the five items of "form within an agent's reach".
+    - **The form views** ([docs/design/FORM.md](docs/design/FORM.md)): `sight_frame` and
+      `sight_orbit` take `form`: `clay`, `normals`, `curvature` or `stripes`. The same surfaces
+      from the same camera as shape alone: no colour, texture or glow of their own, none of
+      the world's light, sky, fog or post effects, on a neutral ground; the packet says which
+      view it is. Exact on both adapters (a wall facing +z reads 128, 128, 255 in `normals`).
+      The first look at the figure in them showed in one pass what sixteen looks under the
+      world's light had not: the plate on a man's chest is on his back and on a woman's back
+      too, the arm lies on the shoulder as a separate capsule, the trunk is a box with hard
+      vertical edges. An independent check of that look said curvature clipped to white and
+      clay was low in contrast; both are changed.
     - **The review of the squarer trunk and of roundness said not to merge them, and what it
       found is mended.** Three major: a rounded box's field was in the shape's own units, not
       metres (a thin board sank by a sixth of its volume, and `round` swelled it by its metres

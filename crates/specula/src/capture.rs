@@ -315,7 +315,7 @@ impl Engine {
             Command::Frame(spec) => Job::Frame(spec),
             Command::Sight(call) => match call {
                 SightCall::Orbit(o) => Job::Orbit(o),
-                SightCall::Compare(CompareCall::Mark { name, frame }) => Job::Mark { name, frame },
+                SightCall::Compare(CompareCall::Mark { name, frame }) => Job::Mark { name, frame: *frame },
                 SightCall::Compare(CompareCall::Diff { name, threshold, max_subjects }) => Job::Diff { name, threshold, max_subjects },
                 SightCall::Query(q) => Job::Query(q),
                 other => {
@@ -905,6 +905,11 @@ impl Engine {
             ..sight::frame(&self.world, &view_proj, &draws, &lights, opts.time_s as f32)
         };
         self.luts.apply(&mut self.gpu, self.world.env(), &mut frame, true);
+        // A form view: the same draws, as shape alone (no light, sky, fog, post or effects).
+        let form = self.captures.form;
+        if let Some((view, scale)) = form {
+            sight::form_frame(&mut frame, view, scale);
+        }
         let second_render = painted && opts.ids && opts.overlays.has(Kind::Bounds);
         let mut overlays = None;
         // A hosted game's interface (include_ui), under the debug overlays.
@@ -969,7 +974,11 @@ impl Engine {
         if gi_drawn && matches!(gi_view, crate::gi::CaptureView::Irradiance | crate::gi::CaptureView::Probes) {
             // The irradiance view shows the indirect light alone and draws no particles: the packet
             // says so, never "drawn" for what no pixel shows (GI fix lane).
-            unlit_particles(&mut effects);
+            unlit_particles(&mut effects, "not drawn: the irradiance view shows the indirect light alone");
+        }
+        if form.is_some() {
+            // A form view draws no particles or decals either, and its packet says so.
+            unlit_particles(&mut effects, "not drawn: a form view shows lit surfaces' shape alone");
         }
         // What the colour passes actually recorded (the GPU's own list, after every readiness
         // check): the packet monitor's record, independent of the ID buffer's counts.
@@ -1494,8 +1503,8 @@ fn encode_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
 }
 
 /// An effects packet (`vfx::packet_json`) for a frame drawn without particles (the irradiance
-/// view): no effect is drawn or fills a pixel, and it says why.
-fn unlit_particles(effects: &mut Json) {
+/// view, a form view): no effect is drawn or fills a pixel, and it says why.
+fn unlit_particles(effects: &mut Json, why: &str) {
     if let Some(Json::Arr(list)) = effects.get("effects") {
         let mut list = list.clone();
         for e in list.iter_mut() {
@@ -1504,7 +1513,7 @@ fn unlit_particles(effects: &mut Json) {
         }
         effects.set("effects", Json::Arr(list));
     }
-    effects.set("particles", Json::from("not drawn: the irradiance view shows the indirect light alone"));
+    effects.set("particles", Json::from(why));
 }
 
 /// What a capture's image holds until it is encoded on a worker (the frame, or a sheet within the

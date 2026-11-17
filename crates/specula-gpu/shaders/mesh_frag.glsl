@@ -255,6 +255,8 @@ void gather_light(vec3 p, vec3 n, vec3 v, float rough, vec3 ambient, out vec3 di
 // Lit: opaque surfaces
 // ---------------------------------------------------------------------------------------------
 
+#include "form.glsl"
+
 vec4 shade_lit() {
 #ifdef TEXTURED
     // Textured materials don't read the vertex colour: with it, this pipeline hangs the same
@@ -324,6 +326,10 @@ vec4 shade_lit() {
         n = normalize(n + vec3(0.0, 2.0, 0.0));
     }
 #endif
+    float form = pc.frame.sky_params.z;
+    if (form > 0.5) {
+        return form_view(form, n, v, v_world);
+    }
     // The ambient term: the flat ambient, or the baked GI's irradiance here (per draw or per
     // pixel, by the tier: gi.glsl).
     vec3 amb = gi_ambient_draw(v_draw, v_world, n, v);

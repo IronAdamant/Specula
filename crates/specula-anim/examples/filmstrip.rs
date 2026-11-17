@@ -372,6 +372,7 @@ fn render_tile(gpu: &mut Gpu, target: specula_gpu::TargetId, view_proj: [f32; 16
         gi: Default::default(),
         terrains: &[],
         text: Default::default(),
+        ..Default::default()
     };
     gpu.render(target, &frame).expect("render");
     let px = gpu.read_rgba8(target).expect("read");

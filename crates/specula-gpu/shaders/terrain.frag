@@ -20,6 +20,7 @@ layout(push_constant) uniform Push {
 } pc;
 
 #include "lit_common.glsl"
+#include "form.glsl"
 
 layout(location = 0) in vec3 v_world;
 layout(location = 1) in vec2 v_cell;
@@ -158,6 +159,11 @@ void main() {
     // normal faces away from the camera while the triangle faces it, and a flipped normal paints
     // the ridge black.
     vec3 v = normalize(camera_pos() - v_world);
+    if (pc.frame.sky_params.z > 0.5) {
+        // A form view (sight_frame form): the ground as shape alone, as meshes show theirs.
+        out_color = form_view(pc.frame.sky_params.z, n, v, v_world);
+        return;
+    }
     vec3 diffuse, specular;
     float sun;
     // Baked GI: per vertex at tier low (terrain.vert), per pixel at high, the flat ambient without.

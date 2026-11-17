@@ -633,6 +633,32 @@ pub fn frame<'a>(world: &World, view_proj: &Mat4, draws: &'a [DrawItem], lights:
     }
 }
 
+/// What a form view's frame is drawn against (sRGB): a dark neutral that clay, both ends of a
+/// curvature view and both stripes stand off from.
+pub const FORM_BACKGROUND: [f32; 4] = [0.09, 0.09, 0.10, 1.0];
+
+/// The frame of a form view ([`specula_gpu::FormView`]): nothing of the world's light, sky, fog
+/// or post effects (the views write the colours they mean, which a tone curve, a grade, bloom
+/// or anti-aliasing would change), no cast shadows and no baked light to prepare, and a neutral
+/// ground behind. The wind stays: what sways is where the world's frame draws it.
+pub fn form_frame(frame: &mut FrameDesc, view: specula_gpu::FormView, scale: f32) {
+    let wind = frame.environment.wind;
+    let mut plain = specula_gpu::Environment { exposure: 1.0, tonemap: false, fxaa: false, wind, ..Default::default() };
+    plain.shadow.enabled = false;
+    plain.bloom.enabled = false;
+    plain.sky.enabled = false;
+    plain.fog.enabled = false;
+    plain.grading.enabled = false;
+    plain.ssao.enabled = false;
+    frame.environment = plain;
+    frame.clear_color = FORM_BACKGROUND;
+    frame.effects = Default::default();
+    frame.gi = Default::default();
+    frame.lights = &[];
+    frame.form = view;
+    frame.form_scale = scale;
+}
+
 /// Whether any of `e`'s bounding box can be in view of `view_proj` (conservative: false only
 /// when every corner is beyond one side of the view, or behind it). Entities without bounds count
 /// as in view.

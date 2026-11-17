@@ -119,6 +119,9 @@ pub struct CaptureQueue {
     /// A step made a new size's target or a slice of its graph's images: the pass's captures
     /// end there.
     end_pass: bool,
+    /// The form view the view being submitted is drawn as, with its curvature scale (`sight_frame
+    /// form`): set for that one render, as the GI view is.
+    pub(super) form: Option<(specula_gpu::FormView, f32)>,
     /// A step job's view in flight (`timeline_preview`'s tiles), with the job's own slot: submitted
     /// in one step and landed in a later one, so the GPU's work never holds the engine thread.
     /// Landed like the flight before any other offscreen render ([`Engine::land_capture_flight`]),
@@ -386,17 +389,17 @@ impl Engine {
             return;
         }
         let none = ov::Spec::default();
-        let (opts, gi) = match (&p.job, &p.state) {
-            (Job::Frame(spec), _) => (ViewOpts { include_ui: spec.include_ui, lod: spec.lod, time_s: p.time_s, overlays: &spec.overlays, caption: None, ids: spec.ids, hud: true, fill: None }, Some(spec.gi)),
-            (Job::Mark { frame: spec, .. }, _) => (ViewOpts { include_ui: spec.include_ui, lod: spec.lod, time_s: p.time_s, overlays: &spec.overlays, caption: None, ids: spec.ids, hud: true, fill: None }, None),
-            (Job::Diff { .. }, State::Diff { view: v, .. }) => (ViewOpts { include_ui: v.include_ui, lod: v.lod, time_s: p.time_s, overlays: &v.overlays, caption: None, ids: v.ids, hud: true, fill: None }, None),
-            (Job::Query(q), _) => (ViewOpts { include_ui: view.include_ui, lod: q.frame.lod, time_s: p.time_s, overlays: &none, caption: None, ids: true, hud: true, fill: None }, None),
+        let (opts, gi, form) = match (&p.job, &p.state) {
+            (Job::Frame(spec), _) => (ViewOpts { include_ui: spec.include_ui, lod: spec.lod, time_s: p.time_s, overlays: &spec.overlays, caption: None, ids: spec.ids, hud: true, fill: None }, Some(spec.gi), spec.form),
+            (Job::Mark { frame: spec, .. }, _) => (ViewOpts { include_ui: spec.include_ui, lod: spec.lod, time_s: p.time_s, overlays: &spec.overlays, caption: None, ids: spec.ids, hud: true, fill: None }, None, crate::sight_tools::Form::default()),
+            (Job::Diff { .. }, State::Diff { view: v, .. }) => (ViewOpts { include_ui: v.include_ui, lod: v.lod, time_s: p.time_s, overlays: &v.overlays, caption: None, ids: v.ids, hud: true, fill: None }, None, crate::sight_tools::Form::default()),
+            (Job::Query(q), _) => (ViewOpts { include_ui: view.include_ui, lod: q.frame.lod, time_s: p.time_s, overlays: &none, caption: None, ids: true, hud: true, fill: None }, None, crate::sight_tools::Form::default()),
             // The window hides the game's interface while the editor is open: the pick sees what the human does.
-            (Job::Pick(_), _) => (ViewOpts { include_ui: true, lod: None, time_s: p.time_s, overlays: &none, caption: None, ids: true, hud: false, fill: None }, None),
+            (Job::Pick(_), _) => (ViewOpts { include_ui: true, lod: None, time_s: p.time_s, overlays: &none, caption: None, ids: true, hud: false, fill: None }, None, crate::sight_tools::Form::default()),
             (Job::Orbit(o), State::Orbit(run)) => {
                 let (_, az) = orbit::view(run.center, run.distance, o.elevation_deg, o.start_deg, at as u32, o.views, o.fov_y_deg);
                 let caption = format!("{} az {}", at + 1, az.round());
-                (ViewOpts { include_ui: o.include_ui, lod: o.lod, time_s: p.time_s, overlays: &o.overlays, caption: Some(caption), ids: true, hud: true, fill: None }, None)
+                (ViewOpts { include_ui: o.include_ui, lod: o.lod, time_s: p.time_s, overlays: &o.overlays, caption: Some(caption), ids: true, hud: true, fill: None }, None, o.form)
             }
             _ => {
                 let _ = p.to.reply.send(ToolOutput::error("internal: a capture job and its state disagree"));
@@ -408,7 +411,10 @@ impl Engine {
             self.gi.capture_view = g;
             self.gi.marks_drawn = (0, 0);
         }
+        // And as what form view (the world, unless the call asked for one).
+        self.captures.form = (!form.is_world()).then(|| (form.view, form.scale_for(&camera)));
         let submitted = self.render_view_submit(camera, w, h, &opts);
+        self.captures.form = None;
         self.gi.capture_view = crate::gi::CaptureView::Lit;
         let submitted = match submitted {
             Ok(s) => s,
@@ -777,6 +783,9 @@ impl Engine {
         if !r.streaming.is_null() {
             packet.set("streaming", r.streaming.clone());
         }
+        if !spec.form.is_world() {
+            packet.set("form", spec.form.packet_json(spec.form.scale_for(&view.camera)));
+        }
         if let Some(mut g) = taken.gi {
             crate::gi::drawn_json(&mut g, spec.gi, r.gi_drawn, r.gi_error.as_deref());
             if let Some((scale, start)) = r.gi_stretch {
@@ -875,6 +884,8 @@ impl Engine {
         let frame = self.frames_captured;
         let requested_by = self.swarm.agent_name(session);
         let (elevation_deg, fov_y_deg, grid) = (o.elevation_deg, o.fov_y_deg, orbit::grid(o.views));
+        // (Every view of an orbit is as far from its centre: one scale for the sheet.)
+        let form = (!o.form.is_world()).then(|| o.form.packet_json(o.form.scale_for(&orbit::view(center, distance, o.elevation_deg, o.start_deg, 0, o.views, o.fov_y_deg).0)));
         self.offload_capture(session, to, (sw, sh, sheet), png, "sight", move |png_bytes, saved, more| {
             warnings.extend(more);
             let packet_path = saved.as_ref().map(|p| p.with_extension("json"));
@@ -902,6 +913,9 @@ impl Engine {
                 ("views", Json::Arr(out_views)),
                 ("warnings", Json::Arr(warnings)),
             ]);
+            if let Some(form) = form {
+                packet.set("form", form);
+            }
             if let Some(ov) = overlays {
                 packet.set("overlays", ov);
             }
@@ -1220,6 +1234,89 @@ mod tests {
         assert!(!out.is_error, "{:?}", out.content);
         let text = out.content.iter().find_map(|c| if let Content::Text(t) = c { Some(t.as_str()) } else { None }).unwrap();
         Json::parse(text).unwrap()
+    }
+
+    fn image(out: &ToolOutput) -> specula_core::png::Image {
+        let data = out.content.iter().find_map(|c| if let Content::Image { data_base64, .. } = c { Some(data_base64.as_str()) } else { None }).unwrap();
+        specula_core::png::decode(&base64::decode(data).unwrap()).unwrap()
+    }
+
+    /// A form view (`sight_frame form`, `sight_orbit form`) draws the same surfaces as shape
+    /// alone, against a neutral ground, and its packet says which view it is and what it left
+    /// out; the frame after it is the world's again, to the byte.
+    #[test]
+    fn a_form_view_is_shape_alone_and_its_packet_says_so() {
+        let Some(mut e) = engine("form") else { return };
+        // Straight at the front of the cube at (2, 0, 3), from +z.
+        let view = r#""eye": [2, 0, 9], "target": [2, 0, 3], "width": 128, "height": 128, "fov_y_deg": 30"#;
+        let mut call = 0;
+        let mut shoot = |e: &mut Engine, more: &str| {
+            call += 1;
+            let rx = ask(e, "sight_frame", &format!("{{{view}{more}}}"), call, soon());
+            let (_, out) = run(e, &[&rx], |_| {});
+            (packet(&out[0]), image(&out[0]))
+        };
+        let px = |i: &specula_core::png::Image, x: u32, y: u32| -> [u8; 3] {
+            let at = ((y * i.width + x) * 4) as usize;
+            [i.rgba[at], i.rgba[at + 1], i.rgba[at + 2]]
+        };
+        let (world_packet, world) = shoot(&mut e, "");
+        assert!(world_packet.get("form").is_none(), "the world's frame has no form entry");
+
+        let ground = sight::FORM_BACKGROUND.map(|c| (c * 255.0).round() as u8);
+        for name in ["clay", "normals", "curvature", "stripes"] {
+            let (p, i) = shoot(&mut e, &format!(r#", "form": "{name}""#));
+            let form = p.get("form").unwrap_or_else(|| panic!("{name}: the packet says it is a form view"));
+            assert_eq!(form.get("view").and_then(Json::as_str), Some(name));
+            assert!(form.get("not_drawn").and_then(Json::as_str).is_some_and(|t| t.contains("light")), "{name}: {form:?}");
+            assert_eq!(form.get("scale_m").is_some(), name == "curvature", "{name}: only curvature has a scale");
+            let corner = px(&i, 2, 2);
+            assert!(corner.iter().zip(&ground).all(|(a, b)| a.abs_diff(*b) <= 1), "{name}: the ground behind is neutral: {corner:?}");
+            assert!(i.rgba != world.rgba, "{name}: not the world's frame");
+            // The ID buffer is the world's: what is visible of each subject is counted the same.
+            let seen = |p: &Json| -> Vec<(String, u64)> {
+                let subjects = p.get("subjects").and_then(Json::as_array).unwrap();
+                subjects.iter().map(|s| (s.get("name").and_then(Json::as_str).unwrap_or("").to_string(), s.get("visible_px").and_then(Json::as_u64).unwrap_or(0))).collect()
+            };
+            assert!(seen(&p) == seen(&world_packet) && seen(&p).iter().any(|(_, px)| *px > 0), "{name}: {:?} against {:?}", seen(&p), seen(&world_packet));
+            let centre = px(&i, 64, 64);
+            match name {
+                // The face looks down +z: (0, 0, 1) as colour, exactly.
+                "normals" => assert!(centre[0].abs_diff(128) <= 1 && centre[1].abs_diff(128) <= 1 && centre[2] == 255, "normals: {centre:?}"),
+                // A flat face is mid grey.
+                "curvature" => assert!(centre.iter().all(|c| c.abs_diff(128) <= 1), "curvature: {centre:?}"),
+                // Clay is a lit warm grey, whatever the world's light.
+                "clay" => assert!(centre[0] >= centre[2] && centre[1] > 60 && centre[1] < 245, "clay: {centre:?}"),
+                _ => assert!(centre[0] == centre[1] && centre[1] == centre[2], "stripes are grey: {centre:?}"),
+            }
+        }
+        // The curvature view's scale: the caller's, or a twentieth of the view's half height.
+        let (p, _) = shoot(&mut e, r#", "form": "curvature", "form_scale": 0.25"#);
+        assert_eq!(p.get("form").and_then(|f| f.get("scale_m")).and_then(Json::as_f64), Some(0.25));
+        let (p, _) = shoot(&mut e, r#", "form": "curvature""#);
+        let auto = p.get("form").and_then(|f| f.get("scale_m")).and_then(Json::as_f64).unwrap();
+        let expected = 0.05 * 6.0 * f64::from(15f32.to_radians().tan());
+        assert!((auto - expected).abs() < 1e-3, "{auto} against {expected}");
+
+        // A form view is for that one frame: the next is the world's again, to the byte.
+        let (_, again) = shoot(&mut e, "");
+        assert!(again.rgba == world.rgba, "the world's frame is unchanged by the form views before it");
+
+        // An orbit takes it too, for every tile: its sheet has the views' neutral ground in it,
+        // which the same orbit of the world has nowhere. (Counted over the sheet: a tile's
+        // corner may hold its caption, and the cubes fill most of each tile.)
+        let orbit = |e: &mut Engine, more: &str, call: u64| {
+            let rx = ask(e, "sight_orbit", &format!(r#"{{"point": [2, 0, 2], "views": 4, "tile_width": 96, "tile_height": 96{more}}}"#), call, soon());
+            let (_, out) = run(e, &[&rx], |_| {});
+            let sheet = image(&out[0]);
+            let on_ground = sheet.rgba.as_chunks::<4>().0.iter().filter(|p| p[..3].iter().zip(&ground).all(|(a, b)| a.abs_diff(*b) <= 1)).count();
+            (packet(&out[0]), on_ground, sheet.rgba.len() / 4)
+        };
+        let (p, on_ground, pixels) = orbit(&mut e, r#", "form": "clay""#, 98);
+        assert_eq!(p.get("form").and_then(|f| f.get("view")).and_then(Json::as_str), Some("clay"));
+        assert!(on_ground * 50 > pixels, "the orbit's tiles stand on the neutral ground: {on_ground} of {pixels} pixels");
+        let (p, on_ground, _) = orbit(&mut e, "", 99);
+        assert!(p.get("form").is_none() && on_ground == 0, "the world's orbit has no such ground: {on_ground} pixels");
     }
 
     /// A 12-view orbit's views go back to back: each lands and the next is submitted in the same

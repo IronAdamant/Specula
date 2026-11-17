@@ -156,6 +156,7 @@ fn warm_frames_do_not_allocate() {
         gi: Default::default(),
         terrains: &[],
         text: Default::default(),
+        ..Default::default()
     };
     for _ in 0..5 {
         gpu.render(target, &frame).unwrap();

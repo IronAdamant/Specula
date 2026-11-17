@@ -125,6 +125,8 @@ const QUERY_KEYS: &[&str] = &["limit", "fields", "path_prefix", "tags", "shape",
 const FRAME_KEYS: &[&str] =
     &["width", "height", "eye", "target", "fov_y_deg", "ortho", "view_2d", "max_subjects", "time_s", "include_ui", "lod"];
 /// sight_frame's arguments beyond the view itself (cameras, overlays, subject filter).
+/// `sight_frame`'s own: a form view of the world (`sight_orbit` takes them too).
+pub(crate) const FRAME_FORM_KEYS: &[&str] = &["form", "form_scale"];
 pub(crate) const FRAME_EXTRA_KEYS: &[&str] = &["camera", "camera_of", "overlays", "overlay_entities", "max_labels", "subjects", "ids", "gi"];
 pub(crate) const ENV_KEYS: &[&str] = &[
     "sun_direction", "sun_color", "sun_intensity", "ambient_color", "ambient_intensity", "exposure", "tonemap",
@@ -377,6 +379,8 @@ pub struct FrameSpec {
     pub ids: bool,
     /// How the capture shows baked GI (`gi`: lit, off, irradiance, probes; see [`crate::gi`]).
     pub gi: crate::gi::CaptureView,
+    /// The world, or a form view of it (`form`), and the curvature view's scale when given.
+    pub form: crate::sight_tools::Form,
 }
 
 pub struct Request {
@@ -970,7 +974,7 @@ pub(crate) fn parse(name: &str, args: &Json) -> Result<Command, String> {
         }
         "agent_hello" => parse_hello(args),
         "sight_frame" => {
-            check_keys(args, name, &[FRAME_KEYS, FRAME_EXTRA_KEYS])?;
+            check_keys(args, name, &[FRAME_KEYS, FRAME_EXTRA_KEYS, FRAME_FORM_KEYS])?;
             parse_frame(args).map(Command::Frame)
         }
         "world_env" => {
@@ -2016,6 +2020,7 @@ pub(crate) fn parse_frame(args: &Json) -> Result<FrameSpec, String> {
             Some(v) => crate::gi::CaptureView::parse(v)?,
             None => crate::gi::CaptureView::Lit,
         },
+        form: crate::sight_tools::form_arg(args)?,
     })
     .and_then(|mut spec| {
         crate::sight_tools::frame_extras(args, &mut spec)?;
@@ -2662,6 +2667,7 @@ pub(crate) fn definitions() -> Vec<ToolDef> {
                 ]
                 .into_iter()
                 .chain(crate::sight_tools::frame_extra_schema())
+                .chain(crate::sight_tools::form_schema())
                 .collect(),
                 &[],
             ),

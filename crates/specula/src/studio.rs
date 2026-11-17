@@ -963,6 +963,7 @@ impl Engine {
             gi: Default::default(),
             terrains: &[],
             text: Default::default(),
+            ..Default::default()
         };
         // A target per light kind: its render graph stays as built (lit and silhouette frames
         // alternate, and a target rebuilds its graph whenever its settings change).

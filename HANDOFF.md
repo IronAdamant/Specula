@@ -406,13 +406,20 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       One limit of the same kind is written down and not mended: a column's field is in units
       of its narrower half size, so `round` and a blend's radius reach further along its
       broader side.
-    - **Then:** the form views (clay, normals, curvature, stripes: they need a mode in the mesh
-      shader, for which the frame's uniform has a spare slot beside the baked light's debug view,
-      and the GPU's live checks after; twice the independent checker could not judge the figure's
-      form under frontal light, which is what they are for); the form checks; shape language; the
-      light report; the same in 2D. And on the figure: the plate on a man's chest, the ledge
-      where the back meets the buttocks, the seam under the skull, the muscles to the arms, one
-      place for a recipe's body fields.
+    - **The form views: built** (2026-11-18; [docs/design/FORM.md](docs/design/FORM.md)):
+      `sight_frame` and `sight_orbit` take `form`: `clay`, `normals`, `curvature`, `stripes`.
+      Shape alone, with none of the world's light; exact on both adapters. **Look at any form
+      in clay and curvature before saying what it is like**: the first look at the figure in
+      them found in one pass what sixteen looks under the world's light had not (the plate is
+      on the backs too; the arm lies on the shoulder as a separate capsule; the trunk is a box
+      with hard vertical edges; an elbow band; a seam where the legs meet the trunk). Not yet:
+      the studio's sheets and `sight_compare` do not take `form`. Not yet reviewed by a model
+      that did not write it.
+    - **Then:** the form checks (loose parts, razor edges, faceting, smooth turning, big to
+      small form), as data beside the taste checks; shape language; the light report; the same
+      in 2D. And on the figure, by what the form views show: the plate front and back, the arm
+      over the shoulder, the trunk's hard edges, the seam under the skull, the muscles to the
+      arms, the knees' rings, one place for a recipe's body fields.
   - **The research behind parts 4 and 5 is in** ([docs/research/library/](docs/research/library/README.md):
     45 topics, each with a second checker's report; the owner had it researched over two days,
     "ensuring the license allowed this usage"). Claude's review of it the day it came

@@ -389,6 +389,10 @@ fn sight_frame(v: &Json) -> Json {
     if let Some(st) = v.get("streaming").filter(|st| ["not_resident", "hlod_entities", "coarser_lod"].iter().any(|k| nonzero(st.get(k)))) {
         out.set("streaming", st.clone());
     }
+    // A form view is not the world's frame: which one it is, always (its colours mean shape).
+    if let Some(f) = v.get("form") {
+        out.set("form", keep(f, &["view", "scale_m"]));
+    }
     if let Some(c) = out.get("camera").cloned() {
         out.set("camera", round(&c, 3));
     }
@@ -600,6 +604,10 @@ mod tests {
         // Nothing streaming-related: neither block.
         let plain = sight_frame(&Json::parse(r#"{"models": {"missing": 0, "hlod": 0, "not_resident": 0}, "streaming": {"not_resident": 0, "hlod_entities": 0}}"#).unwrap());
         assert!(plain.get("streaming").is_none() && plain.get("models").is_none(), "{plain}");
+        assert!(plain.get("form").is_none());
+        // A form view says which it is, in few words.
+        let form = sight_frame(&Json::parse(r#"{"form": {"view": "curvature", "shows": "long words", "not_drawn": "more", "scale_m": 0.05}}"#).unwrap());
+        assert_eq!(form.get("form").map(Json::to_string).as_deref(), Some(r#"{"view":"curvature","scale_m":0.05}"#));
     }
 
     #[test]

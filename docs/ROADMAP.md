@@ -1320,7 +1320,8 @@ at once.
   - **roundness as one number** on the primitives, and **bone chains** (a line of points with radii);
   - **the form checks** as data beside the taste checks: loose parts, razor edges, faceting at the size
     seen, smooth turning, big to small form;
-  - **the form views** in sight: clay, normals, curvature, stripes;
+  - **the form views** in sight: clay, normals, curvature, stripes (built 2026-11-18:
+    [design/FORM.md](design/FORM.md));
   - **the engine's own figure from a skeleton**, rigged by construction, with proportion checks. The owner on
     human figures from outside (body packs): "Only if needed. Zero-dependency remains. But if you can build
     it up, without relying on external downloads, add it to handoff." So the engine's own parametric

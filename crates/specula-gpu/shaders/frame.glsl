@@ -42,7 +42,7 @@ layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Fr
     vec4 sky_zenith;    // linear RGB x intensity, w cos(disc radius)
     vec4 sky_horizon;   // linear RGB x intensity, w disc intensity
     vec4 sky_ground;    // linear RGB x intensity, w glow strength
-    vec4 sky_params;    // horizon sharpness, y: the sky is drawn (1)
+    vec4 sky_params;    // horizon sharpness, y: the sky is drawn (1), z: the form view (0 the world), w: its scale (mesh_frag.glsl)
     vec4 wind;          // xy: horizontal direction x strength (world x, z), z: frequency (Hz), w: gust
     vec4 foliage;       // swaying draws fade out from x to y metres from the camera (y = 0: never)
 #ifdef GI_FIELDS

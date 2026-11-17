@@ -210,6 +210,66 @@ fn water_is_counted_only_when_drawn() {
     });
 }
 
+/// The ground takes the form views as meshes do (`FormView`): in `normals` every pixel of it is
+/// a facing as colour (its blue, world z, is never the only channel, and where the ground is
+/// level green leads), whatever its layers' colours, and in `curvature` its flats are mid grey.
+#[test]
+fn terrain_is_shape_alone_in_a_form_view() {
+    every_adapter("terrain_form", |test, adapter| {
+        let Some(mut gpu) = gpu_or_skip(test, adapter) else { return };
+        gpu.prepare_terrain_pipelines().unwrap();
+        let t = upload_terrain(&mut gpu);
+        let n = [0.0, 1.0, 0.0];
+        let quad_v = [[-0.5, 0.0, 0.5], [0.5, 0.0, 0.5], [0.5, 0.0, -0.5], [-0.5, 0.0, -0.5]].map(|p| Vertex::new(p, n));
+        let quad = gpu.upload_mesh(&quad_v, &[0, 1, 2, 0, 2, 3]).unwrap();
+        let draws = draws(&t, quad, true, None);
+        let terrains = [t.material];
+        let mut shoot = |form: specula_gpu::FormView| {
+            let target = gpu.create_target(W, H).unwrap();
+            // (The plain frame a form view is drawn in: no tone curve, no post, no sky.)
+            let plain = Environment { tonemap: false, ..Default::default() };
+            let frame = FrameDesc {
+                view_proj: view_proj(),
+                clear_color: [0.0, 0.0, 0.0, 1.0],
+                draws: &draws,
+                reverse_z: true,
+                environment: if form == specula_gpu::FormView::World { env() } else { plain },
+                terrains: &terrains,
+                form,
+                ..Default::default()
+            };
+            gpu.render(target, &frame).unwrap();
+            let rgba = gpu.read_rgba8(target).unwrap();
+            gpu.destroy_target(target);
+            rgba
+        };
+        let world = shoot(specula_gpu::FormView::World);
+        let normals = shoot(specula_gpu::FormView::Normals);
+        write_png(&format!("{test}_normals.png"), &normals, W, H);
+        assert!(normals != world, "{test}: a form view of the ground is not its world's frame");
+        // Every drawn pixel is a unit facing as colour: (2c - 1) has length 1, give or take the
+        // bytes' rounding; and the ground faces up more than any other way over most of it.
+        let (mut drawn, mut unit, mut up) = (0, 0, 0);
+        for p in normals.as_chunks::<4>().0 {
+            if p[..3] == [0, 0, 0] {
+                continue;
+            }
+            drawn += 1;
+            let v = [0, 1, 2].map(|k| f32::from(p[k]) / 255.0 * 2.0 - 1.0);
+            let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+            unit += usize::from((len - 1.0).abs() < 0.03);
+            up += usize::from(v[1] > v[0].abs() && v[1] > v[2].abs());
+        }
+        assert!(drawn > (W * H / 4) as usize && unit * 100 >= drawn * 99 && up * 2 > drawn, "{test}: {drawn} drawn, {unit} unit facings, {up} facing up");
+        let curvature = shoot(specula_gpu::FormView::Curvature);
+        write_png(&format!("{test}_curvature.png"), &curvature, W, H);
+        let grey = curvature.as_chunks::<4>().0.iter().filter(|p| p[..3] != [0, 0, 0]).filter(|p| p[0].abs_diff(p[1]) <= 1 && p[1].abs_diff(p[2]) <= 1).count();
+        assert!(grey == drawn, "{test}: curvature is grey on every drawn pixel ({grey} of {drawn})");
+        let errors = validation_errors(test, gpu);
+        assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());
+    });
+}
+
 #[test]
 fn terrain_and_water_draw_lit_counted_and_reproducibly() {
     every_adapter("terrain", |test, adapter| {

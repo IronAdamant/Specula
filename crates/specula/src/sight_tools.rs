@@ -58,6 +58,112 @@ pub enum OrbitTarget {
     Point(Vec3),
 }
 
+/// A capture's form view (`form`, `form_scale`): the world as it is, or its lit surfaces as
+/// shape alone ([`specula_gpu::FormView`]). `scale` is the curvature view's, in metres, when
+/// the caller gave one; without it the capture takes a twentieth of the view's half height at
+/// its target ([`Form::scale_for`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Form {
+    pub view: specula_gpu::FormView,
+    pub scale: Option<f32>,
+}
+
+impl Form {
+    /// The curvature view's scale limits (m).
+    pub const SCALE: std::ops::RangeInclusive<f32> = 0.001..=1000.0;
+
+    pub fn is_world(&self) -> bool {
+        self.view == specula_gpu::FormView::World
+    }
+
+    /// The scale a capture through `camera` draws curvature at: the caller's, or a twentieth
+    /// of the view's half height where the camera looks (a figure that fills the frame shows
+    /// its trunk a little lighter than flat, a limb halfway to white and a finger nearly white).
+    pub fn scale_for(&self, camera: &crate::sight::Camera) -> f32 {
+        self.scale.unwrap_or_else(|| {
+            let half = match camera.projection {
+                crate::sight::Projection::Ortho { height_m } => 0.5 * height_m,
+                crate::sight::Projection::Perspective => (camera.target - camera.eye).length() * (0.5 * camera.fov_y_deg).to_radians().tan(),
+            };
+            (0.05 * half).clamp(*Self::SCALE.start(), *Self::SCALE.end())
+        })
+    }
+
+    /// What a packet says of it (`form`), with the scale the frame was drawn at.
+    pub fn packet_json(&self, scale: f32) -> Json {
+        let mut j = Json::obj([
+            ("view", Json::from(self.view.name())),
+            (
+                "shows",
+                Json::from(match self.view {
+                    specula_gpu::FormView::World => "the world as it is",
+                    specula_gpu::FormView::Clay => "every lit surface as the same matte clay under a studio light that comes with the camera (key from the upper left): no colour, texture or light of the world's",
+                    specula_gpu::FormView::Normals => "each surface's facing as colour: world x, y, z as red, green, blue (128 is 0)",
+                    specula_gpu::FormView::Curvature => "how fast each surface turns: mid grey flat, lighter turning away (a ridge), darker turning in (a groove); a ball of scale_m's radius is halfway to white (191), never cut off",
+                    specula_gpu::FormView::Stripes => "the level bands a mirror of this shape would show: even on an even surface, kinked where the surface is",
+                }),
+            ),
+            ("not_drawn", Json::from("the world's light, sky, fog, post effects, particles and decals; colours in this image say nothing about materials")),
+        ]);
+        if self.view == specula_gpu::FormView::Curvature {
+            j.set("scale_m", Json::from((f64::from(scale) * 1e4).round() / 1e4));
+        }
+        j
+    }
+}
+
+/// `form` and `form_scale` (`sight_frame`, `sight_orbit`).
+pub fn form_arg(args: &Json) -> Result<Form, String> {
+    let view = match string_arg(args, "form")? {
+        None => specula_gpu::FormView::World,
+        Some(name) => specula_gpu::FormView::parse(name).ok_or_else(|| format!("'form' must be one of {}", specula_gpu::FormView::NAMES.join(", ")))?,
+    };
+    let scale = num_in(args, "form_scale", Form::SCALE)?;
+    if scale.is_some() && view != specula_gpu::FormView::Curvature {
+        return Err("'form_scale' is the curvature view's: give it with form: \"curvature\"".into());
+    }
+    Ok(Form { view, scale })
+}
+
+/// The schema of [`form_arg`]'s two arguments.
+pub fn form_schema() -> Vec<(&'static str, Json)> {
+    vec![
+        (
+            "form",
+            Json::obj([
+                ("type", Json::from("string")),
+                ("enum", Json::arr(specula_gpu::FormView::NAMES.map(Json::from))),
+                (
+                    "description",
+                    Json::from(
+                        "Show shape alone (default world: the frame as it is). clay: every lit surface the same matte clay \
+                         under a studio light that comes with the camera, whatever the world's light; normals: facing as \
+                         colour (x, y, z as r, g, b); curvature: grey where flat, lighter on ridges, darker in grooves; \
+                         stripes: the level bands a mirror of the shape would show, which kink where the surface does. \
+                         Use these to judge form: roundness, faceting, seams, ledges. No sky, fog, post effects, particles \
+                         or decals are drawn, and the packet's form says so",
+                    ),
+                ),
+            ]),
+        ),
+        (
+            "form_scale",
+            Json::obj([
+                ("type", Json::from("number")),
+                ("minimum", Json::from(0.001)),
+                ("maximum", Json::from(1000.0)),
+                (
+                    "description",
+                    Json::from(
+                        "With form: curvature, the radius in metres (0.001..1000) of the ball that shows halfway from mid grey to white (default: a \
+                         twentieth of the view's half height at its target). Smaller shows fine detail, larger the big forms",
+                    ),
+                ),
+            ]),
+        ),
+    ]
+}
+
 pub struct OrbitSpec {
     pub target: OrbitTarget,
     pub views: u32,
@@ -73,11 +179,13 @@ pub struct OrbitSpec {
     pub include_ui: bool,
     pub lod: Option<usize>,
     pub overlays: sight_overlay::Spec,
+    /// The world, or a form view of it, in every tile.
+    pub form: Form,
 }
 
 pub enum CompareCall {
     /// Capture "before" through the frame's camera.
-    Mark { name: String, frame: FrameSpec },
+    Mark { name: String, frame: Box<FrameSpec> },
     /// Render now through the mark's camera and compare.
     Diff { name: String, threshold: u8, max_subjects: usize },
     List,
@@ -253,7 +361,7 @@ pub(crate) fn parse_camera_set(args: &Json) -> Result<CameraSpec, String> {
 
 const ORBIT_KEYS: &[&str] = &[
     "target", "point", "views", "elevation_deg", "distance", "start_deg", "tile_width", "tile_height", "fov_y_deg",
-    "max_subjects", "time_s", "include_ui", "lod", "overlays", "overlay_entities", "max_labels",
+    "max_subjects", "time_s", "include_ui", "lod", "overlays", "overlay_entities", "max_labels", "form", "form_scale",
 ];
 
 fn parse_orbit(args: &Json) -> Result<OrbitSpec, String> {
@@ -280,6 +388,7 @@ fn parse_orbit(args: &Json) -> Result<OrbitSpec, String> {
         include_ui: bool_arg(args, "include_ui")?.unwrap_or(false),
         lod: int_arg(args, "lod", 0, 7)?.map(|l| l as usize),
         overlays: overlays_arg(args)?,
+        form: form_arg(args)?,
     })
 }
 
@@ -292,7 +401,7 @@ fn parse_compare(args: &Json) -> Result<CompareCall, String> {
             check_keys(args, "sight_compare mark", &[&["action", "name"], frame_keys, FRAME_EXTRA_KEYS])?;
             let name = label_arg(args, "name", true)?.expect("required");
             let frame = parse_frame(args)?;
-            Ok(CompareCall::Mark { name, frame })
+            Ok(CompareCall::Mark { name, frame: Box::new(frame) })
         }
         "diff" => {
             check_keys(args, "sight_compare diff", &[&["action", "name", "threshold", "max_subjects"]])?;
@@ -504,6 +613,7 @@ pub fn definitions() -> Vec<ToolDef> {
                         ("lod", t("integer", "Draw every model at this LOD")),
                     ],
                     overlay_props(),
+                    form_schema(),
                 ]
                 .concat(),
                 &[],
@@ -572,6 +682,42 @@ mod tests {
 
     fn call(name: &str, a: &str) -> Result<SightCall, String> {
         parse(name, &args(a)).expect("a sight tool")
+    }
+
+    /// `form` and `form_scale`: sight_frame's and sight_orbit's, bounded, and refused elsewhere.
+    #[test]
+    fn form_arguments() {
+        use specula_gpu::FormView;
+        let frame = |a: &str| crate::tools::parse("sight_frame", &args(a)).map(|c| match c {
+            crate::tools::Command::Frame(f) => f.form,
+            _ => panic!("a frame"),
+        });
+        assert_eq!(frame("{}").unwrap(), Form::default());
+        assert!(Form::default().is_world());
+        assert_eq!(frame(r#"{"form":"clay"}"#).unwrap(), Form { view: FormView::Clay, scale: None });
+        assert_eq!(frame(r#"{"form":"world"}"#).unwrap(), Form { view: FormView::World, scale: None });
+        assert_eq!(frame(r#"{"form":"curvature","form_scale":0.2}"#).unwrap(), Form { view: FormView::Curvature, scale: Some(0.2) });
+        for bad in [r#"{"form":"wireframe"}"#, r#"{"form":3}"#, r#"{"form":"clay","form_scale":0.2}"#, r#"{"form_scale":0.2}"#, r#"{"form":"curvature","form_scale":0}"#, r#"{"form":"curvature","form_scale":5000}"#] {
+            assert!(frame(bad).is_err(), "{bad}");
+        }
+        let SightCall::Orbit(o) = call("sight_orbit", r#"{"point":[0,0,0],"form":"stripes"}"#).unwrap() else { panic!("an orbit") };
+        assert_eq!(o.form.view, FormView::Stripes);
+        assert!(call("sight_orbit", r#"{"point":[0,0,0],"form":"mesh"}"#).is_err());
+        // The other tools that take a frame's view do not take a form view, and say so as an unknown argument.
+        assert!(call("sight_compare", r#"{"action":"mark","name":"a","form":"clay"}"#).is_err());
+        assert!(call("sight_query", r#"{"name":"a","form":"clay"}"#).is_err());
+        // Its scale without one given: a twentieth of the view's half height where the camera looks.
+        let cam = crate::sight::Camera::new(Vec3::new(0.0, 0.0, 10.0), Vec3::ZERO, 90.0);
+        let auto = Form { view: FormView::Curvature, scale: None }.scale_for(&cam);
+        assert!((auto - 0.5).abs() < 1e-4, "{auto}");
+        let ortho = crate::sight::Camera { projection: crate::sight::Projection::Ortho { height_m: 2.0 }, ..cam };
+        assert!((Form::default().scale_for(&ortho) - 0.05).abs() < 1e-6);
+        assert_eq!(Form { view: FormView::Curvature, scale: Some(3.0) }.scale_for(&cam), 3.0);
+        // The schema lists every view and bounds the scale.
+        let schema = form_schema();
+        let names = schema[0].1.get("enum").and_then(Json::as_array).unwrap();
+        assert_eq!(names.len(), FormView::NAMES.len());
+        assert!(schema[1].1.get("minimum").is_some() && schema[1].1.get("maximum").is_some());
     }
 
     #[test]

@@ -1257,6 +1257,50 @@ pub struct FrameDesc<'a> {
     /// In-world text: the glyph store and the glyphs [`Draw2d::Text`] runs draw (see [`TextFrame`];
     /// empty: none).
     pub text: TextFrame<'a>,
+    /// The world, or a form view of it ([`FormView`]).
+    pub form: FormView,
+    /// The curvature view's scale (m): a surface that turns as a ball of this radius does is
+    /// halfway from mid grey to white (turning away) or to black (turning in). 0.05 unless
+    /// given.
+    pub form_scale: f32,
+}
+
+/// How a frame shows its lit surfaces: as the world is, or as one of the form views, in which
+/// nothing of a surface shows but its shape (`sight_frame form`): no colour, texture, metal or
+/// glow of its own, and no light of the world's. Meshes and terrain take it. What is not a lit
+/// surface (water, glass, sprites, particles, the sky) is drawn as ever: whoever asks for a form
+/// view leaves out what it does not want in it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FormView {
+    /// The world as it is.
+    #[default]
+    World,
+    /// Every surface the same matte clay under a studio's light that comes with the camera (a
+    /// key from the upper left, a fill from the right, the sky's and the floor's glow): the
+    /// same from every side, whatever the world's light is.
+    Clay,
+    /// A surface's facing as colour (world x, y, z as red, green, blue), unlit.
+    Normals,
+    /// How fast a surface turns, unlit: mid grey where it is flat, lighter where it turns away
+    /// (a ridge, a ball), darker where it turns in (a groove). A ball of the radius
+    /// [`FrameDesc::form_scale`] is halfway from mid grey to white (the turn is eased, never
+    /// cut off).
+    Curvature,
+    /// The stripes a room of level bands would lay on a mirror of this shape, unlit: even
+    /// bands on an even surface, a kink in them where the surface has one.
+    Stripes,
+}
+
+impl FormView {
+    pub const NAMES: [&'static str; 5] = ["world", "clay", "normals", "curvature", "stripes"];
+
+    pub fn name(self) -> &'static str {
+        Self::NAMES[self as usize]
+    }
+
+    pub fn parse(name: &str) -> Option<FormView> {
+        [FormView::World, FormView::Clay, FormView::Normals, FormView::Curvature, FormView::Stripes].into_iter().find(|v| v.name() == name)
+    }
 }
 
 impl Default for FrameDesc<'_> {
@@ -1276,6 +1320,8 @@ impl Default for FrameDesc<'_> {
             gi: GiFrame::default(),
             terrains: &[],
             text: TextFrame::default(),
+            form: FormView::World,
+            form_scale: 0.05,
         }
     }
 }
