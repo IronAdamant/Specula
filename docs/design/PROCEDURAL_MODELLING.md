@@ -125,19 +125,44 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
 - Primitives `sphere box cylinder cone capsule torus ellipsoid halfspace`, **centred on `at`** (mesh
   shapes rest on y = 0; sculpts are placed point by point); groups `union difference intersection`
   with `smooth` (Quilez's polynomial smooth minimum, colours blended the same way).
-- Modifiers on any node: `at rotate scale mirror repeat elongate twist bend round shell displace
-  color`. Uncoloured nodes take the part's colour.
+- Modifiers on any node: `at rotate scale stretch mirror repeat elongate twist bend round shell
+  displace color`. Uncoloured nodes take the part's colour. `stretch` is a scale for each axis
+  (`[1, 1, 0.6]`: a section as broad and as deep as it is measured); the surface is exact, and the
+  field away from it is a lower bound of the distance.
+- **Round form in a few rows** (M6 part 4, 2026-11-17: "bone chains", and what a figure is made of).
+  These are given by their ends, not centred on `at`:
+  - `round_cone`: `from`, `to`, `radius`, `radius_to`. Every ball between two balls.
+  - `chain`: `points`, rows of `[x, y, z, radius]`, and `smooth`. A round cone between every two
+    neighbours: a limb, a tail, a branch or a horn. Always closed, always round.
+  - `column`: `from`, `to`, `side`, and `sections`, rows of `[how far along, half breadth, half
+    depth]` (up to 8). The breadth (toward `side`) and the depth pass smoothly from one section to
+    the next, and a rounded end closes it. A trunk with no steps, a limb with its swell, a neck.
+    Sections ease in and out: over a short span from a wide one to a narrow one that is a shelf, and
+    a slope wants a slanted `round_cone` instead (the figure's shoulders taught this).
+  A chain's links are joined by a **near-union**: only the links within the smoothing of the nearest
+  take part, where a plain smooth union blends its children one after another. It is what lets a
+  tree of many parts cost what is near each point.
 - **Meshing:** dual contouring on a grid of `resolution` cells along the longest side (≤ 160, ≤ 4 M
   samples), sparse: 8³-cell blocks whose centre is farther from the surface than the tree's
   conservative Lipschitz reach are filled by sign. The reach (Lipschitz factor and slack) folds in
   every node, bounded or not: an unbounded displaced cutter (a half-space with noise) counts as
-  much as a bounded one. Each sample costs the tree's evaluation weight (`sdf::eval_cost`: a noise
-  octave about as much as a primitive). One vertex per surface cell (a QEF of the
+  much as a bounded one. **A block that is sampled leaves out what cannot matter in it**: for the
+  block, then for each half of it, then for each quarter, the tree is pruned of the children of its
+  unions that are too far to touch the surface or its smoothing there (`sdf::prune`), exactly (a test
+  compares the pruned and the whole tree bit for bit, colours included; a plain smooth union keeps
+  more than a near-union, because its children blend in turn). Each sample costs the evaluation
+  weight of what is left (`sdf::eval_cost`: a noise octave about as much as a primitive), and so
+  does each crossing's normal. A figure's body costs 2,197 units a sample where every bone at every
+  sample is 7,135. (Measured the same day in release, `calibrate_sdf`: an evaluation takes about a
+  quarter of its weight in nanoseconds on this machine, a sphere 23 ns against 107. The weights are
+  every sculpt's budget and were left as they are.) One vertex per surface cell (a QEF of the
   crossings' planes regularised towards their mass point, clamped to the cell): flat faces stay flat
   and creases sharp. The outer sample layer counts as outside, so the mesh is always closed (it may
   have edges where two sheets touch: still balanced). Unbounded trees (a half-space in a union) need
   `bounds`. The triangle count is known before any is made.
 - **LOD:** the coarse rebuild halves the resolution and drops displacement.
+- **`figure`** is a shape of this tier: a part of a person from a measured body
+  ([FIGURE.md](FIGURE.md)).
 
 ### Tier 4: generators (`generate` on a part)
 

@@ -239,6 +239,33 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
     a change builder's one read took in the look's 1,450 tokens; the guide described a file it
     had just said to delete, and said "every call" where it shows the ones a game of this size
     needs).
+  - **Part 4, slice 2, in progress: round form in a few rows, and a first person**
+    (2026-11-17; [docs/design/FIGURE.md](docs/design/FIGURE.md),
+    [docs/design/PROCEDURAL_MODELLING.md](docs/design/PROCEDURAL_MODELLING.md), tier 3). Not
+    finished: no rig, no review yet, and the figure does not look right yet.
+    - **For any sculpt:** `round_cone` and `chain` (a line of points with radii: a limb, a tail, a
+      horn), `column` (sections of a breadth and a depth along a line, eased from one to the next),
+      `stretch` (a scale for each axis), and a near-union (only what is within the smoothing of the
+      nearest takes part).
+    - **The mesher does the work that is near.** For each block of samples, then each half and each
+      quarter of it, the tree is pruned of what is too far to matter there, exactly (a test compares
+      9,600 points bit for bit, colours included, and a cut foot besides). A figure's body costs
+      2,197 work units a sample where every bone at every sample is 7,135. Measured on the way: an
+      evaluation takes about a quarter of its weight in nanoseconds on this machine; the weights
+      were left as they are.
+    - **`figure`:** a part of a person (body, head, hands, feet, or the whole on one coarse grid)
+      from a sex, a stature, a build or a weight, an age and traits. Sizes are the survey's; a
+      finger's bones are in the proportions of a radiograph study, cited as facts; what lies
+      between the measured places is the engine's own and is judged by looking.
+    - **Eight looks in a day, the bad ones kept** (the owner, the same day: "Record the creation
+      of bodies, hands, faces... if they look bad, then try to fix it please"): tube mannequins
+      with a broken cone for a hand; six parts with real hands and feet and a stepped barrel of a
+      trunk; the first that reads as a person; two tries at the shoulders that made a shelf with a
+      pipe on it; a muscle from the neck to each shoulder; the ankle's ledge, found by measuring
+      pixels after blaming the light. A model that did not take the captures did not pass the
+      sixth as it had been described, and the record says so.
+    - **Asked of the owner's researchers:** reference pictures to hold the figures against
+      ([docs/research/REFERENCE_IMAGES_BRIEF.md](docs/research/REFERENCE_IMAGES_BRIEF.md)).
   - **Part 4, slice 1: the body as numbers** (2026-11-17; `specula-corpus`,
     [docs/design/CORPUS.md](docs/design/CORPUS.md)). The owner's rule for part 4 was tables first,
     from published measurements, "looked up, not written from an agent's memory".

@@ -112,7 +112,7 @@ Read [HANDOFF.md](HANDOFF.md) first.
 | `specula-via` | navigation: tiled navmeshes, paths, off-mesh links, crowds |
 | `specula-mens` | AI as data: behaviour trees and utility AI, validated, with a deterministic runner |
 | `specula-locus` | placement by relations (`world_place`'s solver) |
-| `specula-model` | procedural modelling: recipes → meshes, LODs, colliders; CSG, SDF, terrain, scatter, texture graphs |
+| `specula-model` | procedural modelling: recipes → meshes, LODs, colliders; CSG, SDF (with bone chains and columns of sections), terrain, scatter, texture graphs; a person's surface from a measured body (`figure`: [docs/design/FIGURE.md](docs/design/FIGURE.md)) |
 | `specula-studio` | the asset studio's measures: `style.toml` rules, asset facts, taste checks, critiques |
 | `specula-scintilla` | particles/VFX and decals as data: effects, a closed-form evaluator, budgets, photosensitivity checks |
 | `specula-gustus` | taste direction: gallery spaces and spreads, pick-driven tuning, the preference store, board measures, style presets |

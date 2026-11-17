@@ -291,9 +291,19 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       not to merge it once: every sourced number held, and three things did not (bodies inside
       the first limits with the navel over the ribs; checks that changed when a hand or a foot
       bent; a typed table too few tests held). All three are fixed.
-    - **Next: slice 2, the figure's surface** (the modelling crate): bone chains and roundness as
-      one number, a body's mesh from its frame and girths, rigged by construction; then the form
-      checks, the form views, shape language, and the light report.
+    - **Slice 2, the figure's surface: in progress, and it does not look right yet**
+      (2026-11-17; [docs/design/FIGURE.md](docs/design/FIGURE.md); checkpoints `da99962f` and
+      `067011b7`). Built: bone chains (`chain`, `round_cone`), columns of sections (`column`), a
+      `stretch` and a near-union in the distance-field modeller, a mesher that leaves out of each
+      block what is too far to matter (exact, and what made a finer figure affordable), and the
+      shape `figure`: six parts of a person from a measured body, each on its own grid, hands with
+      fingers, feet with toes. **Eight looks in the engine are recorded**, the bad ones kept
+      (`gallery-full/part4/figure/NOTES.md` on this machine). An independent check of the sixth
+      did not pass it as described. What is wrong and what is missing is in FIGURE.md's last
+      section: no rig, no knees or elbows, a seam at the neck, only two bodies looked at, and
+      **no review yet by a model that did not write it**.
+    - **Then:** the rig by construction, the review, the gate; roundness as one number; the form
+      checks; the form views; shape language; the light report; the same in 2D.
   - **The research behind parts 4 and 5 is in** ([docs/research/library/](docs/research/library/README.md):
     45 topics, each with a second checker's report; the owner had it researched over two days,
     "ensuring the license allowed this usage"). Claude's review of it the day it came
