@@ -94,6 +94,9 @@ development machine (the gallery's originals are not tracked). In short:
 | v10 | A wider join of legs and trunk: looked better, **measured worse** (hips 4 to 6 cm wide, the crotch filled in by 10 cm); taken out |
 | v11 | Mended by measuring (below): limbs with no rings, thighs as ellipses, depths as surveyed |
 | v12 | A skeleton from the same body, and a first walk: she strides, and the pelvis tears |
+| v13 | Bound by the flesh: the tear is gone; the heel went to the shin (rings at the ankles) |
+| v14 | A joint's plane divides its two bones: the heel is the foot's again |
+| v15 | Each part lists the bones of what it meets: the ankles' rings are weaker; the back seen lit for the first time |
 
 A model that did not take the captures checked v6 and **did not pass it as it had been described**: the
 joins still showed, and the waist is not narrower than the chest. It checked v8 too, and did not pass that
@@ -142,10 +145,11 @@ that a character is a change and not a rebuild):
 ```json
 "rig": { "blend": 0.05, "figure": { "sex": "female", "stature": 1.7, "build": 0.5 } },
 "parts": [
-  { "name": "body", "bones": ["hips", "spine", "chest", "neck", "upperarm_l", "upperarm_r", "forearm_l",
-                              "forearm_r", "thigh_l", "thigh_r", "shin_l", "shin_r"],
+  { "name": "body", "bones": ["hips", "spine", "chest", "neck", "head", "upperarm_l", "upperarm_r",
+                              "forearm_l", "forearm_r", "hand_l", "hand_r", "thigh_l", "thigh_r",
+                              "shin_l", "shin_r", "foot_l", "foot_r"],
     "shape": { "op": "figure", "part": "body", "sex": "female", "stature": 1.7, "build": 0.5 } },
-  { "name": "head",   "bones": ["neck", "head"],        "shape": { "op": "figure", "part": "head",   "...": "the same body" } },
+  { "name": "head",   "bones": ["chest", "neck", "head"], "shape": { "op": "figure", "part": "head", "...": "the same body" } },
   { "name": "hand_l", "bones": ["forearm_l", "hand_l"], "shape": { "op": "figure", "part": "hand_l", "...": "the same body" } },
   { "name": "foot_l", "bones": ["shin_l", "foot_l"],    "shape": { "op": "figure", "part": "foot_l", "...": "the same body" } }
 ]
@@ -160,16 +164,35 @@ pose the surface is made in, so it lies inside the surface by construction (a te
 bone ends at the knuckles and a foot's at its ball: fingers and toes have none yet. A rig has `bones` or
 a `figure`, not both.
 
-**The first walk** (v12) showed what the binding lacks. A vertex binds to the nearest bone among its
-part's bones. On a limb that is right; at the hips it is not: the hips' sides are nearer a thigh's bone
-than the pelvis's, so half the pelvis swings with each leg and the surface tears across it. The body
-needs weights that know how thick each bone's flesh is (the sections are there to say so). Not built.
-The body fields are also written seven times in such a recipe (the rig and six parts): one place for
-them is wanted.
+**How a figure's vertices are bound.** Any other rig binds a vertex to the nearest bone among its
+part's bones. The first walk (v12) showed why that is wrong for a body: the hips' sides are nearer a
+thigh's bone than the pelvis's, so half the pelvis swung with each leg and the surface tore across it.
+A figure's rig binds by its flesh instead (`Rig::bind_fleshed`, with `figure::flesh` for the radii):
 
-Using it found a defect in the engine: a rig whose only clips are written into the world (no anims file
-of its own) was filmed in its bind pose by `anim_filmstrip`, every tile alike, while the clip moved it
-in the world. Fixed in `models.rs` (`posed`), with a test.
+- a vertex goes to the bone it is fewest of that bone's own radii from (half the hip breadth for the
+  hips, a thigh's girth as a circle for a thigh, the ankle's reach to the heel for a foot);
+- at a joint, a plane divides the two bones: a limb's bone gives up what is behind its joint, and
+  where one bone carries on from another's end (thigh to shin, shin to foot) the plane is square to
+  their mean direction and the parent gives up what is past it. So a heel, which is behind the ankle
+  along the foot's line, stays with the foot.
+
+**Each part lists the bones of what it meets.** The body's part lists every bone, the head's the
+chest's too: where two parts meet at a cut, both sides must be allowed the same bones, or the same
+place gets two different weights and the cut opens when the joint bends (the ankles showed dark
+rings until the body was given the feet's bones; they are weaker since, not gone). A hand's and a foot's parts keep short lists: a fingertip
+hanging beside a thigh must not find the thigh.
+
+Tests hold that the hips' sides are led by the pelvis or the spine (and fail under plain distance),
+that the thighs lead down the thigh, and that the heel is the foot's. The body fields are still written
+seven times in such a recipe (the rig and six parts): one place for them is wanted.
+
+Using it found two defects in the engine, of one root: it asked whether a build has clips of its
+own where it should ask whether its meshes carry skin. A rig whose only clips are written into the
+world (no anims file of its own) was filmed in its bind pose by `anim_filmstrip`, every tile alike,
+while the clip moved it in the world; and such a figure, animated, did not wait for the skinned
+pipelines, was drawn before they existed and was skipped by the GPU, so a capture taken straight
+after it was spawned showed the world without it. Both are fixed in `models.rs` (`posed`,
+`held_back_by`), each with a test, and an entity's filmstrip now refuses a model that is not ready.
 
 An independent check of the walk's captures did not pass them. It confirmed the stride, the bent
 knees, the frozen filmstrip before the fix and the moving one after, and the crease across the hips in
@@ -197,12 +220,16 @@ capture's fault twice). Its list, and what the numbers add:
 - Legs as tubes: knees nearly as wide as the upper thigh, little calf, no fold under the buttock, no
   ankle bones. Arms: a step at the elbow, the forearm fatter than the upper arm there, no elbow or
   biceps; the shoulders small on a sloping line. A man's knees read as creases.
-- The back has not been seen lit.
+- The back, seen lit at last (v15), is flat: no shoulder blades, no curve in the lower back.
 - Eight bodies have been looked at from afar, and only the two typical ones up close.
 - The levels of detail have not been looked at. A hand is 7,300 triangles.
-- **The pelvis tears when a leg swings** (above); the arms have no rest pose at the sides; fingers and
-  toes have no bones; no motion has been made from walking data yet (the first walk is a crouched lunge
-  from guessed numbers).
+- The pelvis no longer tears when a leg swings (v13 to v15; an independent check confirmed that
+  and passed nothing else as described). A V-shaped line shows at the groin in every tile, crease
+  or step it could not tell; the buttock on the bent leg's side swells into a ball with a notch under
+  it; the calf's outline steps inward at the cut above each foot, like a cuff, and dark ticks remain
+  at the ankles and across a forearm; a hard seam runs under the skull like a helmet's rim. The arms have no
+  rest pose at the sides; fingers and toes have no bones; no motion has been made from walking data yet
+  (the walk is a lunge from guessed numbers; the measured curves are in the library, H1).
 - Held against pictures of people only by eye so far (Richer's plates, 2026-11-17); no outline has
   been compared at one scale.
 - The body and the hands may join two sheets along a few edges (the tops of the thighs, between

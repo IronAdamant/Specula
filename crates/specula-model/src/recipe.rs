@@ -1255,10 +1255,18 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
         Some(def) => Some(build_rig(recipe, def, &Ctx { vars: &vars, style: params.style, seed, tally: &Tally::default(), coarse: false, paint: std::cell::Cell::new([1.0; 4]) })?),
         None => None,
     };
+    // A figure's rig knows how thick each bone's flesh is: its parts bind by that.
+    let flesh: Vec<f32> = match recipe.rig.as_ref().and_then(|def| def.figure.as_ref()) {
+        Some(figure) => {
+            let ctx = Ctx { vars: &vars, style: params.style, seed, tally: &Tally::default(), coarse: false, paint: std::cell::Cell::new([1.0; 4]) };
+            crate::figure::flesh(&ctx.figure_body(figure)?.0)
+        }
+        None => Vec::new(),
+    };
     let bindings: Vec<Binding> = match &rig {
         Some((r, blend)) => built
             .iter()
-            .map(|b| Binding { bones: b.bones.iter().filter_map(|n| r.find(n)).collect(), blend: b.blend.unwrap_or(*blend) })
+            .map(|b| Binding { bones: b.bones.iter().filter_map(|n| r.find(n)).collect(), blend: b.blend.unwrap_or(*blend), radii: flesh.clone() })
             .collect(),
         None => Vec::new(),
     };
@@ -1427,6 +1435,8 @@ pub fn build_recipe(recipe: &Recipe, params: &BuildParams) -> Result<Model, Reci
 struct Binding {
     bones: Vec<usize>,
     blend: f32,
+    /// How thick each bone's flesh is (a figure's rig): empty binds by plain distance.
+    radii: Vec<f32>,
 }
 
 /// Evaluates the rig's bones, fills default tails (a bone's only child's head, else a point) and
@@ -1668,7 +1678,11 @@ fn assemble(parts: &[(&Shape, &BuiltPart)], skin: Option<(&Rig, &[Binding])>) ->
     for (k, (shape, info)) in parts.iter().enumerate() {
         let mut m = shape.finalize_with_uvs(info.smooth_angle, &info.material, info.uv_scale);
         if let Some((rig, binds)) = skin {
-            let (j, w) = rig.bind(&m.positions, &binds[k].bones, binds[k].blend);
+            let (j, w) = if binds[k].radii.is_empty() {
+                rig.bind(&m.positions, &binds[k].bones, binds[k].blend)
+            } else {
+                rig.bind_fleshed(&m.positions, &binds[k].bones, binds[k].blend, &binds[k].radii)
+            };
             m.joints = j;
             m.weights = w;
         }

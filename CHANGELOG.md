@@ -302,9 +302,17 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       at the body's own joints, inside the surface (a test holds it). A walk generated from the
       bones' names alone moves the figure. Its first steps showed that the pelvis tears (a
       vertex binds to the nearest bone, and the hips' sides are nearer a thigh): not mended.
+    - **A figure is bound by its flesh.** A vertex goes to the bone it is fewest of that bone's
+      own radii from, and a plane at each joint divides the two bones that meet there
+      (`Rig::bind_fleshed`). The pelvis no longer tears when a leg swings; the heel stays with
+      the foot. Each part lists the bones of what it meets, so the two sides of a cut agree.
     - **Fixed: a rig with no anims file of its own was filmed in its bind pose.** `anim_filmstrip`
       of a recipe drew every tile alike while the same clip, written into the world, moved the
       model there. A model a caller poses is now drawn skinned whenever its meshes carry skin.
+    - **Fixed: such a figure, animated, was missing from captures taken straight after it was
+      spawned.** It did not wait for the skinned pipelines, was drawn before they existed and
+      was skipped. It waits like any other animated model, and an entity's filmstrip refuses a
+      model that is still building or waiting.
     - **A man's chest is the plain column**: a third try at a swell for the muscle read as one
       mound to an independent check of the eleventh look, which did not pass it. What it listed
       is in [docs/design/FIGURE.md](docs/design/FIGURE.md).

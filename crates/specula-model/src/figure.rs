@@ -535,6 +535,34 @@ pub fn bones(body: &Body, shaping: &Shaping) -> Vec<crate::rig::Bone> {
         .collect()
 }
 
+/// How thick the flesh round each of [`BONES`] is, metres (half a breadth, or a girth as a
+/// circle's radius), for [`crate::rig::Rig::bind_fleshed`]: a figure's vertices bind by how
+/// many of a bone's own radii away they are, so the hips keep their sides.
+pub fn flesh(body: &Body) -> Vec<f32> {
+    let m = |name: &str| (body.dimension(name).unwrap_or(0.0) / 1000.0) as f32;
+    let round = |name: &str| m(name) / (2.0 * std::f32::consts::PI);
+    let frame = body.frame();
+    BONES
+        .iter()
+        .map(|(name, _)| match name.trim_end_matches("_l").trim_end_matches("_r") {
+            "hips" => m("hip_breadth") / 2.0,
+            "spine" => m("waist_breadth") / 2.0,
+            "chest" => m("chest_breadth") / 2.0,
+            "neck" => round("neck_circumference"),
+            "head" => m("head_breadth") / 2.0,
+            "upperarm" => round("biceps_circumference_flexed"),
+            "forearm" => round("forearm_circumference_flexed"),
+            "hand" => m("hand_breadth") / 2.0,
+            "thigh" => round("thigh_circumference"),
+            "shin" => round("calf_circumference"),
+            // A foot's flesh reaches from the ankle back and down to the heel: farther than
+            // half its breadth, and a heel that far from the ankle is still the foot's.
+            "foot" => math3::length(math3::sub(point(frame.at(Joint::Heel(Side::Left))), point(frame.at(Joint::Ankle(Side::Left))))),
+            _ => 0.0,
+        })
+        .collect()
+}
+
 /// The distance tree of one part of a body's surface.
 pub fn tree(body: &Body, shaping: &Shaping, part: Part) -> SdfNode {
     let straight = body.frame();

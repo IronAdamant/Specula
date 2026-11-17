@@ -113,6 +113,99 @@ impl Rig {
         math3::length(math3::sub(p, math3::add(b.head, math3::scale(ab, t))))
     }
 
+    /// [`Rig::bind`] for a body whose bones have flesh of known thickness (`radii`, metres, one
+    /// a bone): a vertex binds to the bone it is fewest of that bone's own radii from, and a
+    /// bone with a parent owns only what lies beyond its own joint (what is behind the joint's
+    /// plane counts as that much farther). The plane is square to the bone's own line; where
+    /// the bone carries on from its parent's end (a shin from a thigh, a foot from a shin), it
+    /// is square to the two bones' mean direction, and the parent gives up what is past it as
+    /// the child gives up what is before it: a heel, which is behind the ankle along the foot's
+    /// line and below it along the shin's, stays with the foot. So a thick bone keeps its sides from
+    /// a thin one that happens to pass near them: the hips' sides stay with the pelvis and do
+    /// not swing with a thigh, and the top of a shoulder stays with the chest. With equal radii
+    /// and nothing behind a joint it is `bind`. `radii` shorter than the rig, or a radius of 0,
+    /// is plain distance for that bone.
+    pub fn bind_fleshed(&self, positions: &[V3], allowed: &[usize], blend: f32, radii: &[f32]) -> (Vec<[u8; 4]>, Vec<[u8; 4]>) {
+        let root = [0usize];
+        let allowed = if allowed.is_empty() { &root[..] } else { allowed };
+        let radius = |b: usize| radii.get(b).copied().filter(|r| *r > 1e-6).unwrap_or(1.0);
+        let unit = |v: V3| {
+            let l = math3::length(v);
+            (l > 1e-6).then(|| math3::scale(v, 1.0 / l))
+        };
+        // The plane at a bone's joint, pointing into the bone: square to its own line, or to
+        // the mean of its line and its parent's where it carries on from the parent's end.
+        let joint = |b: usize| -> Option<V3> {
+            let bone = &self.bones[b];
+            let parent = &self.bones[bone.parent?];
+            let own = unit(math3::sub(bone.tail, bone.head))?;
+            let carries_on = math3::length(math3::sub(parent.tail, bone.head)) < 1e-3;
+            match unit(math3::sub(parent.tail, parent.head)) {
+                Some(from) if carries_on => unit(math3::add(own, from)).or(Some(own)),
+                _ => Some(own),
+            }
+        };
+        // What each allowed bone gives up: what is behind its own joint, and what is past the
+        // joint of an allowed bone that carries on from its end (each a point and a direction).
+        let gives_up: Vec<Vec<(V3, V3)>> = allowed
+            .iter()
+            .map(|&b| {
+                let mut planes = Vec::new();
+                if let Some(into) = joint(b) {
+                    planes.push((self.bones[b].head, math3::scale(into, -1.0)));
+                }
+                for &c in allowed {
+                    let child = &self.bones[c];
+                    if child.parent == Some(b) && math3::length(math3::sub(self.bones[b].tail, child.head)) < 1e-3 {
+                        if let Some(into) = joint(c) {
+                            planes.push((child.head, into));
+                        }
+                    }
+                }
+                planes
+            })
+            .collect();
+        let mut joints = Vec::with_capacity(positions.len());
+        let mut weights = Vec::with_capacity(positions.len());
+        let mut d = vec![0.0f32; allowed.len()];
+        for &p in positions {
+            for (k, &b) in allowed.iter().enumerate() {
+                let beyond = gives_up[k].iter().map(|(at, away)| math3::dot(math3::sub(p, *at), *away)).fold(0.0f32, f32::max);
+                d[k] = (self.distance(b, p) + beyond) / radius(b);
+            }
+            let mut best = 0;
+            for k in 1..allowed.len() {
+                if d[k] < d[best] {
+                    best = k;
+                }
+            }
+            let b0 = allowed[best];
+            let mut second: Option<usize> = None;
+            for k in 0..allowed.len() {
+                if k != best && self.adjacent(b0, allowed[k]) && second.is_none_or(|s| d[k] < d[s]) {
+                    second = Some(k);
+                }
+            }
+            let mut j = [b0 as u8, 0, 0, 0];
+            let mut w = [255u8, 0, 0, 0];
+            if let (Some(s), true) = (second, blend > 0.0) {
+                // The gap in metres of the nearer bone's flesh.
+                let gap = (d[s] - d[best]) * radius(b0);
+                if gap < blend {
+                    let w0 = 0.5 + 0.5 * gap / blend;
+                    let q0 = crate::dmath::round(w0 * 255.0).clamp(128.0, 255.0) as u8;
+                    if q0 < 255 {
+                        j[1] = allowed[s] as u8;
+                        w = [q0, 255 - q0, 0, 0];
+                    }
+                }
+            }
+            joints.push(j);
+            weights.push(w);
+        }
+        (joints, weights)
+    }
+
     /// Skinning data for `positions`: each vertex binds to the nearest of `allowed` bones (ties go
     /// to the earlier entry); within `blend` metres of an adjacent (parent/child) allowed bone it
     /// shares its weight with it, 50/50 exactly where both are equally near. An empty `allowed`
@@ -237,6 +330,8 @@ mod tests {
             assert_eq!(w.iter().map(|x| *x as u32).sum::<u32>(), 255);
         }
         // No bones listed → root.
+        // By flesh: with every bone as thick as the next and nothing behind a joint, the same.
+        assert_eq!(r.bind_fleshed(&pts, &[1, 2, 3], 0.2, &[0.1; 4]), r.bind(&pts, &[1, 2, 3], 0.2));
         let (j, _) = r.bind(&pts, &[], 0.1);
         assert!(j.iter().all(|j| j[0] == 0));
     }

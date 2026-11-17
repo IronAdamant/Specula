@@ -3953,7 +3953,11 @@ impl GpuModels {
     }
 
     fn held_back_by(&self, animated: bool, m: &GpuModel) -> Option<Held<'_>> {
-        self.held_back_for(m.needs.skinned && animated, m.needs.textured)
+        // An animated entity of a rigged model may be drawn skinned by clips written into the
+        // world, whether or not its build has clips of its own: it waits for the skinned
+        // pipelines too. (It did not, was drawn before they existed, and the GPU skipped it:
+        // a capture taken then showed the world without it and nothing said why. 2026-11-17.)
+        self.held_back_for((m.needs.skinned || m.rigged) && animated, m.needs.textured)
     }
 
     /// Draws that use the skinned or the textured pipelines wait for them.
@@ -6330,6 +6334,11 @@ mod tests {
         let (mut bones, mut out) = (Vec::new(), Vec::new());
         models.posed_draws_lod(&mut gpu, &built, &palette, &Mat4::IDENTITY, 0, &mut bones, &mut out).unwrap();
         assert!(!out.is_empty() && out.iter().all(|d| d.skin.is_none()), "the studio's bind-pose shot: unskinned");
+        // An animated entity of it waits for the skinned pipelines; a still one does not.
+        models.ready.skinned = false;
+        let uploaded = &models.uploaded[&built.id];
+        assert!(matches!(models.held_back_by(true, uploaded), Some(Held::Waiting)), "animated: waits for the skinned pipelines");
+        assert!(models.held_back_by(false, uploaded).is_none(), "still: needs none");
         let _ = std::fs::remove_dir_all(&root);
     }
 

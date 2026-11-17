@@ -616,6 +616,17 @@ impl StepJob for FilmJob {
     }
 }
 
+/// Why an entity cannot be filmed yet, if it cannot: its model is still being built, or is
+/// built and waits for the pipelines it is drawn with (sight captures wait for both; a
+/// filmstrip says so and is asked again).
+fn not_yet_filmable(building: bool, waiting: bool) -> Option<&'static str> {
+    match (building, waiting) {
+        (true, _) => Some("is still building"),
+        (false, true) => Some("is built and waits for the pipelines it is drawn with"),
+        (false, false) => None,
+    }
+}
+
 /// An entity filmstrip: its play over time in the world, from three views.
 pub(super) struct EntityFilmJob {
     id: u64,
@@ -651,6 +662,12 @@ impl EntityFilmJob {
         let Some(ent) = e.world.get(id).cloned() else { return Err(error("not_found", "gone")) };
         if ent.anim.is_none() {
             return Err(error("not_animated", format!("{path} has no anim to film")));
+        }
+        // A model still building has no bounds to frame and nothing to draw: filmed then, the
+        // sheet was an empty floor at the entity's feet, with "CHECKS OK" under it.
+        let building = ent.resolved_model().is_some_and(|r| r.state == crate::world::ModelState::Building);
+        if let Some(why) = not_yet_filmable(building, e.models.waiting(&ent)) {
+            return Err(error("model_building", format!("{path}'s model {why}; call again in a moment")));
         }
         // The game brings its presentation up to date first (as for captures).
         let _ = e.before_capture();
@@ -998,6 +1015,16 @@ fn clip_to_tile(b: [u32; 4], tile: u32) -> Option<[u32; 4]> {
 mod tests {
     use super::clip_to_tile;
     use super::*;
+
+    /// An entity whose model is building, or waits for its pipelines, is not filmed: the
+    /// refusal says which. (Filmed then, the sheet showed an empty floor and "CHECKS OK".)
+    #[test]
+    fn an_entity_is_not_filmed_before_its_model_is_ready() {
+        assert_eq!(not_yet_filmable(false, false), None);
+        assert!(not_yet_filmable(true, false).is_some_and(|w| w.contains("building")));
+        assert!(not_yet_filmable(true, true).is_some_and(|w| w.contains("building")));
+        assert!(not_yet_filmable(false, true).is_some_and(|w| w.contains("pipelines")));
+    }
 
     /// The threads a filmstrip row's checks ran on (tests only).
     pub(super) static CHECKED_ON: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());

@@ -406,10 +406,12 @@ fn a_figures_rig_is_its_bodys_skeleton() {
             r##"{{ "recipe": 1, "name": "person", "smooth_angle": 60,
               "rig": {{ "blend": 0.04, "figure": {{ "sex": "female", "stature": {stature} }} }},
               "parts": [
-                {{ "name": "body", "material": "stone", "bones": ["hips", "spine", "chest", "neck", "upperarm_l", "upperarm_r", "forearm_l", "forearm_r", "thigh_l", "thigh_r", "shin_l", "shin_r"],
+                {{ "name": "body", "material": "stone", "bones": ["hips", "spine", "chest", "neck", "head", "upperarm_l", "upperarm_r", "forearm_l", "forearm_r", "hand_l", "hand_r", "thigh_l", "thigh_r", "shin_l", "shin_r", "foot_l", "foot_r"],
                   "shape": {{ "op": "figure", "part": "body", "sex": "female", "stature": {stature}, "resolution": 56 }} }},
                 {{ "name": "hand_l", "material": "stone", "bones": ["forearm_l", "hand_l"],
-                  "shape": {{ "op": "figure", "part": "hand_l", "sex": "female", "stature": {stature}, "resolution": 40 }} }} ] }}"##
+                  "shape": {{ "op": "figure", "part": "hand_l", "sex": "female", "stature": {stature}, "resolution": 40 }} }},
+                {{ "name": "foot_l", "material": "stone", "bones": ["shin_l", "foot_l"],
+                  "shape": {{ "op": "figure", "part": "foot_l", "sex": "female", "stature": {stature}, "resolution": 40 }} }} ] }}"##
         )
     };
     let m = build_with(&recipe(1.60), &[]).unwrap_or_else(|e| panic!("{e}"));
@@ -427,6 +429,38 @@ fn a_figures_rig_is_its_bodys_skeleton() {
         }
     }
     assert!(on_hand > 200, "{on_hand} vertices past the wrist");
+    // The hips keep their sides: between the hip joints' height and the waist, out at the
+    // body's side, a vertex moves with the pelvis or the spine and never mostly with a thigh
+    // (bound by plain distance it did, and the pelvis tore when a leg swung). Down the thigh,
+    // well under the crotch, it moves with the thigh.
+    let bone = |name: &str| rig.find(name).unwrap();
+    let (hips, spine, thigh_l, thigh_r) = (bone("hips") as u8, bone("spine") as u8, bone("thigh_l") as u8, bone("thigh_r") as u8);
+    let (joint_y, waist_y, knee_y) = (rig.bones[thigh_l as usize].head[1], rig.bones[spine as usize].head[1], rig.bones[thigh_l as usize].tail[1]);
+    let (mut sides, mut down) = (0, 0);
+    for (i, p) in l0.positions.iter().enumerate() {
+        let lead = l0.joints[i][0];
+        if p[1] > joint_y + 0.02 && p[1] < waist_y && p[0].abs() > 0.10 && p[0].abs() < 0.22 {
+            sides += 1;
+            assert!(lead == hips || lead == spine, "{p:?} at the hips' side is led by {} ({:?})", rig.bones[lead as usize].name, l0.weights[i]);
+        }
+        if p[1] < joint_y - 0.16 && p[1] > knee_y + 0.08 && p[0].abs() < 0.3 {
+            down += 1;
+            assert!(lead == thigh_l || lead == thigh_r, "{p:?} down the thigh is led by {}", rig.bones[lead as usize].name);
+        }
+    }
+    assert!(sides > 40 && down > 100, "{sides} at the hips' sides, {down} down the thighs");
+    // The heel is the foot's: it lies behind the ankle along the foot's own line, and a rule
+    // that gave a bone only what is ahead of its joint handed it to the shin (rings showed at
+    // the ankles of the walking figure).
+    let (foot, ankle) = (bone("foot_l") as u8, rig.bones[bone("foot_l")].head);
+    let mut heel = 0;
+    for (i, p) in l0.positions.iter().enumerate() {
+        if p[0] > 0.0 && p[1] < 0.035 && p[2] < ankle[2] - 0.02 {
+            heel += 1;
+            assert_eq!(l0.joints[i][0], foot, "{p:?} on the heel is led by {} ({:?})", rig.bones[l0.joints[i][0] as usize].name, l0.weights[i]);
+        }
+    }
+    assert!(heel > 20, "{heel} vertices on the heel");
     // A taller body: the same bones, the head's higher.
     let tall = build_with(&recipe(1.80), &[]).unwrap_or_else(|e| panic!("{e}"));
     let (a, b) = (rig.bones[rig.find("head").unwrap()].head[1], tall.rig.as_ref().unwrap().bones[rig.find("head").unwrap()].head[1]);
