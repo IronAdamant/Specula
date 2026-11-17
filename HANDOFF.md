@@ -148,6 +148,14 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     [docs/research/library/](docs/research/library/README.md) as delivered and **not yet
     checked**. H7 also says where the walking curves already are (H1): the first walk was made
     from guessed numbers and need not have been.
+  - **A third list, of every known gap, ahead of the parts that need it** (the owner, the same
+    night, asked whether more reference is needed: "Might as well list me the gaps now. So you'll
+    have materials. Vehicle physics, air plane physics, space physics would be good to have as
+    well as bullet physics, and sword physics"). It is
+    [docs/research/REFERENCE_ROUND3_BRIEF.md](docs/research/REFERENCE_ROUND3_BRIEF.md): those
+    five kinds of physics, what the first two rounds did not find, and what each later part
+    (faces, clothing, animals, machines, plants, terrain, water, sky, light, buildings, sound,
+    fire) will want. Nothing in hand waits on it.
   - **A skeleton with every figure, so that a character is a change and not a rebuild** (the same
     message: "At the very least, basic skeletons alongside the figures you've made for me will be
     key to set it up so you can easily mutate or change into individual characters over time
