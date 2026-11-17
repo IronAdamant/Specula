@@ -476,6 +476,65 @@ impl Sizes<'_> {
     }
 }
 
+/// The names of a figure's bones and of each one's parent, parents first: the names the
+/// engine's motion tools look for (`hips`, a spine up to `head`, `thigh_*`, `shin_*`, `foot_*`,
+/// `upperarm_*`, `forearm_*`, `hand_*`; left is +X). Every body has these, so one motion
+/// drives them all.
+pub const BONES: [(&str, Option<&str>); 18] = [
+    ("root", None),
+    ("hips", Some("root")),
+    ("spine", Some("hips")),
+    ("chest", Some("spine")),
+    ("neck", Some("chest")),
+    ("head", Some("neck")),
+    ("upperarm_l", Some("chest")),
+    ("upperarm_r", Some("chest")),
+    ("forearm_l", Some("upperarm_l")),
+    ("forearm_r", Some("upperarm_r")),
+    ("hand_l", Some("forearm_l")),
+    ("hand_r", Some("forearm_r")),
+    ("thigh_l", Some("hips")),
+    ("thigh_r", Some("hips")),
+    ("shin_l", Some("thigh_l")),
+    ("shin_r", Some("thigh_r")),
+    ("foot_l", Some("shin_l")),
+    ("foot_r", Some("shin_r")),
+];
+
+/// A body's skeleton, in the pose its surface is made in: each of [`BONES`] from one of the
+/// frame's joints to the next (the root on the ground under the hips; a hand to its knuckles
+/// and a foot to its ball: fingers and toes have no bones of their own yet). The joints are where
+/// the body's own measures put them, so the bones lie inside the surface [`tree`] makes of
+/// the same body and shaping, by construction.
+pub fn bones(body: &Body, shaping: &Shaping) -> Vec<crate::rig::Bone> {
+    let frame = body.frame().spread(shaping.arms, shaping.legs);
+    let at = |joint: Joint| point(frame.at(joint));
+    let ends = |name: &str| -> (V3, V3) {
+        let side = if name.ends_with("_r") { Side::Right } else { Side::Left };
+        match name.trim_end_matches("_l").trim_end_matches("_r") {
+            "hips" => (at(Joint::Pelvis), at(Joint::Waist)),
+            "spine" => (at(Joint::Waist), at(Joint::Chest)),
+            "chest" => (at(Joint::Chest), at(Joint::Neck)),
+            "neck" => (at(Joint::Neck), at(Joint::Head)),
+            "head" => (at(Joint::Head), at(Joint::Vertex)),
+            "upperarm" => (at(Joint::Shoulder(side)), at(Joint::Elbow(side))),
+            "forearm" => (at(Joint::Elbow(side)), at(Joint::Wrist(side))),
+            "hand" => (at(Joint::Wrist(side)), at(Joint::Knuckle(side))),
+            "thigh" => (at(Joint::Hip(side)), at(Joint::Knee(side))),
+            "shin" => (at(Joint::Knee(side)), at(Joint::Ankle(side))),
+            "foot" => (at(Joint::Ankle(side)), at(Joint::Ball(side))),
+            _ => ([0.0; 3], [0.0; 3]),
+        }
+    };
+    BONES
+        .iter()
+        .map(|(name, parent)| {
+            let (head, tail) = ends(name);
+            crate::rig::Bone { name: (*name).to_string(), parent: parent.and_then(|p| BONES.iter().position(|(n, _)| *n == p)), head, tail }
+        })
+        .collect()
+}
+
 /// The distance tree of one part of a body's surface.
 pub fn tree(body: &Body, shaping: &Shaping, part: Part) -> SdfNode {
     let straight = body.frame();
@@ -756,6 +815,35 @@ mod tests {
                     _ => (-0.03, 0.03),
                 };
                 assert!(off >= least && off <= most, "{name}: {what} is {:.1} cm on the figure and {:.1} cm on the body ({:+.1}%)", figure * 100.0, measured * 100.0, off * 100.0);
+            }
+        }
+    }
+
+    /// A body's bones are a valid rig, under the names motion looks for, and lie inside its
+    /// surface: every bone's two ends and its middle are in one of the six parts (the root
+    /// is on the ground and is not asked), and each side's bones mirror the other's.
+    #[test]
+    fn a_bodys_bones_lie_inside_its_surface() {
+        for body in [Body::typical(Sex::Female), Body::with_build(Sex::Male, 1.85, -1.0).unwrap()] {
+            let shaping = Shaping::default();
+            let rig = crate::rig::Rig { bones: bones(&body, &shaping) };
+            rig.validate().unwrap();
+            assert_eq!(rig.len(), BONES.len());
+            let parts: Vec<_> = [Part::Body, Part::Head, Part::Hand(Side::Left), Part::Hand(Side::Right), Part::Foot(Side::Left), Part::Foot(Side::Right)]
+                .iter()
+                .map(|part| tree(&body, &shaping, *part))
+                .collect();
+            // (The top of the head is on the surface itself: an end may be that, to 4 mm.)
+            let inside = |p: V3| parts.iter().any(|part| crate::sdf::field_at(part, p) < 0.004);
+            for bone in &rig.bones[1..] {
+                for t in [0.0, 0.5, 1.0] {
+                    let p = lerp(bone.head, bone.tail, t);
+                    assert!(inside(p), "{} of {} m: {} at {t} ({p:?}) is outside the surface", body.sex().name(), body.stature(), bone.name);
+                }
+            }
+            for name in ["upperarm", "forearm", "hand", "thigh", "shin", "foot"] {
+                let (l, r) = (&rig.bones[rig.find(&format!("{name}_l")).unwrap()], &rig.bones[rig.find(&format!("{name}_r")).unwrap()]);
+                assert!((l.head[0] + r.head[0]).abs() < 1e-5 && (l.head[1] - r.head[1]).abs() < 1e-5 && l.head[0] > 0.0, "{name}: {:?} {:?}", l.head, r.head);
             }
         }
     }

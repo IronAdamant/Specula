@@ -1,8 +1,9 @@
 # Figure: a person's surface from a measured body
 
 Status: **in progress, slice 2 of M6 part 4** (2026-11-17). The shape `figure` builds and is closed; it
-has been looked at eight times in a day and **does not look right yet** (what is wrong is listed
-below). It has no rig, and it has not been reviewed by a model that did not write it. The numbers it is
+has been looked at twelve times and **does not look right yet** (what is wrong is listed below). It
+is measured against its body by a test, it has a skeleton and has taken its first steps, and it has not
+been reviewed by a model that did not write it. The numbers it is
 built from are [CORPUS.md](CORPUS.md)'s.
 
 ## What it is
@@ -92,6 +93,7 @@ development machine (the gallery's originals are not tracked). In short:
 | v9 | Each trait as a pair of bodies alike but for it: each differs where its trait says |
 | v10 | A wider join of legs and trunk: looked better, **measured worse** (hips 4 to 6 cm wide, the crotch filled in by 10 cm); taken out |
 | v11 | Mended by measuring (below): limbs with no rings, thighs as ellipses, depths as surveyed |
+| v12 | A skeleton from the same body, and a first walk: she strides, and the pelvis tears |
 
 A model that did not take the captures checked v6 and **did not pass it as it had been described**: the
 joins still showed, and the waist is not narrower than the chest. It checked v8 too, and did not pass that
@@ -132,6 +134,51 @@ work units a build may spend (with the weights as recalibrated the same day:
 [PROCEDURAL_MODELLING.md](PROCEDURAL_MODELLING.md), tier 3); 0.35 ms of GPU time a frame with two on
 screen at 1280x720.
 
+## The skeleton
+
+A recipe's rig can be the same measured body (the owner, 2026-11-17: a skeleton with every figure, so
+that a character is a change and not a rebuild):
+
+```json
+"rig": { "blend": 0.05, "figure": { "sex": "female", "stature": 1.7, "build": 0.5 } },
+"parts": [
+  { "name": "body", "bones": ["hips", "spine", "chest", "neck", "upperarm_l", "upperarm_r", "forearm_l",
+                              "forearm_r", "thigh_l", "thigh_r", "shin_l", "shin_r"],
+    "shape": { "op": "figure", "part": "body", "sex": "female", "stature": 1.7, "build": 0.5 } },
+  { "name": "head",   "bones": ["neck", "head"],        "shape": { "op": "figure", "part": "head",   "...": "the same body" } },
+  { "name": "hand_l", "bones": ["forearm_l", "hand_l"], "shape": { "op": "figure", "part": "hand_l", "...": "the same body" } },
+  { "name": "foot_l", "bones": ["shin_l", "foot_l"],    "shape": { "op": "figure", "part": "foot_l", "...": "the same body" } }
+]
+```
+
+`rig.figure` takes the `figure` shape's fields (`part` and `smooth` are not read) and gives eighteen
+bones, the same for every body (`figure::BONES`): `root`, `hips`, `spine`, `chest`, `neck`, `head`, and
+on each side `upperarm`, `forearm`, `hand`, `thigh`, `shin`, `foot` (`_l` is the figure's left, +X).
+They are the names the motion generators and the foot placement look for, so a gait made with
+`"body": "auto"` drives any figure. Each bone runs from one of the body's joints to the next, in the
+pose the surface is made in, so it lies inside the surface by construction (a test holds it). A hand's
+bone ends at the knuckles and a foot's at its ball: fingers and toes have none yet. A rig has `bones` or
+a `figure`, not both.
+
+**The first walk** (v12) showed what the binding lacks. A vertex binds to the nearest bone among its
+part's bones. On a limb that is right; at the hips it is not: the hips' sides are nearer a thigh's bone
+than the pelvis's, so half the pelvis swings with each leg and the surface tears across it. The body
+needs weights that know how thick each bone's flesh is (the sections are there to say so). Not built.
+The body fields are also written seven times in such a recipe (the rig and six parts): one place for
+them is wanted.
+
+Using it found a defect in the engine: a rig whose only clips are written into the world (no anims file
+of its own) was filmed in its bind pose by `anim_filmstrip`, every tile alike, while the clip moved it
+in the world. Fixed in `models.rs` (`posed`), with a test.
+
+An independent check of the walk's captures did not pass them. It confirmed the stride, the bent
+knees, the frozen filmstrip before the fix and the moving one after, and the crease across the hips in
+every tile. It also found seams that show while moving (a ring at the ankle, a notch at the wrist, lines
+across the forearm, the shoulder and upper back pinched), a marching step with no heel-off and a
+stride longer than a leg, the held-out arms, a stiff trunk, and that the motion checks said "OK" on all
+of it: they measure sliding, floating and the loop's seam, and none asks whether a walk looks like
+one.
+
 ## What is wrong, and what is not there
 
 An independent check of v11 did not pass it either. It confirmed that the limbs' rings and the boxy
@@ -153,7 +200,9 @@ capture's fault twice). Its list, and what the numbers add:
 - The back has not been seen lit.
 - Eight bodies have been looked at from afar, and only the two typical ones up close.
 - The levels of detail have not been looked at. A hand is 7,300 triangles.
-- **No rig.** The frame's joints are the bones' places; binding is not written.
+- **The pelvis tears when a leg swings** (above); the arms have no rest pose at the sides; fingers and
+  toes have no bones; no motion has been made from walking data yet (the first walk is a crouched lunge
+  from guessed numbers).
 - Held against pictures of people only by eye so far (Richer's plates, 2026-11-17); no outline has
   been compared at one scale.
 - The body and the hands may join two sheets along a few edges (the tops of the thighs, between

@@ -609,6 +609,12 @@ pub fn eval_cost(n: &SdfNode) -> u64 {
 }
 
 /// [`eval_cost`] of a prepared tree (a pruned one costs what is left of it).
+/// A tree's field at a point (negative inside), for tests that ask where a surface is.
+#[cfg(test)]
+pub(crate) fn field_at(n: &SdfNode, p: V3) -> f32 {
+    eval(&prepare(n, 1, &mut 0), p)
+}
+
 fn prepared_cost(n: &Prepared) -> u64 {
     match &n.kind {
         PKind::Prim(p) => prim_cost(p) + modifiers_cost(&n.m),

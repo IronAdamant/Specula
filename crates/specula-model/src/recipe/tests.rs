@@ -396,6 +396,47 @@ fn rig_errors_have_paths_and_codes() {
     assert_eq!(m.rig.unwrap().bones[3].head, [-0.2, 1.0, 0.0]);
 }
 
+/// A rig made from a measured body: the bones every figure has, placed by the body, and its
+/// parts bound to them. A hand's vertices move with the hand and the forearm and nothing else;
+/// the same recipe with another body has the same bones in other places.
+#[test]
+fn a_figures_rig_is_its_bodys_skeleton() {
+    let recipe = |stature: f32| {
+        format!(
+            r##"{{ "recipe": 1, "name": "person", "smooth_angle": 60,
+              "rig": {{ "blend": 0.04, "figure": {{ "sex": "female", "stature": {stature} }} }},
+              "parts": [
+                {{ "name": "body", "material": "stone", "bones": ["hips", "spine", "chest", "neck", "upperarm_l", "upperarm_r", "forearm_l", "forearm_r", "thigh_l", "thigh_r", "shin_l", "shin_r"],
+                  "shape": {{ "op": "figure", "part": "body", "sex": "female", "stature": {stature}, "resolution": 56 }} }},
+                {{ "name": "hand_l", "material": "stone", "bones": ["forearm_l", "hand_l"],
+                  "shape": {{ "op": "figure", "part": "hand_l", "sex": "female", "stature": {stature}, "resolution": 40 }} }} ] }}"##
+        )
+    };
+    let m = build_with(&recipe(1.60), &[]).unwrap_or_else(|e| panic!("{e}"));
+    let rig = m.rig.as_ref().unwrap();
+    assert_eq!(rig.bones.iter().map(|b| b.name.as_str()).collect::<Vec<_>>(), crate::figure::BONES.iter().map(|(n, _)| *n).collect::<Vec<_>>());
+    let l0 = &m.lods[0];
+    let (hand, forearm) = (rig.find("hand_l").unwrap() as u8, rig.find("forearm_l").unwrap() as u8);
+    let mut on_hand = 0;
+    for (i, p) in l0.positions.iter().enumerate() {
+        let (joints, weights) = (l0.joints[i], l0.weights[i]);
+        // Left of the left wrist is the hand's part: its vertices know the hand and the forearm only.
+        if p[0] > rig.bones[hand as usize].head[0] + 0.02 {
+            on_hand += 1;
+            assert!((0..4).all(|k| weights[k] == 0 || joints[k] == hand || joints[k] == forearm), "{p:?} binds to {joints:?} {weights:?}");
+        }
+    }
+    assert!(on_hand > 200, "{on_hand} vertices past the wrist");
+    // A taller body: the same bones, the head's higher.
+    let tall = build_with(&recipe(1.80), &[]).unwrap_or_else(|e| panic!("{e}"));
+    let (a, b) = (rig.bones[rig.find("head").unwrap()].head[1], tall.rig.as_ref().unwrap().bones[rig.find("head").unwrap()].head[1]);
+    assert!(b > a + 0.12 && tall.rig.as_ref().unwrap().len() == rig.len(), "{a} {b}");
+    // Bones and a figure together are refused, by name.
+    let both = r##"{ "name": "x", "rig": { "figure": { "sex": "male" }, "bones": [ { "name": "root", "head": [0, 0, 0] } ] }, "parts": [] }"##;
+    let er = build_with(both, &[]).unwrap_err();
+    assert_eq!(er.path, "rig.bones", "{er}");
+}
+
 #[test]
 fn includes_bind_to_the_including_parts_bones() {
     let parent = r##"{ "name": "rider", "rig": { "bones": [ { "name": "root", "head": [0, 0, 0] }, { "name": "saddle", "parent": "root", "head": [0, 1, 0] } ] },

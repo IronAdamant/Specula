@@ -285,6 +285,9 @@ struct BoneDef {
 struct RigDef {
     blend: Option<Expr>,
     bones: Vec<BoneDef>,
+    /// A rig made from a measured body (`"figure"`): the bones are [`crate::figure::BONES`]
+    /// and their places come from the body when the recipe is built.
+    figure: Option<Node>,
 }
 
 /// A parsed, validated recipe (not yet built).
@@ -643,18 +646,39 @@ impl Parser<'_> {
     }
 
     /// The `rig` section: bones parents-first, `_l` bones with `"mirror": true` gain an `_r` twin
-    /// right after them.
+    /// right after them. Or `"figure"`, a measured body (the fields of the `figure` shape): its
+    /// skeleton, under the names every figure has.
     fn rig(&self, v: &Json) -> Result<RigDef, RecipeError> {
         let o = v.as_object().ok_or_else(|| type_err("rig", "{\"bones\": [...], \"blend\": metres}"))?;
         let mut blend = None;
         let mut items = None;
+        let mut figure = None;
         for (k, x) in o {
             match k.as_str() {
                 "blend" => blend = Some(self.expr("rig.blend", x)?),
                 "bones" => items = Some(x.as_array().ok_or_else(|| type_err("rig.bones", "a list of bones"))?),
+                "figure" => figure = Some(self.node("rig.figure", x, "figure", procgen::FIGURE_FIELDS, false)?),
                 "note" => {}
-                _ => return Err(e(&format!("rig.{k}"), ErrorCode::UnknownField, "a rig accepts: bones, blend, note")),
+                _ => return Err(e(&format!("rig.{k}"), ErrorCode::UnknownField, "a rig accepts: bones, figure, blend, note")),
             }
+        }
+        if let Some(figure) = figure {
+            if items.is_some() {
+                return Err(e("rig.bones", ErrorCode::InvalidRig, "a rig has \"bones\" or a \"figure\", not both"));
+            }
+            // The places are the body's, found at build; the names and the tree are fixed.
+            let bones = crate::figure::BONES
+                .iter()
+                .map(|(name, parent)| BoneDef {
+                    path: "rig.figure".to_string(),
+                    name: (*name).to_string(),
+                    parent: parent.and_then(|p| crate::figure::BONES.iter().position(|(n, _)| *n == p)),
+                    head: Val::List(Vec::new()),
+                    tail: None,
+                    mirror_x: false,
+                })
+                .collect();
+            return Ok(RigDef { blend, bones, figure: Some(figure) });
         }
         let items = items.ok_or_else(|| e("rig.bones", ErrorCode::MissingField, "a rig needs \"bones\""))?;
         if items.is_empty() {
@@ -715,7 +739,7 @@ impl Parser<'_> {
                 return Err(e(&path, ErrorCode::Limit, format!("more than {MAX_BONES} bones")).with_numbers(bones.len() as f64, MAX_BONES as f64));
             }
         }
-        Ok(RigDef { blend, bones })
+        Ok(RigDef { blend, bones, figure: None })
     }
 }
 
@@ -1418,7 +1442,8 @@ fn build_rig(recipe: &Recipe, def: &RigDef, ctx: &Ctx) -> Result<(Rig, f32), Rec
         Ok(p)
     };
     let mut ends: Vec<(V3, Option<V3>)> = Vec::with_capacity(def.bones.len());
-    for b in &def.bones {
+    // (A figure's bones have no places written in the recipe: they are the body's, below.)
+    for b in if def.figure.is_none() { &def.bones[..] } else { &[] } {
         let mut head = point(&b.head, &format!("{}.head", b.path))?;
         let mut tail = b.tail.as_ref().map(|t| point(t, &format!("{}.tail", b.path))).transpose()?;
         if b.mirror_x {
@@ -1429,22 +1454,29 @@ fn build_rig(recipe: &Recipe, def: &RigDef, ctx: &Ctx) -> Result<(Rig, f32), Rec
         }
         ends.push((head, tail));
     }
-    let bones = def
-        .bones
-        .iter()
-        .enumerate()
-        .map(|(i, b)| {
-            let (head, tail) = ends[i];
-            let tail = tail.unwrap_or_else(|| {
-                let mut kids = def.bones.iter().enumerate().filter(|(_, c)| c.parent == Some(i));
-                match (kids.next(), kids.next()) {
-                    (Some((k, _)), None) => ends[k].0,
-                    _ => head,
-                }
-            });
-            Bone { name: b.name.clone(), parent: b.parent, head, tail }
-        })
-        .collect();
+    let bones = match &def.figure {
+        // A measured body's own skeleton, in the pose its surface is made in.
+        Some(figure) => {
+            let (body, shaping) = ctx.figure_body(figure)?;
+            crate::figure::bones(&body, &shaping)
+        }
+        None => def
+            .bones
+            .iter()
+            .enumerate()
+            .map(|(i, b)| {
+                let (head, tail) = ends[i];
+                let tail = tail.unwrap_or_else(|| {
+                    let mut kids = def.bones.iter().enumerate().filter(|(_, c)| c.parent == Some(i));
+                    match (kids.next(), kids.next()) {
+                        (Some((k, _)), None) => ends[k].0,
+                        _ => head,
+                    }
+                });
+                Bone { name: b.name.clone(), parent: b.parent, head, tail }
+            })
+            .collect(),
+    };
     let mut rig = Rig { bones };
     for op in &recipe.finish {
         if let Some(t) = ctx.rig_affine(op)? {

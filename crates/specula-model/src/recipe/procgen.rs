@@ -617,6 +617,13 @@ impl Ctx<'_> {
     /// The body a `figure` asks for, and how it is shaped. What a body refuses (a stature
     /// nobody measured had, traits that fold it) is the recipe's error, in the body's words.
     fn figure_tree(&self, n: &Node) -> Result<sdf::SdfNode, RecipeError> {
+        let (body, shaping) = self.figure_body(n)?;
+        let part = crate::figure::Part::parse(self.str(n, "part", "whole")).unwrap_or(crate::figure::Part::Whole);
+        Ok(crate::figure::tree(&body, &shaping, part))
+    }
+
+    /// The body and the shaping a `figure`'s fields ask for (a shape's, or a rig's).
+    pub(super) fn figure_body(&self, n: &Node) -> Result<(specula_corpus::Body, crate::figure::Shaping), RecipeError> {
         use specula_corpus::{Body, Sex};
         let refused = |er: specula_corpus::BodyError| e(&n.path, ErrorCode::OutOfRange, format!("{}: {er}", er.code()));
         let sex = Sex::parse(self.str(n, "sex", "female")).unwrap_or(Sex::Female);
@@ -647,8 +654,7 @@ impl Ctx<'_> {
             legs: self.ranged(n, "legs", standard.legs, 0.0, 45.0)? as f64,
             smooth: self.ranged(n, "smooth", standard.smooth as f64, 0.0, 0.2)?,
         };
-        let part = crate::figure::Part::parse(self.str(n, "part", "whole")).unwrap_or(crate::figure::Part::Whole);
-        Ok(crate::figure::tree(&body, &shaping, part))
+        Ok((body, shaping))
     }
 
     pub(super) fn sdf_shape(&self, n: &Node) -> Result<Shape, RecipeError> {

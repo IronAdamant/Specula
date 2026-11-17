@@ -3361,6 +3361,9 @@ pub(crate) struct GpuModel {
     /// Pipeline variants its draws use: skinned (its meshes carry skin, when animated) and
     /// textured (a part has textures).
     pub(crate) needs: Needs,
+    /// Its meshes carry skin, whether or not the build has clips of its own (a rig animated
+    /// only by clips written into the world has none): what a caller that poses it is asked.
+    pub(crate) rigged: bool,
     /// The finest LOD uploaded: levels from here to the last are drawable (streaming uploads the
     /// coarsest first; a frame wanting a finer one draws this one meanwhile). 0 = all of them.
     pub(crate) resident_from: usize,
@@ -3741,13 +3744,23 @@ impl GpuModels {
     /// offscreen image (filmstrips): the build is uploaded if no entity has it on the GPU yet (it
     /// goes again at the next sync if none does then). The palette goes into `bones`.
     pub fn posed_draws(&mut self, gpu: &mut Gpu, built: &Arc<Built>, skin: &[Affine], world: &Mat4, bones: &mut Vec<[f32; 16]>, out: &mut Vec<DrawItem>) -> Result<(), String> {
-        self.posed_draws_lod(gpu, built, skin, world, 0, bones, out)
+        self.posed(gpu, built, skin, world, 0, true, bones, out)
     }
 
     /// [`GpuModels::posed_draws`] at level of detail `lod` (clamped to the model's last; the
     /// asset studio's shots choose it from the subject's size on screen, as the game does).
     #[allow(clippy::too_many_arguments)]
     pub fn posed_draws_lod(&mut self, gpu: &mut Gpu, built: &Arc<Built>, skin: &[Affine], world: &Mat4, lod: usize, bones: &mut Vec<[f32; 16]>, out: &mut Vec<DrawItem>) -> Result<(), String> {
+        self.posed(gpu, built, skin, world, lod, false, bones, out)
+    }
+
+    /// `pose`: the caller poses the model with `skin` (a filmstrip's row), so it is drawn
+    /// skinned whenever its meshes carry skin. Without it (the studio's bind-pose shots) only a
+    /// build with clips of its own is. (A rig whose only clips are the world's has none of its
+    /// own: its filmstrip drew every tile in the bind pose, while the same clip moved it in
+    /// the world. 2026-11-17.)
+    #[allow(clippy::too_many_arguments)]
+    fn posed(&mut self, gpu: &mut Gpu, built: &Arc<Built>, skin: &[Affine], world: &Mat4, lod: usize, pose: bool, bones: &mut Vec<[f32; 16]>, out: &mut Vec<DrawItem>) -> Result<(), String> {
         if let std::collections::btree_map::Entry::Vacant(slot) = self.uploaded.entry(built.id) {
             let m = upload(gpu, built).map_err(|e| match e {
                 UploadError::Released => "the model's textures were released; spawn an entity of it (or model_reload) and try again".to_string(),
@@ -3760,7 +3773,8 @@ impl GpuModels {
             }
         }
         let model = &self.uploaded[&built.id];
-        if let Some(h) = self.held_back_by(true, model) {
+        let skinned = model.needs.skinned || (pose && model.rigged && !skin.is_empty());
+        if let Some(h) = self.held_back_for(skinned, model.needs.textured) {
             return Err(match h {
                 Held::Waiting => "the skinned pipeline is still being built; try again in a moment".into(),
                 Held::Failed(f) => format!("the {} pipeline failed to build: {}", variant_names(f), f.error),
@@ -3772,7 +3786,7 @@ impl GpuModels {
         // (Streaming may have only coarser levels on the GPU so far: the finest one there is.)
         let last = model.lods.len().saturating_sub(1);
         for p in &model.lods[lod.max(model.resident_from).min(last)] {
-            out.push(DrawItem { mesh: p.mesh, model: cols, color: p.color, material: p.material, surface: p.surface, skin: model.needs.skinned.then_some(first), bounds: None });
+            out.push(DrawItem { mesh: p.mesh, model: cols, color: p.color, material: p.material, surface: p.surface, skin: skinned.then_some(first), bounds: None });
         }
         Ok(())
     }
@@ -3939,8 +3953,13 @@ impl GpuModels {
     }
 
     fn held_back_by(&self, animated: bool, m: &GpuModel) -> Option<Held<'_>> {
-        let skinned = m.needs.skinned && animated && !self.ready.skinned;
-        let textured = m.needs.textured && !self.ready.textured;
+        self.held_back_for(m.needs.skinned && animated, m.needs.textured)
+    }
+
+    /// Draws that use the skinned or the textured pipelines wait for them.
+    fn held_back_for(&self, skinned: bool, textured: bool) -> Option<Held<'_>> {
+        let skinned = skinned && !self.ready.skinned;
+        let textured = textured && !self.ready.textured;
         if !skinned && !textured {
             return None;
         }
@@ -4233,6 +4252,7 @@ fn upload(gpu: &mut Gpu, built: &Built) -> Result<GpuModel, UploadError> {
         textures,
         anims: built.anims.clone(),
         needs,
+        rigged: model.lods.iter().any(MeshData::is_skinned),
         resident_from: 0,
         bytes,
     })
@@ -6064,17 +6084,7 @@ mod tests {
 
     #[test]
     fn uploads_are_shared_per_build_and_lods_follow_size() {
-        if !specula_gpu::is_available() {
-            eprintln!("SKIPPED: Vulkan is not available");
-            return;
-        }
-        let mut gpu = match Gpu::new(&specula_gpu::GpuOptions::default()) {
-            Ok(g) => g,
-            Err(e) => {
-                eprintln!("SKIPPED: {e}");
-                return;
-            }
-        };
+        let Some(mut gpu) = gpu_or_skip() else { return };
         let shared = Arc::new(SharedLibrary::new(Library::new(&sepulcra(), None)));
         let mut world = World::default();
         world.set_model_source(Some(Arc::clone(&shared) as Arc<dyn ModelSource>));
@@ -6235,17 +6245,7 @@ mod tests {
     /// waiting (so captures don't park on it); a retry builds them and it draws.
     #[test]
     fn failed_pipeline_builds_are_failures_not_waits() {
-        if !specula_gpu::is_available() {
-            eprintln!("SKIPPED: Vulkan is not available");
-            return;
-        }
-        let mut gpu = match Gpu::new(&specula_gpu::GpuOptions::default()) {
-            Ok(g) => g,
-            Err(e) => {
-                eprintln!("SKIPPED: {e}");
-                return;
-            }
-        };
+        let Some(mut gpu) = gpu_or_skip() else { return };
         let shared = Arc::new(SharedLibrary::new(Library::new(&sepulcra(), None)));
         let mut world = World::default();
         world.set_model_source(Some(Arc::clone(&shared) as Arc<dyn ModelSource>));
@@ -6290,19 +6290,52 @@ mod tests {
         let _ = models.take_bones();
     }
 
-    #[test]
-    fn animated_entities_get_palettes_and_posed_bones() {
+    /// A GPU for a test, or `None` after saying why the test is skipped (rule 7: a machine
+    /// without Vulkan passes having printed the reason).
+    fn gpu_or_skip() -> Option<Gpu> {
         if !specula_gpu::is_available() {
             eprintln!("SKIPPED: Vulkan is not available");
-            return;
+            return None;
         }
-        let mut gpu = match Gpu::new(&specula_gpu::GpuOptions::default()) {
-            Ok(g) => g,
+        match Gpu::new(&specula_gpu::GpuOptions::default()) {
+            Ok(g) => Some(g),
             Err(e) => {
                 eprintln!("SKIPPED: {e}");
-                return;
+                None
             }
-        };
+        }
+    }
+
+    /// A rig with no anims file of its own (its clips are written into the world) is drawn
+    /// skinned when a caller poses it, as a filmstrip does; the studio's bind-pose shot of it
+    /// stays unskinned.
+    #[test]
+    fn a_posed_rig_without_clips_of_its_own_is_drawn_skinned() {
+        let Some(mut gpu) = gpu_or_skip() else { return };
+        let rigged = r##"{"recipe":1,"name":"post","rig":{"blend":0.05,"bones":[{"name":"root","head":[0,0,0]},{"name":"top","parent":"root","head":[0,0.5,0],"tail":[0,1,0]}]},
+            "parts":[{"name":"body","material":"stone","bones":["root","top"],"shape":{"op":"box","size":[0.2,1,0.2]}}]}"##;
+        let root = scratch("posedrig", &[("post", rigged)]);
+        let mut lib = Library::new(&root, None);
+        let handle = lib.resolve(&ModelSpec::new("recipes/post.json")).unwrap().handle;
+        settle(&mut lib);
+        let built = Arc::clone(lib.built(handle).unwrap());
+        assert!(built.anims.is_none() && built.model.lods[0].is_skinned(), "rigged, with no clips of its own");
+        gpu.prepare_variants(true, false).expect("pipelines");
+        let mut models = GpuModels::default();
+        models.refresh_ready(&mut gpu);
+        let palette = vec![Affine::IDENTITY; 2];
+        let (mut bones, mut out) = (Vec::new(), Vec::new());
+        models.posed_draws(&mut gpu, &built, &palette, &Mat4::IDENTITY, &mut bones, &mut out).unwrap();
+        assert!(!out.is_empty() && out.iter().all(|d| d.skin == Some(0)) && bones.len() == 2, "posed: skinned with its palette");
+        let (mut bones, mut out) = (Vec::new(), Vec::new());
+        models.posed_draws_lod(&mut gpu, &built, &palette, &Mat4::IDENTITY, 0, &mut bones, &mut out).unwrap();
+        assert!(!out.is_empty() && out.iter().all(|d| d.skin.is_none()), "the studio's bind-pose shot: unskinned");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn animated_entities_get_palettes_and_posed_bones() {
+        let Some(mut gpu) = gpu_or_skip() else { return };
         let shared = Arc::new(SharedLibrary::new(Library::new(&sepulcra(), None)));
         let mut world = World::default();
         world.set_model_source(Some(Arc::clone(&shared) as Arc<dyn ModelSource>));

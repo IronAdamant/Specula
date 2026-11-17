@@ -35,7 +35,7 @@ const ALLOWED: [(&str, usize); 69] = [
     ("crates/specula/src/luts.rs", 2),
     ("crates/specula/src/main.rs", 1),
     ("crates/specula/src/meshes.rs", 10),
-    ("crates/specula/src/models.rs", 10),
+    ("crates/specula/src/models.rs", 6),
     ("crates/specula/src/nav.rs", 1),
     ("crates/specula/src/persist.rs", 1),
     ("crates/specula/src/physics.rs", 2),

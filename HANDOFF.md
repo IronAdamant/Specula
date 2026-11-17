@@ -341,7 +341,11 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       and most girths within 5%; a tape round the waist reads 6% short and round the chest a
       tenth to a fifth short, because the trunk's sections are too round (next: a squareness
       for a column's sections, and the muscles that go from the chest and the back to the
-      arms). What else is wrong and what is missing is in FIGURE.md's last section: no rig, a
+      arms). **It has a skeleton and has walked** (the same evening): a recipe's rig can be the
+      measured body (`"rig": {"figure": {...}}`, eighteen bones under the names the motion
+      tools look for), and a generated gait moves it. The first walk showed that the pelvis
+      tears, because a vertex binds to the nearest bone; the body needs weights that know how
+      thick each bone's flesh is. What else is wrong and what is missing is in FIGURE.md: a
       trunk like a column, tubes for legs, a seam at the neck, the back never seen lit, and
       **no review yet by a model that did not write it**.
     - **Then:** the rig by construction, the review, the gate; roundness as one number; the form

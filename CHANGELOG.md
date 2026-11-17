@@ -292,6 +292,14 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
     - **A thigh's top is an ellipse centred on its flesh**: two lie side by side within the hips'
       breadth. A wider join of legs and trunk, tried first, looked better and measured worse (it
       filled the crotch in by 10 cm) and was taken out.
+    - **A figure has a skeleton, by construction.** A recipe's rig can be the measured body
+      (`"rig": {"figure": {...}}`): eighteen bones under the names the motion tools look for,
+      at the body's own joints, inside the surface (a test holds it). A walk generated from the
+      bones' names alone moves the figure. Its first steps showed that the pelvis tears (a
+      vertex binds to the nearest bone, and the hips' sides are nearer a thigh): not mended.
+    - **Fixed: a rig with no anims file of its own was filmed in its bind pose.** `anim_filmstrip`
+      of a recipe drew every tile alike while the same clip, written into the world, moved the
+      model there. A model a caller poses is now drawn skinned whenever its meshes carry skin.
     - **A man's chest is the plain column**: a third try at a swell for the muscle read as one
       mound to an independent check of the eleventh look, which did not pass it. What it listed
       is in [docs/design/FIGURE.md](docs/design/FIGURE.md).

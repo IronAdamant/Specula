@@ -2472,6 +2472,7 @@ pub(crate) fn upload_next_level(gpu: &mut Gpu, models: &mut GpuModels, library: 
                     textures,
                     anims: built.anims.clone(),
                     needs,
+                    rigged: model.lods.iter().any(MeshData::is_skinned),
                     resident_from: level,
                     bytes,
                 },
