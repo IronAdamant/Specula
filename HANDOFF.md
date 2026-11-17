@@ -398,8 +398,16 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       slice 2"), and that is mended too. What else is wrong and what is missing is in
       FIGURE.md: a trunk like a column, tubes for legs, a seam at the neck, a flat back, and a
       walk that is a lunge (the motion library's work, from the measured curves in H1).
-    - **Then:** the rig by construction, the review, the gate; roundness as one number; the form
-      checks; the form views; shape language; the light report; the same in 2D.
+    - **Roundness as one number: built** (2026-11-18): `roundness`, 0 to 1, on the modeller's
+      box and cylinder and on a rectangular outline (PROCEDURAL_MODELLING.md, tier 3). Not yet
+      reviewed by a model that did not write it.
+    - **Then:** the form views (clay, normals, curvature, stripes: they need a mode in the mesh
+      shader, for which the frame's uniform has a spare slot beside the baked light's debug view,
+      and the GPU's live checks after; twice the independent checker could not judge the figure's
+      form under frontal light, which is what they are for); the form checks; shape language; the
+      light report; the same in 2D. And on the figure: the plate on a man's chest, the ledge
+      where the back meets the buttocks, the seam under the skull, the muscles to the arms, one
+      place for a recipe's body fields.
   - **The research behind parts 4 and 5 is in** ([docs/research/library/](docs/research/library/README.md):
     45 topics, each with a second checker's report; the owner had it researched over two days,
     "ensuring the license allowed this usage"). Claude's review of it the day it came

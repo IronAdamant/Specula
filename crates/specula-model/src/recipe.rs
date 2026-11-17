@@ -118,6 +118,7 @@ const OUTLINE: &[Field] = &[
     o("inner", Num),
     o("rotate", Num),
     o("bevel", Num),
+    o("roundness", Num),
     o("resample", Int),
     o("jitter", Num),
     o("scale", Vec2),
@@ -2053,7 +2054,23 @@ impl Ctx<'_> {
                     self.rows(pv, &n.at("points"), (2, 2), max_points)?.iter().map(|r| [r[0], r[1]]).collect()
                 } else if n.get("rect").is_some() {
                     let s = size2("rect")?;
-                    poly::rect(s[0], s[1])
+                    // Roundness as one number: 0 the rectangle, 1 the ellipse as wide and as
+                    // deep, and between them a superellipse (flat sides, corners that tighten
+                    // as the number falls), in `segments` points.
+                    let round = self.ranged(n, "roundness", 0.0, 0.0, 1.0)?;
+                    if round > 0.0 {
+                        let points = self.int(n, "segments", 48, 8, 256)? as usize;
+                        let power = 2.0 / round.max(0.05);
+                        (0..points)
+                            .map(|i| {
+                                let (sin, cos) = dmath::sin_cos_deg(360.0 * i as f64 / points as f64);
+                                let side = |c: f64, half: f32| (half as f64 * c.signum() * dmath::pow(c.abs() as f32, 2.0 / power) as f64) as f32;
+                                [side(cos, 0.5 * s[0]), side(sin, 0.5 * s[1])]
+                            })
+                            .collect()
+                    } else {
+                        poly::rect(s[0], s[1])
+                    }
                 } else if n.get("sides").is_some() {
                     let sides = self.int(n, "sides", 6, 3, 256)?;
                     poly::regular(sides, self.positive(n, "radius", 1.0)?, 90.0 + rot)

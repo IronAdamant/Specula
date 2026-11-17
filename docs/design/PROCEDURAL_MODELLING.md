@@ -129,6 +129,15 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
   displace color`. Uncoloured nodes take the part's colour. `stretch` is a scale for each axis
   (`[1, 1, 0.6]`: a section as broad and as deep as it is measured); the surface is exact, and the
   field away from it is a lower bound of the distance.
+- **Roundness as one number** (M6 part 4, 2026-11-18): `roundness`, 0 to 1, on a `box` and a
+  `cylinder` here, and on a `rect` outline (the profile of an extrusion, a loft or a sweep). 0 is the
+  hard shape, 1 its fully round form (the ellipsoid as wide, as tall and as deep; the ellipse), and
+  every value between is a valid shape with flat sides and corners that tighten as the number falls
+  (a superquadric, a superellipse: Barr, 1981). The shape keeps its sizes whatever its roundness, so
+  it can be turned up or down without anything else moving. 1 and 0.5 cost a sample what an ellipsoid
+  does; other values take powers and cost about five times that. It is not the modifier `round`
+  (a swelling by a radius in metres, on any node) nor `corner` (an edge radius in metres, which cannot
+  be given with it). A rounded cylinder has one radius.
 - **Round form in a few rows** (M6 part 4, 2026-11-17: "bone chains", and what a figure is made of).
   These are given by their ends, not centred on `at`:
   - `round_cone`: `from`, `to`, `radius`, `radius_to`. Every ball between two balls.

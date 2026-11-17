@@ -63,8 +63,8 @@ macro_rules! sdf_node {
 /// SDF nodes: primitives (centred on `at`) and groups.
 const SDF_NODES: &[(&str, &[Field])] = &[
     ("sphere", sdf_node!(r("radius", Num))),
-    ("box", sdf_node!(r("size", Vec3), o("corner", Num))),
-    ("cylinder", sdf_node!(r("radius", Num), r("height", Num), o("radius_top", Num), o("corner", Num))),
+    ("box", sdf_node!(r("size", Vec3), o("corner", Num), o("roundness", Num))),
+    ("cylinder", sdf_node!(r("radius", Num), r("height", Num), o("radius_top", Num), o("corner", Num), o("roundness", Num))),
     ("cone", sdf_node!(r("radius", Num), r("height", Num))),
     ("capsule", sdf_node!(r("radius", Num), r("height", Num))),
     ("torus", sdf_node!(r("radius", Num), r("tube", Num))),
@@ -461,14 +461,21 @@ impl Ctx<'_> {
                 let s = size3("size")?;
                 let half = s.map(|v| v * 0.5);
                 let corner = self.ranged(n, "corner", 0.0, 0.0, half[0].min(half[1]).min(half[2]) as f64)?;
-                sdf::Kind::Prim(sdf::Prim::Box { half, round: corner })
+                match self.roundness(n, corner)? {
+                    Some(power) => sdf::Kind::Prim(sdf::Prim::Rounded { half, power, disc: false }),
+                    None => sdf::Kind::Prim(sdf::Prim::Box { half, round: corner }),
+                }
             }
             "cylinder" | "cone" => {
                 let radius = pos("radius", 0.5)?;
                 let half_height = pos("height", 1.0)? * 0.5;
                 let radius_top = if n.op == "cone" { 0.0 } else { self.ranged(n, "radius_top", radius as f64, 0.0, 1e4)? };
                 let round = if n.op == "cone" { 0.0 } else { self.ranged(n, "corner", 0.0, 0.0, radius.min(half_height) as f64)? };
-                sdf::Kind::Prim(sdf::Prim::Cylinder { radius, radius_top, half_height, round })
+                match if n.op == "cone" { None } else { self.roundness(n, round)? } {
+                    Some(_) if radius_top != radius => return Err(e(&n.at("roundness"), ErrorCode::Geometry, "a cylinder rounded by \"roundness\" has one radius: leave \"radius_top\" out")),
+                    Some(power) => sdf::Kind::Prim(sdf::Prim::Rounded { half: [radius, half_height, radius], power, disc: true }),
+                    None => sdf::Kind::Prim(sdf::Prim::Cylinder { radius, radius_top, half_height, round }),
+                }
             }
             "capsule" => {
                 let radius = pos("radius", 0.3)?;
@@ -622,6 +629,23 @@ impl Ctx<'_> {
         let (body, shaping) = self.figure_body(n)?;
         let part = crate::figure::Part::parse(self.str(n, "part", "whole")).unwrap_or(crate::figure::Part::Whole);
         Ok(crate::figure::tree(&body, &shaping, part))
+    }
+
+    /// A box's or a cylinder's roundness as one number (`roundness`, 0 to 1; not the modifier
+    /// `round`, which swells any node by a radius in metres): `None` for the hard
+    /// shape (0, or not given), else the power of its rounded form, 2 over the roundness (1 is
+    /// the ellipsoid of its sizes, 0.5 a power of 4; under 0.05 is taken as 0.05, a power of
+    /// 40: nearly the hard shape). `corner` (a radius in metres) is the other way to round an
+    /// edge, and the two are not given together.
+    fn roundness(&self, n: &Node, corner: f32) -> Result<Option<f32>, RecipeError> {
+        let round = self.ranged(n, "roundness", 0.0, 0.0, 1.0)?;
+        if round <= 0.0 {
+            return Ok(None);
+        }
+        if corner > 0.0 {
+            return Err(e(&n.at("roundness"), ErrorCode::Geometry, "\"roundness\" (0 to 1) and \"corner\" (metres) are two ways to round a shape: give one"));
+        }
+        Ok(Some(2.0 / round.max(0.05)))
     }
 
     /// The body and the shaping a `figure`'s fields ask for (a shape's, or a rig's).

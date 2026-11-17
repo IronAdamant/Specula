@@ -51,6 +51,12 @@ pub enum Prim {
     /// In the XZ plane: ring radius and tube radius.
     Torus { radius: f32, tube: f32 },
     Ellipsoid { radii: V3 },
+    /// A box (or, with `disc`, a cylinder along Y: `half` is then its radius, its half height
+    /// and its radius again) rounded by one number: as wide, as tall and as deep as its hard
+    /// shape, with its sides flat and its corners tight at a high `power` and all of it round
+    /// at 2, where it is the ellipsoid of those radii (a superquadric). A recipe gives the
+    /// roundness, 0 to 1, and the power is 2 over it. Its field is a lower bound of the distance.
+    Rounded { half: V3, power: f32, disc: bool },
     /// The half-space below the plane `normal · p = offset` (unbounded: give the sdf bounds).
     HalfSpace { normal: V3, offset: f32 },
     /// A round cone: every ball between one of radius `ra` at `a` and one of radius `rb` at
@@ -370,6 +376,26 @@ fn len2(x: f32, y: f32) -> f32 {
 fn prim_distance(p: &Prim, q: V3) -> f32 {
     match *p {
         Prim::Sphere { radius } => math3::length(q) - radius,
+        Prim::Rounded { half, power, disc } => {
+            // How many of its own half sizes out the point is, each way; then their measure
+            // together (the root of the sum of their powers), less one, by the least half size:
+            // the shape holds the ball of that radius, so this is never more than the distance.
+            let (u, v, w) = if disc { (len2(q[0], q[2]) / half[0], (q[1] / half[1]).abs(), 0.0) } else { ((q[0] / half[0]).abs(), (q[1] / half[1]).abs(), (q[2] / half[2]).abs()) };
+            let k = if power == 2.0 {
+                (u * u + v * v + w * w).sqrt()
+            } else if power == 4.0 {
+                let (a, b, c) = (u * u, v * v, w * w);
+                (a * a + b * b + c * c).sqrt().sqrt()
+            } else {
+                let sum = crate::dmath::pow(u, power) + crate::dmath::pow(v, power) + if disc { 0.0 } else { crate::dmath::pow(w, power) };
+                if sum > 0.0 {
+                    crate::dmath::pow(sum, 1.0 / power)
+                } else {
+                    0.0
+                }
+            };
+            (k - 1.0) * half[0].min(half[1]).min(half[2])
+        }
         Prim::Box { half, round } => {
             let d = [q[0].abs() - half[0] + round, q[1].abs() - half[1] + round, q[2].abs() - half[2] + round];
             let outside = math3::length([d[0].max(0.0), d[1].max(0.0), d[2].max(0.0)]);
@@ -495,6 +521,10 @@ fn column_lip(a: V3, b: V3, sections: &[[f32; 3]]) -> f32 {
     let steepest = steepest * 1.25;
     math3::length([1.0, steepest, 0.0])
 }
+
+/// What a rounded box or cylinder of a power other than 2 or 4 costs a sample over a plain
+/// primitive: set from the timing (`calibrate_sdf`).
+const ROUNDED_COST: u64 = 270;
 
 /// A column's field ([`Prim::Column`]): how many of its own radii out a point is from the
 /// axis, less one, times the smaller radius there (so it is never more than the distance).
@@ -792,6 +822,10 @@ fn prim_cost(p: &Prim) -> u64 {
         Prim::Column { square: 3.0, .. } => 122,
         Prim::Column { .. } => 270,
         Prim::Box { .. } | Prim::Torus { .. } | Prim::Ellipsoid { .. } => 12,
+        // (Measured with the rest, three times in release, 2026-11-18: a power of 2 or 4 takes
+        // roots only, 24 to 30 ns; any other takes a power a side and one more, 166 to 210 ns.)
+        Prim::Rounded { power: 2.0 | 4.0, .. } => 12,
+        Prim::Rounded { .. } => ROUNDED_COST,
         Prim::Cylinder { radius, radius_top, .. } if radius == radius_top => 12,
         Prim::Cylinder { .. } => 35,
     }
@@ -877,6 +911,7 @@ fn bounds(n: &SdfNode) -> Option<(V3, V3, f32, f32)> {
                 Prim::Capsule { radius, half_height } => centred([radius, half_height + radius, radius]),
                 Prim::Torus { radius, tube } => centred([radius + tube, tube, radius + tube]),
                 Prim::Ellipsoid { radii } => centred(radii),
+                Prim::Rounded { half, .. } => centred(half),
                 Prim::HalfSpace { .. } => return None,
                 // Not centred: the box around its two balls.
                 Prim::RoundCone { a, b, ra, rb } => (math3::vmin(math3::sub(a, [ra; 3]), math3::sub(b, [rb; 3])), math3::vmax(math3::add(a, [ra; 3]), math3::add(b, [rb; 3]))),
@@ -1472,6 +1507,10 @@ mod tests {
         sections[..4].copy_from_slice(&[[0.0, 0.17, 0.11], [0.4, 0.13, 0.09], [0.75, 0.15, 0.11], [1.0, 0.06, 0.06]]);
         time("column of 4 sections", &prim(Prim::Column { a: [0.0, 0.0, 0.0], b: [0.1, 1.0, 0.0], side: [1.0, 0.0, 0.0], sections, count: 4, square: 2.0 }));
         time("column, square 3", &prim(Prim::Column { a: [0.0, 0.0, 0.0], b: [0.1, 1.0, 0.0], side: [1.0, 0.0, 0.0], sections, count: 4, square: 3.0 }));
+        time("rounded box, power 2", &prim(Prim::Rounded { half: [0.3, 0.2, 0.1], power: 2.0, disc: false }));
+        time("rounded box, power 4", &prim(Prim::Rounded { half: [0.3, 0.2, 0.1], power: 4.0, disc: false }));
+        time("rounded box, power 6.67", &prim(Prim::Rounded { half: [0.3, 0.2, 0.1], power: 6.67, disc: false }));
+        time("rounded cylinder, power 6.67", &prim(Prim::Rounded { half: [0.3, 0.2, 0.3], power: 6.67, disc: true }));
         time("column, square 4", &prim(Prim::Column { a: [0.0, 0.0, 0.0], b: [0.1, 1.0, 0.0], side: [1.0, 0.0, 0.0], sections, count: 4, square: 4.0 }));
         time("column, square 2.5", &prim(Prim::Column { a: [0.0, 0.0, 0.0], b: [0.1, 1.0, 0.0], side: [1.0, 0.0, 0.0], sections, count: 4, square: 2.5 }));
         time("round cone stretched", &with(link, Modifiers { stretch: [1.0, 1.0, 0.6], ..Modifiers::default() }));
@@ -1906,6 +1945,67 @@ mod tests {
         // It costs what it was measured to: an ellipse's and 4's alike, 3's more, any other most.
         let cost = |square: f32| eval_cost(&prim(column_of(square)));
         assert!(cost(2.0) == cost(4.0) && cost(3.0) > cost(4.0) && cost(2.5) > cost(3.0));
+    }
+
+    /// Roundness as one number: a box or a cylinder rounded by a power is as wide, as tall and
+    /// as deep as its hard shape whatever the power; at 2 it is the ellipsoid of its sizes; the
+    /// higher the power the more of the hard shape it fills; its field is never more than the
+    /// distance; and it meshes closed.
+    #[test]
+    fn a_rounded_box_runs_from_the_ellipsoid_to_the_box() {
+        let half = [0.3f32, 0.2, 0.1];
+        let d = |p: &Prim, q: V3| prim_distance(p, q);
+        let mut last = 0.0;
+        for power in [2.0f32, 4.0, 6.67, 40.0] {
+            for disc in [false, true] {
+                let half = if disc { [0.3, 0.2, 0.3] } else { half };
+                let p = Prim::Rounded { half, power, disc };
+                for axis in 0..3 {
+                    let mut q = [0.0; 3];
+                    q[axis] = half[axis];
+                    assert!(d(&p, q).abs() < 1e-5, "power {power}: as large as its hard shape along axis {axis}");
+                }
+                // The corner of the hard shape is outside; the ellipsoid's point on the diagonal is on or inside.
+                let third = 1.0 / 3.0f32.sqrt();
+                assert!(d(&p, half) > 0.0);
+                let on_ellipsoid = if disc { [half[0] * 0.5, half[1] * std::f32::consts::FRAC_1_SQRT_2, half[2] * 0.5] } else { half.map(|h| h * third) };
+                assert!(d(&p, on_ellipsoid) <= 1e-5, "power {power} disc {disc}: holds the ellipsoid ({})", d(&p, on_ellipsoid));
+                // Never more than the distance: against the nearest of many points of the surface
+                // (found by walking out from the centre along a spread of directions).
+                let mut surface = Vec::new();
+                for i in 0..40 {
+                    for j in 0..80 {
+                        let (lat, lon) = ((i as f32 + 0.5) / 40.0 * std::f32::consts::PI, j as f32 / 80.0 * std::f32::consts::TAU);
+                        let dir = [crate::dmath::sin(lat) * crate::dmath::cos(lon), crate::dmath::cos(lat), crate::dmath::sin(lat) * crate::dmath::sin(lon)];
+                        let (mut lo, mut hi) = (0.0f32, 1.0f32);
+                        for _ in 0..30 {
+                            let mid = (lo + hi) / 2.0;
+                            if d(&p, math3::scale(dir, mid)) < 0.0 {
+                                lo = mid;
+                            } else {
+                                hi = mid;
+                            }
+                        }
+                        surface.push(math3::scale(dir, lo));
+                    }
+                }
+                for probe in [[0.5f32, 0.0, 0.0], [0.35, 0.25, 0.12], [0.0, 0.4, 0.0], [0.31, 0.21, 0.31], [-0.2, 0.3, 0.2]] {
+                    let truth = surface.iter().map(|q| math3::length(math3::sub(*q, probe))).fold(f32::MAX, f32::min);
+                    assert!(d(&p, probe) <= truth + 0.01, "power {power} disc {disc} at {probe:?}: {} against {truth}", d(&p, probe));
+                }
+                if !disc {
+                    let (shape, _) = mesh(&prim(p), &opts(40)).unwrap();
+                    assert_eq!(shape.open_edge_count(), 0, "power {power}");
+                    let volume = shape.signed_volume();
+                    let (ellipsoid, hard) = (4.0 / 3.0 * std::f32::consts::PI * 0.3 * 0.2 * 0.1, 8.0 * 0.3 * 0.2 * 0.1);
+                    assert!(volume > ellipsoid * 0.95 && volume < hard * 1.02 && volume > last, "power {power}: {volume} between {ellipsoid} and {hard}, more than {last}");
+                    last = volume;
+                }
+            }
+        }
+        assert!(last > 8.0 * 0.3 * 0.2 * 0.1 * 0.93, "at a power of 40 it is nearly the box: {last}");
+        let cost = |power: f32| eval_cost(&prim(Prim::Rounded { half, power, disc: false }));
+        assert!(cost(2.0) == cost(4.0) && cost(3.0) > cost(4.0));
     }
 
     /// A column that widens fast (a flange on a thin stem) is trusted less: its field, taken

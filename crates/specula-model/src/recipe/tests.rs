@@ -169,6 +169,11 @@ fn structural_errors_have_paths_and_codes() {
         (one_part(r#"{"op":"extrude","outline":{"rect":[1,1],"sides":4},"height":1}"#, ""), ErrorCode::WrongType, "parts[0].shape.outline"),
         (one_part(r#"{"op":"sweep","profile":{"sides":4,"radius":0.1},"path":[[0,0,0],[0,0,0]]}"#, ""), ErrorCode::Geometry, "parts[0].shape.path"),
         (one_part(r#"{"op":"torus","radius":0.1,"tube":0.2}"#, ""), ErrorCode::OutOfRange, "parts[0].shape.tube"),
+        // Roundness as one number: one way to round at a time, within 0 to 1, one radius for a cylinder.
+        (one_part(r#"{"op":"sdf","tree":{"op":"box","size":[1,1,1],"roundness":0.5,"corner":0.1}}"#, ""), ErrorCode::Geometry, "parts[0].shape.tree.roundness"),
+        (one_part(r#"{"op":"sdf","tree":{"op":"box","size":[1,1,1],"roundness":1.5}}"#, ""), ErrorCode::OutOfRange, "parts[0].shape.tree.roundness"),
+        (one_part(r#"{"op":"sdf","tree":{"op":"cylinder","radius":0.3,"radius_top":0.2,"height":1,"roundness":0.5}}"#, ""), ErrorCode::Geometry, "parts[0].shape.tree.roundness"),
+        (one_part(r#"{"op":"extrude","outline":{"rect":[1,1],"roundness":2},"height":1}"#, ""), ErrorCode::OutOfRange, "parts[0].shape.outline.roundness"),
         (r#"{"name":"x","parts":[{"name":"p","material":"gold","shape":{"op":"box","size":[1,1,1]}}]}"#.into(), ErrorCode::UnknownMaterial, "parts[0].material"),
         (r#"{"name":"x","parts":[{"name":"p","material":"stone"}]}"#.into(), ErrorCode::MissingField, "parts[0]"),
         (r#"{"name":"x","lods":[0.5,0.6],"parts":[{"name":"p","material":"stone","shape":{"op":"box","size":[1,1,1]}}]}"#.into(), ErrorCode::OutOfRange, "lods[1]"),
@@ -225,6 +230,11 @@ fn every_shape_and_op_builds() {
         r#"{"op":"sdf","resolution":40,"tree":{"op":"column","from":[0,0.1,0],"to":[0.1,0.9,0],"sections":[[0,0.2,0.12],[0.5,0.14,0.1],[1,0.08,0.08]]}}"#,
         r#"{"op":"sdf","resolution":32,"tree":{"op":"round_cone","from":[0,0.1,0],"to":[0.3,0.8,0.1],"radius":0.1,"radius_to":0.04}}"#,
         r#"{"op":"sdf","resolution":40,"tree":{"op":"column","from":[0,0.1,0],"to":[0,0.9,0],"square":3,"sections":[[0,0.2,0.12],[1,0.16,0.1]]}}"#,
+        r#"{"op":"sdf","resolution":32,"tree":{"op":"box","size":[0.8,0.5,0.4],"roundness":0.5,"at":[0,0.4,0]}}"#,
+        // (With the modifier `round`, a swelling in metres, which is another thing and may go with it.)
+        r#"{"op":"sdf","resolution":32,"tree":{"op":"box","size":[0.8,0.5,0.4],"roundness":0.3,"round":0.02,"at":[0,0.4,0]}}"#,
+        r#"{"op":"sdf","resolution":32,"tree":{"op":"cylinder","radius":0.3,"height":0.8,"roundness":0.3,"at":[0,0.5,0]}}"#,
+        r#"{"op":"extrude","outline":{"rect":[1,0.6],"roundness":0.5,"segments":32},"height":0.4}"#,
         r#"{"op":"sdf","resolution":40,"tree":{"op":"chain","smooth":0.03,"mirror":"x","points":[[0.2,1.4,0,0.05],[0.25,1.1,0,0.045],[0.27,0.85,0.05,0.03],[0.27,0.75,0.1,0.035]]}}"#,
     ];
     for s in shapes {

@@ -58,7 +58,8 @@
 //!   taper twist lean bend weld color gradient bands noise_tint ao ground_shade bevel_tint`.
 //! - **Outlines** (extrude/loft/sweep profile): `[[x, z], ...]` or `{ "rect" | "sides"+"radius"
 //!   | "arch" | "star"+"radius"+"inner" | "points", "rotate", "bevel", "resample", "jitter",
-//!   "scale", "offset" }`.
+//!   "scale", "offset" }`. A `rect` takes `roundness` (0 the rectangle, 1 the ellipse, in
+//!   `segments` points).
 //! - **Strict:** unknown fields, unknown ops, unknown names, bad types and out-of-range numbers
 //!   are errors with a path (`parts[2].ops[0].amount`), an [`ErrorCode`] and a reason; budgets
 //!   report measured vs limit.

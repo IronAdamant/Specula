@@ -331,6 +331,10 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       figure's waist read 6% short of the survey's and now reads within 1.6% on four bodies;
       round the chest it read a tenth to a fifth short and now a twentieth to a sixth (what is
       left is the muscles to the arms, which the figure does not have).
+    - **Roundness as one number** (`roundness`, 0 to 1): on the modeller's `box` and `cylinder`
+      and on a `rect` outline. 0 is the hard shape, 1 its fully round form, and everything
+      between is valid; the shape keeps its sizes whatever its roundness. With the bone chains
+      of this slice it is the first of the five items of "form within an agent's reach".
     - **A man's chest is the plain column**: a third try at a swell for the muscle read as one
       mound to an independent check of the eleventh look, which did not pass it. What it listed
       is in [docs/design/FIGURE.md](docs/design/FIGURE.md).
