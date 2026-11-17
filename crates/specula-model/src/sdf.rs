@@ -167,6 +167,14 @@ struct Prepared {
     /// Neither this node nor anything under it is repeated, elongated, twisted, bent, shelled
     /// or displaced: its distance at a ball's middle bounds its distance through the ball.
     steady: bool,
+    /// A column whose breadth and depth change in different proportions (`0.0` for anything
+    /// else): how much faster than its factor its field may change along it, for every one of
+    /// its own radii a point is out from its axis ([`column_wander`]). A group has the greatest
+    /// of its children's.
+    wander: f32,
+    /// The least radius of such a column (of the least such column under a group), in the
+    /// node's parent's frame: what "one of its own radii" is.
+    least: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -226,6 +234,18 @@ fn prepare(n: &SdfNode, seed: u64, next: &mut u64) -> Prepared {
     };
     let (lip, slack) = lip_slack(n);
     let m = &n.m;
+    let (wander, least) = match &kind {
+        PKind::Prim(Prim::Column { a, b, sections, count, .. }) => {
+            let used = &sections[..(*count as usize).clamp(1, MAX_SECTIONS)];
+            (column_wander(*a, *b, used), used.iter().map(|row| row[1].min(row[2])).fold(f32::MAX, f32::min) * m.scale)
+        }
+        PKind::Prim(_) => (0.0, f32::MAX),
+        PKind::Group { kids, .. } => {
+            let wander = kids.iter().map(|k| k.wander).fold(0.0f32, f32::max);
+            let least = kids.iter().filter(|k| k.wander > 0.0).map(|k| k.least).fold(f32::MAX, f32::min);
+            (wander, if wander > 0.0 { least * m.scale } else { f32::MAX })
+        }
+    };
     let steady = m.repeat.is_none()
         && m.elongate == [0.0; 3]
         && m.twist == 0.0
@@ -235,8 +255,11 @@ fn prepare(n: &SdfNode, seed: u64, next: &mut u64) -> Prepared {
         && match &kind {
             PKind::Prim(_) => true,
             PKind::Group { kids, .. } => kids.iter().all(|k| k.steady),
-        };
-    Prepared { kind, m: n.m.clone(), inv_rot, rotated: n.m.rotate != [0.0; 3], seed: my_seed, lip, slack, steady }
+        }
+        // A column whose breadth and depth change in different proportions (or a group with
+        // one in it) is steady only unstretched: `prune` then allows for its wander.
+        && (wander == 0.0 || m.stretch == [1.0; 3]);
+    Prepared { kind, m: n.m.clone(), inv_rot, rotated: n.m.rotate != [0.0; 3], seed: my_seed, lip, slack, steady, wander, least }
 }
 
 /// The tree as it is for every point within `reach` of `c` (both in the node's parent's
@@ -255,7 +278,7 @@ fn prepare(n: &SdfNode, seed: u64, next: &mut u64) -> Prepared {
 /// displacement keeps every child, as its distances no longer bound each other), and a child
 /// with any of those anywhere under it is never dropped.
 fn prune(n: &Prepared, c: V3, reach: f32) -> Prepared {
-    let keep_all = |kind: PKind| Prepared { kind, m: n.m.clone(), inv_rot: n.inv_rot, rotated: n.rotated, seed: n.seed, lip: n.lip, slack: n.slack, steady: n.steady };
+    let keep_all = |kind: PKind| Prepared { kind, m: n.m.clone(), inv_rot: n.inv_rot, rotated: n.rotated, seed: n.seed, lip: n.lip, slack: n.slack, steady: n.steady, wander: n.wander, least: n.least };
     let PKind::Group { op, kids, smooth } = &n.kind else { return n.clone() };
     let m = &n.m;
     let plain = m.repeat.is_none() && m.elongate == [0.0; 3] && m.twist == 0.0 && m.bend == 0.0 && m.shell <= 0.0 && m.displace.is_none();
@@ -268,12 +291,34 @@ fn prune(n: &Prepared, c: V3, reach: f32) -> Prepared {
     if !matches!(op, Combine::Union | Combine::Near) {
         return keep_all(PKind::Group { op: *op, kids: kids.iter().map(|kid| prune(kid, q, r)).collect(), smooth: *smooth });
     }
+    // A smooth plain union with a child that is not steady keeps every child: such a child
+    // stays whatever it says, and blending in turn it could carry the pull of a child that
+    // went (three spheres, the middle one twisted: the pruned tree differed in the fifth place).
+    if *op == Combine::Union && *smooth > 0.0 && kids.iter().any(|k| !k.steady) {
+        return keep_all(PKind::Group { op: *op, kids: kids.iter().map(|kid| prune(kid, q, r)).collect(), smooth: *smooth });
+    }
     // Each child's least and greatest distance anywhere in the ball.
     let span: Vec<(f32, f32)> = kids
         .iter()
         .map(|k| {
             let d = eval(k, q);
-            let spread = k.lip * r + k.slack;
+            if k.wander == 0.0 {
+                let spread = k.lip * r + k.slack;
+                return (d - spread, d + spread);
+            }
+            // A column of changing proportions, or a group with one in it: its field changes
+            // faster the further out of the column a point is, by its wander for each of the
+            // column's own radii out. A point of the ball is at most this many radii out (the
+            // column is no nearer than the child's own distance says: under a union the column
+            // may be further than that, and its allowance then grows more slowly than its
+            // distance, as long as the ball is small beside the column, which is asked here).
+            if k.wander * r >= 0.9 * k.least {
+                // A ball too large beside the column to say anything: stays, and is no reason
+                // for another to go.
+                return (f32::MIN, f32::MAX);
+            }
+            let out = (d.max(0.0) + r) / k.least + 1.0;
+            let spread = (k.lip + k.wander * out) * r + k.slack;
             (d - spread, d + spread)
         })
         .collect();
@@ -393,6 +438,37 @@ fn column_sizes(sections: &[[f32; 3]], at: f32) -> (f32, f32) {
         (rx, rz) = (size(1), size(2));
     }
     (rx, rz)
+}
+
+/// How much faster a column's field may change along it for each of its own radii a point is
+/// out from its axis, beyond what [`column_lip`] allows. A round column's, or one whose
+/// breadth and depth keep one proportion, changes along it by its growth alone, wherever the
+/// point is (0 here). Where the proportions change, the field at a point far out to one side
+/// follows that side's radius, and changes by the difference of the two rates of growth times
+/// how many radii out the point is: a wedge 5 by 4 cm growing to 20 by 4 cm over 20 cm changes
+/// 9 metres a metre at 3 m out, against a factor of 1.4 (second review of part 4's slice 2).
+/// The steepest such difference along the column, in units of the least radius, a quarter to
+/// spare.
+fn column_wander(a: V3, b: V3, sections: &[[f32; 3]]) -> f32 {
+    let length = math3::length(math3::sub(b, a)).max(1e-6);
+    let mut worst = 0.0f32;
+    for pair in sections.windows(2) {
+        let span = (pair[1][0] - pair[0][0]).max(1e-6);
+        let mut before = column_sizes(sections, pair[0][0]);
+        for k in 1..=24 {
+            let now = column_sizes(sections, pair[0][0] + span * k as f32 / 24.0);
+            let step = span / 24.0 * length;
+            // The rates at which the two radii grow, each as a share of itself.
+            let (wide, deep) = ((now.0 - before.0) / before.0.min(now.0), (now.1 - before.1) / before.1.min(now.1));
+            worst = worst.max((wide - deep).abs() / step * before.0.min(before.1).min(now.0).min(now.1));
+            before = now;
+        }
+    }
+    if worst < 1e-5 {
+        0.0
+    } else {
+        worst * 1.25
+    }
 }
 
 /// How much faster than distance a column's field may change: its field is how far out of the
@@ -1230,7 +1306,45 @@ pub fn mesh(tree: &SdfNode, opt: &MeshOptions) -> Result<(Shape, SdfStats), SdfE
         // No node has a colour of its own: every vertex is the sculpt's.
         shape.colors = vec![opt.color; shape.positions.len()];
     }
-    // Triangles collapsed by vertices clamped onto each other.
+    // A triangle too small to be kept is closed by its shortest edge: one end is moved onto
+    // the other, so the two triangles on that edge collapse together and their neighbours
+    // meet. (Left to the weld below, which drops any triangle under the least area whatever
+    // its corners, such a triangle went and its three neighbours stayed: a pinhole a few
+    // micrometres across between two fingers, on some hands at some resolutions. Found by the
+    // second review of part 4's slice 2.)
+    for _ in 0..4 {
+        let mut moved = false;
+        for t in 0..shape.tris.len() {
+            let [a, b, c] = shape.tris[t].map(|v| v as usize);
+            let p = [shape.positions[a], shape.positions[b], shape.positions[c]];
+            if p[0] == p[1] || p[1] == p[2] || p[2] == p[0] {
+                continue;
+            }
+            let area = 0.5 * math3::length(math3::cross(math3::sub(p[1], p[0]), math3::sub(p[2], p[0])));
+            if area >= crate::mesh::MIN_TRIANGLE_AREA {
+                continue;
+            }
+            let edges = [(a, b), (b, c), (c, a)];
+            let shortest = (0..3).min_by(|&x, &y| {
+                let len = |e: (usize, usize)| math3::length(math3::sub(shape.positions[e.0], shape.positions[e.1]));
+                len(edges[x]).total_cmp(&len(edges[y]))
+            });
+            if let Some(e) = shortest {
+                let (keep, go) = edges[e];
+                let at = shape.positions[keep];
+                // Every vertex at the place that goes: the mesh is not welded yet.
+                let gone = shape.positions[go];
+                for q in shape.positions.iter_mut().filter(|q| **q == gone) {
+                    *q = at;
+                }
+                moved = true;
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+    // Triangles collapsed by vertices clamped or moved onto each other.
     shape.weld_exact();
     stats.work = work;
     stats.trees_kept = near.len();
@@ -1532,7 +1646,9 @@ mod tests {
             }
         }
         assert_eq!(compared, 9600);
-        assert!(pruned_cost / balls < whole_cost / 2, "pruning leaves {} of {whole_cost} a ball on average", pruned_cost / balls);
+        // (A little over half: it was under half before a column of changing proportions was
+        // given its allowance, which keeps such a column longer than its distance alone would.)
+        assert!(pruned_cost / balls < whole_cost * 3 / 5, "pruning leaves {} of {whole_cost} a ball on average", pruned_cost / balls);
         // And on a tree whose saving is plain by how it is made:
         let limb = |x: f32| {
             let links = (0..10).map(|i| prim(Prim::RoundCone { a: [x, i as f32 * 0.1, 0.0], b: [x, (i + 1) as f32 * 0.1, 0.0], ra: 0.05, rb: 0.05 })).collect();
@@ -1555,7 +1671,9 @@ mod tests {
                 assert_eq!(eval(&near, p).to_bits(), eval(&foot, p).to_bits(), "ball {b}, point {p:?}");
             }
         }
-        assert!(saved > 30, "{saved} of 60 balls about a foot cost under half of it");
+        // (Nearly half of them: it was over half before the foot's columns of changing
+        // proportions were given their allowance.)
+        assert!(saved > 20, "{saved} of 60 balls about a foot cost under half of it");
         // A node that is not a plain union is kept whole.
         let mut twisted = tree.clone();
         twisted.m.twist = 20.0;
@@ -1572,8 +1690,10 @@ mod tests {
         let (shape, stats) = mesh(&tree, &opts(96)).unwrap();
         assert_eq!(unbalanced(&shape), 0);
         let every_bone = stats.samples_evaluated * eval_cost(&tree);
-        // (A body of columns costs a little over half of what its whole tree would at every sample.)
-        assert!(stats.work < every_bone * 2 / 3, "{} work for {} samples of a tree that costs {}", stats.work, stats.samples_evaluated, eval_cost(&tree));
+        // (A body of columns costs about three quarters of what its whole tree would at every
+        // sample. It was under two thirds until its columns of changing proportions were given
+        // their allowance and each limb was cut by its own room: both keep more, and are right.)
+        assert!(stats.work < every_bone * 4 / 5, "{} work for {} samples of a tree that costs {}", stats.work, stats.samples_evaluated, eval_cost(&tree));
         // What is kept for the normals is a tree a half block near the surface, not one a
         // quarter block: thousands, not tens of thousands.
         assert!(stats.trees_kept > 0 && (stats.trees_kept as u64) * 16 < stats.samples_evaluated, "{} trees kept for {} samples", stats.trees_kept, stats.samples_evaluated);
@@ -1657,6 +1777,56 @@ mod tests {
             }
         }
         assert_eq!(compared, 400 * 27);
+    }
+
+    /// A column whose breadth and depth change in different proportions is pruned with an
+    /// allowance for how far out of it a point is: far out to one side its field follows that
+    /// side's radius and changes along the column much faster than its factor says. (A wedge
+    /// 5 by 4 cm growing to 20 by 4 cm, near-joined with a box whose face is 3 m away, was
+    /// pruned by its distance alone and came out with samples on the wrong side: second review
+    /// of part 4's slice 2.) Here: wherever a ball is, the pruned tree says what the whole
+    /// tree says in it.
+    #[test]
+    fn a_wedge_is_pruned_with_room_for_its_wander() {
+        let mut sections = [[0.0f32; 3]; MAX_SECTIONS];
+        sections[..2].copy_from_slice(&[[0.0, 0.05, 0.04], [1.0, 0.2, 0.04]]);
+        let wedge = prim(Prim::Column { a: [0.0, 0.0, 0.0], b: [0.0, 0.2, 0.0], side: [1.0, 0.0, 0.0], sections, count: 2 });
+        let mut slab = prim(Prim::Box { half: [0.5, 0.5, 0.5], round: 0.0 });
+        slab.m.at = [3.5, 0.1, 0.0];
+        let tree = SdfNode { kind: Kind::Group { op: Combine::Near, kids: vec![wedge, slab], smooth: 1.0 }, m: Modifiers::default() };
+        let whole = prepare(&tree, 5, &mut 0);
+        let PKind::Group { kids, .. } = &whole.kind else { panic!("a group") };
+        assert!(kids[0].wander > 0.5 && kids[0].steady && kids[1].wander == 0.0, "the wedge wanders: {}", kids[0].wander);
+        for b in 0..600u32 {
+            let f = |k: u32, span: f32, from: f32| ((b * k) % 101) as f32 / 100.0 * span + from;
+            let c = [f(7, 4.5, -0.5), f(13, 1.2, -0.5), f(29, 1.2, -0.6)];
+            let reach = [0.02, 0.06, 0.2][(b % 3) as usize];
+            let pruned = prune(&whole, c, reach);
+            for i in 0..27u32 {
+                let step = |d: u32| (d as f32 - 1.0) * reach * 0.55;
+                let p = [c[0] + step(i % 3), c[1] + step(i / 3 % 3), c[2] + step(i / 9)];
+                assert_eq!(eval(&pruned, p).to_bits(), eval(&whole, p).to_bits(), "at {p:?} in the ball of {reach} at {c:?}");
+            }
+        }
+    }
+
+    /// A smooth plain union with a child that is not steady keeps every child: three spheres,
+    /// the middle one twisted, pruned for a ball at the nearest, said something in the fifth
+    /// place other than the whole tree did (second review of part 4's slice 2).
+    #[test]
+    fn a_smooth_union_with_an_unsteady_child_keeps_them_all() {
+        let ball = |x: f32, twist: f32| {
+            let mut n = prim(Prim::Sphere { radius: 0.05 });
+            n.m.at = [x, 0.0, 0.0];
+            n.m.twist = twist;
+            n
+        };
+        let tree = SdfNode { kind: Kind::Group { op: Combine::Union, kids: vec![ball(0.235, 0.0), ball(0.14, 1.0), ball(0.05, 0.0)], smooth: 0.1 }, m: Modifiers::default() };
+        let whole = prepare(&tree, 5, &mut 0);
+        let pruned = prune(&whole, [0.0; 3], 0.01);
+        let PKind::Group { kids, .. } = &pruned.kind else { panic!("a group") };
+        assert_eq!(kids.len(), 3);
+        assert_eq!(eval(&pruned, [0.0; 3]).to_bits(), eval(&whole, [0.0; 3]).to_bits());
     }
 
     /// A column that widens fast (a flange on a thin stem) is trusted less: its field, taken

@@ -392,10 +392,10 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       is gone. **Slice 2 has been reviewed by a model that did not write it, which said not to
       merge it**: four major findings (a steep column's field overstated distance; the mesher
       kept a tree a quarter block, up to 742 MB; arms held close cut the thighs out of the
-      body; the root bone took the legs when listed), all mended, each case now a test, and
-      its mends are to be reviewed again. One of its minor findings is open: a hand can have a
-      pinhole at its default resolution, a fault of the mesher whose cause is not found
-      (FIGURE.md, "The review of slice 2"). What else is wrong and what is missing is in
+      body; the root bone took the legs when listed), all mended, each case now a test. **A
+      second model reviewed the mends and said merge**; it also found why a hand could have a
+      pinhole, which the builder had traced and not explained (FIGURE.md, "The review of
+      slice 2"), and that is mended too. What else is wrong and what is missing is in
       FIGURE.md: a trunk like a column, tubes for legs, a seam at the neck, a flat back, and a
       walk that is a lunge (the motion library's work, from the measured curves in H1).
     - **Then:** the rig by construction, the review, the gate; roundness as one number; the form

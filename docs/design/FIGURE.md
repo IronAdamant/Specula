@@ -222,14 +222,28 @@ case is now a test:
 Its minor findings: a repeated child could be pruned away (mended: such a child is never dropped);
 "bit for bit, colours included" was untrue for plain smooth unions by one unit in the last place
 (the notes now say so); the tallest stature the survey covers was refused when written in a recipe
-(mended, and a body's refusal now names its field with the number and the limit); and **a hand is
-not always a closed surface at its default resolution**. That last one is open: where three of the
-mesh's vertices land within a few micrometres of each other between two fingers, one tiny triangle
-is missing, leaving a pinhole. Whether a hand has one depends on where the grid falls. Its cause in
-the mesher is not found; the test holds the hands to at most one, and everything else to none.
+(mended, and a body's refusal now names its field with the number and the limit); and **a hand was
+not always a closed surface at its default resolution**: where three of the mesh's vertices land
+within a few micrometres of each other between two fingers, one tiny triangle was missing, leaving a
+pinhole. The builder traced it that far and could not say why.
 
 It also checked and found sound: pruning for exact shapes (no difference in 1.44 million points over
 800 random trees), the cost weights, the bones inside the surface, and the three engine fixes.
+
+**A second model reviewed the mends and said merge**, with five minor findings, and it **found the
+pinhole's cause**: the mesher made the triangle, and the clean-up after it dropped any triangle under
+the least area a triangle may have, whatever its corners, while its neighbours stayed. The mesher now
+closes such a triangle by its shortest edge, so the two triangles on that edge go together; every
+part of six bodies at the limits is closed at its default resolution, and the hands at two others
+(a test holds it, with no allowance). Its other findings, mended: a column whose breadth and depth
+change in different proportions was pruned by its distance alone, though far out to one side its
+field changes much faster along it (now pruned with an allowance for how far out a point is, which
+costs the figure about a seventh more work); a smooth plain union with a twisted or repeated child
+could differ in the fifth place (it keeps every child); a weight at its limit was refused as a
+stature had been; a trait's refusal did not name the trait. One it found stays as it is, and is said
+here: **with the arms hanging (under about 10 degrees) the forearm's cut end melts into the thigh and
+leaves a web of a few cubic centimetres past the wrist's cut** that the hand's part does not cover.
+Hanging arms are a pose for measuring.
 
 ## What is wrong, and what is not there
 

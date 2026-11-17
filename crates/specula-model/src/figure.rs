@@ -894,15 +894,14 @@ mod tests {
         }
     }
 
-    /// At the resolution a recipe gets by default, for bodies at the limits as for the typical
-    /// ones: the body, the head and the feet are closed surfaces, and a hand is closed but for
-    /// at most one pinhole. **The pinhole is an open defect of the mesher, not of the hand**
-    /// (review of part 4's slice 2, which found it on the heaviest short woman and on a
-    /// long-legged one): where three of its vertices land within a few micrometres of each
-    /// other, between two fingers, the one tiny triangle among them is missing, which leaves
-    /// three edges without a partner. Whether a given hand has one depends on where the grid
-    /// falls (the long-legged woman's has at 56 and not at 64). Its cause is not found; the
-    /// bound here is what it is known to do, so that more than that fails.
+    /// Every part is a closed surface at the resolution a recipe gets by default, for bodies
+    /// at the limits as for the typical ones, and the hands at two other resolutions at which
+    /// they were not. (The first review of part 4's slice 2 found three or four edges without
+    /// a partner on the hands of the heaviest short woman and of a long-legged one; the second
+    /// found why: where three vertices land within micrometres of each other between two
+    /// fingers, the triangle among them was under the least area a triangle may have and was
+    /// dropped, and its neighbours stayed. The mesher now closes such a triangle by its
+    /// shortest edge.)
     #[test]
     fn every_part_is_closed_at_its_default_resolution() {
         let short = specula_corpus::ansur::statures(Sex::Female)[0] / 1000.0 + 0.01;
@@ -916,9 +915,11 @@ mod tests {
         ];
         for (name, body) in &bodies {
             for part in [Part::Body, Part::Head, Part::Hand(Side::Left), Part::Hand(Side::Right), Part::Foot(Side::Left), Part::Foot(Side::Right)] {
-                let shape = built(body, part, part.resolution());
-                let pinholes = if matches!(part, Part::Hand(_)) { 3 } else { 0 };
-                assert!(unbalanced(&shape) <= pinholes, "{name}: {part:?} at {} has {} edges without a partner", part.resolution(), unbalanced(&shape));
+                let also: &[u32] = if matches!(part, Part::Hand(_)) { &[64, 72] } else { &[] };
+                for resolution in [part.resolution()].into_iter().chain(also.iter().copied()) {
+                    let shape = built(body, part, resolution);
+                    assert_eq!(unbalanced(&shape), 0, "{name}: {part:?} at {resolution} has edges without a partner");
+                }
             }
         }
     }

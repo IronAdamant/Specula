@@ -630,7 +630,10 @@ impl Ctx<'_> {
             use specula_corpus::BodyError as B;
             let (field, numbers) = match &er {
                 B::Stature { given, least, most } => ("stature", Some((*given, if given < least { *least } else { *most }))),
-                B::Weight { given, least, most } => (if n.get("weight").is_some() { "weight" } else { "build" }, Some((*given, if given < least { *least } else { *most }))),
+                // (A build is in standard errors and the refusal's numbers are kilograms: they go
+                // with a weight only.)
+                B::Weight { given, least, most } if n.get("weight").is_some() => ("weight", Some((*given, if given < least { *least } else { *most }))),
+                B::Weight { .. } => ("build", None),
                 B::Age { given, least, most } => ("age", Some((*given, if given < least { *least } else { *most }))),
                 B::Trait { given, least, most, .. } => ("traits", Some((*given, if given < least { *least } else { *most }))),
                 B::UnknownTrait { .. } | B::Folded { .. } | B::NotPositive { .. } => ("traits", None),
@@ -655,7 +658,10 @@ impl Ctx<'_> {
             if n.get("build").is_some() {
                 return Err(e(&n.at("build"), ErrorCode::Geometry, "a figure has a build or a weight, not both"));
             }
-            Body::new(sex, stature, self.ranged(n, "weight", typical.weight(), 1.0, 1000.0)? as f64)
+            // (As for the stature: a weight within a tenth of a gram of a limit is that limit.)
+            let weight = self.ranged(n, "weight", typical.weight(), 1.0, 1000.0)? as f64;
+            let weight = Body::weights(sex, stature).into_iter().find(|limit| (weight - limit).abs() < 1e-4).unwrap_or(weight);
+            Body::new(sex, stature, weight)
         } else {
             Body::with_build(sex, stature, self.ranged(n, "build", 0.0, -20.0, 20.0)? as f64)
         }
@@ -668,7 +674,15 @@ impl Ctx<'_> {
             for (name, _) in &traits.fields {
                 set.push((name.as_str(), self.ranged(traits, name, 0.0, -100.0, 100.0)? as f64));
             }
-            body = body.with_traits(&set).map_err(|er| e(&traits.path, ErrorCode::OutOfRange, format!("{}: {er}", er.code())))?;
+            body = body.with_traits(&set).map_err(|er| {
+                use specula_corpus::BodyError as B;
+                let refusal = |at: &str| e(at, ErrorCode::OutOfRange, format!("{}: {er}", er.code()));
+                match &er {
+                    B::Trait { name, given, least, most } => refusal(&traits.at(name)).with_numbers(*given, if given < least { *least } else { *most }),
+                    B::UnknownTrait { name } => refusal(&traits.at(name)),
+                    _ => refusal(&traits.path),
+                }
+            })?;
         }
         let standard = crate::figure::Shaping::default();
         let shaping = crate::figure::Shaping {

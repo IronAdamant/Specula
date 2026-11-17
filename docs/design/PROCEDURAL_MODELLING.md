@@ -163,11 +163,18 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
   plain smooth union keeps more than a near-union, because its children blend in turn). A child with
   a repeat, a twist, a bend, a shell or a displacement anywhere under it is never dropped and never
   a reason to drop another: its field jumps, so what it says at a block's middle is no bound for the
-  block. One pruned tree is kept for each half block that was sampled, for the crossings' normals
+  block. A column whose breadth and depth change in different proportions is pruned with an allowance:
+  far out to one side its field follows that side's radius, and changes along the column faster
+  than its factor says, by its wander (`column_wander`) for each of its own radii a point is out; a
+  ball too large beside such a column says nothing, and the column stays. A smooth plain union with
+  a child that is not steady keeps every child. One pruned tree is kept for each half block that was sampled, for the crossings' normals
   (it was one a quarter block: 188 MB for a body, and up to 742 MB for a legal build). Each sample costs the evaluation
   weight of what is left (`sdf::eval_cost`: a noise octave about as much as a primitive), and so
-  does each crossing's normal. A figure's body of columns costs a little over half of what its whole
-  tree would at every sample (a body of chains, a third).
+  does each crossing's normal. A figure's body of columns costs about three quarters of what its whole
+  tree would at every sample (it was under two thirds before its columns' wander was allowed for and
+  each limb was cut by its own room; a body of chains, a third). A triangle that comes out under the
+  least area a triangle may have is closed by its shortest edge (left to the clean-up, which drops
+  such a triangle and keeps its neighbours, it was a pinhole).
 - **The weights were halved on 2026-11-17**, after three measurements in release on the reference
   laptop (`calibrate_sdf`): a sphere 23, 29 and 34 ns where its weight said 107; a box 25 to 40; a
   round cone 37 to 48; a twist 35 to 48; eight octaves of displacement 208 to 260; a smooth union of
