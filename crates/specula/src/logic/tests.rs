@@ -590,6 +590,56 @@ impl Module for StreamHog {
     }
 }
 
+/// Draws three numbers a call from one stream, and puts the stream back at its beginning before
+/// its third lot. The call after that restarts it too and then fails (rolled back).
+#[derive(Default)]
+struct Again;
+impl Module for Again {
+    fn describe(&self) -> ModuleInfo {
+        ModuleInfo { name: "again", ..ModuleInfo::default() }
+    }
+    fn tick(&self, cx: &mut Cx) -> Result<(), SdkError> {
+        let lot = cx.state("lots")?.as_u64().unwrap_or(0);
+        let failed = cx.tick() == 3;
+        if lot == 2 || failed {
+            cx.random_restart("columns")?;
+        }
+        if failed {
+            return Err(SdkError::new("odd", "restarted, then failed"));
+        }
+        let mut drawn = Vec::new();
+        for _ in 0..3 {
+            drawn.push(Value::from(cx.random_below("columns", 1000)?));
+        }
+        cx.set_state(&format!("lot{lot}"), drawn)?;
+        // (A stream nobody drew from is at its beginning: restarting it makes none.)
+        cx.random_restart("never")?;
+        cx.set_state("lots", lot + 1)
+    }
+}
+
+/// A stream put back at its beginning gives its first numbers again (a run that starts again
+/// "with the same seed": seven of eight one-screen builds of the comparison wrote a generator of
+/// their own for want of this), a restart in a call that fails is undone with the call, and the streams'
+/// kept hash follows both.
+#[test]
+fn a_random_stream_begins_again_when_asked_and_a_failed_call_undoes_it() {
+    let mut a = Run::new();
+    a.load(ModuleCode::of::<Again>()).unwrap();
+    // Ticks 0, 1, 2 draw lots 0, 1, 2 (the third after a restart); tick 3 restarts and fails;
+    // tick 4 draws lot 3.
+    a.ticks(5);
+    let s = &a.host.shared["again"];
+    let lot = |n: u64| s.store.get(&format!("lot{n}")).cloned().unwrap_or(Value::Null);
+    assert!(lot(0).as_list().is_some_and(|l| l.len() == 3), "{:?}", lot(0));
+    assert_ne!(lot(1), lot(0), "a stream goes on from where it was");
+    assert_eq!(lot(2), lot(0), "restarted: the first numbers again");
+    assert_eq!(lot(3), lot(1), "the restart of the call that failed was undone: the stream went on after its third lot");
+    assert_eq!(s.store.get("lots"), Some(&Value::from(4u64)));
+    assert!(!s.rngs().contains_key("never"), "restarting a stream that was never drawn from makes no stream");
+    assert_eq!(s.rng_sum, rng_sum_from_scratch(s), "kept through restarts and the failed call");
+}
+
 /// The streams' incrementally kept hash, recomputed from scratch.
 fn rng_sum_from_scratch(s: &Shared) -> u64 {
     s.rngs().iter().fold(0u64, |sum, (k, r)| sum.wrapping_add(super::stream_hash(k, r)))

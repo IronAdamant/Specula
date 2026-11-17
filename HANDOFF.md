@@ -214,6 +214,12 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       sizes that first meeting is not paid back, and no change to the guide alone will make the
       engine cheaper than the plain build: what would is the engine doing more of a game's work,
       which these three jobs do not ask for.
+    - **A sixth pass, at that gap** (the owner, 2026-11-17, shown where it is: "That gap needs
+      to be looked at and fixed up"; FIRST_HOUR.md, section 13): one read that is enough (six
+      files named by the guide, by `specula new` and by the brief); `cx.random_restart`, which
+      a restart "with the same seed" needed and the SDK lacked (seven of eight one-screen builds
+      had written their own generator); the volume's range; the checks' description out of the
+      first read (`notes/checks.md`).
     - **The live audit after the passes** (2026-11-17, on `e5fbe695`): 69 of 70. `launch_check`
       fails on an expectation that went stale in part 3 (a project made from the start screen now
       opens on its own title screen, and the check expects a window with no text). Its script is

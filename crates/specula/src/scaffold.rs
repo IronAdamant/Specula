@@ -166,22 +166,10 @@ const MODULE_ACTIONS: &str = r#"{
 }
 "#;
 
-const MODULE_SOURCE: &str = r##"//! The rules of the game, as a Specula module (docs: notes/how.md in this project).
-//!
-//! This is the smallest game with every part: tap five times before the time runs out. Replace
-//! the rules and keep the shape:
-//!
-//! - **Stateless code.** What the game must remember lives in the state store (`cx.set_state`)
-//!   and in the world, never in this struct: a rebuild reloads while the game runs and loses
-//!   nothing.
-//! - **What a screen shows is what you keep.** The HUD's `{{{module}}.taps}` is the value this
-//!   module set with `cx.set_state("taps", ..)`; the game file (game.json) decides a run is won
-//!   or lost from the same keys. There is no call to draw an interface.
-//! - **The tick is the only clock**, and randomness comes from `cx.random_*`: the same inputs
-//!   at the same ticks give the same game (a playtest replays it).
-//! - **What happens outside the rules arrives as events** from the engine, at a tick: `run`
-//!   (a run starts, or was given up), `setting` (a setting the rules read), `ui` (a button of
-//!   the game's own was pressed), `outcome` (the run ended).
+const MODULE_SOURCE: &str = r##"//! The rules of the game, as a Specula module (notes/how.md says how one is written).
+//! The smallest game with every part: tap five times before the time runs out. What the game
+//! remembers is in the state store and the world, never in this struct (a rebuild reloads
+//! while the game runs and loses nothing); what a screen shows is what is kept there.
 
 // `export_module!` needs one `unsafe` symbol; nothing else here may use it.
 #![deny(unsafe_code)]
@@ -337,12 +325,16 @@ const RUNS: &str = r#"{
 const HOW: &str = r##"---
 title: How this game is built and checked
 kind: how
-about: game.json, modules/{{module}}/, assets/ui/, checks/
+about: game.json, modules/{{module}}/, assets/ui/
 ---
-**Read with this page, in one go:** `game.json` and `modules/{{module}}/src/lib.rs` (the game
-file and the rules). In a new project they are a sample's, a tap game: replace them, its
-screens and words (`assets/ui/*.json`, `assets/strings/*.json`), and delete its checks
-(`checks/runs.json`, `checks/smoke.json`: they check the tap game) or make them your game's.
+**Read with this page, in one go, and that is the reading done:** `game.json`,
+`modules/{{module}}/src/lib.rs`, `modules/{{module}}/actions.json`, `assets/ui/hud.json`,
+`assets/ui/settings.json` and `assets/strings/en.json` (the game file, the rules, the inputs,
+a screen, a screen that moves settings, the words). In a new project they are a sample's, a
+tap game: replace them. The other screens (`title`, `pause`, `won`, `lost`) have the same
+form and are read when they are changed; `assets/ui/theme.json` is the look, and needs no
+reading. Delete the sample's `checks/` folder: it checks the tap game. Every call of the SDK
+that a game needs is on this page.
 
 **The loop: edit, run, read.** One command builds the modules as they are on disk, plays the
 game from its start with no window, and prints how it stands as one JSON object:
@@ -387,7 +379,9 @@ game from its start with no window, and prints how it stands as one JSON object:
 - `screens`: which file under `assets/ui` is the `title`, `pause`, `won`, `lost` and `hud`.
 - `settings`: each `{"name", "kind", "default"}`, the kind one of `"int"` (with `"min"`,
   `"max"`), `"choice"` (with `"options"`), `"toggle"`, `"locale"`. `language` and `volume`
-  are always there. Every setting is kept for the player; nothing else is needed for that.
+  are always there, declared or not: `volume` is an int from 0 to 10, 8 at first, and it is
+  the sound's volume (declare one with `"is": "volume"` for another range or default).
+  Every setting is kept for the player; nothing else is needed for that.
 - **A setting the rules read** (a difficulty) is four things: `"sim": true` on it here; a
   button on a screen with the action `cycle:NAME` (or `step:NAME:+1`), its text
   `{setting.NAME.text}`; for a choice, a line `setting.NAME.VALUE` for each value in every
@@ -452,10 +446,32 @@ game from its start with no window, and prints how it stands as one JSON object:
 - `cx.tick()` (`u64`), `cx.tick_hz()` (`u32`), `cx.random_below("stream", n)?` (a `u32`
   below `n`), `cx.random_f32("stream")?` (0 to 1), `cx.sound("name", None, 1.0)?`,
   `cx.log("text")?`. The random calls are seeded by the run (`--seed`, a check's `"seed"`):
-  the rules take no seed and keep none.
+  the rules take no seed and keep none. A stream goes on from where it was, so a second game
+  in one session is another game; `cx.random_restart("stream")?` puts it back at its
+  beginning (call it where a run begins, for "the same seed gives the same game again").
 
-**Checks kept with a game** (`checks/runs.json`: for a game that someone comes back to, or
-that is handed on. Building a game does not need them: `specula run` is the loop.)
+**Also**
+
+- `specula play . --as-is` opens the window and plays what is on disk.
+- `specula check .` plays every run that `checks/runs.json` lists and says which did not hold:
+  checks kept with a game, for one that someone comes back to or that is handed on
+  (`notes/checks.md` says how they are written). A game that came with checks of its own: run
+  them after a change. Building a game does not need them.
+- `checks/smoke.json` is a playtest (steps, and what to expect) for an engine left running:
+  `specula open . -- --headless --lead NAME`, then `specula tools` lists what an agent can
+  call there (`logic_build`, `game_state`, `game_act`, `playtest_run`, `ui_frame`).
+- `notes/` is what the project remembers. Leave a note of what you decided and why:
+  `notes/NAME.md`, with the front matter this file has (`title`, `kind: decision`, `about`).
+"##;
+
+const CHECKS_NOTE: &str = r##"---
+title: How checks kept with a game are written (specula check)
+kind: fact
+about: checks/runs.json
+---
+`checks/runs.json` lists runs of the game and what the state of each must be: for a game that
+someone comes back to, or that is handed on. Building a game does not need them (`specula run`
+is the loop: notes/how.md).
 
     specula check . [--only NAME]
 
@@ -480,15 +496,6 @@ that is handed on. Building a game does not need them: `specula run` is the loop
   that names none has a new player's. `--only NAME` plays that check alone, with nothing an
   earlier check set.
 - A `"frame"` is a PNG below the project's `checks` folder.
-
-**Also**
-
-- `specula play . --as-is` opens the window and plays what is on disk.
-- `checks/smoke.json` is a playtest (steps, and what to expect) for an engine left running:
-  `specula open . -- --headless --lead NAME`, then `specula tools` lists what an agent can
-  call there (`logic_build`, `game_state`, `game_act`, `playtest_run`, `ui_frame`).
-- `notes/` is what the project remembers. Leave a note of what you decided and why:
-  `notes/NAME.md`, with the front matter this file has (`title`, `kind: decision`, `about`).
 "##;
 
 const GITIGNORE: &str = "# Build output and what the engine keeps beside a project.\n/target/\n/.specula-cache/\n/.specula-trace/\n/captures/\n";
@@ -533,6 +540,7 @@ pub fn files(name: &str, module: &str) -> Vec<(String, String)> {
     out.push((crate::run_checks::FILE.to_owned(), RUNS.to_owned()));
     out.push(("notes/brief.md".to_owned(), fill(BRIEF)));
     out.push(("notes/how.md".to_owned(), fill(HOW)));
+    out.push(("notes/checks.md".to_owned(), fill(CHECKS_NOTE)));
     out.push((".gitignore".to_owned(), GITIGNORE.to_owned()));
     out
 }
@@ -656,7 +664,7 @@ mod tests {
         assert!(source.contains(&format!("name: \"{module}\"")) && source.contains(&format!("const ROOT: &str = \"/{module}\";")));
         let smoke = Json::parse(text("checks/smoke.json")).expect("the check");
         assert_eq!(smoke.get("steps").and_then(Json::as_array).map(<[Json]>::len), Some(6));
-        let (notes, bad) = specula_memoria::Notes::read([("brief", text("notes/brief.md")), ("how", text("notes/how.md"))]);
+        let (notes, bad) = specula_memoria::Notes::read([("brief", text("notes/brief.md")), ("how", text("notes/how.md")), ("checks", text("notes/checks.md"))]);
         assert!(bad.is_empty(), "{bad:?}");
         let brief = notes.brief();
         assert!(brief.contains("is a new Specula project") && brief.contains("How it is built and checked") && brief.contains("specula run . --ticks"), "{brief}");
@@ -674,9 +682,16 @@ mod tests {
             sources += 1;
         }
         assert!(sources >= 20, "{sources} sources named");
-        for said in ["module_failed", "name_taken", "--follow", "TICKS WORD", "no name", "specula check .", "checks/runs.json"] {
+        for said in ["module_failed", "name_taken", "--follow", "TICKS WORD", "no name", "specula check .", "checks/runs.json", "random_restart", "from 0 to 10", "assets/ui/settings.json"] {
             assert!(how.contains(said), "notes/how.md does not say {said}");
         }
+        // The checks' own note says how one is written (it was a section of the guide until the
+        // sixth pass: every build read it first and wrote checks it was not asked for).
+        let checks_note = text("notes/checks.md");
+        for said in ["specula check . [--only NAME]", "\"expect\"", "\"settings\"", "{\"gt\": 8.4, \"lt\": 8.6}"] {
+            assert!(checks_note.contains(said), "notes/checks.md does not say {said}");
+        }
+        assert!(!how.contains("\"expect\""), "the guide describes checks again: that is notes/checks.md's");
         // The sample's own checks are read as checks, and each expects keys the sample's game
         // file reports (what they come to when played is the live check's to hold).
         let runs = crate::run_checks::parse(text(crate::run_checks::FILE)).expect("the sample's checks");

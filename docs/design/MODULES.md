@@ -214,6 +214,12 @@ A fresh `Self::default()` handles every call, so a module has nowhere to keep st
   a stream per entity grows without bound as entities come and go. For per-entity randomness, draw from the purpose
   stream in a fixed order (entities sorted by id), or mix the entity id into the draw. The streams' hash for the desync
   detector is kept as they change (a wrapping sum of per-stream hashes), so its per-tick cost doesn't grow with them.
+  **A stream begins again when asked** (`Cx::random_restart`, the request `rng_restart`; 2026-11-17): its next
+  number is the first it ever gave, for a run that starts again and must be the same game. A stream goes on from
+  where it was otherwise, and nothing restarts one behind the rules' back. The restart is undone with a call that
+  fails, like a draw; restarting a stream nobody drew from makes none. (Seven of the eight one-screen builds of the
+  measured comparison's last four runs wrote a generator of their own in their rules for want of this: the job asks that a restart begin "a fresh
+  run with the same seed".)
 
 So a reload loses nothing by construction. `static mut`, `thread_local!`, `OnceLock` caches and threads are against
 the rules: they break determinism or dangle after an unload. (World files don't hold the state store and RNG positions;

@@ -209,6 +209,16 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
     change, and did not move the medium game. An engine build has spent 49,000 to 74,000 before its
     first file and a plain build about 6,000; after it the engine arm is the cheaper one on the
     medium game, by the means.
+  - **The sixth pass: the first meeting** ([docs/design/FIRST_HOUR.md](docs/design/FIRST_HOUR.md),
+    section 13; owner, 2026-11-17, shown where the gap is: "That gap needs to be looked at and fixed
+    up"). An engine build spent 49,000 to 74,000 weighted tokens before its first file, in four
+    requests, three of them reading. So: the guide, `specula new` and the comparison's brief name
+    one read of six files and say it is the reading done; **`cx.random_restart("stream")` puts a
+    random stream back at its beginning** (the request `rng_restart`, undone with a call that
+    fails), which a restart "with the same seed" needed and the SDK could not say, so that seven of
+    the eight one-screen builds of four measurements had written a generator of their own; the built-in
+    volume's range is said; the checks' description is a note of its own and no longer in the
+    first read; the sample's rules file lost a header that repeated the guide.
   - **The launcher's live check is Rust** (2026-11-17; `launcher_check`,
     `tools/examen/src/native/launch.rs`). The live audit after the passes passed 69 of 70: the
     launcher's check failed on an expectation that had gone stale in part 3 (a project made from the

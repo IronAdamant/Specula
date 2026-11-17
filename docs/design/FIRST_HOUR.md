@@ -40,6 +40,7 @@ remembers.**
 | 10 | A run that says what went wrong, and a player that reacts: `--follow` (the third pass) | built, reviewed, gated; measured on `6cfff79b` (LEVERAGE.md, "Results (the third pass)": the medium game costs the same as without the engine) |
 | 11 | The game's own checks, every run in one command: `specula check` (the fourth pass) | built, reviewed, gated; measured on `d18e1131` (LEVERAGE.md, "Results (the fourth pass)": no build cheaper, the small game dearer; the checks came on top of single runs) |
 | 12 | What a first build is not asked for: the guide and the brief, cut (the fifth pass) | built, reviewed, gated; measured on `9450e0f4` in a clean shell (LEVERAGE.md, "Results (the fifth pass)": 1.85, 1.28 and 1.25 times; the gap is before the first line of code) |
+| 13 | The first meeting: one read that is enough, and a random stream that begins again (the sixth pass) | built (section 13) |
 
 ## 1. The SDK comes from the engine
 
@@ -527,6 +528,41 @@ still wrote a checks file and ran it once or twice. An engine build has spent 49
 weighted tokens when it writes its first file and a plain build about 6,000; after it the engine
 arm is the cheaper one on the medium game. Still looked up, a third measurement running: whether
 a run that starts again gets the same random numbers, and what the built-in volume is.
+
+## 13. The first meeting: one read, and a run that starts again (the sixth pass, 2026-11-17)
+
+The fifth measurement, the first in a clean shell, put the whole of what the engine arm costs more
+in one place ([LEVERAGE.md](LEVERAGE.md), "Results (2026-11-17: the fifth pass)"): an engine build
+has spent 49,000 to 74,000 weighted tokens when it writes its first file, a plain build about
+6,000, and after the first file the engine arm is the cheaper one on the medium game. Before the
+first file there are four requests: the brief; the guide with the game file and the rules; the rest
+of the sample (its six screens, the look, the words, the inputs, the checks); and one of looking
+something up. The owner, shown it: "That gap needs to be looked at and fixed up."
+
+- **One read that is enough.** The guide's first lines name six files to read with it (the game
+  file, the rules, the inputs, one screen, the screen that moves settings, the words) and say that
+  is the reading done: the other screens have the same form, the look needs no reading, and every
+  call of the SDK a game needs is on the page. `specula new` answers the same list, and the
+  comparison's brief gives it as one command. The fifth pass had named three files, and every
+  build then read the rest of the sample in a request of its own, its 1,450 tokens of look
+  included.
+- **A random stream begins again when asked**: `cx.random_restart("stream")` (the request
+  `rng_restart`; [MODULES.md](MODULES.md)). The one-screen job asks that a restart begin "a fresh
+  run with the same seed", the SDK had no way to say it, and seven of the eight
+  one-screen builds of the last four measurements wrote a generator of its own in their rules
+  (and looked for the call in the engine's documents first). It is the engine's own gap, found by reading what the builders looked up three
+  measurements running; the guide says what a stream does when a run starts again.
+- **What else was looked up three times is said**: the built-in volume is an int from 0 to 10, 8
+  at first, and how a game gives it another range.
+- **Checks are not in the first read.** Their description is a note of its own
+  (`notes/checks.md`); the guide keeps four lines under "Also", and its first lines say to delete
+  the sample's `checks` folder (they said "or make them your game's", and every build of the
+  fifth pass made them its own and ran them).
+- **The sample's rules file says what it is in four lines** (its header repeated the guide).
+
+**What it is made of**: `logic/handler.rs` (`rng_restart`, undone with a call that fails),
+`specula-sdk` (`Cx::random_restart`), `scaffold.rs` (the guide, `notes/checks.md`, the sample's
+header), `launch_run.rs` (`read_first`), the harness's brief.
 
 ## As built
 

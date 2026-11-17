@@ -1232,6 +1232,13 @@ at once.
     not make the engine cheaper than the plain build.** What would: the engine doing more of a
     game's work than these jobs ask for (things kept for a player, kinds of things, assets), and a
     job that asks for it (`large`, written; needs things kept between runs first).
+  - **A sixth pass, at that gap (owner, 2026-11-17: "That gap needs to be looked at and fixed up";
+    [design/FIRST_HOUR.md](design/FIRST_HOUR.md), section 13).** One read that is enough (six files
+    named, by the guide, by `specula new` and by the brief; the fifth pass named three and every
+    build read the rest in a request of its own); `cx.random_restart`, the engine's own gap behind
+    the one-screen job's extra cost (a restart "with the same seed" could not be said, and seven of
+    eight such builds wrote their own generator); the volume's range said; the checks' description out of
+    the first read. Measured next, in the same clean shell.
   - **Then measure again**, with more than two runs a cell on the medium job: two runs alike differ by
     as much as the effect being looked for.
 - [ ] ➕ **Game systems as optional data, and memory for whoever builds the game** (owner, 2026-11-16: "the

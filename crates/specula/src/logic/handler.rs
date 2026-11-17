@@ -23,7 +23,7 @@ pub const MAX_STATE_BYTES: usize = 1 << 20;
 /// Longest log line kept (longer ones are cut).
 const MAX_LOG_CHARS: usize = 400;
 
-const OPS: &str = "find, get, query, spawn, set, delete, state_get, state_set, rng, move_character, emit, log, trace, sound";
+const OPS: &str = "find, get, query, spawn, set, delete, state_get, state_set, rng, rng_restart, move_character, emit, log, trace, sound";
 /// Most sounds one module call may ask for (the SDK's number, so modules can budget for it).
 pub const MAX_SOUNDS_PER_CALL: usize = specula_sdk::MAX_SOUNDS_PER_CALL;
 /// Tagged entities one `query {tag, near}` looks at, at most (the tag index's entries, never the
@@ -241,6 +241,24 @@ impl ModuleHandler<'_> {
                     Some(n) => Value::from(rng.below(n.clamp(1, u64::from(u32::MAX)) as u32)),
                     None => Value::from(rng.next_u32()),
                 }))
+            }
+            // A stream put back at its beginning: its next number is the first it ever gave.
+            // For a run that starts again and must be the same game. Undone like a draw.
+            "rng_restart" => {
+                let stream = str_arg(req, "stream")?;
+                if stream.is_empty() || stream.len() > 64 {
+                    return Err(refuse("invalid_field", "'stream' must be 1..64 bytes"));
+                }
+                let before = self.shared.rngs().get(stream).copied();
+                // (A stream never drawn from is at its beginning already: none is made for it.)
+                if before.is_some() {
+                    if !self.rng_undo.iter().any(|(s, _)| s == stream) {
+                        self.rng_undo.push((stream.to_owned(), before));
+                    }
+                    let (seed, module) = (self.shared.seed, self.module);
+                    self.shared.put_rng(stream.to_owned(), Some(Rng::named(seed, &format!("module/{module}/{stream}"))));
+                }
+                Ok(Value::Null)
             }
             "move_character" => {
                 let id = id_arg(req)?;
