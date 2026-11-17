@@ -106,6 +106,7 @@ Read [HANDOFF.md](HANDOFF.md) first.
 | `specula-lex` | Lex: gameplay rules as typed text data (validate, compile, simulate deterministically) |
 | `specula-balance` | balance lab: targets as data, deterministic sweeps and tuning over Lex parameters |
 | `specula-ludus` | the game file as data: phases, win and loss conditions, score, settings, a button's words, and the run's state machine the project shell follows |
+| `specula-corpus` | the human body as numbers: 114 dimensions by sex (93 measured on 6,068 people, their age, 20 links) and how each follows stature, weight and fourteen named traits; a frame of joints; what each part weighs; the checks of proportion and balance ([docs/design/CORPUS.md](docs/design/CORPUS.md)) |
 | `specula-memoria` | what a project remembers: notes with a kind and paths, superseding, finding, the brief an agent is given at its first call |
 | `specula-physics` | collision queries, triggers, character controller, rigid bodies (stages P1–P3) |
 | `specula-via` | navigation: tiled navmeshes, paths, off-mesh links, crowds |
@@ -123,7 +124,7 @@ Read [HANDOFF.md](HANDOFF.md) first.
 | `specula-tempus` | timelines, sequencer tracks and camera rails as data |
 | `games/sepulcra`, `games/sepulcra-app` | the first game: headless rules, and the app hosted by the engine |
 | `games/ambulo` | example module: a walking, jumping character (the module host's proof) |
-| `tools/examen` (`specula-examen`) | the repository's own tooling, in Rust: the gate, the live checks' runner, what a change needs verified, the document guards |
+| `tools/examen` (`specula-examen`) | the repository's own tooling, in Rust: the gate, the live checks' runner, what a change needs verified, the document guards, and the tables computed from public data (`examen corpus tables`: the body's) |
 | `games/inventarium`, `facultas`, `colloquium`, `quaestio`, `exemplum` | gameplay modules as SDK examples: inventory, abilities, dialogue, quests, and a playable demo of the four |
 
 ## Tooling on this machine

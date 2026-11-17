@@ -241,9 +241,26 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     passed 70 of 70): `origin/main` holds parts 1 and 3 with the first five passes. CI's first run
     of part 1's workflows held on every job but Ubuntu's, which failed one test of part 3 that
     wrote its folders as Windows paths; fixed on the branch.
-  - **Next on the laptop: part 4, by the owner's word** (2026-11-17: "Feel free to advance into
-    Part 4 and onwards now. Grok has completed deep research"). It begins with the proportion
-    tables written into the repository as data, each number checked against its source.
+  - **Part 4 has begun, by the owner's word** (2026-11-17: "Feel free to advance into
+    Part 4 and onwards now. Grok has completed deep research").
+    - **Slice 1, the body as numbers: built** (2026-11-17; `specula-corpus`,
+      [docs/design/CORPUS.md](docs/design/CORPUS.md)). The proportion tables are **computed, not
+      typed**: `examen corpus tables` reads the two public data files of ANSUR II (6,068 people,
+      93 dimensions; never in the repository) and prints the crate's table, and a test holds it
+      against the survey's printed report. A body is a sex, a stature, a weight and fourteen named
+      traits (legs, shoulders, hips, age and the rest), each moving every dimension that goes with
+      it in the people measured; it gives a frame of 29 joints, what its sixteen parts weigh (de
+      Leva 1996, read on the page's image), and two checks: proportions against people of the
+      figure's stature, and whether a still pose stands. Limits are the people measured (17 to 58
+      years; no children, no old age), and the frame is flat (no spine curves). A body whose
+      traits together would fold it is refused by the part that gave way; within 4 standard
+      deviations together none can be (proved by a test). A model that did not write it said
+      not to merge it once: every sourced number held, and three things did not (bodies inside
+      the first limits with the navel over the ribs; checks that changed when a hand or a foot
+      bent; a typed table too few tests held). All three are fixed.
+    - **Next: slice 2, the figure's surface** (the modelling crate): bone chains and roundness as
+      one number, a body's mesh from its frame and girths, rigged by construction; then the form
+      checks, the form views, shape language, and the light report.
   - **The research behind parts 4 and 5 is in** ([docs/research/library/](docs/research/library/README.md):
     45 topics, each with a second checker's report; the owner had it researched over two days,
     "ensuring the license allowed this usage"). Claude's review of it the day it came

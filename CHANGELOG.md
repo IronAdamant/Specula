@@ -225,6 +225,52 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
     a change builder's one read took in the look's 1,450 tokens; the guide described a file it
     had just said to delete, and said "every call" where it shows the ones a game of this size
     needs).
+  - **Part 4, slice 1: the body as numbers** (2026-11-17; `specula-corpus`,
+    [docs/design/CORPUS.md](docs/design/CORPUS.md)). The owner's rule for part 4 was tables first,
+    from published measurements, "looked up, not written from an agent's memory".
+    - **Computed, not typed.** `examen corpus tables FEMALE.csv MALE.csv` reads the two public
+      data files of the US Army's survey of 2010 to 2012 (1,986 women and 4,082 men on 93
+      dimensions; public domain; fetched by whoever runs it, never in the repository) and prints
+      the crate's table: for each of 114 dimensions and each sex the mean, spread and percentiles,
+      its line on stature, its plane on stature and weight, and what each trait adds. A test
+      holds 22 dimensions against the survey's printed report (means and spreads to its last
+      digit, percentiles within a third of a millimetre), and 8 fitted lines against the
+      library research, which had computed them separately.
+    - **Fourteen named traits** tell bodies of one stature and weight apart: age, legs, arms,
+      shoulders, hips, chest, waist, neck, biceps, thighs, calves, head, hands, feet. Each is
+      what is left of one dimension after stature, weight and the traits before it, so they are
+      uncorrelated in the people measured, and each moves every dimension as it does in them
+      (long legs shorten the trunk; big hands come with big feet; age widens the waist).
+      Whatever adds up on a person adds up on a body.
+    - **Joint centres and masses** are de Leva's (1996), every number read on the image of the
+      printed page: where each centre lies from its landmark, what share of the body each of
+      sixteen parts is, and where its weight sits.
+    - **Two checks over a frame of 29 joints**, for a body made here or any figure's: its
+      lengths against people of its own stature, in the survey's spreads; and how far a still
+      pose's centre of mass is inside what its planted feet cover.
+    - **What a test found while it was written**: the first limits (so many standard deviations
+      of stature and of weight) allowed a man of 1.48 m and 21 kg. A body's limits are now the
+      shortest and the tallest people actually measured, and for weight the lowest and the
+      highest body mass index among them.
+    - **What its review found** (a model that did not write it; it reproduced all 228 rows by a
+      route of its own and held every typed digit to the page images, and none was wrong). Do
+      not merge, for three things, all fixed. Bodies inside the limits could have the navel
+      level with the ribs or over them when many traits were pushed at once (893 of 73,728
+      corners for men): a body is now checked as it is made and refused by the part that gave
+      way, and a test proves that within 4 standard deviations together it cannot happen, by
+      finding each gap's least over the whole range and not by sampling it. The checks changed when a hand or a foot bent:
+      they are measured by way of the knuckle and the ball. And the typed mass table was held
+      by one sum, so that six mutations (two of the table, four of the code and the constants
+      that read it) passed every test: it is now held against the research's own typing of it,
+      and against the paper's second way of saying five of its rows. Its second look: merge,
+      with nothing returned folded out of 589,824 corner bodies and 400,000 random ones, all six
+      mutations caught, and five small points, all taken (an age can fold a body and no test
+      said so; traits set one by one are checked one by one, so `with_traits` checks once;
+      three sentences said more than the data).
+    - **Said plainly**: adults of 17 to 58 only; the frame is flat (no spine curves); the hip
+      joints' spacing rests on a paper that was not opened (Bell and others 1989, as the
+      motion-capture literature gives it), and the ankle's place along the foot on one
+      hand-measured survey. Neither is hidden: both are in the design note's table of sources.
   - **The library research is in** (2026-11-17; [docs/research/library/](docs/research/library/README.md)).
     What the brief of 2026-11-16 asked for, researched by Grok at the owner's request over two days:
     45 topics (the body, faces and hair, animals, machines, plants, terrain, water, motion, prior

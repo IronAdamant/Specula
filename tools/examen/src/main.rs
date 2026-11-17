@@ -5,6 +5,7 @@
 //! cargo run -p specula-examen -- gate [--all]     what a change passes before it is reported
 //! cargo run -p specula-examen -- live             every live check, one after the other
 //! cargo run -p specula-examen -- changed          which tier this checkout's change is, and why
+//! cargo run -p specula-examen -- corpus tables F M   the body's tables, computed from their source
 //! ```
 //!
 //! A tool's answer is its standard output, in ASCII. It never links the engine: a check
@@ -13,6 +14,7 @@
 
 mod changed;
 mod cli;
+mod corpus;
 mod gate;
 mod kept;
 mod leverage;
@@ -62,6 +64,11 @@ examen: the repository's own tooling
       The measured comparison's harness (docs/design/LEVERAGE.md): the same game jobs built
       through the engine and without it, each run in a folder of its own, what it cost kept
       apart from what its judge sees.
+
+  examen corpus tables FEMALE.csv MALE.csv
+      Prints crates/specula-corpus/src/ansur_data.rs: how each of a body's dimensions is spread
+      and follows stature and weight, computed from the two public data files of ANSUR II
+      (tools/examen/src/corpus.rs says where they are; they are never in this repository).
 ";
 
 /// `examen changed`: says the tier; for a workflow, writes it where the next job reads it.
@@ -106,6 +113,7 @@ fn main() {
         "changed" => changed_main(args),
         "kept" => kept::main(args),
         "leverage" => leverage::main(args),
+        "corpus" => corpus::main(args),
         "" | "help" | "--help" | "-h" => {
             print!("{HELP}");
             0

@@ -29,6 +29,7 @@ members = [
     "crates/specula-lingua",
     "crates/specula-ludus",
     "crates/specula-memoria",
+    "crates/specula-corpus",
     "crates/specula",
     "games/sepulcra",
     "games/sepulcra-app",

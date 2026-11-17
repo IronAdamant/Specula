@@ -1031,7 +1031,7 @@ at once.
 | 1 | **Verifying faster**: Rust pinned; CI keeps its build and skips the full run for documents; the gate and the audit's runner in Rust, sized to what changed | 4,000 lines | |
 | 2 | **The tooling in Rust, the rest**: 81 checks and measurements, three test-data generators; no `.py`, `.sh` or `.ps1` stays tracked. Beside the other parts, each check when it is next touched, all of it before the Mac's live checks | 36,000 | 1 |
 | 3 | **The engine pays from the first hour**: a project gets its SDK from the engine; a module builds at any depth; a module-built game reaches screens, strings and saved settings; many ticks in a call and a tick other than 30 Hz; the memory helpers; conditions and scoring; then the comparison run again. **Built 2026-11-16; the comparison did not move** (the item "The first hour, measured again") | 12,000 | 1 |
-| 4 | **Form within an agent's reach** (may start: the owner, 2026-11-17, with the research delivered: [research/library/](research/library/README.md)): the five items, with the engine's own human figure taken to realistic (not photoreal) from proportion tables that are written first, in 2D and 3D; and the report of what light a machine can run | 15,000 | |
+| 4 | **Form within an agent's reach** (started 2026-11-17 by the owner's word, with the research delivered: [research/library/](research/library/README.md); slice 1, the body's tables, frame and checks, is built: [design/CORPUS.md](design/CORPUS.md)): the five items, with the engine's own human figure taken to realistic (not photoreal) from proportion tables that are written first, in 2D and 3D; and the report of what light a machine can run | 15,000 | |
 | 5 | **The libraries, for any game** (added 2026-11-16, and widened the same day): people with faces, expressions and hair, and what is derived from them; animals; fantasy creatures; the undead; machines; trees, grass and plants; terrain; water. Each a generator with a seed, so nothing is a copy; rigged and animated where it moves; by code; shown in 2D and 3D; apart from Sepulcra. The research comes first | 40,000 to 60,000, and data | 4 |
 | 6 | **Game systems, the rest**: the storyline tree with captions, babble voices and the slot for voice packs; reputation; the RPG set-up; music sets | 12,000 | 3 |
 | 7 | **Sepulcra's maps 2 and 3** | 4,000, and data | 4, 5, 6 (they use all three) |
@@ -1329,8 +1329,12 @@ at once.
       M6's and not after it: shape parameters (height, build, age, the proportions that differ between
       bodies), muscle and fat as volumes along the bones, and hands, feet and a face as their own small
       skeletons.
-    - **The tables do not exist yet.** The research note has the plan and its sources and no numbers:
-      no proportion table is in this repository (checked 2026-11-16). They are written first, as data,
+    - **The tables exist** (2026-11-17, `specula-corpus`, [design/CORPUS.md](design/CORPUS.md)):
+      114 dimensions by sex with their spreads, computed from the public data of ANSUR II by
+      `examen corpus tables` and held against the survey's report by a test; segment masses from
+      de Leva 1996; proportion and balance checks over a frame of joints. Adults of 17 to 58 only.
+      What was asked, as it was written on 2026-11-16 when there were none: the research note has
+      the plan and its sources and no numbers. They are written first, as data,
       from published body measurements that are free to use, each with its source: head counts, segment
       lengths against height, where the joints fall, and how these differ by age, sex and build.
       Looked up, not written from an agent's memory.

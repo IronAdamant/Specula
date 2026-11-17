@@ -1,0 +1,15 @@
+[package]
+name = "specula-corpus"
+description = "Specula Corpus: the human body as numbers: how its dimensions are spread and follow stature, weight and named traits, where its joints are, what each part weighs, and the checks of proportion and balance a figure is held to"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dev-dependencies]
+specula-core = { workspace = true }
+
+[lints]
+workspace = true
