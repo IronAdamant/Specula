@@ -1,8 +1,11 @@
 # Reference images: what is asked for
 
 Status: **answered the same day: 110 pictures, indexed in
-[library/reference-images/](library/reference-images/README.md).** What follows is the request as it was
-written. The owner offered reference pictures to hold the engine's
+[library/reference-images/](library/reference-images/README.md) and published as
+[specula-imagines](https://github.com/IronAdamant/specula-imagines).** What is still missing is asked for in
+[REFERENCE_ROUND2_BRIEF.md](REFERENCE_ROUND2_BRIEF.md). What follows is the request as it was
+written (its "none is copied into this repository" was the rule then; the owner has since given the
+pictures a repository of their own). The owner offered reference pictures to hold the engine's
 figures against ("Reference images.. sure. I'll get you those. Please get me a list of what you need").
 This is the list. It goes beside the library research ([library/](library/README.md)), which gave the
 numbers; these give something to look at.

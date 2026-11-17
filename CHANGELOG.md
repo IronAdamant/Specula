@@ -275,7 +275,9 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
     - **They came the same evening**: 110 pictures, all from Wikimedia Commons (88 public domain,
       3 CC0, 19 CC BY), indexed in
       [docs/research/library/reference-images/](docs/research/library/reference-images/README.md).
-      The files are beside the repository; whether they go into it is the owner's to say.
+      The files are in a public repository of their own,
+      [specula-imagines](https://github.com/IronAdamant/specula-imagines), with the unclothed plates kept apart there; what to gather
+      next is [docs/research/REFERENCE_ROUND2_BRIEF.md](docs/research/REFERENCE_ROUND2_BRIEF.md).
     - **The figure is measured against its body.** A test builds the body's mesh, cuts it with a
       level plane at each height the survey measured people at, and compares breadth, depth and a
       tight tape's girth with the body's own rows. It found what eight looks had not: chest and

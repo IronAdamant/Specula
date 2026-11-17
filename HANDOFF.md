@@ -101,11 +101,36 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
   - **They came the same evening** ("Reference images supplied. Add them to the library"): 110
     pictures with an index, all with licences that allow keeping them. The index is in the
     library ([docs/research/library/reference-images/](docs/research/library/reference-images/README.md));
-    the files are on this machine in `gallery-full/reference-images/`. Whether the files go into
-    the public repository is the one open decision below. The owner on why: "it's how human
+    the files are on this machine in `gallery-full/reference-images/`. The owner on why: "it's how human
     artists, in any profession, work. They refer to skeleton images before putting in their
     touches... Even though they know what humans look like, they still use reference and
     measurements, so I'm getting you digital equivalent of those".
+  - **The pictures have a public repository of their own** (the owner, the same evening, asked
+    whether the files go into this repository or stay beside it: "Could I not have it be a
+    separate public repository linked to Specula for future references?", then "Name at your
+    discretion, and unclothed plates ... do go in. It should atleast be linked to Specula and the
+    basis of it. With citations referred, and links. We can use the documents from Grok alone for
+    that"). It is [specula-imagines](https://github.com/IronAdamant/specula-imagines): the 110 pictures, Grok's index as the
+    citations, and the 24 unclothed plates and motion studies under `ADULTS-ONLY/` ("I'll take
+    responsibilities, because I think it's still important to put gaits in ... Just put it
+    somewhere like (ADULTS ONLY) or something"). Specula links to it and never depends on it. Its
+    clone on this machine is beside this folder; `gallery-full/reference-images/` is the copy as
+    delivered.
+  - **More reference is offered, and wanted** ("Want me to also find images for certain things,
+    and publicly attributable links you can easily reference, both for looks and animations as
+    well as potential physics that you could adjust in any games? I can create several repos for
+    it. For 2D/3D space"). The list is
+    [docs/research/REFERENCE_ROUND2_BRIEF.md](docs/research/REFERENCE_ROUND2_BRIEF.md): the
+    pictures the first round did not find, motion as numbers, physics values a game can adjust,
+    and what 2D needs. Pictures and bulky data go to repositories of their own; numbers stay in
+    this one's library, where tests are held against them.
+  - **A skeleton with every figure, so that a character is a change and not a rebuild** (the same
+    message: "At the very least, basic skeletons alongside the figures you've made for me will be
+    key to set it up so you can easily mutate or change into individual characters over time
+    easily rather than having to keep rebuilding each time"). *Claude's reading:* the figure is
+    already a recipe of numbers (a character is the base with other numbers), and what it lacks is
+    the rig; so **the rig by construction comes next in part 4's slice 2**, before more work on
+    the surface, with every body sharing one skeleton's names so that one motion drives them all.
   - **Rust only.** "Anything Python in here should be converted to Rust. The only programming language
     used here should be Rust. Zero-dependency is non-negotiable. So I'm willing for this to take
     time." This replaces "new checks may still be Python" (2026-11-15): **no new Python from this
@@ -1215,19 +1240,9 @@ Not decisions of this kind, and also with the owner: the seven items of
 recordings of 2026-11-12 (kept, for the release discussion), an Apple Developer account (theirs to talk
 through with the instance on the Mac), and a Steamworks app ID (later).
 
-1. **The reference pictures themselves: in the repository, or beside it?** (2026-11-17.) The owner had
-   110 pictures gathered (211 MB, all from Wikimedia Commons: 88 public domain, 3 CC0, 19 CC BY) and
-   said "Add them to the library". Their index is in the library
-   ([docs/research/library/reference-images/](docs/research/library/reference-images/README.md)) and
-   the files are on this machine in `gallery-full/reference-images/`, in use. Not committed: the
-   files. The licences allow it, with each author listed as the index does. What is against it is the
-   size (every clone would carry 211 MB for good), and that the repository is public and some plates
-   are unclothed academic studies. Claude's recommendation: keep the index in the repository and the
-   files beside it, as the gallery keeps its full-size originals; or, if the owner wants them seen on
-   GitHub, small copies of the engraved plates only (about 5 MB). The owner's to say.
-
-(The three that were here before were answered on 2026-11-16; the answers are at the top of this page,
-under "The last three open decisions".)
+None at present. (The reference pictures' place was decided on 2026-11-17: a public repository of
+their own, [specula-imagines](https://github.com/IronAdamant/specula-imagines); the three before it were answered on 2026-11-16. Both are
+recorded at the top of this page.)
 
 ## Claude's opinions and thoughts
 
