@@ -138,9 +138,10 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     at the owner's word ("Please take care of it. Erase them. And take them out from my
     extracted folders and zip files if you can") they were erased from that repository's
     history by a forced push and removed from the delivery's folders and zip files. GitHub
-    still serves the old commit to someone who has its id, until it clears unreferenced
-    objects: only deleting and re-creating the repository, or GitHub's support, makes that
-    certain, and the token here cannot delete a repository. The repository's readme says, as
+    went on serving the old commit to anyone with its id, so at the owner's word ("delete and
+    recreate please") the repository was deleted and made again from the clean copy the same
+    night: three commits, 269 pictures, the same address, and the old commits no longer exist
+    there (checked by asking for them). The repository's readme says, as
     the owner asked, that it is an agent reference repository kept for the Specula engine. The round's twelve files of
     numbers (running by speed, recorded-motion datasets, friction, bounce, densities, drag,
     vehicles, what people and animals can do, projectiles, water, other worlds) are in
