@@ -56,7 +56,7 @@
         { "op": "capsule", "radius": 0.016, "height": 0.36, "rotate": [0, 0, -90], "at": [0, 1.41, 0.0] } ] } } },
     { "name": "pelvis", "material": "bone", "texture": "bone", "uv_scale": 0.3, "bones": "hips",
       "shape": { "op": "sdf", "resolution": 16, "tree": { "op": "union", "smooth": 0.03, "of": [
-        { "op": "ellipsoid", "radii": [0.09, 0.07, 0.05], "rotate": [0, 0, -25], "mirror": "x", "at": [0.08, 0.95, -0.01] },
+        { "op": "ellipsoid", "radii": [0.09, 0.07, 0.05], "rotate": [0, 0, 25], "mirror": "x", "at": [0.08, 0.95, -0.01] },
         { "op": "box", "size": [0.12, 0.05, 0.06], "corner": 0.02, "at": [0, 0.9, 0.0] } ] } } },
     { "name": "thighs", "material": "bone", "texture": "bone", "uv_scale": 0.3, "bones": ["thigh_l", "thigh_r"],
       "shape": { "op": "sdf", "resolution": 20, "tree": { "op": "union", "smooth": 0.03, "mirror": "x", "of": [

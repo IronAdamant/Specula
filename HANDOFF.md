@@ -470,7 +470,11 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       found each pair the same). **Its reviewer found the mend right** (with every other
       modifier, nested, and the eleven conversions exact), and that two nodes of the fidelity
       set should not have been converted: the runestone's grooves and the skeleton's upper arm
-      are put back as written, where the mend now shows what the recipe meant.
+      are put back as written, where the mend now shows what the recipe meant. So is the
+      skeleton's pelvis, after both ways were built and held against Richer's plate at the
+      owner's word ("I'd like you to experiment on both"): as written its wings rise up and
+      outward as the hip bones do (pictures in `gallery-full/part4/pelvis/`, checked by a
+      model that did not take them).
     - **The form views: built** (2026-11-18; [docs/design/FORM.md](docs/design/FORM.md)):
       `sight_frame` and `sight_orbit` take `form`: `clay`, `normals`, `curvature`, `stripes`.
       Shape alone, with none of the world's light; exact on both adapters. **Look at any form

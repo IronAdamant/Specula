@@ -138,11 +138,15 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
   before and after, the Sepulcra ones differ by a few triangles in thousands and a millimetre in
   size, because their grids now follow the right bounds; captured in the engine before and after,
   a model that did not take the pictures found each of the four props the same from four sides.
-  **Two nodes of the fidelity set were put back as written**, on the review of the conversion: the
-  runestone's grooves (its glows, mesh parts that were always turned the right way, were placed by
-  the grooves' angles as written, so the old engine had drawn groove and glow crossed) and the
-  skeleton's upper arm (written to run from the shoulder to the elbow). There the mend shows what
-  the recipe meant.
+  **Three nodes of the fidelity set were put back as written**, on the review of the conversion:
+  the runestone's grooves (its glows, mesh parts that were always turned the right way, were
+  placed by the grooves' angles as written, so the old engine had drawn groove and glow crossed),
+  the skeleton's upper arm (written to run from the shoulder to the elbow), and the skeleton's
+  pelvis. The recipe could not say which way the pelvis was meant, so both were built and looked
+  at beside Richer's plate of the trunk's skeleton from behind, at the owner's word ("I'd like you
+  to experiment on both"): as written its two wings rise up and outward with the spine coming down
+  between them, as the hip bones do; as converted they drooped into a dome. A model that did not
+  take the pictures confirmed it. There the mend shows what the recipes meant.
 - **Roundness as one number** (M6 part 4, 2026-11-18): `roundness`, 0 to 1, on a `box` and a
   `cylinder` here, and on a `rect` outline (the profile of an extrusion, a loft or a sweep). 0 is the
   hard shape, 1 its fully round form (the ellipsoid as wide, as tall and as deep; the ellipse), and
