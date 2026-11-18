@@ -181,6 +181,13 @@ impl AssetFacts {
     /// The facts of a built model. `shown_params`: the parameters the caller set (they name the
     /// subject); `info`: the recipe's own fields, when it is a recipe.
     pub fn from_model(model: &Model, info: Option<&RecipeInfo>, file_stem: Option<&str>, shown_params: &[(String, f64)], texture_bytes: u64) -> AssetFacts {
+        AssetFacts::from_model_with(model, info, file_stem, shown_params, texture_bytes, &|| false)
+    }
+
+    /// [`AssetFacts::from_model`], asking `stop` whether to give up measuring the mesh's form
+    /// (the costly part on a large mesh: a call out of time; the facts then say its form was
+    /// not measured).
+    pub fn from_model_with(model: &Model, info: Option<&RecipeInfo>, file_stem: Option<&str>, shown_params: &[(String, f64)], texture_bytes: u64, stop: &dyn Fn() -> bool) -> AssetFacts {
         let materials: Vec<MaterialFact> = model.materials.iter().map(|(n, p)| MaterialFact { name: n.clone(), emissive: p.emissive, glass: p.kind == MaterialKind::Glass }).collect();
         let mut by: BTreeMap<([u8; 3], usize), f64> = BTreeMap::new();
         let mut total = 0.0f64;
@@ -233,7 +240,7 @@ impl AssetFacts {
             part_names: info.map(|i| i.parts.clone()).unwrap_or_default(),
             rigged: model.rig.is_some(),
             named_colours: info.map(|i| i.colours.clone()).unwrap_or_default(),
-            form: model.lods.first().map(crate::form::measure).unwrap_or_default(),
+            form: model.lods.first().map(|m| crate::form::measure_with(m, stop)).unwrap_or_default(),
         }
     }
 

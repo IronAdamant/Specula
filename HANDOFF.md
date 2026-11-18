@@ -445,7 +445,9 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       approved in M4 (`grave_rock`, `ruined_wall`, `statue_angel`, `statue_mourner`): their
       angles were converted so that each looks as it did, and measured before and after they
       differ by a few triangles in thousands. The asset tests' two pinned hashes moved for it.
-      **Not yet looked at in the engine side by side**, and not reviewed.
+      **Looked at in the engine side by side** (2026-11-19: the four props from four sides, in
+      the world's light and in clay, before and after; a model that did not take the pictures
+      found each pair the same). Its review is not back yet.
     - **The form views: built** (2026-11-18; [docs/design/FORM.md](docs/design/FORM.md)):
       `sight_frame` and `sight_orbit` take `form`: `clay`, `normals`, `curvature`, `stripes`.
       Shape alone, with none of the world's light; exact on both adapters. **Look at any form
@@ -468,7 +470,12 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       `pediment_fallen`'s rubble blocks hangs about 5 cm over the ground. It is one of the 33
       props the owner approved at the window in M4, so the recipe is left as approved and the
       fault is written into Sepulcra's `style.toml` (`[form.allow]`); **mending it is the
-      owner's to say.** Not yet reviewed by a model that did not write it.
+      owner's to say.** **Its reviewer said not to merge**: the shape's size was taken from
+      every vertex, used or not (one stray vertex hid a loose piece, and one at infinity made
+      the check pass on nothing), and a dome on a flat slab read as perfectly smooth; five
+      minor findings beside. All mended, each case a test; relief is said plainly to be a
+      coarse measure (a turned shape moves a share by up to 0.15). **The mends are not
+      reviewed yet.**
     - **Then:** shape language in the style presets; the light report; the same in 2D; `form`
       on the studio's sheets and on `sight_compare`. And on the figure, by what the form views show: the plate front and back, the arm
       over the shoulder, the trunk's hard edges, the seam under the skull, the muscles to the

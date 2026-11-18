@@ -42,6 +42,22 @@ fn form(f: &AssetFacts, rules: &StyleRules, r: &mut Report) {
     if m.skipped.is_some() || m.triangles == 0 {
         return;
     }
+    if let (Some(_), None) = (limits.max_loose_pieces, m.loose_count) {
+        // Too many pieces hang clear of the ground to compare each with every other: that is
+        // said as a failure, never passed over.
+        let mut finding = Finding::flag(
+            "loose_pieces",
+            s,
+            true,
+            at(rules, "form.max_loose_pieces"),
+            format!("{} of its {} pieces hang clear of the ground: too many to compare, so loose pieces could not be ruled out", m.clear_of_ground, m.pieces),
+            "join what floats to the rest, or build it as fewer pieces; if they are meant to hover, exempt the asset in [form.allow]".to_string(),
+        );
+        if limits.allows(s, "loose_pieces") {
+            finding.exempt = true;
+        }
+        r.findings.push(finding);
+    }
     let mut push = |check: &'static str, value: f64, limit: f64, unit: &'static str, key: &str, message: String, fix: &str| {
         let mut finding = Finding::measure(check, s, value, limit, Bound::Max, unit, at(rules, &format!("form.{key}")), message, fix.to_string());
         if !finding.passed && limits.allows(s, check) {
@@ -463,6 +479,11 @@ categories = ["stone", "enemy"]
 
         f.form = FormFacts { triangles: 9_000_000, skipped: Some("more triangles than the form measures take"), ..FormFacts::default() };
         assert!(of_form(&check(&f, &r, &palette(&r))).is_empty());
+
+        // Too many floating pieces to compare: a failure that says so, not a pass.
+        f.form = FormFacts { triangles: 30_000, pieces: 10_000, clear_of_ground: 9_000, loose_count: None, ..FormFacts::default() };
+        let found = of_form(&check(&f, &StyleRules::defaults(), &palette(&r)));
+        assert!(found.len() == 1 && found[0].is_error() && found[0].message.contains("9000 of its 10000 pieces"), "{found:?}");
     }
 
     #[test]

@@ -112,13 +112,15 @@ they run wherever the studio's other rules do, CI included, and they are in **ev
 |---|---|---|
 | `loose_pieces` | pieces of the mesh (triangles joined through shared corners) whose bounds touch no other piece's and do not reach the ground, each with where it is, how large and how far from anything | `max_loose_pieces` (0 unless given: checked in any style) |
 | `razor_share` | of the creases (edges whose faces turn more than 30°), the share by length that turn more than 75° with nothing to soften them. A bevel splits a right angle into two of 45°, which pass | `max_razor_share` |
-| `facet_deg` | how coarsely round surfaces are faceted: the turn that 95% of the length of the edges that are not creases stays under | `max_facet_deg` |
+| `facet_deg` | how coarsely round surfaces are faceted: the turn that 95% of the length of the **curved** edges stays under (not creases, and turning more than 1°: flat ground and the diagonals of flat quads are left out, or a dome on a slab reads as smooth). 0 with no curved edge | `max_facet_deg` |
 | `seam_m` | length of the edges that are not creases across which the two sides are shaded more than 15° apart: a line in the light where the surface has none | `max_seam_share` (of the shape's size) |
 | `smeared_crease_m` | length of the creases shaded as if they were round (one normal for both faces): the dark smear along a hard edge | `max_smeared_share` (of the creases) |
 | `relief` | how the shape's relief is shared between `big`, `medium` and `small` form: how much the surface's facing varies within a box a quarter, a sixteenth and a sixty-fourth of its size, sheet by sheet | `max_small_relief` |
 
-Also in the facts, with no check of their own: `pieces`, `open_edge_m` (the rim of an open sheet: grass
-cards, cloth), `tangled_edge_m` (edges more than two triangles share), `crease_m`, `razor_m`, `edge_m`.
+Also in the facts, with no check of their own: `pieces`, `pieces_clear_of_ground`, `open_edge_m` (the
+rim of an open sheet: grass cards, cloth), `tangled_edge_m` (edges more than two triangles share),
+`crease_m`, `razor_m`, `edge_m`. A mesh without a normal for every vertex has `shading: "not
+measured"` in place of the two measures of shading.
 
 - **Only loose pieces are checked unless the style says more.** A piece that hangs in the air and
   touches nothing is a fault in any style; how sharp, how faceted and how busy a shape may be is the
@@ -127,16 +129,26 @@ cards, cloth), `tangled_edge_m` (edges more than two triangles share), `crease_m
   `[taste.allow]`.
 - **Loose means beyond doubt.** Two pieces touch when their bounds come within a hundredth of the
   shape's size of each other, so a ring round a post it never touches counts as touching; a piece
-  that reaches the ground rests on it (a coffin's lid lying beside it, rubble). What is left hangs in
-  the air.
+  whose bounds reach the ground (y = 0, give or take that much) rests on it (a coffin's lid lying
+  beside it, rubble). What is left hangs in the air, or lies wholly under the ground.
+- **The shape is its triangles.** Its size is taken from the corners of the triangles that are
+  measured: a vertex no triangle uses (an importer keeps every vertex of a file) and a corner at
+  infinity are no part of it.
 - **Slivers are left out.** A triangle with next to no area has a facing that is noise, and the
   edges it would make razors of are edges nobody sees.
 - **Relief is by boxes, sheet by sheet.** A triangle is in every box a point of it is in; what is
   in a box is taken sheet by sheet (triangles joined through edges in it), so the two sides of a
   thin plate are not taken for one surface that turns right round. A ball's relief is all big; bumps
-  a thirtieth of its size across put most of it in the small; a ribbed sheet nearly all.
-- **Bounds:** a mesh of more than 600,000 triangles is not measured (the facts say `skipped`); more
-  than 2,000 pieces are counted and not compared; the relief is sampled at 1.5 million points at most.
+  a thirtieth of its size across put most of it in the small; a ribbed sheet nearly all. **It is a
+  coarse measure:** the boxes lie along the axes and are sized by the bounds, so the same shape
+  turned 37° about a slanted axis moves a share by up to 0.15 (a ball on a block: 0.88 big upright,
+  0.73 turned). Set `max_small_relief` with that in mind.
+- **Bounds:** a mesh of more than 600,000 triangles is not measured (the facts say `skipped`). Only
+  pieces clear of the ground are compared with the others, and when that would be more than 50
+  million comparisons the pieces are counted, the facts say `not compared`, and **the loose check
+  fails saying so** (it never passes on what it did not look at). The relief is sampled at 200,000
+  points at most for each of its three sizes. A 600,000-triangle ball takes 1.4 s (release, this
+  laptop); the studio hands the measure its call's deadline, and a measure given up says `skipped`.
 
 **What the first run found** (2026-11-18, on assets that had passed every earlier check):
 
@@ -147,6 +159,23 @@ cards, cloth), `tangled_edge_m` (edges more than two triangles share), `crease_m
 - The fidelity benchmark's skeleton warrior: at T0 six of its eight blocks touch nothing (a
   blockout of bones), and at T3 one hand bone is 4 cm clear of the forearm (a fault of the recipe).
   Both written down in that set's `style.toml`.
+
+**The review of the form checks** (a model that did not write them, 2026-11-19) said not to merge:
+two major findings and five minor, all mended, each case now a test
+(`the_review_of_the_form_checks`).
+- *Major:* the shape's size was taken from every vertex, used or not: one stray vertex a kilometre
+  off made a floating block "near" the rest, and one at infinity dropped every triangle, so the loose
+  check passed on nothing. And `facet_deg` was taken over every edge that is not a crease: a coarse
+  dome (18°) on a flat slab read 0.
+- *Minor:* more than 2,000 pieces passed the loose check unlooked at; the measure could not be
+  stopped and cost a small asset 175 ms (the relief's sampling: the studio's tests took four times
+  as long; they take what they did before now); a piece wholly under the ground was never loose; a
+  mesh with no normals had every crease called smeared; lengths summed in `f32` came out 0.6% off
+  over 600,000 edges.
+- It found sound: the measures under a turn and a move, a ball's facets by its bands, equal facts
+  bit for bit over two runs, pathological meshes, the three halo exemptions (each hides the halo and
+  nothing else), and `pediment_fallen`'s fault (a 0.19 m block, its bottom 5.5 cm off the ground).
+- **The mends are not reviewed yet.**
 
 **Not built:** faceting at the size seen (the measure is the mesh's own turn, not what the gameplay
 shot shows of it: a facet under a pixel is no fault); pieces that pass through each other by

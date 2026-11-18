@@ -1455,7 +1455,13 @@ impl Ctx<'_> {
             let text = if s.spec.recipe.ends_with(".json") { std::fs::read_to_string(root.join(&s.spec.recipe)).ok() } else { None };
             let info = text.as_deref().and_then(RecipeInfo::parse);
             let stem = Path::new(&s.spec.recipe).file_stem().map(|x| x.to_string_lossy().to_string());
-            let mut facts = AssetFacts::from_model(&built.model, info.as_ref(), stem.as_deref(), &s.spec.params, models::texture_bytes(&built));
+            // (Measuring a large mesh's form is the costly part: it stops at the call's deadline.)
+            let deadline = self.deadline;
+            let mut facts = AssetFacts::from_model_with(&built.model, info.as_ref(), stem.as_deref(), &s.spec.params, models::texture_bytes(&built), &|| Instant::now() > deadline);
+            if Instant::now() > deadline {
+                // (Its form was given up, or nearly: no check is answered on half the facts.)
+                return Err(error("timed_out", "the subjects' facts weren't measured in time; call again with fewer subjects"));
+            }
             // A glTF base-colour texture paints what its vertex colours don't say.
             facts.textured = built.materials.values().any(|m| m.base.is_some());
             if let Some(l) = &s.label {
