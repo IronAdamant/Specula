@@ -209,6 +209,39 @@ impl TasteRules {
     }
 }
 
+/// `[form]`: limits on what [`crate::form`] measures of a mesh's shape. A limit not given is
+/// not checked (the measure is still in the asset's facts); only loose pieces are checked
+/// unless the style says more, since a piece that touches nothing is a fault in any style.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FormRules {
+    /// Pieces that touch no other piece.
+    pub max_loose_pieces: Option<u32>,
+    /// The share of the creases' length that is razor-sharp (unbevelled).
+    pub max_razor_share: Option<f32>,
+    /// The turn between neighbouring faces of a round surface, degrees.
+    pub max_facet_deg: Option<f32>,
+    /// Length of the shading seams, as a share of the shape's size.
+    pub max_seam_share: Option<f32>,
+    /// Length of the creases shaded as round, as a share of the creases' length.
+    pub max_smeared_share: Option<f32>,
+    /// The share of the shape's relief that is small.
+    pub max_small_relief: Option<f32>,
+    /// Deliberate style: subject glob → checks it is exempt from.
+    pub allow: Vec<(String, Vec<String>)>,
+}
+
+impl Default for FormRules {
+    fn default() -> Self {
+        FormRules { max_loose_pieces: Some(0), max_razor_share: None, max_facet_deg: None, max_seam_share: None, max_smeared_share: None, max_small_relief: None, allow: Vec::new() }
+    }
+}
+
+impl FormRules {
+    pub fn allows(&self, subject: &str, check: &str) -> bool {
+        self.allow.iter().any(|(g, checks)| glob(g, subject) && checks.iter().any(|c| c == check))
+    }
+}
+
 /// A light rig: key light relative to the camera, ambient and exposure.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Rig {
@@ -326,6 +359,7 @@ pub struct StyleRules {
     pub palette: PaletteRules,
     pub naming: NamingRules,
     pub taste: TasteRules,
+    pub form: FormRules,
     pub stage: StageRules,
     pub shots: ShotRules,
     /// Category → the bible's rules as (aspect, text), in file order.
@@ -572,6 +606,36 @@ impl StyleRules {
                         }
                     }
                 }
+                "form" => {
+                    keys(v, "form", &["max_loose_pieces", "max_razor_share", "max_facet_deg", "max_seam_share", "max_smeared_share", "max_small_relief", "allow"])?;
+                    let f = &mut r.form;
+                    if let Some(x) = v.get("max_loose_pieces") {
+                        f.max_loose_pieces = Some(int(x, "form.max_loose_pieces", 0, 100_000)?);
+                    }
+                    for (key, slot, hi) in [
+                        ("max_razor_share", &mut f.max_razor_share, 1.0),
+                        ("max_facet_deg", &mut f.max_facet_deg, 180.0),
+                        ("max_seam_share", &mut f.max_seam_share, 1000.0),
+                        ("max_smeared_share", &mut f.max_smeared_share, 1.0),
+                        ("max_small_relief", &mut f.max_small_relief, 1.0),
+                    ] {
+                        if let Some(x) = v.get(key) {
+                            *slot = Some(num(x, &format!("form.{key}"), 0.0, hi)? as f32);
+                        }
+                    }
+                    if let Some(x) = v.get("allow") {
+                        for (subject, list) in x.as_object().ok_or_else(|| err("form.allow", "wrong_type", "a table of \"subject glob\" = [checks]"))? {
+                            let p = format!("form.allow.{subject}");
+                            let checks = names(list, &p)?;
+                            for (j, c) in checks.iter().enumerate() {
+                                if !crate::form::CHECKS.contains(&c.as_str()) {
+                                    return Err(err(&format!("{p}[{j}]"), "unknown_check", format!("'{c}' is not a form check ({})", crate::form::CHECKS.join(", "))));
+                                }
+                            }
+                            f.allow.push((subject.clone(), checks));
+                        }
+                    }
+                }
                 "stage" => {
                     keys(v, "stage", &["game", "worst_ambient_scale"])?;
                     if let Some(g) = v.get("game") {
@@ -736,6 +800,21 @@ impl StyleRules {
                     ("flat_min_range", Json::from(t.flat_min_range)),
                 ]),
             ),
+            (
+                "form",
+                Json::obj(
+                    [
+                        ("max_loose_pieces", self.form.max_loose_pieces.map(Json::from)),
+                        ("max_razor_share", self.form.max_razor_share.map(Json::from)),
+                        ("max_facet_deg", self.form.max_facet_deg.map(Json::from)),
+                        ("max_seam_share", self.form.max_seam_share.map(Json::from)),
+                        ("max_smeared_share", self.form.max_smeared_share.map(Json::from)),
+                        ("max_small_relief", self.form.max_small_relief.map(Json::from)),
+                    ]
+                    .into_iter()
+                    .filter_map(|(k, v)| v.map(|v| (k, v))),
+                ),
+            ),
         ])
     }
 
@@ -803,6 +882,49 @@ max_triangles = 3000
         assert!(e.line == Some(1), "{e:?}");
         let e = StyleRules::parse("[[scale]]\nheight_m = [2, 1]\n", "s", &pal).unwrap_err();
         assert_eq!(e.path, "scale[0].height_m[1]");
+    }
+
+    #[test]
+    fn form_limits_parse_and_refuse() {
+        let pal = |_: &str| None;
+        let d = StyleRules::defaults();
+        assert_eq!(d.form, FormRules::default());
+        assert_eq!(d.form.max_loose_pieces, Some(0));
+        let r = StyleRules::parse("[form]
+max_loose_pieces = 2
+max_razor_share = 0.25
+max_facet_deg = 12
+max_seam_share = 0.5
+max_smeared_share = 0.1
+max_small_relief = 0.4
+allow = { \"wraith*\" = [\"loose_pieces\"] }
+", "s", &pal).unwrap();
+        assert_eq!((r.form.max_loose_pieces, r.form.max_razor_share, r.form.max_facet_deg), (Some(2), Some(0.25), Some(12.0)));
+        assert_eq!((r.form.max_seam_share, r.form.max_smeared_share, r.form.max_small_relief), (Some(0.5), Some(0.1), Some(0.4)));
+        assert!(r.form.allows("wraith tier=2", "loose_pieces") && !r.form.allows("wraith", "faceting") && !r.form.allows("stone", "loose_pieces"));
+        let j = r.to_json();
+        assert_eq!(j.get("form").and_then(|f| f.get("max_facet_deg")).and_then(Json::as_f64), Some(12.0));
+        assert!(d.to_json().get("form").is_some_and(|f| f.get("max_facet_deg").is_none() && f.get("max_loose_pieces").is_some()));
+        for (bad, code) in [
+            ("[form]
+max_razor_share = 1.5
+", "out_of_range"),
+            ("[form]
+max_facet_deg = -1
+", "out_of_range"),
+            ("[form]
+max_loose_pieces = 0.5
+", "out_of_range"),
+            ("[form]
+facets = 3
+", "unknown_key"),
+            ("[form]
+allow = { \"x\" = [\"flat_lighting\"] }
+", "unknown_check"),
+        ] {
+            let e = StyleRules::parse(bad, "s", &pal).unwrap_err();
+            assert_eq!(e.code, code, "{bad}: {e:?}");
+        }
     }
 
     #[test]

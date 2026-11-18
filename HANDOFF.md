@@ -415,9 +415,16 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       with hard vertical edges; an elbow band; a seam where the legs meet the trunk). Not yet:
       the studio's sheets and `sight_compare` do not take `form`. Not yet reviewed by a model
       that did not write it.
-    - **Then:** the form checks (loose parts, razor edges, faceting, smooth turning, big to
-      small form), as data beside the taste checks; shape language; the light report; the same
-      in 2D. And on the figure, by what the form views show: the plate front and back, the arm
+    - **The form checks: built** (2026-11-18; FORM.md): loose pieces, razor edges, faceting,
+      shading seams, smeared creases and relief by size, measured from the mesh alone and in
+      every asset's facts; `style.toml`'s `[form]` gives limits (only loose pieces are checked
+      unless it does). **The first run found a fault in an approved prop**: one of
+      `pediment_fallen`'s rubble blocks hangs about 5 cm over the ground. It is one of the 33
+      props the owner approved at the window in M4, so the recipe is left as approved and the
+      fault is written into Sepulcra's `style.toml` (`[form.allow]`); **mending it is the
+      owner's to say.** Not yet reviewed by a model that did not write it.
+    - **Then:** shape language in the style presets; the light report; the same in 2D; `form`
+      on the studio's sheets and on `sight_compare`. And on the figure, by what the form views show: the plate front and back, the arm
       over the shoulder, the trunk's hard edges, the seam under the skull, the muscles to the
       arms, the knees' rings, one place for a recipe's body fields.
   - **The research behind parts 4 and 5 is in** ([docs/research/library/](docs/research/library/README.md):

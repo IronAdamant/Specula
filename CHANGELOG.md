@@ -335,6 +335,14 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       and on a `rect` outline. 0 is the hard shape, 1 its fully round form, and everything
       between is valid; the shape keeps its sizes whatever its roundness. With the bone chains
       of this slice it is the first of the five items of "form within an agent's reach".
+    - **The form checks** ([docs/design/FORM.md](docs/design/FORM.md)): what a trained eye sees
+      in a mesh's shape, as numbers in every asset's facts: loose pieces, razor edges, faceting,
+      shading seams, creases shaded as round, and how its relief is shared between big, medium
+      and small form. Read from the mesh alone, so they run in CI. Loose pieces are checked in
+      any style; the rest when `style.toml`'s `[form]` gives a limit. The first run found, in
+      assets that had passed every earlier check, a rubble block that hangs 5 cm over the
+      ground in one of the 33 props approved in M4 (written down, left as approved), and a
+      stray hand bone in the fidelity benchmark's skeleton.
     - **The form views** ([docs/design/FORM.md](docs/design/FORM.md)): `sight_frame` and
       `sight_orbit` take `form`: `clay`, `normals`, `curvature` or `stripes`. The same surfaces
       from the same camera as shape alone: no colour, texture or glow of their own, none of

@@ -12,7 +12,7 @@ three things: **handles** whose plain result is round, **views** in which a flaw
 | Roundness as one number; bone chains | built | [PROCEDURAL_MODELLING.md](PROCEDURAL_MODELLING.md), tier 3 |
 | The engine's own figure from a skeleton | built, and not yet right to look at | [FIGURE.md](FIGURE.md), [CORPUS.md](CORPUS.md) |
 | The form views | built (this page) | `sight_frame`, `sight_orbit` |
-| The form checks | not built | |
+| The form checks | built (this page) | `style.toml` `[form]`; every asset's facts |
 | Shape language in the presets | not built | |
 
 ## The form views
@@ -86,3 +86,55 @@ for it):
 **Not yet:** the asset studio's sheets (`studio_sheet`, `studio_lineup`, `studio_compare`), a
 filmstrip, and `sight_compare` do not take `form`. A view of the surface's thickness, and the
 silhouette alone, are not built (the studio's silhouette frames are the nearest).
+
+## The form checks
+
+What a trained eye sees in a mesh's shape, as numbers (`specula-studio`, `form.rs`). They are read
+from the finest level of the built mesh alone (positions, normals, triangles: no picture, no GPU), so
+they run wherever the studio's other rules do, CI included, and they are in **every asset's facts**
+(`form`, in `studio_check`, `style_check` and the sheets' answers) whether or not a style limits them.
+
+| Measure | What it is | A limit in `[form]` |
+|---|---|---|
+| `loose_pieces` | pieces of the mesh (triangles joined through shared corners) whose bounds touch no other piece's and do not reach the ground, each with where it is, how large and how far from anything | `max_loose_pieces` (0 unless given: checked in any style) |
+| `razor_share` | of the creases (edges whose faces turn more than 30°), the share by length that turn more than 75° with nothing to soften them. A bevel splits a right angle into two of 45°, which pass | `max_razor_share` |
+| `facet_deg` | how coarsely round surfaces are faceted: the turn that 95% of the length of the edges that are not creases stays under | `max_facet_deg` |
+| `seam_m` | length of the edges that are not creases across which the two sides are shaded more than 15° apart: a line in the light where the surface has none | `max_seam_share` (of the shape's size) |
+| `smeared_crease_m` | length of the creases shaded as if they were round (one normal for both faces): the dark smear along a hard edge | `max_smeared_share` (of the creases) |
+| `relief` | how the shape's relief is shared between `big`, `medium` and `small` form: how much the surface's facing varies within a box a quarter, a sixteenth and a sixty-fourth of its size, sheet by sheet | `max_small_relief` |
+
+Also in the facts, with no check of their own: `pieces`, `open_edge_m` (the rim of an open sheet: grass
+cards, cloth), `tangled_edge_m` (edges more than two triangles share), `crease_m`, `razor_m`, `edge_m`.
+
+- **Only loose pieces are checked unless the style says more.** A piece that hangs in the air and
+  touches nothing is a fault in any style; how sharp, how faceted and how busy a shape may be is the
+  style's to say (Sepulcra's assets have a median razor share of 0.18 and facets up to 28°: its look,
+  not a fault). `[form.allow]` exempts a subject from a check, with the reason in a comment, like
+  `[taste.allow]`.
+- **Loose means beyond doubt.** Two pieces touch when their bounds come within a hundredth of the
+  shape's size of each other, so a ring round a post it never touches counts as touching; a piece
+  that reaches the ground rests on it (a coffin's lid lying beside it, rubble). What is left hangs in
+  the air.
+- **Slivers are left out.** A triangle with next to no area has a facing that is noise, and the
+  edges it would make razors of are edges nobody sees.
+- **Relief is by boxes, sheet by sheet.** A triangle is in every box a point of it is in; what is
+  in a box is taken sheet by sheet (triangles joined through edges in it), so the two sides of a
+  thin plate are not taken for one surface that turns right round. A ball's relief is all big; bumps
+  a thirtieth of its size across put most of it in the small; a ribbed sheet nearly all.
+- **Bounds:** a mesh of more than 600,000 triangles is not measured (the facts say `skipped`); more
+  than 2,000 pieces are counted and not compared; the relief is sampled at 1.5 million points at most.
+
+**What the first run found** (2026-11-18, on assets that had passed every earlier check):
+
+- Sepulcra: three tier 3 towers wear a halo that floats (deliberate: exempted with the reason); and
+  **one of the fallen pediment's rubble blocks hangs about 5 cm over the ground**, in a prop the
+  owner approved at the window in M4. It is written into `style.toml` as a fault and left as
+  approved until the owner says to mend it.
+- The fidelity benchmark's skeleton warrior: at T0 six of its eight blocks touch nothing (a
+  blockout of bones), and at T3 one hand bone is 4 cm clear of the forearm (a fault of the recipe).
+  Both written down in that set's `style.toml`.
+
+**Not built:** faceting at the size seen (the measure is the mesh's own turn, not what the gameplay
+shot shows of it: a facet under a pixel is no fault); pieces that pass through each other by
+accident; a check for the figure's seams between its separately meshed parts (they share no edge, so
+`seam_m` does not see them: the form views do); shape language.

@@ -4,6 +4,7 @@
 
 use crate::colour::{chroma, hex};
 use crate::facts::AssetFacts;
+use crate::form::{RAZOR_DEG, SEAM_DEG};
 use crate::palette::Palette;
 use crate::rules::StyleRules;
 use crate::{Bound, Finding, Report};
@@ -29,8 +30,46 @@ pub fn check_with(facts: &AssetFacts, rules: &StyleRules, palette: &Palette, sto
     naming(facts, rules, &mut r);
     budget(facts, rules, &mut r);
     scale(facts, rules, &mut r);
+    form(facts, rules, &mut r);
     colours(facts, rules, palette, &mut r, stop);
     r
+}
+
+/// The form checks: each measure of [`crate::form`] against the limit `[form]` gives it (none
+/// given: not checked). A failure `[form.allow]` names for this subject is exempt.
+fn form(f: &AssetFacts, rules: &StyleRules, r: &mut Report) {
+    let (m, limits, s) = (&f.form, &rules.form, f.subject.as_str());
+    if m.skipped.is_some() || m.triangles == 0 {
+        return;
+    }
+    let mut push = |check: &'static str, value: f64, limit: f64, unit: &'static str, key: &str, message: String, fix: &str| {
+        let mut finding = Finding::measure(check, s, value, limit, Bound::Max, unit, at(rules, &format!("form.{key}")), message, fix.to_string());
+        if !finding.passed && limits.allows(s, check) {
+            finding.exempt = true;
+        }
+        r.findings.push(finding);
+    };
+    if let (Some(max), Some(loose)) = (limits.max_loose_pieces, m.loose_count) {
+        let first = m.loose.first().map(|l| format!(": the largest, {} triangles and {:.2} m across, is {:.2} m from anything else, at [{:.2}, {:.2}, {:.2}]", l.triangles, l.size_m, l.gap_m, l.at[0], l.at[1], l.at[2])).unwrap_or_default();
+        push("loose_pieces", loose as f64, f64::from(max), "pieces", "max_loose_pieces", format!("{loose} of its {} pieces touch nothing and hang clear of the ground{first}", m.pieces), "join each loose piece to the rest (move it until it overlaps, or bridge the gap), or delete it; if it is meant to hover, exempt it in [form.allow]");
+    }
+    if let Some(max) = limits.max_razor_share {
+        push("razor_edges", f64::from(m.razor_share()), f64::from(max), "share", "max_razor_share", format!("{:.0}% of its {:.2} m of creases turn more than {RAZOR_DEG}° with no bevel", m.razor_share() * 100.0, m.crease_m), "bevel the hard edges (a \"bevel\" on the outline, a \"corner\" or \"roundness\" on the box): no made thing has an edge that sharp");
+    }
+    if let Some(max) = limits.max_facet_deg {
+        push("faceting", f64::from(m.facet_deg), f64::from(max), "degrees", "max_facet_deg", format!("its round surfaces turn up to {:.1}° from one face to the next", m.facet_deg), "more segments or a higher resolution where it is round: above a few degrees an outline reads as a polygon");
+    }
+    let size = f.size_m[0].max(f.size_m[1]).max(f.size_m[2]).max(1e-6);
+    if let Some(max) = limits.max_seam_share {
+        push("shading_seams", f64::from(m.seam_m / size), f64::from(max), "of its size", "max_seam_share", format!("{:.2} m of edges that are not creases are shaded more than {SEAM_DEG}° apart on their two sides: a line in the light where the surface has none", m.seam_m), "let the two sides share their normals there (one part, or a smooth step), or make the edge a real crease");
+    }
+    if let Some(max) = limits.max_smeared_share {
+        let share = if m.crease_m > 0.0 { m.smeared_m / m.crease_m } else { 0.0 };
+        push("smeared_creases", f64::from(share), f64::from(max), "share", "max_smeared_share", format!("{:.0}% of its creases are shaded as if they were round: a dark smear along each", share * 100.0), "shade hard edges flat (split the normals there), or round the edge with real faces");
+    }
+    if let Some(max) = limits.max_small_relief {
+        push("small_relief", f64::from(m.relief[2]), f64::from(max), "share", "max_small_relief", format!("{:.0}% of its relief is small form ({:.0}% big, {:.0}% medium)", m.relief[2] * 100.0, m.relief[0] * 100.0, m.relief[1] * 100.0), "fewer, bigger shapes: say the form in its large masses first and keep detail for where the eye should rest");
+    }
 }
 
 /// How many surface colours are searched between asking whether to stop.
@@ -374,6 +413,56 @@ categories = ["stone", "enemy"]
             total_area: colours.iter().map(|c| c.1).sum(),
             ..AssetFacts::default()
         }
+    }
+
+    /// The form checks: loose pieces are checked in any style, the rest only when `[form]`
+    /// gives a limit; a failure the style allows for the subject is exempt; and a mesh that was
+    /// not measured is not checked.
+    #[test]
+    fn form_limits_are_checked_when_given() {
+        use crate::form::{FormFacts, Loose, CHECKS};
+        let mut r = rules();
+        let mut f = stone(&[("#8c96a3", 9.0)]);
+        let of_form = |rep: &Report| rep.findings.iter().filter(|x| CHECKS.contains(&x.check)).cloned().collect::<Vec<Finding>>();
+        assert!(of_form(&check(&f, &r, &palette(&r))).is_empty(), "nothing measured, nothing checked");
+        f.form = FormFacts {
+            triangles: 100,
+            pieces: 3,
+            loose_count: Some(1),
+            loose: vec![Loose { triangles: 12, at: [0.5, 2.0, 0.5], size_m: 0.1, gap_m: 0.95 }],
+            crease_m: 4.0,
+            razor_m: 3.0,
+            facet_deg: 12.0,
+            seam_m: 0.6,
+            smeared_m: 1.0,
+            relief: [0.2, 0.2, 0.6],
+            ..FormFacts::default()
+        };
+        let found = of_form(&check(&f, &r, &palette(&r)));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].check == "loose_pieces" && found[0].is_error() && found[0].message.contains("1 of its 3 pieces touch nothing and hang clear of the ground") && found[0].message.contains("0.95 m"), "{:?}", found[0]);
+        assert!(found[0].rule.ends_with("form.max_loose_pieces"));
+
+        r.form = crate::rules::FormRules {
+            max_loose_pieces: Some(1),
+            max_razor_share: Some(0.5),
+            max_facet_deg: Some(15.0),
+            max_seam_share: Some(0.1),
+            max_smeared_share: Some(0.5),
+            max_small_relief: Some(0.5),
+            allow: vec![("warding_*".into(), vec!["small_relief".into()])],
+        };
+        let found = of_form(&check(&f, &r, &palette(&r)));
+        let by = |name: &str| found.iter().find(|x| x.check == name).unwrap_or_else(|| panic!("{name} was checked"));
+        assert_eq!(found.len(), 6);
+        assert!(by("loose_pieces").passed && by("faceting").passed && by("smeared_creases").passed);
+        // 3 of 4 m of creases are razors; 0.6 m of seams on a shape 2.4 m tall is a quarter of its size.
+        assert!(by("razor_edges").is_error() && (by("razor_edges").value - 0.75).abs() < 1e-6);
+        assert!(by("shading_seams").is_error() && (by("shading_seams").value - 0.25).abs() < 1e-6);
+        assert!(!by("small_relief").passed && by("small_relief").exempt && !by("small_relief").is_error());
+
+        f.form = FormFacts { triangles: 9_000_000, skipped: Some("more triangles than the form measures take"), ..FormFacts::default() };
+        assert!(of_form(&check(&f, &r, &palette(&r))).is_empty());
     }
 
     #[test]

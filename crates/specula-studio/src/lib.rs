@@ -22,6 +22,7 @@ pub mod check;
 pub mod colour;
 pub mod critique;
 pub mod facts;
+pub mod form;
 pub mod image;
 pub mod palette;
 pub mod rules;

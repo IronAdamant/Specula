@@ -1319,7 +1319,8 @@ at once.
   leave you lacking, and dealing with people's complaints"). All five are M6's:
   - **roundness as one number** on the primitives, and **bone chains** (a line of points with radii);
   - **the form checks** as data beside the taste checks: loose parts, razor edges, faceting at the size
-    seen, smooth turning, big to small form;
+    seen, smooth turning, big to small form (built 2026-11-18, but for "at the size seen":
+    [design/FORM.md](design/FORM.md));
   - **the form views** in sight: clay, normals, curvature, stripes (built 2026-11-18:
     [design/FORM.md](design/FORM.md));
   - **the engine's own figure from a skeleton**, rigged by construction, with proportion checks. The owner on

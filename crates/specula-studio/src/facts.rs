@@ -160,6 +160,8 @@ pub struct AssetFacts {
     pub rigged: bool,
     /// The colour names the recipe uses (see [`RecipeInfo::colours`]).
     pub named_colours: Vec<String>,
+    /// Its form, measured on its finest level ([`crate::form`]).
+    pub form: crate::form::FormFacts,
 }
 
 /// `name k=v k=v` (parameters sorted, whole numbers without a fraction).
@@ -231,6 +233,7 @@ impl AssetFacts {
             part_names: info.map(|i| i.parts.clone()).unwrap_or_default(),
             rigged: model.rig.is_some(),
             named_colours: info.map(|i| i.colours.clone()).unwrap_or_default(),
+            form: model.lods.first().map(crate::form::measure).unwrap_or_default(),
         }
     }
 
@@ -254,6 +257,7 @@ impl AssetFacts {
             ("texture_kb", r(self.texture_bytes as f32 / 1024.0)),
             ("materials", Json::arr(self.materials.iter().map(|m| Json::from(m.name.as_str())))),
         ]);
+        j.set("form", self.form.to_json());
         if colours > 0 && self.total_area > 0.0 {
             j.set(
                 "colours",
