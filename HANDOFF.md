@@ -187,12 +187,16 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     of thirteen to fifteen (no plate of theirs was ever published here); and of the women,
     models 4 to 13, 15 and 19 were "of ages varying from seventeen to twenty-four", with no
     age given for models 2 and 20. **Nine unclothed plates of those women had been published
-    in the pictures' repository** (eight since round two, one for an hour): they were taken
-    out of its files the same day and are still in its history, **which is the owner's to
-    say** (told of it, the owner: "Not gonna worry about them, so long as they were clothed.
-    That man in loincloth is not a issue then"; they were not clothed, and that was said back
-    plainly; plate 8 went in on that word: 359 pictures). Every Muybridge plate of a person is
-    held against that catalogue before it is placed.
+    in the pictures' repository** (eight since round two, one for an hour). The owner's rule
+    for them (2026-11-19): "If these nine women are adults, that is fine to keep. Otherwise,
+    if they're any younger than 18, but if they are clothed, that's fine, but if they are not
+    any clothed, then toss those images out". None can be shown to be an adult and all nine
+    are unclothed, so they were tossed: out of the repository's files, out of the delivery's
+    folders and zip files, and out of its history (the repository was deleted by the owner
+    and made again from the clean copy: seven commits, 359 pictures, the old commits no
+    longer served). Plate 8 of the man went in on the owner's word ("That man in loincloth is
+    not a issue then"). Every Muybridge plate of a person is held against that catalogue
+    before it is placed.
   - **A skeleton with every figure, so that a character is a change and not a rebuild** (the same
     message: "At the very least, basic skeletons alongside the figures you've made for me will be
     key to set it up so you can easily mutate or change into individual characters over time
@@ -428,10 +432,20 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       box and cylinder and on a rectangular outline (PROCEDURAL_MODELLING.md, tier 3). **Its
       review, with the squarer trunk's, said not to merge**: three major findings (the field was
       not in metres; it was infinite far away; a square column's bounds cut its corners) and
-      four minor, all mended, each case now a test. **The mends have not been reviewed again.**
-      One limit of the same kind is written down and not mended: a column's field is in units
-      of its narrower half size, so `round` and a blend's radius reach further along its
-      broader side.
+      four minor, all mended, each case now a test. **A second reviewer said not to merge the
+      mends**: `round` on a thin rounded board still came out up to five times too far at its
+      corners (one touching plane is not enough beside a thin edge); mended by steps toward
+      the nearest point, at a cost (a rounded shape's sample is 7 to 30 times a box's). **That
+      mend is not reviewed yet.** One limit of the same kind is written down and not mended: a
+      column's field is in units of its narrower half size, so `round` and a blend's radius
+      reach further along its broader side.
+    - **A distance-field node's `rotate` turned its field the wrong way, since the modeller was
+      written** (found by that second reviewer, 2026-11-19; PROCEDURAL_MODELLING.md, tier 3).
+      Mended, with a test. Seven recipes turn such nodes, four of them Sepulcra props the owner
+      approved in M4 (`grave_rock`, `ruined_wall`, `statue_angel`, `statue_mourner`): their
+      angles were converted so that each looks as it did, and measured before and after they
+      differ by a few triangles in thousands. The asset tests' two pinned hashes moved for it.
+      **Not yet looked at in the engine side by side**, and not reviewed.
     - **The form views: built** (2026-11-18; [docs/design/FORM.md](docs/design/FORM.md)):
       `sight_frame` and `sight_orbit` take `form`: `clay`, `normals`, `curvature`, `stripes`.
       Shape alone, with none of the world's light; exact on both adapters. **Look at any form
@@ -439,8 +453,14 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       them found in one pass what sixteen looks under the world's light had not (the plate is
       on the backs too; the arm lies on the shoulder as a separate capsule; the trunk is a box
       with hard vertical edges; an elbow band; a seam where the legs meet the trunk). Not yet:
-      the studio's sheets and `sight_compare` do not take `form`. Not yet reviewed by a model
-      that did not write it.
+      the studio's sheets and `sight_compare` do not take `form`. **Its reviewer said not to
+      merge**: clay's light did not come with the camera when looking down; `gi` views with a
+      form drew things that are not there; an inside-out shape looked right, and the
+      description promised hard edges in curvature, which cannot show them; and the world's
+      frame was 2 to 5% slower on the iGPU for a branch. All mended (the views are behind a
+      specialisation bit now, so the world's pipelines hold none of them; clay stains an
+      inside-out face red; hard edges are looked for in `normals` and in the form facts).
+      **The mends are not reviewed yet, and the world's frame has not been timed again.**
     - **The form checks: built** (2026-11-18; FORM.md): loose pieces, razor edges, faceting,
       shading seams, smeared creases and relief by size, measured from the mesh alone and in
       every asset's facts; `style.toml`'s `[form]` gives limits (only loose pieces are checked

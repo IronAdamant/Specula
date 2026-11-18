@@ -14,17 +14,17 @@
         "displace": { "amount": 0.035, "scale": 0.22, "octaves": 3 },
         "of": [
          { "op": "union", "smooth": 0.14, "of": [
-          { "op": "union", "smooth": 0.07, "at": [0.08, 1.3, 0], "rotate": [0, 0, -4], "twist": 75, "bend": 9, "of": [
+          { "op": "union", "smooth": 0.07, "at": [0.08, 1.3, 0], "rotate": [0, 0, 4], "twist": 75, "bend": 9, "of": [
             { "op": "cylinder", "radius": 0.17, "radius_top": 0.08, "height": 2.7, "at": [0.13, 0, 0] },
             { "op": "cylinder", "radius": 0.16, "radius_top": 0.075, "height": 2.6, "at": [-0.065, -0.05, 0.11] },
             { "op": "cylinder", "radius": 0.16, "radius_top": 0.07, "height": 2.5, "at": [-0.065, -0.1, -0.11] } ] },
-          { "op": "capsule", "radius": 0.11, "height": 0.7, "at": [0.42, 0.06, 0.0], "rotate": [0, 0, 72] },
-          { "op": "capsule", "radius": 0.1, "height": 0.6, "at": [0.08, 0.06, 0.4], "rotate": [70, 0, 0] },
-          { "op": "capsule", "radius": 0.1, "height": 0.62, "at": [-0.32, 0.06, 0.2], "rotate": [60, 0, 50] },
-          { "op": "capsule", "radius": 0.09, "height": 0.55, "at": [-0.25, 0.06, -0.3], "rotate": [-62, 0, 40] },
-          { "op": "capsule", "radius": 0.09, "height": 0.5, "at": [0.22, 0.06, -0.36], "rotate": [-66, 0, -30] },
-          { "op": "capsule", "radius": 0.09, "height": 1.3, "at": [0.72, 1.78, 0.08], "rotate": [0, 0, -60] },
-          { "op": "capsule", "radius": 0.075, "height": 1.1, "at": [-0.5, 1.95, 0.12], "rotate": [12, 0, 55] } ] },
+          { "op": "capsule", "radius": 0.11, "height": 0.7, "at": [0.42, 0.06, 0.0], "rotate": [0, 0, -72] },
+          { "op": "capsule", "radius": 0.1, "height": 0.6, "at": [0.08, 0.06, 0.4], "rotate": [-70, 0, 0] },
+          { "op": "capsule", "radius": 0.1, "height": 0.62, "at": [-0.32, 0.06, 0.2], "rotate": [-48.07, -41.561, -30.79] },
+          { "op": "capsule", "radius": 0.09, "height": 0.55, "at": [-0.25, 0.06, -0.3], "rotate": [55.236, 34.579, -21.501] },
+          { "op": "capsule", "radius": 0.09, "height": 0.5, "at": [0.22, 0.06, -0.36], "rotate": [62.792, -27.179, 13.215] },
+          { "op": "capsule", "radius": 0.09, "height": 1.3, "at": [0.72, 1.78, 0.08], "rotate": [0, 0, 60] },
+          { "op": "capsule", "radius": 0.075, "height": 1.1, "at": [-0.5, 1.95, 0.12], "rotate": [-6.951, -9.806, -54.403] } ] },
           { "op": "halfspace", "normal": [0, -1, 0], "offset": 0.0 } ] } } },
     { "name": "crown", "material": "leaf", "texture": "leaf", "uv_scale": 0.8,
       "shape": { "op": "sdf", "resolution": 40, "tree": { "op": "union", "smooth": 0.35,

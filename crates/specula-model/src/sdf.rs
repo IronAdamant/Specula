@@ -231,9 +231,10 @@ fn count_nodes(n: &SdfNode) -> usize {
 
 fn prepare(n: &SdfNode, seed: u64, next: &mut u64) -> Prepared {
     let r = Affine::rotate_euler_deg([n.m.rotate[0] as f64, n.m.rotate[1] as f64, n.m.rotate[2] as f64]);
-    // Inverse of a rotation: its transpose (columns become rows).
-    let c = r.cols;
-    let inv_rot = [[c[0][0], c[1][0], c[2][0]], [c[0][1], c[1][1], c[2][1]], [c[0][2], c[1][2], c[2][2]]];
+    // Inverse of a rotation: its transpose, whose rows are the rotation's columns. (`local`
+    // dots a point with each row. These were the rotation's own rows until 2026-11-19, which
+    // turned the field the opposite way to the node's bounds.)
+    let inv_rot = r.cols;
     *next += 1;
     let my_seed = seed ^ next.wrapping_mul(0x9e37_79b9_7f4a_7c15);
     let kind = match &n.kind {
@@ -505,7 +506,7 @@ fn column_lip(a: V3, b: V3, sections: &[[f32; 3]]) -> f32 {
 
 /// What a rounded box or cylinder of a power other than 2 or 4 costs a sample over a plain
 /// primitive: set from the timing (`calibrate_sdf`).
-const ROUNDED_COST: u64 = 270;
+const ROUNDED_COST: u64 = 1130;
 
 /// A rounded box's or cylinder's field ([`Prim::Rounded`]), in metres.
 ///
@@ -517,6 +518,9 @@ const ROUNDED_COST: u64 = 270;
 /// than the depth inside either. The field is the greater of the two: outside a lower bound of
 /// the distance that far away is the hard shape's (finite however far and whatever the power),
 /// inside the depth as the nearer of a flat side and the rounded surface says it.
+///
+/// Near the surface two more touching planes are tried, each where the last one's foot lies,
+/// and the greatest kept: one plane alone is far from the distance beside a thin shape's edge.
 ///
 /// So the field lies between the hard shape's distance and the true one, and the true one is
 /// never further from the hard shape's than the hard shape's corner is from the rounded
@@ -534,37 +538,80 @@ fn rounded(q: V3, half: V3, power: f32, disc: bool) -> f32 {
     // The hard shape's own distance (a box's, or a cylinder's).
     let d = [p[0] - h[0], p[1] - h[1], if n == 3 { p[2] - h[2] } else { f32::MIN }];
     let hard = math3::length([d[0].max(0.0), d[1].max(0.0), d[2].max(0.0)]) + d[0].max(d[1]).max(d[2]).min(0.0);
-    let u = [p[0] / h[0], p[1] / h[1], p[2] / h[2]];
+    // (One over each half size, taken once: the steps below multiply by them.)
+    let inv = [1.0 / h[0], 1.0 / h[1], if n == 3 { 1.0 / h[2] } else { 0.0 }];
+    // The first touching plane: the one whose normal is the gradient where the point is.
+    let Some((g, len)) = rounded_gradient(p, inv, power) else { return hard };
+    let mut plane = (math3::dot(g, p) - 1.0) / len;
+    // Near the surface that plane can be far from the nearest one: by a thin shape's edge its
+    // normal swings to the thin side within a fraction of the thickness, and a swelling by a
+    // centimetre came out up to five at a thin board's corners (second review of roundness).
+    // So from there steps are taken toward the nearest point: the plane touching where the
+    // last plane's foot lies. Each is a touching plane of a convex shape, so each is still
+    // never more than the distance outside nor less than the depth inside, and the greatest
+    // of them is kept. A second step is taken only when the first gained something (beside a
+    // flat side it gains nothing, and most of a shape is beside one). (Further out than twice
+    // the least half size the hard shape's distance leads, and one plane is enough.)
+    let least = if n == 3 { h[0].min(h[1]).min(h[2]) } else { h[0].min(h[1]) };
+    if plane.max(hard).abs() < 2.0 * least {
+        let (mut g, mut len, mut at) = (g, len, plane);
+        for _ in 0..2 {
+            let foot = math3::sub(p, math3::scale(g, at / len));
+            let Some((next, next_len)) = rounded_gradient(foot, inv, power) else { break };
+            let gained = (math3::dot(next, p) - 1.0) / next_len - plane;
+            (g, len, at) = (next, next_len, plane + gained);
+            if gained <= 0.01 * least {
+                plane = plane.max(at);
+                break;
+            }
+            plane = at;
+        }
+    }
+    plane.max(hard)
+}
+
+/// The gradient of a rounded shape's measure `k` at `x` (in the shape's own two or three
+/// coordinates), and its length: the normal of the plane that touches the shape along the
+/// line from the middle through `x`, which lies `1 / length` from the middle. `None` at the
+/// middle itself. Each share is taken of the largest, so no power overflows or underflows.
+fn rounded_gradient(x: V3, inv: V3, power: f32) -> Option<(V3, f32)> {
+    // (`inv` is one over each half size, and nothing for a cylinder's third.)
+    let u = [x[0].abs() * inv[0], x[1].abs() * inv[1], x[2].abs() * inv[2]];
     let m = u[0].max(u[1]).max(u[2]);
     if m <= 0.0 || !m.is_finite() {
-        return hard;
+        return None;
     }
     // Each share of the largest, to the power less one (`t`), and the sum of the shares to the
     // power (`sum`, between 1 and 3).
-    let r = [u[0] / m, u[1] / m, u[2] / m];
-    let t = if power == 2.0 {
-        r
+    let over = 1.0 / m;
+    let r = [u[0] * over, u[1] * over, u[2] * over];
+    let (t, sum, root);
+    if power == 2.0 {
+        t = r;
+        sum = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
+        root = sum.sqrt();
     } else if power == 4.0 {
-        [r[0] * r[0] * r[0], r[1] * r[1] * r[1], r[2] * r[2] * r[2]]
+        t = [r[0] * r[0] * r[0], r[1] * r[1] * r[1], r[2] * r[2] * r[2]];
+        sum = t[0] * r[0] + t[1] * r[1] + t[2] * r[2];
+        root = sum.sqrt().sqrt();
     } else {
         let e = power - 1.0;
         // (The largest share is 1 and a share of nothing is nothing: no power to take.)
         let pw = |x: f32| if x >= 1.0 { 1.0 } else if x <= 0.0 { 0.0 } else { crate::dmath::pow(x, e) };
-        [pw(r[0]), pw(r[1]), pw(r[2])]
-    };
-    let sum = t[0] * r[0] + t[1] * r[1] + t[2] * r[2];
-    let root = if power == 2.0 {
-        sum.sqrt()
-    } else if power == 4.0 {
-        sum.sqrt().sqrt()
+        t = [pw(r[0]), pw(r[1]), pw(r[2])];
+        sum = t[0] * r[0] + t[1] * r[1] + t[2] * r[2];
+        root = crate::dmath::pow(sum, 1.0 / power);
+    }
+    // k = m * root; grad k = (root / sum) * t_i / half_i, toward the side x is on.
+    let scale = root / sum;
+    let side = |i: usize| if x[i] < 0.0 { -scale } else { scale };
+    let g = [side(0) * t[0] * inv[0], side(1) * t[1] * inv[1], side(2) * t[2] * inv[2]];
+    let len = math3::length(g);
+    if len > 0.0 && len.is_finite() {
+        Some((g, len))
     } else {
-        crate::dmath::pow(sum, 1.0 / power)
-    };
-    // k = m * root; grad k = (root / sum) * t_i / half_i.
-    let k = m * root;
-    let slope = (root / sum) * math3::length([t[0] / h[0], t[1] / h[1], if n == 3 { t[2] / h[2] } else { 0.0 }]);
-    let plane = (k - 1.0) / slope;
-    plane.max(hard)
+        None
+    }
 }
 
 /// How far a rounded box's or cylinder's field may be from a field that changes no faster
@@ -873,11 +920,13 @@ fn prim_cost(p: &Prim) -> u64 {
         Prim::Column { square: 3.0, .. } => 122,
         Prim::Column { .. } => 270,
         Prim::Box { .. } | Prim::Torus { .. } | Prim::Ellipsoid { .. } => 12,
-        // (Measured with the rest, three times in release, 2026-11-18, at points in and near
-        // the shape: a power of 2 or 4 takes roots only, 23 to 27 ns; any other takes a power
-        // for each share but the largest and one more, 125 to 175 ns at powers of 6.67 and 40
-        // alike. With the primitive's 48 the weight is at least one and a half times that.)
-        Prim::Rounded { power: 2.0 | 4.0, .. } => 12,
+        // (Measured with the rest, three times in release, 2026-11-19, at points in and near
+        // the shape, where the closest-point steps are taken: a power of 2 or 4 takes roots
+        // only, 153 to 171 ns; any other takes a power for each share but the largest and one
+        // more, at each step: 369 to 781 ns. With the primitive's 48 each weight is at least
+        // one and a half times its slowest. Before the steps they were 27 and 175 ns: what a
+        // swelling that is right at a thin board's corners costs.)
+        Prim::Rounded { power: 2.0 | 4.0, .. } => 210,
         Prim::Rounded { .. } => ROUNDED_COST,
         Prim::Cylinder { radius, radius_top, .. } if radius == radius_top => 12,
         Prim::Cylinder { .. } => 35,
@@ -2050,7 +2099,7 @@ mod tests {
         }
         assert!(last > 8.0 * 0.3 * 0.2 * 0.1 * 0.93, "at a power of 40 it is nearly the box: {last}");
         let cost = |power: f32| eval_cost(&prim(Prim::Rounded { half, power, disc: false }));
-        assert!(cost(2.0) == cost(4.0) && cost(3.0) > cost(4.0));
+        assert!(cost(2.0) == cost(4.0) && cost(3.0) > cost(4.0) * 3);
     }
 
     /// A rounded shape's surface in `f64`, for the tests below: how far out a point is by the
@@ -2231,7 +2280,9 @@ mod tests {
         // A thin board, at the roundness of a tenth and a twentieth.
         let half = [0.5f32, 0.025, 0.3];
         let hard = 8.0 * f64::from(half[0] * half[1] * half[2]);
-        for power in [20.0f32, 40.0] {
+        // (Every power, not only those that passed: at 4 and 6.67 the board came out 4.7% and
+        // 2.4% too large with one touching plane; second review.)
+        for power in [2.5f32, 4.0, 6.67, 10.0, 20.0, 40.0] {
             let (shape, _) = mesh(&prim(Prim::Rounded { half, power, disc: false }), &opts(48)).unwrap();
             let (volume, expected) = (f64::from(shape.signed_volume()), hard * rounded_share(power));
             assert_eq!(unbalanced(&shape), 0);
@@ -2246,6 +2297,20 @@ mod tests {
         for k in 0..3 {
             let (want, slack) = (half[k] + 0.01, 0.6 * stats.cell);
             assert!((bb.max[k] - want).abs() < slack && (bb.min[k] + want).abs() < slack, "axis {k}: {} to {}, for ±{want}", bb.min[k], bb.max[k]);
+        }
+        // And a centimetre from the rounded surface everywhere, not only along the axes: at a
+        // thin board's plan corners one touching plane put the swollen surface up to 4.8 cm
+        // out, with a lip above and below (second review). Every seventh vertex of the swollen
+        // mesh is held against the unswollen surface, at two roundnesses.
+        for power in [10.0f32, 4.0] {
+            let swollen = SdfNode { kind: Kind::Prim(Prim::Rounded { half, power, disc: false }), m: Modifiers { round: 0.01, ..Modifiers::default() } };
+            let (shape, stats) = mesh(&swollen, &opts(96)).unwrap();
+            let mut worst = 0.0f64;
+            for v in shape.positions.iter().step_by(7) {
+                let away = rounded_nearest(v.map(f64::from), half, power, false);
+                worst = worst.max((away - 0.01).abs());
+            }
+            assert!(worst < 0.0025 + 0.6 * f64::from(stats.cell), "power {power}: the swollen surface is up to {worst} m from a centimetre off the rounded one (cell {})", stats.cell);
         }
         // A ball over a thin plate, blended: the same whatever the plate's roundness.
         let blended = |power: Option<f32>| {
@@ -2314,6 +2379,34 @@ mod tests {
         assert!((bb.max[0] - corner).abs() < stats.cell && (bb.min[2] + corner).abs() < stats.cell, "{:?} to {:?}, corners at ±{corner}", bb.min, bb.max);
         let (lo, hi, _, _) = bounds(&column([1.0, 0.0, 1.0])).unwrap();
         assert!(lo[0] <= -corner && hi[0] >= corner && lo[2] <= -corner && hi[2] >= corner, "{lo:?} {hi:?}");
+    }
+
+    /// A node's `rotate` turns its field the way it turns its bounds: the way a mesh step's
+    /// rotation turns a mesh (X, then Y, then Z). The field was turned the opposite way
+    /// (it used the rotation where it needed its inverse), which nobody saw on a shape that
+    /// looks the same turned either way: a round cone lying along x and turned a quarter turn
+    /// about z stood up inside its bounds in the field and lay outside them, and was meshed
+    /// at a tenth of its volume (found by the second review of roundness; the fault was as old
+    /// as the modeller).
+    #[test]
+    fn a_turned_node_is_where_its_bounds_are() {
+        let turned = |rotate: V3| SdfNode { kind: Kind::Prim(Prim::RoundCone { a: [0.0; 3], b: [1.0, 0.0, 0.0], ra: 0.05, rb: 0.05 }), m: Modifiers { rotate, ..Modifiers::default() } };
+        // A capsule of radius 0.05 and length 1: its volume whichever way it is turned.
+        let whole = std::f32::consts::PI * 0.05 * 0.05 * (1.0 + 4.0 / 3.0 * 0.05);
+        for rotate in [[0.0, 0.0, 0.0], [0.0, 0.0, 90.0], [0.0, 90.0, 0.0], [20.0, 30.0, 40.0], [-60.0, 0.0, 35.0]] {
+            let node = turned(rotate);
+            let (shape, _) = mesh(&node, &opts(96)).unwrap();
+            let volume = shape.signed_volume();
+            assert!((volume / whole - 1.0).abs() < 0.04, "turned {rotate:?}: {volume} of {whole}");
+            // Its far end is where the rotation takes (1, 0, 0), as a mesh's would be.
+            let r = Affine::rotate_euler_deg([rotate[0] as f64, rotate[1] as f64, rotate[2] as f64]);
+            let end = r.apply_point([1.0, 0.0, 0.0]);
+            let p = prepare(&node, 1, &mut 0);
+            assert!((eval(&p, end) + 0.05).abs() < 1e-4, "turned {rotate:?}: the field at its far end {end:?} is {}", eval(&p, end));
+            let (lo, hi, _, _) = bounds(&node).unwrap();
+            let bb = shape.bounds();
+            assert!((0..3).all(|k| bb.min[k] >= lo[k] - 1e-3 && bb.max[k] <= hi[k] + 1e-3 && end[k] >= lo[k] - 1e-3 && end[k] <= hi[k] + 1e-3), "turned {rotate:?}: {:?}..{:?} within {lo:?}..{hi:?}", bb.min, bb.max);
+        }
     }
 
     /// A column that widens fast (a flange on a thin stem) is trusted less: its field, taken

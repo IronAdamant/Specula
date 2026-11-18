@@ -335,6 +335,17 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       and on a `rect` outline. 0 is the hard shape, 1 its fully round form, and everything
       between is valid; the shape keeps its sizes whatever its roundness. With the bone chains
       of this slice it is the first of the five items of "form within an agent's reach".
+    - **Three reviews said not to merge, and what each found is mended** (2026-11-19). The
+      form views: clay's light now comes with the camera whichever way it looks; the views of
+      baked light are refused with a form and the packet says what was drawn; an inside-out
+      face is stained red in clay and shown with its own normal; shadows' discs are left out;
+      and the views are compiled only into pipelines made for them (a branch in every lit
+      pipeline had made the world's scene pass 2 to 5% slower on the reference iGPU). The
+      mends to roundness: beside a thin rounded board's corners a swelling of a centimetre
+      came out up to five, so the field now steps toward the nearest point. **And a fault as
+      old as the modeller: a distance-field node's `rotate` turned its field the opposite way
+      to its bounds.** Mended; seven recipes had their angles converted so that each looks as
+      it did.
     - **The second check of the library's rounds two and three, and a fourth round**
       (2026-11-19): an independent checker's findings on 1,363 rows applied to 44 files (79
       fixes; 35 values it could not confirm moved under "Unconfirmed"), each file with the

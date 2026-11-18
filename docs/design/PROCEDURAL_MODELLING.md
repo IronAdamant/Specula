@@ -128,14 +128,23 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
 - Modifiers on any node: `at rotate scale stretch mirror repeat elongate twist bend round shell
   displace color`. Uncoloured nodes take the part's colour. `stretch` is a scale for each axis
   (`[1, 1, 0.6]`: a section as broad and as deep as it is measured); the surface is exact, and the
-  field away from it is a lower bound of the distance.
+  field away from it is a lower bound of the distance. `rotate` turns a node as a mesh step's
+  rotation turns a mesh (X, then Y, then Z). **Until 2026-11-19 it turned the field the opposite
+  way to the node's bounds** (the rotation was used where its inverse was needed): unseen on a shape
+  that looks alike turned either way, and a capsule lying along x and turned a quarter turn about z
+  was meshed at a tenth of its volume. A reviewer of another change found it. The seven recipes that
+  turn such nodes had their angles converted so that each looks as it did (`grave_rock`,
+  `ruined_wall`, the two statues; the fidelity set's runestone, skeleton and tree at T3): measured
+  before and after, the Sepulcra ones differ by a few triangles in thousands and a millimetre in
+  size, because their grids now follow the right bounds.
 - **Roundness as one number** (M6 part 4, 2026-11-18): `roundness`, 0 to 1, on a `box` and a
   `cylinder` here, and on a `rect` outline (the profile of an extrusion, a loft or a sweep). 0 is the
   hard shape, 1 its fully round form (the ellipsoid as wide, as tall and as deep; the ellipse), and
   every value between is a valid shape with flat sides and corners that tighten as the number falls
   (a superquadric, a superellipse: Barr, 1981). The shape keeps its sizes whatever its roundness, so
-  it can be turned up or down without anything else moving. 1 and 0.5 cost a sample what an ellipsoid
-  does; other values take powers and cost about five times that. It is not the modifier `round`
+  it can be turned up or down without anything else moving. 1 and 0.5 are the cheap ones (roots
+  only: about seven times a plain box's sample); other values take powers and cost about four times
+  that again. It is not the modifier `round`
   (a swelling by a radius in metres, on any node) nor `corner` (an edge radius in metres, which cannot
   be given with it). A rounded cylinder has one radius. On an outline that is not a `rect` it is
   refused, as `segments` is where it would do nothing.
@@ -145,7 +154,11 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
     it where its gradient points is never more than the distance outside and exact to first order
     at the surface; the hard shape of the same sizes holds it, so the hard shape's distance is a
     bound too. The field is the greater of the two: finite however far, and inside the depth by the
-    nearer of a flat side and the rounded surface.
+    nearer of a flat side and the rounded surface. **Near the surface it takes up to two more
+    touching planes**, each where the last one's foot lies, and keeps the greatest: with one plane
+    alone, a swelling of a centimetre came out up to five at a thin board's corners (its second
+    review), because beside a thin edge the touching plane swings to the thin side. That is what
+    makes it dear.
   - **What the mesher is told of it is a slack, not a lip**: the field lies between the hard
     shape's distance and the true one, which are never further apart than the hard shape's corner
     is from the rounded surface. (The touching plane's own distance changes much faster than

@@ -14,7 +14,7 @@
       "shape": { "op": "sdf", "resolution": 20, "tree": { "op": "intersection", "scale": "size", "displace": { "amount": 0.03, "scale": 0.15, "octaves": 3 }, "of": [
         { "op": "union", "smooth": 0.12, "of": [
           { "op": "ellipsoid", "radii": [0.42, 0.28, 0.34], "at": [0, 0.12, 0], "color": "carved_shadow" },
-          { "op": "ellipsoid", "radii": [0.26, 0.24, 0.24], "at": [0.24, 0.16, 0.08], "rotate": [0, 30, 15], "color": "slab_top" },
+          { "op": "ellipsoid", "radii": [0.26, 0.24, 0.24], "at": [0.24, 0.16, 0.08], "rotate": [8.499, -28.879, -17.192], "color": "slab_top" },
           { "op": "sphere", "radius": 0.2, "at": [-0.05, 0.3, -0.04], "color": "moss" } ] },
         { "op": "halfspace", "normal": [0, -1, 0], "offset": 0.0 } ] } } }
   ]

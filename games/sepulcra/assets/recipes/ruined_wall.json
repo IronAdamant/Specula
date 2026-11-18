@@ -26,11 +26,11 @@
     { "name": "rubble", "material": "carved_stone",
       "shape": { "op": "sdf", "resolution": 56, "tree": { "op": "union", "smooth": 0.06, "displace": { "amount": 0.025, "scale": 0.12, "octaves": 3 }, "of": [
         { "op": "ellipsoid", "radii": [0.55, 0.22, 0.4], "at": ["half * 0.55", 0.05, 0.45], "color": "carved_shadow" },
-        { "op": "box", "size": [0.3, 0.22, 0.26], "corner": 0.03, "at": ["half * 0.4", 0.18, 0.5], "rotate": [10, 35, 18], "color": "carved_stone" },
-        { "op": "box", "size": [0.26, 0.18, 0.22], "corner": 0.03, "at": ["half * 0.8", 0.12, 0.62], "rotate": [-8, 70, -12], "color": "carved_stone" },
+        { "op": "box", "size": [0.3, 0.22, 0.26], "corner": 0.03, "at": ["half * 0.4", 0.18, 0.5], "rotate": [0.668, -36.219, -15.058], "color": "carved_stone" },
+        { "op": "box", "size": [0.26, 0.18, 0.22], "corner": 0.03, "at": ["half * 0.8", 0.12, 0.62], "rotate": [-9.609, -69.909, 13.119], "color": "carved_stone" },
         { "op": "sphere", "radius": 0.16, "at": ["half * 0.2", 0.03, 0.35], "color": "moss" },
         { "op": "ellipsoid", "radii": [0.3, 0.12, 0.25], "at": ["-half * 0.6", 0.02, 0.4], "color": "moss_light" },
-        { "op": "box", "size": [0.22, 0.16, 0.2], "corner": 0.025, "at": ["-half * 0.65", 0.12, 0.5], "rotate": [0, 20, 25], "color": "carved_stone" } ] } } }
+        { "op": "box", "size": [0.22, 0.16, 0.2], "corner": 0.025, "at": ["-half * 0.65", 0.12, 0.5], "rotate": [8.745, -18.058, -26.392], "color": "carved_stone" } ] } } }
   ],
   "finish": [ { "op": "ground_shade", "amount": 0.3, "height": 0.4 } ]
 }

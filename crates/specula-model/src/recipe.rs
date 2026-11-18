@@ -2053,7 +2053,9 @@ impl Ctx<'_> {
                 // A field that would do nothing is refused, never ignored: `roundness` is a
                 // rectangle's, and `segments` an arch's or a rounded rectangle's.
                 let round = self.ranged(n, "roundness", 0.0, 0.0, 1.0)?;
-                let rounded = n.get("rect").is_some() && round > 0.0;
+                // (`segments` goes with `roundness` whatever its value, 0 too: a roundness swept
+                // down to nothing must not turn into an error at its last step.)
+                let rounded = n.get("rect").is_some() && n.get("roundness").is_some();
                 if n.get("roundness").is_some() && n.get("rect").is_none() {
                     return Err(e(&n.at("roundness"), ErrorCode::Geometry, "\"roundness\" rounds a \"rect\" outline: this one has none"));
                 }

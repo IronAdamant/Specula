@@ -353,7 +353,12 @@ fn procgen_assets_build_in_budget_and_pinned() {
     assert_eq!(format!("{:016x}", h.finish()), PROCGEN_PINNED, "procgen asset hash changed");
 }
 
-const PROCGEN_PINNED: &str = "dc0693c52fd8b422";
+// (Moved on 2026-11-19: a distance-field node's `rotate` turned its field the opposite way to
+// its bounds, and is mended. The recipes that turn such nodes had their angles converted so
+// that each looks as it did; their grids follow the right bounds now, so their meshes differ
+// by a few triangles: `grave_rock` 720 to 716, `ruined_wall` 3,658 to 3,666, sizes within a
+// millimetre.)
+const PROCGEN_PINNED: &str = "1838e106960c492b";
 
 /// Foliage (M5): alpha-cutout cards swaying in the wind, with their budgets. A tuft is three
 /// upright quads (review R1: 4 mm boxes were 12 triangles a card, both broad faces shaded).
@@ -447,4 +452,6 @@ fn m4_exit_props_build_in_budget_and_pinned() {
     assert_eq!(format!("{:016x}", h.finish()), M4_PINNED, "M4 exit prop hash changed");
 }
 
-const M4_PINNED: &str = "950279ddd1cef222";
+// (Moved on 2026-11-19 with `PROCGEN_PINNED`, for the same mend: of the 33 props only those
+// with a turned distance-field node changed, by a few triangles.)
+const M4_PINNED: &str = "6f5723d8610c9fe6";

@@ -241,6 +241,8 @@ fn every_shape_and_op_builds() {
         r#"{"op":"sdf","resolution":32,"tree":{"op":"box","size":[0.8,0.5,0.4],"roundness":0.3,"round":0.02,"at":[0,0.4,0]}}"#,
         r#"{"op":"sdf","resolution":32,"tree":{"op":"cylinder","radius":0.3,"height":0.8,"roundness":0.3,"at":[0,0.5,0]}}"#,
         r#"{"op":"extrude","outline":{"rect":[1,0.6],"roundness":0.5,"segments":32},"height":0.4}"#,
+        // (A roundness of nothing is the rectangle, and may keep its `segments`.)
+        r#"{"op":"extrude","outline":{"rect":[1,0.6],"roundness":0,"segments":16},"height":0.4}"#,
         // What the review of roundness built that came out cut flat: a thin board swollen by a centimetre.
         // (Its board thinner than a cell, turned, builds now and is no more watertight than the hard box is at
         // that size: `sdf::tests::a_rounded_shape_is_measured_in_metres`.)
