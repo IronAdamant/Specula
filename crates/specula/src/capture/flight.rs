@@ -1294,13 +1294,21 @@ mod tests {
         let view = r#""eye": [2, 0, 9], "target": [2, 0, 3], "width": 96, "height": 96, "fov_y_deg": 30"#;
         let formed = ask(&mut e, "sight_frame", &format!(r#"{{{view}, "form": "clay"}}"#), 1, soon());
         let world = ask(&mut e, "sight_frame", &format!("{{{view}}}"), 2, soon());
-        // (Passes until it first waits: its size's target and the subject cache come first.)
-        for _ in 0..500 {
+        // Passes until it first waits: its size's target comes first, warmed a slice a pass,
+        // and the target's readback buffer is made by the GPU's image worker, which a pass
+        // polls and never waits for. However many passes that takes: a count of passes is how
+        // fast that worker was. (A first form of this test gave it 500 passes, which take 2 ms
+        // when each only polls; it failed once in a gate and once in eight runs beside sixteen
+        // test threads, every pass ending as a slice with the target still cold.)
+        let began = Instant::now();
+        while e.captures.form_waits == 0 {
             e.pump_captures();
             if e.captures.form_waits > 0 {
                 break;
             }
             e.pump_workers(None);
+            assert!(began.elapsed() < Duration::from_secs(120), "the form view never came to wait for its pipelines");
+            std::thread::sleep(Duration::from_millis(1));
         }
         // (Once, or twice when it came round again in that pass after the other went ahead.)
         assert!((1..=2).contains(&e.captures.form_waits), "the form view waited for its pipelines: {} times", e.captures.form_waits);
