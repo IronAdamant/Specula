@@ -197,6 +197,13 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
     longer served). Plate 8 of the man went in on the owner's word ("That man in loincloth is
     not a issue then"). Every Muybridge plate of a person is held against that catalogue
     before it is placed.
+  - **A fifth list, for the figure's surface** (the owner, 2026-11-19, told that the pictures
+    have helped less so far than the numbers and what would help next: "Get me full list of that
+    please. I'll pass this to Grok to investigate"). It is
+    [docs/research/REFERENCE_ROUND5_BRIEF.md](docs/research/REFERENCE_ROUND5_BRIEF.md): the
+    trunk as a surface (cross-sections most of all), the shoulder and the arm where it joins,
+    hands and feet from six sides and in poses, and the numbers that go with them. The owner's
+    use of that assistant resets in the week of 2026-11-23; nothing in hand waits on it.
   - **A skeleton with every figure, so that a character is a change and not a rebuild** (the same
     message: "At the very least, basic skeletons alongside the figures you've made for me will be
     key to set it up so you can easily mutate or change into individual characters over time
