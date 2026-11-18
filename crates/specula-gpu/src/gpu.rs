@@ -705,6 +705,22 @@ impl GpuInner {
         self.pipelines.build_variants(&self.device, Variants { terrain: true, ..Variants::default() }, &formats)
     }
 
+    /// Starts building the form views' pipelines on a worker (a no-op once built, while
+    /// building, or after a failure: [`Gpu::retry_failed_variants`] asks again).
+    pub fn request_form_pipelines(&mut self) {
+        if self.pipelines.variants.form || self.pipelines.ready().failed.is_some_and(|f| f.form) {
+            return;
+        }
+        let formats = self.formats();
+        self.pipelines.request_variants(&self.device, Variants { form: true, ..Variants::default() }, &formats);
+    }
+
+    /// The form views' pipelines now, on this thread (loading time and tests).
+    pub fn prepare_form_pipelines(&mut self) -> Result<(), GpuError> {
+        let formats = self.formats();
+        self.pipelines.build_variants(&self.device, Variants { form: true, ..Variants::default() }, &formats)
+    }
+
     /// The pipeline variants ready to draw with (a finished background build is taken first).
     pub fn pipeline_variants(&mut self) -> crate::PipelineVariants {
         self.poll_pipelines();
@@ -715,7 +731,7 @@ impl GpuInner {
         self.poll_pipelines();
         let Some(f) = self.pipelines.ready().failed else { return false };
         let formats = self.formats();
-        self.pipelines.request_variants(&self.device, Variants { skinned: f.skinned, textured: f.textured, gi: f.gi, gi_pixel: f.gi_pixel, terrain: f.terrain }, &formats);
+        self.pipelines.request_variants(&self.device, Variants { skinned: f.skinned, textured: f.textured, gi: f.gi, gi_pixel: f.gi_pixel, terrain: f.terrain, form: f.form }, &formats);
         true
     }
 

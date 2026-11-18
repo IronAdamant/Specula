@@ -72,7 +72,8 @@ lightness, contrast against its surround and the LOD drawn.
 
 - **Contact sheet** (`studio_sheet`): one block per subject (up to 48), columns are angles (a turntable of N
   azimuths, top, or named shots) and the passes asked for: `colour`, `value` (greyscale lightness of the colour
-  render) and `silhouette`. Blocks stack one above the other while they fit; a review batch wraps into columns
+  render), `silhouette`, and the four form views `clay`, `normals`, `curvature` and `stripes` (shape alone:
+  [FORM.md](FORM.md); each a render of its own for every view). Blocks stack one above the other while they fit; a review batch wraps into columns
   of blocks (the fewest that give the largest tile within 2048 px), so one sheet shows a whole batch: the M4
   exit set's 33 props are 4 columns of 176 px tiles. Tiles (96) and renders (128) still bound a sheet.
 - **Line-up** (`studio_lineup`): siblings side by side at true relative scale with the human and the cube, front and

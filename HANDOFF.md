@@ -461,15 +461,23 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       in clay and curvature before saying what it is like**: the first look at the figure in
       them found in one pass what sixteen looks under the world's light had not (the plate is
       on the backs too; the arm lies on the shoulder as a separate capsule; the trunk is a box
-      with hard vertical edges; an elbow band; a seam where the legs meet the trunk). Not yet:
-      the studio's sheets and `sight_compare` do not take `form`. **Its reviewer said not to
+      with hard vertical edges; an elbow band; a seam where the legs meet the trunk).
+      **The studio's sheets take them as passes** (2026-11-19: `"passes": ["colour", "clay",
+      "curvature"]`; not reviewed). Not yet: `studio_lineup` and `sight_compare`. **Its reviewer said not to
       merge**: clay's light did not come with the camera when looking down; `gi` views with a
       form drew things that are not there; an inside-out shape looked right, and the
       description promised hard edges in curvature, which cannot show them; and the world's
       frame was 2 to 5% slower on the iGPU for a branch. All mended (the views are behind a
       specialisation bit now, so the world's pipelines hold none of them; clay stains an
       inside-out face red; hard edges are looked for in `normals` and in the form facts).
-      **The mends are not reviewed yet, and the world's frame has not been timed again.**
+      **A second reviewer said not to merge the mends**: the first form capture compiled its
+      pipelines on the engine thread (440 ms), one scene of the world's was still 2.2% slower
+      on the iGPU, and clay stained outlines under an orthographic camera. Mended: the views
+      are in shaders of their own (the world's four compiled shaders are byte for byte what
+      they were before the feature, and the world's frame times the same: 1.5211 ms against
+      1.5208 ms on `cubes_10k`, twelve alternating rounds), their pipelines are built on a
+      worker with the capture waiting, and an orthographic camera is told. **These mends are
+      not reviewed yet.**
     - **The form checks: built** (2026-11-18; FORM.md): loose pieces, razor edges, faceting,
       shading seams, smeared creases and relief by size, measured from the mesh alone and in
       every asset's facts; `style.toml`'s `[form]` gives limits (only loose pieces are checked
@@ -484,7 +492,7 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       coarse measure (a turned shape moves a share by up to 0.15). **The mends are not
       reviewed yet.**
     - **Then:** shape language in the style presets; the light report; the same in 2D; `form`
-      on the studio's sheets and on `sight_compare`. And on the figure, by what the form views show: the plate front and back, the arm
+      on `sight_compare` and the line-up. And on the figure, by what the form views show: the plate front and back, the arm
       over the shoulder, the trunk's hard edges, the seam under the skull, the muscles to the
       arms, the knees' rings, one place for a recipe's body fields.
   - **The research behind parts 4 and 5 is in** ([docs/research/library/](docs/research/library/README.md):

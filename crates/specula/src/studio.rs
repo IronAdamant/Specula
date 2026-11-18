@@ -232,8 +232,11 @@ pub(crate) struct RenderReq {
     w: u32,
     h: u32,
     aspect: f32,
-    /// `None`: a silhouette.
+    /// `None`: a silhouette (or a form view).
     light: Option<(Rig, bool)>,
+    /// Shape alone, one of the form views (docs/design/FORM.md): the subjects and nothing else,
+    /// with none of a rig's light.
+    form: Option<specula_gpu::FormView>,
     /// A gallery variant's extras: fog, or the live world as the subject (see `gallery`).
     extra: Option<Box<gallery::Extra>>,
 }
@@ -729,6 +732,8 @@ enum Light<'a> {
     Rig(&'a Rig, bool),
     /// Black on white, no light: masks.
     Silhouette,
+    /// Shape alone: one of the form views.
+    Form(specula_gpu::FormView),
 }
 
 /// The rig's light. Its shadow map has one shape for every studio render, the world's own when
@@ -940,14 +945,14 @@ impl Engine {
                 return Err(error("render_unavailable", e));
             }
         }
-        if req.light.is_none() {
+        if req.light.is_none() && req.form.is_none() {
             for d in &mut draws[first_subject..] {
                 d.material = specula_gpu::Material::Lit;
                 d.color = [0.0, 0.0, 0.0, 1.0];
                 d.surface = specula_gpu::Surface { specular: 0.0, ..specula_gpu::Surface::default() };
             }
         }
-        let frame = FrameDesc {
+        let mut frame = FrameDesc {
             view_proj: vp.to_cols_array(),
             clear_color: clear,
             draws: &draws,
@@ -965,11 +970,24 @@ impl Engine {
             text: Default::default(),
             ..Default::default()
         };
+        if let Some(view) = req.form {
+            // (Its pipelines were waited for, `studio_variants_waiting`: only a set that failed
+            // to build is missing here, and a frame drawn without it would show no subject.)
+            let v = self.gpu.pipeline_variants();
+            if let Some(f) = v.failed.as_ref().filter(|f| f.form && !v.form) {
+                return Err(error("render_unavailable", format!("the form views' pipelines failed to build ({}): {}", f.pipeline, f.error.message)));
+            }
+            // (Curvature's scale as a capture's: a twentieth of the view's half height at the
+            // subject, so a form reads the same at any framing.)
+            let half = (cam.eye - cam.target).length() * (cam.fov.to_radians() * 0.5).tan();
+            crate::sight::form_frame(&mut frame, view, (0.05 * half).clamp(0.001, 1000.0));
+        }
         // A target per light kind: its render graph stays as built (lit and silhouette frames
         // alternate, and a target rebuilds its graph whenever its settings change).
-        let kind = match &req.light {
-            None => 0u8,
-            Some((rig, igpu)) => 1 + u8::from(*igpu) * 2 + u8::from(rig.bloom),
+        let kind = match (&req.form, &req.light) {
+            (Some(_), _) => 8u8,
+            (None, None) => 0,
+            (None, Some((rig, igpu))) => 1 + u8::from(*igpu) * 2 + u8::from(rig.bloom),
         };
         let fresh = !self.studio.targets.iter().any(|t| t.key == (w, h, kind));
         let target = self.studio_target(w, h, kind).map_err(ToolOutput::error)?;
@@ -1295,14 +1313,21 @@ impl Engine {
     fn studio_variants_waiting(&mut self, req: &RenderReq) -> bool {
         let skinned = req.subjects.iter().any(|p| !p.skin.is_empty());
         let textured = req.subjects.iter().any(|p| p.built.materials.values().any(|m| m.textured()));
-        if !skinned && !textured {
+        let form = req.form.is_some();
+        if !skinned && !textured && !form {
             return false;
         }
         self.models.refresh_ready(&mut self.gpu);
         let v = self.gpu.pipeline_variants();
         let failed = |sk: bool| v.failed.as_ref().is_some_and(|f| if sk { f.skinned } else { f.textured });
-        // (The builds' uploads, a step earlier, started building them.)
-        (skinned && !v.skinned && !failed(true)) || (textured && !v.textured && !failed(false))
+        // A form view's pipelines are built on a worker the first time one is asked for (a
+        // frame never compiles one); a set that failed doesn't wait (the render reports it).
+        let form_coming = form && !v.form && !v.failed.as_ref().is_some_and(|f| f.form);
+        if form_coming {
+            self.gpu.request_form_pipelines();
+        }
+        // (The builds' uploads, a step earlier, started building the stream variants.)
+        (skinned && !v.skinned && !failed(true)) || (textured && !v.textured && !failed(false)) || form_coming
     }
 
     /// Answers every queued studio render: the engine is stopping.
@@ -1349,13 +1374,34 @@ pub(crate) fn run(tools: &crate::tools::Tools, shared: &Shared, session: &Sessio
     ctx.studio_call(call)
 }
 
+/// A standard shot's camera, its square size in pixels, the level it shows, and what its
+/// pixel heights are multiplied by to be in the shot's viewport.
+fn shot_cam(s: &Staged, shot: Shot, tile: u32) -> (Cam, u32, usize, f32) {
+    match shot {
+        Shot::CloseUp => (fit(s.lo, s.hi, 35.0, 20.0, FIT_FOV, 1.0, 1.08), tile, 0, 1.0),
+        Shot::Gameplay | Shot::WorstLight | Shot::Phone | Shot::Igpu => {
+            let rules = s.rules();
+            let g = &rules.shots.gameplay;
+            let vh = match shot {
+                Shot::Phone => rules.shots.phone_viewport[1],
+                Shot::Igpu => rules.shots.igpu_viewport[1],
+                _ => g.viewport[1],
+            };
+            let gs = game_cam(s.centre(), s.radius(), s.lods(), g, vh);
+            (gs.cam, gs.crop, gs.lod, gs.scale)
+        }
+    }
+}
+
 /// About how many renders a call will make (for admission; the cap is enforced as it renders).
 fn planned_renders(call: &StudioCall, shared: &Shared, agent: &str) -> usize {
     let sheet = |s: &SheetSpec| -> usize {
         let per_view = |v: &View| match v {
             View::Shot(_) => 2,
-            View::Angle { .. } => usize::from(s.passes.iter().any(|p| *p != Pass::Silhouette)) + usize::from(s.passes.contains(&Pass::Silhouette)),
+            View::Angle { .. } => usize::from(s.passes.iter().any(|p| matches!(p, Pass::Colour | Pass::Value))) + usize::from(s.passes.contains(&Pass::Silhouette)),
         };
+        // (Each form view is a render of its own, of every view.)
+        let per_view = |v: &View| per_view(v) + s.passes.iter().filter(|p| matches!(p, Pass::Form(_))).count();
         s.subjects.len() * s.views.iter().map(per_view).sum::<usize>()
     };
     match call {
@@ -1499,7 +1545,11 @@ impl Ctx<'_> {
             aspect: w as f32 / h as f32,
             light: match light {
                 Light::Rig(rig, igpu) => Some((rig.clone(), igpu)),
-                Light::Silhouette => None,
+                Light::Silhouette | Light::Form(_) => None,
+            },
+            form: match light {
+                Light::Form(view) => Some(view),
+                _ => None,
             },
             extra: None,
         };
@@ -1564,38 +1614,38 @@ impl Ctx<'_> {
     fn studio_shot(&mut self, s: &Staged, shot: Shot, tile: u32) -> Result<Render, ToolOutput> {
         let rules = s.rules().clone();
         let ring = rules.taste.ring_px;
+        let (cam, size, lod, scale) = shot_cam(s, shot, tile);
         match shot {
-            Shot::CloseUp => {
-                let cam = fit(s.lo, s.hi, 35.0, 20.0, FIT_FOV, 1.0, 1.08);
-                self.stage_measured(s, cam, tile, tile, &neutral_rig(), false, 0, ring)
-            }
+            Shot::CloseUp => self.stage_measured(s, cam, size, size, &neutral_rig(), false, lod, ring),
             Shot::Gameplay | Shot::WorstLight | Shot::Phone | Shot::Igpu => {
-                let g = &rules.shots.gameplay;
-                let vh = match shot {
-                    Shot::Phone => rules.shots.phone_viewport[1],
-                    Shot::Igpu => rules.shots.igpu_viewport[1],
-                    _ => g.viewport[1],
-                };
-                let gs = game_cam(s.centre(), s.radius(), s.lods(), g, vh);
                 let rig = if shot == Shot::WorstLight { rules.stage.worst() } else { rules.stage.game.clone() };
-                let mut r = self.stage_measured(s, gs.cam, gs.crop, gs.crop, &rig, shot == Shot::Igpu, gs.lod, ring)?;
+                let mut r = self.stage_measured(s, cam, size, size, &rig, shot == Shot::Igpu, lod, ring)?;
                 // Pixel heights are in the shot's viewport.
-                r.measure.px_height *= gs.scale;
+                r.measure.px_height *= scale;
                 Ok(r)
             }
         }
     }
 
-    /// An angle tile: colour under `rig` (with the references when `refs`), or a silhouette.
+    /// One of the standard shots as a form view: the shot's own camera, size and level, shape
+    /// alone.
+    fn studio_shot_form(&mut self, s: &Staged, shot: Shot, tile: u32, view: specula_gpu::FormView) -> Result<Vec<u8>, ToolOutput> {
+        let (cam, size, lod, _) = shot_cam(s, shot, tile);
+        let placed = [Placed { s, at: Vec3::ZERO, lod: lod.min(s.lods() - 1), yaw: 0.0 }];
+        self.stage_render(&placed, None, &cam, size, size, Light::Form(view))
+    }
+
+    /// An angle tile: colour under `rig` (with the references when `refs`), a silhouette, or a
+    /// form view (`form`: shape alone, no references).
     #[allow(clippy::too_many_arguments)]
-    fn studio_angle(&mut self, s: &Staged, az: f32, el: f32, rig: &Rig, tile: u32, refs: bool, silhouette: bool) -> Result<(Vec<u8>, Option<[u32; 4]>), ToolOutput> {
+    fn studio_angle(&mut self, s: &Staged, az: f32, el: f32, rig: &Rig, tile: u32, refs: bool, silhouette: bool, form: Option<specula_gpu::FormView>) -> Result<(Vec<u8>, Option<[u32; 4]>), ToolOutput> {
         // The subject turns by -az in front of a camera at azimuth 0: the same view as a camera at
         // az, with the references always to its left.
         let (slo, shi) = turned_box(s, -az, Vec3::ZERO);
         let at = Vec3::new(-(slo.x + shi.x) * 0.5, 0.0, -(slo.z + shi.z) * 0.5);
         let (slo, shi) = (slo + at, shi + at);
         let (mut lo, mut hi) = (slo, shi);
-        let fig = (refs && !silhouette).then(|| {
+        let fig = (refs && !silhouette && form.is_none()).then(|| {
             let f = Vec3::new(slo.x - 0.6 - 0.35, 0.0, 0.0);
             let (a, b) = reference_box(f);
             lo = lo.min(a);
@@ -1604,7 +1654,11 @@ impl Ctx<'_> {
         });
         let placed = [Placed { s, at, lod: 0, yaw: -az }];
         let cam = fit(lo, hi, 0.0, el, FIT_FOV, 1.0, 1.08);
-        let light = if silhouette { Light::Silhouette } else { Light::Rig(rig, false) };
+        let light = match form {
+            Some(view) => Light::Form(view),
+            None if silhouette => Light::Silhouette,
+            None => Light::Rig(rig, false),
+        };
         let rgba = self.stage_render(&placed, fig, &cam, tile, tile, light)?;
         let bbox = project_box(&cam.view_proj(1.0), slo, shi, tile, tile);
         Ok((rgba, bbox))
@@ -1615,7 +1669,7 @@ impl Ctx<'_> {
         let px = s.rules().taste.thumb_px;
         let mut out = Vec::new();
         for (az, el) in THUMB_ANGLES {
-            let (rgba, _) = self.studio_angle(s, az, el, &neutral_rig(), px, false, true)?;
+            let (rgba, _) = self.studio_angle(s, az, el, &neutral_rig(), px, false, true, None)?;
             out.push(Mask::from_silhouette(&rgba, px, px).fitted(px));
         }
         Ok(out)
@@ -1821,8 +1875,8 @@ impl Ctx<'_> {
                 // What this view renders, once for all its passes.
                 let (colour, sil, bbox, shot, lod, sw, sh): ViewPixels = match v {
                     View::Angle { az, el, .. } => {
-                        let colour = if sheet.passes.iter().any(|p| *p != Pass::Silhouette) { Some(self.studio_angle(s, *az, *el, &rig, tile, sheet.references, false)?) } else { None };
-                        let sil = if sheet.passes.contains(&Pass::Silhouette) { Some(self.studio_angle(s, *az, *el, &rig, tile, false, true)?.0) } else { None };
+                        let colour = if sheet.passes.iter().any(|p| matches!(p, Pass::Colour | Pass::Value)) { Some(self.studio_angle(s, *az, *el, &rig, tile, sheet.references, false, None)?) } else { None };
+                        let sil = if sheet.passes.contains(&Pass::Silhouette) { Some(self.studio_angle(s, *az, *el, &rig, tile, false, true, None)?.0) } else { None };
                         let bbox = colour.as_ref().and_then(|c| c.1);
                         (colour.map(|c| c.0), sil, bbox, None, 0, tile, tile)
                     }
@@ -1833,9 +1887,28 @@ impl Ctx<'_> {
                         (Some(r.colour), Some(mask_rgba(&r.mask)), bbox, Some((r.measure, mag)), r.lod, r.w, r.h)
                     }
                 };
+                // Its form views, each a render of its own: the same camera, shape alone.
+                let mut forms: Vec<(specula_gpu::FormView, Vec<u8>)> = Vec::new();
+                let mut bbox = bbox;
+                for p in &sheet.passes {
+                    let Pass::Form(view) = p else { continue };
+                    let px = match v {
+                        View::Angle { az, el, .. } => {
+                            let (px, at) = self.studio_angle(s, *az, *el, &rig, tile, false, false, Some(*view))?;
+                            // (A sheet of form views alone has its subject's box from them. With
+                            // a colour pass and references the framing differs, and the box is
+                            // the colour's.)
+                            bbox = bbox.or(at);
+                            px
+                        }
+                        View::Shot(shot) => self.studio_shot_form(s, *shot, tile, *view)?,
+                    };
+                    forms.push((*view, px));
+                }
                 for (pi, p) in sheet.passes.iter().enumerate() {
                     let (x0, y0) = (left + ci * tile, top + pi as u32 * tile);
                     let src = match p {
+                        Pass::Form(view) => forms.iter().find(|f| f.0 == *view).map(|f| f.1.clone()),
                         Pass::Colour => colour.clone(),
                         Pass::Value => colour.clone().map(|mut c| {
                             img::to_value(&mut c);

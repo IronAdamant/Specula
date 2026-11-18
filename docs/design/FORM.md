@@ -56,16 +56,30 @@ lit that way cannot show form, however long it is looked at.
   the world's again, to the byte (a test).
 - **Normals are the shading normals**: a normal map shows in `normals`, `curvature` and `stripes`,
   since it is what a light would follow.
-- **Cost to the world's frame: none.** The views are compiled only into pipelines made for a form
-  view (a specialisation bit, `FEAT_FORM`, as shadows and fog have), built the first time one is
-  asked for. (They were first a branch on a value of the frame in every lit pipeline: a reviewer
-  measured the world's scene pass 2 to 5% slower for it on the reference iGPU.)
+- **Cost to the world's frame: none, by construction and by measurement.** The views are in
+  fragment shaders of their own (`mesh_form.frag`, `mesh_tex_form.frag`, `terrain_form.frag`), and
+  the world's four compiled shaders are byte for byte what they were before the views existed (a
+  comparison with the commit before them). Measured on the reference iGPU at 1600 x 900, twelve
+  rounds of each build alternating: the scene pass of `cubes_10k` 1.5211 ms against 1.5208 ms
+  before the feature (ranges 1.5190 to 1.5249 and 1.5195 to 1.5226), `game` 4.2317 against 4.2332,
+  `mixed_1000` 5.0224 against 5.0222. (They were first a branch on a value of the frame in every
+  lit pipeline: 2 to 5% slower. Then a branch behind a specialisation constant in the same shader:
+  the Intel driver still charged one scene 2.2%. Two reviewers measured those.)
+- **A form view's pipelines are built on a worker, the first time one is asked for**, and the
+  capture or the sheet that asked waits for them, a pass at a time: no frame ever compiles one.
+  (`Variants::form`, `Gpu::request_form_pipelines`; a frame drawn as a form view before they exist
+  draws no mesh and no ground. Compiled inside the first form capture's render they held the engine
+  thread 440 ms and left a budget error for the rest of the run.) A set that failed to build is
+  reported by the call (`gpu_failed`, step `form_pipelines`; the studio: `render_unavailable`).
+- **Under an orthographic camera** every pixel is seen along the camera's own direction (told as
+  the renderer tells it: the projection's bottom row). Taken from the camera's place, clay stained
+  a ring of true outline red.
 
 How they are made: the frame carries the view and the scale in two spare slots of its uniform
-(`FrameData::sky_params.z` and `.w`); the views are in `shaders/form.glsl`, and `mesh_frag.glsl`'s
-`shade_lit` and `terrain.frag` return `form_view` before any light is gathered, in pipelines
-specialised with `FEAT_FORM`; `sight::form_frame` turns a capture's frame into the plain one a view
-is drawn in. Clay's light takes the camera's own right and up from the frame's inverse projection.
+(`FrameData::sky_params.z` and `.w`); the views are in `shaders/form.glsl`, which `mesh_frag.glsl`
+and `terrain_frag.glsl` include only under `#ifdef FORM` (the form entry points define it) and
+return from before any light is gathered; a pipeline whose features have `FEAT_FORM` takes those
+shaders; `sight::form_frame` turns a capture's frame into the plain one a view is drawn in. Clay's light takes the camera's own right and up from the frame's inverse projection.
 
 **The review of the form views** (a model that did not write them, 2026-11-19) said not to merge
 them: clay's light was built from the world's up and each pixel's own direction, so four balls seen
@@ -74,6 +88,15 @@ balls and every form capture in a world with baked light said its light "was not
 inside-out ball was the same picture as a right one, and the description promised hard edges in
 curvature, which cannot show them; and the world's frame was slower. Each is mended and is a test;
 shadows' discs are left out and the packet's lights count what was drawn.
+
+**A second review, of those mends** (another model, 2026-11-19), said not to merge them: the first
+form capture compiled its pipelines on the engine thread (440 ms, and a budget error that never
+cleared); on the iGPU one scene of the world's was still 2.2% slower (twelve alternating rounds,
+no overlap; isolated to the branch in `shade_lit`); and clay stained outlines under an
+orthographic camera. All three are mended as said above; the orthographic case is a test that was
+shown to fail on the fault. It found sound: the camera's axes in every projection and roll,
+terrain (no stain along ridges), frames to the byte after form frames, the pipeline keys, the
+packet. **These mends are not reviewed yet.**
 
 What the first looks through them taught (the figure, 2026-11-18; an independent check of each):
 curvature cut off at white lost limbs and fingers alike, so the turn is eased; clay under an even
@@ -97,8 +120,14 @@ for it):
 - **Clay's raking key brings out small ripples** (a diamond pattern on an upper arm) that normals,
   read by eye, show as smooth: both are right, and the ripple is slight.
 
-**Not yet:** the asset studio's sheets (`studio_sheet`, `studio_lineup`, `studio_compare`), a
-filmstrip, and `sight_compare` do not take `form`. A view of the surface's thickness, and the
+**On the studio's sheets** (2026-11-19): `studio_sheet` and `studio_compare` take the four views as
+`passes` beside `colour`, `value` and `silhouette` (`"passes": ["colour", "clay", "curvature"]`):
+a row a pass, the same camera as the colour tile, the subject alone on the neutral ground (no
+floor, no reference figure). Each form pass is a render of its own for every view; a standard
+shot is shown at the shot's own size and level. Not measured: the taste checks read the colour and
+silhouette passes as before.
+
+**Not yet:** `studio_lineup`, a filmstrip and `sight_compare` do not take `form`. A view of the surface's thickness, and the
 silhouette alone, are not built (the studio's silhouette frames are the nearest).
 
 ## The form checks

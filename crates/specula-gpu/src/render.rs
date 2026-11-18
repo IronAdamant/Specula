@@ -26,7 +26,7 @@ use std::ptr;
 use std::time::Instant;
 
 /// Every shader module, by name (for errors) and SPIR-V; [`Shader`] indexes this table.
-static SHADERS: [(&str, &[u8]); 55] = [
+static SHADERS: [(&str, &[u8]); 58] = [
     ("mesh.vert", include_bytes!("../shaders/mesh.vert.spv")),
     ("mesh.frag", include_bytes!("../shaders/mesh.frag.spv")),
     ("shadow.vert", include_bytes!("../shaders/shadow.vert.spv")),
@@ -82,6 +82,9 @@ static SHADERS: [(&str, &[u8]); 55] = [
     ("water.frag", include_bytes!("../shaders/water.frag.spv")),
     ("shadow_sway.vert", include_bytes!("../shaders/shadow_sway.vert.spv")),
     ("shadow_sway.frag", include_bytes!("../shaders/shadow_sway.frag.spv")),
+    ("mesh_form.frag", include_bytes!("../shaders/mesh_form.frag.spv")),
+    ("mesh_tex_form.frag", include_bytes!("../shaders/mesh_tex_form.frag.spv")),
+    ("terrain_form.frag", include_bytes!("../shaders/terrain_form.frag.spv")),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -141,6 +144,9 @@ enum Shader {
     WaterFrag = 52,
     ShadowSwayVert = 53,
     ShadowSwayFrag = 54,
+    MeshFormFrag = 55,
+    MeshTexFormFrag = 56,
+    TerrainFormFrag = 57,
 }
 
 /// Offscreen targets and the tone mapped image FXAA reads (readback bytes are sRGB RGBA8).
@@ -195,10 +201,12 @@ pub const FEAT_GI: u32 = 512;
 /// draws and terrain, whose registers the iGPU affords.
 pub const FEAT_GI_PIXEL: u32 = 1024;
 /// A form view (`FrameDesc::form`, `shaders/form.glsl`): the mesh and terrain pipelines draw
-/// their lit surfaces as shape alone. A bit of its own, so that a pipeline without it holds
-/// none of the views' code (with a branch on a value of the frame in every pipeline, the
-/// world's scene pass was 2 to 5% slower on the reference iGPU: review of the form views).
-/// Built the first time a frame is drawn as a form view.
+/// their lit surfaces as shape alone, with fragment shaders of their own (`mesh_form.frag`,
+/// `mesh_tex_form.frag`, `terrain_form.frag`), so that the world's shaders hold none of the
+/// views' code. (A branch on a value of the frame in every pipeline made the world's scene
+/// pass 2 to 5% slower on the reference iGPU; behind a specialization constant in the same
+/// shader it still cost 2% on one scene: two reviews of the form views.) These pipelines are
+/// a variant set ([`Variants::form`]) built on a worker when first asked for.
 pub const FEAT_FORM: u32 = 4096;
 /// Vertex stream variants of the scene pipelines: (skinned, textured). Blended materials are
 /// never textured (a textured mesh drawn blended uses the untextured variant). Shadow casters
@@ -223,6 +231,10 @@ pub struct Variants {
     /// The terrain and water pipelines (scene, shadow, ID buffer), asked for when a frame first
     /// has terrain patches or water ([`crate::Gpu::request_terrain_pipelines`]).
     pub terrain: bool,
+    /// The form views' mesh and terrain pipelines ([`FEAT_FORM`]), of every stream variant
+    /// built, asked for when a form view is first wanted
+    /// ([`crate::Gpu::request_form_pipelines`]).
+    pub form: bool,
 }
 
 impl Variants {
@@ -231,7 +243,7 @@ impl Variants {
     }
 
     fn or(self, o: Variants) -> Variants {
-        Variants { skinned: self.skinned || o.skinned, textured: self.textured || o.textured, gi: self.gi || o.gi, gi_pixel: self.gi_pixel || o.gi_pixel, terrain: self.terrain || o.terrain }
+        Variants { skinned: self.skinned || o.skinned, textured: self.textured || o.textured, gi: self.gi || o.gi, gi_pixel: self.gi_pixel || o.gi_pixel, terrain: self.terrain || o.terrain, form: self.form || o.form }
     }
 
     /// Either GI set (the effects' lit GI pipelines come with both).
@@ -1296,7 +1308,12 @@ impl PipelineKey {
                     (false, true) => Shader::MeshTexVert,
                     (true, true) => Shader::MeshSkinTexVert,
                 },
-                frag: Some(if textured { Shader::MeshTexFrag } else { Shader::MeshFrag }),
+                frag: Some(match (textured, features & FEAT_FORM != 0) {
+                    (false, false) => Shader::MeshFrag,
+                    (true, false) => Shader::MeshTexFrag,
+                    (false, true) => Shader::MeshFormFrag,
+                    (true, true) => Shader::MeshTexFormFrag,
+                }),
                 spec: features
                     | if format == HDR_FORMAT { FEAT_HDR } else { 0 }
                     | if blended { FEAT_BLENDED } else { FEAT_OPAQUE }
@@ -1539,7 +1556,7 @@ impl PipelineKey {
             },
             PipelineKey::Terrain { format, features } => PipelineDesc {
                 vert: Shader::TerrainVert,
-                frag: Some(Shader::TerrainFrag),
+                frag: Some(if features & FEAT_FORM != 0 { Shader::TerrainFormFrag } else { Shader::TerrainFrag }),
                 spec: features | if format == HDR_FORMAT { FEAT_HDR } else { 0 } | FEAT_OPAQUE,
                 // The grid's positions hold its coordinates (`terrain::grid_mesh`).
                 vertex: VertexInput::Position { skinned: false, uv: false, color: false },
@@ -1708,6 +1725,9 @@ pub struct PipelineVariants {
     pub gi_pixel: bool,
     /// Terrain and water ([`crate::Gpu::request_terrain_pipelines`]).
     pub terrain: bool,
+    /// The form views ([`crate::Gpu::request_form_pipelines`]): a frame drawn as one before
+    /// they exist draws no mesh and no terrain.
+    pub form: bool,
     /// The last background build's failure: its variants are not ready and won't be until a
     /// retry ([`crate::Gpu::retry_failed_variants`], or uploading a mesh needing them).
     pub failed: Option<VariantFailure>,
@@ -1722,6 +1742,7 @@ pub struct VariantFailure {
     pub gi: bool,
     pub gi_pixel: bool,
     pub terrain: bool,
+    pub form: bool,
     /// The pipeline that failed (its key), or `worker thread panicked`.
     pub pipeline: String,
     pub error: GpuError,
@@ -1990,11 +2011,15 @@ impl Pipelines {
         let shadows = features & FEAT_SHADOWS != 0;
         // Only the variants built: a frame never compiles one (meshes needing the others don't
         // exist yet).
+        // (Nor a form view's: until that set is built, a frame drawn as one draws no mesh and no
+        // terrain. Whoever asks for a form view asks for the set and waits: compiled here,
+        // inside its first frame, it held the engine thread 440 ms.)
+        let formed = features & FEAT_FORM == 0 || built.form;
         let mut opaque = [VK_NULL_HANDLE; 4];
         let mut shadow = [VK_NULL_HANDLE; 5];
         shadow[4] = get(shadows, PipelineKey::ShadowSway)?;
         for (a, b) in OPAQUE_VARIANTS {
-            let have = built.has(a, b);
+            let have = built.has(a, b) && formed;
             let key = PipelineKey::Mesh { format: scene_format, blended: false, features, skinned: a, textured: b };
             opaque[a as usize | (b as usize) << 1] = get(have, key)?;
             shadow[a as usize | (b as usize) << 1] = get(have && shadows, PipelineKey::Shadow { skinned: a, masked: b })?;
@@ -2002,7 +2027,7 @@ impl Pipelines {
         let mut blended = [VK_NULL_HANDLE; 2];
         for (skinned, _) in BLENDED_VARIANTS {
             let key = PipelineKey::Mesh { format: scene_format, blended: true, features, skinned, textured: false };
-            blended[skinned as usize] = get(built.has(skinned, false), key)?;
+            blended[skinned as usize] = get(built.has(skinned, false) && formed, key)?;
         }
         Ok(FramePipelines {
             layout,
@@ -2032,7 +2057,7 @@ impl Pipelines {
             // Water's pass has no depth attachment either.
             overlay_flat: get(overlay && mode.direct() && (effects.0 || effects.1 || built.terrain), PipelineKey::Overlay { format: final_format, depth: false })?,
             // Built with the terrain variant (in the background): lookups.
-            terrain: get(built.terrain, PipelineKey::Terrain { format: scene_format, features })?,
+            terrain: get(built.terrain && formed, PipelineKey::Terrain { format: scene_format, features })?,
             terrain_shadow: get(built.terrain && shadows, PipelineKey::TerrainShadow)?,
             water: get(built.terrain, PipelineKey::Water { format: scene_format, features: features & !FEAT_FORM })?,
         })
@@ -2102,6 +2127,21 @@ impl Pipelines {
         if want.terrain {
             keys.extend(terrain_keys(formats, self.ids_counting, want));
         }
+        if want.form {
+            // A form view is drawn with no tone mapping, so never into the HDR image; with no
+            // shadows, fog, SSAO or baked light, so with this one feature set.
+            for &format in formats.iter().filter(|f| **f != HDR_FORMAT) {
+                for blended in [false, true] {
+                    let variants: &[(bool, bool)] = if blended { &BLENDED_VARIANTS } else { &OPAQUE_VARIANTS };
+                    for &(skinned, textured) in variants.iter().filter(|(s, t)| new(*s, *t)) {
+                        keys.push(PipelineKey::Mesh { format, blended, features: FEAT_FORM, skinned, textured });
+                    }
+                }
+                if want.terrain {
+                    keys.push(PipelineKey::Terrain { format, features: FEAT_FORM });
+                }
+            }
+        }
         keys.retain(|k| !self.by_key.iter().any(|(b, _)| b == k));
         keys
     }
@@ -2115,7 +2155,7 @@ impl Pipelines {
             self.get(dev, key)?;
         }
         self.variants = want;
-        if self.background.failure.as_ref().is_some_and(|f| (!f.skinned || want.skinned) && (!f.textured || want.textured) && (!f.terrain || want.terrain) && (!f.gi || want.gi) && (!f.gi_pixel || want.gi_pixel)) {
+        if self.background.failure.as_ref().is_some_and(|f| (!f.skinned || want.skinned) && (!f.textured || want.textured) && (!f.terrain || want.terrain) && (!f.gi || want.gi) && (!f.gi_pixel || want.gi_pixel) && (!f.form || want.form)) {
             self.background.failure = None; // built after all
         }
         Ok(())
@@ -2139,6 +2179,7 @@ impl Pipelines {
             q.gi |= want.gi && !p.want.gi;
             q.gi_pixel |= want.gi_pixel && !p.want.gi_pixel;
             q.terrain |= want.terrain && !p.want.terrain;
+            q.form |= want.form && !p.want.form;
             return;
         }
         // A build that starts retries what failed before, once (the failure is folded into it,
@@ -2149,6 +2190,7 @@ impl Pipelines {
             want.gi |= f.gi;
             want.gi_pixel |= f.gi_pixel;
             want.terrain |= f.terrain;
+            want.form |= f.form;
         }
         let keys = self.variant_keys(want, formats);
         if keys.is_empty() {
@@ -2200,6 +2242,7 @@ impl Pipelines {
             gi: p.want.gi && !self.variants.gi,
             gi_pixel: p.want.gi_pixel && !self.variants.gi_pixel,
             terrain: p.want.terrain && !self.variants.terrain,
+            form: p.want.form && !self.variants.form,
         };
         let mut lost = if panicked { new } else { Variants::default() };
         let mut failure = panicked.then(|| (String::from("worker thread panicked"), GpuError::new("background pipeline build: the worker thread panicked")));
@@ -2213,7 +2256,12 @@ impl Pipelines {
                 }
                 Err(e) => {
                     self.background.failed += 1;
+                    // (A form view's pipeline that failed loses the form views, and nothing of
+                    // the world's.)
+                    let form = matches!(key, PipelineKey::Mesh { features, .. } | PipelineKey::Terrain { features, .. } if features & FEAT_FORM != 0);
+                    lost.form |= new.form && (form || !matches!(key, PipelineKey::Mesh { .. } | PipelineKey::Shadow { .. } | PipelineKey::Ids { .. } | PipelineKey::Particle { .. } | PipelineKey::Decal { .. } | PipelineKey::Terrain { .. } | PipelineKey::TerrainShadow | PipelineKey::IdsTerrain { .. } | PipelineKey::Water { .. }));
                     let (skinned, textured, gi, gi_pixel, terrain) = match key {
+                        _ if form => (false, false, false, false, false),
                         PipelineKey::Mesh { skinned, textured, features, .. } => (skinned, textured, features & FEAT_GI != 0 && features & FEAT_GI_PIXEL == 0, features & FEAT_GI_PIXEL != 0, false),
                         PipelineKey::Shadow { skinned, masked } => (skinned, masked, false, false, false),
                         PipelineKey::Ids { skinned, textured, .. } => (skinned, textured, false, false, false),
@@ -2243,9 +2291,10 @@ impl Pipelines {
             gi: p.want.gi && !lost.gi,
             gi_pixel: p.want.gi_pixel && !lost.gi_pixel,
             terrain: p.want.terrain && !lost.terrain,
+            form: p.want.form && !lost.form,
         };
         if let Some((pipeline, error)) = failure {
-            self.background.failure = Some(VariantFailure { skinned: lost.skinned, textured: lost.textured, gi: lost.gi, gi_pixel: lost.gi_pixel, terrain: lost.terrain, pipeline, error });
+            self.background.failure = Some(VariantFailure { skinned: lost.skinned, textured: lost.textured, gi: lost.gi, gi_pixel: lost.gi_pixel, terrain: lost.terrain, form: lost.form, pipeline, error });
         }
         let queued = std::mem::take(&mut self.background.queued);
         if queued != Variants::default() {
@@ -2280,6 +2329,7 @@ impl Pipelines {
             gi: self.variants.gi,
             gi_pixel: self.variants.gi_pixel,
             terrain: self.variants.terrain,
+            form: self.variants.form,
             failed: self.background.failure.clone(),
         }
     }

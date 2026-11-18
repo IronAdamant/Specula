@@ -1857,6 +1857,19 @@ impl Gpu {
         self.inner.request_terrain_pipelines()
     }
 
+    /// Starts building the form views' pipelines ([`FormView`]: the mesh and terrain pipelines
+    /// with shaders of their own) on a worker thread. A frame drawn as a form view before
+    /// [`PipelineVariants::form`] draws no mesh and no terrain, and none ever compiles one:
+    /// ask, then draw once they are here. A no-op once built, while building or after a failure.
+    pub fn request_form_pipelines(&mut self) {
+        self.inner.request_form_pipelines()
+    }
+
+    /// The form views' pipelines now, on this thread (loading screens and tests).
+    pub fn prepare_form_pipelines(&mut self) -> Result<(), GpuError> {
+        self.inner.prepare_form_pipelines()
+    }
+
     /// The terrain and water pipelines now, on this thread (loading screens and tests).
     pub fn prepare_terrain_pipelines(&mut self) -> Result<(), GpuError> {
         self.inner.prepare_terrain_pipelines()

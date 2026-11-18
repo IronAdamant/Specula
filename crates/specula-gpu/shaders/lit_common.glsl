@@ -14,8 +14,6 @@ const bool SHADOWS = (FEATURES & 1u) != 0u;
 const bool FOG = (FEATURES & 2u) != 0u;
 const bool HDR = (FEATURES & 4u) != 0u;
 const bool SSAO = (FEATURES & 32u) != 0u;
-// A form view (form.glsl): only a pipeline specialized with this holds the views' code.
-const bool FORM = (FEATURES & 4096u) != 0u;
 
 #include "gi.glsl"
 

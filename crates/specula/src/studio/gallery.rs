@@ -885,6 +885,7 @@ impl Ctx<'_> {
                         h: th,
                         aspect: tw as f32 / th as f32,
                         light: Some((rig, false)),
+                        form: None,
                         extra: fog.map(|f| Box::new(Extra { fog: Some(f), scene: None })),
                     };
                     out.push(self.gallery_render(req, tw, th)?);
@@ -900,7 +901,7 @@ impl Ctx<'_> {
                 let mut out = Vec::new();
                 for (patch, ..) in &looks {
                     let (rig, fog) = stage_light(*base, &game_rig, patch);
-                    let req = RenderReq { subjects: Vec::new(), refs: Some(at), cam, w: tw, h: th, aspect: tw as f32 / th as f32, light: Some((rig, false)), extra: fog.map(|f| Box::new(Extra { fog: Some(f), scene: None })) };
+                    let req = RenderReq { subjects: Vec::new(), refs: Some(at), cam, w: tw, h: th, aspect: tw as f32 / th as f32, light: Some((rig, false)), form: None, extra: fog.map(|f| Box::new(Extra { fog: Some(f), scene: None })) };
                     out.push(self.gallery_render(req, tw, th)?);
                 }
                 Ok(out)
@@ -931,7 +932,7 @@ impl Ctx<'_> {
     /// The live world through `camera` with `patch` applied (read only), `w`×`h`.
     pub(crate) fn scene_render(&mut self, camera: &Camera, patch: Patch, w: u32, h: u32) -> Result<Vec<u8>, ToolOutput> {
         let cam = Cam { eye: camera.eye, target: camera.target, fov: camera.fov_y_deg };
-        let req = RenderReq { subjects: Vec::new(), refs: None, cam, w, h, aspect: w as f32 / h as f32, light: Some((neutral_rig(), false)), extra: Some(Box::new(Extra { fog: None, scene: Some(SceneLook { camera: *camera, patch, call: self.call }) })) };
+        let req = RenderReq { subjects: Vec::new(), refs: None, cam, w, h, aspect: w as f32 / h as f32, light: Some((neutral_rig(), false)), form: None, extra: Some(Box::new(Extra { fog: None, scene: Some(SceneLook { camera: *camera, patch, call: self.call }) })) };
         self.gallery_render(req, w, h)
     }
 

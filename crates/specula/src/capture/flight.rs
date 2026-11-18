@@ -142,6 +142,8 @@ pub struct CaptureQueue {
     pub(crate) landed_views: u64,
     /// The subject cache was still being read when `start_next` gave up this pass.
     warming: bool,
+    /// Passes a form view waited for the form views' pipelines, built on a worker (tests).
+    pub(crate) form_waits: u32,
 }
 
 /// Why a capture pass ended. A pass may end because something outside the engine thread isn't
@@ -387,6 +389,30 @@ impl Engine {
             self.captures.end_pass = true;
             self.captures.waiting.push_front(Waiting::Next(Box::new(p)));
             return;
+        }
+        // A form view's pipelines are a set of their own, built on a worker the first time one
+        // is asked for: the view waits for them, a pass at a time. (Compiled inside its first
+        // render they held the engine thread 440 ms: second review of the form views.)
+        let wants_form = match &p.job {
+            Job::Frame(spec) => !spec.form.is_world(),
+            Job::Orbit(o) => !o.form.is_world(),
+            _ => false,
+        };
+        if wants_form {
+            let v = self.gpu.pipeline_variants();
+            if let Some(f) = v.failed.as_ref().filter(|f| f.form && !v.form) {
+                let mut j = Json::parse(&crate::capture::gpu_failure("form_pipelines", &f.error, self.windowed)).unwrap_or(Json::Null);
+                j.set("pipeline", Json::from(f.pipeline.as_str()));
+                let _ = p.to.reply.send(ToolOutput::error(j.to_string()));
+                return;
+            }
+            if !v.form {
+                self.gpu.request_form_pipelines();
+                self.captures.form_waits += 1;
+                self.captures.end_pass = true;
+                self.captures.waiting.push_front(Waiting::Next(Box::new(p)));
+                return;
+            }
         }
         let none = ov::Spec::default();
         let (opts, gi, form) = match (&p.job, &p.state) {
@@ -1268,10 +1294,22 @@ mod tests {
         };
         let (world_packet, world) = shoot(&mut e, "");
         assert!(world_packet.get("form").is_none(), "the world's frame has no form entry");
+        // The form views' pipelines are built on a worker when the first form view is asked
+        // for, and that view waits for them: no frame compiles one. (Compiled inside the first
+        // form capture's render, they held the engine thread 440 ms and left a budget error
+        // for the rest of the run: second review of the form views.)
+        assert!(!e.gpu.pipeline_variants().form && e.captures.form_waits == 0);
+        e.gpu.mark_warm();
+        let made = e.gpu.last_frame_stats().pipelines.created;
 
         let ground = sight::FORM_BACKGROUND.map(|c| (c * 255.0).round() as u8);
         for name in ["clay", "normals", "curvature", "stripes"] {
+            let waited = e.captures.form_waits;
             let (p, i) = shoot(&mut e, &format!(r#", "form": "{name}""#));
+            // (The first waited for the set, a pass at least; the others found it built.)
+            assert_eq!(e.captures.form_waits > waited, name == "clay", "{name}: waited {} passes", e.captures.form_waits - waited);
+            let stats = e.gpu.last_frame_stats().pipelines;
+            assert!(e.gpu.pipeline_variants().form && (stats.created, stats.created_after_warm) == (made, 0), "{name}: {stats:?}");
             let form = p.get("form").unwrap_or_else(|| panic!("{name}: the packet says it is a form view"));
             assert_eq!(form.get("view").and_then(Json::as_str), Some(name));
             assert!(form.get("not_drawn").and_then(Json::as_str).is_some_and(|t| t.contains("light")), "{name}: {form:?}");

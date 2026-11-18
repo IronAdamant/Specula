@@ -24,6 +24,9 @@ pub const MAX_STYLE_SUBJECTS: usize = 96;
 pub const MAX_STAGE_SUBJECTS: usize = 6;
 /// Tiles one sheet may have (subjects × views × passes).
 pub const MAX_TILES: usize = 96;
+/// A sheet's passes: the three of colour and the four of form, each once.
+pub const MAX_PASSES: usize = 7;
+const PASS_HELP: &str = "\"colour\", \"value\", \"silhouette\", and the form views \"clay\", \"normals\", \"curvature\", \"stripes\"";
 /// Largest sheet or frame side (the sight tools' cap).
 pub const MAX_SHEET_PX: u32 = 2048;
 /// Views one sheet may have.
@@ -105,6 +108,8 @@ pub enum Pass {
     Colour,
     Value,
     Silhouette,
+    /// Shape alone, as `sight_frame {form}` shows it (never `World`): docs/design/FORM.md.
+    Form(specula_gpu::FormView),
 }
 
 impl Pass {
@@ -113,6 +118,7 @@ impl Pass {
             Pass::Colour => "colour",
             Pass::Value => "value",
             Pass::Silhouette => "silhouette",
+            Pass::Form(view) => view.name(),
         }
     }
 }
@@ -265,16 +271,28 @@ fn views_arg(args: &Json, default: Vec<View>) -> Result<Vec<View>, String> {
 fn passes_arg(args: &Json) -> Result<Vec<Pass>, String> {
     match args.get("passes").filter(|v| !v.is_null()) {
         None => Ok(vec![Pass::Colour]),
-        Some(Json::Arr(items)) if !items.is_empty() && items.len() <= 3 => items
-            .iter()
-            .map(|p| match p.as_str() {
-                Some("colour" | "color") => Ok(Pass::Colour),
-                Some("value") => Ok(Pass::Value),
-                Some("silhouette") => Ok(Pass::Silhouette),
-                _ => Err("'passes' lists \"colour\", \"value\" and \"silhouette\"".to_string()),
-            })
-            .collect(),
-        Some(_) => Err("'passes' is a list of \"colour\", \"value\", \"silhouette\"".into()),
+        Some(Json::Arr(items)) if !items.is_empty() && items.len() <= MAX_PASSES => {
+            let mut out: Vec<Pass> = Vec::new();
+            for p in items {
+                let pass = match p.as_str() {
+                    Some("colour" | "color") => Pass::Colour,
+                    Some("value") => Pass::Value,
+                    Some("silhouette") => Pass::Silhouette,
+                    // (The form views by their names; "world" is the colour pass.)
+                    Some(name) => match specula_gpu::FormView::parse(name) {
+                        Some(view) if view != specula_gpu::FormView::World => Pass::Form(view),
+                        _ => return Err(format!("'passes' lists {PASS_HELP}")),
+                    },
+                    None => return Err(format!("'passes' lists {PASS_HELP}")),
+                };
+                if out.contains(&pass) {
+                    return Err(format!("'passes' names \"{}\" twice", pass.name()));
+                }
+                out.push(pass);
+            }
+            Ok(out)
+        }
+        Some(_) => Err(format!("'passes' is a list of 1..{MAX_PASSES} of {PASS_HELP}")),
     }
 }
 
@@ -458,7 +476,7 @@ pub fn definitions() -> Vec<ToolDef> {
                     p.extend(one());
                     p.extend([
                         ("views", any(views)),
-                        ("passes", t("array", "Any of colour, value, silhouette (default [colour])")),
+                        ("passes", t("array", "Any of colour, value, silhouette, and the form views clay, normals, curvature, stripes (shape alone, as sight_frame's form: look at a round or organic asset in clay and curvature before saying what its form is like), each once (default [colour])")),
                         ("rig", t("string", "Light for angle views: neutral (default), game or worst (shots bring their own)")),
                         ("tile", t("integer", "Tile side, 64..512 (default 192)")),
                         ("references", t("boolean", "Draw the 1.8 m figure and 1 m cube in angle tiles (default false)")),
@@ -491,7 +509,7 @@ pub fn definitions() -> Vec<ToolDef> {
                     ("before", any("The 'before' subject: a recipe path or {recipe, params, seed, label}")),
                     ("after", any("The 'after' subject")),
                     ("views", any(views)),
-                    ("passes", t("array", "Any of colour, value, silhouette (default [colour])")),
+                    ("passes", t("array", "Any of colour, value, silhouette, and the form views clay, normals, curvature, stripes (shape alone, as sight_frame's form: look at a round or organic asset in clay and curvature before saying what its form is like), each once (default [colour])")),
                     ("rig", t("string", "neutral (default), game or worst")),
                     ("tile", t("integer", "Tile side, 64..512 (default 192)")),
                     ("references", t("boolean", "Draw the scale references (default false)")),
@@ -579,6 +597,17 @@ mod tests {
         assert!(bad("studio_sheet", r#"{"recipe": "a.json", "views": ["sideways"]}"#).contains("a view is"));
         assert!(bad("studio_sheet", r#"{"recipe": "a.json", "subjects": ["b.json"]}"#).contains("not both"));
         assert!(bad("studio_sheet", "{}").contains("required"));
+
+        // The form views are passes by their names, each once; "world" is the colour pass.
+        let StudioCall::Sheet { sheet, .. } = ok("studio_sheet", r#"{"recipe": "a.json", "views": 4, "passes": ["colour", "clay", "curvature", "normals", "stripes", "silhouette", "value"]}"#) else { panic!() };
+        assert_eq!(sheet.passes.iter().map(|p| p.name()).collect::<Vec<_>>(), ["colour", "clay", "curvature", "normals", "stripes", "silhouette", "value"]);
+        assert_eq!(sheet.passes[1], Pass::Form(specula_gpu::FormView::Clay));
+        assert!(bad("studio_sheet", r#"{"recipe": "a.json", "passes": ["world"]}"#).contains("\"clay\""));
+        assert!(bad("studio_sheet", r#"{"recipe": "a.json", "passes": ["clay", "clay"]}"#).contains("twice"));
+        assert!(bad("studio_sheet", r#"{"recipe": "a.json", "passes": ["clay", 3]}"#).contains("'passes' lists"));
+        assert!(bad("studio_sheet", r#"{"recipe": "a.json", "passes": []}"#).contains("1..7"));
+        // (Seven passes of sixteen views are more tiles than a sheet holds.)
+        assert!(bad("studio_sheet", r#"{"recipe": "a.json", "views": 16, "passes": ["colour", "clay", "curvature", "normals", "stripes", "silhouette", "value"]}"#).contains("at most 96"));
     }
 
     #[test]

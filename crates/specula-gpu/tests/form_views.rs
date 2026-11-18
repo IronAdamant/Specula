@@ -73,6 +73,30 @@ fn on_adapter(adapter: AdapterPreference, label: &str) {
     let shot = |form, scale, mesh| Shot { form, scale, color: [1.0; 4], environment: plain, mesh };
     let mid = SIZE / 2;
 
+    // A form view's pipelines are a set of their own, built on a worker when asked for: a
+    // frame never compiles one (the first form capture held the engine thread 440 ms doing
+    // so: second review of the form views). Before they exist a frame drawn as a form view
+    // draws no mesh; asked for and waited for, it draws, and no pipeline was made on this thread.
+    gpu.mark_warm();
+    assert!(!gpu.pipeline_variants().form, "{test}: the form set is not built at start");
+    let made = gpu.last_frame_stats().pipelines.created;
+    let rgba = shoot(&mut gpu, &shot(FormView::Normals, 0.05, &wall));
+    let early = gpu.last_frame_stats();
+    assert_eq!(pixel(&rgba, SIZE, mid, mid), pixel(&rgba, SIZE, 2, 2), "{test}: no mesh is drawn before the form set exists");
+    assert_eq!((early.pipelines.created, early.pipelines.created_after_warm), (made, 0), "{test}: the frame compiled nothing");
+    gpu.request_form_pipelines();
+    let asked = std::time::Instant::now();
+    loop {
+        let v = gpu.pipeline_variants();
+        assert!(v.failed.is_none(), "{test}: {:?}", v.failed);
+        if v.form {
+            break;
+        }
+        assert!(asked.elapsed() < std::time::Duration::from_secs(120), "{test}: the form set was not built in two minutes");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    gpu.request_form_pipelines(); // (again: nothing to do)
+
     // Normals: the facing as colour, exactly. A wall facing the camera is (0, 0, 1); the ball's
     // left, right, top and bottom lean their own ways.
     let rgba = shoot(&mut gpu, &shot(FormView::Normals, 0.05, &wall));
@@ -200,6 +224,33 @@ fn on_adapter(adapter: AdapterPreference, label: &str) {
         assert_eq!(centre != corner, drawn, "{test}: a shadow's disc in {}: {centre:?} against {corner:?}", form.name());
     }
     gpu.destroy_target(target);
+
+    // Under an orthographic camera every pixel is seen along the camera's own direction: a
+    // ball's outline is not stained as facing away (taken from the camera's place, the middle
+    // of its near plane, a ring of 258 pixels round a correct ball was red: second review).
+    let target = gpu.create_target(SIZE, SIZE).unwrap();
+    let mut ortho = [0.0f32; 16];
+    // (Vulkan clip space: x and y of +-1.5 m to +-1, y down; depth 0 at 0.1 m, 1 at 20 m.)
+    (ortho[0], ortho[5], ortho[10], ortho[14], ortho[15]) = (1.0 / 1.5, -1.0 / 1.5, -1.0 / 19.9, -0.1 / 19.9, 1.0);
+    let flat = mul(&ortho, &look_at_rh([0.0, 0.0, 4.0], [0.0; 3], [0.0, 1.0, 0.0]));
+    let coarse = self::ball(6);
+    for mesh in [&ball, &coarse] {
+        let id = gpu.upload_mesh(&mesh.0, &mesh.1).unwrap();
+        let draws = [DrawItem::new(id, common::translation([0.0; 3]), [1.0; 4])];
+        gpu.render(target, &FrameDesc { view_proj: flat, draws: &draws, form: FormView::Clay, ..Default::default() }).unwrap();
+        let rgba = gpu.read_rgba8(target).unwrap();
+        write_png(&format!("form_clay_ortho_{label}_{}.png", mesh.1.len()), &rgba, SIZE, SIZE);
+        // (Clay is a warm grey, red over green about 1.06 as the eye's values; the stain, 1.8.)
+        let red = rgba.as_chunks::<4>().0.iter().filter(|p| p[0] > 40 && u32::from(p[0]) * 10 > u32::from(p[1]) * 14 + 100).count();
+        let drawn = rgba.as_chunks::<4>().0.iter().filter(|p| p[0] > 60).count();
+        assert!(drawn > 4_000 && red == 0, "{test}: a ball of {} triangles under an orthographic camera: {red} of its {drawn} pixels are stained", mesh.1.len() / 3);
+        gpu.destroy_mesh(id);
+    }
+    gpu.destroy_target(target);
+
+    // And through all of it, no frame compiled a pipeline.
+    let s = gpu.last_frame_stats();
+    assert_eq!(s.pipelines.created_after_warm, 0, "{test}: {:?}", s.pipelines);
 
     let errors = validation_errors(&test, gpu);
     assert!(errors.is_empty(), "{test}: {} validation error(s)", errors.len());

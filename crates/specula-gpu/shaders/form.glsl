@@ -1,7 +1,10 @@
 // The form views (sight_frame form; frame.sky_params.z): 1 clay, 2 normals, 3 curvature, 4 stripes.
-// Included by the shaders of lit surfaces (meshes, terrain) after `pc.frame`, `FORM` and `display`
-// are declared; each returns `form_view` before it gathers any light, in a pipeline specialized
-// with FORM only (render.rs FEAT_FORM): the world's pipelines hold none of this.
+// Included, under `#ifdef FORM`, by the shaders of lit surfaces (meshes, terrain) after `pc.frame`
+// and `display` are declared; each returns `form_view` before it gathers any light. FORM is
+// defined only by the entry points mesh_form.frag, mesh_tex_form.frag and terrain_form.frag,
+// which render.rs gives a pipeline whose features have FEAT_FORM: the world's shaders hold none
+// of this (behind a specialization constant, the Intel driver still charged the world's frame
+// 2% for the branch).
 // A surface shows nothing but its shape: its own colour, texture, metal and glow are put aside,
 // and so is the world's light. What they write is meant for a frame with no tone mapping.
 // `n` is the surface's own normal, not turned toward the viewer: a face whose normal points away
@@ -15,6 +18,15 @@ vec3 form_linear(vec3 srgb) {
 
 vec4 form_view(float form, vec3 n, vec3 v, vec3 world) {
     vec3 c;
+    // Under an orthographic camera every pixel is seen along one direction, the camera's own
+    // (`v` from the camera's place, the middle of its near plane, fans out from it: clay
+    // stained a ring of true outline red). An orthographic projection is told as render.rs
+    // tells it for the camera's place: its bottom row is (0, 0, 0, w).
+    if (pc.frame.view_proj[0][3] == 0.0 && pc.frame.view_proj[1][3] == 0.0 && pc.frame.view_proj[2][3] == 0.0) {
+        vec3 r = (pc.frame.inv_view_proj * vec4(1.0, 0.0, 0.0, 0.0)).xyz;
+        vec3 u = -(pc.frame.inv_view_proj * vec4(0.0, 1.0, 0.0, 0.0)).xyz;
+        v = normalize(cross(r, u));
+    }
     if (form < 1.5) {
         // Clay under a studio's light that comes with the camera: a key from the upper left, a
         // fill from the right and a little below, the glow of a pale ceiling and a dim floor,

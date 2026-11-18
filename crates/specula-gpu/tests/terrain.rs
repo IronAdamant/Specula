@@ -218,6 +218,8 @@ fn terrain_is_shape_alone_in_a_form_view() {
     every_adapter("terrain_form", |test, adapter| {
         let Some(mut gpu) = gpu_or_skip(test, adapter) else { return };
         gpu.prepare_terrain_pipelines().unwrap();
+        // (The form views' set after the terrain's: it holds the ground's form pipeline too.)
+        gpu.prepare_form_pipelines().unwrap();
         let t = upload_terrain(&mut gpu);
         let n = [0.0, 1.0, 0.0];
         let quad_v = [[-0.5, 0.0, 0.5], [0.5, 0.0, 0.5], [0.5, 0.0, -0.5], [-0.5, 0.0, -0.5]].map(|p| Vertex::new(p, n));

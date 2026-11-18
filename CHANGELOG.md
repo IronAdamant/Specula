@@ -335,6 +335,19 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       and on a `rect` outline. 0 is the hard shape, 1 its fully round form, and everything
       between is valid; the shape keeps its sizes whatever its roundness. With the bone chains
       of this slice it is the first of the five items of "form within an agent's reach".
+    - **A second round of reviews said not to merge the mends, and the form checks** (2026-11-19,
+      later). *The form views:* the first form capture compiled its pipelines on the engine
+      thread (440 ms), one scene of the world's was still 2.2% slower on the iGPU, and clay
+      stained outlines under an orthographic camera. The views are now in fragment shaders of
+      their own (the world's four compiled shaders are byte for byte what they were before the
+      feature, and the world's frame times the same), their pipelines are built on a worker
+      while the capture waits, and an orthographic camera is told. *The form checks:* the
+      shape's size was taken from every vertex, used or not (a stray one hid a loose piece),
+      and a dome on a flat slab read as perfectly smooth; five smaller findings beside. All
+      mended, each case a test.
+    - **The form views on the studio's sheets**: `studio_sheet` and `studio_compare` take
+      `clay`, `normals`, `curvature` and `stripes` as passes beside colour, value and
+      silhouette.
     - **Three reviews said not to merge, and what each found is mended** (2026-11-19). The
       form views: clay's light now comes with the camera whichever way it looks; the views of
       baked light are refused with a form and the packet says what was drawn; an inside-out
