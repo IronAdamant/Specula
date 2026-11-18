@@ -345,6 +345,16 @@ The proto-1.0. Its scope was talked through with the owner on 2026-11-16 (the an
       shape's size was taken from every vertex, used or not (a stray one hid a loose piece),
       and a dome on a flat slab read as perfectly smooth; five smaller findings beside. All
       mended, each case a test.
+    - **A third review of roundness said not to merge it, and its field outside the shape is
+      now the distance itself** (2026-11-19). Three touching planes were still up to 4.7 times
+      out beside a thin, fully round board's corners, with a step in the field where they were
+      switched on. The nearest point of the surface is now solved for, so a swelling, a shell
+      or a blend of any size is measured from the rounded surface (to a few parts in a hundred
+      thousand, held against a distance found by search). It costs more, said as what builds:
+      a cube of roundness 0.3 builds at a resolution of 64 and is refused at 96, where at
+      roundness 1 and 0.5 it takes a third and a half of the work limit.
+      Two nodes of the fidelity set's recipes, converted with the rotation's mend to look as
+      they did, were put back as written: the mend shows what they meant.
     - **The form views on the studio's sheets**: `studio_sheet` and `studio_compare` take
       `clay`, `normals`, `curvature` and `stripes` as passes beside colour, value and
       silhouette.

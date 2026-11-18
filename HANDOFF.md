@@ -442,10 +442,17 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       four minor, all mended, each case now a test. **A second reviewer said not to merge the
       mends**: `round` on a thin rounded board still came out up to five times too far at its
       corners (one touching plane is not enough beside a thin edge); mended by steps toward
-      the nearest point, at a cost (a rounded shape's sample is 7 to 30 times a box's). **That
-      mend is not reviewed yet.** One limit of the same kind is written down and not mended: a
-      column's field is in units of its narrower half size, so `round` and a blend's radius
-      reach further along its broader side.
+      the nearest point. **A third reviewer said not to merge that**: at roundness 0.8 to 1,
+      and for a swelling past twice the thinness, it was still up to 4.7 times out, and the
+      field had a step where the extra planes were switched on. **Outside the shape the field
+      is now the distance itself** (the nearest point of the surface is solved for; held
+      against a distance found by search to a few parts in a hundred thousand), at a cost said
+      as what builds: a cube of roundness 0.3 at resolution 64, refused at 96; at roundness 1
+      and 0.5 a third and a half of the work limit at 96. **This is not reviewed yet.** Two
+      limits of the same kind are written down and not mended: inside a rounded shape the
+      field is a bound, so a `shell` or a shrinking of one is thinner than asked beside its
+      corners; and a column's field is in units of its narrower half size, so `round` and a
+      blend's radius reach further along its broader side.
     - **A distance-field node's `rotate` turned its field the wrong way, since the modeller was
       written** (found by that second reviewer, 2026-11-19; PROCEDURAL_MODELLING.md, tier 3).
       Mended, with a test. Seven recipes turn such nodes, four of them Sepulcra props the owner
@@ -454,7 +461,10 @@ what's next** only; history is in [CHANGELOG.md](CHANGELOG.md). Last updated **2
       differ by a few triangles in thousands. The asset tests' two pinned hashes moved for it.
       **Looked at in the engine side by side** (2026-11-19: the four props from four sides, in
       the world's light and in clay, before and after; a model that did not take the pictures
-      found each pair the same). Its review is not back yet.
+      found each pair the same). **Its reviewer found the mend right** (with every other
+      modifier, nested, and the eleven conversions exact), and that two nodes of the fidelity
+      set should not have been converted: the runestone's grooves and the skeleton's upper arm
+      are put back as written, where the mend now shows what the recipe meant.
     - **The form views: built** (2026-11-18; [docs/design/FORM.md](docs/design/FORM.md)):
       `sight_frame` and `sight_orbit` take `form`: `clay`, `normals`, `curvature`, `stripes`.
       Shape alone, with none of the world's light; exact on both adapters. **Look at any form

@@ -136,36 +136,50 @@ ordered containers, per-pixel-independent threads). `cargo test -p specula-model
   turn such nodes had their angles converted so that each looks as it did (`grave_rock`,
   `ruined_wall`, the two statues; the fidelity set's runestone, skeleton and tree at T3): measured
   before and after, the Sepulcra ones differ by a few triangles in thousands and a millimetre in
-  size, because their grids now follow the right bounds.
+  size, because their grids now follow the right bounds; captured in the engine before and after,
+  a model that did not take the pictures found each of the four props the same from four sides.
+  **Two nodes of the fidelity set were put back as written**, on the review of the conversion: the
+  runestone's grooves (its glows, mesh parts that were always turned the right way, were placed by
+  the grooves' angles as written, so the old engine had drawn groove and glow crossed) and the
+  skeleton's upper arm (written to run from the shoulder to the elbow). There the mend shows what
+  the recipe meant.
 - **Roundness as one number** (M6 part 4, 2026-11-18): `roundness`, 0 to 1, on a `box` and a
   `cylinder` here, and on a `rect` outline (the profile of an extrusion, a loft or a sweep). 0 is the
   hard shape, 1 its fully round form (the ellipsoid as wide, as tall and as deep; the ellipse), and
   every value between is a valid shape with flat sides and corners that tighten as the number falls
   (a superquadric, a superellipse: Barr, 1981). The shape keeps its sizes whatever its roundness, so
-  it can be turned up or down without anything else moving. 1 and 0.5 are the cheap ones (roots
-  only: about seven times a plain box's sample); other values take powers and cost about four times
-  that again. It is not the modifier `round`
+  it can be turned up or down without anything else moving. **What it costs:** 1 and 0.5 are the
+  cheap ones (no power to take: six and nine times a plain box's sample); any other value solves
+  for the nearest point with some forty powers a sample outside the shape, thirty times a plain
+  box's. So a cube of roundness 0.3 builds at a resolution of 64 and is refused at 96 by the work
+  limit, where the same cube at roundness 1 or 0.5 takes a third and a half of the limit (a test
+  holds this); a thin board has an eighth of a cube's samples at the same resolution. It is not the modifier `round`
   (a swelling by a radius in metres, on any node) nor `corner` (an edge radius in metres, which cannot
   be given with it). A rounded cylinder has one radius. On an outline that is not a `rect` it is
   refused, as `segments` is where it would do nothing.
-  - **Its field is in metres** (after its review; the first was in the shape's own units, so `round`
-    swelled a thin board by its metres times the ratio of each side to the thinnest, and infinite a
-    few sizes away at a low roundness). The shape is convex, so the distance to the plane that touches
-    it where its gradient points is never more than the distance outside and exact to first order
-    at the surface; the hard shape of the same sizes holds it, so the hard shape's distance is a
-    bound too. The field is the greater of the two: finite however far, and inside the depth by the
-    nearer of a flat side and the rounded surface. **Near the surface it takes up to two more
-    touching planes**, each where the last one's foot lies, and keeps the greatest: with one plane
-    alone, a swelling of a centimetre came out up to five at a thin board's corners (its second
-    review), because beside a thin edge the touching plane swings to the thin side. That is what
-    makes it dear.
-  - **What the mesher is told of it is a slack, not a lip**: the field lies between the hard
-    shape's distance and the true one, which are never further apart than the hard shape's corner
-    is from the rounded surface. (The touching plane's own distance changes much faster than
-    distance where the plane swings from one side to the next, the faster the lower the
-    roundness: it is trusted for where the surface is, never for its slope.) That slack is next to
-    nothing for a nearly hard shape and 0.42 of the half diagonal at a roundness of 1, where less
-    is skipped and pruned near the shape: for an ellipsoid, `ellipsoid` is the cheaper way.
+  - **Outside the shape its field is the distance itself**, to the nearest point of the rounded
+    surface, to a few parts in a hundred thousand: so `round`, `shell` and a blend of any size
+    are measured from that surface on every side. It took three reviews. The first field was in
+    the shape's own units (`round` swelled a thin board by its metres times the ratio of each
+    side to the thinnest, and it was infinite a few sizes away at a low roundness). The second
+    was the distance to the plane that touches the shape where the gradient points, and the
+    third to three such planes: right along the axes and wrong beside a thin shape's edge,
+    where a swelling of a centimetre came out up to five (and at roundness 1 still 4.7 after
+    the third, with a step in the field where the extra planes were switched on). Now the
+    nearest point is solved for: the point `x` of the surface with `p - x` along the surface's
+    normal there, by Newton's steps on one number with each coordinate's own equation inside
+    (both curves are convex, so the steps cannot pass the answer). A test holds the field
+    against a distance found by search, on six shapes to 100:1 at six roundnesses, and swollen
+    meshes against the unswollen surface at every roundness, for swellings to three times the
+    thinness.
+  - **Inside it is a bound, and the mesher is told a slack**: the greater of the hard shape's
+    own depth and the distance behind up to three touching planes, each never less than the
+    depth, and never more than it by more than the hard shape's corner is from the rounded
+    surface. That slack is next to nothing for a nearly hard shape and 0.42 of the half diagonal
+    at a roundness of 1, where less is skipped and pruned near the shape: for an ellipsoid,
+    `ellipsoid` is the cheaper way. A `shell` or a negative `round` (a shrinking) of a rounded
+    shape is therefore measured from a bound, not from the depth: right on the flat sides,
+    thinner than asked by up to the slack beside the corners. **Not mended.**
   - **A known limit of the same kind, not mended:** a `column`'s field is in units of its
     section's narrower half size, so `round`, `shell` and a blend's radius act further along its
     broader side (by the ratio of the two: one and a half on the figure's trunk). The figure is
